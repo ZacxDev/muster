@@ -17,11 +17,12 @@ import (
 //
 // Destructive, refused:
 //
-//   - DROP of anything except: a CONSTRAINT that the SAME file re-adds by name
-//     (the CHECK-widening idiom `DROP CONSTRAINT x … ADD CONSTRAINT x CHECK
-//     (…)`), NOT NULL (widening), DEFAULT and INDEX. So DROP TABLE, DROP
-//     COLUMN (including `ALTER TABLE t DROP c` and `DROP IF EXISTS c`), DROP
-//     VIEW/TYPE/SCHEMA/… are refused;
+//   - a DROP, classified by what it is attached to: under ALTER [COLUMN] c,
+//     anything but DEFAULT, NOT NULL, IDENTITY, EXPRESSION; as an ALTER TABLE
+//     action, anything but a CONSTRAINT the SAME file re-adds by name (the
+//     CHECK-widening idiom) — so `DROP COLUMN c`, `DROP c`, `DROP "c"`,
+//     `DROP index` (a column named index) are all column drops; as a
+//     statement (or inside a DO body), anything but DROP INDEX;
 //   - any DROP … CASCADE;
 //   - RENAME (a table, a column, a constraint, a value);
 //   - ALTER … TYPE / SET DATA TYPE on a column;
@@ -126,18 +127,26 @@ func dollarTag(s string) string { return dollarTagRE.FindString(s) }
 var (
 	wsRE           = regexp.MustCompile(`\s+`)
 	onCommitDropRE = regexp.MustCompile(`\bON\s+COMMIT\s+DROP\b`)
-	dropRE         = regexp.MustCompile(`\bDROP\s+(\w+)(\s+\w+)?`)
-	dropConRE      = regexp.MustCompile(`\bDROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?("[^"]+"|\w+)`)
-	addConRE       = regexp.MustCompile(`\bADD\s+CONSTRAINT\s+("[^"]+"|\w+)`)
-	cascadeRE      = regexp.MustCompile(`\bDROP\s[^,]*?\bCASCADE\b`)
-	renameRE       = regexp.MustCompile(`\bRENAME\b`)
-	alterTypeRE    = regexp.MustCompile(`\bALTER\s+(?:COLUMN\s+)?(?:"[^"]+"|\w+)\s+(?:SET\s+DATA\s+)?TYPE\b`)
-	setNotNullRE   = regexp.MustCompile(`\bSET\s+NOT\s+NULL\b`)
-	truncateRE     = regexp.MustCompile(`\bTRUNCATE\b`)
-	deleteRE       = regexp.MustCompile(`\bDELETE\s+FROM\b`)
-	updateRE       = regexp.MustCompile(`\bUPDATE\s+(?:ONLY\s+)?(?:"[^"]+"|[\w.]+)\s+(?:AS\s+\w+\s+)?SET\b`)
-	whereRE        = regexp.MustCompile(`\bWHERE\b`)
-	allowedDropOn  = map[string]bool{"CONSTRAINT": true, "NOT": true, "DEFAULT": true, "INDEX": true}
+	dropRE         = regexp.MustCompile(`\bDROP\s+("[^"]*"|\w+)(\s+\w+)?`)
+	// alterColumnTailRE: the text before a DROP ends in `ALTER [COLUMN] <col>`
+	// — the DROP is a column PROPERTY (DEFAULT, NOT NULL, IDENTITY, EXPRESSION).
+	alterColumnTailRE = regexp.MustCompile(`\bALTER\s+(?:COLUMN\s+)?(?:"[^"]*"|\w+)\s*$`)
+	// alterTableTailRE: the text before a DROP ends in `ALTER TABLE <t>`, or
+	// the DROP follows a comma inside an ALTER TABLE — it is a table ACTION.
+	alterTableTailRE = regexp.MustCompile(`\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:"[^"]*"|[\w.]+)\s*\*?\s*$`)
+	alterTableRE     = regexp.MustCompile(`\bALTER\s+TABLE\b`)
+	dropConRE        = regexp.MustCompile(`\bDROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?("[^"]+"|\w+)`)
+	addConRE         = regexp.MustCompile(`\bADD\s+CONSTRAINT\s+("[^"]+"|\w+)`)
+	cascadeRE        = regexp.MustCompile(`\bDROP\s[^,]*?\bCASCADE\b`)
+	renameRE         = regexp.MustCompile(`\bRENAME\b`)
+	alterTypeRE      = regexp.MustCompile(`\bALTER\s+(?:COLUMN\s+)?(?:"[^"]+"|\w+)\s+(?:SET\s+DATA\s+)?TYPE\b`)
+	setNotNullRE     = regexp.MustCompile(`\bSET\s+NOT\s+NULL\b`)
+	truncateRE       = regexp.MustCompile(`\bTRUNCATE\b`)
+	deleteRE         = regexp.MustCompile(`\bDELETE\s+FROM\b`)
+	updateRE         = regexp.MustCompile(`\bUPDATE\s+(?:ONLY\s+)?(?:"[^"]+"|[\w.]+)\s+(?:AS\s+\w+\s+)?SET\b`)
+	whereRE          = regexp.MustCompile(`\bWHERE\b`)
+	// columnPropertyDrops are the DROPs under ALTER [COLUMN] c that remove no data.
+	columnPropertyDrops = map[string]bool{"DEFAULT": true, "NOT": true, "IDENTITY": true, "EXPRESSION": true}
 )
 
 // LintMigration returns every destructive statement in one migration file.
@@ -159,13 +168,42 @@ func LintMigration(file, sql string) []Finding {
 		}
 		// `CREATE TEMP TABLE … ON COMMIT DROP` drops a temp table at commit: not
 		// a schema change.
-		for _, m := range dropRE.FindAllStringSubmatch(onCommitDropRE.ReplaceAllString(stmt, "ON COMMIT"), -1) {
-			if !allowedDropOn[m[1]] {
-				add("DROP "+m[1], stmt)
-				continue
+		//
+		// 🔴 EACH DROP IS CLASSIFIED BY WHAT IT IS ATTACHED TO (round-1 F4), never
+		// by the word after it alone: in Postgres `COLUMN` is optional, so
+		// `ALTER TABLE t DROP index` and `ALTER TABLE t DROP "x"` drop columns.
+		//   - under ALTER [COLUMN] c: a column property; DEFAULT, NOT NULL,
+		//     IDENTITY and EXPRESSION pass;
+		//   - an ALTER TABLE action (after `ALTER TABLE t` or a comma inside an
+		//     ALTER TABLE): CONSTRAINT is checked for its re-add below, and
+		//     ANYTHING else is a column drop;
+		//   - anything else (a DROP statement, or one inside a DO body): DROP
+		//     INDEX passes, every other object is refused.
+		scan := onCommitDropRE.ReplaceAllString(stmt, "ON COMMIT")
+		for _, loc := range dropRE.FindAllStringSubmatchIndex(scan, -1) {
+			word := scan[loc[2]:loc[3]]
+			next := ""
+			if loc[4] >= 0 {
+				next = strings.TrimSpace(scan[loc[4]:loc[5]])
 			}
-			if m[1] == "NOT" && strings.TrimSpace(m[2]) != "NULL" {
-				add("DROP NOT "+strings.TrimSpace(m[2]), stmt)
+			before := scan[:loc[0]]
+			clause := before
+			if i := strings.LastIndexByte(before, ','); i >= 0 {
+				clause = before[i+1:]
+			}
+			switch {
+			case alterColumnTailRE.MatchString(clause) && !alterTableTailRE.MatchString(clause):
+				if !columnPropertyDrops[word] || (word == "NOT" && next != "NULL") {
+					add("DROP "+word+" on a column", stmt)
+				}
+			case alterTableTailRE.MatchString(clause) || (alterTableRE.MatchString(before) && strings.TrimSpace(clause) == ""):
+				if word != "CONSTRAINT" {
+					add("DROP COLUMN", stmt)
+				}
+			default:
+				if word != "INDEX" {
+					add("DROP "+word, stmt)
+				}
 			}
 		}
 		for _, m := range dropConRE.FindAllStringSubmatch(stmt, -1) {

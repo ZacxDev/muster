@@ -68,8 +68,11 @@ type WatchStatus struct {
 	RevertPR    int       `json:"revert_pr,omitempty"`
 	RollbackTag string    `json:"rollback_tag,omitempty"`
 	Escalated   bool      `json:"escalated"`
-	Events      []string  `json:"events"`
-	Done        bool      `json:"done"`
+	// Rollback is true for the watch of a ROLLBACK release: it is never itself
+	// rolled back.
+	Rollback bool     `json:"rollback"`
+	Events   []string `json:"events"`
+	Done     bool     `json:"done"`
 }
 
 // Watcher watches one officer's releases, one at a time.
@@ -162,6 +165,11 @@ func (w *Watcher) set(f func(s *WatchStatus)) {
 // already in flight is refused: officer_tag_release's in-flight gate makes
 // that unreachable except by a rollback, which watches inline.
 func (w *Watcher) Start(ctx context.Context, rel TagOutcome, itemID string) error {
+	return w.start(ctx, rel, itemID, true)
+}
+
+// start watches rel; rollbackAllowed is false for a rollback release.
+func (w *Watcher) start(ctx context.Context, rel TagOutcome, itemID string, rollbackAllowed bool) error {
 	w.mu.Lock()
 	if w.cur != nil && !w.cur.Done {
 		w.mu.Unlock()
@@ -174,7 +182,7 @@ func (w *Watcher) Start(ctx context.Context, rel TagOutcome, itemID string) erro
 		}
 	}
 	w.cur = &WatchStatus{Tag: rel.Tag, SHA: rel.SHA, Previous: rel.Previous, ItemID: itemID, TaggedAt: rel.TaggedAt,
-		Phase: "live", Verdict: VerdictWatching}
+		Phase: "live", Verdict: VerdictWatching, Rollback: !rollbackAllowed}
 	w.mu.Unlock()
 	w.wg.Add(1)
 	go func() {
@@ -189,7 +197,7 @@ func (w *Watcher) Start(ctx context.Context, rel TagOutcome, itemID string) erro
 				w.set(func(s *WatchStatus) { s.Verdict, s.Done, s.Phase = VerdictAborted, true, "done" })
 			}
 		}()
-		w.run(ctx, rel, true)
+		w.run(ctx, rel, rollbackAllowed)
 	}()
 	return nil
 }
@@ -228,9 +236,13 @@ func (w *Watcher) Resume(ctx context.Context) {
 		w.logf("officers: %s rollout: could not resume the watch of %s: %v", w.OfficerID, rels[0].Ref.Name, err)
 		return
 	}
-	if err := w.Start(ctx, TagOutcome{Tag: rels[0].Ref.Name, SHA: t.TargetSHA, Previous: rels[1].Version.String(), PreviousSHA: prev,
-		TaggedAt: t.TaggedAt}, ""); err == nil {
-		w.event("resumed the watch of %s after a restart", rels[0].Ref.Name)
+	// 🔴 A ROLLBACK RELEASE RESUMES AS ONE (round-1 F1). Resumed as an
+	// ordinary release, a still-unhealthy service would make the watch revert
+	// the revert and tag the bad tree again. The tag's own trailer says which.
+	rollback := IsRollbackTag(t.Message)
+	if err := w.start(ctx, TagOutcome{Tag: rels[0].Ref.Name, SHA: t.TargetSHA, Previous: rels[1].Version.String(), PreviousSHA: prev,
+		TaggedAt: t.TaggedAt}, "", !rollback); err == nil {
+		w.event("resumed the watch of %s after a restart (rollback release: %v)", rels[0].Ref.Name, rollback)
 	}
 }
 
@@ -466,6 +478,11 @@ func (w *Watcher) openRevert(ctx context.Context, rel TagOutcome) (int, error) {
 		}
 		for _, p := range prs {
 			if p.Merged && p.MergeCommitSHA == sha && strings.EqualFold(p.Author, bot) {
+				// 🔴 AN AUTOMATIC REVERT IS NEVER REVERTED AUTOMATICALLY (round-1
+				// F1): that would re-ship the change it removed.
+				if strings.HasPrefix(p.HeadRef, w.Ship.BranchPrefix+"revert-") {
+					return 0, fmt.Errorf("%s holds #%d, itself an automatic revert; it is never reverted automatically", rel.Tag, p.Number)
+				}
 				own = append(own, merged{sha, p})
 			}
 		}
@@ -477,9 +494,23 @@ func (w *Watcher) openRevert(ctx context.Context, rel TagOutcome) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	branch := w.Ship.BranchPrefix + "revert-" + rel.Tag
-	if err := w.GH.CreateRef(ctx, "refs/heads/"+branch, base); err != nil {
-		return 0, err
+	// A branch left by an earlier attempt gets a fresh name (round-1 G2).
+	branch := ""
+	for i := 1; i <= 9 && branch == ""; i++ {
+		b := w.Ship.BranchPrefix + "revert-" + rel.Tag
+		if i > 1 {
+			b += "-" + strconv.Itoa(i)
+		}
+		err := w.GH.CreateRef(ctx, "refs/heads/"+b, base)
+		switch {
+		case err == nil:
+			branch = b
+		case !errors.Is(err, ErrRefExists):
+			return 0, err
+		}
+	}
+	if branch == "" {
+		return 0, fmt.Errorf("every %srevert-%s branch name is taken", w.Ship.BranchPrefix, rel.Tag)
 	}
 	var body bytes.Buffer
 	fmt.Fprintf(&body, "Automatic rollback of %s by officer %s: the release failed its rollout watch.\n\nReverts:\n", rel.Tag, w.OfficerID)

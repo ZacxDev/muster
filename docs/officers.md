@@ -575,7 +575,7 @@ connector's. It is an allowlist:
 | `git push` (`git-receive-pack`) to the officer's repo whose every command updates `refs/heads/<prefix>…` (create, update, force or delete) | `PUT …/pulls/{n}/merge`, `…/git/refs`, `…/git/tags`, `…/releases`, the contents API, the merges API, GraphQL, every `DELETE` |
 | `POST /repos/{repo}/pulls` with head `<prefix>…` and base `base` | a signed push, an unreadable push body, a body naming a key twice |
 | `PATCH /repos/{repo}/pulls/{n}` of its **own** pull request (`title`, `body`, `state`) | a method-override header, a query string on a write, a path with an empty, `.`, `..` or doubly encoded segment |
-| `POST /repos/{repo}/issues/{n}/comments` | any write to another repository |
+| `POST /repos/{repo}/issues/{n}/comments` on its **own** pull request | any write to another repository |
 
 A refusal is a 403 naming the rule, and the upstream sees nothing.
 
@@ -616,9 +616,18 @@ Squash-merges the officer's own pull request, with GitHub's match-head guard
 A refusal names its gate and the gates that passed; nothing is merged. Every
 call is logged with its inputs and verdict.
 
-**The migration lint** refuses `DROP` of anything except a constraint the
-same file re-adds by name (the CHECK-widening idiom), `NOT NULL`, `DEFAULT` and
-`INDEX`; any `DROP … CASCADE`; `RENAME`; `ALTER … TYPE`; `SET NOT NULL`;
+After the merge muster re-reads the merge commit: if its parent is not the
+base sha the gates checked (the base moved in between), the result carries
+`untested_tree: true` and a warning, and `officer_tag_release` refuses
+(`untested_merge`) while the base's head is that merge — its tree is one no CI
+run saw. The next up-to-date merge clears it.
+
+**The migration lint** classifies each `DROP` by what it is attached to:
+under `ALTER [COLUMN] c` only `DEFAULT`, `NOT NULL`, `IDENTITY` and `EXPRESSION`
+pass; as an `ALTER TABLE` action only a constraint the same file re-adds by
+name (the CHECK-widening idiom) passes — anything else, whatever its name
+(`DROP "x"`, `DROP index`), is a column drop, since `COLUMN` is optional; as a
+statement only `DROP INDEX` passes. It also refuses any `DROP … CASCADE`; `RENAME`; `ALTER … TYPE`; `SET NOT NULL`;
 `TRUNCATE`; `DELETE` or `UPDATE` with no `WHERE`. Comments are stripped by a
 scanner that knows quoting; string literals and dollar-quoted bodies are
 scanned, so dynamic SQL in a `DO` block is seen. A destructive migration is
@@ -636,7 +645,10 @@ when ALL of these hold:
 3. no release is in flight: the rollout watch owns none, and `health_url`
    reports the highest tag's version (the previous release is live);
 4. fewer than `releases_per_day` officer tags in the last 24 h (counted from
-   the annotated tags its bot made) and none within `min_release_gap`;
+   the annotated tags its bot made, walking annotated tags newest first until
+   the first one — anyone's — older than 24 h) and none within
+   `min_release_gap`; the base's head is not an untested officer merge
+   (above);
 5. not inside `quiet_hours`;
 6. the required checks passed for the head's **exact tree**: either they are
    success on the head itself, or the head is a pull request's squash merge
@@ -648,7 +660,10 @@ when ALL of these hold:
    minutes old, no archive failure in the last hour and a base backup under
    26 hours old.
 
-Then it creates the tag object and `refs/tags/<next>`. A tag someone else
+Then it creates the tag object and `refs/tags/<next>`. Its message ends with
+the trailer `Muster-Release: release` (or `rollback`), which is how the
+rollout watch, resumed after a restart, knows never to roll back a rollback
+release. A tag someone else
 pushed first makes the ref create fail; the tool says so and nothing is
 created. Untagged merges by humans on `base` ship in the officer's release.
 
@@ -666,7 +681,8 @@ item's completion. A watch in progress at a restart resumes at boot.
 On `not_live` or `unhealthy`, per `rollback`:
 
 - `off`: escalate to the webhook; touch nothing.
-- `pr`: open a revert pull request from `<prefix>revert-<tag>` that reverts the
+- `pr`: open a revert pull request from `<prefix>revert-<tag>` (`-2`, `-3`, … if
+  that branch exists) that reverts the
   officer's own squash merges in the release, newest first (each a 3-way merge
   GitHub computes, so later commits are kept); escalate with its number.
 - `auto`: as `pr`, then merge it through `officer_merge_pr`'s gates (CI and
@@ -681,7 +697,9 @@ On `not_live` or `unhealthy`, per `rollback`:
 
 The rollback is always a revert plus a **new** tag, never a higher tag on an
 old commit (which would leave `base` ahead of production for the next tag to
-re-ship). Schema is never reverted.
+re-ship). Schema is never reverted. A rollback release is never itself rolled
+back (a failure escalates), and a release holding an automatic revert is
+never reverted automatically.
 
 ### Kill switches
 

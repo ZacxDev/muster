@@ -222,7 +222,13 @@ func (s *Server) dispatchShipTool(ctx context.Context, a agents.Agent, o officer
 		if err != nil {
 			return shipRefusal(name, err, res.Passed)
 		}
-		return toolJSON(map[string]any{"merged": true, "result": res})
+		out := map[string]any{"merged": true, "result": res}
+		if res.UntestedTree {
+			// Said on the result and in the log: put it in your item too.
+			out["warning"] = res.Warning + " — record this on your item"
+			s.logger.Printf("officers: %s: %s", o.ID, res.Warning)
+		}
+		return toolJSON(out)
 	case officers.ToolTagRelease:
 		if strings.ContainsAny(in.ItemID, "/?#") || len(in.ItemID) > 64 {
 			return toolErr("item_id is not an item id")

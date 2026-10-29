@@ -32,7 +32,7 @@ import (
 //   - POST /repos/{repo}/pulls with head <prefix>… and base = the base branch;
 //   - PATCH /repos/{repo}/pulls/{n} of the officer's OWN pull request (its
 //     App's bot authored it, its head is <prefix>…), title/body/state only;
-//   - POST /repos/{repo}/issues/{n}/comments.
+//   - POST /repos/{repo}/issues/{n}/comments on its OWN pull request.
 //
 // Every other method, path and host shape is refused — the merge endpoint, the
 // git/refs and git/tags endpoints, releases, the contents API (which commits to
@@ -320,7 +320,10 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 			return g.ownPR(r.Context(), n)
 		})
 	case r.Method == http.MethodPost && len(tail) == 3 && tail[0] == "issues" && isNumber(tail[1]) && tail[2] == "comments":
-		return g.admitJSON(r, map[string]bool{"body": true}, nil)
+		n, _ := strconv.Atoi(tail[1])
+		return g.admitJSON(r, map[string]bool{"body": true}, func(map[string]json.RawMessage) error {
+			return g.ownPR(r.Context(), n)
+		})
 	}
 	return nil, refused("%s api.github.com/%s", r.Method, path)
 }

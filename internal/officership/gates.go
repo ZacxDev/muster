@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -26,29 +27,32 @@ type HQ interface {
 
 // Gate names, as a refusal and the call log name them.
 const (
-	GateStage       = "stage"
-	GateHQEnabled   = "hq_enabled"
-	GatePR          = "pull_request"
-	GateBase        = "base"
-	GateHeadBranch  = "head_branch"
-	GateAuthor      = "author"
-	GateMergeable   = "mergeable"
-	GateUpToDate    = "up_to_date"
-	GateChecks      = "checks"
-	GateReview      = "review"
-	GateHold        = "hold"
-	GateMigrations  = "migrations"
-	GateNotice      = "notice"
-	GateMerge       = "merge"
-	GateTags        = "tags"
-	GateAncestor    = "ancestor"
-	GateInFlight    = "in_flight"
-	GateRate        = "rate"
-	GateQuietHours  = "quiet_hours"
-	GateMainCI      = "main_ci"
-	GateBackup      = "backup"
-	GateTagCreate   = "tag_create"
-	gateNothingToDo = "nothing_to_release"
+	GateStage      = "stage"
+	GateHQEnabled  = "hq_enabled"
+	GatePR         = "pull_request"
+	GateBase       = "base"
+	GateHeadBranch = "head_branch"
+	GateAuthor     = "author"
+	GateMergeable  = "mergeable"
+	GateUpToDate   = "up_to_date"
+	GateChecks     = "checks"
+	GateReview     = "review"
+	GateHold       = "hold"
+	GateMigrations = "migrations"
+	GateNotice     = "notice"
+	GateMerge      = "merge"
+	GateTags       = "tags"
+	GateAncestor   = "ancestor"
+	GateInFlight   = "in_flight"
+	GateRate       = "rate"
+	GateQuietHours = "quiet_hours"
+	GateMainCI     = "main_ci"
+	GateBackup     = "backup"
+	GateTagCreate  = "tag_create"
+	// GateUntestedMerge refuses a release while the base's head is an
+	// officer merge that raced the base (MergeOutcome.UntestedTree).
+	GateUntestedMerge = "untested_merge"
+	gateNothingToDo   = "nothing_to_release"
 )
 
 // Refusal is a gate that did not pass. Nothing was written.
@@ -85,7 +89,16 @@ type Gates struct {
 	// LiveVersion reads the version the service reports now (the rollout's
 	// health URL).
 	LiveVersion func(ctx context.Context) (string, error)
+
+	mu sync.Mutex
+	// untested is a merge sha that landed on a base which moved after the
+	// gates read it (round-1 F5): the base's tree there is one no CI run saw.
+	// TagRelease refuses while the base's head is that sha.
+	untested string
 }
+
+func (g *Gates) setUntested(sha string) { g.mu.Lock(); g.untested = sha; g.mu.Unlock() }
+func (g *Gates) untestedHead() string   { g.mu.Lock(); defer g.mu.Unlock(); return g.untested }
 
 func (g *Gates) now() time.Time {
 	if g.Now != nil {
@@ -107,7 +120,10 @@ type MergeOutcome struct {
 	Warning      string `json:"warning,omitempty"`
 }
 
-var holdRE = regexp.MustCompile(`(?i)(^|\s)/hold\b`)
+// holdRE is a /hold command: "/hold" not preceded by a letter, digit or
+// underscore (so inside backticks, bold, parentheses, after a no-break space —
+// but not x/hold.go or /unhold) and not followed by one.
+var holdRE = regexp.MustCompile(`(?i)(^|[^\p{L}\p{N}_])/hold\b`)
 
 // MergePR squash-merges the officer's own pull request n if, and only if,
 // every merge gate passes now. A refusal is a *Refusal naming the gate; on a
@@ -173,6 +189,12 @@ func (g *Gates) MergePR(ctx context.Context, n int) (MergeOutcome, error) {
 		return out, refuse(GateMergeable, "GitHub says #%d is not mergeable (conflicts); rebase it on %s and push", n, g.Ship.Base)
 	}
 	pass(GateMergeable)
+	// The base as the gates see it. After the merge, its parent must be this
+	// sha, or the base moved in between and holds a tree nobody tested.
+	checkedBase, err := g.GH.BranchSHA(ctx, g.Ship.Base)
+	if err != nil {
+		return out, refuse(GateUpToDate, "could not read %s: %v", g.Ship.Base, err)
+	}
 	cmp, err := g.GH.Compare(ctx, g.Ship.Base, pr.HeadSHA)
 	if err != nil {
 		return out, refuse(GateUpToDate, "could not compare %s with the head: %v", g.Ship.Base, err)
@@ -228,6 +250,17 @@ func (g *Gates) MergePR(ctx context.Context, n int) (MergeOutcome, error) {
 	}
 	out.MergeSHA = sha
 	pass(GateMerge)
+	_, parents, perr := g.GH.Commit(ctx, sha)
+	if perr != nil || len(parents) != 1 || parents[0] != checkedBase {
+		out.UntestedTree = true
+		if perr != nil {
+			out.Warning = fmt.Sprintf("merged, but the merge commit %s could not be read (%v): treated as an untested tree", short(sha), perr)
+		} else {
+			out.Warning = fmt.Sprintf("merged, but %s moved after the gates read it (%s): the merge %s sits on %v, so %s now holds an untested tree. "+
+				"No release is cut from it; the next up-to-date merge clears this", g.Ship.Base, short(checkedBase), short(sha), parents, g.Ship.Base)
+		}
+		g.setUntested(sha)
+	}
 	return out, nil
 }
 
@@ -469,10 +502,30 @@ type TagOutcome struct {
 	Migrations  []string  `json:"migrations,omitempty"`
 }
 
+// The trailer every officer tag's message ends with, saying which kind of
+// release it is. The rollout watch reads it when it resumes after a restart
+// (IsRollbackTag): a rollback release must never be rolled back.
+const (
+	releaseTrailer      = "Muster-Release"
+	releaseKindForward  = "release"
+	releaseKindRollback = "rollback"
+)
+
+// IsRollbackTag reports whether an annotated tag's message carries the
+// rollback trailer (a whole line, exactly).
+func IsRollbackTag(message string) bool {
+	for _, l := range strings.Split(message, "\n") {
+		if strings.TrimSpace(l) == releaseTrailer+": "+releaseKindRollback {
+			return true
+		}
+	}
+	return false
+}
+
 // Rate-limit bookkeeping bounds.
 const (
 	rateWindow       = 24 * time.Hour
-	maxTagObjectRead = 60
+	maxTagObjectRead = 500
 	// Backup preflight thresholds.
 	walMaxAge       = 5 * time.Minute
 	walQuietFailure = time.Hour
@@ -539,6 +592,13 @@ func (g *Gates) TagRelease(ctx context.Context, opt TagOptions) (TagOutcome, err
 			top.Ref.Name, short(top.Commit), g.Ship.Base, short(head), cmp.Status, g.Ship.Base)
 	}
 	pass(GateAncestor)
+	if u := g.untestedHead(); u != "" {
+		if u == head {
+			return out, refuse(GateUntestedMerge, "%s's head %s is an officer merge that raced the base: its tree was never tested. "+
+				"Release after the next up-to-date merge", g.Ship.Base, short(head))
+		}
+		g.setUntested("") // the base moved on; main_ci decides the new head
+	}
 	slug, err := g.GH.AppSlug(ctx)
 	if err != nil {
 		return out, refuse(GateRate, "could not read the officer App's identity: %v", err)
@@ -590,10 +650,11 @@ func (g *Gates) TagRelease(ctx context.Context, opt TagOptions) (TagOutcome, err
 	next := top.Version.NextMinor().String()
 	now := g.now().UTC()
 	bot := BotLogin(slug)
-	msg := fmt.Sprintf("%s\n\nReleased by officer %s through muster's gates.\n%s %s, previous %s (%s).\n", next, g.OfficerID, g.Ship.Base,
-		head, top.Ref.Name, top.Commit)
+	msg := fmt.Sprintf("%s\n\nReleased by officer %s through muster's gates.\n%s %s, previous %s (%s).\n\n%s: %s\n", next, g.OfficerID, g.Ship.Base,
+		head, top.Ref.Name, top.Commit, releaseTrailer, releaseKindForward)
 	if opt.Rollback {
-		msg = fmt.Sprintf("%s\n\nRollback release by officer %s (a revert of %s).\n%s %s.\n", next, g.OfficerID, top.Ref.Name, g.Ship.Base, head)
+		msg = fmt.Sprintf("%s\n\nRollback release by officer %s (a revert of %s).\n%s %s.\n\n%s: %s\n", next, g.OfficerID, top.Ref.Name, g.Ship.Base,
+			head, releaseTrailer, releaseKindRollback)
 	}
 	obj, err := g.GH.CreateTag(ctx, next, msg, head, Tagger{Name: bot, Email: bot + "@users.noreply.github.com", When: now})
 	if err != nil {
@@ -611,7 +672,11 @@ func (g *Gates) TagRelease(ctx context.Context, opt TagOptions) (TagOutcome, err
 }
 
 // rateAllows counts the officer's own (annotated, tagged by its bot) release
-// tags in the last 24 h, newest first, stopping at the first older one.
+// tags in the last 24 h. It walks the annotated tags newest version first and
+// stops at the first one — ANYONE's — tagged before the window: a human's old
+// tag ends the walk as surely as the officer's (round-1 F2: a repository with
+// many human annotated tags and no officer tag used to exhaust the read cap
+// and refuse every release). Lightweight tags carry no time and are skipped.
 func (g *Gates) rateAllows(ctx context.Context, rels []release, slug string) error {
 	bot := BotLogin(slug)
 	now := g.now()
@@ -628,14 +693,17 @@ func (g *Gates) rateAllows(ctx context.Context, rels []release, slug string) err
 		if err != nil {
 			return refuse(GateRate, "could not read tag %s: %v", r.Ref.Name, err)
 		}
+		if now.Sub(t.TaggedAt) > rateWindow {
+			if t.Tagger == bot && (newestOwn.IsZero() || t.TaggedAt.After(newestOwn)) {
+				newestOwn = t.TaggedAt
+			}
+			break
+		}
 		if t.Tagger != bot {
 			continue
 		}
 		if newestOwn.IsZero() || t.TaggedAt.After(newestOwn) {
 			newestOwn = t.TaggedAt
-		}
-		if now.Sub(t.TaggedAt) > rateWindow {
-			break
 		}
 		count++
 	}

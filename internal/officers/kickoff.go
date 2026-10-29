@@ -136,7 +136,7 @@ func shipNote(o Officer) string {
 
 Your repository is %[1]s. Reach it through muster's %[2]q connector — the only connector you may use. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once approved:
 - git: run `+"`ccd connect-git %[2]s`"+` once, then `+"`git clone https://github.com/%[1]s.git`"+`. Work on a branch named %[3]s<task>-<slug> off origin/%[4]s and `+"`git push origin %[3]s<task>-<slug>`"+`. muster's push filter refuses any push that updates a ref outside refs/heads/%[3]s* — %[4]s and every tag included — so never try.
-- the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/%[1]s/<path>\"`"+`. Reads are open. The writes muster forwards: POST pulls (head %[3]s*, base %[4]s), PATCH pulls/<n> (your own pull requests: title, body, state), POST issues/<n>/comments. Everything else is refused.
+- the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/%[1]s/<path>\"`"+`. Reads are open. The writes muster forwards: POST pulls (head %[3]s*, base %[4]s), PATCH pulls/<n> (your own pull requests: title, body, state), POST issues/<n>/comments (on your own pull requests). Everything else is refused.
 muster attaches the credential itself; you never hold one.
 
 Merging: %[5]s{pr}. It merges ONLY your own %[3]s* pull request, and only when every gate passes at call time (CI checks, the %[6]q review, up to date with %[4]s, mergeable, no /hold from a human, no destructive DDL). A refusal names the gate: fix that and call again; never look for another way.

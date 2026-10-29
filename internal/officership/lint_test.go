@@ -14,8 +14,8 @@ func TestTheLintRefusesEachDestructiveClassAndPassesItsAdditiveTwin(t *testing.T
 	}{
 		{"DROP TABLE", "DROP TABLE widgets;", "CREATE TABLE widgets (id bigint);"},
 		{"DROP COLUMN", "ALTER TABLE widgets DROP COLUMN note;", "ALTER TABLE widgets ADD COLUMN note text;"},
-		{"DROP NOTE", "ALTER TABLE widgets DROP note;", "ALTER TABLE widgets ALTER COLUMN note DROP NOT NULL;"},
-		{"DROP IF", "ALTER TABLE widgets DROP IF EXISTS note;", "ALTER TABLE widgets ALTER COLUMN note DROP DEFAULT;"},
+		{"DROP COLUMN", "ALTER TABLE widgets DROP note;", "ALTER TABLE widgets ALTER COLUMN note DROP NOT NULL;"},
+		{"DROP COLUMN", "ALTER TABLE widgets DROP IF EXISTS note;", "ALTER TABLE widgets ALTER COLUMN note DROP DEFAULT;"},
 		{"DROP VIEW", "DROP VIEW widget_view;", "DROP INDEX IF EXISTS widgets_note_idx;"},
 		{"DROP CONSTRAINT without re-adding WIDGETS_KIND_CHECK", "ALTER TABLE widgets DROP CONSTRAINT widgets_kind_check;",
 			"ALTER TABLE widgets DROP CONSTRAINT widgets_kind_check;\nALTER TABLE widgets ADD CONSTRAINT widgets_kind_check CHECK (kind IN ('a','b','c'));"},
