@@ -199,6 +199,19 @@ When a gateway is configured, three routes are live:
 A `claude-code` agent has the same Rendered | Terminal switch as a mirrored
 session.
 
+## An agent's page
+
+A dispatched agent's page shows, under its title, the agent's live status (with
+**awaiting approval** while it waits at a permission prompt, **kickoff owed** or
+**kickoff failed**, and what it has running), and a **⋯** menu: **Rename**,
+**Start** or **Stop**, and **Delete** (two steps; never for the chief). A failed
+kickoff, a first turn held for your GitHub approval, or a GitHub App problem is
+explained above the transcript. To start a new agent, use the **+** beside
+**Agents** in the sidebar: **Dispatch**, or **Save for later** to start it later
+from its page.
+
+![An agent's page on a phone, its live status and its ⋯ menu open](img/agent-actions.png)
+
 ## Destroying an agent
 
 Two doors take the same teardown (`destroyAgent` in `internal/api/agents.go`):

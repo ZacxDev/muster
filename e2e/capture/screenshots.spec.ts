@@ -21,7 +21,8 @@ test.use({ viewport: { width: 360, height: 640 }, deviceScaleFactor: 3, isMobile
 
 for (const [route, file, ready] of [
   ['/tasks', 'screenshot-tasks-narrow.png', '#tasks-list article'],
-  ['/agents', 'screenshot-agents-narrow.png', '#agents-list article'],
+  // An agent's page (the Agents list page this once photographed is retired).
+  ['/agents/docs-sweeper', 'screenshot-agents-narrow.png', '#agent-strip'],
 ] as const) {
   test(`capture ${file}`, async ({ page }) => {
     // pgx connects to ?dbname= / ?database= over the path, so every name the

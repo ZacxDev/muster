@@ -106,6 +106,7 @@ against a throwaway database.
 - **Agent actions.** A dispatched agent's page shows its live status and has a
   **⋯** menu to rename, start, stop or delete it; the **+** beside **Agents** in
   the sidebar dispatches a new one (or saves it for later).
+  → [docs/provisioner.md](docs/provisioner.md#an-agents-page)
 - **Message box and step-up.** Send text into a Claude Code session, a plain
   terminal pane (Codex, Gemini CLI, a shell) or a dispatched agent. The message
   box does not send to opencode yet, and sends to Hermes only through the

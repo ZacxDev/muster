@@ -127,7 +127,7 @@ func Manifest() WebManifest {
 		// planned to be reachable without auth, so anything in them is public.
 		Screenshots: []manifestImage{
 			shot("/static/icons/screenshot-tasks-narrow.png", "The task board, with a task ready for review"),
-			shot("/static/icons/screenshot-agents-narrow.png", "Agents at work, each with its live status"),
+			shot("/static/icons/screenshot-agents-narrow.png", "An agent at work: its chat, with its live status"),
 		},
 	}
 }
