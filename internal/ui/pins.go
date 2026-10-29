@@ -4,10 +4,11 @@ import (
 	"strconv"
 )
 
-// The pin routes (internal/api pins.go). The toggles are forms with hx-post:
-// htmx posts them in place and the answer is the re-rendered list. They also
-// carry method/action, but that is not a no-JavaScript path — #agents-list and
-// its cards are loaded only by htmx, so without JavaScript no toggle is drawn.
+// The pin routes (internal/api pins.go). The one toggle that posts here is the
+// session switcher's (SwitcherPinToggle): a form with hx-post, answered with
+// the toggle in its new state and the bar's rows out of band. It also carries
+// method/action, and without JavaScript the server sends the browser back to
+// the session's page.
 const (
 	PinPath   = "/agents/pins"
 	UnpinPath = "/agents/pins/delete"
@@ -26,9 +27,8 @@ func mirrorPinFields(m MirrorCardView) [][2]string {
 	return [][2]string{{"kind", "mirror"}, {"host", m.Host}, {"session", m.Session}, {"window", m.Window}}
 }
 
-// ⚠ PINNED ENTRIES ARE CARDS AGAIN, AND THEIR OWN TOGGLE UNPINS THEM. A pinned
-// entry used to be drawn as a chip in a row above the cards, unpinned from the
-// chip's ×; that row is gone (operator ask: the session switcher's Pins view
-// supersedes it). A pinned entry is now its card, still drawn first
-// (orderList), and the card's pin toggle — the ⋯ menu's item on an agent, the
-// pin button on a mirrored window — pins or unpins it.
+// ⚠ A PIN IS SET AND CLEARED FROM THE SESSION SWITCHER ONLY. The retired Agents
+// list drew pinned entries first and its cards carried a pin toggle; that page
+// is gone. A pinned entry is still ordered first in the switcher (orderList)
+// and shown in its Pins view, and the bar's toggle (switcher_pin.go) pins or
+// unpins the page's own session.

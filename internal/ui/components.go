@@ -221,11 +221,10 @@ func PageWith(activeTab string, feat Features, data ShellData) g.Node {
 // ShellData is state a shell draws on its FIRST PAINT, rather than after the
 // panel's own load, because drawing it later would move what is below it.
 //
-// The Agents tab's own document draws the LIST (WithList): its cards and its
-// session switcher are the first paint, not a request's answer
-// (agents_list_ssr.go). (A "Recently viewed" strip drawn here for the same
-// reason — it measured 0.011 of layout shift when it arrived late — is gone:
-// the switcher replaced it.)
+// Only the Tasks tab draws anything here now (WithTasks). The retired Agents
+// tab's document drew its LIST here (WithList, agents_list_ssr.go), and before
+// that a "Recently viewed" strip, for the same reason — the strip measured 0.011
+// of layout shift when it arrived late.
 type ShellData struct {
 	// tasks is the Tasks tab's board, drawn into #tasks-list (WithTasks,
 	// tasks_list_ssr.go); nil draws the skeleton its own load replaces.
@@ -387,8 +386,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				noteModalShell(),
 				// The error toasts' host (actionToasts) is the sidebar's (sidebarIn).
 				// Persistent notification FAB (bottom-LEFT) — the launcher for recent
-				// agent replies. On every tab but Agents (fabHiddenOnTab); only the
-				// count badge hides at zero. Its panel lazy-loads /ui/notifications.
+				// agent replies. On every tab; only the count badge hides at zero. Its panel lazy-loads /ui/notifications.
 				notifFAB(),
 				// The chief slide-out. Body level for the same reason as badgePopover
 				// and the FABs — and for one stronger one: it holds a LIVE WebSocket
@@ -446,7 +444,8 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 // on a timer discards nodes inside its panel every ten seconds with nobody
 // touching the page.
 //
-// Read off muster's rendered subtrees, ALL THREE PANELS ANSWER `true`:
+// Read off muster's rendered subtrees, ALL THREE PANELS ANSWERED `true` when
+// this was written (#panel-agents and #panel-repos are retired since):
 //
 //	#panel-tasks       morph at the panel level, BUT the delete confirm is
 //	                   `outerHTML swap:200ms` onto `#task-<id>`, inside it
@@ -653,7 +652,8 @@ func contentWidth() string {
 }
 
 // contentMaxW is contentWidth's ladder without its gutter: the column's box,
-// for a box that pads itself (the Agents list's switcher dock, switcherDock).
+// for a box that pads itself (the retired Agents list's switcher dock was one;
+// contentWidth is its only caller now).
 func contentMaxW() string {
 	return "mx-auto w-full max-w-xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-[110rem] min-[2560px]:max-w-[150rem]"
 }
@@ -1077,8 +1077,8 @@ func pathForTab(key string) string { return "/" + normalizeTab(key) }
 // detail/operator pages: on the shell (where the target panel exists), appScript
 // intercepts the click and does the instant in-place panel toggle (pushState +
 // show); on a page WITHOUT panels (agent-detail/operator), the click falls
-// through and the boosted <a> navigates to the shell with that tab. The sidebar
-// <a> is NOT inside #agents-list, so boosting is safe (top-level body swap).
+// through and the boosted <a> navigates to the shell with that tab. Boosting
+// the sidebar <a> is safe (top-level body swap).
 // active marks the default-selected tab.
 //
 // 🔴 hasPanels (the home shell) renders hx-boost="false", and that is
@@ -1444,7 +1444,7 @@ var appScriptSrc = staticJS("app", `
   // MEASURED on an idle no-DB shell: 6 htmx:load events, ALL of them within 9ms
   // of first paint, from one response's out-of-band badge subtrees. So the
   // re-entry is a burst on every page load rather than a slow drip; what a real
-  // shell with agent cards adds on top is asserted, not measured.
+  // shell (then with agent cards) adds on top is asserted, not measured.
   //
   // ⚠ THE SEVERITY WORDING BELOW OUTRUNS THAT NUMBER. "every few seconds" and
   // "dragged back and HELD" were written against an earlier reading of the
@@ -1696,8 +1696,9 @@ var appScriptSrc = staticJS("app", `
     // isPage=true: the pushState above (or the early-return equality check) means
     // location.pathname IS pathForTab(sel), so this tab's link is the current page.
     show(sel, true);
-    // A panel that keeps state in the URL (the Agents filter's ?q=,
-    // agents_filter.go) re-writes it: the push above is a bare /<tab>.
+    // For a panel that keeps state in the URL to re-write it: the push
+    // above is a bare /<tab>. Nothing listens now (the retired Agents
+    // filter's ?q=, agents_filter.go, did).
     document.dispatchEvent(new CustomEvent('muster:tabshown', { detail: { tab: sel } }));
     setOpen(false);
     navSet(NAV_TAB_KEY, sel);
@@ -2716,8 +2717,8 @@ var taskModalScriptSrc = staticJS("task-modal", `
     var f = DIRTY[id];
     return !!(f && f());
   };
-  // 🔴 OPEN = CLEAR, then reveal. Every open path (both FABs, the card Edit and
-  // the card Dispatch button) reveals the sheet from its own hx-on:click and
+  // 🔴 OPEN = CLEAR, then reveal. Every open path (the Tasks FAB, the sidebar's
+  // "+", the card Edit and the card Dispatch button) reveals the sheet from its own hx-on:click and
   // lets htmx fill <id>-body asynchronously. During that in-flight window the
   // body still held the PREVIOUS open's form, and the discard bar is a SIBLING
   // of the body so it survives the swap — so the dirty guard read stale text and

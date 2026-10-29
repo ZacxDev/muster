@@ -13,10 +13,10 @@ import (
 )
 
 // THE WORK LEDGER: how many of a parent transcript's subagents are running
-// NOW — the subagent half of a card's live work count
+// NOW — the subagent half of an entry's live work count
 // (docs/design/agent-cards.md (a)). It follows the parent transcript from a
 // byte cursor and applies the subagent cards' own status rule (State), so a
-// card's count and its rendered view's subagent list cannot disagree.
+// window's count and its rendered view's subagent list cannot disagree.
 // muster-mirror (internal/mirrorhost) and ccd (cmd/ccd) both count with it.
 
 // Ledger follows ONE parent transcript's Agent calls: the calls and the

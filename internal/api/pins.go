@@ -11,7 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// registerPinRoutes wires the Agents list's pin toggles (internal/pins,
+// registerPinRoutes wires the session switcher's pin toggle (internal/pins,
 // migration 0017): POST ui.PinPath and ui.UnpinPath, form-encoded, naming one
 // subject — kind=agent&agent_id=N, or kind=mirror&host=&session=&window= (the
 // window "" for a per-session host's entry).
@@ -138,8 +138,8 @@ func switcherPinBack(v string) string {
 }
 
 // pinSet is the viewing principal's pins, read once per render. No store, or a
-// failed read (logged), is "nothing pinned": the list still renders, in its
-// unpinned order.
+// failed read (logged), is "nothing pinned": the entries still render, in
+// their unpinned order.
 func (s *Server) pinSet(ctx context.Context) pins.Set {
 	if s.ext.Pins == nil {
 		return pins.Set{}

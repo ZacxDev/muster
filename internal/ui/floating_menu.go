@@ -36,31 +36,24 @@ import (
 //     the two saw the grown menu hanging over its trigger. ResizeObserver
 //     callbacks run in the rendering steps before paint.
 //   - THE TRIGGER MOVED. Scroll and resize.
-//   - A MORPH STRIPPED THE POSITION. #agents-list morphs in place on every
-//     lifecycle and chat event, and the server orders cards by last activity, so
-//     a reply RE-ORDERS them. (While the "N new ↑" pill holds the order — the
-//     usual case for a background refresh — the morph is handed the cards in
-//     the DRAWN order (agentsFilterScript's keepDrawnOrder) and is not
-//     re-ranked, and held arrivals sort last, so the held refresh itself moves
-//     no drawn card. (It can still HIDE one whose new text stops matching a
-//     typed filter — an open gap.) A
-//     re-order that is applied still moves cards: by moveBefore where the
-//     browser has it, which keeps the popover open; by appendChild where it
-//     does not, which CLOSES it.) An open popover stays open through a
-//     moveBefore move (its state is not an attribute), but when idiomorph
-//     moves its card it rewrites the
-//     element's attributes to the server's — which carry no inline style — and the
-//     menu fell to the popover default corner (measured: 0,0) with Start/Delete
-//     still live, nowhere near its trigger. Its SIZE does not change, so the
+//   - A MORPH STRIPPED THE POSITION. The retired Agents list (#agents-list)
+//     morphed its cards in place on every lifecycle and chat event, re-ordering
+//     them by last activity. An open popover stays open through a moveBefore
+//     move (its state is not an attribute), but when idiomorph moved its card
+//     it rewrote the element's attributes to the server's — which carry no
+//     inline style — and the menu fell to the popover default corner (measured:
+//     0,0) with Start/Delete still live, nowhere near its trigger. (The agent
+//     page's ⋯ menu is not morphed: its strip's refresh replaces the menu slot's
+//     content outright, RenderAgentHeader.) Its SIZE does not change, so the
 //     ResizeObserver cannot see it. A MutationObserver on the open menu's `style`
 //     attribute does, and runs as a microtask — before paint — so it is re-placed
 //     beside the trigger's NEW position. It is re-placed rather than closed:
-//     these morphs are fired by background events, and a menu that shuts under
+//     such morphs are fired by background events, and a menu that shuts under
 //     the operator's finger because some other agent replied is worse than one
-//     that follows its card.
-//     ⚠ What the morph still does: it closes the nested Delete step (the
-//     server's markup has no `open`), so an armed "Confirm delete" drops back to
-//     step 1. That is the safe direction and is left alone.
+//     that follows its trigger.
+//     ⚠ What such a morph still did: it closed the nested Delete step (the
+//     server's markup has no `open`), so an armed "Confirm delete" dropped back
+//     to step 1 — the safe direction.
 //
 // 🔴 AND IT IS INVISIBLE UNTIL PLACED. A popover opens synchronously on the
 // click, but its `toggle` event — where it is first placed — is a later task,
@@ -70,11 +63,11 @@ import (
 // until it is shown), so the markup carries `invisible` and place() is the only
 // thing that makes it visible; closing drops the inline style again.
 //
-// A trigger that DECLARES aria-expanded (the focus title, cardFocusTitle) is
+// A trigger that DECLARES aria-expanded (a clamped title's "…", titleMoreButton) is
 // kept in step with its popover on every toggle, open and close, whatever
 // closed it (a tap outside, Escape, a second tap) — AND after every htmx swap:
-// #agents-list's morph rewrites the trigger's attributes to the server's
-// aria-expanded="false" while its popover stays open, and no toggle fires, so
+// a morph can rewrite the trigger's attributes to the server's
+// aria-expanded="false" while its popover stays open (the retired #agents-list's did), and no toggle fires, so
 // the chevron and highlight (both keyed on aria-expanded) would drop under an
 // open popover. A trigger without the attribute is left without it.
 //
@@ -132,7 +125,7 @@ var floatingMenuScriptSrc = staticJS("floating-menu", `
     }
     m.style.left = left + 'px';
     m.style.top = top + 'px';
-    // Shown only now. The menu is rendered with the invisible class (agentMenu), so every
+    // Shown only now. The menu is rendered with the invisible class (agentActionsMenu), so every
     // frame before this line — and every frame after a morph strips this style —
     // draws nothing rather than a menu in the wrong place.
     m.style.visibility = 'visible';

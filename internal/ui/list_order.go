@@ -9,14 +9,16 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// THE AGENTS LIST IS ONE FLAT LIST, MOST RECENTLY ACTIVE FIRST (operator ask:
+// THE ENTRIES ARE ONE FLAT LIST, MOST RECENTLY ACTIVE FIRST (operator ask:
 // "sort agents by most recently active, flat, not separated by host"). Before
-// it the list drew every dispatched agent ahead of every mirrored window, so an
-// agent idle for a week sat above a Claude Code window that answered a minute
-// ago. The host stays visible on each card through its host icon (hostMark /
-// clusterMark); it no longer decides the order.
+// it the retired Agents list drew every dispatched agent ahead of every
+// mirrored window, so an agent idle for a week sat above a Claude Code window
+// that answered a minute ago. The host stays visible on each sidebar row and
+// switcher pill through its host icon (hostMark); it no longer decides the
+// order.
 //
-// listEntry is one card of that list: exactly one of agent and mirror is set.
+// listEntry is one entry of that list — a sidebar row, a switcher pill:
+// exactly one of agent and mirror is set.
 type listEntry struct {
 	agent  *AgentCardView
 	mirror *MirrorCardView
@@ -30,7 +32,7 @@ func (e listEntry) pinned() bool {
 	return e.mirror.Pinned
 }
 
-// work is what the entry has running (its card's work chip): a dispatched
+// work is what the entry has running (its sidebar row's count, navWork): a dispatched
 // agent's pod report, a mirrored window's host report.
 func (e listEntry) work() mirror.WindowWork {
 	if e.agent != nil {
@@ -47,8 +49,8 @@ func (e listEntry) idle() bool {
 	return e.mirror.Idle
 }
 
-// activeAt is the entry's LAST ACTIVITY — the time its card prints as "active
-// … ago" (cardActivity), so the order and the label are one number:
+// activeAt is the entry's LAST ACTIVITY — the time its sidebar row's recency
+// dot reads (recencyDot), so the order and the dot are one number:
 //
 //   - a dispatched agent: agents.LastActivity (the newer of its row's
 //     updated_at and its newest persisted transcript message: a turn, a status
@@ -63,7 +65,7 @@ func (e listEntry) activeAt() time.Time {
 	return e.mirror.ActiveAt
 }
 
-// orderList is the Agents list's order — 🔴 ONE RULE, ONE PLACE:
+// orderList is the switcher's order, which navOrder re-sorts — 🔴 ONE RULE, ONE PLACE:
 //
 //  1. the viewer's PINNED entries first, then the rest (pins are per viewer,
 //     which is why this happens here and not in agents.SortByLastActivity or
@@ -74,7 +76,7 @@ func (e listEntry) activeAt() time.Time {
 //     after every entry that has one;
 //  4. ties keep the order the entries arrive in — agents first, each kind in
 //     its own already-decided order (agents.SortByLastActivity breaks its own
-//     ties by id; mirror.Ordered by host, then the host's order) — so two cards
+//     ties by id; mirror.Ordered by host, then the host's order) — so two entries
 //     active in the same instant never swap places between two renders.
 func orderList(agents []AgentCardView, mirrors []MirrorCardView) []listEntry {
 	out := make([]listEntry, 0, len(agents)+len(mirrors))
@@ -123,7 +125,7 @@ func (e listEntry) chief() bool { return e.agent != nil && e.agent.IsChief }
 // (AgentCardView.PrimaryChief, internal/api's primaryChief).
 func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.PrimaryChief }
 
-// navOrder is the SIDEBAR's order of the Agents list's entries (nav_agents.go)
+// navOrder is the SIDEBAR's order of the entries (nav_agents.go)
 // — 🔴 ONE RULE, ONE PLACE, beside orderList, whose output it re-sorts:
 //
 //  1. the chief agent first (the operator's main conversation, pinned) —
@@ -136,8 +138,8 @@ func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.Primar
 //     entries active in the same instant never swap places between renders.
 //
 // Unlike orderList it does not lift the viewer's pins: the sidebar is a list
-// of conversations ordered by who needs the operator, and the Agents list,
-// its Pins view and the switcher keep the pins.
+// of conversations ordered by who needs the operator, and the switcher (its
+// Pins view, and the pins first in its Waiting and All views) keeps the pins.
 func navOrder(agents []AgentCardView, mirrors []MirrorCardView) []listEntry {
 	out := orderList(agents, mirrors)
 	sort.SliceStable(out, func(i, j int) bool { return navBefore(out[i], out[j]) })

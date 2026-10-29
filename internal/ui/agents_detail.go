@@ -286,8 +286,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// The rename form the header's ⋯ menu opens (agent_actions.go).
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
 				// Places the header's full-title popover (agentTitle) beside its "…"
-				// and keeps that button's aria-expanded in step — the same script
-				// the shell runs for the cards' popovers.
+				// and keeps that button's aria-expanded in step, and places the ⋯
+				// menu (agentActionsMenu).
 				floatingMenuScript(),
 				// Shows that "…" whenever the title is visibly clipped, not only
 				// when the server clamped it (agentTitle).
@@ -375,7 +375,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // wrapped into a wall of lines that pushed the header controls and the chat
 // down the screen. Two guards now, because either alone leaves a hole:
 //   - the TEXT is clamped to cardTitleMax runes (clampTitle — the same budget
-//     and the same rune-safe cut the agent cards use);
+//     and the same rune-safe cut the retired Agents list's cards used);
 //   - the BOX is one line that can only shrink (min-w-0 on every flex parent,
 //     nowrap + overflow hidden), so even the clamped words cannot widen the row.
 //
@@ -384,7 +384,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // title is CLIPPED by the box though it is well inside the budget — and with
 // the "…" drawn only for a rune-clamped title, its full text was unreadable on
 // the operator's main device. So the "…" (titleMoreButton) and the full-title
-// popover (fullTitlePopover — the cards' own pair) are ALWAYS rendered; the
+// popover (fullTitlePopover — the pair the retired cards used) are ALWAYS rendered; the
 // button starts `hidden` unless the server clamped, and agentTitleFitScript
 // shows it whenever the text is clipped (scrollWidth > clientWidth), re-checked
 // by a ResizeObserver (rotation, resize, a late font). The button sits INSIDE
@@ -392,8 +392,8 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // header control. The text clips rather than drawing a CSS ellipsis: the "…"
 // button IS the ellipsis.
 //
-// textplain.Title (via plainOr), the SAME treatment agentCard gives this
-// string in the list — see textplain.Title for why it is stripped, not rendered.
+// textplain.Title (via plainOr), the SAME treatment the sidebar and the
+// switcher give this string — see textplain.Title for why it is stripped, not rendered.
 func agentTitle(v AgentDetailView) g.Node {
 	full := plainOr(v.DisplayName, v.Name)
 	short, clamped := clampTitle(full)
@@ -690,7 +690,7 @@ func newChatButton(agentID int64) g.Node {
 // current model as its trimmed display value and hx-posts the chosen model to
 // POST /agents/{id}/model with form field `model` (empty = cluster default). A
 // repo chip sits alongside when the agent is repo-backed. A successful post
-// returns 200 + HX-Trigger: agents:changed; the list/detail refresh via the
+// returns 200 + HX-Trigger: agents:changed; the sidebar/strip refresh via the
 // existing agents:changed/SSE wiring. Changing the model restarts the agent, so a
 // clear hint says so and a brief "restarting…" state is shown after the request.
 func agentModelControl(v AgentDetailView) g.Node {
@@ -1091,8 +1091,7 @@ func sessionDrawer(v AgentDetailView) g.Node {
 			Href(AgentSessionHref(v.Name, sess.ID)),
 			// Boosted SPA nav: picking a session body-swaps the page (transcript +
 			// fresh data-session); agentChatScript's boost-safe init reconnects the WS
-			// to the picked session. The link is NOT inside #agents-list, so boosting
-			// is a safe top-level body swap.
+			// to the picked session. Boosting is a safe top-level body swap.
 			Class(cls+" gap-2"),
 			Span(Class("mr-auto truncate"), g.Text(title)),
 			g.If(!sess.LastActive.IsZero(),
@@ -1434,7 +1433,7 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 			Action(TaskCompletePath(*v.NoteID)),
 			hx("hx-patch", "/tasks/"+id+"/status"),
 			hx("hx-swap", "none"),
-			// On success, leave the agent and go back OUT to the Agents list (operator
+			// On success, leave the agent and go back OUT home (operator
 			// ask: "after marking a task complete, it should just redirect back out of
 			// the agent instead of to another page" — it used to open /tasks). Full
 			// navigation, the same place the no-JS path's redirect lands.

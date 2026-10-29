@@ -10,13 +10,15 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// WHAT A CARD SAYS ABOUT ITS RECENCY, WHAT IT IS WAITING ON, AND HOW LONG ITS
-// TITLE MAY BE. Each is decided here, once, as a Go table or function; the
-// cards render from it and the list's scripts are handed it as JSON, so the
-// page, the script and the tests read one definition.
+// WHAT AN ENTRY SAYS ABOUT ITS RECENCY, WHAT IT IS WAITING ON, AND HOW LONG ITS
+// TITLE MAY BE. Each is decided here, once, as a Go table or function, and the
+// sidebar's rows, the switcher and the agent page header render from it. (The
+// retired Agents list's cards did too, and its scripts were handed the tables
+// as JSON.)
 
 // ---------------------------------------------------------------------------
-// RECENCY: a small dot beside "active … ago", tinted by how long ago that was.
+// RECENCY: a small dot on an entry's sidebar row, tinted by how long ago it was
+// last active.
 //
 // The palette and the thresholds are the operator's tmux idle-fade window
 // colours — the 8-step Gruvbox scale their tmux status bar tints each window
@@ -25,11 +27,13 @@ import (
 // grey). Mirroring it means a window reads the same colour in tmux and here.
 // The colours are Gruvbox's published palette; nothing in the table is private.
 //
-// 🔴 THE DOT IS NOT THE CARD'S BORDER. The border is reserved for a per-window
-// tmux identity colour (a separate design); recency must not claim it.
+// 🔴 THE DOT IS NOT THE ROW'S EDGE. The coloured edge is reserved for a
+// per-window tmux identity colour (a separate design); recency must not claim
+// it.
 //
-// The dot is decoration (aria-hidden): the words beside it ("active 3m ago")
-// carry the same fact, so colour is never the only signal.
+// The dot is decoration (aria-hidden), with its bucket's name as its tooltip.
+// (On the retired Agents list's card the words beside it, "active 3m ago",
+// carried the same fact; a sidebar row has no such words.)
 
 // recencyStep is one bucket: an entry idle for less than Under (0 = no upper
 // bound, the last bucket) is drawn with Class.
@@ -38,8 +42,7 @@ type recencyStep struct {
 	// Class is the dot's colour utility: a role token, bg-idle-<i>, whose
 	// value is tmux-idle-update.sh's colour for the bucket, defined once in
 	// web/css/input.css (--mu-idle-<i>, both themes) — this package names no
-	// hue (TestNoHardCodedColourInUI). TestRecencyTokensAreTheTmuxPalette holds
-	// those values to the script's.
+	// hue (TestNoHardCodedColourInUI).
 	Class string
 	// Name is the script's own word for the bucket: the dot's tooltip.
 	Name string
@@ -83,8 +86,9 @@ func recencyDotClass(bucket int) string {
 }
 
 // recencyDot is the dot for an entry last active at t, or nothing for a zero
-// t (cardActivity prints no "active" then either). data-recency-ts lets the
-// list's script re-tint it as time passes without a re-render.
+// t. data-recency-ts is what the retired Agents list's script re-tinted it by
+// as time passed; nothing reads it now — the sidebar redraws its rows on a
+// minute's tick (navAgentsRailTrigger).
 func recencyDot(now, t time.Time) g.Node {
 	b := recencyBucket(now, t)
 	if b < 0 {
@@ -120,7 +124,7 @@ func recencyDot(now, t time.Time) g.Node {
 // Whichever way an entry asks, it is waiting on you. A reply draft (kind
 // "plugin") is not: nothing is blocked on it.
 
-// waitKinds maps each attention kind a card can count to the wait word it
+// waitKinds maps each attention kind an entry can count to the wait word it
 // files under ("" = none).
 var waitKinds = map[string]string{
 	"ask":      waitingToken,
@@ -153,20 +157,17 @@ func waitTokens(a *CardAttention, awaitingApproval bool) string {
 const waitingToken = "you"
 
 // ---------------------------------------------------------------------------
-// LONG TITLES: what heads a card — its NAME, or its FOCUS title when it has one
-// (focus.go) — is clamped to cardTitleMax characters; past that it ends in a
-// "…" BUTTON that opens the whole title in a popover. Both go through ONE
-// mechanism, cardTitleRow: the row, the clamp, the "…" control and the popover.
-//
-// The row sits OUTSIDE the card's nav anchor (a button inside an <a> is
-// invalid and its tap would open the card), so a card with a long name draws
-// its name in a title row of its own above the anchor — the place its focus
-// row already had. A short name is drawn inside the anchor as it always was.
+// LONG TITLES: what heads the agent page (agentTitle) is clamped to
+// cardTitleMax characters; past that it ends in a "…" BUTTON that opens the
+// whole title in a popover (titleMoreButton, fullTitlePopover). The budget is
+// the retired Agents list card's, whose title row (its NAME, or its FOCUS
+// title) was the first to clamp.
 
-// cardTitleMax is the most characters (runes) of a title a card draws.
+// cardTitleMax is the most characters (runes) of a title the agent page header
+// draws (the retired Agents list card's budget).
 const cardTitleMax = 60
 
-// clampTitle is s as a card (and the agent page header) draws it: whole when
+// clampTitle is s as the agent page header draws it: whole when
 // it fits, else at most its first cardTitleMax runes (trailing space trimmed)
 // and true.
 //
@@ -229,9 +230,8 @@ func graphemeExtends(c rune) bool {
 func isRegionalIndicator(c rune) bool { return c >= 0x1F1E6 && c <= 0x1F1FF }
 
 // titleMoreButton is THE "…" control that opens a clamped title's popover —
-// the cards' (cardTitleRow) and the agent page header's (agentTitle). fit is
-// only how it sits in its row (a card's top-aligned title row vs the header's
-// centred one); the control, its name and its ARIA are the same everywhere.
+// the agent page header's (agentTitle). fit is only how it sits in its row;
+// the control, its name and its ARIA are the same wherever it is drawn.
 //
 // extra is appended to the button (the agent header passes `hidden` while its
 // title is not clipped; see agentTitleFitScript).

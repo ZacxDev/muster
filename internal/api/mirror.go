@@ -24,7 +24,7 @@ import (
 // 🔴 OFF IS THE DEFAULT, AND OFF MEANS INVISIBLE. With Extensions.Mirror nil
 // (MUSTER_MIRROR unset) every route below answers 404 — they are still
 // REGISTERED, because registration in this package is unconditional (routes.go)
-// — and the Agents view draws no mirrored card.
+// — and the sidebar and the session switcher list no mirrored entry.
 //
 // 🔴 A MIRRORED SESSION IS NOT AN AGENT. It lives in the hub's memory, keyed by
 // its host's token OWNER, and is addressed by (host, session) — never by an
@@ -32,7 +32,7 @@ import (
 // ever see one.
 //
 // 🔴 EVERY WINDOW IS AN ENTRY, ADDRESSED BY (host, session, window id). A host
-// that registers per window (mirror.Msg.Windows) has one card per tmux WINDOW,
+// that registers per window (mirror.Msg.Windows) has one entry per tmux WINDOW,
 // and its pages, sockets and sends carry `window=@<n>` — tmux's own id for the
 // window, never its index, which tmux renumbers. A URL with no `window` (every
 // link from before windows were addressable, and every link to a per-session
@@ -90,8 +90,8 @@ func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
 	s.ext.Mirror.ServeConnect(w, r)
 }
 
-// mirrorCards is the viewing principal's mirrored sessions, for the Agents
-// view — one list across its hosts, most recently active first (mirror.Ordered
+// mirrorCards is the viewing principal's mirrored sessions, for the sidebar
+// and the session switcher — one list across its hosts, most recently active first (mirror.Ordered
 // is the order's one definition); nil with the plugin off.
 //
 // pinned is the viewer's pins: an entry whose address is pinned is marked. A
@@ -118,7 +118,7 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	return out
 }
 
-// mirrorHostIcon is one host's icon key — the one its cards draw (mirrorCards).
+// mirrorHostIcon is one host's icon key — the one its sidebar rows draw (mirrorCards).
 func (s *Server) mirrorHostIcon(ctx context.Context, host string) string {
 	if s.ext.Mirror == nil {
 		return ui.HostIconFor(nil, host)
@@ -149,9 +149,9 @@ func mirrorTitle(e mirror.SessionView) string {
 //     and e is the session's active window: the pages send the browser to the
 //     explicit address rather than serve a page whose window could change
 //     between its socket connects.
-//   - e carries the Qualifier the Agents list gives the same entry
-//     (mirror.Qualified, over the same hosts), so a page is titled exactly as
-//     the card that opened it.
+//   - e carries the Qualifier the sidebar and the switcher give the same
+//     entry (mirror.Qualified, over the same hosts), so a page is titled
+//     exactly as the row that opened it.
 func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h mirror.HostView, e mirror.SessionView, listed, redirect, ok bool) {
 	if s.ext.Mirror == nil {
 		return h, e, false, false, false
@@ -214,7 +214,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// window ID stay the address (WSPath).
 		DisplayName: e.Title(),
 		// What tells this entry apart from another host's (or window's) of the
-		// same name — the card's own qualifier (mirror.Qualified).
+		// same name — the sidebar row's own qualifier (mirror.Qualified).
 		TitleQualifier: e.Qualifier,
 		RawName:        rawName,
 		BackHref:       ui.HomePath,

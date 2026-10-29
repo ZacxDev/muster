@@ -53,7 +53,8 @@ func RenderTaskNotFound(w io.Writer, id string, feat Features) error {
 	return TaskNotFoundPage(id, feat).Render(w)
 }
 
-// RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form
+// RenderDispatchModal writes the /ui/agents/new partial (the task-less dispatch form
+// the sidebar's "+" opens
 // body: Model, Repository, Existing task, ad-hoc task).
 func RenderDispatchModal(w io.Writer, k KindChoices) error {
 	return DispatchModalBodyFor(k).Render(w)

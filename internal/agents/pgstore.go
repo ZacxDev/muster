@@ -396,7 +396,7 @@ func (s *PGStore) MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt 
 
 // MarkRunning promotes a provisioning row the caller saw at seenUpdatedAt to
 // running (see the Store contract). updated_at is bumped: this IS a status
-// transition, and it is what moves agents.LastActivity for the Agents list.
+// transition, and it is what moves agents.LastActivity for the sidebar's order.
 func (s *PGStore) MarkRunning(ctx context.Context, id int64, seenUpdatedAt time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE agents

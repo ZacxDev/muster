@@ -16,11 +16,11 @@ import (
 // THE SIDEBAR IS A LIST OF AGENTS (operator decision: "like channels in a chat
 // app"), on every signed-in page that draws the nav (sidebarIn): the chief
 // pinned first, then every session waiting on the operator, then the rest by
-// recency (navOrder, list_order.go). Each row is one entry of the Agents list
-// — its identity colour on the row's left edge, its recency dot, its host
-// icon, its whole name (sessionSwitcherLabels, the switcher's labels) and its
-// attention count — and opens what its card opens. The page's own session is
-// marked.
+// recency (navOrder, list_order.go). Each row is one entry — a dispatched
+// agent or a mirrored window: its identity colour on the row's left edge, its
+// recency dot, its host icon, its whole name (sessionSwitcherLabels, the
+// switcher's labels) and its attention count — and opens what the switcher's
+// pill for it opens. The page's own session is marked.
 //
 // The pages (Tasks, Connectors, Asks, Install, Account, Admin) moved into ONE
 // collapsed "More" disclosure at the bottom of the sidebar (navMore); the Asks
@@ -42,8 +42,8 @@ import (
 //
 // 🔴 THE ROWS ARE A LAZY PARTIAL (GET NavAgentsPath), NOT THE FIRST PAINT. The
 // sidebar is on every document — a mirrored view, a terminal, the account page
-// — and building the list there would put the Agents list's reads in front of
-// each of those documents' first byte. The partial is built like the session
+// — and building the list there would put its reads in front of each of
+// those documents' first byte. The partial is built like the session
 // switcher (internal/api's agentsListCardsLive with no live instance read):
 // names, recency and attention, never a pod's status.
 //
@@ -58,11 +58,11 @@ import (
 //   - a page with the rail: on load, but only where the rail is on screen (a
 //     desktop: navShownJS's musterNavShown); on a phone, where it is a closed
 //     drawer, on the drawer's first and every open (appScript's setOpen fires
-//     NavOpenEvent) instead. Then it follows the Agents list's own refresh
-//     events (agentsListLiveTrigger's: agents:changed, agent.changed,
-//     chat.reply, the attention queue, muster:resync — the SSE ones heard only
-//     on a document that already holds a stream; the nav opens none,
-//     TestTheNavAddsNoStream) and a minute's tick, each skipped while the list
+//     NavOpenEvent) instead. Then it follows the agents' refresh events
+//     (agents:changed, agent.changed, chat.reply, the attention queue,
+//     muster:resync — the events the retired Agents list refreshed on; the
+//     SSE ones heard only on a document that already holds a stream; the nav
+//     opens none, TestTheNavAddsNoStream) and a minute's tick, each skipped while the list
 //     is not on screen, the tick also while the tab is hidden.
 //   - a page whose sidebar is an overlay at every width (the mirrored
 //     Rendered view and the terminal, whose open path is measured): only on
@@ -97,7 +97,7 @@ const NavOpenEvent = "muster:nav-open"
 const navShownJS = "!window.musterNavShown||musterNavShown()"
 
 // navAgentsRailTrigger is the list's refresh on a page with the rail: the
-// Agents list's own events (agentsListLiveTrigger's), each filtered by
+// agents' refresh events (the retired Agents list's), each filtered by
 // navShownJS. The SSE ones are debounced as attentionBadgeTrigger is, for its
 // reason: one event is dispatched on every element listening for it and heard
 // at body once per dispatch.
@@ -307,8 +307,8 @@ func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView
 	return NavAgentsList(list, mirrors, currentURL, time.Now()).Render(w)
 }
 
-// navAgentRow is one row: a real-load link (hx-boost="false", as a card's and
-// a switcher pill's), 44px tall, the whole row the tap target.
+// navAgentRow is one row: a real-load link (hx-boost="false", as a switcher
+// pill's), 44px tall, the whole row the tap target.
 //
 // 🔴 THE CURRENT ROW SAYS aria-current="true", NOT "page". The page's own nav
 // entry (the Agents link, for a session page — sidebar's currentTab) already
@@ -341,7 +341,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 		Class("min-w-0"),
 		A(
 			// 🔴 A STABLE ID, THE ENTRY'S OWN (its agent id, or its window's
-			// address hashed as its card's is). A refresh swaps the list's
+			// address hashed, mirrorCardID). A refresh swaps the list's
 			// innerHTML, and htmx re-focuses the element of the id that had
 			// focus — so a row focused by keyboard keeps it across a refresh,
 			// wherever the new order put it.
@@ -424,7 +424,7 @@ func navRowTone(current bool) string {
 	return "text-fg2 hover:bg-s2 hover:text-fg"
 }
 
-// navAttentionPill is a row's attention: the card badge's icon and count
+// navAttentionPill is a row's attention: the kind's icon and the count
 // (AttentionKindIcons) — NOT a link, the row is one (an anchor cannot nest
 // in it) — or, for an entry waiting with no item to count (an agent at a
 // permission prompt), the switcher's waiting dot. Nothing otherwise.

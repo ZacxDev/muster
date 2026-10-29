@@ -600,7 +600,7 @@ func (s *Server) registerAll(mux Mux) {
 
 	s.registerNotesRoutes(mux)
 	s.registerAgentRoutes(mux)
-	// Pins (internal/pins): the Agents list's pin toggles, 404 without a store.
+	// Pins (internal/pins): the session switcher's pin toggle, 404 without a store.
 	s.registerPinRoutes(mux)
 	// The send queue (internal/sendqueue): Queue, its list, Cancel; 404 without a store.
 	s.registerSendQueueRoutes(mux)
@@ -1330,7 +1330,7 @@ func (s *Server) mirrorToRouter(owner int64, name, data string) {
 }
 
 // BroadcastAgentChanged fires an SSE agent.changed nudge for the named agent so
-// an open Tasks tab and the Agents tab refresh live. Best-effort + nil-safe: it
+// an open Tasks tab, the sidebar and the agent's page refresh live. Best-effort + nil-safe: it
 // is wired into the reconciler's status-change hook, which runs on a background
 // goroutine, so it must never panic.
 //
@@ -1344,7 +1344,7 @@ func (s *Server) BroadcastAgentChanged(agentName string) {
 	s.agentChangedFor(s.agentOwner(agentName), agentName)
 }
 
-// BroadcastAgentsChangedFor nudges owner's open Agents views to re-fetch, with
+// BroadcastAgentsChangedFor nudges owner's open sidebars and pages to re-fetch, with
 // no agent named — the mirror plugin's host connected / dropped / re-listed
 // hook, which knows the host's owner and nothing else.
 func (s *Server) BroadcastAgentsChangedFor(owner int64) {

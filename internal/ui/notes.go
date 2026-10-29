@@ -17,7 +17,7 @@ import (
 
 // AgentBrief is the minimal linked-agent info a task card renders: enough to
 // show a status chip and link to the agent's chat, with NO live k8s call (the
-// Status is the STORED agents.status, mirroring how the agents list avoids
+// Status is the STORED agents.status, mirroring how the sidebar's agent list avoids
 // per-agent pod lookups).
 type AgentBrief struct {
 	ID          int64
