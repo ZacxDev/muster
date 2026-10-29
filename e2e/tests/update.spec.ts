@@ -178,9 +178,12 @@ test('the update toast survives an in-app navigation while the update waits', as
   const loadsBefore = Number(await page.evaluate(() => sessionStorage.getItem('loads')));
   await page.click('#sidebar-open');
   await openMore(page);
-  await page.locator('#sidebar a[data-tab="agents"]').click();
-  await expect(page).toHaveURL(origin + '/agents');
-  await expect(page.locator('#sidebar a[data-tab="agents"][aria-current="page"]')).toHaveCount(1);
+  // The task page's Tasks link (the retired Agents tab was this hop; this
+  // server has no connector store, so Tasks is the shell's one tab): off the
+  // shell, an in-app boosted swap.
+  await page.locator('#sidebar a[data-tab="tasks"]').click();
+  await expect(page).toHaveURL(origin + '/tasks');
+  await expect(page.locator('#sidebar a[data-tab="tasks"][aria-current="page"]')).toHaveCount(1);
   // 🔴 The navigation was a swap, not a document load: a full load would
   // re-offer the update from the registration-time check and prove nothing.
   expect(Number(await page.evaluate(() => sessionStorage.getItem('loads'))), 'no full reload').toBe(loadsBefore);
@@ -501,7 +504,7 @@ for (const vp of viewports) {
       const second = await context.newPage();
       await first.goto(origin + '/tasks');
       await waitControlled(first);
-      await second.goto(origin + '/agents');
+      await second.goto(origin + '/agents/docs-sweeper');
       await waitControlled(second);
       await deployB();
       await first.evaluate(checkForUpdate);
@@ -632,8 +635,10 @@ for (const vp of placements) {
       await page.evaluate(checkForUpdate);
       const pill = page.locator('#sw-update-toast');
       let sidebarIntersections = 0;
-      // (`/` is not listed: it redirects to /agents here, which is.)
-      for (const path of ['/tasks', '/agents', '/agents/docs-sweeper']) {
+      // (`/` and /agents are not listed: with no chief they redirect to an
+      // agent's page here, which is. The retired Agents list's place in this
+      // list is another sidebar page, Account.)
+      for (const path of ['/tasks', '/account', '/agents/docs-sweeper']) {
         // A full load re-offers the waiting update from the registration check.
         await page.goto(origin + path);
         await expect(pill).toBeVisible();

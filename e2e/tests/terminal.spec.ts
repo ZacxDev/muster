@@ -58,7 +58,7 @@ async function login(page: Page) {
 // answer).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code', note: string): Promise<string> {
   const before = await agentNames();
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
@@ -69,6 +69,8 @@ async function saveAgent(page: Page, kind: 'gateway' | 'claude-code', note: stri
   expect((await resp).status()).toBe(200);
   const created = [...(await agentNames())].filter((n) => !before.has(n));
   expect(created.length, 'exactly one agent created').toBe(1);
+  // The sheet's answer sends the page to the new agent's own page.
+  await page.waitForURL((u) => u.pathname === '/agents/' + created[0]);
   return created[0];
 }
 

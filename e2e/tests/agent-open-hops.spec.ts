@@ -70,14 +70,24 @@ async function canonical(page: Page): Promise<string> {
   return loc;
 }
 
-async function openList(page: Page) {
-  await page.goto('/agents');
-  await expect(page.locator('#agents-list > article').first()).toBeVisible();
+// openSidebar opens a page with the sidebar (the board) and puts the sidebar on
+// screen — the drawer, on this phone — so its rows load.
+async function openSidebar(page: Page) {
+  await page.goto('/tasks');
+  await page.locator('#sidebar-open').click();
+  await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
+}
+
+// openOtherSession opens ANOTHER agent's page (the seed's), the kind of page
+// the session switcher's bar is on now that the Agents list is retired.
+async function openOtherSession(page: Page) {
+  await page.goto('/agents/docs-sweeper');
+  await expect(page.locator('#session-switcher')).toBeVisible();
 }
 
 // 🔴 A REGRESSION TEST: on origin/main each tap below made TWO document
 // requests (/agents/<name>, then its 303's target).
-test('a card, a pinned chip and a Recent entry each open the page in ONE document request', async ({ page }) => {
+test('a sidebar row, a pinned chip and a Recent entry each open the page in ONE document request', async ({ page }) => {
   const canon = await canonical(page);
   // A list link is the 303 target plus the from=list marker (ui.AgentListHref),
   // which only moves a STALE link to the latest session.
@@ -86,18 +96,18 @@ test('a card, a pinned chip and a Recent entry each open the page in ONE documen
   await page.goto('/agents/' + name);
   await page.waitForURL((u) => u.pathname + u.search === canon);
 
-  await openList(page);
-  const card = page.locator(`#agents-list > article[id^="agent-"]:has(${agentLink(name)})`);
-  await expect(card).toHaveCount(1);
-  agentID = (await card.getAttribute('id'))!.replace('agent-', '');
+  // The sidebar's row: where the retired Agents list's card went.
+  await openSidebar(page);
+  const row = page.locator(`#sidebar-agents-list a[data-nav-agent="agent"]`).and(page.locator(agentLink(name)));
+  await expect(row).toHaveCount(1);
+  agentID = (await row.getAttribute('id'))!.replace('nav-agent-', '');
   let docs = documents(page);
-  await Promise.all([page.waitForURL((u) => u.pathname === '/agents/' + name), card.locator('a[data-card-slot="body"]').tap()]);
+  await Promise.all([page.waitForURL((u) => u.pathname === '/agents/' + name), row.tap()]);
   await page.waitForLoadState('domcontentloaded');
-  expect(docs, 'the card: one document, the session URL').toEqual([want]);
+  expect(docs, 'the sidebar row: one document, the session URL').toEqual([want]);
 
-  await openList(page);
-  // The Agents list's session switcher (it replaced the Recent strip and the
-  // pinned chips): its Recent view, then its Pins view.
+  await openOtherSession(page);
+  // The session switcher's bar: its Recent view, then its Pins view.
   const recent = page.locator('#session-switcher [data-switcher-list="recent"] a[data-switcher-entry="agent"]').and(page.locator(agentLink(name)));
   await expect(recent).toHaveCount(1);
   docs = documents(page);
@@ -108,7 +118,7 @@ test('a card, a pinned chip and a Recent entry each open the page in ONE documen
   await pin(page, true);
   try {
     await page.evaluate(() => localStorage.setItem('muster.switcher.view', 'pins'));
-    await openList(page);
+    await openOtherSession(page);
     const chip = page.locator('#session-switcher [data-switcher-list="pins"] a[data-switcher-entry="agent"]').and(page.locator(agentLink(name)));
     await expect(chip).toHaveCount(1);
     docs = documents(page);

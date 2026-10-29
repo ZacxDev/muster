@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
-import { test, expect, expectShellShows } from '../lib/fixtures';
+import { test, expect } from '../lib/fixtures';
 import {
   dsn, e2eRoot, gotrueSecret, passkeysBrowserPort, passkeysGotruePort, passkeysMainPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
@@ -9,6 +9,18 @@ import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { authenticator, credentialCount } from '../lib/webauthn';
 import { landedHome } from '../lib/nav';
+
+// expectAgentPageHome: a sign-in landed on `/`, which — with no chief, and the
+// Agents list page retired — opens an agent's own page (the session the user
+// opened last, else the sidebar's first row; internal/api/nav_agents.go
+// homeTarget). Asserted on the page the redirect produced, before any
+// navigation: the page must DRAW that agent's conversation, not a blank main
+// area.
+async function expectAgentPageHome(page: Page, why: string) {
+  await expect(page, why).toHaveURL(/\/agents\/[^/?]+(\?session=\d+(&from=list)?)?$/);
+  await expect(page.locator('#chat-log'), `${why}: the agent's conversation is drawn`).toBeVisible();
+}
+
 
 // Passkeys, end to end: Chromium's VIRTUAL AUTHENTICATOR (CDP WebAuthn domain)
 // against the REAL GoTrue image with GOTRUE_PASSKEY_ENABLED, through muster's
@@ -119,7 +131,7 @@ test('add a passkey, sign in with it, outlive the access token, sign out everywh
   await signOut(page);
   await expect(page.locator('#passkey-signin')).toBeVisible();
   await Promise.all([page.waitForURL(landedHome(browserURL)), page.locator('#passkey-signin').click()]);
-  await expectShellShows(page, 'agents', 'Agents', 'landing on / after a passkey sign-in (no chief: the Agents list)');
+  await expectAgentPageHome(page, 'landing on / after a passkey sign-in (no chief: an agent page)');
   const cs = await page.context().cookies(browserURL);
   for (const name of ['muster_at', 'muster_rt']) {
     const c = cs.find((x) => x.name === name);

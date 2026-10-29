@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { request as pwRequest } from '@playwright/test';
+import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect, expectShellShows, navTabKey } from '../lib/fixtures';
 import {
   dsn, e2eRoot, gotrueSecret, hookToken, invitesBrowserPort, invitesGotruePort, invitesMainPort, repoRoot, versionA, versionTerm,
@@ -8,6 +8,30 @@ import {
 import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { landedHome } from '../lib/nav';
+
+// expectAgentPageHome: a sign-in landed on `/`, which — with no chief, and the
+// Agents list page retired — opens an agent's own page (the session the user
+// opened last, else the sidebar's first row; internal/api/nav_agents.go
+// homeTarget). Asserted on the page the redirect produced, before any
+// navigation: the page must DRAW that agent's conversation, not a blank main
+// area.
+async function expectAgentPageHome(page: Page, why: string) {
+  await expect(page, why).toHaveURL(/\/agents\/[^/?]+(\?session=\d+(&from=list)?)?$/);
+  await expect(page.locator('#chat-log'), `${why}: the agent's conversation is drawn`).toBeVisible();
+}
+
+// expectOnboardingHome: `/` for a user with nothing to open (no chief, no
+// agent, no mirrored window) draws the onboarding page at /agents — the
+// retired Agents list's empty state, now home's (ui.agentsEmptyState): it says
+// how to start an agent (the tmux one-liner) and how to connect a machine.
+async function expectOnboardingHome(page: Page, why: string) {
+  expect(new URL(page.url()).pathname, why).toBe('/agents');
+  const empty = page.locator('#agents-empty');
+  await expect(empty.getByText('No agents yet'), `${why}: the empty state is VISIBLE`).toBeVisible();
+  await expect(empty.getByText('tmux new -A -s work claude'), `${why}: the tmux one-liner`).toBeVisible();
+  await expect(page.locator('#onboarding-prompt'), `${why}: the onboarding prompt`).toBeVisible();
+}
+
 
 // Accounts PR 5, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
 // the deployment's pin): the admin claims the account, creates an invite link
@@ -97,11 +121,11 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await page.fill('#claim-password2', adminPW);
   await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
   // The claim lands on `/`, which opens the chief's chat — with no chief
-  // (here), the Agents list: asserted HERE, on the page the redirect produced,
-  // before any navigation. Every sign-in in this suite used to be followed
-  // immediately by goto('/tasks'), so nothing ever looked at `/` — and `/`
-  // once rendered every panel and every FAB hidden.
-  await expectShellShows(page, 'agents', 'Agents', 'the admin, landing on / after the claim (no chief: the Agents list)');
+  // (here), the admin's last-opened (else first) agent's page: asserted HERE,
+  // on the page the redirect produced, before any navigation. Every sign-in in
+  // this suite used to be followed immediately by goto('/tasks'), so nothing
+  // ever looked at `/` — and `/` once rendered every panel and every FAB hidden.
+  await expectAgentPageHome(page, 'the admin, landing on / after the claim (no chief: an agent page)');
   await page.goto(browserURL + '/tasks');
   await expect(page.locator(`#task-${adminTask}`), 'CONTROL: the admin sees its own task').toBeVisible();
   await expect(page.locator('#sidebar-admin')).toHaveAttribute('href', '/admin/users');
@@ -134,11 +158,10 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#invite-password2', memberPW);
   await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.getByRole('button', { name: 'Create account' }).click()]);
   // The member's FIRST page is `/`, in a browser with no saved tab. A new
-  // member has no chief, so `/` opens their (empty) Agents list — not a blank
-  // main area (internal/api/nav_agents.go redirectHome).
-  expect(new URL(mp.url()).pathname, 'the member lands on the Agents list').toBe('/agents');
-  await expectShellShows(mp, 'agents', 'Agents', 'the member, landing on / after redeeming the invite');
-  await expect(mp.locator('#agents-list').getByText('No agents yet'), "the member's empty list is VISIBLE").toBeVisible();
+  // member has no chief and nothing to open, so `/` draws the onboarding page —
+  // not a blank main area, and not the admin's agents (internal/api/nav_agents.go
+  // redirectHome).
+  await expectOnboardingHome(mp, 'the member, landing on / after redeeming the invite');
   // The shell drawn at a bare `/` (the service worker's offline copy, which
   // it fetches as /?shell=1) shows the (empty) board with its New-task button,
   // and a tab saved by a build (or a product) whose default was another tab
@@ -305,7 +328,7 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#muster-email', memberEmail);
   await mp.fill('#muster-password', newPW);
   await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.click('button[type=submit]')]);
-  await expectShellShows(mp, 'agents', 'Agents', 'the member, landing on / after signing in (no chief: the Agents list)');
+  await expectOnboardingHome(mp, 'the member, landing on / after signing in (nothing to open: the onboarding page)');
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
 
