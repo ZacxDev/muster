@@ -62,7 +62,7 @@ func navRows(t *testing.T, html string) []string {
 func TestTheSidebarListsTheChiefThenWhoIsWaitingThenByRecency(t *testing.T) {
 	html := renderString(t, NavAgentsList(navAgentFixture(), navMirrorFixture(), "", navNow))
 	got := strings.Join(navRows(t, html), ",")
-	want := "chief-a,prompt,asker,approver,fresh,drafter,pinned-old,unknown"
+	want := "chief-a,prompt:1,asker,approver,fresh:1,drafter,pinned-old,unknown:1"
 	if got != want {
 		t.Fatalf("the sidebar's rows are %s\nwant %s\n(the chief, then waiting by recency, then the rest by recency, unknown activity last)", got, want)
 	}
@@ -71,7 +71,7 @@ func TestTheSidebarListsTheChiefThenWhoIsWaitingThenByRecency(t *testing.T) {
 	// arrives in.
 	var list []string
 	for _, e := range orderList(navAgentFixture(), navMirrorFixture()) {
-		s, _ := switcherName(e)
+		s := switcherName(e)
 		list = append(list, s)
 	}
 	if strings.Join(list, ",") == want {
@@ -94,7 +94,7 @@ func TestTheSwitcherAndTheSidebarShareTheWaitingPredicate(t *testing.T) {
 	for _, m := range regexp.MustCompile(`<a [^>]*data-nav-wait[^>]*title="([^"]*)"`).FindAllStringSubmatch(html, -1) {
 		navWait = append(navWait, m[1])
 	}
-	want := "prompt,asker,approver"
+	want := "prompt:1,asker,approver"
 	if strings.Join(navWait, ",") != want {
 		t.Errorf("the sidebar marks %v waiting, want %s", navWait, want)
 	}
@@ -121,7 +121,7 @@ func TestTheRowCarriesTheCardsSignals(t *testing.T) {
 		start := strings.LastIndex(html[:i], "<a ")
 		return html[start : start+strings.Index(html[start:], "</a>")]
 	}
-	fresh, drafter := row("fresh"), row("drafter")
+	fresh, drafter := row("fresh:1"), row("drafter")
 	if !strings.Contains(fresh, `data-identity="#3366cc"`) || !strings.Contains(fresh, "border-l-[rgb(var(--id-bd))]") {
 		t.Errorf("the coloured window's row is not tinted: %s", fresh)
 	}
@@ -134,7 +134,7 @@ func TestTheRowCarriesTheCardsSignals(t *testing.T) {
 	if !strings.Contains(drafter, `data-nav-attention`) || !strings.Contains(drafter, `data-count="2"`) || strings.Count(drafter, "<a ") != 1 {
 		t.Errorf("the drafter's row does not carry its count as a non-link pill: %s", drafter)
 	}
-	if u := row("unknown"); strings.Contains(u, "data-recency") {
+	if u := row("unknown:1"); strings.Contains(u, "data-recency") {
 		t.Errorf("a row of unknown activity draws a recency dot: %s", u)
 	}
 	if !strings.Contains(row("chief-a"), "data-nav-chief") {
@@ -156,8 +156,8 @@ func TestTheRowOfThePageIsCurrent(t *testing.T) {
 	cases := []struct{ from, want string }{
 		{"http://x.test/agents/asker?session=3&from=list", "asker"},
 		{"http://x.test/agents/approver/terminal", "approver"},
-		{"http://x.test/mirror/view?host=laptop&session=s-fresh&window=%408", "fresh"},
-		{"http://x.test/mirror/terminal?host=laptop&session=s-prompt&window=%409", "prompt"},
+		{"http://x.test/mirror/view?host=laptop&session=s-fresh&window=%408", "fresh:1"},
+		{"http://x.test/mirror/terminal?host=laptop&session=s-prompt&window=%409", "prompt:1"},
 		{"http://x.test/mirror/view?host=laptop&session=s-fresh&window=%409", ""},
 		{"http://x.test/agents", ""},
 		{"http://x.test/agents/no-such-agent", ""},

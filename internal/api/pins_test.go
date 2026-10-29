@@ -363,3 +363,67 @@ func TestThePinRoutesAreRefusedOnTheMachineListener(t *testing.T) {
 		}
 	}
 }
+
+// TestTheSwitcherPinToggleAnswersWithItselfAndTheBar: a post from the session
+// switcher's pin toggle (view=switcher) pins or unpins like any other, and an
+// htmx one answers with the toggle in its NEW state and the bar's rows and
+// counts out of band — the Pins row now holding (or no longer holding) the
+// session — never the Agents list. Without script it goes back to the
+// session's page; a "back" that is not a session page of this server goes to
+// /agents (no open redirect). Red at the commit before: the answer was the
+// list (and the redirect /agents) whatever was posted.
+func TestTheSwitcherPinToggleAnswersWithItselfAndTheBar(t *testing.T) {
+	fm := &fakeMirror{online: true, windows: pinWindows()}
+	mp := &memPins{agents: map[int64]bool{5: true, 6: true, 7: true}}
+	s, h := pinServer(t, fm, mp)
+	agent7 := url.Values{"kind": {"agent"}, "agent_id": {"7"}, "view": {"switcher"}, "back": {"/agents/idle-newest"}}
+
+	rec := pinPost(t, s, h, "/agents/pins", agent7, true)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || strings.Contains(body, "<article") {
+		t.Fatalf("htmx switcher pin = %d, and answered the list:\n%s", rec.Code, body)
+	}
+	if !mp.pinFor(authz.OperatorUserID).Agents[7] {
+		t.Fatal("agent 7 was not pinned")
+	}
+	if !strings.HasPrefix(body, `<form method="post" action="/agents/pins/delete" data-switcher-pin=""`) ||
+		!strings.Contains(body, `id="switcher-pin" type="submit" aria-pressed="true" aria-label="Unpin this session"`) ||
+		!strings.Contains(body, `name="back" value="/agents/idle-newest"`) || !strings.Contains(body, `name="agent_id" value="7"`) {
+		t.Errorf("the answer is not the toggle, pressed, posting Unpin for agent 7:\n%s", body)
+	}
+	pinsRow := regexp.MustCompile(`<div id="switcher-list-pins" hx-swap-oob="innerHTML">(.*?)</div><span id="switcher-count-pins" hx-swap-oob="innerHTML">(\d+)</span>`).FindStringSubmatch(body)
+	if pinsRow == nil || !strings.Contains(pinsRow[1], `aria-current="page"`) || pinsRow[2] != "1" {
+		t.Errorf("the bar's Pins row is not sent out of band holding the page's own session (count 1):\n%s", body)
+	}
+
+	rec = pinPost(t, s, h, "/agents/pins/delete", agent7, true)
+	body = rec.Body.String()
+	if mp.pinFor(authz.OperatorUserID).Agents[7] || !strings.Contains(body, `aria-pressed="false" aria-label="Pin this session"`) ||
+		!strings.Contains(body, `<span id="switcher-count-pins" hx-swap-oob="innerHTML">0</span>`) {
+		t.Errorf("unpin did not answer the unpressed toggle and an empty Pins count:\n%s", body)
+	}
+
+	// A window: its own (host, session, window) is what is pinned.
+	win := url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"chief"}, "window": {"@2"}, "view": {"switcher"}, "back": {"/mirror/view?host=ws&session=chief&window=%402"}}
+	if rec := pinPost(t, s, h, "/agents/pins", win, true); rec.Code != http.StatusOK ||
+		!mp.pinFor(authz.OperatorUserID).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] {
+		t.Fatalf("the window's switcher pin = %d; pinned %v", rec.Code, mp.pinFor(authz.OperatorUserID).Mirrors)
+	}
+
+	// Without script: back to the session's page — and only ever to one.
+	for _, c := range []struct{ back, want string }{
+		{"/agents/idle-newest", "/agents/idle-newest"},
+		{"/mirror/view?host=ws&session=chief&window=%402", "/mirror/view?host=ws&session=chief&window=%402"},
+		{"https://evil.example/agents/x", "/agents"},
+		{"//evil.example/agents/x", "/agents"},
+		{"/agents/x\r\nSet-Cookie: a=b", "/agents"},
+		{"/tasks", "/agents"},
+		{"", "/agents"},
+	} {
+		f := url.Values{"kind": {"agent"}, "agent_id": {"7"}, "view": {"switcher"}, "back": {c.back}}
+		rec := pinPost(t, s, h, "/agents/pins", f, false)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != c.want {
+			t.Errorf("plain switcher pin with back %q = %d → %q, want 303 → %q", c.back, rec.Code, rec.Header().Get("Location"), c.want)
+		}
+	}
+}

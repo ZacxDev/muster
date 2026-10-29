@@ -95,10 +95,12 @@ against a throwaway database.
   Claude Code window renders as a chat, and the Terminal view is one tap away
   (on a Linux host; on a macOS host there is no Terminal view yet, see
   Requirements). Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
-- **Session switcher, sidebar and search.** A bottom bar with Recent, Pins and
-  All, and a sidebar that lists every session like channels in a chat app: the
-  chief first (if you turned one on), then the sessions waiting on you, then
-  the rest by recency. The search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)
+- **Session switcher, sidebar and search.** A bottom bar with Recent, Waiting,
+  Pins and All (and a pin button for the session you are on), and a sidebar
+  that lists every session like channels in a chat app: the chief first (if
+  you turned one on), then the sessions waiting on you, then the rest by
+  recency. The search opens with the magnifier on the bar or in the sidebar, or
+  `/`. → [docs/mirroring.md](docs/mirroring.md)
 - **Message box and step-up.** Send text into a Claude Code session, a plain
   terminal pane (Codex, Gemini CLI, a shell) or a dispatched agent. The message
   box does not send to opencode yet, and sends to Hermes only through the
