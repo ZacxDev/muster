@@ -1,7 +1,7 @@
 # Mirrored sessions
 
-A **mirrored session** is a tmux window on one of your own machines, shown as a
-card on muster's Agents list. You can watch it, open its terminal, read a Claude
+A **mirrored session** is a tmux window on one of your own machines, listed in
+muster's sidebar (and the bottom bar's views). You can watch it, open its terminal, read a Claude
 Code conversation as a chat, and send it a message, all from a phone.
 
 Mirroring is off unless the server runs with `MUSTER_MIRROR=1`, and it needs a
@@ -230,7 +230,7 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   token for a new host (or a second token for an old one) never changes an
   existing host's icon.
 
-![The Agents list with the session switcher's search open, matching Claude Code windows on two hosts by their kind](img/agents-filter.png)
+![The sidebar's search open, matching Claude Code windows on two hosts by their kind](img/sidebar-search.png)
 ![A session page with the switcher's search open, finding a window by its codename](img/switcher-search.png)
 
 ## Viewing never moves your terminal
@@ -434,7 +434,7 @@ browser, and the view starts again from the beginning.
   shown signed out) deletes them, and a sign-out ends there. Another tab still
   open on a rendered view stops keeping copies at that moment, for as long as
   it stays open.
-- **Warming.** While you are on the Agents list or an agent's page, muster
+- **Warming.** While you are on an agent's page or a rendered view, muster
   refreshes the copies of up to three windows you are likely to open next
   (pinned, then recently viewed, then the ones this browser has copies of), one
   at a time when the browser is idle, every two minutes at most, skipping a
