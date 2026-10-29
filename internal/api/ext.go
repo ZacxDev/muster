@@ -665,7 +665,7 @@ const ProvisionerUnwiredField = "provisionerUnwired"
 // One condition, one refusal shape.
 func (s *Server) requireLifecycleProvisioner(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.ext.Provisioner == nil {
+		if !s.dispatchServed() {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error": "this build has no agent provisioner wired, so it cannot " +
 					"provision, start, stop, destroy or stream logs from an agent. " +
@@ -678,6 +678,21 @@ func (s *Server) requireLifecycleProvisioner(next http.HandlerFunc) http.Handler
 		next(w, r)
 	}
 }
+
+// dispatchServed reports whether this server holds an agent provisioner. It is
+// the ONE predicate behind requireLifecycleProvisioner's 503 AND every surface
+// that offers a dispatch: Features.Dispatch (the Agents bar's "+"),
+// TaskCardView.Dispatch (a task card's Dispatch button) and the
+// /ui/agents/new sheet's body. A UI that decided "can this server dispatch?"
+// from anything else could draw a button over the very 503 this answers —
+// which is what a docker compose install (MUSTER_AGENT_PROVISIONER unset, so
+// `none`) shipped with.
+//
+// ⚠ IT IS NOT "A DISPATCH WILL SUCCEED". A wired provisioner whose kickoff is
+// undeliverable still answers a dispatch with a 409 naming why
+// (Provisioner.KickoffUndeliverableReason) while "Save for later" works, so
+// the sheet stays useful there and is not hidden.
+func (s *Server) dispatchServed() bool { return s.ext.Provisioner != nil }
 
 // requireGatewayProvisioner is the chat half. See requireLifecycleProvisioner.
 func (s *Server) requireGatewayProvisioner(next http.HandlerFunc) http.HandlerFunc {

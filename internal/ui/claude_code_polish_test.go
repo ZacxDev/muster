@@ -115,7 +115,7 @@ func TestTheBoardCardPrintsTheTimeTheBoardIsOrderedBy(t *testing.T) {
 // re-orders) on the SSE events that change it, not only on a local action's
 // HX-Trigger.
 func TestTheAgentsListRefreshesOnServerEvents(t *testing.T) {
-	html := renderNode(t, AgentsPanel(true))
+	html := renderNode(t, AgentsPanel(true, featuresAllOn))
 	i := strings.Index(html, `id="agents-list"`)
 	if i < 0 {
 		t.Fatal("instrument check FAILED: no #agents-list")

@@ -164,13 +164,15 @@ type ComboOption struct {
 // the FAB and dispatch modal live in the shell (Page) so the 4s status refresh
 // never rebuilds them. The card list uses morph swaps so live updates patch in
 // place (no scroll jump, no teardown of hover/expanded state).
-func AgentsPanel(active bool) g.Node { return agentsPanel(active, nil) }
+func AgentsPanel(active bool, feat Features) g.Node { return agentsPanel(active, nil, feat) }
 
 // agentsPanel is AgentsPanel with, on the Agents tab's own document, the list's
 // cards and its session switcher (list, nil for none) drawn on the first paint
 // (ShellData). Without them the switcher is drawn pending (switcherPending) and
 // the list's first load fills both.
-func agentsPanel(active bool, list *shellList) g.Node {
+//
+// feat decides whether the docked bar carries the dispatch "+" (Features.Dispatch).
+func agentsPanel(active bool, list *shellList, feat Features) g.Node {
 	sw := switcherPending()
 	if list != nil && list.switcher != nil {
 		sw = list.switcher
@@ -204,6 +206,10 @@ func agentsPanel(active bool, list *shellList) g.Node {
 		Div(
 			Class("mb-2 flex items-center gap-2"),
 			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
+			// No "+" on this server's bar (Features.Dispatch false): say why,
+			// once, in the header, for a list that is not empty (the empty
+			// state says it in its own words).
+			g.If(!feat.Dispatch, dispatchOffHint()),
 		),
 		// ⚠ THE "RECENTLY VIEWED" STRIP AND THE SEARCH BOX THAT SAT HERE ARE GONE
 		// (operator ask): the session switcher docked at the bottom supersedes
@@ -253,7 +259,7 @@ func agentsPanel(active bool, list *shellList) g.Node {
 		// edge, and the "+" moved into it).
 		//
 		// The session switcher, docked at the bottom of the viewport (switcher.go).
-		switcherDock(sw),
+		switcherDock(sw, feat.Dispatch),
 	)
 }
 
@@ -973,6 +979,62 @@ func agentModalShell() g.Node {
 // FAB is tapped. The Task-card Dispatch button uses the task-scoped variant
 // (DispatchModalTaskBody) instead; this FAB form is unchanged.
 func DispatchModalBody() g.Node { return DispatchModalBodyFor(KindChoices{}) }
+
+// ProvisionerGuideURL is docs/provisioner.md on GitHub: how to give muster an
+// agent runtime so it can dispatch.
+const ProvisionerGuideURL = "https://github.com/ZacxDev/muster/blob/main/docs/provisioner.md"
+
+// DispatchUnavailableAttr marks the sheet a server with no agent runtime
+// answers GET /ui/agents/new with, in place of the dispatch form.
+const DispatchUnavailableAttr = "data-dispatch-unavailable"
+
+// DispatchOffHintAttr marks the Agents header's note on a server that cannot
+// dispatch (dispatchOffHint).
+const DispatchOffHintAttr = "data-dispatch-off-hint"
+
+// dispatchOffHint is the Agents list header's one-line note on a server with no
+// agent runtime: the "+" is absent from the bar, and this says why and links
+// the guide. Muted text, not a control that looks like an action. h-11 because
+// it is a link, and every link a thumb can hit is a 44px target.
+func dispatchOffHint() g.Node {
+	return A(
+		g.Attr(DispatchOffHintAttr, ""),
+		Href(ProvisionerGuideURL), Target("_blank"), Rel("noopener"),
+		g.Attr("title", "This server has no agent runtime, so it cannot start agents. Agents you run in tmux still show up here."),
+		Class("ml-auto inline-flex h-11 shrink-0 items-center px-1 text-xs text-muted underline decoration-dotted underline-offset-2 hover:text-fg"),
+		g.Text("Agent dispatch not set up"),
+	)
+}
+
+// DispatchUnavailableBody is the /ui/agents/new partial on a server that cannot
+// dispatch (Features.Dispatch false): what is missing and where to set it up,
+// instead of a form whose submit can only answer 503.
+//
+// No document drawn by that server offers the sheet (no "+", no card Dispatch
+// button), so this is reached by a page rendered before the server lost its
+// provisioner, or a hand-typed request. It carries no form, so nothing on it
+// can POST /agents.
+func DispatchUnavailableBody() g.Node {
+	return Div(
+		g.Attr(DispatchUnavailableAttr, ""),
+		Div(
+			Class("mb-4 flex items-center gap-2"),
+			H2(Class("text-base font-semibold text-fg"), g.Text("Agent dispatch is not set up")),
+			Span(Class("flex-1")),
+			dispatchCloseButton(),
+		),
+		Div(
+			Class("space-y-2 text-sm leading-relaxed text-muted"),
+			P(g.Text("This server has no agent runtime configured, so it cannot start agents. "+
+				"Agents you run in tmux on a connected machine still show up in muster.")),
+			P(
+				g.Text("Dispatch needs an agent provisioner (MUSTER_AGENT_PROVISIONER); the docker compose install ships without one. See "),
+				A(Href(ProvisionerGuideURL), Target("_blank"), Rel("noopener"), Class("text-accent underline"), g.Text("docs/provisioner.md")),
+				g.Text("."),
+			),
+		),
+	)
+}
 
 // DispatchModalBodyFor is DispatchModalBody with the deployment's agent kinds;
 // more than one renders the kind picker (see kindPicker).

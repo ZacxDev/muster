@@ -507,7 +507,7 @@ func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
 // origin/main: no "+" anywhere on the bar.
 func TestOnlyTheAgentsListBarHasADeployButton(t *testing.T) {
 	list, mirrors := switcherFixture()
-	dock := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{})))
+	dock := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
 	b := regexp.MustCompile(`<button id="` + SwitcherDeployID + `"[^>]*>`).FindString(dock)
 	for _, want := range []string{`type="button"`, `aria-label="Deploy agent"`, `hx-get="/ui/agents/new"`, `hx-target="#agent-modal-body"`, `hx-swap="innerHTML"`, `h-11 w-11`} {
 		if !strings.Contains(b, want) {
@@ -520,6 +520,12 @@ func TestOnlyTheAgentsListBarHasADeployButton(t *testing.T) {
 	// After the search button, in the bar's one fixed row.
 	if strings.Index(dock, `id="`+SwitcherDeployID+`"`) < strings.Index(dock, `id="switcher-search-open"`) {
 		t.Error("the + is not beside (after) the search button")
+	}
+	// A server that cannot dispatch (Features.Dispatch false): the same docked
+	// bar, no "+". internal/api's TestTheUIOffersDispatchOnlyWhenTheServerCanDispatch
+	// drives this through the real handler.
+	if off := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), false)); strings.Contains(off, SwitcherDeployID) || !strings.Contains(off, `id="`+SwitcherDockID+`"`) {
+		t.Error("with dispatch off the dock must still draw, without the +")
 	}
 	for _, page := range []string{
 		renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{AgentID: 1}), false)),

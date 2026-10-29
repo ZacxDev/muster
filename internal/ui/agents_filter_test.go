@@ -38,7 +38,7 @@ func TestNoCardCarriesTheRemovedSearchBoxsAttributes(t *testing.T) {
 // #agents-list (a refresh never touches them). Red at origin/main: the box was
 // drawn.
 func TestTheFilterBarHasNoSearchBox(t *testing.T) {
-	panel := renderNode(t, AgentsPanel(true))
+	panel := renderNode(t, AgentsPanel(true, featuresAllOn))
 	for _, gone := range []string{`id="agents-search"`, `id="agents-search-clear"`, `role="searchbox"`, "Search by name"} {
 		if strings.Contains(panel, gone) {
 			t.Errorf("the Agents panel still draws %s", gone)

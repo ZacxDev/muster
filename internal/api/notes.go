@@ -130,7 +130,7 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 	latest := s.latestSessionIDs(ctx, agentIDs)
 	views := make([]ui.TaskCardView, 0, len(list))
 	for _, n := range list {
-		v := ui.TaskCardView{Note: n}
+		v := ui.TaskCardView{Note: n, Dispatch: s.dispatchServed()}
 		if a, ok := byNote[n.ID]; ok {
 			v.Agent = agentBrief(a, latest[a.ID])
 		}
@@ -143,7 +143,7 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 // the outerHTML re-render after a status change / comment. Best-effort agent
 // lookup (nil on miss/failure ⇒ the card falls back to the Dispatch button).
 func (s *Server) taskCardView(ctx context.Context, n notes.Note) ui.TaskCardView {
-	v := ui.TaskCardView{Note: n}
+	v := ui.TaskCardView{Note: n, Dispatch: s.dispatchServed()}
 	if s.ext.Agents != nil {
 		if m, err := s.ext.Agents.AgentsByNoteIDs(ctx, []int64{n.ID}); err == nil {
 			if a, ok := m[n.ID]; ok {

@@ -277,6 +277,10 @@ export const askPageFakePort = port + 245;
 // The first-run empty state on a fresh database (onboarding.spec.ts): its own
 // server (versionA) on a database e2e/emptydb creates.
 export const onboardingPort = port + 240;
+// tests/layout.spec.ts's dispatch-sheet checks: a server WITH an agent
+// provisioner (noop). The shared server has none, like the docker compose
+// install, so it offers no dispatch sheet to measure.
+export const layoutDispatchPort = port + 250;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

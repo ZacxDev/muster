@@ -43,6 +43,14 @@ type Features struct {
 	// (internal/attention). False draws no Attention link and no badge: the
 	// routes behind them would only answer 404.
 	Attention bool
+	// Dispatch is true when the server holds an agent provisioner
+	// (MUSTER_AGENT_PROVISIONER is not `none`), i.e. when POST /agents can do
+	// anything but answer 503. False draws no "+" on the Agents list's bar
+	// (switcherDock) and no Dispatch button on a task card (TaskCardView's
+	// field of the same name, set from the same server predicate): the docker
+	// compose install ships with no agent runtime, and a "+" over a 503 is a
+	// button that can only fail.
+	Dispatch bool
 	// SnapUser and SnapBuild are the signed-in user and the running build: the
 	// key, and the check, of the mirrored view's snapshot store
 	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.

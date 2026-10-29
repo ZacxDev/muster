@@ -25,7 +25,7 @@ import (
 // arrival moves nothing. The "Recently viewed" strip is gone. Red at
 // origin/main: no dock, no switcher, and the strip.
 func TestTheAgentsPanelDocksTheSwitcherAndReservesItsRoom(t *testing.T) {
-	panel := renderNode(t, AgentsPanel(true))
+	panel := renderNode(t, AgentsPanel(true, featuresAllOn))
 	if strings.Contains(panel, `id="agents-recent"`) || strings.Contains(panel, "Recently viewed") {
 		t.Error("the Agents panel still draws the Recently viewed strip")
 	}
@@ -63,7 +63,7 @@ func TestTheAgentsPanelDocksTheSwitcherAndReservesItsRoom(t *testing.T) {
 // list's first load fills them out of band. The control: the Agents tab's own
 // document draws its rows' empty lines.
 func TestAPanelWithoutTheListDrawsItsSwitcherPending(t *testing.T) {
-	pending := renderNode(t, AgentsPanel(false))
+	pending := renderNode(t, AgentsPanel(false, featuresAllOn))
 	for _, v := range switcherViews {
 		if !strings.Contains(pending, `<div id="`+switcherRowID(v.key)+`" data-switcher-list="`+v.key+`"`) {
 			t.Errorf("no %s row", v.key)

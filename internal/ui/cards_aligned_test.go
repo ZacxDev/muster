@@ -134,7 +134,7 @@ func TestNoCardRendersAPreview(t *testing.T) {
 		"agent":    renderNode(t, agentCard(a)),
 		"mirrored": renderNode(t, mirrorCard(realisticMirror())),
 		"list":     renderNode(t, AgentsCardsWithMirrors([]AgentCardView{a}, []MirrorCardView{realisticMirror()})),
-		"panel":    renderNode(t, AgentsPanel(true)),
+		"panel":    renderNode(t, AgentsPanel(true, featuresAllOn)),
 	} {
 		for _, bad := range []string{"<pre", "agent-recent-", "/recent", "animate-pulse"} {
 			if strings.Contains(markup, bad) {

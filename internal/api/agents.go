@@ -300,6 +300,14 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 // to the plain FAB form so the modal always renders something usable.
 func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// No agent runtime: explain, rather than draw a form whose submit can only
+	// answer requireLifecycleProvisioner's 503 (dispatchServed).
+	if !s.dispatchServed() {
+		if err := ui.RenderDispatchUnavailable(w); err != nil {
+			s.logger.Printf("agents: render dispatch-unavailable sheet: %v", err)
+		}
+		return
+	}
 	if noteParam := r.URL.Query().Get("note"); noteParam != "" && s.ext.Notes != nil {
 		if id, err := strconv.ParseInt(noteParam, 10, 64); err == nil {
 			if n, err := s.ext.Notes.Get(r.Context(), id); err == nil {

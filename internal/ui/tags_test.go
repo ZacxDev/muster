@@ -31,7 +31,7 @@ func renderTasks(t *testing.T, v TasksView) string {
 func renderTagCard(t *testing.T, n notes.Note) string {
 	t.Helper()
 	var b bytes.Buffer
-	if err := noteCard(TaskCardView{Note: n}).Render(&b); err != nil {
+	if err := noteCard(TaskCardView{Note: n, Dispatch: true}).Render(&b); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return b.String()
