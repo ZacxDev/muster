@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/api"
@@ -154,7 +155,7 @@ func TestBuildAppMintsInTheConfiguredAccessMode(t *testing.T) {
 		cfg.ConnectorEncKey = []byte(strings.Repeat("k", 32))
 		cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAppAccounts, cfg.GitHubAppAccess =
 			key.GitHubAppID, key.GitHubAppKey, key.GitHubAppAccounts, key.GitHubAppAccess
-		var buf bytes.Buffer
+		var buf lockedBuffer // buildApp's background App check logs into it too
 		a, err := buildApp(context.Background(), cfg, log.New(&buf, "", 0))
 		if err != nil {
 			t.Fatalf("%s=%q: buildApp: %v", envGitHubAppAccess, c.env, err)
@@ -164,4 +165,23 @@ func TestBuildAppMintsInTheConfiguredAccessMode(t *testing.T) {
 			t.Errorf("%s=%q: the built App does not report %q; banner:\n%s", envGitHubAppAccess, c.env, c.want, buf.String())
 		}
 	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for a logger written from another
+// goroutine while the test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
