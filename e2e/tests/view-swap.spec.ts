@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, viewSwapPort } from '../lib/env';
-import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { openDispatchSheet } from '../lib/dispatch';
-import { openMore } from '../lib/nav';
+import { landedHome, openMore } from '../lib/nav';
 
 // THE RENDERED ↔ TERMINAL SWITCH KEEPS BOTH VIEWS' CONNECTIONS
 // (internal/ui/view_swap.go) — a mirrored window's and a claude-code agent's —
@@ -114,7 +114,9 @@ test.describe('a mirrored window', () => {
     // can still show the previous process's windows, offline, for a moment.
     await expect.poll(() => rig.log.includes('connected to '), { message: `the host connected (log:\n${rig.log})`, timeout: 20_000 }).toBe(true);
     await expect
-      .poll(async () => ((await (await page.request.get(origin + '/ui/agents')).text()).match(/data-mirror-claude/g) || []).length, {
+      // The sidebar's rows (GET /ui/nav/agents): this host's windows, online,
+      // each a row that opens its Rendered view.
+      .poll(async () => mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter((e) => e.state === 'online' && e.markup.includes(`host=${encodeURIComponent(rig.host)}&`) && entryMatches(e.markup, 'data-mirror-claude')).length, {
         message: `both windows listed as Claude Code (muster-mirror log:\n${rig.log})`,
         timeout: 20_000,
       })
@@ -123,7 +125,8 @@ test.describe('a mirrored window', () => {
 
   async function openRendered(page: Page, win = '@1'): Promise<void> {
     await ready(page);
-    await page.goto(origin + '/agents');
+    // A page before it, for Back: the board.
+    await page.goto(origin + '/tasks');
     await page.goto(origin + viewOf(win));
     await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText(win === '@1' ? 'window ONE' : 'window TWO');
     await expect(page.locator('#mv-status')).toHaveText('Live');
@@ -197,10 +200,10 @@ test.describe('a mirrored window', () => {
     await page.locator('#view-rendered').click();
     await expect(framed(page).locator('#mv-log [data-tool-row]')).toHaveCount(1);
     await page.goBack();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
-    // The Agents tab draws its list in the document (#225): Back onto it has
-    // the cards, and no view frame came back with the page.
-    await expect(page.locator(`#agents-list > article[data-f-host="${rig.host}"]`).first()).toBeVisible();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
+    // Back onto the board draws the board, and no view frame came back with
+    // the page.
+    await expect(page.locator('#panel-tasks')).toBeVisible();
     await expect(frameEl(page)).toHaveCount(0);
     await settled();
     expect(unwatched('@1'), `leaving closed the transcript stream (log:\n${rig.log})`).toBe(2);
@@ -254,8 +257,12 @@ test.describe('a mirrored window', () => {
     await openRendered(page);
     await page.locator('#view-terminal').click();
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
-    await framed(page).locator('#term-back').click();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
+    // A link out of the window in the framed terminal: its nav's Tasks (the
+    // header's back goes home, "/", which may well be this same window).
+    await framed(page).locator('#sidebar-open').click();
+    await openMore(framed(page));
+    await framed(page).locator('#sidebar a[data-tab="tasks"]').click();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
     await expect(frameEl(page)).toHaveCount(0);
     await settled();
     expect(unwatched('@1'), `the page's stream ended (log:\n${rig.log})`).toBe(1);
@@ -534,7 +541,7 @@ test.describe('a claude-code agent', () => {
     await rig.login(page);
     if (agent) return;
     const before = await agentNames();
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     await openDispatchSheet(page);
     const sheet = page.locator('#agent-modal form');
     await sheet.locator('[data-kind-option="claude-code"]').click();
@@ -545,11 +552,14 @@ test.describe('a claude-code agent', () => {
     const created = [...(await agentNames())].filter((n) => !before.has(n));
     expect(created.length, 'exactly one agent created').toBe(1);
     agent = created[0];
+    // Save for later answers with an HX-Redirect to the new agent's page: let
+    // that navigation land, or it interrupts the caller's next one.
+    await page.waitForURL((u) => u.pathname === `/agents/${agent}`);
   }
 
   async function openChat(page: Page): Promise<void> {
     await signedIn(page);
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     await page.goto(origin + '/agents/' + agent);
     await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
     await expect.poll(() => chatOpened(agent) - chatClosed(agent), { message: `the chat socket opened (server log:\n${rig.server!.log()})` }).toBe(1);
@@ -612,14 +622,14 @@ test.describe('a claude-code agent', () => {
     expect(chatOpened(agent) - chat0, 'ONE chat socket').toBe(1);
     expect(termAttached(agent) - term0, 'no new terminal attach').toBe(0);
 
-    // A boosted link in the framed chat page (its header's way back to the
-    // list) navigates the TOP window, and both connections end.
+    // A boosted link in the framed chat page (its nav's Tasks) navigates the
+    // TOP window, and both connections end.
     await framed(page).locator('#sidebar-open').click();
     await openMore(framed(page));
-    await framed(page).locator('#sidebar a[data-tab="agents"]').click();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
+    await framed(page).locator('#sidebar a[data-tab="tasks"]').click();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
     await expect(frameEl(page)).toHaveCount(0);
-    await expect(page.locator('#agents-list > article').first(), 'the list is drawn on arrival (#225)').toBeVisible();
+    await expect(page.locator('#panel-tasks'), 'the board is drawn on arrival').toBeVisible();
     await settled();
     expect(chatOpened(agent) - chatClosed(agent), `the chat socket ended (server log:\n${rig.server!.log()})`).toBe(0);
     expect(termAttached(agent) - termDetached(agent), 'and the attach').toBe(0);
@@ -687,14 +697,22 @@ test.describe('a claude-code agent', () => {
     await expect(frameEl(page), 'no frame left behind').toHaveCount(0);
   };
 
-  test('Mark complete in the framed chat takes the TOP window to the Agents list — no white frame', async ({ page }) => {
+  // Mark complete sends its page home ("/", ui.HomePath), which redirects on
+  // (the chief, else the session opened last, else the sidebar's first row):
+  // so it is the TOP window's request for "/" that is asserted, and that it
+  // landed home with no frame.
+  test('Mark complete in the framed chat takes the TOP window home — no white frame', async ({ page }) => {
     const name = taskAgent('done');
     try {
       await chatInFrame(page, name);
+      const topHome: string[] = [];
+      page.on('request', (r) => {
+        if (r.isNavigationRequest() && r.frame() === page.mainFrame() && new URL(r.url()).pathname === '/') topHome.push(r.url());
+      });
       await framed(page).getByRole('button', { name: 'Mark complete' }).click();
-      await expect.poll(() => pathOf(page), { message: 'the top window went to the list' }).toBe('/agents');
+      await expect.poll(() => topHome.length, { message: 'the top window went home' }).toBe(1);
+      await page.waitForURL(landedHome(origin));
       await noWhiteFrame(page);
-      await expect(page.locator('#agents-list')).toBeVisible();
     } finally {
       mkchat(name, null);
     }
@@ -708,9 +726,9 @@ test.describe('a claude-code agent', () => {
       // answered 401: the auth gate reloads — the TOP window must be what goes
       // to sign-in.
       await page.context().clearCookies();
-      await page.route('**/ui/agents?e2e=401', (route) => route.fulfill({ status: 401, body: 'unauthorized' }));
+      await page.route('**/ui/nav/agents?e2e=401', (route) => route.fulfill({ status: 401, body: 'unauthorized' }));
       const f = page.frames().find((x) => x !== page.mainFrame() && x.url().includes(`/agents/${name}`))!;
-      await f.evaluate(() => (window as unknown as { htmx: { ajax: (m: string, u: string, o: object) => void } }).htmx.ajax('GET', '/ui/agents?e2e=401', { target: '#task-modal', swap: 'none' }));
+      await f.evaluate(() => (window as unknown as { htmx: { ajax: (m: string, u: string, o: object) => void } }).htmx.ajax('GET', '/ui/nav/agents?e2e=401', { target: '#task-modal', swap: 'none' }));
       await expect.poll(() => pathOf(page), { message: 'the top window went to sign-in' }).toBe('/login');
       await noWhiteFrame(page);
       await expect(page.locator('#muster-password')).toBeVisible();
@@ -749,8 +767,8 @@ test.describe('a claude-code agent', () => {
     await expect(frameEl(page)).toBeHidden();
     await page.locator('#sidebar-open').click();
     await openMore(page);
-    await page.locator('#sidebar a[data-tab="agents"]').click();
-    await expect.poll(() => pathOf(page)).toBe('/agents');
+    await page.locator('#sidebar a[data-tab="tasks"]').click();
+    await expect.poll(() => pathOf(page)).toBe('/tasks');
     await settled();
     const attaches = termAttached(agent);
     expect(attaches - a0, 'one attach while on the page').toBe(1);

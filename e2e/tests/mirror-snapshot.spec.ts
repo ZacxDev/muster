@@ -3,7 +3,8 @@ import { Page, WebSocketRoute } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { mirrorSnapPort, password } from '../lib/env';
-import { cc, MirrorRig } from '../lib/mirrorhost';
+import { cc, entryMatches, mirroredEntries, mkchat, MirrorRig } from '../lib/mirrorhost';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE RENDERED VIEW'S SNAPSHOT (web/static/mirror-snap.js): a mirrored window's
 // view is painted at once from this browser's copy of what it last drew, then
@@ -29,6 +30,14 @@ const origin = rig.origin;
 let trLong = '';
 let trTwo = '';
 let trThree = '';
+
+// The host's windows file: work @1 (the long one, last active at oneAt), @2
+// and @3 (two and three minutes ago).
+let windowsFile = '';
+const windowLines = (oneAt: number) => {
+  const now = Math.floor(Date.now() / 1000);
+  return [`work|@1|1|1|claude|${oneAt}|${trLong}`, `work|@2|2|0|claude|${now - 120}|${trTwo}`, `work|@3|3|0|claude|${now - 180}|${trThree}`].join('\n') + '\n';
+};
 
 const viewOf = (win: string) => `/mirror/view?host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent(win)}`;
 const lines = (re: RegExp) => rig.log.split('\n').filter((l) => re.test(l)).length;
@@ -196,11 +205,19 @@ const readsInit = `(() => {
 async function ready(page: Page): Promise<void> {
   await rig.login(page);
   await expect.poll(() => rig.log.includes('connected to '), { message: `the host connected (log:\n${rig.log})`, timeout: 20_000 }).toBe(true);
+  // The sidebar's rows (GET /ui/nav/agents): each of this host's three
+  // windows listed online, as a row that opens its Rendered view.
   await expect
-    .poll(async () => ((await (await page.request.get(origin + '/ui/agents')).text()).match(/data-mirror-claude/g) || []).length, {
-      message: `all three windows listed as Claude Code (log:\n${rig.log})`,
-      timeout: 20_000,
-    })
+    .poll(
+      async () =>
+        mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter(
+          (e) => e.state === 'online' && e.markup.includes(`host=${rig.host}`) && entryMatches(e.markup, 'data-mirror-claude'),
+        ).length,
+      {
+        message: `all three windows listed as Claude Code (log:\n${rig.log})`,
+        timeout: 20_000,
+      },
+    )
     .toBe(3);
 }
 
@@ -221,12 +238,8 @@ test.beforeAll(async () => {
   trLong = rig.transcript(longTranscript(), 'long');
   trTwo = rig.transcript(cc.prompt('the prompt of window TWO') + cc.reply('Window two answered.'), 'two');
   trThree = rig.transcript(cc.prompt('the prompt of window THREE') + cc.reply('Window three answered.'), 'three');
-  const now = Math.floor(Date.now() / 1000);
-  const windows = rig.transcript(
-    [`work|@1|1|1|claude|${now - 60}|${trLong}`, `work|@2|2|0|claude|${now - 120}|${trTwo}`, `work|@3|3|0|claude|${now - 180}|${trThree}`].join('\n') + '\n',
-    'windows',
-  );
-  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+  windowsFile = rig.transcript(windowLines(Math.floor(Date.now() / 1000) - 60), 'windows');
+  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
 });
 
 test.afterAll(async () => {
@@ -247,7 +260,7 @@ test('a second open paints the conversation from the snapshot before the server 
   expect(rec.gen, 'and its transcript').toBeTruthy();
 
   // Warm: the same window again, its socket HELD — nothing from the server.
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   const resumedBefore = resuming('@1');
   const h = await hold(page, '@1');
   await page.goto(origin + viewOf('@1'));
@@ -269,9 +282,9 @@ test('a second open paints the conversation from the snapshot before the server 
 
 test('a page painted from a snapshot converges to live: messages written since are drawn once, after it', async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@2');
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   // Two new messages while the page was away.
   fs.appendFileSync(trTwo, cc.prompt('a NEWER prompt for two') + cc.reply('A newer answer from two.'));
   const resumedBefore = resuming('@2');
@@ -325,7 +338,7 @@ test('on an emulated phone the second open of a long conversation is painted fro
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 30_000 });
   const cold = (await times(page)).bubble!;
   await expect.poll(async () => (await snapOf(page, '@1'))?.batches?.length ?? 0, { timeout: 15_000 }).toBeGreaterThan(0);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await page.goto(origin + viewOf('@1'));
   await expect(page.locator('#mv-log [data-bubble]').first()).toBeVisible({ timeout: 30_000 });
   const t = await times(page);
@@ -352,7 +365,7 @@ for (const size of [
     await settle(page);
     const coldCls = await readCls(page);
     console.log(`CLS cold (no snapshot) at ${size.name}: ${coldCls.total} ${JSON.stringify(coldCls.shifts)}`);
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     await page.goto(origin + viewOf('@1'));
     await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
     await settle(page);
@@ -376,7 +389,7 @@ for (const size of [
 
 test("a record that is not this user's is never painted, and is deleted", async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@3');
   const real = await snapOf(page, '@3');
   const { user, build } = await identity(page);
@@ -394,7 +407,7 @@ test("a record that is not this user's is never painted, and is deleted", async 
 
   // POSITIVE CONTROL: this user's own record, through the same held socket.
   await putSnap(page, rec('OWN-SENTINEL', user, user));
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   let h = await hold(page, '@3');
   await page.goto(origin + viewOf('@3'));
   await expect(page.locator('#mv-log'), 'the instrument sees a painted record').toContainText('OWN-SENTINEL');
@@ -407,7 +420,7 @@ test("a record that is not this user's is never painted, and is deleted", async 
   const other = String(Number(user) + 1000);
   await putSnap(page, rec('FOREIGN-SAME-KEY', other, user));
   await putSnap(page, rec('FOREIGN-OWN-KEY', other, other));
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   h = await hold(page, '@3');
   await page.goto(origin + viewOf('@3'));
   // Given longer than the control needed to paint.
@@ -422,7 +435,7 @@ test("a record that is not this user's is never painted, and is deleted", async 
 
 test('a snapshot past its TTL is ignored and deleted; one inside it is painted', async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@3');
   const real = await snapOf(page, '@3');
   const aged = (min: number, text: string) => ({
@@ -436,7 +449,7 @@ test('a snapshot past its TTL is ignored and deleted; one inside it is painted',
     { min: 30, text: 'AGED-30-MIN', painted: false },
   ]) {
     await putSnap(page, aged(c.min, c.text));
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     const h = await hold(page, '@3');
     await page.goto(origin + viewOf('@3'));
     if (c.painted) {
@@ -459,7 +472,7 @@ test('the TTL is checked on the read itself, not only by the load-time sweep', a
   // record is expired but its META is fresh, so the sweep (which reads meta
   // only) keeps it, and only the read's own check can refuse it.
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@3');
   const real = await snapOf(page, '@3');
   const batches = (text: string) => [{ type: 'batch', reset: true, gen: real.gen, offset: real.offset, ops: [{ op: 'append', html: `<div data-bubble="user">${text}</div>` }] }];
@@ -468,7 +481,7 @@ test('the TTL is checked on the read itself, not only by the load-time sweep', a
     { at: Date.now() - 6 * 60_000, text: 'READ-EXPIRED', painted: false },
   ]) {
     await putSnap(page, { ...real, at: c.at, batches: batches(c.text) }, { at: Date.now() });
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     const h = await hold(page, '@3');
     await page.goto(origin + viewOf('@3'));
     if (c.painted) await expect(page.locator('#mv-log'), 'POSITIVE CONTROL: painted').toContainText(c.text);
@@ -484,12 +497,12 @@ test('the TTL is checked on the read itself, not only by the load-time sweep', a
 
 test('a snapshot is aged from its last FULL read: a resume keeps that age, and past 30 minutes it is not painted', async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@2');
   const first = await snapOf(page, '@2');
   expect(typeof first.firstAt, 'the snapshot records when it was read in full').toBe('number');
   // Opened again: painted, resumed (not read in full), saved again.
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await page.goto(origin + viewOf('@2'));
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
   fs.appendFileSync(trTwo, cc.reply('Two, once more.'));
@@ -506,7 +519,7 @@ test('a snapshot is aged from its last FULL read: a resume keeps that age, and p
     { min: 31, text: 'FULL-31-MIN-READ', painted: false, meta: { firstAt: Date.now() } },
   ]) {
     await putSnap(page, { ...real, at: Date.now(), firstAt: Date.now() - c.min * 60_000, batches: batches(c.text) }, c.meta);
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     const starts = fromStart('@2');
     const h = await hold(page, '@2');
     await page.goto(origin + viewOf('@2'));
@@ -525,11 +538,11 @@ test('a snapshot is aged from its last FULL read: a resume keeps that age, and p
 
 test('a save reads no snapshot back: eviction works from keys and meta', async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   // Two other windows' snapshots in the store, so there is something to read.
   await openLive(page, '@3');
   await openLive(page, '@1');
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await page.addInitScript(readsInit);
   await page.goto(origin + viewOf('@2'));
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
@@ -562,7 +575,7 @@ test('a save reads no snapshot back: eviction works from keys and meta', async (
 
 test('a sign-out in another tab turns the store off in this one: it keeps streaming and stores nothing', async ({ page, context }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@2');
   const other = await context.newPage();
   await other.goto(origin + '/account');
@@ -580,7 +593,7 @@ test('a sign-out in another tab turns the store off in this one: it keeps stream
 
 test('a resume refused before its first batch takes the snapshot off the page and out of storage', async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@3');
   const real = await snapOf(page, '@3');
   await putSnap(page, {
@@ -588,7 +601,7 @@ test('a resume refused before its first batch takes the snapshot off the page an
     at: Date.now(),
     batches: [{ type: 'batch', reset: true, gen: real.gen, offset: real.offset, ops: [{ op: 'append', html: '<div data-bubble="user">REFUSED-SENTINEL</div>' }] }],
   });
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   // The window's FIRST socket is closed without a word once the snapshot is
   // on screen (what a 401 or a 404 on the upgrade looks like to the page);
   // every later one goes through.
@@ -620,7 +633,7 @@ test('a resume refused before its first batch takes the snapshot off the page an
 
 test('signing out deletes every snapshot in the browser', async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@3');
   expect((await snaps(page))?.length, 'POSITIVE CONTROL: there is a snapshot to delete').toBeGreaterThan(0);
 
@@ -630,11 +643,11 @@ test('signing out deletes every snapshot in the browser', async ({ page }) => {
 
   // Signed in again: the window opens cold.
   await rig.login(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   if (new URL(page.url()).pathname === '/login') {
     await page.fill('#muster-password', password);
     await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
   }
   const h = await hold(page, '@3');
   await page.goto(origin + viewOf('@3'));
@@ -644,45 +657,88 @@ test('signing out deletes every snapshot in the browser', async ({ page }) => {
   await expect(page.locator('#mv-log [data-bubble]').first()).toContainText('window THREE');
 });
 
-test('warming from the Agents list stores the recent windows without opening their pages or moving Recent', async ({ page }) => {
-  await ready(page);
-  // Recent becomes @2, @3 (newest first)…
-  await page.goto(origin + viewOf('@3'));
-  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
-  await page.goto(origin + viewOf('@2'));
-  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
-  const recent = async () => {
-    // The session switcher's Recent row, which the list's partial carries out
-    // of band (it replaced the "Recently viewed" strip).
-    const html = await (await page.request.get(origin + '/ui/agents')).text();
-    const at = html.indexOf('id="switcher-list-recent"');
-    const row = at < 0 ? '' : html.slice(at, html.indexOf('</div>', at));
-    return [...row.matchAll(/<a href="([^"]+)"[^>]*data-switcher-entry="mirror"/g)].map((m) => decodeURIComponent(m[1].replace(/&amp;/g, '&')).replace(/.*window=/, ''));
-  };
-  // …and nothing is stored.
-  await wipe(page);
-  const before = await recent();
-  expect(before.slice(0, 2), 'Recent before').toEqual(['@2', '@3']);
+// 🔴 THE SIDEBAR'S ROWS WARM. The retired Agents list warmed the windows it
+// listed; its rows moved into the sidebar, whose links to a Rendered view carry
+// data-snap-warm (nav_agents.go), on the pages that warm (an agent's page, a
+// rendered view: mirror-snap.js warmable()). The agent's page at a desktop
+// width draws the sidebar as a rail, so its rows load with the page.
+//
+// ISOLATED: the agent page's own document has every data-snap-warm taken out
+// as it is parsed (its session switcher's pills carry them too), so whatever is
+// warmed came from the sidebar's partial (GET /ui/nav/agents), which arrives
+// separately and is left alone. POSITIVE CONTROL: the sidebar's rows do carry
+// the mark, and the document's own links carry none.
+test('warming from the sidebar stores the recent windows without opening their pages or moving Recent', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const agent = 'e2e-snap-warm-' + Date.now().toString(36);
+  mkchat(agent, [{ role: 'user', content: 'An agent whose page the warming runs on.' }]);
+  // The sidebar lists by recency, and warming takes its rows in that order
+  // within one pass's byte budget, which the long @1 alone uses up: so @1 is
+  // made the LEAST recent here, and the rows to warm first are @2 and @3.
+  writeFileAtomic(windowsFile, windowLines(Math.floor(Date.now() / 1000) - 3600));
+  try {
+    await ready(page);
+    await expect
+      .poll(async () => mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter((e) => e.markup.includes(`host=${rig.host}&`)).map((e) => /window=%40(\d)/.exec(e.markup)?.[1]).join(','), { message: '@1 is listed last', timeout: 20_000 })
+      .toBe('2,3,1');
+    // Recent becomes @2, @3 (newest first)…
+    await page.goto(origin + viewOf('@3'));
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+    await page.goto(origin + viewOf('@2'));
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+    const agentPage = `/agents/${agent}`;
+    // The session switcher's Recent row (its mirrored entries, newest first),
+    // as the agent's page draws it — read by a request, which runs no script
+    // and so warms nothing.
+    const recent = async () => {
+      const html = await (await page.request.get(origin + agentPage)).text();
+      const at = html.indexOf('id="switcher-list-recent"');
+      const row = at < 0 ? '' : html.slice(at, html.indexOf('</div>', at));
+      return [...row.matchAll(/<a href="([^"]+)"[^>]*data-switcher-entry="mirror"/g)].map((m) => decodeURIComponent(m[1].replace(/&amp;/g, '&')).replace(/.*window=/, ''));
+    };
+    // …and nothing is stored.
+    await wipe(page);
+    const before = await recent();
+    expect(before.slice(0, 2), 'Recent before').toEqual(['@2', '@3']);
 
-  const docs: string[] = [];
-  page.on('request', (r) => {
-    if (r.resourceType() === 'document') docs.push(new URL(r.url()).pathname);
-  });
-  const startsBefore = { two: fromStart('@2'), three: fromStart('@3') };
-  await page.goto(origin + '/agents');
-  await expect
-    .poll(async () => ((await snaps(page)) || []).map((r) => r.window).sort().join(','), { message: 'the recent windows were warmed', timeout: 20_000 })
-    .toContain('@2,@3');
-  expect(fromStart('@2') > startsBefore.two && fromStart('@3') > startsBefore.three, 'each warmed through its own transcript socket').toBe(true);
-  expect(docs, 'no page but the Agents list was loaded').toEqual(['/agents']);
-  expect((await recent()).slice(0, 2), 'Recent did not move').toEqual(before.slice(0, 2));
+    // The document's own marks are taken off as it is parsed (before the
+    // warm pass, 1.5 s after load); the sidebar's partial arrives after, and
+    // keeps its own. (Not by page.route: a fulfilled document is refused its
+    // sockets by Chromium's local-network-access check, warm ones included.)
+    await page.addInitScript(() => {
+      document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('a[data-snap-warm]').forEach((a) => {
+          if (!a.closest('#sidebar-agents-list')) a.removeAttribute('data-snap-warm');
+        });
+      });
+    });
+    const docs: string[] = [];
+    page.on('request', (r) => {
+      if (r.resourceType() === 'document') docs.push(new URL(r.url()).pathname);
+    });
+    const startsBefore = { two: fromStart('@2'), three: fromStart('@3') };
+    await page.goto(origin + agentPage);
+    const rows = page.locator('#sidebar-agents-list a[data-nav-agent="mirror"][data-snap-warm]');
+    await expect(rows.first(), "POSITIVE CONTROL: the sidebar's rows to a rendered view carry the warm mark").toBeVisible();
+    expect(await page.locator('a[data-snap-warm]:not(#sidebar-agents-list a)').count(), "the document's own links are unmarked").toBe(0);
+    expect(await page.locator('#session-switcher a[data-switcher-entry="mirror"]').count(), "POSITIVE CONTROL: the switcher's pills that were unmarked exist").toBeGreaterThan(0);
+    await expect
+      .poll(async () => ((await snaps(page)) || []).map((r) => r.window).sort().join(','), { message: 'the recent windows were warmed', timeout: 20_000 })
+      .toContain('@2,@3');
+    expect(fromStart('@2') > startsBefore.two && fromStart('@3') > startsBefore.three, 'each warmed through its own transcript socket').toBe(true);
+    expect(docs.filter((d) => d !== agentPage), "no page but the agent's was loaded").toEqual([]);
+    expect((await recent()).slice(0, 2), 'Recent did not move').toEqual(before.slice(0, 2));
 
-  // And the warmed window opens from it.
-  const h = await hold(page, '@3');
-  await page.goto(origin + viewOf('@3'));
-  await expect(page.locator('#mv-log'), 'painted from the warmed snapshot with the socket held').toContainText('window THREE');
-  h.release();
-  await expect(page.locator('#mv-status')).toHaveText('Live');
+    // And the warmed window opens from it.
+    const h = await hold(page, '@3');
+    await page.goto(origin + viewOf('@3'));
+    await expect(page.locator('#mv-log'), 'painted from the warmed snapshot with the socket held').toContainText('window THREE');
+    h.release();
+    await expect(page.locator('#mv-status')).toHaveText('Live');
+  } finally {
+    mkchat(agent, null);
+    writeFileAtomic(windowsFile, windowLines(Math.floor(Date.now() / 1000) - 60));
+  }
 });
 
 test("the session switcher's Rendered-view entries feed warming, at most three a pass", async ({ page }) => {
@@ -719,9 +775,9 @@ test("the session switcher's Rendered-view entries feed warming, at most three a
 
 test('the "Updating…" chip shows only after a second of catching up, in room it always had', async ({ page }) => {
   await ready(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openLive(page, '@1');
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await page.addInitScript(clsInit);
   await page.addInitScript(stamps);
   const h = await hold(page, '@1');
@@ -757,10 +813,10 @@ test.describe('a resume whose frames arrive during the parse', () => {
   test.use({ serviceWorkers: 'block' });
   test('draws the snapshot, then the new messages, once each and in order', async ({ page }) => {
     await ready(page);
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     await openLive(page, '@3');
     const drawn = await page.locator('#mv-log [data-bubble]').allTextContents();
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     fs.appendFileSync(trThree, cc.prompt('a PARSE-TIME prompt for three') + cc.reply('A parse-time answer from three.'));
     await page.addInitScript(() => {
       (window as any).__whileParsing = 0;

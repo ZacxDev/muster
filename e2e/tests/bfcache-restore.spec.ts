@@ -317,19 +317,22 @@ test('a restored agent page redraws its switcher: an agent opened meanwhile is i
   }
 });
 
-// The Agents list (the shell) was already restorable; its restore reopens the
-// list's event stream too, and the list catches up on the stream's (re)open.
-test('a restored Agents list shows an agent created while it was away', async () => {
+// The shell was already restorable; its restore reopens its event stream too,
+// and the sidebar's list of agents (the retired Agents list's) catches up on
+// the stream's (re)open. At a desktop width, where the sidebar is the rail and
+// its list is on screen (a phone's closed drawer loads nothing).
+test('a restored page shows, in its sidebar, an agent created while it was away', async () => {
   const fresh = 'e2e-bfc-new-' + Date.now().toString(36);
-  const { ctx, page } = await newContext();
+  const { ctx, page } = await newContext({ width: 1280 });
   try {
-    await page.goto('/agents');
-    await expect(page.locator('#agents-list > article').first()).toBeVisible();
+    await page.goto('/tasks');
+    await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
+    await expect(page.locator(`#sidebar-agents-list a[href^="/agents/${fresh}"]`), 'not listed before it exists').toHaveCount(0);
     const doc = await docOf(page);
     const t0 = Date.now();
-    await awayAndBack(page, '/tasks', async () => mkchat(fresh, [{ role: 'user', content: 'Created while the list was away.' }]));
-    await expectRestored(page, await backShow(page, '/agents', t0), doc);
-    await expect(page.locator(`#agents-list a[href^="/agents/${fresh}"]`).first(), 'the list caught up').toBeAttached({ timeout: 10_000 });
+    await awayAndBack(page, away, async () => mkchat(fresh, [{ role: 'user', content: 'Created while the page was away.' }]));
+    await expectRestored(page, await backShow(page, '/tasks', t0), doc);
+    await expect(page.locator(`#sidebar-agents-list a[href^="/agents/${fresh}"]`).first(), 'the sidebar caught up').toBeAttached({ timeout: 10_000 });
   } finally {
     await ctx.close();
     mkchat(fresh, null);
@@ -861,22 +864,28 @@ test.describe('mirrored', () => {
     }
   });
 
-  test('the Agents list left in the middle of warming a snapshot is still restored', async () => {
+  // (Measured on the retired Agents list, a page that warmed; an agent's
+  // page warms the same windows now — its session switcher's Recent row —
+  // and is the page this guards.)
+  test('an agent page left in the middle of warming a snapshot is still restored', async () => {
+    const agent = 'e2e-bfc-warm-' + Date.now().toString(36);
+    mkchat(agent, [{ role: 'user', content: 'An agent whose page warms a window.' }]);
     const { ctx, page } = await mirrorPage();
     try {
       // The window is in this user's Recent (a visit is recorded by the view's
       // own GET), and this browser holds no snapshot of it: it is warmed.
       expect((await page.request.get(rig.origin + view())).status()).toBe(200);
-      const warm = page.waitForEvent('websocket', { predicate: (ws) => ws.url().includes('/mirror/view/ws'), timeout: 15_000 });
-      await page.goto(rig.origin + '/agents');
-      await expect(page.locator('#agents-list')).toBeVisible();
+      const warm = page.waitForEvent('websocket', { predicate: (ws) => ws.url().includes('/mirror/view/ws') && ws.url().includes('warm=1'), timeout: 15_000 });
+      await page.goto(rig.origin + '/agents/' + agent);
+      await expect(page.locator('#chat-form')).toBeVisible();
       const doc = await docOf(page);
       await warm;
       const t0 = Date.now();
       await awayAndBack(page, rig.origin + '/tasks');
-      await expectRestored(page, await backShow(page, '/agents', t0), doc);
+      await expectRestored(page, await backShow(page, '/agents/' + agent, t0), doc);
     } finally {
       await ctx.close();
+      mkchat(agent, null);
     }
   });
 
