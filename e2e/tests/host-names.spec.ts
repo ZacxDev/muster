@@ -6,9 +6,9 @@ import { writeFileAtomic } from '../lib/atomic';
 
 // THE OPERATOR'S OWN HOSTS, in a real browser against a real muster-server
 // (mirror plugin on) configured the way the operator's deployment is — two
-// hosts given icons by name (and named first, for the retired host tabs):
+// hosts given icons by name:
 //
-//	MUSTER_HOST_ORDER=tower,laptop   MUSTER_HOST_ICONS=laptop=laptop,tower=server
+//	MUSTER_HOST_ICONS=laptop=laptop,tower=server
 //
 // — and four REAL muster-mirror processes over the tunnel (the `-tags
 // e2emirror` fake plays tmux only), plus the seeded dispatched agents on the
@@ -28,7 +28,7 @@ import { writeFileAtomic } from '../lib/atomic';
 // 🔴 REGRESSION TEST: on the commit before named icons, the laptop host drew
 // the icon of its registration rank.
 
-const rig = new MirrorRig(hostNamesPort, 'e2e-names-zeta', { MUSTER_HOST_ORDER: 'tower,laptop', MUSTER_HOST_ICONS: 'laptop=laptop,tower=server' });
+const rig = new MirrorRig(hostNamesPort, 'e2e-names-zeta', { MUSTER_HOST_ICONS: 'laptop=laptop,tower=server' });
 const zeta = rig.host;
 const mint = rig.host.replace('e2e-names-zeta-', 'e2e-names-mint-');
 const HOSTS = ['tower', 'laptop', mint, zeta];

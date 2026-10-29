@@ -56,14 +56,14 @@ func (r *workRig) get(path string) *httptest.ResponseRecorder {
 }
 
 // agentStrip is agent id's status strip as its page's header refresh draws it
-// (GET ui.AgentHeaderPath: the strip's body, then the ⋯ menu and the notices
-// out of band) — the strip alone, where the retired list card's chip moved.
+// (GET ui.AgentHeaderPath: the strip's body, then the notices out of band) —
+// the strip alone, where the retired list card's chip moved.
 func agentStrip(t *testing.T, get func(string) *httptest.ResponseRecorder, id int64) string {
 	t.Helper()
 	body := get(ui.AgentHeaderPath(id)).Body.String()
-	end := strings.Index(body, `<div id="`+ui.AgentMenuSlot+`"`)
+	end := strings.Index(body, `<div id="`+ui.AgentNoticesID+`"`)
 	if !strings.Contains(body, `id="agent-status"`) || end < 0 {
-		t.Fatalf("instrument check FAILED: agent %d's header answer has no status strip before #%s:\n%s", id, ui.AgentMenuSlot, body)
+		t.Fatalf("instrument check FAILED: agent %d's header answer has no status strip before #%s:\n%s", id, ui.AgentNoticesID, body)
 	}
 	return body[:end]
 }

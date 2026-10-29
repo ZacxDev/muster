@@ -187,8 +187,8 @@ for (const [label, viewport] of sizes) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 'no sideways scroll').toBe(0);
 
       // An OPEN menu is not refreshed away under the reader: a live refresh
-      // of the strip (any agent change) skips the menu while it is open, and
-      // brings it up to date once it closes.
+      // of the strip (any agent change) never redraws the menu, which is drawn
+      // once; its Start/Stop follows the strip's status (checked below).
       let m = await menu(page);
       await m.locator('[data-agent-action="delete"]').click();
       await expect(m.locator('[data-agent-action="confirm-delete"]')).toBeVisible();
@@ -198,10 +198,8 @@ for (const [label, viewport] of sizes) {
       await page.waitForTimeout(300);
       expect(await m.evaluate((el) => el.matches(':popover-open')), 'the menu is still open after a refresh').toBe(true);
       await expect(m.locator('[data-agent-action="confirm-delete"]'), 'the armed Confirm delete is still there').toBeVisible();
-      const caughtUp = page.waitForResponse((r) => new URL(r.url()).pathname === `/ui/agents/${a.id}/header`);
       await page.keyboard.press('Escape');
-      await caughtUp;
-      await expect(page.locator('#agent-actions-open'), 'the menu is back, refreshed').toBeVisible();
+      await expect(page.locator('#agent-actions-open')).toBeVisible();
 
       // Rename.
       const name = `Renamed at ${label}`;
@@ -225,6 +223,7 @@ for (const [label, viewport] of sizes) {
       await expect(page.locator('#agent-status')).toHaveAttribute('data-agent-status', /provisioning|running/, { timeout: 20_000 });
       m = await menu(page);
       await expect(m.locator('[data-agent-action="Stop"]')).toBeVisible();
+      await expect(m.locator('[data-agent-action="Start"]'), 'a running agent is not offered Start').toBeHidden();
 
       // Stop.
       await m.locator('[data-agent-action="Stop"]').click();
@@ -232,6 +231,7 @@ for (const [label, viewport] of sizes) {
       await expect(page.locator('#agent-status')).toHaveAttribute('data-agent-status', 'stopped', { timeout: 20_000 });
       m = await menu(page);
       await expect(m.locator('[data-agent-action="Start"]')).toBeVisible();
+      await expect(m.locator('[data-agent-action="Stop"]'), 'a stopped agent is not offered Stop').toBeHidden();
 
       // Delete, two steps: lands home, and the agent is gone.
       await m.locator('[data-agent-action="delete"]').click();

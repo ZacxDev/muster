@@ -142,7 +142,7 @@ for (const kind of ['gateway', 'claude-code'] as const) {
     await expect(status, 'the strip shows running without a reload').toHaveAttribute('data-agent-status', 'running', { timeout: 15_000 });
     await page.locator('#agent-actions-open').click();
     await expect(menu.locator('[data-agent-action="Stop"]'), 'the menu offers Stop').toBeVisible();
-    await expect(menu.locator('[data-agent-action="Start"]')).toHaveCount(0);
+    await expect(menu.locator('[data-agent-action="Start"]'), 'Start is not offered while it runs').toBeHidden();
     await page.keyboard.press('Escape');
 
     // Nothing scrolls sideways at 412px.

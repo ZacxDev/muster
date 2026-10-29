@@ -590,3 +590,15 @@
   }
 }
 
+/*
+ * The agent page's ⋯ menu draws BOTH Start and Stop (internal/ui/agent_actions.go
+ * agentLifecycleItems) and shows the one the status calls for, read off the
+ * header strip's #agent-status, which every strip refresh re-renders: Stop
+ * while running or provisioning, Start otherwise. So the menu is drawn once
+ * and never replaced — an open menu with an armed "Confirm delete" stays put.
+ * Outside every @layer, so the items' own `flex` utility cannot outrank it.
+ */
+body:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"])) #agent-actions [data-lifecycle="idle"],
+body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"]))) #agent-actions [data-lifecycle="live"] {
+  display: none;
+}

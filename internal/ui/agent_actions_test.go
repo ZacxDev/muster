@@ -72,13 +72,11 @@ func TestTheAgentPageCarriesWhatItsCardDid(t *testing.T) {
 		}
 		menu := page[strings.Index(page, `id="`+AgentMenuID+`"`):]
 		menu = menu[:strings.Index(menu, "</details>")]
-		for _, want := range []string{`data-agent-action="rename"`, `data-agent-action="Stop"`, `hx-post="/agents/41/stop"`, `data-agent-action="delete"`, `hx-delete="/agents/41"`} {
+		for _, want := range []string{`data-agent-action="rename"`, `data-agent-action="Stop" data-lifecycle="live"`, `hx-post="/agents/41/stop"`,
+			`data-agent-action="Start" data-lifecycle="idle"`, `hx-post="/agents/41/start"`, `data-agent-action="delete"`, `hx-delete="/agents/41"`} {
 			if !strings.Contains(menu, want) {
 				t.Errorf("%s: the ⋯ menu lacks %s", kind, want)
 			}
-		}
-		if strings.Contains(menu, `data-agent-action="Start"`) {
-			t.Errorf("%s: a running agent's menu offers Start", kind)
 		}
 		if !strings.Contains(page, `id="`+AgentRenameID+`"`) || !strings.Contains(page, `hx-post="/agents/41/name"`) {
 			t.Errorf("%s: no rename form", kind)
@@ -100,29 +98,43 @@ func TestTheAgentMenuFollowsTheStatusAndTheDeleteGuard(t *testing.T) {
 	for _, c := range []struct {
 		name          string
 		a             AgentCardView
-		action        string
 		deleteOffered bool
 	}{
-		{"stopped", AgentCardView{ID: 3, Name: "a3", Status: "stopped"}, "Start", true},
-		{"error", AgentCardView{ID: 4, Name: "a4", Status: "error"}, "Start", true},
-		{"provisioning", AgentCardView{ID: 5, Name: "a5", Status: "provisioning"}, "Stop", true},
-		{"the chief", AgentCardView{ID: 6, Name: "a6", Status: "running", IsChief: true}, "Stop", false},
-		{"an officer's instance", AgentCardView{ID: 7, Name: "a7", Status: "stopped", DeleteProtected: true}, "Start", false},
+		{"stopped", AgentCardView{ID: 3, Name: "a3", Status: "stopped"}, true},
+		{"the chief", AgentCardView{ID: 6, Name: "a6", Status: "running", IsChief: true}, false},
+		{"an officer's instance", AgentCardView{ID: 7, Name: "a7", Status: "stopped", DeleteProtected: true}, false},
 	} {
 		menu := renderString(t, agentActionsMenu(c.a))
-		if !strings.Contains(menu, `data-agent-action="`+c.action+`"`) {
-			t.Errorf("%s: the menu does not offer %s:\n%s", c.name, c.action, menu)
+		// The menu is drawn once, whatever the status: both lifecycle items,
+		// each marked with the status it is for (the stylesheet shows one).
+		for _, want := range []string{`data-agent-action="Start" data-lifecycle="idle"`, `data-agent-action="Stop" data-lifecycle="live"`} {
+			if !strings.Contains(menu, want) {
+				t.Errorf("%s: the menu lacks %s:\n%s", c.name, want, menu)
+			}
 		}
 		if got := strings.Contains(menu, "data-agent-action=\"confirm-delete\""); got != c.deleteOffered {
 			t.Errorf("%s: Delete offered = %v, want %v", c.name, got, c.deleteOffered)
 		}
 	}
+	// 🔴 THE RULE THAT PICKS ONE, pinned whole: the Start item hides while the
+	// strip's #agent-status says running or provisioning, the Stop item hides
+	// otherwise — and the strip's status attribute is what those selectors read.
+	css := strings.Join(strings.Fields(readInputCSS(t)), " ")
+	const rule = `body:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"])) #agent-actions [data-lifecycle="idle"], ` +
+		`body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"]))) #agent-actions [data-lifecycle="live"] { display: none; }`
+	if !strings.Contains(css, rule) {
+		t.Errorf("input.css lacks the lifecycle rule:\n%s", rule)
+	}
+	if strip := renderString(t, agentStripBody(AgentCardView{ID: 3, Status: "provisioning"})); !strings.Contains(strip, `id="agent-status" data-agent-status="provisioning"`) {
+		t.Errorf("the strip's status element does not carry the status the rule reads:\n%s", strip)
+	}
 }
 
 // TestTheStripRefreshRedrawsWhatTheStripShows: the strip's refresh (GET
 // AgentHeaderPath) answers the strip's body — every badge and the chip it
-// draws, so its innerHTML swap erases nothing it should keep — and the ⋯ menu
-// and the notices out of band, into their own elements. A relationship pin:
+// draws, so its innerHTML swap erases nothing it should keep — and the notices
+// out of band. NOT the ⋯ menu: it is drawn once and never replaced, so an open
+// menu (an armed "Confirm delete") survives every refresh. A relationship pin:
 // the strip and its refresh are one renderer (agentStripBody).
 func TestTheStripRefreshRedrawsWhatTheStripShows(t *testing.T) {
 	a := pageCard()
@@ -142,10 +154,11 @@ func TestTheStripRefreshRedrawsWhatTheStripShows(t *testing.T) {
 			t.Errorf("CONTROL: the strip lacks %s", want)
 		}
 	}
-	for _, oob := range []string{`<div id="` + AgentMenuSlot + `" hx-swap-oob="innerHTML">`, `<div id="` + AgentNoticesID + `" hx-swap-oob="innerHTML">`} {
-		if !strings.Contains(refresh, oob) {
-			t.Errorf("the refresh lacks %s:\n%s", oob, refresh)
-		}
+	if !strings.Contains(refresh, `<div id="`+AgentNoticesID+`" hx-swap-oob="innerHTML">`) {
+		t.Errorf("the refresh lacks the notices:\n%s", refresh)
+	}
+	if strings.Contains(refresh, AgentMenuSlot) || strings.Contains(refresh, `id="`+AgentMenuID+`"`) {
+		t.Errorf("the refresh redraws the ⋯ menu, which would close an open one:\n%s", refresh)
 	}
 	if !strings.Contains(strip, `hx-get="`+AgentHeaderPath(41)+`"`) || !strings.Contains(strip, "agents:changed from:body") || !strings.Contains(strip, AgentsAwaitingEvent+" from:body") {
 		t.Errorf("the strip does not refresh itself on a lifecycle action and on a stale poll:\n%s", strip)

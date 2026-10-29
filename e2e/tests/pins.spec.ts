@@ -224,7 +224,7 @@ for (const vp of [
           .poll(async () => { await page.reload(); return status.getAttribute('data-agent-status'); }, { message: 'the pinned agent runs', timeout: 30_000 })
           .toBe('running');
         await more.click();
-        await expect(menu.locator('[data-agent-action="Start"]')).toHaveCount(0);
+        await expect(menu.locator('[data-agent-action="Start"]'), 'Start is not offered while it runs').toBeHidden();
         await menu.locator('[data-agent-action="Stop"]').click();
         await expect(status, 'stopped from its menu, the strip follows').toHaveAttribute('data-agent-status', 'stopped', { timeout: 20_000 });
         await more.click();

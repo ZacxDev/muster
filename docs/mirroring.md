@@ -65,7 +65,7 @@ another terminal does not attach to it: Claude Code copies the conversation
 into a NEW session and carries on there. muster mirrors that copy, and your
 messages from muster go to it, not to the session you left open. When the other
 copy is a Claude Code session on the same host, in the same project directory,
-the window's card and its Rendered and Terminal views say **Running in two
+the window's Rendered and Terminal views say **Running in two
 places** and name the other session's id. See [Two copies of one
 conversation](#two-copies-of-one-conversation).
 
@@ -106,24 +106,30 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
 
 ## What you see
 
-- **One card per tmux window.** Each window is addressed by its session and
-  tmux's own window id (`@12`), not by its index, which tmux renumbers. A card
-  says what runs in the window's active pane: Claude Code, opencode, a shell, or
-  the command name. A host lists up to 512 windows and reads them with one tmux
-  call per refresh, every 5 seconds.
-- **Titles.** A card is titled `<session>:<index>`. With `-labels-file` you can
-  map a session to a codename: a JSON object `{"<session>": "<codename>"}`. Each
-  of that session's windows is then titled `<codename>:<index>`. The window's
-  own pages show the raw session name beside it; its card does not (it is the
-  title's tooltip, and the search still finds it). Each entry is checked on its own: an invalid one
-  is logged and skipped, and a missing or unreadable file is logged and ignored,
-  never fatal.
+- **One entry per tmux window.** Each window is addressed by its session and
+  tmux's own window id (`@12`), not by its index, which tmux renumbers. An
+  entry knows what runs in the window's active pane: Claude Code, opencode, a
+  shell, or the command name (the search finds it by that kind). A host lists up
+  to 512 windows and reads them with one tmux call per refresh, every 5 seconds.
+- **Where they are listed.** The **sidebar** lists every entry like channels in
+  a chat app: your chief first (if you turned one on), then every entry waiting
+  on you, then the rest. The **session switcher**, the bar under the message box
+  of a window's Rendered view, its terminal and an agent's chat page, has the
+  same entries in four views (below). Home (`/`) opens your chief's chat, or the
+  session you opened last.
+- **Titles.** An entry is titled `<session>:<index>`. With `-labels-file` you
+  can map a session to a codename: a JSON object `{"<session>": "<codename>"}`.
+  Each of that session's windows is then titled `<codename>:<index>`. The
+  window's own pages show the raw session name beside it; the sidebar and the
+  switcher do not (the search still finds it). Each entry is checked on its
+  own: an invalid one is logged and skipped, and a missing or unreadable file is
+  logged and ignored, never fatal.
   When the same title appears on more than one host, every one of them carries
   its host (`mango:1 · <host>`); when it repeats on one host (two sessions given
   one codename), each also carries its tmux address (`mango:1 · <session>:<index>`).
-  The card, both view headers and the page title always agree.
-- **Most recently active first.** One flat list across all your hosts AND your
-  dispatched agents, ordered by last activity, newest first. A **Claude Code**
+  The sidebar, the switcher, both view headers and the page title always agree.
+- **Most recently active first.** One flat order across all your hosts AND
+  your dispatched agents, by last activity, newest first. A **Claude Code**
   window's last activity is its conversation's last message (the newest user or
   assistant message in its transcript, to the minute — not tmux's activity,
   which a tmux restart resets for every window, and not the rows a resumed
@@ -131,104 +137,69 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   itself); while that session is WORKING — a turn running, waiting on you, a
   background shell of its own — it is now, since Claude Code writes nothing
   meanwhile. A host from before this reports none, and the window falls back to
-  tmux's. Any other window's is when its host last saw it
-  active, to the minute; output in a pane counts as activity, not only
-  keystrokes. A dispatched agent's is the newer of
-  its last chat message and its last change (a status write, a rename). The
-  host is not a section: it is the icon on each card. A window whose host did
-  not report activity comes last. Ties keep a stable order: agents first, then
-  windows by host, session and index. An open list reorders only when the order
-  actually changes.
-- **How recent, at a glance.** Beside "active 3m ago" each card draws a small
-  dot tinted on the same 8-step Gruvbox scale as tmux's idle-fade window colours:
-  bright green under 10 minutes, green to 30, aqua to an hour, yellow to 2
-  hours, orange to 4, red to 8, purple to a day, grey past it. It re-tints as
-  time passes, without a refresh. The card's border is not used for this.
-- **Long titles.** A card's title longer than 60 characters is cut and ends
-  in a **…** button — its name, and its focus title when it has one
-  ([focus.md](focus.md)). Tap it (or press Enter on it) to see the whole title
-  in a popover; it never opens the card. On a desktop, hovering a long name
-  shows it too.
+  tmux's. Any other window's is when its host last saw it active, to the
+  minute; output in a pane counts as activity, not only keystrokes. A
+  dispatched agent's is the newer of its last chat message and its last change
+  (a status write, a rename). The host is not a section: it is the icon on each
+  entry. A window whose host did not report activity comes last. Ties keep a
+  stable order: agents first, then windows by host, session and index.
+- **How recent, at a glance.** Each sidebar row draws a small dot tinted on the
+  same 8-step Gruvbox scale as tmux's idle-fade window colours: bright green
+  under 10 minutes, green to 30, aqua to an hour, yellow to 2 hours, orange to
+  4, red to 8, purple to a day, grey past it.
+- **Idle.** An entry with no activity for longer than `MUSTER_AGENTS_IDLE_AFTER`
+  (14 days by default; [configuration](configuration.md)) is drawn last in the
+  sidebar, under a collapsed **Idle (N)** group — never one waiting on you, the
+  chief, or the page you are on. The group remembers whether you opened it.
+  Nothing on a host is closed.
+- **What a row says.** Besides its name: how many things wait on you there, a
+  dot when it waits on you with nothing to count (an agent at a permission
+  prompt), **offline** while its host is not serving it, and how many
+  subagents and background shells it has running. A long name is cut; the
+  whole name is the row's tooltip. A window's own Rendered view and terminal
+  say under their header when its host is offline, and show the host's note
+  about it.
 - **Not an agent, and not stored.** muster keeps each connected host's window
   list in memory, under the token owner's account. A mirrored window cannot be
   dispatched, deleted, or mistaken for a muster agent. A disconnected host stays
   listed as `offline` for a day. The database holds `mirror_tokens`, as sha256
   hashes, and your pins (below), both under row-level security.
-- **Pins.** The pin button on a card (and **Pin to top** in an agent card's ⋯
-  menu) puts that entry first in your list, on every device you sign in on. A
-  pinned entry is still its card; the same button (or **Unpin** in the ⋯ menu)
-  unpins it. On a session's own page (a window's Rendered view or terminal, an
-  agent's chat page) the session switcher has a pin button beside its search
-  that pins or unpins that session. Your pins are also the session switcher's
-  **Pins** view (below).
-  Pinned entries keep their own most-recently-active order, ahead of the rest.
+- **Pins.** On a session's own page (a window's Rendered view, an agent's chat
+  page) the session switcher has a pin button beside its search that pins or
+  unpins that session; a window with no Rendered view has it in its terminal's
+  header instead. Your pins are the session switcher's **Pins** view (below),
+  on every device you sign in on, and come first in its **All** view.
   A mirrored pin is the window's address — host, session and tmux window id —
   so it survives renumbering, a list refresh and a muster restart. A pin whose
   window is gone is kept and shown nothing; it comes back with the window. A
   tmux-server restart (a reboot) reissues window ids, so after one a pin names
   whichever window now has that id in a same-named session, or nothing — re-pin.
-  The host tab and the quick filters still hide a pinned card that does not
-  match.
-- **The session switcher.** A bar docked at the bottom of the list, the same
-  one that sits under the message box of a window's Rendered view and an
-  agent's chat page. Its left button opens a menu of four views: **Recent**
-  (the entries you last opened, on any device), **Waiting** (the entries
-  waiting on you: exactly what the **Waiting on you** chip below shows),
-  **Pins** and **All** (every entry, in the list's order). Each pill shows the
-  entry's whole name, a window's codename with its `:<index>` (`wheat:2`). The
-  magnifier on its right, the magnifier at the top of the sidebar, or `/`
-  outside a text field, opens one search box that finds any entry by its tmux
-  codename (`mango`, `wheat:2`) or its title as you type — and, after those,
-  by its repository, its kind (`opencode`, `shell`) or a window's raw tmux
-  session name (`scratch11`); the arrows move and Enter opens it. On a page
-  with no switcher it searches the sidebar's list. On the list the bar
-  ends in a **+**, which opens the dispatch form. The list has no search box of
-  its own, no "Recently viewed" strip and no row of pinned chips: the switcher
-  replaced all three. It has no floating buttons either: the **+** is in the
-  bar, and agent replies are the 💬 button on the other tabs.
-- **Quick filters.** Above the cards, four chips:
-  - **Waiting on you**: something on the card asked you to decide. Either an
-    agent or a Claude Code session called `attention_ask` and waits for your
-    answer, or a mirrored Claude Code session is stopped at a prompt (a
-    permission prompt: the session asking to go on) or holds an
-    `AskUserQuestion` picker open for you — the
-    [attention queue](attention.md)'s **Question**, **Session waiting** and
-    **Session question** items — or a dispatched agent is blocked at a
-    permission prompt (its **awaiting approval** badge).
-  - **Idle >15m**, **Idle >1h**, **Idle >1d**: no activity for more than that
-    long (the same activity time the list is ordered by). A window with no
-    reported activity is never counted as idle.
-
-  The chips combine with OR: a card is shown when it matches ANY chosen chip
-  (waiting on you, or idle that long). Only one idle chip
-  is on at a time. The chips together and the host tab must both match.
-  A reply draft does not count as waiting on you. The chosen chips are remembered
-  on this device, and a list refresh never resets them; **Clear**, shown while
-  any chip is on, turns them all off. A card that crosses an idle threshold
-  while the list is open is not shown or hidden by itself — that would move
-  the cards around it — it waits behind the **N new ↑** pill like an arrival,
-  and is applied on the tap.
-- **Host tabs.** Above the chips: **All**, then one tab per host on the list
-  (dispatched pod agents under **cluster**), each counting its cards that the
-  chips show. The hosts named in `MUSTER_HOST_ORDER` come first, in that order,
-  then every other host alphabetically, then **cluster** last
-  ([configuration](configuration.md)). A tab narrows the list to that host
-  exactly, together with the chips. The chosen tab is remembered by the
-  browser. While its host is not listed (a restart, a laptop asleep) the list
-  shows **All**, and goes back to that host when it returns; only picking
-  another tab changes the choice. A refresh that changes only cards the current
-  tab and chips hide is applied at once, with no "N new ↑". On a phone the
-  strip scrolls sideways.
-- **Host icons.** Every entry draws its host's icon beside its name — on its
-  card, its session-switcher entry, its host tab and the badge on its own
-  pages — with the host's name in the icon's tooltip. A mirrored window's card
-  also spells its host in a chip in its body (`host laptop`). Dispatched pod
-  agents draw the cluster's icon, which no mirrored host ever draws. A host
-  given an icon in `MUSTER_HOST_ICONS` (`laptop=laptop`) draws it, and no other
-  host does. Any other host's icon is picked by when its first mirror token was
-  minted, so your first hosts usually each draw a different one, and minting a
-  token for a new host (or a second token for an old one) never changes an
-  existing host's icon.
+- **The session switcher.** The bar under the message box of a window's
+  Rendered view and an agent's chat page. Its left button opens a menu of four
+  views: **Recent** (the entries you last opened, on any device), **Waiting**
+  (the entries waiting on you: an agent or a Claude Code session called
+  `attention_ask`, a mirrored Claude Code session stopped at a prompt or
+  holding an `AskUserQuestion` picker — the [attention queue](attention.md)'s
+  **Question**, **Session waiting** and **Session question** items — or a
+  dispatched agent blocked at a permission prompt; a reply draft does not
+  count), **Pins** and **All** (every entry, pins first). Each pill shows the
+  entry's whole name, a window's codename with its `:<index>` (`wheat:2`).
+- **Search.** The magnifier on the switcher, the magnifier at the top of the
+  sidebar, or `/` outside a text field, opens one search box that finds any
+  entry by its tmux codename (`mango`, `wheat:2`) or its title as you type —
+  and, after those, by its repository, its kind (`opencode`, `shell`), a
+  window's raw tmux session name (`scratch11`) or its **host's name**
+  (`laptop`; `cluster` for dispatched agents). The arrows move and Enter opens
+  it. On a page with no switcher it searches the sidebar's list.
+- **Host icons.** Every entry draws its host's icon beside its name — in the
+  sidebar, its session-switcher entry and the badge on its own pages — with the
+  host's name in the icon's tooltip. Dispatched pod agents draw the cluster's
+  icon, which no mirrored host ever draws. A host given an icon in
+  `MUSTER_HOST_ICONS` (`laptop=laptop`) draws it, and no other host does. Any
+  other host's icon is picked by when its first mirror token was minted, so
+  your first hosts usually each draw a different one, and minting a token for
+  a new host (or a second token for an old one) never changes an existing
+  host's icon.
 
 ![The sidebar's search open, matching Claude Code windows on two hosts by their kind](img/sidebar-search.png)
 ![A session page with the switcher's search open, finding a window by its codename](img/switcher-search.png)
@@ -257,7 +228,7 @@ with a "Fit width" control.
 
 ## Rendered and terminal views
 
-When a window's active pane runs Claude Code, its card opens a **rendered** view
+When a window's active pane runs Claude Code, its entry opens a **rendered** view
 by default. Prompts and replies appear as chat bubbles, and each tool call as one
 collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
@@ -449,13 +420,12 @@ browser, and the view starts again from the beginning.
 
 The Rendered view is the main way to read a Claude Code session; the Terminal
 view is the fallback. A window with no Rendered view opens in the Terminal view,
-and a line under its header says why. The card also says why when the host
-gave a reason. The reasons:
+and a line under its header says why. The reasons:
 
 | line | what it means | what to do |
 |---|---|---|
 | muster found no Claude Code conversation in this window. | nothing in the pane is Claude Code (a shell, Codex, Gemini CLI) | nothing; or start `claude` in it |
-| Claude Code has not written this conversation yet. … | Claude Code started, but you have not sent its first message | send one; the card opens the Rendered view from the next refresh |
+| Claude Code has not written this conversation yet. … | Claude Code started, but you have not sent its first message | send one; the window opens the Rendered view from the next refresh |
 | Claude Code is running here, but muster-mirror cannot match it to a transcript … | neither Claude Code's sessions file nor its working directory leads to a transcript that is this window's alone: none at all, or only a guess another window in the same directory makes too | see the cases below; update Claude Code if it is old (a current one names its conversation in a sessions file); on the host, `muster-mirror -list -claude` lists the Claude Code windows it did resolve |
 | Claude Code is running here, but muster-mirror cannot read its environment … | Claude Code runs, nothing else resolved it, and its environment cannot be read (another user's process; on macOS, a process the kernel returns no environment for), so its config directory is unknown | run Claude Code as the user muster-mirror runs as; on the host, `muster-mirror -list -claude` |
 | muster-mirror cannot read this host's process table … | the host's OS has no process lookup (Linux and macOS have one), or reading it failed, and the window's command is `claude` | on the host, `muster-mirror -list -claude` |
@@ -724,7 +694,7 @@ session matches. Two sessions with one title (opencode's default title, say)
 match nothing, and that window gets no view rather than a guess. A TUI started
 with `--standalone` or `--server` runs on another server and is never matched.
 
-The window's card opens a **read-only rendered view**: the session's prompts,
+The window opens a **read-only rendered view**: the session's prompts,
 the agent's replies, and each tool call by its name and target (the command,
 the file). It never shows a tool's input or output, nor the model's reasoning.
 The view opens with a "matched by title" row, because a title is a heuristic:
@@ -736,7 +706,7 @@ unknown fails closed.
 
 When the token needs the person — a renewal is failing, it is within 3 days
 of expiry — the view's first row says so, in the same words `-list -opencode`
-prints (and the card's note, below).
+prints (and the window's note, below).
 
 The composer is disabled, saying sending to opencode isn't supported yet:
 muster sends nothing to opencode, and the paste guard above still refuses its
@@ -747,7 +717,7 @@ does not see them yet.
 A window has no view, and an unknown status, when the host has no token, the
 server refuses the token (it expired, or the server's password was rotated),
 the title matches no root session or several, or the TUI is on another server.
-The window's **card** says which, in one line ("opencode is not paired on this
+The window's terminal page says which, in one line ("opencode is not paired on this
 host: run muster-mirror opencode-pair", "… ambiguous, so none is shown", …);
 an open view that loses its session closes with the same line. The host sends
 the line with the window (`Window.AgentNote`: at most 200 bytes, on at most 8
@@ -778,9 +748,8 @@ A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
 listed as a **Hermes window**: a process named `hermes`, a Python running a
 `hermes` launcher, no `gateway` argument, reading the pane's terminal
 (`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
-as one; the paste refusal above still covers it. Its card carries the kind
-chip **Hermes** (`kind:hermes` in the filter), whatever its pane's command
-reads. muster sends into it only from its rendered view, and only on a host
+as one; the paste refusal above still covers it. Its kind is **Hermes**
+(the search finds it by `hermes`), whatever its pane's command reads. muster sends into it only from its rendered view, and only on a host
 that runs with `-hermes-send` (below); elsewhere Send, Queue and Send now all
 refuse it.
 
@@ -810,8 +779,8 @@ session in `~/.muster/hermes-status/` (0700; it holds the status, its time and
 a request's kind and id, never a prompt or a command). `busy` is believed only
 while Hermes holds the conversation's turn lease and the gateway that wrote it
 is running; `idle` only while no lease is held and no message is newer than it.
-Anything else is **unknown**. An unknown window holds the send queue, and its
-card shows no status.
+Anything else is **unknown**. An unknown window holds the send queue, and shows
+no status.
 
 The host reads only these Hermes files: `state.db` (and its `-wal` and `-shm`),
 `terminal-sessions/tty-*`, and `shell-hooks-allowlist.json` — and, only with
@@ -885,7 +854,7 @@ Hermes in `~/.hermes/pastes/`; muster never reads that directory.
 #### Hermes's approvals, questions and sudo prompts (`-hermes-answer`)
 
 A Hermes window waiting on you is in the **Attention** queue (and counts on
-its card's badge), saying what it waits on, as Hermes's status hook recorded
+its sidebar row), saying what it waits on, as Hermes's status hook recorded
 it:
 
 - **an approval** — Hermes wants to run a command. On a host that runs with

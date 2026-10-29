@@ -312,19 +312,25 @@ func TestTheChiefsCardOffersNoDelete(t *testing.T) {
 	}
 }
 
-// agentMenu is one agent's ⋯ menu as its page's header refresh draws it
-// (GET ui.AgentHeaderPath: the strip, and the menu out of band in
-// #agent-menu-slot) — the menu's markup alone, so a Delete elsewhere in the
-// answer is not counted.
+// agentMenu is one agent's ⋯ menu as its page composes it: the page's card
+// (agentPageCard, which decides the chief and officer protection) drawn by the
+// page's own menu renderer (ui.RenderAgentMenu). The strip's refresh no longer
+// carries the menu — it is drawn once, with the page.
 func agentMenu(t *testing.T, s *Server, h http.Handler, id int64) string {
 	t.Helper()
-	body := getOwed(t, s, h, ui.AgentHeaderPath(id)).Body.String()
-	start := strings.Index(body, `<div id="`+ui.AgentMenuSlot+`"`)
-	end := strings.Index(body, `<div id="`+ui.AgentNoticesID+`"`)
-	if start < 0 || end < start {
-		t.Fatalf("agent %d's header answer carries no #%s before #%s:\n%s", id, ui.AgentMenuSlot, ui.AgentNoticesID, body)
+	ctx := operatorCtx()
+	a, err := s.ext.Agents.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("agent %d: %v", id, err)
 	}
-	return body[start:end]
+	var b strings.Builder
+	if err := ui.RenderAgentMenu(&b, s.agentPageCard(ctx, a, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), `id="`+ui.AgentMenuSlot+`"`) {
+		t.Fatalf("instrument check FAILED: agent %d's menu has no #%s:\n%s", id, ui.AgentMenuSlot, b.String())
+	}
+	return b.String()
 }
 
 // TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every top-level

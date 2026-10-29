@@ -8,8 +8,7 @@ import (
 // TestTheHostPreferencesAreReadAndChecked: MUSTER_HOST_ICONS reaches the
 // config as ui.HostPreferences (names lower-cased), unset is none, and a value
 // that is not host=icon — or that ui.HostPreferences.Normalized refuses —
-// stops the boot, naming the variable. (MUSTER_HOST_ORDER, the retired Agents
-// list's host-tab order, is read no more.)
+// stops the boot, naming the variable.
 func TestTheHostPreferencesAreReadAndChecked(t *testing.T) {
 	base := map[string]string{envDatabase: "postgres://x/y", envUIPassword: strings.Repeat("p", 40)}
 	load := func(icons string) (config, error) {

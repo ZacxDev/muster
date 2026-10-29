@@ -116,18 +116,21 @@ for (const vp of [
 
     // 🔴 THE HEADER RE-RENDERS UNDER AN OPEN MENU THROUGH ITS OWN hx-trigger.
     // agents:changed (a lifecycle action's answer), the status poll's
-    // agents:awaiting and sse:agent.changed each re-fetch the strip, whose
-    // answer carries the ⋯ menu's slot out of band. An OPEN menu is not
-    // replaced (agentMenuHoldJS): a replaced popover closes under the reader,
-    // armed "Confirm delete" and all — so the menu stays open, beside its
-    // trigger, and the menu catches up once it closes. The refresh is fired by
-    // the strip's own trigger event, the real path.
-    test('a header refresh under an open menu keeps it open beside its trigger; the menu catches up once it closes', async ({ page }) => {
+    // agents:awaiting and sse:agent.changed each re-fetch the strip. The ⋯
+    // menu is NOT part of that answer: it is drawn once with the page (its
+    // Start/Stop follows the strip's status by a stylesheet rule), so an open
+    // menu — an armed "Confirm delete" included — is never replaced under the
+    // reader, before or after it closes. The refresh is fired by the strip's
+    // own trigger event, the real path.
+    test('a header refresh under an open menu keeps it open beside its trigger, and never replaces it', async ({ page }) => {
       await open(page);
       await trigger(page).click();
       await expect.poll(() => page.evaluate(placementJS)).toBe('beside');
       await delSummary(page).click();
-      await page.evaluate(() => ((document.getElementById('agent-actions') as unknown as { __old: boolean }).__old = true));
+      await page.evaluate(() => {
+        (document.getElementById('agent-actions') as unknown as { __old: boolean }).__old = true;
+        (document.getElementById('agent-status') as unknown as { __old: boolean }).__old = true;
+      });
       const refreshed = page.waitForResponse((r) => /\/ui\/agents\/\d+\/header$/.test(new URL(r.url()).pathname));
       await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('agents:changed', { bubbles: true })));
       await refreshed;
@@ -135,13 +138,9 @@ for (const vp of [
       expect(await page.evaluate(() => !!(document.getElementById('agent-actions') as unknown as { __old?: boolean }).__old), 'the open menu was not replaced').toBe(true);
       expect(await page.evaluate(placementJS), 'still open, beside its trigger').toBe('beside');
       await expect(confirmDel(page), 'the armed Confirm delete is still there').toBeVisible();
-      // Closing it lets the held refresh through: the menu is the new one.
-      const caughtUp = page.waitForResponse((r) => /\/ui\/agents\/\d+\/header$/.test(new URL(r.url()).pathname));
+      // POSITIVE CONTROL: the refresh did redraw the strip around it.
+      expect(await page.evaluate(() => !!(document.getElementById('agent-status') as unknown as { __old?: boolean } | null)?.__old), 'the strip was redrawn').toBe(false);
       await page.keyboard.press('Escape');
-      await caughtUp;
-      await expect
-        .poll(() => page.evaluate(() => !(document.getElementById('agent-actions') as unknown as { __old?: boolean }).__old), { message: 'the menu caught up after closing' })
-        .toBe(true);
       await trigger(page).click();
       await expect.poll(() => page.evaluate(placementJS), { timeout: 3000 }).toBe('beside');
       await expect(delSummary(page)).toBeVisible();
@@ -220,7 +219,9 @@ for (const vp of [
       });
       await open(page);
       await trigger(page).click();
-      const action = menu(page).locator('[data-agent-action="Start"], [data-agent-action="Stop"]');
+      // The lifecycle item the status calls for (both are drawn; the
+      // stylesheet shows one).
+      const action = menu(page).locator('[data-agent-action="Start"]:visible, [data-agent-action="Stop"]:visible');
       await expect(action).toBeVisible();
       await action.click();
       await expect(action).toBeHidden();

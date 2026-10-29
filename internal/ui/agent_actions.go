@@ -19,7 +19,7 @@ import (
 //   - the live status (the polled icon, with its "awaiting approval" badge),
 //     the "kickoff owed" / "kickoff failed" badges and the work chip, at the
 //     start of the header's second row (agentStrip);
-//   - Rename, Start / Stop and Delete, in a ⋯ menu at that row's end
+//   - Rename, Start / Stop and Delete, in a ⋯ menu beside the strip
 //     (agentActionsMenu) — 🔴 THE SECOND ROW, NOT THE FIRST: the first row is
 //     the title's, and one more 44px button there would take its room (the
 //     operator's rule e2e/tests/title-room.spec.ts pins: the title keeps 150px
@@ -32,7 +32,11 @@ import (
 // when what the page was drawn with is no longer true the poll raises
 // AgentsAwaitingEvent; that, a local lifecycle action's agents:changed and the
 // agent.changed stream event each re-fetch the strip (AgentHeaderPath), whose
-// answer also carries the menu and the notices out of band.
+// answer also carries the notices out of band. The ⋯ menu is NOT refreshed:
+// it is drawn once, and its one item that depends on the status (Start or
+// Stop) follows the strip's data-agent-status by a stylesheet rule
+// (agentLifecycleItems) — so an open menu, with an armed "Confirm delete", is
+// never replaced under the reader.
 
 // The elements the agent page's actions live in.
 const (
@@ -95,13 +99,7 @@ func agentStripBody(a AgentCardView) g.Node {
 // display utility beats the UA's rule that hides a closed popover.
 func agentActionsMenu(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
-	var lifecycle g.Node
-	switch a.Status {
-	case "running", "provisioning":
-		lifecycle = agentActionItem("Stop", "/agents/"+ids+"/stop", "text-fg")
-	default: // stopped/pending/error
-		lifecycle = agentActionItem("Start", "/agents/"+ids+"/start", "text-accent")
-	}
+	lifecycle := agentLifecycleItems(ids)
 	deletable := !a.IsChief && !a.DeleteProtected
 	return g.Group{
 		Button(
@@ -138,13 +136,28 @@ func agentActionsMenu(a AgentCardView) g.Node {
 	}
 }
 
-// agentActionItem is a lifecycle action (Start/Stop): it posts, and the answer
-// (an empty 200 with agents:changed) re-fetches the strip and this menu.
-func agentActionItem(label, postURL, tone string) g.Node {
+// agentLifecycleItems is the menu's lifecycle action: BOTH Start and Stop are
+// drawn, and the stylesheet shows the one the status calls for — Stop while
+// the strip's #agent-status says running or provisioning, Start otherwise
+// (web/css/input.css, data-lifecycle). The strip re-renders #agent-status on
+// every refresh, so the item follows the status with no script and without
+// the menu being redrawn. An action's answer (an empty 200 with
+// agents:changed) re-fetches the strip.
+func agentLifecycleItems(ids string) g.Node {
+	return g.Group{
+		agentActionItem("Start", "/agents/"+ids+"/start", "text-accent", "idle"),
+		agentActionItem("Stop", "/agents/"+ids+"/stop", "text-fg", "live"),
+	}
+}
+
+// agentActionItem is one lifecycle action (Start/Stop); when names the status
+// it is shown for (agentLifecycleItems): "live" or "idle".
+func agentActionItem(label, postURL, tone, when string) g.Node {
 	return Button(
 		Type("button"),
 		g.Attr("role", "menuitem"),
 		g.Attr("data-agent-action", label),
+		g.Attr("data-lifecycle", when),
 		Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-sm font-medium transition hover:bg-s2 disabled:opacity-60 "+tone),
 		hx("hx-post", postURL),
 		hx("hx-swap", "none"),
@@ -243,41 +256,16 @@ func agentNotices(a AgentCardView) g.Node {
 	return Div(ID(AgentNoticesID), Class("flex flex-col gap-2 empty:hidden"), agentNoticesBody(a))
 }
 
-// agentMenuHoldJS keeps an OPEN ⋯ menu (or the rename form it opened) from
-// being replaced under the reader by the strip's out-of-band refresh: the
-// refresh comes on any agent change (sse:agent.changed included), and a
-// replaced popover closes — with a "Confirm delete" the reader was about to
-// press. The skipped copy is not lost: when the menu closes, the strip is
-// asked again (AgentsAwaitingEvent), so the menu catches up then.
-var agentMenuHoldJS = `(function () {
-  if (window.__musterAgentMenuHold) return;
-  window.__musterAgentMenuHold = true;
-  var held = false;
-  function open(id) { var p = document.getElementById(id); try { return !!p && p.matches(':popover-open'); } catch (e) { return false; } }
-  document.addEventListener('htmx:oobBeforeSwap', function (e) {
-    var t = e.detail && e.detail.target;
-    if (!t || t.id !== '` + AgentMenuSlot + `') return;
-    if (open('` + AgentMenuID + `') || open('` + AgentRenameID + `')) { e.detail.shouldSwap = false; held = true; }
-  });
-  document.addEventListener('toggle', function (e) {
-    var id = e.target && e.target.id;
-    if (!held || e.newState !== 'closed' || (id !== '` + AgentMenuID + `' && id !== '` + AgentRenameID + `')) return;
-    if (open('` + AgentMenuID + `') || open('` + AgentRenameID + `')) return;
-    held = false;
-    document.body.dispatchEvent(new CustomEvent('` + AgentsAwaitingEvent + `', { bubbles: true }));
-  }, true);
-})();`
-
-// agentMenuHold is agentMenuHoldJS's tag.
-func agentMenuHold() g.Node { return Script(g.Raw(agentMenuHoldJS)) }
+// RenderAgentMenu writes the ⋯ menu exactly as the agent page draws it
+// (agentMenuSlot), for a caller that has the card but not the page.
+func RenderAgentMenu(w io.Writer, a AgentCardView) error { return agentMenuSlot(a).Render(w) }
 
 // RenderAgentHeader writes the strip's refresh (GET AgentHeaderPath): the
-// strip's body, and — out of band — the ⋯ menu (its lifecycle item follows the
-// status) and the notices.
+// strip's body (its #agent-status carries the status the ⋯ menu's lifecycle
+// item follows) and — out of band — the notices.
 func RenderAgentHeader(w io.Writer, a AgentCardView) error {
 	return g.Group{
 		agentStripBody(a),
-		Div(ID(AgentMenuSlot), hx("hx-swap-oob", "innerHTML"), agentActionsMenu(a)),
 		Div(ID(AgentNoticesID), hx("hx-swap-oob", "innerHTML"), agentNoticesBody(a)),
 	}.Render(w)
 }

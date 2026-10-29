@@ -16,9 +16,6 @@ import (
 // It is configuration (MUSTER_HOST_ICONS, read in cmd/muster-server) rather
 // than a list in this file because host names are the operator's own, and a
 // deployment's real ones must not be written into this repository.
-//
-// (A second setting, MUSTER_HOST_ORDER — the order of the Agents list's host
-// tabs — went with that page: nothing draws host tabs now.)
 type HostPreferences struct {
 	Icons map[string]string
 }

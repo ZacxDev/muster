@@ -284,10 +284,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// focusHistoryButton opens.
 				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.FocusHistory != "", focusHistoryScript()),
-				// The rename form the header's ⋯ menu opens (agent_actions.go), and
-				// the hold that keeps an open menu from being refreshed away.
+				// The rename form the header's ⋯ menu opens (agent_actions.go).
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
-				g.If(v.Card.ID != 0, agentMenuHold()),
 				// Places the header's full-title popover (agentTitle) beside its "…"
 				// and keeps that button's aria-expanded in step, and places the ⋯
 				// menu (agentActionsMenu).
