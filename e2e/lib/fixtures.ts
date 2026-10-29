@@ -84,16 +84,17 @@ const shellStateJS = `(() => {
 })()`;
 
 // expectShellShows asserts the shell is showing exactly ONE tab, and that the
-// panel, the FAB, the heading and aria-current all name the same one — the FAB
-// only for a tab that has one: the Agents tab draws none (its bottom edge is
-// the session switcher's bar), so there NO FAB is shown at all.
-const tabsWithoutFAB = ['agents'];
+// panel, the FAB, the heading and aria-current all name the same one. (The
+// Agents tab, which drew no FAB, is retired: the shell's tabs are Tasks and —
+// with a connector store — Connectors.)
+const tabsWithoutFAB = ['connectors'];
 export async function expectShellShows(page: Page, tab: string, heading: string, why: string): Promise<void> {
   await expect
     .poll(() => page.evaluate(shellStateJS), { message: why })
     .toMatchObject({ panels: [tab], fabs: tabsWithoutFAB.includes(tab) ? [] : [tab], heading, current: [tab] });
   const drawn = ((await page.evaluate(shellStateJS)) as { drawn: number }).drawn;
-  expect(drawn, `${why}: CONTROL — the shell drew more than one panel, so "exactly one shown" hid the rest`).toBeGreaterThan(1);
+  // ≥1, not >1: a server with no connector store draws the Tasks panel alone.
+  expect(drawn, `${why}: CONTROL — the shell drew no panel at all`).toBeGreaterThanOrEqual(1);
 }
 
 // expectAgentsDestroyed waits for every agent in `ids` to leave GET /api/agents.
@@ -130,13 +131,3 @@ export async function useSuiteSession(page: Page): Promise<void> {
   await page.context().addCookies(state.cookies);
 }
 
-// takeNew taps the Agents list's "N new ↑" pill when it is up, applying the
-// order a background refresh held back (internal/ui/agents_filter.go hold), and
-// waits until no card is held. A spec that asserts the LIVE order of the open
-// list goes through this: an arrival or a re-order that would move a card in
-// view is not drawn until the reader asks for it.
-export async function takeNew(page: Page): Promise<void> {
-  const pill = page.locator('#agents-new-pill');
-  if (await pill.isVisible()) await pill.click();
-  await expect(page.locator('#agents-list > article[data-held]')).toHaveCount(0);
-}
