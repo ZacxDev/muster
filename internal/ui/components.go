@@ -951,6 +951,9 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				Class("flex min-h-[4.25rem] items-center gap-3 border-b border-line px-4 py-3"),
 				Span(Class("text-lg font-semibold tracking-tight"), wordmark()),
 				Span(Class("flex-1")),
+				// The command palette's other way in (palette.go): the same box
+				// the session switcher's magnifier opens.
+				sidebarSearchButton(),
 				Button(
 					ID("sidebar-close"),
 					Type("button"),
@@ -1033,6 +1036,9 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				),
 			),
 		),
+		// The command palette (palette.go): one per document, in the root and
+		// not in the panel above, which a transform slides.
+		paletteBox(),
 	)
 }
 
@@ -2360,7 +2366,7 @@ var appScriptSrc = staticJS("app", `
     document.body.addEventListener('htmx:load', init);
   }
 })();
-`)
+`+paletteJS)
 
 // resyncScript keeps the task list fresh after the app is backgrounded and
 // reopened. The htmx SSE extension auto-reconnects, but a dropped connection can

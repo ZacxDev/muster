@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	g "maragu.dev/gomponents"
@@ -87,16 +89,28 @@ func listBefore(a, b listEntry) bool {
 	return a.activeAt().After(b.activeAt())
 }
 
-// waiting reports whether the entry waits on the viewer — its card's
-// data-wait (waitTokens): an attention item that files under "you", or a
-// dispatched agent blocked at a permission prompt. 🔴 THE ONE PREDICATE the
-// session switcher's waiting dot (switcherItems) and the sidebar's order
-// (navBefore) both read, so the two cannot disagree about who is waiting.
+// waiting reports whether the entry waits on the viewer: whether the Agents
+// list's "Waiting on you" chip (listChips' "waiting") shows its card — the
+// chip's token among the card's data-wait words (waitTokens): an attention
+// item that files under "you", or a dispatched agent blocked at a permission
+// prompt. 🔴 THE ONE PREDICATE the session switcher's Waiting view and waiting
+// dot (NewSwitcher, switcherItems), the sidebar's order (navBefore) and — by
+// the chip's own token — the list's chip all read, so none of them can
+// disagree about who is waiting.
 func (e listEntry) waiting() bool {
+	var words string
 	if e.agent != nil {
-		return waitTokens(e.agent.Attention, e.agent.AwaitingApproval) != ""
+		words = waitTokens(e.agent.Attention, e.agent.AwaitingApproval)
+	} else {
+		words = waitTokens(e.mirror.Attention, false)
 	}
-	return waitTokens(e.mirror.Attention, false) != ""
+	return slices.Contains(strings.Fields(words), waitingChip().Token)
+}
+
+// waitingChip is the list's "Waiting on you" chip.
+func waitingChip() listChip {
+	c, _ := chipByID("waiting")
+	return c
 }
 
 // chief reports whether the entry is the viewer's chief agent

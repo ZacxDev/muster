@@ -188,15 +188,17 @@ func TestRenderAgentCardDrawsAPinnedAgentAsItsCard(t *testing.T) {
 	}
 }
 
-// TestSwitcherLabelsDropTheIndexUnlessTwoWouldReadTheSame: "mango:1" and
-// "vapor:2" read "mango" and "vapor"; two windows of one codename keep their
-// index; the same codename and index on two hosts adds the list's qualifier; a
-// window with no codename shows its "<session>:<index>" and a label that only
-// repeats the session is no codename; an agent shows its display name, else
-// its name, WHOLE. INVARIANT GUARD, moved here from the pinned chips' tests
-// (the chips drew these labels; the switcher draws them now): the rule did not
-// change.
-func TestSwitcherLabelsDropTheIndexUnlessTwoWouldReadTheSame(t *testing.T) {
+// TestSwitcherLabelsAreTheWholeName: a window's pill reads its WHOLE codename,
+// ":<index>" and all — "mango:1", "vapor:2", "wheat:13" — whether or not
+// another entry shares the rest; the same codename and index on two hosts adds
+// the list's qualifier; a window with no codename shows its
+// "<session>:<index>" and a label that only repeats the session is no
+// codename; an agent shows its display name, else its name, WHOLE.
+//
+// REGRESSION TEST (operator report: the pills were "missing the number after
+// the colon"): red at the commit before, where a codename alone in its view
+// dropped its ":<index>" ("mango", "vapor", "wheat").
+func TestSwitcherLabelsAreTheWholeName(t *testing.T) {
 	long := strings.Repeat("x", 70)
 	cases := []struct {
 		name   string
@@ -208,12 +210,12 @@ func TestSwitcherLabelsDropTheIndexUnlessTwoWouldReadTheSame(t *testing.T) {
 			pinWin(0, "hosta", "s1", "@1", "mango:1"),
 			pinWin(1, "hosta", "s2", "@2", "vapor:2"),
 			pinWin(2, "hosta", "s3", "@3", "wheat:13"),
-		}, []string{"mango", "vapor", "wheat"}},
+		}, []string{"mango:1", "vapor:2", "wheat:13"}},
 		{"one codename twice", nil, []MirrorCardView{
 			pinWin(0, "hosta", "s1", "@1", "mango:1"),
 			pinWin(1, "hosta", "s1", "@2", "mango:2"),
 			pinWin(2, "hosta", "s2", "@3", "vapor:3"),
-		}, []string{"mango:1", "mango:2", "vapor"}},
+		}, []string{"mango:1", "mango:2", "vapor:3"}},
 		{"one label on two hosts", nil, func() []MirrorCardView {
 			a, b := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hostb", "s1", "@1", "mango:1")
 			a.Qualifier, b.Qualifier = "hosta", "hostb"

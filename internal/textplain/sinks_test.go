@@ -119,6 +119,8 @@ var uiExempt = map[string]exemption{
 	"connectors.go ConnectorForm p.Label":              {1, whyStatic},
 	"list_signals.go agentsFilterChips c.Label":        {1, whyStatic},
 	"switcher.go switcherEntry it.Label":               {3, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
+	"nav_agents.go navAgentRow it.Label":               {1, "SwitcherItem.Label, built through Title by switcherItems (the switcher's own labels); the row's name and title — plaining it again would apply Title twice"},
+	"nav_agents.go navAgentRow it.Title":               {2, "SwitcherItem.Title, built through Title by switcherItems; the command palette's data-switcher-title — plaining it again would apply Title twice"},
 	"switcher.go switcherEntry it.Title":               {2, "SwitcherItem.Title is built through Title by switcherItems (plainOr of the display name, focusTitle's plainOr of the focus); it is the search's data-switcher-title, and plaining it again here would apply Title twice"},
 	"mirror.go mirrorFields m.Label":                   {1, whyFilter},
 	"mirror.go mirrorFields m.Title":                   {1, whyFilter},
