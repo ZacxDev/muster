@@ -19,8 +19,7 @@ import (
 // because a message sent to this window never reaches that one.
 //
 // HOW A COPY HAPPENS. `claude --resume <id>` of a conversation that is still
-// open in another client (the VS Code extension, another terminal) does not
-// attach to it: it starts a NEW session whose transcript begins with a copy of
+// open in another client does not attach to it: it starts a NEW session whose transcript begins with a copy of
 // the old one. Measured read-only on real transcripts on one host (Claude Code
 // 2.1.x), both pairs of copies there:
 //
@@ -42,14 +41,20 @@ import (
 // "STILL RUNNING ELSEWHERE" is decided by, in order:
 //
 //  1. Claude Code's own sessions/<pid>.json, which a running CLI writes for its
-//     peers (ClaudeLocator): a LIVE process (pid and procStart both match) other
-//     than this window's own CLI that names the other session → running. A
-//     sessions file that names it from this window's own CLI, or from a process
-//     that has exited, says it is NOT running elsewhere: the CLI does not
-//     rewrite that file when its conversation changes id, so the window's own
-//     CLI can name the very session it moved away from.
-//  2. Nothing names it (a client that writes no sessions file): its last
-//     MESSAGE (lastmsg.go's rule) is within LiveCopyWindow. Not its mtime:
+//     peers (ClaudeLocator), read through the locator's own alive rule
+//     (sessionAlive: the pid is running, with the procStart the file
+//     recorded). A live CLI other than this window's own that names the other
+//     session → running. This window's OWN CLI naming it says it is NOT
+//     running elsewhere: the CLI does not rewrite that file when its
+//     conversation changes id, so it can name the very session it moved away
+//     from. A file whose process is gone is ignored like no file at all —
+//     rarely seen, since Claude Code deletes its sessions file when it exits
+//     (measured: every one of 61 files on one host named a running pid).
+//  2. No live CLI names it — a copy that was just CLOSED (its sessions file
+//     deleted on exit), or one whose CLI writes no sessions file: its last
+//     MESSAGE (lastmsg.go's rule) is within LiveCopyWindow. So a copy closed a
+//     minute after its last message is still warned about until
+//     LiveCopyWindow has passed since that message. Not its mtime:
 //     Claude Code appends untimestamped bookkeeping rows (cost-state) to
 //     transcripts it is not running — measured, 37 transcripts on one host had
 //     their mtime moved within one minute with no message written.
@@ -154,11 +159,10 @@ type originKey struct{ uuid, timestamp string }
 
 func (o transcriptOrigin) key() originKey { return originKey{o.UUID, o.Timestamp} }
 
-// liveCopyHolder is a sessions file naming a session: its process, and
-// whether that process is the one that wrote it and still running.
+// liveCopyHolder is a LIVE Claude Code process whose sessions file names a
+// session.
 type liveCopyHolder struct {
-	pid   int
-	alive bool
+	pid int
 }
 
 // attach sets LiveCopy on each Claude Code window of windows (their
@@ -235,14 +239,14 @@ func (l *LiveCopies) find(c *ClaudePane, holders func() map[string][]liveCopyHol
 // running reports whether session id (transcript p) is running somewhere
 // other than the CLI ownPID, and as of when (see the file's comment).
 func (l *LiveCopies) running(id, p string, ownPID int, holders func() map[string][]liveCopyHolder, tails map[string]bool, now time.Time) (time.Time, bool) {
-	named := false
-	for _, h := range holders()[id] {
-		if h.alive && h.pid != ownPID {
+	held := holders()[id]
+	for _, h := range held {
+		if h.pid != ownPID {
 			return now, true
 		}
-		named = true
 	}
-	if named {
+	// Only this window's own CLI names it: not elsewhere.
+	if len(held) > 0 {
 		return time.Time{}, false
 	}
 	st, err := os.Stat(p)
@@ -334,10 +338,11 @@ func (l *LiveCopies) forgetDir(dir string) {
 	}
 }
 
-// readLiveCopyHolders is, per session id, every sessions file under cfg that
-// names it: its pid, and whether that process is alive — in procs, with the
-// procStart the file recorded when it recorded one (a sessions file outlives
-// its process, and a pid can be reused).
+// readLiveCopyHolders is, per session id, every LIVE process (sessionAlive)
+// whose sessions file under cfg names it. One id can have several — the
+// window's own CLI still naming a session it moved away from, and the CLI
+// actually running it — which is why this is not liveSessions.byID (one file
+// per id).
 func readLiveCopyHolders(cfg string, procs map[int]procInfo) map[string][]liveCopyHolder {
 	out := map[string][]liveCopyHolder{}
 	m, _ := filepath.Glob(filepath.Join(cfg, "sessions", "*.json"))
@@ -350,9 +355,9 @@ func readLiveCopyHolders(cfg string, procs map[int]procInfo) map[string][]liveCo
 		if json.Unmarshal(b, &sf) != nil || !sessionIDPattern.MatchString(sf.SessionID) || sf.PID <= 0 {
 			continue
 		}
-		pi, ok := procs[sf.PID]
-		alive := ok && (sf.ProcStart == "" || sf.ProcStart == pi.start)
-		out[sf.SessionID] = append(out[sf.SessionID], liveCopyHolder{pid: sf.PID, alive: alive})
+		if sessionAlive(sf, procs) {
+			out[sf.SessionID] = append(out[sf.SessionID], liveCopyHolder{pid: sf.PID})
+		}
 	}
 	return out
 }

@@ -6,8 +6,7 @@ package mirror
 //
 // How one happens (an external report, confirmed against transcripts on a
 // real host): `claude --resume <id>` of a conversation that is STILL OPEN in
-// another client (the VS Code extension, another terminal) does not attach to
-// it. It copies the conversation into a NEW session — every row of the old
+// another client does not attach to it. It copies the conversation into a NEW session — every row of the old
 // transcript kept with its own uuid and timestamp, only sessionId rewritten —
 // and carries on there. muster mirrors the copy correctly, so the phone shows a
 // working session whose messages never reach the other client, and nothing on

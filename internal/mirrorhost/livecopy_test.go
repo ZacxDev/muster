@@ -145,8 +145,10 @@ func TestReadTranscriptOrigin(t *testing.T) {
 // row) and a running Claude Code process other than the window's own names it
 // in its sessions file — the client the person resumed from, still open. The
 // window's LiveCopy names it. And every way that reading would be wrong is
-// not one: the holder is the window's own CLI, or has exited, or reused the
-// pid; the other transcript is another conversation; either is a /bg job.
+// not one: the holder is the window's own CLI (which vetoes even a recent
+// message), or has exited or reused the pid (a leftover file counts as no
+// file: the last-message rule decides); the other transcript is another
+// conversation; either is a /bg job.
 func TestALiveCopyHeldByAnotherRunningCLIIsFound(t *testing.T) {
 	old := lcNow.Add(-time.Hour)
 	for _, c := range []struct {
@@ -167,7 +169,7 @@ func TestALiveCopyHeldByAnotherRunningCLIIsFound(t *testing.T) {
 		{"the window's own CLI names it", lcOrigTS, "", "", lcOwnPID, "100", true, false, ""},
 		{"the window's own CLI names it, a recent message", lcOrigTS, "", "", lcOwnPID, "100", true, true, ""},
 		{"the CLI that names it has exited", lcOrigTS, "", "", lcElsPID, "200", false, false, ""},
-		{"the CLI that names it has exited, a recent message", lcOrigTS, "", "", lcElsPID, "200", false, true, ""},
+		{"a leftover file of an exited CLI, a recent message: the message decides", lcOrigTS, "", "", lcElsPID, "200", false, true, lcCopy},
 		{"its pid was reused", lcOrigTS, "", "", lcElsPID, "999", true, false, ""},
 		{"another conversation (same uuid, other time)", "2026-01-02T03:04:05.679Z", "", "", lcElsPID, "200", true, false, ""},
 		{"the other is a /bg job", lcOrigTS, "bg", "", lcElsPID, "200", true, false, ""},
@@ -225,6 +227,40 @@ func TestALiveCopyNoSessionsFileNamesCountsByItsLastMessage(t *testing.T) {
 	f.transcript(lcCopy, lcOrigin, lcOrigTS, "", old, old)
 	if got := f.liveCopyOf(&LiveCopies{}, lcCopy, lcProcs(false), lcNow); got != lcOwn {
 		t.Fatalf("the other side: LiveCopy = %q, want %q", got, lcOwn)
+	}
+}
+
+// TestAClosedCopyIsWarnedAboutUntilLiveCopyWindowPasses is the realistic
+// state after the other copy is CLOSED: Claude Code deletes its sessions file
+// when it exits (measured: every sessions file on one host named a running
+// pid), so nothing names the copy any more and the last-message rule decides.
+// While the copy runs, its sessions file names it; a minute after its last
+// message it is closed (file gone) and still warned about; once
+// LiveCopyWindow has passed since that message, the warning clears.
+func TestAClosedCopyIsWarnedAboutUntilLiveCopyWindowPasses(t *testing.T) {
+	old := lcNow.Add(-time.Hour)
+	last := lcNow.Add(-time.Minute)
+	f := newLCFixture(t)
+	f.transcript(lcOwn, lcOrigin, lcOrigTS, "", old, old)
+	f.transcript(lcCopy, lcOrigin, lcOrigTS, "", last, last)
+	f.holder(lcOwnPID, lcOwn, "100")
+	f.holder(lcElsPID, lcCopy, "200")
+	l := &LiveCopies{}
+	if got := f.liveCopyOf(l, lcOwn, lcProcs(true), lcNow); got != lcCopy {
+		t.Fatalf("while the copy runs: LiveCopy = %q, want %q", got, lcCopy)
+	}
+	// It exits: its process is gone and so is its sessions file.
+	if err := os.Remove(filepath.Join(f.cfg, "sessions", strconv.Itoa(lcElsPID)+".json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.liveCopyOf(l, lcOwn, lcProcs(false), lcNow); got != lcCopy {
+		t.Fatalf("just closed, its last message a minute old: LiveCopy = %q, want still %q", got, lcCopy)
+	}
+	if got := f.liveCopyOf(l, lcOwn, lcProcs(false), last.Add(LiveCopyWindow-30*time.Second)); got != lcCopy {
+		t.Fatalf("closed, inside LiveCopyWindow of its last message: LiveCopy = %q, want still %q", got, lcCopy)
+	}
+	if got := f.liveCopyOf(l, lcOwn, lcProcs(false), last.Add(LiveCopyWindow+30*time.Second)); got != "" {
+		t.Fatalf("closed, past LiveCopyWindow of its last message: LiveCopy = %q, want none", got)
 	}
 }
 
