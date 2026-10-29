@@ -338,13 +338,17 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				g.If(v.FocusHistory != "", focusHistoryButton()),
 			),
 			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
-			// (agent_actions.go): the live status strip first and the ⋯ menu
-			// last, so the first row stays the title's.
+			// (agent_actions.go): the live status strip and the ⋯ menu, at the
+			// row's START — the first row stays the title's, and the row's right
+			// end keeps what it had: the update pill (pwa.go placeToast) slides
+			// down the right edge past every control there, and a ⋯ at the end
+			// pushed it from under the header to mid-screen on a phone held
+			// sideways (e2e update.spec's 844×390 placement).
 			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, Div(
 				Class("flex items-center gap-2 pl-11 text-xs"),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
-				agentModelControl(v),
 				agentMenuSlot(v.Card),
+				agentModelControl(v),
 			)),
 			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
 			// row in the sidebar opens this page. A claude-code agent also has a
@@ -354,10 +358,10 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
 				Div(Class("flex items-center gap-2"),
 					g.If(v.Card.ID != 0, agentStrip(v.Card)),
+					agentMenuSlot(v.Card),
 					chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
-					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))),
-					agentMenuSlot(v.Card))),
+					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 		),
 		// A restore's "Updating…" (restore.go): hung just below the header (a
 		// sticky box, so it is the chip's containing block), over the top of
