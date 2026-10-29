@@ -147,7 +147,8 @@ func TestThePushFilterIsAnAllowlistOfWrites(t *testing.T) {
 		{"POST", "api.github.com", "repos/example-org/example-web/pulls", `{"title":"t","head":"officer/5-x","base":"main","body":"b"}`, true},
 		{"POST", "api.github.com", "repos/example-org/example-web/pulls", `{"head":"example-org:officer/5-x","base":"main"}`, true},
 		{"PATCH", "api.github.com", "repos/example-org/example-web/pulls/5", `{"title":"new","state":"closed"}`, true},
-		{"POST", "api.github.com", "repos/example-org/example-web/issues/6/comments", `{"body":"overlap with yours"}`, true},
+		{"POST", "api.github.com", "repos/example-org/example-web/issues/5/comments", `{"body":"ci is red, pushing a fix"}`, true},
+		{"POST", "api.github.com", "repos/example-org/example-web/issues/6/comments", `{"body":"overlap with yours"}`, false},
 
 		{"POST", "api.github.com", "repos/example-org/example-web/pulls", `{"head":"feature/y","base":"main"}`, false},
 		{"POST", "api.github.com", "repos/example-org/example-web/pulls", `{"head":"officer/5-x","base":"release"}`, false},

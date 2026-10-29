@@ -97,6 +97,7 @@ type TagObject struct {
 	TaggedAt   time.Time
 	TargetSHA  string
 	TargetType string
+	Message    string
 }
 
 // Tagger is who an annotated tag is made by.
@@ -503,8 +504,9 @@ func (g *REST) Tags(ctx context.Context) ([]TagRef, error) {
 // TagObject implements GitHub.
 func (g *REST) TagObject(ctx context.Context, sha string) (TagObject, error) {
 	var r struct {
-		SHA    string `json:"sha"`
-		Tagger *struct {
+		SHA     string `json:"sha"`
+		Message string `json:"message"`
+		Tagger  *struct {
 			Name string    `json:"name"`
 			Date time.Time `json:"date"`
 		} `json:"tagger"`
@@ -516,7 +518,7 @@ func (g *REST) TagObject(ctx context.Context, sha string) (TagObject, error) {
 	if err := g.do(ctx, http.MethodGet, g.repoPath()+"/git/tags/"+url.PathEscape(sha), "", nil, &r, "reading tag object "+sha); err != nil {
 		return TagObject{}, err
 	}
-	t := TagObject{SHA: r.SHA, TargetSHA: r.Object.SHA, TargetType: r.Object.Type}
+	t := TagObject{SHA: r.SHA, TargetSHA: r.Object.SHA, TargetType: r.Object.Type, Message: r.Message}
 	if r.Tagger != nil {
 		t.Tagger, t.TaggedAt = r.Tagger.Name, r.Tagger.Date
 	}

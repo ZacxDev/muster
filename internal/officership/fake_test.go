@@ -29,6 +29,8 @@ type fakeGH struct {
 	prsFor     map[string][]PR
 	mergeErr   error
 	refErr     error
+	// existingRefs answer ErrRefExists on create.
+	existingRefs map[string]bool
 
 	merged      []int
 	mergedSHA   []string
@@ -125,13 +127,14 @@ func (f *fakeGH) Merge(_ context.Context, n int, sha string) (string, error) {
 	}
 	f.merged = append(f.merged, n)
 	f.mergedSHA = append(f.mergedSHA, sha)
+	f.branches["main"] = "squash" + sha // the base now points at the merge
 	return "squash" + sha, nil
 }
-func (f *fakeGH) CreateTag(_ context.Context, name, _, sha string, t Tagger) (string, error) {
+func (f *fakeGH) CreateTag(_ context.Context, name, msg, sha string, t Tagger) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	obj := "tagobj-" + name
-	f.tagObjects[obj] = TagObject{SHA: obj, Tagger: t.Name, TaggedAt: t.When, TargetSHA: sha, TargetType: "commit"}
+	f.tagObjects[obj] = TagObject{SHA: obj, Tagger: t.Name, TaggedAt: t.When, TargetSHA: sha, TargetType: "commit", Message: msg}
 	f.createdTags = append(f.createdTags, name)
 	return obj, nil
 }
@@ -140,6 +143,9 @@ func (f *fakeGH) CreateRef(_ context.Context, ref, sha string) error {
 	defer f.mu.Unlock()
 	if f.refErr != nil {
 		return f.refErr
+	}
+	if f.existingRefs[ref] {
+		return fmt.Errorf("%w: %s", ErrRefExists, ref)
 	}
 	f.createdRefs = append(f.createdRefs, ref+"="+sha)
 	return nil
@@ -212,6 +218,9 @@ func greenMergeFixture() (*Gates, *fakeGH, *fakeHQ) {
 	gh.checkRuns[fxHead] = []CheckRun{{ID: 5, Name: "pr-review", Status: "completed", Conclusion: "success", AppSlug: "reviewer"}}
 	gh.files[fxPR] = []File{{Path: "internal/web/handler.go", Status: "modified"}, {Path: "db/migrations/0090_add.sql", Status: "added"}}
 	gh.contents["db/migrations/0090_add.sql@"+fxHead] = "CREATE TABLE widgets (id bigint);\nALTER TABLE things ADD COLUMN note text;"
+	// The base the gates check, and the merge GitHub makes on top of it.
+	gh.branches["main"] = fxMain
+	gh.commits["squash"+fxHead] = commitInfo{tree: "tree-merged", parents: []string{fxMain}}
 	g := &Gates{OfficerID: "engineering:example-web", Repo: fxRepo, Ship: fxShip(), GH: gh, HQ: hq,
 		Now:      func() time.Time { return time.Date(2000, 1, 5, 15, 0, 0, 0, time.UTC) },
 		InFlight: func() (string, bool) { return "", false }}

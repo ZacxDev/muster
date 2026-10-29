@@ -62,6 +62,10 @@ func (f *apiFakeGH) Merge(_ context.Context, n int, _ string) (string, error) {
 	f.merged = append(f.merged, n)
 	return "squash-sha", nil
 }
+func (f *apiFakeGH) BranchSHA(context.Context, string) (string, error) { return "base-sha", nil }
+func (f *apiFakeGH) Commit(context.Context, string) (string, []string, error) {
+	return "tree", []string{"base-sha"}, nil
+}
 func (f *apiFakeGH) mergedPRs() []int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

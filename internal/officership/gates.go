@@ -101,6 +101,10 @@ type MergeOutcome struct {
 	MergeSHA string   `json:"merge_sha"`
 	Passed   []string `json:"gates_passed"`
 	Noticed  []string `json:"sensitive_paths_noticed,omitempty"`
+	// UntestedTree: the merge landed on a base that moved after the gates
+	// read it, so the base now holds a tree no CI run saw (Warning says so).
+	UntestedTree bool   `json:"untested_tree,omitempty"`
+	Warning      string `json:"warning,omitempty"`
 }
 
 var holdRE = regexp.MustCompile(`(?i)(^|\s)/hold\b`)

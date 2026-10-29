@@ -86,7 +86,7 @@ func TestAGatedCallersAdmittedRequestCarriesTheGatesCredentialOnly(t *testing.T)
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+gateSecret))
 	for _, c := range []struct{ method, rest, body string }{
 		{"GET", "repos/example-org/example-web/pulls/5", ""},
-		{"POST", "repos/example-org/example-web/issues/5/comments", `{"body":"hello"}`},
+		{"POST", "repos/example-org/example-web/pulls", `{"title":"t","head":"officer/5-x","base":"main"}`},
 	} {
 		w := gatedDo(h, c.method, "/connect/github/"+f.host+"/"+c.rest, c.body)
 		if w.Code != http.StatusOK {

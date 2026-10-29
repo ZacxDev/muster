@@ -89,3 +89,38 @@ func TestTheHouseIdiomPasses(t *testing.T) {
 		t.Fatal("re-adding a DIFFERENT constraint passed as a re-add")
 	}
 }
+
+// TestTheLintSeesEveryColumnDrop (round-1 F4): in Postgres `COLUMN` is
+// optional, so `ALTER TABLE t DROP <name>` drops a column whatever the name
+// looks like — quoted, or a keyword such as index or default. Only the
+// column-property forms under ALTER COLUMN, and a standalone DROP INDEX, are
+// not column drops.
+func TestTheLintSeesEveryColumnDrop(t *testing.T) {
+	for _, sql := range []string{
+		`ALTER TABLE widgets DROP "note";`,
+		`ALTER TABLE widgets DROP index;`,
+		`ALTER TABLE widgets DROP default;`,
+		`ALTER TABLE widgets ADD COLUMN x int, DROP "Old Name";`,
+		`ALTER TABLE ONLY widgets DROP COLUMN IF EXISTS note;`,
+	} {
+		found := false
+		for _, f := range LintMigration("x.sql", sql) {
+			found = found || f.Rule == "DROP COLUMN"
+		}
+		if !found {
+			t.Errorf("%s: not refused as DROP COLUMN (%v)", sql, LintMigration("x.sql", sql))
+		}
+	}
+	for _, sql := range []string{
+		`ALTER TABLE widgets ALTER COLUMN note DROP DEFAULT;`,
+		`ALTER TABLE widgets ALTER note DROP NOT NULL;`,
+		`ALTER TABLE widgets ALTER COLUMN id DROP IDENTITY IF EXISTS;`,
+		`ALTER TABLE widgets ALTER COLUMN total DROP EXPRESSION;`,
+		`DROP INDEX IF EXISTS widgets_note_idx;`,
+		`DROP INDEX CONCURRENTLY widgets_note_idx;`,
+	} {
+		if f := LintMigration("x.sql", sql); len(f) != 0 {
+			t.Errorf("%s: refused %v", sql, f)
+		}
+	}
+}
