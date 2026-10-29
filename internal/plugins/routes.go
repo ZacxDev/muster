@@ -85,10 +85,12 @@ type RouteStore interface {
 	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
 	BoundThread(ctx context.Context, thread string) (string, error)
 	// SettleOwnerAnswered ends message messageID's route owner_answered when
-	// it is still routed: plugin pluginID's stamp that the reply was sent
-	// directly (owner_replies.go). settled false, with the route as it is,
-	// otherwise; ErrNotFound for a message that is not that plugin's.
-	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64) (r Route, settled bool, err error)
+	// it is still routed and thread is the message's own: plugin pluginID's
+	// stamp that the reply was sent directly (owner_replies.go). settled
+	// false, with the route as it is, otherwise; ErrNotFound for a message
+	// that is not that plugin's; ErrStampNoThread / ErrStampThreadMismatch
+	// (with the route as it is) for a stamp not bound to its conversation.
+	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64, thread string) (r Route, settled bool, err error)
 }
 
 var _ RouteStore = (*PGStore)(nil)

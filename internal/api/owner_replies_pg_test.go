@@ -60,8 +60,12 @@ func (f *ownerAnsweredFixture) mintPlugin(t *testing.T, owner int64, name string
 func (f *ownerAnsweredFixture) message(t *testing.T, tok, external string, extra map[string]any) plugins.Message {
 	t.Helper()
 	in := map[string]any{"external_id": external, "sender": "Someone (Example DM 1)", "subject": "Example DM: 1 message",
-		"body": "can you look at this?"}
+		"body": "can you look at this?", "thread": "dm-" + external}
 	for k, v := range extra {
+		if v == nil {
+			delete(in, k)
+			continue
+		}
 		in[k] = v
 	}
 	b, _ := json.Marshal(in)
@@ -94,9 +98,20 @@ type stampAnswer struct {
 	Error   string `json:"error"`
 }
 
-func (f *ownerAnsweredFixture) stamp(t *testing.T, tok string, messageID int64) stampAnswer {
+// stamp is the plugin's report for message m, naming m's own thread.
+func (f *ownerAnsweredFixture) stamp(t *testing.T, tok string, m plugins.Message) stampAnswer {
 	t.Helper()
-	w := f.call(t, "POST", "/plugin/v1/messages/"+strconv.FormatInt(messageID, 10)+"/owner-answered", strings.NewReader(""),
+	thread := ""
+	if m.Thread != nil {
+		thread = *m.Thread
+	}
+	return f.stampRaw(t, tok, m.ID, `{"thread":"`+thread+`"}`)
+}
+
+// stampRaw is the report for message id with the raw JSON body.
+func (f *ownerAnsweredFixture) stampRaw(t *testing.T, tok string, messageID int64, body string) stampAnswer {
+	t.Helper()
+	w := f.call(t, "POST", "/plugin/v1/messages/"+strconv.FormatInt(messageID, 10)+"/owner-answered", strings.NewReader(body),
 		map[string]string{"Authorization": "Bearer " + tok})
 	var a stampAnswer
 	_ = json.Unmarshal(w.Body.Bytes(), &a)
@@ -141,7 +156,7 @@ func TestAStampedReplySettlesAWaitingRoute(t *testing.T) {
 		t.Fatalf("the route has no paste: %+v", r)
 	}
 	before := time.Now().Add(-time.Second)
-	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || !a.Settled || a.State != "owner_answered" || a.RouteID != id {
+	if a := f.stamp(t, f.tok, m); a.Code != 200 || !a.Settled || a.State != "owner_answered" || a.RouteID != id {
 		t.Fatalf("the stamp: %+v; want 200 settling %s", a, id)
 	}
 	got := f.routeState(t, id)
@@ -176,7 +191,7 @@ func TestAStampedReplySettlesAWaitingRoute(t *testing.T) {
 		t.Fatalf("a late route reply: %d; want 409", code)
 	}
 	// The same stamp again: 200, nothing more settled.
-	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || a.Settled || a.State != "owner_answered" {
+	if a := f.stamp(t, f.tok, m); a.Code != 200 || a.Settled || a.State != "owner_answered" {
 		t.Fatalf("a repeated stamp: %+v; want 200, settled false, owner_answered", a)
 	}
 }
@@ -225,7 +240,7 @@ func TestAStampOnARouteThatIsNotWaitingChangesNothing(t *testing.T) {
 		{"failed", failed, fid, plugins.RouteFailed},
 		{"never routed", never, "", "none"},
 	} {
-		a := f.stamp(t, f.tok, c.m.ID)
+		a := f.stamp(t, f.tok, c.m)
 		if a.Code != 409 || a.Settled || a.State != string(c.want) || a.Error == "" {
 			t.Errorf("%s: %+v; want 409, settled false, state %s", c.name, a, c.want)
 		}
@@ -239,7 +254,7 @@ func TestAStampOnARouteThatIsNotWaitingChangesNothing(t *testing.T) {
 
 	waiting := f.message(t, f.tok, "stamp-not-5", nil)
 	wid := f.route(t, waiting)
-	if a := f.stamp(t, f.tok, waiting.ID); a.Code != 200 || !a.Settled || a.RouteID != wid {
+	if a := f.stamp(t, f.tok, waiting); a.Code != 200 || !a.Settled || a.RouteID != wid {
 		t.Fatalf("CONTROL: the waiting route's stamp: %+v; want 200 settling %s", a, wid)
 	}
 }
@@ -255,11 +270,79 @@ func TestAStampSettlesTheMessagesLatestRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := f.route(t, m)
-	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || !a.Settled || a.RouteID != second {
+	if a := f.stamp(t, f.tok, m); a.Code != 200 || !a.Settled || a.RouteID != second {
 		t.Fatalf("the stamp: %+v; want 200 settling the latest route %s", a, second)
 	}
 	if got := f.routeState(t, first); got.State != plugins.RouteTimedOut {
 		t.Fatalf("the earlier route is %s; want still timed_out", got.State)
+	}
+}
+
+// 🔴 THE STAMP IS BOUND TO ITS CONVERSATION: a stamp naming another thread
+// than the message's, or a message stored with no thread, is 409 and changes
+// nothing; a body without a well-formed thread is 400. The control: the
+// message's own thread then settles it.
+func TestAStampIsBoundToItsMessagesThread(t *testing.T) {
+	f := newOwnerAnsweredFixture(t)
+	m := f.message(t, f.tok, "stamp-thread-1", nil)
+	id := f.route(t, m)
+	// The mismatch FIRST, on a route nothing has touched, so it is this
+	// guard that answers.
+	a := f.stampRaw(t, f.tok, m.ID, `{"thread":"dm-another-conversation"}`)
+	if a.Code != 409 || a.Settled || a.State != "routed" || !strings.Contains(a.Error, "thread is not the conversation") {
+		t.Fatalf("another thread: %+v; want 409 naming the mismatch, state routed", a)
+	}
+	if got := f.routeState(t, id); got.State != plugins.RouteRouted || f.ownerRepliedAt(t, id) != nil {
+		t.Fatalf("another thread changed the route to %s", got.State)
+	}
+
+	for _, c := range []struct{ name, body string }{
+		{"no body", ""},
+		{"no thread", `{}`},
+		{"a thread with a space", `{"thread":"dm one"}`},
+	} {
+		if a := f.stampRaw(t, f.tok, m.ID, c.body); a.Code != 400 || a.Settled {
+			t.Errorf("%s: %+v; want 400", c.name, a)
+		}
+	}
+	bare := f.message(t, f.tok, "stamp-thread-2", map[string]any{"thread": nil})
+	if bare.Thread != nil {
+		t.Fatalf("CONTROL: the message was stored with thread %q", *bare.Thread)
+	}
+	bid := f.route(t, bare)
+	a = f.stampRaw(t, f.tok, bare.ID, `{"thread":"dm-stamp-thread-2"}`)
+	if a.Code != 409 || a.Settled || !strings.Contains(a.Error, "no thread") {
+		t.Fatalf("a message with no thread: %+v; want 409 naming it", a)
+	}
+	if got := f.routeState(t, bid); got.State != plugins.RouteRouted {
+		t.Fatalf("a message with no thread: the route is %s; want still routed", got.State)
+	}
+
+	if a := f.stamp(t, f.tok, m); a.Code != 200 || !a.Settled || a.RouteID != id {
+		t.Fatalf("CONTROL: the message's own thread: %+v; want 200 settling %s", a, id)
+	}
+}
+
+// A stamp on a FALLBACK route — the session answered through route_reply and
+// its draft awaits the owner — is 409 and leaves the draft pending (approving
+// it later would send a second reply; that is the owner's call).
+func TestAStampOnAPendingDraftLeavesItPending(t *testing.T) {
+	f := newOwnerAnsweredFixture(t)
+	m := f.message(t, f.tok, "stamp-fallback-1", nil)
+	id := f.route(t, m)
+	if code, _ := f.reply(t, f.token, id, "the session's answer"); code != 200 {
+		t.Fatalf("CONTROL: the route reply: %d", code)
+	}
+	r := f.routeState(t, id)
+	if r.State != plugins.RouteFallback || r.DraftID == nil {
+		t.Fatalf("CONTROL: the route is %s (draft %v); want fallback with a draft", r.State, r.DraftID)
+	}
+	if a := f.stamp(t, f.tok, m); a.Code != 409 || a.Settled || a.State != "fallback" {
+		t.Fatalf("the stamp on a fallback route: %+v; want 409, state fallback", a)
+	}
+	var status string
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT status FROM plugin_reply_drafts WHERE id = $1`, *r.DraftID).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("the draft is %q (%v); want still pending", status, err)
 	}
 }
 
@@ -282,7 +365,7 @@ func TestAStampForAnotherPluginsOrOwnersMessageIsNotFound(t *testing.T) {
 		{"another owner's plugin, same name", strangerTok, m.ID},
 		{"a message that does not exist", f.tok, m.ID + 1_000_000},
 	} {
-		if a := f.stamp(t, c.tok, c.id); a.Code != 404 || a.Settled {
+		if a := f.stampRaw(t, c.tok, c.id, `{"thread":"`+*m.Thread+`"}`); a.Code != 404 || a.Settled {
 			t.Errorf("%s: %+v; want 404", c.name, a)
 		}
 		if got := f.routeState(t, id); got.State != plugins.RouteRouted {
@@ -290,10 +373,10 @@ func TestAStampForAnotherPluginsOrOwnersMessageIsNotFound(t *testing.T) {
 		}
 	}
 	// A personal token is not a plugin's.
-	if a := f.stamp(t, f.token, m.ID); a.Code != 401 {
+	if a := f.stamp(t, f.token, m); a.Code != 401 {
 		t.Fatalf("the owner's personal token: %+v; want 401", a)
 	}
-	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || !a.Settled || a.RouteID != id {
+	if a := f.stamp(t, f.tok, m); a.Code != 200 || !a.Settled || a.RouteID != id {
 		t.Fatalf("CONTROL: the message's own plugin: %+v; want 200 settling %s", a, id)
 	}
 }

@@ -16,6 +16,7 @@ func TestAnOwnerAnsweredMessageIsNotRetryable(t *testing.T) {
 	unconfirmed := func(ext string) Message {
 		t.Helper()
 		in := msg(ext)
+		in.Thread = "dm-" + ext
 		m, _, err := w.s.Submit(plugin(2), w.p.ID, in)
 		if err != nil {
 			t.Fatal(err)
@@ -42,7 +43,7 @@ func TestAnOwnerAnsweredMessageIsNotRetryable(t *testing.T) {
 	answered, control := unconfirmed("oa-retry-1"), unconfirmed("oa-retry-2")
 	r := w.route(t, answered)
 	timedOut(control)
-	got, settled, err := w.s.SettleOwnerAnswered(plugin(2), w.p.ID, answered.ID)
+	got, settled, err := w.s.SettleOwnerAnswered(plugin(2), w.p.ID, answered.ID, *answered.Thread)
 	if err != nil || !settled || got.RouteID != r.RouteID || got.State != RouteOwnerAnswered || got.OwnerRepliedAt == nil {
 		t.Fatalf("settle: %+v %v %v; want route %s owner_answered, with its time", got, settled, err, r.RouteID)
 	}

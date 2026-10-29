@@ -984,12 +984,17 @@ out and go back to the chief as if nobody had answered. So a sending tool that
 knows which message it answers **stamps** the send with that message's id, and
 after a send it has verified, the plugin reports it:
 
-```
+```json
 POST /plugin/v1/messages/{message_id}/owner-answered
+{"thread": "dm-123"}
 ```
 
-(no body; the plugin token). If the message's route is still waiting
-(`routed`), it ends `owner_answered`: a paste still queued is cancelled, a
+with the plugin token. `thread` is the conversation the reply was **sent
+to**, as the sending tool knew it; it must equal the `thread` the message was
+stored with. That binds the stamp to its conversation: a stamp carrying a
+wrong message id cannot settle another conversation's route. If the thread
+matches and the message's route is still waiting (`routed`), it ends
+`owner_answered`: a paste still queued is cancelled, a
 session's late `route_reply` is refused ("its reply was already sent to the
 sender directly"), the chief's conversation gets a note (never a turn), and
 the route records when muster took the report (`owner_replied_at`) with a
@@ -999,17 +1004,20 @@ the route records when muster took the report (`owner_replied_at`) with a
 |---|---|
 | `200 {"message_id", "route_id", "state": "owner_answered", "settled": true}` | the route was waiting and is settled |
 | `200 {…, "settled": false, "state": "owner_answered"}` | already settled: a repeat of the stamp changes nothing |
-| `409 {…, "settled": false, "state", "error"}` | the route is not waiting — `answered`, `relayed`, `fallback`, `timed_out`, `failed`, or `none` (never routed). Nothing changes, and a hand-back already owed or delivered stands. Final: do not retry. |
+| `409 {…, "settled": false, "state", "error"}` | the stamp's `thread` is not the message's, or the message was stored with no `thread` (the error says which); or the route is not waiting — `answered`, `relayed`, `fallback`, `timed_out`, `failed`, or `none` (never routed). Nothing changes, and a hand-back already owed or delivered stands. Final: do not retry. |
+| `400` | the body is not `{"thread": "<thread id>"}` (for a message of this plugin) |
 | `404` | not a message of this plugin (another plugin's, another owner's, or none), or routing is off |
+
+⚠ **A stamp on a `fallback` route is a 409 and leaves its draft pending.**
+`fallback` means the session already answered through `route_reply` and its
+reply draft awaits your approval. The stamp does not touch that draft: if you
+approve it afterwards, the sender gets a **second** reply. Reject it on the
+draft card if the direct reply was enough.
 
 🔴 **The signal is a stamp on a send, never an inference.** muster settles the
 one message the stamp names, and only a message the same plugin delivered. A
 reply typed by hand carries no stamp and settles nothing: its route times out
 as usual. muster reads no message text for who wrote what.
-
-The routed block a session receives says so in one sentence: if it sends the
-answer some other way, it stamps that send with `--answers <message_id>` (the
-flag of the Discord plugin's sender; another plugin's tool names its own).
 
 ### A reply on a thread a session started
 

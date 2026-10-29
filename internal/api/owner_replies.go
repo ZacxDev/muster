@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -12,9 +13,12 @@ import (
 
 // THE OWNER ANSWERED IT DIRECTLY: docs/plugins.md#when-the-owner-answers-it-directly.
 //
-// POST /plugin/v1/messages/{id}/owner-answered is a plugin's report that a
-// reply to its message {id} was sent DIRECTLY — by the plugin's own sending
-// tool, in a send stamped with that message — and not through route_reply.
+// POST /plugin/v1/messages/{id}/owner-answered {thread} is a plugin's report
+// that a reply to its message {id} was sent DIRECTLY — by the plugin's own
+// sending tool, in a send stamped with that message — and not through
+// route_reply. `thread` is the conversation the reply was SENT to; it must be
+// the message's own stored thread (plugins.SettleOwnerAnswered), so a stamp
+// with a wrong message id cannot settle another conversation's route.
 // The message's route, if it is still waiting (routed), ends owner_answered:
 // a paste still queued is cancelled and the chief is told in a note.
 //
@@ -26,15 +30,22 @@ import (
 // security), and only a message the SAME plugin delivered is settled: another
 // plugin's message, another owner's and a missing one are all 404.
 //
+// 🔴 A `fallback` route — the session's answer is a draft PENDING the owner's
+// approval — is not waiting, so the stamp is a 409 and the draft stays
+// pending: approving it afterwards would send the sender a SECOND reply.
+//
 // The answers:
 //   - 200 {message_id, route_id, state: "owner_answered", settled: true}: the
 //     route was waiting and is settled now;
 //   - 200 {…, settled: false, state: "owner_answered"}: already settled (a
 //     repeat of the stamp changes nothing);
-//   - 409 {…, settled: false, state, error}: the route is not waiting —
+//   - 409 {…, settled: false, state, error}: the stamp's thread is not the
+//     message's, or the message has no thread (nothing changes); or the
+//     route is not waiting —
 //     answered, relayed, fallback, timed_out or failed, or "none" when the
 //     message was never routed. Nothing changes: a hand-back already owed or
 //     delivered stands. Final; a plugin does not retry it;
+//   - 400 for a body that is not {"thread": "<thread id>"};
 //   - 404 for a message that is not this plugin's, and with routing off.
 
 const pluginOwnerAnsweredPath = pluginAPIPrefix + "/messages/{id}/owner-answered"
@@ -53,10 +64,27 @@ func (s *Server) handlePluginOwnerAnswered(w http.ResponseWriter, r *http.Reques
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such message"})
 		return
 	}
+	var in struct {
+		Thread string `json:"thread"`
+	}
+	// A body that does not parse names no thread; the message is looked up
+	// FIRST all the same, so another plugin's message is 404 whatever the
+	// body (a malformed thread can never equal a stored one: nothing settles).
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+		in.Thread = ""
+	}
 	p := pluginFromContext(r.Context())
-	route, settled, err := s.ext.Routes.SettleOwnerAnswered(r.Context(), p.ID, id)
+	route, settled, err := s.ext.Routes.SettleOwnerAnswered(r.Context(), p.ID, id, in.Thread)
+	var refused string
 	switch {
+	case (errors.Is(err, plugins.ErrStampNoThread) || errors.Is(err, plugins.ErrStampThreadMismatch)) && !plugins.ValidThread(in.Thread):
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"thread": "<the conversation the reply was sent to>"}`})
+		return
 	case err == nil:
+	case errors.Is(err, plugins.ErrStampNoThread):
+		refused = "the message was stored with no thread, so a stamp cannot be bound to its conversation; nothing was changed"
+	case errors.Is(err, plugins.ErrStampThreadMismatch):
+		refused = "the stamp's thread is not the conversation the message arrived on; nothing was changed"
 	case errors.Is(err, plugins.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such message"})
 		return
@@ -74,6 +102,9 @@ func (s *Server) handlePluginOwnerAnswered(w http.ResponseWriter, r *http.Reques
 		out["route_id"] = route.RouteID
 	}
 	switch {
+	case refused != "":
+		out["error"] = refused
+		s.writeJSON(w, http.StatusConflict, out)
 	case settled:
 		s.endOwnerAnswered(context.WithoutCancel(r.Context()), route)
 		s.writeJSON(w, http.StatusOK, out)
