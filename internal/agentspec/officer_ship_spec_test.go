@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // TestAShippingOfficersPodSpecCarriesNoAppKeyOrWebhook (round-1 G3) builds a
@@ -23,8 +25,10 @@ import (
 // ⚠ AN INVARIANT GUARD, NOT REGRESSION COVERAGE, mirroring
 // TestAnOfficerInstancesPodSpecCarriesNoOfficerToken: nothing on the spec path
 // was ever handed these secrets, so no prior code fails it. It pins the
-// property for the change that would route one into the pod. The positive
-// control proves the scan sees a credential the spec does carry.
+// property for the change that would route one into the pod. Two positive
+// controls: the scan sees a credential the spec does carry, and the App-key
+// probe fires on the same spec with the PEM planted in its env (round 2: the
+// round-1 probe could never match, so this guard was blind to the key).
 func TestAShippingOfficersPodSpecCarriesNoAppKeyOrWebhook(t *testing.T) {
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -63,6 +67,33 @@ func TestAShippingOfficersPodSpecCarriesNoAppKeyOrWebhook(t *testing.T) {
 		}
 	}
 	spec := mustBuild(t, a, ccConfig(), Options{ClaudeCodeSession: ClaudeCodeSession{AllowMCPTools: tools, BypassPermissions: true}})
+	haystack := specHaystack(t, spec)
+	if !strings.Contains(haystack, ccTokenBeta) {
+		t.Fatal("positive control failed: the scan does not see the account token the spec carries")
+	}
+	if !strings.Contains(haystack, officers.ToolMergePR) {
+		t.Fatal("positive control failed: the spec is not a shipping officer's (no gated tool in it)")
+	}
+	secrets := map[string]string{"the App key": appKeyProbe(t, keyPEM), "the escalation webhook": hook, "the HQ token": tok}
+	// Positive control for the App-key probe (round-2): the same spec with the
+	// PEM planted in its env must be caught. The probe is one whole PEM body
+	// line, so it matches wherever the PEM lands with its newlines kept or
+	// escaped (raw file content, JSON "\n", %+v) — round 1's probe joined three
+	// lines WITHOUT their newlines, a string no carrier of the PEM contains.
+	planted := spec
+	planted.Env = append(append([]provision.EnvVar(nil), spec.Env...), provision.EnvVar{Name: "PLANTED_APP_KEY", Value: keyPEM})
+	if got := leakedSecrets(specHaystack(t, planted), secrets); len(got) != 1 || got[0] != "the App key" {
+		t.Fatalf("positive control failed: a spec carrying the App key PEM in its env was reported as leaking %q, want [the App key]", got)
+	}
+	for _, name := range leakedSecrets(haystack, secrets) {
+		t.Errorf("%s reached the shipping officer instance's pod spec", name)
+	}
+}
+
+// specHaystack is every rendering of the spec a secret could hide in: its
+// JSON, the raw content of its files and its sidecar's, and its %+v.
+func specHaystack(t *testing.T, spec provision.Spec) string {
+	t.Helper()
 	b, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -76,17 +107,28 @@ func TestAShippingOfficersPodSpecCarriesNoAppKeyOrWebhook(t *testing.T) {
 			files.Write(f.Content)
 		}
 	}
-	haystack := string(b) + files.String() + fmt.Sprintf("%+v", spec)
-	if !strings.Contains(haystack, ccTokenBeta) {
-		t.Fatal("positive control failed: the scan does not see the account token the spec carries")
+	return string(b) + files.String() + fmt.Sprintf("%+v", spec)
+}
+
+// appKeyProbe is the first full body line of the PEM: 64 base64 characters
+// with no newline in them, so it survives any escaping of the line breaks.
+func appKeyProbe(t *testing.T, keyPEM string) string {
+	t.Helper()
+	lines := strings.Split(keyPEM, "\n")
+	if len(lines) < 3 || !strings.HasPrefix(lines[0], "-----BEGIN ") || len(lines[1]) != 64 {
+		t.Fatalf("the fixture key is not a PEM with a full 64-char body line: %q", lines[:min(len(lines), 2)])
 	}
-	if !strings.Contains(haystack, officers.ToolMergePR) {
-		t.Fatal("positive control failed: the spec is not a shipping officer's (no gated tool in it)")
-	}
-	body := strings.Join(strings.Split(keyPEM, "\n")[1:4], "")
-	for name, secret := range map[string]string{"the App key": body, "the escalation webhook": hook, "the HQ token": tok} {
+	return lines[1]
+}
+
+// leakedSecrets names, sorted, each secret found in the haystack.
+func leakedSecrets(haystack string, secrets map[string]string) []string {
+	var found []string
+	for name, secret := range secrets {
 		if strings.Contains(haystack, secret) {
-			t.Errorf("%s reached the shipping officer instance's pod spec", name)
+			found = append(found, name)
 		}
 	}
+	sort.Strings(found)
+	return found
 }
