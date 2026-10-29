@@ -34,17 +34,15 @@ func TestADispatchedAgentNamedAfterALongMarkdownTitleRendersPlain(t *testing.T) 
 
 	a := ui.AgentCardView{ID: 41, Name: "agent-41", Status: "running", DisplayName: name}
 	var b bytes.Buffer
-	if err := ui.RenderAgentsList(&b, []ui.AgentCardView{a}, nil, []ui.RecentRef{{AgentID: 41}}, 0); err != nil {
+	if err := ui.RenderNavAgents(&b, []ui.AgentCardView{a}, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	list := b.String()
-	if n := strings.Count(list, ">"+plain+"<"); n < 2 {
-		t.Errorf("the plain name is drawn %d time(s) on the agents list; want the card and the recents strip:\n%s", n, list)
+	if n := strings.Count(list, ">"+plain+"<"); n < 1 {
+		t.Errorf("the plain name is drawn %d time(s) in the sidebar; want its row:\n%s", n, list)
 	}
-	// (The filter's data attributes keep the raw name on purpose; what is
-	// DRAWN must not carry the markup.)
 	if strings.Contains(list, ">#41 · Fix the [login") {
-		t.Errorf("the agents list draws the link markup")
+		t.Errorf("the sidebar draws the link markup")
 	}
 	b.Reset()
 	if err := ui.AgentDetailPage(ui.AgentDetailView{Name: "agent-41", Status: "running", DisplayName: name}, ui.Features{}).Render(&b); err != nil {

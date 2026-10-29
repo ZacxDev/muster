@@ -70,7 +70,9 @@ func TestTheScriptsDefaultTabIsTheTabTheShellShowsAtRoot(t *testing.T) {
 			if len(shown) != 1 {
 				t.Fatalf("the shell for / shows %d panels (%v), want exactly one", len(shown), shown)
 			}
-			if hidden == 0 {
+			// With one visible tab (no Connectors) there is only one panel and
+			// nothing to choose between; the control needs two.
+			if hidden == 0 && len(visibleTabs(shape.feat)) > 1 {
 				t.Fatal("CONTROL: the shell for / rendered no hidden panel, so `one shown` says nothing about a default")
 			}
 

@@ -5,9 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	g "maragu.dev/gomponents"
-	. "maragu.dev/gomponents/html"
 )
 
 // THE AGENTS LIST'S "IDLE" SECTION. A real operator's list is a hundred-odd
@@ -142,26 +139,4 @@ func IdleSectionAfterLabel(d time.Duration) string {
 		return plural(int64(d/time.Hour), "hour")
 	}
 	return d.String()
-}
-
-// idleHead is the section's header: a full-width toggle naming how many entries
-// it holds. Drawn only when there is at least one; the script keeps the count
-// to what the filter shows, and its aria-expanded to the state in force.
-func idleHead(n int, after time.Duration) g.Node {
-	return Div(
-		ID("agents-idle-head"),
-		g.Attr("data-idle-head", ""),
-		Class("col-span-full mt-2 flex min-h-[44px] items-center border-t border-line pt-2"),
-		Button(
-			Type("button"),
-			ID("agents-idle-toggle"),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-controls", "agents-list"),
-			Class("press inline-flex min-h-[44px] items-center gap-2 rounded-xl px-2 text-sm font-medium text-fg2 transition hover:text-fg"),
-			g.Raw(`<svg data-idle-chevron class="h-4 w-4 shrink-0 transition-transform" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5l5 5-5 5"/></svg>`),
-			Span(g.Text("Idle")),
-			Span(g.Attr("data-idle-count", ""), Class("tabular-nums"), g.Text("("+strconv.Itoa(n)+")")),
-			g.If(after > 0, Span(Class("text-xs font-normal text-muted"), g.Text("no activity in over "+IdleSectionAfterLabel(after)))),
-		),
-	)
 }

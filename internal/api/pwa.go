@@ -112,7 +112,6 @@ func Manifest() WebManifest {
 		Shortcuts: []manifestShortcut{
 			shortcut("New task", "New task", "/tasks?new=1", "/static/icons/shortcut-new-96.png"),
 			shortcut("Tasks", "Tasks", "/tasks", "/static/icons/shortcut-tasks-96.png"),
-			shortcut("Agents", "Agents", "/agents", "/static/icons/shortcut-agents-96.png"),
 		},
 		ShareTarget: manifestShareTarget{
 			Action: "/share",

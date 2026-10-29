@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"regexp"
 	"strconv"
 	"strings"
@@ -103,48 +102,6 @@ func headerOf(t *testing.T, card string) string {
 		t.Fatalf("no header slot:\n%s", card)
 	}
 	return card[i:]
-}
-
-// TestEveryListedEntryDrawsItsHostsIconBesideItsName: an agent card draws the
-// cluster's, a mirrored card its host's (the key it was given), each in its
-// header — beside the name, inside the 16px box, the host in its tooltip and
-// accessible name — and a "Recently viewed" entry draws the very same mark as
-// its card.
-func TestEveryListedEntryDrawsItsHostsIconBesideItsName(t *testing.T) {
-	agent := AgentCardView{ID: 4, Name: "ag-icons", Status: "running"}
-	tower := MirrorCardView{Host: "tower", Session: "main", Online: true, HostIcon: HostIconFor(map[string]int{"tower": 1}, "tower")}
-	if tower.HostIcon != hostIconSet[1].Key {
-		t.Fatalf("instrument check FAILED: tower (rank 1) draws %q, want %q", tower.HostIcon, hostIconSet[1].Key)
-	}
-	for _, c := range []struct {
-		name, html, key, host string
-	}{
-		{"agent", renderString(t, agentCard(agent)), "cluster", "cluster"},
-		{"mirror", renderString(t, mirrorCard(tower)), hostIconSet[1].Key, "tower"},
-	} {
-		m := hostMarkRe.FindStringSubmatch(headerOf(t, c.html))
-		if m == nil {
-			t.Errorf("%s card: no host mark in its header:\n%s", c.name, c.html)
-			continue
-		}
-		if m[1] != c.key || m[2] != c.host || m[3] != c.host {
-			t.Errorf("%s card: mark %q for host %q/%q, want %q for %q", c.name, m[1], m[2], m[3], c.key, c.host)
-		}
-	}
-
-	var b bytes.Buffer
-	if err := RenderAgentsList(&b, []AgentCardView{agent}, []MirrorCardView{tower},
-		[]RecentRef{{AgentID: 4}, {Mirror: MirrorRef{Host: "tower", Session: "main"}}}, 0); err != nil {
-		t.Fatal(err)
-	}
-	// The switcher's Recent row (switcherRefresh), which replaced the
-	// "Recently viewed" strip: its entries draw the marks their cards draw.
-	recent := b.String()[strings.Index(b.String(), `id="`+switcherRowID(SwitcherRecent)+`"`):]
-	recent = recent[:strings.Index(recent, `id="`+switcherCountID(SwitcherRecent)+`"`)]
-	marks := hostMarkRe.FindAllStringSubmatch(recent, -1)
-	if len(marks) != 2 || marks[0][1] != "cluster" || marks[1][1] != hostIconSet[1].Key || marks[1][2] != "tower" {
-		t.Errorf("Recent entries' marks %v; want the agent's cluster mark, then tower's %q", marks, hostIconSet[1].Key)
-	}
 }
 
 // TestAMirroredPageBadgeLeadsWithItsHostsIcon: the "Mirrored · <host>" badge on

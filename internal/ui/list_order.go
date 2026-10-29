@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	g "maragu.dev/gomponents"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE AGENTS LIST IS ONE FLAT LIST, MOST RECENTLY ACTIVE FIRST (operator ask:
@@ -28,6 +28,15 @@ func (e listEntry) pinned() bool {
 		return e.agent.Pinned
 	}
 	return e.mirror.Pinned
+}
+
+// work is what the entry has running (its card's work chip): a dispatched
+// agent's pod report, a mirrored window's host report.
+func (e listEntry) work() mirror.WindowWork {
+	if e.agent != nil {
+		return e.agent.Work
+	}
+	return e.mirror.Work
 }
 
 // idle reports whether the entry is drawn in the Idle section (MarkIdle).
@@ -89,14 +98,12 @@ func listBefore(a, b listEntry) bool {
 	return a.activeAt().After(b.activeAt())
 }
 
-// waiting reports whether the entry waits on the viewer: whether the Agents
-// list's "Waiting on you" chip (listChips' "waiting") shows its card — the
-// chip's token among the card's data-wait words (waitTokens): an attention
-// item that files under "you", or a dispatched agent blocked at a permission
-// prompt. 🔴 THE ONE PREDICATE the session switcher's Waiting view and waiting
-// dot (NewSwitcher, switcherItems), the sidebar's order (navBefore) and — by
-// the chip's own token — the list's chip all read, so none of them can
-// disagree about who is waiting.
+// waiting reports whether the entry waits on the viewer: waitingToken among
+// its wait words (waitTokens) — an attention item that files under "you", or a
+// dispatched agent blocked at a permission prompt. 🔴 THE ONE PREDICATE the
+// session switcher's Waiting view and waiting dot (NewSwitcher,
+// switcherItems), the sidebar's order (navBefore) and its rows' waiting mark
+// (navAgentRow) all read, so none of them can disagree about who is waiting.
 func (e listEntry) waiting() bool {
 	var words string
 	if e.agent != nil {
@@ -104,13 +111,7 @@ func (e listEntry) waiting() bool {
 	} else {
 		words = waitTokens(e.mirror.Attention, false)
 	}
-	return slices.Contains(strings.Fields(words), waitingChip().Token)
-}
-
-// waitingChip is the list's "Waiting on you" chip.
-func waitingChip() listChip {
-	c, _ := chipByID("waiting")
-	return c
+	return slices.Contains(strings.Fields(words), waitingToken)
 }
 
 // chief reports whether the entry is the viewer's chief agent
@@ -157,10 +158,34 @@ func navBefore(a, b listEntry) bool {
 	return a.activeAt().After(b.activeAt())
 }
 
-// listCard renders one entry as its card.
-func listCard(e listEntry) g.Node {
-	if e.agent != nil {
-		return agentCard(*e.agent)
+// HomeHref is where home (`/`, and the retired /agents) opens for a viewer
+// with no chief to open (internal/api homeTarget): the session the viewer
+// opened LAST that is still listed (refs, newest first — the switcher's Recent
+// order), else the sidebar's first row (navOrder: whoever waits on the
+// operator, then the most recently active), else "" — nothing to open, and
+// home draws the onboarding page.
+//
+// 🔴 A CONVERSATION, NOT A PAGE OF CONVERSATIONS (operator decision: "make the
+// default view open to the chief"). Without a chief, an empty page whose only
+// way on is a drawer that starts shut on a phone would be a dead end; the last
+// conversation is what a chat app opens.
+func HomeHref(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) string {
+	es := navOrder(list, mirrors)
+	for _, r := range refs {
+		for _, e := range es {
+			if r.AgentID != 0 && e.agent != nil && e.agent.ID == r.AgentID {
+				return e.agent.PageHref()
+			}
+			if r.AgentID == 0 && e.mirror != nil && (MirrorRef{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window}) == r.Mirror {
+				return MirrorCardHref(*e.mirror)
+			}
+		}
 	}
-	return mirrorCard(*e.mirror)
+	if len(es) == 0 {
+		return ""
+	}
+	if e := es[0]; e.agent != nil {
+		return e.agent.PageHref()
+	}
+	return MirrorCardHref(*es[0].mirror)
 }

@@ -128,6 +128,11 @@ type AgentDetailView struct {
 	// Switcher is the session switcher below the chat form (switcher.go), on
 	// the page surface only; nil for none.
 	Switcher *Switcher
+	// Card is the agent as its card was composed (internal/api's
+	// cardViewIndexed, the one composer): what the page's status strip, its ⋯
+	// menu and its notices draw (agent_actions.go). Zero (Card.ID 0) draws
+	// none of them — the chief panel's pane, and a minimal test view.
+	Card AgentCardView
 }
 
 // SessionView is one chat session in the switcher.
@@ -221,12 +226,10 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// its tabs are boosted <a>s that navigate to the shell, so the detail
 				// page gets the same chrome as the home shell.
 				//
-				// currentTab = "agents": /agents/<name> is a child of the Agents
-				// section AND appScript's tabFromPath('/agents/x') resolves to
-				// 'agents', so the server's first paint and the client's show()
-				// agree on which link is current. Marking the section index for a
-				// detail view is standard practice.
-				sidebar("agents", "agents", false, feat),
+				// No nav entry is current: the Agents section this page used to be
+				// a child of (the list page) is retired. The page's own ROW in the
+				// sidebar's agent list is marked instead (navAgentRow).
+				sidebar("", "", false, feat),
 				// Content column: offset right of the persistent desktop sidebar (lg+),
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
@@ -280,6 +283,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// focusHistoryButton opens.
 				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.FocusHistory != "", focusHistoryScript()),
+				// The rename form the header's ⋯ menu opens (agent_actions.go).
+				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
 				// Places the header's full-title popover (agentTitle) beside its "…"
 				// and keeps that button's aria-expanded in step — the same script
 				// the shell runs for the cards' popovers.
@@ -332,16 +337,27 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				chatHistoryButton(sessionDrawerID),
 				g.If(v.FocusHistory != "", focusHistoryButton()),
 			),
-			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
+			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
+			// (agent_actions.go): the live status strip first and the ⋯ menu
+			// last, so the first row stays the title's.
+			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, Div(
+				Class("flex items-center gap-2 pl-11 text-xs"),
+				g.If(v.Card.ID != 0, agentStrip(v.Card)),
+				agentModelControl(v),
+				agentMenuSlot(v.Card),
+			)),
 			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
-			// card opens this page. A claude-code agent also has a Terminal — the
-			// same Rendered | Terminal switch a mirrored Claude Code window has
-			// (viewToggle), on both of its pages. An agent of a kind with no
-			// terminal has one view and no switch.
+			// row in the sidebar opens this page. A claude-code agent also has a
+			// Terminal — the same Rendered | Terminal switch a mirrored Claude Code
+			// window has (viewToggle), on both of its pages. An agent of a kind
+			// with no terminal has one view and no switch.
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
+				Div(Class("flex items-center gap-2"),
+					g.If(v.Card.ID != 0, agentStrip(v.Card)),
+					chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
-					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
+					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))),
+					agentMenuSlot(v.Card))),
 		),
 		// A restore's "Updating…" (restore.go): hung just below the header (a
 		// sticky box, so it is the chip's containing block), over the top of
@@ -669,23 +685,6 @@ func newChatButton(agentID int64) g.Node {
 	)
 }
 
-// liveStatusIcon is the header status indicator: a bare colored dot (no text
-// label) that self-refreshes. It renders statusIcon(status) for an instant first
-// paint, then polls GET /ui/agents/{id}/status on load + every 10s and swaps the
-// fresh icon into itself — so the header reflects the agent's live pod state
-// without a label. htmx only (boost-safe). Shared by the agent-detail and
-// operator headers.
-func liveStatusIcon(agentID int64, status string) g.Node {
-	return Span(
-		ID("agent-status"),
-		hx("hx-get", "/ui/agents/"+strconv.FormatInt(agentID, 10)+"/status"),
-		hx("hx-trigger", "load, every 10s"),
-		hx("hx-target", "this"),
-		hx("hx-swap", "innerHTML"),
-		statusIcon(status),
-	)
-}
-
 // agentModelControl renders the agent's model directly AS the searchable model
 // combobox (no separate badge chip, no "change" expander): the combobox shows the
 // current model as its trimmed display value and hx-posts the chosen model to
@@ -696,11 +695,10 @@ func liveStatusIcon(agentID int64, status string) g.Node {
 // clear hint says so and a brief "restarting…" state is shown after the request.
 func agentModelControl(v AgentDetailView) g.Node {
 	ids := strconv.FormatInt(v.ID, 10)
-	return Div(
-		// Single compact row: the model selector flexes to fill and the repo chip
-		// sits alongside it (shrink-0, truncates) — keeps the header tight instead
-		// of spending a second row on the repo.
-		Class("flex items-center gap-2 pl-11 text-xs"),
+	// The header's second row (agentDetailHeader) holds these: the model
+	// selector flexes to fill and the repo chip sits alongside it (shrink-0,
+	// truncates) — keeps the header tight instead of spending a row on the repo.
+	return g.Group{
 		Form(
 			hx("hx-post", "/agents/"+ids+"/model"),
 			// Autosave: picking a model dispatches `change` on the hidden #model
@@ -729,7 +727,16 @@ func agentModelControl(v AgentDetailView) g.Node {
 			Class("inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full bg-s2/80 px-2.5 py-1 text-[11px] text-muted ring-1 ring-inset ring-line"),
 			g.Text(v.Repo),
 		)),
-	)
+	}
+}
+
+// agentMenuSlot is the header's ⋯ menu (agentActionsMenu) in the element its
+// refresh replaces; nothing for a view with no card.
+func agentMenuSlot(a AgentCardView) g.Node {
+	if a.ID == 0 {
+		return nil
+	}
+	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenu(a))
 }
 
 // ChatSurfaceQueryParam is the query-string name the chat-log partial reads its
@@ -769,6 +776,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// positioning at all. See ChatSurface.
 		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
 		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// What the retired list's card said under its title (agent_actions.go).
+		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		Div(
 			ID("chat-log"),
 			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0 [&[data-cg-unlaid]>*]:invisible"),
@@ -1367,12 +1376,19 @@ func chatProvisioningIndicator(status string) g.Node {
 	)
 }
 
-// AgentsListPath is where marking a task complete from an agent's page lands:
-// the Agents list, on both the htmx and the no-JS path.
-const AgentsListPath = "/agents"
+// HomePath is home: the chief's chat, or the session opened last
+// (internal/api homeTarget). Marking a task complete from an agent's page
+// lands there, on both the htmx and the no-JS path — it used to land on the
+// Agents list page, which is retired.
+const HomePath = "/"
+
+// HomeFallbackPath is the retired Agents list page's URL, GET /agents: home's
+// redirect, or — when home has nothing to open — the onboarding page
+// (RenderAgentsHome).
+const HomeFallbackPath = "/agents"
 
 // TaskCompletePath is the no-JS Mark-complete form's action: a POST that
-// completes the task and redirects to AgentsListPath.
+// completes the task and redirects to HomePath.
 func TaskCompletePath(id int64) string { return "/tasks/" + strconv.FormatInt(id, 10) + "/complete" }
 
 // agentTaskBanner renders the completion banner for a TASK-LINKED agent whose
@@ -1412,7 +1428,7 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	if !complete {
 		children = append(children, Form(
 			// THE NO-JS PATH: a plain POST to TaskCompletePath, which completes
-			// the task and answers 303 → AgentsListPath. htmx's hx-patch below
+			// the task and answers 303 → HomePath. htmx's hx-patch below
 			// takes precedence over method/action whenever the script runs.
 			Method("post"),
 			Action(TaskCompletePath(*v.NoteID)),
@@ -1422,7 +1438,7 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 			// ask: "after marking a task complete, it should just redirect back out of
 			// the agent instead of to another page" — it used to open /tasks). Full
 			// navigation, the same place the no-JS path's redirect lands.
-			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+AgentsListPath+"'}"),
+			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+HomePath+"'}"),
 			Class("contents"),
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
 			Button(

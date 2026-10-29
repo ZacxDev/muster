@@ -41,8 +41,9 @@ func TestMarkCompleteWithoutJavaScriptLandsOnTheAgentsList(t *testing.T) {
 	hdr := map[string]string{"Cookie": sessionCookieFor(f.srv), "Origin": "http://example.com"}
 	body, ct := form(url.Values{})
 	w := f.call(t, http.MethodPost, path, body, merge(hdr, ct))
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/agents" {
-		t.Fatalf("POST %s = %d → %q, want 303 → /agents (%s)", path, w.Code, w.Header().Get("Location"), w.Body)
+	// Home (ui.HomePath): the Agents list page it used to land on is retired.
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+		t.Fatalf("POST %s = %d → %q, want 303 → / (%s)", path, w.Code, w.Header().Get("Location"), w.Body)
 	}
 	if got, _ := f.notes.Get(asUser(1), n.ID); got.Status != notes.StatusComplete {
 		t.Fatalf("the task is %s after the POST, want complete", got.Status)

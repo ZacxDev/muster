@@ -95,7 +95,9 @@ var chiefHref = ui.AgentSessionHref("zesty-stoat", homeChiefSess)
 
 // TestHomeOpensTheChiefsChat: GET / sends a browser to the chief agent's page
 // on its latest session (302), an htmx request the same place by HX-Redirect,
-// and — with no chief to open — to the Agents list. `/?shell=1` (the service
+// with no chief to open, to the last session (the sidebar's first row here),
+// and with nothing to open — or a failed read — to /agents, which draws the
+// onboarding page (or reports the failure). `/?shell=1` (the service
 // worker's offline copy) and /tasks still serve the shell.
 //
 // Red on the base tree: GET / served the Tasks shell (200) in every case.
@@ -107,7 +109,8 @@ func TestHomeOpensTheChiefsChat(t *testing.T) {
 		want  string
 	}{
 		{"a chief", withChief, chiefHref},
-		{"no agent labelled chief", &homeAgents{rows: homeRows(false), latest: map[int64]int64{homeWorkerID: 55}}, "/agents"},
+		// No chief: the sidebar's first row (ui.HomeHref; no recents here).
+		{"no agent labelled chief", &homeAgents{rows: homeRows(false), latest: map[int64]int64{homeWorkerID: 55}}, ui.AgentListHref("brave-otter", 55)},
 		{"the agent list cannot be read", &homeAgents{rows: homeRows(true), listErr: errors.New("db down")}, "/agents"},
 		{"no agent store", nil, "/agents"},
 	}

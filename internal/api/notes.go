@@ -1540,7 +1540,7 @@ func (s *Server) handleNoteStatus(w http.ResponseWriter, r *http.Request) {
 // the agent page's Mark-complete (ui.TaskCompletePath). It sets the task
 // complete through applyTaskStatus — the session path's one core, so the
 // broadcast and every side effect are the PATCH route's — and redirects to
-// the Agents list (ui.AgentsListPath), where the htmx path lands too.
+// home (ui.HomePath), where the htmx path lands too.
 func (s *Server) handleNoteComplete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -1556,7 +1556,7 @@ func (s *Server) handleNoteComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update status", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, ui.AgentsListPath, http.StatusSeeOther)
+	http.Redirect(w, r, ui.HomePath, http.StatusSeeOther)
 }
 
 // handleAPITaskStatus handles PATCH /api/tasks/{id}/status (machine,

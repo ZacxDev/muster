@@ -287,8 +287,8 @@ func TestFocusTextIsEscapedEverywhereItIsDrawn(t *testing.T) {
 	rows := b.String()
 	a := realisticAgent()
 	a.Focus = &FocusView{Title: escapeTitlePayload, Description: escapeTitlePayload, UpdatedAt: time.Now()}
-	card := renderNode(t, agentCard(a))
-	for name, markup := range map[string]string{"history rows": rows, "card": card} {
+	row := renderNode(t, NavAgentsList([]AgentCardView{a}, nil, "", time.Now()))
+	for name, markup := range map[string]string{"history rows": rows, "sidebar row": row} {
 		if strings.Contains(markup, "<img") || strings.Contains(markup, `onerror="alert`) ||
 			strings.Contains(markup, "<svg onload") || strings.Contains(markup, `onload="alert`) {
 			t.Errorf("%s: the payload is markup:\n%s", name, markup)
@@ -304,18 +304,5 @@ func TestFocusTextIsEscapedEverywhereItIsDrawn(t *testing.T) {
 	}
 	if got := attrOf(findAttr(doc, "data-focus-history-more"), "data-href"); got != href {
 		t.Errorf("data-href reads %q, want %q", got, href)
-	}
-	art := parseArticle(t, card)
-	trigger := findAttr(art, "data-card-focus")
-	if got := focusNodeText(trigger); !strings.HasPrefix(got, escapeTitlePayload) {
-		t.Errorf("card focus title reads %q", got)
-	}
-	if got := attrOf(trigger, "aria-label"); got != "Focus: "+escapeTitlePayload+" — show details" {
-		t.Errorf("aria-label reads %q", got)
-	}
-	for _, h := range []string{"onerror", "onload"} {
-		if n := len(allAttr(art, h)); n != 0 {
-			t.Errorf("%d elements carry an %s attribute", n, h)
-		}
 	}
 }

@@ -241,8 +241,8 @@ var opCtx = authz.Operator(context.Background())
 // no switch to refuse.
 func TestAFreshInstallHasNoChiefAndSaysSo(t *testing.T) {
 	w := newChiefWorld(t, false, false)
-	if got := w.landing(t); got != "/agents" {
-		t.Errorf("GET / → %q, want /agents", got)
+	if got := w.landing(t); got != chiefOffHome {
+		t.Errorf("GET / → %q, want %q (no chief: the last session)", got, chiefOffHome)
 	}
 	if sb := w.sidebar(); strings.Contains(sb, "data-nav-chief") {
 		t.Errorf("the sidebar has a chief row:\n%s", sb)
@@ -279,8 +279,8 @@ func TestANewUserWithAProvisionerHasTheChiefOff(t *testing.T) {
 	if state != "off" || !strings.Contains(section, `name="on" value="1"`) || !strings.Contains(section, "Turn the chief on") {
 		t.Errorf("Chief section state %q, want off with a turn-on control:\n%s", state, section)
 	}
-	if got := w.landing(t); got != "/agents" {
-		t.Errorf("GET / → %q, want /agents", got)
+	if got := w.landing(t); got != chiefOffHome {
+		t.Errorf("GET / → %q, want %q (no chief: the last session)", got, chiefOffHome)
 	}
 }
 
@@ -362,8 +362,8 @@ func TestTurningTheChiefOffAndOnAgain(t *testing.T) {
 		t.Fatalf("off stored chose=%v on=%v", chose, on)
 	}
 	w.prov.waitFor(t, "stop "+itoa(homeChiefID))
-	if got := w.landing(t); got != "/agents" {
-		t.Errorf("off: GET / → %q, want /agents", got)
+	if got := w.landing(t); got != chiefOffHome {
+		t.Errorf("off: GET / → %q, want %q", got, chiefOffHome)
 	}
 	if sb := w.sidebar(); strings.Contains(sb, "data-nav-chief") || strings.Contains(sb, `/agents/zesty-stoat`) {
 		t.Errorf("off: the sidebar still lists the chief:\n%s", sb)
@@ -520,8 +520,8 @@ func TestAFailedStartIsSaidAndLeavesTheChiefOff(t *testing.T) {
 	if strings.Contains(page, "Saved.") || !strings.Contains(page, "could not be started") {
 		t.Errorf("the Account page after a failed Start:\n%.800s", page[strings.Index(page, `data-testid="chief-settings"`):])
 	}
-	if got := w.landing(t); got != "/agents" {
-		t.Errorf("GET / → %q, want /agents (still off)", got)
+	if got := w.landing(t); got != chiefOffHome {
+		t.Errorf("GET / → %q, want %q (still off)", got, chiefOffHome)
 	}
 }
 
@@ -536,7 +536,7 @@ func TestAChiefWithNoProvisionerCanStillBeTurnedOff(t *testing.T) {
 	if rec := w.post(accountChiefPath, url.Values{"on": {"0"}}); rec.Code != http.StatusSeeOther {
 		t.Fatalf("off: %d %s", rec.Code, rec.Body)
 	}
-	if got := w.landing(t); got != "/agents" {
+	if got := w.landing(t); got != chiefOffHome {
 		t.Errorf("off: GET / → %q", got)
 	}
 }
@@ -572,8 +572,8 @@ func TestProvisionRefusesAChiefTurnedOff(t *testing.T) {
 func TestAnUnreadableSwitchIsOff(t *testing.T) {
 	w := newChiefWorld(t, true, true)
 	w.prefs.err = errors.New("db down")
-	if got := w.landing(t); got != "/agents" {
-		t.Errorf("GET / → %q, want /agents", got)
+	if got := w.landing(t); got != chiefOffHome {
+		t.Errorf("GET / → %q, want %q (no chief: the last session)", got, chiefOffHome)
 	}
 	if _, err := w.s.chiefAgent(opCtx); err == nil || errors.Is(err, ErrNoChief) {
 		t.Errorf("chiefAgent err = %v, want the read error", err)
@@ -586,3 +586,8 @@ func TestAnUnreadableSwitchIsOff(t *testing.T) {
 		t.Errorf("Account reads %q, want unknown", state)
 	}
 }
+
+// chiefOffHome is where home opens with no chief on: the fixture's other
+// agent, the sidebar's first row (ui.HomeHref) — the Agents list page it used
+// to open is retired.
+var chiefOffHome = ui.AgentListHref("brave-otter", 55)

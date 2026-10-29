@@ -88,6 +88,11 @@ func TestTheViewPagesPaintWholeBeforeAnyScript(t *testing.T) {
 			}
 			for i := body; i <= last; i++ {
 				if n := order[i]; n.Data == "script" {
+					// A deferred script does not block the parser (it runs after the
+					// document is parsed), so it moves nothing in mid-paint.
+					if _, deferred := pinAttr(n, "defer"); deferred {
+						continue
+					}
 					if src, ok := pinAttr(n, "src"); ok {
 						t.Errorf("a parser-blocking <script src=%q> in the body before the page's last laid-out block ends (element %d of %d..%d): a paint while it loads moves what is parsed after it", src, i, body, last)
 					}

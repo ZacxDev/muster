@@ -54,8 +54,8 @@ func offerGet(t *testing.T, h http.Handler, path string) string {
 
 // TestTheUIOffersDispatchOnlyWhenTheServerCanDispatch: a server with no agent
 // provisioner answers POST /agents with requireLifecycleProvisioner's 503, so
-// no surface it draws may offer a dispatch — not the Agents bar's "+", not a
-// task card's Dispatch button — and the dispatch sheet, if reached anyway,
+// no surface it draws may offer a dispatch — not the sidebar's "+", not the
+// onboarding page's button, not a task card's Dispatch button — and the dispatch sheet, if reached anyway,
 // explains what is missing instead of drawing a form that can only fail. With
 // a provisioner wired, all three are offered as before.
 //
@@ -66,7 +66,7 @@ func offerGet(t *testing.T, h http.Handler, path string) string {
 // Red at origin/main: the unwired server drew the "+", the card's Dispatch and
 // the dispatch form, the shipped defect on a docker compose install.
 func TestTheUIOffersDispatchOnlyWhenTheServerCanDispatch(t *testing.T) {
-	plus := `id="` + ui.SwitcherDeployID + `"`
+	plus := `id="` + ui.NavDeployID + `"`
 	cardDispatch := `hx-get="/ui/agents/new?`
 	sheetForm := `hx-post="/agents"`
 	sheetExplains := `data-dispatch-unavailable`
@@ -82,20 +82,26 @@ func TestTheUIOffersDispatchOnlyWhenTheServerCanDispatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := dispatchOfferServer(t, tc.prov)
 
-			// The "+" on the Agents list's docked bar, in the Agents document.
+			// The "+" beside the sidebar's Agents label, and the onboarding page's
+			// button, on GET /agents (home has nothing to open on this server, so
+			// it draws the onboarding page).
 			doc := offerGet(t, h, "/agents")
 			if got := strings.Contains(doc, plus); got != tc.offer {
-				t.Errorf("GET /agents draws the dispatch + = %t, want %t", got, tc.offer)
+				t.Errorf("GET /agents draws the sidebar's dispatch + = %t, want %t", got, tc.offer)
 			}
-			// Where the "+" is absent the Agents header says why (and links the
-			// guide); where it is drawn, the header says nothing.
+			if got := strings.Contains(doc, `id="`+ui.HomeDispatchID+`"`); got != tc.offer {
+				t.Errorf("GET /agents draws the onboarding page's dispatch button = %t, want %t", got, tc.offer)
+			}
+			// Where the "+" is absent the sidebar says why (and links the guide);
+			// where it is drawn, nothing does.
 			if got := strings.Contains(doc, `data-dispatch-off-hint`); got == tc.offer {
 				t.Errorf("GET /agents draws the dispatch-not-set-up hint = %t, want %t", got, !tc.offer)
 			}
-			// POSITIVE CONTROL: the bar the "+" sits in is drawn in both shapes, so
-			// an absent "+" is the gate and not a document missing its switcher.
-			if !strings.Contains(doc, `id="`+ui.SwitcherDockID+`"`) {
-				t.Fatalf("GET /agents drew no switcher dock at all; the + assertion above is vacuous")
+			// POSITIVE CONTROL: the sidebar's agent list the "+" heads is drawn in
+			// both shapes, so an absent "+" is the gate and not a document
+			// missing its sidebar.
+			if !strings.Contains(doc, `id="`+ui.NavAgentsListID+`"`) {
+				t.Fatalf("GET /agents drew no sidebar agent list at all; the + assertion above is vacuous")
 			}
 
 			// A task card's Dispatch button, on the board partial.

@@ -349,13 +349,13 @@
     try { return root.top !== root; } catch (e) { return true; }
   }
 
-  // warmable: this page warms (the Agents list or an agent page), and now.
+  // warmable: this page warms (an agent page or a rendered view), and now.
   function warmable() {
     if (!enabled || document.hidden || frugal() || framed()) return false;
     var p = location.pathname;
     // (Not "/": a signed-in "/" redirects to the chief's page, which is an
     // /agents/ path; the shell drawn at "/" is only the offline copy.)
-    return p === '/agents' || p.indexOf('/agents/') === 0 || p === '/mirror/view';
+    return p.indexOf('/agents/') === 0 || p === '/mirror/view';
   }
 
   // here is the window this page shows, when it is a rendered view.

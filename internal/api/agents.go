@@ -39,11 +39,12 @@ const chatHistoryCap = 200
 // Every handler below answers its own "nothing to serve from" case, so the
 // recorded route set is a function of the CODE and never of the fixture.
 func (s *Server) registerAgentRoutes(mux Mux) {
-	mux.HandleFunc("GET /ui/agents", s.requireSession(s.handleAgentsContent))
-	// Live status icon poll for the agent-detail / operator header (the bare
-	// colored dot, no label). Works without a provisioner (falls back to stored
-	// status), so it's registered alongside the list route.
+	// Live status icon poll for the agent page's header (the bare colored dot,
+	// no label). Works without a provisioner (falls back to stored status).
 	mux.HandleFunc("GET /ui/agents/{id}/status", s.requireSession(s.handleAgentStatusIcon))
+	// The agent page's status strip, ⋯ menu and notices (ui/agent_actions.go):
+	// what the retired Agents list's card showed, re-fetched on a change.
+	mux.HandleFunc("GET /ui/agents/{id}/header", s.requireSession(s.handleAgentHeader))
 	// Agent-reply notifications: the FAB's panel + OOB badge, and the per-session
 	// mark-read used by the chat client when a turn finishes. Both are pure DB
 	// reads/writes, so they're registered without a provisioner.
@@ -146,9 +147,6 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/agents/new", s.requireSession(s.handleAgentNewModal))
 	mux.HandleFunc("GET /ui/agents/repos", s.requireSession(s.handleAgentRepoOptions))
 	mux.HandleFunc("GET /ui/agents/notes", s.requireSession(s.handleAgentNoteOptions))
-	// Inline rename: the pencil swaps in the edit form; cancel re-fetches the card.
-	mux.HandleFunc("GET /ui/agents/{id}/rename", s.requireSession(s.handleAgentRenameForm))
-	mux.HandleFunc("GET /ui/agents/{id}/card", s.requireSession(s.handleAgentCard))
 	mux.HandleFunc("GET /api/openrouter/models", s.requireSession(s.handleOpenRouterModels))
 	mux.HandleFunc("POST /agents", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentCreate)))
 	mux.HandleFunc("POST /agents/{id}/start", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStart)))
@@ -186,39 +184,6 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /agents/{name}/send", s.requireSession(s.handleAgentSendAgain))
 	mux.HandleFunc("GET /agents/{name}/terminal", s.requireSession(s.handleAgentTerminalPage))
 	mux.HandleFunc("GET /agents/{name}/terminal/ws", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentTerminalWS)))
-}
-
-// handleAgentsContent serves the /ui/agents partial: cards (status reconciled
-// with live pods) plus the FAB + dispatch modal.
-func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	cards, mirrors, err := s.agentsListCards(ctx)
-	if err != nil {
-		s.logger.Printf("agents: list: %v", err)
-		http.Error(w, "could not load agents", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx), s.ext.AgentsIdleAfter); err != nil {
-		s.logger.Printf("agents: render: %v", err)
-	}
-}
-
-// agentsListCards is the Agents list's cards as the viewer sees them: agents
-// most recently active first, pins marked, and the viewer's mirrored sessions.
-// The list partial renders them, and the shell resolves the "Recently viewed"
-// strip against them (handleIndex), so both read the one list.
-//
-// Every card carries its attention badge (withCardAttention).
-func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
-	return s.agentsListCardsWithin(ctx, 0)
-}
-
-// agentsListCardsWithin is agentsListCards with the provisioner's instance read
-// bounded by instancesWithin (0 = unbounded): past it the cards are drawn with
-// their STORED status (a nil index, liveStatusIndexed). See shellData.
-func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time.Duration) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
-	return s.agentsListCardsLive(ctx, instancesWithin, true)
 }
 
 // agentsListCardsLive is agentsListCardsWithin, with the instance read made
@@ -654,55 +619,27 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 	}
 }
 
-// cardViewFor builds the single-card view for one agent, fetching the live
-// instance index itself. Used by the inline-rename re-render and the cancel/card
-// re-fetch. Do NOT use it in a loop — see liveStatus.
-//
-// The chief answer needs the whole list (the chief is resolved across it). A
-// failed read degrades to the reserved-slug half of the predicate only — the
-// card then may offer a Delete the server still refuses, which is the safe
-// direction to be wrong in.
-func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardView {
+// agentPageCard is the agent page's card view (ui.AgentDetailView.Card): what
+// its status strip, ⋯ menu and notices draw — the retired Agents list's card,
+// composed by the ONE composer (cardViewIndexed) against the instance index
+// the page already read (idx: its status is the page's), so the strip and the
+// page cannot disagree. The chief answer needs the whole list; a failed read
+// degrades to the reserved-slug half of the predicate (the menu may then offer
+// a Delete the server still refuses — the safe direction to be wrong in).
+func (s *Server) agentPageCard(ctx context.Context, a agents.Agent, idx map[string]*provision.Instance) ui.AgentCardView {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
-		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
+		s.logger.Printf("agents: page card %d: list for chief check: %v", a.ID, err)
 		list = nil
 	}
-	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], s.latestSessionIDs(ctx, []int64{a.ID})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	v := s.cardViewIndexed(a, idx, time.Time{}, 0, chiefPredicate(list), pins.Set{}, nil)
 	v.DeleteProtected = s.deleteProtection(list)(a)
-	// The same badge the list draws, so a re-rendered card keeps it.
-	one := []ui.AgentCardView{v}
-	s.withCardAttention(ctx, one, nil)
-	return one[0]
+	return v
 }
 
-// handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename
-// form that REPLACES the card (outerHTML swap of #agent-{id}).
-func (s *Server) handleAgentRenameForm(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	a, err := s.ext.Agents.Get(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.NotFound(w, r)
-			return
-		}
-		s.logger.Printf("agents: rename form %d: %v", id, err)
-		http.Error(w, "could not load agent", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentRename(w, ui.AgentCardView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName}); err != nil {
-		s.logger.Printf("agents: render rename form %d: %v", id, err)
-	}
-}
-
-// handleAgentCard serves GET /ui/agents/{id}/card: re-renders one agent card
-// (used to cancel the inline rename), swapped as outerHTML of #agent-{id}.
-func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
+// handleAgentHeader serves GET /ui/agents/{id}/header: the agent page's status
+// strip, with its ⋯ menu and notices out of band (ui.RenderAgentHeader).
+func (s *Server) handleAgentHeader(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
@@ -715,19 +652,21 @@ func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		s.logger.Printf("agents: card %d: %v", id, err)
+		s.logger.Printf("agents: header %d: %v", id, err)
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentCard(w, s.cardViewFor(ctx, a)); err != nil {
-		s.logger.Printf("agents: render card %d: %v", id, err)
+	w.Header().Set("Cache-Control", "no-store")
+	if err := ui.RenderAgentHeader(w, s.agentPageCard(ctx, a, s.instanceIndex(ctx))); err != nil {
+		s.logger.Printf("agents: render header %d: %v", id, err)
 	}
 }
 
 // handleAgentName handles POST /agents/{id}/name: update the agent's display
-// name (the slug Name is immutable) and re-render the card (outerHTML swap of
-// #agent-{id}). A blank name falls back to the slug so the card stays labelled.
+// name (the slug Name is immutable). The agent page's rename form posts it;
+// the answer reloads that page (HX-Refresh), so its header, its tab title and
+// the sidebar all read the new name. A blank name falls back to the slug.
 func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -740,7 +679,7 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	ctx := r.Context()
-	updated, err := s.ext.Agents.SetDisplayName(ctx, id, name)
+	_, err = s.ext.Agents.SetDisplayName(ctx, id, name)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -750,10 +689,9 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update name", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentCard(w, s.cardViewFor(ctx, updated)); err != nil {
-		s.logger.Printf("agents: render card after rename %d: %v", id, err)
-	}
+	w.Header().Set("HX-Refresh", "true")
+	w.Header().Set("HX-Trigger", "agents:changed")
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleAgentCreate handles POST /agents: build the record, then provision only when
@@ -832,11 +770,12 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := s.createAndDispatchAgent(ctx, dispatchParams{
+	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
 		Kickoff: action == "dispatch",
 		Kind:    kind, CCAccount: ccAccount, WorkerPool: workerPool,
-	}); err != nil {
+	})
+	if err != nil {
 		s.logger.Printf("agents: create/dispatch: %v", err)
 		// A kind/account refusal is decided BEFORE the row exists and is the
 		// operator's to act on — the toast shows this text verbatim.
@@ -863,46 +802,41 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		s.advanceTaskToInProgress(ctx, *noteID)
 	}
 
-	// 🔴 THE ANSWER HAS TO FIT THE DOCUMENT THAT ASKED. The default response is
-	// the agents list, morphed into #agents-list — an element that exists ONLY on
-	// the shell. Dispatching from /tasks/{id} would target nothing, and htmx
-	// resolves hx-target BEFORE sending, so the POST was never made at all: no
-	// agent, no error, no toast, and a modal that stayed open. The detail page
-	// gets its own card back instead, which is where the dispatch's effect is
-	// visible anyway (open → in_progress, plus the new agent's status chip).
-	if noteID != nil && rendersInDetailShape(r, *noteID) {
+	// 🔴 THE ANSWER HAS TO FIT THE FORM THAT ASKED. A task's Dispatch (the
+	// task-scoped sheet, on the board or on /tasks/{id}) targets that task's
+	// card, and gets the card back — the dispatch's visible effect there is the
+	// task flipping to in-progress with its new agent's status chip. Every
+	// other submit — the sidebar's "+", the onboarding page's button, whose form
+	// swaps nothing — is sent to the new agent's page (HX-Redirect), where it
+	// can be watched starting (or, saved for later, started).
+	//
+	// 🔴 THE TARGET IS READ FROM HX-Target, THE ELEMENT htmx WILL SWAP INTO. The
+	// sheet with no task can still name one (its "Existing task" combobox), so
+	// "a note id was posted" does not say which form it was. The answer used to
+	// be the Agents list, morphed into #agents-list — an element that existed
+	// ONLY on the retired list's document.
+	if noteID != nil && r.Header.Get("HX-Target") == "task-"+strconv.FormatInt(*noteID, 10) {
 		note, err := s.ext.Notes.Get(ctx, *noteID)
 		if err == nil {
 			s.renderNoteCard(w, r, note)
 			return
 		}
-		// 🔴 DO NOT FALL THROUGH TO THE AGENTS LIST HERE, and the comment that used
-		// to sit in this branch called it a merely "wrong target". It is worse than
-		// that: #task-{id} DOES exist on this page, so handleAgentsContent's
-		// agents-list markup morphs cleanly OVER the task card and the detail page
-		// silently shows an unrelated panel where its task was, until something
-		// triggers a resync.
-		//
-		// 204 instead. htmx does not swap a No Content response, so the page keeps
-		// the card it already has — which is correct: the dispatch SUCCEEDED, only
-		// the re-read failed. A request that worked still answers 2xx; nothing is
-		// rendered that is not true.
-		//
-		// 🔴 AND THE RECOVERY IS NOW REAL. This comment used to end "…and
-		// taskDetailLive re-fetches on the next sse:agent.changed /
-		// muster:resync anyway", which was NOT established: the agent.changed
-		// for this dispatch fires from inside createAndDispatchAgent, i.e. BEFORE
-		// the status write above, so there was frequently no next one and the page
-		// could sit on `open` until the reader changed tab. advanceTaskToInProgress
-		// now broadcasts task.changed AFTER its commit, which taskDetailLive also
-		// listens for — so this branch strands nothing, and the re-fetch it
-		// triggers reads the advanced status rather than racing it.
+		// 🔴 204, NOT SOMETHING ELSE IN THE CARD'S PLACE: htmx does not swap a
+		// No Content response, so the page keeps the card it already has —
+		// which is correct: the dispatch SUCCEEDED, only the re-read failed.
+		// advanceTaskToInProgress broadcasts task.changed after its commit, so
+		// the page's own live refresh brings the advanced card.
 		s.logger.Printf("agents: reload task %d after dispatch: %v", *noteID, err)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	s.handleAgentsContent(w, r)
+	to := s.agentPageHref(ctx, rec)
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, to, http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("HX-Redirect", to)
+	w.WriteHeader(http.StatusOK)
 }
 
 // advanceTaskToInProgress flips a task open→in_progress after a dispatch. It
@@ -1216,8 +1150,9 @@ func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
 	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Stop(ctx, id) }, "stop")
 }
 
-// agentLifecycle runs a start/stop action in the background then re-renders the
-// agents panel.
+// agentLifecycle runs a start/stop action in the background and answers an
+// empty 200 with agents:changed, which re-fetches the agent page's status
+// strip and ⋯ menu (ui/agent_actions.go) and the sidebar's rows.
 func (s *Server) agentLifecycle(w http.ResponseWriter, r *http.Request, action func(context.Context, int64) error, label string) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -1231,7 +1166,8 @@ func (s *Server) agentLifecycle(w http.ResponseWriter, r *http.Request, action f
 			s.logger.Printf("agents: %s %d: %v", label, id, err)
 		}
 	})
-	s.handleAgentsContent(w, r)
+	w.Header().Set("HX-Trigger", "agents:changed")
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleAgentModel handles POST /agents/{id}/model: update the agent's model in
@@ -1309,7 +1245,10 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAgentDelete tears down the agent (release + namespace + record) in the
-// background and removes its card.
+// background and sends the page that asked home (HX-Redirect): the agent page's
+// ⋯ menu is where Delete is, and the agent it shows is going. Home leaves the
+// deleted agent out (homeTarget's except): its row outlives this response by a
+// moment, and the page must not land back on it.
 //
 // 🔴 THE CHIEF IS REFUSED WITH 409, BEFORE ANYTHING IS STARTED. The teardown is
 // asynchronous, so a check inside it could only log; the refusal has to happen
@@ -1335,8 +1274,14 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not check whether this is the chief agent; nothing was deleted", http.StatusInternalServerError)
 		return
 	}
-	// Empty 200: htmx removes the targeted #agent-<id> card.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	to, herr := s.homeTarget(r, id)
+	if herr != nil {
+		s.logger.Printf("agents: home after delete %d: %v", id, herr)
+	}
+	if to == "" {
+		to = ui.HomeFallbackPath
+	}
+	w.Header().Set("HX-Redirect", to)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1470,7 +1415,10 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
 		return
 	}
-	status := s.liveStatus(op.begin("status"), a)
+	// The instance index, read ONCE: the page's status and its card's
+	// (agentPageCard) are the same read.
+	idx := s.instanceIndex(op.begin("status"))
+	status := liveStatusIndexed(a, idx)
 	sessionParam := r.URL.Query().Get("session")
 	// ⚠ THE LIST-READ FAILURE IS DISCARDED HERE, AND THAT IS THE PAGE'S EXISTING
 	// BEHAVIOUR RATHER THAN AN OVERSIGHT: sessionDrawer renders no failure state, so
@@ -1532,6 +1480,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
 	// The session switcher below the chat form (ui/switcher.go).
 	view.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{AgentID: a.ID})
+	// What the retired Agents list's card showed: the header's status strip,
+	// its ⋯ menu and the notices (ui/agent_actions.go).
+	view.Card = s.agentPageCard(op.begin("card"), a, idx)
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {

@@ -145,11 +145,6 @@ type Switcher struct {
 	unknown bool
 }
 
-// switcherPending is the bar of a document that does not build the list: the
-// Agents panel of another tab's document, shown by a client-side tab switch.
-// Its rows are filled by the list's own first load (switcherRefresh).
-func switcherPending() *Switcher { return &Switcher{unknown: true} }
-
 // SwitcherItem is one entry of a view.
 type SwitcherItem struct {
 	Href, Label string
@@ -299,7 +294,9 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
 			it.Title = switcherSearchTitle(a.Name, plainOr(a.DisplayName, ""), focusTitle(a.Focus))
-			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind))
+			// The host is a word too (the retired Agents list's host tabs): a
+			// dispatched agent's is the cluster.
+			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost)
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
@@ -307,8 +304,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.HostNamed = labelNamesHost(*m, labels[i])
 			it.Code = switcherName(e)
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
-			f := mirrorFields(*m)
-			it.Words = switcherSearchWords(f.Repo, f.Kind, m.Session)
+			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host)
 		}
 		out[i] = it
 	}
@@ -370,7 +366,9 @@ func (s *Switcher) view(key string) []SwitcherItem {
 // inset, being the last thing above the screen's edge; otherwise (the agent
 // page, inside its already-inset pane) it lines up with the form above it.
 // Nothing when s is nil.
-func switcherBar(s *Switcher, pinned bool) g.Node { return switcherBarWith(s, pinned, switcherScript(), nil) }
+func switcherBar(s *Switcher, pinned bool) g.Node {
+	return switcherBarWith(s, pinned, switcherScript(), nil)
+}
 
 // switcherBarWith is switcherBar with its script tag (switcherScript, or the
 // shell's switcherStaticScript) and, last on its row, extra (the Agents list's
@@ -458,7 +456,7 @@ func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 			switcherViewMenu(s),
 		),
 		script,
-		NoScript(StyleEl(g.Raw(`#`+SwitcherID+` { visibility: visible !important; }`))),
+		NoScript(StyleEl(g.Raw(`#` + SwitcherID + ` { visibility: visible !important; }`))),
 	}
 }
 
@@ -583,72 +581,6 @@ func switcherRow(s *Switcher, key, empty string, hidden bool) g.Node {
 	)
 }
 
-// SwitcherDockID is the Agents list's dock: the fixed box at the bottom of the
-// viewport that holds its bar (switcherDock).
-const SwitcherDockID = "agents-switcher-dock"
-
-// switcherDock is the bar as the Agents list draws it: FIXED to the bottom of
-// the viewport (the list is the document's own scroll, so a bar in flow would
-// sit under the last card), offset right of the desktop sidebar as the content
-// column is, and as wide as that column (contentMaxW). The bar is the pinned
-// form (switcherBar): inset, and padded by the safe-area inset, being the last
-// thing above the screen's edge.
-//
-// 🔴 OUT OF FLOW, SO ITS ARRIVAL MOVES NOTHING; THE LIST'S ROOM FOR IT IS THE
-// PANEL'S OWN PADDING (agentsPanel, switcherRoom), in the panel's first byte,
-// so the last card scrolls clear of the bar and nothing shifts when it paints.
-// Inside the Agents panel, so it shows only while the panel does (a hidden
-// panel is display:none, and so is everything in it).
-//
-// dispatch is Features.Dispatch: false draws the bar with no "+" at all, since
-// the sheet it opens could only submit into a 503 on a server with no agent
-// runtime (the docker compose install's default). The Agents empty state is
-// where that absence is explained (agentsEmptyState).
-func switcherDock(s *Switcher, dispatch bool) g.Node {
-	if s == nil {
-		return nil
-	}
-	var deploy g.Node
-	if dispatch {
-		deploy = switcherDeployButton()
-	}
-	return Div(
-		ID(SwitcherDockID),
-		Class("fixed inset-x-0 bottom-0 z-20 bg-bg lg:left-72"),
-		Div(
-			Class("relative "+contentMaxW()+" "+switcherRoom(true)),
-			switcherBarWith(s, true, switcherStaticScript(), deploy),
-		),
-	)
-}
-
-// SwitcherDeployID is the Agents list bar's "+" (switcherDeployButton).
-const SwitcherDeployID = "switcher-deploy"
-
-// switcherDeployButton is the Agents list bar's "+": it opens the task-less
-// dispatch sheet (GET /ui/agents/new, DispatchModalBody) exactly as the list's
-// FAB did — load the body into the always-present sheet, reveal it
-// (modalOpenClick). A 44px target around a 32px face, like the search button
-// beside it, in the bar's fixed h-11 row, so it moves nothing.
-func switcherDeployButton() g.Node {
-	return Button(
-		ID(SwitcherDeployID),
-		Type("button"),
-		g.Attr("aria-label", "Deploy agent"),
-		g.Attr("title", "Deploy agent"),
-		g.Attr("aria-haspopup", "dialog"),
-		Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
-		hx("hx-get", "/ui/agents/new"),
-		hx("hx-target", "#agent-modal-body"),
-		hx("hx-swap", "innerHTML"),
-		hx("hx-on:click", modalOpenClick("agent-modal")),
-		Span(
-			Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent transition group-hover:bg-accent/90"),
-			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
-		),
-	)
-}
-
 // switcherRefresh is the bar's rows and counts as a list render carries them,
 // out of band (RenderAgentsList): each swaps its CHILDREN into the element of
 // its id, so the shown row (a `hidden` the script set) and the view stay as
@@ -740,12 +672,6 @@ func switcherEntry(it SwitcherItem) g.Node {
 // TestTheShellCarriesNoInlineScriptOverTheBudget), and a boosted swap runs it
 // inline from the text the window holds (swap_inline.go). One text, switcherJS.
 func switcherScript() g.Node { return Script(g.Raw(switcherJS)) }
-
-// switcherStaticScript is switcherScript as the app shell's static file.
-func switcherStaticScript() g.Node { return staticScript(switcherScriptSrc) }
-
-// switcherScriptSrc is the path switcherJS is served at, /static/js/switcher.js.
-var switcherScriptSrc = staticJS("switcher", switcherJS)
 
 // switcherOOBHandler takes the Agents list's out-of-band copies of the bar's
 // rows and counts (switcherRefresh) and swaps them ITSELF, not htmx: the

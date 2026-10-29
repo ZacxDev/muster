@@ -35,15 +35,21 @@ func TestTheOnePromptIsTheSameEverywhere(t *testing.T) {
 	}
 }
 
-// TestTheEmptyAgentsListSaysHowToConnect: no agents and no mirrored windows
-// draws the connect instructions — the tmux one-liner, the exact prompt and
-// the guide's link — not a blank list. A list with a card draws none of it.
+// TestTheEmptyAgentsListSaysHowToConnect: home with nothing to open (no
+// agents and no mirrored windows: RenderAgentsHome) draws the connect
+// instructions — the tmux one-liner, the exact prompt and the guide's link —
+// inside the navigation, and offers the dispatch sheet only when the server can
+// dispatch (else the "not set up" hint).
 func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 	var empty bytes.Buffer
-	if err := AgentsCardsWithMirrors(nil, nil).Render(&empty); err != nil {
+	if err := RenderAgentsHome(&empty, Features{Dispatch: true}); err != nil {
 		t.Fatal(err)
 	}
 	html := empty.String()
+	if !strings.Contains(html, `id="sidebar-root"`) || !strings.Contains(html, `id="`+HomeDispatchID+`"`) ||
+		!strings.Contains(html, `id="`+NavDeployID+`"`) || strings.Contains(html, DispatchOffHintAttr) {
+		t.Errorf("the onboarding page is not inside the nav with the dispatch button:\n%s", html)
+	}
 	for _, want := range []string{`id="agents-empty"`, `id="onboarding-prompt"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the empty state lacks %s:\n%s", want, html)
@@ -55,12 +61,12 @@ func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 		}
 	}
 
-	var full bytes.Buffer
-	if err := AgentsCardsWithMirrors([]AgentCardView{{ID: 1, Name: "clever-fox", Status: "running"}}, nil).Render(&full); err != nil {
+	var off bytes.Buffer
+	if err := RenderAgentsHome(&off, Features{}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(full.String(), "agents-empty") || strings.Contains(full.String(), "onboarding-prompt") {
-		t.Fatalf("a list with an agent still draws the empty state:\n%s", full.String())
+	if strings.Contains(off.String(), `id="`+HomeDispatchID+`"`) || !strings.Contains(off.String(), DispatchOffHintAttr) {
+		t.Fatalf("a server that cannot dispatch offers the sheet, or does not say why:\n%s", off.String())
 	}
 }
 

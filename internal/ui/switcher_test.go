@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"html"
 	"regexp"
 	"strings"
 	"testing"
@@ -416,9 +415,9 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]
 	for _, want := range []string{
 		`data-switcher-entry="mirror" title="mango:1" data-switcher-code="mango:1" data-switcher-title="Migrate the billing ledger"`,
-		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" data-switcher-words="w" class=`,
+		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" data-switcher-words="w tower" class=`,
 		`data-switcher-entry="agent" title="Release tidy" data-switcher-code="ag-three" data-switcher-title="Release tidy · Tidy the release notes"`,
-		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" data-switcher-words="standard" class=`,
+		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" data-switcher-words="standard cluster" class=`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("the All row lacks %s in:\n%s", want, all)
@@ -484,14 +483,16 @@ func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
 	for _, it := range s.All {
 		got[it.Code] = it.Words
 	}
-	if w := got["ag-x"]; w != "acme/ledger claude code" {
+	// The host is the last word (the retired Agents list's host tabs): the
+	// cluster for a dispatched agent, the window's host otherwise.
+	if w := got["ag-x"]; w != "acme/ledger claude code cluster" {
 		t.Errorf("agent words = %q", w)
 	}
-	if w := got["mango:1"]; w != "fixture-repo opencode scratch11" {
+	if w := got["mango:1"]; w != "fixture-repo opencode scratch11 tower" {
 		t.Errorf("window words = %q", w)
 	}
 	page := renderString(t, switcherBar(s, true))
-	if !strings.Contains(page, `data-switcher-words="a&#34;b&lt;c claude code scratch12"`) {
+	if !strings.Contains(page, `data-switcher-words="a&#34;b&lt;c claude code scratch12 tower"`) {
 		t.Errorf("the words are not an escaped attribute:\n%s", page)
 	}
 	for _, want := range []string{
@@ -505,42 +506,6 @@ func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
 	// Drawn by textContent only: the script never writes markup it was given.
 	if regexp.MustCompile(`innerHTML\s*=[^=]`).MatchString(paletteJS) {
 		t.Error("the palette writes innerHTML")
-	}
-}
-
-// TestOnlyTheAgentsListBarHasADeployButton: operator ask (deploy "In the bottom
-// bar"): the Agents list's docked bar ends in a "+" that opens the task-less
-// dispatch sheet as the old FAB did; a session page's bar has none. Red at
-// origin/main: no "+" anywhere on the bar.
-func TestOnlyTheAgentsListBarHasADeployButton(t *testing.T) {
-	list, mirrors := switcherFixture()
-	dock := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
-	b := regexp.MustCompile(`<button id="` + SwitcherDeployID + `"[^>]*>`).FindString(dock)
-	for _, want := range []string{`type="button"`, `aria-label="Deploy agent"`, `hx-get="/ui/agents/new"`, `hx-target="#agent-modal-body"`, `hx-swap="innerHTML"`, `h-11 w-11`} {
-		if !strings.Contains(b, want) {
-			t.Errorf("the + lacks %s: %s", want, b)
-		}
-	}
-	if !strings.Contains(b, html.EscapeString(modalOpenClick("agent-modal"))) && !strings.Contains(b, modalOpenClick("agent-modal")) {
-		t.Errorf("the + does not open the dispatch sheet: %s", b)
-	}
-	// After the search button, in the bar's one fixed row.
-	if strings.Index(dock, `id="`+SwitcherDeployID+`"`) < strings.Index(dock, `id="switcher-search-open"`) {
-		t.Error("the + is not beside (after) the search button")
-	}
-	// A server that cannot dispatch (Features.Dispatch false): the same docked
-	// bar, no "+". internal/api's TestTheUIOffersDispatchOnlyWhenTheServerCanDispatch
-	// drives this through the real handler.
-	if off := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), false)); strings.Contains(off, SwitcherDeployID) || !strings.Contains(off, `id="`+SwitcherDockID+`"`) {
-		t.Error("with dispatch off the dock must still draw, without the +")
-	}
-	for _, page := range []string{
-		renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{AgentID: 1}), false)),
-		renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{Mirror: MirrorRef{Host: "tower", Session: "w", Window: "@1"}}), true)),
-	} {
-		if strings.Contains(page, SwitcherDeployID) || strings.Contains(page, "Deploy agent") {
-			t.Error("a session page's bar draws the +")
-		}
 	}
 }
 

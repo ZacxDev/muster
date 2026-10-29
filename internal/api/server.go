@@ -35,7 +35,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ZacxDev/muster/internal/askq"
 	"io/fs"
 	"log"
 	"net/http"
@@ -44,6 +43,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/askq"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -97,8 +98,8 @@ type Server struct {
 	// ledgers is the rendered views' tool-context ledger checkpoints, which a
 	// resuming socket starts from (mirror_ledger.go).
 	ledgers ledgerCheckpoints
-	auth     AuthConfig
-	router   RouterPort
+	auth    AuthConfig
+	router  RouterPort
 
 	// chiefSwitch is each owner's chief-switch lock (chief_toggle.go
 	// chiefSwitchLock): owner id → *sync.Mutex.
@@ -566,6 +567,9 @@ func (s *Server) registerAll(mux Mux) {
 	for _, tab := range ui.TabKeys() {
 		mux.HandleFunc("GET /"+tab, s.requireSession(s.handleIndex))
 	}
+	// The retired Agents list page's URL: home's redirect, or the onboarding
+	// page when home has nowhere to go (nav_agents.go).
+	mux.HandleFunc("GET "+ui.HomeFallbackPath, s.requireSession(s.handleAgentsHome))
 	mux.HandleFunc("GET /events", s.requireSession(s.handleEvents))
 	// The sidebar's agent list (nav_agents.go): a partial every nav document loads.
 	mux.HandleFunc("GET "+ui.NavAgentsPath, s.requireSession(s.handleNavAgents))
@@ -794,47 +798,14 @@ const shellDocumentCacheControl = viewDocumentCacheControl
 const offlineShellParam = "shell"
 
 // shellData is what the shell draws on its first paint (ui.ShellData): on the
-// Agents tab, the LIST — its cards, server-rendered — and the "Recently viewed"
-// strip resolved against them, so nothing is filled in under the reader a moment
-// later. Any other tab draws its Agents panel hidden and empty, where a late
-// list moves nothing on screen, and fills it from the list's own load. On the
-// Tasks tab (`/`, /tasks) it is the task BOARD instead (tasksShellData).
-//
-// 🔴 IT IS THE LIST'S BUILD — agentsListCards, THE ONE handleAgentsContent
-// SERVES — AND THE TAB'S FIRST PAINT NEEDS NO SECOND. The shell used to draw only
-// the strip (a lighter read) and leave the list to a `load` request, so the
-// document was a filter bar over nothing until that request landed. Now the
-// document reads the provisioner's instances ONCE and the list issues no load
-// of its own (ui.agentsListLiveTrigger). (Its first live refresh — the SSE
-// open's resync — still rebuilds and morphs it; see ui/agents_list_ssr.go for
-// why that is measured and kept.) TestTheAgentsFirstPaintBuildsTheListOnce counts the provisioner reads.
-//
-// 🔴 THE DOCUMENT'S FIRST BYTE WAITS ON THAT INSTANCE READ AT MOST
-// shellInstancesWithin. It is a Kubernetes list (two API reads) with no timeout
-// of its own, and a stalled apiserver made GET /agents — every reload, a pin's
-// redirect, a boosted click — a blank tab for as long as it stalled (measured by
-// review: 3.002s behind a 3s-delayed provisioner, against 1ms for the shell
-// before). Past the bound the cards are drawn with their STORED status — still
-// the cards, so the first paint is still the list — and the list's first live
-// refresh (the SSE open's resync, GET /ui/agents, which waits for its read as
-// it always did) brings the live one, morphed in place.
-//
-// ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
-// empty strip), not an error: that load reports its own failure.
+// Tasks tab (/tasks) the task BOARD (tasksShellData); every other tab draws
+// its panel from its own load. (The Agents tab, which drew its list here, is
+// retired — GET /agents is home's redirect, handleAgentsHome.)
 func (s *Server) shellData(ctx context.Context, tab string, feat ui.Features) ui.ShellData {
 	if ui.ShellTab(tab, feat) == "tasks" {
 		return s.tasksShellData(ctx)
 	}
-	if tab != "agents" || s.ext.Agents == nil {
-		return ui.ShellData{}
-	}
-	cards, mirrors, err := s.agentsListCardsWithin(ctx, shellInstancesWithin)
-	if err != nil {
-		s.logger.Printf("agents: shell list: %v", err)
-		return ui.ShellData{}
-	}
-	refs := s.recentRefs(ctx)
-	return ui.ShellData{}.WithList(cards, mirrors, refs, s.ext.AgentsIdleAfter)
+	return ui.ShellData{}
 }
 
 // tasksShellData is the Tasks tab's first paint: the board for the default
@@ -895,14 +866,8 @@ func (s *Server) tasksShellData(ctx context.Context) ui.ShellData {
 	return ui.ShellData{}.WithTasks(b.v, mark)
 }
 
-// shellBoardWithin bounds the Tasks document's board build (tasksShellData),
-// as shellInstancesWithin bounds the Agents document's instance read.
+// shellBoardWithin bounds the Tasks document's board build (tasksShellData).
 const shellBoardWithin = 1500 * time.Millisecond
-
-// shellInstancesWithin bounds the Agents document's instance read (shellData):
-// long enough for a healthy apiserver's two list calls, short enough that a
-// stalled one costs a reload a moment rather than the tab.
-const shellInstancesWithin = 1500 * time.Millisecond
 
 // tabFromPath maps a request path to a tab key.
 //

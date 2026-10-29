@@ -217,7 +217,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// same name — the card's own qualifier (mirror.Qualified).
 		TitleQualifier: e.Qualifier,
 		RawName:        rawName,
-		BackHref:       "/agents",
+		BackHref:       ui.HomePath,
 		Badge:          "Mirrored · " + h.Host,
 		BadgeHost:      h.Host,
 		BadgeHostIcon:  s.mirrorHostIcon(r.Context(), h.Host),
@@ -267,6 +267,12 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	}
 	v.TerminalOnly = e.TerminalOnlyReason()
 	v.LiveCopy = e.LiveCopyWarning()
+	// What the retired list's card said: "offline", and the host's note —
+	// unless TerminalOnly already is that note.
+	v.Offline = !h.Online
+	if e.AgentNote != v.TerminalOnly {
+		v.Note = e.AgentNote
+	}
 	// Drag-to-scroll only where the host can do it: an older muster-mirror (or
 	// a read-only host) gets a page with no gesture at all, not one that fails.
 	if e.CanScroll() {

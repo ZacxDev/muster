@@ -159,22 +159,3 @@ func hostMarkDecorative(host, key string) g.Node {
 		g.Raw(hostIconSVG(d, "h-4 w-4")),
 	)
 }
-
-// hostChip is a MIRRORED card's host, SPELLED, in the card's body (header row,
-// beside its name), as a chip like the card's kind and repo: "host laptop". A
-// phone has no hover for hostMark's tooltip, and the host is what tells two
-// same-named windows apart and a filter field (host:). It is not in the footer
-// (an operator ask). A dispatched agent's card draws none: its cluster icon and
-// the "cluster" tab already say it. The value carries data-mirror-host, which
-// tests locate the host by.
-func hostChip(host string) g.Node {
-	return Span(
-		g.Attr("data-card-host", host),
-		Class("inline-flex items-center gap-1 rounded-full bg-s2/80 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line"),
-		Span(Class("text-muted"), g.Text("host")),
-		Span(g.Attr("data-mirror-host", ""), g.Text(host)),
-	)
-}
-
-// clusterMark is a dispatched pod agent's host mark.
-func clusterMark() g.Node { return hostMark(podHost, clusterIcon.Key) }

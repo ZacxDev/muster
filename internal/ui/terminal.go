@@ -113,6 +113,11 @@ type AgentTerminalView struct {
 	// elsewhere under another session id (mirror.SessionView.LiveCopyWarning),
 	// "" for none: a banner under the header (livecopy.go).
 	LiveCopy string
+	// Offline and Note are a mirrored window's host state, as MirrorViewView's
+	// (mirrorHostBanner). Note is drawn only where TerminalOnly does not
+	// already say it.
+	Offline bool
+	Note    string
 	// StepUp, when set, puts live keys behind a FRESH sign-in
 	// (internal/stepup): a mirrored session. The page attaches with live keys
 	// when the sign-in is fresh, and otherwise asks "Confirm it's you" at the
@@ -276,7 +281,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Class("flex h-dvh flex-col overflow-hidden bg-bg text-fg antialiased"),
 				// The navigation: position:fixed (no room taken in the column,
 				// so the terminal keeps its size), an overlay at every width.
-				overlayNav(v.Nav, "agents"),
+				overlayNav(v.Nav, ""),
 				Header(
 					// It WRAPS: with the view switch beside Fit width and the
 					// Interactive switch, a phone's width does not hold them all
@@ -322,6 +327,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				liveCopyBanner("term-live-copy", v.LiveCopy),
+				mirrorHostBanner("term-host-note", v.Offline, v.Note),
 				Div(
 					ID("term-error"),
 					g.Attr("role", "alert"),
