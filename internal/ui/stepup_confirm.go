@@ -141,8 +141,10 @@ func confirmDialog(s *StepUpView) g.Node {
 				g.Attr("hidden", ""),
 				Class("flex flex-col"),
 				Button(ID("term-confirm-passkey"), Type("button"),
-					Class("press min-h-[44px] rounded-md px-3 py-2 text-base font-semibold transition "+stepUpPrimary),
-					g.Text("Confirm with passkey")),
+					g.Attr("data-label", stepUpPasskeyLabel),
+					g.Attr("data-label-waiting", stepUpPasskeyWaiting),
+					Class("press min-h-[44px] rounded-md px-3 py-2 text-base font-semibold transition aria-disabled:cursor-wait aria-disabled:opacity-60 "+stepUpPrimary),
+					g.Text(stepUpPasskeyLabel)),
 			),
 			// Why no passkey is offered, when one should have been (stepUpScript's
 			// unavailable): one muted line, hidden otherwise.
@@ -183,6 +185,13 @@ func confirmDialog(s *StepUpView) g.Node {
 		),
 	)
 }
+
+// The passkey button's label, and what it says while its challenge is being
+// fetched (stepUpScript's pkWaiting).
+const (
+	stepUpPasskeyLabel   = "Confirm with passkey"
+	stepUpPasskeyWaiting = "Checking for your passkey…"
+)
 
 // The password's collapse and its summary (confirmDialog).
 const (
@@ -403,7 +412,14 @@ function mpkFresh(p) { return p && (Date.now() - p.at) < mpkMaxAge; }
 //
 // The tap on "Confirm with passkey" then reaches navigator.credentials on an
 // already-resolved promise — no network between the gesture and WebAuthn (see
-// PasskeyPrefetchJS).
+// PasskeyPrefetchJS). 🔴 THAT IS WHY THE BUTTON IS INERT WHILE A FETCH IS IN
+// FLIGHT (pkWaiting): it is drawn, and focused, from the open's first frame,
+// but aria-disabled — "Checking for your passkey…" — until the open's options
+// answer, and again while a retry's replacement is fetched; a tap meanwhile
+// does nothing (it would await that fetch inside the gesture: on iOS, the
+// NotAllowedError read as "The passkey was cancelled"). aria-disabled, not
+// disabled: a disabled button cannot hold the focus it is given. The one
+// exception stays the one above: a challenge older than mpkMaxAge.
 //
 // Telemetry (window.cgTrack, Faro's custom events; nothing when telemetry is
 // off), two events, both carrying open_id — a random id the page makes at each
@@ -456,6 +472,7 @@ window.musterStepUp = (function () {
   // is then the only option, never a tap away.
   function offer(on) {
     if (on) unavailable('');
+    else pkWaiting(false);
     pkBox.hidden = !on;
     dlg.setAttribute('data-passkey-offered', on ? '1' : '0');
     how.textContent = dlg.getAttribute(on ? 'data-how-passkey' : 'data-how-password');
@@ -464,6 +481,13 @@ window.musterStepUp = (function () {
     var pri = submit.getAttribute('data-primary'), sec = submit.getAttribute('data-secondary');
     if (on) { swap(submit, pri, sec); submit.textContent = '` + stepUpSubmitBehind + `'; }
     else { swap(submit, sec, pri); submit.textContent = '` + stepUpSubmitPassword + `'; }
+  }
+  // pkWaiting marks the passkey button inert, and says so, while the
+  // challenge a tap would use is being fetched (see stepUpScript).
+  function pkWaiting(on) {
+    if (on) pkBtn.setAttribute('aria-disabled', 'true');
+    else pkBtn.removeAttribute('aria-disabled');
+    pkBtn.textContent = pkBtn.getAttribute(on ? 'data-label-waiting' : 'data-label');
   }
   // Opened by its summary, the password takes focus, so the keyboard is up.
   pwBox.addEventListener('toggle', function () { if (pwBox.open && dlg.open && !pwToggle.hidden) pw.focus(); });
@@ -592,9 +616,12 @@ window.musterStepUp = (function () {
     unavailable(missing);
     if (!dlg.open) { lift(); dlg.showModal(); }
     if (missing) { pw.focus(); return; }
+    pkWaiting(true);
     pkBtn.focus();
     prefetch('open').then(function (r) {
-      if (r === null || !dlg.open) return;
+      if (r === null) return;
+      pkWaiting(false);
+      if (!dlg.open) return;
       // The account has no passkey, or the options call failed: the password
       // opens, as the only option, and takes focus.
       if (r) { offer(false); unavailable(r); pw.focus(); }
@@ -666,6 +693,8 @@ window.musterStepUp = (function () {
     return p;
   }
   pkBtn.addEventListener('click', async function () {
+    // Inert while its challenge is fetched (pkWaiting): no gesture spent on a wait.
+    if (pkBtn.getAttribute('aria-disabled') === 'true') return;
     pkBtn.disabled = true;
     fail('');
     var ev = { open_id: openId, attempt: ++attempts, options_trigger: '', options_status: '', get: 'not-called', verify: '' };
@@ -723,7 +752,12 @@ window.musterStepUp = (function () {
       // sent (cancelled, refused by the device) is still good and still in
       // pre — nothing is fetched (see stepUpScript).
       if (spent && dlg.open && !pkBox.hidden) {
-        prefetch('retry').then(function (r) { if (r && dlg.open) { offer(false); unavailable(r); } });
+        pkWaiting(true);
+        prefetch('retry').then(function (r) {
+          if (r === null) return;
+          pkWaiting(false);
+          if (r && dlg.open) { offer(false); unavailable(r); }
+        });
       }
     }
   });

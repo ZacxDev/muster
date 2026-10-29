@@ -546,14 +546,28 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     // an answer that had already arrived and waited out the test (measured: the
     // options came back 35 ms after the 403).
     const options = page.waitForResponse((r) => r.url().endsWith('/auth/confirm/passkey/options'), { timeout: 20_000 });
+    // The options answer is HELD a moment: this browser can run WebAuthn, so
+    // the passkey button shows at the open — inert until the answer. A tap in
+    // that moment says nothing (no "A passkey cannot be used right now"):
+    // there is no way to reach that message for an account with no passkey.
+    let releaseOptions!: () => void;
+    const gate = new Promise<void>((r) => { releaseOptions = r; });
+    await page.route('**/auth/confirm/passkey/options', async (r) => { await gate; await r.continue(); }, { times: 1 });
     await v.send.tap();
     await expect(dialog(page)).toBeVisible();
     expect(v.sends, 'refused by the server').toEqual([403]);
     await expect(dialog(page)).toContainText('needs a sign-in from the last 12 hours.');
     await expect(dialog(page)).not.toContainText('5 minutes');
-    // No passkey is registered for this account: the dialog stays password-only
-    // although this GoTrue has passkeys on and this browser supports WebAuthn.
+    await expect(passkeyBtn(page)).toHaveAttribute('aria-disabled', 'true');
+    await passkeyBtn(page).dispatchEvent('click');
+    await expect(page.locator('#term-confirm-error'), 'a tap while checking says nothing').toBeHidden();
+    releaseOptions();
+    // No passkey is registered for this account: the dialog becomes
+    // password-only although this GoTrue has passkeys on and this browser
+    // supports WebAuthn.
     await options.catch(() => undefined);
+    await page.unrouteAll({ behavior: 'wait' });
+    await expect(page.locator('#term-confirm-error'), 'and nothing after the answer either').toBeHidden();
     await expect(passkeyBtn(page)).toBeHidden();
     await expect(page.locator('#term-confirm-submit')).toHaveText('Confirm');
     // 🔴 With no passkey the password is the only option: shown with no tap,
@@ -1094,6 +1108,9 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     //    a NEW id, and no tap event.
     await page.evaluate(() => (window as unknown as { musterStepUp: { ask: (w: string, cb: null) => void } }).musterStepUp.ask('', null));
     await expect(passkeyBtn(page)).toBeVisible();
+    // The passkey shows at the open's first frame, before /options answers:
+    // its event is awaited, not inferred from the button.
+    await expect.poll(async () => (await events()).length, { message: 'the new open\'s fetch sent its event' }).toBe(all1.length + 1);
     await page.locator('#term-confirm-cancel').click();
     await expect(dialog(page)).toBeHidden();
     const all = await events();
@@ -1346,18 +1363,42 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
         // checkVisibility, not client rects: a shut <details> keeps its
         // content's boxes (content-visibility), so only this says "hidden".
         passkey: document.getElementById('term-confirm-passkey')!.checkVisibility(),
+        waiting: document.getElementById('term-confirm-passkey')!.getAttribute('aria-disabled') === 'true',
         password: document.getElementById('term-confirm-password')!.checkVisibility(),
       });
       (window as unknown as Run).musterStepUp.ask('', null);
       const sync = read();
       requestAnimationFrame(() => res({ sync, frame: read() }));
     }));
-    const shut = { open: false, focus: 'term-confirm-passkey', summary: true, passkey: true, password: false };
+    const shut = { open: false, focus: 'term-confirm-passkey', summary: true, passkey: true, waiting: true, password: false };
     expect(first, 'shut, the passkey focused, at the open and at its first frame').toEqual({ sync: shut, frame: shut });
     await held;
     await expect(passkeyBtn(page)).toBeVisible();
     await expect(page.locator('#term-confirm-password'), 'still shut while the options are slow').toBeHidden();
     await expect(passkeyBtn(page)).toBeFocused();
+    // 🔴 INERT UNTIL THE OPTIONS ANSWER: a tap now would await the fetch
+    //    inside its gesture (iOS: NotAllowedError, read as "cancelled"). So it
+    //    is aria-disabled, says it is checking, and a click (dispatched: the
+    //    page's own click, which Playwright's would wait out) reaches no
+    //    WebAuthn call and sends no /verify. REGRESSION TEST: red at ac6fdfc3,
+    //    where the button was live during the wait.
+    await expect(passkeyBtn(page)).toHaveAttribute('aria-disabled', 'true');
+    await expect(passkeyBtn(page)).toHaveText('Checking for your passkey…');
+    await page.evaluate(() => {
+      const w = window as unknown as { __gets: number };
+      w.__gets = 0;
+      const c = navigator.credentials, orig = c.get.bind(c);
+      Object.defineProperty(c, 'get', { configurable: true, value: (o?: CredentialRequestOptions) => { w.__gets++; return orig(o); } });
+    });
+    let earlyVerify = 0;
+    const onVerify = (r: { url: () => string }) => { if (new URL(r.url()).pathname === '/auth/confirm/passkey/verify') earlyVerify++; };
+    page.on('request', onVerify);
+    await passkeyBtn(page).dispatchEvent('click');
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+    expect(await page.evaluate(() => (window as unknown as { __gets: number }).__gets), 'no WebAuthn call while the options are in flight').toBe(0);
+    expect(earlyVerify, 'and no /verify').toBe(0);
+    await expect(page.locator('#term-confirm-error'), 'and no error said').toBeHidden();
+    page.off('request', onVerify);
     // The summary is the way in, answer or not.
     await passwordToggle(page).click();
     await expect(page.locator('#term-confirm-password')).toBeVisible();
@@ -1366,7 +1407,23 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     releaseOptions();
     expect((await answered).status()).toBe(200);
     await expect(passkeyBtn(page), 'the passkey is still offered').toBeVisible();
+    await expect(passkeyBtn(page), 'and live once the options answered').not.toHaveAttribute('aria-disabled', /.*/);
+    await expect(passkeyBtn(page)).toHaveText('Confirm with passkey');
     await expect(page.locator('#term-confirm-password'), 'and the password the person opened stays open').toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // 6. A PASSKEY-CAPABLE BROWSER WHOSE /options FAILS (500): the password
+    //    opens, as the only option, with no summary, and takes focus.
+    await page.route('**/auth/confirm/passkey/options', (r) => r.fulfill({ status: 500, json: { error: 'boom' } }), { times: 1 });
+    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'options-failed:500');
+    await expect(page.locator('#term-confirm-password'), 'a failed options call opens the password').toBeVisible();
+    await expect(page.locator('#term-confirm-password')).toBeFocused();
+    await expect(passwordToggle(page), 'with no summary: it is the only option').toBeHidden();
+    await expect(passkeyBtn(page)).toBeHidden();
     await page.keyboard.press('Escape');
     await expect(dialog(page)).toBeHidden();
     await page.unrouteAll({ behavior: 'wait' });
