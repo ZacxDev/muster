@@ -11,10 +11,12 @@ import (
 
 // TestAWindowWhoseConversationRunsElsewhereSaysSoEverywhere: a Claude window
 // the host reports a live copy for (mirror.Window.LiveCopy) carries the
-// warning on its card, at the top of its Rendered view and of its Terminal
-// view — and a Claude window with none carries it nowhere. The three handlers
-// each pass mirror.SessionView.LiveCopyWarning to their page; this pins that
-// seam (a handler that drops the assignment fails here only).
+// warning at the top of its Rendered view and of its Terminal view — and a
+// Claude window with none carries it nowhere. The two handlers each pass
+// mirror.SessionView.LiveCopyWarning to their page; this pins that seam (a
+// handler that drops the assignment fails here only). (The retired Agents
+// list's card carried it too; the sidebar row that replaced the card has no
+// room for a sentence, so the pages are where it is said.)
 func TestAWindowWhoseConversationRunsElsewhereSaysSoEverywhere(t *testing.T) {
 	const own, other = "11111111-2222-4333-8444-555555555555", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	fm := goldHost()
@@ -30,14 +32,6 @@ func TestAWindowWhoseConversationRunsElsewhereSaysSoEverywhere(t *testing.T) {
 	want := html.EscapeString(mirror.SessionView{Claude: true, LiveCopy: other}.LiveCopyWarning())
 	if want == "" || !strings.Contains(want, other[:mirror.LiveCopyShortID]) {
 		t.Fatalf("instrument check: the warning %q does not name the other session", want)
-	}
-
-	_, list := mirrorGet(t, s, ts, "/ui/agents")
-	if card := cardFor(t, list, ref("scratch2", "@7").ViewPath()); !strings.Contains(card, "data-mirror-live-copy") || !strings.Contains(card, want) {
-		t.Errorf("the card of the window with a live copy does not warn:\n%s", card)
-	}
-	if card := cardFor(t, list, ref("scratch2", "@9").ViewPath()); strings.Contains(card, "data-mirror-live-copy") {
-		t.Errorf("the card of a window with no live copy warns:\n%s", card)
 	}
 
 	for _, page := range []string{ref("scratch2", "@7").ViewPath(), ref("scratch2", "@7").TerminalPath()} {

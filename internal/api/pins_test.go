@@ -126,13 +126,14 @@ func pinServer(t *testing.T, fm *fakeMirror, mp *memPins) (*Server, http.Handler
 // mirrored window; and the Pins view, the same way.
 func pinnedList(t *testing.T, s *Server, h http.Handler) (pinned string, all []string) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	admit(s, req)
-	sw := s.switcher(req.Context(), ui.SwitcherCurrent{})
+	// The signed-in operator's principal — what requireSession attaches; the
+	// mirror's hosts are scoped to it (fakeMirror.Hosts lists none without).
+	ctx := operatorCtx()
+	sw := s.switcher(ctx, ui.SwitcherCurrent{})
 	if sw == nil {
 		t.Fatal("instrument check FAILED: no switcher was built")
 	}
-	list, err := s.ext.Agents.List(req.Context())
+	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
