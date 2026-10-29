@@ -41,7 +41,7 @@ func egressSeamAdapter(t *testing.T, row agents.Agent, officer *bool) (*Adapter,
 		t.Fatal(err)
 	}
 	cfg := seamSpecConfig()
-	cfg.ConnectURL, cfg.ConnectPort = "http://muster.control-plane-7.svc.cluster.local:18191", egressSeamConnectPort
+	cfg.ConnectURL, cfg.ConnectPort = "http://muster.example:18191", egressSeamConnectPort
 	a, err := New(Config{Driver: driver, Store: &recordingStore{agent: row}, Spec: cfg, KickoffDeliverable: true})
 	if err != nil {
 		t.Fatal(err)

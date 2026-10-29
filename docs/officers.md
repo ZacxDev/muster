@@ -174,10 +174,11 @@ policy for the officer instance pods that allows:
 - DNS to the cluster's DNS pods (UDP/TCP 53) **with names filtered** — on
   Cilium, `rules.dns` on that port, so Cilium's DNS proxy answers only for
   `api.anthropic.com` and the cluster-local names the pod needs (muster's
-  connect URL is a `*.svc.cluster.local` name; with the usual `ndots:5`
-  search path, `api.anthropic.com` is first tried as
-  `api.anthropic.com.<namespace>.svc.cluster.local` and so on, which a
-  `*.cluster.local` pattern covers);
+  connect URL is a cluster-local Service name, and with the usual `ndots:5`
+  search path `api.anthropic.com` is first tried with each cluster search
+  domain appended, so the rule must match every name under the cluster
+  domain at any depth — on Cilium a `**.` pattern; a single `*` matches one
+  label only);
 - `api.anthropic.com:443` — on Cilium, `toFQDNs`.
 
 On Cilium both fit in one `CiliumClusterwideNetworkPolicy`. Without it every
