@@ -99,9 +99,10 @@ those agents with a build that still has the kind before upgrading.
   - admits connections only from muster's pods;
   - allows egress only to cluster DNS and TCP 443 on public IPv4 addresses, plus
     muster's connect port;
-  - for an **officer instance** only, drops the public-443 rule: DNS and the
-    connect port, nothing else. The cluster must allow `api.anthropic.com` by
-    name ([officers.md](officers.md#the-instances-network)).
+  - for an **officer instance** only, drops the public-443 rule and the DNS
+    rule: the connect port, nothing else. The cluster must allow name-filtered
+    DNS and `api.anthropic.com` by name
+    ([officers.md](officers.md#the-instances-network)).
 
   See [limits.md](limits.md) for what that does and does not stop.
 

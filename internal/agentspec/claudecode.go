@@ -85,8 +85,8 @@ var ClaudeCodeSecurity = provision.Security{
 // ⚠ WHAT IT DOES NOT BUY: this is "public internet on 443", not "Anthropic and
 // GitHub". Nothing here names a host. A prompt-injected agent can still send
 // what it holds to any public HTTPS endpoint. An egress-locked agent (an officer
-// instance: [ClaudeCodeSession.EgressLocked]) does NOT get the public rule at
-// all; see claudeCodeNetworkFor.
+// instance: [ClaudeCodeSession.EgressLocked]) does NOT get the public rule, or
+// the DNS rule, at all; see claudeCodeNetworkFor.
 //
 // ⚠ MUSTER ITSELF IS NOT REACHABLE FROM THE POD through this policy, although
 // the spec still hands it MUSTER_API_URL: that address is in-cluster, so it is on
@@ -101,19 +101,22 @@ func ClaudeCodeNetwork() provision.Network {
 // connector store ([Config.ConnectURL]), egress to muster's connector port — the
 // one allowance that lets the pod reach muster, and only that surface of it.
 //
-// 🔴 WITH egressLocked ([ClaudeCodeSession.EgressLocked]) THE PUBLIC RULE IS
-// GONE: the pod may reach DNS and muster's connect port, and NOTHING on the
-// public internet — not even the Anthropic API. That is deliberate, and it is
-// what makes the lock mean anything: a NetworkPolicy cannot name a host, and
-// network plugins union allows, so a cluster-side FQDN allow (e.g. a Cilium
-// toFQDNs policy for api.anthropic.com:443) narrows nothing while this policy
-// still allows "any public address on 443". The operator ships that FQDN allow;
-// without it a locked pod cannot reach the API at all (closed, loud: every turn
-// fails). See docs/officers.md "The instance's network".
+// 🔴 WITH egressLocked ([ClaudeCodeSession.EgressLocked]) THE PUBLIC RULE AND
+// THE DNS RULE ARE BOTH GONE: the pod may reach muster's connect port, and
+// NOTHING else — no name resolution, not even the Anthropic API. That is
+// deliberate, and it is what makes the lock mean anything: a NetworkPolicy
+// cannot name a host, and network plugins union allows, so a cluster-side FQDN
+// allow (e.g. a Cilium toFQDNs policy for api.anthropic.com:443) narrows nothing
+// while this policy still allows "any public address on 443" — and a
+// cluster-side name-filtered DNS rule (Cilium rules.dns) narrows nothing while
+// this policy still allows port 53 to the DNS pods. The operator ships both;
+// without them a locked pod cannot resolve or reach the API at all (closed,
+// loud: every turn fails). See docs/officers.md "The instance's network".
 func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 	n := ClaudeCodeNetwork()
 	if egressLocked {
 		n.PublicEgressTCPPorts = nil
+		n.NoClusterDNS = true
 	}
 	if cfg.ClaudeCodeMCPOffered() {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}

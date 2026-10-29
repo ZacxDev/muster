@@ -338,8 +338,9 @@ type Network struct {
 	//   - inbound: only the instance's declared [Spec.Ports], and only from
 	//     whatever the driver is configured to treat as its controller (muster
 	//     itself);
-	//   - outbound: name resolution, plus PublicEgressTCPPorts on public
-	//     addresses. Nothing else.
+	//   - outbound: name resolution (unless NoClusterDNS), plus
+	//     PublicEgressTCPPorts on public addresses and ControllerEgressTCPPorts
+	//     on the controller. Nothing else.
 	Isolate bool
 	// PublicEgressTCPPorts are the TCP ports the instance may reach on public
 	// addresses. Empty with Isolate set means "name resolution only".
@@ -356,11 +357,28 @@ type Network struct {
 	//
 	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED, for PublicEgressTCPPorts' reason.
 	ControllerEgressTCPPorts []int
+	// NoClusterDNS drops the name-resolution allowance: the backend writes NO
+	// rule for the cluster's DNS, so the instance resolves nothing unless the
+	// cluster's own policy allows it.
+	//
+	// 🔴 IT EXISTS SO A NAME-FILTERED DNS POLICY CAN MEAN SOMETHING. Network
+	// plugins union allows: an L4 "port 53 to the DNS pods" rule written here,
+	// next to a cluster-side DNS rule that allows only some names (Cilium's DNS
+	// proxy with rules.dns), widens that rule back to "any name" — and any name
+	// is a DNS tunnel. An instance with this set depends on the operator's
+	// policy for DNS entirely; without one it cannot resolve a name (closed,
+	// loud).
+	//
+	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED, for PublicEgressTCPPorts' reason.
+	//
+	// omitempty: every spec that keeps cluster DNS marshals byte-identically to
+	// before the field existed (the agentspec goldens pin that).
+	NoClusterDNS bool `json:",omitempty"`
 }
 
 // IsZero reports whether nothing is declared.
 func (n Network) IsZero() bool {
-	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0
+	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0 && !n.NoClusterDNS
 }
 
 // Spec is the complete desired state of one instance.
@@ -580,6 +598,10 @@ func (s Spec) Validate() error {
 	if !s.Network.Isolate && len(s.Network.ControllerEgressTCPPorts) > 0 {
 		return fmt.Errorf("%w: network names controller egress ports %v without Isolate; on an unconfined "+
 			"instance that list restricts nothing and reads as if it did", ErrInvalidSpec, s.Network.ControllerEgressTCPPorts)
+	}
+	if !s.Network.Isolate && s.Network.NoClusterDNS {
+		return fmt.Errorf("%w: network sets NoClusterDNS without Isolate; on an unconfined instance that "+
+			"restricts nothing and reads as if it did", ErrInvalidSpec)
 	}
 	ctrl := map[int]bool{}
 	for _, p := range s.Network.ControllerEgressTCPPorts {

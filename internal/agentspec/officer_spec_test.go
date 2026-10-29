@@ -62,8 +62,8 @@ func TestAnOfficerInstancesPodSpecCarriesNoOfficerToken(t *testing.T) {
 
 // TestAnEgressLockedSessionLosesThePublicRuleAndSkipsNonessentialTraffic: the
 // spec half of the officer egress lock. A session with BypassPermissions (an
-// officer instance) gets a Network with NO public port — DNS and the connect
-// port only — and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. Every other
+// officer instance) gets a Network with NO public port and NO cluster DNS —
+// the connect port only — and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. Every other
 // claude-code agent keeps public 443 and no such variable, INCLUDING an agent
 // whose job lanes bypass (MUSTER_AGENT_CC_BYPASS_POOLS), which is a different
 // mechanism and out of this lock's scope.
@@ -72,7 +72,7 @@ func TestAnEgressLockedSessionLosesThePublicRuleAndSkipsNonessentialTraffic(t *t
 	cfg.ConnectURL, cfg.ConnectPort = "http://muster.example.test:18191", 18191
 
 	locked := mustBuild(t, ccAgent(), cfg, Options{ClaudeCodeSession: ClaudeCodeSession{BypassPermissions: true}})
-	if want := (provision.Network{Isolate: true, ControllerEgressTCPPorts: []int{18191}}); !reflect.DeepEqual(locked.Network, want) {
+	if want := (provision.Network{Isolate: true, ControllerEgressTCPPorts: []int{18191}, NoClusterDNS: true}); !reflect.DeepEqual(locked.Network, want) {
 		t.Errorf("locked network = %+v, want %+v", locked.Network, want)
 	}
 	if v, ok := envValue(locked, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"); !ok || v != "1" {

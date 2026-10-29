@@ -498,7 +498,7 @@ type ClaudeCodeSession struct {
 }
 
 // EgressLocked reports whether the pod's network policy drops the public-443
-// rule (claudeCodeNetworkFor) and the pod is told to skip the CLI's
+// rule and the cluster-DNS rule (claudeCodeNetworkFor) and the pod is told to skip the CLI's
 // non-essential traffic ([EnvClaudeDisableNonessentialTraffic]).
 //
 // 🔴 IT IS BypassPermissions, NOT A SECOND KNOB, AND THAT IS THE DECISION. A

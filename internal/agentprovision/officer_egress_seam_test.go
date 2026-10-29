@@ -186,9 +186,10 @@ const wantTaskAgentPolicy = `{
 }`
 
 // wantOfficerPolicy is an officer instance's policy, WRITTEN BY HAND FROM THE
-// REQUIREMENT: the task agent's, minus the public-443 ipBlock rule. Ingress
-// unchanged; egress = DNS to the cluster's DNS pods + muster's connect port on
-// muster's own pods. Nothing reaches a public address.
+// REQUIREMENT: the task agent's, minus the public-443 ipBlock rule AND minus the
+// port-53 rule to the cluster's DNS pods. Ingress unchanged; egress = muster's
+// connect port on muster's own pods, and nothing else. DNS comes only from the
+// cluster's name-filtered policy (an L4 :53 allow here would union it open).
 const wantOfficerPolicy = `{
   "podSelector": {
     "matchLabels": {
@@ -225,32 +226,6 @@ const wantOfficerPolicy = `{
     {
       "ports": [
         {
-          "protocol": "UDP",
-          "port": 53
-        },
-        {
-          "protocol": "TCP",
-          "port": 53
-        }
-      ],
-      "to": [
-        {
-          "podSelector": {
-            "matchLabels": {
-              "k8s-app": "kube-dns"
-            }
-          },
-          "namespaceSelector": {
-            "matchLabels": {
-              "kubernetes.io/metadata.name": "kube-system"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "ports": [
-        {
           "protocol": "TCP",
           "port": 18191
         }
@@ -278,7 +253,7 @@ const wantOfficerPolicy = `{
 }`
 
 // TestAnOfficerInstanceIsWrittenAPolicyWithNoPublicEgress pins both policies
-// WHOLE: an officer instance's has no public-443 rule; a task agent's on the
+// WHOLE: an officer instance's has no public-443 rule and no DNS rule; a task agent's on the
 // same deployment is byte-identical to the pre-change render.
 func TestAnOfficerInstanceIsWrittenAPolicyWithNoPublicEgress(t *testing.T) {
 	for _, tc := range []struct {
