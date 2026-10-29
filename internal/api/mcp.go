@@ -68,14 +68,14 @@ func mcpChiefInstructions() string {
 // mcpInstructionsFor is the initialize instructions this server gives agent a:
 // the connector store's (the chief's own when a is the chief), and the
 // attention queue's paragraph when its tools are offered (attention_tools.go's
-// attentionInstruction).
+// attentionInstructionFor: an officer instance's differs).
 func (s *Server) mcpInstructionsFor(ctx context.Context, a agents.Agent) string {
 	in := mcpInstructions()
 	if s.isChiefAgent(ctx, a) {
 		in = mcpChiefInstructions()
 	}
 	if s.attentionToolsOn() {
-		return in + " " + attentionInstruction
+		return in + " " + s.attentionInstructionFor(a)
 	}
 	return in
 }

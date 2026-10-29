@@ -272,6 +272,13 @@ carry this paragraph (`attentionInstruction`):
 A mirrored session's (`mirrorAttentionInstruction`) still says to call
 `attention_wait` until it returns the answer: its answer is never pushed.
 
+An [officer](officers.md) instance gets `officerAttentionInstruction` in its
+place (`attentionInstructionFor`): follow its charter, and by default finish
+the item with `officer_complete{outcome: "escalated", summary}` (HQ notifies the
+officer's owner) rather than `attention_ask`, which it uses only when its
+charter says to. An officers muster usually runs headless, so an attention ask
+there reaches nobody. The attention tools stay offered to it.
+
 ## Mirrored Claude Code sessions
 
 A Claude Code session in a mirrored tmux window gets the **every agent** tools

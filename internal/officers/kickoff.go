@@ -22,7 +22,7 @@ Your officer tools (MCP server "muster"): %[5]s. They act for officer %[1]s only
 Start now:
 1. Call %[6]s. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
 2. Work the queue one item at a time: %[7]s to see open items, %[8]s{item_id} to take one (a 409 means another instance has it — move on), %[9]s{item_id} at least every few minutes while you work it, and %[10]s{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, %[11]s{item_id} so another instance can.
-3. Anything that needs a human decision: attention_ask, then attention_wait.
+3. Anything that needs a human: follow your charter. By default, finish the item with %[10]s{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
 4. When %[7]s shows nothing open and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
 
 You watch, triage, record and dispatch. You never merge, deploy or release, and you hold no production credentials.`,
