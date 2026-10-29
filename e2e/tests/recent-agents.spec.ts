@@ -1,47 +1,58 @@
 import { Browser, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { baseURL, password } from '../lib/env';
+import { baseURL, hookToken, password } from '../lib/env';
 import { touchDrag } from '../lib/touch';
-import { agentLink } from '../lib/agent-link';
 
 // RECENTLY VIEWED, in a real browser on the shared server: the session
-// switcher's Recent view, docked at the bottom of the Agents list (it replaced
-// the "Recently viewed" strip above the list — operator ask: "hide the pinned
-// and recent on the main agent list page because the bottom bar flow
-// supersedes it"): the entries the operator last opened, newest first, one tap
-// each. It is stored on the SERVER per user (internal/recents, migration
-// 0018), so a second browser context — its own sign-in, its own storage — sees
-// the same view. Unlike the strip it keeps a pinned entry: Pins is a view of
-// its own beside it.
+// switcher's Recent view, on a session's page (the Agents list it was once
+// docked on is retired; the bar is on every session page — an agent's chat, a
+// mirrored window's views): the entries the operator last opened, newest
+// first, one tap each. It is stored on the SERVER per user (internal/recents,
+// migration 0018), so a second browser context — its own sign-in, its own
+// storage — sees the same view. It keeps a pinned entry: Pins is a view of its
+// own beside it.
 //
 // The seeded agents are shared by every spec (one database, one operator), so
 // this asserts about the entries it opened itself, in the order it opened
-// them, and unpins what it pinned.
+// them, and unpins what it pinned. The page the view is read on is a THIRD
+// seeded agent's (notes-tidy): opening it is a visit too, so its own entry —
+// drawn current — is left out of the order read.
 //
 // Phone-sized with touch: the row is a row of tap targets.
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
+const VIEWER = 'notes-tidy';
 const strip = (page: Page) => page.locator('#session-switcher [data-switcher-list="recent"]');
 const entries = (page: Page) => strip(page).locator('a[data-switcher-entry]');
 // Which agent each entry opens (its path; the query is the session it names,
-// pinned by agent-open-hops.spec.ts).
-const hrefs = (page: Page) => entries(page).evaluateAll((els) => els.map((e) => (e.getAttribute('href') || '').split('?')[0]));
+// pinned by agent-open-hops.spec.ts), the viewing page's own left out.
+const hrefs = (page: Page) =>
+  entries(page).evaluateAll((els, viewer) => els.map((e) => (e.getAttribute('href') || '').split('?')[0]).filter((h) => h !== '/agents/' + viewer), VIEWER);
 
 async function openAgent(page: Page, name: string) {
   await page.goto('/agents/' + name);
   await page.waitForURL((u) => u.pathname === '/agents/' + name && u.searchParams.has('session'));
 }
 
-async function openList(page: Page) {
-  // The Recent view is the one shown (the viewer's stored choice cleared).
+// openBar opens the viewing agent's page with the Recent view shown (the
+// viewer's stored choice cleared).
+async function openBar(page: Page) {
   await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} }).catch(() => undefined);
-  await page.goto('/agents');
-  await expect(page.locator('#agents-list > article').first()).toBeVisible();
+  await openAgent(page, VIEWER);
+  await expect(page.locator('#session-switcher')).toBeVisible();
 }
 
-async function pin(page: Page, agentID: string, on: boolean) {
+async function agentID(name: string): Promise<string> {
+  const r = await fetch(baseURL + '/api/agents', { headers: { Authorization: `Bearer ${hookToken}` } });
+  expect(r.status).toBe(200);
+  const a = ((await r.json()) as { id: number; name: string }[]).find((x) => x.name === name);
+  expect(a, `${name} is listed`).toBeTruthy();
+  return String(a!.id);
+}
+
+async function pin(page: Page, id: string, on: boolean) {
   const r = await page.request.post(on ? '/agents/pins' : '/agents/pins/delete', {
-    form: { kind: 'agent', agent_id: agentID },
+    form: { kind: 'agent', agent_id: id },
     headers: { Origin: baseURL, 'HX-Request': 'true' },
   });
   expect(r.status(), await r.text()).toBe(200);
@@ -62,53 +73,48 @@ test.afterEach(async ({ page }) => {
   pinnedID = '';
 });
 
-// 🔴 A REGRESSION TEST: at origin/main the Agents list has no session switcher.
 test('a visit shows in the Recent view, newest first, one tap to open; it persists to another browser; a pinned entry stays in it', async ({ page, browser }) => {
   await openAgent(page, 'docs-sweeper');
   await openAgent(page, 'release-helper');
-  await openList(page);
+  await openBar(page);
 
-  // Newest first: the two just opened lead the strip.
+  // Newest first: the two just opened lead the strip (after the page's own).
   await expect(strip(page)).toBeVisible();
   await expect.poll(() => hrefs(page)).toEqual(expect.arrayContaining(['/agents/release-helper', '/agents/docs-sweeper']));
   const h = await hrefs(page);
   expect(h.slice(0, 2), 'the last opened first').toEqual(['/agents/release-helper', '/agents/docs-sweeper']);
-  expect(h.length, 'at most eight').toBeLessThanOrEqual(8);
+  expect(await entries(page).count(), 'at most eight').toBeLessThanOrEqual(8);
 
-  // Docked below the list, not one of its cards: the filter's count is of cards only.
-  await expect(page.locator('#agents-list #session-switcher')).toHaveCount(0);
-  const cards = await page.locator('#agents-list > article').count();
-  await expect(page.locator('#agents-count')).toHaveText(`${cards} of ${cards}`);
   // Condensed and thumb-sized, and it never widens the page.
-  const first = entries(page).first();
-  expect((await first.boundingBox())!.height, 'a 44px tap target').toBeGreaterThanOrEqual(44);
+  const firstOther = strip(page).locator('a[data-switcher-entry]:not([data-switcher-current])').first();
+  expect((await firstOther.boundingBox())!.height, 'a 44px tap target').toBeGreaterThanOrEqual(44);
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw, 'no sideways page scroll').toBeLessThanOrEqual(cw);
 
   // Revisiting moves an entry to the front rather than adding it twice.
   await openAgent(page, 'docs-sweeper');
-  await openList(page);
+  await openBar(page);
   await expect.poll(async () => (await hrefs(page)).slice(0, 2)).toEqual(['/agents/docs-sweeper', '/agents/release-helper']);
   expect((await hrefs(page)).filter((x) => x === '/agents/docs-sweeper'), 'one entry per agent').toHaveLength(1);
 
   // One tap opens it.
-  await Promise.all([page.waitForURL((u) => u.pathname === '/agents/docs-sweeper'), first.tap()]);
+  const sweeper = strip(page).locator('a[data-switcher-entry][href^="/agents/docs-sweeper"]');
+  await Promise.all([page.waitForURL((u) => u.pathname === '/agents/docs-sweeper'), sweeper.tap()]);
 
   // Another browser — its own sign-in and its own storage — sees the same view.
   const other = await freshContext(browser);
   try {
-    await openList(other.page);
+    await openBar(other.page);
     await expect.poll(async () => (await hrefs(other.page)).slice(0, 2)).toEqual(['/agents/docs-sweeper', '/agents/release-helper']);
   } finally {
     await other.ctx.close();
   }
 
   // A pinned entry stays in Recent (in its place), and is in Pins too.
-  await openList(page);
-  pinnedID = (await page.locator(`#agents-list > article:has(${agentLink('docs-sweeper')})`).getAttribute('id'))!.replace('agent-', '');
+  pinnedID = await agentID('docs-sweeper');
+  await openAgent(page, 'docs-sweeper');
   await pin(page, pinnedID, true);
-  await openList(page);
-  await expect(page.locator('#agents-list > article').first(), 'pinned first in the list').toHaveId('agent-' + pinnedID);
+  await openBar(page);
   await expect.poll(async () => (await hrefs(page))[0], { message: 'still the newest in Recent' }).toBe('/agents/docs-sweeper');
   const pins = await page.locator('#session-switcher [data-switcher-list="pins"] a[data-switcher-entry]').evaluateAll((els) => els.map((e) => (e.getAttribute('href') || '').split('?')[0]));
   expect(pins, 'and in Pins').toContain('/agents/docs-sweeper');
@@ -118,14 +124,16 @@ test('a visit shows in the Recent view, newest first, one tap to open; it persis
 
 // 🔴 A REGRESSION TEST: swiping the Recent strip sideways switched the PARENT
 // tab. A horizontal swipe anywhere over a tabpanel used to walk the tab order
-// (appScript's touch handler), and a sideways-scrolling row — the switcher's,
-// now — is exactly where a thumb swipes sideways. The tab-switch swipe is
-// gone; the sidebar's edge-swipe stays, and is pinned here in the same breath
-// so the fix cannot have been "delete every touch gesture".
-test('a sideways swipe on the switcher does not switch the tab; an edge-swipe still opens the sidebar', async ({ page }) => {
+// (appScript's touch handler), and a sideways-scrolling row — the switcher's —
+// is exactly where a thumb swipes sideways. The tab-switch swipe is gone; the
+// sidebar's edge-swipe stays, and is pinned here in the same breath so the fix
+// cannot have been "delete every touch gesture". (Read on a session page now:
+// the Agents tab the bar was docked on is retired.)
+test('a sideways swipe on the switcher leaves the page alone; an edge-swipe still opens the sidebar', async ({ page }) => {
   await openAgent(page, 'docs-sweeper');
   await openAgent(page, 'release-helper');
-  await openList(page);
+  await openBar(page);
+  const at = page.url();
   await expect(strip(page)).toBeVisible();
   const sb = (await strip(page).boundingBox())!;
   const bar = (await page.locator('#session-switcher').boundingBox())!;
@@ -141,8 +149,7 @@ test('a sideways swipe on the switcher does not switch the tab; an edge-swipe st
   for (const [from, to] of [[sb.x + sb.width - 30, sb.x + 30], [sb.x + 30, sb.x + sb.width - 30]]) {
     await touchDrag(page, { x: from, y }, { x: to, y });
     await page.waitForTimeout(250);
-    expect(new URL(page.url()).pathname, 'the swipe left the tab alone').toBe('/agents');
-    await expect(page.locator('#panel-agents')).toBeVisible();
+    expect(page.url(), 'the swipe left the page alone').toBe(at);
   }
 
   // 🔴 The bar begins INSIDE the edge-swipe's 28px zone at this width, so a
@@ -158,5 +165,5 @@ test('a sideways swipe on the switcher does not switch the tab; an edge-swipe st
   // The sidebar's edge-swipe: from the left edge, rightwards (above the bar).
   await touchDrag(page, { x: 4, y: 400 }, { x: 220, y: 404 });
   await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
-  expect(new URL(page.url()).pathname).toBe('/agents');
+  expect(page.url()).toBe(at);
 });

@@ -2,51 +2,44 @@ import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { agentsSwitcherPort, hookToken } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
+import { openDispatchSheet } from '../lib/dispatch';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
-import { openMore } from '../lib/nav';
 
-// THE SESSION SWITCHER ON THE AGENTS LIST (internal/ui/switcher.go
-// switcherDock), on a REAL muster-server and a REAL muster-mirror
+// THE SESSION SWITCHER'S BAR AND THE SEARCH PALETTE (internal/ui/switcher.go,
+// palette.go), on a REAL muster-server and a REAL muster-mirror
 // (`-tags e2emirror`, which fakes tmux only) whose windows carry codenames,
-// plus one dispatched agent. The operator asks:
+// plus one dispatched agent. The bar was once docked on the Agents list page
+// too; that page is retired (the sidebar and the bar are how a person moves
+// between agents), so the bar is read on a SESSION's page — a mirrored
+// window's Rendered view — and the palette also from a page with no bar. At a
+// phone (390×844, touch) and a desktop (1280×800) size:
 //
-//   "Include the bottom bar on the main agent list page as well. Hide the
-//    existing search input because the new command palette UX supersedes it.
-//    Also hide the pinned and recent on the main agent list page because the
-//    bottom bar flow supersedes it."
-//   "Also hide the agent replies FAB and deploy agent FAB on agent list page"
-//
-// so, at a phone (390×844, touch) and a desktop (1280×800) size:
-//
-//   1. the bar is docked at the bottom of /agents and paints with the page (no
-//      layout shift, no sideways page scroll), and the list's search box, its
-//      "Recently viewed" strip, its pinned chips and both FABs are gone;
-//   2. the list's last card scrolls clear of the bar;
-//   3. the view menu works there, and a pin made on a card reaches its Pins
-//      view without a reload; nothing is drawn current (the page has no
-//      session of its own);
-//   4. the search palette ("/" and the magnifier) finds a window by its
+//   1. a session page's bar paints with the page (no layout shift from it, no
+//      sideways page scroll), and its view menu works: All holds every entry,
+//      the page's own drawn current; Pins starts empty;
+//   2. the search palette ("/" and the magnifier) finds a window by its
 //      codename and Enter opens it;
-//   5. a filter text a browser stored for the removed search box (or a ?q=)
-//      hides no card;
-//   6. the FABs are still on the Tasks tab, and a client-side switch to Agents
-//      hides the replies FAB and fills the bar;
-//   7. the bar's "+" (operator: deploy "In the bottom bar") opens the
-//      task-less dispatch sheet the old FAB opened, and a dispatch from it
-//      creates an agent; a session page's bar has no "+";
-//   8. the palette also finds an entry by its repository, its kind and a
-//      window's raw tmux session name — after every codename and title match
-//      (operator: "Teach the palette repo+kind").
-//
-// 🔴 REGRESSION TESTS: at origin/main (baf851ac) /agents has no bar, draws the
-// search box, the strip and the chips, and both FABs.
+//   3. the palette also finds an entry by its repository, its kind, a window's
+//      raw tmux session name and — the retired list's host tabs' successor —
+//      its HOST's name, after every codename and title match (operator:
+//      "Teach the palette repo+kind");
+//   4. a pill shows the whole codename, ":<index>" and all;
+//   5. the sidebar's magnifier opens the same palette, on a session page and
+//      on a page with no bar, where it reads the sidebar's rows;
+//   6. the bar's pin toggle pins and unpins the page's own window;
+//   7. the dispatch "+" — beside the sidebar's Agents label now (it was the
+//      list's bar's) — opens the task-less dispatch sheet, and a dispatch from
+//      it creates an agent and opens its page; a session page's bar has no "+";
+//   8. a window that ran an older switcher still swaps the rows cleanly, and a
+//      focused pill keeps focus through a reorder.
+
 test.use({ storageState: { cookies: [], origins: [] } });
 
-const rig = new MirrorRig(agentsSwitcherPort, 'e2e-asw', {}, { decimalHost: true });
-const origin = rig.origin;
 // DECIMAL, like the host: the agent's name is a codename the search matches as
 // a substring, and a base-36 stamp can spell a query this spec types (the same
 // flake switcher-search.spec.ts had with "vap"). Digits spell no query.
+const rig = new MirrorRig(agentsSwitcherPort, 'e2e-asw', {}, { decimalHost: true });
+const origin = rig.origin;
 const stamp = String(Date.now());
 const AGENT = `e2e-asw-ledger-${stamp}`;
 const AGENT_TITLE = 'Rotate the ledger';
@@ -57,8 +50,6 @@ const AGENT_REPO = 'acme/wheatfield';
 const SCRATCH = 'scratch11';
 const NIMBUS = 'nimbus';
 
-// Enough windows that the list scrolls at both sizes, so "the last card is
-// clear of the bar" is measured with the list scrolled to its end.
 const WINDOWS: [string, string][] = [
   ['mango', '@1'],
   ['wheat', '@2'],
@@ -92,26 +83,35 @@ test.afterAll(async () => {
 });
 
 const bar = (page: Page) => page.locator('#session-switcher');
-const dock = (page: Page) => page.locator('#agents-switcher-dock');
 const toggle = (page: Page) => page.locator('#switcher-toggle');
 const menu = (page: Page) => page.locator('#switcher-views');
 const pal = (page: Page) => page.locator('#switcher-search');
 const input = (page: Page) => page.locator('#switcher-search-input');
 const options = (page: Page) => page.locator('#switcher-search-results [role="option"]');
 const row = (page: Page, key: string) => page.locator(`#session-switcher [data-switcher-list="${key}"]`);
-const cards = (page: Page) => page.locator('#agents-list > article');
-// listed is how many entries the list holds: these windows, this agent, and
-// the seeded fixture's own agents (e2e/seed) — every one a card, and every one
-// an entry of the switcher's All view.
+const viewOf = (session: string, w: string) => origin + rig.viewPath(session) + '&window=' + encodeURIComponent(w);
+const MANGO = viewOf('mango', '@1');
+
+// listed is how many entries there are: these windows, this agent, and the
+// seeded fixture's own agents (e2e/seed) — every one a row of the sidebar's
+// list (GET /ui/nav/agents, the Idle group's included), and every one an entry
+// of the switcher's All view.
 async function listed(page: Page): Promise<number> {
-  await expect.poll(() => cards(page).count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(WINDOWS.length + 3);
-  return cards(page).count();
+  let n = 0;
+  await expect
+    .poll(async () => {
+      const html = await (await page.request.get(origin + '/ui/nav/agents')).text();
+      n = (html.match(/<a\b[^>]*\bdata-nav-agent="/g) || []).length;
+      return n;
+    }, { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(WINDOWS.length + 3);
+  return n;
 }
 
 async function ready(page: Page) {
   await rig.login(page);
   await rig.waitListed(page, 'marble');
-  // Each test starts from no stored view, no pins.
+  // Each test starts from no stored view.
   await page.addInitScript(() => {
     try {
       if (!sessionStorage.getItem('asw-cleared')) {
@@ -122,10 +122,11 @@ async function ready(page: Page) {
   });
 }
 
-// openAgents loads /agents with layout shift recorded from the first paint.
-async function openAgents(page: Page, path = '/agents') {
+// openView loads a window's Rendered view with layout shift recorded from the
+// first paint.
+async function openView(page: Page, url = MANGO) {
   await page.addInitScript(clsInit);
-  await page.goto(origin + path);
+  await page.goto(url);
   await expect(bar(page)).toBeVisible();
   await settle(page);
 }
@@ -137,14 +138,8 @@ async function expectNoSidewaysScroll(page: Page) {
   expect(w.sw, `the page is ${w.sw}px wide in a ${w.cw}px viewport`).toBeLessThanOrEqual(w.cw);
 }
 
-// unpinAll leaves nothing pinned (the pins are the viewer's, server-side).
-async function unpinAll(page: Page) {
-  const pinned = page.locator('#agents-list > article[data-pinned]');
-  for (let n = await pinned.count(); n > 0; n--) {
-    await pinned.first().locator('[data-pin-toggle]').click();
-    await expect(pinned).toHaveCount(n - 1);
-  }
-}
+const unpin = (page: Page, session: string, w: string) =>
+  page.request.post(origin + '/agents/pins/delete', { form: { kind: 'mirror', host: rig.host, session, window: w }, headers: { Origin: origin } });
 
 for (const vp of [
   { name: 'phone 390×844', w: 390, h: 844, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
@@ -153,115 +148,49 @@ for (const vp of [
   test.describe(vp.name, () => {
     test.use(vp.use);
 
-    test('the bar is docked at the bottom of /agents and paints with the page; the search box, the strip, the chips and both FABs are gone', async ({ page }) => {
+    test("a session page's bar paints with the page; its view menu works: All holds every entry, Pins starts empty", async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
-      await openAgents(page);
-      // Docked: the bar's bottom is the viewport's (no safe-area inset here),
-      // full width on a phone, right of the sidebar from lg up.
-      const box = await bar(page).boundingBox();
-      expect(box, 'the bar has a box').not.toBeNull();
-      expect(Math.round(box!.y + box!.height), 'the bar sits on the bottom edge').toBe(vp.h);
-      expect(box!.height, 'the bar is its fixed 45px row').toBeCloseTo(45, 0);
-      expect(await dock(page).evaluate((e) => getComputedStyle(e).position)).toBe('fixed');
-      expect(box!.x, vp.w >= 1024 ? 'the bar starts right of the sidebar' : 'the bar starts at the left edge').toBeGreaterThanOrEqual(vp.w >= 1024 ? 288 : 0);
-      await expect(row(page, 'recent')).toBeVisible();
-      // The superseded UI is not drawn at all.
-      await expect(page.locator('#agents-search')).toHaveCount(0);
-      await expect(page.locator('#agents-search-clear')).toHaveCount(0);
-      await expect(page.locator('#agents-recent')).toHaveCount(0);
-      await expect(page.locator('[data-pinned-chip]')).toHaveCount(0);
-      await expect(page.locator('#agents-pins-edit')).toHaveCount(0);
-      await expect(page.locator('#fab-agents')).toHaveCount(0);
-      await expect(page.locator('#notif-fab')).toBeHidden();
-      // KEPT: the host tabs and the quick-filter chips.
-      await expect(page.locator('#agents-hosts')).toBeVisible();
-      await expect(page.locator('#agents-chips')).toBeVisible();
-      // Nothing is the page's own session.
-      await expect(page.locator('#session-switcher [data-switcher-current]')).toHaveCount(0);
-      // The load moved nothing, and the page does not scroll sideways.
+      for (const [s, w] of WINDOWS) await unpin(page, s, w);
+      await openView(page);
+      // Nothing that shifted is the bar or anything in it: it is out of flow
+      // and its room is reserved in the page's first byte.
       const cls = await readCls(page);
       expect(cls.unsupported, 'the browser reports layout-shift entries').toBeUndefined();
-      // The suite's load bar (cls.spec.ts: under 0.01) — and nothing that
-      // shifted is the bar or anything in it: it is out of flow and its room
-      // is reserved in the panel's first byte.
-      expect(cls.total, `layout shift on load ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
       for (const sh of cls.shifts) {
-        for (const src of sh.sources) expect(src, `a shift's source is the switcher: ${JSON.stringify(cls.shifts)}`).not.toMatch(/session-switcher|agents-switcher-dock|switcher-/);
+        for (const src of sh.sources) expect(src, `a shift's source is the switcher: ${JSON.stringify(cls.shifts)}`).not.toMatch(/session-switcher|switcher-/);
       }
       await expectNoSidewaysScroll(page);
-    });
-
-    test('the last card scrolls clear of the bar', async ({ page }) => {
-      await ready(page);
-      await openAgents(page);
-      await listed(page);
-      const scrolls = await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight);
-      expect(scrolls, 'instrument check: the list is long enough to scroll, so its end is measured scrolled').toBe(true);
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await page.waitForTimeout(300);
-      const m = await page.evaluate(() => {
-        const arts = [...document.querySelectorAll('#agents-list > article')].filter((a) => a.getClientRects().length);
-        const lastBottom = Math.max(...arts.map((a) => a.getBoundingClientRect().bottom));
-        return { lastBottom, barTop: document.getElementById('session-switcher')!.getBoundingClientRect().top };
-      });
-      expect(m.lastBottom, `the last card's bottom (${m.lastBottom}) is above the bar's top (${m.barTop})`).toBeLessThanOrEqual(m.barTop);
-      await expectNoSidewaysScroll(page);
-    });
-
-    test('the view menu works on /agents, and a pin made on a card reaches the Pins view without a reload', async ({ page }) => {
-      test.setTimeout(90_000);
-      await ready(page);
-      await openAgents(page);
-      await unpinAll(page);
       await expect(toggle(page)).toHaveText('Recent');
-      // All holds every entry of the list, none of them current.
+      // All holds every entry, the page's own drawn current (one, not a link).
       await toggle(page).click();
       await expect(menu(page)).toBeVisible();
       await menu(page).locator('[data-switcher-pick="all"]').click();
       await expect(menu(page)).toBeHidden();
       await expect(toggle(page)).toHaveText('All');
       await expect(row(page, 'all')).toBeVisible();
-      await expect(row(page, 'all').locator('a[data-switcher-entry]')).toHaveCount(await listed(page));
+      const n = await listed(page);
+      await expect(row(page, 'all').locator('[data-switcher-entry]')).toHaveCount(n);
+      await expect(row(page, 'all').locator('[data-switcher-current]')).toHaveText('mango:1');
       await expect(row(page, 'all').locator('a[data-switcher-entry]', { hasText: AGENT_TITLE })).toHaveCount(1);
-      // Pins: nothing pinned yet.
+      // Pins: nothing pinned.
       await toggle(page).click();
       await menu(page).locator('[data-switcher-pick="pins"]').click();
       await expect(row(page, 'pins')).toHaveText('Nothing pinned');
       await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
-      // Pin wheat from its card: the list's own refresh carries the bar's rows
-      // (switcherRefresh), so the Pins view shows it — still the shown view.
-      const wheat = page.locator('#agents-list > article[data-mirror-card][data-f-session="wheat"]');
-      await wheat.locator('[data-pin-toggle]').click();
-      await expect(page.locator('#agents-list > article[data-pinned]')).toHaveCount(1);
-      await expect(row(page, 'pins').locator('a[data-switcher-entry]')).toHaveText(['wheat:1']);
-      // The refresh put the entries IN the row — its children, not a copy of
-      // the row nested in it (htmx's own out-of-band innerHTML swap did that).
-      await expect(row(page, 'pins').locator(':scope > a[data-switcher-entry]')).toHaveCount(1);
-      await expect(page.locator('[id="switcher-list-pins"]')).toHaveCount(1);
-      await expect(page.locator('[id="switcher-count-pins"]')).toHaveCount(1);
-      await expect(row(page, 'pins')).toBeVisible();
-      await expect(toggle(page)).toHaveText('Pins');
-      await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('1');
-      // The pinned entry is its CARD, first, and its toggle unpins it.
-      await expect(cards(page).first()).toHaveAttribute('data-pinned', '');
-      await expect(cards(page).first().locator('[data-pin-toggle]')).toHaveAttribute('aria-pressed', 'true');
-      await cards(page).first().locator('[data-pin-toggle]').click();
-      await expect(page.locator('#agents-list > article[data-pinned]')).toHaveCount(0);
-      await expect(row(page, 'pins')).toHaveText('Nothing pinned');
-      await expectNoSidewaysScroll(page);
     });
 
     test('the search palette: "/" and the magnifier open it, a codename finds its window, Enter opens it', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
-      await openAgents(page);
+      await openView(page);
       await page.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.keyboard.press('/');
       await expect(pal(page)).toBeVisible();
       await expect(input(page)).toBeFocused();
-      // Every entry, none excluded (the page has no session of its own).
-      await expect(options(page)).toHaveCount(await listed(page));
+      // Every entry but the page's own session.
+      await expect(options(page)).toHaveCount((await listed(page)) - 1);
       await input(page).pressSequentially('quar');
       await expect(options(page)).toHaveCount(1);
       await expect(options(page).first()).toContainText('quartz');
@@ -277,10 +206,10 @@ for (const vp of [
       ]);
     });
 
-    test('the palette finds an entry by its repository, its kind and its tmux session, after every codename match', async ({ page }) => {
+    test('the palette finds an entry by its repository, its kind, its tmux session and its host, after every codename match', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
-      await openAgents(page);
+      await openView(page);
       await page.locator('#switcher-search-open').click();
       const labels = () => options(page).evaluateAll((els) => els.map((e) => (e.firstElementChild as HTMLElement).textContent));
       // The tmux session name: the window called "orchid".
@@ -295,7 +224,18 @@ for (const vp of [
       await expect.poll(labels).toEqual([AGENT_TITLE]);
       await input(page).fill('wheat');
       await expect.poll(labels).toEqual(['wheat:1', AGENT_TITLE]);
+      // THE HOST (the host tabs' successor): this host's name finds every one
+      // of its windows but the page's own — and no dispatched agent; the
+      // cluster's finds the dispatched agents, and none of this host's windows.
+      const windowsHere = WINDOWS.filter(([s]) => s !== 'mango').map(([s]) => `${s}:1`).concat(['orchid:1', `${NIMBUS}:1`]);
+      await input(page).fill(rig.host);
+      await expect.poll(async () => (await labels()).slice().sort()).toEqual(windowsHere.slice().sort());
+      await input(page).fill('cluster');
+      await expect.poll(labels).toContain(AGENT_TITLE);
+      for (const l of await labels()) expect(windowsHere, `"cluster" found ${l}`).not.toContain(l);
       // Enter opens the top one: the codename match.
+      await input(page).fill('wheat');
+      await expect.poll(labels).toEqual(['wheat:1', AGENT_TITLE]);
       await Promise.all([
         page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'wheat'),
         page.keyboard.press('Enter'),
@@ -306,35 +246,32 @@ for (const vp of [
     // the pills were "missing the number after the colon"). "orchid" is a
     // codename that is NOT its tmux session (the labels file), alone in every
     // view — exactly where the bar used to draw it without its index. Read on
-    // /agents and on a session page's bar, at this size: the label's text,
-    // and its box not clipping it. REGRESSION TEST: red at the commit before,
-    // where the pill read "orchid".
-    test('a pill shows the whole codename, ":<index>" and all, unclipped — on /agents and on a session page', async ({ page }) => {
+    // a session page's bar, at this size: the label's text, and its box not
+    // clipping it.
+    test('a pill shows the whole codename, ":<index>" and all, unclipped', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
-      for (const path of ['/agents', rig.viewPath('mango') + '&window=' + encodeURIComponent('@1')]) {
-        await page.addInitScript(() => { try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
-        await page.goto(origin + path);
-        await expect(row(page, 'all')).toBeVisible();
-        const orchid = row(page, 'all').locator(`a[data-switcher-entry][data-switcher-words~="${SCRATCH}"]`);
-        await expect(orchid, `${path}: the orchid window's pill`).toHaveCount(1);
-        await expect(orchid, `${path}: the pill reads the whole codename`).toHaveText('orchid:1');
-        await expect(orchid).toHaveAttribute('title', 'orchid:1');
-        // Not clipped: the label's box holds its whole text, and the pill is
-        // at least as wide as the label.
-        await orchid.scrollIntoViewIfNeeded();
-        const m = await orchid.evaluate((a) => {
-          const label = a.querySelector('.whitespace-nowrap') as HTMLElement, pill = a.firstElementChild as HTMLElement;
-          return { sw: label.scrollWidth, cw: label.clientWidth, lw: label.getBoundingClientRect().width, pw: pill.getBoundingClientRect().width };
-        });
-        expect(m.sw, `${path}: the label is not clipped (${JSON.stringify(m)})`).toBeLessThanOrEqual(m.cw + 0.5);
-        expect(m.pw, `${path}: the pill holds the label (${JSON.stringify(m)})`).toBeGreaterThanOrEqual(m.lw);
-        // Every window pill ends in its ":<index>".
-        const labels = await row(page, 'all').locator('a[data-switcher-entry="mirror"]').evaluateAll((els) => els.map((e) => e.textContent || ''));
-        expect(labels.length, 'instrument check: the row holds window pills').toBeGreaterThanOrEqual(WINDOWS.length);
-        for (const l of labels) expect(l, `${path}: a window pill without its index`).toMatch(/:\d+$/);
-        await expectNoSidewaysScroll(page);
-      }
+      await page.addInitScript(() => { try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
+      await page.goto(MANGO);
+      await expect(row(page, 'all')).toBeVisible();
+      const orchid = row(page, 'all').locator(`a[data-switcher-entry][data-switcher-words~="${SCRATCH}"]`);
+      await expect(orchid, 'the orchid window\'s pill').toHaveCount(1);
+      await expect(orchid, 'the pill reads the whole codename').toHaveText('orchid:1');
+      await expect(orchid).toHaveAttribute('title', 'orchid:1');
+      // Not clipped: the label's box holds its whole text, and the pill is
+      // at least as wide as the label.
+      await orchid.scrollIntoViewIfNeeded();
+      const m = await orchid.evaluate((a) => {
+        const label = a.querySelector('.whitespace-nowrap') as HTMLElement, pill = a.firstElementChild as HTMLElement;
+        return { sw: label.scrollWidth, cw: label.clientWidth, lw: label.getBoundingClientRect().width, pw: pill.getBoundingClientRect().width };
+      });
+      expect(m.sw, `the label is not clipped (${JSON.stringify(m)})`).toBeLessThanOrEqual(m.cw + 0.5);
+      expect(m.pw, `the pill holds the label (${JSON.stringify(m)})`).toBeGreaterThanOrEqual(m.lw);
+      // Every window pill ends in its ":<index>".
+      const labels = await row(page, 'all').locator('a[data-switcher-entry="mirror"]').evaluateAll((els) => els.map((e) => e.textContent || ''));
+      expect(labels.length, 'instrument check: the row holds window pills').toBeGreaterThanOrEqual(WINDOWS.length - 1);
+      for (const l of labels) expect(l, 'a window pill without its index').toMatch(/:\d+$/);
+      await expectNoSidewaysScroll(page);
       await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
     });
 
@@ -342,8 +279,7 @@ for (const vp of [
     // icon button that opens the same command palette UI that the bottom bar
     // search opens"): the one #switcher-search, from a session page (where the
     // bar's magnifier opens it too) and from a page with no bar at all, whose
-    // palette reads the sidebar's rows. Enter opens what it found. REGRESSION
-    // TEST: red at the commit before (no #sidebar-search).
+    // palette reads the sidebar's rows. Enter opens what it found.
     test('the sidebar\'s magnifier opens the bar\'s palette, on a session page and on a page with no bar; Enter opens the find', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
@@ -354,7 +290,7 @@ for (const vp of [
         }
       };
       // A session page: the overlay sidebar, opened at every width.
-      await page.goto(origin + rig.viewPath('mango') + '&window=' + encodeURIComponent('@1'));
+      await page.goto(MANGO);
       await expect(bar(page)).toBeVisible();
       await page.locator('#sidebar-open').click();
       await expect(page.locator('#sidebar-search')).toBeVisible();
@@ -371,8 +307,7 @@ for (const vp of [
       await expect(page.locator('#sidebar-search'), 'focus goes back to the button that opened it').toBeFocused();
       await expect(page.locator('#sidebar-search')).toHaveAttribute('aria-expanded', 'false');
       // The bar's magnifier opens the very same element.
-      const same = await pal(page).evaluate((el) => { (window as any).__palEl = el; return true; });
-      expect(same).toBe(true);
+      await pal(page).evaluate((el) => { (window as any).__palEl = el; });
       await page.locator('#sidebar-close').click();
       await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'false');
       await page.locator('#switcher-search-open').click();
@@ -405,15 +340,14 @@ for (const vp of [
     // THE PIN ON A SESSION'S BAR (operator ask: "a way to pin the current
     // session, the current agent, from within the rendered view"): on a
     // window's Rendered view the bar's pin toggle pins THAT window — the Pins
-    // view and its count follow at once, a reload keeps it, the list's card is
-    // pinned — and unpins it again. REGRESSION TEST: red at the commit before
-    // (no #switcher-pin).
+    // view and its count follow at once, a reload keeps it, another session's
+    // bar lists it in Pins — and unpins it again. (With the Agents list's card
+    // toggles retired, this is the one way to pin: open it, then pin.)
     test('the bar\'s pin toggle pins and unpins the page\'s own window; the Pins view follows at once', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
-      await openAgents(page);
-      await unpinAll(page);
-      const view = origin + rig.viewPath('tundra') + '&window=' + encodeURIComponent('@6');
+      await unpin(page, 'tundra', '@6');
+      const view = viewOf('tundra', '@6');
       await page.goto(view);
       const pin = page.locator('#switcher-pin');
       await expect(pin).toBeVisible();
@@ -432,11 +366,12 @@ for (const vp of [
         await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('1');
         await expect(row(page, 'pins').locator('[data-switcher-current]')).toHaveText('tundra:1');
         await expect(page.locator('[id="switcher-list-pins"]'), 'no nested copy of the row').toHaveCount(1);
-        // Kept: a reload draws it pressed, and the list's card is pinned.
+        // Kept: a reload draws it pressed, and another session's bar lists it.
         await page.reload();
         await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'true');
-        await page.goto(origin + '/agents');
-        await expect(page.locator('#agents-list > article[data-mirror-card][data-f-session="tundra"]')).toHaveAttribute('data-pinned', '');
+        await page.goto(MANGO);
+        await expect(row(page, 'pins').locator('a[data-switcher-entry]')).toHaveText(['tundra:1']);
+        await expect(page.locator('#switcher-pin'), "mango's own toggle is not pressed").toHaveAttribute('aria-pressed', 'false');
         // And unpinned from the same toggle.
         await page.goto(view);
         await page.locator('#switcher-pin').click();
@@ -444,25 +379,23 @@ for (const vp of [
         await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
         await expectNoSidewaysScroll(page);
       } finally {
-        await page.request.post(origin + '/agents/pins/delete', { form: { kind: 'mirror', host: rig.host, session: 'tundra', window: '@6' }, headers: { Origin: origin } });
+        await unpin(page, 'tundra', '@6');
       }
     });
 
-    test('the bar\'s "+" opens the dispatch sheet and a dispatch from it creates an agent; a session page has no "+"', async ({ page }) => {
+    test('the sidebar\'s "+" opens the dispatch sheet, and a dispatch from it creates an agent and opens it; a session page\'s bar has no "+"', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
-      await openAgents(page);
-      const plus = page.locator('#switcher-deploy');
+      await page.goto(MANGO);
+      await expect(bar(page)).toBeVisible();
+      // A session page's bar: the same switcher, no "+" of its own.
+      await expect(page.locator('#switcher-deploy')).toHaveCount(0);
+      await page.locator('#sidebar-open').click();
+      const plus = page.locator('#sidebar-deploy');
       await expect(plus).toBeVisible();
       await expect(plus).toHaveAccessibleName('Deploy agent');
       const pb = (await plus.boundingBox())!;
-      const bb = (await bar(page).boundingBox())!;
       expect([Math.round(pb.width), Math.round(pb.height)], 'a 44px target').toEqual([44, 44]);
-      expect(pb.y >= bb.y && pb.y + pb.height <= bb.y + bb.height + 0.5, 'inside the bar').toBe(true);
-      // The pills' row keeps room (measured; printed for the PR).
-      const rowW = await row(page, 'recent').evaluate((e) => e.getBoundingClientRect().width);
-      console.log(`[agents-switcher ${vp.name}] pill row width ${rowW}`);
-      expect(rowW, 'the pill row keeps usable room').toBeGreaterThan(150);
       await expectNoSidewaysScroll(page);
       // Keyboard: focus it and press Enter.
       await plus.focus();
@@ -471,7 +404,7 @@ for (const vp of [
       await expect(sheet).toBeVisible();
       await expect(sheet.locator('textarea[name="note_text"]'), 'the task-less form: an ad-hoc task box').toBeVisible();
       await expect(sheet.locator('[data-combobox]:has(input[name="note_id"])'), 'the task-less form: an existing-task picker, not a fixed task').toHaveCount(1);
-      // A dispatch from it creates exactly one agent.
+      // A dispatch from it creates exactly one agent, and opens its page.
       const names = async () => {
         const r = await page.request.get(origin + '/api/agents', { headers: { Authorization: `Bearer ${hookToken}` } });
         expect(r.status()).toBe(200);
@@ -484,117 +417,55 @@ for (const vp of [
       expect((await resp).status()).toBe(200);
       const created = (await names()).filter((a) => !before.has(a.name));
       expect(created.length, 'exactly one agent created').toBe(1);
-      await page.request.delete(`${origin}/agents/${created[0].id}`, { headers: { Origin: origin } });
-      // A session page's bar: the same switcher, no "+".
-      await page.goto(origin + rig.viewPath('mango') + '&window=' + encodeURIComponent('@1'));
-      await expect(bar(page)).toBeVisible();
-      await expect(page.locator('#switcher-deploy')).toHaveCount(0);
+      try {
+        await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name, { timeout: 15_000 });
+      } finally {
+        await page.request.delete(`${origin}/agents/${created[0].id}`, { headers: { Origin: origin } });
+      }
+      // The same "+" from a page with no bar (openDispatchSheet: the sidebar's).
+      await page.goto(origin + '/tasks');
+      await openDispatchSheet(page);
     });
 
     // 🔴 THE ROW SWAP IS BOUND PER VERSION, NOT UNDER THE "/" FLAG. A window
     // that ran #294's switcher has window.__musterSwitcherKeys set; a boosted
-    // swap into /agents then ran this script with that flag already true, and
-    // the row swap it guarded was never bound — htmx's own out-of-band swap
-    // nested a copy of each row in it. Simulated by setting the flag first.
-    // And a swap that reorders the row keeps a focused pill focused.
+    // swap then ran this script with that flag already true, and the row swap
+    // it guarded was never bound — htmx's own out-of-band swap nested a copy of
+    // each row in it. Simulated by setting the flag first. The swap is the pin
+    // toggle's answer (switcher_pin.go: the bar's rows, out of band), clicked by
+    // script so focus stays where the reader left it: on a pill, which keeps
+    // it through the reorder.
     test('a window with an older switcher\'s flag still swaps the rows cleanly; a focused pill keeps focus through a reorder', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
       await page.addInitScript(() => { (window as any).__musterSwitcherKeys = true; try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
-      await openAgents(page);
-      await unpinAll(page);
+      await unpin(page, 'mango', '@1');
+      await openView(page);
       await expect(row(page, 'all')).toBeVisible();
       const marble = row(page, 'all').locator('a[data-switcher-entry]', { hasText: 'marble:1' });
       const href = await marble.getAttribute('href');
-      const before = await row(page, 'all').locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
+      const order = () => row(page, 'all').locator('[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href') || 'current'));
+      const before = await order();
       await marble.focus();
       await expect(marble).toBeFocused();
-      // Pinned elsewhere, then the list refreshes: marble moves to the front
-      // of All (pins lead it), and Pins gains it.
-      const form = { kind: 'mirror', host: rig.host, session: 'marble', window: '@10' };
-      expect((await page.request.post(origin + '/agents/pins', { form, headers: { Origin: origin } })).status()).toBe(200);
       try {
-        await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
-        await expect.poll(() => row(page, 'all').locator('a[data-switcher-entry]').first().getAttribute('href'), { message: 'the refresh reordered All' }).toBe(href);
-        expect(before[0], 'control: marble was not first before').not.toBe(href);
+        // Pin the page's own window: it moves to the front of All (pins lead
+        // it), and Pins gains it.
+        await page.evaluate(() => (document.getElementById('switcher-pin') as HTMLElement).click());
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+        await expect.poll(async () => (await order())[0], { message: 'the swap reordered All' }).toBe('current');
+        expect(before[0], 'control: the page\'s own pill was not first before').not.toBe('current');
         // No nesting, no duplicate ids.
         for (const id of ['switcher-list-recent', 'switcher-list-pins', 'switcher-list-all', 'switcher-count-pins']) {
           await expect(page.locator(`[id="${id}"]`), `one #${id}`).toHaveCount(1);
         }
-        await expect(row(page, 'pins').locator(':scope > a[data-switcher-entry]')).toHaveCount(1);
+        await expect(row(page, 'pins').locator(':scope > [data-switcher-entry]')).toHaveCount(1);
         await expect(row(page, 'all').locator('[data-switcher-list], [id^="switcher-list-"]')).toHaveCount(0);
         // Focus is on the same session's pill, in its new place.
         expect(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.closest('#session-switcher a[data-switcher-entry]')?.getAttribute('href') ?? null), 'focus kept on the pill').toBe(href);
       } finally {
-        await page.request.post(origin + '/agents/pins/delete', { form, headers: { Origin: origin } });
+        await unpin(page, 'mango', '@1');
       }
-    });
-
-    test('a filter text stored for the removed search box, or a ?q=, hides no card', async ({ page }) => {
-      await ready(page);
-      await page.addInitScript(() => {
-        try {
-          sessionStorage.setItem('muster.agents.filter', 'zzqx-nothing-matches');
-          localStorage.setItem('muster.agents.filter', 'zzqx-nothing-matches');
-        } catch (e) {}
-      });
-      await openAgents(page, '/agents?q=zzqx-nothing-matches');
-      const n = await listed(page);
-      // Every card is shown — but the Idle section's, which the section's own
-      // collapse hides (idle_section.go), not a filter.
-      const hidden = await page.evaluate(() => [...document.querySelectorAll('#agents-list > article:not([data-idle-section])')].filter((a) => !a.getClientRects().length).map((a) => a.id));
-      expect(hidden, 'no card is hidden by a stale filter text').toEqual([]);
-      expect(await page.locator('#agents-list > article:not([data-idle-section])').count(), 'instrument check: the windows are drawn outside the Idle section').toBeGreaterThanOrEqual(WINDOWS.length);
-      await expect(page.locator('#agents-nomatch')).toBeHidden();
-      await expect(page.locator('#agents-count')).toHaveText(`${n} of ${n}`);
-      expect(await page.evaluate(() => document.getElementById('agents-filter-style')?.textContent || ''), 'no hide rule but the held arrivals\'').toBe('#agents-list > article[data-held]{display:none !important}');
-      // The stale session copy is deleted by the head script.
-      expect(await page.evaluate(() => sessionStorage.getItem('muster.agents.filter'))).toBeNull();
     });
   });
 }
-
-test.describe('desktop 1280×800, from another tab', () => {
-  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
-
-  test('the FABs stay on the Tasks tab; a switch to Agents hides the replies FAB and fills the bar, and back shows it again', async ({ page }) => {
-    test.setTimeout(90_000);
-    await ready(page);
-    await page.goto(origin + '/tasks');
-    await expect(page.locator('#fab-tasks')).toBeVisible();
-    await expect(page.locator('#notif-fab')).toBeVisible();
-    await expect(page.locator('#fab-agents')).toHaveCount(0);
-    // The Tasks document does not build the list: its Agents panel's bar is
-    // pending until the list's own load fills it.
-    await openMore(page);
-    await page.click('.sidebar-tab[data-tab="agents"]');
-    await expect(page).toHaveURL(/\/agents$/);
-    // The router finished the switch (it once stopped at the launcher, and the
-    // sidebar kept naming Tasks as the page).
-    await expect(page.locator('.sidebar-tab[data-tab="agents"]')).toHaveAttribute('aria-current', 'page');
-    await expect(bar(page)).toBeVisible();
-    await expect(page.locator('#notif-fab')).toBeHidden();
-    await expect(page.locator('#fab-tasks')).toBeHidden();
-    await toggle(page).click();
-    await menu(page).locator('[data-switcher-pick="all"]').click();
-    const n = await listed(page);
-    await expect(row(page, 'all').locator('a[data-switcher-entry]')).toHaveCount(n, { timeout: 15_000 });
-    await expect(menu(page).locator('[data-switcher-count="all"]')).toHaveText(String(n));
-    // Back to Tasks: its FABs return, and the bar goes with the Agents panel.
-    await page.click('.sidebar-tab[data-tab="tasks"]');
-    await expect(page.locator('#notif-fab')).toBeVisible();
-    await expect(page.locator('#fab-tasks')).toBeVisible();
-    await expect(bar(page)).toBeHidden();
-    // The replies panel, open on Tasks, closes with its launcher when Back
-    // (not a tap, which closes it anyway) shows Agents again.
-    // (Opened by script: at 1280 the desktop sidebar covers this FAB; neither
-    // its place nor the sidebar's is changed here.)
-    await page.locator('#notif-fab').evaluate((e) => (e as HTMLElement).click());
-    await expect(page.locator('#notif-panel')).toBeVisible();
-    await page.goBack();
-    await expect(page).toHaveURL(/\/agents$/);
-    await expect(page.locator('.sidebar-tab[data-tab="agents"]')).toHaveAttribute('aria-current', 'page');
-    await expect(page.locator('#notif-fab')).toBeHidden();
-    await expect(page.locator('#notif-panel')).toBeHidden();
-  });
-});

@@ -7,9 +7,12 @@ import { dsn, repoRoot } from '../lib/env';
 // through internal/textplain.Title at render time; this is the click path:
 //
 //   - an agent dispatched from a task is named after it ("#<id> · <title>"),
-//     and a task title routinely carries markdown. Its card on /agents and its
-//     detail page's <title> must read as plain text — with the "#<id>" and the
-//     snake_case identifier intact (the previous stripper removed every # and _);
+//     and a task title routinely carries markdown. Its detail page's <title> and header
+//     and its sidebar row must read as plain text — with the "#<id>" and the
+//     snake_case identifier intact (the previous stripper removed every # and _).
+//     The Agents list page is retired, so its card's sinks moved: the sidebar's
+//     row (its text and its title attribute, the whole label) and the agent's
+//     page header title;
 //   - a task created with a markdown title: its /tasks/{id} <title> and <h1>.
 //
 // The stored values stay as written (the title is rendered plain, not
@@ -38,20 +41,24 @@ test.afterAll(() => {
   if (agentID) fix('rmagent', '1', agentName);
 });
 
-test('a task-derived agent name with markdown reads plain on its card and in its page title', async ({ page }) => {
-  await page.goto('/agents');
-  const card = page.locator(`#agents-list article#agent-${agentID}`);
-  await expect(card).toBeVisible();
-  // The card shows the plain title, whole, and none of the markers. (Asserted
-  // on the card's text rather than one heading element: a name past the card's
-  // clamp moves to a title row of its own, and the raw markdown name is longer
-  // than the plain one, so an element check would fail on layout, not text.)
-  await expect(card).toContainText(plainName);
-  const shown = await card.innerText();
-  for (const marker of ['**', '](', '`', '~~']) expect(shown, `the card shows ${marker}`).not.toContain(marker);
-
+test('a task-derived agent name with markdown reads plain on its sidebar row and in its page title', async ({ page }) => {
   await page.goto('/agents/' + agentName);
   await expect(page).toHaveTitle(plainName + ' · muster');
+  // The page's own header title: the whole plain name (its title attribute)
+  // and none of the markers in what it draws.
+  const title = page.locator('[data-agent-title] h1');
+  await expect(title).toHaveAttribute('title', plainName);
+  // The sidebar's row (a drawer on a phone): the whole plain label as its
+  // title, and none of the markers in its text.
+  await page.locator('#sidebar-open').click();
+  const row = page.locator(`#sidebar-agents-list a#nav-agent-${agentID}`);
+  await expect(row).toBeVisible();
+  await expect(row).toHaveAttribute('title', plainName);
+  await expect(row).toContainText(plainName);
+  for (const el of [row, title]) {
+    const shown = await el.innerText();
+    for (const marker of ['**', '](', '`', '~~']) expect(shown, `${await el.evaluate((e) => e.id || e.tagName)} shows ${marker}`).not.toContain(marker);
+  }
 });
 
 test('a task with a markdown title reads plain in its detail page title and heading', async ({ page, api }) => {
