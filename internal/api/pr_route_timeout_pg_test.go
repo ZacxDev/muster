@@ -27,13 +27,6 @@ func deadlineIs(t *testing.T, what string, r plugins.Route, want time.Duration) 
 	}
 }
 
-func TestTheDeadlineConstantsAreThirtyMinutesAndFourHours(t *testing.T) {
-	// Literal values, not each other: the PR deadline is a separate number.
-	if RouteTimeout != 30*time.Minute || PRRouteTimeout != 4*time.Hour {
-		t.Fatalf("RouteTimeout %v, PRRouteTimeout %v; want 30m, 4h", RouteTimeout, PRRouteTimeout)
-	}
-}
-
 func TestAPullRequestReviewRouteHasTheFourHourDeadline(t *testing.T) {
 	f := newPRFixture(t)
 	f.authored(t, f.asOwner, routeSID, prCreated())

@@ -857,7 +857,10 @@ turn for each message says when to do this.
    wrote: a preface saying it is an untrusted external message, its `route_id`
    and how to answer, then the message behind the fence's content prefix. It
    appears in that window's queue like any queued message, and you can Cancel
-   it there.
+   it there: a cancelled routed message — by you, or by a disable or a
+   sign-out everywhere — ends its route and goes back to the chief at once,
+   not at its deadline. So does one still queued when no online window has
+   shown its session for 2 minutes.
 3. **The answer.** The session answers with the `route_reply {route_id, body}`
    tool of its [muster MCP server](attention.md#mirrored-claude-code-sessions)
    (`POST /mirror/mcp`, the mirror host's token). It is bound to the route's
@@ -1050,9 +1053,16 @@ routing is on.
    hand-back — but a deadline of **4 hours**, not 30 minutes: the session that
    authored the pull request is usually still at work on it, and its paste
    waits until its window goes idle, so a 30-minute deadline handed most
-   reviews back to the chief before they were ever pasted. The audit row carries
+   reviews back to the chief before they were ever pasted. So a review may be
+   pasted up to 4 hours after its mail arrived, at the session's first idle
+   gap. The audit row carries
    `routed_via: "pr <owner>/<repo>#<n> authored by <session>"`. Another
-   owner's session is never chosen.
+   owner's session is never chosen. A newer review round of the same pull
+   request for the same session **supersedes** every older round whose paste
+   is still queued: that route ends `failed` ("superseded by a newer review
+   round") and its paste is cancelled, with no hand-back to the chief — so the
+   session never answers, and muster never auto-sends, a stale round. An older
+   round already pasted is left alone.
 4. **No online window for that session.** The message goes to your chief as
    any other, and its turn ends with a block headed "Session that authored
    this pull request": the session's id, title, host, what its host's hook reported it did

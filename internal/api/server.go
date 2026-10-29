@@ -157,6 +157,10 @@ type Server struct {
 	// ended owing its chief a hand-back.
 	routeKick     chan struct{}
 	routeKickOnce sync.Once
+	// routeGoneMu guards routeGone: for each routed paste whose target window
+	// the route sweep last found missing, when it first did (routedPastePass).
+	routeGoneMu sync.Mutex
+	routeGone   map[string]time.Time
 	// attention is the attention queue's process state (attention.go): the
 	// waiters' wake-up and each owner's last-seen waiting sessions.
 	attention attentionState
