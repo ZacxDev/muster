@@ -43,7 +43,14 @@
     of cluster it is on.
 
   Either way, the agent can still resolve names and send anything it holds to any
-  public HTTPS host. A `gateway`-kind agent gets no NetworkPolicy at all. And a
+  public HTTPS host. The exception is an **officer instance**, whose policy has
+  no public rule and no DNS rule at all (muster's connect port only); the
+  operator allows name-filtered DNS and the Anthropic API to it by name, with
+  the network plugin's own policy
+  ([officers.md](officers.md#the-instances-network)). With that policy live,
+  DNS tunnelling is closed for it, but `api.anthropic.com` stays a
+  full-bandwidth channel for anyone with their own Anthropic API key. A
+  `gateway`-kind agent gets no NetworkPolicy at all. And a
   NetworkPolicy is only a declaration: the cluster's network plugin enforces it
   or does not, and muster cannot tell which.
 - **A machine job does not survive a restart, and its timeout does not stop the

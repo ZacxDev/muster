@@ -1621,7 +1621,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			if a.cfg.agentNetworkPolicy() {
 				l.Printf("%s network: a NetworkPolicy is WRITTEN per agent before its pod, and the agent is "+
 					"refused if it cannot be — ingress only from pods labelled [%s] (%s) in namespace %s (%s), "+
-					"egress only DNS and TCP %d to public IPv4 addresses. Enforcement is the cluster network "+
+					"egress only DNS and TCP %d to public IPv4 addresses. An OFFICER instance (its session "+
+					"runs with permissions bypassed) gets that policy WITHOUT the public rule and WITHOUT the DNS "+
+					"rule — egress the connect port only — so name-filtered DNS and the Anthropic API must be "+
+					"allowed by a cluster-side FQDN policy (docs/officers.md); an officer started by an older "+
+					"build keeps its old rules until it is "+
+					"stopped and started. Enforcement is the cluster network "+
 					"plugin's, not this server's. That selector is what a policy written FROM NOW ON gets: an "+
 					"agent created before this build has NO policy, and an existing policy keeps its old "+
 					"selector, until that agent is stopped and started. This server's ServiceAccount needs "+

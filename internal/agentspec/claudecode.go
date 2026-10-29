@@ -84,7 +84,9 @@ var ClaudeCodeSecurity = provision.Security{
 //
 // ⚠ WHAT IT DOES NOT BUY: this is "public internet on 443", not "Anthropic and
 // GitHub". Nothing here names a host. A prompt-injected agent can still send
-// what it holds to any public HTTPS endpoint.
+// what it holds to any public HTTPS endpoint. An egress-locked agent (an officer
+// instance: [ClaudeCodeSession.EgressLocked]) does NOT get the public rule, or
+// the DNS rule, at all; see claudeCodeNetworkFor.
 //
 // ⚠ MUSTER ITSELF IS NOT REACHABLE FROM THE POD through this policy, although
 // the spec still hands it MUSTER_API_URL: that address is in-cluster, so it is on
@@ -98,13 +100,43 @@ func ClaudeCodeNetwork() provision.Network {
 // claudeCodeNetworkFor is ClaudeCodeNetwork plus, when the deployment offers the
 // connector store ([Config.ConnectURL]), egress to muster's connector port — the
 // one allowance that lets the pod reach muster, and only that surface of it.
-func claudeCodeNetworkFor(cfg Config) provision.Network {
+//
+// 🔴 WITH egressLocked ([ClaudeCodeSession.EgressLocked]) THE PUBLIC RULE AND
+// THE DNS RULE ARE BOTH GONE: the pod may reach muster's connect port, and
+// NOTHING else — no name resolution, not even the Anthropic API. That is
+// deliberate, and it is what makes the lock mean anything: a NetworkPolicy
+// cannot name a host, and network plugins union allows, so a cluster-side FQDN
+// allow (e.g. a Cilium toFQDNs policy for api.anthropic.com:443) narrows nothing
+// while this policy still allows "any public address on 443" — and a
+// cluster-side name-filtered DNS rule (Cilium rules.dns) narrows nothing while
+// this policy still allows port 53 to the DNS pods. The operator ships both;
+// without them a locked pod cannot resolve or reach the API at all (closed,
+// loud: every turn fails). See docs/officers.md "The instance's network".
+func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 	n := ClaudeCodeNetwork()
+	if egressLocked {
+		n.PublicEgressTCPPorts = nil
+		n.NoClusterDNS = true
+	}
 	if cfg.ClaudeCodeMCPOffered() {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
 	}
 	return n
 }
+
+// EnvClaudeDisableNonessentialTraffic is the Claude Code CLI's switch for its
+// non-inference traffic (auto-updater, telemetry, error reporting, feedback,
+// release notes, feature flags — https://code.claude.com/docs/en/network-config
+// and /en/data-usage). An egress-locked pod sets it to "1": those hosts are
+// unreachable there by design, and the CLI is told not to try rather than having
+// each attempt time out against the policy.
+//
+// ⚠ IT DOES NOT COVER EVERYTHING. Per the docs, the WebFetch domain-safety
+// preflight (to api.anthropic.com, which a locked pod still reaches through the
+// cluster's FQDN allow) and the claude.ai MCP connectors (mcp-proxy.anthropic.com,
+// which it does not) are separate switches. Neither is needed for the pod to
+// work: the first succeeds, the second fails closed.
+const EnvClaudeDisableNonessentialTraffic = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 
 // ClaudeCodeMCPOffered reports whether a claude-code agent built from this
 // Config can reach muster's MCP server — its ONLY route to muster's tools (the
@@ -280,7 +312,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
 		Security:  ClaudeCodeSecurity,
-		Network:   claudeCodeNetworkFor(cfg),
+		Network:   claudeCodeNetworkFor(cfg, opts.ClaudeCodeSession.EgressLocked()),
 		Labels:    labels,
 		Repo:      repo,
 	}
@@ -304,6 +336,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	if opts.ClaudeCodeSession.BypassPermissions {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvPermissionMode, Value: podagent.PermissionModeBypass})
+	}
+	if opts.ClaudeCodeSession.EgressLocked() {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableNonessentialTraffic, Value: "1"})
 	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)

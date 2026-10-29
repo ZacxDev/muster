@@ -157,7 +157,8 @@ func copyLabels(in map[string]string) map[string]string {
 //     in ControllerNamespace. The two selectors are ONE peer, so they are ANDed:
 //     written as two peers they would be ORed, and would admit every pod in the
 //     controller's namespace plus every namespace's pods carrying those labels;
-//   - EGRESS: UDP and TCP 53 to the cluster's DNS pods, each of the spec's
+//   - EGRESS: UDP and TCP 53 to the cluster's DNS pods (none when the spec sets
+//     NoClusterDNS), each of the spec's
 //     PublicEgressTCPPorts to [publicIPv4] except [nonPublicIPv4], and each of its
 //     ControllerEgressTCPPorts to the controller's pods (the ingress peer).
 //
@@ -223,20 +224,26 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 		})
 	}
 
-	udp, tcp := corev1.ProtocolUDP, corev1.ProtocolTCP
-	dns := intstr.FromInt32(dnsPort)
-	egress := []networkingv1.NetworkPolicyEgressRule{{
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{labelNamespaceName: cfg.dnsNamespace()},
+	// 🔴 NoClusterDNS MEANS NO DNS RULE AT ALL — not even port 53 to the DNS
+	// pods. Plugins union allows, so an L4 :53 allow here would widen a
+	// cluster-side name-filtered DNS rule back to "any name" (provision.Network).
+	egress := []networkingv1.NetworkPolicyEgressRule{}
+	if !spec.Network.NoClusterDNS {
+		udp, tcp := corev1.ProtocolUDP, corev1.ProtocolTCP
+		dns := intstr.FromInt32(dnsPort)
+		egress = append(egress, networkingv1.NetworkPolicyEgressRule{
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{labelNamespaceName: cfg.dnsNamespace()},
+				},
+				PodSelector: &metav1.LabelSelector{MatchLabels: cfg.dnsPodLabels()},
+			}},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &udp, Port: &dns},
+				{Protocol: &tcp, Port: &dns},
 			},
-			PodSelector: &metav1.LabelSelector{MatchLabels: cfg.dnsPodLabels()},
-		}},
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &udp, Port: &dns},
-			{Protocol: &tcp, Port: &dns},
-		},
-	}}
+		})
+	}
 
 	// Same rule as ingress, for the same reason: no public port, no public rule.
 	if len(spec.Network.PublicEgressTCPPorts) > 0 {
