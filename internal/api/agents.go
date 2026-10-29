@@ -277,10 +277,6 @@ func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
 		if id, err := strconv.ParseInt(noteParam, 10, 64); err == nil {
 			if n, err := s.ext.Notes.Get(r.Context(), id); err == nil {
 				v := s.buildTaskDispatchView(r.Context(), n)
-				// Which document is opening this modal decides where its submit can
-				// land: #agents-list exists only on the shell. See
-				// ui.TaskDispatchView.FromDetailPage.
-				v.FromDetailPage = rendersInDetailShape(r, n.ID)
 				v.Kinds = s.kindChoices(r.Context())
 				if rerr := ui.RenderDispatchModalTask(w, v); rerr != nil {
 					s.logger.Printf("agents: render task dispatch modal: %v", rerr)

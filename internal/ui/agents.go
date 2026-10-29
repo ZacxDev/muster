@@ -496,8 +496,11 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 		),
 		Form(
 			hx("hx-post", "/agents"),
-			hx("hx-target", "#agents-list"),
-			hx("hx-swap", "morph:innerHTML"),
+			// Nothing to swap: the answer sends the page to the new agent
+			// (HX-Redirect, internal/api handleAgentCreate). It used to morph
+			// #agents-list, which only the retired Agents list page had — on any
+			// other document htmx would have sent nothing at all.
+			hx("hx-swap", "none"),
 			// Close the modal after a successful dispatch — but ONLY for THIS form's
 			// own request. htmx:afterRequest bubbles, so the lazy repo/task combobox
 			// loads (hx-get on child <ul>s) would otherwise fire this handler and slam
@@ -601,35 +604,24 @@ type TaskDispatchView struct {
 	Repo       string // resolved repo full name ("" = none / not inferred)
 	RepoBranch string // resolved branch ("" = repo default, resolved server-side)
 
-	// FromDetailPage switches the form's SWAP TARGET, and it is the difference
-	// between Dispatch working and Dispatch being inert.
-	//
-	// 🔴 htmx resolves hx-target BEFORE it issues the request; when the selector
-	// matches nothing it raises htmx:targetError and sends NOTHING. Nothing in
-	// internal/ui listens for that event, so on a document without the target
-	// there is no request, no error, no toast — the modal does not even close.
-	// This form's default target, #agents-list, exists ONLY inside AgentsPanel,
-	// i.e. only on the shell; on /tasks/{id} the Dispatch button opened a modal
-	// whose submit did nothing at all.
-	//
-	// On the detail page the form therefore targets the task's own card, and
-	// POST /agents answers with that card (see internal/api's handleAgentCreate):
-	// the dispatch's real, visible effect there is the task flipping to
-	// in-progress with its new agent's status chip.
-	FromDetailPage bool
-
 	// Kinds is the deployment's agent kinds; more than one renders the picker.
 	Kinds KindChoices
 }
 
 // dispatchTarget is the (selector, swap) pair the task-scoped dispatch form
-// posts into. ONE function, so the two documents cannot drift apart, and so the
-// answer is derivable in a test rather than spelled twice.
+// posts into: the task's own card, on the board and on /tasks/{id} alike, and
+// POST /agents answers a request targeting it with that card (internal/api's
+// handleAgentCreate reads HX-Target): the dispatch's visible effect is the task
+// flipping to in-progress with its new agent's status chip.
+//
+// 🔴 htmx resolves hx-target BEFORE it issues the request; when the selector
+// matches nothing it raises htmx:targetError and sends NOTHING — no request,
+// no error, no toast, a sheet that does not even close. The board's form used
+// to target #agents-list, which only existed because the retired Agents tab's
+// panel was drawn (hidden) into every shell document; the card is there on
+// every document that draws the Dispatch button.
 func (v TaskDispatchView) dispatchTarget() (selector, swap string) {
-	if v.FromDetailPage {
-		return "#task-" + strconv.FormatInt(v.NoteID, 10), "morph:outerHTML"
-	}
-	return "#agents-list", "morph:innerHTML"
+	return "#task-" + strconv.FormatInt(v.NoteID, 10), "morph:outerHTML"
 }
 
 // DispatchModalTaskBody is the /ui/agents/new?note=<id> partial: a TASK-SCOPED
@@ -671,9 +663,8 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 		),
 		Form(
 			hx("hx-post", "/agents"),
-			// See TaskDispatchView.FromDetailPage: #agents-list exists only on the
-			// shell, and an unresolvable hx-target makes htmx drop the request
-			// silently rather than fail loudly.
+			// The task's card (dispatchTarget): an unresolvable hx-target makes htmx
+			// drop the request silently rather than fail loudly.
 			hx("hx-target", target),
 			hx("hx-swap", swap),
 			hx("hx-on::after-request", dispatchCloseOnOwnSubmit),
@@ -1098,10 +1089,10 @@ func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL
 			hx("hx-get", optionsURL),
 			hx("hx-trigger", "load"),
 			// Target THIS <ul> explicitly. htmx hx-target is inherited by
-			// descendants, and this combobox lives inside the dispatch form whose
-			// hx-target is "#agents-list" — without this, the options would load into
-			// #agents-list (turning the agents panel into a repo/task list) and the
-			// skeleton here would never resolve.
+			// descendants, and this combobox lives inside a dispatch form whose
+			// hx-target is the task's card (the task-scoped one) — without this,
+			// the options would load into that card and the skeleton here would
+			// never resolve.
 			hx("hx-target", "this"),
 			hx("hx-swap", "innerHTML"),
 			Class("hidden absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-s1 py-1 shadow-2xl ring-1 ring-line"),
