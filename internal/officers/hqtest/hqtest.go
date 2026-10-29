@@ -54,6 +54,20 @@ type Server struct {
 	PageSize int
 	// Evaluations is every POST /releases/captain accepted, in order.
 	Evaluations []Evaluation
+	// Disabled officers answer `enabled: false` on GET /officers/{id}.
+	Disabled map[string]bool
+	// Notices is every notice POSTed to /officers/{id}/notices that was
+	// accepted; NoticeStatus, when non-zero, is answered instead (e.g. 503).
+	Notices      []Notice
+	NoticeStatus int
+	// Preflight is POST /officers/{id}/preflight's answer (404 when nil).
+	Preflight map[string]any
+}
+
+// Notice is one accepted sensitive-path notice.
+type Notice struct {
+	Officer string
+	Body    map[string]any
 }
 
 // Evaluation is one accepted captain-route post: the officer HQ resolved from
@@ -112,6 +126,29 @@ func (s *Server) Requests() []Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Request(nil), s.reqs...)
+}
+
+// SetDisabled sets whether officer answers `enabled: false`.
+func (s *Server) SetDisabled(officer string, disabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Disabled == nil {
+		s.Disabled = map[string]bool{}
+	}
+	s.Disabled[officer] = disabled
+}
+
+// SetNoticeStatus makes the notices route answer code (0: accept).
+func (s *Server) SetNoticeStatus(code int) { s.mu.Lock(); s.NoticeStatus = code; s.mu.Unlock() }
+
+// SetPreflight sets the preflight route's answer (nil: 404).
+func (s *Server) SetPreflight(body map[string]any) { s.mu.Lock(); s.Preflight = body; s.mu.Unlock() }
+
+// NoticesPosted returns the accepted notices.
+func (s *Server) NoticesPosted() []Notice {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Notice(nil), s.Notices...)
 }
 
 // ResetRequests forgets the recorded requests.
@@ -209,6 +246,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.write(w, http.StatusOK, map[string]any{"items": items, "next": next})
 	case len(parts) == 4 && parts[1] == "items" && r.Method == http.MethodPost:
 		s.itemVerb(w, officer, parts[2], parts[3], body, now)
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		// GET /officers/{id}: the officer row, `enabled` as HQ spells it.
+		s.write(w, http.StatusOK, map[string]any{"id": officer, "enabled": !s.Disabled[officer]})
+	case len(parts) == 2 && parts[1] == "notices" && r.Method == http.MethodPost:
+		if s.NoticeStatus != 0 {
+			s.write(w, s.NoticeStatus, map[string]any{"error": "notice refused by the fake"})
+			return
+		}
+		s.Notices = append(s.Notices, Notice{Officer: officer, Body: body})
+		s.write(w, http.StatusCreated, map[string]any{"posted": true})
+	case len(parts) == 2 && parts[1] == "preflight" && r.Method == http.MethodPost:
+		if s.Preflight == nil {
+			s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
+		s.write(w, http.StatusOK, s.Preflight)
 	default:
 		s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
 	}

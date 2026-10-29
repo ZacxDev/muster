@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officership"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -56,6 +57,9 @@ type officerRuntime struct {
 	claimOwner string
 	// wg counts re-prompt sends in flight.
 	wg sync.WaitGroup
+	// ships are the shipping officers' runtimes, by officer id
+	// (officer_ship.go).
+	ships map[string]*shipRuntime
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -72,6 +76,14 @@ type OfficersConfig struct {
 	// through this source) and never run its model, and nothing would say so —
 	// EnableOfficers refuses instead.
 	InstallSession func(source func(agents.Agent) (agentspec.ClaudeCodeSession, bool))
+	// ShipGitHub, ShipHosts and ShipHTTP replace a shipping officer's GitHub
+	// side (its App, the REST client and the hosts the push gate serves) and
+	// the rollout watch's HTTP client. For tests; nil/zero is production.
+	ShipGitHub func(officers.Officer) officership.GitHub
+	ShipHosts  [2]string
+	ShipHTTP   *http.Client
+	// NoShipResume skips resuming rollout watches at boot (tests).
+	NoShipResume bool
 }
 
 // EnableOfficers turns the officer runtime on and returns its wake loop for the
@@ -99,6 +111,10 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	host, _ := os.Hostname()
 	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	if err := s.enableShips(cfg); err != nil {
+		s.officerRT = nil
+		return nil, err
+	}
 	cfg.InstallSession(s.OfficerClaudeCodeSession)
 	for _, o := range reg.All() {
 		repo := "none"
@@ -531,6 +547,12 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officerToolDefs are the tools an officer instance is offered. None takes an
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
+	return append(queueToolDefs(), shipToolDefs()...)
+}
+
+// queueToolDefs are every officer's queue tools (and the release officer's
+// captain tool).
+func queueToolDefs() []agents.ToolDef {
 	item := strProp("The item's id, as officer_items or officer_brief returned it.")
 	lease := intProp(fmt.Sprintf("How long the lease runs, in seconds (default %d, %d to %d).", officers.DefaultLeaseSeconds, officers.MinLeaseSeconds, officers.MaxLeaseSeconds),
 		officers.MinLeaseSeconds, officers.MaxLeaseSeconds)
@@ -626,6 +648,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 				return toolErr("you act for officer %s only; %s cannot name another officer", o.ID, name), true
 			}
 		}
+	}
+	if isShipTool(name) {
+		return s.dispatchShipTool(ctx, a, o, name, arguments), true
 	}
 	c := s.officerRT.hq.Client(o)
 	instance := a.Name

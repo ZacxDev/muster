@@ -78,6 +78,11 @@ type Officer struct {
 	// with MUSTER_GITHUB_APP_ACCESS=read. It is NOT checked out: the instance
 	// reads it through muster's connector proxy.
 	Repo string `json:"repo,omitempty"`
+	// Ship, when set, lets the officer push branches, open pull requests, and
+	// (by stage) merge its own pull requests and tag releases in Repo — every
+	// write filtered or performed by muster (ship.go). nil for every other
+	// officer, whose GitHub access stays read-only.
+	Ship *Ship `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -111,6 +116,8 @@ type declared struct {
 	CCAccount    string `json:"cc_account"`
 	Model        string `json:"model"`
 	Repo         string `json:"repo"`
+	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
+	Ship json.RawMessage `json:"ship"`
 }
 
 // idPart is one half of an officer id: lowercase alphanumerics and single
@@ -250,6 +257,13 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 	if n := InstanceName(o.ID, o.MaxInstances); len(n) > maxName {
 		return Officer{}, fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
 			o.ID, n, len(n), maxName, MaxNamespaceLen)
+	}
+	if len(d.Ship) > 0 && string(d.Ship) != "null" {
+		ship, err := parseShip(o.ID, o.Repo, d.Ship, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Ship = ship
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {

@@ -16,6 +16,9 @@ officer's tools, and scales to zero when the queue is quiet.
 
 Officers **watch, triage, record and dispatch**. They do not merge, deploy or
 release: those stay with humans. An instance holds no production credential.
+The one exception is a [shipping officer](#shipping-officers), which merges
+its own pull requests and tags releases in its one repository — still holding
+no credential, and only through two muster tools that check every gate.
 
 The code: `internal/officers` (configuration, HQ client, the wake loop's
 policy, the first message), bound to muster in
@@ -54,6 +57,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `cc_account` | the pool's choice | Pin the Claude account instances run on. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
+| `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -248,7 +252,9 @@ would file an implicit request) — and an officer's request for another
 connector filed before this rule cannot be approved (the tab and
 `connector_request_decide` refuse it).
 
-**Always read-only.** An officer's App token is minted with Contents, Pull
+**Always read-only** — except for a [shipping officer](#shipping-officers),
+whose requests go through its push gate and carry its OWN App's token instead
+(nothing below applies to it). An officer's App token is minted with Contents, Pull
 requests, Checks and Commit statuses **read** — whatever
 [`MUSTER_GITHUB_APP_ACCESS`](github-app.md#read-only-mode) says
 (`connectors.Caller.ReadOnly`, set for every officer instance). A deployment in
@@ -432,6 +438,7 @@ listing and again at dispatch):
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
+| `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge or a release tag made by muster — see [Shipping officers](#shipping-officers) |
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
@@ -473,6 +480,248 @@ text is unchanged.
 
 (`officers.KickoffText` has the whole text.) It carries no charter and no
 credential.
+
+## Shipping officers
+
+An officer with a `ship` block may **write code to its `repo`**: push branches,
+open pull requests, merge its own pull requests and tag releases. It holds no
+GitHub credential for any of it. muster holds the officer's **own** GitHub App
+key, filters every write the instance sends through the connector proxy, and
+makes merges and tags itself, in two tools that check every gate at call
+time. Nothing the officer can merge changes those gates: they are muster's
+code and muster-server's environment, and the officer's App is installed on
+its one repository only.
+
+🔴 **Use it only where the repository enforces nothing else, and know that
+muster is then the branch protection.** On a private repository without
+branch protection or rulesets, any `contents: write` token can push to the
+base branch, push any tag and merge with red checks. The design rests on that
+token never reaching the instance (below).
+
+The code: `internal/officers/ship.go` (configuration), `internal/officership`
+(the push gate, the merge and release gates, the migration lint, the rollout
+watch), bound to muster in `internal/api/officer_ship.go`.
+
+### Configuration
+
+A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
+`repo`:
+
+```json
+{"id": "engineering:example-web", "hq_url": "https://hq.example.com/api/v1", "repo": "example-org/example-web",
+ "ship": {
+   "stage": "merge",
+   "github_app": {"id": 123456, "account": "example-org:7654321"},
+   "required_checks": ["ci / build", "ci / e2e", "ci / lint"],
+   "review_check": "pr-review",
+   "review_app": "example-review-app",
+   "migrations": "internal/db/migrations/",
+   "sensitive_paths": ["internal/auth/", "*token*", "internal/store/officer*", "Dockerfile*"],
+   "notice": {"channel": "ch/example-alerts"},
+   "releases_per_day": 6,
+   "min_release_gap": "30m",
+   "quiet_hours": {"tz": "America/New_York", "start": "22:00", "end": "08:00", "weekends": true},
+   "rollout": {"health_url": "https://svc.example.com/healthz", "version_field": "version",
+               "ok_field": "db", "ok_value": "ok", "rollback": "pr"}
+ }}
+```
+
+| field | default | |
+|---|---|---|
+| `stage` | **required** | `shadow` (push and open pull requests; both gated tools refuse), `merge` (also `officer_merge_pr`), `release` (also `officer_tag_release`; needs `rollout`). There is no default. |
+| `base` | `main` | The branch merges land on and releases are cut from. |
+| `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. |
+| `github_app` | **required** | The officer's OWN App: `id`, and `account` as `<login>:<numeric id>` (matched by id; the login must be the repository's owner). Never the deployment's App, so suspending it stops this officer and nothing else. |
+| `required_checks` | **required** | 1–20 commit-status contexts (or check-run names) that must be `success` on the head commit. A status's `success` counts whatever its description says (a CI job that reports "success: skipped" passes). Missing is not passed. |
+| `review_check` | **required** | The check run that must be `completed`/`success` on the head. `neutral` does not pass. |
+| `review_app` | none | When set, only that App's check run of that name counts. |
+| `migrations` | none | The directory whose files are linted for destructive DDL, and whose added files make a release need HQ's backup preflight. |
+| `sensitive_paths` | none | Patterns whose change makes `officer_merge_pr` post a notice to HQ first (never a block by itself). `dir/` is a prefix, a pattern with `/` matches the whole path, one without matches any path segment. Needs `notice`. |
+| `notice` | none | `channel` (the mail channel or address HQ posts the notice to) and `path` (default `/officers/{id}/notices`, under `hq_url`). |
+| `releases_per_day`, `min_release_gap` | `6`, `30m` | Officer tags per rolling 24 h, and the least time between two. |
+| `quiet_hours` | none | No officer tag in these local hours (`start` > `end` wraps midnight), or on weekends when `weekends` is true. Merges are not affected. |
+| `rollout` | none; **required** for `release` | `health_url` (fetched by muster-server), `version_field` (default `version`), optional `ok_field`/`ok_value`, `live_reads` (10), `live_within` (20m), `healthy_for` (15m), `interval` (30s), `rollback` (**required**: `off`, `pr` or `auto`), `rollback_within` (60m). |
+
+Secrets, from muster-server's environment only (never an instance's pod):
+
+- `MUSTER_OFFICER_GITHUB_APP_KEY_<NAME>`: the officer App's PEM private key.
+- `MUSTER_OFFICER_ESCALATE_WEBHOOK_<NAME>`: an https webhook **outside HQ**
+  (a Discord-style `{"content": …}` endpoint), required with `rollout`. A
+  failed rollout escalates there, because the failing service may be HQ.
+
+`<NAME>` is the officer id as for its HQ token (`engineering:example-web` →
+`ENGINEERING_EXAMPLE_WEB`).
+
+**The officer's App needs** these repository permissions and no others:
+Contents **read and write** (push its branches, create tags, merge), Pull
+requests **read and write** (open and edit its pull requests, comment, merge),
+Checks **read** and Commit statuses **read** (the gates), and Metadata read
+(implicit). No Workflows, Administration, Actions or Issues. muster mints
+every token with exactly Contents and Pull requests write, Checks and Commit
+statuses read, for the one repository.
+
+### The push gate
+
+Every GitHub request a shipping officer's instance sends through muster's
+proxy is decided by its push gate (`officership.PushGate`, a
+`connectors.Gate`) **before any credential exists**; an admitted request then
+carries the officer App's token, never the deployment App's or a stored
+connector's. It is an allowlist:
+
+| forwarded | refused |
+|---|---|
+| every read (`GET`, `HEAD`) | everything not on the left, including: |
+| `git fetch` (`git-upload-pack`) | a push updating **any** ref outside `refs/heads/<prefix>…`, so the base branch and **every tag** (one bad ref refuses the whole push) |
+| `git push` (`git-receive-pack`) to the officer's repo whose every command updates `refs/heads/<prefix>…` (create, update, force or delete) | `PUT …/pulls/{n}/merge`, `…/git/refs`, `…/git/tags`, `…/releases`, the contents API, the merges API, GraphQL, every `DELETE` |
+| `POST /repos/{repo}/pulls` with head `<prefix>…` and base `base` | a signed push, an unreadable push body, a body naming a key twice |
+| `PATCH /repos/{repo}/pulls/{n}` of its **own** pull request (`title`, `body`, `state`) | a method-override header, a query string on a write, a path with an empty, `.`, `..` or doubly encoded segment |
+| `POST /repos/{repo}/issues/{n}/comments` | any write to another repository |
+
+A refusal is a 403 naming the rule, and the upstream sees nothing.
+
+🔴 **Why the instance cannot go around it.** The instance's pod holds no
+GitHub credential, and its network policy reaches only muster's connect port
+([The instance's network](#the-instances-network)). On that port the one route
+that attaches a GitHub credential is the connector proxy, which resolves the
+caller from the agent's own token (an agent cannot rename itself into another
+officer) and, for a shipping officer's instance, runs the gate first
+(`connectors.Proxy.Serve`). The token is minted in muster-server and injected
+on the way out; the instance never sees it. The gate, the gates and the App
+key live in muster's code and muster-server's environment, and the officer's
+App is not installed on the repository that holds them.
+
+### `officer_merge_pr {pr}`
+
+Squash-merges the officer's own pull request, with GitHub's match-head guard
+(`sha` = the head every gate read), only when ALL of these hold, read fresh:
+
+1. `stage` is `merge` or `release`;
+2. HQ answers `GET /officers/{id}` with `enabled: true` (HQ unreachable
+   refuses: fail closed);
+3. the pull request is open and not a draft, into `base` of `repo`, from a
+   `<prefix>` branch of `repo`, authored by the officer App's bot
+   (`<app slug>[bot]`, read from GitHub);
+4. GitHub says it is mergeable, and it is not behind `base` (`behind_by` 0);
+5. every `required_checks` entry is success on the head;
+6. the newest `review_check` run on the head is completed/success;
+7. no human (any author who is not a bot) wrote `/hold` on it — in a
+   comment, a review or a review comment. Lift it by editing or deleting the
+   comment;
+8. no added or changed file under `migrations` holds destructive DDL, and none
+   is removed or renamed (the lint, below);
+9. if a changed path matches `sensitive_paths`, HQ accepted the notice
+   `POST <notice.path>` `{pr, head_sha, paths, summary, channel}` with the
+   officer's token. **If that call fails, the merge is refused.**
+
+A refusal names its gate and the gates that passed; nothing is merged. Every
+call is logged with its inputs and verdict.
+
+**The migration lint** refuses `DROP` of anything except a constraint the
+same file re-adds by name (the CHECK-widening idiom), `NOT NULL`, `DEFAULT` and
+`INDEX`; any `DROP … CASCADE`; `RENAME`; `ALTER … TYPE`; `SET NOT NULL`;
+`TRUNCATE`; `DELETE` or `UPDATE` with no `WHERE`. Comments are stripped by a
+scanner that knows quoting; string literals and dollar-quoted bodies are
+scanned, so dynamic SQL in a `DO` block is seen. A destructive migration is
+a human's to write and ship.
+
+### `officer_tag_release {item_id?}`
+
+Creates the next release — the highest `vX.Y.Z` tag with its minor bumped and
+patch 0 — as an **annotated** tag by the officer's bot on `base`'s head, only
+when ALL of these hold:
+
+1. `stage` is `release`, and HQ says the officer is enabled;
+2. the highest tag is an ancestor of `base`'s head, and the head is ahead of
+   it;
+3. no release is in flight: the rollout watch owns none, and `health_url`
+   reports the highest tag's version (the previous release is live);
+4. fewer than `releases_per_day` officer tags in the last 24 h (counted from
+   the annotated tags its bot made) and none within `min_release_gap`;
+5. not inside `quiet_hours`;
+6. the required checks passed for the head's **exact tree**: either they are
+   success on the head itself, or the head is a pull request's squash merge
+   whose head commit has them all success and the same tree (true of every
+   squash merge of an up-to-date head). A head merged from a stale branch is
+   refused until the next up-to-date merge;
+7. no destructive DDL in the release's migrations, and when it adds one, HQ's
+   preflight (`POST /officers/{id}/preflight`) reports a WAL archive under 5
+   minutes old, no archive failure in the last hour and a base backup under
+   26 hours old.
+
+Then it creates the tag object and `refs/tags/<next>`. A tag someone else
+pushed first makes the ref create fail; the tool says so and nothing is
+created. Untagged merges by humans on `base` ship in the officer's release.
+
+### The rollout watch and rollback
+
+After a tag, muster-server watches the release, using only `health_url` and
+GitHub (never HQ, which may be the service). It is **live** once `live_reads`
+consecutive answers report the tag (within `live_within` of tagging), and
+**healthy** once it has answered 200 (and `ok_field` = `ok_value`) for
+`healthy_for`; three bad answers in a row is **unhealthy**. A higher version
+answering means a newer release superseded it. `officer_rollout_status`
+returns the phase, verdict and events; the instance puts the verdict in its
+item's completion. A watch in progress at a restart resumes at boot.
+
+On `not_live` or `unhealthy`, per `rollback`:
+
+- `off`: escalate to the webhook; touch nothing.
+- `pr`: open a revert pull request from `<prefix>revert-<tag>` that reverts the
+  officer's own squash merges in the release, newest first (each a 3-way merge
+  GitHub computes, so later commits are kept); escalate with its number.
+- `auto`: as `pr`, then merge it through `officer_merge_pr`'s gates (CI and
+  review must pass on the revert) and tag it through the release gates minus
+  the in-flight, rate, quiet-hours and HQ-enabled gates (the release being
+  rolled back is the one in flight, and HQ may be what is down); then watch
+  that release. Anything that fails, including a revert that would need a
+  human's merge, a conflict or a removed migration file, escalates. The
+  revert's MERGE keeps the HQ-enabled and notice gates, so when HQ itself is
+  the failing service the automatic merge is refused and the watch escalates
+  with the revert pull request open.
+
+The rollback is always a revert plus a **new** tag, never a higher tag on an
+old commit (which would leave `base` ahead of production for the next tag to
+re-ship). Schema is never reverted.
+
+### Kill switches
+
+In order of reach. The first two do not depend on HQ.
+
+1. **Suspend the officer's GitHub App.** Stops every push, merge and tag at
+   once and touches nothing else (the App is the officer's alone). In the
+   UI: the organization's *Settings → GitHub Apps → <the App> → Configure →
+   Suspend*. By API, as the App (`$APP_JWT` is a JWT signed with its key):
+
+   ```sh
+   curl -X PUT -H "Authorization: Bearer $APP_JWT" -H "Accept: application/vnd.github+json" \
+     https://api.github.com/app/installations/<installation-id>/suspended
+   # undo: the same with -X DELETE
+   ```
+
+2. **Stop it in muster.** Set the officer's `stage` to `shadow` (both gated
+   tools refuse at once) or remove its `ship` block, and roll muster-server.
+   To stop the instances as well, scale them to zero in a way your deployment
+   tool does not immediately revert, e.g. with Flux:
+
+   ```sh
+   flux suspend kustomization <muster kustomization>
+   kubectl -n <namespace-prefix>officer-<type>-<area>-1 scale deploy --all --replicas=0
+   ```
+
+   then remove the officer from `MUSTER_OFFICERS` in git and `flux resume`.
+
+3. **Disable it in HQ.** muster reads `enabled` on every `officer_merge_pr` and
+   `officer_tag_release` call, so the next one is refused (the automatic
+   rollback's tag is the one exception: it does not ask HQ). HQ's `PUT
+   /officers/{id}` replaces the fields it is not given, so repeat every one:
+
+   ```sh
+   hq officer put <id> --area '<the area JSON>' --mail-handle <handle> --owner <login> \
+     --max-instances <n> --disabled
+   ```
+
+None of these undoes a tag already pushed. If a bad release is live, a human
+releases the fix.
 
 ## Security model
 
@@ -520,7 +769,11 @@ is informational.
 From the officers contract, v1 (base `/api/v1`, bearer token of scope
 `officer`): `GET /officers/{id}/brief`, `GET /officers/{id}/items`, `POST
 /officers/{id}/items/{item}/{claim,heartbeat,complete,release}`, and `POST
-/releases/captain` (release officers), with the bodies in the table above. Where the contract leaves a shape open, muster accepts:
+/releases/captain` (release officers), with the bodies in the table above. A
+shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
+/officers/{id}/notices` (or its configured `notice.path`) and `POST
+/officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
+"failed_count"}, "last_backup_time"}`). Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;
