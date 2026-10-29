@@ -385,8 +385,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// the "+" beside its Agents label opens it, and so does a task card's
 				// Dispatch button on the Tasks tab.
 				noteModalShell(),
-				// Transient error toasts for failed background (optimistic) actions.
-				actionToasts(),
+				// The error toasts' host (actionToasts) is the sidebar's (sidebarIn).
 				// Persistent notification FAB (bottom-LEFT) — the launcher for recent
 				// agent replies. On every tab but Agents (fabHiddenOnTab); only the
 				// count badge hides at zero. Its panel lazy-loads /ui/notifications.
@@ -1028,6 +1027,10 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 		// (TestTheViewPagesPaintWholeBeforeAnyScript).
 		agentModalShell(),
 		staticScript(taskModalScriptSrc, Defer()),
+		// The error toasts' host, on every document with the sidebar: the
+		// dispatch sheet's refusal is toasted on every page it opens on
+		// (dispatchFailureToast), not only where resyncScript listens.
+		actionToasts(),
 	)
 }
 
@@ -2445,6 +2448,9 @@ var resyncScriptSrc = staticJS("resync", `
     document.body.addEventListener('htmx:sseOpen', musterSSEOpen);
   }
 
+  // Said once per document, so a form that toasts its own failure where no
+  // page-wide listener exists (dispatchFailureToast) does not toast twice here.
+  window.__musterFailureToasts = true;
   // Surface htmx failures. htmx does NOT swap non-2xx responses, so without this
   // every failed form/mutation (dispatch, note, status, comment)
   // would fail SILENTLY — modal frozen, no feedback. Show the server's error text

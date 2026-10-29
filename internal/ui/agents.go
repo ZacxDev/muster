@@ -501,6 +501,7 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 			// #agents-list, which only the retired Agents list page had — on any
 			// other document htmx would have sent nothing at all.
 			hx("hx-swap", "none"),
+			dispatchFailureToast(),
 			// Close the modal after a successful dispatch — but ONLY for THIS form's
 			// own request. htmx:afterRequest bubbles, so the lazy repo/task combobox
 			// loads (hx-get on child <ul>s) would otherwise fire this handler and slam
@@ -581,6 +582,20 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 // loads don't slam it shut) and fires the dispatch analytics event. Shared by
 // the FAB and task-scoped dispatch forms.
 const dispatchCloseOnOwnSubmit = "if(event.target===this && event.detail.successful){if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}try{window.cgTrack('agent.dispatch',{});}catch(e){}}"
+
+// dispatchFailureToast says a refused or failed dispatch on the page the
+// sheet is open on. The sheet is the sidebar's, so it opens on every document,
+// and htmx swaps no non-2xx answer: a refusal (a 409 with the reason, a 503)
+// would otherwise change nothing on a page without resyncScript's page-wide
+// htmx:responseError listener (an agent's page, a mirrored view). Where that
+// listener runs (window.__musterFailureToasts) it toasts, and this does not,
+// so a refusal is said exactly once. The sheet stays open with what was typed.
+func dispatchFailureToast() g.Node {
+	return g.Group{
+		hx("hx-on::response-error", "if(event.target===this&&!window.__musterFailureToasts&&window.toast){var x=event.detail&&event.detail.xhr,m=(x&&x.responseText?x.responseText:'').trim();if(!m||m.charAt(0)==='<')m='Request failed ('+((x&&x.status)||'?')+')';if(m.length>200)m=m.slice(0,200)+'…';window.toast(m)}"),
+		hx("hx-on::send-error", "if(event.target===this&&!window.__musterFailureToasts&&window.toast){window.toast('Network error — could not reach the server')}"),
+	}
+}
 
 // dispatchCloseButton is the modal's top-right close (×).
 func dispatchCloseButton() g.Node {
@@ -667,6 +682,7 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			// drop the request silently rather than fail loudly.
 			hx("hx-target", target),
 			hx("hx-swap", swap),
+			dispatchFailureToast(),
 			hx("hx-on::after-request", dispatchCloseOnOwnSubmit),
 			Class("flex flex-col gap-3"),
 			// The task is known — submit it by id (no combobox, no ad-hoc textarea).

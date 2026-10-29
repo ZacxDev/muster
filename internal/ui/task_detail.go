@@ -111,8 +111,7 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				// that must exist in the document, or their swap lands nowhere. The
 				// dispatch sheet is the sidebar's (sidebarIn), as is the modals' script.
 				noteModalShell(),
-				// Transient error toasts for failed background actions.
-				actionToasts(),
+				// The error toasts' host is the sidebar's (sidebarIn).
 				// Keep the card's relative timestamp ('10s', '30m') live.
 				relTimeScript(),
 				// The edit form's type-Enter-to-chip tag input.
