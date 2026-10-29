@@ -153,6 +153,10 @@ var (
 		// routes are past their deadline (ids and owners only); each is then
 		// timed out as its owner (withPrincipalLedger's routePrincipal).
 		"internal/plugins.(*PGStore).ExpiredRoutes",
+		// …and its read of every route still routed with a paste row (ids,
+		// owners, targets, row ids), so a cancelled row or a vanished window
+		// ends the route early; each is read and failed as its owner.
+		"internal/plugins.(*PGStore).RoutedPastes",
 		// File attachments (migration 0024): a signed link's read of ONE row by
 		// its public id (uploads.PGStore.LinkTarget), made only after the link's
 		// HMAC and expiry have been verified — the link is the credential, and

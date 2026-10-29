@@ -101,7 +101,8 @@ const (
 	// timing a route out and handing its message back to the chief: a
 	// background job acting as the route's OWNER only. One site mints it —
 	// internal/api's routePrincipal, called only by the sweep, handed each owner
-	// after plugins.PGStore.ExpiredRoutes read the due routes under System.
+	// after plugins.PGStore.ExpiredRoutes (or RoutedPastes) read the routes
+	// under System.
 	ViaRoute Via = "session-route"
 	// ViaAttention is the ATTENTION QUEUE's background work acting as one
 	// owner: reading that owner's mirrored windows to see which became (or

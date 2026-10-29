@@ -1300,7 +1300,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 	// no longer than that wait times the route out before its message can
 	// reach the session — every route would go back to the chief unread.
 	// Checked only with routing on: with it off neither value is about routes,
-	// and a long idle wait alone is a valid setting.
+	// and a long idle wait alone is a valid setting. Against RouteTimeout, the
+	// shorter of the two deadlines (api.PRRouteTimeout is longer).
 	if c.SessionRouting && api.RouteTimeout <= c.SendQueueIdle {
 		return config{}, fmt.Errorf("invalid %s %s: with %s=1 it must be shorter than a route's deadline (%s), or every route would time out before its message is even pasted",
 			envSendQueueIdle, c.SendQueueIdle, envSessionRouting, api.RouteTimeout)

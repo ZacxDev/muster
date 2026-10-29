@@ -474,6 +474,9 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("sendqueue: cancelled message %d for %s", id, it.Target)
+	// A routed message's route ends with it, back to the chief now — not at
+	// its deadline, holding a message that will never be pasted.
+	s.failCancelledRoute(ctx, it.RouteID)
 	// 🔴 A CANCEL DOES NOT UN-SEND AN ANSWER: a queued message answers its
 	// session's asks when it is queued, and that answer is already delivered.
 	if asker, ok := s.queueAnswered(ctx, []sendqueue.Item{it})[id]; ok {
@@ -1076,6 +1079,9 @@ func (s *Server) cancelQueuedFor(ctx context.Context, uid int64, detail string) 
 	}
 	if n > 0 {
 		s.logger.Printf("sendqueue: cancelled %d queued message(s) of user %d (%s)", n, uid, detail)
+		// A routed one's route goes back to the chief: the route sweep fails
+		// every route whose row was cancelled (routedPastePass), as its owner.
+		s.kickRouteSweep()
 	}
 }
 
