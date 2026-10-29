@@ -23,6 +23,16 @@ import (
 // could set a pod's environment — can pre-allow Bash, Write, Edit, a path rule
 // or another MCP server's tool. Today only an officer instance gets it
 // (internal/api's officer runtime), with exactly its officer's tools.
+//
+// 🔴 THE PERMISSION-MODE CHANNEL IS THE OTHER WAY ROUND: IT ALLOWS EVERYTHING.
+// EnvPermissionMode=PermissionModeBypass makes `ccd seed` start the session in
+// bypassPermissions (settings permissions.defaultMode), so NO tool call — Bash,
+// WebFetch, Write, any MCP tool — ever stops on a permission prompt. Its only
+// value is that one; anything else is refused (ParsePermissionMode), so a typo
+// is a crash-looping pod naming the variable, never a silent posture. muster
+// writes it for an officer instance only (internal/api OfficerClaudeCodeSession,
+// operator decision, PR #337 round 1): an officer has no approval relay anyone
+// watches, and reads its repository with git/curl through the proxy.
 // ---------------------------------------------------------------------------
 
 const (
@@ -31,6 +41,13 @@ const (
 	// EnvModel is the model the pod's primary Claude Code session runs
 	// ("opus", "sonnet", a full model id); unset leaves the account's default.
 	EnvModel = "CCD_MODEL"
+	// EnvPermissionMode is the permission mode the pod's sessions start in:
+	// unset is the image's default posture (prompts routed for approval,
+	// bypass disabled); PermissionModeBypass is every tool allowed, no prompt.
+	EnvPermissionMode = "CCD_PERMISSION_MODE"
+	// PermissionModeBypass is EnvPermissionMode's one value: the CLI's own
+	// bypassPermissions mode.
+	PermissionModeBypass = "bypassPermissions"
 	// MCPServerName is muster's server name in the CLI's mcpServers
 	// (cmd/ccd/connect.go registers it under this name).
 	MCPServerName = "muster"
@@ -107,4 +124,20 @@ func ParseModel(v string) (string, error) {
 		return "", errors.New(EnvModel + ": " + err.Error())
 	}
 	return v, nil
+}
+
+// ParsePermissionMode reads an EnvPermissionMode value: "" is the default
+// posture, exactly PermissionModeBypass is bypass, and anything else — a
+// near-miss spelling, surrounding space, another CLI mode — is an error. It is
+// never trimmed or case-folded: a value muster did not write exactly is refused.
+func ParsePermissionMode(v string) (bypass bool, err error) {
+	switch v {
+	case "":
+		return false, nil
+	case PermissionModeBypass:
+		return true, nil
+	}
+	return false, fmt.Errorf("%s=%q is not a permission mode ccd applies: the only value is %q (every tool "+
+		"allowed, no permission prompt), and unset keeps the default posture. Refusing rather than guessing",
+		EnvPermissionMode, v, PermissionModeBypass)
 }

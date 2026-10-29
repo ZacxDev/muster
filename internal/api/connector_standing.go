@@ -43,8 +43,30 @@ import (
 // it passes every refusal a manual approval passes — the connector must exist.
 // A worker-pool member is never approved from a standing grant at all, for any
 // connector (its requests wait for the owner as before), and its own approvals
-// are never shared.
+// are never shared. Neither is an officer instance (excludedFromSharing).
 // ---------------------------------------------------------------------------
+
+// excludedFromSharing is THE rule for which agents a shared approval never
+// reaches, in either direction: no standing grant approves their requests
+// (approveFromStanding), their own approvals never become one (shareApproval),
+// and their request cards never say they will (requestShares).
+//
+//   - A worker-pool member: it runs machine jobs that review code which may not
+//     be the operator's own (jobs_grants.go), possibly with permission bypass.
+//   - 🔴 AN OFFICER INSTANCE (operator decision, PR #337 round 1): every grant
+//     an officer holds is a decision its owner made FOR THAT INSTANCE. Before
+//     this, an owner who had shared an approval of a stored connector (keyed on
+//     the connector name alone) silently handed it to any officer instance that
+//     asked — and an officer runs with every tool allowed. Its approvals are not
+//     shared out either: a decision about an officer is not one about the
+//     owner's task agents.
+func (s *Server) excludedFromSharing(a agents.Agent) bool {
+	if a.WorkerPool != "" {
+		return true
+	}
+	_, _, officer := s.officerOf(a)
+	return officer
+}
 
 // standingKey is the standing-grant key a grant on connector would be approved
 // under for agent a, for ctx's principal (the owner): the credential source the
@@ -81,11 +103,10 @@ func (s *Server) approveFromStanding(ctx context.Context, g connectors.Grant) (c
 	if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
 		return g, false
 	}
-	// 🔴 A WORKER-POOL MEMBER IS NEVER APPROVED FROM A STANDING GRANT, FOR ANY
-	// CONNECTOR: it runs machine jobs that review code which may not be the
-	// operator's own (jobs_grants.go), possibly with permission bypass, so each
-	// of its requests waits for the owner, as before shared approvals.
-	if a.WorkerPool != "" {
+	// 🔴 A WORKER-POOL MEMBER OR AN OFFICER INSTANCE IS NEVER APPROVED FROM A
+	// STANDING GRANT, FOR ANY CONNECTOR (excludedFromSharing): each of its
+	// requests waits for the owner's explicit decision.
+	if s.excludedFromSharing(a) {
 		return g, false
 	}
 	source, repo, ok := s.standingKey(ctx, g.Connector, a)
@@ -166,9 +187,9 @@ func (s *Server) shareApproval(ctx context.Context, g connectors.Grant, via conn
 		s.logger.Printf("connectors: share approval %d: agent: %v", g.ID, err)
 		return out
 	}
-	// A pool worker's approval is its own: it is never shared (and never
-	// matched: approveFromStanding).
-	if a.WorkerPool != "" {
+	// A pool worker's or an officer's approval is its own: it is never shared
+	// (and never matched: approveFromStanding).
+	if s.excludedFromSharing(a) {
 		return out
 	}
 	repo, ok := connectors.StandingRepo(g.Source, s.agentRepo(a))
@@ -243,7 +264,7 @@ func shareSentence(connector, source, repo string) string {
 // owner's other agents (shareSentence), or "" when it shares nothing: no such
 // connector yet (the answer is a credential, and creating it shares the same
 // way — the form says so), an agent that cannot be read, ANY request of a
-// worker-pool member (its approvals are never shared: shareApproval), or an App
+// worker-pool member or an officer instance (excludedFromSharing), or an App
 // request from an agent with no repository.
 func (s *Server) requestShares(ctx context.Context, g connectors.Grant) string {
 	if s.ext.Agents == nil {
@@ -253,7 +274,7 @@ func (s *Server) requestShares(ctx context.Context, g connectors.Grant) string {
 		return ""
 	}
 	a, err := s.ext.Agents.Get(ctx, g.AgentID)
-	if err != nil || a.WorkerPool != "" {
+	if err != nil || s.excludedFromSharing(a) {
 		return ""
 	}
 	source, repo, ok := s.standingKey(ctx, g.Connector, a)

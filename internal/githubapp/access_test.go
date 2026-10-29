@@ -142,3 +142,42 @@ func TestScopeTextFollowsTheMode(t *testing.T) {
 		t.Errorf("the read scope claims write: %q", AccessRead.Scope())
 	}
 }
+
+// TestAReadOnlyCallerIsMintedReadInWriteMode: a caller marked ReadOnly (an
+// officer instance, connectors.Caller.ReadOnly) gets the READ literal from a
+// write-mode App; the same agent's write token, minted first and still cached,
+// is never served to its read-only request (the mode is part of the cache
+// key), and the read token is not served back to a write request either.
+// Control: a caller not marked gets the write literal.
+func TestAReadOnlyCallerIsMintedReadInWriteMode(t *testing.T) {
+	app, f, _ := newTestAppAccess(t, AccessWrite)
+	ctx := context.Background()
+	write := agent(7, "example-org/widget")
+	read := write
+	read.ReadOnly = true
+	wtok, _, err := app.Credential(ctx, write, DefaultGitHost, "example-org/widget.git/info/refs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rtok, _, err := app.Credential(ctx, read, DefaultGitHost, "example-org/widget.git/info/refs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := f.mintsSoFar()
+	if len(m) != 2 || m[0].body != writeMintBody || m[1].body != readMintBody {
+		t.Fatalf("mints = %+v, want the write literal then the read literal", m)
+	}
+	if rtok != m[1].token || rtok == wtok {
+		t.Fatalf("the read-only caller got %q, want the read token %q (the write one is %q)", rtok, m[1].token, wtok)
+	}
+	// Both are cached under their own mode: no further mint, each served its own.
+	if again, _, _ := app.Credential(ctx, read, DefaultGitHost, "example-org/widget.git/info/refs"); again != rtok {
+		t.Fatalf("a cached read-only request got %q, want %q", again, rtok)
+	}
+	if again, _, _ := app.Credential(ctx, write, DefaultGitHost, "example-org/widget.git/info/refs"); again != wtok {
+		t.Fatalf("a cached write request got %q, want %q", again, wtok)
+	}
+	if n := len(f.mintsSoFar()); n != 2 {
+		t.Fatalf("%d mints after the cached requests, want 2", n)
+	}
+}

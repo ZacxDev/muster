@@ -92,6 +92,23 @@ func (e errPoolWorkerGitHubGrant) Error() string {
 		"(connector %s reaches github.com); the request was not approved", e.agent, e.pool, e.connector)
 }
 
+// refuseGrantApproval is why the owner may not approve grant g, or nil: THE
+// refusal every approval door asks (the card's Approve, connector_request_decide,
+// a credential entered for a request) — a worker-pool member's GitHub-reaching
+// grant (refusePoolWorkerGitHubGrant), or an officer instance's grant on any
+// connector but `github` (officerConnectorRefusal), e.g. one filed before that
+// rule existed. It FAILS CLOSED on an unreadable agent.
+func (s *Server) refuseGrantApproval(ctx context.Context, g connectors.Grant) error {
+	if err := s.refusePoolWorkerGitHubGrant(ctx, g); err != nil {
+		return err
+	}
+	a, err := s.ext.Agents.Get(ctx, g.AgentID)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errGrantUnreadable, err)
+	}
+	return s.officerConnectorRefusal(a, g.Connector)
+}
+
 // refusePoolWorkerGitHubGrant is errPoolWorkerGitHubGrant when approving grant
 // g would give a worker-pool member a GitHub credential, else nil.
 func (s *Server) refusePoolWorkerGitHubGrant(ctx context.Context, g connectors.Grant) error {

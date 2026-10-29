@@ -63,7 +63,7 @@ func TestTheConnectorScopeDescriptionFollowsTheAccessMode(t *testing.T) {
 		s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
 		s.UseExtensions(Extensions{Connectors: connectors.WithVirtual(presenceStore{}, app, authz.IsAdmin), GitHubApp: app})
 		desc, _ := s.grantsDescription(admin, connectors.Grant{Connector: githubapp.ConnectorName, AgentID: 7},
-			connectors.Connector{}, "example-org/widget")
+			connectors.Connector{}, "example-org/widget", false)
 		if !strings.Contains(desc, "("+c.want+")") || strings.Contains(desc, c.never) {
 			t.Errorf("access %q: the approve description is %q, want it to carry (%s) and never %q", c.access, desc, c.want, c.never)
 		}

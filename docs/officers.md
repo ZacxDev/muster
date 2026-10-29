@@ -95,37 +95,54 @@ keeps its namespace, volume and Claude account across stops and starts.
 
 ### The instance's Claude Code session
 
-The instance runs in its pod's primary Claude Code session, and muster sets two
-things in that session's `settings.json` at provision time (the pod's
-`ccd seed` writes them from `CCD_ALLOW_MCP_TOOLS` and `CCD_MODEL`, which muster
-puts on the pod; `internal/podagent/session.go`):
+The instance runs in its pod's primary Claude Code session, and muster sets
+three things in that session's `settings.json` at provision time (the pod's
+`ccd seed` writes them from `CCD_PERMISSION_MODE`, `CCD_ALLOW_MCP_TOOLS` and
+`CCD_MODEL`, which muster puts on the pod; `internal/podagent/session.go`):
 
+- 🔴 **Every tool allowed: `permissions.defaultMode: "bypassPermissions"`.** An
+  officer instance never stops on a permission prompt — not for its own tools,
+  not for `Bash`, `WebFetch`, `Write` or any other. muster puts
+  `CCD_PERMISSION_MODE=bypassPermissions` on every officer instance's pod, and
+  `ccd seed` then sets `defaultMode` to `bypassPermissions`, drops the image's
+  `disableBypassPermissionsMode` and records the bypass disclaimer's consent
+  (`skipDangerousModePermissionPrompt`), so the CLI starts at its prompt with no
+  dialog. Every session the pod's CLI starts runs that way. Why: an officer
+  deployment may have no approval gate anyone answers, and an officer reads its
+  repository with `git` and `curl` through muster's proxy; a prompt would stall
+  it until its turn times out. What bounds an officer is therefore what it can
+  *reach*, not what it may run: its MCP toolset (officer tools and the three
+  connector tools only), the `github` connector only, every grant decided
+  explicitly by its owner and minted read-only (below), and the pod's network
+  policy. ⚠ Like a bypass job lane (`MUSTER_AGENT_CC_BYPASS_POOLS`), treat the
+  WHOLE POD as running without approvals: anything in it, including the agent's
+  own muster token (`MUSTER_HOOK_TOKEN`), is reachable by a command the session
+  runs. Any value of `CCD_PERMISSION_MODE` other than unset or exactly
+  `bypassPermissions` is refused and the pod does not start. **No other agent
+  gets it**: task agents and the chief keep the image's posture (default mode,
+  bypass disabled, prompts routed for approval). This needs a
+  `claude-code-agent` image built from this version: an older `ccd` ignores the
+  variable, and the officer would keep prompting.
 - **`permissions.allow`: exactly the officer's own tools, then the connector
   tools** — `mcp__muster__officer_brief`, `…officer_items`, `…officer_claim`,
   `…officer_heartbeat`, `…officer_complete`, `…officer_release`, and for a
   `release:*` officer `…officer_release_evaluation`; then, when the connector
   store is configured (`MUSTER_CONNECTOR_ENCRYPTION_KEY`, so the instance is
   offered them), `…connectors_list`, `…connector_request` and
-  `…connector_status`, so an officer can ask for GitHub access and wait for the
-  decision. Asking is not using: the operator still approves every grant, and
-  what an approved `github` grant may do is the GitHub App's mode
-  ([`MUSTER_GITHUB_APP_ACCESS`](github-app.md#read-only-mode); set it to `read`
-  for an officer deployment). Without them the first call to each would wait
-  on a permission prompt in the pod's terminal, and an officer deployment may
-  have no approval gate to answer it. **Nothing else is allowed**: the channel only takes bare tool names and always writes them as
-  `mcp__muster__<name>` (a name holding `__` or anything but `[a-z0-9_]` is
-  refused and the pod does not start), so it cannot allow Bash, Write, Edit, a
-  path rule or another server's tool. Every other tool keeps the image's default
-  permission posture. The template's `permissions` replace the file's on every
-  pod start (`ccd seed`; an in-pod CLI restart by the supervisor does not
-  re-seed), so an allow list a session writes for itself does not survive the
-  next pod start.
+  `…connector_status`. Redundant under bypass and kept: it names the muster
+  tools the instance is for, and holds if bypass is ever lifted. The channel
+  only takes bare tool names and always writes them as `mcp__muster__<name>`
+  (a name holding `__` or anything but `[a-z0-9_]` is refused and the pod does
+  not start). The template's `permissions` replace the file's on every pod start
+  (`ccd seed`; an in-pod CLI restart by the supervisor does not re-seed), so an
+  allow list or mode a session writes for itself does not survive the next pod
+  start.
 - **`model`**, when the officer sets one. Removing it from the officer's config
   takes effect at the instance's next pod start: seed removes the model it set
   itself (the instance keeps its volume, so it would otherwise persist), back to
   the account default. A model changed by hand inside the pod is left alone.
 
-No other agent gets either (the officer runtime is the provisioner's only
+No other agent gets any of them (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
 
 ### Reading a repository (`repo`)
@@ -145,54 +162,76 @@ asks "which repository is this agent's" for a connector reads it from there:
   for exactly that one repository; any other repository is reached anonymously,
 - the approve card's and `connector_requests_list`'s description of what
   approving grants (and `connector_request_decide`'s no-repository warning),
-- the [shared approval](connectors.md#shared-approvals) key, so approving one
-  instance's request shares it on that repository, and the officer's other
-  instances are approved from it,
+- the repository a grant is recorded as approved FOR (below),
 - the App's problem line on the agent's card.
 
-**Read-only.** On a deployment with
-[`MUSTER_GITHUB_APP_ACCESS=read`](github-app.md#read-only-mode) the token has
-Contents, Pull requests, Checks and Commit statuses **read** only: a push or a
-pull-request write through the proxy is refused by GitHub. That is the
-recommended setting for an officers deployment. The mode is the deployment's,
-so a muster that also runs task agents that must push needs `write`, and its
-officers would then get a write token too.
+**`github` only.** An officer instance may request and use the `github`
+connector and nothing else. A request for any other connector its owner holds
+is refused with an error naming the officer — by `connector_request` and
+`POST /agent/connectors/{name}/request` (400), and by the proxy (403, before it
+would file an implicit request) — and an officer's request for another
+connector filed before this rule cannot be approved (the tab and
+`connector_request_decide` refuse it).
+
+**Always read-only.** An officer's App token is minted with Contents, Pull
+requests, Checks and Commit statuses **read** — whatever
+[`MUSTER_GITHUB_APP_ACCESS`](github-app.md#read-only-mode) says
+(`connectors.Caller.ReadOnly`, set for every officer instance). A deployment in
+the default `write` mode keeps minting write tokens for its task agents, and
+read tokens for its officers; the approve card and `connector_requests_list`
+describe an officer's request as READ ONLY in both modes. A push or a
+pull-request write through the proxy is refused by GitHub. ⚠ This limits the
+**App**: when `github` is a stored connector (no App, or an owner who is not an
+admin), the officer gets whatever that stored token may do — store a read-only
+token for an officers deployment.
 
 **No checkout.** The instance row carries no repository: a row repository is
 what makes the pod's `ccd` clone it before the CLI starts and start the session
 pre-trusted in it (running that repository's `.claude/settings.json`), and would
 hold the instance's first turn until the `github` grant is approved. The officer
-fetches what it needs through muster's proxy instead. Because the repository is
-read from the configuration and never stored on the row, changing or removing
-`repo` takes effect for existing instances at the next request; their first
-message is re-armed with the new text the next time the wake loop starts them.
-⚠ A grant is the instance's, not the repository's: an instance whose `github`
-grant is already approved reaches the NEW repository on its next request,
-without asking again. Revoke its grant on the Connectors tab first if the
-change should be re-approved.
+fetches what it needs through muster's proxy instead, as its first message says:
+
+- **git**: `ccd connect-git github` routes git's `https://github.com/` through
+  the proxy (ccd also does it by itself within 15 seconds of the approval), then
+  `git clone --depth 50 https://github.com/<owner>/<name>.git`;
+- **the REST API**: `curl -sS -H "Authorization: Bearer $MUSTER_HOOK_TOKEN"
+  "$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/<path>"`.
+
+**A grant is approved FOR a repository** (migration 0061). Because the
+repository is read from the configuration and never stored on the row, changing
+or removing `repo` takes effect for existing instances at the next request
+(their first message is re-armed with the new text the next time the wake loop
+starts them) — and the grant does NOT follow it. The approval records the
+instance's repository at the time it was decided; when the officer's `repo` is
+then different — another repository, none → some (an officer approved while it
+had no `repo`, when the card said "approving grants NOTHING usable"), or some →
+none — the grant is put back to **pending** at its next use (the proxy, or the
+agent's `connector_status` / `connector_request`), audited as "re-opened: the
+agent's repository changed (approved for …, now …)", and the owner is prompted
+again, as for a changed credential source (0033). Nothing is minted for the new
+repository until the owner approves it.
 
 **Approving the grant.** Nothing is pre-granted: there is no automatic grant
 for officers, and none for any other configured agent. The instance asks once
-(`connector_request{name: "github"}`, pre-allowed in its session), and the
-officer's `owner` (default user 1, the operator) decides it like any other
-agent's request:
+(`connector_request{name: "github"}`), and the officer's `owner` (default user
+1, the operator) decides it **explicitly, for that instance**:
 
 - the **Connectors** tab (`/connectors` on the officers muster, signed in as
   the owner): the request card names the instance agent
-  (`officer-<type>-<area>-<n>`) and its reason, and says the approval is
-  shared on the officer's repository; the `github` connector's entry states the
-  token's scope (READ ONLY in read mode). Press **Approve**. A pending request also
-  sends a `connector` push notification when push is configured; or
+  (`officer-<type>-<area>-<n>`) and its reason; the `github` connector's entry
+  states the token's scope. Press **Approve**. A pending request also sends a
+  `connector` push notification when push is configured; or
 - `connector_requests_list` then `connector_request_decide {id, decision:
   "approve"}` from one of the owner's own mirrored Claude Code sessions
   ([connectors.md](connectors.md#deciding-a-request-from-your-own-session)).
 
-The approval is shared on that repository, so the officer's other instances
-(and any later request from the same owner's agents on that repository) are
-approved without asking again, until the owner revokes the shared approval on
-the Connectors tab. The App is an admin's: an `owner` who is not an admin is
-offered the stored `github` connector instead, and the App mints nothing for
-them.
+🔴 **Shared approvals never reach an officer**, in either direction
+(`excludedFromSharing`, `internal/api/connector_standing.go`): no standing grant
+— not one keyed on a stored connector's name alone, not one on the officer's
+repository — approves an officer instance's request, and an officer's approval
+is never shared. Each instance's `github` request waits for its own decision.
+The App is an admin's: an `owner` who is not an admin is offered the stored
+`github` connector instead, and the App mints nothing for them.
 
 ## Waking and scaling
 
@@ -348,9 +387,14 @@ You are officer <id>, instance <n> of <max> (<agent name>). …
 ```
 
 An officer with a `repo` is also told that it may read that repository through
-muster's `github` connector — request it once with `connector_request`, read
-through the proxy, never hold a token, no checkout — and that it never pushes or
-merges. Without one the text is unchanged.
+muster's `github` connector, the only connector it may use: request it once
+with `connector_request`, wait with `connector_status` (the owner decides it by
+hand), then read through the proxy either with git (`ccd connect-git github`,
+then `git clone https://github.com/<owner>/<name>.git`) or with `curl` on
+`$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/…`
+carrying `Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster holds a read-only
+token, there is no checkout, and it never pushes or merges. Without a `repo` the
+text is unchanged.
 
 (`officers.KickoffText` has the whole text.) It carries no charter and no
 credential.
@@ -424,9 +468,13 @@ What a deployment needs beyond muster's usual claude-code setup:
    `claude-code` with an account in the pool.
 4. The connector door: `MUSTER_CONNECTOR_ENCRYPTION_KEY`, `MUSTER_CONNECT_PORT`
    and `MUSTER_AGENT_CONNECT_URL` (the server refuses to boot officers without
-   it). No approval gate is needed for the officer's own tools: they are
-   pre-allowed in the instance's session (above).
-5. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
+   it). No approval gate is needed: an officer instance runs with every tool
+   allowed (above). Its `github` requests still need the owner's explicit
+   decision.
+6. A `claude-code-agent` image built from this version or later (its `ccd`
+   applies `CCD_PERMISSION_MODE`; an older one ignores it and the officer
+   prompts).
+7. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
 
 Checking it: the boot log has one `officers: <id> on: …` line per officer;
 after HQ creates an item, `officer-<type>-<area>-1` appears among the agents

@@ -83,6 +83,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/cctasks"
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 const defaultListen = ":18789"
@@ -270,6 +271,14 @@ func serve() error {
 	bypass, err := jobBypass(os.Getenv(envJobPermissionMode))
 	if err != nil {
 		return fmt.Errorf("ccd: %w", err)
+	}
+	// The session permission mode (podagent.EnvPermissionMode): `ccd seed`
+	// already applied it to settings.json; refused here too, fail closed.
+	if sessionBypass, err := podagent.ParsePermissionMode(os.Getenv(podagent.EnvPermissionMode)); err != nil {
+		return fmt.Errorf("ccd: %w", err)
+	} else if sessionBypass {
+		log.Printf("ccd: %s=%s: every session in this pod starts in bypassPermissions — NO tool call is "+
+			"routed for approval", podagent.EnvPermissionMode, podagent.PermissionModeBypass)
 	}
 	// Announced here; the lane set reads it again itself (newLaneSet).
 	if bypass {

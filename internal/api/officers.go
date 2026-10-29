@@ -14,7 +14,9 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -66,9 +68,10 @@ type OfficersConfig struct {
 	// InstallSession installs the officer runtime's session source on the
 	// provisioner (agentprovision.Adapter.UseClaudeCodeSession). REQUIRED:
 	// without it an instance's Claude Code session would stop on a permission
-	// prompt for its first officer tool call and never run its model, and
-	// nothing would say so — EnableOfficers refuses instead.
-	InstallSession func(source func(agents.Agent) (allow []string, model string, ok bool))
+	// prompt for its first tool call (it runs with every tool allowed only
+	// through this source) and never run its model, and nothing would say so —
+	// EnableOfficers refuses instead.
+	InstallSession func(source func(agents.Agent) (agentspec.ClaudeCodeSession, bool))
 }
 
 // EnableOfficers turns the officer runtime on and returns its wake loop for the
@@ -82,7 +85,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, errors.New("officers: need the agents store and an agent provisioner")
 	}
 	if cfg.InstallSession == nil {
-		return nil, errors.New("officers: no way to install the instances' session settings on the provisioner (pre-allowed officer tools, model)")
+		return nil, errors.New("officers: no way to install the instances' session settings on the provisioner (every tool allowed, officer tools, model)")
 	}
 	if !s.ext.kindEnabled(agents.KindClaudeCode) {
 		return nil, fmt.Errorf("officers: instances run on the %s kind, which MUSTER_AGENT_KINDS does not enable", agents.KindClaudeCode)
@@ -142,6 +145,33 @@ func (s *Server) agentRepo(a agents.Agent) string {
 	}
 	return a.Repo
 }
+
+// officerConnectorRefusal is why officer instance a may not use connector
+// name, or nil. 🔴 AN OFFICER USES THE `github` CONNECTOR ONLY (operator
+// decision, PR #337 round 1): it reads its one repository and nothing else, so
+// a request for any other connector — a stored chat, mail or cloud credential
+// its owner happens to hold — is refused at every door that would file or
+// serve one (AgentRequestConnector, the proxy, and the owner's approval), not
+// left for the owner to notice. Every other agent: nil.
+func (s *Server) officerConnectorRefusal(a agents.Agent, name string) error {
+	o, _, ok := s.officerOf(a)
+	if !ok || name == officers.GitHubConnector {
+		return nil
+	}
+	return errOfficerConnector{agent: a.Name, officer: o.ID, connector: name}
+}
+
+// errOfficerConnector is officerConnectorRefusal's refusal. It is
+// connectors.ErrInvalid (errors.Is), so the agent's request route answers 400
+// and its connector_request tool shows it verbatim, as any invalid request.
+type errOfficerConnector struct{ agent, officer, connector string }
+
+func (e errOfficerConnector) Error() string {
+	return fmt.Sprintf("%s is an instance of officer %s, and an officer may use only the %q connector (to read its "+
+		"repository); %q was refused", e.agent, e.officer, officers.GitHubConnector, e.connector)
+}
+
+func (e errOfficerConnector) Is(target error) bool { return target == connectors.ErrInvalid }
 
 // officerPrincipal is ctx acting as owner, through authz.ViaOfficer: how the
 // wake loop reads and moves one officer's instance agents, so row-level
@@ -405,23 +435,30 @@ func (s *Server) WaitForOfficerReprompts() {
 
 // OfficerClaudeCodeSession is the provisioner's session source
 // (agentprovision.Adapter.UseClaudeCodeSession): for a declared officer's
-// instance, the officer tools it is offered, in registry order, so its Claude
-// Code session never stops on a permission prompt for its own queue (an
-// officer deployment may have no approval gate) — and the officer's
-// configured model. Every other agent: ok=false.
+// instance, its session settings; every other agent: ok=false, unchanged.
 //
-// When the connector store is configured (so the instance is offered them),
-// the three connector tools follow, in registry order — connectors_list,
-// connector_request, connector_status — so an officer can ask for GitHub (or
-// any connector) access and wait for the decision without stalling on a
-// permission prompt nobody answers. Asking is not using: the operator still
-// approves each grant. Nothing else is ever pre-allowed: not a built-in tool,
-// not another muster tool.
-func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (allow []string, model string, ok bool) {
+//   - BypassPermissions: true. 🔴 AN OFFICER INSTANCE RUNS WITH EVERY TOOL
+//     ALLOWED — no permission prompt at all (operator decision, PR #337 round
+//     1). An officer deployment may have no approval gate anyone watches, and
+//     an officer reads its repository with Bash (git, curl) through muster's
+//     proxy; a prompt there stalls the instance until its turn times out. The
+//     pod's ccd seed starts every session in bypassPermissions
+//     (podagent.EnvPermissionMode). What bounds an officer is what it can
+//     REACH, not what it may run: its token (an officer-only MCP toolset, a
+//     `github` grant the operator decides explicitly, minted read-only —
+//     callerOf), and its pod's network policy.
+//   - AllowMCPTools: the officer tools it is offered, in registry order, then —
+//     when the connector store is configured (so the instance is offered
+//     them) — connectors_list, connector_request, connector_status. Redundant
+//     under bypass, and kept: it names exactly the muster tools the instance
+//     is for, and holds if bypass is ever lifted.
+//   - Model: the officer's configured model.
+func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeSession, bool) {
 	o, _, ok := s.officerOf(a)
 	if !ok {
-		return nil, "", false
+		return agentspec.ClaudeCodeSession{}, false
 	}
+	var allow []string
 	for _, d := range officerToolDefs() {
 		if officers.ToolOffered(o, d.Name) {
 			allow = append(allow, d.Name)
@@ -432,7 +469,7 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (allow []string, model
 			allow = append(allow, d.Name)
 		}
 	}
-	return allow, o.Model, true
+	return agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: o.Model, BypassPermissions: true}, true
 }
 
 // --- delete protection -------------------------------------------------------

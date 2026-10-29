@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // TestTheOfficerKickoffNamesTheAppsConnector: the connector name the officer's
@@ -27,6 +28,31 @@ import (
 func TestTheOfficerKickoffNamesTheAppsConnector(t *testing.T) {
 	if officers.GitHubConnector != githubapp.ConnectorName {
 		t.Fatalf("officers.GitHubConnector = %q, the App's connector is %q", officers.GitHubConnector, githubapp.ConnectorName)
+	}
+}
+
+// TestTheOfficerKickoffTeachesTheRealProxyRecipe (E): the two ways the
+// officer's first message says to read its repository are the real mechanism,
+// spelled from their sources — the REST URL and header ProxyRecipe teaches
+// every agent (for the github connector on GitHub's API host, the env names
+// podagent exports), and git routed with ccd's own connect-git subcommand for
+// GitHub's git host.
+func TestTheOfficerKickoffTeachesTheRealProxyRecipe(t *testing.T) {
+	o := officers.Officer{ID: "triage:example-web", MaxInstances: 1, Repo: "example-org/widget"}
+	text := officers.KickoffText(o, 1)
+	rest := "$" + podagent.EnvConnectURL + "/connect/" + githubapp.ConnectorName + "/" + githubapp.DefaultAPIHost + "/repos/example-org/widget/<path>"
+	header := "Authorization: Bearer $" + podagent.EnvAgentToken
+	recipe := ProxyRecipe(githubapp.ConnectorName, githubapp.DefaultAPIHost)
+	for _, want := range []string{rest, header, "`ccd connect-git " + githubapp.ConnectorName + "`",
+		"https://" + githubapp.DefaultGitHost + "/example-org/widget.git"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the officer kickoff does not carry %q:\n%s", want, text)
+		}
+	}
+	// The pieces are ProxyRecipe's own (the URL prefix and the header).
+	if !strings.Contains(recipe, "$"+podagent.EnvConnectURL+"/connect/"+githubapp.ConnectorName+"/"+githubapp.DefaultAPIHost+"/") ||
+		!strings.Contains(recipe, header) {
+		t.Fatalf("ProxyRecipe no longer teaches the URL/header the officer kickoff spells: %s", recipe)
 	}
 }
 
@@ -69,32 +95,10 @@ func TestAnOfficersConfiguredRepoIsItsAppTokensOneRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	op := map[string]string{"Cookie": sessionCookieFor(srv), "HX-Request": "true", "Origin": "http://example.com"}
-	ctx := dbtest.AsOperator(context.Background())
 
-	// The wake loop's own create: the instance row, as the provisioner would
-	// then give it its per-agent token.
 	instance := func(id string, n int, tok string) agents.Agent {
 		t.Helper()
-		o, err := srv.officerRT.reg.Get(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		name := officers.InstanceName(o.ID, n)
-		t.Cleanup(func() {
-			_, _ = f.pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE name=$1`, name)
-		})
-		if err := (officerFleet{s: srv}).Start(ctx, o, n, officers.KickoffText(o, n)); err != nil {
-			t.Fatalf("start %s: %v", name, err)
-		}
-		a, err := srv.ext.Agents.GetByName(srv.officerPrincipal(ctx, o.Owner), name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := srv.ext.Agents.(*agents.PGStore).SetHooksToken(ctx, a.ID, tok); err != nil {
-			t.Fatal(err)
-		}
-		a.HooksToken = tok
-		return a
+		return startOfficerInstance(t, f, srv, id, n, tok)
 	}
 	const tok, tokNone = "officer-repo-agent-token-0123456789", "officer-norepo-agent-token-012345678"
 	a := instance(withRepo, 1, tok)
@@ -122,8 +126,8 @@ func TestAnOfficersConfiguredRepoIsItsAppTokensOneRepository(t *testing.T) {
 		}
 		var filed AgentConnectorView
 		_ = json.Unmarshal(w.Body.Bytes(), &filed)
-		if filed.Grant == connectors.StatusApproved {
-			return // approved from a shared approval
+		if filed.Grant != connectors.StatusPending {
+			t.Fatalf("an officer's request was %q at once; every officer grant needs an explicit decision", filed.Grant)
 		}
 		w = serveCall(t, h, "POST", "/ui/connector-requests/"+strconv.FormatInt(filed.GrantID, 10)+"/approve", nil, op)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "approved for github") {
@@ -138,7 +142,8 @@ func TestAnOfficersConfiguredRepoIsItsAppTokensOneRepository(t *testing.T) {
 	// connector_request_decide — the officers deployment's procedure). Both read
 	// the officer's configured repository: the listing names it and says the
 	// App's READ-ONLY token for it, never "NOTHING usable"; the decision carries
-	// no warning and is shared as a standing grant ON that repository.
+	// no warning and is NOT shared (an officer's approval is its own:
+	// excludedFromSharing, PR #337 round 1).
 	w := serveCall(t, h, "POST", "/agent/connectors/github/request", strings.NewReader(`{"reason":"read the repository"}`),
 		map[string]string{"X-Muster-Token": tok, "Content-Type": "application/json"})
 	if w.Code != http.StatusAccepted {
@@ -166,22 +171,23 @@ func TestAnOfficersConfiguredRepoIsItsAppTokensOneRepository(t *testing.T) {
 	}
 	out := srv.toolConnectorRequestDecide(asUser(1), mirrored, `{"id":`+strconv.FormatInt(filed.GrantID, 10)+`,"decision":"approve"}`)
 	if err := json.Unmarshal([]byte(out), &decided); err != nil || decided.Status != connectors.StatusApproved || decided.Warning != "" ||
-		decided.Standing == 0 || !strings.Contains(decided.Shared, "github on example-org/widget from any of your owner's agents") {
+		decided.Standing != 0 || decided.Shared != "" {
 		t.Fatalf("connector_request_decide: %s", out)
 	}
 	if v := agentView(t, h, tok); v.Grant != connectors.StatusApproved {
 		t.Fatalf("after approval the officer sees %+v", v)
 	}
-	// The officer's second instance asks too: it is on the same repository, so
-	// the shared approval covers it and it is approved at once.
+	// The officer's second instance asks too: it is on the same repository,
+	// but nothing was shared, so its request waits for its own decision.
 	const tok2 = "officer-repo-agent-token-2-012345678"
 	instance(withRepo, 2, tok2)
 	w = serveCall(t, h, "POST", "/agent/connectors/github/request", strings.NewReader(`{"reason":"read the repository"}`),
 		map[string]string{"X-Muster-Token": tok2, "Content-Type": "application/json"})
 	var second AgentConnectorView
-	if err := json.Unmarshal(w.Body.Bytes(), &second); err != nil || second.Grant != connectors.StatusApproved {
-		t.Fatalf("the second instance's request was not approved from the shared approval on example-org/widget: %d %s", w.Code, w.Body)
+	if err := json.Unmarshal(w.Body.Bytes(), &second); err != nil || second.Grant != connectors.StatusPending {
+		t.Fatalf("the second instance's request was not left pending for its owner: %d %s", w.Code, w.Body)
 	}
+	approve(tok2)
 	approve(tokNone)
 
 	muster := httptest.NewServer(h)
@@ -261,4 +267,32 @@ func officerAppServer(t *testing.T, f *connFixture, up *fakeGitHubUpstream, acce
 	s.UseExtensions(Extensions{Agents: agents.NewPG(f.pool), Connectors: connectors.WithVirtual(f.store, app, authz.IsAdmin),
 		GitHubApp: app, ConnectorPolicy: fakeTestPolicy(), Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"}})
 	return s, s.Handler()
+}
+
+// startOfficerInstance is the wake loop's own create of instance n of officer
+// id on srv (officerFleet.Start: a real agents row, with no repository), given
+// per-agent token tok as the provisioner would.
+func startOfficerInstance(t *testing.T, f *connFixture, srv *Server, id string, n int, tok string) agents.Agent {
+	t.Helper()
+	ctx := dbtest.AsOperator(context.Background())
+	o, err := srv.officerRT.reg.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := officers.InstanceName(o.ID, n)
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE name=$1`, name)
+	})
+	if err := (officerFleet{s: srv}).Start(ctx, o, n, officers.KickoffText(o, n)); err != nil {
+		t.Fatalf("start %s: %v", name, err)
+	}
+	a, err := srv.ext.Agents.GetByName(srv.officerPrincipal(ctx, o.Owner), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ext.Agents.(*agents.PGStore).SetHooksToken(ctx, a.ID, tok); err != nil {
+		t.Fatal(err)
+	}
+	a.HooksToken = tok
+	return a
 }

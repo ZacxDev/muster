@@ -153,10 +153,11 @@ That account must be on `MUSTER_GITHUB_APP_ACCOUNTS`.
 `metadata: read` in both modes. With a read token, a `git push` or a
 pull-request write through the proxy is **refused by GitHub** (403); muster
 never mints a wider token in its place. Use it for a deployment whose agents
-must only read GitHub — for example, a muster running [officers](officers.md)
-with a [`repo`](officers.md#reading-a-repository-repo), whose instances then
-read that one repository — even when it shares an App with a write-mode deployment: the mode is the
-deployment's, the App's own permissions stay as in the table above.
+must only read GitHub, even when it shares an App with a write-mode deployment:
+the mode is the deployment's, the App's own permissions stay as in the table
+above. An [officer](officers.md#reading-a-repository-repo) instance's token is
+read-only in **both** modes (`connectors.Caller.ReadOnly`): a write-mode
+deployment mints write for its task agents and read for its officers.
 
 In read mode, every place muster describes the connector says so: the
 Connectors tab, the approve card and `connector_requests_list`

@@ -698,7 +698,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 // installSessionOn is prov's session-source installer for the officer
 // runtime, or nil when there is no provisioner (EnableOfficers then refuses).
-func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) ([]string, string, bool)) {
+func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
 	if prov == nil {
 		return nil
 	}

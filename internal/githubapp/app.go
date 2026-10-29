@@ -27,13 +27,16 @@
 // read}`; in read mode (AccessRead, MUSTER_GITHUB_APP_ACCESS=read) every one of
 // the four is `read`, so a push or a pull-request write through the proxy is
 // refused by GitHub, never upgraded (GitHub adds metadata: read implicitly in
-// both). Nothing wider is ever asked for on an agent's behalf: the request body
-// is a fixed struct (mintRequest), pinned literally by the tests for each mode.
+// both). A caller marked ReadOnly (connectors.Caller.ReadOnly — an officer
+// instance) is minted in read mode whatever the App's mode (accessFor), and the
+// mode is part of the token cache's key. Nothing wider is ever asked for on an
+// agent's behalf: the request body is a fixed struct (mintRequest), pinned
+// literally by the tests for each mode.
 //
 // 🔴 THE TOKEN NEVER LEAVES MUSTER. It is injected by the connector proxy
 // (internal/connectors, /connect/github/...) on the way out, exactly as a stored
 // connector's secret is, and is held only in this process's memory: cached per
-// (agent, repository) until refreshBefore of its expiry (GitHub issues them for
+// (agent, repository, mode) until refreshBefore of its expiry (GitHub issues them for
 // one hour), never written to the database, a log line or a response.
 //
 // 🔴 A REQUEST FOR ANOTHER REPOSITORY CARRIES NO CREDENTIAL AT ALL. It is
@@ -211,11 +214,15 @@ type Account struct {
 	ID    int64
 }
 
-// tokenKey names a cached token: an agent's repository token (agent > 0), or an
-// installation's listing token (agent == 0, repo == "installation:<id>").
+// tokenKey names a cached token: an agent's repository token (agent > 0) in
+// one access mode, or an installation's listing token (agent == 0, repo ==
+// "installation:<id>", access ""). The mode is part of the key, so a write
+// token cached for an agent is never served to a read-only request of the same
+// agent (an agent that became an officer instance).
 type tokenKey struct {
-	agent int64
-	repo  string
+	agent  int64
+	repo   string
+	access Access
 }
 
 type token struct {
@@ -364,7 +371,7 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	if scoped && !strings.EqualFold(target, repo) {
 		return "", true, nil // another repository: anonymous, never the App token
 	}
-	tok, err := a.repoToken(ctx, caller.AgentID, repo)
+	tok, err := a.repoToken(ctx, caller.AgentID, repo, a.accessFor(caller))
 	a.mu.Lock()
 	if err != nil {
 		a.problems[caller.AgentID] = err.Error()
@@ -373,6 +380,16 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	}
 	a.mu.Unlock()
 	return tok, false, err
+}
+
+// accessFor is the mode caller's token is minted in: AccessRead for a caller
+// that asks for read only (connectors.Caller.ReadOnly — an officer instance),
+// whatever this App's mode; the App's mode otherwise.
+func (a *App) accessFor(caller connectors.Caller) Access {
+	if caller.ReadOnly {
+		return AccessRead
+	}
+	return a.cfg.Access
 }
 
 // Rejected drops every cached token of caller's: GitHub answered 401 to one
@@ -491,13 +508,14 @@ func agentMintRequest(repoName string, access Access) mintRequest {
 // into an agent's request.
 var listingMintRequest = map[string]any{"permissions": map[string]string{"metadata": "read"}}
 
-// repoToken returns a cached or freshly minted token for agentID's repo.
-func (a *App) repoToken(ctx context.Context, agentID int64, repo string) (string, error) {
+// repoToken returns a cached or freshly minted token for agentID's repo, in
+// mode access.
+func (a *App) repoToken(ctx context.Context, agentID int64, repo string, access Access) (string, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 		return "", fmt.Errorf("%w: %q is not owner/name", connectors.ErrTargetRefused, repo)
 	}
-	key := tokenKey{agent: agentID, repo: strings.ToLower(repo)}
+	key := tokenKey{agent: agentID, repo: strings.ToLower(repo), access: access}
 	if t, ok := a.cached(key); ok {
 		return t, nil
 	}
@@ -510,7 +528,7 @@ func (a *App) repoToken(ctx context.Context, agentID int64, repo string) (string
 	if err != nil {
 		return "", err
 	}
-	t, err := a.mint(ctx, inst, agentMintRequest(name, a.cfg.Access), "minting a token for "+repo)
+	t, err := a.mint(ctx, inst, agentMintRequest(name, access), "minting a token for "+repo)
 	if err != nil {
 		return "", err
 	}
@@ -788,7 +806,7 @@ func (a *App) DefaultBranch(ctx context.Context, repo string) (string, error) {
 // ListPullRequests lists agentID's own repository's pull requests with that
 // agent's repository token (server-side; the worker tool returns only the list).
 func (a *App) ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error) {
-	tok, err := a.repoToken(ctx, agentID, repo)
+	tok, err := a.repoToken(ctx, agentID, repo, a.cfg.Access)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
@@ -107,18 +108,28 @@ func SourceFor(ctx context.Context, s Store, name string) string {
 	return SourceStored
 }
 
-// ReconcileGrant puts an approved grant back to pending when its connector's
-// credential source (for ctx's principal, the grant's owner) is no longer the
-// one the approval was about — the GitHub App configured over a stored token,
-// or removed from under one. reopened reports that this call did it, so the
-// caller can prompt the owner. Any other grant is returned unchanged.
+// ReconcileGrant puts an approved grant back to pending when the approval no
+// longer describes what the grant would now serve, and says why:
+//
+//   - its connector's credential source (for ctx's principal, the grant's
+//     owner) is no longer the one the approval was about — the GitHub App
+//     configured over a stored token, or removed from under one (0033);
+//   - the agent's effective repository (repo: connectors.Caller.Repo, the
+//     officer's configured `repo` for an officer instance) is not the one the
+//     approval was made for (Grant.Repo, 0061) — compared without case or
+//     surrounding space, as GitHub names are. An officer approved for one
+//     repository and then pointed at another, or approved with none and then
+//     given one, asks its owner again.
+//
+// reason is "" when the grant is returned unchanged, else the audit line's
+// why. The caller prompts the owner.
 //
 // 🔴 THIS IS THE ONE PLACE THE RULE LIVES; every reader that turns a grant into
 // "may this agent use the connector" calls it first (Proxy.CheckAccess, the
 // agent's connector status and request routes).
-func ReconcileGrant(ctx context.Context, s Store, g Grant) (Grant, bool, error) {
+func ReconcileGrant(ctx context.Context, s Store, g Grant, repo string) (Grant, string, error) {
 	if g.Status != StatusApproved {
-		return g, false, nil
+		return g, "", nil
 	}
 	// 🔴 NEVER ON A FALLBACK ROLE. When the principal's role could not be read it
 	// acts as member, and for an admin that makes the App connector vanish —
@@ -126,20 +137,46 @@ func ReconcileGrant(ctx context.Context, s Store, g Grant) (Grant, bool, error) 
 	// over one database blip. The grant is left as it is; the next request with
 	// a readable role decides.
 	if p, ok := authz.From(ctx); ok && p.RoleUncertain {
-		return g, false, nil
+		return g, "", nil
 	}
 	src := g.Source
 	if src == "" {
 		src = SourceStored
 	}
-	if src == SourceFor(ctx, s, g.Connector) {
-		return g, false, nil
+	reason := ""
+	switch {
+	case src != SourceFor(ctx, s, g.Connector):
+		reason = ReopenedSourceChanged
+	case !SameRepo(g.Repo, repo):
+		reason = reopenedRepoChanged(g.Repo, repo)
+	default:
+		return g, "", nil
 	}
 	ng, reopened, err := s.ReopenGrant(ctx, g.ID)
-	if err != nil {
-		return g, false, err
+	if err != nil || !reopened {
+		return ng, "", err
 	}
-	return ng, reopened, nil
+	return ng, reason, nil
+}
+
+// ReopenedSourceChanged is ReconcileGrant's reason for a changed credential
+// source.
+const ReopenedSourceChanged = "re-opened: the connector's credential source changed"
+
+func reopenedRepoChanged(was, now string) string {
+	name := func(r string) string {
+		if strings.TrimSpace(r) == "" {
+			return "no repository"
+		}
+		return strings.TrimSpace(r)
+	}
+	return "re-opened: the agent's repository changed (approved for " + name(was) + ", now " + name(now) + ")"
+}
+
+// SameRepo reports whether two repository names are the same repository:
+// equal without case or surrounding space ("" is no repository).
+func SameRepo(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 type virtualStore struct {

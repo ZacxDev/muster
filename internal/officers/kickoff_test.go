@@ -22,10 +22,19 @@ Start now:
 You watch, triage, record and dispatch. You never merge, deploy or release, and you hold no production credentials.`
 
 // kickoffRepoNote is what an officer with repo example-org/widget is told
-// after the base text.
-const kickoffRepoNote = `
-
-Your repository is example-org/widget. You may READ it through muster's "github" connector: call connector_request{name: "github", reason} once (the operator approves it; connector_status{name: "github", wait_seconds} waits for the decision and then says how to use it), and read the repository through muster's connector proxy. muster attaches a token limited to example-org/widget to each request on your behalf, so you never hold or need one — do not ask for one. There is no checkout; fetch what you need. Reading is all it is for: you never push or merge.`
+// after the base text: github is the only connector it may use, the operator
+// decides the request by hand, and HOW to read the repository once approved —
+// git routed through the proxy (ccd connect-git) or the REST API through the
+// proxy — with a read-only token muster holds.
+const kickoffRepoNote = "\n\nYour repository is example-org/widget. You may READ it through muster's \"github\" connector — the only connector you may use. " +
+	"Ask once with connector_request{name: \"github\", reason}; the operator decides it by hand, so then wait with connector_status{name: \"github\", wait_seconds: 50}, " +
+	"repeated while it says pending. Once it is approved, read the repository in either of two ways (both through muster's proxy):\n" +
+	"- git: run `ccd connect-git github` once (it routes git's https://github.com/ through the proxy; ccd also does this by itself within 15 seconds of the approval), " +
+	"then `git clone --depth 50 https://github.com/example-org/widget.git` and read the clone; `git fetch` in it later for new commits.\n" +
+	"- the REST API: `curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/example-org/widget/<path>\"` " +
+	"(for example pulls/<n>, pulls/<n>/files, commits/<sha>, compare/<base>...<head>, contents/<file>?ref=<sha>); muster replaces that header with the credential.\n" +
+	"muster attaches a READ-ONLY token limited to example-org/widget to each request on your behalf, so you never hold or need one — do not ask for one. " +
+	"Reading is all it is for: you never push or merge."
 
 // TestTheKickoffWithoutARepoIsUnchanged pins the whole no-repo first message.
 // ⚠ An INVARIANT guard: green before and after officers could name a repo (it

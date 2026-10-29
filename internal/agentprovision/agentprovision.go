@@ -399,15 +399,17 @@ type Adapter struct {
 	// UNKNOWN, and vetoes job-lane bypass (jobBypassVeto).
 	githubGrant func(ctx context.Context, agentID int64) (string, error)
 	// ccSession answers a claude-code agent's per-agent session settings (the
-	// officer runtime's pre-allowed tools and model); nil = none for anyone.
-	ccSession func(agents.Agent) (allow []string, model string, ok bool)
+	// officer runtime's pre-allowed tools, model and permission bypass); nil =
+	// none for anyone.
+	ccSession func(agents.Agent) (agentspec.ClaudeCodeSession, bool)
 }
 
 // UseClaudeCodeSession installs the source of claude-code agents' per-agent
 // session settings (agentspec.ClaudeCodeSession). internal/api's officer
-// runtime is the one caller: an officer instance's own tools pre-allowed and
-// its configured model; every other agent answers ok=false.
-func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (allow []string, model string, ok bool)) {
+// runtime is the one caller: an officer instance's own tools pre-allowed, its
+// configured model and every tool allowed (BypassPermissions); every other
+// agent answers ok=false.
+func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
 	a.ccSession = f
 }
 
@@ -1186,8 +1188,8 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	if !agents.IsChiefName(ag.Name) {
 		opts := agentspec.Options{JobBypassVeto: jobBypassVeto}
 		if a.ccSession != nil {
-			if allow, model, ok := a.ccSession(ag); ok {
-				opts.ClaudeCodeSession = agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: model}
+			if sess, ok := a.ccSession(ag); ok {
+				opts.ClaudeCodeSession = sess
 			}
 		}
 		return agentspec.Build(ag, cfg, opts)

@@ -32,20 +32,33 @@ You watch, triage, record and dispatch. You never merge, deploy or release, and 
 
 // GitHubConnector is the connector an officer with a repository reads it
 // through: the GitHub App's virtual connector (githubapp.ConnectorName), named
-// here because this package does not import the App.
+// here because this package does not import the App. It is the ONLY connector
+// an officer instance may request or use (internal/api
+// officerConnectorRefusal).
 const GitHubConnector = "github"
 
 // repoNote is what an officer with a configured repository is told about it:
-// that it may READ it through muster's github connector, asked for once, with
-// muster holding the credential. Nothing for an officer without one, whose
-// text is unchanged.
+// that it may READ it through muster's github connector (the only connector an
+// officer may use), asked for once and decided by the operator, and HOW to
+// read it once approved — git routed through the proxy, or the REST API
+// through the proxy — with muster holding a read-only credential. Nothing for
+// an officer without one, whose text is unchanged.
+//
+// 🔴 THE TWO RECIPES ARE THE REAL MECHANISM, PINNED IN TESTS AGAINST THEIR
+// SOURCES: `ccd connect-git github` (cmd/ccd/connect.go: git's
+// https://github.com/ routed through the proxy; ccd also applies it by itself
+// within podagent.GitSyncInterval of the approval) and api.ProxyRecipe's URL
+// and header (TestTheOfficerKickoffTeachesTheRealProxyRecipe in internal/api).
 func repoNote(o Officer) string {
 	if o.Repo == "" {
 		return ""
 	}
 	return fmt.Sprintf(`
 
-Your repository is %[1]s. You may READ it through muster's %[2]q connector: call connector_request{name: %[2]q, reason} once (the operator approves it; connector_status{name: %[2]q, wait_seconds} waits for the decision and then says how to use it), and read the repository through muster's connector proxy. muster attaches a token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. There is no checkout; fetch what you need. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector)
+Your repository is %[1]s. You may READ it through muster's %[2]q connector — the only connector you may use. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once it is approved, read the repository in either of two ways (both through muster's proxy):
+- git: run `+"`ccd connect-git %[2]s`"+` once (it routes git's https://github.com/ through the proxy; ccd also does this by itself within 15 seconds of the approval), then `+"`git clone --depth 50 https://github.com/%[1]s.git`"+` and read the clone; `+"`git fetch`"+` in it later for new commits.
+- the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/%[1]s/<path>\"`"+` (for example pulls/<n>, pulls/<n>/files, commits/<sha>, compare/<base>...<head>, contents/<file>?ref=<sha>); muster replaces that header with the credential.
+muster attaches a READ-ONLY token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector)
 }
 
 // releaseNote is the release officer's extra step: where its evaluation goes.
