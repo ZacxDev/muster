@@ -53,7 +53,13 @@ type fakeGitHubUpstream struct {
 	// public repositories are served to anyone, with no Authorization.
 	public  map[string]bool
 	minted  map[string]string // token -> repository name it was minted for
+	// readOnly tokens were minted with contents: read; a push with one is
+	// refused 403, as GitHub refuses it ("Write access to repository not
+	// granted").
+	readOnly map[string]bool
 	gitSeen []string          // "<path> <authorization>" per git request
+	// pushRefused counts receive-pack requests refused for a read-only token.
+	pushRefused int
 	apiSeen []string          // the Authorization of each /repos/ request
 }
 
@@ -65,7 +71,7 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 	if err != nil {
 		t.Fatal("git is required (CI runners have it): ", err)
 	}
-	f := &fakeGitHubUpstream{root: t.TempDir(), minted: map[string]string{}, public: map[string]bool{}}
+	f := &fakeGitHubUpstream{root: t.TempDir(), minted: map[string]string{}, public: map[string]bool{}, readOnly: map[string]bool{}}
 	backend := &cgi.Handler{Path: gitBin, Args: []string{"http-backend"},
 		Env: []string{"GIT_PROJECT_ROOT=" + f.root, "GIT_HTTP_EXPORT_ALL=1"}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +104,7 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			if m := mintedRepoName.FindStringSubmatch(string(body)); m != nil {
 				f.minted[tok] = m[1]
 			}
+			f.readOnly[tok] = strings.Contains(string(body), `"contents":"read"`)
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"token": tok,
@@ -134,6 +141,16 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			if len(segs) < 2 || user != "x-access-token" || repoName == "" || repoName+".git" != segs[1] {
 				w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			f.mu.Lock()
+			ro := f.readOnly[tok]
+			f.mu.Unlock()
+			if ro && (strings.HasSuffix(p, "/git-receive-pack") || r.URL.Query().Get("service") == "git-receive-pack") {
+				f.mu.Lock()
+				f.pushRefused++
+				f.mu.Unlock()
+				http.Error(w, "Write access to repository not granted.", http.StatusForbidden)
 				return
 			}
 			backend.ServeHTTP(w, r)
@@ -201,11 +218,18 @@ func fakeTestPolicy() connectors.Policy {
 // MUSTER_GITHUB_APP_ID / _PRIVATE_KEY (cmd/muster-server's buildApp wiring).
 func appServer(t *testing.T, f *connFixture, up *fakeGitHubUpstream) (*Server, http.Handler, *githubapp.App) {
 	t.Helper()
+	return appServerAccess(t, f, up, "")
+}
+
+// appServerAccess is appServer with MUSTER_GITHUB_APP_ACCESS = access ("" =
+// unset, the default).
+func appServerAccess(t *testing.T, f *connFixture, up *fakeGitHubUpstream, access githubapp.Access) (*Server, http.Handler, *githubapp.App) {
+	t.Helper()
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := githubapp.New(githubapp.Config{AppID: 12345, PrivateKey: k, BaseURL: up.srv.URL,
+	app, err := githubapp.New(githubapp.Config{AppID: 12345, PrivateKey: k, BaseURL: up.srv.URL, Access: access,
 		GitHost: "github.fake.test:" + up.port(), APIHost: "api.fake.test:" + up.port(), Accounts: []githubapp.Account{{Login: "example-org", ID: 4200}}})
 	if err != nil {
 		t.Fatal(err)

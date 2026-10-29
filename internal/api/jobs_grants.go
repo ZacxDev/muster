@@ -13,7 +13,8 @@ import (
 // running it must not be able to write to the repository under review. The one
 // way an agent gets a GitHub credential is a grant on a connector that reaches
 // github.com — the `github` connector (the GitHub App's one-repository token,
-// contents:write, docs/github-app.md) or any stored connector with a github.com
+// contents:write in the default write mode, docs/github-app.md) or any stored
+// connector with a github.com
 // host: with such a grant APPROVED, ccd routes every https://github.com/ git
 // request of the pod through muster's proxy, which adds the credential
 // (internal/podagent gitroute.go). So the rule, in one predicate

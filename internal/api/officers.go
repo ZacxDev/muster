@@ -375,11 +375,18 @@ func (s *Server) WaitForOfficerReprompts() {
 
 // OfficerClaudeCodeSession is the provisioner's session source
 // (agentprovision.Adapter.UseClaudeCodeSession): for a declared officer's
-// instance, the officer tools it is offered — EXACTLY those, in registry
-// order, so its Claude Code session never stops on a permission prompt for
-// its own queue (an officer deployment may have no approval gate) — and the
-// officer's configured model. Every other agent: ok=false. Nothing else is
-// ever pre-allowed: not a built-in tool, not another muster tool.
+// instance, the officer tools it is offered, in registry order, so its Claude
+// Code session never stops on a permission prompt for its own queue (an
+// officer deployment may have no approval gate) — and the officer's
+// configured model. Every other agent: ok=false.
+//
+// When the connector store is configured (so the instance is offered them),
+// the three connector tools follow, in registry order — connectors_list,
+// connector_request, connector_status — so an officer can ask for GitHub (or
+// any connector) access and wait for the decision without stalling on a
+// permission prompt nobody answers. Asking is not using: the operator still
+// approves each grant. Nothing else is ever pre-allowed: not a built-in tool,
+// not another muster tool.
 func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (allow []string, model string, ok bool) {
 	o, _, ok := s.officerOf(a)
 	if !ok {
@@ -387,6 +394,11 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (allow []string, model
 	}
 	for _, d := range officerToolDefs() {
 		if officers.ToolOffered(o, d.Name) {
+			allow = append(allow, d.Name)
+		}
+	}
+	if s.ext.Connectors != nil {
+		for _, d := range connectorToolDefs() {
 			allow = append(allow, d.Name)
 		}
 	}

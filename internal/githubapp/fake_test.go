@@ -217,11 +217,17 @@ func (c *clock) set(t time.Time) {
 // example-org holding example-org/widget and example-org/gadget.
 func newTestApp(t *testing.T) (*App, *fakeGitHub, *clock) {
 	t.Helper()
+	return newTestAppAccess(t, "")
+}
+
+// newTestAppAccess is newTestApp with Config.Access = access ("" = unset).
+func newTestAppAccess(t *testing.T, access Access) (*App, *fakeGitHub, *clock) {
+	t.Helper()
 	c := &clock{t: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
 	k := key(t)
 	f := newFakeGitHub(t, &k.PublicKey, c.now)
 	f.install(42, "example-org", "example-org/widget", "example-org/gadget")
-	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []Account{{Login: "Example-Org", ID: 4200}}})
+	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Access: access, Accounts: []Account{{Login: "Example-Org", ID: 4200}}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -128,7 +128,7 @@ func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k co
 			return appNoRepoNote, vc.Problem(g.AgentID)
 		}
 		return "the GitHub App: each request to " + repo + " (this agent's own repository) carries a 1-hour token limited to it (" +
-			githubAppScope + "); other repositories are reached anonymously", vc.Problem(g.AgentID)
+			githubAppScope(vc) + "); other repositories are reached anonymously", vc.Problem(g.AgentID)
 	}
 	return "the stored " + g.Connector + " credential (whatever the token itself may do), on " + strings.Join(k.Hosts, ", ") +
 		" only, through muster's proxy", ""

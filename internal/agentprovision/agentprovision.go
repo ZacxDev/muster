@@ -423,9 +423,11 @@ func (a *Adapter) UseGitHubGrants(f func(ctx context.Context, agentID int64) (st
 //
 // 🔴 AN AGENT HOLDING AN APPROVED GRANT THAT REACHES GITHUB IS NEVER BYPASSED.
 // With such a grant ccd routes the pod's git through muster's proxy, which adds a
-// GitHub App token with contents:write and pull_requests:write
-// (internal/githubapp), so a prompt-injected lane running unapproved could push
-// and merge. The approval doors already refuse such a grant to every pool worker
+// GitHub App token with contents:write and pull_requests:write in the default
+// write mode (internal/githubapp; read-only only under
+// MUSTER_GITHUB_APP_ACCESS=read, and a stored github.com connector is never
+// limited by it), so a prompt-injected lane running unapproved could push and
+// merge. The approval doors already refuse such a grant to every pool worker
 // (internal/api refusePoolWorkerGitHubGrant), so this is the third door: it is
 // asked every time the spec is built — Dispatch, Start and ReapplyProfiles — and
 // it FAILS CLOSED: an unreadable grant state, or no lookup wired, is a veto too.

@@ -369,11 +369,14 @@ var bannerLedger = []string{
 	// told it is" with nothing in the log. One line names all three in each
 	// direction.
 	envConnectorEncKey,
-	// The GitHub App: the `github app:` line names all three in both directions
+	// The GitHub App: the `github app:` line names all four in both directions
 	// (ON / OFF), and the `checkout wait:` line names its variable in both.
 	envGitHubAppID,
 	envGitHubAppKey,
 	envGitHubAppAccounts,
+	// The access mode: the ON line names it with its value and the scope it
+	// mints; the OFF line says it does not apply.
+	envGitHubAppAccess,
 	envCheckoutWaitTimeout,
 	envConnectPort,
 	envAgentConnectURL,
@@ -865,6 +868,9 @@ func TestTheBannerWarnsWhenRoutingIsOnWithoutAHookToken(t *testing.T) {
 // banner only asks whether they are wired.
 type bannerStubPlugins struct{ plugins.Store }
 type bannerStubGitHubApp struct{ api.GitHubApp }
+
+func (bannerStubGitHubApp) Access() githubapp.Access { return githubapp.AccessWrite }
+
 type bannerStubPluginGateway struct{ plugins.Gateway }
 type bannerStubRoutes struct{ plugins.RouteStore }
 

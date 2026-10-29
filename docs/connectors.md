@@ -20,8 +20,9 @@ came from is revoked, or the connector is deleted. Connectors handle HTTP only.
 `MUSTER_GITHUB_APP_ID` and `MUSTER_GITHUB_APP_PRIVATE_KEY` are set, `github` is
 provided by the App for admins' agents and is not a stored secret: each
 approved agent's requests to its own repository carry a 1-hour installation
-token limited to that repository, and requests for other repositories go out
-anonymously. It replaces an admin's stored `github` connector while it is
+token limited to that repository (read and write, or read only under
+[`MUSTER_GITHUB_APP_ACCESS=read`](github-app.md#read-only-mode)), and requests
+for other repositories go out anonymously. It replaces an admin's stored `github` connector while it is
 configured. Members' agents do not see it. Registration
 and setup are in [github-app.md](github-app.md).
 

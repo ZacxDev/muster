@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -568,9 +569,20 @@ func (s *Server) connectorRequestViews(ctx context.Context) ([]ui.ConnectorReque
 }
 
 // githubAppScope is what the GitHub App's installation token may do in the
-// agent's own repository (the permissions internal/githubapp mints it with), as
-// the Connectors tab and connector_requests_list both say it.
-const githubAppScope = "Contents and Pull requests read and write, Checks and Commit statuses read"
+// agent's own repository, as the Connectors tab, the approve card and
+// connector_requests_list say it.
+//
+// 🔴 IT IS READ FROM THE CONNECTOR, NEVER A CONSTANT. The levels depend on
+// MUSTER_GITHUB_APP_ACCESS (githubapp.Access), and Access.Scope derives the
+// text from the very permissions the mint asks for — so a read-only deployment
+// can never be described as granting write, nor the reverse. A virtual
+// connector that does not report its mode is not described as either.
+func githubAppScope(vc connectors.Virtual) string {
+	if ar, ok := vc.(interface{ Access() githubapp.Access }); ok {
+		return ar.Access().Scope()
+	}
+	return "permissions as that connector's token carries them"
+}
 
 func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsContent) error {
 	reqs, err := s.connectorRequestViews(ctx)
@@ -613,7 +625,7 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 			Shared: shared[k.Name]}
 		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok {
 			cv.Managed = "Provided by the GitHub App this server is configured with: each approved agent's " +
-				"requests to its own repository carry a 1-hour token limited to it (" + githubAppScope + "); " +
+				"requests to its own repository carry a 1-hour token limited to it (" + githubAppScope(vc) + "); " +
 				"other repositories are reached anonymously, " +
 				"and an agent with no repository gets no access. There is no stored secret to rotate or delete."
 			cv.Problem = vc.Problem(0)
@@ -651,10 +663,23 @@ func (s *Server) handleConnectorRequests(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func presetViews() []ui.ConnectorPresetView {
+// githubPresetReadOnlyHelp replaces the GitHub preset's help on a deployment
+// whose GitHub App mints read-only tokens: the default help recommends a
+// read/write token, which would contradict the mode. 🔴 A STORED TOKEN IS NOT
+// LIMITED BY MUSTER_GITHUB_APP_ACCESS, and the text says so.
+const githubPresetReadOnlyHelp = "A fine-grained personal access token scoped to the repositories the agents should reach " +
+	"(Contents read, Pull requests read, Metadata read — this deployment's GitHub access is read only, " +
+	"MUSTER_GITHUB_APP_ACCESS=read). It is used for the REST API and for git over HTTPS. That setting does NOT " +
+	"limit a stored token: the agents can do whatever its own permissions allow."
+
+func (s *Server) presetViews() []ui.ConnectorPresetView {
 	var out []ui.ConnectorPresetView
 	for _, p := range connectors.Presets() {
-		out = append(out, ui.ConnectorPresetView{Key: p.Key, Label: p.Label, Help: p.Help, SecretLabel: p.SecretLabel, Hosts: p.Hosts})
+		help := p.Help
+		if p.Key == connectors.GitHubPreset.Key && s.githubAppReadOnly() {
+			help = githubPresetReadOnlyHelp
+		}
+		out = append(out, ui.ConnectorPresetView{Key: p.Key, Label: p.Label, Help: help, SecretLabel: p.SecretLabel, Hosts: p.Hosts})
 	}
 	return out
 }
@@ -663,7 +688,7 @@ func presetViews() []ui.ConnectorPresetView {
 // submitted or queried fields.
 func (s *Server) connectorForm(ctx context.Context, q url.Values) (ui.ConnectorFormView, error) {
 	f := ui.ConnectorFormView{
-		Presets:  presetViews(),
+		Presets:  s.presetViews(),
 		Name:     strings.TrimSpace(q.Get("name")),
 		Preset:   q.Get("preset"),
 		Hosts:    q.Get("hosts"),

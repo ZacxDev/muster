@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/pins"
 )
 
@@ -23,6 +24,7 @@ type listingApp struct {
 	repos   []string
 	problem string
 	prAgent int64
+	access  githubapp.Access // "" = AccessWrite
 }
 
 func (l *listingApp) Repos(context.Context) ([]github.Repo, error) {
@@ -40,6 +42,12 @@ func (l *listingApp) ListPullRequests(_ context.Context, agentID int64, _, _ str
 	return []github.PullRequest{{Number: 3, Title: "from the app"}}, nil
 }
 func (l *listingApp) Problem(int64) string { return l.problem }
+func (l *listingApp) Access() githubapp.Access {
+	if l.access == "" {
+		return githubapp.AccessWrite
+	}
+	return l.access
+}
 
 // TestAClaudeCodeDispatchChecksTheAppsRepositories: at the dispatch door an App
 // repository is accepted (on the App's default branch), and one outside the

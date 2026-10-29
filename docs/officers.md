@@ -95,13 +95,19 @@ things in that session's `settings.json` at provision time (the pod's
 `ccd seed` writes them from `CCD_ALLOW_MCP_TOOLS` and `CCD_MODEL`, which muster
 puts on the pod; `internal/podagent/session.go`):
 
-- **`permissions.allow`: exactly the officer's own tools** —
-  `mcp__muster__officer_brief`, `…officer_items`, `…officer_claim`,
+- **`permissions.allow`: exactly the officer's own tools, then the connector
+  tools** — `mcp__muster__officer_brief`, `…officer_items`, `…officer_claim`,
   `…officer_heartbeat`, `…officer_complete`, `…officer_release`, and for a
-  `release:*` officer `…officer_release_evaluation`. Without them the first call
-  to each would wait on a permission prompt in the pod's terminal, and an
-  officer deployment may have no approval gate to answer it. **Nothing else is
-  allowed**: the channel only takes bare tool names and always writes them as
+  `release:*` officer `…officer_release_evaluation`; then, when the connector
+  store is configured (`MUSTER_CONNECTOR_ENCRYPTION_KEY`, so the instance is
+  offered them), `…connectors_list`, `…connector_request` and
+  `…connector_status`, so an officer can ask for GitHub access and wait for the
+  decision. Asking is not using: the operator still approves every grant, and
+  what an approved `github` grant may do is the GitHub App's mode
+  ([`MUSTER_GITHUB_APP_ACCESS`](github-app.md#read-only-mode); set it to `read`
+  for an officer deployment). Without them the first call to each would wait
+  on a permission prompt in the pod's terminal, and an officer deployment may
+  have no approval gate to answer it. **Nothing else is allowed**: the channel only takes bare tool names and always writes them as
   `mcp__muster__<name>` (a name holding `__` or anything but `[a-z0-9_]` is
   refused and the pod does not start), so it cannot allow Bash, Write, Edit, a
   path rule or another server's tool. Every other tool keeps the image's default

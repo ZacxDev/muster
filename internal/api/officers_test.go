@@ -907,6 +907,42 @@ func TestAnOfficerInstancePreAllowsExactlyItsOwnTools(t *testing.T) {
 	}
 }
 
+// TestAnOfficerInstancePreAllowsTheConnectorToolsWhenOffered: with the
+// connector store configured (so the instance is offered them), the officer's
+// own tools are followed by EXACTLY connectors_list, connector_request and
+// connector_status — the whole list pinned, so the officer tools are unchanged
+// and nothing else (no other muster tool, no built-in) is added. Without the
+// store they are not offered and not allowed (the test above).
+func TestAnOfficerInstancePreAllowsTheConnectorToolsWhenOffered(t *testing.T) {
+	r := newOfficerRig(t)
+	rel := r.addInstance(r.a, 1, 873)
+	tri := r.addInstance(r.b, 1, 874)
+	r.s.ext.Connectors = presenceStore{}
+	allow, _, ok := r.s.OfficerClaudeCodeSession(rel)
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_release_evaluation," +
+		"connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
+		t.Fatalf("release officer allow = %v (ok %v), want %s", allow, ok, want)
+	}
+	allow, _, ok = r.s.OfficerClaudeCodeSession(tri)
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release," +
+		"connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
+		t.Fatalf("triage officer allow = %v (ok %v), want %s", allow, ok, want)
+	}
+	// Each allowed connector tool is one the instance is really offered over MCP.
+	offered := map[string]bool{}
+	for _, d := range r.s.MCPToolDefsFor(context.Background(), tri) {
+		offered[d.Name] = true
+	}
+	for _, n := range []string{"connectors_list", "connector_request", "connector_status"} {
+		if !offered[n] {
+			t.Errorf("%s is pre-allowed but not offered to the officer instance", n)
+		}
+	}
+	if allow, _, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerOrdinaryID)); ok || allow != nil {
+		t.Fatalf("an ordinary agent got session settings: %v", allow)
+	}
+}
+
 // TestEnableOfficersInstallsTheSessionSourceOrRefuses: the source the
 // provisioner is handed IS the officer runtime's (it answers an instance with
 // its tools), and EnableOfficers refuses to run officers with no installer —

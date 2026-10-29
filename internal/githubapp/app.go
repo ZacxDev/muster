@@ -22,10 +22,13 @@
 // FOUR PERMISSIONS. Each proxied request from an approved agent to its own
 // repository is served with an installation access token minted by POST
 // /app/installations/{id}/access_tokens with `repositories: [<the agent's
-// repo>]` and `permissions: {contents: write, pull_requests: write, checks:
-// read, statuses: read}` (GitHub adds metadata: read implicitly). Nothing wider
-// is ever asked for on an agent's behalf: the request body is a fixed struct
-// (mintRequest), pinned literally by the tests.
+// repo>]` and, in the default write mode (Config.Access, AccessWrite),
+// `permissions: {contents: write, pull_requests: write, checks: read, statuses:
+// read}`; in read mode (AccessRead, MUSTER_GITHUB_APP_ACCESS=read) every one of
+// the four is `read`, so a push or a pull-request write through the proxy is
+// refused by GitHub, never upgraded (GitHub adds metadata: read implicitly in
+// both). Nothing wider is ever asked for on an agent's behalf: the request body
+// is a fixed struct (mintRequest), pinned literally by the tests for each mode.
 //
 // 🔴 THE TOKEN NEVER LEAVES MUSTER. It is injected by the connector proxy
 // (internal/connectors, /connect/github/...) on the way out, exactly as a stored
@@ -101,10 +104,62 @@ const reposTTL = time.Minute
 // maxRepoPages caps the repository listing (100 per page).
 const maxRepoPages = 30
 
+// Access is what an agent's token may do in its repository: AccessWrite (the
+// default) or AccessRead. It is the ONLY input to the agent mint's permission
+// levels (agentMintRequest).
+type Access string
+
+const (
+	// AccessWrite: contents + pull_requests write, checks + statuses read.
+	AccessWrite Access = "write"
+	// AccessRead: contents, pull_requests, checks and statuses all read.
+	AccessRead Access = "read"
+)
+
+// ParseAccess reads an access mode as the operator wrote it: "" (unset) is
+// AccessWrite, so a deployment that never set it is unchanged; "read" and
+// "write" (any case, surrounding space ignored) are themselves; anything else
+// is an error — a typo must never fall back to a wider grant.
+func ParseAccess(v string) (Access, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", string(AccessWrite):
+		return AccessWrite, nil
+	case string(AccessRead):
+		return AccessRead, nil
+	}
+	return "", fmt.Errorf("%q is not an access mode: want %q or %q", v, AccessRead, AccessWrite)
+}
+
+// Scope is what an agent's installation token may do in its own repository in
+// mode m, as every user-visible description of the connector says it (the
+// Connectors tab, the approve card, connector_requests_list, the boot banner).
+// It is derived from the same permission levels the mint asks for, so the text
+// cannot claim a level the token does not carry.
+func (m Access) Scope() string {
+	p := agentMintRequest("", m).Permissions
+	if p.Contents == "read" && p.PullRequests == "read" && p.Checks == "read" && p.Statuses == "read" {
+		return "READ ONLY: Contents, Pull requests, Checks and Commit statuses read — no push, no merge, no pull-request write"
+	}
+	return "Contents and Pull requests " + levelWords(p.Contents) + ", Checks and Commit statuses " + levelWords(p.Checks)
+}
+
+func levelWords(level string) string {
+	switch level {
+	case "write":
+		return "read and write"
+	case "read":
+		return "read"
+	}
+	return level
+}
+
 // Config is what New needs.
 type Config struct {
 	AppID      int64
 	PrivateKey *rsa.PrivateKey
+	// Access is the agent tokens' permission mode; "" means AccessWrite. New
+	// refuses any other value.
+	Access Access
 	// Accounts are the GitHub accounts (users or organizations) whose
 	// installations are used, matched by ID. REQUIRED: New refuses an empty
 	// list or an entry with no ID, because the App is installable by anyone.
@@ -186,6 +241,13 @@ func New(cfg Config) (*App, error) {
 				"renamed and re-registered by someone else", acc.Login)
 		}
 	}
+	switch cfg.Access {
+	case "":
+		cfg.Access = AccessWrite
+	case AccessWrite, AccessRead:
+	default:
+		return nil, fmt.Errorf("githubapp: unknown access mode %q (want %q or %q)", cfg.Access, AccessRead, AccessWrite)
+	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = github.APIBaseURL()
 	}
@@ -209,6 +271,9 @@ func New(cfg Config) (*App, error) {
 
 // AppID is the configured App ID.
 func (a *App) AppID() int64 { return a.cfg.AppID }
+
+// Access is the agent tokens' permission mode (never "").
+func (a *App) Access() Access { return a.cfg.Access }
 
 // allowed reports whether in's ACCOUNT ID is on the allowlist. A matching id
 // under a different login (a rename) is allowed, and recorded once (Renames).
@@ -408,11 +473,16 @@ type mintPermissions struct {
 	Statuses     string `json:"statuses"`
 }
 
-func agentMintRequest(repoName string) mintRequest {
-	return mintRequest{
-		Repositories: []string{repoName},
-		Permissions:  mintPermissions{Contents: "write", PullRequests: "write", Checks: "read", Statuses: "read"},
+// agentMintRequest is the agent mint's body for repoName in mode access. 🔴
+// ANYTHING BUT AccessWrite GETS READ: the write levels are reachable only by
+// naming the write mode, so an unexpected value (New refuses one anyway) can
+// never widen a token.
+func agentMintRequest(repoName string, access Access) mintRequest {
+	p := mintPermissions{Contents: "read", PullRequests: "read", Checks: "read", Statuses: "read"}
+	if access == AccessWrite {
+		p.Contents, p.PullRequests = "write", "write"
 	}
+	return mintRequest{Repositories: []string{repoName}, Permissions: p}
 }
 
 // listingMintRequest is the body of the installation-wide token muster itself
@@ -440,7 +510,7 @@ func (a *App) repoToken(ctx context.Context, agentID int64, repo string) (string
 	if err != nil {
 		return "", err
 	}
-	t, err := a.mint(ctx, inst, agentMintRequest(name), "minting a token for "+repo)
+	t, err := a.mint(ctx, inst, agentMintRequest(name, a.cfg.Access), "minting a token for "+repo)
 	if err != nil {
 		return "", err
 	}

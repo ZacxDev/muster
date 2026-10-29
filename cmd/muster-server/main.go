@@ -366,7 +366,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// without a connector store; buildApp only skips the wrap.
 		if cfg.GitHubAppID != 0 {
 			gapp, err := githubapp.New(githubapp.Config{AppID: cfg.GitHubAppID, PrivateKey: cfg.GitHubAppKey,
-				Accounts: cfg.GitHubAppAccounts, Logger: logger})
+				Accounts: cfg.GitHubAppAccounts, Access: cfg.GitHubAppAccess, Logger: logger})
 			if err != nil {
 				a.Close()
 				return nil, fmt.Errorf("github app: %w", err)
@@ -1446,9 +1446,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 
 	if ext.GitHubApp != nil {
 		agentsSee := "the `github` connector is backed by it for ADMINS' agents: each approved agent's requests to " +
-			"its own repository carry a 1-hour installation token limited to that repository (contents + " +
-			"pull_requests write, checks + statuses read), other repositories go out anonymously, and an agent " +
-			"with NO repository (a chief) gets no github access"
+			"its own repository carry a 1-hour installation token limited to that repository (" +
+			envGitHubAppAccess + "=" + string(ext.GitHubApp.Access()) + ": " + ext.GitHubApp.Access().Scope() +
+			"), other repositories go out anonymously, and an agent with NO repository (a chief) gets no github access"
 		if ext.Connectors == nil {
 			agentsSee = "NO connector store, so agents cannot use it"
 		}
@@ -1459,8 +1459,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			githubAppAccountList(a.cfg.GitHubAppAccounts), agentsSee)
 	} else {
 		l.Printf("github app: OFF — %s/%s/%s are unset, so muster has no GitHub identity (no repository is "+
-			"connected for dispatch) and a `github` connector needs a stored token", envGitHubAppID, envGitHubAppKey,
-			envGitHubAppAccounts)
+			"connected for dispatch), %s does not apply, and a `github` connector needs a stored token (which "+
+			"that setting does not limit)", envGitHubAppID, envGitHubAppKey, envGitHubAppAccounts, envGitHubAppAccess)
 	}
 	if a.cfg.CheckoutWaitTimeout > 0 {
 		l.Printf("checkout wait: %s=%s — a claude-code agent's first turn waits that long for its repository "+

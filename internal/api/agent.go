@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -531,7 +532,10 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 		// was false for every agent this binary provisions. Pushing goes through the
 		// connector store's proxy when it is offered, and is otherwise reported as
 		// impossible rather than retried against a token that is not there.
-		if a.NoteID != nil {
+		if a.NoteID != nil && s.githubAppReadOnly() {
+			b += "\n\nCLOSE THE LOOP when the task's change is complete and verified — do NOT just stop after editing/testing:" +
+				readOnlyCloseOut
+		} else if a.NoteID != nil {
 			b += "\n\nCLOSE THE LOOP when the task's change is complete and verified — do NOT just stop after editing/testing:" +
 				s.pushSteps(a.Repo) +
 				"\n3. Call agent_comment_task with the PR URL, then agent_set_task_status{status:\"ready_for_review\"}." +
@@ -553,6 +557,21 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 		". Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
 	return b
 }
+
+// githubAppReadOnly reports whether this deployment's GitHub App mints
+// read-only agent tokens (MUSTER_GITHUB_APP_ACCESS=read).
+func (s *Server) githubAppReadOnly() bool {
+	return s.ext.GitHubApp != nil && s.ext.GitHubApp.Access() == githubapp.AccessRead
+}
+
+// readOnlyCloseOut is the close-out protocol when the GitHub App mints
+// read-only tokens. 🔴 IT NEVER TELLS THE AGENT TO PUSH OR OPEN A PULL REQUEST:
+// GitHub refuses both with such a token, and an instruction to do it anyway is
+// a claim of write access the deployment does not grant.
+const readOnlyCloseOut = "\n1. Commit your work on a branch in your workspace. This deployment's GitHub access is READ ONLY " +
+	"(MUSTER_GITHUB_APP_ACCESS=read): you cannot push or open a pull request — do NOT try, and do NOT ask for a token." +
+	"\n2. Call agent_comment_task naming the branch and summarising the change (what, why, how you verified it), then agent_set_task_status{status:\"ready_for_review\"}." +
+	"\nOnly finish once that comment is posted and the task is marked ready_for_review."
 
 // pushSteps is steps 1-2 of the close-out protocol: how to push and open a PR.
 // With the connector store configured the agent goes through the `github`
