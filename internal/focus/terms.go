@@ -22,8 +22,15 @@ import (
 // What is distinctive (and the key it normalises to):
 //
 //   - a number written AS A REFERENCE: `#137`, `PR 137`, `PR-137`, `PR #137`,
-//     `pr137`, `pull request 137` → "#137". A BARE number is not: "137" alone,
-//     or a message stuffed with 0–999, names nothing.
+//     `pr137`, `pull request 137`, and GitHub's cross-repo `acme/widgets#137`
+//     → "#137". A BARE number is not: "137" alone, or a message stuffed with
+//     0–999, names nothing; nor is a '#' glued to a word (`abc#12`), an HTML
+//     entity (`&#39;`) or a URL or path fragment (`example.com/page#12`,
+//     `a/b/c#12`). The key carries NO repo: muster's focus titles say
+//     "PR #137", and a key `acme/widgets#137` would equal none of them. The
+//     cost is that `acme/widgets#5` shares "#5" with another repo's "PR #5" —
+//     the cost a bare "#5" already has. The owner and repo stay in the text,
+//     where a repo name can still be a term of its own.
 //   - a version: `v1.2` or longer with a v, `1.2.3` or longer without → "v1.2.3".
 //   - a word holding letters AND digits: `node-7k`, `k8s`, `6a99a92`, `utf-8` →
 //     itself, lower-cased — except an ordinal, a decade or a clock time
@@ -47,10 +54,16 @@ import (
 const MaxDistinctiveTerms = 20
 
 var (
-	// refRE: a number written as a reference. Group 1 is the number.
-	// "pr" and "pull request" must start a word, so "spr 5" is not one; the
-	// '#' form must not follow a word character, '&' (an HTML entity) or '/'.
-	refRE = regexp.MustCompile(`(?i)(?:\bpull[ \t]+requests?|\bprs?)[ \t]*[-#]?[ \t]*(\d+)\b|(?:^|[^\w&#/])#(\d+)\b`)
+	// refRE: a number written as a reference; exactly one of groups 1–3 is
+	// the number. "pr" and "pull request" must start a word, so "spr 5" is
+	// not one (group 1); the bare '#' form must not follow a word character,
+	// '&' (an HTML entity) or '/' (group 2); GitHub's cross-repo form
+	// owner/repo#N must not follow a word character, '&' (a query string),
+	// '/' or '.', and its owner holds no '.' (group 3) — so a path or URL
+	// fragment (`a/b/c#1`, `example.com/page#1`) is not one.
+	refRE = regexp.MustCompile(`(?i)(?:\bpull[ \t]+requests?|\bprs?)[ \t]*[-#]?[ \t]*(\d+)\b` +
+		`|(?:^|[^\w&#/])#(\d+)\b` +
+		`|(?:^|[^\w&/.])[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+#(\d+)\b`)
 	// versionRE: v1.2(.3…) or 1.2.3(.4…).
 	versionRE = regexp.MustCompile(`(?i)\bv(\d+(?:\.\d+)+)\b|\b(\d+\.\d+\.\d+(?:\.\d+)*)\b`)
 	// tokenRE: a word, with inner '.', '_' or '-' joining its parts.
@@ -162,15 +175,18 @@ func distinctiveTerms(text string, max int) (keys []string, rest string) {
 	}
 	for _, m := range refRE.FindAllStringSubmatchIndex(text, -1) {
 		g := 2
-		if m[2] < 0 {
-			g = 4
+		for m[g] < 0 {
+			g += 2
 		}
 		n, err := strconv.ParseUint(text[m[g]:m[g+1]], 10, 64)
 		if err != nil {
 			continue
 		}
 		start := m[0]
-		if g == 4 { // the '#' form: the match may include the character before '#'
+		if g > 2 {
+			// A '#' form: the span is "#N" alone. The character the match
+			// takes before '#', and a cross-repo form's owner/repo, stay
+			// ordinary text (the repo's name can still be a term itself).
 			start = m[g] - 1
 		}
 		claim(start, m[1], "#"+strconv.FormatUint(n, 10))
