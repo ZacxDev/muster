@@ -7,9 +7,10 @@ Self-hosted: one Go server and Postgres, in Docker on one of your machines,
 reached over HTTPS on your private Tailscale network and nowhere else. The UI
 installs on your phone as a PWA. Your other machines dial out to it.
 
-Not to be confused with the Mac menu-bar app also called Muster
-([agentmuster.app](https://agentmuster.app/)): this muster is the self-hosted
-one, for your phone and every machine you run agents on. How it compares with
+Not to be confused with two other apps called Muster: the Mac menu-bar app
+([agentmuster.app](https://agentmuster.app/)) and the desktop app for running
+parallel agents in git worktrees ([musterup.dev](https://musterup.dev/)). This
+muster is the self-hosted one, for your phone and every machine you run agents on. How it compares with
 Happy, Claude Code Remote Control and SSH + tmux:
 [docs/comparison.md](docs/comparison.md).
 
