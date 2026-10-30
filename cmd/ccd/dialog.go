@@ -60,6 +60,9 @@ func (e *limitMenuShown) Unwrap() error { return errDialogShown }
 // dialogRefusal is the error for a screen showing a dialog: limitMenuShown for
 // the usage-limit menu, else errDialogShown naming what.
 func dialogRefusal(screen, what string) error {
+	if limit, ok := ccdialog.UsageLimit(screen); ok {
+		return &limitMenuShown{what: what, limit: limit}
+	}
 	return fmt.Errorf("%w: %s", errDialogShown, what)
 }
 

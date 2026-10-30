@@ -74,7 +74,7 @@ func Unsent(err error) string {
 	var rt *agents.RuntimeError
 	if errors.As(err, &rt) {
 		switch {
-		case rt.Status == http.StatusConflict && rt.Type == "busy":
+		case rt.Status == http.StatusConflict && (rt.Type == "busy" || rt.Type == "rate_limited"):
 			return UnsentBusy
 		case rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready":
 			return UnsentNotReady

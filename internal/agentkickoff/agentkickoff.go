@@ -785,7 +785,7 @@ func runtimeNotReady(err error) bool {
 func runtimeRefusedUnsent(err error) bool {
 	var rt *agents.RuntimeError
 	return runtimeNotReady(err) || errors.As(err, &rt) && rt.Status == http.StatusConflict &&
-		rt.Type == "busy"
+		(rt.Type == "busy" || rt.Type == "rate_limited")
 }
 
 // ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was
