@@ -52,6 +52,10 @@ type restartProv struct {
 	startFails error
 	// noReady makes a started instance never become ready.
 	noReady bool
+	// staleReads is how many Instances reads after a Start still answer the
+	// instance as it was BEFORE the Stop (a lagging backend listing).
+	staleReads int
+	stale      map[string]provision.Instance
 }
 
 func (p *restartProv) name(id int64) string {
@@ -82,6 +86,10 @@ func (p *restartProv) Stop(_ context.Context, id int64) error {
 	if p.insts == nil {
 		p.insts = map[string]provision.Instance{}
 	}
+	p.stale = map[string]provision.Instance{}
+	for k, v := range p.insts {
+		p.stale[k] = v
+	}
 	p.insts[n] = provision.Instance{Ref: provision.Ref{Name: n}, Phase: provision.PhaseStopped, Reason: "scaled to zero"}
 	p.mu.Unlock()
 	return p.setStatus(id, agents.StatusStopped)
@@ -106,8 +114,13 @@ func (p *restartProv) Start(_ context.Context, id int64) error {
 func (p *restartProv) Instances(context.Context) ([]provision.Instance, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]provision.Instance, 0, len(p.insts))
-	for _, i := range p.insts {
+	src := p.insts
+	if p.staleReads > 0 && p.pods > 0 && p.stale != nil {
+		p.staleReads--
+		src = p.stale
+	}
+	out := make([]provision.Instance, 0, len(src))
+	for _, i := range src {
 		out = append(out, i)
 	}
 	return out, nil
@@ -536,6 +549,47 @@ func TestOnlyAMirroredSessionCanRestartTheChief(t *testing.T) {
 		t.Fatalf("a refused caller reached the provisioner: %v", got)
 	}
 	if text, isErr := f.restart(t, f.ws, focusSID, map[string]any{}); isErr {
+		t.Fatalf("control: %s", text)
+	}
+}
+
+// TestALaggingListingOfTheOldPodIsNotTakenAsRestarted: the backend's listing
+// still shows the chief's OLD pod, running and ready, for a few reads after the
+// start. The wait does not take that as the restart: it reports the NEW pod.
+func TestALaggingListingOfTheOldPodIsNotTakenAsRestarted(t *testing.T) {
+	f := newRestartFixture(t)
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rslagchief")
+	f.prov.seed(chief, "old-pod", restartImage)
+	f.prov.mu.Lock()
+	f.prov.staleReads = 3
+	f.prov.mu.Unlock()
+	text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
+	if r := decodeRestart(t, text); !r.Restarted || r.Before.Pod != "old-pod" || r.After.Pod == "" || r.After.Pod == "old-pod" {
+		t.Fatalf("a lagging listing: %s", text)
+	}
+}
+
+// TestChiefRestartRefusesAChiefTurnedOff: an owner who turned their chief off
+// (chief_toggle.go) is refused and nothing is stopped or started. CONTROL: on
+// again, the same call restarts it.
+func TestChiefRestartRefusesAChiefTurnedOff(t *testing.T) {
+	f := newRestartFixture(t)
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rsoffchief")
+	f.prov.seed(chief, "old-pod", "")
+	prefs := &memChiefPrefs{}
+	f.srv.ext.ChiefPrefs = prefs
+	_ = prefs.SetEnabled(context.Background(), owner, false)
+	want := `{"error":"your owner's chief ` + chief.Name + ` is turned off; nothing was restarted — turn it on from muster first"}`
+	if text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`); text != want {
+		t.Fatalf("a chief turned off: %s", text)
+	}
+	if got := f.prov.callList(); len(got) != 0 {
+		t.Fatalf("a chief turned off was restarted: %v", got)
+	}
+	_ = prefs.SetEnabled(context.Background(), owner, true)
+	if text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`); isToolErr(text) {
 		t.Fatalf("control: %s", text)
 	}
 }

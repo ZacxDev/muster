@@ -150,6 +150,42 @@ What the agent was told is also its first message, on its transcript. Guards: [p
 tasks. That scope, like the chief-only filter, is decided by the chief
 predicate, never by the kind.
 
+## Restarting the chief
+
+The chief keeps running the image and tool set it was started on. After a muster
+release (a new `MUSTER_AGENT_CC_IMAGE`, new chief tools), restart it so it picks
+them up. A restart is Stop then Start: the pod is scaled down and started again
+from the agent's current spec. Its row, chat sessions and history are kept,
+unlike [replacing the chief](#replacing-the-chief-on-another-kind).
+
+- **From the browser:** the chief's agent page, ⋯ → **Stop**, then **Start**. No
+  fresh sign-in is needed (agent lifecycle is not step-up gated).
+- **From one of your own mirrored Claude Code sessions:** ask it to call the
+  `chief_restart` MCP tool ([attention.md](attention.md#the-agent-tools)). It takes
+  no agent: it restarts **your** chief and nothing else. It runs the agent page's
+  own Stop and Start, then waits up to 4 minutes for the chief to be running and
+  ready on a new pod, and answers with the pod before and after. For a claude-code
+  chief it compares the image the new pod runs against `MUSTER_AGENT_CC_IMAGE` and
+  fails if they differ.
+
+  It is refused while the chief is mid-turn: a plugin message, its kickoff or a
+  memo being delivered, or a chat turn running. Retry when the turn ends, or pass
+  `force: true` to cut the turn off, which is what the browser's Stop does. It
+  is also refused when you have no chief, or have turned it off.
+
+  Nothing is stopped when the Start would be refused (for example, a claude-code
+  chief whose owner has no Claude account). If the start fails after the stop, the
+  answer says the chief is **stopped**: start it from its agent page.
+
+  The restart writes no audit row, like the browser's Stop/Start and
+  `agent_destroy`. The calling host and session and the outcome are in muster's
+  server log.
+
+After either route, the operator's post-checks still apply: the deployments in
+the chief's namespace rolled out, the pod is newer than the restart, the agent
+image equals `MUSTER_AGENT_CC_IMAGE`, and `ccd seed --check` passes in the pod.
+`chief_restart` covers the pod and the image; the seed check is still yours.
+
 ## Sessions on more than one runtime
 
 With `MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`, each new chief chat session

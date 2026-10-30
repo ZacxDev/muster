@@ -32,10 +32,15 @@ import (
 //     security rolled back, another owner's chief, or any agent that is not the
 //     chief, cannot be named or reached. An owner whose chief is turned off
 //     (chief_toggle.go) or who has none is refused.
-//   - 🔴 THE SAME CODE PATH AS THE BROWSER: agentStartRefusal is checked first
-//     (so a start that would be refused never begins with a stop), then
-//     stopAgent and startAgent — the very functions the agent page's Stop and
-//     Start run (agents.go). The browser's Stop/Start are NOT step-up gated
+//   - 🔴 THE SAME CODE PATH AS THE BROWSER: agentStartRefusal — the agent
+//     page's Start refusal, one function for both doors — is checked first (so
+//     a start that would be refused never begins with a stop); then the agent
+//     page's Stop (clearAgentWork, Provisioner.Stop) and Start
+//     (Provisioner.Start): the provisioner methods ARE the lifecycle
+//     (agentprovision.Adapter: the spec re-apply, the status writes, the
+//     kickoff provenance), so nothing of theirs is re-implemented here. Unlike
+//     the browser, which answers at once and runs them in the background, this
+//     door runs them in order and waits. The browser's Stop/Start are NOT step-up gated
 //     (requireSession only; docs/sending-and-step-up.md gates mirrored typing,
 //     not agent lifecycle), so this door is no bypass of a fresh sign-in.
 //   - 🔴 REFUSED WHILE THE CHIEF IS MID-TURN unless force. The browser's Stop
@@ -131,7 +136,10 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 	if err := dec.Decode(&in); err != nil {
 		return toolErr("arguments are {force?}; chief_restart takes no agent — it restarts your owner's own chief")
 	}
-	if !s.chiefRestartOn() {
+	// 🔴 THE PROVISIONER BARRIER FOR THIS DOOR, IN ITS OWN BODY: it is not a
+	// lifecycle route (requireLifecycleProvisioner), and provisioner_seam_test.go's
+	// walk looks for the nil check beside the calls below.
+	if s.ext.Provisioner == nil || s.ext.Agents == nil {
 		return toolErr("this deployment has no agent provisioner wired, so it cannot restart the chief")
 	}
 	p, ok := authz.From(ctx)
@@ -192,11 +200,16 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 	// The stop and the start outlive the request (a caller that goes away must
 	// not leave the chief stopped half-way) but keep its principal.
 	opCtx := context.WithoutCancel(ctx)
-	if err := s.stopAgent(opCtx, chief.ID); err != nil {
+	// The agent page's Stop, step for step (handleAgentStop): its work report is
+	// forgotten (a stopped pod cannot post its own clear), then the provisioner
+	// scales it to zero.
+	s.clearAgentWork(chief.ID)
+	if err := s.ext.Provisioner.Stop(opCtx, chief.ID); err != nil {
 		s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: stop: %v", chief.ID, chief.Name, from, err)
 		return toolErr("the chief %s could not be stopped (%v); it was not restarted", chief.Name, err)
 	}
-	if err := s.startAgent(opCtx, chief.ID); err != nil {
+	// The agent page's Start (handleAgentStart; its refusal was checked above).
+	if err := s.ext.Provisioner.Start(opCtx, chief.ID); err != nil {
 		s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: start: %v", chief.ID, chief.Name, from, err)
 		return toolErr("the chief %s was STOPPED but could not be started again (%v); start it from its agent page", chief.Name, err)
 	}
