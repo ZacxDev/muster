@@ -1,4 +1,4 @@
--- muster 0064 — Claude account FAILOVER: a claude-code agent whose account hit
+-- muster 0065 — Claude account FAILOVER: a claude-code agent whose account hit
 -- its limit (or failed authentication) may be REBOUND to another of its
 -- owner's accounts (internal/ccfailover).
 --
@@ -15,7 +15,7 @@
 -- agents.cc_account_pinned: the account was named explicitly at creation (a
 -- dispatch's or the chief's pin, an officer's `cc_account`). A pinned agent is
 -- NOT failed over unless agents.cc_failover is also true (the operator's
--- opt-in). An agent created before 0064 reads unpinned, i.e. Auto.
+-- opt-in). An agent created before 0065 reads unpinned, i.e. Auto.
 --
 -- jobs.failovers: the account failovers a job was re-queued for, oldest first,
 -- each {"from","to","reason","at"}; the job runner re-queues a job at most
@@ -24,13 +24,13 @@
 -- cc_account_failovers: one row per rebind, for the agent's page and the API.
 -- It holds account NAMES, a reason and a reset time — never a token.
 --
--- Rollback: an image from before 0064 never reads the new columns or table,
+-- Rollback: an image from before 0065 never reads the new columns or table,
 -- and its trigger function is restored by re-running 0003's CREATE OR REPLACE.
 -- To remove them:
 --   DROP TABLE public.cc_account_failovers;
 --   ALTER TABLE public.jobs DROP COLUMN failovers;
 --   ALTER TABLE public.agents DROP COLUMN cc_account_pinned, DROP COLUMN cc_failover;
---   DELETE FROM schema_migrations WHERE version = 64;
+--   DELETE FROM schema_migrations WHERE version = 65;
 
 SET LOCAL lock_timeout = '3s';
 
