@@ -100,7 +100,35 @@ func (r *laneRig) operator(t *testing.T, key string) *lane {
 		t.Fatalf("operator lane %s: %v", key, f)
 	}
 	r.l.release(ln)
+	started(t, ln)
 	return ln
+}
+
+// started waits until ln's `tmux new-session` has returned (lane.startReturned)
+// — the lane's CLI is up, as an idle lane's is.
+//
+// 🔴 WITHOUT IT A LANE IS EVICTED MID-START WHENEVER ITS run GOROUTINE IS SLOW
+// TO BE SCHEDULED: acquire returns before that goroutine calls Start, so a lane
+// stopped straight after is stopped while starting (lane.stoppedMidStart) and,
+// by design, killed a SECOND time once Start returns (lane.killLateSession).
+// Its pane then counts 2 kills, not 1, depending on goroutine scheduling — CI
+// flaked exactly so. Eviction mid-start is a different case from evicting an
+// idle lane; tests of the latter must wait for the start.
+func started(t *testing.T, ln *lane) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ln.startMu.Lock()
+		done := ln.startReturned
+		ln.startMu.Unlock()
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lane %s (%s): its tmux new-session never returned", ln.id, ln.key)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // checkTurn posts one turn for key marked as a throwaway check and returns the
@@ -239,6 +267,7 @@ func TestACheckMayStopAnotherCheckLane(t *testing.T) {
 	if f != nil {
 		t.Fatal(f)
 	}
+	started(t, old)
 	r.l.mu.Lock()
 	old.reserved = 0
 	r.l.mu.Unlock()
@@ -291,14 +320,15 @@ func TestAnOperatorLaneAtTheCapStillStopsTheLeastRecentlyUsedIdleLane(t *testing
 	if f != nil {
 		t.Fatal(f)
 	}
+	started(t, chk)
 	r2.l.mu.Lock()
 	chk.reserved = 0
 	r2.l.mu.Unlock()
 	e := r2.operator(t, "sess-e")
 	r2.operator(t, "sess-f")
 	if r2.l.get(chk.id) != nil || r2.pane(chk.key).kills() != 1 || r2.l.get(e.id) != e {
-		t.Fatalf("an operator session beside an older idle check lane: check in set=%v, e in set=%v; want the check stopped, e kept",
-			r2.l.get(chk.id) != nil, r2.l.get(e.id) == e)
+		t.Fatalf("an operator session beside an older idle check lane: check in set=%v kills=%d, e in set=%v; want the check stopped, e kept",
+			r2.l.get(chk.id) != nil, r2.pane(chk.key).kills(), r2.l.get(e.id) == e)
 	}
 }
 
