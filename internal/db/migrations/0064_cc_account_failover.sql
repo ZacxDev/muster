@@ -63,22 +63,29 @@ CREATE TABLE IF NOT EXISTS public.cc_account_failovers (
     owner_id     BIGINT      NOT NULL
                  DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
                  REFERENCES public.users (id),
-    agent_id     BIGINT      NOT NULL,
+    agent_id     BIGINT      NOT NULL REFERENCES public.agents (id) ON DELETE CASCADE,
     agent_name   TEXT        NOT NULL,
     from_account TEXT        NOT NULL,
     to_account   TEXT        NOT NULL,
     reason       TEXT        NOT NULL,
     resets_at    TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- 0006's composite key: the event's owner IS its agent's owner.
-    CONSTRAINT cc_account_failovers_agent_owner_fkey FOREIGN KEY (agent_id, owner_id)
-        REFERENCES public.agents (id, owner_id) ON DELETE CASCADE,
     CONSTRAINT cc_account_failovers_reason_check CHECK (reason IN ('rate_limited', 'auth_failed')),
     CONSTRAINT cc_account_failovers_accounts_check CHECK (
         from_account <> '' AND to_account <> '' AND from_account <> to_account
         AND octet_length(from_account) <= 128 AND octet_length(to_account) <= 128),
     CONSTRAINT cc_account_failovers_agent_name_cap CHECK (char_length(agent_name) BETWEEN 1 AND 128)
 );
+
+-- ⚠ A PLAIN FOREIGN KEY, NOT 0006's COMPOSITE (agent_id, owner_id): that one
+-- depends on agents_id_owner_key, which 0006's re-runnable body drops and
+-- re-creates (0014 says why). The owner is the agent's because the one writer
+-- (internal/ccfailover PGStore.Record) inserts the agent's own owner_id.
+
+-- Re-stated (not only in CREATE TABLE) so db.RLSOn, which re-applies this body
+-- after RLSOff set the default to 1, restores it.
+ALTER TABLE public.cc_account_failovers ALTER COLUMN owner_id
+    SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
 
 CREATE INDEX IF NOT EXISTS idx_cc_account_failovers_agent ON public.cc_account_failovers (agent_id, id DESC);
 
