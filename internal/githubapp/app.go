@@ -812,3 +812,28 @@ func (a *App) ListPullRequests(ctx context.Context, agentID int64, repo, state s
 	}
 	return github.ListPullRequestsAt(ctx, a.cfg.BaseURL, tok, repo, state)
 }
+
+// Slug reads the App's own slug (GET /app, as the App). The App's bot account
+// is `<slug>[bot]`: the identity its pull requests are authored by, which a
+// shipping officer's merge gate compares against (internal/officership).
+// Read fresh on every call — a renamed App changes its slug.
+func (a *App) Slug(ctx context.Context) (string, error) {
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := a.appCall(ctx, http.MethodGet, a.cfg.BaseURL+"/app", nil, &out, "reading the App", ""); err != nil {
+		return "", err
+	}
+	if out.Slug == "" {
+		return "", errors.New("GitHub's answer for the App carried no slug")
+	}
+	return out.Slug, nil
+}
+
+// RepoToken is a token for repo minted in the App's own mode, for muster's
+// own server-side calls on a shipping officer's behalf (merge, tag). It is
+// never injected into an agent's request: the proxy takes its credential from
+// Credential (or a connectors.Gate), not from here.
+func (a *App) RepoToken(ctx context.Context, repo string) (string, error) {
+	return a.repoToken(ctx, 0, repo, a.cfg.Access)
+}
