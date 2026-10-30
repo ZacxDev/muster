@@ -18,7 +18,8 @@ import { launchWithBfcache } from '../lib/bfcache';
 // opencode windows file). Every value is invented fixture data.
 //
 // 🔴 REGRESSION TEST. On origin/main an opencode window has no rendered view:
-// its card opens the Terminal, and /mirror/view redirects there.
+// its entry (the Agents list's card then, the sidebar's row now) opens the
+// Terminal, and /mirror/view redirects there.
 
 const rig = new MirrorRig(openCodeViewPort, 'e2e-opencode');
 const sid = 'ses_0e2efixture1a2b3c4d';
@@ -96,23 +97,30 @@ test.afterAll(async () => {
 test.use({ storageState: { cookies: [], origins: [] } });
 
 const viewOf = (window: string) => `${rig.viewPath('oc')}&window=${encodeURIComponent(window)}`;
+// A window's row in the sidebar's list.
 const card = (page: Page, window: string) =>
-  page
-    .locator('#agents-list > article[data-mirror-card]')
-    .filter({ has: page.locator(`a[href*="session=${window === '@1' ? 'plain' : 'oc'}"][href*="window=${encodeURIComponent(window)}"]`) });
+  page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="session=${window === '@1' ? 'plain' : 'oc'}"][href*="window=${encodeURIComponent(window)}"]`);
+// What a terminal-only window's own page says about it: the terminal-only
+// line, or the host's note under the header.
+const termNote = (page: Page) => page.locator('#term-only, #term-host-note [data-mirror-note]');
 
 test('an opencode window opens a read-only rendered view of the session its title names, live', async ({ page }) => {
   await rig.login(page);
-  await page.goto(rig.origin + '/agents');
-  // The matched card opens the rendered view; the ambiguous one, the Terminal.
-  await expect(card(page, '@2').locator('a[href*="/mirror/view?"]'), `the matched card (mirror log:\n${rig.log})`).toHaveCount(1, { timeout: 20_000 });
-  await expect(card(page, '@3').locator('a[href*="/mirror/terminal?"]')).toHaveCount(1);
-  for (const w of ['@2', '@3']) await expect(card(page, w).locator('[data-mirror-kind]')).toContainText('opencode');
-  // The ambiguous one says why it has no view; the matched one has no note.
-  await expect(card(page, '@3').locator('[data-mirror-note]')).toHaveText('2 opencode sessions match the title "New session": ambiguous, so none is shown');
-  await expect(card(page, '@2').locator('[data-mirror-note]')).toHaveCount(0);
+  // The sidebar (a phone: its drawer, whose list loads as it opens).
+  await page.goto(rig.origin + '/tasks');
+  await page.locator('#sidebar-open').click();
+  // The matched row opens the rendered view; the ambiguous one, the Terminal.
+  await expect(card(page, '@2'), `the matched row (mirror log:\n${rig.log})`).toHaveAttribute('href', /^\/mirror\/view\?/, { timeout: 20_000 });
+  await expect(card(page, '@3')).toHaveAttribute('href', /^\/mirror\/terminal\?/);
+  for (const w of ['@2', '@3']) expect(((await card(page, w).getAttribute('data-switcher-words')) ?? '').split(' '), `${w}'s kind`).toContain('opencode');
+  // The ambiguous one says why it has no view, on its own page.
+  await card(page, '@3').click();
+  await page.waitForURL((u) => u.pathname === '/mirror/terminal');
+  await expect(termNote(page)).toContainText('2 opencode sessions match the title "New session": ambiguous, so none is shown');
 
   await page.goto(rig.origin + viewOf('@2'));
+  // The matched one has no note.
+  await expect(page.locator('#mv-host-note')).toHaveCount(0);
   await expect(page).toHaveURL(/\/mirror\/view\?/);
   const log = page.locator('#mv-log');
   // It says how it found the session.
@@ -273,7 +281,7 @@ test('back to an opencode view restores it, reconnects, draws a message that cam
 });
 
 // LAST, because it breaks the fake server for good: the server's password is
-// rotated, which revokes the host's token. The window keeps its card, as an
+// rotated, which revokes the host's token. The window keeps its entry, as an
 // opencode window with NO view: its address goes to the Terminal.
 test('a refused token leaves the opencode window with no view', async ({ page }) => {
   await rig.login(page);
@@ -287,9 +295,8 @@ test('a refused token leaves the opencode window with no view', async ({ page })
       { message: `the view after the token is refused (mirror log:\n${rig.log})`, timeout: 30_000 },
     )
     .toBe('/mirror/terminal');
-  // The card says why, and what fixes it.
-  await page.goto(rig.origin + '/agents');
-  await expect(card(page, '@2').locator('[data-mirror-note]')).toContainText("refused muster-mirror's token", { timeout: 20_000 });
-  await expect(card(page, '@2').locator('[data-mirror-note]')).toContainText('muster-mirror opencode-pair');
+  // Its own page says why, and what fixes it.
+  await expect(termNote(page)).toContainText("refused muster-mirror's token", { timeout: 20_000 });
+  await expect(termNote(page)).toContainText('muster-mirror opencode-pair');
   await expect.poll(() => rig.log, { message: 'the host logs the refusal' }).toContain("refused muster-mirror's token");
 });

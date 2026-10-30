@@ -142,14 +142,16 @@ func rowHrefs(row string) []string {
 	return got
 }
 
-// TestTheListRefreshesTheSwitchersRows: GET /ui/agents sends the session
-// switcher's rows OUT OF BAND (they replaced the "Recently viewed" strip),
-// resolved against the cards it renders: Recent is the visits newest first,
-// pinned ones INCLUDED (Pins is a view of its own there), gone ones skipped;
-// Pins the pinned entries. Fixture: agents 5, 6, 7 and windows main@1, chief@2
-// (pinWindows); agent 6 and chief@2 are pinned; agent 99 and window main@9 do
-// not exist.
-func TestTheListRefreshesTheSwitchersRows(t *testing.T) {
+// TestTheSwitchersRowsResolveTheVisitsAgainstTheList: the session switcher's
+// rows (they replaced the retired Agents list's "Recently viewed" strip) are
+// resolved against the entries the list is built from (agentsListCardsLive):
+// Recent is the visits newest first, pinned ones INCLUDED (Pins is a view of
+// its own), gone ones skipped; Pins the pinned entries. Fixture: agents 5, 6, 7
+// and windows main@1, chief@2 (pinWindows); agent 6 and chief@2 are pinned;
+// agent 99 and window main@9 do not exist. (It read GET /ui/agents' out-of-band
+// copy of the rows; that partial is retired, and the rows are the switcher's
+// own build — s.switcher, what every session page draws.)
+func TestTheSwitchersRowsResolveTheVisitsAgainstTheList(t *testing.T) {
 	mem := &memRecents{}
 	for _, v := range []recents.Entry{
 		{AgentID: 5},
@@ -163,58 +165,57 @@ func TestTheListRefreshesTheSwitchersRows(t *testing.T) {
 		mem.put(v) // put prepends: 7 ends up newest
 	}
 	mp := &memPins{}
-	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, mp)
+	s, _ := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, mp)
 	s.ext.Recents = mem
 	mp.pinFor(1).Agents[6] = true
 	mp.pinFor(1).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] = true
 
-	body := getOwed(t, s, h, "/ui/agents").Body.String()
-	if strings.Contains(body, "agents-recent") {
-		t.Error("the list still sends the Recently viewed strip")
+	sw := s.switcher(operatorCtx(), ui.SwitcherCurrent{})
+	if sw == nil {
+		t.Fatal("instrument check FAILED: no switcher was built")
 	}
-	if !strings.Contains(body, `<div id="switcher-list-recent" hx-swap-oob="innerHTML">`) {
-		t.Fatalf("no out-of-band Recent row in the list:\n%s", body)
+	hrefs := func(items []ui.SwitcherItem) []string {
+		var out []string
+		for _, it := range items {
+			out = append(out, it.Href)
+		}
+		return out
 	}
-	got := rowHrefs(switcherRow(t, body, "switcher-list-recent"))
-	want := []string{"/agents/idle-newest", "/agents/status-moved", amp(ref("main", "@1").TerminalPath()),
-		amp(ref("chief", "@2").TerminalPath()), "/agents/chatting-oldest"}
-	if !eqStrings(got, want) {
+	want := []string{"/agents/idle-newest", "/agents/status-moved", ref("main", "@1").TerminalPath(),
+		ref("chief", "@2").TerminalPath(), "/agents/chatting-oldest"}
+	if got := hrefs(sw.Recent); !eqStrings(got, want) {
 		t.Errorf("Recent = %v, want %v (newest first, pinned included, the gone 99 / main@9 left out)", got, want)
 	}
-	if got, want := rowHrefs(switcherRow(t, body, "switcher-list-pins")), []string{"/agents/status-moved", amp(ref("chief", "@2").TerminalPath())}; !eqStrings(got, want) {
+	if got, want := hrefs(sw.Pins), []string{"/agents/status-moved", ref("chief", "@2").TerminalPath()}; !eqStrings(got, want) {
 		t.Errorf("Pins = %v, want %v", got, want)
 	}
 }
 
-// TestTheAgentsShellDrawsTheSwitcherOnFirstPaint: GET /agents draws the
-// switcher's rows WITH their entries in the document itself (ui.ShellData), so
-// the bar paints whole with the page; the list's first load refreshes them in
-// place. Same resolution as the list's out-of-band copy. Any other tab draws
-// the bar pending — no entries and no "nothing here" line — its Agents panel
-// hidden until a switch to it, whose list load fills the rows.
-func TestTheAgentsShellDrawsTheSwitcherOnFirstPaint(t *testing.T) {
+// TestASessionPageDrawsTheSwitcherOnFirstPaint: an agent's page draws the
+// session switcher's rows WITH their entries in the document itself, so the
+// bar paints whole with the page — Recent resolved as above, the page's own
+// session left out of it. (It was the retired Agents shell's first paint;
+// GET /agents is home's redirect now, and the shell's tabs draw no switcher —
+// the control below.)
+func TestASessionPageDrawsTheSwitcherOnFirstPaint(t *testing.T) {
 	mem := &memRecents{}
-	mem.put(recents.Entry{AgentID: 5})
-	mem.put(recents.Entry{AgentID: 6}) // pinned: still a Recent entry
-	mem.put(recents.Entry{AgentID: 7})
-	mp := &memPins{}
-	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, mp)
+	mem.put(recents.Entry{AgentID: 7}) // the page's own agent: never in its Recent
+	mem.put(recents.Entry{Mirror: pins.MirrorKey{Host: "ws", Session: "scratch2", Window: "@4"}})
+	mem.put(recents.Entry{AgentID: 8})
+	s, ts := sendServer(t, newSendAgents(), &turnGateway{})
+	s.ext.Mirror = goldHost()
 	s.ext.Recents = mem
-	mp.pinFor(1).Agents[6] = true
 
-	body := getOwed(t, s, h, "/agents").Body.String()
-	if want := []string{"/agents/idle-newest", "/agents/status-moved", "/agents/chatting-oldest"}; !eqStrings(rowHrefs(switcherRow(t, body, "switcher-list-recent")), want) { // 7, 6, 5
-		t.Errorf("first-paint Recent = %v, want %v", rowHrefs(switcherRow(t, body, "switcher-list-recent")), want)
-	}
-	if strings.Contains(body, "data-switcher-current") {
-		t.Error("an entry is drawn current on the Agents list")
+	_, body := mirrorGet(t, s, ts, "/agents/keen-wren?session=41")
+	want := []string{"/agents/plain-otter", amp(ref("scratch2", "@4").TerminalPath())} // 8, then the window
+	if got := rowHrefs(switcherRow(t, body, "switcher-list-recent")); !eqStrings(got, want) {
+		t.Errorf("first-paint Recent = %v, want %v (newest first, the page's own keen-wren left out)", got, want)
 	}
 
-	// Control: the board's Agents panel draws the bar pending.
-	tasks := getOwed(t, s, h, "/tasks").Body.String()
-	row := switcherRow(t, tasks, "switcher-list-recent")
-	if switcherEntryHref.MatchString(row) || strings.Contains(row, "No other recent sessions") {
-		t.Errorf("the /tasks shell's Recent row should be pending (empty), got: %s", row)
+	// Control: the shell (/tasks) draws no switcher at all, so the rows above
+	// are the session page's own.
+	if _, tasks := mirrorGet(t, s, ts, "/tasks"); strings.Contains(tasks, `id="switcher-list-recent"`) {
+		t.Error("the /tasks shell draws a session switcher")
 	}
 }
 

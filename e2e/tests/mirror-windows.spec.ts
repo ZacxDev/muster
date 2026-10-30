@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
-import { test, expect, takeNew } from '../lib/fixtures';
+import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, password, repoRoot, versionTerm, windowsPort } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
@@ -18,8 +18,9 @@ import { writeFileAtomic } from '../lib/atomic';
 // The host is the operator's own shape: session `scratch2` (codename Gold) has
 // three windows — a shell at index 1, Claude Code at index 8 (its ACTIVE
 // window), Claude Code at index 11 — and session `solo` has one, opencode. With
-// one card per session that host showed two cards and reached two windows; the
-// other two were unreachable.
+// one entry per session that host showed two entries and reached two windows;
+// the other two were unreachable. Each window is a row of the sidebar's list of
+// agents (the retired Agents list's card).
 //
 // Each test runs at a phone's size (390×844, touch) and at a desktop's.
 
@@ -73,8 +74,10 @@ function writeWindows(ws: Win[]) {
 const q = (w: Win) => `host=${encodeURIComponent(host)}&session=${encodeURIComponent(w.session)}&window=${encodeURIComponent(w.id)}`;
 const viewPath = (w: Win) => '/mirror/view?' + q(w);
 const termPath = (w: Win) => '/mirror/terminal?' + q(w);
-const cards = (page: Page) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge][aria-label="Mirrored · ${host}"])`);
-const cardOf = (page: Page, href: string) => page.locator(`#agents-list article[data-mirror-card]:has(a[href="${href}"])`);
+// This host's rows in the sidebar's list, in its order; one row by the page it opens.
+const cards = (page: Page) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="host=${encodeURIComponent(host)}&"]`);
+const cardOf = (page: Page, href: string) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href="${href}"]`);
+const names = (page: Page) => cards(page).evaluateAll((els) => els.map((e) => e.getAttribute('title')));
 const screen = (page: Page) => page.locator('#term .xterm-rows');
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
 
@@ -141,12 +144,24 @@ async function noHorizontalScroll(page: Page) {
   expect(sw, 'document scrollWidth').toBeLessThanOrEqual(cw);
 }
 
+// openList opens the sidebar the way a person does, on a page of its own (the
+// board) — on a phone its hamburger opens the drawer, whose list loads on that
+// open; at a desktop width it is the rail — and waits for this host's rows.
+// The partial is polled first, so the page opens on a list that already
+// holds them.
 async function openList(page: Page, want: number) {
   await login(page);
-  await page.goto(origin + '/agents');
-  await expect(cards(page), `this host's cards (muster-mirror log:\n${mirrorLog})`).toHaveCount(want, { timeout: 20_000 });
-  // A window that registered after the first paint waits behind the pill.
-  await takeNew(page);
+  await expect
+    .poll(async () => (await (await page.request.get(origin + '/ui/nav/agents')).text()).split(`host=${encodeURIComponent(host)}&amp;`).length - 1, {
+      message: `this host's rows (muster-mirror log:\n${mirrorLog})`,
+      timeout: 20_000,
+    })
+    .toBe(want);
+  await page.goto(origin + '/tasks');
+  const open = page.locator('#sidebar-open');
+  if (await open.isVisible()) await open.click();
+  await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
+  await expect(cards(page), `this host's rows (muster-mirror log:\n${mirrorLog})`).toHaveCount(want, { timeout: 20_000 });
 }
 
 for (const vp of [
@@ -162,66 +177,53 @@ for (const vp of [
     });
 
     // 🔴 A REGRESSION TEST for "I only see a handful": on the commit before
-    // per-window registration this host draws TWO cards (one per session), so
-    // the count of four fails there — and the two windows that are not their
-    // session's active one have no card to open at all.
-    test('every window is a card of its own, named <codename>:<index>, most recently active first', async ({ page }) => {
+    // per-window registration this host draws TWO entries (one per session),
+    // so the count of four fails there — and the two windows that are not
+    // their session's active one have no entry to open at all.
+    test('every window is a row of its own, named <codename>:<index>, most recently active first', async ({ page }) => {
       await openList(page, 4);
       const eleven = cardOf(page, viewPath(elevenWin));
       const eight = cardOf(page, viewPath(eightWin));
       const shell = cardOf(page, termPath(shellWin));
       const solo = cardOf(page, termPath(soloWin));
 
-      // Named by codename and the window's OWN index; a session with no
-      // codename is <session>:<index>.
-      await expect(eleven.locator('[data-mirror-label]')).toHaveText('Gold:11');
-      await expect(eight.locator('[data-mirror-label]')).toHaveText('Gold:8');
-      await expect(shell.locator('[data-mirror-label]')).toHaveText('Gold:1');
-      // 🔴 The raw tmux session name is NOT drawn on a labelled card (an
+      // Named by codename and the window's OWN index (the row's text, and
+      // its title: the whole label); a session with no codename is
+      // <session>:<index>.
+      for (const [c, label] of [[eleven, 'Gold:11'], [eight, 'Gold:8'], [shell, 'Gold:1'], [solo, 'solo:3']] as const) {
+        await expect(c).toHaveText(label);
+        await expect(c).toHaveAttribute('title', label);
+      }
+      // 🔴 The raw tmux session name is NOT drawn on a labelled row (an
       // operator ask: the resolved title only) — not beside the name, not
-      // anywhere in the card's text. It is the name's tooltip, and the search
-      // still finds the card by it. Red before: each card drew `scratch2`
-      // muted beside its codename.
+      // anywhere in its text. The palette still finds the row by it, and by
+      // the host's name (the row's search words).
       for (const c of [eleven, eight, shell]) {
-        await expect(c.locator('[data-mirror-session]')).toHaveCount(0);
-        expect(await c.innerText(), 'no raw session name on the card').not.toContain('scratch2');
-        await expect(c.locator('[data-mirror-name]')).toHaveAttribute('title', 'tmux session scratch2');
+        expect(await c.innerText(), 'no raw session name on the row').not.toContain('scratch2');
+        expect((await c.getAttribute('data-switcher-words'))!.split(' '), 'the palette finds it by its tmux session').toContain('scratch2');
       }
-      await expect(solo.locator('[data-mirror-name]')).toHaveText('solo:3');
-      await expect(solo.locator('[data-mirror-label]')).toHaveCount(0);
-
-      // What runs in each.
-      await expect(eleven.locator('[data-mirror-claude]')).toContainText('Claude Code');
-      await expect(eight.locator('[data-mirror-claude]')).toContainText('Claude Code');
-      await expect(shell.locator('[data-mirror-kind]')).toContainText('shell');
-      await expect(solo.locator('[data-mirror-kind]')).toContainText('opencode');
-      // The host is spelled in the card's BODY (a chip beside the name), and
-      // not in its footer. Red before: "host <name>" was the footer's.
       for (const c of [eleven, eight, shell, solo]) {
-        await expect(c.locator('[data-card-slot="header"] [data-mirror-host]')).toHaveText(host);
-        await expect(c.locator('[data-card-slot="header"] [data-card-host]')).toHaveAttribute('data-card-host', host);
-        await expect(c.locator('[data-card-slot="footer"]')).not.toContainText(host);
+        expect((await c.getAttribute('data-switcher-words'))!.split(' ').pop(), 'the palette finds it by its host').toBe(host.toLowerCase());
       }
+      // What a row opens: a Claude Code window its Rendered view, any other
+      // window its terminal (the cardOf hrefs above, each found once).
 
       // One flat list, most recently active first — two windows of ONE session
       // sit either side of another session's.
-      const order = await cards(page).evaluateAll((els) =>
-        els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent),
-      );
-      expect(order).toEqual(['Gold:11', 'solo:3', 'Gold:8', 'Gold:1']);
+      expect(await names(page)).toEqual(['Gold:11', 'solo:3', 'Gold:8', 'Gold:1']);
 
       await noHorizontalScroll(page);
       for (const c of [eleven, solo]) {
         const b = (await c.boundingBox())!;
-        expect(b.x + b.width, 'the card fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+        expect(b.x + b.width, 'the row fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
       }
 
-      // Live, with no reload: a window is renumbered (its card follows, same
-      // element), and another closes (its card goes).
+      // Live, with no reload: a window is renumbered (its row follows, same
+      // element), and another closes (its row goes).
       const id = await eleven.getAttribute('id');
       writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin]);
-      await expect(eleven.locator('[data-mirror-label]'), `the card follows the renumbering (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
-      expect(await eleven.getAttribute('id'), 'a renumbered window is the SAME card: its address is the window id, not the index').toBe(id);
+      await expect(eleven, `the row follows the renumbering (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
+      expect(await eleven.getAttribute('id'), 'a renumbered window is the SAME row: its address is the window id, not the index').toBe(id);
       writeWindows([eightWin, { ...elevenWin, index: 2 }, soloWin]);
       await expect(cards(page)).toHaveCount(3, { timeout: 20_000 });
       await expect(shell).toHaveCount(0);
@@ -231,7 +233,7 @@ for (const vp of [
     // ITS transcript, and a message sent from it reaches ITS pane.
     test('a non-active Claude Code window opens its own rendered view, and Send reaches that window', async ({ page }) => {
       await openList(page, 4);
-      await cardOf(page, viewPath(elevenWin)).locator('a').first().click();
+      await cardOf(page, viewPath(elevenWin)).click();
       await page.waitForURL((u) => u.pathname === '/mirror/view');
       expect(new URL(page.url()).searchParams.get('window'), 'opened by the window id').toBe('@9');
       await expect(page.locator('header h1')).toContainText('Gold:11');
@@ -261,7 +263,7 @@ for (const vp of [
 
     test('a non-active window that is not Claude Code opens its own terminal, and Send reaches that window', async ({ page }) => {
       await openList(page, 4);
-      await cardOf(page, termPath(shellWin)).locator('a').first().click();
+      await cardOf(page, termPath(shellWin)).click();
       await page.waitForURL((u) => u.pathname === '/mirror/terminal');
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4 mode=rw');
       await expect(page.locator('#term-status')).toHaveText('Connected');
@@ -281,103 +283,37 @@ for (const vp of [
     // this spec's tests of its words, field tokens and ?q=. What they also
     // pinned about the LIST itself is kept here.
 
-    // 🔴 THE LIST REFRESHES ITSELF and opens no socket per card: a window is
-    // renumbered (a card's text changes) and a new one appears; the new one
-    // waits behind the pill, and nothing reloads.
-    test('the list refreshes itself under a host tab, holds an arrival behind the pill, and opens no socket per card', async ({ page }) => {
+    // 🔴 THE LIST REFRESHES ITSELF and opens no socket per row: a window is
+    // renumbered (a row's text changes) and a new one appears, and nothing
+    // reloads. (The retired Agents list held an arrival behind an "N new ↑"
+    // pill under a host tab; the sidebar has neither, and draws it at once.)
+    test('the sidebar refreshes itself and opens no socket per row', async ({ page }) => {
       const sockets: string[] = [];
       page.on('websocket', (ws) => sockets.push(ws.url()));
       await openList(page, 4);
-      const press = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
-      const count = page.locator('#agents-count');
-      const visible = () => cards(page).filter({ visible: true });
-      const names = async () =>
-        (await visible().evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
-      const all = await page.locator('#agents-list > article').count();
-      await expect(count).toHaveText(`${all} of ${all}`);
-      // This host's tab: its windows only.
-      await press(page.locator(`#agents-hosts [role="tab"][data-host="${host}"]`));
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-      await expect(count).toHaveText(`4 of ${all}`);
+      const sorted = async () => (await names(page)).sort();
+      expect(await sorted()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
       const marked = await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
       expect(marked).toBe(1);
       const twelve: Win = { session: 'scratch2', id: '@12', index: 12, active: false, command: 'zsh', activity: now - 30 };
       writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin, twelve]);
-      await expect(cardOf(page, viewPath(elevenWin)).locator('[data-mirror-label]'), `the list refreshed (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
-      // The new window lands above the cards in view: it waits behind the pill,
-      // uncounted, and a tap draws it.
-      await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${termPath(twelve)}"])`)).toHaveCount(1, { timeout: 20_000 });
-      await expect(cardOf(page, termPath(twelve))).toBeHidden();
-      await expect(count).toHaveText(`4 of ${all}`);
-      await page.locator('#agents-new-pill').click();
-      await expect(cardOf(page, termPath(twelve))).toBeVisible();
-      expect(await names()).toEqual(['Gold:1', 'Gold:12', 'Gold:2', 'Gold:8', 'solo:3']);
-      await expect(count).toHaveText(`5 of ${all + 1}`);
+      await expect(cardOf(page, viewPath(elevenWin)), `the list refreshed (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
+      await expect(cardOf(page, termPath(twelve))).toBeVisible({ timeout: 20_000 });
+      expect(await sorted()).toEqual(['Gold:1', 'Gold:12', 'Gold:2', 'Gold:8', 'solo:3']);
       expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
 
-      // A hundred cards must not mean a hundred connections: the list page
-      // opened no socket at all for its mirrored cards. (Read here, before a
-      // card is opened: its page has a socket of its own.)
-      // The one exception is WARMING (web/static/mirror-snap.js): short-lived
-      // sockets, one at a time, marked warm=1, for at most three likely-next
-      // windows — bounded whatever the number of cards.
-      expect(sockets.filter((u) => u.includes('/mirror/') && !u.includes('warm=1')), 'no per-card socket').toEqual([]);
-      expect(new Set(sockets.filter((u) => u.includes('warm=1')).map((u) => new URL(u).searchParams.get('window'))).size, 'at most three warmed').toBeLessThanOrEqual(3);
-      await press(page.locator('#agents-hosts [role="tab"][data-host=""]'));
+      // A hundred rows must not mean a hundred connections: the page opened
+      // no socket at all for its mirrored rows. (Read here, before a row is
+      // opened: its page has a socket of its own.) Nor any warm socket: the
+      // board does not warm (web/static/mirror-snap.js warmable()).
+      expect(sockets.filter((u) => u.includes('/mirror/')), 'no per-row socket').toEqual([]);
       await noHorizontalScroll(page);
     });
 
-    // THE FILTER'S CONTROLS: the host is a TAB — All, "cluster" (the pod
-    // agents), this host — each with its count. The tab is the browser's
-    // (localStorage) and is NOT in the URL.
-    //
-    // 🔴 A REGRESSION TEST: on the commit before there is no #agents-hosts.
-    test('the host tabs filter, count, are exact, and survive a reload', async ({ page }) => {
-      await openList(page, 4);
-      const press = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
-      const hostTab = (h: string) => page.locator(`#agents-hosts [role="tab"][data-host="${h}"]`);
-      const count = page.locator('#agents-count');
-      const pods = page.locator('#agents-list > article:not([data-mirror-card])');
-      const names = async () =>
-        (await cards(page).filter({ visible: true }).evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
-      const all = await page.locator('#agents-list > article').count();
-      const podCount = await pods.count();
-      expect(podCount, 'the seeded pod agents are listed').toBeGreaterThanOrEqual(3);
-      await expect(count).toBeVisible();
-      await expect(count).toHaveText(`${all} of ${all}`);
-
-      // The tabs are the cards' own hosts, each counting its cards.
-      await expect.poll(() => page.locator('#agents-hosts [data-tab-label]').allTextContents(), { timeout: 20_000 }).toEqual(['All', host, 'cluster']);
-      await expect(hostTab('').locator('[data-tab-count]')).toHaveText(String(all));
-      await expect(hostTab('cluster').locator('[data-tab-count]')).toHaveText(String(podCount));
-      await expect(hostTab(host).locator('[data-tab-count]')).toHaveText('4');
-      // Thumb-friendly: each tab a 44px target (measured before any is pressed).
-      for (const t of await page.locator('#agents-hosts [role="tab"]').all()) {
-        expect((await t.boundingBox())!.height, 'a tab is a 44px target').toBeGreaterThanOrEqual(44);
-      }
-
-      // This host's tab: its windows only, and the URL is left alone.
-      await press(hostTab(host));
-      await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true');
-      expect(new URL(page.url()).search).toBe('');
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-      await expect(pods.filter({ visible: true })).toHaveCount(0);
-      await expect(count).toHaveText(`4 of ${all}`);
-      // The cluster's tab: every pod agent, and no mirrored window.
-      await press(hostTab('cluster'));
-      await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ visible: true })).toHaveCount(0);
-      await expect(pods.filter({ visible: true })).toHaveCount(podCount);
-      await expect(count).toHaveText(`${podCount} of ${all}`);
-
-      // A reload brings back the tab (localStorage).
-      await press(hostTab(host));
-      await page.reload();
-      await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
-      await expect.poll(names, { timeout: 20_000 }).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-      await press(hostTab(''));
-      await expect(count).toHaveText(`${all} of ${all}`);
-      await noHorizontalScroll(page);
-    });
+    // (A test here pinned the retired Agents list's HOST TABS — All, "cluster",
+    // this host, each with its count, kept across a reload. The tabs are gone:
+    // the palette finds an entry by its host's name instead, pinned above on
+    // each row's search words and by switcher-search.spec.ts.)
 
     // THE COMPOSER WITHOUT ITS SCRIPT. A browser context with JavaScript OFF: the
     // page's composer script does not exist, so what is left is the form itself.
@@ -387,7 +323,7 @@ for (const vp of [
     // with `?text=…`, and nothing is sent.
     test('with no script at all, a message is typed, submitted by the browser, delivered, and the page comes back saying so', async ({ page, browser }) => {
       await login(page);
-      await expect.poll(async () => (await page.request.get(origin + '/ui/agents')).text(), { timeout: 20_000 }).toContain(`Mirrored · ${host}`);
+      await expect.poll(async () => (await page.request.get(origin + '/ui/nav/agents')).text(), { timeout: 20_000 }).toContain(`host=${encodeURIComponent(host)}&amp;`);
       const ctx = await browser.newContext({ ...vp.use, javaScriptEnabled: false });
       await ctx.addCookies(signedIn!);
       const plain = await ctx.newPage();
@@ -553,8 +489,9 @@ for (const vp of [
     // "muster only has a terminal" to a person whose Claude Code window had no
     // transcript yet. The shell window says no Claude Code was found (red at
     // origin/main: no line at all); a Claude Code window whose host says why
-    // it has no view says the host's reason on its card AND in its Terminal
-    // view; a window WITH a rendered view draws the switch and no line.
+    // it has no view says the host's reason in its Terminal view, which its
+    // sidebar row opens; a window WITH a rendered view draws the switch and no
+    // line.
     // It lists a fifth window; the next beforeEach removes it again.
     test('a terminal-only window says why in one line; a window with a rendered view does not', async ({ page }) => {
       const why = 'Claude Code has not written this conversation yet. The Rendered view appears after its first message.';
@@ -582,13 +519,13 @@ for (const vp of [
       await expect(page.locator('#view-rendered')).toBeVisible();
       await expect(page.locator('#term-only')).toHaveCount(0);
 
-      // A Claude Code window with no transcript yet: the host's reason, on its
-      // card and in its Terminal view.
+      // A Claude Code window with no transcript yet: its row opens its
+      // Terminal view, which gives the host's reason.
       writeWindows([shellWin, eightWin, elevenWin, soloWin, freshWin]);
       await openList(page, 5);
       const card = cardOf(page, termPath(freshWin));
-      await expect(card.locator('[data-mirror-note]')).toHaveText(why);
-      await card.locator('a').first().click();
+      await expect(card).toBeVisible();
+      await card.click();
       await page.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('session') === 'fresh');
       await expect(screen(page)).toContainText('FAKE-MIRROR session=fresh window=@5');
       await expect(page.locator('#term-only')).toHaveText('Terminal only. ' + why);
@@ -602,8 +539,8 @@ for (const vp of [
       await login(page);
       const old = `host=${encodeURIComponent(host)}&session=scratch2`;
       await expect
-        .poll(async () => (await page.request.get(origin + '/ui/agents')).text(), { timeout: 20_000 })
-        .toContain(`Mirrored · ${host}`);
+        .poll(async () => (await page.request.get(origin + '/ui/nav/agents')).text(), { timeout: 20_000 })
+        .toContain(`host=${encodeURIComponent(host)}&amp;`);
       await page.goto(origin + '/mirror/view?' + old);
       await page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('window') === '@7');
       await expect(page.locator('header h1')).toContainText('Gold:8');

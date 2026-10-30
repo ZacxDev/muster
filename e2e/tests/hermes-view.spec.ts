@@ -15,8 +15,10 @@ import { launchWithBfcache } from '../lib/bfcache';
 // view reads it with the real reader.
 //
 // 🔴 REGRESSION TEST. On origin/main a Hermes window has no rendered view: its
-// card opens the Terminal, /mirror/view redirects there, and the card's kind
-// is the pane's command (python3.14).
+// entry opens the Terminal, /mirror/view redirects there, and the entry's kind
+// is the pane's command (python3.14). (The entry was the Agents list's card;
+// it is the sidebar's row now, whose kind is one of the words the palette
+// finds it by.)
 
 const rig = new MirrorRig(hermesViewPort, 'e2e-hermes');
 const sid = 'local-' + 'ab'.repeat(32);
@@ -63,27 +65,31 @@ test.afterAll(async () => {
 test.use({ storageState: { cookies: [], origins: [] } });
 
 const viewOf = (window: string) => `${rig.viewPath('herm')}&window=${encodeURIComponent(window)}`;
+// A window's row in the sidebar's list.
 const card = (page: Page, window: string) =>
-  page
-    .locator('#agents-list > article[data-mirror-card]')
-    .filter({ has: page.locator(`a[href*="session=${window === '@1' ? 'plain' : 'herm'}"][href*="window=${encodeURIComponent(window)}"]`) });
+  page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="session=${window === '@1' ? 'plain' : 'herm'}"][href*="window=${encodeURIComponent(window)}"]`);
+const words = async (page: Page, window: string) => ((await card(page, window).getAttribute('data-switcher-words')) ?? '').split(' ');
 
 test('a Hermes window opens a read-only rendered view of its conversation, live', async ({ page }) => {
   await rig.login(page);
   await rig.waitListed(page, 'herm');
-  await page.goto(rig.origin + '/agents');
+  // The sidebar (a phone: its drawer, whose list loads as it opens).
+  await page.goto(rig.origin + '/tasks');
+  await page.locator('#sidebar-open').click();
 
-  // The card with a session opens the rendered view; the stale one, the Terminal.
-  await expect(card(page, '@2').locator('a[href*="/mirror/view?"]')).toHaveCount(1);
-  await expect(card(page, '@3').locator('a[href*="/mirror/terminal?"]')).toHaveCount(1);
-  // Both are Hermes cards — the kind chip, never the pane's command — and
-  // carry it as their kind field.
+  // The row with a session opens the rendered view; the stale one, the Terminal.
+  await expect(card(page, '@2')).toHaveAttribute('href', /^\/mirror\/view\?/);
+  await expect(card(page, '@3')).toHaveAttribute('href', /^\/mirror\/terminal\?/);
   // This host lists exactly three windows: the plain shell and the two Hermes.
-  const hostCards = page.locator(`#agents-list > article[data-mirror-card][data-f-host="${rig.host}"]`);
+  const hostCards = page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="host=${encodeURIComponent(rig.host)}&"]`);
   await expect(hostCards).toHaveCount(3);
-  await expect(card(page, '@1').locator('[data-mirror-kind]')).toContainText('shell');
-  for (const w of ['@2', '@3']) await expect(card(page, w).locator('[data-mirror-kind]')).toContainText('Hermes');
-  await expect(page.locator(`#agents-list > article[data-mirror-card][data-f-host="${rig.host}"][data-f-kind="hermes"]`)).toHaveCount(2);
+  // Both are Hermes windows — their kind, never the pane's command — and the
+  // shell is a shell.
+  expect(await words(page, '@1'), 'the shell window\'s kind').toContain('shell');
+  for (const w of ['@2', '@3']) {
+    expect(await words(page, w), `${w}'s kind`).toContain('hermes');
+    expect(await words(page, w), `${w}: not the pane's command`).not.toContain('python3.14');
+  }
 
   await page.goto(rig.origin + viewOf('@2'));
   await expect(page).toHaveURL(/\/mirror\/view\?/);

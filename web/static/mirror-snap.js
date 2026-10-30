@@ -29,7 +29,7 @@
 // a 404) before its first batch DISCARDS the snapshot — removed from the page
 // and from storage — rather than leaving it on screen as if it were current.
 //
-// WARMING: on the Agents list and on agent pages, the likely-next windows
+// WARMING: on agent pages and rendered views, the likely-next windows
 // (pinned, recently viewed, and this browser's own recent snapshots; at most
 // WARM_MAX, one socket at a time) are refreshed in an idle callback by
 // opening their transcript SOCKET — never their page. The socket (GET /mirror/view/ws) records no visit
@@ -89,7 +89,7 @@
 
   // refOf is the mirrored window a rendered view's page or socket path names
   // ({host, session, window}), or null for any other path. Decoded rather than
-  // compared as text, so a card's link and the page's socket agree however
+  // compared as text, so a sidebar row's link and the page's socket agree however
   // each was encoded.
   function refOf(path) {
     if (typeof path !== 'string') return null;
@@ -349,13 +349,13 @@
     try { return root.top !== root; } catch (e) { return true; }
   }
 
-  // warmable: this page warms (the Agents list or an agent page), and now.
+  // warmable: this page warms (an agent page or a rendered view), and now.
   function warmable() {
     if (!enabled || document.hidden || frugal() || framed()) return false;
     var p = location.pathname;
     // (Not "/": a signed-in "/" redirects to the chief's page, which is an
     // /agents/ path; the shell drawn at "/" is only the offline copy.)
-    return p === '/agents' || p.indexOf('/agents/') === 0 || p === '/mirror/view';
+    return p.indexOf('/agents/') === 0 || p === '/mirror/view';
   }
 
   // here is the window this page shows, when it is a rendered view.
@@ -517,7 +517,7 @@
       if (Date.now() - lastWarm >= WARM_EVERY_MS) setTimeout(function () { idle(warmPass); }, 500);
     });
     // 🔴 A WARM STILL OPEN AS THE PAGE GOES INTO THE BACK/FORWARD CACHE EVICTS
-    // IT: measured (Chromium 153), the Agents list left mid-warm was reloaded
+    // IT: measured (Chromium 153), the (since retired) Agents list left mid-warm was reloaded
     // by Back 3 times in 3 (CDP: IgnoreEventAndEvict) — leaving does not
     // reliably fire visibilitychange first, so the stop above may not run. A
     // page that may be kept aborts its warm here, storing nothing; the next

@@ -61,7 +61,9 @@ func TestTurningTheChiefOnCreatesItAndARefusedCreateLeavesItOff(t *testing.T) {
 	if got := state(); got != "off" {
 		t.Fatalf("a member with no chief: Account reads %q, want off", got)
 	}
-	if got := home(); got != "/agents" {
+	// No chief: home is not the chief's page (it opens the member's own last
+	// session; the Agents list page it used to open is retired).
+	if got := home(); got == "" || strings.HasPrefix(got, "/agents/"+slug) {
 		t.Fatalf("a member with no chief: GET / → %q", got)
 	}
 
@@ -106,7 +108,7 @@ func TestTurningTheChiefOnCreatesItAndARefusedCreateLeavesItOff(t *testing.T) {
 	if chose, on := stored(w.b.uid); !chose || on {
 		t.Fatalf("off stored chose=%v on=%v", chose, on)
 	}
-	if got := home(); got != "/agents" {
+	if got := home(); got == "" || strings.HasPrefix(got, "/agents/"+slug) {
 		t.Errorf("off: GET / → %q", got)
 	}
 	if n := agentCount(); n != 1 {

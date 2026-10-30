@@ -30,8 +30,9 @@ import (
 //     `chief ask`, a session's chief_ask, the panel, threads — answers
 //     ErrChiefOff, which is an ErrNoChief, so every one of those paths takes
 //     the branch it already had for "no chief";
-//   - `/` opens the Agents list, and the agents list and sidebar leave the
-//     chief out (homeTarget, agentsListCardsLive);
+//   - `/` does not open it (home falls back to the session opened last), and
+//     the sidebar and the session switcher leave the chief out (homeTarget,
+//     agentsListCardsLive);
 //   - a mention's ask is raised by muster, not the chief (mentionAsker);
 //   - the chief agent is offered none of its chief-only tools, and a call to
 //     one is refused (toolsFor, dispatchAgentTool), so a chief that is still

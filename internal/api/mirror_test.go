@@ -269,8 +269,9 @@ func mirrorGet(t *testing.T, s *Server, ts *httptest.Server, path string) (*http
 var mainPage = ui.MirrorTerminalPath("ws", "main")
 
 // TestTheMirrorPluginOffIsInvisible: with Extensions.Mirror nil every mirror
-// route 404s and the Agents view draws no mirrored card — and the SAME requests
-// with the plugin on reach it (the control that makes each 404 the off-state).
+// route 404s and the sidebar (where agents are listed since the Agents list
+// page was retired) draws no mirrored row — and the SAME requests with the
+// plugin on reach it (the control that makes each 404 the off-state).
 func TestTheMirrorPluginOffIsInvisible(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		var m Mirror
@@ -284,12 +285,12 @@ func TestTheMirrorPluginOffIsInvisible(t *testing.T) {
 		if resp, _ := mirrorGet(t, s, ts, mainPage); resp.StatusCode != map[bool]int{false: 404, true: 200}[on] {
 			t.Errorf("on=%v: the mirror terminal page = %d", on, resp.StatusCode)
 		}
-		_, list := mirrorGet(t, s, ts, "/ui/agents")
-		if got := strings.Contains(list, "data-mirror-card"); got != on {
-			t.Errorf("on=%v: a mirrored card is drawn = %v", on, got)
+		_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+		if got := strings.Contains(list, `data-nav-agent="mirror"`); got != on {
+			t.Errorf("on=%v: a mirrored row is drawn = %v", on, got)
 		}
 		if !strings.Contains(list, plainName) {
-			t.Errorf("on=%v: the gateway agent vanished from /ui/agents", on)
+			t.Errorf("on=%v: the gateway agent vanished from the sidebar", on)
 		}
 	}
 	s, ts := mirrorServer(t, nil, newFakeTerminal())
@@ -298,48 +299,55 @@ func TestTheMirrorPluginOffIsInvisible(t *testing.T) {
 	}
 }
 
-// mirrorCardOf is the mirrored card for session in the list markup.
-func mirrorCardOf(t *testing.T, markup, session string) string {
+// mirrorRowOf is the sidebar row (its whole <a>) of session's entry on host ws
+// in a GET ui.NavAgentsPath answer.
+func mirrorRowOf(t *testing.T, markup, session string) string {
 	t.Helper()
 	marker := `href="` + strings.ReplaceAll(ui.MirrorTerminalPath("ws", session), "&", "&amp;") + `"`
 	i := strings.Index(markup, marker)
 	if i < 0 {
-		t.Fatalf("no mirrored card for %s (%s) in:\n%s", session, marker, markup)
+		t.Fatalf("no mirrored row for %s (%s) in:\n%s", session, marker, markup)
 	}
-	start := strings.LastIndex(markup[:i], "<article")
+	start := strings.LastIndex(markup[:i], "<a ")
 	rest := markup[start:]
-	if j := strings.Index(rest, "</article>"); j >= 0 {
+	if j := strings.Index(rest, "</a>"); j >= 0 {
 		rest = rest[:j]
 	}
 	return rest
 }
 
-// TestAMirroredSessionIsACardOfItsOwnNotAnAgent: badged "Mirrored · ws",
-// "offline" exactly while the host is not serving it, a status dot from the
-// host, a link to its terminal — and NO agent menu (nothing to start, stop or
-// delete). The gateway card beside it is unchanged.
+// TestAMirroredSessionIsACardOfItsOwnNotAnAgent: a mirrored session is an
+// entry of its own — a sidebar row (data-nav-agent="mirror") linking its
+// terminal, "offline" exactly while the host is not serving it, and its page
+// badged "Mirrored · ws", saying "offline" too (#term-host-note) — and NO agent
+// menu anywhere (nothing to start, stop, rename or delete). The gateway
+// agent's row beside it is unchanged. (The retired list card drew a status
+// dot from the host; neither the row nor the page draws one.)
 func TestAMirroredSessionIsACardOfItsOwnNotAnAgent(t *testing.T) {
 	for _, online := range []bool{false, true} {
 		s, ts := mirrorServer(t, &fakeMirror{online: online}, newFakeTerminal())
-		_, list := mirrorGet(t, s, ts, "/ui/agents")
-		card := mirrorCardOf(t, list, "main")
-		if !strings.Contains(card, "data-mirror-badge") || !strings.Contains(card, "Mirrored · ws") {
-			t.Errorf("online=%v: no Mirrored · ws badge:\n%s", online, card)
+		_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+		row := mirrorRowOf(t, list, "main")
+		if !strings.Contains(row, `data-nav-agent="mirror"`) {
+			t.Errorf("online=%v: the row is not a mirrored entry:\n%s", online, row)
 		}
-		if got := strings.Contains(card, "data-mirror-offline"); got == online {
-			t.Errorf("online=%v: offline badge drawn = %v", online, got)
+		if got := strings.Contains(row, "data-nav-offline"); got == online {
+			t.Errorf("online=%v: the row's offline mark drawn = %v", online, got)
 		}
-		want := map[bool]string{false: "stopped", true: "running"}[online]
-		if !strings.Contains(card, `aria-label="Status: `+want+`"`) {
-			t.Errorf("online=%v: status is not %s:\n%s", online, want, card)
+		_, page := mirrorGet(t, s, ts, mainPage)
+		if !strings.Contains(page, "data-term-badge") || !strings.Contains(page, "Mirrored · ws") {
+			t.Errorf("online=%v: the page has no Mirrored · ws badge", online)
+		}
+		if got := strings.Contains(page, "data-mirror-offline"); got == online {
+			t.Errorf("online=%v: the page's offline note drawn = %v", online, got)
 		}
 		for _, agentOnly := range []string{"Agent actions", "/start", "/stop", "hx-delete", "Rename agent"} {
-			if strings.Contains(card, agentOnly) {
-				t.Errorf("online=%v: a mirrored card carries the agent control %q", online, agentOnly)
+			if strings.Contains(row, agentOnly) || strings.Contains(page, agentOnly) {
+				t.Errorf("online=%v: a mirrored entry carries the agent control %q", online, agentOnly)
 			}
 		}
-		if !strings.Contains(list, `id="agent-8"`) || !strings.Contains(list, "/agents/8/start") {
-			t.Errorf("control: the gateway card changed")
+		if !strings.Contains(list, `id="nav-agent-8"`) || !strings.Contains(list, `href="/agents/plain-otter"`) {
+			t.Errorf("control: the gateway agent's row changed")
 		}
 	}
 }
@@ -370,8 +378,11 @@ func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.
 			}
 		}
 		wantWS := strings.ReplaceAll(ui.MirrorTerminalWSPath("ws", "main"), "&", "&amp;")
-		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="/agents"`) {
-			t.Errorf("the page does not point at the mirror socket / back to the list")
+		// Home LEAVING this window (ui.HomeLeavingMirrorPath): bare home would
+		// be this very window, the session opened last.
+		wantBack := strings.ReplaceAll(ui.HomeLeavingMirrorPath(ui.MirrorRef{Host: "ws", Session: "main"}), "&", "&amp;")
+		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="`+wantBack+`" aria-label="Back`) {
+			t.Errorf("the page does not point at the mirror socket / back home leaving the window (want %s)", wantBack)
 		}
 	}
 }

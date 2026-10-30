@@ -1,7 +1,9 @@
 # Design: live work counts and tmux identity colours on agent cards
 
 **Status: (a) built for mirrored and dispatched cards, (b) for mirrored cards;
-parts deferred; (c) deferred.**
+parts deferred; (c) deferred.** The Agents list page and its cards have since
+been retired: the work counts are on each sidebar row and a dispatched agent's
+page, and the identity colour is the sidebar row's left edge.
 The operator settled every open question; the decisions are recorded under
 [Operator decisions](#operator-decisions), and the sections on (a) and (b)
 describe the design as decided. What is built, and what is not:

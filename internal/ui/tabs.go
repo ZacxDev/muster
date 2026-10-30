@@ -40,8 +40,8 @@ type TabSet struct {
 	Panels g.Node
 }
 
-// tabClass is a tab's look, shared by every tablist in the app (Tabs here, and
-// the Agents list's host tabs, agentsHostTabs). The selected tab is underlined
+// tabClass is a tab's look, shared by every tablist in the app (Tabs here; the
+// retired Agents list's host tabs used it too). The selected tab is underlined
 // in the accent; every tab carries the border (transparent), so selecting one
 // moves nothing. It is styled by aria-selected, so a script that sets the
 // attribute restyles the tab with no class of its own.

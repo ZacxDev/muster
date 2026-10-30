@@ -231,7 +231,7 @@ func TestMoreHoldsThePagesWithTheAsksCountOnItsHeader(t *testing.T) {
 	for _, tb := range visibleTabs(navFeatures) {
 		pages = append(pages, `data-tab="`+tb.Key+`"`)
 	}
-	if len(pages) < 7 {
+	if len(pages) < 6 {
 		t.Fatalf("CONTROL: only %d pages to look for", len(pages))
 	}
 	for name, doc := range navDocuments() {

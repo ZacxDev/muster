@@ -2,7 +2,6 @@ package api
 
 import (
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -119,29 +118,20 @@ func TestTheCardBadgesAreTheQueuesItems(t *testing.T) {
 		t.Fatal("instrument check: the answered ask is not in the Answered listing")
 	}
 
-	// The list draws them: each card its own badge, a link to the queue item.
-	list := f.page(t, "/ui/agents")
-	opCard := articleWithID(t, list, "agent-"+strconv.FormatInt(f.op.ID, 10))
-	if !strings.Contains(opCard, `href="/attention#`+attentionAskKey(opOld)+`"`) || !strings.Contains(opCard, `data-kind="ask" data-count="2"`) {
-		t.Fatalf("op's card does not carry its badge:\n%s", opCard)
+	// The sidebar draws them (the retired list's cards did): each row its own
+	// count and kind. (The card's badge was a link to the queue item; a row's
+	// count is not — the row is itself the link to the session.)
+	nav := f.page(t, ui.NavAgentsPath)
+	opRow := navRow(t, nav, agentNavID(f.op.ID))
+	if !strings.Contains(opRow, `data-nav-attention="" data-kind="ask" data-count="2"`) {
+		t.Fatalf("op's sidebar row does not carry its count:\n%s", opRow)
 	}
-	if n := strings.Count(list, "data-attention-badge"); n != 5 {
-		t.Fatalf("%d badges on the list, want 5 (op, op2, @1, @2, @3)", n)
+	if op2Row := navRow(t, nav, agentNavID(f.op2.ID)); !strings.Contains(op2Row, `data-nav-attention="" data-kind="ask" data-count="1"`) {
+		t.Fatalf("op2's sidebar row does not carry its count:\n%s", op2Row)
 	}
-}
-
-// articleWithID is the <article id="id"> element of markup.
-func articleWithID(t *testing.T, markup, id string) string {
-	t.Helper()
-	i := strings.Index(markup, `<article id="`+id+`"`)
-	if i < 0 {
-		t.Fatalf("no card %s in:\n%s", id, markup)
+	if n := strings.Count(nav, "data-nav-attention"); n != 5 {
+		t.Fatalf("%d counts in the sidebar, want 5 (op, op2, @1, @2, @3)", n)
 	}
-	rest := markup[i:]
-	if j := strings.Index(rest, "</article>"); j >= 0 {
-		rest = rest[:j]
-	}
-	return rest
 }
 
 // TestEveryAttentionKindHasABadgeIcon: a kind a card counts with no icon would

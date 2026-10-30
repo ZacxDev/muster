@@ -170,19 +170,22 @@ func TestAClaudePanesCardOpensTheRenderedViewAndOthersTheTerminal(t *testing.T) 
 			fm.v2 = &fakeMirrorV2{}
 		}
 		s, ts := viewServer(t, fm)
-		_, list := mirrorGet(t, s, ts, "/ui/agents")
+		// The sidebar's rows (where the retired list's cards went).
+		_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
 		wantMain := ui.MirrorTerminalPath("ws", "main")
 		if v2 {
 			wantMain = ui.MirrorViewPath("ws", "main")
 		}
 		if !strings.Contains(list, `href="`+amp(wantMain)+`"`) {
-			t.Errorf("v2=%v: main's card does not open %s:\n%s", v2, wantMain, list)
+			t.Errorf("v2=%v: main's row does not open %s:\n%s", v2, wantMain, list)
 		}
 		if !strings.Contains(list, `href="`+amp(ui.MirrorTerminalPath("ws", "chief"))+`"`) {
-			t.Errorf("v2=%v: a non-Claude session's card does not open its terminal", v2)
+			t.Errorf("v2=%v: a non-Claude session's row does not open its terminal", v2)
 		}
-		if got := strings.Count(list, "data-mirror-claude"); got != map[bool]int{true: 1, false: 0}[v2] {
-			t.Errorf("v2=%v: %d Claude Code badges", v2, got)
+		// A Claude pane is found as one (its row's palette words; the card's
+		// "Claude Code" badge has no successor on the row).
+		if got := strings.Count(list, `data-switcher-words="claude code `); got != map[bool]int{true: 1, false: 0}[v2] {
+			t.Errorf("v2=%v: %d rows found as Claude Code", v2, got)
 		}
 	}
 }

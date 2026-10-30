@@ -60,7 +60,7 @@ async function agentNames(): Promise<Set<string>> {
 // the dispatch sheet's layout at each width is not part of this spec.
 async function newAgent(page: Page, note: string): Promise<string> {
   const before = await agentNames();
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await sheet.locator('[data-kind-option="claude-code"]').click();
@@ -70,6 +70,8 @@ async function newAgent(page: Page, note: string): Promise<string> {
   expect((await resp).status()).toBe(200);
   const created = [...(await agentNames())].filter((n) => !before.has(n));
   expect(created.length, 'exactly one agent created').toBe(1);
+  // The sheet's answer sends the page to the new agent's own page.
+  await page.waitForURL((u) => u.pathname === '/agents/' + created[0]);
   return created[0];
 }
 

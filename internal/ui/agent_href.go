@@ -34,8 +34,8 @@ const (
 	FromListValue = "list"
 )
 
-// AgentListHref is a list's link to an agent (a card, a pinned chip, a Recent
-// entry, a task card's Open chat): AgentSessionHref on the session that was the
+// AgentListHref is a list's link to an agent (a sidebar row, a switcher pill,
+// home's target, a task card's Open chat): AgentSessionHref on the session that was the
 // agent's latest when the list was drawn, marked &from=list.
 //
 // 🔴 THE MARKER IS WHAT KEEPS THE ONE-HOP LINK FROM GOING STALE. The bare URL

@@ -65,10 +65,10 @@ func TestNoShellDocumentRendersARemovedSurface(t *testing.T) {
 	for _, feat := range []Features{{}, {Connectors: true}} {
 		for _, tab := range visibleTabs(feat) {
 			doc := renderString(t, Page(tab.Key, feat))
-			// Positive control: the shell does mount the agents list, so an empty
+			// Positive control: the shell does mount the task board, so an empty
 			// or truncated render cannot pass the absence checks.
-			if !strings.Contains(doc, `hx-get="/ui/agents"`) {
-				t.Fatalf("Page(%q) does not mount /ui/agents; this render is not the shell", tab.Key)
+			if !strings.Contains(doc, `hx-get="/ui/tasks"`) {
+				t.Fatalf("Page(%q) does not mount /ui/tasks; this render is not the shell", tab.Key)
 			}
 			assertNoRemovedMarkers(t, "Page("+tab.Key+")", doc)
 		}

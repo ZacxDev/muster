@@ -1,7 +1,9 @@
 # Design: start a tmux-backed session on a host from muster
 
 **Status: proposed; the design's decisions are made** (by the operator; see
-[decisions](#decisions)). **Nothing here is implemented.**
+[decisions](#decisions)). **Nothing here is implemented.** The Agents list page
+it places the **New session** button on has since been retired; that button's
+home would be the sidebar, beside its dispatch **+**.
 Every other section is the recommended design. This page proposes letting
 the operator start a **new** session on one of their own machines from muster
 (the web UI and the PWA now, the Android shell later). The session is a real

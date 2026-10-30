@@ -1,10 +1,10 @@
 // Package mirror is the server half of MIRRORED sessions: tmux sessions that live
 // on an operator's own machines (a workstation, a laptop) and appear in muster's
-// Agents view beside its provisioned agents, so the view is complete.
+// sidebar and session switcher beside its provisioned agents, so the list is complete.
 //
 // 🔴 A MIRRORED SESSION IS NOT AN AGENT. Nothing about it is persisted: the hub
 // holds each connected host's session list IN MEMORY, keyed by the host's token
-// OWNER and host name, and the Agents view renders it from there. No agents row,
+// OWNER and host name, and the sidebar renders it from there. No agents row,
 // no kind, no chat, no lifecycle — so it can never be dispatched, deleted,
 // chatted with, or mistaken for an agent by name (a tmux session named "chief"
 // is not the chief). The only table is mirror_tokens (migration 0008).
@@ -490,8 +490,8 @@ type Window struct {
 	// (muster then shows "<session>:<index>").
 	Label string `json:"label,omitempty"`
 	// Activity is when the window was last active (Unix seconds, floored to
-	// ActivityBucket); 0 = unknown. Ordering and display only (the card's
-	// "active … ago").
+	// ActivityBucket); 0 = unknown. Ordering and display only (the sidebar
+	// row's recency dot).
 	Activity int64 `json:"activity,omitempty"`
 	// Claude: the window's active pane runs Claude Code with a transcript the
 	// host can read — it has a rendered view.
@@ -629,8 +629,8 @@ type Window struct {
 	LiveCopy string `json:"liveCopy,omitempty"`
 }
 
-// CardActivity is the window's activity as the Agents list uses it — the
-// order, the card's "active … ago" and the Idle section, one number: a Claude
+// CardActivity is the window's activity as the sidebar and the switcher use
+// it — the order, the recency dot and the Idle section, one number: a Claude
 // window's LastMessage when the host reported one, else Activity.
 func (w Window) CardActivity() int64 {
 	if w.Claude && w.LastMessage > 0 {
@@ -949,8 +949,8 @@ func NormalizeLabels(labels map[string]string, sessions []string) map[string]str
 //
 // 🔴 IT IS THE RE-SEND AND RE-ORDER POLICY, NOT A ROUNDING NICETY. A busy pane's
 // raw activity time moves every second; sent raw, every refresh would differ,
-// every one would be re-sent, and two busy sessions would swap places on the
-// Agents view each time. Floored, a host's map changes at most once per bucket
+// every one would be re-sent, and two busy sessions would swap places in the
+// sidebar each time. Floored, a host's map changes at most once per bucket
 // per session, sessions active within the same bucket TIE (and keep their
 // name order), and the list reorders only when a session falls a whole bucket
 // behind another.

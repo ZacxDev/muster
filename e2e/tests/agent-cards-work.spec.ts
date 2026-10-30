@@ -7,25 +7,29 @@ import { MirrorRig, cc } from '../lib/mirrorhost';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
 
-// LIVE WORK COUNTS AND THE TMUX IDENTITY COLOUR ON MIRRORED CARDS
-// (docs/design/agent-cards.md (a) and (b)), every hop real: a real
-// muster-mirror (-tags e2emirror) whose fake windows carry what the real host
-// reads — a Claude Code window's RAW session status, its process-tree shells
-// and a real transcript the host's ledger reads for running Agent calls, and
-// each window's @muster-color value — over the real tunnel to a real server.
+// LIVE WORK COUNTS AND THE TMUX IDENTITY COLOUR, ON THE SIDEBAR'S ROWS
+// (docs/design/agent-cards.md (a) and (b); the Agents list's cards carried them
+// until the list page was retired — internal/ui/nav_agents.go navWork and the
+// row's identity edge now), every hop real: a real muster-mirror (-tags
+// e2emirror) whose fake windows carry what the real host reads — a Claude Code
+// window's RAW session status, its process-tree shells and a real transcript
+// the host's ledger reads for running Agent calls, and each window's
+// @muster-color value — over the real tunnel to a real server.
 //
-//   - THE CHIP: a busy window with two running Agent calls and a shell reads
+//   - THE COUNT: a busy window with two running Agent calls and a shell says
 //     "2 subagents · 1+ shell" (a turn may be running, so the shell count is a
-//     lower bound); a window whose CLI says "shell" with three reads "3 shells";
-//     it goes away LIVE when the CLI goes idle. It is display only (no filter field).
-//   - THE TINT: the card's border is the window's colour and its title the
-//     title variant, the server's own per-theme values, in BOTH themes; a card
-//     with no colour keeps the line border; a shell window is tinted too.
+//     lower bound) — its name and tooltip the whole sentence, its face one
+//     count; a window whose CLI says "shell" with three says "3 shells"; it
+//     goes away LIVE when the CLI goes idle.
+//   - THE TINT: the row's left edge is the window's colour, the server's own
+//     per-theme value, in BOTH themes; a row with no colour keeps a plain
+//     (transparent) edge of the same width; a shell window is tinted too.
 //   - AN OLDER HOST (MUSTER_MIRROR_E2E_NO_WORK: it sends neither message) whose
 //     windows carry the same status and colour renders exactly as before: no
-//     chip, no tint.
-//   - Phone (390×844) and desktop (1280×800), with the layout shift of the list
-//     carrying chips and tints under the cls spec's bar.
+//     count, no tint.
+//   - Phone (390×844, the drawer open) and desktop (1280×800, the rail), with
+//     the layout shift of the list carrying counts and tints under the cls
+//     spec's bar.
 
 const BAR = 0.01;
 const viewports = [
@@ -87,131 +91,145 @@ test.afterAll(async () => {
   await rig.stop();
 });
 
-const card = (page: Page, title: string) => page.locator('#agents-list > article[data-mirror-card]').filter({ hasText: title });
-// chipText is what the chip SHOWS (its screen-reader label is a separate span).
-const chipText = (page: Page, title: string) => card(page, title).locator('[data-mirror-work] > [aria-hidden="true"]');
+// row is a mirrored window's sidebar row, by its label.
+const row = (page: Page, title: string) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][title="${title}"]`);
+const work = (page: Page, title: string) => row(page, title).locator('[data-nav-work]');
 
-// triplet is a style attribute's custom property ("R G B") as a computed rgb().
+// variant is a style attribute's custom property ("R G B") as a computed rgb().
 async function variant(page: Page, title: string, prop: string): Promise<string> {
-  const style = (await card(page, title).getAttribute('style')) || '';
+  const style = (await row(page, title).getAttribute('style')) || '';
   const m = new RegExp(`${prop}:(\\d+) (\\d+) (\\d+)`).exec(style);
   expect(m, `${title}'s style ${style} names ${prop}`).toBeTruthy();
   return `rgb(${m![1]}, ${m![2]}, ${m![3]})`;
 }
 
-const borderOf = (page: Page, title: string) => card(page, title).evaluate((el) => getComputedStyle(el).borderTopColor);
-const titleColourOf = (page: Page, title: string) => card(page, title).locator('[data-mirror-name]').first().evaluate((el) => getComputedStyle(el).color);
+const edgeOf = (page: Page, title: string) => row(page, title).evaluate((el) => getComputedStyle(el).borderLeftColor);
 
-async function openList(page: Page) {
+// openList signs in, opens a page with the sidebar (the account page: its own
+// content never changes live, so what moves is the sidebar's) and shows its
+// list — the rail on a desktop, the drawer opened on a phone (by script when
+// asked, so what it moves is counted by a layout-shift record) — once this
+// host's and the older host's rows are drawn.
+async function openList(page: Page, scripted = false, at = '/account') {
   await rig.login(page);
-  await page.goto(rig.origin + '/agents');
-  await expect(card(page, 'fleet:5'), rig.log).toHaveCount(1, { timeout: 30_000 });
-  await expect(card(page, 'relic:0'), rig.log).toHaveCount(1, { timeout: 30_000 });
+  await page.goto(rig.origin + at);
+  if ((page.viewportSize()?.width ?? 0) < 1024) {
+    if (scripted) await page.evaluate(() => (document.getElementById('sidebar-open') as HTMLElement).click());
+    else await page.locator('#sidebar-open').click();
+    await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
+    // Slid all the way in (its transform settled), so a box read is final.
+    await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
+  }
+  await expect(row(page, 'fleet:5'), rig.log).toHaveCount(1, { timeout: 30_000 });
+  await expect(row(page, 'relic:0'), rig.log).toHaveCount(1, { timeout: 30_000 });
 }
 
 for (const vp of viewports) {
   test.describe(vp.name, () => {
     test.use({ viewport: vp.viewport, hasTouch: vp.hasTouch, isMobile: vp.isMobile, storageState: { cookies: [], origins: [] } });
 
-    test('each card reads what its window has running, and an older host shows nothing', async ({ page }) => {
+    test('each row reads what its window has running, and an older host shows nothing', async ({ page }) => {
       test.setTimeout(90_000);
       await openList(page);
-      await expect(chipText(page, 'fleet:5'), rig.log).toHaveText('2 subagents · 1+ shell', { timeout: 20_000 });
-      await expect(card(page, 'fleet:5').locator('[data-mirror-work] .sr-only')).toHaveText('2 subagents and at least 1 background shell running');
-      await expect(chipText(page, 'fleet:6')).toHaveText('3 shells');
-      // A shell window, and a Claude window with no status read: no chip.
-      await expect(card(page, 'notes:0').locator('[data-mirror-work]')).toHaveCount(0);
-      // The older host: the same busy status, shells and transcript — no chip.
-      await expect(card(page, 'relic:0').locator('[data-mirror-work]')).toHaveCount(0);
-      // The chip sits in the header row, inside the card (no overflow).
-      const box = (await card(page, 'fleet:5').boundingBox())!;
-      const chip = (await card(page, 'fleet:5').locator('[data-mirror-work]').boundingBox())!;
-      expect(chip.x >= box.x && chip.x + chip.width <= box.x + box.width + 0.5, `the chip ${JSON.stringify(chip)} is inside the card ${JSON.stringify(box)}`).toBe(true);
+      await expect(work(page, 'fleet:5'), rig.log).toHaveAttribute('data-nav-work', '2 subagents · 1+ shell', { timeout: 20_000 });
+      await expect(work(page, 'fleet:5')).toHaveAttribute('aria-label', '2 subagents and at least 1 background shell running');
+      await expect(work(page, 'fleet:5').locator('.sr-only')).toHaveText('2 subagents and at least 1 background shell running');
+      // Compact: one count — 2 subagents and at least 1 shell — beside the icon.
+      await expect(work(page, 'fleet:5').locator('[aria-hidden="true"]').last()).toHaveText('3+');
+      await expect(work(page, 'fleet:6')).toHaveAttribute('data-nav-work', '3 shells');
+      // A shell window: nothing.
+      await expect(work(page, 'notes:0')).toHaveCount(0);
+      // The older host: the same busy status, shells and transcript — nothing.
+      await expect(work(page, 'relic:0')).toHaveCount(0);
+      // The count sits inside its row (no overflow), and nothing scrolls sideways.
+      const box = (await row(page, 'fleet:5').boundingBox())!;
+      const chip = (await work(page, 'fleet:5').boundingBox())!;
+      expect(chip.x >= box.x && chip.x + chip.width <= box.x + box.width + 0.5, `the count ${JSON.stringify(chip)} is inside the row ${JSON.stringify(box)}`).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      // Display only: the chip is not a filter field.
-      expect(await card(page, 'fleet:5').getAttribute('data-f-work')).toBeNull();
     });
 
-    test('the border and title wear the window colour in both themes; untinted and older-host cards keep the line', async ({ page }) => {
+    test("the row's edge wears the window colour in both themes; untinted and older-host rows keep a plain edge", async ({ page }) => {
       test.setTimeout(90_000);
       await openList(page);
-      await expect(card(page, 'fleet:5')).toHaveAttribute('data-identity', '#d79921', { timeout: 20_000 });
-      const line = await borderOf(page, 'plain:0');
+      await expect(row(page, 'fleet:5')).toHaveAttribute('data-identity', '#d79921', { timeout: 20_000 });
       for (const theme of ['dark', 'light'] as const) {
         if (theme === 'light') {
           // The light theme is unreachable in the product (the toggle is gone and
           // the head script forces dark), but its tokens are still shipped: check
           // the tint under them by dropping the class directly.
           await page.evaluate(() => document.documentElement.classList.remove('dark'));
-          await expect(card(page, 'fleet:5')).toHaveCount(1, { timeout: 20_000 });
         }
         const sfx = theme === 'dark' ? 'd' : 'l';
         for (const title of ['fleet:5', 'fleet:6', 'notes:0']) {
-          expect(await borderOf(page, title), `${title} border (${theme})`).toBe(await variant(page, title, `--id-bd-${sfx}`));
-          expect(await titleColourOf(page, title), `${title} title (${theme})`).toBe(await variant(page, title, `--id-tt-${sfx}`));
+          // Polled: the row's colours are transitioned (its hover), so a theme
+          // switch reaches the computed value over a few frames.
+          const want = await variant(page, title, `--id-bd-${sfx}`);
+          await expect.poll(() => edgeOf(page, title), { message: `${title} edge (${theme})` }).toBe(want);
         }
-        // No colour, or an older host's: the line border, exactly as before.
-        const plainLine = await borderOf(page, 'plain:0');
-        expect(await borderOf(page, 'relic:0'), `the older host's card (${theme})`).toBe(plainLine);
-        expect(await card(page, 'relic:0').getAttribute('data-identity')).toBeNull();
-        expect(await card(page, 'plain:0').getAttribute('style')).toBeNull();
-        if (theme === 'dark') expect(plainLine).toBe(line);
+        // No colour, or an older host's: the transparent edge of the same width.
+        expect(await edgeOf(page, 'plain:0'), `the untinted row (${theme})`).toBe('rgba(0, 0, 0, 0)');
+        expect(await edgeOf(page, 'relic:0'), `the older host's row (${theme})`).toBe('rgba(0, 0, 0, 0)');
+        expect(await row(page, 'relic:0').getAttribute('data-identity')).toBeNull();
+        expect(await row(page, 'plain:0').getAttribute('style')).toBeNull();
       }
-      // The terminal colour itself is the dark border (it already meets 3:1
-      // there); the light title had to darken (4.5:1 on white).
+      // The terminal colour itself is the dark edge (it already meets 3:1
+      // there); the light variant had to move.
       await page.reload();
-      await expect(card(page, 'fleet:5')).toHaveCount(1, { timeout: 20_000 });
-      expect(await borderOf(page, 'fleet:5')).toBe('rgb(215, 153, 33)');
-      expect(await variant(page, 'fleet:5', '--id-tt-l')).not.toBe('rgb(215, 153, 33)');
-      // The CARDS only: the rendered view's header title is not tinted.
+      if ((page.viewportSize()?.width ?? 0) < 1024) await page.locator('#sidebar-open').click();
+      await expect(row(page, 'fleet:5')).toHaveCount(1, { timeout: 20_000 });
+      expect(await edgeOf(page, 'fleet:5')).toBe('rgb(215, 153, 33)');
+      expect(await variant(page, 'fleet:5', '--id-bd-l')).not.toBe('rgb(215, 153, 33)');
+      // The rendered view's header title is not tinted.
       await page.goto(rig.origin + `/mirror/view?host=${encodeURIComponent(rig.host)}&session=fleet&window=${encodeURIComponent('@5')}`);
       await expect(page.locator('header [data-mirror-name]')).toHaveCount(1, { timeout: 15_000 });
-      await expect(page.locator('[data-identity]')).toHaveCount(0);
+      await expect(page.locator('header [data-identity]')).toHaveCount(0);
     });
 
-    test(`the list with chips and tints shifts less than ${BAR}`, async ({ page }) => {
+    test(`the list with counts and tints shifts less than ${BAR}`, async ({ page }) => {
       test.setTimeout(60_000);
-      await rig.login(page);
       await page.addInitScript(clsInit);
-      await page.goto(rig.origin + '/agents');
-      await expect(card(page, 'fleet:5').locator('[data-mirror-work]'), rig.log).toHaveCount(1, { timeout: 20_000 });
+      await openList(page, true);
+      await expect(work(page, 'fleet:5'), rig.log).toHaveCount(1, { timeout: 20_000 });
       await settle(page);
       const r = await readCls(page);
-      console.log(`[cls ${vp.name}] /agents with work chips and tints ${r.total}`);
+      console.log(`[cls ${vp.name}] the sidebar list with work counts and tints ${r.total}`);
+      expect(r.unsupported, 'layout-shift is observable here').toBeUndefined();
       expect(r.total, JSON.stringify(r.shifts)).toBeLessThan(BAR);
       // POSITIVE CONTROL: the same instrument, on the same page, sees a shift
-      // when one happens — a block pushed in above the cards.
+      // when one happens — a block pushed in above the rows.
       await resetCls(page);
       await page.evaluate(() => {
         const d = document.createElement('div');
         d.style.height = '160px';
-        document.querySelector('#agents-list')!.prepend(d);
+        document.querySelector('#sidebar-agents-list')!.prepend(d);
       });
       await settle(page);
       const c = await readCls(page);
-      console.log(`[cls ${vp.name}] positive control (a block pushed in above the cards) ${c.total}`);
+      console.log(`[cls ${vp.name}] positive control (a block pushed in above the rows) ${c.total}`);
       expect(c.total, 'the instrument can observe a shift').toBeGreaterThan(BAR);
     });
   });
 }
 
-test('a chip goes away live when its CLI goes idle, and comes back when it runs a shell again', async ({ page }) => {
+test('a count goes away live when its CLI goes idle, and comes back when it runs a shell again', async ({ page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(clsInit);
-  await openList(page);
-  const chip = card(page, 'fleet:6').locator('[data-mirror-work]');
-  await expect(chipText(page, 'fleet:6'), rig.log).toHaveText('3 shells', { timeout: 20_000 });
+  // A page that holds the event stream (the sidebar's live refresh is heard
+  // only on such a document; the account page's list waits for its minute's
+  // tick), whose own content does not move on an agent change: a seeded
+  // agent's page with no conversation.
+  await openList(page, false, '/agents/notes-tidy');
+  await expect(work(page, 'fleet:6'), rig.log).toHaveAttribute('data-nav-work', '3 shells', { timeout: 20_000 });
   await settle(page);
   await resetCls(page);
   status(trShell, 'idle', 0);
-  await expect(chip, 'the chip left without a reload').toHaveCount(0, { timeout: 20_000 });
+  await expect(work(page, 'fleet:6'), 'the count left without a reload').toHaveCount(0, { timeout: 20_000 });
   status(trShell, 'shell', 2);
-  await expect(chipText(page, 'fleet:6'), 'the chip came back without a reload').toHaveText('2 shells', { timeout: 20_000 });
+  await expect(work(page, 'fleet:6'), 'the count came back without a reload').toHaveAttribute('data-nav-work', '2 shells', { timeout: 20_000 });
   await settle(page);
-  // The live updates shift the list less than the bar too (measured 0.0003:
-  // the chip is in a wrapping header row, so only its own row reflows).
+  // The live updates shift the page less than the bar too.
   const r = await readCls(page);
-  console.log(`[cls phone] the chip leaving and coming back live ${r.total} ${JSON.stringify(r.shifts)}`);
+  console.log(`[cls phone] the count leaving and coming back live ${r.total} ${JSON.stringify(r.shifts)}`);
   expect(r.total, JSON.stringify(r.shifts)).toBeLessThan(BAR);
 });

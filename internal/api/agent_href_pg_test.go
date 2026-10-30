@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // latestSessionPage is where a bare GET /agents/{name} would 303 for a: its
@@ -70,10 +71,10 @@ func anchorHrefs(body, marker string) []string {
 }
 
 // TestEveryListLinkToAnAgentNamesItsLatestSession: on a real Postgres, every
-// link the Agents list and the Tasks list draw to an agent — the card (its nav
-// anchor and its long-title link), a switcher Pins or Recent entry, a task
-// card's "Open chat" — is the canonical /agents/{name}?session=<latest>, the
-// SAME URL the bare /agents/{name} 303s to. Red before ui.AgentSessionHref:
+// link a list draws to an agent — its sidebar row (where the retired Agents
+// list's card went), a switcher Pins or Recent entry, a task card's "Open
+// chat" — is the canonical /agents/{name}?session=<latest>, the SAME URL the
+// bare /agents/{name} 303s to. Red before ui.AgentSessionHref:
 // every one of them was the bare URL, and each open paid the 303's round trip.
 func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 	f := newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) {
@@ -95,8 +96,8 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 			t.Fatalf("bare GET /agents/%s = %d → %q, want 303 → %q", c.a.Name, w.Code, w.Header().Get("Location"), c.want)
 		}
 	}
-	// A visit puts op in the switcher's Recent view; op2 is pinned (its card,
-	// and the switcher's Pins view).
+	// A visit puts op in the switcher's Recent view; op2 is pinned (the
+	// switcher's Pins view).
 	if w := f.call(t, http.MethodGet, wantOp, nil, f.operator()); w.Code != http.StatusOK {
 		t.Fatalf("GET %s = %d", wantOp, w.Code)
 	}
@@ -107,37 +108,40 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 	if got := latestSessionPage(t, f.pool, f.op); got != wantOp {
 		t.Fatalf("instrument check FAILED: opening the page moved op's latest session %q → %q", wantOp, got)
 	}
-	list := f.page(t, "/ui/agents")
+	list := f.page(t, ui.NavAgentsPath)
 	// A LIST link is the 303 target plus the from=list marker (ui.AgentListHref).
 	listOp, listOp2 := wantOp+"&from=list", wantOp2+"&from=list"
-	opCard := `href="` + strings.ReplaceAll(listOp, "&", "&amp;") + `"`
-	if !strings.Contains(list, opCard) {
-		t.Errorf("op's card does not link %s; its links: %v", listOp, anchorHrefs(list, "/agents/"+f.op.Name))
+	if got := anchorHrefs(list, `id="`+agentNavID(f.op.ID)+`"`); len(got) != 1 || got[0] != listOp {
+		t.Errorf("op's sidebar row links %v, want [%s]", got, listOp)
 	}
-	opCard2 := `href="` + strings.ReplaceAll(listOp2, "&", "&amp;") + `"`
-	if !strings.Contains(list, opCard2) {
-		t.Errorf("op2's (pinned) card does not link %s; its links: %v", listOp2, anchorHrefs(list, "/agents/"+f.op2.Name))
+	if got := anchorHrefs(list, `id="`+agentNavID(f.op2.ID)+`"`); len(got) != 1 || got[0] != listOp2 {
+		t.Errorf("op2's (pinned) sidebar row links %v, want [%s]", got, listOp2)
 	}
-	// The session switcher's rows, carried out of band by the list: a Pins
-	// entry and a Recent entry link the same canonical URL.
-	row := func(id string) string {
-		at := strings.Index(list, `id="`+id+`"`)
-		if at < 0 {
-			t.Fatalf("no #%s in the list partial", id)
+	// The session switcher's rows (what a session page draws, s.switcher): a
+	// Pins entry and a Recent entry link the same canonical URL.
+	sw := f.srv.switcher(asUser(1), ui.SwitcherCurrent{})
+	if sw == nil {
+		t.Fatal("instrument check FAILED: no switcher was built")
+	}
+	agentHrefs := func(items []ui.SwitcherItem) []string {
+		var out []string
+		for _, it := range items {
+			if it.Kind == "agent" {
+				out = append(out, it.Href)
+			}
 		}
-		r := list[at:]
-		return r[:strings.Index(r, "</div>")]
+		return out
 	}
-	if got := anchorHrefs(row("switcher-list-pins"), `data-switcher-entry="agent"`); len(got) != 1 || got[0] != listOp2 {
+	if got := agentHrefs(sw.Pins); len(got) != 1 || got[0] != listOp2 {
 		t.Errorf("Pins entries link %v, want [%s]", got, listOp2)
 	}
-	if got := anchorHrefs(row("switcher-list-recent"), `data-switcher-entry="agent"`); len(got) != 1 || got[0] != listOp {
+	if got := agentHrefs(sw.Recent); len(got) != 1 || got[0] != listOp {
 		t.Errorf("Recent entries link %v, want [%s]", got, listOp)
 	}
-	// No anchor anywhere on the list links either agent's BARE page.
+	// No anchor anywhere in the sidebar links either agent's BARE page.
 	for _, a := range []agents.Agent{f.op, f.op2} {
 		if strings.Contains(list, `href="/agents/`+a.Name+`"`) {
-			t.Errorf("the list still links the bare /agents/%s", a.Name)
+			t.Errorf("the sidebar still links the bare /agents/%s", a.Name)
 		}
 	}
 
@@ -167,7 +171,7 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 }
 
 // TestAStaleListLinkLandsOnTheLatestSession: a list link names the session that
-// was latest when the list was DRAWN. The bare URL it replaced resolved the
+// was latest when the list was DRAWN (the sidebar's row, here). The bare URL it replaced resolved the
 // latest at TAP time, so a list left open while another session became the
 // latest must still land there: a list link (from=list) to a session that is no
 // longer the latest 303s to the latest; a fresh one renders at once (one hop);
@@ -177,8 +181,8 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 func TestAStaleListLinkLandsOnTheLatestSession(t *testing.T) {
 	f := newAttnFixture(t)
 	first := sessionsFor(t, f.pool, f.op)
-	list := f.page(t, "/ui/agents")
-	links := anchorHrefs(list, `data-card-slot="body"`)
+	// The sidebar's row for op: the list link (where the retired card's went).
+	links := anchorHrefs(f.page(t, ui.NavAgentsPath), `id="`+agentNavID(f.op.ID)+`"`)
 	var link string
 	for _, h := range links {
 		if strings.HasPrefix(h, "/agents/"+f.op.Name+"?") {
@@ -187,7 +191,7 @@ func TestAStaleListLinkLandsOnTheLatestSession(t *testing.T) {
 	}
 	want := "/agents/" + f.op.Name + "?session=" + strconv.FormatInt(first, 10)
 	if !strings.HasPrefix(link, want) {
-		t.Fatalf("instrument check FAILED: op's card links %q (all: %v), want the session %d", link, links, first)
+		t.Fatalf("instrument check FAILED: op's sidebar row links %q (all: %v), want the session %d", link, links, first)
 	}
 	// Fresh: one hop, the page itself.
 	if w := f.call(t, http.MethodGet, link, nil, f.operator()); w.Code != http.StatusOK {

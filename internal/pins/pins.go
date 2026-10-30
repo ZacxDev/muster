@@ -1,4 +1,4 @@
-// Package pins is the Agents list's pinned entries (migration 0017): per user,
+// Package pins is the session switcher's pinned entries (migration 0017): per user,
 // server-stored, so a pin follows its owner across devices. A pin names either
 // a dispatched agent or a mirrored tmux window.
 //

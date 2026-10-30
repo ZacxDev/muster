@@ -179,7 +179,7 @@ while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
 
 ### Creating a pool worker
 
-1. Open the dispatch form (the **+** on the Agents list's bottom bar, or a
+1. Open the dispatch form (the **+** beside **Agents** in the sidebar, or a
    task's **Dispatch**).
 2. Pick **Claude Code** as the agent kind. The **Worker pool** field appears
    under the Claude account; it is not shown for any other kind.
@@ -190,7 +190,7 @@ while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
 5. **Dispatch** (or **Save for later** and Start it). A pool job can run only on
    a `running` worker.
 
-The agent's card and page show a **pool** chip, and `GET /api/agents` reports
+The agent's page shows a **pool** chip, and `GET /api/agents` reports
 it as `workerPool`. Repeat with the same name for more workers; each takes its
 own account from the pool unless pinned.
 

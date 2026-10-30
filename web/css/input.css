@@ -138,16 +138,14 @@
 
   /*
    * THE TMUX IDENTITY COLOUR (internal/ui/identity_color.go). A mirrored
-   * window's CARD (only the card: not its pages' headers) carries data-identity and four variants of its colour as "R G B" custom
+   * window's sidebar ROW (not its pages' headers) carries data-identity and four variants of its colour as "R G B" custom
    * properties: border and title, dark and light, each already moved in
-   * lightness to meet 3:1 / 4.5:1 against that theme's s1 and bg. These rules
-   * pick the theme's pair (the same class switch as the palette above, so no
-   * script) and apply it to the card's border and ring and to its title.
-   *
-   * The selectors are attribute pairs, (0,2,0), so they out-rank the card's
-   * own border-line / ring-line / text-fg utilities (0,1,0) wherever they are
-   * emitted; `group-hover:text-accent` (0,3,0) still wins on hover. An element
-   * with no colour has no data-identity, so nothing here touches it.
+   * lightness to meet 3:1 / 4.5:1 against that theme's s1 and bg. The first two
+   * rules pick the theme's pair (the same class switch as the palette above, so
+   * no script); the row's left edge reads --id-bd (navAgentRow).
+   * (The title variants, --id-tt, tinted the retired Agents list card's
+   * title; nothing reads them now.) An element with no colour has no
+   * data-identity, so nothing here touches it.
    */
   [data-identity] {
     --id-bd: var(--id-bd-d);
@@ -156,14 +154,6 @@
   :root:not(.dark) [data-identity] {
     --id-bd: var(--id-bd-l);
     --id-tt: var(--id-tt-l);
-  }
-  [data-identity][data-mirror-card] {
-    border-color: rgb(var(--id-bd));
-    --tw-ring-color: rgb(var(--id-bd));
-  }
-  [data-identity] [data-mirror-name],
-  [data-identity] [data-card-title] {
-    color: rgb(var(--id-tt));
   }
 
   /*
@@ -347,7 +337,7 @@
    * 🔴 A SHUT PANEL IS ALSO visibility: hidden, NOT ONLY OFF SCREEN. Translated
    * away, its contents are still hit-testable and focusable — and with the
    * sidebar's <details> "More" in it, Chromium resolves a touch just inside the
-   * left edge, over the Agents list's session switcher, to <html> instead of
+   * left edge, over the session switcher (then the Agents list's), to <html> instead of
    * the bar (measured: elementFromPoint names the bar, the touchstart's target
    * is <html>; replacing the <details> with a <div>, or hiding the panel,
    * restores the bar). The bar's own swipe (ownsSideways) then never sees its
@@ -601,59 +591,14 @@
 }
 
 /*
- * The Agents list's layout (internal/ui/agents.go). The list is a wrapping
- * flex row: every child takes the whole row — a card, the Idle header, the
- * empty state — and from lg up a card takes half of it (two columns).
+ * The agent page's ⋯ menu draws BOTH Start and Stop (internal/ui/agent_actions.go
+ * agentLifecycleItems) and shows the one the status calls for, read off the
+ * header strip's #agent-status, which every strip refresh re-renders: Stop
+ * while running or provisioning, Start otherwise. So the menu is drawn once
+ * and never replaced — an open menu with an armed "Confirm delete" stays put.
+ * Outside every @layer, so the items' own `flex` utility cannot outrank it.
  */
-#agents-list > * {
-  flex: 0 0 100%;
-  min-width: 0;
-}
-@media (min-width: 1024px) {
-  #agents-list > article {
-    flex-basis: calc(50% - 0.375rem);
-  }
-}
-/*
- * The content column keeps room at its bottom for the FABs every other tab
- * floats there. The Agents tab draws none: its bottom edge is the session
- * switcher's dock (internal/ui/switcher.go switcherDock), whose room the
- * panel reserves itself (data-switcher-room), so while it is the panel shown
- * the column keeps none of its own.
- */
-main:has(> [data-switcher-room]:not(.hidden)) {
-  padding-bottom: 0;
-}
-/*
- * …and while it is shown, scrolling an element into view (a keyboard focus
- * moving down the list, a tap a browser scrolls to first) stops above the dock
- * rather than leaving the element under the bar. The room is switcherRoom(true)'s
- * (internal/ui/switcher.go; TestTheDockedSwitchersScrollPaddingIsItsRoom).
- */
-html:has([data-switcher-room]:not(.hidden)) {
-  scroll-padding-bottom: calc(2.8125rem + env(safe-area-inset-bottom));
-}
-
-/*
- * The Agents list's Idle section (internal/ui/idle_section.go). Outside every
- * @layer, like the rules above, so no utility can outrank it.
- *
- * WHERE: the header after the working entries, the idle entries after it — by
- * `order`, not by DOM position, so a background refresh the hold keeps in its
- * drawn DOM order (agentsFilterScript's keepDrawnOrder) still draws each card
- * in its section. COLLAPSED unless <html> carries data-agents-idle-open (this
- * viewer opened it; set from localStorage by the head script before the first
- * paint). A pinned entry is never in the section (InIdleSection).
- */
-#agents-list > [data-idle-head] {
-  order: 1;
-}
-#agents-list > article[data-idle-section] {
-  order: 2;
-}
-html:not([data-agents-idle-open]) #agents-list > article[data-idle-section] {
-  display: none !important;
-}
-html[data-agents-idle-open] [data-idle-chevron] {
-  transform: rotate(90deg);
+body:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"])) #agent-actions [data-lifecycle="idle"],
+body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"]))) #agent-actions [data-lifecycle="live"] {
+  display: none;
 }

@@ -108,15 +108,12 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				),
 				// The Edit button (hx-get /ui/tasks/{id}/edit → #task-modal-body) and
 				// the Dispatch button (→ #agent-modal-body) both target modal shells
-				// that must exist in the document, or their swap lands nowhere.
+				// that must exist in the document, or their swap lands nowhere. The
+				// dispatch sheet is the sidebar's (sidebarIn), as is the modals' script.
 				noteModalShell(),
-				agentModalShell(),
-				// Transient error toasts for failed background actions.
-				actionToasts(),
+				// The error toasts' host is the sidebar's (sidebarIn).
 				// Keep the card's relative timestamp ('10s', '30m') live.
 				relTimeScript(),
-				// Task modal: dirty-guarded dismiss, save highlight, focus return.
-				taskModalScript(),
 				// The edit form's type-Enter-to-chip tag input.
 				tagScript(),
 				// 🔴 THE FAILURE-FEEDBACK LISTENERS LIVE HERE, and they are the only

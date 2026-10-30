@@ -30,5 +30,5 @@ func TestOnlyTheSwitchsPagesMayBeFramedAndOnlyByThisOrigin(t *testing.T) {
 	check(ref("scratch2", "@7").ViewPath(), "'self'", "SAMEORIGIN")
 	check(ref("scratch2", "@7").TerminalPath(), "'self'", "SAMEORIGIN")
 	// A page that is not a view of a switch.
-	check("/agents", "'none'", "DENY")
+	check("/tasks", "'none'", "DENY")
 }

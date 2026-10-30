@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { Page } from '@playwright/test';
 import { test, expect, useSuiteSession } from '../lib/fixtures';
 import { toolGroupsPort } from '../lib/env';
-import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
 
 // CONSECUTIVE TOOL CALLS COLLAPSE INTO ONE "N tool calls" ROW (internal/ui/
 // tool_groups.go). One sequence — three calls, text, one call, text, two calls —
@@ -324,10 +324,10 @@ test('mirror: a socket that drops and resumes keeps the run in place, with no du
   const tr = rig.transcript(cc.prompt('resume me') + cc.toolUse('ra', 'Bash', { command: cmd('ra') }) +
     cc.toolUse('rb', 'Bash', { command: cmd('rb') }) + cc.toolUse('rc', 'Bash', { command: cmd('rc') }), 'resume');
   // 🔴 A SESSION OF ITS OWN ('resume', not 'main'): the host started before
-  // this test listed a Claude 'main', and its card stays listed (offline)
-  // after it stops, so waiting for "a Claude card" returned before THIS host
+  // this test listed a Claude 'main', and its entry stays listed (offline)
+  // after it stops, so waiting for "a Claude entry" returned before THIS host
   // had connected and the page opened was the old one (CI: the shape poll
-  // timed out; reproduced by starting this host 2 s late). A card for
+  // timed out; reproduced by starting this host 2 s late). An entry for
   // 'resume', online, can only be this host's.
   await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'resume', MUSTER_MIRROR_E2E_CLAUDE: 'resume=' + tr });
   const sockets: { close: () => Promise<void> }[] = [];
@@ -339,11 +339,13 @@ test('mirror: a socket that drops and resumes keeps the run in place, with no du
   await expect
     .poll(
       async () => {
-        const html = await (await page.request.get(rig.origin + '/ui/agents')).text();
-        const card = html.split('<article').find((a) => a.includes('data-f-session="resume"'));
-        return !!card && card.includes('data-mirror-claude') && !card.includes('data-mirror-offline');
+        // The sidebar's rows (GET /ui/nav/agents).
+        const html = await (await page.request.get(rig.origin + '/ui/nav/agents')).text();
+        return mirroredEntries(html).some(
+          (e) => e.state === 'online' && entryMatches(e.markup, 'data-f-session="resume"') && entryMatches(e.markup, 'data-mirror-claude'),
+        );
       },
-      { message: `this host's 'resume' card, online, as Claude Code (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
+      { message: `this host's 'resume' entry, online, as Claude Code (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
     )
     .toBe(true);
   await page.goto(rig.origin + rig.viewPath('resume'));

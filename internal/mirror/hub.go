@@ -216,18 +216,18 @@ type activityThrottle struct {
 }
 
 // notifyDebounce is the window change nudges are coalesced in: however fast
-// hosts connect, drop or change their lists, open Agents views are told at most
+// hosts connect, drop or change their lists, open sidebars are told at most
 // once per window.
 const notifyDebounce = time.Second
 
 // activityNudgeEvery is the most often one OWNER's ACTIVITY-ONLY changes (a
-// card's "active … ago" moved; nothing else did) nudge its open views: once per
+// sidebar row's recency moved; nothing else did) nudge its open views: once per
 // ActivityBucket, the granularity the time is carried at, however many of its
 // hosts are busy. A host re-sends whenever a session enters a newer bucket —
 // once per bucket for the sessions that stay busy, plus once for each that
 // wakes mid-bucket — so without it an owner whose sessions wake at different
 // moments re-renders every open page several times a minute. It is per OWNER,
-// not per host, because the cost is the owner's open pages: one Agents view
+// not per host, because the cost is the owner's open pages: one sidebar
 // lists every host of its owner, so a per-host throttle would let 64 busy hosts
 // re-render it 64 times a minute.
 const activityNudgeEvery = ActivityBucket * time.Second
@@ -263,7 +263,7 @@ func NewHub(logger *log.Logger) *Hub {
 
 // SetNotify installs the change nudge (a host connected, disconnected or
 // changed its list), called with the OWNER of the host that changed — the one
-// user whose Agents view shows it (accounts PR 3b: an SSE event reaches only
+// user whose sidebar lists it (accounts PR 3b: an SSE event reaches only
 // its owner's streams). It is called on its own goroutine.
 func (h *Hub) SetNotify(fn func(owner int64)) {
 	h.mu.Lock()
@@ -566,10 +566,10 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 }
 
 // sameWindows reports whether a and b are the same windows in everything but
-// Activity (and LastMessage, its Claude-window stand-in: Window.CardActivity). Activity is compared on its own, as the card prints it (listed):
-// it moves all the time, and a change in it is shown — in the card's "active …
-// ago" — but is throttled (activityMoved) rather than nudged at once.
-// Status and StatusSince are ignored too: no card draws them and they move
+// Activity (and LastMessage, its Claude-window stand-in: Window.CardActivity). Activity is compared on its own, as the sidebar reads it (listed):
+// it moves all the time, and a change in it is shown — in the sidebar row's
+// recency dot — but is throttled (activityMoved) rather than nudged at once.
+// Status and StatusSince are ignored too: no entry draws them and they move
 // with every turn (the send queue reads them, through AgentState).
 func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
@@ -888,7 +888,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
 				// activity-only one is THROTTLED. A changed list or order nudges
 				// at once. A time that moved with nothing else (a busy window that
-				// stays where it is) still changes that card's "active … ago" — a
+				// stays where it is) still changes that row's recency dot — a
 				// view never told would show it going stale while the window works
 				// — so it nudges too, but at most once per activityEvery per owner
 				// (activityNudgeEvery says why). Both are read off the list the
@@ -1016,7 +1016,7 @@ func (h *Hub) drop(hc *hostConn) {
 	if current {
 		delete(h.hosts, hc.key)
 		// The disconnect nudges the owner's views below, which re-fetches every
-		// card's time: a pending trailing activity nudge has nothing left to do,
+		// entry's time: a pending trailing activity nudge has nothing left to do,
 		// so it is stopped, and the owner's throttle starts afresh (at most one
 		// extra activity nudge per disconnect, which already costs one).
 		if t := h.activity[hc.key.owner]; t != nil {

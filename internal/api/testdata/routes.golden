@@ -118,12 +118,10 @@ GET /sw.js
 GET /tasks
 GET /tasks/{id}
 GET /tasks/{id}/attachments/{aid}
-GET /ui/agents
 GET /ui/agents/new
 GET /ui/agents/notes
 GET /ui/agents/repos
-GET /ui/agents/{id}/card
-GET /ui/agents/{id}/rename
+GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
 GET /ui/agents/{name}/chat-log
 GET /ui/agents/{name}/task

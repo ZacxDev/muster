@@ -65,8 +65,6 @@ var apiTitleNames = map[string]bool{"Source": true, "Focus": true}
 // checked below to call Title (or another helper in this set).
 var plainingHelpers = map[string]bool{
 	"mirrorEntryTitle":    true,
-	"mirrorCardTitle":     true,
-	"entryTitle":          true,
 	"mirrorDisplayName":   true,
 	"mirrorSessionTitle":  true,
 	"mirrorTerminalTitle": true,
@@ -77,8 +75,6 @@ var plainingHelpers = map[string]bool{
 // class) are drawn as written. checkPlainingHelpers holds each helper to it.
 var helperNameArgs = map[string][]int{
 	"mirrorEntryTitle":    {0, 1}, // label, title
-	"mirrorCardTitle":     {0, 1}, // label, title
-	"entryTitle":          {0, 1}, // label, title
 	"mirrorDisplayName":   {0, 1}, // label, title
 	"mirrorSessionTitle":  {0},    // label
 	"mirrorTerminalTitle": {0},    // title
@@ -102,38 +98,34 @@ const (
 
 // uiExempt: "file func expr" → exemption.
 var uiExempt = map[string]exemption{
-	"mirror_ask.go askForm o.Description":              {2, whyOption},
-	"mirror_ask.go askReadOnly o.Description":          {2, whyOption},
-	"subagent_cards.go subagentCallOf in.Description":  {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
-	"subagent_cards.go subagentSummary s.Description":  {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
-	"terminal.go AgentTerminalPage v.DisplayName":      {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
-	"switcher.go switcherName m.Label":                 {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
-	"agents.go agentFields a.DisplayName":              {1, whyFilter},
-	"agents.go agentRenameForm a.DisplayName":          {1, whyForm},
-	"agents.go comboOption o.Label":                    {2, whyStatic},
-	"agents.go seededComboOption o.Label":              {2, whyStatic},
-	"agents.go modelFieldForDisplay m.Label":           {1, whyStatic},
-	"chief_sessions.go chiefNewSessionPicker rt.Label": {2, whyStatic},
-	"components.go sidebarIn t.Label":                  {1, whyStatic},
-	"nav_layout.go NavDocument v.Title":                {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
-	"connectors.go ConnectorForm p.Label":              {1, whyStatic},
-	"list_signals.go agentsFilterChips c.Label":        {1, whyStatic},
-	"switcher.go switcherEntry it.Label":               {3, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
-	"nav_agents.go navAgentRow it.Label":               {1, "SwitcherItem.Label, built through Title by switcherItems (the switcher's own labels); the row's name and title — plaining it again would apply Title twice"},
-	"nav_agents.go navAgentRow it.Title":               {2, "SwitcherItem.Title, built through Title by switcherItems; the command palette's data-switcher-title — plaining it again would apply Title twice"},
-	"switcher.go switcherEntry it.Title":               {2, "SwitcherItem.Title is built through Title by switcherItems (plainOr of the display name, focusTitle's plainOr of the focus); it is the search's data-switcher-title, and plaining it again here would apply Title twice"},
-	"mirror.go mirrorFields m.Label":                   {1, whyFilter},
-	"mirror.go mirrorFields m.Title":                   {1, whyFilter},
-	"mirror_ask.go askForm o.Label":                    {2, whyOption},
-	"mirror_ask.go askReadOnly o.Label":                {1, whyOption},
-	"mirror_ask.go askRetryForm q.Options[p].Label":    {1, whyOption},
-	"notes.go noteDispatchButton TaskTitle":            {1, whyDispatch},
-	"notes.go NotesEditModalBody n.Title":              {1, whyForm},
-	"notes.go statusFilterRow taskstatus.Label":        {1, whyStatic},
-	"notes.go TaskTitle n.Title":                       {1, whyAccessor},
-	"tabs.go TabsSelected t.Label":                     {1, whyStatic},
-	"tags.go tasksFilteredEmpty taskstatus.Label":      {1, whyStatic},
-	"terminal.go quickKeyButton k.Label":               {1, whyStatic},
+	"mirror_ask.go askForm o.Description":               {2, whyOption},
+	"mirror_ask.go askReadOnly o.Description":           {2, whyOption},
+	"subagent_cards.go subagentCallOf in.Description":   {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
+	"subagent_cards.go subagentSummary s.Description":   {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
+	"terminal.go AgentTerminalPage v.DisplayName":       {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
+	"switcher.go switcherName m.Label":                  {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
+	"agent_actions.go agentRenamePopover a.DisplayName": {1, whyForm},
+	"agents.go comboOption o.Label":                     {2, whyStatic},
+	"agents.go seededComboOption o.Label":               {2, whyStatic},
+	"agents.go modelFieldForDisplay m.Label":            {1, whyStatic},
+	"chief_sessions.go chiefNewSessionPicker rt.Label":  {2, whyStatic},
+	"components.go sidebarIn t.Label":                   {1, whyStatic},
+	"nav_layout.go NavDocument v.Title":                 {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
+	"connectors.go ConnectorForm p.Label":               {1, whyStatic},
+	"switcher.go switcherEntry it.Label":                {3, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
+	"nav_agents.go navAgentRow it.Label":                {1, "SwitcherItem.Label, built through Title by switcherItems (the switcher's own labels); the row's name and title — plaining it again would apply Title twice"},
+	"nav_agents.go navAgentRow it.Title":                {2, "SwitcherItem.Title, built through Title by switcherItems; the command palette's data-switcher-title — plaining it again would apply Title twice"},
+	"switcher.go switcherEntry it.Title":                {2, "SwitcherItem.Title is built through Title by switcherItems (plainOr of the display name, focusTitle's plainOr of the focus); it is the search's data-switcher-title, and plaining it again here would apply Title twice"},
+	"mirror_ask.go askForm o.Label":                     {2, whyOption},
+	"mirror_ask.go askReadOnly o.Label":                 {1, whyOption},
+	"mirror_ask.go askRetryForm q.Options[p].Label":     {1, whyOption},
+	"notes.go noteDispatchButton TaskTitle":             {1, whyDispatch},
+	"notes.go NotesEditModalBody n.Title":               {1, whyForm},
+	"notes.go statusFilterRow taskstatus.Label":         {1, whyStatic},
+	"notes.go TaskTitle n.Title":                        {1, whyAccessor},
+	"tabs.go TabsSelected t.Label":                      {1, whyStatic},
+	"tags.go tasksFilteredEmpty taskstatus.Label":       {1, whyStatic},
+	"terminal.go quickKeyButton k.Label":                {1, whyStatic},
 }
 
 // apiExempt: the same, for api's hand-written HTML.

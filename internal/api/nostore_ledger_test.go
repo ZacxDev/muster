@@ -86,7 +86,9 @@ var noStoreLiterals = map[string]string{
 	"handleUpload":             "an upload's answer",
 	"handleUploadLink":         "an upload's signed link",
 	"handleNavAgents":          "the sidebar's agent list",
-	"redirectHome":             "where `/` sends the viewer (it follows who the chief is now)",
+	"redirectTo":               "home's redirect, from `/` and GET /agents (it follows who the chief is now)",
+	"handleAgentsHome":         "GET /agents: home's redirect, or the onboarding page when there is nowhere to go",
+	"handleAgentHeader":        "an agent page's status strip, ⋯ menu and notices, live",
 }
 
 // viewDocumentCallers are the four handlers whose documents Back may restore.
@@ -257,22 +259,17 @@ func noStoreScan(t *testing.T, dir string) (writers, literals, views []string) {
 const htmlFragment = "an htmx fragment: fetched by script, never a document; no validator, so never served fresh; no secret"
 
 var htmlWithoutNoStore = map[string]string{
-	"handleIndex": "the shell (/, /agents, /tasks, …): restorable before this change, no secret on it; its appScript " +
+	"handleIndex": "the shell (/tasks, /connectors, …): restorable before this change, no secret on it; its appScript " +
 		"carries restoreJS, so a restore or a history load from the HTTP cache gets the build and refusal checks",
 	"handleTaskDetail":   "a task's page: no secret on it; its appScript carries restoreJS (as the shell's)",
 	"renderTaskNotFound": "a task's not-found page: nothing on it but the id the reader typed",
 
-	"handleAgentsContent":       htmlFragment,
 	"answerSwitcherPin":         htmlFragment,
 	"handleAgentNewModal":       htmlFragment,
 	"handleAgentRepoOptions":    htmlFragment,
 	"handleAgentNoteOptions":    htmlFragment,
 	"handleAgentStatusIcon":     htmlFragment,
 	"handleNotifications":       htmlFragment,
-	"handleAgentRenameForm":     htmlFragment,
-	"handleAgentCard":           htmlFragment,
-	"handleAgentName":           htmlFragment,
-	"handleAgentDelete":         htmlFragment,
 	"handleAgentTaskModal":      htmlFragment,
 	"writeChiefPanelBody":       htmlFragment,
 	"writeChiefPanelBodyFor":    htmlFragment,

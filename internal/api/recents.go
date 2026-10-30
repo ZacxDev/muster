@@ -29,7 +29,7 @@ func (s *Server) recordAgentVisit(ctx context.Context, id int64) {
 }
 
 // recordMirrorVisit records that the viewer opened the mirrored entry at
-// (host, session, window) — the address its card links by.
+// (host, session, window) — the address its sidebar row links by.
 func (s *Server) recordMirrorVisit(ctx context.Context, host, session, window string) {
 	if s.ext.Recents == nil {
 		return
@@ -65,16 +65,16 @@ func (s *Server) recentRefs(ctx context.Context) []ui.RecentRef {
 }
 
 // switcher is the viewer's session switcher for the page of cur (ui.Switcher):
-// the Agents list's entries — built the way the list builds them, minus the
-// live instance read (the bar shows names, not status) — and the same recently
-// viewed refs the strip reads, resolved by ui.NewSwitcher. nil — no bar — when
+// the entries the sidebar lists, with no live instance read (the bar shows
+// names, not status) — and the viewer's recently viewed refs, resolved by
+// ui.NewSwitcher. nil — no bar — when
 // there is no agent store, or the list cannot be read (logged): the page
 // renders without it rather than failing.
 func (s *Server) switcher(ctx context.Context, cur ui.SwitcherCurrent) *ui.Switcher {
 	if s.ext.Agents == nil {
 		return nil
 	}
-	cards, mirrors, err := s.agentsListCardsLive(ctx, 0, false)
+	cards, mirrors, err := s.agentsListEntries(ctx)
 	if err != nil {
 		s.logger.Printf("switcher: list: %v", err)
 		return nil

@@ -141,7 +141,7 @@ test("the browser's rank agrees with the Go rank on the shared table", async ({ 
 
 test('the dispatch dialog ranks its task, repo and model pickers', async ({ page }) => {
   await signIn(page);
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet).toBeVisible();

@@ -6,7 +6,8 @@ package ui
 // device. The session switcher's Recent view draws them (switcher.go).
 //
 // ⚠ THE AGENTS LIST'S "RECENTLY VIEWED" STRIP THAT ALSO DREW THEM IS GONE
-// (operator ask): the switcher docked at the bottom of the list supersedes it.
+// (operator ask), as is that page; home (HomeHref) opens the newest of them
+// when there is no chief.
 
 // RecentRef is one recently opened entry, as the store keys it: an agent by id
 // (Mirror zero), or a mirrored entry by its address (AgentID 0).

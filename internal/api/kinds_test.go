@@ -80,19 +80,29 @@ func postDispatch(t *testing.T, s *Server, h http.Handler, form url.Values) *htt
 	return rec
 }
 
+// dispatched is whether a plain (non-htmx) POST /agents answered as a
+// successful dispatch does: 303 to the agent page of the row it just created
+// (store's newest) — the bare /agents/<name>, since these fixtures record no
+// session. (It answered 200 with the retired Agents list.)
+func dispatched(rec *httptest.ResponseRecorder, store *preflightStore) bool {
+	rows := store.rows()
+	return rec.Code == http.StatusSeeOther && len(rows) > 0 &&
+		rec.Header().Get("Location") == "/agents/"+rows[len(rows)-1].Name
+}
+
 // TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount: the account is chosen
 // BEFORE the row and stored on it; a pin reaches the pool verbatim.
 func TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount(t *testing.T) {
 	var pins []string
 	s, h, store := kindsServer(t, stubKinds{pick: "work", pins: &pins})
 
-	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}}); !dispatched(rec, store) {
 		t.Fatalf("auto: %d %s", rec.Code, rec.Body)
 	}
-	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "cc_account": {"personal"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "cc_account": {"personal"}}); !dispatched(rec, store) {
 		t.Fatalf("pin: %d %s", rec.Code, rec.Body)
 	}
-	if rec := postDispatch(t, s, h, url.Values{}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{}); !dispatched(rec, store) {
 		t.Fatalf("no kind: %d %s", rec.Code, rec.Body)
 	}
 	rows := store.rows()
@@ -114,7 +124,7 @@ func TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount(t *testing.T) {
 // refuses, it is a 409 before any row exists.
 func TestADispatchCanMakeAClaudeCodeAgentAPoolWorker(t *testing.T) {
 	s, h, store := kindsServer(t, stubKinds{pick: "work"})
-	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "worker_pool": {"reviewers"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "worker_pool": {"reviewers"}}); !dispatched(rec, store) {
 		t.Fatalf("claude-code worker: %d %s", rec.Code, rec.Body)
 	}
 	if rows := store.rows(); len(rows) != 1 || rows[0].WorkerPool != "reviewers" || rows[0].Kind != agents.KindClaudeCode {
@@ -146,7 +156,7 @@ func TestAClaudeCodeDispatchKeepsItsRepository(t *testing.T) {
 	connectRepos(t, s, "example-org/tide")
 	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"},
 		"repo": {"example-org/tide"}, "repo_branch": {"release/3"}})
-	if rec.Code != http.StatusOK {
+	if !dispatched(rec, store) {
 		t.Fatalf("claude-code + repo: %d %s", rec.Code, rec.Body)
 	}
 	rows := store.rows()
@@ -174,7 +184,7 @@ func TestAClaudeCodeDispatchTakesOnlyAConnectedRepository(t *testing.T) {
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchNoGitHub) || len(store2.rows()) != 0 {
 		t.Fatalf("no GitHub connection: %d %q rows=%d", rec.Code, rec.Body, len(store2.rows()))
 	}
-	if rec := postDispatch(t, s, h, url.Values{"note_text": {"t"}, "repo": {"stranger/x"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"note_text": {"t"}, "repo": {"stranger/x"}}); !dispatched(rec, store) {
 		t.Fatalf("gateway + unconnected repo (unchanged): %d %s", rec.Code, rec.Body)
 	}
 }

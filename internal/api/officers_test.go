@@ -617,12 +617,12 @@ func TestADeclaredOfficersInstanceCannotBeDeleted(t *testing.T) {
 			t.Log(r.logs.String())
 		}
 	})
-	body := getOwed(t, r.s, r.h, "/ui/agents").Body.String()
-	if card := cardChunk(t, body, inst.ID); strings.Contains(card, `hx-delete="/agents/`+itoa(inst.ID)+`"`) {
-		t.Error("the officer instance's card offers Delete")
+	// The agent page's ⋯ menu (the retired list card's) reads the same rule.
+	if deletableOnPage(t, r.s, inst.ID) {
+		t.Error("the officer instance's menu offers Delete")
 	}
-	if card := cardChunk(t, body, officerOrdinaryID); !strings.Contains(card, `hx-delete="/agents/`+itoa(officerOrdinaryID)+`"`) {
-		t.Error("control: an ordinary agent's card lost Delete")
+	if !deletableOnPage(t, r.s, officerOrdinaryID) {
+		t.Error("control: an ordinary agent's menu lost Delete")
 	}
 }
 

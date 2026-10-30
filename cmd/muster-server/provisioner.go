@@ -260,8 +260,8 @@ func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
 // deliverer sees exactly the instances the lifecycle routes see.
 //
 // onChange is called with an agent's name whenever the deliverer changes what that
-// agent's card shows; buildApp passes api.Server.BroadcastAgentChanged so an open
-// Agents list re-renders (agentkickoff.Config.OnChange).
+// agent's page shows; buildApp passes api.Server.BroadcastAgentChanged so an open
+// agent page's strip and the sidebar re-fetch (agentkickoff.Config.OnChange).
 func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string), logger *log.Logger) (*agentkickoff.Deliverer, error) {
 	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
 		return nil, nil

@@ -110,20 +110,3 @@ func TestTheBoardCardPrintsTheTimeTheBoardIsOrderedBy(t *testing.T) {
 		t.Errorf("a re-rendered board card without ActivityAt does not print UpdatedAt %s", ts(n.UpdatedAt))
 	}
 }
-
-// TestTheAgentsListRefreshesOnServerEvents: the list re-renders (and so
-// re-orders) on the SSE events that change it, not only on a local action's
-// HX-Trigger.
-func TestTheAgentsListRefreshesOnServerEvents(t *testing.T) {
-	html := renderNode(t, AgentsPanel(true, featuresAllOn))
-	i := strings.Index(html, `id="agents-list"`)
-	if i < 0 {
-		t.Fatal("instrument check FAILED: no #agents-list")
-	}
-	list := html[i : i+strings.Index(html[i:], ">")]
-	for _, ev := range []string{"sse:agent.changed from:body", "sse:chat.reply from:body", "agents:changed from:body"} {
-		if !strings.Contains(list, ev) {
-			t.Errorf("#agents-list does not re-render on %q", ev)
-		}
-	}
-}
