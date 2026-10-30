@@ -35,9 +35,6 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// redStub disables this change's behaviour: the tests-first commit (red).
-const redStub = true
-
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
 //
 // ⚠ IT IS NOT 8104. That is the permission router's port, and the two services
@@ -1099,9 +1096,6 @@ func parsePoolDeployKeys(v string) (map[string]agentspec.PoolDeployKey, error) {
 // egressLockedPools is every egress-locked pool, sorted: the listed ones and
 // every deploy-key pool (agentspec.PoolEgressLocked's set).
 func (c config) egressLockedPools() []string {
-	if redStub {
-		return nil
-	}
 	set := map[string]bool{}
 	for _, p := range c.AgentCCEgressLockedPools {
 		set[p] = true
@@ -1244,9 +1238,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
 	c.AgentCCPoolDeployKeys, c.AgentCCPoolDeployKeysErr = parsePoolDeployKeys(getenv(envAgentCCPoolDeployKeys))
-	if !redStub {
-		c.AgentCCEgressLockedPools = splitList(getenv(envAgentCCEgressLockedPools))
-	}
+	c.AgentCCEgressLockedPools = splitList(getenv(envAgentCCEgressLockedPools))
 	if len(c.AgentCCAccountNames) > 0 {
 		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
 		for _, name := range c.AgentCCAccountNames {
@@ -2261,7 +2253,7 @@ func (c config) validateClaudeCodeKind() error {
 				"deploy key. Add %s to %s, or unset it", envAgentCCPoolDeployKeys, envAgentKinds, agents.KindClaudeCode,
 				agents.KindClaudeCode, envAgentKinds)
 		}
-		if !redStub && len(c.AgentCCEgressLockedPools) > 0 {
+		if len(c.AgentCCEgressLockedPools) > 0 {
 			return fmt.Errorf("%s is set but %s does not include %s: there are no worker pools for it to lock. "+
 				"Add %s to %s, or unset it", envAgentCCEgressLockedPools, envAgentKinds, agents.KindClaudeCode,
 				agents.KindClaudeCode, envAgentKinds)
@@ -2272,7 +2264,7 @@ func (c config) validateClaudeCodeKind() error {
 		return c.AgentCCPoolDeployKeysErr
 	}
 	for _, p := range c.AgentCCEgressLockedPools {
-		if !redStub && !agents.ValidWorkerPool(p) {
+		if !agents.ValidWorkerPool(p) {
 			return fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
 				"letter or digit", envAgentCCEgressLockedPools, p)
 		}

@@ -12,9 +12,6 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// redStub disables this change's behaviour: the tests-first commit (red).
-const redStub = true
-
 // The claude-code kind's profile: the Claude Code pod (cmd/ccd + the pinned CLI,
 // images/claude-code-agent).
 //
@@ -238,7 +235,7 @@ const (
 // (closed, loud). Written when the spec is applied (dispatch, Start, reapply).
 func PoolEgressLocked(a agents.Agent, cfg Config) bool {
 	cc := cfg.ClaudeCode
-	if redStub || cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
+	if cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
 		return false
 	}
 	_, keyed := cc.PoolDeployKeys[a.WorkerPool]
