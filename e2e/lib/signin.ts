@@ -38,6 +38,16 @@ async function signedIn(page: Page, origin: string): Promise<boolean> {
   return r.status() >= 300 && r.status() < 400;
 }
 
+// land leaves the page where the form's sign-in leaves it: the origin's home
+// (the form redirects to /, with no ?next=). 🔴 EVERY PATH ENDS THERE, so a
+// test cannot pass only because it happens to be its file's first: one that
+// used whatever page signing in left it on worked after the form and timed out
+// after a reused session, which left the page blank (claude-code-polish's
+// desktop 1a, the first run of this helper).
+async function land(page: Page, origin: string): Promise<void> {
+  await page.goto(origin + '/');
+}
+
 export interface SignInOptions {
   // The server's operator password, when it is not the suite's.
   password?: string;
@@ -59,7 +69,7 @@ export async function signIn(page: Page, origin: string = baseURL, opts: SignInO
       await page.context().addCookies(cached);
       if (await signedIn(page, origin)) {
         sessions.set(k, cached);
-        return;
+        return land(page, origin);
       }
       sessions.delete(k);
     } else if (await signedIn(page, origin)) {
@@ -67,7 +77,7 @@ export async function signIn(page: Page, origin: string = baseURL, opts: SignInO
       // a key derived from the password, so the suite's session from another
       // of its servers is good here too). /login would only redirect.
       sessions.set(k, await page.context().cookies(origin));
-      return;
+      return land(page, origin);
     }
   } else {
     // A session the context already holds would send /login straight on.
