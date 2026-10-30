@@ -39,7 +39,6 @@ import (
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/users"
 	"log"
-	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -1629,26 +1628,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					line += fmt.Sprintf(" No worker pool has a deploy key (%s unset): every pool clones and fetches "+
 						"anonymously, so pools serve public repositories only.", envAgentCCPoolDeployKeys)
 				}
-				// Egress-locked pools: listed in MUSTER_AGENT_CC_POOL_EGRESS or given
-				// a deploy key. Without a name-filtering driver their workers are
-				// refused at dispatch/Start, which the line says.
-				if a.cfg.poolEgressLocked() {
-					locked := map[string]bool{}
-					for p := range a.cfg.AgentCCPoolEgress {
-						locked[p] = true
-					}
-					for p := range a.cfg.AgentCCPoolDeployKeys {
-						locked[p] = true
-					}
-					pools := slices.Sorted(maps.Keys(locked))
-					how := "a CiliumNetworkPolicy per worker (" + envAgentNetpolFQDN + "=cilium) allows TCP 443 to [" +
-						strings.Join(agentspec.DefaultPoolEgressHosts, ", ") + "] plus the pool's own hosts, and DNS for those and cluster names only"
-					if a.cfg.AgentNetpolFQDN != netpolFQDNCilium {
-						how = "but " + envAgentNetpolFQDN + " is unset, so their workers are REFUSED at dispatch and Start " +
-							"(never started open)"
-					}
-					line += fmt.Sprintf(" Egress LOCKED for worker pools [%s] (%s, and every deploy-key pool): %s; applied "+
-						"when a worker's spec is applied.", strings.Join(pools, ", "), envAgentCCPoolEgress, how)
+				// Egress-locked pools: listed in MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS
+				// or given a deploy key. muster removes their egress and labels
+				// them; the operator's cluster policy is their only allow.
+				if pools := a.cfg.egressLockedPools(); len(pools) > 0 {
+					line += fmt.Sprintf(" Egress LOCKED for worker pools [%s] (%s, and every deploy-key pool): their "+
+						"NetworkPolicy allows no DNS and no public address, and their pods carry %s=%s and %s=<pool>, so "+
+						"the operator's cluster policy selecting that label is their ONLY egress allow (none = nothing "+
+						"public); applied when a worker's spec is applied.", strings.Join(pools, ", "),
+						envAgentCCEgressLockedPools, agentspec.LabelEgress, agentspec.EgressLocked, agentspec.LabelPool)
 				}
 			}
 			l.Print(line)

@@ -4,11 +4,8 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"os"
 	"slices"
-	"strings"
 
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -447,55 +444,7 @@ func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, erro
 	dc := k8sDriverConfig(cfg, logger)
 	dc.Client = client
 	dc.RESTConfig = rc
-	if dc.NetworkPolicy != nil && dc.NetworkPolicy.CiliumFQDN {
-		dyn, err := dynamic.NewForConfig(rc)
-		if err != nil {
-			return nil, fmt.Errorf("kubernetes dynamic client: %w", err)
-		}
-		dc.Dynamic = dyn
-		rcBytes, err := os.ReadFile(resolvConfPath)
-		if err != nil {
-			return nil, fmt.Errorf("%s=%s: reading the cluster's DNS domain from %s: %w", envAgentNetpolFQDN,
-				netpolFQDNCilium, resolvConfPath, err)
-		}
-		domain, err := clusterDomainFromResolvConf(string(rcBytes), cfg.AgentNetpolFromNS)
-		if err != nil {
-			return nil, fmt.Errorf("%s=%s: %w", envAgentNetpolFQDN, netpolFQDNCilium, err)
-		}
-		dc.NetworkPolicy.ClusterDomain = domain
-	}
 	return k8sdriver.New(dc)
-}
-
-// resolvConfPath is this pod's resolver configuration, whose search list names
-// the cluster's DNS domain.
-const resolvConfPath = "/etc/resolv.conf"
-
-// clusterDomainFromResolvConf reads the cluster's DNS domain off a pod's
-// resolv.conf: the kubelet writes the search list `<ns>.svc.<domain>
-// svc.<domain> <domain>`, so the domain is what follows `<ns>.svc.` in the entry
-// for this pod's own namespace ns. That entry is required (not any `svc.` one):
-// an operator-added search domain cannot then be mistaken for the cluster's.
-//
-// 🔴 THERE IS NO DEFAULT. A wrong domain leaves every in-cluster name a
-// name-filtered pod looks up unresolvable, so a resolv.conf this cannot read is
-// a boot refusal, not a guess.
-func clusterDomainFromResolvConf(content, ns string) (string, error) {
-	prefix := ns + ".svc."
-	for _, line := range strings.Split(content, "\n") {
-		f := strings.Fields(line)
-		if len(f) == 0 || f[0] != "search" {
-			continue
-		}
-		for _, d := range f[1:] {
-			d = strings.TrimSuffix(strings.ToLower(d), ".")
-			if dom := strings.TrimPrefix(d, prefix); dom != d && dom != "" {
-				return dom, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("the resolver's search list has no %q<domain> entry, so the cluster's DNS domain cannot be "+
-		"read (is %s this pod's namespace, and does the pod use the cluster's DNS?)", prefix, envAgentNetpolFromNS)
 }
 
 // k8sDriverConfig maps this binary's configuration onto the driver's, WITHOUT
@@ -556,9 +505,6 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 		dc.NetworkPolicy = &k8sdriver.NetworkPolicyConfig{
 			ControllerNamespace: cfg.AgentNetpolFromNS,
 			ControllerPodLabels: labels,
-			// MUSTER_AGENT_NETPOL_FQDN=cilium: egress-locked pools' workers get
-			// a CiliumNetworkPolicy. Unset, the driver refuses them.
-			CiliumFQDN: cfg.AgentNetpolFQDN == netpolFQDNCilium,
 		}
 		// 🔴 A deploy-key pool's Secret is kept in muster's OWN namespace (the
 		// one this variable names) and copied into each worker's namespace
@@ -668,5 +614,5 @@ func claudeCodeSpecConfig(cfg config) *agentspec.ClaudeCodeConfig {
 	}
 	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage,
 		BypassPools: slices.Clone(cfg.AgentCCBypassPools), PoolDeployKeys: maps.Clone(cfg.AgentCCPoolDeployKeys),
-		PoolEgress: maps.Clone(cfg.AgentCCPoolEgress)}
+		EgressLockedPools: slices.Clone(cfg.AgentCCEgressLockedPools)}
 }

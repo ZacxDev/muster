@@ -375,36 +375,12 @@ type Network struct {
 	// omitempty: every spec that keeps cluster DNS marshals byte-identically to
 	// before the field existed (the agentspec goldens pin that).
 	NoClusterDNS bool `json:",omitempty"`
-	// PublicEgressHosts narrows the public egress BY NAME: with it set, the
-	// instance may open PublicEgressTCPPorts to THESE host names only (exact
-	// names, lower case, no wildcard), not to every public address, and its name
-	// resolution answers only for these names and the cluster's own. Empty is
-	// the address-range rule above, unchanged.
-	//
-	// 🔴 A DRIVER THAT CANNOT FILTER BY NAME REFUSES IT (Capabilities.
-	// NetworkEgressByName): dropping it would start the instance with "any
-	// public address" while the spec says "these hosts".
-	//
-	// ⚠ SETTING IT WITHOUT Isolate, WITHOUT a public port, OR WITH NoClusterDNS
-	// IS REFUSED: each of those leaves the list restricting nothing, or nothing
-	// reachable.
-	//
-	// omitempty, for NoClusterDNS's reason.
-	PublicEgressHosts []string `json:",omitempty"`
 }
 
 // IsZero reports whether nothing is declared.
 func (n Network) IsZero() bool {
-	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0 && !n.NoClusterDNS &&
-		len(n.PublicEgressHosts) == 0
+	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0 && !n.NoClusterDNS
 }
-
-// egressHostName is an exact DNS name: lower-case labels of [a-z0-9-], not
-// starting or ending with '-', at least two labels. No wildcard.
-var egressHostName = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
-
-// ValidEgressHost reports whether h is a host name PublicEgressHosts accepts.
-func ValidEgressHost(h string) bool { return len(h) <= 253 && egressHostName.MatchString(h) }
 
 // Spec is the complete desired state of one instance.
 //
@@ -713,29 +689,6 @@ func (s Spec) Validate() error {
 	if !s.Network.Isolate && s.Network.NoClusterDNS {
 		return fmt.Errorf("%w: network sets NoClusterDNS without Isolate; on an unconfined instance that "+
 			"restricts nothing and reads as if it did", ErrInvalidSpec)
-	}
-	if len(s.Network.PublicEgressHosts) > 0 {
-		switch {
-		case !s.Network.Isolate:
-			return fmt.Errorf("%w: network names public egress hosts %v without Isolate; on an unconfined instance "+
-				"that list restricts nothing and reads as if it did", ErrInvalidSpec, s.Network.PublicEgressHosts)
-		case len(s.Network.PublicEgressTCPPorts) == 0:
-			return fmt.Errorf("%w: network names public egress hosts %v but no public egress port; the hosts would "+
-				"be reachable on nothing", ErrInvalidSpec, s.Network.PublicEgressHosts)
-		case s.Network.NoClusterDNS:
-			return fmt.Errorf("%w: network names public egress hosts %v and NoClusterDNS; the hosts could not be "+
-				"resolved", ErrInvalidSpec, s.Network.PublicEgressHosts)
-		}
-		hosts := map[string]bool{}
-		for _, h := range s.Network.PublicEgressHosts {
-			if !ValidEgressHost(h) {
-				return fmt.Errorf("%w: network public egress host %q is not an exact lower-case DNS name", ErrInvalidSpec, h)
-			}
-			if hosts[h] {
-				return fmt.Errorf("%w: network public egress host %q appears twice", ErrInvalidSpec, h)
-			}
-			hosts[h] = true
-		}
 	}
 	ctrl := map[int]bool{}
 	for _, p := range s.Network.ControllerEgressTCPPorts {

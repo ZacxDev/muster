@@ -74,11 +74,11 @@ func TestAPrivatePoolWorkerMountsItsDeployKeyInItsKeyHolder(t *testing.T) {
 		}
 	}
 	if err := provision.CheckSpec(provision.Capabilities{Secrets: true, Files: true, Persistence: true, ResourceLimits: true,
-		NetworkIsolation: true, NetworkEgressByName: true, KeyHolder: true}, spec); err != nil {
+		NetworkIsolation: true, KeyHolder: true}, spec); err != nil {
 		t.Fatalf("the spec does not pass CheckSpec: %v", err)
 	}
 	if err := provision.CheckSpec(provision.Capabilities{Secrets: true, Files: true, Persistence: true, ResourceLimits: true,
-		NetworkIsolation: true, NetworkEgressByName: true}, spec); err == nil {
+		NetworkIsolation: true}, spec); err == nil {
 		t.Fatal("a driver that cannot run a key holder accepted the spec")
 	}
 }

@@ -58,19 +58,12 @@ func internalNetworkPolicy() *NetworkPolicyConfig {
 // internalDriver is configured for network isolation, which is the shape of a
 // deployment that enables an isolated kind: every spec that declares NO isolation
 // still goes through a driver that could render a policy, and must get none.
-//
-// It can also filter egress by name (CiliumFQDN, over a fake dynamic client:
-// d.cfg.Dynamic), so a spec naming no hosts goes through a driver that could
-// write a CiliumNetworkPolicy, and must get none.
 func internalDriver(t *testing.T) (*Driver, *fake.Clientset) {
 	t.Helper()
 	cs := fake.NewClientset()
 	empty := ""
-	np := internalNetworkPolicy()
-	np.CiliumFQDN = true
-	np.ClusterDomain = "cluster.example"
 	d, err := New(Config{Client: cs, Namespace: internalNS, WorkspaceStorageClass: &empty,
-		NetworkPolicy: np, Dynamic: newFakeDynamic()})
+		NetworkPolicy: internalNetworkPolicy()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -218,20 +211,6 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 			act: func(d *Driver) error {
 				s := internalSpec("np")
 				s.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443}}
-				return d.Create(ctx, s)
-			},
-		},
-		{
-			// A stranger's co-named CiliumNetworkPolicy, for networkpolicy's
-			// reason: not adopted, not overwritten.
-			site: "apply/ciliumnetworkpolicy",
-			kind: "ciliumnetworkpolicy",
-			seed: func(*fake.Clientset) {},
-			act: func(d *Driver) error {
-				seedCNP(t, d, internalNS, "cn-egress", internalForeignMeta("cn-egress").Labels)
-				s := internalSpec("cn")
-				s.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443},
-					PublicEgressHosts: []string{"svc.example.test"}}
 				return d.Create(ctx, s)
 			},
 		},
@@ -526,12 +505,11 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// still terminating (a transient). Every OTHER 403 does not come through
 		// here — networkPolicyForbidden names the verb instead.
 		//
-		// The CiliumNetworkPolicy (egress.go) has the NetworkPolicy's two arms,
-		// and the key holder's Secret copy (secretcopy.go) one: each 403 that is
+		// The key holder's Secret copy (secretcopy.go) has one: its 403 that is
 		// not a terminating namespace is named instead, as above.
-		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2, "applyEgressPolicy": 2, "copyKeyHolderSecrets": 1},
+		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2, "copyKeyHolderSecrets": 1},
 		// The create-then-update-if-ours predicate.
-		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1, "applyEgressPolicy": 1, "copyKeyHolderSecrets": 1},
+		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1, "copyKeyHolderSecrets": 1},
 		// The create-only-if-ours predicate: a bound claim, immutable in the
 		// fields that matter.
 		"createOwned": {"apply": 1},
@@ -542,9 +520,7 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// Destroy's two: the loop over the six satellites, and the NetworkPolicy,
 		// which is separate because it is deleted LAST and only when the driver
 		// is configured for isolation.
-		// The CiliumNetworkPolicy's delete is the NetworkPolicy's companion,
-		// in its own function.
-		"deleteIfOwned": {"apply": 3, "Destroy": 2, "deleteEgressPolicy": 1},
+		"deleteIfOwned": {"apply": 3, "Destroy": 2},
 		// The predicate itself. Every by-name path that reads, writes or
 		// deletes reaches exactly one of these.
 		"owned": {

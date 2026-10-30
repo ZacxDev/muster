@@ -56,8 +56,8 @@ it names, or one muster chooses from a named **worker pool**.
 >
 > **Not isolated:** the turn runs in the worker's pod with the worker's Claude
 > account, its network (any public HTTPS host — or, on an
-> [egress-locked pool](#a-pools-egress-lock), GitHub, the Anthropic API and the
-> pool's listed hosts only) and its volume. Every other file
+> [egress-locked pool](#a-pools-egress-lock), what the operator's cluster
+> policy allows) and its volume. Every other file
 > in the commit is the commit's — `CLAUDE.md` / `AGENTS.md` below the root
 > (instructions the CLI reads as it works there), build scripts, tests,
 > dependencies — and the turn may run them if the prompt leads it there. The
@@ -288,10 +288,10 @@ nothing else changes: no GitHub grant, no proxy, no token.
    muster copies it into each worker's namespace (below); do not copy it there
    yourself — a Secret of that name muster did not make is refused, never
    overwritten.
-3. Set `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS=<pool>=<owner>/<name>:<secret>` and
-   `MUSTER_AGENT_NETPOL_FQDN=cilium` ([configuration](configuration.md); the
-   pool is [egress-locked](#a-pools-egress-lock), which needs it) and restart
-   muster.
+3. Set `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS=<pool>=<owner>/<name>:<secret>`
+   ([configuration](configuration.md)) and restart muster. The pool is
+   [egress-locked](#a-pools-egress-lock): ship its cluster egress policy
+   first, or its workers reach nothing public.
 4. Create the pool's workers on that repository (Start an existing one again to
    give it the mount).
 
@@ -386,32 +386,95 @@ refreshed in a running pod).
 
 ### A pool's egress lock
 
-A worker of a pool with a deploy key, or of a pool listed in
-`MUSTER_AGENT_CC_POOL_EGRESS` ([configuration](configuration.md)), may reach
-on the public internet **only**:
+Every pool with a deploy key, and every pool listed in
+`MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS` ([configuration](configuration.md)), is
+**egress-locked** — the officer lock (docs/officers.md "The instance's
+network"), applied to a pool's workers. muster does two things, and only two:
 
-- GitHub: `github.com`, `api.github.com`, `codeload.github.com`,
-  `ssh.github.com` (port 443) and `objects.githubusercontent.com`;
-- the Anthropic API: `api.anthropic.com` (the CLI's inference, its WebFetch
-  domain check and token use);
-- the hosts listed for the pool (an HQ host, say);
+- **It removes egress.** The worker's NetworkPolicy keeps its ingress rule
+  (from muster's pods) and, when the connector store is offered, egress to
+  muster's connect port — and has **no DNS rule and no "any public address on
+  443" rule**. Network plugins union allows, so either rule would widen
+  whatever the cluster's policy narrows.
+- **It labels the pod**: `muster.agent/pool=<pool>` and
+  `muster.agent/egress=locked` (only locked workers carry them; every other
+  pod's labels are unchanged). The pod also gets
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the CLI does not try its
+  optional hosts (telemetry and error-report intake, the auto-updater,
+  release notes).
 
-each on TCP 443, with name resolution answered only for those names and the
-cluster's own. muster's connect port stays reachable when the connector store
-is offered (the policy's controller rule, as for every claude-code agent). The
-pod also gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the CLI does not
-try its optional hosts (telemetry and error-report intake, the auto-updater,
-release notes), which are unreachable.
+🔴 **The allowlist is the operator's cluster policy, not muster's.** A policy
+selecting `muster.agent/egress=locked` is the only thing that lets a locked
+worker resolve a name or reach a host. Without one, a locked worker reaches
+nothing public and every turn fails — closed and loud. On Cilium, a
+`CiliumClusterwideNetworkPolicy` (clusterwide, because muster creates the
+worker namespaces itself):
 
-On Kubernetes this is a `CiliumNetworkPolicy` per worker (`<agent>-egress`:
-DNS through Cilium's proxy with `rules.dns`, and `toFQDNs` by exact name),
-written before the pod, with the worker's NetworkPolicy keeping its ingress
-and controller rules but losing its DNS and "any public address" rules —
-network plugins union allows, so either would widen the Cilium policy back.
-It needs `MUSTER_AGENT_NETPOL_FQDN=cilium` and RBAC on
-`ciliumnetworkpolicies.cilium.io`; without either, the worker is **refused**
-at dispatch or Start, never started open. A worker started by an older muster
-keeps its old policy until its next Stop → Start.
+```yaml
+# Egress for muster's egress-locked pool workers: DNS for the allowed names
+# and cluster-internal names only, and those hosts on 443.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: muster-egress-locked-workers
+spec:
+  endpointSelector:
+    matchLabels:
+      # The driver's ownership pair, so a pod someone else labels
+      # egress=locked gets nothing from this policy.
+      app.kubernetes.io/managed-by: muster
+      app.kubernetes.io/name: muster-agent
+      muster.agent/egress: locked
+  enableDefaultDeny:
+    ingress: false   # ingress stays muster's NetworkPolicy
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchName: github.com
+              - matchName: api.github.com
+              - matchName: codeload.github.com
+              - matchName: ssh.github.com
+              - matchName: objects.githubusercontent.com
+              - matchName: api.anthropic.com
+              # Your cluster's DNS domain (the kubelet's clusterDomain): the
+              # search-path expansions every lookup is tried with first under
+              # ndots:5. `**.` is multi-level; `*.` matches one label only.
+              - matchPattern: "**.CLUSTER_DOMAIN"
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: api.github.com
+        - matchName: codeload.github.com
+        - matchName: ssh.github.com          # a deploy-key holder's SSH, on 443
+        - matchName: objects.githubusercontent.com
+        - matchName: api.anthropic.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+```
+
+Why those hosts: GitHub for the clone, a job's anonymous fetch, the REST API,
+archives and raw objects, and SSH over 443 (`ssh.github.com`, the key
+holder's); `api.anthropic.com` for the CLI's inference, its WebFetch domain
+check and its token use. Add a pool's own hosts (an HQ, say) to both lists; to
+give pools different allowlists, select `muster.agent/pool` as well.
+
+⚠ **A worker keeps the policy it was started with.** The lock and the labels
+are written when its spec is applied (dispatch, Start, reapply); a worker
+started by an older muster keeps its public-443 rule until Stop → Start.
+Check with `kubectl -n <worker namespace> get networkpolicy -o yaml`: the
+egress list has no `ipBlock` and no port 53.
 
 What it still allows: anything those hosts accept. A session can push what it
 reads to a GitHub repository or gist of an attacker's, or call the Anthropic
