@@ -2,9 +2,10 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
+import { Browser, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, hookToken, listUxPort, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, hookToken, listUxPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
@@ -203,18 +204,6 @@ test.afterAll(async () => {
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
-
 // row is one of this spec's sidebar rows: a window by its tmux session, an
 // agent by its page.
 function row(page: Page, key: string): Locator {
@@ -240,7 +229,7 @@ const NAV_ORDER = ['luxnow', askAgent, 'luxq', draftAgent, freshAgent, 'luxorang
 // openList signs in, opens a page with the sidebar and shows its list (the
 // drawer opened on a phone), and waits until every row of this spec is drawn.
 async function openList(page: Page, at = '/account') {
-  await login(page);
+  await signIn(page, origin);
   if (!asked) {
     await askQuestion();
     asked = true;
@@ -372,7 +361,7 @@ for (const vp of [
     // another page"). It went to the Agents list; that page is retired, and
     // home (`/`) now opens a session — which must not be the agent just left.
     test('Mark complete on an agent page goes back out of the agent (with JavaScript)', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(origin + `/agents/${doneAgent(vp.name, true)}`);
       const btn = page.getByRole('button', { name: 'Mark complete' });
       await expect(btn).toBeVisible({ timeout: 20_000 });
@@ -397,9 +386,7 @@ async function noJS(browser: Browser, use: object, fn: (page: Page) => Promise<v
   const ctx = await browser.newContext({ ...use, javaScriptEnabled: false, baseURL: origin });
   try {
     const p = await ctx.newPage();
-    await p.goto(origin + '/login');
-    await p.fill('#muster-password', password);
-    await Promise.all([p.waitForURL((u) => !u.pathname.startsWith('/login')), p.click('button[type=submit]')]);
+    await signIn(p, origin);
     await fn(p);
   } finally {
     await ctx.close();

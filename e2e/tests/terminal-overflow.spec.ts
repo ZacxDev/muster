@@ -1,6 +1,7 @@
 import { request as pwRequest, CDPSession, Page, WebSocket as PWWebSocket } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, overflowPort, password, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, overflowPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 
@@ -42,9 +43,7 @@ test.afterAll(async () => {
 });
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
 async function agentNames(): Promise<Set<string>> {

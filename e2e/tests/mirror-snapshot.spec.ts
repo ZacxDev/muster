@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { Page, WebSocketRoute } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { clsInit, readCls, settle } from '../lib/cls';
-import { mirrorSnapPort, password } from '../lib/env';
+import { mirrorSnapPort } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, mkchat, MirrorRig } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -644,11 +644,6 @@ test('signing out deletes every snapshot in the browser', async ({ page }) => {
   // Signed in again: the window opens cold.
   await rig.login(page);
   await page.goto(origin + '/tasks');
-  if (new URL(page.url()).pathname === '/login') {
-    await page.fill('#muster-password', password);
-    await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-    await page.goto(origin + '/tasks');
-  }
   const h = await hold(page, '@3');
   await page.goto(origin + viewOf('@3'));
   await page.waitForTimeout(1500);

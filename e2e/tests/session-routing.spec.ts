@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { APIRequestContext, request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, hookToken, password, repoRoot, routingConnectPort, routingPort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, hookToken, repoRoot, routingConnectPort, routingPort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -117,9 +118,7 @@ async function mcpCall(name: string, args: Record<string, unknown>): Promise<{ t
 test('a routed message reaches the mirrored session, its answer is auto-approved and the plugin sends it once', async ({ page }) => {
   test.setTimeout(180_000);
   // The owner signs in and mints the plugin's token on /plugins.
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await page.goto(origin + '/plugins');
   await page.fill('#plugin-name', 'route-inbox');
   await page.fill('#plugin-label', 'Route inbox');

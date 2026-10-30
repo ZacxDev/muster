@@ -1,6 +1,7 @@
 import { Page } from '@playwright/test';
 import { test, expect, expectShellShows, navTabKey } from '../lib/fixtures';
-import { connectPort, connectorsPort, password, versionA } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { connectPort, connectorsPort, versionA } from '../lib/env';
 import { openMore } from '../lib/nav';
 import { startServer, Running } from '../lib/server';
 
@@ -94,9 +95,7 @@ test.describe('a shell with a second tab (the connector store on)', () => {
   });
 
   async function login(page: Page) {
-    await page.goto(origin + '/login');
-    await page.fill('#muster-password', password);
-    await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+    await signIn(page, origin);
   }
 
   // INVARIANT GUARD, not regression coverage: this held before the fix too. It

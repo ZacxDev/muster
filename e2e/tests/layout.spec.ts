@@ -1,7 +1,8 @@
 import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
 import { Page } from '@playwright/test';
 import { openDispatchSheet } from '../lib/dispatch';
-import { layoutDispatchPort, password, versionA } from '../lib/env';
+import { layoutDispatchPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // Phone-width layout at the narrowest common Android width (360px).
@@ -28,16 +29,12 @@ test.afterAll(async () => {
 
 // signInDispatch leaves this page signed in on the dispatching server's
 // /tasks. (Not /agents: the Agents list page is retired, and /agents is home's
-// redirect to some session there.) The shared server's session cookie is scoped to the host, not the
-// port, and both servers share the suite's password, so it is usually already
-// accepted here; the form is filled only when the server asks for it.
+// redirect to some session there.) The shared server's session cookie is scoped
+// to the host, not the port, and both servers share the suite's password, so
+// lib/signin.ts usually finds it already accepted and drives no form.
 async function signInDispatch(page: Page) {
+  await signIn(page, dorigin);
   await page.goto(dorigin + '/tasks');
-  if (new URL(page.url()).pathname.startsWith('/login')) {
-    await page.fill('#muster-password', password);
-    await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-    await page.goto(dorigin + '/tasks');
-  }
   expect(new URL(page.url()).pathname, 'signed in on the dispatching server').toBe('/tasks');
 }
 

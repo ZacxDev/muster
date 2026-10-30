@@ -2,9 +2,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page } from '@playwright/test';
+import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dsn, mirrorChatPort, password, repoRoot } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { dsn, mirrorChatPort, repoRoot } from '../lib/env';
 import { entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 
 // THE MIRRORED RENDERED VIEW'S CHAT, on a phone with touch (412×915), against a
@@ -40,18 +41,6 @@ test.afterEach(async () => {
 test.afterAll(async () => {
   await rig.stop();
 });
-
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
 
 const rec = (o: object) => JSON.stringify(o) + '\n';
 const prompt = (t: string) => rec({ type: 'user', promptId: 'p', origin: { kind: 'human' }, message: { role: 'user', content: t } });
@@ -92,7 +81,7 @@ const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 // logged the view resolves to this connection. The entry must also be online.
 async function openView(page: Page, transcript: string, extra: NodeJS.ProcessEnv = {}) {
   await startMirror(transcript, extra);
-  await login(page);
+  await signIn(page, origin);
   await expect
     .poll(
       async () => {
@@ -438,7 +427,7 @@ async function unchangedRefresh(page: Page): Promise<{ status: number; swapped: 
 // drawn open again at once, by its row id, without animating.
 test('an opened persisted message stays open across a chat-log refresh', async ({ page }) => {
   makeChatAgent();
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + '/agents/' + chatAgent);
   const log = page.locator('#chat-log');
   const long = log.locator('[data-bubble="user"]').last();
@@ -487,7 +476,7 @@ test('an opened persisted message stays open across a chat-log refresh', async (
 // tap.
 test('the agent chat clamps a long bubble and leaves its short seeded ones alone', async ({ page }) => {
   makeChatAgent();
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + '/agents/' + chatAgent);
   const log = page.locator('#chat-log');
   const seeded = log.locator('[data-bubble="user"]').first();

@@ -2,9 +2,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { Locator, Page } from '@playwright/test';
+import { Locator } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, password, pickersConnectPort, pickersFakePort, pickersPort, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, pickersConnectPort, pickersFakePort, pickersPort, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 
@@ -109,12 +110,6 @@ test.afterAll(async () => {
   await new Promise<void>((r) => (upstream ? upstream.close(() => r()) : r()));
 });
 
-async function signIn(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
-
 // shown is a combobox's visible options, top to bottom, as labels, kept to the
 // fixture set (seeded quick-picks and other rows are someone else's).
 const shown = (box: Locator, mine: string[]) =>
@@ -131,7 +126,7 @@ async function expectRanked(box: Locator, mine: string[], label: string) {
 }
 
 test("the browser's rank agrees with the Go rank on the shared table", async ({ page }) => {
-  await signIn(page);
+  await signIn(page, origin);
   const table = JSON.parse(fs.readFileSync(path.join(repoRoot, 'internal/searchrank/testdata/cases.json'), 'utf8')) as { cases: { label: string; q: string; tier: number; why: string }[] };
   expect(table.cases.length, 'the table has rows').toBeGreaterThan(10);
   const got = await page.evaluate((cases) => cases.map((c) => (window as any).musterRank(c.label, c.q)), table.cases);
@@ -140,7 +135,7 @@ test("the browser's rank agrees with the Go rank on the shared table", async ({ 
 });
 
 test('the dispatch dialog ranks its task, repo and model pickers', async ({ page }) => {
-  await signIn(page);
+  await signIn(page, origin);
   await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
@@ -159,7 +154,7 @@ test('the dispatch dialog ranks its task, repo and model pickers', async ({ page
 });
 
 test('the new-task sheet ranks its directory picker', async ({ page }) => {
-  await signIn(page);
+  await signIn(page, origin);
   await page.goto(origin + '/tasks');
   await page.click('#fab-tasks');
   const box = page.locator('#task-modal [data-combobox][data-combobox-remote="/api/directories"]');

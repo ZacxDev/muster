@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, password, pinsPort } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, pinsPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 import { clsInit, readCls, settle } from '../lib/cls';
@@ -89,13 +90,7 @@ test.afterAll(async () => {
 });
 
 async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   signedIn = await page.context().cookies(origin);
 }
 
