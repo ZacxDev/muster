@@ -108,7 +108,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		PRMail:     &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
 		PRSessions: stubPRSessions{},
 		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
-			Members: plugins.FleetReportMembers{1: "example-member"}, Replies: stubMusterReplier{}},
+			Paths: plugins.FleetReportPaths{"/srv/example-work"}, Replies: stubMusterReplier{}},
 		// NON-ZERO on purpose: an empty allowlist is the feature off.
 		MailResume:      &MailResume{Allow: plugins.RelayAllowlist{1: nil}},
 		MailResumes:     stubMailResumes{},

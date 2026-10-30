@@ -283,7 +283,7 @@ type Extensions struct {
 	PRSessions plugins.PRSessionStore
 
 	// FleetReport is the fleet-report request's configuration
-	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_MEMBERS;
+	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS;
 	// fleet_report.go). nil — the senders unset — is OFF: such a mail is handed
 	// on as any other. The chief's fleet_report tool needs only Focus, and
 	// lists pull requests only with PRSessions.

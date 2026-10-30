@@ -1127,8 +1127,8 @@ without the hook.
 A team console's standup can ask your muster what you worked on. A **fleet-report
 request** is answered by muster itself, in code, with no chief turn and no
 owner in between. Off unless `MUSTER_FLEET_REPORT_SENDERS` lists the asking
-agent-mail address and `MUSTER_FLEET_REPORT_MEMBERS` gives your GitHub login
-([configuration](configuration.md)).
+agent-mail address; `MUSTER_FLEET_REPORT_PATHS` must then name the working
+directories whose sessions a reply may describe ([configuration](configuration.md)).
 
 1. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
    is on the list **and** that the plugin marked `sender_verified`, and whose
@@ -1140,9 +1140,13 @@ agent-mail address and `MUSTER_FLEET_REPORT_MEMBERS` gives your GitHub login
     "window": {"since": "<RFC 3339>", "until": "<RFC 3339>", "zone": "<IANA zone>"}}
    ```
 
-   A body that is not such an object (prose, another `type`, anything after
-   the object), an unverified or unlisted sender, a `no_reply` message, or an
-   owner with no chief: the ordinary delivery, unchanged.
+   `member` is part of the contract but **not checked**: every read runs as
+   the owner the plugin acts for, under row-level security, so the reply is
+   always that owner's, and the asking side binds the reply to its request by
+   its own target, sender and thread. A body that is not such an object
+   (prose, another `type`, anything after the object), an unverified or
+   unlisted sender, a `no_reply` message, or an owner with no chief: the
+   ordinary delivery, unchanged.
 2. **The reply.** muster hands the message to your chief **without a turn**,
    settled (it never becomes an [unrouted ask](#a-message-the-chief-does-not-act-on)),
    and files its reply draft **already approved**; the plugin's next claim
@@ -1152,46 +1156,56 @@ agent-mail address and `MUSTER_FLEET_REPORT_MEMBERS` gives your GitHub login
    ```json
    {"type": "fleet_report", "v": 1, "request_id": "<echoed>", "generated_at": "<RFC 3339>",
     "window": {"since": "…", "until": "…", "zone": "…"},
-    "coverage": {"sessions": 3, "omitted": 0, "hosts": ["<online host>"], "gaps": ["<what did not answer>"]},
-    "sessions": [{"id": "agent:<id> | mirror:<claude session id>", "kind": "agent | mirror",
-      "name": "<window or agent name>", "host": "<host, or empty>", "repo": "<repo> | null",
+    "coverage": {"sessions": 2, "omitted": 0, "hosts": [], "gaps": ["<what was left out or did not answer>"]},
+    "sessions": [{"id": "mirror:<claude session id>", "kind": "mirror",
+      "name": "<window name>", "host": "", "repo": "<repo> | null",
       "state": "active | waiting | ended", "first_seen": "<RFC 3339>", "last_seen": "<RFC 3339>",
       "focus": [{"title": "<focus title>", "at": "<RFC 3339>"}], "prs": ["<owner>/<repo>#<n>"]}]}
    ```
 
    It is the chief's [`fleet_report`](focus.md#the-tools) over the request's
-   window, capped at **16 KiB** (a reply draft's limit, not the tool's 32):
-   the least recently active sessions are left out first and counted in
-   `omitted`. `hosts` are the mirror hosts online now; `gaps` names each
-   offline host (whether its sessions still run is unknown), a store that
-   could not be read, and how many titles and fields were left out or
-   withheld. Every character outside ASCII is written as a JSON `\u` escape.
-3. **An error** — a version other than 1, a malformed field, a window that is
-   empty or longer than 4 days, or a `member` that is not your GitHub login
-   (or no login configured for you) — is the same reply with no data:
+   window, narrowed as below and capped at **16 KiB** (a reply draft's limit,
+   not the tool's 32): the least recently active sessions are left out first
+   and counted in `omitted`. `gaps` counts what was left out or could not be
+   known (sessions whose working directory is unknown, offline mirror hosts,
+   a store or the router that did not answer, titles beyond 20 per session,
+   secret-shaped strings removed). Every character outside ASCII is written
+   as a JSON `\u` escape.
+3. **An error** — a version other than 1, a malformed field, or a window that
+   is empty or longer than 4 days — is the same reply with no data:
 
    ```json
    {"type": "fleet_report", "v": 1, "request_id": "<echoed, or empty>", "error": "<plain English>"}
    ```
 
 🔴 **What leaves muster.** The reply goes to the asking service and, from
-there, to whatever model reads it. It carries ids, names, hosts, repositories,
-focus **titles**, times and pull-request references — never a focus
-description, transcript text, a command or tool output. Each free-text field
-(a name, a repository, a title) passes the reply screen one at a time; a field
-it refuses (an IP address, a dotted host name, a token-shaped string, an
-infrastructure word, one of `MUSTER_FLOW_AGENT_DENY_WORDS`) is replaced by
-`(withheld by muster's reply screen)` and counted in `gaps`. The **host**
-names in `host` and `hosts` are muster's own labels for your mirror hosts and
-are **not** screened: the report exists to say where work ran. ⚠ So a host
-label that is also on `MUSTER_FLOW_AGENT_DENY_WORDS` is still sent.
+there, to whatever model reads it. So, unlike the chief's tool:
 
-🔴 **Accepted risk: a listed sender reads your sessions' titles.** Anyone who
-can send verified agent mail as a listed address gets, for any window of up to
-4 days, every session's name, host and focus titles, without your approval.
-The `member` check makes a request meant for someone else fail loudly; it does
-not protect you from the listed sender itself. List only a sender you would
-show your standup to. Every reply writes `plugin.delivered`,
+- **Only sessions working under `MUSTER_FLEET_REPORT_PATHS`.** muster asks
+  the permission router (`MUSTER_ROUTER_URL`) for each mirrored Claude
+  session's working directory, and describes the session only when that
+  directory is one of the prefixes or inside one, on a path-component
+  boundary (`/srv/example-work` covers `/srv/example-work/app`, never
+  `/srv/example-work-x`). The directory decides; it is never written into the
+  reply. Fail closed: a session whose directory is **unknown** — every
+  dispatched agent, a session the router holds no record of, a router that is
+  not configured or does not answer — is left out and counted in `gaps`; a
+  session **outside** the prefixes is left out and not mentioned at all.
+- **No host labels.** Every `host` is `""` and `hosts` is empty; an offline
+  mirror host is a counted gap, unnamed.
+- **Titles, names and repositories are not screened** for infrastructure
+  words, dotted host names or the deployment's own names — only
+  **secret-shaped** runs (a credential-shaped string, a long token-shaped
+  string) are cut out, replaced by `[removed]`, and counted.
+- Focus **titles** only: never a focus description, transcript text, a
+  command or tool output.
+
+🔴 **Accepted risk: a listed sender reads your work sessions' titles.** Anyone
+who can send verified agent mail as a listed address gets, for any window of
+up to 4 days, the names, repositories and focus titles of every session
+working under your configured prefixes, without your approval. List only a
+sender you would show your standup to, and only the prefixes whose work you
+would show it. Every reply writes `plugin.delivered`,
 `plugin.message.settled`, `plugin.draft.filed` and `plugin.draft.approved`
 (`"auto": true`, `"via": "fleet_report"`) audit rows.
 

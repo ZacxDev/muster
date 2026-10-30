@@ -345,7 +345,9 @@ type RouterPort interface {
 	// handler will use to render another service's data. This method serves the
 	// WRITE path, which genuinely needs the project/cwd to denormalise onto the
 	// link row, and it is a single lookup rather than a batch because its caller
-	// links one session at a time.
+	// links one session at a time. The fleet report's mail door
+	// (fleet_report.go) also reads the cwd, to DECIDE whether a session may be
+	// described; the cwd itself is never rendered.
 	SessionMeta(ctx context.Context, sessionID string) (SessionMeta, bool, error)
 }
 

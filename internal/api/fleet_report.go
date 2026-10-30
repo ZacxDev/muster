@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -37,21 +38,32 @@ import (
 //
 // 🔴 OWNERSHIP IS sessions_overview's. Every read runs under the request's
 // principal — the owner the plugin token acts as — on tables under FORCE
-// row-level security; the request's `member` is checked against that owner
-// (MUSTER_FLEET_REPORT_MEMBERS) and never selects whose rows are read. What
-// differs from sessions_overview is only the liveness filter (none: an ended
-// session is exactly what a standup needs) and the window (the caller's,
-// at most focus.MaxWindowSpan).
+// row-level security. The request's `member` is echoed nowhere and checked
+// nowhere (operator decision): it never selects whose rows are read, and the
+// asking side binds a reply to its request by its own target, sender and
+// thread. What differs from sessions_overview is only the liveness filter
+// (none: an ended session is exactly what a standup needs) and the window
+// (the caller's, at most focus.MaxWindowSpan).
 //
-// 🔴 FOCUS TITLES ONLY. The report leaves muster for an outside service and
-// from there for an LLM provider, so it carries no transcript text, no
-// description, no command and no tool output: ids, names, hosts, repos, focus
-// titles, times and pull-request references. On the mail door every free-text
-// field passes the reply screen (plugins.MusterReplier.FieldRefusal) one at a
-// time — an IP, a dotted host name, a token-shaped string, an infrastructure
-// word or one of the deployment's own names is replaced by fleetWithheld and
-// counted in the coverage's gaps. Ids and timestamps are muster's own and are
-// not screened (a Claude session id is token-shaped by construction).
+// 🔴 WHAT LEAVES MUSTER (the MAIL door, fleetMail; operator decision). The
+// reply goes to an outside service and from there to an LLM provider, so:
+//   - ONLY sessions whose working directory is under a configured prefix
+//     (MUSTER_FLEET_REPORT_PATHS) are described. The directory comes from the
+//     permission router's record of the Claude session (RouterPort.SessionMeta)
+//     and is used for this decision only — it is never written into the reply.
+//     A session whose directory is unknown — every dispatched agent, any
+//     session the router has no record of, a router that is not configured or
+//     does not answer — is LEFT OUT and counted in the coverage's gaps; one
+//     outside the prefixes is left out and not mentioned at all.
+//   - Titles, names and repos go UNSCREENED by the agent-text screen, except
+//     that credential- and token-shaped runs are cut out
+//     (flows.StripSecretShaped) and counted.
+//   - NO HOST LABELS: every session's host is "" and coverage.hosts is empty;
+//     an offline host is a counted gap, unnamed.
+//   - Focus titles only: no description, transcript text, command or tool
+//     output.
+// The chief's TOOL shows the owner everything, hosts included, unfiltered: its
+// answer never leaves muster.
 // ---------------------------------------------------------------------------
 
 const (
@@ -63,8 +75,9 @@ const (
 	fleetReportVersion     = 1
 	// fleetReportMaxIDBytes bounds a request_id.
 	fleetReportMaxIDBytes = 64
-	// fleetWithheld replaces a free-text field the reply screen refused.
-	fleetWithheld = "(withheld by muster's reply screen)"
+	// fleetWithheld replaces a free-text field holding a character nobody
+	// could see (flows.HiddenCharRefusal).
+	fleetWithheld = "(withheld by muster: it holds an invisible character)"
 	// fleetReportVia names this door on audit rows and the settle reason.
 	fleetReportVia = "fleet_report"
 )
@@ -84,18 +97,21 @@ func fleetReportToolDef() agents.ToolDef {
 }
 
 // FleetReport is the fleet-report request's configuration
-// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_MEMBERS) and the store
-// that files muster's own reply. nil — the senders unset — is OFF: every such
-// mail is handed on exactly as before. The fleet_report TOOL needs none of it.
+// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS) and the store that
+// files muster's own reply. nil — the senders unset — is OFF: every such mail
+// is handed on exactly as before. The fleet_report TOOL needs none of it.
 type FleetReport struct {
 	Senders plugins.AgentMailSenders
-	Members plugins.FleetReportMembers
+	Paths   plugins.FleetReportPaths
 	Replies plugins.MusterReplier
 }
 
-// fleetReportOn reports whether the request door is on.
+// fleetReportOn reports whether the request door is on. No prefixes is OFF
+// too, never "describe everything" (the boot refuses that configuration; this
+// holds whatever wires the struct).
 func (s *Server) fleetReportOn() bool {
-	return s.ext.FleetReport != nil && len(s.ext.FleetReport.Senders) > 0 && s.ext.FleetReport.Replies != nil
+	return s.ext.FleetReport != nil && len(s.ext.FleetReport.Senders) > 0 && len(s.ext.FleetReport.Paths) > 0 &&
+		s.ext.FleetReport.Replies != nil
 }
 
 // --- the report -------------------------------------------------------------
@@ -160,18 +176,76 @@ type errFleetReport string
 
 func (e errFleetReport) Error() string { return string(e) }
 
-// fleetScreen is how a free-text field is made fit for the report: the field,
-// or fleetWithheld and false.
-type fleetScreen func(string) (string, bool)
+// fleetMail is how the MAIL door narrows the report (see the file comment);
+// nil is the chief's tool, which shows the owner everything.
+type fleetMail struct {
+	paths plugins.FleetReportPaths
+}
 
-// noFleetScreen keeps every field (the chief's tool: nothing leaves muster).
-func noFleetScreen(s string) (string, bool) { return s, true }
+// The bounds of the working-directory lookups the mail door makes, one per
+// mirrored session, to the permission router. Vars so a test can shorten them.
+var (
+	fleetCwdTimeout  = 3 * time.Second
+	fleetCwdBudget   = 10 * time.Second
+	fleetCwdParallel = 4
+)
+
+// fleetCwds is the working directory the permission router recorded for each
+// Claude session of keys ("" or absent: unknown), and how many lookups failed
+// (an error or the budget, not a 404). A runtime-qualified key ("hermes:…") is
+// not a Claude session id and is never looked up.
+func (s *Server) fleetCwds(ctx context.Context, keys []string) (map[string]string, int) {
+	out := map[string]string{}
+	if s.router == nil {
+		return out, 0
+	}
+	bctx, cancel := context.WithTimeout(ctx, fleetCwdBudget)
+	defer cancel()
+	var mu sync.Mutex
+	failed := 0
+	sem := make(chan struct{}, fleetCwdParallel)
+	var wg sync.WaitGroup
+	for _, k := range keys {
+		if strings.Contains(k, ":") {
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-bctx.Done():
+		}
+		if bctx.Err() != nil {
+			mu.Lock()
+			failed++
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		safeGo(s.logger, "fleet_report: a working-directory lookup", func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			tctx, tcancel := context.WithTimeout(bctx, fleetCwdTimeout)
+			defer tcancel()
+			meta, ok, err := s.router.SessionMeta(tctx, k)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err != nil:
+				failed++
+			case ok:
+				out[k] = meta.Cwd
+			}
+		})
+	}
+	wg.Wait()
+	return out, failed
+}
 
 // buildFleetReport is the report of ctx's principal's sessions with focus
 // activity in [since, until], the chief (exclude) left out, encoded within
-// maxBytes. window is what the report echoes.
+// maxBytes; mail non-nil narrows it for the mail door. window is what the
+// report echoes.
 func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, until time.Time, window fleetWindow,
-	requestID *string, screen fleetScreen, maxBytes int) (string, error) {
+	requestID *string, mail *fleetMail, maxBytes int) (string, error) {
 	if s.ext.Focus == nil {
 		return "", errFleetReport("session focus is off on this muster, so it keeps no session history to report")
 	}
@@ -207,16 +281,23 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 	} else {
 		hv := s.ext.Mirror.Hosts(ctx)
 		sort.Slice(hv, func(i, j int) bool { return hv[i].Host < hv[j].Host })
+		offline := 0
 		for _, h := range hv {
-			if h.Online {
+			switch {
+			case h.Online:
 				hosts = append(hosts, h.Host)
-			} else {
+			case mail != nil:
+				offline++ // never named in a reply
+			default:
 				since := "an unknown time"
 				if !h.OfflineSince.IsZero() {
 					since = h.OfflineSince.UTC().Format(time.RFC3339)
 				}
 				gap("host %s has been offline since %s: whether its sessions are still running is unknown", h.Host, since)
 			}
+		}
+		if offline > 0 {
+			gap("%d mirror host(s) offline: whether their sessions are still running is unknown", offline)
 		}
 		for _, e := range mirror.Ordered(hv) { // most recently active first
 			k := e.SessionKey()
@@ -228,7 +309,7 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 			}
 		}
 	}
-	if hosts == nil {
+	if hosts == nil || mail != nil {
 		hosts = []string{}
 	}
 
@@ -250,7 +331,21 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		prs = got
 	}
 
-	withheld, titlesLeft := 0, 0
+	// The mail door describes only sessions under the configured prefixes.
+	var cwds map[string]string
+	unknownCwd := 0
+	if mail != nil {
+		if s.router == nil {
+			gap("no permission router is configured, so no session's working directory is known and none is described")
+		}
+		var failed int
+		cwds, failed = s.fleetCwds(ctx, mirrorKeys)
+		if failed > 0 {
+			gap("the permission router could not be asked for %d session(s)' working directory", failed)
+		}
+	}
+
+	withheld, secrets, titlesLeft := 0, 0, 0
 	field := func(v string) string {
 		v = flows.NormalizeAgentText(strings.TrimSpace(v))
 		if v == "" {
@@ -260,14 +355,33 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 			withheld++
 			return fleetWithheld
 		}
-		out, ok := screen(v)
-		if !ok {
-			withheld++
+		if mail != nil {
+			var n int
+			v, n = flows.StripSecretShaped(v)
+			secrets += n
 		}
-		return out
+		return v
 	}
 	rows := []fleetSession{}
 	for _, w := range wr.Subjects {
+		if w.Subject.Kind == focus.KindAgent && w.Subject.AgentID() == exclude {
+			continue
+		}
+		if mail != nil {
+			// 🔴 FAIL CLOSED: an agent has no directory under the operator's tree
+			// muster could know; a mirrored session needs the router's record.
+			cwd := ""
+			if w.Subject.Kind == focus.KindMirror {
+				cwd = cwds[w.Subject.Key]
+			}
+			if cwd == "" {
+				unknownCwd++
+				continue
+			}
+			if !mail.paths.Contains(cwd) {
+				continue // outside the prefixes: never described, never counted
+			}
+		}
 		row := fleetSession{ID: w.Subject.String(), Kind: string(w.Subject.Kind), State: "ended",
 			FirstSeen: w.FirstAt.UTC().Format(time.RFC3339), LastSeen: w.LastAt.UTC().Format(time.RFC3339),
 			Focus: []fleetFocus{}, PRs: []string{}}
@@ -275,9 +389,6 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		switch w.Subject.Kind {
 		case focus.KindAgent:
 			id := w.Subject.AgentID()
-			if id == exclude {
-				continue
-			}
 			if a, ok := byAgent[id]; ok {
 				row.Name, repo = firstNonBlank(a.DisplayName, a.Name), a.Repo
 			}
@@ -298,6 +409,9 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		if pending[w.Subject] != nil {
 			row.State = "waiting"
 		}
+		if mail != nil {
+			row.Host = ""
+		}
 		row.Name = field(row.Name)
 		if repo = field(repo); repo != "" {
 			row.Repo = &repo
@@ -317,7 +431,13 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 			g = append(g, fmt.Sprintf("%d older focus title(s) left out (at most %d per session)", titlesLeft, focus.MaxWindowTitles))
 		}
 		if withheld > 0 {
-			g = append(g, fmt.Sprintf("%d field(s) withheld by muster's reply screen", withheld))
+			g = append(g, fmt.Sprintf("%d field(s) withheld (an invisible character)", withheld))
+		}
+		if secrets > 0 {
+			g = append(g, fmt.Sprintf("%d secret-shaped string(s) removed", secrets))
+		}
+		if unknownCwd > 0 {
+			g = append(g, fmt.Sprintf("%d session(s) whose working directory muster does not know were left out", unknownCwd))
 		}
 		if g == nil {
 			g = []string{}
@@ -390,7 +510,7 @@ func (s *Server) toolFleetReport(ctx context.Context, caller agents.Agent, argum
 		return toolErr("%s", why)
 	}
 	w := fleetWindow{Since: since.UTC().Format(time.RFC3339), Until: until.UTC().Format(time.RFC3339)}
-	out, err := s.buildFleetReport(ctx, caller.ID, since, until, w, nil, noFleetScreen, overviewMaxBytes)
+	out, err := s.buildFleetReport(ctx, caller.ID, since, until, w, nil, nil, overviewMaxBytes)
 	if err != nil {
 		return toolErr("%s", err.Error())
 	}
@@ -421,8 +541,9 @@ type fleetReportRequest struct {
 	Type      string          `json:"type"`
 	V         json.RawMessage `json:"v"`
 	RequestID json.RawMessage `json:"request_id"`
-	Member    string          `json:"member"`
-	Window    struct {
+	// Member is read and NOT checked (operator decision; the file comment).
+	Member string `json:"member"`
+	Window struct {
 		Since string `json:"since"`
 		Until string `json:"until"`
 		Zone  string `json:"zone"`
@@ -438,7 +559,6 @@ var ianaZone = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+
 type parsedFleetRequest struct {
 	requestID    string
 	problem      string
-	member       string
 	since, until time.Time
 	window       fleetWindow
 }
@@ -471,10 +591,6 @@ func parseFleetReportRequest(body string) (parsedFleetRequest, bool) {
 		p.problem = fmt.Sprintf("request_id must be a string of 1 to %d bytes of visible text", fleetReportMaxIDBytes)
 		return p, true
 	}
-	if !plugins.ValidGitHubLogin(in.Member) {
-		p.problem = "member must be a GitHub login"
-		return p, true
-	}
 	since, err1 := time.Parse(time.RFC3339, in.Window.Since)
 	until, err2 := time.Parse(time.RFC3339, in.Window.Until)
 	switch {
@@ -489,7 +605,7 @@ func parseFleetReportRequest(body string) (parsedFleetRequest, bool) {
 		p.problem = why
 		return p, true
 	}
-	p.member, p.since, p.until = in.Member, since, until
+	p.since, p.until = since, until
 	p.window = fleetWindow{Since: in.Window.Since, Until: in.Window.Until, Zone: in.Window.Zone}
 	return p, true
 }
@@ -527,22 +643,10 @@ func (s *Server) answerFleetReport(ctx context.Context, p plugins.Plugin, m plug
 	switch {
 	case req.problem != "":
 		body = fleetErrorBody(req.requestID, req.problem)
-	case !s.ext.FleetReport.Members.Is(owner, req.member):
-		// 🔴 NO DATA FOR ANOTHER MEMBER. The reads below would only ever return
-		// this owner's rows (row-level security), so a mismatch is not a leak
-		// path — it is a request sent to the wrong muster, answered as such.
-		body = fleetErrorBody(req.requestID, "this muster reports only its owner's sessions, and member "+req.member+
-			" is not its owner (or the owner's GitHub login is not configured here)")
 	default:
 		id := req.requestID
-		replies := s.ext.FleetReport.Replies
-		screen := func(v string) (string, bool) {
-			if replies.FieldRefusal(v) != "" {
-				return fleetWithheld, false
-			}
-			return v, true
-		}
-		out, err := s.buildFleetReport(ctx, chief.ID, req.since, req.until, req.window, &id, screen, plugins.MaxDraftBytes)
+		out, err := s.buildFleetReport(ctx, chief.ID, req.since, req.until, req.window, &id,
+			&fleetMail{paths: s.ext.FleetReport.Paths}, plugins.MaxDraftBytes)
 		var why errFleetReport
 		switch {
 		case errors.As(err, &why):

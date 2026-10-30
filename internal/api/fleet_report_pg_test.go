@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -20,24 +22,31 @@ import (
 // THE FLEET REPORT (fleet_report.go), through the real server against a real
 // Postgres: a verified, listed sender's fleet_report_request is answered by
 // muster itself with an already-approved reply listing the owner's sessions in
-// the window — ended ones included, another owner's never — and every other
-// mail is handed on exactly as before.
+// the window that work under the configured prefixes — ended ones included,
+// another owner's never, hosts never named — and every other mail is handed on
+// exactly as before.
 //
-// Fixture values are invented and pairwise distinct: the sender, the member's
-// login, the hosts, the session ids and every focus title differ from each
-// other and from every other test's.
+// Fixture values are invented placeholders and pairwise distinct: the sender,
+// the prefix, the session ids and every focus title differ from each other and
+// from every other test's. No real path, host or deny word appears.
 
 const (
 	frSender     = "standup-desk/report-ask"
-	frMember     = "Example-Member"
+	frPrefix     = "/srv/example-work"
 	frEndedSID   = "5e55a1d0-0000-4000-8000-0000000e0ded"
 	frForeignSID = "5e55a1d0-0000-4000-8000-0000000f0e19"
+	frSiblingSID = "5e55a1d0-0000-4000-8000-00000005b11a"
+	frOutsideSID = "5e55a1d0-0000-4000-8000-0000000007ae"
+	frUnknownSID = "5e55a1d0-0000-4000-8000-0000000c0de0"
 	frOldTitle   = "Bisecting the flaky widget cache test"
 	frLiveTitle  = "Wiring the gizmo export button"
 	frEndTitle   = "Reviewing the sprocket migration"
 	frStopTitle  = "Indexing the doohickey catalogue"
 	frChiefTitle = "Triage of the morning inbox"
 	frForeign    = "Another owner's thingamajig rewrite"
+	frSibTitle   = "Sibling-prefix whatsit refactor"
+	frOutTitle   = "Personal doodad side project"
+	frUnkTitle   = "Unplaced gubbins experiment"
 )
 
 // fleetMirror is the route fixture's mirror plus one OFFLINE host.
@@ -48,6 +57,20 @@ type fleetMirror struct {
 
 func (m fleetMirror) Hosts(ctx context.Context) []mirror.HostView {
 	return append(m.routeMirror.Hosts(ctx), mirror.HostView{Host: "lab-2", OfflineSince: m.offlineSince})
+}
+
+// fleetRouter answers the working directory of each Claude session it knows.
+type fleetRouter struct {
+	stubRouter
+	cwds map[string]string
+}
+
+func (r fleetRouter) SessionMeta(_ context.Context, id string) (SessionMeta, bool, error) {
+	if id == "router-down" {
+		return SessionMeta{}, false, errors.New("router unavailable")
+	}
+	cwd, ok := r.cwds[id]
+	return SessionMeta{SessionID: id, Cwd: cwd}, ok, nil
 }
 
 type frFixture struct {
@@ -62,12 +85,20 @@ func newFleetReportFixture(t *testing.T) *frFixture {
 	f := &frFixture{prFixture: newPRFixture(t)}
 	f.focus = focus.NewPG(f.pool)
 	f.srv.ext.Focus = f.focus
+	f.srv.ext.Attention = attention.NewPG(f.pool)
 	f.srv.ext.Mirror = fleetMirror{routeMirror: f.mirror, offlineSince: time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)}
+	f.srv.UseRouter(fleetRouter{cwds: map[string]string{
+		routeSID:     frPrefix + "/app",
+		frEndedSID:   frPrefix,
+		frSiblingSID: frPrefix + "-x/app",
+		frOutsideSID: "/opt/example-other",
+		frForeignSID: frPrefix + "/app",
+	}})
 	senders, err := plugins.ParseAgentMailSenders(frSender)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.srv.ext.FleetReport = &FleetReport{Senders: senders, Members: plugins.FleetReportMembers{f.owner: frMember}, Replies: f.plugins}
+	f.srv.ext.FleetReport = &FleetReport{Senders: senders, Paths: plugins.FleetReportPaths{frPrefix}, Replies: f.plugins}
 	sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
 	f.stopped = f.newAgent(t, f.owner, "frstop-"+sfx, "catalogue indexer", "frstop-tok-"+sfx)
 	if err := f.srv.ext.Agents.UpdateStatus(f.asOwner, f.stopped.ID, agents.StatusStopped, "", ""); err != nil {
@@ -75,31 +106,41 @@ func newFleetReportFixture(t *testing.T) *frFixture {
 	}
 	f.other = f.newMember(t)
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_prs WHERE owner_id = $1`, f.other)
+		sys := authz.System(context.Background())
+		_, _ = f.pool.Exec(sys, `DELETE FROM session_prs WHERE owner_id = $1`, f.other)
+		_, _ = f.pool.Exec(sys, `DELETE FROM attention_asks WHERE owner_id = $1`, f.owner)
 	})
 
-	set := func(ctx context.Context, sub focus.Subject, title string) {
-		t.Helper()
-		if _, err := f.focus.Upsert(ctx, sub, focus.Write{Title: title, Source: focus.SourceSummarizer}); err != nil {
-			t.Fatal(err)
-		}
-	}
 	// The live window's session: an old title (three days ago, outside the
 	// window) and a current one.
-	set(f.asOwner, focus.MirrorSubject(routeSID), frOldTitle)
+	f.set(t, f.asOwner, focus.MirrorSubject(routeSID), frOldTitle)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus_history SET created_at = now() - interval '3 days'
 		WHERE subject_key = '`+routeSID+`' AND title = '`+frOldTitle+`'`)
-	set(f.asOwner, focus.MirrorSubject(routeSID), frLiveTitle)
-	// An ENDED mirrored session: no window shows it; it opened a pull request.
-	set(f.asOwner, focus.MirrorSubject(frEndedSID), frEndTitle)
+	f.set(t, f.asOwner, focus.MirrorSubject(routeSID), frLiveTitle)
+	// An ENDED mirrored session under the prefix: no window shows it; it opened
+	// a pull request.
+	f.set(t, f.asOwner, focus.MirrorSubject(frEndedSID), frEndTitle)
 	f.authored(t, f.asOwner, frEndedSID, prroute.Signal{Kind: prroute.KindPRCreate, Repo: prRepo, PR: prNumber})
-	// A STOPPED agent, and the chief itself (left out of its own report).
-	set(f.asOwner, focus.AgentSubject(f.stopped.ID), frStopTitle)
-	set(f.asOwner, focus.AgentSubject(f.chief.ID), frChiefTitle)
-	// Another owner's session, in the same window, with a pull request too.
-	set(f.as(f.other), focus.MirrorSubject(frForeignSID), frForeign)
+	// Sessions the reply must not describe: a sibling-prefix directory, one
+	// outside, one with no recorded directory, a STOPPED agent (no directory
+	// muster could know), and the chief itself.
+	f.set(t, f.asOwner, focus.MirrorSubject(frSiblingSID), frSibTitle)
+	f.set(t, f.asOwner, focus.MirrorSubject(frOutsideSID), frOutTitle)
+	f.set(t, f.asOwner, focus.MirrorSubject(frUnknownSID), frUnkTitle)
+	f.set(t, f.asOwner, focus.AgentSubject(f.stopped.ID), frStopTitle)
+	f.set(t, f.asOwner, focus.AgentSubject(f.chief.ID), frChiefTitle)
+	// Another owner's session, in the same window and under the prefix, with a
+	// pull request too.
+	f.set(t, f.as(f.other), focus.MirrorSubject(frForeignSID), frForeign)
 	f.authored(t, f.as(f.other), frForeignSID, prroute.Signal{Kind: prroute.KindPRCreate, Repo: prRepo, PR: prNumber + 1})
 	return f
+}
+
+func (f *frFixture) set(t *testing.T, ctx context.Context, sub focus.Subject, title string) {
+	t.Helper()
+	if _, err := f.focus.Upsert(ctx, sub, focus.Write{Title: title, Source: focus.SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // requestBody is a fleet_report_request for member over the last day.
@@ -149,6 +190,25 @@ func (f *frFixture) drafts(t *testing.T, m plugins.Message) []plugins.Draft {
 	return out
 }
 
+// reply is the one approved draft answering m, decoded.
+func (f *frFixture) reply(t *testing.T, m plugins.Message) (frReply, string) {
+	t.Helper()
+	ds := f.drafts(t, m)
+	if len(ds) != 1 || ds[0].Status != plugins.DraftApproved || ds[0].AgentID == nil || *ds[0].AgentID != f.chief.ID {
+		t.Fatalf("drafts %+v; want ONE approved draft under the chief", ds)
+	}
+	return decodeReply(t, ds[0].Body), ds[0].Body
+}
+
+type frSession struct {
+	ID, Kind, Name, Host, State string
+	Repo                        *string
+	FirstSeen                   string `json:"first_seen"`
+	LastSeen                    string `json:"last_seen"`
+	Focus                       []struct{ Title, At string }
+	PRs                         []string `json:"prs"`
+}
+
 type frReply struct {
 	Type        string            `json:"type"`
 	V           int               `json:"v"`
@@ -162,37 +222,44 @@ type frReply struct {
 		Hosts    []string `json:"hosts"`
 		Gaps     []string `json:"gaps"`
 	} `json:"coverage"`
-	Sessions []struct {
-		ID, Kind, Name, Host, State string
-		Repo                        *string
-		FirstSeen                   string `json:"first_seen"`
-		LastSeen                    string `json:"last_seen"`
-		Focus                       []struct{ Title, At string }
-		PRs                         []string `json:"prs"`
-	} `json:"sessions"`
+	Sessions []frSession `json:"sessions"`
+}
+
+func (r frReply) byID() map[string]frSession {
+	out := map[string]frSession{}
+	for _, s := range r.Sessions {
+		out[s.ID] = s
+	}
+	return out
+}
+
+func (r frReply) hasGap(prefix string) bool {
+	for _, g := range r.Coverage.Gaps {
+		if strings.HasPrefix(g, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeReply(t *testing.T, body string) frReply {
 	t.Helper()
 	var r frReply
-	dec := json.NewDecoder(strings.NewReader(body))
-	if err := dec.Decode(&r); err != nil {
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&r); err != nil {
 		t.Fatalf("the reply is not JSON: %v\n%s", err, body)
 	}
 	return r
 }
 
 // 🔴 TestAVerifiedListedRequestIsAnsweredWithTheWindowsSessions: the whole
-// door, and the report's content — the ended session and the stopped agent
-// are there with their state; the out-of-window title, the chief and the other
-// owner's session are not.
+// door, and the report's content — only the sessions under the prefix (the
+// live one, and the ENDED one with its pull request), no host anywhere; the
+// sibling-prefix, outside, unknown-directory and agent sessions, the chief,
+// the out-of-window title and the other owner's session are not there.
 func TestAVerifiedListedRequestIsAnsweredWithTheWindowsSessions(t *testing.T) {
 	f := newFleetReportFixture(t)
 	m := f.ask(t, "fr-ok-1", frSender, true, requestBody("example-member", "req-0001"))
-	ds := f.drafts(t, m)
-	if len(ds) != 1 || ds[0].Status != plugins.DraftApproved || ds[0].AgentID == nil || *ds[0].AgentID != f.chief.ID {
-		t.Fatalf("drafts %+v; want ONE approved draft under the chief", ds)
-	}
+	r, body := f.reply(t, m)
 	if n := f.turns.count(); n != 0 {
 		t.Fatalf("the chief took %d turn(s); muster answers a fleet-report request itself", n)
 	}
@@ -201,51 +268,69 @@ func TestAVerifiedListedRequestIsAnsweredWithTheWindowsSessions(t *testing.T) {
 		t.Fatalf("the message %+v (%v); want delivered to the chief and settled", got, err)
 	}
 	// The plugin's next claim collects it: the at-most-once send path, unchanged.
-	c, ok, err := f.plugins.ClaimDraft(f.asOwner, f.agentMail.ID)
-	if err != nil || !ok || c.DraftID != ds[0].ID || c.MessageExternalID != "fr-ok-1" || c.Body != ds[0].Body {
+	if c, ok, err := f.plugins.ClaimDraft(f.asOwner, f.agentMail.ID); err != nil || !ok || c.MessageExternalID != "fr-ok-1" || c.Body != body {
 		t.Fatalf("claim %+v %v %v; want this draft", c, ok, err)
 	}
 
-	r := decodeReply(t, ds[0].Body)
 	if r.Type != "fleet_report" || r.V != 1 || r.RequestID != "req-0001" || r.Error != "" || r.Window["zone"] != "Europe/Berlin" ||
 		r.Coverage == nil || r.GeneratedAt == "" {
 		t.Fatalf("reply header %+v", r)
 	}
-	by := map[string]int{}
-	for i, s := range r.Sessions {
-		by[s.ID] = i
+	by := r.byID()
+	live, ended := "mirror:"+routeSID, "mirror:"+frEndedSID
+	if len(r.Sessions) != 2 {
+		t.Fatalf("the reply describes %d sessions; want exactly the two under the prefix: %s", len(r.Sessions), body)
 	}
-	live, ended, stopped := "mirror:"+routeSID, "mirror:"+frEndedSID, "agent:"+strconv.FormatInt(f.stopped.ID, 10)
-	for _, id := range []string{live, ended, stopped} {
-		if _, ok := by[id]; !ok {
-			t.Fatalf("the report lacks %s: %s", id, ds[0].Body)
-		}
+	if s, ok := by[live]; !ok || s.State != "active" || s.Host != "" || s.Kind != "mirror" || len(s.Focus) != 1 || s.Focus[0].Title != frLiveTitle {
+		t.Errorf("the live session: %+v %v; want active, NO host, only its in-window title", s, ok)
 	}
-	if s := r.Sessions[by[live]]; s.State != "active" || s.Host != "tower" || s.Kind != "mirror" || len(s.Focus) != 1 || s.Focus[0].Title != frLiveTitle {
-		t.Errorf("the live session: %+v; want active on tower with only its in-window title", s)
-	}
-	if s := r.Sessions[by[ended]]; s.State != "ended" || len(s.Focus) != 1 || s.Focus[0].Title != frEndTitle ||
+	if s, ok := by[ended]; !ok || s.State != "ended" || len(s.Focus) != 1 || s.Focus[0].Title != frEndTitle ||
 		len(s.PRs) != 1 || s.PRs[0] != prRepo+"#"+strconv.Itoa(prNumber) {
-		t.Errorf("the ended session: %+v; want ended, its title and its pull request", s)
+		t.Errorf("the ended session: %+v %v; want ended, its title and its pull request", s, ok)
 	}
-	if s := r.Sessions[by[stopped]]; s.State != "ended" || s.Kind != "agent" || s.Name != "catalogue indexer" {
-		t.Errorf("the stopped agent: %+v; want ended, named", s)
-	}
-	for _, never := range []string{frOldTitle, frChiefTitle, frForeign, frForeignSID, "agent:" + strconv.FormatInt(f.chief.ID, 10) + `"`,
-		prRepo + "#" + strconv.Itoa(prNumber+1)} {
-		if strings.Contains(ds[0].Body, never) {
-			t.Errorf("the report carries %q: %s", never, ds[0].Body)
+	for _, never := range []string{frOldTitle, frChiefTitle, frForeign, frForeignSID, frSibTitle, frSiblingSID, frOutTitle, frOutsideSID,
+		frUnkTitle, frUnknownSID, frStopTitle, "agent:", prRepo + "#" + strconv.Itoa(prNumber+1), "tower", "lab-2", frPrefix} {
+		if strings.Contains(body, never) {
+			t.Errorf("the reply carries %q: %s", never, body)
 		}
 	}
-	if r.Coverage.Sessions != len(r.Sessions) || r.Coverage.Omitted != 0 || strings.Join(r.Coverage.Hosts, ",") != "tower" {
-		t.Errorf("coverage %+v", *r.Coverage)
+	if r.Coverage.Sessions != 2 || r.Coverage.Omitted != 0 || r.Coverage.Hosts == nil || len(r.Coverage.Hosts) != 0 {
+		t.Errorf("coverage %+v; want 2 sessions and an EMPTY host list", *r.Coverage)
 	}
-	gapped := false
-	for _, g := range r.Coverage.Gaps {
-		gapped = gapped || strings.HasPrefix(g, "host lab-2 has been offline since 2000-01-02T03:04:05Z")
+	// The unknown-directory mirrored session and the stopped agent are
+	// counted; the sibling and outside sessions are not mentioned at all.
+	if !r.hasGap("2 session(s) whose working directory muster does not know were left out") ||
+		!r.hasGap("1 mirror host(s) offline") {
+		t.Errorf("gaps %v", r.Coverage.Gaps)
 	}
-	if !gapped {
-		t.Errorf("the offline host is not a gap: %v", r.Coverage.Gaps)
+
+	// The chief's tool shows the owner everything, hosts included.
+	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("fleet_report", `{"since":"`+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+`"}`)
+	for _, want := range []string{frSiblingSID, frOutsideSID, frUnknownSID, "agent:" + strconv.Itoa(int(f.stopped.ID)), `"host":"tower"`,
+		"host lab-2 has been offline since 2000-01-02T03:04:05Z", `"untrusted"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the tool lacks %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, frForeignSID) || strings.Contains(text, frChiefTitle) {
+		t.Errorf("the tool shows another owner's session or the chief: %s", text)
+	}
+}
+
+// A router that does not answer, or none at all, leaves every session out —
+// fail closed — and says so.
+func TestNoKnownWorkingDirectoryDescribesNothing(t *testing.T) {
+	f := newFleetReportFixture(t)
+	f.srv.UseRouter(nil)
+	r, body := f.reply(t, f.ask(t, "fr-nr-1", frSender, true, requestBody("example-member", "req-nr")))
+	if len(r.Sessions) != 0 || !r.hasGap("no permission router is configured") || strings.Contains(body, frLiveTitle) {
+		t.Fatalf("no router: %s", body)
+	}
+	f.srv.UseRouter(fleetRouter{cwds: map[string]string{}})
+	f.set(t, f.asOwner, focus.MirrorSubject("router-down"), "Lookups that fail")
+	r, body = f.reply(t, f.ask(t, "fr-nr-2", frSender, true, requestBody("example-member", "req-nr2")))
+	if len(r.Sessions) != 0 || !r.hasGap("the permission router could not be asked for 1 session(s)") {
+		t.Fatalf("a failing lookup: %s", body)
 	}
 }
 
@@ -275,28 +360,13 @@ func TestAnythingButAVerifiedListedRequestIsHandedOnAsBefore(t *testing.T) {
 	}
 }
 
-// 🔴 A member that is not the owner gets an error and no data — and so does
-// an owner whose GitHub login is not configured.
-func TestAMemberWhoIsNotTheOwnerGetsAnErrorAndNoData(t *testing.T) {
+// D1 (operator decision): the request's member is not checked — any member
+// gets the owner's report, which row-level security already scopes.
+func TestTheMemberIsNotChecked(t *testing.T) {
 	f := newFleetReportFixture(t)
-	m := f.ask(t, "fr-mm-1", frSender, true, requestBody("someone-else", "req-mm"))
-	ds := f.drafts(t, m)
-	if len(ds) != 1 || ds[0].Status != plugins.DraftApproved {
-		t.Fatalf("drafts %+v; want one approved error reply", ds)
-	}
-	r := decodeReply(t, ds[0].Body)
-	if r.Type != "fleet_report" || r.RequestID != "req-mm" || !strings.Contains(r.Error, "not its owner") || r.Sessions != nil || r.Coverage != nil {
-		t.Fatalf("reply %s; want an error and no data", ds[0].Body)
-	}
-	for _, never := range []string{routeSID, frEndedSID, frLiveTitle} {
-		if strings.Contains(ds[0].Body, never) {
-			t.Fatalf("the error reply carries %q", never)
-		}
-	}
-	f.srv.ext.FleetReport.Members = plugins.FleetReportMembers{f.owner + 1000: frMember}
-	m = f.ask(t, "fr-mm-2", frSender, true, requestBody("example-member", "req-mm2"))
-	if ds := f.drafts(t, m); len(ds) != 1 || !strings.Contains(decodeReply(t, ds[0].Body).Error, "not its owner") {
-		t.Fatalf("an owner with no configured login: %+v", ds)
+	r, body := f.reply(t, f.ask(t, "fr-mm-1", frSender, true, requestBody("someone-else", "req-mm")))
+	if r.Error != "" || len(r.Sessions) != 2 || strings.Contains(body, frForeign) {
+		t.Fatalf("reply %s; want the owner's report, whatever member says", body)
 	}
 }
 
@@ -304,10 +374,9 @@ func TestAMemberWhoIsNotTheOwnerGetsAnErrorAndNoData(t *testing.T) {
 func TestABadWindowIsAnsweredWithAnError(t *testing.T) {
 	f := newFleetReportFixture(t)
 	body := strings.Replace(requestBody("example-member", "req-w"), `"since":"`, `"since":"1999-01-01T00:00:00Z","x":"`, 1)
-	m := f.ask(t, "fr-bw-1", frSender, true, body)
-	ds := f.drafts(t, m)
-	if len(ds) != 1 || !strings.Contains(decodeReply(t, ds[0].Body).Error, "longer than 4 days") {
-		t.Fatalf("drafts %+v; want an error reply about the window", ds)
+	r, _ := f.reply(t, f.ask(t, "fr-bw-1", frSender, true, body))
+	if !strings.Contains(r.Error, "longer than 4 days") || r.Sessions != nil || r.Coverage != nil {
+		t.Fatalf("reply %+v; want an error reply about the window, no data", r)
 	}
 }
 
@@ -316,7 +385,7 @@ func TestABadWindowIsAnsweredWithAnError(t *testing.T) {
 func TestTheSizeCapCountsWhatItLeavesOut(t *testing.T) {
 	f := newFleetReportFixture(t)
 	now := time.Now()
-	full, err := f.srv.buildFleetReport(f.asOwner, f.chief.ID, now.Add(-time.Hour), now.Add(time.Minute), fleetWindow{}, nil, noFleetScreen, 1<<20)
+	full, err := f.srv.buildFleetReport(f.asOwner, f.chief.ID, now.Add(-time.Hour), now.Add(time.Minute), fleetWindow{}, nil, nil, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +394,7 @@ func TestTheSizeCapCountsWhatItLeavesOut(t *testing.T) {
 		t.Fatalf("control: the uncapped report has %d sessions, omitted %d", len(all.Sessions), all.Coverage.Omitted)
 	}
 	limit := len(full) - 1
-	capped, err := f.srv.buildFleetReport(f.asOwner, f.chief.ID, now.Add(-time.Hour), now.Add(time.Minute), fleetWindow{}, nil, noFleetScreen, limit)
+	capped, err := f.srv.buildFleetReport(f.asOwner, f.chief.ID, now.Add(-time.Hour), now.Add(time.Minute), fleetWindow{}, nil, nil, limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,22 +405,50 @@ func TestTheSizeCapCountsWhatItLeavesOut(t *testing.T) {
 	}
 }
 
-// The mail door screens each free-text field; the chief's tool does not.
-func TestTheMailWithholdsAScreenedTitleTheToolShows(t *testing.T) {
+// Q1 (operator decision): titles go UNSCREENED by the agent-text screen — a
+// dotted host name and an infrastructure word pass — except that a
+// secret-shaped run is still cut out, and counted.
+func TestTheMailKeepsInfraWordsAndCutsOnlySecrets(t *testing.T) {
 	f := newFleetReportFixture(t)
-	const leaky = "Rotating the kubectl credentials"
-	if _, err := f.focus.Upsert(f.asOwner, focus.MirrorSubject(frEndedSID), focus.Write{Title: leaky, Source: focus.SourceSummarizer}); err != nil {
-		t.Fatal(err)
+	const infra = "Debugging kubectl access to build.example.com"
+	const secret = "ghp_" + "AbCdEfGhIjKlMnOpQrStUv0123"
+	f.set(t, f.asOwner, focus.MirrorSubject(frEndedSID), infra)
+	f.set(t, f.asOwner, focus.MirrorSubject(routeSID), "Rotating the token "+secret+" today")
+	r, body := f.reply(t, f.ask(t, "fr-scr-1", frSender, true, requestBody("example-member", "req-scr")))
+	titles := map[string]bool{}
+	for _, s := range r.Sessions {
+		for _, t := range s.Focus {
+			titles[t.Title] = true
+		}
 	}
-	m := f.ask(t, "fr-scr-1", frSender, true, requestBody("example-member", "req-scr"))
-	ds := f.drafts(t, m)
-	if len(ds) != 1 || strings.Contains(ds[0].Body, leaky) || !strings.Contains(ds[0].Body, fleetWithheld) ||
-		!strings.Contains(ds[0].Body, "field(s) withheld by muster's reply screen") {
-		t.Fatalf("drafts %+v; want the title withheld and counted", ds)
+	if !titles[infra] {
+		t.Errorf("the infra title was withheld or changed: %s", body)
+	}
+	if strings.Contains(body, secret) || strings.Contains(body, secret[4:]) || !titles["Rotating the token [removed] today"] ||
+		!r.hasGap("1 secret-shaped string(s) removed") {
+		t.Errorf("the secret was not cut out and counted: %s", body)
 	}
 	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("fleet_report", `{"since":"`+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+`"}`)
-	if !strings.Contains(text, leaky) || !strings.Contains(text, frEndedSID) || !strings.Contains(text, `"untrusted"`) {
-		t.Fatalf("the tool: %s", text)
+	if !strings.Contains(text, infra) {
+		t.Errorf("the tool: %s", text)
+	}
+}
+
+// D3 (operator decision): a session with an open attention item is "waiting",
+// over "active".
+func TestASessionWithAPendingAskIsWaiting(t *testing.T) {
+	f := newFleetReportFixture(t)
+	if _, err := f.srv.ext.Attention.Create(f.asOwner, attention.New{Asker: attention.Asker{MirrorHost: "tower", MirrorSession: routeSID,
+		Label: "work:1"}, Question: "Which gizmo export format?"}); err != nil {
+		t.Fatal(err)
+	}
+	r, body := f.reply(t, f.ask(t, "fr-wait-1", frSender, true, requestBody("example-member", "req-wait")))
+	by := r.byID()
+	if by["mirror:"+routeSID].State != "waiting" || by["mirror:"+frEndedSID].State != "ended" {
+		t.Fatalf("states: %s; want the asking session waiting and the other ended", body)
+	}
+	if strings.Contains(body, "Which gizmo export format") {
+		t.Fatalf("the reply quotes the ask: %s", body)
 	}
 }
 

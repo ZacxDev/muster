@@ -2,7 +2,7 @@ package plugins
 
 import "testing"
 
-// MUSTER_FLEET_REPORT_SENDERS and MUSTER_FLEET_REPORT_MEMBERS (fleet_report.go,
+// MUSTER_FLEET_REPORT_SENDERS and MUSTER_FLEET_REPORT_PATHS (fleet_report.go,
 // pr_sessions.go's AgentMailSenders). Fixture values are invented: no test
 // passes by spelling a deployment's value.
 
@@ -21,33 +21,38 @@ func TestTheFleetReportSendersAreThePRListsGrammar(t *testing.T) {
 	}
 }
 
-func TestParseFleetReportMembers(t *testing.T) {
-	m, err := ParseFleetReportMembers(" 7:Example-Member , 12:other-login,")
-	if err != nil || len(m) != 2 || m[7] != "Example-Member" || m[12] != "other-login" {
-		t.Fatalf("got %v, %v", m, err)
+func TestParseFleetReportPaths(t *testing.T) {
+	p, err := ParseFleetReportPaths(" /srv/example-work/ , /opt/example-code,")
+	if err != nil || len(p) != 2 || p[0] != "/srv/example-work" || p[1] != "/opt/example-code" {
+		t.Fatalf("got %v, %v", p, err)
 	}
-	if m, err := ParseFleetReportMembers(""); err != nil || len(m) != 0 {
-		t.Fatalf("empty: %v, %v", m, err)
+	if p, err := ParseFleetReportPaths(""); err != nil || len(p) != 0 {
+		t.Fatalf("empty: %v, %v", p, err)
 	}
-	for _, bad := range []string{"example-member", "0:example-member", "-1:example-member", "x:example-member",
-		"7:", "7:-leading", "7:trailing-", "7:has space", "7:" + "a123456789012345678901234567890123456789", "7:a,7:b"} {
-		if _, err := ParseFleetReportMembers(bad); err == nil {
+	for _, bad := range []string{"srv/example-work", "~/code", "/", "//", "/srv/../etc", "/srv/./x"} {
+		if _, err := ParseFleetReportPaths(bad); err == nil {
 			t.Errorf("%q parsed; want refused", bad)
 		}
 	}
 }
 
-func TestFleetReportMembersMatchTheOwnersLoginOnly(t *testing.T) {
-	m := FleetReportMembers{7: "Example-Member"}
-	if !m.Is(7, "example-member") || !m.Is(7, "EXAMPLE-MEMBER") {
-		t.Fatal("control: the owner's own login (any case) does not match")
-	}
-	for _, c := range []struct {
-		uid   int64
-		login string
-	}{{7, "other-login"}, {8, "example-member"}, {7, ""}, {7, "example-member "}} {
-		if m.Is(c.uid, c.login) {
-			t.Errorf("%d %q matched", c.uid, c.login)
+// 🔴 A PREFIX MATCHES ON A PATH-COMPONENT BOUNDARY: inside, sibling-prefix,
+// outside, unknown.
+func TestFleetReportPathsMatchOnAComponentBoundary(t *testing.T) {
+	p := FleetReportPaths{"/srv/example-work"}
+	for _, in := range []string{"/srv/example-work", "/srv/example-work/", "/srv/example-work/app", "/srv/example-work/a/b/../c"} {
+		if !p.Contains(in) {
+			t.Errorf("%q: not contained; want contained", in)
 		}
+	}
+	for _, out := range []string{"/srv/example-work-x", "/srv/example-workshop/app", "/srv/example", "/srv", "/other/srv/example-work",
+		"/srv/example-work/../secret", "", "srv/example-work/app", "relative"} {
+		if p.Contains(out) {
+			t.Errorf("%q: contained; want not", out)
+		}
+	}
+	var none FleetReportPaths
+	if none.Contains("/srv/example-work") {
+		t.Fatal("an empty list contains a directory")
 	}
 }

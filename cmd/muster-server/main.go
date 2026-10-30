@@ -564,7 +564,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// listed, verified sender's request itself. Not gated on session
 		// routing: it routes nothing.
 		if len(cfg.FleetReportSenders) > 0 {
-			ext.FleetReport = &api.FleetReport{Senders: cfg.FleetReportSenders, Members: cfg.FleetReportMembers, Replies: pluginStore}
+			ext.FleetReport = &api.FleetReport{Senders: cfg.FleetReportSenders, Paths: cfg.FleetReportPaths, Replies: pluginStore}
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
 		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
@@ -1383,8 +1383,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	case ext.FleetReport != nil:
 		l.Printf("fleet-report requests: ON (%s) — %d agent-mail sender(s) whose VERIFIED fleet_report_request muster answers "+
 			"itself, with an already-approved reply listing the owner's sessions in the requested window (focus titles, "+
-			"hosts, repos, pull requests; never transcripts); %d owner(s) have a GitHub login (%s)",
-			envFleetReportSenders, len(ext.FleetReport.Senders), len(ext.FleetReport.Members), envFleetReportMembers)
+			"repos, pull requests; no hosts, never transcripts), only those working under %d prefix(es) (%s)",
+			envFleetReportSenders, len(ext.FleetReport.Senders), len(ext.FleetReport.Paths), envFleetReportPaths)
 	case len(a.cfg.FleetReportSenders) > 0:
 		l.Printf("fleet-report requests: INERT — %s is set but the plugin interface is off, so nothing is answered", envFleetReportSenders)
 	default:

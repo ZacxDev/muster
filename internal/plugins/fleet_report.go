@@ -2,62 +2,65 @@ package plugins
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
+	"path"
 	"strings"
 )
 
 // A FLEET-REPORT REQUEST's configuration (internal/api/fleet_report.go,
 // docs/plugins.md#a-fleet-report-request): who may ask (an AgentMailSenders
-// list, MUSTER_FLEET_REPORT_SENDERS) and which GitHub login each muster user
-// is (FleetReportMembers, MUSTER_FLEET_REPORT_MEMBERS) — the request names the
-// member whose sessions it wants, and muster answers only for the owner the
-// mail was delivered to.
+// list, MUSTER_FLEET_REPORT_SENDERS) and which sessions a reply may describe
+// (FleetReportPaths, MUSTER_FLEET_REPORT_PATHS).
 
-// FleetReportMembers maps a muster user id to that user's GitHub login.
+// FleetReportPaths is the working-directory prefixes whose sessions a
+// fleet-report REPLY may describe: absolute, cleaned, matched on a
+// path-component boundary (Contains).
 //
-// 🔴 WHY CONFIGURATION. muster stores no GitHub identity for a user (migration
-// 0059 dropped the last one), and the request's `member` is a GitHub login.
-// Without this map muster cannot tell the requester's member from its owner,
-// so an owner with no entry gets an error reply and no data — the request's
-// own claim about whose sessions it wants is never taken on trust.
-type FleetReportMembers map[int64]string
+// 🔴 FAIL CLOSED. A session whose working directory is unknown is never
+// described, and a deployment that turns the requests on without naming any
+// prefix refuses to boot (cmd/muster-server) rather than replying with
+// nothing — or with everything.
+type FleetReportPaths []string
 
-// githubLogin is GitHub's login grammar: letters, digits and single hyphens,
-// not starting with a hyphen, at most 39 characters.
-var githubLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
-
-// ValidGitHubLogin reports whether s is shaped like a GitHub login.
-func ValidGitHubLogin(s string) bool { return githubLogin.MatchString(s) && !strings.HasSuffix(s, "-") }
-
-// ParseFleetReportMembers reads "<user id>:<github login>,…"; "" is the empty
-// map. A user listed twice, a non-positive id or a malformed login refuses.
-func ParseFleetReportMembers(raw string) (FleetReportMembers, error) {
-	out := FleetReportMembers{}
+// ParseFleetReportPaths reads "<absolute path>,…"; "" is the empty list. A
+// relative path, the root alone, or a path with a "." or ".." component
+// refuses.
+func ParseFleetReportPaths(raw string) (FleetReportPaths, error) {
+	var out FleetReportPaths
 	for _, e := range strings.Split(raw, ",") {
 		e = strings.TrimSpace(e)
 		if e == "" {
 			continue
 		}
-		id, login, ok := strings.Cut(e, ":")
-		uid, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
-		login = strings.TrimSpace(login)
-		switch {
-		case !ok || err != nil || uid <= 0:
-			return nil, fmt.Errorf("%q: want <user id>:<github login>", e)
-		case !ValidGitHubLogin(login):
-			return nil, fmt.Errorf("%q: %q is not a GitHub login", e, login)
-		case out[uid] != "":
-			return nil, fmt.Errorf("user %d is listed twice", uid)
+		if !strings.HasPrefix(e, "/") {
+			return nil, fmt.Errorf("%q: want an absolute path", e)
 		}
-		out[uid] = login
+		for _, part := range strings.Split(strings.Trim(e, "/"), "/") {
+			if part == "." || part == ".." {
+				return nil, fmt.Errorf("%q: a prefix may not hold a %q component", e, part)
+			}
+		}
+		c := path.Clean(e)
+		if c == "/" {
+			return nil, fmt.Errorf("%q: the root alone would match every directory", e)
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }
 
-// Is reports whether login is user uid's GitHub login. GitHub logins are
-// case-insensitive (ASCII only, by their grammar).
-func (m FleetReportMembers) Is(uid int64, login string) bool {
-	have := m[uid]
-	return have != "" && ValidGitHubLogin(login) && strings.EqualFold(have, login)
+// Contains reports whether directory dir is one of the prefixes or inside one,
+// on a path-component boundary: "/w/proj" contains "/w/proj" and
+// "/w/proj/app", never "/w/project". An empty or relative dir is never
+// contained (an unknown working directory is excluded).
+func (p FleetReportPaths) Contains(dir string) bool {
+	if !strings.HasPrefix(dir, "/") {
+		return false
+	}
+	dir = path.Clean(dir)
+	for _, pre := range p {
+		if dir == pre || strings.HasPrefix(dir, pre+"/") {
+			return true
+		}
+	}
+	return false
 }

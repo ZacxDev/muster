@@ -11,12 +11,22 @@ import (
 // The fleet-report request's parser and the reply's encoding (fleet_report.go),
 // with no database. Fixture values are invented.
 
+// D1 (operator decision): member is read and not checked, so any value parses.
+func TestTheMemberFieldIsNotValidated(t *testing.T) {
+	for _, member := range []string{`"not a login"`, `""`, `"someone-else"`} {
+		body := strings.Replace(goodRequest, `"example-member"`, member, 1)
+		if p, ok := parseFleetReportRequest(body); !ok || p.problem != "" {
+			t.Errorf("member %s: %+v %v; want a request with no problem", member, p, ok)
+		}
+	}
+}
+
 const goodRequest = `{"type":"fleet_report_request","v":1,"request_id":"req-77","member":"example-member",` +
 	`"window":{"since":"2000-01-03T00:00:00Z","until":"2000-01-04T12:00:00Z","zone":"America/Argentina/Buenos_Aires"}}`
 
 func TestARequestParsesAndEverythingElseIsNotOne(t *testing.T) {
 	p, ok := parseFleetReportRequest("\n" + goodRequest + "\n")
-	if !ok || p.problem != "" || p.requestID != "req-77" || p.member != "example-member" ||
+	if !ok || p.problem != "" || p.requestID != "req-77" ||
 		p.window.Zone != "America/Argentina/Buenos_Aires" || p.until.Sub(p.since).Hours() != 36 {
 		t.Fatalf("control: %+v %v", p, ok)
 	}
@@ -39,7 +49,6 @@ func TestABrokenRequestIsAnErrorThatEchoesItsID(t *testing.T) {
 		"version":   {`"v":1`, `"v":2`, "req-77", "unsupported request version"},
 		"no id":     {`"request_id":"req-77"`, `"request_id":""`, "", "request_id must be"},
 		"long id":   {`"req-77"`, `"` + strings.Repeat("r", 65) + `"`, "", "request_id must be"},
-		"member":    {`"example-member"`, `"not a login"`, "req-77", "member must be a GitHub login"},
 		"since":     {`"2000-01-03T00:00:00Z"`, `"yesterday"`, "req-77", "RFC 3339"},
 		"zone":      {`"America/Argentina/Buenos_Aires"`, `"../etc/passwd"`, "req-77", "IANA zone"},
 		"inverted":  {`"2000-01-03T00:00:00Z"`, `"2000-01-05T00:00:00Z"`, "req-77", "the window is empty"},

@@ -20,10 +20,11 @@ import (
 // a relay, a verified sender the owner allowlisted. Here the text is not an
 // agent's: muster builds it from its own rows, deterministically, for a sender
 // the DEPLOYMENT listed (an AgentMailSenders list) and the plugin verified. So
-// the draft is filed already approved, as an allowlisted relay's is. The caller
-// screens each free-text field it puts in (FieldRefusal) — not the whole body,
-// whose ids and timestamps are muster's own and would trip the token-shaped
-// pattern — and this store refuses a body with a character nobody could see.
+// the draft is filed already approved, as an allowlisted relay's is. What the
+// caller may put in is the caller's rule (fleet_report.go: only sessions under
+// the configured working-directory prefixes, secret-shaped runs removed); this
+// store refuses a body with a character nobody could see, or one that is not
+// already in normal form.
 
 // MusterReplier is the store side of a reply muster writes itself.
 type MusterReplier interface {
@@ -34,16 +35,9 @@ type MusterReplier interface {
 	// other delivery took it) is ErrNotFound and nothing is written; a
 	// no_reply message is ErrNoReply.
 	ReplyAsMuster(ctx context.Context, chiefID, ownerID, messageID int64, agentName, body, reason, via string) (Draft, error)
-	// FieldRefusal is why text may not go to a third party in a reply ("" for
-	// none): the reply screen's deny patterns and the deployment's own names
-	// (flows.AgentTextRefusal, MUSTER_FLOW_AGENT_DENY_WORDS).
-	FieldRefusal(text string) string
 }
 
 var _ MusterReplier = (*PGStore)(nil)
-
-// FieldRefusal: see MusterReplier.
-func (s *PGStore) FieldRefusal(text string) string { return flows.AgentTextRefusal(text, s.denyWords) }
 
 // ReplyAsMuster: see MusterReplier.
 func (s *PGStore) ReplyAsMuster(ctx context.Context, chiefID, ownerID, messageID int64, agentName, body, reason, via string) (Draft, error) {
