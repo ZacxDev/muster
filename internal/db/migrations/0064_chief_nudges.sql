@@ -4,7 +4,8 @@
 -- chief_nudges: one row per DECISION the stall sweep took about one of an
 -- owner's idle sessions — a mirrored Claude Code window (session_kind
 -- 'mirror', session_key its Claude session id) or a dispatched agent
--- ('agent', session_key its id) — for one idle streak (streak_key). The
+-- ('agent', session_key "<agent id>:<chat session id>", the one conversation
+-- of it that stalled: agent_id and chat_session_id) — for one idle streak (streak_key). The
 -- unique key (owner, kind, key, streak) is the sweep's claim: a second sweep,
 -- or a restart, never decides the same streak twice.
 --
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS public.chief_nudges (
     mirror_session TEXT        NOT NULL DEFAULT '' CHECK (length(mirror_session) <= 200),
     mirror_window  TEXT        NOT NULL DEFAULT '' CHECK (length(mirror_window) <= 32),
     agent_id       BIGINT,
+    chat_session_id BIGINT,
     title          TEXT        NOT NULL DEFAULT '' CHECK (char_length(title) <= 300),
     streak_key     TEXT        NOT NULL CHECK (length(streak_key) BETWEEN 1 AND 100),
     anchor_key     TEXT        NOT NULL DEFAULT '' CHECK (length(anchor_key) <= 100),

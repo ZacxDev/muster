@@ -23,7 +23,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/fence"
 )
 
 // Session kinds.
@@ -72,6 +75,7 @@ const (
 	GuardAskFailed  = "ask_not_created"  // the attention ask could not be raised
 	GuardMovedOn    = "moved_on"         // the session left its idle streak before muster acted
 	GuardAskCap     = "ask_cap"          // the owner's open asks are at attention's cap
+	GuardChiefError = "chief_error"      // the chief's call failed (Detail says how); the next streak is judged again
 )
 
 // Suppressed is the outcome for guard.
@@ -97,18 +101,22 @@ const (
 	// MaxOwnerMessageRunes cuts each one; MaxLastRunes the session's last message.
 	MaxOwnerMessageRunes = 2000
 	MaxLastRunes         = 4000
-	// MinQuoteRunes is the shortest quote accepted: a two-letter "ok" matches
-	// almost any message and authorises nothing in particular.
-	MinQuoteRunes = 4
+	// MinQuoteRunes and MinQuoteWords are the shortest quote accepted: a
+	// fragment ("make", "ok go") matches almost any message and authorises
+	// nothing in particular. A quote must be a phrase of the owner's.
+	MinQuoteRunes = 12
+	MinQuoteWords = 3
 	// MaxQuoteRunes bounds a quote (the nudge carries it).
 	MaxQuoteRunes = 500
 	// MinOptions/MaxOptions bound an ask's options.
 	MinOptions = 2
 	MaxOptions = 4
-	// StallerThreshold is "a repeat staller": this many decisions for one
-	// session within StallerWindow.
-	StallerThreshold = 3
-	StallerWindow    = 24 * time.Hour
+	// RelayMaxAge bounds how long a claimed relay is retried (an agent that
+	// stays busy): past it the relay is dropped and recorded failed.
+	RelayMaxAge = 2 * time.Hour
+	// QueueRepairAfter: a live nudge recorded queued whose send_queue row was
+	// never written (a crash between the two) is failed after this.
+	QueueRepairAfter = 10 * time.Minute
 )
 
 // The column bounds (0064's CHECKs).
@@ -129,9 +137,11 @@ type Session struct {
 	Key  string // Claude session id (mirror) or agent id (agent)
 	// Mirror address (KindMirror).
 	Host, TmuxSession, Window, Label string
-	// AgentID (KindAgent).
-	AgentID int64
-	Title   string // its focus title, "" for none
+	// AgentID and ChatSessionID (KindAgent): the agent and the ONE conversation
+	// of it that stalled — an agent can hold several.
+	AgentID       int64
+	ChatSessionID int64
+	Title         string // its focus title, "" for none
 
 	// Status is "idle", "busy", "waiting" or "" (unknown).
 	Status string
@@ -205,9 +215,16 @@ type Msg struct {
 	// ID names it within its session: a chat message id (agent) or a prompt's
 	// byte offset in the transcript (mirror). "" for an assistant message.
 	ID string
-	// At is when it was written; zero when the source does not say (a mirrored
-	// transcript carries no times on the wire).
+	// At is when it was written; zero when the source does not say (a
+	// mirrored transcript from a muster-mirror older than the PromptAt field).
 	At time.Time
+}
+
+// AgentKey is a dispatched agent's conversation as a Session.Key: the agent
+// and the chat session, so each conversation of an agent stalls (and is
+// decided, capped and relayed to) on its own.
+func AgentKey(agentID, chatSessionID int64) string {
+	return strconv.FormatInt(agentID, 10) + ":" + strconv.FormatInt(chatSessionID, 10)
 }
 
 // LastIsAssistant reports whether the newest user-or-assistant message of msgs
@@ -230,19 +247,24 @@ func LastIsAssistant(msgs []Msg) (Msg, bool) {
 var fenceOpen = regexp.MustCompile(`<<<[a-z][a-z0-9-]* untrusted nonce=[0-9a-f]{16} count=[0-9]+>>>`)
 
 // OwnerMessages is the owner's OWN messages among msgs — user-role, written at
-// or after since (a message with no time is kept: a mirrored transcript has
-// none, and its read is bounded by the host's backfill instead), at most
-// MaxOwnerMessages, newest last — leaving out:
+// or after since, at most MaxOwnerMessages, newest last — leaving out:
+//
+//   - a message with NO time: its age cannot be checked against since, so it
+//     authorises nothing (an older muster-mirror sends prompts without one;
+//     Untimed counts them, so the caller can say why there is no nudge);
 //
 //   - any message carrying a muster fence (fenceOpen): text muster injected,
 //     whose words are an outside party's or muster's, never the owner's;
+//
 //   - any message equal (after trimming) to one of injected: what muster itself
 //     pasted into this session (a routed message, a nudge, a relay — the
 //     send_queue rows muster queued and the chief_nudges rows' texts);
+//
 //   - any message starting with one of prefixes: the openings muster's own
 //     pastes are written with (the routed preface, NudgeLabel), passed in from
 //     the constants the senders use — a second line behind injected, for a
 //     paste whose row is gone;
+//
 //   - skipFirst: the session's very first message, when the caller knows it is
 //     a dispatched agent's kickoff (the task's text, which can be a plugin's).
 //
@@ -271,7 +293,7 @@ func OwnerMessages(msgs []Msg, injected, prefixes []string, since time.Time, ski
 		if t == "" || m.ID == "" || fenceOpen.MatchString(m.Text) || inj[t] || hasAnyPrefix(t, prefixes) {
 			continue
 		}
-		if !m.At.IsZero() && !since.IsZero() && m.At.Before(since) {
+		if m.At.IsZero() || (!since.IsZero() && m.At.Before(since)) {
 			continue
 		}
 		out = append(out, m)
@@ -280,6 +302,17 @@ func OwnerMessages(msgs []Msg, injected, prefixes []string, since time.Time, ski
 		out = out[len(out)-MaxOwnerMessages:]
 	}
 	return out
+}
+
+// Untimed counts msgs' user-role messages that carry no time.
+func Untimed(msgs []Msg) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == "user" && m.At.IsZero() && strings.TrimSpace(m.Text) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func hasAnyPrefix(s string, prefixes []string) bool {
@@ -344,23 +377,42 @@ func ParseProposal(raw string) (Proposal, error) {
 // Quote guard errors.
 var (
 	ErrNoQuote      = errors.New("the nudge quotes nothing")
-	ErrQuoteShort   = fmt.Errorf("the quote is shorter than %d characters", MinQuoteRunes)
+	ErrQuoteShort   = fmt.Errorf("the quote is not a phrase: it needs at least %d words and %d characters", MinQuoteWords, MinQuoteRunes)
 	ErrQuoteLong    = fmt.Errorf("the quote is longer than %d characters", MaxQuoteRunes)
 	ErrNoCover      = errors.New("the nudge names no pending action its quote covers")
 	ErrQuoteUnknown = errors.New("the quote names no owner message of this session")
-	ErrQuoteNotIn   = errors.New("the quote is not, byte for byte, in the owner message it names")
+	ErrQuoteNotIn   = errors.New("the quote is not, byte for byte and on word boundaries, in the owner message it names")
 )
 
-// CheckQuote is the nudge guard: p's quote must be non-trivial, name a covered
-// action, and appear BYTE FOR BYTE inside the owner message p.QuoteID names,
-// which must be one of owner (OwnerMessages' set — never the session's own
-// output, never injected text). It returns that message.
+// Shown is text as the chief is shown it in the stall check's fenced block:
+// each line through fence.Sanitize. A quote is matched against THIS form, so
+// a tab or a control character the chief saw replaced does not make a true
+// quote fail.
+func Shown(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		lines[i] = fence.Sanitize(l)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// CheckQuote is the nudge guard: p's quote must be a phrase (MinQuoteWords
+// words, MinQuoteRunes characters), name a covered action, and appear BYTE FOR
+// BYTE — starting and ending on word boundaries — inside the one owner message
+// p.QuoteID names (as Shown), which must be one of owner (OwnerMessages' set:
+// never the session's own output, never injected text, never older than the
+// window). It returns that message.
+//
+// ⚠ WHAT IT GUARANTEES, AND WHAT IT DOES NOT: the quote is the owner's own
+// recent words, verbatim. Whether those words COVER the pending action is the
+// chief's judgement (covered_action is its claim), not something code checks.
 func CheckQuote(p Proposal, owner []Msg) (Msg, error) {
 	q := p.Quote
-	switch n := utf8.RuneCountInString(strings.TrimSpace(q)); {
+	trimmed := strings.TrimSpace(q)
+	switch n := utf8.RuneCountInString(trimmed); {
 	case n == 0:
 		return Msg{}, ErrNoQuote
-	case n < MinQuoteRunes:
+	case n < MinQuoteRunes || len(strings.Fields(trimmed)) < MinQuoteWords:
 		return Msg{}, ErrQuoteShort
 	case utf8.RuneCountInString(q) > MaxQuoteRunes:
 		return Msg{}, ErrQuoteLong
@@ -372,12 +424,52 @@ func CheckQuote(p Proposal, owner []Msg) (Msg, error) {
 		if m.ID != p.QuoteID {
 			continue
 		}
-		if strings.Contains(m.Text, q) {
+		if containsPhrase(Shown(m.Text), q) {
 			return m, nil
 		}
 		return Msg{}, ErrQuoteNotIn
 	}
 	return Msg{}, ErrQuoteUnknown
+}
+
+// containsPhrase reports whether q occurs in text with a word boundary on
+// each side: no letter or digit right before it or right after it (an edge of
+// q that is itself not a letter or digit needs none).
+func containsPhrase(text, q string) bool {
+	if q == "" {
+		return false
+	}
+	word := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+	first, _ := utf8.DecodeRuneInString(q)
+	last, _ := utf8.DecodeLastRuneInString(q)
+	for from := 0; from <= len(text)-len(q); {
+		i := strings.Index(text[from:], q)
+		if i < 0 {
+			return false
+		}
+		i += from
+		before, _ := utf8.DecodeLastRuneInString(text[:i])
+		after, _ := utf8.DecodeRuneInString(text[i+len(q):])
+		okBefore := i == 0 || !word(first) || !word(before)
+		okAfter := i+len(q) == len(text) || !word(last) || !word(after)
+		if okBefore && okAfter {
+			return true
+		}
+		_, size := utf8.DecodeRuneInString(text[i:])
+		from = i + size
+	}
+	return false
+}
+
+// EscalationNoTimes is the ask raised in place of a nudge for a session whose
+// host sends no prompt times: no instruction of the owner's can be checked.
+func EscalationNoTimes(title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		t = "This session"
+	}
+	return t + " stopped. Its host does not send when your messages were written, so muster cannot check an " +
+		"instruction of yours that covers the next step. Should it continue?"
 }
 
 // CleanOptions is an ask's options: trimmed, one line, deduplicated, cut, at
@@ -450,27 +542,30 @@ type Decision struct {
 	TmuxSession string
 	Window      string
 	AgentID     int64
-	Title       string
-	StreakKey   string
-	AnchorKey   string
-	IdleSince   time.Time
-	DecidedAt   time.Time
-	Decision    string
-	Message     string
-	QuoteID     string
-	QuoteAt     time.Time
-	QuoteText   string
-	Covered     string
-	Question    string
-	Options     []string
-	Reason      string
-	Mode        string
-	Outcome     string
-	Detail      string
-	AskID       int64
-	SendQueueID int64
-	RelayText   string
-	UpdatedAt   time.Time
+	// ChatSessionID is the agent's conversation the decision is about (0 for a
+	// mirrored session): where its nudge or relay goes.
+	ChatSessionID int64
+	Title         string
+	StreakKey     string
+	AnchorKey     string
+	IdleSince     time.Time
+	DecidedAt     time.Time
+	Decision      string
+	Message       string
+	QuoteID       string
+	QuoteAt       time.Time
+	QuoteText     string
+	Covered       string
+	Question      string
+	Options       []string
+	Reason        string
+	Mode          string
+	Outcome       string
+	Detail        string
+	AskID         int64
+	SendQueueID   int64
+	RelayText     string
+	UpdatedAt     time.Time
 }
 
 // Clean bounds d's free-text fields to the table's CHECKs.
@@ -493,13 +588,6 @@ func Clean(d Decision) Decision {
 func (d Decision) Suppressed() (string, bool) {
 	g, ok := strings.CutPrefix(d.Outcome, SuppressedPrefix)
 	return g, ok
-}
-
-// Staller is a session with StallerThreshold or more decisions in the window.
-type Staller struct {
-	Kind, Key, Title, Host string
-	Count                  int
-	Last                   time.Time
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }

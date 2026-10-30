@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -282,7 +283,7 @@ func (s *Server) agentTail(ctx context.Context, id int64) ([]focus.Entry, error)
 // (or names none) ends the read as errNoSession, and nothing is stored.
 func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid string) ([]focus.Entry, error) {
 	evs, err := s.mirrorEvents(ctx, e, sid)
-	if err != nil {
+	if errors.Is(err, errNoSession) {
 		return nil, err
 	}
 	out := make([]focus.Entry, 0, len(evs))
@@ -291,13 +292,20 @@ func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid strin
 			out = append(out, en)
 		}
 	}
+	// As before mirrorEvents existed: a read that ended in an error is an
+	// error only when it yielded no ENTRY (events this tail does not keep,
+	// tool output, do not count).
+	if len(out) == 0 && err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
 // mirrorEvents is mirrorTail's read: the bounded backfill of e's transcript as
 // events (a prompt keeps its Line — its place in the transcript — which the
 // chief nudge sweep names it by), with mirrorTail's guard that the stream is
-// conversation sid.
+// conversation sid (errNoSession). It returns what it read AND the watch's
+// error, so each caller decides what a partial read is worth.
 func (s *Server) mirrorEvents(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, error) {
 	ctx, cancel := context.WithTimeout(ctx, focusTailTimeout)
 	defer cancel()
@@ -353,10 +361,7 @@ loop:
 		s.logger.Printf("focus: %s@%s %s%s holds another conversation now, not %s; nothing stored", e.Session, e.Host, e.Session, e.Window, sid)
 		return nil, errNoSession
 	}
-	if len(out) == 0 && err != nil {
-		return nil, err
-	}
-	return append([]cctranscript.Event(nil), out...), nil
+	return append([]cctranscript.Event(nil), out...), err
 }
 
 // focusEntryOf is one transcript event as a tail entry: a prompt, a reply, a

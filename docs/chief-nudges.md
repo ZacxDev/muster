@@ -23,7 +23,7 @@ whatever is still idle after that.
 | `MUSTER_CHIEF_NUDGES` | `1` runs the sweep, in shadow mode for every owner. Off by default. Needs a database. |
 | `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` | The user ids, comma-separated, whose decisions are **acted on**. Everyone else stays in shadow mode. |
 | `MUSTER_CHIEF_NUDGE_IDLE` | How long a session must have been idle to count as stalled. Default `10m`, from `2m` to `24h`. |
-| `MUSTER_CHIEF_NUDGE_HOURLY_CAP` | The most nudges per hour, across every owner, shadow and live together. Default `6`. |
+| `MUSTER_CHIEF_NUDGE_HOURLY_CAP` | The most live nudges per hour, across every owner. Default `6`. Shadow mode is not capped. |
 
 All four are read at boot; the boot log says which mode the sweep is in.
 
@@ -43,7 +43,9 @@ turned on). It considers:
 - every **dispatched agent** of the owner's.
 
 It never considers an [officer](officers.md) (officers escalate through HQ),
-the chief itself, or another user's agents.
+the chief itself, or another user's agents. An agent's **conversations** are
+judged one by one (those active in the last 24 hours): the one that stalled is
+the one decided about, nudged and relayed to.
 
 A session is a **candidate** only when all of these hold:
 
@@ -66,10 +68,15 @@ call. A sweep puts at most 5 sessions to the chiefs, across all owners.
 
 ## What the chief is asked
 
-For each candidate, the chief gets one bounded call on its own runtime, under a
-gateway session of its own (`agent:<chief>:webchat:nudge`), so the check never
-appears in your conversation with it. The call holds the chief's turn lock: a
-busy chief is skipped until the next sweep.
+For each candidate, the chief gets one bounded call on its own runtime. Every
+call is a **fresh context**: its gateway session key is derived from the
+decision it is for (`agent:<chief>:webchat:nudge:<hash of owner, session and
+idle streak>`), so no check sees another's, none grows with the ones before it,
+and none appears in your conversation with the chief. The call holds the
+chief's turn lock: a busy chief is skipped until the next sweep. A call that
+fails is recorded on that session as `suppressed:chief_error` (that idle streak
+is not retried; the next one is judged afresh) and the sweep goes on to the
+next session.
 
 The call carries, fenced as untrusted data:
 
@@ -90,20 +97,38 @@ The call carries, fenced as untrusted data:
   by …`, `[Chief nudge]`, from the same constants the senders use) — a second
   line for a paste whose row is gone;
 - for a dispatched agent, its first message (the task's text, which can come
-  from a plugin) when muster has read the whole conversation, and anything
-  older than 6 hours.
+  from a plugin) when muster has read the whole conversation;
+- anything **older than 6 hours**, or with **no time** at all.
 
-A mirrored transcript has no times on the wire, so for a window the read is the
-host's backfill (the newest 300 events within the last 4 MiB of its transcript)
-instead of 6 hours, and its messages carry no time. A message is named by its
-place in the transcript; an older `muster-mirror` that does not send it has no
-messages a nudge can quote, so its sessions are only ever asked about or left.
+A window's messages are read from the host's transcript backfill (the newest
+300 events within the last 4 MiB). Each prompt now carries its own time on the
+wire (`promptAt`, from the transcript record), so a window is held to the same 6
+hours as an agent, and its nudge says when you said it. A message is named by
+its place in the transcript. An older `muster-mirror` sends no prompt times:
+then none of your messages can authorise a nudge, the chief's "nudge" is turned
+into an ask, and the decision records why ("… arrived with no time (an older
+muster-mirror)").
 
-**What leaves for the model provider.** Each call sends the text above, with
-anything shaped like a secret replaced by `«redacted»` (the same heuristic
-redaction as `sessions_overview`; a secret in a shape it does not know passes),
-to the chief's model provider: OpenRouter for a `gateway` chief, Anthropic for a
-`claude-code` chief. Nothing is sent for a session that is not a candidate.
+**A Stop hook's block reason is not your message.** Claude Code records the
+reason of a Stop hook that blocks as a user record marked `isMeta`
+(`Stop hook feedback: …`); muster's transcript reader drops every `isMeta`
+record, so it never reaches the chief as yours (pinned by a test in
+`internal/cctranscript`).
+
+**A message over the machine door is yours (operator decision).** For a
+dispatched agent, a message sent with `POST /api/agents/{name}/messages` (a
+token-authenticated call) counts as your own and can authorise a nudge.
+muster records no other source for an agent's chat messages, and that is the
+decision, not an oversight.
+
+**What leaves for the model provider.** Each call sends exactly the fenced block
+above — the focus title, the session's last message and your own recent
+messages to it — plus muster's instructions, with anything shaped like a secret
+replaced by `«redacted»` (the same heuristic redaction as `sessions_overview`; a
+secret in a shape it does not know passes), to the chief's model provider:
+OpenRouter for a `gateway` chief, Anthropic for a `claude-code` chief. No earlier
+check is in the context (each call is fresh), and nothing is sent for a session
+that is not a candidate.
 
 The chief answers with one decision:
 
@@ -117,17 +142,26 @@ The chief answers with one decision:
 
 These are code, not instructions to the chief:
 
-- **The quote is checked byte for byte.** A nudge is accepted only when its
-  quote (at least 4 characters) appears exactly inside the message it names,
-  and that message is one of your own messages above. Text the session wrote —
-  "the owner approved the deploy" — is never in that set, so a session cannot
-  talk itself into a nudge. A nudge with no covered action is refused too. A
+- **The quote is your own recent words, checked byte for byte.** A nudge is
+  accepted only when its quote is a phrase (at least 3 words and 12
+  characters) that appears exactly — starting and ending on word boundaries,
+  as the chief was shown it — inside the one message it names, and that
+  message is one of your own messages above. Text the session wrote ("the
+  owner approved the deploy") is never in that set, so a session cannot talk
+  itself into a nudge. A nudge naming no covered action is refused too. A
   refused nudge is recorded as `suppressed:quote_unverified`.
+
+  **What this does not check:** whether your words actually *cover* the
+  pending action ("merge when green" covers a merge, not a deploy) is the
+  chief's judgement, recorded as the decision's covered action. The code
+  guarantees only that the quote is yours, recent and verbatim.
 - **Two nudges per message of yours.** After 2 nudges quoting from the same
   latest message of yours, the next nudge becomes an ask ("… stopped again
   after 2 nudges since your last message to it. Should it continue?").
-- **The hourly cap.** Past `MUSTER_CHIEF_NUDGE_HOURLY_CAP` nudges in the last
-  hour, a nudge is recorded as `suppressed:hourly_cap`.
+- **The hourly cap, live only.** Past `MUSTER_CHIEF_NUDGE_HOURLY_CAP` live
+  nudges in the last hour, a live nudge is recorded as `suppressed:hourly_cap`.
+  Shadow mode is not capped and does not count: it records what it would send
+  (operator decision).
 - **Still stalled.** Right before anything is sent or asked, muster checks the
   session is still in the same idle streak; if not, the decision is recorded as
   `suppressed:moved_on`.
@@ -144,8 +178,8 @@ These are code, not instructions to the chief:
 [Chief nudge] Sam said at 14:02: "keep going until merged". Continue.
 ```
 
-For a window the time is left out (`Sam said earlier in this session: …`),
-because its transcript carries none. To a window it is queued (it shows in the
+The time is when you wrote the quoted message (on an agent's row, or the
+transcript record's own time for a window). To a window it is queued (it shows in the
 window's queue, and cannot be edited or retried); to an agent it is sent as a
 turn when no other turn of the agent's is running. When muster pastes a queued
 nudge it checks again that the feature is on, you are live, the window still
@@ -162,6 +196,14 @@ session's `attention_answer` is recorded and **not** relayed, since a session
 fed outside text could write it. If the session moves on before you answer, the
 ask is withdrawn.
 
+An agent's relay goes into the conversation that was asked about (stored on the
+decision), not the agent's newest one, and only while that conversation is
+still where it stopped. The kill switch is read again when a relay or an
+agent's nudge is sent, as the send queue's gate reads it for a window. A relay
+not delivered within 2 hours (an agent that stayed busy) is dropped and
+recorded failed. A live window nudge recorded as queued whose queued message
+was never written (muster stopped between the two) is failed after 10 minutes.
+
 ## The Chief nudges tab
 
 `/attention?tab=nudges` lists your 50 newest decisions, newest first. Each card
@@ -169,9 +211,6 @@ shows the session (focus title and host, or agent), the decision, the message
 that was or would have been sent, the quote and its message id, the covered
 action, the chief's reason, the outcome (including which guard suppressed it)
 and a **Shadow** or **Live** badge.
-
-At the top, **Repeat stallers** lists sessions with 3 or more decisions in the
-last 24 hours.
 
 ## Records
 
@@ -199,8 +238,8 @@ your relayed answer.
 
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.
-- A mirrored session's messages have no times, so its nudge cannot say when you
-  said it, and the 6-hour window does not apply to it.
+- A window on an older `muster-mirror` (no prompt times) is never nudged, only
+  asked about or left.
 - For dispatched agents, which user-role messages are yours is decided by what
-  muster can tell apart (fenced injections, its own pastes, the kickoff). A
-  message sent over the machine door is counted as yours.
+  muster can tell apart (fenced injections, its own pastes, the kickoff); a
+  message over the machine door counts as yours (above).

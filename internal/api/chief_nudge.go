@@ -2,11 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
@@ -90,6 +91,9 @@ const (
 	chiefNudgePendingBatch = 200
 	// chiefNudgeAskLabel names the chief on a nudge's ask.
 	chiefNudgeAskLabel = "your chief"
+	// chiefNudgeAgentSessionAge: an agent conversation not active for this
+	// long is not looked at (it is not a stall worth a call any more).
+	chiefNudgeAgentSessionAge = 24 * time.Hour
 )
 
 // chiefNudgesOn reports whether the feature runs here.
@@ -294,41 +298,44 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 		isChief := chiefPredicate(list)
 		for _, a := range list {
 			_, _, officer := s.officerOf(a)
-			c := chiefnudge.Session{Kind: chiefnudge.KindAgent, Key: strconv.FormatInt(a.ID, 10), AgentID: a.ID,
+			agentKey := "agent:" + strconv.FormatInt(a.ID, 10)
+			base := chiefnudge.Session{Kind: chiefnudge.KindAgent, Key: chiefnudge.AgentKey(a.ID, 0), AgentID: a.ID,
 				Label: firstNonBlank(a.DisplayName, a.Name), OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
-				OpenAsk: asked["agent:"+strconv.FormatInt(a.ID, 10)] || inFlight[chiefnudge.KindAgent+":"+strconv.FormatInt(a.ID, 10)]}
-			nc := nudgeCandidate{Session: c, agent: a}
-			if c.OtherUser || c.Chief || c.Officer {
-				all = append(all, nc)
-				continue
-			}
-			if !agentCanBeSent(s.liveStatus(octx, a)) || agents.KickoffOwed(a) || s.turns.busy(a.ID) {
-				all = append(all, nc)
+				OpenAsk: asked[agentKey]}
+			if base.OtherUser || base.Chief || base.Officer ||
+				!agentCanBeSent(s.liveStatus(octx, a)) || agents.KickoffOwed(a) || s.turns.busy(a.ID) {
+				all = append(all, nudgeCandidate{Session: base, agent: a}) // status "": not idle
 				continue
 			}
 			sessions, err := s.ext.Agents.ListSessions(octx, a.ID)
-			if err != nil || len(sessions) == 0 {
+			if err != nil {
 				continue
 			}
-			last, err := s.ext.Agents.ListRecentChatMessages(octx, sessions[0].ID, 1)
-			if err != nil || len(last) == 0 {
-				continue
+			// 🔴 EACH CONVERSATION ON ITS OWN: an agent can hold several, and
+			// the one that stalled is the one decided, nudged and relayed to.
+			for _, sess := range sessions {
+				if now.Sub(sess.UpdatedAt) > chiefNudgeAgentSessionAge {
+					break // most recently active first: the rest are older still
+				}
+				last, err := s.ext.Agents.ListRecentChatMessages(octx, sess.ID, 1)
+				if err != nil || len(last) == 0 {
+					continue
+				}
+				m := last[len(last)-1]
+				c := base
+				c.ChatSessionID, c.Key = sess.ID, chiefnudge.AgentKey(a.ID, sess.ID)
+				c.OpenAsk = c.OpenAsk || inFlight[chiefnudge.KindAgent+":"+c.Key]
+				c.Status = "idle"
+				c.StreakKey = "msg:" + strconv.FormatInt(m.ID, 10)
+				c.IdleSince, c.IdleFor = m.CreatedAt, now.Sub(m.CreatedAt)
+				c.TurnError = m.Role == "assistant" && strings.HasPrefix(m.Content, AgentTurnFailedPrefix)
+				all = append(all, nudgeCandidate{Session: c, agent: a, session: sess})
 			}
-			m := last[len(last)-1]
-			nc.session = sessions[0]
-			nc.Status = "idle"
-			nc.StreakKey = "msg:" + strconv.FormatInt(m.ID, 10)
-			nc.IdleSince, nc.IdleFor = m.CreatedAt, now.Sub(m.CreatedAt)
-			nc.TurnError = m.Role == "assistant" && strings.HasPrefix(m.Content, AgentTurnFailedPrefix)
-			all = append(all, nc)
 		}
 	}
 	var out []nudgeCandidate
 	for _, c := range all {
 		if chiefnudge.Exclude(c.Session, idle) != "" {
-			continue
-		}
-		if s.nudgeSkipped(owner, c.Session) {
 			continue
 		}
 		decided, err := s.ext.ChiefNudges.Decided(octx, c.Kind, c.Key, c.StreakKey)
@@ -339,36 +346,6 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 		out = append(out, c)
 	}
 	return out
-}
-
-// nudgeSkips is the idle streaks a pass read and found not to be candidates
-// after all (the owner spoke last), so later passes do not read their
-// transcripts again: in memory, keyed owner/kind/key/streak, and dropped
-// whole once it holds nudgeSkipsMax (a skip lost costs one re-read).
-type nudgeSkips struct {
-	mu sync.Mutex
-	m  map[string]bool
-}
-
-const nudgeSkipsMax = 10000
-
-func nudgeSkipKey(owner int64, c chiefnudge.Session) string {
-	return strconv.FormatInt(owner, 10) + "/" + c.Kind + "/" + c.Key + "/" + c.StreakKey
-}
-
-func (s *Server) nudgeSkip(owner int64, c chiefnudge.Session) {
-	s.nudgeSkipSet.mu.Lock()
-	defer s.nudgeSkipSet.mu.Unlock()
-	if s.nudgeSkipSet.m == nil || len(s.nudgeSkipSet.m) >= nudgeSkipsMax {
-		s.nudgeSkipSet.m = map[string]bool{}
-	}
-	s.nudgeSkipSet.m[nudgeSkipKey(owner, c)] = true
-}
-
-func (s *Server) nudgeSkipped(owner int64, c chiefnudge.Session) bool {
-	s.nudgeSkipSet.mu.Lock()
-	defer s.nudgeSkipSet.mu.Unlock()
-	return s.nudgeSkipSet.m[nudgeSkipKey(owner, c)]
 }
 
 // nudgeOpenAskers is the sessions of octx's owner with an open attention ask of
@@ -427,8 +404,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	last, ok := chiefnudge.LastIsAssistant(msgs)
 	if !ok {
 		// The owner spoke last (or the session said nothing): not stalled on
-		// its own word. Not re-read for this streak (nudgeSkip).
-		s.nudgeSkip(requestOwner(octx), c.Session)
+		// its own word.
 		return false, false
 	}
 	injected, err := s.nudgeInjected(octx, c.Session)
@@ -438,6 +414,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	}
 	owner := chiefnudge.OwnerMessages(msgs, injected, nudgeInjectedPrefixes, s.now().Add(-chiefnudge.OwnerWindow),
 		c.Kind == chiefnudge.KindAgent && full)
+	untimed := chiefnudge.Untimed(msgs)
 	// 🔴 THE CHIEF SEES REDACTED TEXT, AND THE QUOTE IS MATCHED AGAINST EXACTLY
 	// WHAT IT SAW: each owner message is redacted and cut here, once, and both
 	// the prompt and CheckQuote read this copy.
@@ -446,17 +423,21 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	}
 	last.Text = redact.Secrets(chiefnudge.Cut(last.Text, chiefnudge.MaxLastRunes))
 	p.budget--
-	raw, err := s.askChiefForNudge(octx, chief, chiefnudge.Prompt(c.Session, last, owner, c.IdleFor, fence.NewNonce()))
+	d := chiefnudge.Decision{Kind: c.Kind, Key: c.Key, Host: c.Host, TmuxSession: c.TmuxSession, Window: c.Window,
+		AgentID: c.AgentID, ChatSessionID: c.ChatSessionID, Title: c.Title, StreakKey: c.StreakKey, AnchorKey: chiefnudge.Anchor(owner),
+		IdleSince: c.IdleSince, Mode: s.chiefNudgeMode(o.ID)}
+	raw, err := s.askChiefForNudge(octx, chief, nudgeSessionName(chief.Name, o.ID, c.Session),
+		chiefnudge.Prompt(c.Session, last, owner, c.IdleFor, fence.NewNonce()))
 	if errors.Is(err, errNudgeChiefBusy) {
 		return false, true
 	}
 	if err != nil {
-		s.logger.Printf("chief nudges: %s %s: the chief's call failed%s; retried next pass", c.Kind, c.Key, failureKind(err))
-		return false, true
+		// 🔴 ONE FAILED CALL DOES NOT WEDGE THE OWNER'S SWEEP: it is recorded
+		// on THIS candidate (so this streak is not retried every pass) and the
+		// owner's next candidate is judged. A new streak is judged afresh.
+		d.Decision, d.Outcome, d.Detail = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardChiefError), "the chief's call failed"+failureKind(err)
+		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
 	}
-	d := chiefnudge.Decision{Kind: c.Kind, Key: c.Key, Host: c.Host, TmuxSession: c.TmuxSession, Window: c.Window,
-		AgentID: c.AgentID, Title: c.Title, StreakKey: c.StreakKey, AnchorKey: chiefnudge.Anchor(owner),
-		IdleSince: c.IdleSince, Mode: s.chiefNudgeMode(o.ID)}
 	prop, perr := chiefnudge.ParseProposal(raw)
 	if perr != nil {
 		d.Decision, d.Outcome, d.Reason = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardInvalid), perr.Error()
@@ -474,6 +455,15 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	// A nudge.
 	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
 	quoted, qerr := chiefnudge.CheckQuote(prop, owner)
+	if qerr != nil && untimed > 0 && len(owner) == 0 {
+		// The host sent the owner's messages with no times (an older
+		// muster-mirror): none can authorise a nudge, so it is an ask — and
+		// the decision says why.
+		d.Decision = chiefnudge.DecisionAsk
+		d.Question, d.Options = chiefnudge.EscalationNoTimes(c.Title), chiefnudge.CleanOptions(nil)
+		d.Detail = strconv.Itoa(untimed) + " message(s) of the owner's arrived with no time (an older muster-mirror): none can authorise a nudge"
+		return s.actAsk(octx, c, d), false
+	}
 	if qerr != nil {
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardQuote), qerr.Error()
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
@@ -492,7 +482,9 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Reason = "escalated: " + strconv.Itoa(n) + " nudges since the owner's last message; " + d.Reason
 		return s.actAsk(octx, c, d), false
 	}
-	if p.hourly >= s.chiefNudgeHourlyCap() {
+	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
+	// unsuppressed (operator decision), and is not counted.
+	if d.Mode == chiefnudge.ModeLive && p.hourly >= s.chiefNudgeHourlyCap() {
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardHourlyCap),
 			strconv.Itoa(p.hourly)+" nudges in the last hour (cap "+strconv.Itoa(s.chiefNudgeHourlyCap())+")"
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
@@ -500,11 +492,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	d.Message = chiefnudge.NudgeText(o.Name, quoted, prop.Quote, time.Local)
 	if d.Mode != chiefnudge.ModeLive {
 		d.Outcome = chiefnudge.OutcomeWouldSend
-		if s.recordNudge(octx, d, "chief_nudge.would_send") {
-			p.hourly++
-			return true, false
-		}
-		return false, false
+		return s.recordNudge(octx, d, "chief_nudge.would_send"), false
 	}
 	if s.actNudge(octx, c, d) {
 		p.hourly++
@@ -553,7 +541,7 @@ func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) ([]chief
 		return s.nudgeRead(ctx, c.Session)
 	}
 	if c.Kind == chiefnudge.KindAgent {
-		msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, c.session.ID, chiefNudgeAgentMessages)
+		msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, c.ChatSessionID, chiefNudgeAgentMessages)
 		if err != nil {
 			return nil, false, err
 		}
@@ -568,7 +556,7 @@ func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) ([]chief
 	}
 	e := mirror.SessionView{Host: c.Host, Session: c.TmuxSession, Window: c.Window, ClaudeSession: c.Key}
 	evs, err := s.mirrorEvents(ctx, e, c.Key)
-	if err != nil {
+	if err != nil && (len(evs) == 0 || errors.Is(err, errNoSession)) {
 		return nil, false, err
 	}
 	var out []chiefnudge.Msg
@@ -579,7 +567,11 @@ func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) ([]chief
 			if ev.Line > 0 {
 				id = "line:" + strconv.FormatInt(ev.Line, 10)
 			}
-			out = append(out, chiefnudge.Msg{Role: "user", Text: ev.Text, ID: id})
+			var at time.Time
+			if ev.PromptAt > 0 {
+				at = time.UnixMilli(ev.PromptAt) // the host's clock: a six-hour window shrugs off skew
+			}
+			out = append(out, chiefnudge.Msg{Role: "user", Text: ev.Text, ID: id, At: at})
 		case cctranscript.KindText:
 			out = append(out, chiefnudge.Msg{Role: "assistant", Text: ev.Text})
 		}
@@ -587,19 +579,22 @@ func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) ([]chief
 	return out, false, nil
 }
 
-// nudgeSessionName is the chief's gateway key for stall checks: a pure
-// function of its name, like recapSessionName, and never an operator thread's
-// key, so a stall check never enters the operator's conversation with the
-// chief. No chat_sessions row exists for it (chief_agent.go says why).
-func nudgeSessionName(agentName string) string {
-	return "agent:" + agentName + ":webchat:nudge"
+// nudgeSessionName is the chief's gateway key for ONE stall check: derived
+// from the decision it is for (owner, session, idle streak), so every check
+// starts a fresh context — no check sees another's, none grows with the ones
+// before it — and never an operator thread's key, so a check never enters the
+// operator's conversation with the chief. No chat_sessions row exists for it
+// (chief_agent.go says why).
+func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + c.Kind + "\x00" + c.Key + "\x00" + c.StreakKey))
+	return "agent:" + agentName + ":webchat:nudge:" + hex.EncodeToString(sum[:8])
 }
 
 // askChiefForNudge puts prompt to the chief and returns its answer, holding
 // the chief's session claim and turn gate (as a question turn does) so it never
 // overlaps another of the chief's turns. errNudgeChiefBusy when the chief
 // cannot take it now. The test hook nudgeChief replaces the call itself.
-func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, prompt string) (string, error) {
+func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, prompt string) (string, error) {
 	if s.ext.Gateway == nil || s.ext.Agents == nil {
 		return "", errNudgeChiefBusy
 	}
@@ -624,7 +619,7 @@ func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, promp
 	defer s.turns.leave(chief.ID)
 	tctx, cancel := context.WithTimeout(ctx, chiefNudgeTurnBudget)
 	defer cancel()
-	reply, err := s.ext.Gateway.Chat(tctx, chief, nudgeSessionName(chief.Name), prompt, nil)
+	reply, err := s.ext.Gateway.Chat(tctx, chief, key, prompt, nil)
 	if agentgateway.Unsent(err) != "" {
 		return "", errNudgeChiefBusy
 	}
@@ -661,14 +656,10 @@ func (s *Server) nudgeStreakNow(ctx context.Context, d chiefnudge.Decision) stri
 		}
 		return "since:" + strconv.FormatInt(st.Since, 10)
 	}
-	if s.ext.Agents == nil || s.turns.busy(d.AgentID) {
+	if s.ext.Agents == nil || s.turns.busy(d.AgentID) || d.ChatSessionID == 0 {
 		return ""
 	}
-	sessions, err := s.ext.Agents.ListSessions(ctx, d.AgentID)
-	if err != nil || len(sessions) == 0 {
-		return ""
-	}
-	last, err := s.ext.Agents.ListRecentChatMessages(ctx, sessions[0].ID, 1)
+	last, err := s.ext.Agents.ListRecentChatMessages(ctx, d.ChatSessionID, 1)
 	if err != nil || len(last) == 0 {
 		return ""
 	}
@@ -692,7 +683,7 @@ func (s *Server) actNudge(ctx context.Context, c nudgeCandidate, d chiefnudge.De
 		return false
 	}
 	if c.Kind == chiefnudge.KindAgent {
-		s.sendNudgeTurn(ctx, rec, c, rec.Message, chiefnudge.OutcomeQueued, chiefnudge.OutcomeSent, "chief_nudge.sent")
+		s.sendNudgeTurn(ctx, rec, rec.Message, chiefnudge.OutcomeQueued, chiefnudge.OutcomeSent, "chief_nudge.sent")
 		return true
 	}
 	s.queueNudgeText(ctx, rec, rec.Message, chiefnudge.OutcomeQueued)
@@ -723,38 +714,45 @@ func (s *Server) queueNudgeText(ctx context.Context, d chiefnudge.Decision, text
 // sendNudgeTurn starts text as a turn to d's agent — never overlapping one of
 // its turns — and moves d from state to done (with action's audit row), or to
 // suppressed:moved_on when the agent is busy or gone.
-func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, c nudgeCandidate, text, state, done, action string) {
-	a, sess := c.agent, c.session
-	if a.ID == 0 {
-		got, err := s.ext.Agents.Get(ctx, d.AgentID)
-		if err != nil {
-			s.failNudge(ctx, d, state, "the agent is gone")
-			return
-		}
-		sessions, err := s.ext.Agents.ListSessions(ctx, got.ID)
-		if err != nil || len(sessions) == 0 {
-			s.failNudge(ctx, d, state, "the agent has no conversation")
-			return
-		}
-		a, sess = got, sessions[0]
+func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, text, state, done, action string) {
+	// 🔴 THE KILL SWITCH REACHES AN AGENT'S NUDGE AND RELAY TOO, read at the
+	// moment of sending (the send queue's gate does it for a window).
+	if !s.chiefNudgeLive(d.Owner) {
+		s.failNudge(ctx, d, state, SendQueueNudgeOff)
+		return
 	}
 	if s.ext.Gateway == nil {
 		s.failNudge(ctx, d, state, "the agent gateway is off on this server")
+		return
+	}
+	a, err := s.ext.Agents.Get(ctx, d.AgentID)
+	if err != nil {
+		s.failNudge(ctx, d, state, "the agent is gone")
+		return
+	}
+	// The conversation the decision was about — not whichever is newest.
+	sess, err := s.ext.Agents.GetSession(ctx, d.ChatSessionID)
+	if err != nil || sess.AgentID != a.ID {
+		s.failNudge(ctx, d, state, "the agent's conversation is gone")
 		return
 	}
 	if !agentCanBeSent(s.liveStatus(ctx, a)) {
 		s.failNudge(ctx, d, state, "the agent is not running")
 		return
 	}
-	if ok, _ := s.turns.enterIdle(a.ID); !ok {
-		if done == chiefnudge.OutcomeRelayed {
-			return // a relay waits for the agent; the next pass retries it
+	if !s.stillStalled(ctx, d) {
+		if done == chiefnudge.OutcomeRelayed && s.turns.busy(a.ID) {
+			return // busy for now: the next pass retries it, up to RelayMaxAge
 		}
+		why := "the conversation moved on before muster sent it"
 		if _, err := s.ext.ChiefNudges.Move(ctx, d.ID, []string{state}, chiefnudge.Move{Outcome: chiefnudge.Suppressed(chiefnudge.GuardMovedOn),
-			Detail: "the agent started a turn before muster sent it"}, "chief_nudge.suppressed"); err != nil {
+			Detail: why}, "chief_nudge.suppressed"); err != nil {
 			s.logger.Printf("chief nudges: decision %d: %v", d.ID, err)
 		}
 		return
+	}
+	if ok, _ := s.turns.enterIdle(a.ID); !ok {
+		return // a turn started this instant: the next pass retries (a nudge is then moved on)
 	}
 	if _, err := s.ext.ChiefNudges.Move(ctx, d.ID, []string{state}, chiefnudge.Move{Outcome: done}, action); err != nil {
 		s.turns.leave(a.ID)
@@ -888,9 +886,12 @@ func (s *Server) relayNudgeAnswer(ctx context.Context, a attention.Ask) {
 
 // deliverRelay sends d's relay text: queued for a mirrored window, a turn for
 // an agent.
+//
+// The kill switch is read where each send happens — sendNudgeTurn for an
+// agent, sendQueueNudgeGate at the paste for a window — never only here.
 func (s *Server) deliverRelay(ctx context.Context, d chiefnudge.Decision) {
 	if d.Kind == chiefnudge.KindAgent {
-		s.sendNudgeTurn(ctx, d, nudgeCandidate{}, d.RelayText, chiefnudge.OutcomeRelayQueued, chiefnudge.OutcomeRelayed, "chief_nudge.relayed")
+		s.sendNudgeTurn(ctx, d, d.RelayText, chiefnudge.OutcomeRelayQueued, chiefnudge.OutcomeRelayed, "chief_nudge.relayed")
 		return
 	}
 	s.queueNudgeText(ctx, d, d.RelayText, chiefnudge.OutcomeRelayQueued)
@@ -904,10 +905,25 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 	switch d.Outcome {
 	case chiefnudge.OutcomeQueued, chiefnudge.OutcomeRelayQueued:
 		if d.SendQueueID == 0 {
-			if d.Outcome == chiefnudge.OutcomeRelayQueued {
+			age := s.now().Sub(d.UpdatedAt)
+			switch {
+			case d.Outcome == chiefnudge.OutcomeRelayQueued && age > chiefnudge.RelayMaxAge:
+				s.failNudge(octx, d, d.Outcome, "the relay was not delivered within "+chiefnudge.RelayMaxAge.String()+"; dropped")
+				return true
+			case d.Outcome == chiefnudge.OutcomeRelayQueued:
 				// Claimed by the answer, not yet sent (or the agent was busy):
 				// send it now.
 				s.deliverRelay(octx, d)
+			case d.Kind == chiefnudge.KindAgent:
+				// An agent's nudge whose turn could not start (a turn began
+				// that instant): tried again, which records it moved on if
+				// the conversation has.
+				s.sendNudgeTurn(octx, d, d.Message, d.Outcome, chiefnudge.OutcomeSent, "chief_nudge.sent")
+			case d.Kind == chiefnudge.KindMirror && age > chiefnudge.QueueRepairAfter:
+				// Recorded queued, but its send_queue row was never written (a
+				// stop between the two): nothing will ever send it.
+				s.failNudge(octx, d, d.Outcome, "its message was never queued (interrupted)")
+				return true
 			}
 			return false
 		}

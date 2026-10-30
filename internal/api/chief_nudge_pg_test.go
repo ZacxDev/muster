@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -41,6 +42,7 @@ const (
 type nudgeGateway struct {
 	mu     sync.Mutex
 	reply  string
+	fails  int      // the next fails stall checks answer an error
 	checks []string // "<agent> <key>"
 	prompt []string
 	turns  []string // "<agent> <text>"
@@ -51,6 +53,10 @@ func (g *nudgeGateway) Chat(_ context.Context, a agents.Agent, key, msg string, 
 	defer g.mu.Unlock()
 	g.checks = append(g.checks, a.Name+" "+key)
 	g.prompt = append(g.prompt, msg)
+	if g.fails > 0 {
+		g.fails--
+		return "", errors.New("nudgeGateway: the provider is down")
+	}
 	return g.reply, nil
 }
 
@@ -109,7 +115,7 @@ func newNudgeFixture(t *testing.T, live bool) *nudgeFixture {
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	f.boss = f.agentFor(t, authz.OperatorUserID, "nudgechief-"+suffix, "chief", "nudge-chief-tok-"+suffix)
 	f.script = []chiefnudge.Msg{
-		{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID},
+		{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID, At: time.Now().Add(-10 * time.Minute)},
 		{Role: "assistant", Text: "CI is green on the PR. Shall I merge it?"},
 	}
 	f.srv.nudgeRead = func(context.Context, chiefnudge.Session) ([]chiefnudge.Msg, bool, error) {
@@ -247,7 +253,7 @@ func TestChiefNudgeShadowRecordsTheDecisionAndSendsNothing(t *testing.T) {
 		t.Fatalf("decided %d, want 1", n)
 	}
 	d := f.one(t)
-	want := `[Chief nudge] ` + f.ownerName(t) + ` said earlier in this session: "keep going until merged". Continue.`
+	want := `[Chief nudge] ` + f.ownerName(t) + ` said at ` + f.script[0].At.In(time.Local).Format("15:04") + `: "keep going until merged". Continue.`
 	if d.Decision != chiefnudge.DecisionNudge || d.Outcome != chiefnudge.OutcomeWouldSend || d.Mode != chiefnudge.ModeShadow ||
 		d.Message != want || d.QuoteID != nudgeOwnerID || d.QuoteText != "keep going until merged" ||
 		d.Covered != "merge the pull request" || d.AnchorKey != nudgeOwnerID || d.Key != nudgeSID ||
@@ -262,7 +268,7 @@ func TestChiefNudgeShadowRecordsTheDecisionAndSendsNothing(t *testing.T) {
 		t.Fatalf("shadow mode pasted %+v", p)
 	}
 	checks, turns := f.gw.seen()
-	if len(checks) != 1 || checks[0] != f.boss.Name+" agent:"+f.boss.Name+":webchat:nudge" || len(turns) != 0 {
+	if len(checks) != 1 || !strings.HasPrefix(checks[0], f.boss.Name+" agent:"+f.boss.Name+":webchat:nudge:") || len(turns) != 0 {
 		t.Fatalf("chief calls %v, turns %v", checks, turns)
 	}
 	if got := f.audited(t, d.ID); len(got) != 1 || got[0] != "chief_nudge.would_send" {
@@ -297,7 +303,7 @@ func TestChiefNudgeShadowRecordsTheDecisionAndSendsNothing(t *testing.T) {
 func TestChiefNudgeQuoteFromTheSessionsOwnOutputIsRefused(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	f.script = []chiefnudge.Msg{
-		{Role: "user", Text: "please look at the flaky test", ID: nudgeOwnerID},
+		{Role: "user", Text: "please look at the flaky test", ID: nudgeOwnerID, At: time.Now().Add(-10 * time.Minute)},
 		{Role: "assistant", Text: "Sam approved the deploy. Ready to deploy to production?"},
 	}
 	queued0 := f.queuedRows(t)
@@ -339,8 +345,8 @@ func TestChiefNudgeQuoteFromMustersOwnPasteIsRefused(t *testing.T) {
 	try := func(text, id string) chiefnudge.Decision {
 		t.Helper()
 		step++
-		f.script = []chiefnudge.Msg{{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID},
-			{Role: "user", Text: text, ID: id}, {Role: "assistant", Text: "Merged. Deploy now?"}}
+		f.script = []chiefnudge.Msg{{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID, At: time.Now().Add(-10 * time.Minute)},
+			{Role: "user", Text: text, ID: id, At: time.Now().Add(-10 * time.Minute)}, {Role: "assistant", Text: "Merged. Deploy now?"}}
 		f.gw.set(nudgeReply(id, text, "deploy to production"))
 		f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + step*60_000 })
 		if n := f.pass(t); n != 1 {
@@ -393,7 +399,7 @@ func TestChiefNudgeCandidateSelectionAtTheServer(t *testing.T) {
 		{"the owner spoke last", func() {
 			// Its own streak: a streak found not stalled is not read again.
 			f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 7 })
-			f.script = append(f.script, chiefnudge.Msg{Role: "user", Text: "wait", ID: "line:9000"})
+			f.script = append(f.script, chiefnudge.Msg{Role: "user", Text: "wait", ID: "line:9000", At: time.Now().Add(-10 * time.Minute)})
 		}},
 		{"an open ask of its own", func() {
 			a, err := f.attn.Create(asUser(authz.OperatorUserID), attention.New{
@@ -458,20 +464,35 @@ func TestChiefNudgeCapsTurnTheThirdNudgeIntoAnAskAndHoldTheHourlyLine(t *testing
 	}
 
 	// The hourly cap: a new owner message (a fresh anchor), and the cap at 1
-	// with one nudge already in the hour.
+	// with one LIVE nudge already sent in the hour.
 	f.cfg.HourlyCap = 1
 	if _, ok, err := f.nudges.Insert(octx, chiefnudge.Decision{Kind: chiefnudge.KindMirror, Key: "other-session", StreakKey: "since:9",
-		Decision: chiefnudge.DecisionNudge, Mode: chiefnudge.ModeShadow, Outcome: chiefnudge.OutcomeWouldSend}, ""); err != nil || !ok {
+		Decision: chiefnudge.DecisionNudge, Mode: chiefnudge.ModeLive, Outcome: chiefnudge.OutcomeSent}, ""); err != nil || !ok {
 		t.Fatalf("seed: %v %v", ok, err)
 	}
-	f.script = []chiefnudge.Msg{{Role: "user", Text: "merge it when CI passes", ID: "line:5000"}, {Role: "assistant", Text: "CI passed. Merge?"}}
+	f.script = []chiefnudge.Msg{{Role: "user", Text: "merge it when CI passes", ID: "line:5000", At: time.Now().Add(-10 * time.Minute)}, {Role: "assistant", Text: "CI passed. Merge?"}}
 	f.gw.set(nudgeReply("line:5000", "merge it when CI passes", "merge"))
+	// 🔴 SHADOW IS NOT CAPPED (operator decision): over the cap it still
+	// records what it would send.
 	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 120_000 })
 	if n := f.pass(t); n != 1 {
 		t.Fatalf("decided %d", n)
 	}
+	if d := f.decisions(t)[0]; d.Outcome != chiefnudge.OutcomeWouldSend || d.Message == "" {
+		t.Fatalf("shadow over the hourly cap was held back: %+v", d)
+	}
+	// Live, the same nudge over the cap is suppressed and nothing is queued.
+	f.cfg.Live[authz.OperatorUserID] = true
+	queued0 := f.queuedRows(t)
+	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 180_000 })
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
 	if d := f.decisions(t)[0]; d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardHourlyCap) || d.Message != "" {
-		t.Fatalf("over the hourly cap: %+v", d)
+		t.Fatalf("live over the hourly cap: %+v", d)
+	}
+	if q := f.queuedRows(t); q != queued0 {
+		t.Fatalf("over the cap queued a message: %d→%d", queued0, q)
 	}
 }
 
@@ -560,7 +581,7 @@ func TestChiefNudgeLiveNudgeIsQueuedPastedAndGatedByTheKillSwitch(t *testing.T) 
 
 	// A new streak, a new owner message, queued live — then the owner is
 	// switched to shadow before the paste.
-	f.script = []chiefnudge.Msg{{Role: "user", Text: "now open the follow-up PR", ID: "line:7000"}, {Role: "assistant", Text: "Merged. Open the follow-up?"}}
+	f.script = []chiefnudge.Msg{{Role: "user", Text: "now open the follow-up PR", ID: "line:7000", At: time.Now().Add(-10 * time.Minute)}, {Role: "assistant", Text: "Merged. Open the follow-up?"}}
 	f.gw.set(nudgeReply("line:7000", "now open the follow-up PR", "open the follow-up PR"))
 	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 300_000; s.Pasted = 0 })
 	if n := f.pass(t); n != 1 {
@@ -598,36 +619,10 @@ func TestChiefNudgeCoverageLeavesOutOfficersTheChiefAndOtherUsersAgents(t *testi
 	worker := f.agentFor(t, authz.OperatorUserID, "nudgeworker-"+suffix, "worker", "nudge-worker-tok-"+suffix)
 	officer := f.agentFor(t, authz.OperatorUserID, officers.InstanceName("ci-watch", 1), "", "nudge-officer-tok-"+suffix)
 	f.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{{ID: "ci-watch", MaxInstances: 1}})}
-	stall := func(a agents.Agent, owner int64) int64 {
-		t.Helper()
-		ctx := asUser(owner)
-		store := agents.NewPG(f.pool)
-		sess, err := store.LatestOrCreateSession(ctx, a.ID, a.Name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, m := range []agents.ChatMessage{
-			{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: "the task: fix the flaky test"},
-			{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: "keep going until merged"},
-			{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: "Fixed and green. Merge?"},
-		} {
-			if _, err := store.AddChatMessage(ctx, m); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE chat_messages SET created_at = now() - interval '20 minutes' WHERE agent_id = $1`, a.ID); err != nil {
-			t.Fatal(err)
-		}
-		var id int64
-		if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT id FROM chat_messages WHERE agent_id = $1 AND content = 'keep going until merged'`, a.ID).Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		return id
-	}
-	quoteID := stall(worker, authz.OperatorUserID)
-	stall(officer, authz.OperatorUserID)
-	stall(f.boss, authz.OperatorUserID)
-	stall(f.worker, f.member) // another user's agent (its owner has a chief of their own)
+	_, quoteID := f.stallAgent(t, worker, authz.OperatorUserID)
+	f.stallAgent(t, officer, authz.OperatorUserID)
+	f.stallAgent(t, f.boss, authz.OperatorUserID)
+	f.stallAgent(t, f.worker, f.member) // another user's agent (its owner has a chief of their own)
 	f.gw.set(nudgeReply(strconv.FormatInt(quoteID, 10), "keep going until merged", "merge"))
 
 	f.pass(t)
@@ -657,10 +652,9 @@ func TestChiefNudgeCoverageLeavesOutOfficersTheChiefAndOtherUsersAgents(t *testi
 	}
 }
 
-// TestChiefNudgesTabListsDecisionsAndRepeatStallers: the Asks page's tab, its
-// cards (the would-be message, the quote, the guard's outcome, the shadow
-// badge) and the repeat stallers at its top.
-func TestChiefNudgesTabListsDecisionsAndRepeatStallers(t *testing.T) {
+// TestChiefNudgesTabListsDecisions: the Asks page's tab and its cards (the
+// would-be message, the quote, the guard's outcome, the shadow badge).
+func TestChiefNudgesTabListsDecisions(t *testing.T) {
 	f := newNudgeFixture(t, false)
 	f.pass(t)
 	body := f.page(t, "/attention?tab=nudges")
@@ -668,24 +662,224 @@ func TestChiefNudgesTabListsDecisionsAndRepeatStallers(t *testing.T) {
 		t.Fatalf("the nudges tab is not selected: %q", got)
 	}
 	for _, want := range []string{`>Chief nudges</button>`, `data-nudges-mode="shadow"`, `data-outcome="would_send"`,
-		`data-nudge-mode>Shadow</span>`, "Would send: [Chief nudge]", `Quote [` + nudgeOwnerID + `]: "keep going until merged"`,
+		`data-nudge-mode>Shadow</span>`, "Would send: [Chief nudge]", `Quote [` + nudgeOwnerID + ` · `, `]: "keep going until merged"`,
 		"Would have been sent (shadow mode)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the tab lacks %q:\n%s", want, htmlRegion(body, `data-testid="nudges-list"`, `</ul>`))
 		}
 	}
-	if strings.Contains(body, `data-testid="nudges-stallers"`) {
-		t.Fatal("one decision listed a repeat staller")
+	if strings.Contains(body, "Repeat stallers") {
+		t.Fatal("the repeat-stallers block is back (operator: dropped for now)")
 	}
-	for i := 2; i <= chiefnudge.StallerThreshold; i++ {
-		if _, _, err := f.nudges.Insert(asUser(authz.OperatorUserID), chiefnudge.Decision{Kind: chiefnudge.KindMirror, Key: nudgeSID,
-			Host: "ws", Title: "Fix CI", StreakKey: "since:s" + strconv.Itoa(i), Decision: chiefnudge.DecisionLeave,
-			Mode: chiefnudge.ModeShadow, Outcome: chiefnudge.OutcomeLeft}, ""); err != nil {
+}
+
+// stallAgent gives agent a (of owner) a conversation that stalled 20 minutes
+// ago — the task, then the owner's "keep going until merged", then the agent's
+// own question — and returns that chat session and the owner message's id.
+func (f *nudgeFixture) stallAgent(t *testing.T, a agents.Agent, owner int64) (agents.ChatSession, int64) {
+	t.Helper()
+	ctx := asUser(owner)
+	store := agents.NewPG(f.pool)
+	sess, err := store.CreateSession(ctx, a.ID, a.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quote int64
+	for _, m := range []agents.ChatMessage{
+		{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: "the task: fix the flaky test"},
+		{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: "keep going until merged"},
+		{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: "Fixed and green. Merge into main or release?"},
+	} {
+		got, err := store.AddChatMessage(ctx, m)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if m.Content == "keep going until merged" {
+			quote = got.ID
+		}
 	}
-	body = f.page(t, "/attention?tab=nudges")
-	if !strings.Contains(body, `data-nudge-staller="mirror:`+nudgeSID+`"`) || !strings.Contains(body, "Fix CI (@ ws)</span> · 3 decisions in the last day") {
-		t.Fatalf("no repeat staller:\n%s", htmlRegion(body, `data-testid="nudges-panel"`, `</ul>`))
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE chat_messages SET created_at = now() - interval '20 minutes' WHERE session_id = $1`, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	return sess, quote
+}
+
+// sessionMessages is chat session id's message texts of role, oldest first.
+func (f *nudgeFixture) sessionMessages(t *testing.T, id int64, role string) []string {
+	t.Helper()
+	rows, err := f.pool.Query(authz.System(context.Background()), `SELECT content FROM chat_messages WHERE session_id = $1 AND role = $2 ORDER BY id`, id, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		_ = rows.Scan(&c)
+		out = append(out, c)
+	}
+	return out
+}
+
+// TestChiefNudgeAnOldHostsUntimedMessagesAuthoriseNothing: a muster-mirror
+// that sends no prompt times (PromptAt 0) leaves no owner message a nudge can
+// quote, so the chief's "nudge" becomes an ask, and the decision says why.
+func TestChiefNudgeAnOldHostsUntimedMessagesAuthoriseNothing(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	f.script = []chiefnudge.Msg{{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID}, {Role: "assistant", Text: "CI is green. Merge?"}}
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
+	d := f.one(t)
+	if d.Decision != chiefnudge.DecisionAsk || d.Outcome != chiefnudge.OutcomeWouldAsk || d.Message != "" ||
+		!strings.Contains(d.Question, "does not send when your messages were written") || !strings.Contains(d.Detail, "no time") {
+		t.Fatalf("untimed: %+v", d)
+	}
+	f.mu.Lock()
+	prompt := f.gw.prompt[0]
+	f.mu.Unlock()
+	if strings.Contains(prompt, nudgeOwnerText) {
+		t.Fatal("an untimed message was shown to the chief as the owner's")
+	}
+}
+
+// TestChiefNudgeAnOwnerMessageOlderThanSixHoursAuthorisesNothing: a mirrored
+// session now carries prompt times, so its owner messages are held to the six
+// hours an agent's are; a quote of a 7-hour-old instruction is refused.
+func TestChiefNudgeAnOwnerMessageOlderThanSixHoursAuthorisesNothing(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	f.script = []chiefnudge.Msg{{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID, At: time.Now().Add(-7 * time.Hour)},
+		{Role: "assistant", Text: "CI is green. Merge?"}}
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
+	if d := f.one(t); d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardQuote) || d.Message != "" {
+		t.Fatalf("a 7h-old quote: %+v", d)
+	}
+	// The control: the same message 5 hours old authorises it.
+	f.script[0].At = time.Now().Add(-5 * time.Hour)
+	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 60_000 })
+	f.pass(t)
+	if d := f.decisions(t)[0]; d.Outcome != chiefnudge.OutcomeWouldSend || !strings.Contains(d.Message, " said at ") {
+		t.Fatalf("a 5h-old quote: %+v", d)
+	}
+}
+
+// TestChiefNudgeAFailedCallIsRecordedAndEachCheckIsAFreshContext: the chief's
+// call fails for the first candidate; that is recorded on IT
+// (suppressed:chief_error) and the owner's next candidate is still judged —
+// under a gateway key of its own, so no check shares another's context.
+func TestChiefNudgeAFailedCallIsRecordedAndEachCheckIsAFreshContext(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	worker := f.agentFor(t, authz.OperatorUserID, "nudgeworker-"+suffix, "worker", "nudge-worker-tok-"+suffix)
+	f.stallAgent(t, worker, authz.OperatorUserID)
+	f.gw.mu.Lock()
+	f.gw.fails = 1
+	f.gw.mu.Unlock()
+	if n := f.pass(t); n != 2 {
+		t.Fatalf("decided %d, want 2 (the failure recorded, the next judged)", n)
+	}
+	var failed, judged int
+	for _, d := range f.decisions(t) {
+		switch {
+		case d.Outcome == chiefnudge.Suppressed(chiefnudge.GuardChiefError) && strings.Contains(d.Detail, "the chief's call failed"):
+			failed++
+		case d.Decision == chiefnudge.DecisionNudge:
+			judged++
+		}
+	}
+	checks, _ := f.gw.seen()
+	if failed != 1 || judged != 1 || len(checks) != 2 || checks[0] == checks[1] {
+		t.Fatalf("failed %d, judged %d, checks %v", failed, judged, checks)
+	}
+}
+
+// liveAgentAsk is the live agent loop up to the owner's answer: a worker with
+// TWO conversations — the older one stalled on a question, the newer one
+// where the owner spoke last — the chief asks, the owner answers on the
+// Attention view. It returns the decision, the two sessions and the answer.
+func liveAgentAsk(t *testing.T, f *nudgeFixture) (chiefnudge.Decision, agents.ChatSession, agents.ChatSession, string) {
+	t.Helper()
+	f.srv.nudgeRead = nil
+	f.mirror.windows = nil
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	worker := f.agentFor(t, authz.OperatorUserID, "nudgeworker-"+suffix, "worker", "nudge-worker-tok-"+suffix)
+	stalled, _ := f.stallAgent(t, worker, authz.OperatorUserID)
+	store := agents.NewPG(f.pool)
+	other, err := store.CreateSession(asUser(authz.OperatorUserID), worker.ID, worker.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddChatMessage(asUser(authz.OperatorUserID), agents.ChatMessage{AgentID: worker.ID, SessionID: other.ID, Role: "user", Content: "a newer conversation"}); err != nil {
+		t.Fatal(err)
+	}
+	f.gw.set(nudgeAskReply)
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
+	d := f.one(t)
+	if d.Outcome != chiefnudge.OutcomeAsked || d.ChatSessionID != stalled.ID || d.Key != chiefnudge.AgentKey(worker.ID, stalled.ID) {
+		t.Fatalf("the ask is not about the stalled conversation %d: %+v", stalled.ID, d)
+	}
+	answer := "release, please"
+	rd, hdr := form(url.Values{"answer": {answer}})
+	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
+		t.Fatalf("answer: %d %s", w.Code, w.Body)
+	}
+	return f.one(t), stalled, other, answer
+}
+
+// TestChiefNudgeAnAgentRelayGoesToTheConversationAskedAbout: the owner's
+// answer is relayed, verbatim, into the conversation that stalled — not the
+// agent's newest one.
+func TestChiefNudgeAnAgentRelayGoesToTheConversationAskedAbout(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	d, stalled, other, answer := liveAgentAsk(t, f)
+	f.pass(t)
+	waitFor(t, func() bool { _, turns := f.gw.seen(); return len(turns) == 1 })
+	if d = f.one(t); d.Outcome != chiefnudge.OutcomeRelayed {
+		t.Fatalf("after the pass: %+v", d)
+	}
+	waitFor(t, func() bool {
+		got := f.sessionMessages(t, stalled.ID, "user")
+		return len(got) > 0 && got[len(got)-1] == answer
+	})
+	if got := f.sessionMessages(t, other.ID, "user"); len(got) != 1 {
+		t.Fatalf("the newer conversation got the relay: %q", got)
+	}
+}
+
+// TestChiefNudgeTheKillSwitchReachesAnAgentRelay: the owner is switched to
+// shadow after answering; the claimed relay is not sent, and is recorded
+// failed. And a relay that could not be delivered for RelayMaxAge is dropped.
+func TestChiefNudgeTheKillSwitchReachesAnAgentRelay(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	d, _, _, _ := liveAgentAsk(t, f)
+	if d.Outcome != chiefnudge.OutcomeRelayQueued {
+		t.Fatalf("claimed: %+v", d)
+	}
+	delete(f.cfg.Live, authz.OperatorUserID)
+	f.pass(t)
+	if _, turns := f.gw.seen(); len(turns) != 0 {
+		t.Fatalf("the kill switch let a relay through: %v", turns)
+	}
+	if d := f.one(t); d.Outcome != chiefnudge.OutcomeFailed || d.Detail != SendQueueNudgeOff {
+		t.Fatalf("after the switch: %+v", d)
+	}
+}
+
+func TestChiefNudgeARelayOlderThanItsBoundIsDropped(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	d, _, _, _ := liveAgentAsk(t, f)
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE chief_nudges SET updated_at = now() - interval '3 hours' WHERE id = $1`, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.pass(t)
+	if _, turns := f.gw.seen(); len(turns) != 0 {
+		t.Fatalf("an expired relay was sent: %v", turns)
+	}
+	if d := f.one(t); d.Outcome != chiefnudge.OutcomeFailed || !strings.Contains(d.Detail, "not delivered within") {
+		t.Fatalf("after the bound: %+v", d)
 	}
 }

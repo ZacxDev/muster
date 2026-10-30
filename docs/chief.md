@@ -64,7 +64,7 @@ that chief off.)
 
 With `MUSTER_CHIEF_NUDGES=1` the chief also judges your sessions that have
 stalled — idle, with the last word theirs — and either nudges one on with a
-labelled message quoting your own instruction to it, or asks you on the
+labelled message quoting your own recent instruction to it, or asks you on the
 Attention page and relays your answer. It ships in shadow mode: decisions are
 recorded, nothing is sent. See [chief-nudges.md](chief-nudges.md).
 

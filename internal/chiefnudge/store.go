@@ -33,8 +33,9 @@ type Store interface {
 	// NudgesForAnchor counts the caller's nudges (would_send, queued, sent) to
 	// (kind, key) since the owner message anchor.
 	NudgesForAnchor(ctx context.Context, kind, key, anchor string) (int, error)
-	// NudgesSince counts every owner's nudges (would_send, queued, sent)
-	// decided at or after since: the global hourly cap (system scope).
+	// NudgesSince counts every owner's LIVE nudges (queued, sent) decided at
+	// or after since: the global hourly cap, which bounds what is sent and
+	// never holds shadow mode back (system scope).
 	NudgesSince(ctx context.Context, since time.Time) (int, error)
 	// Injected is what the sweep pasted into the caller's session (kind, key):
 	// every live nudge and relay text.
@@ -53,8 +54,6 @@ type Store interface {
 	Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error)
 	// List is the caller's newest decisions.
 	List(ctx context.Context, limit int) ([]Decision, error)
-	// Stallers is the caller's sessions with at least min decisions since.
-	Stallers(ctx context.Context, since time.Time, min int) ([]Staller, error)
 }
 
 // Move is what Store.Move writes.
@@ -78,7 +77,7 @@ type PG struct{ pool *pgxpool.Pool }
 // NewPG is Store over pool.
 func NewPG(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
 
-const cols = `id, owner_id, session_kind, session_key, mirror_host, mirror_session, mirror_window, coalesce(agent_id, 0),
+const cols = `id, owner_id, session_kind, session_key, mirror_host, mirror_session, mirror_window, coalesce(agent_id, 0), coalesce(chat_session_id, 0),
 	title, streak_key, anchor_key, coalesce(idle_since, 'epoch'::timestamptz), decided_at, decision, message, quote_id,
 	coalesce(quote_at, 'epoch'::timestamptz), quote_text, covered_action, question, options, reason, mode, outcome, detail,
 	coalesce(ask_id, 0), coalesce(send_queue_id, 0), relay_text, updated_at`
@@ -86,7 +85,7 @@ const cols = `id, owner_id, session_kind, session_key, mirror_host, mirror_sessi
 func scan(row pgx.Row) (Decision, error) {
 	var d Decision
 	var opts []byte
-	err := row.Scan(&d.ID, &d.Owner, &d.Kind, &d.Key, &d.Host, &d.TmuxSession, &d.Window, &d.AgentID,
+	err := row.Scan(&d.ID, &d.Owner, &d.Kind, &d.Key, &d.Host, &d.TmuxSession, &d.Window, &d.AgentID, &d.ChatSessionID,
 		&d.Title, &d.StreakKey, &d.AnchorKey, &d.IdleSince, &d.DecidedAt, &d.Decision, &d.Message, &d.QuoteID,
 		&d.QuoteAt, &d.QuoteText, &d.Covered, &d.Question, &opts, &d.Reason, &d.Mode, &d.Outcome, &d.Detail,
 		&d.AskID, &d.SendQueueID, &d.RelayText, &d.UpdatedAt)
@@ -209,13 +208,13 @@ func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, b
 	err = pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `INSERT INTO chief_nudges (session_kind, session_key, mirror_host, mirror_session, mirror_window, agent_id,
 				title, streak_key, anchor_key, idle_since, decision, message, quote_id, quote_at, quote_text, covered_action,
-				question, options, reason, mode, outcome, detail, ask_id, send_queue_id, relay_text)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+				question, options, reason, mode, outcome, detail, ask_id, send_queue_id, relay_text, chat_session_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
 			ON CONFLICT ON CONSTRAINT chief_nudges_one_per_streak DO NOTHING
 			RETURNING `+cols,
 			d.Kind, d.Key, d.Host, d.TmuxSession, d.Window, nullID(d.AgentID), d.Title, d.StreakKey, d.AnchorKey, nullTime(d.IdleSince),
 			d.Decision, d.Message, d.QuoteID, nullTime(d.QuoteAt), d.QuoteText, d.Covered, d.Question, opts, d.Reason, d.Mode,
-			d.Outcome, d.Detail, nullID(d.AskID), nullID(d.SendQueueID), d.RelayText)
+			d.Outcome, d.Detail, nullID(d.AskID), nullID(d.SendQueueID), d.RelayText, nullID(d.ChatSessionID))
 		var err error
 		out, err = scan(row)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -251,7 +250,7 @@ func (p *PG) NudgesForAnchor(ctx context.Context, kind, key, anchor string) (int
 func (p *PG) NudgesSince(ctx context.Context, since time.Time) (int, error) {
 	var n int
 	err := p.pool.QueryRow(sys(ctx), `SELECT count(*) FROM chief_nudges WHERE decided_at >= $1
-		AND decision = 'nudge' AND outcome = ANY($2)`, since, nudgeOutcomes).Scan(&n)
+		AND decision = 'nudge' AND mode = 'live' AND outcome = ANY($2)`, since, nudgeOutcomes).Scan(&n)
 	return n, err
 }
 
@@ -328,26 +327,4 @@ func (p *PG) Move(ctx context.Context, id int64, from []string, m Move, action s
 // List implements Store.
 func (p *PG) List(ctx context.Context, limit int) ([]Decision, error) {
 	return collect(p.pool.Query(ctx, `SELECT `+cols+` FROM chief_nudges ORDER BY decided_at DESC, id DESC LIMIT $1`, limit))
-}
-
-// Stallers implements Store.
-func (p *PG) Stallers(ctx context.Context, since time.Time, min int) ([]Staller, error) {
-	rows, err := p.pool.Query(ctx, `SELECT session_kind, session_key,
-			(array_agg(title ORDER BY id DESC))[1], (array_agg(mirror_host ORDER BY id DESC))[1], count(*), max(decided_at)
-		FROM chief_nudges WHERE decided_at >= $1
-		GROUP BY session_kind, session_key HAVING count(*) >= $2
-		ORDER BY count(*) DESC, max(decided_at) DESC LIMIT 20`, since, min)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Staller
-	for rows.Next() {
-		var s Staller
-		if err := rows.Scan(&s.Kind, &s.Key, &s.Title, &s.Host, &s.Count, &s.Last); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
 }

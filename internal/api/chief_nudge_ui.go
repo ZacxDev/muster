@@ -12,8 +12,8 @@ import (
 )
 
 // THE "CHIEF NUDGES" TAB of the Asks page (docs/chief-nudges.md): every
-// decision the stall sweep recorded for the viewer, newest first, with the
-// repeat stallers on top. It is drawn while the feature is on.
+// decision the stall sweep recorded for the viewer, newest first. It is drawn
+// while the feature is on.
 //
 // ⚠ ONLY CLASSES THE STYLESHEET ALREADY EMITS. This file is not one of
 // Tailwind's content globs (tailwind.config.js), so every class here is copied
@@ -35,19 +35,6 @@ func (s *Server) chiefNudgesPanelHTML(ctx context.Context, now time.Time) string
 		b.WriteString(`<p class="text-xs text-fg2" data-nudges-mode="live">Live: your chief nudges a stalled session only with a labelled message quoting one of your own messages to it, or asks you here and relays your answer word for word.</p>`)
 	} else {
 		b.WriteString(`<p class="text-xs text-fg2" data-nudges-mode="shadow">Shadow mode: your chief's decisions about your stalled sessions are recorded here. Nothing is sent and nothing is asked.</p>`)
-	}
-	stallers, err := s.ext.ChiefNudges.Stallers(ctx, now.Add(-chiefnudge.StallerWindow), chiefnudge.StallerThreshold)
-	if err != nil {
-		s.logger.Printf("chief nudges: stallers: %v", err)
-	}
-	if len(stallers) > 0 {
-		b.WriteString(`<p class="pt-2 text-xs font-semibold uppercase tracking-wide text-fg2">Repeat stallers</p>
-<ul class="flex flex-col gap-2" data-testid="nudges-stallers">`)
-		for _, st := range stallers {
-			b.WriteString(`<li class="` + flowsCardClass + `" data-nudge-staller="` + esc(st.Kind+":"+st.Key) + `"><p class="break-words text-sm text-fg"><span class="font-semibold">` +
-				esc(nudgeWhere(textplain.Title(st.Title), st.Kind, st.Key, st.Host)) + `</span> · ` + strconv.Itoa(st.Count) + ` decisions in the last day</p></li>`)
-		}
-		b.WriteString(`</ul>`)
 	}
 	list, err := s.ext.ChiefNudges.List(ctx, chiefNudgesShown)
 	if err != nil {
@@ -92,7 +79,7 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		`" data-outcome="` + esc(d.Outcome) + `" data-mode="` + esc(d.Mode) + `">
 <span class="text-xs text-fg2"><span class="font-semibold" data-nudge-mode>` + mode + `</span> · <span data-nudge-decision>` + esc(nudgeDecisionLabel(d.Decision)) +
 		`</span> · <time datetime="` + d.DecidedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.DecidedAt))) + `</time></span>
-<p class="break-words text-sm text-fg"><span class="font-semibold" data-nudge-session>` + esc(nudgeWhere(textplain.Title(d.Title), d.Kind, d.Key, d.Host)) + `</span></p>
+<p class="break-words text-sm text-fg"><span class="font-semibold" data-nudge-session>` + esc(nudgeWhere(textplain.Title(d.Title), d.Kind, strconv.FormatInt(d.AgentID, 10), d.Host)) + `</span></p>
 `)
 	switch {
 	case d.Message != "":

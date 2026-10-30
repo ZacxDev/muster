@@ -24,7 +24,7 @@ creation), ties broken by the item's key:
 With [stall nudges](chief-nudges.md) on (`MUSTER_CHIEF_NUDGES=1`), the page
 has a **Chief nudges** tab (`/attention?tab=nudges`, with or without plugins):
 every decision your chief took about one of your stalled sessions, newest
-first, with the sessions that stalled 3 or more times in a day at the top. A
+first. A
 live ask the chief raises about a stalled session is an ordinary question on
 the **Ask** tab, asked by *your chief*; your answer there is sent into that
 session word for word ([how](chief-nudges.md#live-mode)).

@@ -48,8 +48,9 @@ func Prompt(s Session, last Msg, owner []Msg, idle time.Duration, nonce string) 
 			head += " · " + m.At.UTC().Format(time.RFC3339)
 		}
 		lines = append(lines, head+"]")
-		for _, l := range strings.Split(m.Text, "\n") {
-			lines = append(lines, "    "+fence.Sanitize(l))
+		// Shown: exactly the form CheckQuote matches a quote against.
+		for _, l := range strings.Split(Shown(m.Text), "\n") {
+			lines = append(lines, "    "+l)
 		}
 	}
 	return fence.Block{Preface: pre, Marker: promptMarker, Count: 1, Lines: lines}.Render(nonce)
