@@ -27,6 +27,10 @@ import (
 const (
 	envRepo       = "CCD_REPO"
 	envRepoBranch = "CCD_REPO_BRANCH"
+	// envRepoMirror is the path of a bare mirror of the repository that the
+	// pod's deploy-key holder makes (agentspec.EnvCCDRepoMirror): set, the
+	// clone is from it; unset, anonymous HTTPS. ccd never holds the key.
+	envRepoMirror = "CCD_REPO_MIRROR"
 )
 
 // The states /healthz reports under `repo` (podagent's, which are
@@ -65,7 +69,14 @@ func checkoutFromEnv(workspace string) (*checkout, error) {
 	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
 		cfg.ConnectBase, cfg.Token = base, tok
 	}
-	c := podagent.NewCheckout(cfg)
+	// A private repository (a worker pool with a deploy key): the clone is
+	// from the mirror the pod's key holder makes with the key, which this
+	// process cannot read.
+	cfg.Mirror = strings.TrimSpace(os.Getenv(envRepoMirror))
+	c, err := podagent.NewCheckout(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("ccd: %s: %w", envRepoMirror, err)
+	}
 	c.Logf = log.Printf
 	return c, nil
 }

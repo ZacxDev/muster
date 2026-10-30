@@ -27,7 +27,10 @@ func TestNoLaneStartsBeforeTheCheckoutExists(t *testing.T) {
 			sup := newSupervisor(primary, "claude", cfg, "/data/workspace")
 			fastRestarts(sup)
 			s.supervisePrimary(sup, noPrimaryPID)
-			co := podagent.NewCheckout(podagent.CheckoutConfig{Repo: "o/r", Dir: "/data/workspace", Voice: ccdVoice})
+			co, err := podagent.NewCheckout(podagent.CheckoutConfig{Repo: "o/r", Dir: "/data/workspace", Voice: ccdVoice})
+			if err != nil {
+				t.Fatal(err)
+			}
 			co.SetStateForTest(state, "detail")
 			s.checkout = co
 			l := testLanes(t, 2)

@@ -28,8 +28,13 @@ import (
 //     is TYPED into the terminal's picker by the host; the card then shows
 //     "typing", and how it ended once the CLI recorded it — answered here,
 //     answered in the terminal (with the answers), dismissed, or that it
-//     could not be typed in. The page polls it (MirrorAsksPath); a card stays a
-//     few minutes after it ends, until the conversation draws the call itself.
+//     could not be typed in. The page polls it (MirrorAsksPath). The server
+//     lists a card for a few minutes after it ends (mirrorAskShownFor in
+//     internal/api); the page HIDES it as soon as the conversation holds the
+//     call's result row — the row whose id the card names in data-ask-row
+//     (MirrorAskRowID, from the tool_use id) — so the question shows once.
+//     Until then (the CLI writes the call only with its answer) the card is
+//     the only place the question is.
 //   - THE CONVERSATION draws the call from the transcript once it is there:
 //     read-only, with the answers its result records (the toolUseResult) —
 //     however it was answered.
@@ -37,7 +42,8 @@ import (
 // 🔴 THE PAGE NEVER DECIDES ANYTHING. Which state a card is in is the server's
 // answer to the poll; a submit is refused server-side unless the question is
 // still open, the host is -interactive and the sign-in is fresh, exactly like
-// a Send.
+// a Send. What the page does decide is only whether to SHOW a card: one whose
+// call the conversation has drawn from its result is hidden (askScript).
 
 // MirrorAskPath takes a card's answers (POST); MirrorAsksPath is the window's
 // live region (GET).
@@ -448,7 +454,10 @@ func askCancelControl(v MirrorAskLiveView) g.Node {
 // it as pending again leaves it alone, so what a person has chosen or typed is
 // not thrown away. Any other state (typing, answered here or in the terminal,
 // dismissed) replaces it; a card the server no longer lists (a few minutes
-// after it ended) is removed.
+// after it ended) is removed. A card whose call the conversation (#mv-log)
+// holds as a result row — the element with the card's data-ask-row id, in
+// the history state — is hidden while that row is there, whichever arrived
+// first (tidy, on every poll and on every change to the conversation).
 //
 // It polls when the page's socket says the window's questions changed (a
 // message of type "asks"), so a question shows the moment its hook registers
@@ -459,8 +468,29 @@ func askScript() g.Node {
   var region = document.getElementById('mv-asks');
   if (!region) return;
   var busy = false, again = false;
+  var log = document.getElementById('mv-log');
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
-  function tidy() { region.hidden = !region.querySelector('[data-ask-live]'); }
+  // A card whose call the conversation has drawn from its result (the row
+  // data-ask-row names, in the history state) is hidden, so the question is on
+  // the page once; it shows again if that row goes. Hidden, not removed: the
+  // server lists it for a few minutes more, and a removed card would come back
+  // with the next poll.
+  function drawn(card) {
+    var row = log && document.getElementById(card.getAttribute('data-ask-row'));
+    return !!(row && log.contains(row) && row.getAttribute('data-ask-state') === '`+AskStateHistory+`');
+  }
+  function tidy() {
+    var any = false;
+    region.querySelectorAll('[data-ask-live]').forEach(function (c) {
+      var hide = drawn(c);
+      if (c.hidden !== hide) c.hidden = hide;
+      if (!hide) any = true;
+    });
+    region.hidden = !any;
+  }
+  // The conversation draws (and redraws) its rows on its own socket, before or
+  // after this region's poll: either order ends with tidy().
+  if (log && typeof MutationObserver === 'function') new MutationObserver(tidy).observe(log, { childList: true, subtree: true });
   function merge(html) {
     var got = frag(html), seen = {};
     Array.prototype.slice.call(got.querySelectorAll('[data-ask-live]')).forEach(function (card) {

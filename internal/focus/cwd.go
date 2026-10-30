@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-// A SESSION'S WORKING DIRECTORY (migration 0063): the newest one its transcript
+// A SESSION'S WORKING DIRECTORY (migration 0064): the newest one its transcript
 // tail named, stored with its focus. Read only by the fleet report's mail door
 // (internal/api/fleet_report.go), to decide whether a session is under the
 // configured prefixes; never rendered and never sent.
@@ -17,7 +17,7 @@ import (
 // is UNKNOWN, and unknown is the fail-closed answer: the report leaves such a
 // session out.
 
-// MaxCwdBytes bounds a stored working directory (migration 0063's CHECK says
+// MaxCwdBytes bounds a stored working directory (migration 0064's CHECK says
 // the same, in characters).
 const MaxCwdBytes = 512
 

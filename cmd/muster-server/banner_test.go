@@ -466,6 +466,10 @@ var bannerExempt = map[string]string{
 		"\"no worker pool bypasses\"), which bannerBothDirections' fixture cannot render; refused at boot without the " +
 		"kind (validateClaudeCodeKind), so outside that arm there is no state to announce. " +
 		"TestTheKindsBannerLineAnnouncesTheJobLaneBypassBothWays pins both",
+	envAgentCCPoolDeployKeys: "printed on the claude-code arm of the `agent kinds:` line in both states (the pools, " +
+		"repositories and Secrets listed, or \"no worker pool has a deploy key\"), which bannerBothDirections' fixture " +
+		"cannot render; refused at boot without the kind, so outside that arm there is no state to announce. " +
+		"TestTheKindsBannerLineAnnouncesThePoolDeployKeysBothWays pins both",
 	envAgentNetpolFromNS: "named on the `claude-code network:` line in both arms (a policy is written / NOT CONFINED), " +
 		"which bannerBothDirections' fixture cannot render for the reason given for " + envAgentKinds + "; " +
 		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +

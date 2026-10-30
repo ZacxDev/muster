@@ -2,7 +2,7 @@ package focus
 
 import "testing"
 
-// The stored working directory (migration 0063) against a real Postgres: a
+// The stored working directory (migration 0064) against a real Postgres: a
 // tail naming one stores it cleaned; a tail naming none keeps it; a named,
 // malformed one clears it; another owner never reads it. Fixture paths are
 // invented placeholders.

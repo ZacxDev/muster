@@ -49,10 +49,10 @@ import (
 //   - ONLY sessions whose working directory is under a configured prefix
 //     (MUSTER_FLEET_REPORT_PATHS) are described. The directory is the one the
 //     session's transcript last named, stored with its focus
-//     (focus.Focus.Cwd, migration 0063), and is used for this decision only —
+//     (focus.Focus.Cwd, migration 0064), and is used for this decision only —
 //     it is never written into the reply. A session whose directory is
 //     unknown — a dispatched agent, a Hermes window, a session whose focus was
-//     written before 0063 or by a host that predates it, one past the focus
+//     written before 0064 or by a host that predates it, one past the focus
 //     retention — is LEFT OUT and counted in the coverage's gaps; one outside
 //     the prefixes is left out and not mentioned at all.
 //   - Titles, names and repos go UNSCREENED by the agent-text screen, except

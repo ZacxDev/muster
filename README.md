@@ -7,9 +7,12 @@ Self-hosted: one Go server and Postgres, in Docker on one of your machines,
 reached over HTTPS on your private Tailscale network and nowhere else. The UI
 installs on your phone as a PWA. Your other machines dial out to it.
 
-Not to be confused with the Mac menu-bar app also called Muster
-([agentmuster.app](https://agentmuster.app/)): this muster is the self-hosted
-one, for your phone and every machine you run agents on.
+Not to be confused with two other apps called Muster: the Mac menu-bar app
+([agentmuster.app](https://agentmuster.app/)) and the desktop app for running
+parallel agents in git worktrees ([musterup.dev](https://musterup.dev/)). This
+muster is the self-hosted one, for your phone and every machine you run agents on. How it compares with
+Happy, Claude Code Remote Control and SSH + tmux:
+[docs/comparison.md](docs/comparison.md).
 
 <p align="center">
   <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
@@ -141,6 +144,8 @@ against a throwaway database.
   target, shortcuts and a badge. → [docs/push.md](docs/push.md)
 - **Asks.** A single queue of everything waiting on you. An agent can ask you a
   question and wait for your answer instead of stopping. → [docs/attention.md](docs/attention.md)
+
+  <p align="center"><img src="docs/img/ask-flow.gif" width="270" alt="On a phone: the sidebar lists sessions on two machines; one asks whether to tag and publish a release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"></p>
 - **Context badges.** Each tool call in a Claude Code session shows how much
   context it added. → [docs/mirroring.md](docs/mirroring.md)
 - **Task board.** Tasks have statuses, comments, attachments, tags and a review

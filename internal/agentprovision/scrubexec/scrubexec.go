@@ -60,6 +60,17 @@ func (d Driver) Exec(ctx context.Context, ref provision.Ref, cmd []string, stdin
 }
 
 // ExecTTY runs Command(cmd) on a terminal through the wrapped driver.
+// ExecContainer is Exec into a named container (a key holder's): the same
+// prefix, though no turn credential is in that container's environment — every
+// exec this wrapper passes carries it, so none can be added without it.
+func (d Driver) ExecContainer(ctx context.Context, ref provision.Ref, container string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	e, ok := d.raw.(provision.ContainerExecer)
+	if !ok {
+		return fmt.Errorf("%w: driver %q cannot exec into a named container", provision.ErrUnsupported, d.raw.Driver())
+	}
+	return e.ExecContainer(ctx, ref, container, Command(cmd), stdin, stdout, stderr)
+}
+
 func (d Driver) ExecTTY(ctx context.Context, ref provision.Ref, cmd []string, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 	e, ok := d.raw.(provision.TTYExecer)
 	if !ok {
@@ -97,7 +108,8 @@ func (d Driver) StreamLogs(ctx context.Context, ref provision.Ref, emit func(lin
 }
 
 var (
-	_ provision.Provisioner = Driver{}
-	_ provision.Execer      = Driver{}
-	_ provision.TTYExecer   = Driver{}
+	_ provision.Provisioner     = Driver{}
+	_ provision.Execer          = Driver{}
+	_ provision.TTYExecer       = Driver{}
+	_ provision.ContainerExecer = Driver{}
 )

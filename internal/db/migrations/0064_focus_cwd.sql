@@ -1,4 +1,4 @@
--- muster 0063 — A SESSION'S WORKING DIRECTORY, AS ITS TRANSCRIPT LAST SAID.
+-- muster 0064 — A SESSION'S WORKING DIRECTORY, AS ITS TRANSCRIPT LAST SAID.
 -- docs/focus.md#the-working-directory.
 --
 --   agent_focus.cwd   the newest working directory the session's transcript
@@ -16,12 +16,12 @@
 -- FORCE row-level security (0020); a new column inherits both, so nothing here
 -- touches a policy, grant or default and db.RLSOn re-applies nothing.
 --
--- Must apply after 0062 (the contiguity test refuses a gap). Idempotent.
+-- Must apply after 0063 (the contiguity test refuses a gap). Idempotent.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   ALTER TABLE agent_focus DROP CONSTRAINT IF EXISTS agent_focus_cwd_check;
 --   ALTER TABLE agent_focus DROP COLUMN IF EXISTS cwd;
---   DELETE FROM schema_migrations WHERE version = 63;
+--   DELETE FROM schema_migrations WHERE version = 64;
 
 SET LOCAL lock_timeout = '3s';
 

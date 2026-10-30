@@ -24,6 +24,7 @@ import (
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
+	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -374,6 +375,17 @@ const (
 	// lower-case only). Refused at boot without the claude-code kind, and for a
 	// name agents.ValidWorkerPool refuses.
 	envAgentCCBypassPools = "MUSTER_AGENT_CC_BYPASS_POOLS"
+
+	// envAgentCCPoolDeployKeys gives worker pools a PRIVATE repository: a comma
+	// list of `<pool>=<owner>/<name>:<secret>` (parsePoolDeployKeys). Each
+	// listed pool's workers clone, and its jobs fetch, that one repository over
+	// SSH with the read-only deploy key in the Secret <secret> (key
+	// ssh-privatekey) of the agents' namespace, mounted read-only into each
+	// worker (agentspec.ClaudeCodeConfig.PoolDeployKeys). Unset is none: every
+	// pool clones and fetches anonymously. A worker of a listed pool on another
+	// repository is refused, and so is a job naming another repository. Refused
+	// at boot without the claude-code kind, and for a malformed entry.
+	envAgentCCPoolDeployKeys = "MUSTER_AGENT_CC_POOL_DEPLOY_KEYS"
 
 	// --- the claude-code kind's NetworkPolicy (kubernetes driver only) ---
 	//
@@ -920,6 +932,12 @@ type config struct {
 	// trimmed, in order, LOWER-CASED (pool names are lower-case only, so
 	// "Pr-Review" names the pool "pr-review"). Empty is none.
 	AgentCCBypassPools []string
+	// AgentCCPoolDeployKeys is MUSTER_AGENT_CC_POOL_DEPLOY_KEYS parsed
+	// (parsePoolDeployKeys): pool -> its repository and deploy-key Secret. nil is
+	// none. AgentCCPoolDeployKeysErr is the parse's refusal, reported by
+	// validateKinds.
+	AgentCCPoolDeployKeys    map[string]agentspec.PoolDeployKey
+	AgentCCPoolDeployKeysErr error
 
 	// AgentNetpolFromNS and AgentNetpolFromLabels say which pods a claude-code
 	// agent's NetworkPolicy admits: muster's own. AgentNetpolFromLabels is the
@@ -1038,6 +1056,46 @@ func parseHostIcons(v string) (map[string]string, error) {
 }
 
 // splitList parses a comma list: trimmed, lower-cased, empties dropped.
+// parsePoolDeployKeys reads MUSTER_AGENT_CC_POOL_DEPLOY_KEYS: a comma list of
+// `<pool>=<owner>/<name>:<secret>`. The pool is lower-cased (as
+// MUSTER_AGENT_CC_BYPASS_POOLS') and must be a valid pool name; the repository
+// must be owner/name; the Secret a DNS subdomain. A pool listed twice is
+// refused: two keys for one pool would leave which one a worker gets to map
+// order. "" is nil.
+func parsePoolDeployKeys(v string) (map[string]agentspec.PoolDeployKey, error) {
+	entries := strings.Split(v, ",")
+	out := map[string]agentspec.PoolDeployKey{}
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		pool, rest, ok := strings.Cut(e, "=")
+		repo, secret, ok2 := strings.Cut(rest, ":")
+		pool, repo, secret = strings.ToLower(strings.TrimSpace(pool)), strings.TrimSpace(repo), strings.TrimSpace(secret)
+		switch {
+		case !ok || !ok2:
+			return nil, fmt.Errorf("invalid %s entry %q: want <pool>=<owner>/<name>:<secret>", envAgentCCPoolDeployKeys, e)
+		case !agents.ValidWorkerPool(pool):
+			return nil, fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
+				"letter or digit", envAgentCCPoolDeployKeys, e)
+		case !jobs.ValidRepo(repo):
+			return nil, fmt.Errorf("invalid %s entry %q: the repository must be owner/name", envAgentCCPoolDeployKeys, e)
+		case len(validation.IsDNS1123Subdomain(secret)) != 0:
+			return nil, fmt.Errorf("invalid %s entry %q: the Secret's name must be a DNS subdomain (lower case)",
+				envAgentCCPoolDeployKeys, e)
+		}
+		if _, dup := out[pool]; dup {
+			return nil, fmt.Errorf("invalid %s: pool %q is listed twice", envAgentCCPoolDeployKeys, pool)
+		}
+		out[pool] = agentspec.PoolDeployKey{Repo: repo, Secret: secret}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
 func splitList(v string) []string {
 	var out []string
 	for _, part := range strings.Split(v, ",") {
@@ -1169,6 +1227,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
 		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
+	c.AgentCCPoolDeployKeys, c.AgentCCPoolDeployKeysErr = parsePoolDeployKeys(getenv(envAgentCCPoolDeployKeys))
 	if len(c.AgentCCAccountNames) > 0 {
 		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
 		for _, name := range c.AgentCCAccountNames {
@@ -2193,7 +2252,15 @@ func (c config) validateClaudeCodeKind() error {
 				"bypass permissions on, so it would be an armed switch that does nothing. Add %s to %s, or unset it",
 				envAgentCCBypassPools, envAgentKinds, agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
 		}
+		if len(c.AgentCCPoolDeployKeys) > 0 || c.AgentCCPoolDeployKeysErr != nil {
+			return fmt.Errorf("%s is set but %s does not include %s: there are no worker pools for it to give a "+
+				"deploy key. Add %s to %s, or unset it", envAgentCCPoolDeployKeys, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
 		return nil
+	}
+	if c.AgentCCPoolDeployKeysErr != nil {
+		return c.AgentCCPoolDeployKeysErr
 	}
 	for _, p := range c.AgentCCBypassPools {
 		if !agents.ValidWorkerPool(p) {

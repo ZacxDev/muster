@@ -137,6 +137,17 @@ function answerInTerminal(id: string, answers: Record<string, string>) {
   fs.appendFileSync(tr, askUse(id) + askResult(id, answers));
 }
 
+// expectShownOnce: the call toolID is on the page once — its conversation row
+// (rowID, the id its live card names in data-ask-row) shows, and its live card
+// does not. By identity: the row's id and the card's tool, never its words.
+async function expectShownOnce(page: Page, toolID: string, rowID: string) {
+  const row = page.locator(`#mv-log [id="${rowID}"]`);
+  const live = page.locator(`#mv-asks [data-ask-live][data-ask-tool="${toolID}"]`);
+  await expect(row).toBeVisible();
+  await expect(live, 'the live card of a call the conversation shows answered').toBeHidden();
+  await expect(page.locator(`#mv-log [id="${rowID}"]:visible, #mv-asks [data-ask-live][data-ask-tool="${toolID}"]:visible`)).toHaveCount(1);
+}
+
 // registered runs the hook for a question shown in both places and checks it
 // behaved as the CLI needs: quickly, with no output, exit 0.
 async function registered(toolUseID: string, opts: { touched?: boolean; qs?: Question[]; shown?: Question[] } = {}) {
@@ -280,6 +291,14 @@ test.describe('phone 412×915 touch', () => {
     await expect(q2.getByRole('checkbox', { name: 'Fish' })).toBeChecked();
     await expect(q3.getByRole('textbox')).toHaveValue('Gamma, the third');
 
+    // Before the CLI writes the call, the live card is the question's only
+    // place on the page: the conversation has no row for it, and the card shows.
+    const rowID = await c.getAttribute('data-ask-row');
+    expect(rowID, 'the live card names the conversation row of its call').toMatch(/^mt-[0-9a-f]{16}$/);
+    const row = page.locator(`#mv-log [id="${rowID}"]`);
+    await expect(row).toHaveCount(0);
+    await expect(c).toBeVisible();
+
     await c.getByRole('button', { name: 'Submit answers' }).tap();
     await expect(c).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
     await expect(c).toContainText('Answered here');
@@ -293,7 +312,62 @@ test.describe('phone 412×915 touch', () => {
       'What should the project be called?': 'Gamma, the third',
     });
     expect(fs.existsSync(pickerFile()), 'the picker closed').toBe(false);
-    await expect(page.locator('#mv-log [data-ask][data-ask-state="history"]', { hasText: 'Gamma, the third' })).toBeVisible({ timeout: 20_000 });
+    // 🔴 SHOWN ONCE: the conversation draws the call from its result — the
+    // row the live card names — and the live card goes, though the server
+    // still lists it for a few minutes.
+    await expect(row).toHaveAttribute('data-ask-state', 'history', { timeout: 20_000 });
+    await expect(row).toContainText('Gamma, the third');
+    await expectShownOnce(page, toolID, rowID!);
+    // A refresh draws the conversation and polls the region in either order:
+    // still once.
+    await page.reload();
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+    await expect(row).toHaveAttribute('data-ask-state', 'history', { timeout: 20_000 });
+    await expect(c, 'the server still lists the answered card').toHaveCount(1, { timeout: 10_000 });
+    await expectShownOnce(page, toolID, rowID!);
+  });
+
+  // 🔴 THE CALL WITHOUT ITS ANSWER IS NOT THE ANSWERED CALL: a conversation
+  // holding the call alone (a transcript cut between the two) draws it
+  // "asking…", and the live card — the only place to answer it from — stays.
+  // Once the CLI records the answer, the question shows once.
+  test('the live card stays until the conversation draws the answered call', async ({ page }) => {
+    await openView(page);
+    await page.clock.install();
+    await page.reload();
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+    const toolID = 'toolu_e2e_once_' + stamp;
+    await registered(toolID);
+    const c = card(page, toolID);
+    await expect(c).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    const rowID = await c.getAttribute('data-ask-row');
+    const row = page.locator(`#mv-log [id="${rowID}"]`);
+    fs.appendFileSync(tr, askUse(toolID));
+    await expect(row).toHaveAttribute('data-ask-state', 'waiting', { timeout: 20_000 });
+    await page.waitForResponse((r) => r.url().includes('/mirror/view/asks'));
+    await expect(c).toBeVisible();
+    await expect(c.getByRole('button', { name: 'Submit answers' })).toBeVisible();
+    answerInTerminal(toolID, { 'Which color do you prefer?': 'Blue', 'Which pets do you have?': 'Fish', 'What should the project be called?': 'Beta' });
+    await expect(row).toHaveAttribute('data-ask-state', 'history', { timeout: 20_000 });
+    await expect(c).toHaveAttribute('data-ask-state', 'answered-terminal', { timeout: 10_000 });
+    await expectShownOnce(page, toolID, rowID!);
+    // 🔴 THE CONVERSATION'S OWN CHANGES DECIDE IT, NOT ONLY THE POLL: with the
+    // page's timers paused (no poll runs), the row leaving the conversation
+    // shows the card again, and its return hides it.
+    await page.clock.pauseAt(new Date(Date.now() + 1000));
+    await page.evaluate((id) => {
+      const r = document.getElementById(id)!;
+      const mark = document.createComment('held');
+      r.replaceWith(mark);
+      (window as unknown as { held: [Element, Comment] }).held = [r, mark];
+    }, rowID!);
+    await expect(c, 'the conversation no longer shows the call: the live card is its only place').toBeVisible();
+    await page.evaluate(() => {
+      const [r, mark] = (window as unknown as { held: [Element, Comment] }).held;
+      mark.replaceWith(r);
+    });
+    await expectShownOnce(page, toolID, rowID!);
+    await page.clock.resume();
   });
 
   // ANSWERED IN THE TERMINAL: the card, form and all, flips to "answered in
