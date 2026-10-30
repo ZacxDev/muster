@@ -9,12 +9,14 @@
 // So the form is driven ONCE per server per worker, and every later call hands
 // the context the session cookies that sign-in earned.
 //
-// A cached session is PROBED before it is trusted: GET /login answers a redirect
-// to a signed-in caller and the form to anyone else (internal/api login.go
-// handleLoginPage). So a server restarted under the same port with another
-// secret, or a session the server no longer accepts, is signed in again rather
-// than handed on. A restarted WORKER (Playwright starts a new one after a
-// failure) starts with an empty cache and signs in again on its first call.
+// A cached session is handed on unchecked: the session key is derived from the
+// password (internal/api auth.go), every server the suite starts uses the
+// suite's, and password sessions last 30 days and cannot be revoked — so a
+// server restarted on the same port still accepts it. With nothing cached the
+// context's own cookies are checked first (GET /login redirects a signed-in
+// caller, login.go handleLoginPage): a context that already holds the suite's
+// session from another of its servers needs no form. A restarted WORKER
+// (Playwright starts a new one after a failure) starts with an empty cache.
 //
 // ⚠ WHERE THE PAGE IS AFTERWARDS DEPENDS ON THE PATH: after the form it is on
 // the origin's home (where the sign-in redirects), after a reused session it
@@ -36,7 +38,6 @@ type Cookies = Awaited<ReturnType<BrowserContext['cookies']>>;
 // The password-mode session cookie (internal/api auth.go sessionCookieName).
 const sessionCookie = 'muster_session';
 const sessions = new Map<string, Cookies>();
-const key = (origin: string, pw: string) => `${origin}\n${pw}`;
 
 // signedIn reports whether the context's cookies are a session this server
 // accepts. maxRedirects 0: the redirect itself is the answer.
@@ -46,34 +47,28 @@ async function signedIn(page: Page, origin: string): Promise<boolean> {
 }
 
 export interface SignInOptions {
-  // The server's operator password, when it is not the suite's.
-  password?: string;
   // Drive the form even when a session is cached: the caller needs one of its own.
   fresh?: boolean;
 }
 
 export async function signIn(page: Page, origin: string = baseURL, opts: SignInOptions = {}): Promise<void> {
-  const pw = opts.password ?? suitePassword;
-  const k = key(origin, pw);
   if (!opts.fresh) {
-    let cached = sessions.get(k);
+    let cached = sessions.get(origin);
     // The shared server's session is the one global-setup saved: a worker
     // never needs the form for it.
-    if (!cached && origin === baseURL && pw === suitePassword && fs.existsSync(authState)) {
+    if (!cached && origin === baseURL && fs.existsSync(authState)) {
       cached = (JSON.parse(fs.readFileSync(authState, 'utf8')) as { cookies: Cookies }).cookies;
     }
     if (cached) {
       await page.context().addCookies(cached);
-      if (await signedIn(page, origin)) {
-        sessions.set(k, cached);
-        return;
-      }
-      sessions.delete(k);
-    } else if (await signedIn(page, origin)) {
+      sessions.set(origin, cached);
+      return;
+    }
+    if (await signedIn(page, origin)) {
       // Already signed in (the context's own cookies: a session is signed with
       // a key derived from the password, so the suite's session from another
       // of its servers is good here too). /login would only redirect.
-      sessions.set(k, await page.context().cookies(origin));
+      sessions.set(origin, await page.context().cookies(origin));
       return;
     }
   } else {
@@ -81,8 +76,8 @@ export async function signIn(page: Page, origin: string = baseURL, opts: SignInO
     await page.context().clearCookies({ name: sessionCookie });
   }
   await page.goto(origin + '/login');
-  await page.fill('#muster-password', pw);
+  await page.fill('#muster-password', suitePassword);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
   noteFormSignIn(origin);
-  sessions.set(k, await page.context().cookies(origin));
+  sessions.set(origin, await page.context().cookies(origin));
 }

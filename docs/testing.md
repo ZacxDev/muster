@@ -134,8 +134,8 @@ in no leg or in two.
 server, so a spec that fills the sign-in form for every test gets a 429 on a
 fast runner and passes on a slow one. Specs sign in with `signIn(page, origin)`
 from `e2e/lib/signin.ts`, which drives the form once per server and worker and
-reuses that session afterwards. It checks the session is still accepted before
-using it, so a restarted server or worker signs in again. Pass `{ fresh: true }`
+reuses that session afterwards; the session key comes from the password, so a
+restarted server still accepts it. Pass `{ fresh: true }`
 when a test needs a session of its own. Every server the suite starts counts the
 password sign-ins it handled, from its own log. A test fails once any server has
 handled more than half of `loginRateBurst` (read from `internal/api/login.go`),

@@ -62,16 +62,18 @@ export interface Running {
 // under half of it.
 //
 // Counted: the password form's two judged outcomes (a session issued, a password
-// rejected). NOT counted, and not needed: GoTrue-mode sign-in (it is not in
-// this bucket), a 429 (the test has already failed), and a password step-up
-// confirm (it draws from this bucket, but logs only its rejections and no spec
-// drives one — the step-up dialogs in the suite are passkey or routed).
+// rejected), and a REJECTED password step-up confirm. NOT counted: GoTrue-mode
+// sign-in (it is not in this bucket) and a 429 (the test has already failed).
+// ⚠ An ACCEPTED password step-up confirm draws from this bucket too but logs
+// nothing (internal/api stepup.go confirmOperatorPassword), so it is invisible
+// here: the half-burst margin is what absorbs them. Specs that drive one today:
+// view-swap (3), composer-menu (2), mirrored (1 accepted, 1 rejected).
 const loginGo = fs.readFileSync(path.join(repoRoot, 'internal', 'api', 'login.go'), 'utf8');
 const burst = /\bloginRateBurst\s*=\s*(\d+)/.exec(loginGo);
 if (!burst) throw new Error('internal/api/login.go: loginRateBurst not found — the sign-in budget cannot be set');
 export const loginRateBurst = Number(burst[1]);
 export const signInBudget = Math.floor(loginRateBurst / 2);
-const signInLine = /login: (a browser session was issued|rejected a password attempt)/g;
+const signInLine = /login: (a browser session was issued|rejected a password attempt)|stepup: rejected an operator-password confirm/g;
 export const countSignIns = (log: string) => (log.match(signInLine) ?? []).length;
 
 // Every server this process started, and how many times lib/signin.ts drove the
