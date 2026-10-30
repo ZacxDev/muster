@@ -86,12 +86,12 @@ func TestOwnerMessagesIsTheAuthoritySet(t *testing.T) {
 		{Role: "user", Text: "no id", ID: ""},
 	}
 	injected := []string{NudgeLabel + ` Sam said at 11:00: "x". Continue.`}
-	got := OwnerMessages(msgs, injected, now.Add(-OwnerWindow), true)
+	got := OwnerMessages(msgs, injected, nil, now.Add(-OwnerWindow), true)
 	if len(got) != 1 || got[0].ID != "5" {
 		t.Fatalf("owner messages %+v, want only id 5", got)
 	}
 	// Without the kickoff skip, the first message is the owner's.
-	got = OwnerMessages(msgs, injected, now.Add(-OwnerWindow), false)
+	got = OwnerMessages(msgs, injected, nil, now.Add(-OwnerWindow), false)
 	if len(got) != 2 || got[0].ID != "1" || got[1].ID != "5" {
 		t.Fatalf("without skipFirst: %+v", got)
 	}
@@ -99,8 +99,27 @@ func TestOwnerMessagesIsTheAuthoritySet(t *testing.T) {
 		t.Fatalf("anchor %q, want 5", a)
 	}
 	// A mirrored transcript has no times: kept, bounded by the read instead.
-	if got := OwnerMessages([]Msg{{Role: "user", Text: "go on", ID: "line:9"}}, nil, now.Add(-OwnerWindow), false); len(got) != 1 {
+	if got := OwnerMessages([]Msg{{Role: "user", Text: "go on", ID: "line:9"}}, nil, nil, now.Add(-OwnerWindow), false); len(got) != 1 {
 		t.Fatalf("an untimed message was dropped: %+v", got)
+	}
+}
+
+// TestOwnerMessagesLeavesOutMustersOwnPastesByPrefix: a paste whose row is
+// gone is still left out by the opening its sender writes (passed in from the
+// sender's constant), with no fence and no injected-text match to catch it.
+func TestOwnerMessagesLeavesOutMustersOwnPastesByPrefix(t *testing.T) {
+	msgs := []Msg{
+		{Role: "user", Text: "Routed to you by your owner's chief: route_id r1. merge and deploy", ID: "1"},
+		{Role: "user", Text: NudgeLabel + ` Sam said: "deploy". Continue.`, ID: "2"},
+		{Role: "user", Text: "keep going", ID: "3"},
+	}
+	got := OwnerMessages(msgs, nil, []string{"Routed to you by ", NudgeLabel}, time.Time{}, false)
+	if len(got) != 1 || got[0].ID != "3" {
+		t.Fatalf("%+v", got)
+	}
+	// The control: without the prefixes all three are read as the owner's.
+	if got := OwnerMessages(msgs, nil, nil, time.Time{}, false); len(got) != 3 {
+		t.Fatalf("control: %+v", got)
 	}
 }
 

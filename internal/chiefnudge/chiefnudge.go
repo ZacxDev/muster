@@ -237,15 +237,19 @@ var fenceOpen = regexp.MustCompile(`<<<[a-z][a-z0-9-]* untrusted nonce=[0-9a-f]{
 //   - any message carrying a muster fence (fenceOpen): text muster injected,
 //     whose words are an outside party's or muster's, never the owner's;
 //   - any message equal (after trimming) to one of injected: what muster itself
-//     pasted into this session (a nudge, a relay — the chief_nudges rows'
-//     message and relay texts);
+//     pasted into this session (a routed message, a nudge, a relay — the
+//     send_queue rows muster queued and the chief_nudges rows' texts);
+//   - any message starting with one of prefixes: the openings muster's own
+//     pastes are written with (the routed preface, NudgeLabel), passed in from
+//     the constants the senders use — a second line behind injected, for a
+//     paste whose row is gone;
 //   - skipFirst: the session's very first message, when the caller knows it is
 //     a dispatched agent's kickoff (the task's text, which can be a plugin's).
 //
 // 🔴 THIS IS THE AUTHORITY SET FOR CheckQuote. A message that should not
 // authorise a nudge must not get past here; a message wrongly left out only
 // costs a nudge that becomes an ask.
-func OwnerMessages(msgs []Msg, injected []string, since time.Time, skipFirst bool) []Msg {
+func OwnerMessages(msgs []Msg, injected, prefixes []string, since time.Time, skipFirst bool) []Msg {
 	inj := make(map[string]bool, len(injected))
 	for _, t := range injected {
 		if t = strings.TrimSpace(t); t != "" {
@@ -264,7 +268,7 @@ func OwnerMessages(msgs []Msg, injected []string, since time.Time, skipFirst boo
 			continue
 		}
 		t := strings.TrimSpace(m.Text)
-		if t == "" || m.ID == "" || fenceOpen.MatchString(m.Text) || inj[t] {
+		if t == "" || m.ID == "" || fenceOpen.MatchString(m.Text) || inj[t] || hasAnyPrefix(t, prefixes) {
 			continue
 		}
 		if !m.At.IsZero() && !since.IsZero() && m.At.Before(since) {
@@ -276,6 +280,15 @@ func OwnerMessages(msgs []Msg, injected []string, since time.Time, skipFirst boo
 		out = out[len(out)-MaxOwnerMessages:]
 	}
 	return out
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if p != "" && strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Anchor is the owner's latest message's id among owner ("" for none): the

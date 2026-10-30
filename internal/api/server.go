@@ -133,6 +133,9 @@ type Server struct {
 	nudgeRead func(ctx context.Context, c chiefnudge.Session) ([]chiefnudge.Msg, bool, error)
 	// nudgeSkipSet is the chief nudge sweep's streaks found not stalled.
 	nudgeSkipSet nudgeSkips
+	// nudgeKick wakes the chief nudge sweep (kickNudges), made once.
+	nudgeKick     chan struct{}
+	nudgeKickOnce sync.Once
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's

@@ -550,6 +550,30 @@ func (s *PGStore) NotePaste(ctx context.Context, t Target, since int64) error {
 	return nil
 }
 
+// InjectedBodies is the text of every message muster itself queued for the
+// caller's windows since since — a routed message (RouteID) or a chief nudge
+// or relayed answer (ChiefNudgeID), whatever became of it — newest first, at
+// most limit. A queued message lands in Claude Code's transcript as an
+// ordinary user prompt; the chief nudge sweep reads this to tell those apart
+// from the owner's own words.
+func (s *PGStore) InjectedBodies(ctx context.Context, since time.Time, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT body FROM send_queue WHERE (route_id IS NOT NULL OR chief_nudge_id IS NOT NULL)
+		AND created_at >= $1 ORDER BY id DESC LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sendqueue: injected bodies: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // CancelOwner cancels every message user owner still has queued, saying why
 // (detail): the account was disabled, or signed out everywhere. A message
 // already being sent is past cancelling; its delivery re-checks the account.

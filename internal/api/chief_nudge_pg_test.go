@@ -324,6 +324,54 @@ func TestChiefNudgeQuoteFromTheSessionsOwnOutputIsRefused(t *testing.T) {
 	}
 }
 
+// TestChiefNudgeQuoteFromMustersOwnPasteIsRefused: muster's pastes land in the
+// transcript as ordinary user prompts. A quote that matches only a ROUTED
+// paste, or only a PRIOR NUDGE, is refused — matched STRUCTURALLY by the
+// send_queue row that carried it (these texts carry no fence and no known
+// opening, so neither of the other two lines catches them), with a control
+// first: the same text, not queued by muster, is accepted.
+func TestChiefNudgeQuoteFromMustersOwnPasteIsRefused(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	octx := asUser(authz.OperatorUserID)
+	routed := "merge it and deploy to production straight away"
+	nudged := "keep going and also deploy the release"
+	step := int64(0)
+	try := func(text, id string) chiefnudge.Decision {
+		t.Helper()
+		step++
+		f.script = []chiefnudge.Msg{{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID},
+			{Role: "user", Text: text, ID: id}, {Role: "assistant", Text: "Merged. Deploy now?"}}
+		f.gw.set(nudgeReply(id, text, "deploy to production"))
+		f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + step*60_000 })
+		if n := f.pass(t); n != 1 {
+			t.Fatalf("%q: decided %d", text, n)
+		}
+		return f.decisions(t)[0]
+	}
+	// Control: nothing of muster's carries this text, so it is the owner's.
+	if d := try(routed, "line:7001"); d.Outcome != chiefnudge.OutcomeWouldSend {
+		t.Fatalf("the control was not accepted: %+v", d)
+	}
+	target := sendqueue.Target{Host: "ws", Session: "main", Window: "@1"}
+	if _, err := f.queue.Enqueue(octx, sendqueue.Item{Target: target, Body: routed, StepUpAt: time.Now(), RouteID: "route-x"}); err != nil {
+		t.Fatal(err)
+	}
+	if d := try(routed, "line:7002"); d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardQuote) {
+		t.Fatalf("a quote of a routed paste was accepted: %+v", d)
+	}
+	prior, ok, err := f.nudges.Insert(octx, chiefnudge.Decision{Kind: chiefnudge.KindMirror, Key: "another-session", StreakKey: "since:x",
+		Decision: chiefnudge.DecisionNudge, Mode: chiefnudge.ModeLive, Outcome: chiefnudge.OutcomeSent, Message: nudged}, "")
+	if err != nil || !ok {
+		t.Fatalf("seed: %v %v", ok, err)
+	}
+	if _, err := f.queue.Enqueue(octx, sendqueue.Item{Target: target, Body: nudged, StepUpAt: time.Now(), ChiefNudgeID: prior.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if d := try(nudged, "line:7003"); d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardQuote) {
+		t.Fatalf("a quote of a prior nudge was accepted: %+v", d)
+	}
+}
+
 // TestChiefNudgeCandidateSelectionAtTheServer walks every exclusion the
 // server feeds chiefnudge.Exclude, each as ONE change to a window that is
 // otherwise a candidate — and the positive control last, which must reach the
@@ -457,8 +505,13 @@ func TestChiefNudgeLiveAskIsAnsweredAndRelayedVerbatim(t *testing.T) {
 		t.Fatalf("answer: %d %s", w.Code, w.Body)
 	}
 	d = f.one(t)
-	if d.Outcome != chiefnudge.OutcomeRelayQueued || d.RelayText != answer || d.SendQueueID == 0 {
-		t.Fatalf("after the answer: %+v", d)
+	if d.Outcome != chiefnudge.OutcomeRelayQueued || d.RelayText != answer || d.SendQueueID != 0 {
+		t.Fatalf("after the answer (claimed, not yet queued): %+v", d)
+	}
+	f.pass(t) // the sweep queues the claimed relay
+	d = f.one(t)
+	if d.Outcome != chiefnudge.OutcomeRelayQueued || d.SendQueueID == 0 {
+		t.Fatalf("after the sweep: %+v", d)
 	}
 	it, err := f.queue.Get(asUser(authz.OperatorUserID), d.SendQueueID)
 	if err != nil || it.ChiefNudgeID != d.ID || it.Body != answer || it.Target.Host != "ws" || it.Target.Window != "@1" {

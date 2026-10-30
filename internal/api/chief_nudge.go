@@ -136,6 +136,11 @@ func (s *Server) RunChiefNudgeSweep(ctx context.Context, interval time.Duration)
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.nudgeKickChan():
+			// An answer was claimed for a relay (relayNudgeAnswer): settle the
+			// decisions in flight now, without waiting for the tick.
+			s.reconcileNudges(ctx)
+			continue
 		case <-t.C:
 		}
 		if _, err := s.ChiefNudgePass(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -144,16 +149,26 @@ func (s *Server) RunChiefNudgeSweep(ctx context.Context, interval time.Duration)
 	}
 }
 
-// ChiefNudgePass is one sweep: settle the live decisions in flight, then
-// decide each owner's stalled sessions. It returns how many decisions it
-// recorded.
-func (s *Server) ChiefNudgePass(ctx context.Context) (int, error) {
-	if !s.chiefNudgesOn() {
-		return 0, nil
+// nudgeKickChan is the sweep's wake-up (one pending kick is enough).
+func (s *Server) nudgeKickChan() chan struct{} {
+	s.nudgeKickOnce.Do(func() { s.nudgeKick = make(chan struct{}, 1) })
+	return s.nudgeKick
+}
+
+// kickNudges asks the sweep to settle the decisions in flight now.
+func (s *Server) kickNudges() {
+	select {
+	case s.nudgeKickChan() <- struct{}{}:
+	default:
 	}
+}
+
+// reconcileNudges settles every live decision in flight (reconcileNudge),
+// returning the owner sessions that are still in flight.
+func (s *Server) reconcileNudges(ctx context.Context) (map[int64]map[string]bool, error) {
 	pending, err := s.ext.ChiefNudges.Pending(ctx, chiefNudgePendingBatch)
 	if err != nil {
-		return 0, fmt.Errorf("pending decisions: %w", err)
+		return nil, fmt.Errorf("pending decisions: %w", err)
 	}
 	busy := map[int64]map[string]bool{} // owner -> session keys with a decision in flight
 	for _, d := range pending {
@@ -163,6 +178,20 @@ func (s *Server) ChiefNudgePass(ctx context.Context) (int, error) {
 			}
 			busy[d.Owner][d.Kind+":"+d.Key] = true
 		}
+	}
+	return busy, nil
+}
+
+// ChiefNudgePass is one sweep: settle the live decisions in flight, then
+// decide each owner's stalled sessions. It returns how many decisions it
+// recorded.
+func (s *Server) ChiefNudgePass(ctx context.Context) (int, error) {
+	if !s.chiefNudgesOn() {
+		return 0, nil
+	}
+	busy, err := s.reconcileNudges(ctx)
+	if err != nil {
+		return 0, err
 	}
 	owners, err := s.ext.ChiefNudges.Owners(ctx)
 	if err != nil {
@@ -402,12 +431,12 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		s.nudgeSkip(requestOwner(octx), c.Session)
 		return false, false
 	}
-	injected, err := s.ext.ChiefNudges.Injected(octx, c.Kind, c.Key)
+	injected, err := s.nudgeInjected(octx, c.Session)
 	if err != nil {
 		s.logger.Printf("chief nudges: %s %s: injected: %v", c.Kind, c.Key, err)
 		return false, false
 	}
-	owner := chiefnudge.OwnerMessages(msgs, injected, s.now().Add(-chiefnudge.OwnerWindow),
+	owner := chiefnudge.OwnerMessages(msgs, injected, nudgeInjectedPrefixes, s.now().Add(-chiefnudge.OwnerWindow),
 		c.Kind == chiefnudge.KindAgent && full)
 	// 🔴 THE CHIEF SEES REDACTED TEXT, AND THE QUOTE IS MATCHED AGAINST EXACTLY
 	// WHAT IT SAW: each owner message is redacted and cut here, once, and both
@@ -482,6 +511,37 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return true, false
 	}
 	return false, false
+}
+
+// nudgeInjectedPrefixes are the openings of muster's own pastes, from the
+// constants their senders write them with (one rule, one place).
+var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel}
+
+// injectedBodyReader is the send queue's read of what muster itself queued
+// (sendqueue.PGStore.InjectedBodies); a queue without it adds nothing.
+type injectedBodyReader interface {
+	InjectedBodies(ctx context.Context, since time.Time, limit int) ([]string, error)
+}
+
+// nudgeInjected is every text muster itself put into c's conversation that it
+// still has a record of: the routed messages, nudges and relays it queued for
+// the owner's windows (send_queue, the last 7 days — a row's lifetime), and
+// this feature's own nudges and relays for c (chief_nudges). 🔴 STRUCTURAL,
+// NOT SPELLED: a paste is matched by the row that carried it, so a reworded
+// template cannot slip one into the owner's messages.
+func (s *Server) nudgeInjected(ctx context.Context, c chiefnudge.Session) ([]string, error) {
+	out, err := s.ext.ChiefNudges.Injected(ctx, c.Kind, c.Key)
+	if err != nil {
+		return nil, err
+	}
+	if q, ok := s.ext.SendQueue.(injectedBodyReader); ok && c.Kind == chiefnudge.KindMirror {
+		bodies, err := q.InjectedBodies(ctx, s.now().Add(-7*24*time.Hour), 1000)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bodies...)
+	}
+	return out, nil
 }
 
 // nudgeTranscript is c's conversation, oldest first; full reports that it is
@@ -678,6 +738,10 @@ func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, c nud
 		}
 		a, sess = got, sessions[0]
 	}
+	if s.ext.Gateway == nil {
+		s.failNudge(ctx, d, state, "the agent gateway is off on this server")
+		return
+	}
 	if !agentCanBeSent(s.liveStatus(ctx, a)) {
 		s.failNudge(ctx, d, state, "the agent is not running")
 		return
@@ -801,6 +865,11 @@ func (s *Server) relayNudgeAnswer(ctx context.Context, a attention.Ask) {
 	case !s.chiefNudgeLive(d.Owner):
 		closeAsk("chief nudges are off or in shadow mode for this owner now: not relayed")
 		return
+	case d.Kind == chiefnudge.KindAgent && s.ext.Gateway == nil:
+		// An agent's relay is a turn, and with no gateway there is none to run
+		// (cmd/muster-server leaves it nil on purpose: doc_seams.go).
+		closeAsk("the agent gateway is off on this server: not relayed")
+		return
 	}
 	// 🔴 CLAIM FIRST: asked → relay_queued, with the text, in one conditional
 	// update. A second caller (the sweep racing the answer) finds it moved and
@@ -810,8 +879,11 @@ func (s *Server) relayNudgeAnswer(ctx context.Context, a attention.Ask) {
 	if err != nil || !moved {
 		return
 	}
-	d.Outcome, d.RelayText = chiefnudge.OutcomeRelayQueued, a.Answer
-	s.deliverRelay(ctx, d)
+	// 🔴 THE SEND IS THE SWEEP'S, NOT THIS REQUEST'S: the claim above is all an
+	// answer does here; the sweep's reconcile (woken now) queues the text or
+	// starts the agent's turn, on its own goroutine — so no answer route ever
+	// reaches the agent gateway (provisioner_seam_test.go holds that).
+	s.kickNudges()
 }
 
 // deliverRelay sends d's relay text: queued for a mirrored window, a turn for
@@ -832,8 +904,10 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 	switch d.Outcome {
 	case chiefnudge.OutcomeQueued, chiefnudge.OutcomeRelayQueued:
 		if d.SendQueueID == 0 {
-			if d.Outcome == chiefnudge.OutcomeRelayQueued && d.Kind == chiefnudge.KindAgent {
-				s.deliverRelay(octx, d) // the agent was busy: try again
+			if d.Outcome == chiefnudge.OutcomeRelayQueued {
+				// Claimed by the answer, not yet sent (or the agent was busy):
+				// send it now.
+				s.deliverRelay(octx, d)
 			}
 			return false
 		}

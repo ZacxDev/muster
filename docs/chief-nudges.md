@@ -80,9 +80,15 @@ The call carries, fenced as untrusted data:
 
 "Your own messages" are the session's user-role messages, leaving out:
 
-- anything muster injected that carries a muster fence (a routed message, a
-  delivered answer, a forwarded task);
-- any nudge or relay this feature pasted into the session;
+- anything muster itself queued into your windows: every routed message and
+  every nudge or relay of this feature, matched against the `send_queue` row
+  that carried it (the last 7 days), and this feature's own nudges and relays
+  for that session. muster's pastes land in Claude Code's transcript as
+  ordinary prompts, so this is what keeps them from reading as yours;
+- anything that carries a muster fence (a routed message, a delivered answer, a
+  forwarded task), or opens the way muster's own pastes open (`Routed to you
+  by …`, `[Chief nudge]`, from the same constants the senders use) — a second
+  line for a paste whose row is gone;
 - for a dispatched agent, its first message (the task's text, which can come
   from a plugin) when muster has read the whole conversation, and anything
   older than 6 hours.
@@ -149,8 +155,9 @@ chief judged.
 **An ask** is an attention ask on your queue, asked by *your chief*, naming the
 session's focus title and where it runs, the chief's question and its options.
 It is pushed like any ask. When you answer it **on the Attention view**, your
-answer is sent into that session **word for word** (queued for a window, a turn
-for an agent). Nothing else is added to it. An answer given through a mirrored
+answer is claimed for the relay at once and sent into that session **word for
+word** by the sweep, which the answer wakes (queued for a window, a turn for an
+agent). Nothing else is added to it. An answer given through a mirrored
 session's `attention_answer` is recorded and **not** relayed, since a session
 fed outside text could write it. If the session moves on before you answer, the
 ask is withdrawn.

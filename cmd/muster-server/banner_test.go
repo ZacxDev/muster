@@ -792,6 +792,11 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefDispatchOwners:    map[int64]bool{1: true},
 		// Chief session runtimes: the banner branches on ext.SessionRuntimes (below).
 		ChiefSessionRuntimes: []string{"claude-code"},
+		// The chief's stall nudges: the banner branches on ext.ChiefNudge (below).
+		ChiefNudges:          true,
+		ChiefNudgeIdle:       15 * time.Minute,
+		ChiefNudgeHourlyCap:  4,
+		ChiefNudgeLiveOwners: map[int64]bool{1: true},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
@@ -828,6 +833,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		MailResume:      &api.MailResume{Allow: bannerResumeAllowlist(t)},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code"},
+		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
