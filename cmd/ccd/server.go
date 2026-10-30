@@ -688,12 +688,14 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// primary — every request without the header, as before (lanes.go).
 	target := s
 	if key := r.Header.Get(headerCCSession); key != "" {
-		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir))
+		ephemeral := r.Header.Get(headerCCEphemeral) == "1"
+		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), ephemeral)
 		if f != nil {
 			writeFailure(w, f)
 			return
 		}
 		// Held until runTurn returns: no eviction may take the lane under its turn.
+		// For a throwaway check lane this release also stops its CLI (lanes.release).
 		defer s.lanes.release(ln)
 		target = ln.srv
 		// Before any body is written: success or failure, the answer says where
@@ -1081,7 +1083,11 @@ func credentialVisible(configDir string) func() bool {
 // refused unless it is exactly a job worktree of THIS workspace
 // (agents.IsJobWorktreeDir) and an existing directory, not a symlink — so the
 // header cannot point a CLI anywhere else on the volume (checkJobDir).
-func (s *server) laneFor(ctx context.Context, key, model, workdir string) (*lane, *failure) {
+//
+// ephemeral (X-Muster-CC-Ephemeral: 1) makes it a throwaway check lane
+// (lanes.go): refused rather than stopping an operator lane at the cap, and
+// stopped when released — here too, when its CLI never reached its prompt.
+func (s *server) laneFor(ctx context.Context, key, model, workdir string, ephemeral bool) (*lane, *failure) {
 	if s.lanes == nil {
 		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
 			"or CCD_MAX_SESSIONS is 0), so it cannot run a session of its own for " + strconv.Quote(key))
@@ -1103,7 +1109,7 @@ func (s *server) laneFor(ctx context.Context, key, model, workdir string) (*lane
 			return nil, f
 		}
 	}
-	ln, f := s.lanes.acquireIn(ctx, key, model, workdir)
+	ln, f := s.lanes.acquireIn(ctx, key, model, workdir, ephemeral)
 	if f != nil {
 		return nil, f
 	}

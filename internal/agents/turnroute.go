@@ -38,6 +38,13 @@ const (
 	// when it is missing or different — a ccd from before job worktrees ignores
 	// HeaderCCWorkdir and would run the job in the agent's own checkout.
 	HeaderCCWorkdirUsed = "X-Muster-CC-Workdir-Used"
+	// HeaderCCEphemeral, "1", marks an explicit session (HeaderCCSession) as a
+	// THROWAWAY check: ccd stops that session's CLI as soon as its turn is over,
+	// and at its cap (CCD_MAX_SESSIONS) refuses it (FailureCapacity) rather
+	// than stop another session's CLI to make room. Set only on a chief's stall
+	// check (internal/api nudgeRoute). A ccd that predates it ignores it and
+	// keeps the CLI like any other session's.
+	HeaderCCEphemeral = "X-Muster-CC-Ephemeral"
 )
 
 // FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names
@@ -86,7 +93,7 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir} {
+	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}

@@ -756,7 +756,7 @@ func nudgeMirrorComplete(evs []cctranscript.Event, idx mirrorIndex, now time.Tim
 //     conversation with the chief — whatever its session key. So the check
 //     also carries the key as an explicit session (nudgeRoute), and ccd runs it
 //     in a CLI of its own (a lane, cmd/ccd/lanes.go), started with an empty
-//     conversation.
+//     conversation and stopped as soon as the check's turn is over.
 //
 // Either way no check sees another's and none grows with the ones before it.
 // The key is the same only for the same decision, and a decision is asked
@@ -768,23 +768,29 @@ func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) strin
 }
 
 // nudgeRoute is ctx carrying the route of a stall check under key: for a
-// claude-code chief, key as an explicit claude-code session (withSessionRoute,
-// the one place that route is built), with no model — ccd starts the lane's
-// CLI on the pod's default model, as the primary runs. A gateway chief gets no
-// route, and its request is exactly what it was before: its runtime has no
-// lanes, and its per-decision session key is already a session of its own.
+// claude-code chief, key as an explicit claude-code session marked EPHEMERAL
+// (withRoute, the one place that route is built), with no model — ccd starts
+// the lane's CLI on the pod's default model, as the primary runs. A gateway
+// chief gets no route, and its request is exactly what it was before: its
+// runtime has no lanes, and its per-decision session key is already a session
+// of its own.
 //
-// ⚠ EVICTION, STATED: ccd keeps a lane's CLI running after its turn, and when
-// it needs a slot (CCD_MAX_SESSIONS, default 3) it stops the least recently
-// used idle lane — which can be one of the operator's explicit sessions as
-// readily as an earlier check's. ccd has no way to be told a lane is
-// disposable; an evicted session is resumed from its transcript on its next
-// turn, at the cost of a cold start.
+// 🔴 EPHEMERAL IS WHAT KEEPS A CHECK OFF THE OPERATOR'S SESSIONS. ccd stops a
+// check's CLI as soon as its turn is over, so no idle check CLI holds a slot or
+// pod memory. When every slot (CCD_MAX_SESSIONS, default 3) is taken by an
+// operator session, ccd refuses the check (503 capacity, so errNudgeChiefBusy
+// and a retry next pass) rather than stop one of them to make room.
+//
+// ⚠ VERSION SKEW: a ccd that predates agents.HeaderCCEphemeral ignores it and
+// keeps the check's CLI like any session's. At its cap it then stops the least
+// recently used idle lane, which may be the operator's. The header ships in the
+// same release as the claude-code agent image; a chief pod still running an
+// older image behaves that way until it is restarted on the new one.
 func nudgeRoute(ctx context.Context, chief agents.Agent, key string) context.Context {
 	if agents.ResolveKind(chief.Kind) != agents.KindClaudeCode {
 		return ctx
 	}
-	return withSessionRoute(ctx, chief, agents.ChatSession{SessionKey: key, Runtime: agents.SessionRuntimeClaudeCode})
+	return withRoute(ctx, chief, agents.ChatSession{SessionKey: key, Runtime: agents.SessionRuntimeClaudeCode}, true)
 }
 
 // askChiefForNudge puts prompt to the chief and returns its answer, holding

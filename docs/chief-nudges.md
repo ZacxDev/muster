@@ -126,12 +126,19 @@ none appears in your conversation with the chief:
   chief. So the check also names its key as an explicit session
   (`X-Muster-CC-Session`, as a chat session started on the Claude Code runtime
   does), and ccd runs it in a CLI of its own, a *lane*, started with an empty
-  conversation on the pod's default model.
+  conversation on the pod's default model. The check is marked throwaway
+  (`X-Muster-CC-Ephemeral: 1`): ccd stops that CLI as soon as the check's
+  turn is over, whether it succeeded or failed, so no check CLI stays in the
+  pod's memory or holds a lane.
 
 The call holds the chief's turn lock: a busy chief is skipped until the next
 sweep, and so is a claude-code chief whose ccd has no free lane for the check
 (its `503 capacity`, answered before anything is sent): nothing is recorded,
-and the same streak is asked about next sweep. The call's budget is four
+and the same streak is asked about next sweep. A check never takes a lane from
+one of your own sessions. When every lane (`CCD_MAX_SESSIONS`, default 3) is
+held by your sessions, even idle ones, ccd refuses the check rather than stop
+one of them, so a busy chief with that many open sessions is the usual reason
+for this skip. The call's budget is four
 minutes: the three a check's turn has always had, plus one for ccd to start
 the lane's CLI (ccd gives up on a start after 60 seconds with a `503
 not_ready`, which is skipped the same way). A call that fails otherwise is
@@ -316,14 +323,17 @@ your relayed answer.
   muster keeps no row for these, so they pile up in the gateway's own storage:
   a follow-up is to prune them once the gateway offers a way. Nothing in this
   feature prunes them.
-- On a `claude-code` chief each stall check is a lane in the chief's ccd. Its
-  CLI stays running after the check, and the processes are bounded by ccd's
-  lane cap (`CCD_MAX_SESSIONS`, default 3): at the cap ccd stops the least
-  recently used idle lane to start a new one. That can be one of your own
-  explicit Claude Code sessions with the chief as readily as an earlier check's
-  lane — ccd cannot be told a lane is disposable. A stopped session is resumed
-  from its transcript on its next turn, at the cost of a cold start. Each
-  check's transcript stays on the chief's volume; nothing prunes those either.
+- On a `claude-code` chief each stall check starts a Claude Code CLI in the
+  chief's pod (about 250–550 MiB while it runs) and stops it when the check's
+  turn ends. With all of ccd's lanes held by your own sessions, checks are
+  skipped until one frees up; they are never run by stopping your sessions.
+  Each check's transcript stays on the chief's volume (a few KiB each); nothing
+  prunes those.
+- A chief pod whose ccd is older than this muster ignores the throwaway mark.
+  It keeps each check's CLI running after the check and, at its lane cap,
+  stops the least recently used idle lane to start a new one, which can be one
+  of your own sessions (resumed from its transcript on its next turn, with a
+  cold start). Restarting the chief on the current image ends this.
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.
 - A window on an older `muster-mirror` (no prompt times) is never nudged, only

@@ -42,7 +42,8 @@ type nudgeCCD struct {
 func (c *nudgeCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	c.turns = append(c.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
-		ccSession: r.Header.Get("X-Muster-CC-Session"), ccModel: r.Header.Get("X-Muster-CC-Model")})
+		ccSession: r.Header.Get("X-Muster-CC-Session"), ccModel: r.Header.Get("X-Muster-CC-Model"),
+		ccEphemeral: r.Header.Get("X-Muster-CC-Ephemeral")})
 	full, reply := c.full, c.reply
 	c.mu.Unlock()
 	// ccd refuses for capacity only a turn that needs a lane (laneFor); the
@@ -110,7 +111,9 @@ func newLaneNudgeFixture(t *testing.T, kind string) (*nudgeFixture, *nudgeCCD) {
 // by (X-Muster-CC-Session), so ccd runs it in a CLI of its own with an empty
 // conversation — never in the primary CLI, the operator's conversation with
 // the chief, which is where a turn without that header goes. No model header:
-// the lane starts on the pod's default model, as the primary does.
+// the lane starts on the pod's default model, as the primary does. And it is
+// marked a throwaway check (X-Muster-CC-Ephemeral: 1), so ccd stops its CLI
+// once its turn is over and never stops an operator's session to make room.
 func TestChiefNudgeOnAClaudeCodeChiefRunsInALaneOfItsOwn(t *testing.T) {
 	f, ccd := newLaneNudgeFixture(t, agents.KindClaudeCode)
 	if n := f.pass(t); n != 1 {
@@ -132,6 +135,9 @@ func TestChiefNudgeOnAClaudeCodeChiefRunsInALaneOfItsOwn(t *testing.T) {
 	}
 	if got.ccModel != "" {
 		t.Fatalf("X-Muster-CC-Model %q, want none", got.ccModel)
+	}
+	if got.ccEphemeral != "1" {
+		t.Fatalf("X-Muster-CC-Ephemeral %q, want \"1\": without it ccd keeps the check's CLI and may stop an operator's session for it", got.ccEphemeral)
 	}
 }
 
@@ -175,7 +181,7 @@ func TestChiefNudgeOnAGatewayChiefCarriesNoLaneHeader(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("turns %v, want 1", turns)
 	}
-	if got := turns[0]; !strings.HasPrefix(got.key, "agent:"+f.boss.Name+":webchat:nudge:") || got.ccSession != "" || got.ccModel != "" {
+	if got := turns[0]; !strings.HasPrefix(got.key, "agent:"+f.boss.Name+":webchat:nudge:") || got.ccSession != "" || got.ccModel != "" || got.ccEphemeral != "" {
 		t.Fatalf("gateway chief's check: %v, want its own session key and no claude-code route", got)
 	}
 }
