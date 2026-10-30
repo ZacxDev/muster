@@ -96,6 +96,17 @@ type Event struct {
 	// stateless, cannot — and Prompts names the same prompt by the same number,
 	// which is how the message index finds a prompt's bubble. 0 = not known.
 	Line int64 `json:"line,omitempty"`
+	// PromptAt is a PROMPT's own timestamp (its record's, Unix ms), 0 when the
+	// record has none. It is what lets muster tell how recent a message the
+	// person typed is (the chief nudge sweep only accepts the owner's last six
+	// hours of instructions: internal/api chief_nudge.go).
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older muster ignores
+	// the field; an older host never sends it, and muster then has NO timed
+	// prompt for that session, which the sweep reads as "no instruction it can
+	// verify" (an ask, never a nudge). Set on prompts only, so an events batch
+	// grows by one small number per prompt.
+	PromptAt int64 `json:"promptAt,omitempty"`
 	// Usage is the context an assistant turn used (usage.go), on the FIRST
 	// event its record contributes; nil on every other event, and from a host
 	// that predates it.
@@ -174,7 +185,7 @@ func Events(r Record) []Event {
 			if cmd, ok := slashCommand(text); ok {
 				text = cmd
 			}
-			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText)}}
+			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText), PromptAt: r.Time()}}
 		}
 		if r.IsMeta || r.IsCompactSummary {
 			return nil
