@@ -1168,7 +1168,7 @@ directories whose sessions a reply may describe ([configuration](configuration.m
    not the tool's 32): the least recently active sessions are left out first
    and counted in `omitted`. `gaps` counts what was left out or could not be
    known (sessions whose working directory is unknown, offline mirror hosts,
-   a store or the router that did not answer, titles beyond 20 per session,
+   a store that did not answer, titles beyond 20 per session,
    secret-shaped strings removed). Every character outside ASCII is written
    as a JSON `\u` escape.
 3. **An error** — a version other than 1, a malformed field, or a window that
@@ -1181,16 +1181,17 @@ directories whose sessions a reply may describe ([configuration](configuration.m
 🔴 **What leaves muster.** The reply goes to the asking service and, from
 there, to whatever model reads it. So, unlike the chief's tool:
 
-- **Only sessions working under `MUSTER_FLEET_REPORT_PATHS`.** muster asks
-  the permission router (`MUSTER_ROUTER_URL`) for each mirrored Claude
-  session's working directory, and describes the session only when that
-  directory is one of the prefixes or inside one, on a path-component
-  boundary (`/srv/example-work` covers `/srv/example-work/app`, never
-  `/srv/example-work-x`). The directory decides; it is never written into the
-  reply. Fail closed: a session whose directory is **unknown** — every
-  dispatched agent, a session the router holds no record of, a router that is
-  not configured or does not answer — is left out and counted in `gaps`; a
-  session **outside** the prefixes is left out and not mentioned at all.
+- **Only sessions working under `MUSTER_FLEET_REPORT_PATHS`.** Each
+  session's working directory is the one its transcript last named, stored
+  with its focus ([focus](focus.md#the-working-directory)); the session is
+  described only when that directory is one of the prefixes or inside one, on
+  a path-component boundary (`/srv/example-work` covers
+  `/srv/example-work/app`, never `/srv/example-work-x`). The directory
+  decides; it is never written into the reply. Fail closed: a session whose
+  directory is **unknown** — a dispatched agent, a Hermes window, a host that
+  predates it, a focus not written since the upgrade — is left out and
+  counted in `gaps`; a session **outside** the prefixes is left out and not
+  mentioned at all. No permission router is involved.
 - **No host labels.** Every `host` is `""` and `hosts` is empty; an offline
   mirror host is a counted gap, unnamed.
 - **Titles, names and repositories are not screened** for infrastructure

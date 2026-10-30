@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/flows"
 )
 
@@ -89,5 +90,18 @@ func TestTheReplyEncodingSurvivesFolding(t *testing.T) {
 	var folded fleetFocus
 	if err := json.Unmarshal([]byte(flows.NormalizeAgentText(string(plain))), &folded); err == nil && folded.Title == title {
 		t.Fatal("control: folding the plain encoding kept the title, so this fixture proves nothing")
+	}
+}
+
+// The seam between the stream and the focus pass: a mirrored prompt's working
+// directory reaches the focus entry (focus.LatestCwd reads it there), and no
+// other event's does.
+func TestAPromptsDirectoryReachesItsFocusEntry(t *testing.T) {
+	en, ok := focusEntryOf(cctranscript.Event{Kind: cctranscript.KindPrompt, Text: "hi", Cwd: "/srv/example-work/app"})
+	if !ok || en.Cwd != "/srv/example-work/app" || en.Role != "user" {
+		t.Fatalf("prompt: %+v %v", en, ok)
+	}
+	if en, _ := focusEntryOf(cctranscript.Event{Kind: cctranscript.KindText, Text: "reply", Cwd: "/srv/x"}); en.Cwd != "" {
+		t.Fatalf("a reply's entry carries %q", en.Cwd)
 	}
 }

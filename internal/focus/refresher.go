@@ -200,7 +200,8 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err
 	}
-	if _, err := r.Store.Upsert(ctx, sub, Write{Title: sum.Title, Description: sum.Description, Source: SourceSummarizer,
+	cwd, named := LatestCwd(entries)
+	if _, err := r.Store.Upsert(ctx, sub, Write{Title: sum.Title, Description: sum.Description, Source: SourceSummarizer, Cwd: cwd, CwdNamed: named,
 		Fingerprint: fp}); err != nil {
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err

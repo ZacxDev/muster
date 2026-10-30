@@ -350,7 +350,7 @@ loop:
 func focusEntryOf(ev cctranscript.Event) (focus.Entry, bool) {
 	switch ev.Kind {
 	case cctranscript.KindPrompt:
-		return focus.Entry{Role: "user", Text: ev.Text}, true
+		return focus.Entry{Role: "user", Text: ev.Text, Cwd: ev.Cwd}, true
 	case cctranscript.KindText:
 		return focus.Entry{Role: "assistant", Text: ev.Text}, true
 	case cctranscript.KindToolCall:

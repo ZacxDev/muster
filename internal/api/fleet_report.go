@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -48,13 +47,14 @@ import (
 // 🔴 WHAT LEAVES MUSTER (the MAIL door, fleetMail; operator decision). The
 // reply goes to an outside service and from there to an LLM provider, so:
 //   - ONLY sessions whose working directory is under a configured prefix
-//     (MUSTER_FLEET_REPORT_PATHS) are described. The directory comes from the
-//     permission router's record of the Claude session (RouterPort.SessionMeta)
-//     and is used for this decision only — it is never written into the reply.
-//     A session whose directory is unknown — every dispatched agent, any
-//     session the router has no record of, a router that is not configured or
-//     does not answer — is LEFT OUT and counted in the coverage's gaps; one
-//     outside the prefixes is left out and not mentioned at all.
+//     (MUSTER_FLEET_REPORT_PATHS) are described. The directory is the one the
+//     session's transcript last named, stored with its focus
+//     (focus.Focus.Cwd, migration 0063), and is used for this decision only —
+//     it is never written into the reply. A session whose directory is
+//     unknown — a dispatched agent, a Hermes window, a session whose focus was
+//     written before 0063 or by a host that predates it, one past the focus
+//     retention — is LEFT OUT and counted in the coverage's gaps; one outside
+//     the prefixes is left out and not mentioned at all.
 //   - Titles, names and repos go UNSCREENED by the agent-text screen, except
 //     that credential- and token-shaped runs are cut out
 //     (flows.StripSecretShaped) and counted.
@@ -182,64 +182,6 @@ type fleetMail struct {
 	paths plugins.FleetReportPaths
 }
 
-// The bounds of the working-directory lookups the mail door makes, one per
-// mirrored session, to the permission router. Vars so a test can shorten them.
-var (
-	fleetCwdTimeout  = 3 * time.Second
-	fleetCwdBudget   = 10 * time.Second
-	fleetCwdParallel = 4
-)
-
-// fleetCwds is the working directory the permission router recorded for each
-// Claude session of keys ("" or absent: unknown), and how many lookups failed
-// (an error or the budget, not a 404). A runtime-qualified key ("hermes:…") is
-// not a Claude session id and is never looked up.
-func (s *Server) fleetCwds(ctx context.Context, keys []string) (map[string]string, int) {
-	out := map[string]string{}
-	if s.router == nil {
-		return out, 0
-	}
-	bctx, cancel := context.WithTimeout(ctx, fleetCwdBudget)
-	defer cancel()
-	var mu sync.Mutex
-	failed := 0
-	sem := make(chan struct{}, fleetCwdParallel)
-	var wg sync.WaitGroup
-	for _, k := range keys {
-		if strings.Contains(k, ":") {
-			continue
-		}
-		select {
-		case sem <- struct{}{}:
-		case <-bctx.Done():
-		}
-		if bctx.Err() != nil {
-			mu.Lock()
-			failed++
-			mu.Unlock()
-			continue
-		}
-		wg.Add(1)
-		safeGo(s.logger, "fleet_report: a working-directory lookup", func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			tctx, tcancel := context.WithTimeout(bctx, fleetCwdTimeout)
-			defer tcancel()
-			meta, ok, err := s.router.SessionMeta(tctx, k)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case err != nil:
-				failed++
-			case ok:
-				out[k] = meta.Cwd
-			}
-		})
-	}
-	wg.Wait()
-	return out, failed
-}
-
 // buildFleetReport is the report of ctx's principal's sessions with focus
 // activity in [since, until], the chief (exclude) left out, encoded within
 // maxBytes; mail non-nil narrows it for the mail door. window is what the
@@ -331,17 +273,18 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		prs = got
 	}
 
-	// The mail door describes only sessions under the configured prefixes.
-	var cwds map[string]string
+	// The mail door describes only sessions under the configured prefixes:
+	// each session's directory is the one its focus row stores (cwd.go).
+	cwds := map[focus.Subject]string{}
 	unknownCwd := 0
 	if mail != nil {
-		if s.router == nil {
-			gap("no permission router is configured, so no session's working directory is known and none is described")
+		list, err := s.ext.Focus.List(ctx)
+		if err != nil {
+			s.logger.Printf("fleet_report: focus list: %v", err)
+			gap("the sessions' working directories could not be read, so none is described")
 		}
-		var failed int
-		cwds, failed = s.fleetCwds(ctx, mirrorKeys)
-		if failed > 0 {
-			gap("the permission router could not be asked for %d session(s)' working directory", failed)
+		for _, f := range list {
+			cwds[f.Subject] = f.Cwd
 		}
 	}
 
@@ -368,13 +311,10 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 			continue
 		}
 		if mail != nil {
-			// 🔴 FAIL CLOSED: an agent has no directory under the operator's tree
-			// muster could know; a mirrored session needs the router's record.
-			cwd := ""
-			if w.Subject.Kind == focus.KindMirror {
-				cwd = cwds[w.Subject.Key]
-			}
-			if cwd == "" {
+			// 🔴 FAIL CLOSED: no stored directory, or one that is not well
+			// formed, is unknown — whatever kind of session it is.
+			cwd, ok := focus.CleanCwd(cwds[w.Subject])
+			if !ok {
 				unknownCwd++
 				continue
 			}

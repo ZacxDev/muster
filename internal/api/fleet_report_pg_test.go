@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -59,20 +58,6 @@ func (m fleetMirror) Hosts(ctx context.Context) []mirror.HostView {
 	return append(m.routeMirror.Hosts(ctx), mirror.HostView{Host: "lab-2", OfflineSince: m.offlineSince})
 }
 
-// fleetRouter answers the working directory of each Claude session it knows.
-type fleetRouter struct {
-	stubRouter
-	cwds map[string]string
-}
-
-func (r fleetRouter) SessionMeta(_ context.Context, id string) (SessionMeta, bool, error) {
-	if id == "router-down" {
-		return SessionMeta{}, false, errors.New("router unavailable")
-	}
-	cwd, ok := r.cwds[id]
-	return SessionMeta{SessionID: id, Cwd: cwd}, ok, nil
-}
-
 type frFixture struct {
 	*prFixture
 	focus   *focus.PGStore
@@ -87,13 +72,9 @@ func newFleetReportFixture(t *testing.T) *frFixture {
 	f.srv.ext.Focus = f.focus
 	f.srv.ext.Attention = attention.NewPG(f.pool)
 	f.srv.ext.Mirror = fleetMirror{routeMirror: f.mirror, offlineSince: time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)}
-	f.srv.UseRouter(fleetRouter{cwds: map[string]string{
-		routeSID:     frPrefix + "/app",
-		frEndedSID:   frPrefix,
-		frSiblingSID: frPrefix + "-x/app",
-		frOutsideSID: "/opt/example-other",
-		frForeignSID: frPrefix + "/app",
-	}})
+	// 🔴 NO PERMISSION ROUTER (a standalone deployment): the directories come
+	// from the sessions' transcripts, stored with their focus.
+	f.srv.UseRouter(nil)
 	senders, err := plugins.ParseAgentMailSenders(frSender)
 	if err != nil {
 		t.Fatal(err)
@@ -113,32 +94,39 @@ func newFleetReportFixture(t *testing.T) *frFixture {
 
 	// The live window's session: an old title (three days ago, outside the
 	// window) and a current one.
-	f.set(t, f.asOwner, focus.MirrorSubject(routeSID), frOldTitle)
+	f.cwd(t, f.asOwner, focus.MirrorSubject(routeSID), frOldTitle, frPrefix+"/app")
 	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus_history SET created_at = now() - interval '3 days'
 		WHERE subject_key = '`+routeSID+`' AND title = '`+frOldTitle+`'`)
-	f.set(t, f.asOwner, focus.MirrorSubject(routeSID), frLiveTitle)
+	f.set(t, f.asOwner, focus.MirrorSubject(routeSID), frLiveTitle) // names no cwd: the stored one stays
 	// An ENDED mirrored session under the prefix: no window shows it; it opened
 	// a pull request.
-	f.set(t, f.asOwner, focus.MirrorSubject(frEndedSID), frEndTitle)
+	f.cwd(t, f.asOwner, focus.MirrorSubject(frEndedSID), frEndTitle, frPrefix)
 	f.authored(t, f.asOwner, frEndedSID, prroute.Signal{Kind: prroute.KindPRCreate, Repo: prRepo, PR: prNumber})
 	// Sessions the reply must not describe: a sibling-prefix directory, one
 	// outside, one with no recorded directory, a STOPPED agent (no directory
 	// muster could know), and the chief itself.
-	f.set(t, f.asOwner, focus.MirrorSubject(frSiblingSID), frSibTitle)
-	f.set(t, f.asOwner, focus.MirrorSubject(frOutsideSID), frOutTitle)
+	f.cwd(t, f.asOwner, focus.MirrorSubject(frSiblingSID), frSibTitle, frPrefix+"-x/app")
+	f.cwd(t, f.asOwner, focus.MirrorSubject(frOutsideSID), frOutTitle, "/opt/example-other")
 	f.set(t, f.asOwner, focus.MirrorSubject(frUnknownSID), frUnkTitle)
 	f.set(t, f.asOwner, focus.AgentSubject(f.stopped.ID), frStopTitle)
 	f.set(t, f.asOwner, focus.AgentSubject(f.chief.ID), frChiefTitle)
 	// Another owner's session, in the same window and under the prefix, with a
 	// pull request too.
-	f.set(t, f.as(f.other), focus.MirrorSubject(frForeignSID), frForeign)
+	f.cwd(t, f.as(f.other), focus.MirrorSubject(frForeignSID), frForeign, frPrefix+"/app")
 	f.authored(t, f.as(f.other), frForeignSID, prroute.Signal{Kind: prroute.KindPRCreate, Repo: prRepo, PR: prNumber + 1})
 	return f
 }
 
 func (f *frFixture) set(t *testing.T, ctx context.Context, sub focus.Subject, title string) {
 	t.Helper()
-	if _, err := f.focus.Upsert(ctx, sub, focus.Write{Title: title, Source: focus.SourceSummarizer}); err != nil {
+	f.cwd(t, ctx, sub, title, "")
+}
+
+// cwd writes sub's focus as the refresher does, with the working directory
+// its tail named ("" for none).
+func (f *frFixture) cwd(t *testing.T, ctx context.Context, sub focus.Subject, title, dir string) {
+	t.Helper()
+	if _, err := f.focus.Upsert(ctx, sub, focus.Write{Title: title, Source: focus.SourceSummarizer, Cwd: dir, CwdNamed: dir != ""}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -317,20 +305,15 @@ func TestAVerifiedListedRequestIsAnsweredWithTheWindowsSessions(t *testing.T) {
 	}
 }
 
-// A router that does not answer, or none at all, leaves every session out —
-// fail closed — and says so.
+// With no stored directory nothing is described — fail closed — and the
+// count says so; a malformed stored directory is unknown too.
 func TestNoKnownWorkingDirectoryDescribesNothing(t *testing.T) {
 	f := newFleetReportFixture(t)
-	f.srv.UseRouter(nil)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus SET cwd = '' WHERE owner_id = `+strconv.FormatInt(f.owner, 10))
 	r, body := f.reply(t, f.ask(t, "fr-nr-1", frSender, true, requestBody("example-member", "req-nr")))
-	if len(r.Sessions) != 0 || !r.hasGap("no permission router is configured") || strings.Contains(body, frLiveTitle) {
-		t.Fatalf("no router: %s", body)
-	}
-	f.srv.UseRouter(fleetRouter{cwds: map[string]string{}})
-	f.set(t, f.asOwner, focus.MirrorSubject("router-down"), "Lookups that fail")
-	r, body = f.reply(t, f.ask(t, "fr-nr-2", frSender, true, requestBody("example-member", "req-nr2")))
-	if len(r.Sessions) != 0 || !r.hasGap("the permission router could not be asked for 1 session(s)") {
-		t.Fatalf("a failing lookup: %s", body)
+	if len(r.Sessions) != 0 || !r.hasGap("6 session(s) whose working directory muster does not know were left out") ||
+		strings.Contains(body, frLiveTitle) {
+		t.Fatalf("no directories: %s", body)
 	}
 }
 

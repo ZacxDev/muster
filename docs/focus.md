@@ -69,6 +69,29 @@ A pass only looks at sessions that were active since their focus was
 written, at most 20 per user, and skips disabled users. Calls are capped at
 60 per user and 300 in all per hour, two at a time.
 
+### The working directory
+
+With the focus, the pass stores the session's **working directory** as its
+transcript last named it (`agent_focus.cwd`, migration `0063`). Claude Code
+writes a `cwd` on every transcript record; `muster-mirror` passes the one on
+each human prompt along with the prompt (and drops one the secret redactor
+would rewrite, or one over 512 bytes), and the newest prompt in the tail
+decides. It is read for one thing only: the [fleet report](plugins.md#a-fleet-report-request)'s
+mail reply describes a session only when that directory is under
+`MUSTER_FLEET_REPORT_PATHS`. It is never shown, never searched and never sent.
+
+It is **untrusted** — it arrives beside text a model wrote — so it is kept only
+in a narrow shape: absolute, cleaned (`filepath.Clean`), at most 512 bytes, no
+control or invisible characters. A tail whose newest prompt names a malformed
+directory makes it **unknown** (an older one never stands in: the session may
+have moved); a tail that names none — no prompt in its 40 entries — keeps the
+one stored. Unknown is what a dispatched agent, a Hermes window, a host older
+than this change, and a session whose focus has not been written since the
+upgrade have; the report leaves all of them out. The directory lives on the
+focus row, so an ended session keeps it until that row is swept (below):
+longer than any report window, unless `MUSTER_FOCUS_RETENTION` is set under 4
+days.
+
 **Retention.** A sweep runs at startup and then hourly. It runs whether or not
 the refresh pass does: with no summarizer, or with `MUSTER_FOCUS_INTERVAL=0`.
 It marks every enabled user's visible mirrored sessions as seen, then deletes

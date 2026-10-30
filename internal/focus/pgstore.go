@@ -60,6 +60,11 @@ type Write struct {
 	Source             Source
 	// Fingerprint is the tail it was computed from ("" for a self or manual write).
 	Fingerprint string
+	// Cwd is the working directory the tail named last (LatestCwd), and
+	// CwdNamed whether the tail named one at all: not named keeps the stored
+	// directory; named replaces it — with "" (unknown) when it was malformed.
+	Cwd      string
+	CwdNamed bool
 }
 
 // MaxSearchResults bounds focus_search.
@@ -74,13 +79,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 var _ Store = (*PGStore)(nil)
 
 const cols = `subject_kind, subject_key, owner_id, title, description, source, fingerprint, updated_at,
-	last_error, coalesce(error_at, 'epoch'::timestamptz)`
+	last_error, coalesce(error_at, 'epoch'::timestamptz), cwd`
 
 func scan(row pgx.Row) (Focus, error) {
 	var f Focus
 	var kind, src string
 	err := row.Scan(&kind, &f.Subject.Key, &f.Owner, &f.Title, &f.Description, &src, &f.Fingerprint, &f.UpdatedAt,
-		&f.LastError, &f.ErrorAt)
+		&f.LastError, &f.ErrorAt, &f.Cwd)
 	f.Subject.Kind, f.Source = Kind(kind), Source(src)
 	if f.ErrorAt.Unix() == 0 {
 		f.ErrorAt = time.Time{}
@@ -186,7 +191,11 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 		return Focus{}, errf("upsert: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint))
+	// An invalid directory is unknown (""), never stored: the column's CHECK
+	// would refuse it.
+	cwd, _ := CleanCwd(w.Cwd)
+	f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint,
+		cwd, w.CwdNamed))
 	if err != nil {
 		return Focus{}, errf("upsert: %w", err)
 	}
@@ -201,13 +210,16 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 
 // upsertFocusSQL writes the caller's focus for one subject, clearing any
 // recorded error: ($1 kind, $2 key, $3 agent id or NULL, $4 title, $5
-// description, $6 source, $7 fingerprint).
+// description, $6 source, $7 fingerprint, $8 cwd or ”, $9 whether the tail
+// named one). A write whose tail named no working directory keeps the stored
+// one (migration 0063).
 const upsertFocusSQL = `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
-		source, fingerprint, updated_at, last_error, error_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL)
+		source, fingerprint, updated_at, last_error, error_at, cwd)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL, $8)
 	ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET seen_at = now(), title = EXCLUDED.title,
 		description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
-		updated_at = now(), last_error = '', error_at = NULL
+		updated_at = now(), last_error = '', error_at = NULL,
+		cwd = CASE WHEN $9::boolean THEN EXCLUDED.cwd ELSE agent_focus.cwd END
 	RETURNING ` + cols
 
 // appendHistorySQL appends a focus to its subject's history unless the

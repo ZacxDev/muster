@@ -88,9 +88,9 @@ func TestAReaderPlacesEachPromptAtItsLineEnd(t *testing.T) {
 func TestEventsFromARealToolTurn(t *testing.T) {
 	got := allEvents(readFixture(t))
 	want := []Event{
-		{Kind: KindPrompt, Text: "an earlier prompt"},
+		{Kind: KindPrompt, Text: "an earlier prompt", Cwd: "/data/workspace"},
 		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn", Usage: &Usage{Tokens: 248773, Output: 829}},
-		{Kind: KindPrompt, Text: "list the workspace"},
+		{Kind: KindPrompt, Text: "list the workspace", Cwd: "/data/workspace"},
 		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Tokens: 248773, Output: 829}},
 		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Bytes: 43, Usage: &Usage{Tokens: 248773, Output: 829}},
 		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b", Bytes: 13, At: 946684811000},
@@ -338,5 +338,32 @@ func TestBackfillCapSplitsTheOldestLine(t *testing.T) {
 	got := Flatten(lines)
 	if len(got) != 2 || got[0].ToolID != "b" || got[1].Text != "newest" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// A prompt carries its record's working directory, and only a prompt: the
+// real fixture's records all name one (the positive control), and no other
+// event does. One past MaxCwd is dropped, never cut.
+func TestOnlyAPromptCarriesItsWorkingDirectory(t *testing.T) {
+	prompts := 0
+	for _, ev := range allEvents(readFixture(t)) {
+		switch {
+		case ev.Kind == KindPrompt && ev.Cwd == "/data/workspace":
+			prompts++
+		case ev.Cwd != "":
+			t.Errorf("a %s carries cwd %q", ev.Kind, ev.Cwd)
+		}
+	}
+	if prompts != 2 {
+		t.Fatalf("%d prompts carry the fixture's cwd; want 2", prompts)
+	}
+	long := "/" + strings.Repeat("d", MaxCwd)
+	r, ok := DecodeLine([]byte(`{"type":"user","cwd":"` + long + `","message":{"content":"hello"}}`))
+	if evs := Events(r); !ok || len(evs) != 1 || evs[0].Cwd != "" || evs[0].Text != "hello" {
+		t.Fatalf("an over-long cwd: %+v", evs)
+	}
+	r, _ = DecodeLine([]byte(`{"type":"user","cwd":"` + long[:MaxCwd] + `","message":{"content":"hello"}}`))
+	if evs := Events(r); len(evs) != 1 || evs[0].Cwd != long[:MaxCwd] {
+		t.Fatalf("control: a cwd of exactly MaxCwd was dropped: %+v", evs)
 	}
 }
