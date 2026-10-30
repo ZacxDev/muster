@@ -17,7 +17,7 @@ import (
 
 // TestTheRubricsAreTheApprovedOnes pins the three rubric strings and the
 // instructions, byte for byte, to the operator-approved, backtested ones in
-// devrc's ask_classifier.py. The hash was computed from that file's RUBRICS and
+// the reference ask_classifier.py. The hash was computed from that file's RUBRICS and
 // INSTRUCTIONS (each label, NUL, its rubric, NUL, in label order, then the
 // instructions). A reword is a different classifier than the one measured.
 func TestTheRubricsAreTheApprovedOnes(t *testing.T) {

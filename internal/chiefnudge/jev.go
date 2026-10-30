@@ -25,7 +25,7 @@ import (
 // threshold, the stall is an unasked question or permission request, and the
 // default outcome is an ASK.
 //
-// A port of devrc's scripts/claude-hooks/ask_classifier.py `classify()`: the
+// A port of the operator's reference classifier (ask_classifier.py `classify()`): the
 // same endpoint, body, model and rubric strings, so the backtest's numbers are
 // this code's numbers. It never fails the sweep: every error is a Result.Err,
 // and the sweep then decides with the chief alone.
