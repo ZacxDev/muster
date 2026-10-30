@@ -296,6 +296,24 @@ test.describe('a 200-message agent transcript', () => {
         at: (html: string) => { const n = html.indexOf('aria-label="New chat session"'); return n < 0 ? -1 : html.indexOf('</form>', n) + '</form>'.length; },
         held: `!!document.querySelector('button[aria-label="New chat session"]') && !document.querySelector('label[aria-label="Chat history"]')`,
       },
+      // The header's second row, straight after the status strip and before
+      // the ⋯ menu: the CI re-run's frame (0.00002 at 390px from #agent-status's
+      // `span.relative.inline-flex.shrink-0`) made deterministic. The row
+      // centres its items and was the strip's height until the 44px ⋯ arrived
+      // (agents_detail.go menuRowMin). Then straight after the ⋯ and before the
+      // rest of the row.
+      {
+        label: "inside the header's second row, after its status strip",
+        at: (html: string) => html.indexOf('<span id="agent-menu-slot"'),
+        held: `!!document.getElementById('agent-strip') && !document.getElementById('agent-menu-slot')`,
+      },
+      {
+        label: "inside the header's second row, after its ⋯ menu",
+        // These agents are of the default (gateway) kind, whose row goes on with
+        // the model control, a form posting to /agents/{id}/model.
+        at: (html: string) => { const n = html.indexOf('<span id="agent-menu-slot"'); if (n < 0) return -1; const m = html.indexOf('/model"', n); return m < 0 ? -1 : html.lastIndexOf('<form', m); },
+        held: `!!document.getElementById('agent-actions-open') && !document.querySelector('header form[hx-post$="/model"]')`,
+      },
     ];
     for (const stall of stalls)
     test(`${vp.name}: a frame painted ${stall.label} moves nothing`, async ({ browser }) => {

@@ -343,8 +343,16 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// down the right edge past every control there, and a ⋯ at the end
 			// pushed it from under the header to mid-screen on a phone held
 			// sideways (e2e update.spec's 844×390 placement).
+			//
+			// 🔴 AND THE ROW IS THE ⋯'S HEIGHT FROM ITS OPENING TAG (menuRowMin).
+			// It centres its items, and the strip before the ⋯ is shorter than
+			// the ⋯'s 44px: a frame painted with the strip parsed and the ⋯ not
+			// yet drew the row at the strip's height, and the ⋯'s arrival grew it
+			// and moved the status icon down (main's CI re-run: 0.00002 from
+			// #agent-status's `span.relative.inline-flex.shrink-0`; e2e
+			// cls-long-transcript's stall after the strip makes it deterministic).
 			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, Div(
-				Class("flex items-center gap-2 pl-11 text-xs"),
+				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
 				agentMenuSlot(v.Card),
 				agentModelControl(v),
@@ -355,7 +363,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// window has (viewToggle), on both of its pages. An agent of a kind
 			// with no terminal has one view and no switch.
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"),
+				Div(Class("flex items-center gap-2"+menuRowMin(v.Card)),
 					g.If(v.Card.ID != 0, agentStrip(v.Card)),
 					agentMenuSlot(v.Card),
 					chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
@@ -395,6 +403,16 @@ func agentHeaderTools(v AgentDetailView) g.Node {
 		chatHistoryButton(sessionDrawerID),
 		g.If(v.FocusHistory != "", focusHistoryButton()),
 	)
+}
+
+// menuRowMin is the header second row's minimum height: the ⋯ trigger's own
+// (agentActionsMenu, h-11), when the row has one (agentMenuSlot) — so the row
+// is its final height before the ⋯ is parsed.
+func menuRowMin(a AgentCardView) string {
+	if a.ID == 0 {
+		return ""
+	}
+	return " min-h-11"
 }
 
 // agentHeaderToolsWidth is the width class of n 2.75rem controls with 0.75rem

@@ -6,7 +6,65 @@ import (
 	"testing"
 
 	"golang.org/x/net/html"
+
+	"github.com/ZacxDev/muster/internal/agents"
 )
+
+// TestAgentHeaderMenuRowIsTheMenusHeight: the header's second row — the status
+// strip, then the ⋯ — has the ⋯ trigger's height as its minimum, for both row
+// shapes (a gateway's and a claude-code agent's). It centres its items, so a
+// row sized by the strip alone until the ⋯ arrived moved the strip's status
+// icon when it did (menuRowMin; e2e cls-long-transcript's stall after the
+// strip is the behavioural case). With no card there is no ⋯ and no minimum.
+func TestAgentHeaderMenuRowIsTheMenusHeight(t *testing.T) {
+	for _, kind := range []string{agents.KindGateway, agents.KindClaudeCode} {
+		t.Run(kind, func(t *testing.T) {
+			v := sampleAgentDetailView()
+			v.Kind = kind
+			v.Card = AgentCardView{ID: v.ID, Name: v.Name, Status: "running"}
+			var b strings.Builder
+			if err := RenderAgentDetail(&b, v, featuresAllOn); err != nil {
+				t.Fatal(err)
+			}
+			doc := parseFragment(t, b.String())
+			trigger, slot, strip := byID(doc, "agent-actions-open"), byID(doc, AgentMenuSlot), byID(doc, AgentStripID)
+			if trigger == nil || slot == nil || strip == nil {
+				t.Fatalf("trigger %v, slot %v, strip %v", trigger, slot, strip)
+			}
+			if !hasClass(attrOf(trigger, "class"), "h-11") {
+				t.Fatalf("the ⋯ trigger is not h-11 (the minimum's premise): %q", attrOf(trigger, "class"))
+			}
+			row := slot.Parent
+			if strip.Parent != row {
+				t.Fatal("the strip and the ⋯ are not in one row")
+			}
+			if c := attrOf(row, "class"); !hasClass(c, "items-center") || !hasClass(c, "min-h-11") {
+				t.Errorf("the second row: %q, want items-center with min-h-11", c)
+			}
+		})
+	}
+	v := sampleAgentDetailView()
+	var b strings.Builder
+	if err := RenderAgentDetail(&b, v, featuresAllOn); err != nil {
+		t.Fatal(err)
+	}
+	doc := parseFragment(t, b.String())
+	if byID(doc, AgentMenuSlot) != nil {
+		t.Fatal("control: a view with no card drew the ⋯")
+	}
+	rows := 0
+	for _, n := range allAttr(doc, "class") {
+		if c := attrOf(n, "class"); hasClass(c, "pl-11") && hasClass(c, "items-center") {
+			rows++
+			if hasClass(c, "min-h-11") {
+				t.Error("a second row with no ⋯ is held at the ⋯'s height")
+			}
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("control: %d gateway second rows found, want 1", rows)
+	}
+}
 
 // TestAgentHeaderToolsReserveTheirWidth: the first header row's controls right
 // of the title sit in one box whose width class is the controls' own total —
