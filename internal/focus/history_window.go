@@ -35,6 +35,10 @@ const (
 	// MaxWindowSubjects bounds how many sessions one read returns, most
 	// recently active first; WindowReport.Omitted counts the rest.
 	MaxWindowSubjects = 200
+	// MaxWindowScan bounds a read whose caller filters the sessions itself
+	// before applying MaxWindowSubjects (the fleet report's mail door, so its
+	// count of what the cap left out is of sessions it may describe).
+	MaxWindowScan = 5000
 	// MaxWindowTitles bounds the distinct titles kept per session, the newest
 	// ones; WindowSubject.TitlesOmitted counts the rest.
 	MaxWindowTitles = 20
@@ -52,7 +56,7 @@ type WindowSubject struct {
 }
 
 // WindowReport is a window read: the sessions, most recently active first,
-// and how many more MaxWindowSubjects left out.
+// and how many more the read's limit left out.
 type WindowReport struct {
 	Subjects []WindowSubject
 	Omitted  int
@@ -63,8 +67,12 @@ var errBadWindow = errf("a window needs since before until, at most %s apart", M
 
 // WindowHistory is every session of the caller's with focus activity at or
 // after since and at or before until (see the file comment), most recently
-// active first, at most MaxWindowSubjects.
-func (s *PGStore) WindowHistory(ctx context.Context, since, until time.Time) (WindowReport, error) {
+// active first, at most limit (MaxWindowSubjects, or MaxWindowScan for a
+// caller that filters before its own cap; anything else is MaxWindowSubjects).
+func (s *PGStore) WindowHistory(ctx context.Context, since, until time.Time, limit int) (WindowReport, error) {
+	if limit != MaxWindowScan {
+		limit = MaxWindowSubjects
+	}
 	if since.IsZero() || until.IsZero() || !since.Before(until) || until.Sub(since) > MaxWindowSpan {
 		return WindowReport{}, errBadWindow
 	}
@@ -124,8 +132,8 @@ func (s *PGStore) WindowHistory(ctx context.Context, since, until time.Time) (Wi
 	})
 	out := WindowReport{Subjects: []WindowSubject{}}
 	for i, w := range order {
-		if i >= MaxWindowSubjects {
-			out.Omitted = len(order) - MaxWindowSubjects
+		if i >= limit {
+			out.Omitted = len(order) - limit
 			break
 		}
 		out.Subjects = append(out.Subjects, *w)

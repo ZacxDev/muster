@@ -1384,7 +1384,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	case ext.FleetReport != nil:
 		l.Printf("fleet-report requests: ON (%s) — %d agent-mail sender(s) whose VERIFIED fleet_report_request muster answers "+
 			"itself, with an already-approved reply listing the owner's sessions in the requested window (focus titles, "+
-			"repos, pull requests; no hosts, never transcripts), only those working under %d prefix(es) (%s)",
+			"repos, pull requests; no host labels, window titles unqualified, never transcripts), only those working under %d "+
+			"prefix(es) (%s)",
 			envFleetReportSenders, len(ext.FleetReport.Senders), len(ext.FleetReport.Paths), envFleetReportPaths)
 	case len(a.cfg.FleetReportSenders) > 0:
 		l.Printf("fleet-report requests: INERT — %s is set but the plugin interface is off, so nothing is answered", envFleetReportSenders)

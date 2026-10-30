@@ -85,7 +85,7 @@ func (m *memFocus) MatchHistory(context.Context, string, focus.Live, time.Time, 
 func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time) (map[focus.Subject][]focus.TitleAt, error) {
 	return nil, nil
 }
-func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time) (focus.WindowReport, error) {
+func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time, int) (focus.WindowReport, error) {
 	return focus.WindowReport{}, nil
 }
 

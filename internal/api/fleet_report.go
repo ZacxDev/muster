@@ -58,8 +58,11 @@ import (
 //   - Titles, names and repos go UNSCREENED by the agent-text screen, except
 //     that credential- and token-shaped runs are cut out
 //     (flows.StripSecretShaped) and counted.
-//   - NO HOST LABELS: every session's host is "" and coverage.hosts is empty;
-//     an offline host is a counted gap, unnamed.
+//   - NO HOST LABELS: every session's host is "", its name is the window's
+//     UNQUALIFIED title (never DisplayTitle, which adds " · <host>" when two
+//     hosts' titles clash), coverage.hosts is empty, and an offline host is a
+//     counted gap, unnamed. The other free-text fields come from the focus
+//     summarizer (titles) and the host's repo chip (a directory's basename).
 //   - Focus titles only: no description, transcript text, command or tool
 //     output.
 // The chief's TOOL shows the owner everything, hosts included, unfiltered: its
@@ -78,6 +81,9 @@ const (
 	// fleetWithheld replaces a free-text field holding a character nobody
 	// could see (flows.HiddenCharRefusal).
 	fleetWithheld = "(withheld by muster: it holds an invisible character)"
+	// fleetMaxPRs bounds a session's prs in a reply: the asking side drops a
+	// session that lists more.
+	fleetMaxPRs = 50
 	// fleetReportVia names this door on audit rows and the settle reason.
 	fleetReportVia = "fleet_report"
 )
@@ -191,7 +197,14 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 	if s.ext.Focus == nil {
 		return "", errFleetReport("session focus is off on this muster, so it keeps no session history to report")
 	}
-	wr, err := s.ext.Focus.WindowHistory(ctx, since, until)
+	// 🔴 THE MAIL DOOR FILTERS BEFORE IT CAPS. Its omitted count must be of
+	// sessions it may describe: a cap applied before the prefix filter would
+	// count — and so reveal — sessions outside the prefixes.
+	limit := focus.MaxWindowSubjects
+	if mail != nil {
+		limit = focus.MaxWindowScan
+	}
+	wr, err := s.ext.Focus.WindowHistory(ctx, since, until, limit)
 	if err != nil {
 		s.logger.Printf("fleet_report: window history: %v", err)
 		return "", errFleetReport("the session history could not be read")
@@ -288,7 +301,7 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		}
 	}
 
-	withheld, secrets, titlesLeft := 0, 0, 0
+	withheld, secrets, titlesLeft, prsLeft := 0, 0, 0, 0
 	field := func(v string) string {
 		v = flows.NormalizeAgentText(strings.TrimSpace(v))
 		if v == "" {
@@ -337,13 +350,23 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 			}
 		case focus.KindMirror:
 			if e, ok := byKey[w.Subject.Key]; ok {
+				// 🔴 THE MAIL DOOR NAMES A SESSION BY ITS UNQUALIFIED TITLE.
+				// DisplayTitle appends " · <host>" when two listed entries share
+				// a title (mirror's qualify) — a host label inside the name.
 				row.Name, row.Host, repo = e.DisplayTitle(), e.Host, e.Repo
+				if mail != nil {
+					row.Name = e.Title()
+				}
 				if e.Online {
 					row.State = "active"
 				}
 			}
 			if p := prs[w.Subject.Key]; p != nil {
 				row.PRs = p
+				if mail != nil && len(p) > fleetMaxPRs {
+					prsLeft += len(p) - fleetMaxPRs
+					row.PRs = p[:fleetMaxPRs]
+				}
 			}
 		}
 		if pending[w.Subject] != nil {
@@ -362,6 +385,18 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		titlesLeft += w.TitlesOmitted
 		rows = append(rows, row)
 	}
+	omitted := wr.Omitted
+	if mail != nil {
+		// The cap, on the sessions the reply may describe only.
+		omitted = 0
+		if len(rows) > focus.MaxWindowSubjects {
+			omitted = len(rows) - focus.MaxWindowSubjects
+			rows = rows[:focus.MaxWindowSubjects]
+		}
+		if wr.Omitted > 0 {
+			gap("more sessions were active in the window than muster reads for one report; some may be left out")
+		}
+	}
 
 	rep := fleetReport{Type: fleetReportType, V: fleetReportVersion, RequestID: requestID,
 		GeneratedAt: s.now().UTC().Format(time.RFC3339), Window: window, Sessions: rows}
@@ -376,6 +411,9 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		if secrets > 0 {
 			g = append(g, fmt.Sprintf("%d secret-shaped string(s) removed", secrets))
 		}
+		if prsLeft > 0 {
+			g = append(g, fmt.Sprintf("%d pull request(s) left out (at most %d per session)", prsLeft, fleetMaxPRs))
+		}
 		if unknownCwd > 0 {
 			g = append(g, fmt.Sprintf("%d session(s) whose working directory muster does not know were left out", unknownCwd))
 		}
@@ -387,7 +425,6 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 	}
 	// 🔴 THE HARD CAP: sessions are dropped from the oldest-active end until
 	// the whole encoding fits, and each dropped one is counted.
-	omitted := wr.Omitted
 	out := finish(omitted)
 	for len(out) > maxBytes && len(rep.Sessions) > 0 {
 		rep.Sessions = rep.Sessions[:len(rep.Sessions)-1]

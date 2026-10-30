@@ -1192,8 +1192,19 @@ there, to whatever model reads it. So, unlike the chief's tool:
   predates it, a focus not written since the upgrade — is left out and
   counted in `gaps`; a session **outside** the prefixes is left out and not
   mentioned at all. No permission router is involved.
-- **No host labels.** Every `host` is `""` and `hosts` is empty; an offline
-  mirror host is a counted gap, unnamed.
+- **No host labels.** Every `host` is `""` and `hosts` is empty; a session's
+  `name` is its window's **unqualified** title (`main:1`, or the label its
+  host gave it) — never the name the pages show, which adds ` · <host>` when
+  two hosts' windows share a title; an offline mirror host is a counted gap,
+  unnamed.
+- **Which sessions, decided once.** A session is included or left out by the
+  directory its **newest** prompt named, as last stored; when it is included,
+  **all** its focus titles in the window are reported — including any written
+  while it worked somewhere else earlier in the window.
+- **Caps count only what may be described.** At most 200 sessions and, per
+  session, 50 pull requests (more is a counted gap). `omitted` counts only
+  sessions under the prefixes that a cap left out: the prefix filter runs
+  first, so the count never reveals sessions outside them.
 - **Titles, names and repositories are not screened** for infrastructure
   words, dotted host names or the deployment's own names — only
   **secret-shaped** runs (a credential-shaped string, a long token-shaped

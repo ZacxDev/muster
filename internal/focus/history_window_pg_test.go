@@ -14,7 +14,7 @@ import (
 
 func windowOf(t *testing.T, s *PGStore, uid int64, since, until time.Time) map[Subject]WindowSubject {
 	t.Helper()
-	r, err := s.WindowHistory(as(uid), since, until)
+	r, err := s.WindowHistory(as(uid), since, until, MaxWindowSubjects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,11 +126,11 @@ func TestAWindowThatIsEmptyOrTooLongIsRefused(t *testing.T) {
 		"too long": {now.Add(-MaxWindowSpan - time.Second), now},
 		"no since": {{}, now},
 	} {
-		if _, err := s.WindowHistory(as(2), w[0], w[1]); err == nil {
+		if _, err := s.WindowHistory(as(2), w[0], w[1], MaxWindowSubjects); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	if _, err := s.WindowHistory(as(2), now.Add(-MaxWindowSpan), now); err != nil {
+	if _, err := s.WindowHistory(as(2), now.Add(-MaxWindowSpan), now, MaxWindowSubjects); err != nil {
 		t.Errorf("control: exactly the longest window is refused: %v", err)
 	}
 }

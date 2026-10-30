@@ -48,14 +48,24 @@ const (
 	frUnkTitle   = "Unplaced gubbins experiment"
 )
 
-// fleetMirror is the route fixture's mirror plus one OFFLINE host.
+// fleetMirror is the route fixture's mirror plus one OFFLINE host — with, when
+// clash is set, a retained window whose title ("work:1") is the online one's,
+// so the mirror's own list qualifies both titles with their hosts.
 type fleetMirror struct {
 	*routeMirror
 	offlineSince time.Time
+	clash        string // the offline window's Claude session, "" for none
 }
 
 func (m fleetMirror) Hosts(ctx context.Context) []mirror.HostView {
-	return append(m.routeMirror.Hosts(ctx), mirror.HostView{Host: "lab-2", OfflineSince: m.offlineSince})
+	off := mirror.HostView{Host: "lab-2", OfflineSince: m.offlineSince}
+	if m.clash != "" {
+		off.Host = "hostbeta"
+		off.Windows = mirror.NormalizeWindows([]mirror.Window{{Session: "work", ID: "@1", Index: 1, Active: true, Claude: true,
+			ClaudeSession: m.clash}}, 0)
+		off.Sessions, off.Claude, off.Labels, off.Activity = mirror.SessionsOf(off.Windows)
+	}
+	return append(m.routeMirror.Hosts(ctx), off)
 }
 
 type frFixture struct {
@@ -448,5 +458,63 @@ func TestTheToolRefusesABadWindow(t *testing.T) {
 		if got := call("fleet_report", args); got != toolErr("%s", want) {
 			t.Errorf("%s: %s; want %q", args, got, want)
 		}
+	}
+}
+
+// 🔴 NO HOST LABEL ANYWHERE IN THE REPLY, EVEN WHEN TWO HOSTS' TITLES CLASH.
+// The online host's "work:1" and a retained offline host's "work:1" make the
+// mirror's list qualify each name with its host ("work:1 · tower"); the reply
+// must carry the unqualified title, and no host label in any field.
+func TestNoHostLabelLeavesEvenWhenTitlesClash(t *testing.T) {
+	f := newFleetReportFixture(t)
+	f.srv.ext.Mirror = fleetMirror{routeMirror: f.mirror, offlineSince: time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC), clash: frEndedSID}
+	// Control: the chief's tool, which may show hosts, does show the qualified
+	// names — so the clash is real and the assertion below can see one.
+	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("fleet_report", `{"since":"`+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+`"}`)
+	if !strings.Contains(text, "work:1 · tower") || !strings.Contains(text, "work:1 · hostbeta") {
+		t.Fatalf("control: the tool does not show the host-qualified names, so the fixture has no clash: %s", text)
+	}
+	r, body := f.reply(t, f.ask(t, "fr-clash-1", frSender, true, requestBody("example-member", "req-clash")))
+	by := r.byID()
+	if by["mirror:"+routeSID].Name != "work:1" || by["mirror:"+frEndedSID].Name != "work:1" {
+		t.Errorf("names %q / %q; want the unqualified title", by["mirror:"+routeSID].Name, by["mirror:"+frEndedSID].Name)
+	}
+	for _, host := range []string{"tower", "hostbeta", "lab-2", "·"} {
+		if strings.Contains(body, host) {
+			t.Errorf("the reply carries %q: %s", host, body)
+		}
+	}
+}
+
+// 🔴 THE CAP COUNTS ONLY WHAT THE REPLY MAY DESCRIBE. More than
+// focus.MaxWindowSubjects sessions OUTSIDE the prefixes, all more recent than
+// the two inside: the reply still describes the two, and its omitted count
+// says nothing about the others.
+func TestTheSubjectCapNeverCountsSessionsOutsideThePrefixes(t *testing.T) {
+	f := newFleetReportFixture(t)
+	for i := 0; i < focus.MaxWindowSubjects+5; i++ {
+		f.cwd(t, f.asOwner, focus.MirrorSubject("outside-"+strconv.Itoa(i)), "Elsewhere step "+strconv.Itoa(i), "/opt/example-other")
+	}
+	r, body := f.reply(t, f.ask(t, "fr-cap-1", frSender, true, requestBody("example-member", "req-cap")))
+	by := r.byID()
+	if _, ok := by["mirror:"+routeSID]; !ok || len(r.Sessions) != 2 || r.Coverage.Omitted != 0 {
+		t.Fatalf("%d sessions, omitted %d; want the two in-prefix ones and omitted 0: %.600s", len(r.Sessions), r.Coverage.Omitted, body)
+	}
+}
+
+// A session's pull requests are capped at fleetMaxPRs in a reply, and the
+// excess is counted.
+func TestASessionsPullRequestsAreCapped(t *testing.T) {
+	f := newFleetReportFixture(t)
+	for i := 1; i <= fleetMaxPRs+3; i++ {
+		f.authored(t, f.asOwner, routeSID, prroute.Signal{Kind: prroute.KindPRCreate, Repo: "acme-labs/gizmo-" + strconv.Itoa(i), PR: int64(i)})
+	}
+	r, body := f.reply(t, f.ask(t, "fr-prs-1", frSender, true, requestBody("example-member", "req-prs")))
+	if n := len(r.byID()["mirror:"+routeSID].PRs); n != fleetMaxPRs || !r.hasGap("3 pull request(s) left out (at most 50 per session)") {
+		t.Fatalf("%d prs; gaps %v: %.300s", n, r.Coverage.Gaps, body)
+	}
+	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("fleet_report", `{"since":"`+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+`"}`)
+	if !strings.Contains(text, "acme-labs/gizmo-53#53") {
+		t.Fatalf("the tool, which never leaves muster, must show them all: %.300s", text)
 	}
 }
