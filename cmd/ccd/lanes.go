@@ -412,6 +412,11 @@ type lane struct {
 	// lanes.mu, the lock eviction chooses under, so a turn that has its lane
 	// cannot lose it.
 	reserved int
+	// startReturned: the CLI's `tmux new-session` has returned (laneStartWatch);
+	// stoppedMidStart: stop ran before it had. Guarded by startMu.
+	startMu         sync.Mutex
+	startReturned   bool
+	stoppedMidStart bool
 }
 
 // lanes is the set of running lanes.
@@ -624,7 +629,9 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		dir = workdir
 	}
 	term := l.newTerm("cc-" + id)
-	sup := newSupervisor(term, l.bin, l.configDir, dir)
+	ln := &lane{id: id, key: key, model: model, workdir: workdir, term: term,
+		done: make(chan struct{}), lastUsed: l.now()}
+	sup := newSupervisor(laneStartWatch{laneTerminal: term, ln: ln}, l.bin, l.configDir, dir)
 	if l.tweak != nil {
 		l.tweak(sup)
 	}
@@ -652,8 +659,25 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		srv.cliPID = func(ctx context.Context) (int, error) { return sup.runningPID(ctx, pp.PanePID) }
 	}
 	srv.blockedSrc = id
-	return &lane{id: id, key: key, model: model, workdir: workdir, srv: srv, sup: sup, term: term,
-		done: make(chan struct{}), lastUsed: l.now()}
+	ln.srv, ln.sup = srv, sup
+	return ln
+}
+
+// laneStartWatch is a lane's terminal as its supervisor sees it: it notes when
+// the lane's `tmux new-session` has returned (lane.startReturned), so lane.stop
+// can tell whether its kill could have missed a session that command was still
+// creating.
+type laneStartWatch struct {
+	laneTerminal
+	ln *lane
+}
+
+func (w laneStartWatch) Start(ctx context.Context, dir string, argv []string) (paneRef, error) {
+	ref, err := w.laneTerminal.Start(ctx, dir, argv)
+	w.ln.startMu.Lock()
+	w.ln.startReturned = true
+	w.ln.startMu.Unlock()
+	return ref, err
 }
 
 // run supervises the lane's CLI until it is stopped, crash-loops or loses its
@@ -661,28 +685,60 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 func (ln *lane) run(ctx context.Context, l *lanes) {
 	defer close(ln.done)
 	err := ln.sup.run(ctx)
-	if ctx.Err() == nil {
-		st := ln.sup.state()
-		log.Printf("ccd: session %s (%s) ended: %s %s (err=%v); its next turn starts it again", ln.id, ln.key, st.CLI, st.Detail, err)
-		// 🔴 OWNERSHIP FIRST, THEN THE KILL. The session is killed BY NAME, and
-		// a lane started again for this key (after this one was taken out of
-		// the set) has the SAME name: killing it unconditionally here killed the
-		// replacement's CLI. A lane no longer in the set was removed by whoever
-		// took it out (an eviction stops it itself).
-		l.mu.Lock()
-		owned := l.set[ln.id] == ln
-		if owned {
-			delete(l.set, ln.id)
-		}
-		l.mu.Unlock()
-		if !owned {
-			return
-		}
-		ln.clearBlocked()
-		kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = ln.term.KillSession(kctx)
-		kcancel()
+	if ctx.Err() != nil {
+		ln.killLateSession(l)
+		return
 	}
+	st := ln.sup.state()
+	log.Printf("ccd: session %s (%s) ended: %s %s (err=%v); its next turn starts it again", ln.id, ln.key, st.CLI, st.Detail, err)
+	// 🔴 OWNERSHIP FIRST, THEN THE KILL. The session is killed BY NAME, and
+	// a lane started again for this key (after this one was taken out of
+	// the set) has the SAME name: killing it unconditionally here killed the
+	// replacement's CLI. A lane no longer in the set was removed by whoever
+	// took it out (an eviction stops it itself).
+	l.mu.Lock()
+	owned := l.set[ln.id] == ln
+	if owned {
+		delete(l.set, ln.id)
+	}
+	l.mu.Unlock()
+	if !owned {
+		return
+	}
+	ln.clearBlocked()
+	kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = ln.term.KillSession(kctx)
+	kcancel()
+}
+
+// killLateSession runs once a stopped lane's supervisor has returned. When the
+// stop came while the CLI's `tmux new-session` was still running (a release
+// after waitStarted gave up on a slow start, or after the caller went away),
+// stop's kill-session found no session yet — and new-session may then have
+// created one: a cc-<id> CLI nothing would ever kill (a check's key is never
+// used again). So it is killed now, by name, under l.mu, and only while NO lane
+// holds that name: a replacement started for the key in between owns it (and
+// if the late session is still there, the replacement's own new-session fails
+// on the duplicate name, and its cleanup, lane.run, kills that session by name).
+//
+// A stop after new-session returned killed the session itself; nothing is done
+// again then.
+func (ln *lane) killLateSession(l *lanes) {
+	ln.startMu.Lock()
+	late := ln.stoppedMidStart
+	ln.startMu.Unlock()
+	if !late {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.set[ln.id] != nil {
+		return
+	}
+	log.Printf("ccd: session %s (%s) was stopped while its CLI was starting: killing its tmux session by name in case the start created it", ln.id, ln.key)
+	kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer kcancel()
+	_ = ln.term.KillSession(kctx)
 }
 
 // clearBlocked withdraws the lane's "awaiting approval" from the agent's badge:
@@ -696,6 +752,11 @@ func (ln *lane) clearBlocked() {
 
 // stop ends the lane's CLI and its tmux session.
 func (ln *lane) stop() {
+	ln.startMu.Lock()
+	if !ln.startReturned {
+		ln.stoppedMidStart = true
+	}
+	ln.startMu.Unlock()
 	if ln.cancel != nil {
 		ln.cancel()
 	}
