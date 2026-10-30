@@ -5,6 +5,9 @@ import (
 	"strings"
 )
 
+// redStub disables this change's behaviour: the tests-first commit (red).
+const redStub = true
+
 // Isolation is how well a driver separates an instance from the machine it runs
 // on. It is ordered, so a caller can compare.
 type Isolation int
@@ -111,6 +114,13 @@ type Capabilities struct {
 	// start the instance if I cannot", NOT "I measured it enforced".
 	NetworkIsolation bool
 
+	// NetworkEgressByName: the driver can confine an isolated instance's public
+	// egress to named hosts (Network.PublicEgressHosts). False means such a spec
+	// is refused rather than started with "any public address". On the
+	// kubernetes driver it is an operator's statement that the cluster's network
+	// plugin filters by name (Cilium), for NetworkIsolation's reason.
+	NetworkEgressByName bool
+
 	// Sidecar: the driver runs Spec.Sidecar beside the instance, sharing its
 	// network and workspace (see provision.Sidecar).
 	Sidecar bool
@@ -186,6 +196,11 @@ func CheckSpec(caps Capabilities, s Spec) error {
 		return fmt.Errorf("%w: driver cannot isolate an instance's network, and the spec asks for network isolation; "+
 			"starting it anyway would run something that is declared confined and can reach everything",
 			ErrUnsupported)
+	}
+	if !redStub && !caps.NetworkEgressByName && len(s.Network.PublicEgressHosts) > 0 {
+		return fmt.Errorf("%w: driver cannot confine egress to host names, and the spec allows only %s; starting it "+
+			"anyway would let it reach every public address on its ports", ErrUnsupported,
+			strings.Join(s.Network.PublicEgressHosts, ", "))
 	}
 	if !caps.Scale && s.DesiredReplicas() != 1 {
 		return fmt.Errorf("%w: driver runs exactly one instance, and the spec asks for %d", ErrUnsupported, s.DesiredReplicas())

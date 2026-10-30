@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -96,6 +97,17 @@ type Config struct {
 	// destroy of any instance fails after its Deployment is removed. See Destroy.
 	NetworkPolicy *NetworkPolicyConfig
 
+	// Dynamic is the client the name-filtered egress policy (a
+	// CiliumNetworkPolicy, egress.go) is written with. Required when
+	// NetworkPolicy.CiliumFQDN is set; unused otherwise.
+	Dynamic dynamic.Interface
+
+	// SecretSourceNamespace, when set, is where the Secrets a key holder mounts
+	// (provision.SecretMount) are kept — muster's own namespace — and apply
+	// copies each into the instance's namespace before the pod (secretcopy.go).
+	// Empty: the operator places them in the instance's namespace, unchanged.
+	SecretSourceNamespace string
+
 	// Logger is optional.
 	Logger *log.Logger
 }
@@ -136,6 +148,14 @@ func New(cfg Config) (*Driver, error) {
 		if err := cfg.NetworkPolicy.validate(); err != nil {
 			return nil, err
 		}
+		if cfg.NetworkPolicy.CiliumFQDN && cfg.Dynamic == nil {
+			return nil, errors.New("k8s: Config.NetworkPolicy.CiliumFQDN needs Config.Dynamic (the client the " +
+				"CiliumNetworkPolicy is written with)")
+		}
+		if cfg.NetworkPolicy.CiliumFQDN && strings.TrimSpace(cfg.NetworkPolicy.ClusterDomain) == "" {
+			return nil, errors.New("k8s: Config.NetworkPolicy.CiliumFQDN needs NetworkPolicy.ClusterDomain (the " +
+				"cluster's DNS domain, whose names the name-filtered DNS rule answers for)")
+		}
 	}
 	lg := cfg.Logger
 	if lg == nil {
@@ -151,9 +171,11 @@ func (d *Driver) Driver() string { return "kubernetes" }
 //
 // 🔴 TWO LOSSES THIS DRIVER HAS ARE NOT ON THIS TYPE, AND HAVE TO BE READ HERE:
 //
-//   - IT RESTRICTS NO EGRESS BY DNS NAME. That is the control that addresses
-//     exfiltration by a prompt-injected model, and NetworkIsolation true is NOT
-//     it: the NetworkPolicy this driver renders for an isolated instance
+//   - IT RESTRICTS NO EGRESS BY DNS NAME, EXCEPT FOR A SPEC THAT NAMES ITS HOSTS
+//     (Network.PublicEgressHosts) ON A DRIVER CONFIGURED WITH CiliumFQDN
+//     (NetworkEgressByName; egress.go). That is the control that addresses
+//     exfiltration by a prompt-injected model, and NetworkIsolation true alone is
+//     NOT it: the NetworkPolicy this driver renders for an isolated instance
 //     (network.go) is an ADDRESS-RANGE policy — DNS plus the spec's ports on
 //     public addresses — so an isolated instance can still reach any public host
 //     on those ports. What it keeps the instance off is every address in
@@ -187,8 +209,11 @@ func (d *Driver) Capabilities() provision.Capabilities {
 		// instance if I cannot" — see provision.Capabilities.NetworkIsolation on
 		// why that is not a claim that anything enforces it.
 		NetworkIsolation: d.cfg.NetworkPolicy != nil,
-		Sidecar:          true,
-		KeyHolder:        true,
+		// The same statement for name filtering: the operator says the cluster
+		// runs Cilium (CiliumFQDN), and the driver can write to it.
+		NetworkEgressByName: d.cfg.NetworkPolicy != nil && d.cfg.NetworkPolicy.CiliumFQDN && d.cfg.Dynamic != nil,
+		Sidecar:             true,
+		KeyHolder:           true,
 	}
 }
 
@@ -642,6 +667,16 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	// applyNetworkPolicy: after a refusal here this call must WRITE no Deployment
 	// and no Secret. (What an existing instance already has, it keeps.)
 	if err := d.applyNetworkPolicy(ctx, spec, ns); err != nil {
+		return err
+	}
+	// The name-filtered half of the confinement, for a spec that names hosts
+	// (egress.go), under the same rule: before anything that runs.
+	if err := d.applyEgressPolicy(ctx, spec, ns); err != nil {
+		return err
+	}
+	// A key holder's Secrets, copied from muster's namespace (secretcopy.go):
+	// a missing one fails here, before the pod that would wait on it forever.
+	if err := d.copyKeyHolderSecrets(ctx, spec, ns); err != nil {
 		return err
 	}
 
@@ -1164,6 +1199,9 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 			err = fmt.Errorf("%w — if this refusal is about RBAC, %s", err, networkPolicyRBACHint)
 		}
 		fail("networkpolicy "+npName, err)
+		// The name-filtered egress policy, last with the NetworkPolicy and for
+		// its reason. Only on a driver configured for it (CiliumFQDN).
+		fail("ciliumnetworkpolicy "+egressPolicyName(name), d.deleteEgressPolicy(ctx, ns, name))
 	}
 
 	if d.cfg.NamespacePerInstance {

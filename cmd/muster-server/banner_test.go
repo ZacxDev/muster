@@ -468,6 +468,12 @@ var bannerExempt = map[string]string{
 		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +
 		"state: validateKinds refuses it unset when a policy would be written and set when none would be",
 	envAgentNetpolFromLabels: "the other half of the same selector; same line, same test and same boot refusals as " + envAgentNetpolFromNS,
+	envAgentCCPoolEgress: "printed on the claude-code arm of the `agent kinds:` line whenever a pool is locked (this list or " +
+		"a deploy key), naming the pools; with no locked pool there is nothing locked to announce. Refused at boot " +
+		"without the kind. TestTheKindsBannerLineAnnouncesTheEgressLock pins it",
+	envAgentNetpolFQDN: "printed on the same egress-lock line in both states (a CiliumNetworkPolicy per worker, or the " +
+		"locked workers REFUSED); refused at boot off the kubernetes claude-code arm. " +
+		"TestTheKindsBannerLineAnnouncesTheEgressLock pins both",
 	envE2EHoldReadyDir: "a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver (e2eterm.go); the " +
 		"shipped binary has no reader, so it has no state to announce, and an e2e build already logs its own " +
 		"🔴 E2E BUILD line at boot",

@@ -27,12 +27,16 @@ import (
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 )
+
+// redStub disables this change's behaviour: the tests-first commit (red).
+const redStub = true
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
 //
@@ -368,12 +372,22 @@ const (
 	// list of `<pool>=<owner>/<name>:<secret>` (parsePoolDeployKeys). Each
 	// listed pool's workers clone, and its jobs fetch, that one repository over
 	// SSH with the read-only deploy key in the Secret <secret> (key
-	// ssh-privatekey) of the agents' namespace, mounted read-only into each
+	// ssh-privatekey), kept in muster's own namespace and copied into each
+	// worker's (k8s secretcopy.go), mounted read-only into each
 	// worker (agentspec.ClaudeCodeConfig.PoolDeployKeys). Unset is none: every
 	// pool clones and fetches anonymously. A worker of a listed pool on another
 	// repository is refused, and so is a job naming another repository. Refused
 	// at boot without the claude-code kind, and for a malformed entry.
 	envAgentCCPoolDeployKeys = "MUSTER_AGENT_CC_POOL_DEPLOY_KEYS"
+
+	// envAgentCCPoolEgress locks worker pools' egress to named hosts: a
+	// `;`-separated list of `<pool>=<host>,<host>` (parsePoolEgress), each
+	// pool's EXTRA hosts on top of agentspec.DefaultPoolEgressHosts (GitHub and
+	// the Anthropic API). A pool listed here, or given a deploy key, is locked
+	// (agentspec.PoolEgressHostsFor); `<pool>=` alone locks it to the defaults.
+	// Needs a driver that filters by name (envAgentNetpolFQDN); without one a
+	// locked pool's workers are refused at dispatch/Start, never started open.
+	envAgentCCPoolEgress = "MUSTER_AGENT_CC_POOL_EGRESS"
 
 	// --- the claude-code kind's NetworkPolicy (kubernetes driver only) ---
 	//
@@ -389,6 +403,11 @@ const (
 	// Deployment's pod template.
 	envAgentNetpolFromNS     = "MUSTER_AGENT_NETPOL_FROM_NAMESPACE"
 	envAgentNetpolFromLabels = "MUSTER_AGENT_NETPOL_FROM_POD_LABELS"
+	// envAgentNetpolFQDN names the cluster's name-filtering network plugin, the
+	// one value being `cilium`: an egress-locked pool's workers then get a
+	// CiliumNetworkPolicy (toFQDNs, name-filtered DNS) per agent. Unset: no
+	// name filtering, and an egress-locked pool's workers are refused.
+	envAgentNetpolFQDN = "MUSTER_AGENT_NETPOL_FQDN"
 
 	// --- browser-test fixture (read ONLY by a `-tags e2eterm` build) ---
 	//
@@ -921,6 +940,13 @@ type config struct {
 	// validateKinds.
 	AgentCCPoolDeployKeys    map[string]agentspec.PoolDeployKey
 	AgentCCPoolDeployKeysErr error
+	// AgentCCPoolEgress is MUSTER_AGENT_CC_POOL_EGRESS parsed (parsePoolEgress):
+	// pool -> its extra hosts. nil is none. AgentCCPoolEgressErr is the parse's
+	// refusal, reported by validateKinds.
+	AgentCCPoolEgress    map[string][]string
+	AgentCCPoolEgressErr error
+	// AgentNetpolFQDN is MUSTER_AGENT_NETPOL_FQDN, lower-cased: "" or "cilium".
+	AgentNetpolFQDN string
 
 	// AgentNetpolFromNS and AgentNetpolFromLabels say which pods a claude-code
 	// agent's NetworkPolicy admits: muster's own. AgentNetpolFromLabels is the
@@ -1079,6 +1105,68 @@ func parsePoolDeployKeys(v string) (map[string]agentspec.PoolDeployKey, error) {
 	return out, nil
 }
 
+// netpolFQDNCilium is MUSTER_AGENT_NETPOL_FQDN's one value.
+const netpolFQDNCilium = "cilium"
+
+// parsePoolEgress reads MUSTER_AGENT_CC_POOL_EGRESS: a `;`-separated list of
+// `<pool>=<host>,<host>`. The pool is lower-cased and must be a valid pool
+// name; each host an exact lower-case DNS name (provision.ValidEgressHost: no
+// scheme, port, path or wildcard). `<pool>=` with no host locks the pool to the
+// defaults. A pool listed twice, or a host twice in one pool, is refused. "" is
+// nil.
+func parsePoolEgress(v string) (map[string][]string, error) {
+	if redStub {
+		return nil, nil
+	}
+	out := map[string][]string{}
+	for _, e := range strings.Split(v, ";") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		pool, rest, ok := strings.Cut(e, "=")
+		pool = strings.ToLower(strings.TrimSpace(pool))
+		if !ok {
+			return nil, fmt.Errorf("invalid %s entry %q: want <pool>=<host>,<host> (entries separated by ;)", envAgentCCPoolEgress, e)
+		}
+		if !agents.ValidWorkerPool(pool) {
+			return nil, fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
+				"letter or digit", envAgentCCPoolEgress, e)
+		}
+		if _, dup := out[pool]; dup {
+			return nil, fmt.Errorf("invalid %s: pool %q is listed twice", envAgentCCPoolEgress, pool)
+		}
+		hosts := []string{}
+		seen := map[string]bool{}
+		for _, h := range strings.Split(rest, ",") {
+			h = strings.ToLower(strings.TrimSpace(h))
+			if h == "" {
+				continue
+			}
+			if !provision.ValidEgressHost(h) {
+				return nil, fmt.Errorf("invalid %s entry %q: %q is not a host name (exact, no scheme, port, path or "+
+					"wildcard)", envAgentCCPoolEgress, e, h)
+			}
+			if seen[h] {
+				return nil, fmt.Errorf("invalid %s entry %q: host %q is listed twice", envAgentCCPoolEgress, e, h)
+			}
+			seen[h] = true
+			hosts = append(hosts, h)
+		}
+		out[pool] = hosts
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// poolEgressLocked reports whether any pool is egress-locked: listed in
+// MUSTER_AGENT_CC_POOL_EGRESS or given a deploy key.
+func (c config) poolEgressLocked() bool {
+	return len(c.AgentCCPoolEgress) > 0 || len(c.AgentCCPoolDeployKeys) > 0
+}
+
 func splitList(v string) []string {
 	var out []string
 	for _, part := range strings.Split(v, ",") {
@@ -1209,8 +1297,10 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentCCBypassPools:    splitList(getenv(envAgentCCBypassPools)),
 		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
 		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
+		AgentNetpolFQDN:       strings.ToLower(strings.TrimSpace(getenv(envAgentNetpolFQDN))),
 	}
 	c.AgentCCPoolDeployKeys, c.AgentCCPoolDeployKeysErr = parsePoolDeployKeys(getenv(envAgentCCPoolDeployKeys))
+	c.AgentCCPoolEgress, c.AgentCCPoolEgressErr = parsePoolEgress(getenv(envAgentCCPoolEgress))
 	if len(c.AgentCCAccountNames) > 0 {
 		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
 		for _, name := range c.AgentCCAccountNames {
@@ -2158,6 +2248,14 @@ func (c config) validateKinds() error {
 	// to be given the selector. k8s.New refuses an empty one as well, at boot —
 	// but in the driver's words (Config.NetworkPolicy.ControllerNamespace), which
 	// name nothing an operator can set. Refused here first, naming both variables.
+	if !redStub && c.AgentNetpolFQDN != "" && c.AgentNetpolFQDN != netpolFQDNCilium {
+		return fmt.Errorf("invalid %s %q: the one value is %q (or unset)", envAgentNetpolFQDN, c.AgentNetpolFQDN, netpolFQDNCilium)
+	}
+	if !redStub && c.AgentNetpolFQDN != "" && !c.agentNetworkPolicy() {
+		return fmt.Errorf("%s is set but nothing would render a name-filtered policy from it: that needs %s to "+
+			"include %s AND %s=%s. Unset it, or enable the kind on that driver", envAgentNetpolFQDN, envAgentKinds,
+			agents.KindClaudeCode, envAgentProvisioner, provisionerK8s)
+	}
 	if c.agentNetworkPolicy() {
 		if c.AgentNetpolFromNS == "" || c.AgentNetpolFromLabels == "" {
 			return fmt.Errorf("%s enables a confined kind (%s) on %s=%s but %s and %s are not both set (%s is %s, %s is %s): a "+
@@ -2225,10 +2323,18 @@ func (c config) validateClaudeCodeKind() error {
 				"deploy key. Add %s to %s, or unset it", envAgentCCPoolDeployKeys, envAgentKinds, agents.KindClaudeCode,
 				agents.KindClaudeCode, envAgentKinds)
 		}
+		if len(c.AgentCCPoolEgress) > 0 || c.AgentCCPoolEgressErr != nil {
+			return fmt.Errorf("%s is set but %s does not include %s: there are no worker pools for it to lock. "+
+				"Add %s to %s, or unset it", envAgentCCPoolEgress, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
 		return nil
 	}
 	if c.AgentCCPoolDeployKeysErr != nil {
 		return c.AgentCCPoolDeployKeysErr
+	}
+	if c.AgentCCPoolEgressErr != nil {
+		return c.AgentCCPoolEgressErr
 	}
 	for _, p := range c.AgentCCBypassPools {
 		if !agents.ValidWorkerPool(p) {

@@ -55,7 +55,9 @@ it names, or one muster chooses from a named **worker pool**.
 >   turn's reply is discarded and the job fails `workdir_unconfirmed`.
 >
 > **Not isolated:** the turn runs in the worker's pod with the worker's Claude
-> account, its network (any public HTTPS host) and its volume. Every other file
+> account, its network (any public HTTPS host — or, on an
+> [egress-locked pool](#a-pools-egress-lock), GitHub, the Anthropic API and the
+> pool's listed hosts only) and its volume. Every other file
 > in the commit is the commit's — `CLAUDE.md` / `AGENTS.md` below the root
 > (instructions the CLI reads as it works there), build scripts, tests,
 > dependencies — and the turn may run them if the prompt leads it there. The
@@ -280,11 +282,16 @@ nothing else changes: no GitHub grant, no proxy, no token.
 
 1. Make an SSH key pair and add its public half to the repository as a
    **deploy key, without "Allow write access"** (Settings → Deploy keys).
-2. Store the private half in a Secret in the agents' namespace, key
-   `ssh-privatekey`:
-   `kubectl create secret generic <secret> --type=kubernetes.io/ssh-auth --from-file=ssh-privatekey=<file>`.
-3. Set `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS=<pool>=<owner>/<name>:<secret>`
-   ([configuration](configuration.md)) and restart muster.
+2. Store the private half in a Secret in **muster's own namespace**
+   (`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`), key `ssh-privatekey`:
+   `kubectl -n <muster's namespace> create secret generic <secret> --type=kubernetes.io/ssh-auth --from-file=ssh-privatekey=<file>`.
+   muster copies it into each worker's namespace (below); do not copy it there
+   yourself — a Secret of that name muster did not make is refused, never
+   overwritten.
+3. Set `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS=<pool>=<owner>/<name>:<secret>` and
+   `MUSTER_AGENT_NETPOL_FQDN=cilium` ([configuration](configuration.md); the
+   pool is [egress-locked](#a-pools-egress-lock), which needs it) and restart
+   muster.
 4. Create the pool's workers on that repository (Start an existing one again to
    give it the mount).
 
@@ -315,6 +322,18 @@ user, which ssh needs to exist; the agent's session runs as 1000). The holder, a
   agent's container. The pool's jobs get none of the repository's agent
   configuration
   ([above](#a-deploy-key-pools-jobs-get-none-of-the-repositorys-configuration)).
+
+**The Secret is copied, not shared.** Each time a worker's spec is applied
+(dispatch, Start, reapply) muster reads the Secret in its own namespace and
+writes its data and type — nothing else of it, under muster's ownership labels
+— to a Secret of the same name in the worker's namespace, before the pod. A
+source that is missing, or has no `ssh-privatekey`, fails that dispatch or
+Start with an error naming the Secret and the namespace, and no pod is started
+(it would otherwise wait in `ContainerCreating` forever). The copy is removed
+with the worker's namespace. muster never logs the Secret's data. In the
+shared-namespace layout (`MUSTER_AGENT_NAMESPACE_SHARED`) the pool's workers
+share one copy, which a worker's Destroy leaves; when that namespace is
+muster's own, nothing is copied.
 
 Port 443, because a worker may reach public addresses on 443 only; GitHub
 serves the same SSH endpoint there. The ssh command fixes every option
@@ -361,8 +380,43 @@ pod's start, and every pull-request head and base fetched for the worker's
 jobs — are readable by the session, as the checkout always was. Whoever can
 exec into the pod or read the Secret through the Kubernetes API (muster's
 ServiceAccount, cluster admins) can read the key; the agent's pod mounts no
-ServiceAccount token. Rotating the key: replace the Secret's key, then Stop →
-Start each worker (a `subPath` mount is not refreshed).
+ServiceAccount token. Rotating the key: replace the key in muster's namespace,
+then Stop → Start each worker (Start copies it again; a `subPath` mount is not
+refreshed in a running pod).
+
+### A pool's egress lock
+
+A worker of a pool with a deploy key, or of a pool listed in
+`MUSTER_AGENT_CC_POOL_EGRESS` ([configuration](configuration.md)), may reach
+on the public internet **only**:
+
+- GitHub: `github.com`, `api.github.com`, `codeload.github.com`,
+  `ssh.github.com` (port 443) and `objects.githubusercontent.com`;
+- the Anthropic API: `api.anthropic.com` (the CLI's inference, its WebFetch
+  domain check and token use);
+- the hosts listed for the pool (an HQ host, say);
+
+each on TCP 443, with name resolution answered only for those names and the
+cluster's own. muster's connect port stays reachable when the connector store
+is offered (the policy's controller rule, as for every claude-code agent). The
+pod also gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the CLI does not
+try its optional hosts (telemetry and error-report intake, the auto-updater,
+release notes), which are unreachable.
+
+On Kubernetes this is a `CiliumNetworkPolicy` per worker (`<agent>-egress`:
+DNS through Cilium's proxy with `rules.dns`, and `toFQDNs` by exact name),
+written before the pod, with the worker's NetworkPolicy keeping its ingress
+and controller rules but losing its DNS and "any public address" rules —
+network plugins union allows, so either would widen the Cilium policy back.
+It needs `MUSTER_AGENT_NETPOL_FQDN=cilium` and RBAC on
+`ciliumnetworkpolicies.cilium.io`; without either, the worker is **refused**
+at dispatch or Start, never started open. A worker started by an older muster
+keeps its old policy until its next Stop → Start.
+
+What it still allows: anything those hosts accept. A session can push what it
+reads to a GitHub repository or gist of an attacker's, or call the Anthropic
+API with an attacker's key and put data in the request; closing that needs an
+egress proxy that checks credentials, which muster does not ship.
 
 A job naming a pool runs on the member chosen when it is submitted. A member is
 **eligible** when it is a `claude-code` agent whose status is `running`, works

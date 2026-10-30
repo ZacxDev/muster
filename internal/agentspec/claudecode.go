@@ -12,6 +12,9 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
+// redStub disables this change's behaviour: the tests-first commit (red).
+const redStub = true
+
 // The claude-code kind's profile: the Claude Code pod (cmd/ccd + the pinned CLI,
 // images/claude-code-agent).
 //
@@ -84,7 +87,9 @@ var ClaudeCodeSecurity = provision.Security{
 //
 // ⚠ WHAT IT DOES NOT BUY: this is "public internet on 443", not "Anthropic and
 // GitHub". Nothing here names a host. A prompt-injected agent can still send
-// what it holds to any public HTTPS endpoint. An egress-locked agent (an officer
+// what it holds to any public HTTPS endpoint — unless its worker pool is
+// egress-locked ([PoolEgressHostsFor]), which narrows 443 to named hosts. An
+// egress-locked agent (an officer
 // instance: [ClaudeCodeSession.EgressLocked]) does NOT get the public rule, or
 // the DNS rule, at all; see claudeCodeNetworkFor.
 //
@@ -112,11 +117,18 @@ func ClaudeCodeNetwork() provision.Network {
 // this policy still allows port 53 to the DNS pods. The operator ships both;
 // without them a locked pod cannot resolve or reach the API at all (closed,
 // loud: every turn fails). See docs/officers.md "The instance's network".
-func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
+//
+// 🔴 WITH poolHosts ([PoolEgressHostsFor]) THE PUBLIC RULE IS NARROWED TO THOSE
+// HOST NAMES (provision.Network.PublicEgressHosts), and name resolution to them
+// and the cluster's own names: a driver that cannot filter by name refuses the
+// spec. An officer's lock, which allows no public host at all, wins over it.
+func claudeCodeNetworkFor(cfg Config, egressLocked bool, poolHosts []string) provision.Network {
 	n := ClaudeCodeNetwork()
 	if egressLocked {
 		n.PublicEgressTCPPorts = nil
 		n.NoClusterDNS = true
+	} else if len(poolHosts) > 0 {
+		n.PublicEgressHosts = slices.Clone(poolHosts)
 	}
 	if cfg.ClaudeCodeMCPOffered() {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
@@ -196,6 +208,54 @@ type ClaudeCodeConfig struct {
 	// (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): see [PoolDeployKeyFor]. A pool with no
 	// entry — every pool, by default — clones and fetches anonymously.
 	PoolDeployKeys map[string]PoolDeployKey
+	// PoolEgress maps a worker pool's name to the EXTRA host names its workers
+	// may reach (MUSTER_AGENT_CC_POOL_EGRESS), on top of [DefaultPoolEgressHosts].
+	// A pool listed here, or given a deploy key, is egress-locked: see
+	// [PoolEgressHostsFor]. A pool in neither keeps "any public address on 443".
+	PoolEgress map[string][]string
+}
+
+// DefaultPoolEgressHosts is what every worker of an egress-locked pool may
+// reach on TCP 443, sorted: GitHub (the clone, a job's anonymous fetch, the
+// REST API, archive and raw-object downloads, and SSH over 443 —
+// ssh.github.com, which a deploy-key pool's key holder uses) and the Anthropic
+// API (the Claude Code CLI's inference, its WebFetch domain check and its token
+// use). Nothing else: the CLI's optional hosts (error reporting and telemetry
+// intake, the auto-updater, release notes) are switched off in the pod
+// ([EnvClaudeDisableNonessentialTraffic]) and unreachable; muster's own connect
+// port, when offered, is the policy's controller rule, not a host here.
+var DefaultPoolEgressHosts = []string{
+	"api.anthropic.com",
+	"api.github.com",
+	"codeload.github.com",
+	"github.com",
+	"objects.githubusercontent.com",
+	"ssh.github.com",
+}
+
+// PoolEgressHostsFor is the host allowlist agent a's pool is locked to: ONLY a
+// pooled agent (never a chief) whose pool has a deploy key ([PoolDeployKeyFor])
+// or is listed in PoolEgress. The list is [DefaultPoolEgressHosts] plus the
+// pool's extras, sorted, without repeats. ok=false is no lock: "any public
+// address on 443", unchanged.
+//
+// 🔴 A DEPLOY-KEY POOL IS LOCKED WHETHER OR NOT IT IS LISTED: its workers hold
+// a private repository's mirror, and the lock is what keeps a session from
+// sending it to any public host. Like the key, it is written when the spec is
+// applied (dispatch, Start, reapply).
+func PoolEgressHostsFor(a agents.Agent, cfg Config) ([]string, bool) {
+	cc := cfg.ClaudeCode
+	if redStub || cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
+		return nil, false
+	}
+	extra, listed := cc.PoolEgress[a.WorkerPool]
+	_, keyed := cc.PoolDeployKeys[a.WorkerPool]
+	if !listed && !keyed {
+		return nil, false
+	}
+	hosts := append(slices.Clone(DefaultPoolEgressHosts), extra...)
+	slices.Sort(hosts)
+	return slices.Compact(hosts), true
 }
 
 // PoolDeployKey is one worker pool's private-repository access: the ONE
@@ -204,8 +264,9 @@ type PoolDeployKey struct {
 	// Repo is owner/name. A worker of the pool must work on it, and a job on
 	// such a worker must name it; anything else is refused.
 	Repo string
-	// Secret names a Secret in the agents' namespace, made by the operator
-	// (muster never creates, reads or changes it), whose key
+	// Secret names a Secret the operator makes in muster's own namespace (the
+	// kubernetes driver copies it into each worker's namespace; muster never
+	// changes the source), whose key
 	// [DeployKeySecretKey] holds the PRIVATE half of a deploy key added to Repo
 	// WITHOUT write access.
 	Secret string
@@ -371,6 +432,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	labels := buildLabels(a, cfg)
 	labels[LabelKind] = agents.KindClaudeCode
 
+	poolHosts, poolLocked := PoolEgressHostsFor(a, cfg)
 	spec := provision.Spec{
 		Ref: ref,
 		// 🔴 NO WorkingDir, and the image has none under /data either: a container
@@ -399,7 +461,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
 		Security:  ClaudeCodeSecurity,
-		Network:   claudeCodeNetworkFor(cfg, opts.ClaudeCodeSession.EgressLocked()),
+		Network:   claudeCodeNetworkFor(cfg, opts.ClaudeCodeSession.EgressLocked(), poolHosts),
 		Labels:    labels,
 		Repo:      repo,
 	}
@@ -454,7 +516,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if opts.ClaudeCodeSession.BypassPermissions {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvPermissionMode, Value: podagent.PermissionModeBypass})
 	}
-	if opts.ClaudeCodeSession.EgressLocked() {
+	if opts.ClaudeCodeSession.EgressLocked() || poolLocked {
+		// An egress-locked pool's worker too: its optional hosts are not in
+		// DefaultPoolEgressHosts, so the CLI is told not to try them.
 		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableNonessentialTraffic, Value: "1"})
 	}
 	if err := spec.Validate(); err != nil {

@@ -38,6 +38,17 @@ type NetworkPolicyConfig struct {
 	// [DefaultDNSNamespace] and [DefaultDNSPodLabels].
 	DNSNamespace string
 	DNSPodLabels map[string]string
+	// CiliumFQDN is the operator's statement that the cluster runs Cilium, whose
+	// CiliumNetworkPolicy can filter egress by DNS name. It raises
+	// Capabilities.NetworkEgressByName: a spec naming Network.PublicEgressHosts
+	// then gets a CiliumNetworkPolicy (egress.go) in place of the NetworkPolicy's
+	// DNS and public rules. Unset, such a spec is refused.
+	CiliumFQDN bool
+	// ClusterDomain is the cluster's DNS domain, whose names (at any depth) the
+	// name-filtered DNS rule answers for. REQUIRED with CiliumFQDN: there is no
+	// default, because a wrong one leaves every in-cluster name unresolvable
+	// (muster's server reads it off its own pod's resolv.conf search list).
+	ClusterDomain string
 }
 
 // The cluster DNS selector used when [NetworkPolicyConfig] names none: the
@@ -227,8 +238,12 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 	// 🔴 NoClusterDNS MEANS NO DNS RULE AT ALL — not even port 53 to the DNS
 	// pods. Plugins union allows, so an L4 :53 allow here would widen a
 	// cluster-side name-filtered DNS rule back to "any name" (provision.Network).
+	// 🔴 A SPEC THAT NAMES ITS HOSTS GETS NEITHER THE DNS RULE NOR THE PUBLIC
+	// RULE HERE: both move, filtered by name, into its CiliumNetworkPolicy
+	// (egress.go), because an unfiltered allow here would union over them.
+	named := namedEgress(spec)
 	egress := []networkingv1.NetworkPolicyEgressRule{}
-	if !spec.Network.NoClusterDNS {
+	if !spec.Network.NoClusterDNS && !named {
 		udp, tcp := corev1.ProtocolUDP, corev1.ProtocolTCP
 		dns := intstr.FromInt32(dnsPort)
 		egress = append(egress, networkingv1.NetworkPolicyEgressRule{
@@ -246,7 +261,7 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 	}
 
 	// Same rule as ingress, for the same reason: no public port, no public rule.
-	if len(spec.Network.PublicEgressTCPPorts) > 0 {
+	if len(spec.Network.PublicEgressTCPPorts) > 0 && !named {
 		public := append([]int(nil), spec.Network.PublicEgressTCPPorts...)
 		sort.Ints(public)
 		ports := make([]networkingv1.NetworkPolicyPort, 0, len(public))
