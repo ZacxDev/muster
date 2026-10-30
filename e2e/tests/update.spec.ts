@@ -657,8 +657,19 @@ for (const vp of placements) {
         if (vp.sidebar) {
           await page.click('#sidebar-open');
           await expect(page.locator('#sidebar-more-summary')).toBeVisible();
-          // Let the slide-in finish: the probe reads where things ARE.
-          await page.locator('#sidebar').evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+          // Let the slide-in finish: the probe reads where things ARE. It waits
+          // until NOTHING in the sidebar is animating, settling each round.
+          // 🔴 Not Promise.all over `finished`: the panel slides under the
+          // pointer the click left behind, so a header button's hover colour
+          // transition starts and is then replaced mid-slide — a CANCELLED
+          // transition, whose `finished` rejects with AbortError ("The user
+          // aborted a request"; CI runs 41001388651 and 41089311557). A
+          // cancelled transition has stopped moving, which is all this wait is for.
+          await page.locator('#sidebar').evaluate(async (el) => {
+            for (let running; (running = el.getAnimations({ subtree: true })).length; ) {
+              await Promise.allSettled(running.map((a) => a.finished));
+            }
+          });
           const s = await page.evaluate(coverageJS);
           sidebarIntersections += s.intersecting;
           expect(s.covered, `on ${path} with the sidebar open: covers no control`).toEqual([]);
