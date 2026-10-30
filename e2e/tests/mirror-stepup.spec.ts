@@ -1031,6 +1031,9 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     // 🔴 The replacement is fetched WHILE the route above is installed, so it
     // is awaited before the routes go: unrouteAll while a request is paused
     // for interception left it unanswered for good (CI, 8014aad2's main run).
+    // This ordering alone is NOT the protection: the { times: 1 } route above
+    // expiring hung the same fetch (CI 40999312494). The context route held by
+    // the beforeEach at the top of the file is what prevents both.
     // Listened for only once the OPEN's own options have answered (the
     // button is live), so the response it resolves on is the replacement's.
     await expect(passkeyBtn(page)).toBeEnabled();
