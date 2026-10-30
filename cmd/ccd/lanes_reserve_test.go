@@ -58,12 +58,41 @@ func (p *stillPane) kills() int {
 func testLanes(t *testing.T, max int) *lanes {
 	t.Helper()
 	cfg := t.TempDir()
-	return &lanes{
+	l := &lanes{
 		newTerm:   func(string) laneTerminal { return &stillPane{} },
 		newServer: func(term terminal) *server { return newServer(serverConfig{ConfigDir: cfg}, term, newAuthTracker()) },
 		bin:       "claude", configDir: cfg, workspace: "/data/workspace", max: max,
 		startTimeout: time.Second, now: time.Now, set: map[string]*lane{},
 		tweak: func(s *supervisor) { s.poll = 10 * time.Millisecond },
+	}
+	// Registered first, so it runs after the test's own cleanups.
+	t.Cleanup(func() { stopAll(t, l) })
+	return l
+}
+
+// stopAll stops every lane still in l's set and waits for every lane's run
+// goroutine — those stopped earlier included — to end. 🔴 A lane goroutine
+// that outlives its test writes to the global logger (supervisor.run, lane.run)
+// while a later test has swapped it for a buffer it reads unlocked
+// (TestTheUnrecordedFallbackTiers): a data race the race detector pins on that
+// later test.
+func stopAll(t *testing.T, l *lanes) {
+	t.Helper()
+	l.mu.Lock()
+	list := make([]*lane, 0, len(l.set))
+	for _, ln := range l.set {
+		list = append(list, ln)
+	}
+	l.mu.Unlock()
+	for _, ln := range list {
+		ln.stop()
+	}
+	done := make(chan struct{})
+	go func() { l.runs.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Error("a lane's run goroutine did not end within 10s of the test's end")
 	}
 }
 

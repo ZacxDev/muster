@@ -55,6 +55,9 @@ func TestABusyRefusedKickoffIsResentAndNeverRecordedAsPossiblySent(t *testing.T)
 	for _, refusal := range []*agents.RuntimeError{
 		{Status: 409, Type: "busy", Code: "awaiting_approval", Message: "the CLI's pane shows a dialog"},
 		{Status: 409, Type: "busy", Message: "another turn is already being driven"},
+		// The pane parked on the CLI's usage-limit menu (cmd/ccd limitMenuFailure):
+		// also refused before typing; the gateway failed the agent over.
+		{Status: 409, Type: "rate_limited", Code: "rate_limit", Message: "the CLI's pane shows its usage-limit menu"},
 	} {
 		name := refusal.Type + "/" + refusal.Code
 		h := refusingHarness(t, 2, refusal)

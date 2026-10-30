@@ -55,7 +55,9 @@ it names, or one muster chooses from a named **worker pool**.
 >   turn's reply is discarded and the job fails `workdir_unconfirmed`.
 >
 > **Not isolated:** the turn runs in the worker's pod with the worker's Claude
-> account, its network (any public HTTPS host) and its volume. Every other file
+> account, its network (any public HTTPS host — or, on an
+> [egress-locked pool](#a-pools-egress-lock), what the operator's cluster
+> policy allows) and its volume. Every other file
 > in the commit is the commit's — `CLAUDE.md` / `AGENTS.md` below the root
 > (instructions the CLI reads as it works there), build scripts, tests,
 > dependencies — and the turn may run them if the prompt leads it there. The
@@ -280,11 +282,16 @@ nothing else changes: no GitHub grant, no proxy, no token.
 
 1. Make an SSH key pair and add its public half to the repository as a
    **deploy key, without "Allow write access"** (Settings → Deploy keys).
-2. Store the private half in a Secret in the agents' namespace, key
-   `ssh-privatekey`:
-   `kubectl create secret generic <secret> --type=kubernetes.io/ssh-auth --from-file=ssh-privatekey=<file>`.
+2. Store the private half in a Secret in **muster's own namespace**
+   (`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`), key `ssh-privatekey`:
+   `kubectl -n <muster's namespace> create secret generic <secret> --type=kubernetes.io/ssh-auth --from-file=ssh-privatekey=<file>`.
+   muster copies it into each worker's namespace (below); do not copy it there
+   yourself — a Secret of that name muster did not make is refused, never
+   overwritten.
 3. Set `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS=<pool>=<owner>/<name>:<secret>`
-   ([configuration](configuration.md)) and restart muster.
+   ([configuration](configuration.md)) and restart muster. The pool is
+   [egress-locked](#a-pools-egress-lock): ship its cluster egress policy
+   first, or its workers reach nothing public.
 4. Create the pool's workers on that repository (Start an existing one again to
    give it the mount).
 
@@ -315,6 +322,27 @@ user, which ssh needs to exist; the agent's session runs as 1000). The holder, a
   agent's container. The pool's jobs get none of the repository's agent
   configuration
   ([above](#a-deploy-key-pools-jobs-get-none-of-the-repositorys-configuration)).
+
+⚠ **Upgrading from v0.110.0:** that release's docs had the operator create
+the Secret in each worker's namespace. Since this release it lives in
+**muster's own namespace**: create it there, and **delete every hand-made copy
+in the worker namespaces** — muster refuses a Secret of that name it did not
+make (the dispatch or Start fails naming it), and never overwrites one.
+
+**The Secret is copied, not shared.** Each time a worker's spec is applied
+(dispatch, Start, reapply) muster reads the Secret in its own namespace and
+writes the key the pod mounts (`ssh-privatekey`) and the Secret's type — no
+other key, label or annotation of it, under muster's ownership labels — to a
+Secret of the same name in the worker's namespace, before the pod. A source
+recreated with another type replaces muster's copy (a type cannot be changed
+in place). A
+source that is missing, or has no `ssh-privatekey`, fails that dispatch or
+Start with an error naming the Secret and the namespace, and no pod is started
+(it would otherwise wait in `ContainerCreating` forever). The copy is removed
+with the worker's namespace. muster never logs the Secret's data. In the
+shared-namespace layout (`MUSTER_AGENT_NAMESPACE_SHARED`) the pool's workers
+share one copy, which a worker's Destroy leaves; when that namespace is
+muster's own, nothing is copied.
 
 Port 443, because a worker may reach public addresses on 443 only; GitHub
 serves the same SSH endpoint there. The ssh command fixes every option
@@ -361,8 +389,116 @@ pod's start, and every pull-request head and base fetched for the worker's
 jobs — are readable by the session, as the checkout always was. Whoever can
 exec into the pod or read the Secret through the Kubernetes API (muster's
 ServiceAccount, cluster admins) can read the key; the agent's pod mounts no
-ServiceAccount token. Rotating the key: replace the Secret's key, then Stop →
-Start each worker (a `subPath` mount is not refreshed).
+ServiceAccount token. Rotating the key: replace the key in muster's namespace,
+then Stop → Start each worker (Start copies it again; a `subPath` mount is not
+refreshed in a running pod).
+
+### A pool's egress lock
+
+Every pool with a deploy key, and every pool listed in
+`MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS` ([configuration](configuration.md)), is
+**egress-locked** — the officer lock (docs/officers.md "The instance's
+network"), applied to a pool's workers. muster does two things, and only two:
+
+- **It removes egress.** The worker's NetworkPolicy keeps its ingress rule
+  (from muster's pods) and, when the connector store is offered, egress to
+  muster's connect port — and has **no DNS rule and no "any public address on
+  443" rule**. Network plugins union allows, so either rule would widen
+  whatever the cluster's policy narrows.
+- **It labels the pod**: `muster.agent/pool=<pool>` and
+  `muster.agent/egress=locked` (only locked workers carry them; every other
+  pod's labels are unchanged). The pod also gets
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the CLI does not try its
+  optional hosts (telemetry and error-report intake, the auto-updater,
+  release notes).
+
+🔴 **The allowlist is the operator's cluster policy, not muster's.** A policy
+selecting `muster.agent/egress=locked` is the only thing that lets a locked
+worker resolve a name or reach a host. Without one, a locked worker reaches
+nothing public and every turn fails — closed and loud. On Cilium, a
+`CiliumClusterwideNetworkPolicy` (clusterwide, because muster creates the
+worker namespaces itself):
+
+```yaml
+# Egress for muster's egress-locked pool workers: DNS for the allowed names
+# and cluster-internal names only, and those hosts on 443.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: muster-egress-locked-workers
+spec:
+  endpointSelector:
+    matchLabels:
+      # The driver's ownership pair, so a pod someone else labels
+      # egress=locked gets nothing from this policy.
+      app.kubernetes.io/managed-by: muster
+      app.kubernetes.io/name: muster-agent
+      muster.agent/egress: locked
+  enableDefaultDeny:
+    ingress: false   # ingress stays muster's NetworkPolicy
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchName: github.com
+              - matchName: api.github.com
+              - matchName: codeload.github.com
+              - matchName: ssh.github.com
+              - matchName: objects.githubusercontent.com
+              - matchName: api.anthropic.com
+              # Your cluster's DNS domain (the kubelet's clusterDomain): the
+              # search-path expansions every lookup is tried with first under
+              # ndots:5. `**.` is multi-level; `*.` matches one label only.
+              - matchPattern: "**.CLUSTER_DOMAIN"
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: api.github.com
+        - matchName: codeload.github.com
+        - matchName: ssh.github.com          # a deploy-key holder's SSH, on 443
+        - matchName: objects.githubusercontent.com
+        - matchName: api.anthropic.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+```
+
+Why those hosts: GitHub for the clone, a job's anonymous fetch, the REST API,
+archives and raw objects, and SSH over 443 (`ssh.github.com`, the key
+holder's); `api.anthropic.com` for the CLI's inference, its WebFetch domain
+check and its token use. Add a pool's own hosts (an HQ, say) to both lists; to
+give pools different allowlists, select `muster.agent/pool` as well.
+
+⚠ **A worker keeps the policy it was started with.** The lock and the labels
+are written when its spec is applied (dispatch, Start, reapply); a worker
+started by an older muster keeps its public-443 rule until Stop → Start.
+Check with `kubectl -n <worker namespace> get networkpolicy -o yaml`: the
+egress list has no `ipBlock` and no port 53.
+
+What it still allows:
+
+- anything those hosts accept. A session can push what it reads to a GitHub
+  repository or gist of an attacker's, or call the Anthropic API with an
+  attacker's key and put data in the request; closing that needs an egress
+  proxy that checks credentials, which muster does not ship;
+- **muster's connector proxy**, when the connector store is offered: the
+  NetworkPolicy keeps egress to muster's connect port (`MUSTER_CONNECT_PORT`),
+  which the cluster policy does not see. An **approved connector grant** is
+  therefore an egress path out of a locked worker, bounded by muster's own
+  policy on that connector (its hosts and credential), not by the cluster's.
+  A pool worker can never hold an approved grant reaching github.com
+  ([Worker pools](#worker-pools)); grants to other connectors are decided by
+  their owner.
 
 A job naming a pool runs on the member chosen when it is submitted. A member is
 **eligible** when it is a `claude-code` agent whose status is `running`, works
@@ -404,6 +540,67 @@ agent is the caller's override.
 The job records the pool (`worker_pool`) and the worker (`agent`,
 `cc_account`). The choice is made once; a job is not moved to another worker
 later, and one worker still runs its jobs one at a time.
+
+### Account failover
+
+A worker is not stuck on an exhausted account. When a turn on any
+`claude-code` agent — a pool worker, a named agent, an officer instance, the
+chief — fails `rate_limited` or `auth_failed`, muster marks the account as
+above and then, unless `MUSTER_AGENT_CC_FAILOVER=off`, **moves the agent to
+another of its owner's accounts**:
+
+- **Which account.** One that is usable: not cooling down after a
+  `rate_limited`, and not marked `auth_failed` for its current token. Of those,
+  the pool's order: never rate-limited first, then the one rate-limited longest
+  ago, then the account name. When there is none — every other account is
+  cooling down or failed — nothing moves and everything behaves as before
+  (the job fails `rate_limited`; a pool submission whose every worker is
+  cooling is a 429 that names each worker's reset). Nothing special happens at the reset: the next turn simply works.
+- **How.** The agent's row is moved to the new account (only if it is still on
+  the old one), and its spec is re-applied with the new account's setup-token,
+  which **restarts its pod**: the running CLI session and every job lane's CLI
+  restart; the volume (checkout, transcripts, settings), namespace and identity
+  are kept. The cost is one cold start of the pod.
+- **Pinned agents stay.** An agent whose account was named explicitly when it
+  was created — a dispatch's or `POST /api/chief/replace`'s `cc_account`, an
+  officer's `cc_account` — is not moved, unless it opted in: the `cc_failover`
+  field (`on`/`true`) of the dispatch request (`POST /agents`; the form has no
+  control for it), `"cc_failover": true` on `POST /api/chief/replace`, or the
+  officer's `cc_failover`.
+  Agents created before this existed read as not pinned (an officer instance
+  reads its officer's current configuration).
+- **Once per failure.** Two turns on one agent failing at once move it once:
+  the move is conditional on the account it is leaving, and in one process the
+  failovers of one agent run one at a time. A move never races a Stop or a
+  Delete into restarting a stopped or deleted agent: they run one at a time per
+  agent, and a move of an agent that is not running, provisioning or pending
+  does nothing.
+- **No fail-back.** The agent stays on its new account when the old one resets
+  (moving back would restart its pod again for nothing); it moves again only if
+  the new account fails in turn.
+
+**The job that hit the limit is re-queued, not failed.** A job whose turn
+failed `rate_limited` or `auth_failed`, on an agent the failover moved off that
+account, goes back to `queued` on the **same worker**, waits for the worker's
+new pod to be ready (up to 5 minutes), and runs again with a fresh
+`timeout_s`. It is re-queued **at most once per account it failed on**, so it
+never loops: failing again on an account it already left ends it as before.
+Each re-queue is recorded on the job:
+
+```json
+"account_failovers": [
+  {"from": "alpha", "to": "beta", "reason": "rate_limited", "at": "…"}
+]
+```
+
+`cc_account` then names the account its last turn ran on. The agent's moves are
+on `GET /api/agents/{name}/account-failovers` (hook tier) —
+`{agent, ccAccount, ccAccountPinned, ccFailover, failoverAllowed, why?, events}`,
+each event `{id, agent_id, agent, from, to, reason, resets_at?, at}`, newest
+first — and the latest one on the agent's page next to its account. muster logs
+one line per move: `ccfailover: agent <name> (id <n>): account_failover from
+alpha to beta, reason rate_limited, resets <time>`. None of them carries a
+token.
 
 ## Reading a job
 
@@ -477,7 +674,7 @@ kept — the job keeps its status and `error` says
 
 | `reason` | |
 |---|---|
-| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`). Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed` or is still cooling down after a `rate_limited`, and prefers the account rate-limited longest ago. |
+| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`), when the [account failover](#account-failover) could not move the agent (every other account cooling or failed, a pinned agent, or the failover off) or the job already failed once on that account. Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed` or is still cooling down after a `rate_limited`, and prefers the account rate-limited longest ago. |
 | other ccd types | `busy`, `capacity`, `not_ready`, `empty_reply`, `turn_failed`, … — ccd's vocabulary, passed through unchanged |
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
@@ -575,7 +772,13 @@ step 6 has its own bound.
 - **A pool is chosen from at submission, not re-balanced.** The marks it reads
   are the account pool's: `auth_failed` under the account's current token, and
   the latest `rate_limited`, whose cooldown is judged at submission: a job
-  already queued on a worker whose account is then rate-limited is not moved.
+  already queued on a worker whose account is then rate-limited is not moved
+  to another worker (the worker itself may be moved to another account by the
+  [account failover](#account-failover)).
+- **The account failover is per process.** A move is idempotent across
+  servers (it is conditional on the account it leaves), but serialising a move
+  against a Stop or Delete of the same agent holds only within one server; a
+  rolling update's two servers can still interleave them.
 - **`result_path` is checked as a string, not resolved.** No `..`, no absolute
   path — but a symlink in the worktree (or the working directory) is followed,
   so the file read can be outside it.

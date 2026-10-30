@@ -80,6 +80,13 @@ const (
 	GuardChiefError = "chief_error"      // the chief's call failed (Detail says how); the next streak is judged again
 	GuardSuperseded = "superseded"       // a queued nudge or relay was refused at its paste: the session had moved on
 	GuardPartial    = "partial_read"     // reason text only: the transcript read was incomplete, so no owner message authorises a nudge
+	// GuardLanesFull: the chief's ccd refused every check for this streak with
+	// 503 capacity (every lane held by the owner's own sessions) for longer than
+	// the sweep's bound; recorded so the streak stops being asked about.
+	GuardLanesFull = "lanes_full"
+	// GuardChiefNotReady: the same for a typed 503 not_ready (CCD_MAX_SESSIONS=0,
+	// or a check CLI that never reaches its prompt).
+	GuardChiefNotReady = "chief_not_ready"
 )
 
 // Suppressed is the outcome for guard.

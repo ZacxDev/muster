@@ -533,12 +533,14 @@ type KeyHolder struct {
 // a [KeyHolder], read-only: on Kubernetes, a key of a Secret in the instance's
 // namespace, mounted from a secret volume into the holder's container only.
 //
-// 🔴 IT IS A REFERENCE, AND MUSTER NEVER READS WHAT IT NAMES. Unlike a secret
-// [File], whose bytes muster holds and writes into an object of its own, the
-// content here stays in the operator's object: muster neither stores nor logs
-// it, and a driver neither creates, updates nor deletes that object. A Secret
-// that does not exist leaves the pod unable to start (the kubelet's
-// FailedMount), which is loud.
+// 🔴 IT IS A REFERENCE, AND MUSTER NEITHER STORES NOR LOGS WHAT IT NAMES. Unlike
+// a secret [File], whose bytes are in the spec, the content stays in the
+// operator's object, which a driver never changes or deletes. A driver MAY copy
+// it, data and type only, from a namespace the operator keeps it in into the
+// instance's (the kubernetes driver's Config.SecretSourceNamespace); that copy
+// passes through the driver's memory and is written nowhere else. A source that
+// does not exist then fails the apply, naming it; without a copy, a Secret that
+// does not exist leaves the pod unable to start (the kubelet's FailedMount).
 //
 // It is a field of [KeyHolder], never of the Spec itself: a type that cannot
 // place it into the instance's container is what keeps it out of there.

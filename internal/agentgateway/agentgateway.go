@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -151,6 +152,27 @@ type Gateway struct {
 	model    string
 	client   *http.Client
 	accounts AccountMarker
+	// failover is the account failover (UseFailover); nil = none.
+	failoverMu sync.RWMutex
+	failover   AccountFailover
+}
+
+// AccountFailover is what the gateway tells after a typed `rate_limited` /
+// `auth_failed` was marked against a claude-code agent's account
+// (internal/ccfailover.Service). It may move the agent to another account and
+// restart its pod; the gateway does not wait for the new pod, and the failed
+// turn's error is returned unchanged.
+type AccountFailover interface {
+	NoteAccountFailure(ctx context.Context, agentID int64, account, failure, detail string)
+}
+
+// UseFailover installs the account failover. It is set after construction
+// because the failover needs the lifecycle adapter, which is built after the
+// gateway (cmd/muster-server buildAgentPlaneWith).
+func (g *Gateway) UseFailover(f AccountFailover) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.failover = f
 }
 
 // New validates the configuration and builds the gateway.
@@ -241,6 +263,7 @@ type Target struct {
 	kind    string
 	account string
 	owner   int64
+	agentID int64
 }
 
 // Resolve does the part of [Gateway.Chat] that contacts no agent runtime: it
@@ -257,7 +280,7 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, unresolved{err}
 	}
-	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID, agentID: a.ID}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from
@@ -319,11 +342,25 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if merr := g.accounts.MarkFailure(mctx, t.owner, t.account, rt.Type, rt.Message); merr != nil {
 		return fmt.Errorf("%w (recording %s against Claude account %q also failed: %v)", err, rt.Type, t.account, merr)
 	}
+	// After the mark, so the failover's choice already sees this account as
+	// cooling (or auth-failed). On its own detached budget: a rebind re-applies
+	// the agent's spec, which outlasts a mark write.
+	g.failoverMu.RLock()
+	f := g.failover
+	g.failoverMu.RUnlock()
+	if f != nil && t.agentID > 0 {
+		fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), failoverTimeout)
+		defer fcancel()
+		f.NoteAccountFailure(fctx, t.agentID, t.account, rt.Type, rt.Message)
+	}
 	return err
 }
 
 // markTimeout bounds the account-mark write.
 const markTimeout = 5 * time.Second
+
+// failoverTimeout bounds the account failover the gateway runs after a mark.
+const failoverTimeout = 2 * time.Minute
 
 // textDeltasOnly adapts Chat's text-delta callback to the responses transport's
 // event stream, and returns nil for a nil callback so the transport's own nil-safety

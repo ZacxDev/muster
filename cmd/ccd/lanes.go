@@ -72,6 +72,22 @@ import (
 // resumes it. When no lane is free to stop the new one is refused (503
 // capacity), never queued.
 //
+// 🔴 A CHECK LANE IS THROWAWAY (X-Muster-CC-Ephemeral: 1 — muster sets it on a
+// chief's stall check, internal/api nudgeRoute). Its key is one decision's, so
+// its conversation is never wanted again:
+//
+//   - its CLI is STOPPED, and its slot freed, as soon as the last turn holding
+//     it releases it — whatever the turn's outcome, a refusal before the paste
+//     included (lanes.release). Nothing keeps an idle check CLI resident;
+//   - it NEVER takes an operator lane's slot: at the cap a check may stop only
+//     another check lane (pickEvictLocked); failing that it is refused with the
+//     same typed 503 capacity, which muster reads as "not sent, retry next pass"
+//     (agentgateway.LanesFull);
+//   - an operator lane at the cap may stop an idle check lane like any other
+//     (with the first rule there is none to stop).
+//
+// Its transcript stays on disk (a few KiB a check); nothing deletes it.
+//
 // A lane at a permission prompt shows on the agent's "awaiting approval" badge
 // like the primary (blockedReporter), and one left there past stuckAfter may be
 // stopped for a new session (pickEvictLocked).
@@ -93,6 +109,10 @@ const (
 	// lane's CLI works in — so muster can tell a ccd that honoured
 	// headerCCWorkdir from one that predates it.
 	headerCCWorkdirUsed = "X-Muster-CC-Workdir-Used"
+	// headerCCEphemeral: "1" marks the lane a THROWAWAY check lane (see above).
+	// Read only on a turn that names a session (headerCCSession); any other
+	// value is an ordinary lane.
+	headerCCEphemeral = "X-Muster-CC-Ephemeral"
 )
 
 // laneModelPattern is what a lane's --model may be: an alias ("opus") or a model
@@ -368,13 +388,17 @@ type lane struct {
 	// workdir is the directory the lane's CLI works in: a job's worktree
 	// (X-Muster-CC-Workdir), or "" for ccd's own workspace. Like the model it is
 	// fixed for the lane's life.
-	workdir  string
-	srv      *server
-	sup      *supervisor
-	term     laneTerminal
-	cancel   context.CancelFunc
-	done     chan struct{} // closed when the supervisor's run returns
-	lastUsed time.Time
+	workdir string
+	// ephemeral: a throwaway check lane (headerCCEphemeral), stopped when its
+	// last turn releases it and never the reason an operator lane is stopped.
+	// Fixed for the lane's life.
+	ephemeral bool
+	srv       *server
+	sup       *supervisor
+	term      laneTerminal
+	cancel    context.CancelFunc
+	done      chan struct{} // closed when the supervisor's run returns
+	lastUsed  time.Time
 	// reserved counts the turns holding this lane, from acquire until their
 	// runTurn has returned (lanes.release). Guarded by lanes.mu.
 	//
@@ -388,6 +412,11 @@ type lane struct {
 	// lanes.mu, the lock eviction chooses under, so a turn that has its lane
 	// cannot lose it.
 	reserved int
+	// startReturned: the CLI's `tmux new-session` has returned (laneStartWatch);
+	// stoppedMidStart: stop ran before it had. Guarded by startMu.
+	startMu         sync.Mutex
+	startReturned   bool
+	stoppedMidStart bool
 }
 
 // lanes is the set of running lanes.
@@ -412,10 +441,19 @@ type lanes struct {
 
 	mu  sync.Mutex
 	set map[string]*lane // by laneID
+
+	// runs counts the lanes' run goroutines still going, stopped or not, so a
+	// test can wait for every one of them to end (stopAll) before the next
+	// test swaps the global logger they write to.
+	runs sync.WaitGroup
 }
 
 // errLanesFull: every lane is mid-turn and the cap is reached.
 var errLanesFull = errors.New("every Claude Code session ccd may run at once is mid-turn")
+
+// errChecksFull: a throwaway check found the cap reached with no other check
+// lane to stop (pickEvictLocked).
+var errChecksFull = errors.New("every Claude Code session ccd may run at once is in use")
 
 // dir is the directory ln's CLI works in.
 func (l *lanes) dir(ln *lane) string {
@@ -432,9 +470,9 @@ func (l *lanes) get(id string) *lane {
 	return l.set[id]
 }
 
-// acquire is acquireIn in ccd's own workspace.
+// acquire is acquireIn in ccd's own workspace, for an operator lane.
 func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure) {
-	return l.acquireIn(ctx, key, model, "")
+	return l.acquireIn(ctx, key, model, "", false)
 }
 
 // acquireIn returns key's lane, starting it in workdir ("" = ccd's workspace;
@@ -442,7 +480,10 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 // when at the cap — if it is not running. model and workdir must match a
 // running lane's. The lane comes back RESERVED (lane.reserved): the caller
 // releases it once its turn is over.
-func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lane, *failure) {
+//
+// ephemeral marks a throwaway check lane: at the cap it may stop only another
+// check lane, never an operator's (pickEvictLocked), and release stops it.
+func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, ephemeral bool) (*lane, *failure) {
 	id := laneID(key)
 	l.mu.Lock()
 	if ln, ok := l.set[id]; ok {
@@ -456,6 +497,11 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lan
 			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
 				Message: fmt.Sprintf("session %q works in %q, not %q: a session's working directory is fixed", key, l.dir(ln), workdir)}
 		}
+		if ln.ephemeral != ephemeral {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q is ephemeral=%v, not %v: whether a session is a throwaway check is fixed", key, ln.ephemeral, ephemeral)}
+		}
 		ln.reserved++
 		l.mu.Unlock()
 		return ln, nil
@@ -463,15 +509,20 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lan
 	var evict *lane
 	stuck := false
 	if len(l.set) >= l.max {
-		evict, stuck = l.pickEvictLocked()
+		evict, stuck = l.pickEvictLocked(ephemeral)
 		if evict == nil {
 			l.mu.Unlock()
+			if ephemeral {
+				return nil, &failure{Status: http.StatusServiceUnavailable, Type: failCapacity,
+					Message: fmt.Sprintf("%v (%d; CCD_MAX_SESSIONS), and a throwaway check never stops a session's CLI — retry later", errChecksFull, l.max)}
+			}
 			return nil, &failure{Status: http.StatusServiceUnavailable, Type: failCapacity,
 				Message: fmt.Sprintf("%v (%d; CCD_MAX_SESSIONS) — retry when one finishes", errLanesFull, l.max)}
 		}
 		delete(l.set, evict.id)
 	}
 	ln := l.newLane(id, key, model, workdir)
+	ln.ephemeral = ephemeral
 	// Detached from the turn's request: the CLI outlives the turn that started it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ln.cancel = cancel
@@ -489,7 +540,11 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lan
 		}
 		evict.stop()
 	}
-	go ln.run(runCtx, l)
+	l.runs.Add(1)
+	go func() {
+		defer l.runs.Done()
+		ln.run(runCtx, l)
+	}()
 	return ln, nil
 }
 
@@ -514,8 +569,15 @@ const stuckLaneAfter = 10 * time.Minute
 // paste into it would answer the dialog rather than reach the model.
 //
 // ⚠ A LANE A TURN STILL HOLDS IS NEVER TAKEN, stuck or not (lane.reserved).
-func (l *lanes) pickEvictLocked() (evict *lane, stuck bool) {
+//
+// 🔴 FOR A CHECK (forCheck), ONLY ANOTHER CHECK LANE IS A CANDIDATE: a throwaway
+// stall check is never the reason an operator's session loses its CLI. With no
+// check lane to take, the caller refuses the check (503 capacity).
+func (l *lanes) pickEvictLocked(forCheck bool) (evict *lane, stuck bool) {
 	for _, ln := range l.set {
+		if forCheck && !ln.ephemeral {
+			continue
+		}
 		if ln.reserved == 0 && ln.srv.idle() && (evict == nil || ln.lastUsed.Before(evict.lastUsed)) {
 			evict = ln
 		}
@@ -525,7 +587,7 @@ func (l *lanes) pickEvictLocked() (evict *lane, stuck bool) {
 	}
 	var oldest time.Time
 	for _, ln := range l.set {
-		if ln.reserved != 0 {
+		if ln.reserved != 0 || forCheck && !ln.ephemeral {
 			continue
 		}
 		since, waiting := ln.srv.awaitingSince()
@@ -543,13 +605,31 @@ func (l *lanes) stuckAfterOr() time.Duration {
 	return stuckLaneAfter
 }
 
-// release ends one reservation acquire took.
+// release ends one reservation acquire took — and, for a throwaway check lane
+// no other turn holds, stops its CLI and frees its slot.
+//
+// 🔴 THE CHECK LANE IS STOPPED UNDER l.mu, out of the set AND killed in one
+// critical section. Its tmux session is killed BY NAME, and a lane started again
+// for the same key has the same name: removed from the set first and killed
+// after the lock, a turn for that key arriving in between would start a new CLI
+// that the kill then took down (the hazard lane.run's ownership check names).
+// Under the lock such a turn waits, then starts a fresh lane. The kill is two
+// tmux commands bounded by 5s (lane.stop) — the same teardown an eviction does.
+//
+// ⚠ ONLY THE LANE THIS RELEASE HOLDS (l.set[ln.id] == ln): one whose CLI ended
+// on its own was already dropped and killed by lane.run, and a replacement for
+// the key is a different lane with turns of its own.
 func (l *lanes) release(ln *lane) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if ln.reserved > 0 {
 		ln.reserved--
 	}
-	l.mu.Unlock()
+	if ln.ephemeral && ln.reserved == 0 && l.set[ln.id] == ln {
+		delete(l.set, ln.id)
+		log.Printf("ccd: stopping check session %s (%s): its turn is over and a check's CLI is never kept", ln.id, ln.key)
+		ln.stop()
+	}
 }
 
 func (l *lanes) newLane(id, key, model, workdir string) *lane {
@@ -558,7 +638,9 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		dir = workdir
 	}
 	term := l.newTerm("cc-" + id)
-	sup := newSupervisor(term, l.bin, l.configDir, dir)
+	ln := &lane{id: id, key: key, model: model, workdir: workdir, term: term,
+		done: make(chan struct{}), lastUsed: l.now()}
+	sup := newSupervisor(laneStartWatch{laneTerminal: term, ln: ln}, l.bin, l.configDir, dir)
 	if l.tweak != nil {
 		l.tweak(sup)
 	}
@@ -586,8 +668,25 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		srv.cliPID = func(ctx context.Context) (int, error) { return sup.runningPID(ctx, pp.PanePID) }
 	}
 	srv.blockedSrc = id
-	return &lane{id: id, key: key, model: model, workdir: workdir, srv: srv, sup: sup, term: term,
-		done: make(chan struct{}), lastUsed: l.now()}
+	ln.srv, ln.sup = srv, sup
+	return ln
+}
+
+// laneStartWatch is a lane's terminal as its supervisor sees it: it notes when
+// the lane's `tmux new-session` has returned (lane.startReturned), so lane.stop
+// can tell whether its kill could have missed a session that command was still
+// creating.
+type laneStartWatch struct {
+	laneTerminal
+	ln *lane
+}
+
+func (w laneStartWatch) Start(ctx context.Context, dir string, argv []string) (paneRef, error) {
+	ref, err := w.laneTerminal.Start(ctx, dir, argv)
+	w.ln.startMu.Lock()
+	w.ln.startReturned = true
+	w.ln.startMu.Unlock()
+	return ref, err
 }
 
 // run supervises the lane's CLI until it is stopped, crash-loops or loses its
@@ -595,28 +694,60 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 func (ln *lane) run(ctx context.Context, l *lanes) {
 	defer close(ln.done)
 	err := ln.sup.run(ctx)
-	if ctx.Err() == nil {
-		st := ln.sup.state()
-		log.Printf("ccd: session %s (%s) ended: %s %s (err=%v); its next turn starts it again", ln.id, ln.key, st.CLI, st.Detail, err)
-		// 🔴 OWNERSHIP FIRST, THEN THE KILL. The session is killed BY NAME, and
-		// a lane started again for this key (after this one was taken out of
-		// the set) has the SAME name: killing it unconditionally here killed the
-		// replacement's CLI. A lane no longer in the set was removed by whoever
-		// took it out (an eviction stops it itself).
-		l.mu.Lock()
-		owned := l.set[ln.id] == ln
-		if owned {
-			delete(l.set, ln.id)
-		}
-		l.mu.Unlock()
-		if !owned {
-			return
-		}
-		ln.clearBlocked()
-		kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = ln.term.KillSession(kctx)
-		kcancel()
+	if ctx.Err() != nil {
+		ln.killLateSession(l)
+		return
 	}
+	st := ln.sup.state()
+	log.Printf("ccd: session %s (%s) ended: %s %s (err=%v); its next turn starts it again", ln.id, ln.key, st.CLI, st.Detail, err)
+	// 🔴 OWNERSHIP FIRST, THEN THE KILL. The session is killed BY NAME, and
+	// a lane started again for this key (after this one was taken out of
+	// the set) has the SAME name: killing it unconditionally here killed the
+	// replacement's CLI. A lane no longer in the set was removed by whoever
+	// took it out (an eviction stops it itself).
+	l.mu.Lock()
+	owned := l.set[ln.id] == ln
+	if owned {
+		delete(l.set, ln.id)
+	}
+	l.mu.Unlock()
+	if !owned {
+		return
+	}
+	ln.clearBlocked()
+	kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = ln.term.KillSession(kctx)
+	kcancel()
+}
+
+// killLateSession runs once a stopped lane's supervisor has returned. When the
+// stop came while the CLI's `tmux new-session` was still running (a release
+// after waitStarted gave up on a slow start, or after the caller went away),
+// stop's kill-session found no session yet — and new-session may then have
+// created one: a cc-<id> CLI nothing would ever kill (a check's key is never
+// used again). So it is killed now, by name, under l.mu, and only while NO lane
+// holds that name: a replacement started for the key in between owns it (and
+// if the late session is still there, the replacement's own new-session fails
+// on the duplicate name, and its cleanup, lane.run, kills that session by name).
+//
+// A stop after new-session returned killed the session itself; nothing is done
+// again then.
+func (ln *lane) killLateSession(l *lanes) {
+	ln.startMu.Lock()
+	late := ln.stoppedMidStart
+	ln.startMu.Unlock()
+	if !late {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.set[ln.id] != nil {
+		return
+	}
+	log.Printf("ccd: session %s (%s) was stopped while its CLI was starting: killing its tmux session by name in case the start created it", ln.id, ln.key)
+	kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer kcancel()
+	_ = ln.term.KillSession(kctx)
 }
 
 // clearBlocked withdraws the lane's "awaiting approval" from the agent's badge:
@@ -630,6 +761,11 @@ func (ln *lane) clearBlocked() {
 
 // stop ends the lane's CLI and its tmux session.
 func (ln *lane) stop() {
+	ln.startMu.Lock()
+	if !ln.startReturned {
+		ln.stoppedMidStart = true
+	}
+	ln.startMu.Unlock()
 	if ln.cancel != nil {
 		ln.cancel()
 	}
@@ -694,6 +830,9 @@ type laneHealth struct {
 	CLI     string `json:"cli"`
 	Session string `json:"session"`
 	Busy    bool   `json:"busy"`
+	// Ephemeral: a throwaway check lane (headerCCEphemeral), stopped when its
+	// turn is over — seen here only while that turn runs.
+	Ephemeral bool `json:"ephemeral,omitempty"`
 	// AwaitingApproval: the lane's CLI is at a permission prompt (since
 	// AwaitingSince); Stuck: for longer than stuckAfter, so a new session at
 	// the cap may stop it (pickEvictLocked).
@@ -713,7 +852,7 @@ func (l *lanes) health() []laneHealth {
 	for _, ln := range list {
 		started, ended, busy := ln.srv.snapshot()
 		h := laneHealth{ID: ln.id, Model: ln.model, CLI: ln.sup.state().CLI,
-			Session: ln.srv.sessionState(started, ended), Busy: busy}
+			Session: ln.srv.sessionState(started, ended), Busy: busy, Ephemeral: ln.ephemeral}
 		if since, waiting := ln.srv.awaitingSince(); waiting {
 			h.AwaitingApproval, h.AwaitingSince = true, since.UTC().Format(time.RFC3339)
 			h.Stuck = l.now().Sub(since) >= l.stuckAfterOr()

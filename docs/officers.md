@@ -50,11 +50,12 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 |---|---|---|
 | `id` | required | HQ's officer id, `<type>:<area slug>`: lowercase letters, digits and single hyphens on each side of the colon. HQ allows 54 characters; muster refuses, at boot, an id whose highest instance agent name (`officer-<type>-<slug>-<max>`) would not fit a namespace under the deployment's `MUSTER_AGENT_NAMESPACE_PREFIX` (63 minus the prefix: 50 under `muster-agent-`). |
 | `hq_url` | required | HQ's API base, including `/api/v1`. No credentials in the URL. |
-| `max_instances` | `1` | 1–8. Each instance is a pod, a volume and a Claude account for life. |
+| `max_instances` | `1` | 1–8. Each instance is a pod, a volume and a Claude account (which the [account failover](#account-failover) may change). |
 | `idle_scale_to_zero_after` | `30m` | How long the officer must be idle before its instances are stopped. |
 | `poll_interval` | `1m` | How often HQ's open items are read when nothing else wakes the loop. At least `10s`. |
 | `owner` | `1` | The muster user the instance agents belong to. |
-| `cc_account` | the pool's choice | Pin the Claude account instances run on. |
+| `cc_account` | the pool's choice | Pin the Claude account instances run on. A pinned instance is not moved to another account when this one hits its limit, unless `cc_failover` is set. |
+| `cc_failover` | `false` | With `cc_account`: let a pinned instance fail over to another account anyway ([account failover](#account-failover)). Without `cc_account` it changes nothing: an unpinned instance fails over by default. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
@@ -96,6 +97,27 @@ Names starting `officer-` are reserved. muster's name generator cannot produce
 one (its adjective-noun pool has no such word), and the officer runtime is the
 only code that creates an agent under a fixed name of that shape. An instance
 keeps its namespace, volume and Claude account across stops and starts.
+
+### Account failover
+
+When a turn of an instance fails `rate_limited` or `auth_failed`, muster moves
+the instance to another of the owner's Claude accounts that is usable, exactly
+as for any `claude-code` agent ([jobs: account
+failover](jobs.md#account-failover)) — unless the officer pins `cc_account`
+without `cc_failover`, or `MUSTER_AGENT_CC_FAILOVER=off`. The move restarts the
+instance's pod (its session restarts; its volume, name and identity are kept),
+and, before the pod restarts:
+
+- the instance's **first turn is re-armed** (as when an existing instance is
+  started), so once the new pod is ready the kickoff deliverer sends it the
+  officer kickoff again and it loads its charter and works the queue;
+- every **live claim it held is released**, so the item it was working when
+  the limit hit is claimable at once, instead of after its lease lapses, and is
+  retried by the restarted instance (or another).
+
+There is no second instance needed and no automatic move back when the first
+account resets. With every other account cooling down, nothing moves: the
+instance stays on its account and the next turn after the reset works.
 
 ### The instance's Claude Code session
 

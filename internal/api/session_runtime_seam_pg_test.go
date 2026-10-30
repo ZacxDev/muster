@@ -38,10 +38,13 @@ type routeRuntime struct {
 
 type routedTurn struct {
 	key, runtime, ccSession, ccModel, gwModel string
+	// ccEphemeral is X-Muster-CC-Ephemeral: set on a chief's stall check only,
+	// so every operator session's turn here must arrive without it.
+	ccEphemeral string
 }
 
 func (r routedTurn) String() string {
-	return fmt.Sprintf("key=%s runtime=%q cc=%q ccmodel=%q gwmodel=%q", r.key, r.runtime, r.ccSession, r.ccModel, r.gwModel)
+	return fmt.Sprintf("key=%s runtime=%q cc=%q ccmodel=%q gwmodel=%q ephemeral=%q", r.key, r.runtime, r.ccSession, r.ccModel, r.gwModel, r.ccEphemeral)
 }
 
 func (f *routeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +57,8 @@ func (f *routeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.instructions = append(f.instructions, req.Instructions)
 	f.turns = append(f.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
 		runtime: r.Header.Get("X-Muster-Runtime"), ccSession: r.Header.Get("X-Muster-CC-Session"),
-		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model")})
+		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model"),
+		ccEphemeral: r.Header.Get("X-Muster-CC-Ephemeral")})
 	f.mu.Unlock()
 	const reply = "noted"
 	w.Header().Set("Content-Type", "text/event-stream")

@@ -319,6 +319,47 @@ func TestJunkCannotSteerTheHint(t *testing.T) {
 	}
 }
 
+// 🔴 TestACrossRepoReferenceNamesThePRSession: a review mail writes the PR
+// GitHub's cross-repo way, acme/widgets#7239, and the session on it says only
+// "PR #7239" in its focus. The message's '#' followed '/', which the bare '#'
+// form refuses, so it carried no "#7239" and named nobody. Now it names that
+// session and only it: not a session on PR #7240, nor one whose focus holds
+// 7239 as a bare number; and the same digits in a URL fragment or glued to a
+// word still name nothing.
+func TestACrossRepoReferenceNamesThePRSession(t *testing.T) {
+	s, pool := pgStore(t)
+	on := AgentSubject(mustAgent(t, pool, 2, "focus-hs-xrepo").ID)
+	near := AgentSubject(mustAgent(t, pool, 2, "focus-hs-xrepo-near").ID)
+	bare := AgentSubject(mustAgent(t, pool, 2, "focus-hs-xrepo-bare").ID)
+	write(t, s, 2, on, "Session working on PR #7239 rebase and audit", "", "")
+	write(t, s, 2, near, "Session working on PR #7240 rebase and audit", "", "")
+	write(t, s, 2, bare, "Session working on the pr queue, build 7239", "", "")
+	live := Live{Agents: []int64{on.AgentID(), near.AgentID(), bare.AgentID()}}
+	since := time.Now().Add(-HistoryWindow)
+	match := func(text string) []string {
+		t.Helper()
+		ms, err := s.MatchHistory(as(2), text, live, since, 2, MaxSearchResults)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return subjectsOf(ms)
+	}
+	// The mail's shape: subject and body joined as pluginSessionHints joins them.
+	mail := "[ask] pr-review acme/widgets#7239 @841aa42 r1\n# Review acme/widgets#7239 @841aa42"
+	if got := match(mail); fmt.Sprint(got) != fmt.Sprint([]string{on.String()}) {
+		t.Errorf("the review mail named %v; want [%s]", got, on)
+	}
+	for _, text := range []string{
+		"[ask] pr-review https://example.com/acme/widgets#7239 r1",
+		"[ask] pr-review example.com/widgets#7239 r1",
+		"[ask] pr-review widgets#7239 r1",
+	} {
+		if got := match(text); len(got) != 0 {
+			t.Errorf("%q named %v; a fragment or a glued '#' is no reference", text, got)
+		}
+	}
+}
+
 // 🔴 TestRealIdentifiersGetAHint (#139 follow-up 8): identifiers people do
 // write got no hint — snake_case and camelCase names and file names (hints.go
 // has no underscore, so the snake rule cannot stand in for the file rule) hold

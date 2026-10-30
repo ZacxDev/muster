@@ -112,6 +112,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO uploads (public_id, object_key, filename, content_type, size_bytes, expires_at) VALUES (substr(md5($1), 1, 22), 'uploads/' || substr(md5($1), 1, 22), 'f.png', 'image/png', 1, now() + interval '1 day')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO attention_asks (agent_id, question, expires_at) VALUES ($1, 'which way?', now() + interval '1 hour')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO jobs (agent_id, agent_name, prompt, timeout_s) VALUES ($1, 'a', 'review it', 60)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO cc_account_failovers (agent_id, agent_name, from_account, to_account, reason) VALUES ($1, 'a', 'north', 'south', 'rate_limited')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO session_routes (route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at) VALUES ('rt_' || substr(md5($1), 1, 24), $2, $3, 'mirror', 'sess', now() + interval '1 hour')`, func() []any { return []any{tag, message, agent} }, nil},
 	}
 	for _, s := range steps {

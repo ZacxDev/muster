@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ZacxDev/muster/internal/officers"
+	"maps"
 	"net/url"
 	"os"
 	"regexp"
@@ -377,6 +378,10 @@ const (
 	// ccpool.DefaultCooldown; unset cap is NO cap (the cap is opt-in).
 	envAgentCCCooldown = "MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN"
 	envAgentCCMaxJobs  = "MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS"
+	// envAgentCCFailover switches the per-agent account failover
+	// (internal/ccfailover): on (the default) moves a claude-code agent whose
+	// account hit its limit to another usable account; off never moves one.
+	envAgentCCFailover = "MUSTER_AGENT_CC_FAILOVER"
 
 	// envAgentCCBypassPools is a comma list of worker-pool names whose
 	// claude-code agents run their JOB lanes with permissions BYPASSED
@@ -393,12 +398,22 @@ const (
 	// list of `<pool>=<owner>/<name>:<secret>` (parsePoolDeployKeys). Each
 	// listed pool's workers clone, and its jobs fetch, that one repository over
 	// SSH with the read-only deploy key in the Secret <secret> (key
-	// ssh-privatekey) of the agents' namespace, mounted read-only into each
+	// ssh-privatekey), kept in muster's own namespace and copied into each
+	// worker's (k8s secretcopy.go), mounted read-only into each
 	// worker (agentspec.ClaudeCodeConfig.PoolDeployKeys). Unset is none: every
 	// pool clones and fetches anonymously. A worker of a listed pool on another
 	// repository is refused, and so is a job naming another repository. Refused
 	// at boot without the claude-code kind, and for a malformed entry.
 	envAgentCCPoolDeployKeys = "MUSTER_AGENT_CC_POOL_DEPLOY_KEYS"
+
+	// envAgentCCEgressLockedPools names worker pools to egress-lock, a comma
+	// list (splitList, lower-cased), on top of every deploy-key pool, which is
+	// locked anyway (agentspec.PoolEgressLocked). A locked worker's
+	// NetworkPolicy has no DNS and no public rule, and its pod carries
+	// muster.agent/egress=locked: what it may reach is the operator's cluster
+	// policy. Refused at boot without the claude-code kind, and for a name
+	// agents.ValidWorkerPool refuses.
+	envAgentCCEgressLockedPools = "MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS"
 
 	// --- the claude-code kind's NetworkPolicy (kubernetes driver only) ---
 	//
@@ -949,6 +964,9 @@ type config struct {
 	// zero is unset: ccpool.DefaultCooldown for the cooldown, and NO cap.
 	AgentCCCooldown time.Duration
 	AgentCCMaxJobs  int
+	// AgentCCFailoverOff is MUSTER_AGENT_CC_FAILOVER=off: no claude-code agent
+	// is moved to another Claude account (unset or on: they are).
+	AgentCCFailoverOff bool
 	// AgentCCBypassPools is MUSTER_AGENT_CC_BYPASS_POOLS read by splitList:
 	// trimmed, in order, LOWER-CASED (pool names are lower-case only, so
 	// "Pr-Review" names the pool "pr-review"). Empty is none.
@@ -959,6 +977,9 @@ type config struct {
 	// validateKinds.
 	AgentCCPoolDeployKeys    map[string]agentspec.PoolDeployKey
 	AgentCCPoolDeployKeysErr error
+	// AgentCCEgressLockedPools is MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS read by
+	// splitList. Empty is none (deploy-key pools are locked regardless).
+	AgentCCEgressLockedPools []string
 
 	// AgentNetpolFromNS and AgentNetpolFromLabels say which pods a claude-code
 	// agent's NetworkPolicy admits: muster's own. AgentNetpolFromLabels is the
@@ -1117,6 +1138,19 @@ func parsePoolDeployKeys(v string) (map[string]agentspec.PoolDeployKey, error) {
 	return out, nil
 }
 
+// egressLockedPools is every egress-locked pool, sorted: the listed ones and
+// every deploy-key pool (agentspec.PoolEgressLocked's set).
+func (c config) egressLockedPools() []string {
+	set := map[string]bool{}
+	for _, p := range c.AgentCCEgressLockedPools {
+		set[p] = true
+	}
+	for p := range c.AgentCCPoolDeployKeys {
+		set[p] = true
+	}
+	return slices.Sorted(maps.Keys(set))
+}
+
 func splitList(v string) []string {
 	var out []string
 	for _, part := range strings.Split(v, ",") {
@@ -1249,6 +1283,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
 	c.AgentCCPoolDeployKeys, c.AgentCCPoolDeployKeysErr = parsePoolDeployKeys(getenv(envAgentCCPoolDeployKeys))
+	c.AgentCCEgressLockedPools = splitList(getenv(envAgentCCEgressLockedPools))
 	if len(c.AgentCCAccountNames) > 0 {
 		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
 		for _, name := range c.AgentCCAccountNames {
@@ -1293,6 +1328,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 				envAgentCCCooldown, v, ccpool.DefaultCooldown)
 		}
 		c.AgentCCCooldown = d
+	}
+	switch v := strings.ToLower(strings.TrimSpace(getenv(envAgentCCFailover))); v {
+	case "", "on", "1", "true":
+	case "off", "0", "false":
+		c.AgentCCFailoverOff = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want on (the default) or off", envAgentCCFailover, v)
 	}
 	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
 		n, err := strconv.Atoi(v)
@@ -2298,6 +2340,11 @@ func (c config) validateClaudeCodeKind() error {
 				"them to limit. Add %s to %s, or unset them", envAgentCCCooldown, envAgentCCMaxJobs, envAgentKinds,
 				agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
 		}
+		if c.AgentCCFailoverOff {
+			return fmt.Errorf("%s=off is set but %s does not include %s: there are no Claude accounts to fail "+
+				"over between. Add %s to %s, or unset it", envAgentCCFailover, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
 		if len(c.AgentCCBypassPools) > 0 {
 			return fmt.Errorf("%s is set but %s does not include %s: there are no Claude Code job lanes for it to "+
 				"bypass permissions on, so it would be an armed switch that does nothing. Add %s to %s, or unset it",
@@ -2308,10 +2355,40 @@ func (c config) validateClaudeCodeKind() error {
 				"deploy key. Add %s to %s, or unset it", envAgentCCPoolDeployKeys, envAgentKinds, agents.KindClaudeCode,
 				agents.KindClaudeCode, envAgentKinds)
 		}
+		if len(c.AgentCCEgressLockedPools) > 0 {
+			return fmt.Errorf("%s is set but %s does not include %s: there are no worker pools for it to lock. "+
+				"Add %s to %s, or unset it", envAgentCCEgressLockedPools, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
 		return nil
 	}
 	if c.AgentCCPoolDeployKeysErr != nil {
 		return c.AgentCCPoolDeployKeysErr
+	}
+	for _, p := range c.AgentCCEgressLockedPools {
+		if !agents.ValidWorkerPool(p) {
+			return fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
+				"letter or digit", envAgentCCEgressLockedPools, p)
+		}
+	}
+	// 🔴 A LOCKED POOL'S NAME IS A LABEL VALUE (muster.agent/pool). A pool name
+	// may end in "-", which a label value may not, and the apiserver would then
+	// refuse every object of such a worker with 422 at dispatch. Refused here,
+	// naming the variable that locks it.
+	for _, l := range []struct {
+		env   string
+		pools []string
+	}{
+		{envAgentCCEgressLockedPools, c.AgentCCEgressLockedPools},
+		{envAgentCCPoolDeployKeys, slices.Sorted(maps.Keys(c.AgentCCPoolDeployKeys))},
+	} {
+		for _, p := range l.pools {
+			if msgs := validation.IsValidLabelValue(p); len(msgs) > 0 {
+				return fmt.Errorf("invalid %s entry %q: the pool is egress-locked and its name is the value of the "+
+					"pod label %s, but it is not a valid label value (%s); rename the pool (it must also end with a "+
+					"letter or digit)", l.env, p, agentspec.LabelPool, strings.Join(msgs, "; "))
+			}
+		}
 	}
 	for _, p := range c.AgentCCBypassPools {
 		if !agents.ValidWorkerPool(p) {

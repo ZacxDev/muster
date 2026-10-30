@@ -134,6 +134,9 @@ type Server struct {
 	// nudgeKick wakes the chief nudge sweep (kickNudges), made once.
 	nudgeKick     chan struct{}
 	nudgeKickOnce sync.Once
+	// nudgeRetry is the stall checks the chief refused, retried bounded
+	// (chief_nudge_retry.go).
+	nudgeRetry nudgeRetries
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's
