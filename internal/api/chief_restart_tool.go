@@ -52,8 +52,9 @@ import (
 //     browser Stop's behaviour — and holds whichever of the two it could take.
 //   - It WAITS, bounded by chiefRestartWait, for the chief's instance to be
 //     observed running and ready on a NEW pod (when there was one before), and
-//     reports the pod and the image it runs against MUSTER_AGENT_CC_IMAGE for
-//     a claude-code chief.
+//     reports the pod and the image its application container runs. It
+//     REPORTS that image and does not compare it with MUSTER_AGENT_CC_IMAGE:
+//     that check stays the operator's (muster-ops chief-restart).
 //
 // ⚠ NO AUDIT ROW, LIKE agent_destroy AND THE BROWSER'S Stop/Start (none of
 // which writes one): the restart's provenance — the host the mirror token
@@ -90,7 +91,7 @@ func chiefRestartToolDef() agents.ToolDef {
 			"after a muster release, so the chief runs the new image and tool set). It is the same as Stop then Start on the chief's " +
 			"agent page: the pod is scaled down and started again from its current spec. It restarts only your owner's own chief and " +
 			"takes no agent. It waits (up to a few minutes) for the chief to be running again and returns the pod before and after " +
-			"and, for a claude-code chief, the image now running against the configured one. It is refused while the chief is " +
+			"and the image each runs. It is refused while the chief is " +
 			"mid-turn (a message being delivered, or a chat turn) unless force is true, which cuts that turn off as Stop does.",
 		Parameters: objSchema(map[string]any{
 			"force": map[string]any{"type": "boolean", "description": "Restart even when the chief is mid-turn, cutting that turn off. Default false."},
@@ -223,31 +224,14 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 	if forced {
 		out["forced"] = true
 	}
-	expected := ""
-	if agents.ResolveKind(chief.Kind) == agents.KindClaudeCode {
-		expected = s.ext.AgentCCImage
-	}
-	if expected != "" {
-		out["expected_image"] = expected
-	}
 	if !observed || after.Status != agents.StatusRunning || !after.Ready || (before.Pod != "" && after.Pod == before.Pod) {
 		s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: not confirmed running within %s (status %s, pod %q, was %q)",
 			chief.ID, chief.Name, from, chiefRestartWait, after.Status, after.Pod, before.Pod)
 		return toolErr("the chief %s was stopped and started, but was not seen running on a new pod within %s: status %s, pod %q "+
 			"(before: %s, pod %q); check its agent page", chief.Name, chiefRestartWait, after.Status, after.Pod, before.Status, before.Pod)
 	}
-	if expected != "" && after.Image != "" && after.Image != expected {
-		s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: running image %s, configured %s", chief.ID, chief.Name, from, after.Image, expected)
-		return toolErr("the chief %s restarted on pod %s, but it runs image %s, not the configured %s", chief.Name, after.Pod, after.Image, expected)
-	}
 	out["restarted"] = true
-	switch {
-	case expected != "" && after.Image != "":
-		out["image_matches"] = true
-	case expected != "":
-		out["image_note"] = "the provisioner does not report the running image, so it was not compared with expected_image"
-	}
-	s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: running on pod %s (was %q)", chief.ID, chief.Name, from, after.Pod, before.Pod)
+	s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: running on pod %s (was %q), image %q", chief.ID, chief.Name, from, after.Pod, before.Pod, after.Image)
 	return toolJSON(out)
 }
 

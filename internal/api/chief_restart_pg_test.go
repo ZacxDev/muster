@@ -145,8 +145,8 @@ func (k unavailableKinds) Unavailable(context.Context, int64) map[string]string 
 const restartImage = "ghcr.io/example-org/cc@sha256:2222"
 
 // restartFixture is the attention fixture (user 1's agents op and op2; a member
-// with a labelled chief and a worker) plus a recording restartProv, the
-// configured claude-code image, mirror tokens ws (user 1's host "ws", listing
+// with a labelled chief and a worker) plus a recording restartProv starting
+// pods on restartImage, mirror tokens ws (user 1's host "ws", listing
 // focusSID) and members (the member's token for a host also named "ws"), and
 // user 1's chief as resolveChief over user 1's own agents finds it.
 type restartFixture struct {
@@ -163,7 +163,6 @@ func newRestartFixture(t *testing.T) *restartFixture {
 	f.attnFixture = newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		f.prov.pool = pool
 		ext.Provisioner = f.prov
-		ext.AgentCCImage = restartImage
 	})
 	f.srv.logger = log.New(f.log, "", 0)
 	t.Cleanup(func() {
@@ -241,10 +240,8 @@ type restartResult struct {
 		Status, Pod, Image string
 		Ready              bool
 	} `json:"after"`
-	ExpectedImage string `json:"expected_image"`
-	ImageMatches  bool   `json:"image_matches"`
-	Restarted     bool   `json:"restarted"`
-	Forced        bool   `json:"forced"`
+	Restarted bool `json:"restarted"`
+	Forced    bool `json:"forced"`
 }
 
 func decodeRestart(t *testing.T, text string) restartResult {
@@ -305,13 +302,14 @@ func TestAMirroredSessionRestartsItsOwnersChief(t *testing.T) {
 	}
 }
 
-// TestChiefRestartReportsTheImageAgainstTheConfiguredOne: a claude-code chief
-// restarted onto the configured image reports image_matches; one that comes
-// back on another image is a tool error naming both; one that never becomes
-// ready is a tool error saying it was not seen running (after the stop and
-// start, which did run). Driven through the handler as a fresh member whose
-// claude-code chief is made here.
-func TestChiefRestartReportsTheImageAgainstTheConfiguredOne(t *testing.T) {
+// TestChiefRestartReportsTheRunningImage: a restarted chief's result reports
+// before.image and after.image as the provisioner reads them from the agent
+// container, and nothing compares them with a configured image (a restart onto
+// any image succeeds, and the result carries no expected_image/image_matches);
+// one that never becomes ready is a tool error saying it was not seen running
+// (after the stop and start, which did run). Driven through the handler as a
+// fresh member whose claude-code chief is made here.
+func TestChiefRestartReportsTheRunningImage(t *testing.T) {
 	f := newRestartFixture(t)
 	owner := f.newMember(t)
 	chief := f.labelledChief(t, owner, "rsccchief")
@@ -319,16 +317,24 @@ func TestChiefRestartReportsTheImageAgainstTheConfiguredOne(t *testing.T) {
 
 	text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
 	r := decodeRestart(t, text)
-	if !r.Restarted || r.ExpectedImage != restartImage || r.After.Image != restartImage || !r.ImageMatches || r.Before.Image != "ghcr.io/example-org/cc@sha256:1111" {
-		t.Fatalf("matching image: %s", text)
+	if !r.Restarted || r.After.Image != restartImage || r.Before.Image != "ghcr.io/example-org/cc@sha256:1111" {
+		t.Fatalf("reported images: %s", text)
 	}
 
 	f.prov.mu.Lock()
 	f.prov.image = "ghcr.io/example-org/cc@sha256:9999"
 	f.prov.mu.Unlock()
 	text = f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
-	if !isToolErr(text) || !strings.Contains(text, "runs image ghcr.io/example-org/cc@sha256:9999, not the configured "+restartImage) {
-		t.Fatalf("mismatched image: %s", text)
+	if isToolErr(text) {
+		t.Fatalf("a restart onto another image is not the tool's to fail: %s", text)
+	}
+	if r := decodeRestart(t, text); !r.Restarted || r.Before.Image != restartImage || r.After.Image != "ghcr.io/example-org/cc@sha256:9999" {
+		t.Fatalf("reported images after an image change: %s", text)
+	}
+	for _, k := range []string{"expected_image", "image_matches", "image_note"} {
+		if strings.Contains(text, k) {
+			t.Fatalf("the result still carries %s: %s", k, text)
+		}
 	}
 
 	f.prov.mu.Lock()

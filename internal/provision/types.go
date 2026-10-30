@@ -858,8 +858,9 @@ type Instance struct {
 	// container was started from, as the backend reports it (for Kubernetes,
 	// the newest pod's spec image of its one application container), or ""
 	// when the driver does not report one or no instance is running. It is
-	// what lets a caller check that a restart brought the instance up on the
-	// image it is configured for (chief_restart).
+	// what lets a caller report which image a restart brought the instance up
+	// on (chief_restart); comparing it with the configured image is the
+	// caller's business.
 	Image string
 }
 

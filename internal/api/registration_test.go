@@ -84,7 +84,6 @@ func fullyWiredServer(t *testing.T) *Server {
 		// the exact blindness that let the namespace defect ship. See
 		// Extensions.AgentNamespacePrefix.
 		AgentNamespacePrefix: "muster-agent-",
-		AgentCCImage:         "ghcr.io/example-org/cc@sha256:1",
 		Connectors:           stubConnectorsStore{},
 		Credentials:          stubCredentialStore{},
 		// NON-ZERO on purpose, for AgentNamespacePrefix's reason: the zero policy

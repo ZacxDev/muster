@@ -105,13 +105,6 @@ type Extensions struct {
 	// attention.
 	AgentNamespacePrefix string
 
-	// AgentCCImage is the claude-code kind's configured image reference
-	// (MUSTER_AGENT_CC_IMAGE), or "" when the kind is not enabled. It is read
-	// only to REPORT: chief_restart (chief_restart_tool.go) compares a restarted
-	// claude-code chief's running image against it. The image an agent is
-	// started on is the provisioner's (agentspec), never this field.
-	AgentCCImage string
-
 	// SessionLiveness answers "does a transcript record for this session still
 	// exist" — the one bit SessionLink.DetailAvailable is made of.
 	//

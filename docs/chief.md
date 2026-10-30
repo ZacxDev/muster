@@ -164,9 +164,11 @@ unlike [replacing the chief](#replacing-the-chief-on-another-kind).
   `chief_restart` MCP tool ([attention.md](attention.md#the-agent-tools)). It takes
   no agent: it restarts **your** chief and nothing else. It runs the agent page's
   own Stop and Start, then waits up to 4 minutes for the chief to be running and
-  ready on a new pod, and answers with the pod before and after. For a claude-code
-  chief it compares the image the new pod runs against `MUSTER_AGENT_CC_IMAGE` and
-  fails if they differ.
+  ready on a new pod, and answers with the pod before and after and the image
+  each runs (the agent container's). It only reports that image: it does not
+  compare it with `MUSTER_AGENT_CC_IMAGE`, so a restart onto another image still
+  succeeds. `muster-ops chief-restart` remains the check that the running image
+  equals the configured one.
 
   It is refused while the chief is mid-turn: a plugin message, its kickoff or a
   memo being delivered, or a chat turn running. Retry when the turn ends, or pass
@@ -184,7 +186,9 @@ unlike [replacing the chief](#replacing-the-chief-on-another-kind).
 After either route, the operator's post-checks still apply: the deployments in
 the chief's namespace rolled out, the pod is newer than the restart, the agent
 image equals `MUSTER_AGENT_CC_IMAGE`, and `ccd seed --check` passes in the pod.
-`chief_restart` covers the pod and the image; the seed check is still yours.
+`chief_restart` covers the new pod and reports the image; that the image equals
+`MUSTER_AGENT_CC_IMAGE` (`muster-ops chief-restart` checks it) and the seed check
+are still yours.
 
 ## Sessions on more than one runtime
 
