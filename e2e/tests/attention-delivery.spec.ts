@@ -2,7 +2,8 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { attentionDeliveryConnectPort, attentionDeliveryFakePort, attentionDeliveryPort, dsn, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { attentionDeliveryConnectPort, attentionDeliveryFakePort, attentionDeliveryPort, dsn, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // AN ANSWER IS DELIVERED TO THE CHIEF THAT ASKED (internal/api/attention_delivery.go),
@@ -120,9 +121,7 @@ async function openChiefPanel(page: Page) {
 
 test('the operator answers the chief on /attention and the chief\'s session receives the answer as a turn, once', async ({ page }) => {
   test.setTimeout(120_000);
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 
   // The chief asks and does not wait: its tool result says it need not.
   const asked = await mcpCall('attention_ask', { question: 'Who should take task 42?', options: ['forward it', 'dispatch a new agent'] });
@@ -180,9 +179,7 @@ for (const vp of [
     test.use(vp.use);
     test('the operator answers the chief on the chief\'s own page and the chief receives it', async ({ page }) => {
       test.setTimeout(120_000);
-      await page.goto(origin + '/login');
-      await page.fill('#muster-password', password);
-      await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+      await signIn(page, origin);
 
       const asked = await mcpCall('attention_ask', { question: `Who takes task 43 (${vp.name})?`, options: ['forward it', 'dispatch a new agent'] });
       expect(asked.isError, asked.text).toBe(false);

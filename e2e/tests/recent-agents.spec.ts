@@ -1,6 +1,7 @@
 import { Browser, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { baseURL, hookToken, password } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { baseURL, hookToken } from '../lib/env';
 import { touchDrag } from '../lib/touch';
 
 // RECENTLY VIEWED, in a real browser on the shared server: the session
@@ -61,9 +62,7 @@ async function pin(page: Page, id: string, on: boolean) {
 async function freshContext(browser: Browser) {
   const ctx = await browser.newContext({ baseURL, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
   const page = await ctx.newPage();
-  await page.goto('/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page);
   return { ctx, page };
 }
 

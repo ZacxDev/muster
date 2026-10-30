@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, dupLabelsPort, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, dupLabelsPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -149,9 +150,7 @@ async function shownTitle(scope: Locator): Promise<string> {
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
 test('two hosts with the same label: two distinct titles, live, and each page is titled as its row', async ({ page }) => {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await expect
     .poll(async () => (await (await page.request.get(origin + '/ui/nav/agents')).text()).split(`host=${hostA}&amp;`).length - 1, { message: `host A's rows (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 })
     .toBe(2);
@@ -225,11 +224,6 @@ test('two hosts with the same label: two distinct titles, live, and each page is
 // refresh never undid the chosen tab. The tabs are gone; the palette finds an
 // entry by its host's name instead.)
 
-async function signIn(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
 // ONE HOST, ONE CODENAME, TWO SESSIONS — and no raw session name on the row.
 // The entry does not draw the raw tmux session beside a codename (an operator
 // ask: the resolved title only), so what tells two "violet:1" windows of ONE
@@ -251,7 +245,7 @@ test('two sessions of one host given one codename: two distinct titles, and no r
     { session: 'scratch9', id: '@3', index: 1, active: true, command: 'zsh', activity: now - 50 },
   ]);
   startHost(hostD, mint(hostD));
-  await signIn(page);
+  await signIn(page, origin);
   await expect
     .poll(async () => (await (await page.request.get(origin + '/ui/nav/agents')).text()).split(`host=${hostD}&amp;`).length - 1, { message: `host D's rows (log:\n${mirrorLog})`, timeout: 20_000 })
     .toBe(3);

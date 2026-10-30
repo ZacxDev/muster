@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, password, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -132,21 +133,6 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// One password sign-in, its cookie handed to every context (sign-in is
-// throttled); a password sign-in is also a FRESH one, which the step-up gate
-// on queueing for a mirror needs.
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
-
 const phone = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true };
 
 // A separate browser context: another device, with its own page and no state
@@ -154,12 +140,12 @@ const phone = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile:
 async function otherDevice(browser: Browser): Promise<{ ctx: BrowserContext; page: Page }> {
   const ctx = await browser.newContext({ ...phone, storageState: { cookies: [], origins: [] } });
   const page = await ctx.newPage();
-  await login(page);
+  await signIn(page, origin);
   return { ctx, page };
 }
 
 async function openView(page: Page, host: string) {
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + viewPath(host));
   await expect(page.locator('#mv-input'), `the rendered view (log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
 }
@@ -398,7 +384,7 @@ test.describe('desktop 1280×800', () => {
   // D1: only the Rendered view queues. The Terminal view's composer pastes into
   // whatever pane is active, which is not the pane whose idle a queue waits on.
   test('the Terminal view of the same window has Send and no Queue', async ({ page }) => {
-    await login(page);
+    await signIn(page, origin);
     await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(newHost)}&session=work&window=%401`);
     await expect(page.locator('#mv-input'), 'the Terminal view draws its composer').toBeVisible({ timeout: 20_000 });
     await expect(page.locator('#mv-queue-send')).toHaveCount(0);
@@ -828,7 +814,7 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
 
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, javaScriptEnabled: false });
     const page = await ctx.newPage();
-    await login(page);
+    await signIn(page, origin);
     await page.goto(origin + viewPath(newHost));
     const r = rowIn(page, sendText, 'queued');
     await moreOf(r).click();
@@ -982,7 +968,7 @@ test.describe('edit a queued message without JavaScript, desktop 1280×800', () 
 
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, javaScriptEnabled: false });
     const page = await ctx.newPage();
-    await login(page);
+    await signIn(page, origin);
     await page.goto(origin + viewPath(newHost));
     const r = rowIn(page, text, 'queued');
     await moreOf(r).click();

@@ -18,6 +18,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [push.md](push.md) — Web Push and the installable app
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
 - [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
+- [chief-nudges.md](chief-nudges.md) — the chief's stall nudges: finding stalled sessions, nudging them with your own words or asking you, shadow mode first
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
 - [connectors.md](connectors.md) — credentials agents use without seeing them, and deciding an agent's request from your own mirrored session (`connector_request_decide`)
 - [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents

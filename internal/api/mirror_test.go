@@ -128,6 +128,8 @@ type fakeMirror struct {
 	liveErr   error
 	// hostTok is what HostToken answers for user 1 (host -> token id).
 	hostTok map[string]int64
+	// work is the host's per-window work counts (HostView.Work); nil = none.
+	work map[string]mirror.WindowWork
 }
 
 // HostToken answers f.hostTok for the host's owner.
@@ -190,6 +192,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	hv.PaneScroll = f.online && f.interactive && f.scroll
 	hv.HermesSend = f.online && f.interactive && f.hermesSend
+	hv.Work = f.work
 	if f.windows != nil {
 		// A per-window host: its per-session view is derived from its windows,
 		// exactly as the hub derives it.
