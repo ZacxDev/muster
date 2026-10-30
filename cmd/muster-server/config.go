@@ -377,6 +377,10 @@ const (
 	// ccpool.DefaultCooldown; unset cap is NO cap (the cap is opt-in).
 	envAgentCCCooldown = "MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN"
 	envAgentCCMaxJobs  = "MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS"
+	// envAgentCCFailover switches the per-agent account failover
+	// (internal/ccfailover): on (the default) moves a claude-code agent whose
+	// account hit its limit to another usable account; off never moves one.
+	envAgentCCFailover = "MUSTER_AGENT_CC_FAILOVER"
 
 	// envAgentCCBypassPools is a comma list of worker-pool names whose
 	// claude-code agents run their JOB lanes with permissions BYPASSED
@@ -949,6 +953,9 @@ type config struct {
 	// zero is unset: ccpool.DefaultCooldown for the cooldown, and NO cap.
 	AgentCCCooldown time.Duration
 	AgentCCMaxJobs  int
+	// AgentCCFailoverOff is MUSTER_AGENT_CC_FAILOVER=off: no claude-code agent
+	// is moved to another Claude account (unset or on: they are).
+	AgentCCFailoverOff bool
 	// AgentCCBypassPools is MUSTER_AGENT_CC_BYPASS_POOLS read by splitList:
 	// trimmed, in order, LOWER-CASED (pool names are lower-case only, so
 	// "Pr-Review" names the pool "pr-review"). Empty is none.
@@ -1293,6 +1300,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 				envAgentCCCooldown, v, ccpool.DefaultCooldown)
 		}
 		c.AgentCCCooldown = d
+	}
+	switch v := strings.ToLower(strings.TrimSpace(getenv(envAgentCCFailover))); v {
+	case "", "on", "1", "true":
+	case "off", "0", "false":
+		c.AgentCCFailoverOff = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want on (the default) or off", envAgentCCFailover, v)
 	}
 	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
 		n, err := strconv.Atoi(v)
@@ -2297,6 +2311,11 @@ func (c config) validateClaudeCodeKind() error {
 			return fmt.Errorf("%s or %s is set but %s does not include %s: there is no Claude account pool for "+
 				"them to limit. Add %s to %s, or unset them", envAgentCCCooldown, envAgentCCMaxJobs, envAgentKinds,
 				agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
+		}
+		if c.AgentCCFailoverOff {
+			return fmt.Errorf("%s=off is set but %s does not include %s: there are no Claude accounts to fail "+
+				"over between. Add %s to %s, or unset it", envAgentCCFailover, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
 		}
 		if len(c.AgentCCBypassPools) > 0 {
 			return fmt.Errorf("%s is set but %s does not include %s: there are no Claude Code job lanes for it to "+

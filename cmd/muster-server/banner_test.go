@@ -473,6 +473,8 @@ var bannerExempt = map[string]string{
 		"with it (ccpool.DefaultCooldown, config.ccPoolLimits), so there is no OFF state to announce",
 	envAgentCCMaxJobs: "an optional, opt-in limit of the claude-code account pool (unset is no cap, config.ccPoolLimits); " +
 		"refused at boot without the kind, so there is no OFF state to announce",
+	envAgentCCFailover: "an optional switch of the claude-code account pool (unset is on; off disables the failover); " +
+		"refused at boot set off without the kind, and printed on the `account failover:` line when the failover is built",
 	envAgentCCBypassPools: "printed on the claude-code arm of the `agent kinds:` line in both states (the pools listed, or " +
 		"\"no worker pool bypasses\"), which bannerBothDirections' fixture cannot render; refused at boot without the " +
 		"kind (validateClaudeCodeKind), so outside that arm there is no state to announce. " +

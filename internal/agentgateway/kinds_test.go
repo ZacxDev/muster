@@ -49,6 +49,9 @@ const (
 	ccdRateLimited = `{"error":{"type":"rate_limited","code":"rate_limit","upstream_status":429,"message":"You've hit your limit · resets 5pm"}}`
 	ccdAuthFailed  = `{"error":{"type":"auth_failed","code":"authentication_failed","upstream_status":401,"message":"OAuth access token is invalid"}}`
 	ccdBusy        = `{"error":{"type":"busy","code":"busy","upstream_status":0,"message":"a turn is in progress"}}`
+	// ccd's answer for a pane parked on the CLI's usage-limit menu (cmd/ccd
+	// failure.go limitMenuFailure): 409, nothing typed, no upstream status.
+	ccdLimitMenu = `{"error":{"type":"rate_limited","code":"rate_limit","message":"You’ve hit your weekly limit · resets Nov 2, 1am (UTC) — the CLI's pane shows its usage-limit menu (a select menu (❯ 1. Stop and wait for limit to reset)); nothing was typed — the account hit its limit"}}`
 )
 
 func markGateway(t *testing.T, srv *httptest.Server, m AccountMarker) *Gateway {

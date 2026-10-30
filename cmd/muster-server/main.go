@@ -504,6 +504,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if gw != nil {
 		ext.Gateway = gw
 	}
+	// The claude-code account failover (internal/ccfailover): with the pool, the
+	// lifecycle adapter and the gateway that reports the failures it acts on.
+	if f, err := buildAccountFailover(cfg, ccPool, ext.Agents, prov, a.pool, logger); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("account failover: %w", err)
+	} else if f != nil {
+		ext.AccountFailover = f
+		if gw != nil {
+			gw.UseFailover(f)
+		}
+	}
 	// The runtimes a chief session may be started on (MUSTER_CHIEF_SESSION_RUNTIMES;
 	// internal/api/session_runtime.go). Empty: the picker is not drawn.
 	ext.SessionRuntimes = cfg.ChiefSessionRuntimes

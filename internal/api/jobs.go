@@ -686,6 +686,11 @@ func jobView(j jobs.Job) map[string]any {
 	if j.SessionID != 0 {
 		v["session_id"] = j.SessionID
 	}
+	// The account failovers the job was re-queued for (failoverJob), oldest
+	// first: present only on a job that had one.
+	if len(j.Failovers) > 0 {
+		v["account_failovers"] = j.Failovers
+	}
 	if j.HasResult {
 		v["result"] = j.Result
 	}
@@ -959,9 +964,30 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		// Not queued any more: something else already finished it.
 		return
 	}
-	jctx, cancel := context.WithTimeout(ctx, s.jobTimeout(j))
-	defer cancel()
-	finish(s.runJobTurn(jctx, a, sess, j))
+	for {
+		jctx, cancel := context.WithTimeout(ctx, s.jobTimeout(j))
+		o := s.runJobTurn(jctx, a, sess, j)
+		cancel()
+		// 🔴 AN ACCOUNT FAILOVER RE-QUEUES THE JOB ON THE SAME WORKER (failoverJob):
+		// the worker was moved to another Claude account and its pod restarted,
+		// so the job runs again there, with a fresh timeout, instead of failing
+		// rate_limited. At most once per account the job failed on.
+		next, again := s.failoverJob(ctx, j, a, o)
+		if !again {
+			finish(o)
+			return
+		}
+		a = next
+		started, err := s.ext.Jobs.Start(ctx, j.ID, a.CCAccount, sess.ID)
+		if err != nil {
+			s.logger.Printf("jobs: %d: start again after an account failover: %v", j.ID, err)
+			finish(jobs.Failed(jobs.ReasonInternal, "could not mark the job running again after its agent's account failover"))
+			return
+		}
+		if !started {
+			return
+		}
+	}
 }
 
 // jobSession opens the chat session a job's turn runs in: a new one per job, on
