@@ -33,6 +33,16 @@ each one is checked again when it would be pasted, and a nudge whose owner is no
 longer live, or whose feature is off, fails with *Not sent: chief nudges are
 off, or in shadow mode for you, on this server* and is never pasted.
 
+**Rolling out.** A `claude-code` chief runs each check in a throwaway lane only
+if its pod's ccd knows the throwaway mark (`X-Muster-CC-Ephemeral`), which ships
+in the same release as the `claude-code-agent` image. An older ccd ignores the
+mark and keeps every check's CLI, and at its lane cap stops an idle one to start
+the next — which can be one of your own sessions (see **Limits**). muster does
+not detect that. So, as part of rolling out this muster: **restart the chief
+onto the new `claude-code-agent` image BEFORE setting (or re-enabling)
+`MUSTER_CHIEF_NUDGES`**, and leave the feature off while any chief pod still
+runs an older image.
+
 ## What counts as stalled
 
 Every 2 minutes the sweep looks at each owner who has a chief (and has it
@@ -103,9 +113,13 @@ mode included), the last assistant message of each of your sessions that has
 already been idle for `MUSTER_CHIEF_NUDGE_IDLE` — redacted like everything sent
 to the chief, and only its last 8 KB — plus the fixed rubrics, sent to TypeSafe's
 Jev through OpenRouter on your OpenRouter key.
-Nothing for any other session, and never per turn: only when the sweep has a
-candidate. It runs in **shadow mode too** — measuring the classifier on real
-stalls is what shadow mode is for.
+Nothing for any other session, and never per turn: **once per idle streak**,
+when that streak first reaches the chief's check. A check the chief could not
+take (busy, refused for capacity, not ready — nothing was sent to it) is retried
+on later sweeps with the classification kept in memory from the first try, not
+a new call; only a restart of muster, a retry more than an hour after the first,
+or more than 512 such streaks held at once classifies that streak again. It runs in **shadow mode too** — measuring
+the classifier on real stalls is what shadow mode is for.
 
 Every decision records the label, all three probabilities, the ask score, the
 model the response says it served (e.g. `typesafe/jev-1.14-…`) and the call's
@@ -132,19 +146,37 @@ none appears in your conversation with the chief:
   pod's memory or holds a lane.
 
 The call holds the chief's turn lock: a busy chief is skipped until the next
-sweep, and so is a claude-code chief whose ccd has no free lane for the check
-(its `503 capacity`, answered before anything is sent): nothing is recorded,
-and the same streak is asked about next sweep. A check never takes a lane from
-one of your own sessions. When every lane (`CCD_MAX_SESSIONS`, default 3) is
-held by your sessions, even idle ones, ccd refuses the check rather than stop
-one of them, so a busy chief with that many open sessions is the usual reason
-for this skip. The call's budget is four
-minutes: the three a check's turn has always had, plus one for ccd to start
-the lane's CLI (ccd gives up on a start after 60 seconds with a `503
-not_ready`, which is skipped the same way). A call that fails otherwise is
-recorded on that session as `suppressed:chief_error` (that idle streak is not
-retried; the next one is judged afresh) and the sweep goes on to the next
-session.
+sweep — nothing is recorded, and the same streak is asked about next sweep.
+
+A claude-code chief whose ccd has no free lane for the check answers `503
+capacity`, before anything is sent. A check never takes a lane from one of your
+own sessions: when every lane (`CCD_MAX_SESSIONS`, default 3) is held by your
+sessions with the chief, even idle ones, ccd refuses the check rather than stop
+one of them. **Those lanes do not free up on their own** — ccd never stops an
+idle session of yours — so the refusal lasts until you close one of those
+sessions. A `503 not_ready` is the same kind of refusal: ccd runs no lanes at
+all (`CCD_MAX_SESSIONS=0`), or the check's CLI did not reach its prompt within
+ccd's 60 seconds. Either refusal is:
+
+- retried on each sweep, with the stall classifier's result kept from the
+  first try (above), and logged once per idle streak, on its first refusal;
+- after **30 minutes** of refusals, recorded on that session as
+  `suppressed:lanes_full` (capacity) or `suppressed:chief_not_ready`, with a
+  detail saying why and what to change — so it shows on the Chief nudges tab,
+  and that idle streak is not asked about again (the next one is judged
+  afresh, and waits its own 30 minutes if the lanes are still full).
+
+While one check is refused, your other stalled sessions wait behind it, and
+their 30 minutes start with its: past the bound they are recorded the same way,
+on the same sweep or the next. A check the chief does answer restarts every
+one of your refusal clocks. The clocks are in memory: a restart of muster
+restarts them.
+
+The call's budget is four minutes, for every kind of chief:
+the three a check's turn has always had, plus one for ccd to start the lane's
+CLI. A call that fails otherwise is recorded on that session as
+`suppressed:chief_error` (that idle streak is not retried; the next one is
+judged afresh) and the sweep goes on to the next session.
 
 The call carries, fenced as untrusted data:
 
@@ -326,14 +358,18 @@ your relayed answer.
 - On a `claude-code` chief each stall check starts a Claude Code CLI in the
   chief's pod (about 250–550 MiB while it runs) and stops it when the check's
   turn ends. With all of ccd's lanes held by your own sessions, checks are
-  skipped until one frees up; they are never run by stopping your sessions.
+  refused — they are never run by stopping your sessions — and since ccd never
+  stops an idle session of yours, they stay refused until you close one: each
+  stalled streak is retried for 30 minutes and then recorded
+  `suppressed:lanes_full` (above), not nudged or asked about.
   Each check's transcript stays on the chief's volume (a few KiB each); nothing
   prunes those.
 - A chief pod whose ccd is older than this muster ignores the throwaway mark.
   It keeps each check's CLI running after the check and, at its lane cap,
   stops the least recently used idle lane to start a new one, which can be one
   of your own sessions (resumed from its transcript on its next turn, with a
-  cold start). Restarting the chief on the current image ends this.
+  cold start). muster does not detect this. Restarting the chief on the current
+  image ends it — see **Rolling out** above.
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.
 - A window on an older `muster-mirror` (no prompt times) is never nudged, only

@@ -35,8 +35,11 @@ import (
 type nudgeCCD struct {
 	mu    sync.Mutex
 	full  bool
-	reply string
-	turns []routedTurn
+	// notReady: a lane turn gets ccd's typed 503 not_ready instead (a ccd with
+	// CCD_MAX_SESSIONS=0, server.laneFor).
+	notReady bool
+	reply    string
+	turns    []routedTurn
 }
 
 func (c *nudgeCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -44,8 +47,13 @@ func (c *nudgeCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.turns = append(c.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
 		ccSession: r.Header.Get("X-Muster-CC-Session"), ccModel: r.Header.Get("X-Muster-CC-Model"),
 		ccEphemeral: r.Header.Get("X-Muster-CC-Ephemeral")})
-	full, reply := c.full, c.reply
+	full, notReady, reply := c.full, c.notReady, c.reply
 	c.mu.Unlock()
+	if notReady && r.Header.Get("X-Muster-CC-Session") != "" {
+		podagent.WriteFailure(w, &podagent.Failure{Status: http.StatusServiceUnavailable, Type: "not_ready",
+			Message: "this ccd runs one Claude Code session only (it does not supervise the CLI, or CCD_MAX_SESSIONS is 0)"})
+		return
+	}
 	// ccd refuses for capacity only a turn that needs a lane (laneFor); the
 	// primary's turns are never refused for it.
 	if full && r.Header.Get("X-Muster-CC-Session") != "" {
@@ -68,6 +76,12 @@ func (c *nudgeCCD) setFull(full bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.full = full
+}
+
+func (c *nudgeCCD) setNotReady(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notReady = v
 }
 
 // newLaneNudgeFixture is newNudgeFixture (shadow) with the real gateway in
