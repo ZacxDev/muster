@@ -46,56 +46,69 @@ as() { # as <uid> <cmd...>: run with that uid/gid and no supplementary groups.
 	setpriv --reuid="$u" --regid="$u" --clear-groups env HOME=/tmp LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "$@"
 }
 
-# (a) ssh as the holder's uid.
-out=$(as "$HOLDER_UID" ssh -V 2>&1) || fail "(a) ssh -V as uid $HOLDER_UID: $out"
-echo "deploykey-smoke: (a) ssh -V as uid $HOLDER_UID: $out"
-# Port 1 on loopback: nothing listens, so a working ssh stops at the connect
-# step ("Connection refused"); one that cannot run stops before it.
-# shellcheck disable=SC2086
-out=$(as "$HOLDER_UID" $SSH_CMD -o ConnectTimeout=5 -p 1 git@127.0.0.1 git-upload-pack x 2>&1) && fail "(a) ssh to a closed port succeeded"
-echo "deploykey-smoke: (a) holder ssh as uid $HOLDER_UID: $out"
-case $out in
-*"No user exists"*) fail "(a) the holder's ssh cannot run as uid $HOLDER_UID: $out" ;;
-*"Connection refused"*) ;;
-*) fail "(a) the holder's ssh did not reach the connect step: $out" ;;
-esac
+check_a() (
+	# (a) ssh as the holder's uid.
+	out=$(as "$HOLDER_UID" ssh -V 2>&1) || fail "(a) ssh -V as uid $HOLDER_UID: $out"
+	echo "deploykey-smoke: (a) ssh -V as uid $HOLDER_UID: $out"
+	# Port 1 on loopback: nothing listens, so a working ssh stops at the connect
+	# step ("Connection refused"); one that cannot run stops before it.
+	# shellcheck disable=SC2086
+	out=$(as "$HOLDER_UID" $SSH_CMD -o ConnectTimeout=5 -p 1 git@127.0.0.1 git-upload-pack x 2>&1) && fail "(a) ssh to a closed port succeeded"
+	echo "deploykey-smoke: (a) holder ssh as uid $HOLDER_UID: $out"
+	case $out in
+	*"No user exists"*) fail "(a) the holder's ssh cannot run as uid $HOLDER_UID: $out" ;;
+	*"Connection refused"*) ;;
+	*) fail "(a) the holder's ssh did not reach the connect step: $out" ;;
+	esac
 
-# (b) the mirror, written by the holder's uid, read by the session's.
-install -d -o "$HOLDER_UID" -g "$HOLDER_UID" -m 0755 "$(dirname "$MIRROR")"
-work=$(mktemp -d)
-chown "$HOLDER_UID:$HOLDER_UID" "$work"
-# shellcheck disable=SC2016
-as "$HOLDER_UID" sh -euc '
-	git init -q -b trunk "$1"
-	printf "mirrored\n" > "$1/f"
-	git -C "$1" add f
-	git -C "$1" -c user.name=t -c user.email=t@t commit -q -m one
-	git clone -q --bare "$1" "$2"
-	git -C "$2" update-ref refs/pull/7/head trunk
-' sh "$work/src" "$MIRROR"
-[ "$(stat -c %u "$MIRROR")" = "$HOLDER_UID" ] || fail "(b) the mirror is not owned by uid $HOLDER_UID"
-dest=$(mktemp -d)
-chown "$SESSION_UID:$SESSION_UID" "$dest"
-up=()
-[ -z "$UPLOAD_PACK" ] || up=(--upload-pack="$UPLOAD_PACK")
-# shellcheck disable=SC2086
-out=$(as "$SESSION_UID" git $GIT_PRE clone --quiet --no-local "${up[@]}" -- "$MIRROR" "$dest/co" 2>&1) ||
-	fail "(b) clone of the mirror as uid $SESSION_UID: $out"
-[ "$(cat "$dest/co/f")" = mirrored ] || fail "(b) the clone does not hold the mirror's file"
-echo "deploykey-smoke: (b) clone --no-local of a uid-$HOLDER_UID mirror as uid $SESSION_UID: ok"
-# shellcheck disable=SC2086
-out=$(as "$SESSION_UID" git $GIT_PRE -C "$dest/co" fetch --quiet --no-tags "${up[@]}" "$MIRROR" "+refs/pull/7/head:refs/muster-jobs/1" 2>&1) ||
-	fail "(b) fetch from the mirror as uid $SESSION_UID: $out"
-as "$SESSION_UID" git -C "$dest/co" rev-parse --verify --quiet refs/muster-jobs/1 >/dev/null || fail "(b) the fetched ref is missing"
-echo "deploykey-smoke: (b) fetch <mirror> refs/pull/7/head as uid $SESSION_UID: ok"
+)
+check_b() (
+	# (b) the mirror, written by the holder's uid, read by the session's.
+	install -d -o "$HOLDER_UID" -g "$HOLDER_UID" -m 0755 "$(dirname "$MIRROR")"
+	work=$(mktemp -d)
+	chown "$HOLDER_UID:$HOLDER_UID" "$work"
+	# shellcheck disable=SC2016
+	as "$HOLDER_UID" sh -euc '
+		git init -q -b trunk "$1"
+		printf "mirrored\n" > "$1/f"
+		git -C "$1" add f
+		git -C "$1" -c user.name=t -c user.email=t@t commit -q -m one
+		git clone -q --bare "$1" "$2"
+		git -C "$2" update-ref refs/pull/7/head trunk
+	' sh "$work/src" "$MIRROR"
+	[ "$(stat -c %u "$MIRROR")" = "$HOLDER_UID" ] || fail "(b) the mirror is not owned by uid $HOLDER_UID"
+	dest=$(mktemp -d)
+	chown "$SESSION_UID:$SESSION_UID" "$dest"
+	up=()
+	[ -z "$UPLOAD_PACK" ] || up=(--upload-pack="$UPLOAD_PACK")
+	# shellcheck disable=SC2086
+	out=$(as "$SESSION_UID" git $GIT_PRE clone --quiet --no-local "${up[@]}" -- "$MIRROR" "$dest/co" 2>&1) ||
+		fail "(b) clone of the mirror as uid $SESSION_UID: $out"
+	[ "$(cat "$dest/co/f")" = mirrored ] || fail "(b) the clone does not hold the mirror's file"
+	echo "deploykey-smoke: (b) clone --no-local of a uid-$HOLDER_UID mirror as uid $SESSION_UID: ok"
+	# shellcheck disable=SC2086
+	out=$(as "$SESSION_UID" git $GIT_PRE -C "$dest/co" fetch --quiet --no-tags "${up[@]}" "$MIRROR" "+refs/pull/7/head:refs/muster-jobs/1" 2>&1) ||
+		fail "(b) fetch from the mirror as uid $SESSION_UID: $out"
+	as "$SESSION_UID" git -C "$dest/co" rev-parse --verify --quiet refs/muster-jobs/1 >/dev/null || fail "(b) the fetched ref is missing"
+	echo "deploykey-smoke: (b) fetch <mirror> refs/pull/7/head as uid $SESSION_UID: ok"
 
-# (c) the key's mode, against another uid.
-key=$(mktemp)
-echo "smoke-marker" > "$key"
-chown "0:$HOLDER_UID" "$key"
-chmod 0440 "$key"
-if as "$SESSION_UID" cat "$key" >/dev/null 2>&1; then fail "(c) uid $SESSION_UID read a 0440 root:$HOLDER_UID file"; fi
-as "$HOLDER_UID" cat "$key" >/dev/null 2>&1 || fail "(c) control: uid $HOLDER_UID cannot read its own group's file"
-echo "deploykey-smoke: (c) uid $SESSION_UID cannot read a 0440 root:$HOLDER_UID file: ok"
-rm -rf "$work" "$dest" "$key" "$(dirname "$MIRROR")"
+)
+check_c() (
+	# (c) the key's mode, against another uid.
+	key=$(mktemp)
+	echo "smoke-marker" > "$key"
+	chown "0:$HOLDER_UID" "$key"
+	chmod 0440 "$key"
+	if as "$SESSION_UID" cat "$key" >/dev/null 2>&1; then fail "(c) uid $SESSION_UID read a 0440 root:$HOLDER_UID file"; fi
+	as "$HOLDER_UID" cat "$key" >/dev/null 2>&1 || fail "(c) control: uid $HOLDER_UID cannot read its own group's file"
+	echo "deploykey-smoke: (c) uid $SESSION_UID cannot read a 0440 root:$HOLDER_UID file: ok"
+)
+# Each check runs on its own (a subshell: its fail exits only it), so one
+# run reports every check that fails.
+failed=0
+check_a || failed=1
+check_b || failed=1
+check_c || failed=1
+rm -rf "$(dirname "$MIRROR")"
+[ "$failed" = 0 ] || { echo "deploykey-smoke: FAILED" >&2; exit 1; }
 echo "deploykey-smoke: ok"
