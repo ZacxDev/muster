@@ -325,7 +325,7 @@ func TestTheNewestHistoryRowIsTheCurrentFocusUnderInterleavedWriters(t *testing.
 	write(t, s, 2, sub, "start", "", "")
 	ctx := as(2)
 	upsert := func(tx pgx.Tx, title string) error {
-		f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, nil, title, "", string(SourceSummarizer), ""))
+		f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, nil, title, "", string(SourceSummarizer), "", "", false))
 		if err != nil {
 			return err
 		}

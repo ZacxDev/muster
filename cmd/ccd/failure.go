@@ -36,7 +36,7 @@ const (
 	failTerminal     = "terminal"      // 502: tmux could not be driven
 	failTranscript   = "transcript"    // 502: the reply could not be read back
 	failAuth         = "auth_failed"   // 502: the model account's credential was rejected
-	failRateLimited  = "rate_limited"  // 429: the model account hit a usage limit
+	failRateLimited  = "rate_limited"  // 429: the model account hit a usage limit (409 from the limit menu: limitMenuFailure)
 	failBilling      = "billing_error" // 502
 	failTurn         = "turn_failed"   // 502: any other API failure
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
@@ -46,6 +46,35 @@ const (
 // codeAwaitingApproval is the `code` of a `busy` refusal for a pane showing a
 // dialog (server.go awaitingApproval).
 const codeAwaitingApproval = "awaiting_approval"
+
+// codeRateLimit is the CLI's own error code for a usage limit (the transcript's
+// error=rate_limit), which classifyAPIError maps to rate_limited.
+const codeRateLimit = "rate_limit"
+
+// limitMenuFailure is the answer for a pane parked on the CLI's usage-limit
+// menu (dialog.go limitMenuShown): type rate_limited, code rate_limit — what
+// muster's gateway marks the account on and fails the agent over on
+// (internal/agentgateway noteFailure keys on the type alone).
+//
+// 🔴 ITS STATUS IS 409, NOT THE 429 OF A RATE-LIMITED TURN, BECAUSE NOTHING WAS
+// TYPED. A 429 is a turn that was pasted and failed; a 409 from ccd is a refusal
+// before any key (`busy` is the other), and muster's "provably unsent" reading
+// (internal/agentgateway.Unsent, internal/agentkickoff runtimeRefusedUnsent)
+// keys on that status, so the message is queued again rather than recorded as
+// possibly delivered — and the retry lands on the agent's next account.
+//
+// The message leads with the CLI's limit line when the screen shows it, so the
+// account pool reads its reset time ("resets Nov 2, 1am (UTC)",
+// internal/ccpool statedReset); without one the pool rests the account for its
+// default cooldown, as for any rate_limited whose message states no reset.
+func limitMenuFailure(lm *limitMenuShown) *failure {
+	msg := "the CLI's pane shows its usage-limit menu (" + lm.what + ")"
+	if lm.limit != "" {
+		msg = lm.limit + " — " + msg
+	}
+	return &failure{Status: http.StatusConflict, Type: failRateLimited, Code: codeRateLimit,
+		Message: msg + "; nothing was typed — the account hit its limit"}
+}
 
 // failure is internal/podagent's typed failure (one wire).
 type failure = podagent.Failure
@@ -76,7 +105,7 @@ func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, 
 func classifyAPIError(e apiError) *failure {
 	f := &failure{Code: e.Code, Upstream: e.Status, Message: e.Message}
 	switch {
-	case e.Code == "rate_limit":
+	case e.Code == codeRateLimit:
 		f.Status, f.Type = http.StatusTooManyRequests, failRateLimited
 	case e.Code == "authentication_failed":
 		f.Status, f.Type = http.StatusBadGateway, failAuth

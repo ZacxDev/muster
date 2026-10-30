@@ -64,6 +64,9 @@ type chiefReplaceRequest struct {
 	Kind string `json:"kind"`
 	// CCAccount pins a claude-code chief's Claude account; "" lets the pool choose.
 	CCAccount string `json:"cc_account"`
+	// CCFailover opts a chief PINNED by CCAccount in to account failover; an
+	// unpinned claude-code chief fails over by default.
+	CCFailover bool `json:"cc_failover"`
 	// Model is a gateway chief's model; "" = the deployment default.
 	Model string `json:"model"`
 	// Confirm must equal the reserved slug being replaced, or nothing happens.
@@ -324,6 +327,7 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Name: chiefName, DisplayName: ChiefDisplayName, Kind: kind, CCAccount: account, Model: req.Model,
+		CCAccountChosen: req.CCAccount == "", CCFailover: req.CCFailover,
 		NoteText: chiefIntro(kind), Kickoff: true,
 	})
 	if err != nil {

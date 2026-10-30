@@ -146,6 +146,9 @@ type Focus struct {
 	// success), at ErrorAt.
 	LastError string
 	ErrorAt   time.Time
+	// Cwd is the working directory the session's transcript last named when
+	// its focus was written ("" = unknown): cwd.go, migration 0065.
+	Cwd string
 }
 
 // Has reports whether f holds a focus at all (a row that only recorded a

@@ -59,6 +59,9 @@ type Record struct {
 	APIErrorStatus   int    `json:"apiErrorStatus"`
 	// Timestamp is when the CLI wrote the record (RFC 3339); Time reads it.
 	Timestamp string `json:"timestamp"`
+	// Cwd is the working directory the CLI was in when it wrote the record.
+	// Only a prompt's travels (Event.Cwd).
+	Cwd string `json:"cwd"`
 	// Origin is who wrote a user record: "human", or "task-notification" for
 	// one the harness injected (notice.go). Absent before CLI 2.1.22.
 	Origin struct {

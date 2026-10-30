@@ -91,6 +91,8 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// same reason: it is a pure DB read and never touches k8s, so it works on a
 	// provisioner-less deployment.
 	mux.HandleFunc("GET /api/agents/{name}/messages", s.requireHookToken(s.handleAPIAgentMessages))
+	// The agent's Claude account binding and its account failovers (failover.go).
+	mux.HandleFunc("GET /api/agents/{name}/account-failovers", s.requireHookToken(s.handleAPIAgentFailovers))
 	// 🔴 THE MACHINE WRITE HALF, AND THE ROUTE `muster chief ask` NOW POSTS TO
 	// (task #633 criterion 1). It used to post to POST /operator/agents/{id}/message
 	// behind requireOperatorToken — a gate that resolved the bearer to an agent ROW
@@ -750,6 +752,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	noteText := strings.TrimSpace(r.FormValue("note_text"))
 	kind := strings.TrimSpace(r.FormValue("kind"))
 	ccAccount := strings.TrimSpace(r.FormValue("cc_account"))
+	ccFailover := formTrue(r.FormValue("cc_failover"))
 	workerPool := strings.TrimSpace(r.FormValue("worker_pool"))
 
 	// Resolve the kickoff note: an existing note's body takes precedence.
@@ -775,7 +778,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
 		Kickoff: action == "dispatch",
-		Kind:    kind, CCAccount: ccAccount, WorkerPool: workerPool,
+		Kind:    kind, CCAccount: ccAccount, CCFailover: ccFailover, WorkerPool: workerPool,
 	})
 	if err != nil {
 		s.logger.Printf("agents: create/dispatch: %v", err)
@@ -913,6 +916,13 @@ type dispatchParams struct {
 	// CCAccount PINS a claude-code agent's Claude account; "" lets the pool
 	// choose. Refused for any other kind.
 	CCAccount string
+	// CCAccountChosen says CCAccount was already chosen BY THE POOL (the chief
+	// replacement resolves its account before it deletes the old chief), so it
+	// is not a pin: the agent is created unpinned and fails over by default.
+	CCAccountChosen bool
+	// CCFailover opts a PINNED agent in to account failover
+	// (agents.Agent.CCFailover); an unpinned one fails over without it.
+	CCFailover bool
 	// WorkerPool makes a claude-code agent a member of that machine-job worker
 	// pool (agents.Agent.WorkerPool); "" for none. Refused for any other kind
 	// and for a name agents.ValidWorkerPool refuses.
@@ -956,8 +966,9 @@ func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
 // row exists.
 //
 // 🔴 THE ACCOUNT IS CHOSEN HERE, ONCE, AND STORED ON THE ROW — the agent keeps
-// it for life (migration 0003 refuses a change). Every later build of this
-// agent's spec reads the stored name; nothing re-selects.
+// it until an account failover moves it (internal/ccfailover; migration 0003's
+// trigger refuses every other change). Every later build of this agent's spec
+// reads the stored name; nothing else re-selects.
 func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind, account string, err error) {
 	kind, err = s.resolveKind(ctx, p.Kind)
 	if err != nil {
@@ -1102,7 +1113,10 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		Status:      agents.StatusProvisioning,
 		Kind:        kind,
 		CCAccount:   account,
-		WorkerPool:  p.WorkerPool,
+		// A pin is an account the CALLER named; the pool's own choice is not.
+		CCAccountPinned: account != "" && p.CCAccount != "" && !p.CCAccountChosen,
+		CCFailover:      account != "" && p.CCFailover,
+		WorkerPool:      p.WorkerPool,
 	})
 	if err != nil {
 		return agents.Agent{}, err
@@ -1478,7 +1492,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	view := ui.AgentDetailView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
-		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
+		LastFailover: s.lastFailoverLine(ctx, a),
+		Messages:     lines, Sessions: sessions, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
 		// The chat form's fallback when its socket cannot carry a message
 		// (agent_send.go): its nonce, and the outcome of such a send.
@@ -2172,4 +2187,14 @@ func firstNonEmptyLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// formTrue reads an HTML checkbox or a JSON-ish flag: "on", "1", "true", "yes"
+// (any case) are true; anything else, including absent, is false.
+func formTrue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "on", "1", "true", "yes":
+		return true
+	}
+	return false
 }

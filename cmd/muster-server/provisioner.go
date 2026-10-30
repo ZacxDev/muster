@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
@@ -126,6 +128,43 @@ func buildClaudePool(cfg config, src ccpool.Source, marks ccpool.Store) (*ccpool
 			"in Postgres, and %s is unset", envAgentKinds, agents.KindClaudeCode, envDatabase)
 	}
 	return ccpool.NewWithLimits(src, marks, cfg.ccPoolLimits())
+}
+
+// buildAccountFailover builds the claude-code account failover
+// (internal/ccfailover) over the pool, the agents store and the lifecycle
+// adapter, or nil when there is no claude-code pool or no adapter to restart
+// an agent with. It is built even when MUSTER_AGENT_CC_FAILOVER=off — it then
+// moves nothing, and the agent page and API say why.
+//
+// 🔴 nil IS RETURNED AS A TYPED NIL'S ABSENCE, NOT A nil *Service IN AN
+// INTERFACE: the caller assigns it to api.Extensions.AccountFailover only when
+// non-nil, so the api's nil check stays truthful.
+func buildAccountFailover(cfg config, pool *ccpool.Pool, store agents.Store, prov *agentprovision.Adapter,
+	db *pgxpool.Pool, logger *log.Logger) (*ccfailover.Service, error) {
+	if pool == nil || prov == nil || store == nil {
+		return nil, nil
+	}
+	fc := ccfailover.Config{
+		Enabled:   !cfg.AgentCCFailoverOff,
+		Pool:      pool,
+		Agents:    store,
+		Rebinder:  prov,
+		Instances: prov.Instances,
+		Logger:    logger,
+	}
+	if db != nil {
+		fc.Store = ccfailover.NewPG(db)
+	}
+	f, err := ccfailover.New(fc)
+	if err != nil {
+		return nil, err
+	}
+	state := "on"
+	if cfg.AgentCCFailoverOff {
+		state = "OFF (" + envAgentCCFailover + "=off)"
+	}
+	logger.Printf("account failover: %s", state)
+	return f, nil
 }
 
 // buildAgentPlaneWith is buildAgentPlane with the claude-code account pool,

@@ -42,6 +42,9 @@ const (
 	MaxText = 32 << 10
 	// MaxInput bounds a tool call's input JSON (shown when the row is expanded).
 	MaxInput = 2 << 10
+	// MaxCwd bounds a prompt's working directory (Event.Cwd): a longer one is
+	// dropped, never cut — a cut path names another directory.
+	MaxCwd = 512
 	// MaxOutput bounds a tool result's output (shown when the row is expanded).
 	MaxOutput = 4 << 10
 )
@@ -96,6 +99,14 @@ type Event struct {
 	// stateless, cannot — and Prompts names the same prompt by the same number,
 	// which is how the message index finds a prompt's bubble. 0 = not known.
 	Line int64 `json:"line,omitempty"`
+	// Cwd is a PROMPT's working directory, as its record said ("" on every
+	// other event, for one over MaxCwd, and from a host that predates it).
+	// muster stores the newest with the session's focus, to decide whether
+	// the fleet report may describe the session (internal/focus/cwd.go); it
+	// is never rendered. Prompts only, so the stream grows by one path per
+	// human turn, not per record.
+	Cwd string `json:"cwd,omitempty"`
+
 	// PromptAt is a PROMPT's own timestamp (its record's, Unix ms), 0 when the
 	// record has none. It is what lets muster tell how recent a message the
 	// person typed is (the chief nudge sweep only accepts the owner's last six
@@ -185,7 +196,11 @@ func Events(r Record) []Event {
 			if cmd, ok := slashCommand(text); ok {
 				text = cmd
 			}
-			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText), PromptAt: r.Time()}}
+			ev := Event{Kind: KindPrompt, Text: Cap(text, MaxText), PromptAt: r.Time()}
+			if len(r.Cwd) <= MaxCwd {
+				ev.Cwd = r.Cwd
+			}
+			return []Event{ev}
 		}
 		if r.IsMeta || r.IsCompactSummary {
 			return nil

@@ -10,6 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
@@ -290,6 +291,13 @@ type Extensions struct {
 	PRMail     *PRMail
 	PRSessions plugins.PRSessionStore
 
+	// FleetReport is the fleet-report request's configuration
+	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS;
+	// fleet_report.go). nil — the senders unset — is OFF: such a mail is handed
+	// on as any other. The chief's fleet_report tool needs only Focus, and
+	// lists pull requests only with PRSessions.
+	FleetReport *FleetReport
+
 	// MailResume is the mail resume's configuration (MUSTER_MAIL_RESUME_ALLOW,
 	// MUSTER_MAIL_RESUME_OFF; mail_resume.go) and MailResumes its durable
 	// record (migration 0056). nil — the allowlist unset — is OFF: mail for a
@@ -326,6 +334,22 @@ type Extensions struct {
 	// and delete. nil (no provisioner): a job naming sha or result_path is
 	// refused 501 when it is submitted, never accepted and then failed.
 	JobWorkspace JobWorkspace
+	// AccountFailover is the claude-code account failover
+	// (internal/ccfailover.Service). nil (no claude-code kind, or no
+	// provisioner): a job whose account hit its limit fails as before, and the
+	// agent page shows no failovers.
+	AccountFailover AccountFailover
+}
+
+// AccountFailover is the part of internal/ccfailover.Service this package uses:
+// the job runner's re-queue (AccountFailed + AwaitRebound), the agent page's
+// history (Events) and the officer runtime's hooks (UseHooks).
+type AccountFailover interface {
+	AccountFailed(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result
+	AwaitRebound(ctx context.Context, r ccfailover.Result) error
+	Events(ctx context.Context, agentID int64, limit int) ([]ccfailover.Event, error)
+	UseHooks(policy ccfailover.Policy, prepare ccfailover.Prepare)
+	Allowed(a agents.Agent) (bool, string)
 }
 
 // JobWorkspace is the part of the agent lifecycle adapter the job runner uses
@@ -480,6 +504,9 @@ func (s *Server) UseExtensions(ext Extensions) {
 	s.extDefects = ext.defects()
 	ext.Notes = withSessionLiveness(ext.Notes, ext.SessionLiveness)
 	s.ext = ext
+	if ext.AccountFailover != nil {
+		ext.AccountFailover.UseHooks(s.failoverPolicy, s.failoverPrepare)
+	}
 	if ext.Mirror != nil {
 		s.wireAsks(ext.Mirror)
 	}

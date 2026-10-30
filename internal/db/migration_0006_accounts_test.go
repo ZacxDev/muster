@@ -108,7 +108,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - device_challenges (0058, a paired phone's signed-action challenges).
 //   - chief_preferences (0060, the chief's per-user on/off toggle).
 //   - chief_nudges (0064, the chief's stall-nudge decisions).
-var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+//   - cc_account_failovers (0066, a claude-code agent's account rebinds).
+var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
 
@@ -155,6 +156,8 @@ var sharedTables = []string{"agent_retired_names", "schema_migrations"}
 var wantForeignKeys = []string{
 	"agents|agents_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE SET NULL (note_id)",
 	"agents|agents_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"cc_account_failovers|cc_account_failovers_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"cc_account_failovers|cc_account_failovers_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"cc_account_marks|cc_account_marks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"api_tokens|api_tokens_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",
 	"audit_log|audit_log_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",

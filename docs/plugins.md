@@ -1122,6 +1122,106 @@ but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a
 command behind a wrapper the hook does not read), and anything from a host
 without the hook.
 
+### A fleet-report request
+
+A team console's standup can ask your muster what you worked on. A **fleet-report
+request** is answered by muster itself, in code, with no chief turn and no
+owner in between. Off unless `MUSTER_FLEET_REPORT_SENDERS` lists the asking
+agent-mail address; `MUSTER_FLEET_REPORT_PATHS` must then name the working
+directories whose sessions a reply may describe ([configuration](configuration.md)).
+
+1. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
+   is on the list **and** that the plugin marked `sender_verified`, and whose
+   **whole body** is one JSON object (the subject is not read):
+
+   ```json
+   {"type": "fleet_report_request", "v": 1, "request_id": "<opaque, at most 64 bytes>",
+    "member": "<github login>",
+    "window": {"since": "<RFC 3339>", "until": "<RFC 3339>", "zone": "<IANA zone>"}}
+   ```
+
+   `member` is part of the contract but **not checked**: every read runs as
+   the owner the plugin acts for, under row-level security, so the reply is
+   always that owner's, and the asking side binds the reply to its request by
+   its own target, sender and thread. A body that is not such an object
+   (prose, another `type`, anything after the object), an unverified or
+   unlisted sender, a `no_reply` message, or an owner with no chief: the
+   ordinary delivery, unchanged.
+2. **The reply.** muster hands the message to your chief **without a turn**,
+   settled (it never becomes an [unrouted ask](#a-message-the-chief-does-not-act-on)),
+   and files its reply draft **already approved**; the plugin's next claim
+   sends it on the request's thread through the usual claim and result
+   routes. The reply's whole body is JSON:
+
+   ```json
+   {"type": "fleet_report", "v": 1, "request_id": "<echoed>", "generated_at": "<RFC 3339>",
+    "window": {"since": "…", "until": "…", "zone": "…"},
+    "coverage": {"sessions": 2, "omitted": 0, "hosts": [], "gaps": ["<what was left out or did not answer>"]},
+    "sessions": [{"id": "mirror:<claude session id>", "kind": "mirror",
+      "name": "<window name>", "host": "", "repo": "<repo> | null",
+      "state": "active | waiting | ended", "first_seen": "<RFC 3339>", "last_seen": "<RFC 3339>",
+      "focus": [{"title": "<focus title>", "at": "<RFC 3339>"}], "prs": ["<owner>/<repo>#<n>"]}]}
+   ```
+
+   It is the chief's [`fleet_report`](focus.md#the-tools) over the request's
+   window, narrowed as below and capped at **16 KiB** (a reply draft's limit,
+   not the tool's 32): the least recently active sessions are left out first
+   and counted in `omitted`. `gaps` counts what was left out or could not be
+   known (sessions whose working directory is unknown, offline mirror hosts,
+   a store that did not answer, titles beyond 20 per session,
+   secret-shaped strings removed). Every character outside ASCII is written
+   as a JSON `\u` escape.
+3. **An error** — a version other than 1, a malformed field, or a window that
+   is empty or longer than 4 days — is the same reply with no data:
+
+   ```json
+   {"type": "fleet_report", "v": 1, "request_id": "<echoed, or empty>", "error": "<plain English>"}
+   ```
+
+🔴 **What leaves muster.** The reply goes to the asking service and, from
+there, to whatever model reads it. So, unlike the chief's tool:
+
+- **Only sessions working under `MUSTER_FLEET_REPORT_PATHS`.** Each
+  session's working directory is the one its transcript last named, stored
+  with its focus ([focus](focus.md#the-working-directory)); the session is
+  described only when that directory is one of the prefixes or inside one, on
+  a path-component boundary (`/srv/example-work` covers
+  `/srv/example-work/app`, never `/srv/example-work-x`). The directory
+  decides; it is never written into the reply. Fail closed: a session whose
+  directory is **unknown** — a dispatched agent, a Hermes window, a host that
+  predates it, a focus not written since the upgrade — is left out and
+  counted in `gaps`; a session **outside** the prefixes is left out and not
+  mentioned at all. No permission router is involved.
+- **No host labels.** Every `host` is `""` and `hosts` is empty; a session's
+  `name` is its window's **unqualified** title (`main:1`, or the label its
+  host gave it) — never the name the pages show, which adds ` · <host>` when
+  two hosts' windows share a title; an offline mirror host is a counted gap,
+  unnamed.
+- **Which sessions, decided once.** A session is included or left out by the
+  directory its **newest** prompt named, as last stored; when it is included,
+  up to 20 of its focus titles in the window (the newest; the rest counted as
+  a gap) are reported — including any written while it worked somewhere else
+  earlier in the window.
+- **Caps count only what may be described.** At most 200 sessions and, per
+  session, 50 pull requests (more is a counted gap). `omitted` counts only
+  sessions under the prefixes that a cap left out: the prefix filter runs
+  first, so the count never reveals sessions outside them.
+- **Titles, names and repositories are not screened** for infrastructure
+  words, dotted host names or the deployment's own names — only
+  **secret-shaped** runs (a credential-shaped string, a long token-shaped
+  string) are cut out, replaced by `[removed]`, and counted.
+- Focus **titles** only: never a focus description, transcript text, a
+  command or tool output.
+
+🔴 **Accepted risk: a listed sender reads your work sessions' titles.** Anyone
+who can send verified agent mail as a listed address gets, for any window of
+up to 4 days, the names, repositories and focus titles of every session
+working under your configured prefixes, without your approval. List only a
+sender you would show your standup to, and only the prefixes whose work you
+would show it. Every reply writes `plugin.delivered`,
+`plugin.message.settled`, `plugin.draft.filed` and `plugin.draft.approved`
+(`"auto": true`, `"via": "fleet_report"`) audit rows.
+
 ### Resuming an ended session
 
 When agent mail would be routed by muster itself — a [reply on a thread a

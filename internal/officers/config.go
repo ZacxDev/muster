@@ -65,8 +65,14 @@ type Officer struct {
 	// operator). Row-level security scopes the agents to that user.
 	Owner int64 `json:"owner"`
 	// CCAccount optionally pins the Claude account instances run on; empty
-	// lets the account pool choose (each instance keeps its account for life).
+	// lets the account pool choose (an instance keeps its account until an
+	// account failover moves it, internal/ccfailover).
 	CCAccount string `json:"cc_account,omitempty"`
+	// CCFailover opts instances pinned by CCAccount in to account failover
+	// (internal/ccfailover): without it a pinned instance stays on its
+	// account when that account hits its limit. Unpinned instances fail over
+	// whatever it says (unless MUSTER_AGENT_CC_FAILOVER=off).
+	CCFailover bool `json:"cc_failover,omitempty"`
 	// Model is the model the instances' Claude Code sessions run ("opus", a
 	// full model id); "" leaves the account's default.
 	Model string `json:"model,omitempty"`
@@ -114,6 +120,7 @@ type declared struct {
 	PollInterval string `json:"poll_interval"`
 	Owner        int64  `json:"owner"`
 	CCAccount    string `json:"cc_account"`
+	CCFailover   bool   `json:"cc_failover"`
 	Model        string `json:"model"`
 	Repo         string `json:"repo"`
 	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
@@ -202,6 +209,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		MaxInstances: d.MaxInstances,
 		Owner:        d.Owner,
 		CCAccount:    strings.TrimSpace(d.CCAccount),
+		CCFailover:   d.CCFailover,
 		Model:        strings.TrimSpace(d.Model),
 		Repo:         strings.TrimSpace(d.Repo),
 		IdleAfter:    DefaultIdleAfter,
