@@ -89,6 +89,12 @@ type Officer struct {
 	// write filtered or performed by muster (ship.go). nil for every other
 	// officer, whose GitHub access stays read-only.
 	Ship *Ship `json:"-"`
+	// Connectors are the connectors, besides `github`, the officer's instances
+	// may REQUEST (internal/api officerConnectorRefusal), by name — e.g. a
+	// postgres connector for read-only SQL. Declaring one grants nothing: each
+	// instance's request is still decided explicitly by the owner, and is never
+	// approved from a shared approval. Sorted and deduplicated.
+	Connectors []string `json:"connectors,omitempty"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -113,16 +119,17 @@ func (o Officer) GoString() string { return o.String() }
 
 // declared is the JSON shape of one MUSTER_OFFICERS entry.
 type declared struct {
-	ID           string `json:"id"`
-	HQURL        string `json:"hq_url"`
-	MaxInstances int    `json:"max_instances"`
-	IdleAfter    string `json:"idle_scale_to_zero_after"`
-	PollInterval string `json:"poll_interval"`
-	Owner        int64  `json:"owner"`
-	CCAccount    string `json:"cc_account"`
-	CCFailover   bool   `json:"cc_failover"`
-	Model        string `json:"model"`
-	Repo         string `json:"repo"`
+	ID           string   `json:"id"`
+	HQURL        string   `json:"hq_url"`
+	MaxInstances int      `json:"max_instances"`
+	IdleAfter    string   `json:"idle_scale_to_zero_after"`
+	PollInterval string   `json:"poll_interval"`
+	Owner        int64    `json:"owner"`
+	CCAccount    string   `json:"cc_account"`
+	CCFailover   bool     `json:"cc_failover"`
+	Model        string   `json:"model"`
+	Repo         string   `json:"repo"`
+	Connectors   []string `json:"connectors"`
 	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
 	Ship json.RawMessage `json:"ship"`
 }
@@ -132,6 +139,24 @@ type declared struct {
 const idPart = `[a-z0-9]+(?:-[a-z0-9]+)*`
 
 var idRE = regexp.MustCompile(`^` + idPart + `:` + idPart + `$`)
+
+// connectorNameRE is internal/connectors' connector-name rule (ValidateName),
+// repeated here because this package does not import the connector store.
+var connectorNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// MayRequestConnector is THE rule for which connectors officer o's instances
+// may request and use: `github`, plus the ones o declares in `connectors`.
+func MayRequestConnector(o Officer, name string) bool {
+	if name == GitHubConnector {
+		return true
+	}
+	for _, c := range o.Connectors {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
 
 // TokenEnvPrefix is the prefix of the variable each officer's HQ token is read
 // from: MUSTER_OFFICER_TOKEN_<NAME>, where NAME is [TokenEnvSuffix] of its id.
@@ -233,6 +258,21 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
 		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
 	}
+	seenConn := map[string]bool{}
+	for _, c := range d.Connectors {
+		c = strings.TrimSpace(c)
+		if !connectorNameRE.MatchString(c) {
+			return Officer{}, fmt.Errorf("officer %s: connector %q is not a connector name (lowercase letters, digits and '-', at most 63)", o.ID, c)
+		}
+		if c == GitHubConnector {
+			return Officer{}, fmt.Errorf("officer %s: connectors lists %q, which every officer may already request; remove it", o.ID, c)
+		}
+		if !seenConn[c] {
+			seenConn[c] = true
+			o.Connectors = append(o.Connectors, c)
+		}
+	}
+	sort.Strings(o.Connectors)
 	if o.MaxInstances == 0 {
 		o.MaxInstances = DefaultMaxInstances
 	}

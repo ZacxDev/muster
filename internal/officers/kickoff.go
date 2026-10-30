@@ -27,7 +27,7 @@ Start now:
 
 %[12]s`,
 		o.ID, n, o.MaxInstances, InstanceName(o.ID, n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o)) + repoNote(o) + releaseNote(o)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o)) + repoNote(o) + connectorsNote(o) + releaseNote(o)
 }
 
 // closingLine is the kickoff's last paragraph: what the officer may never do.
@@ -42,9 +42,9 @@ func closingLine(o Officer) string {
 
 // GitHubConnector is the connector an officer with a repository reads it
 // through: the GitHub App's virtual connector (githubapp.ConnectorName), named
-// here because this package does not import the App. It is the ONLY connector
-// an officer instance may request or use (internal/api
-// officerConnectorRefusal).
+// here because this package does not import the App. Besides the connectors
+// the officer declares (Officer.Connectors), it is the only connector an
+// officer instance may request or use (MayRequestConnector).
 const GitHubConnector = "github"
 
 // repoNote is what an officer with a configured repository is told about it:
@@ -68,11 +68,40 @@ func repoNote(o Officer) string {
 	}
 	return fmt.Sprintf(`
 
-Your repository is %[1]s. You may READ it through muster's %[2]q connector — the only connector you may use. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once it is approved, read the repository in either of two ways (both through muster's proxy):
+Your repository is %[1]s. You may READ it through muster's %[2]q connector — %[3]s. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once it is approved, read the repository in either of two ways (both through muster's proxy):
 - git: run `+"`ccd connect-git %[2]s`"+` once (it routes git's https://github.com/ through the proxy; ccd also does this by itself within 15 seconds of the approval), then `+"`git clone --depth 50 https://github.com/%[1]s.git`"+` and read the clone; `+"`git fetch`"+` in it later for new commits.
 - the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/%[1]s/<path>\"`"+` (for example pulls/<n>, pulls/<n>/files, commits/<sha>, compare/<base>...<head>, contents/<file>?ref=<sha>); muster replaces that header with the credential.
-muster attaches a READ-ONLY token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector)
+muster attaches a READ-ONLY token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector, onlyConnector(o))
 }
+
+// onlyConnector is how repoNote and shipNote describe the github connector:
+// "the only connector you may use", unless the officer declares connectors of
+// its own (connectorsNote), when it is the only one for the repository.
+func onlyConnector(o Officer) string {
+	if len(o.Connectors) == 0 {
+		return "the only connector you may use"
+	}
+	return "the only connector you may use for it"
+}
+
+// connectorsNote is what an officer that declares connectors (Officer.
+// Connectors) is told about them: each is asked for once and decided by the
+// owner, and a postgres connector is queried with postgres_query — read-only,
+// one statement, capped — with muster holding the credential. Nothing for an
+// officer that declares none.
+func connectorsNote(o Officer) string {
+	if len(o.Connectors) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+You may also use these connectors: %[1]s. Ask for each once with connector_request{name, reason}; the operator decides it by hand, so then wait with connector_status{name, wait_seconds: 50}, repeated while it says pending. A postgres connector is a database: once approved, query it with %[2]s{connector, sql, params?} — ONE statement per call, run by muster in a READ-ONLY transaction with a statement timeout and capped rows (the result says truncated when the cap cut it); use $1, $2 … with params for values. To check whether tables and columns exist, read pg_catalog (pg_namespace, pg_class, pg_attribute): information_schema hides tables your database role holds no privileges on. muster connects to the database itself; you never hold or need its credential — do not ask for one.`, strings.Join(o.Connectors, ", "), ToolPostgresQuery)
+}
+
+// ToolPostgresQuery is the connector tool that runs read-only SQL against a
+// postgres connector (internal/api connector_tools.go), named here because
+// this package does not import the API.
+const ToolPostgresQuery = "postgres_query"
 
 // releaseNote is the release officer's extra step: where its evaluation goes.
 func releaseNote(o Officer) string {
@@ -134,12 +163,12 @@ func shipNote(o Officer) string {
 	s := o.Ship
 	return fmt.Sprintf(`
 
-Your repository is %[1]s. Reach it through muster's %[2]q connector — the only connector you may use. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once approved:
+Your repository is %[1]s. Reach it through muster's %[2]q connector — %[9]s. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once approved:
 - git: run `+"`ccd connect-git %[2]s`"+` once, then `+"`git clone https://github.com/%[1]s.git`"+`. Work on a branch named %[3]s<task>-<slug> off origin/%[4]s and `+"`git push origin %[3]s<task>-<slug>`"+`. muster's push filter refuses any push that updates a ref outside refs/heads/%[3]s* — %[4]s and every tag included — so never try.
 - the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/%[1]s/<path>\"`"+`. Reads are open. The writes muster forwards: POST pulls (head %[3]s*, base %[4]s), PATCH pulls/<n> (your own pull requests: title, body, state), POST issues/<n>/comments (on your own pull requests). Everything else is refused.
 muster attaches the credential itself; you never hold one.
 
 Merging: %[5]s{pr}. It merges ONLY your own %[3]s* pull request, and only when every gate passes at call time (CI checks, the %[6]q review, up to date with %[4]s, mergeable, no /hold from a human, no destructive DDL). A refusal names the gate: fix that and call again; never look for another way.
 Releasing: %[7]s{item_id?}. It tags the next minor version on %[4]s's head when the release gates pass, and muster then watches the rollout; %[8]s{} reports it.`,
-		o.Repo, GitHubConnector, s.BranchPrefix, s.Base, ToolMergePR, s.ReviewCheck, ToolTagRelease, ToolRolloutStatus)
+		o.Repo, GitHubConnector, s.BranchPrefix, s.Base, ToolMergePR, s.ReviewCheck, ToolTagRelease, ToolRolloutStatus, onlyConnector(o))
 }

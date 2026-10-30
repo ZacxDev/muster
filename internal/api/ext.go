@@ -542,7 +542,14 @@ func (s *Server) UseExtensions(ext Extensions) {
 		s.answerTurn = s.runDeliveredTurn
 	}
 	s.connectProxy = nil
+	if s.pgExec != nil {
+		s.pgExec.Close()
+	}
+	s.pgExec = nil
 	if ext.Connectors != nil {
+		// Postgres connectors (connectors/postgres.go): the same store; their
+		// queries run in this process, never through the HTTP proxy.
+		s.pgExec = &connectors.PostgresExecutor{Store: ext.Connectors, Logger: s.logger}
 		s.connectProxy = &connectors.Proxy{
 			Store:            ext.Connectors,
 			Policy:           ext.ConnectorPolicy,

@@ -17,7 +17,8 @@
 //
 // 🔴 ACCESS IS RECORDED PER AGENT, BUT AN APPROVAL IS SHARED BY THE OWNER'S
 // AGENTS. Any agent may ASK for any connector by name (an officer instance only
-// for `github`: internal/api officerConnectorRefusal); the first ask files a
+// for `github` and the connectors its officer declares: internal/api
+// officerConnectorRefusal); the first ask files a
 // pending [Grant]. When the owner approves one, a [StandingGrant] is recorded
 // for the owner, keyed on the connector, its credential source and — for the
 // GitHub App's one-repository token — the agent's repository: a later request
@@ -33,11 +34,14 @@
 // changed (ReconcileGrant). There is no time-based expiry. A denial is final
 // for that request, and is never shared.
 //
-// ⚠ HTTP ONLY. HTTPS APIs and git's smart-HTTP protocol go through the proxy.
-// Non-HTTP platforms (a database, SSH) are out of scope: a future "handout"
-// scheme would hand the secret to the pod on approval and would need its own
-// opt-in, its own warning and its own audit shape — [Scheme] is the seam where
-// it would be added, and nothing here accepts it today.
+// ⚠ HTTP, PLUS ONE DATABASE KIND THAT NEVER LEAVES muster-server. HTTPS APIs
+// and git's smart-HTTP protocol go through the proxy. A [SchemePostgres]
+// connector is not proxied at all: muster-server itself connects to the
+// database and runs one read-only statement per call ([PostgresExecutor],
+// postgres.go), and the agent gets rows back — never the password, never a
+// socket. The HTTP proxy refuses a postgres connector. Other non-HTTP platforms
+// (SSH) remain out of scope: a "handout" scheme would hand the secret to the pod
+// and would need its own opt-in, warning and audit shape — nothing accepts one.
 package connectors
 
 import (
@@ -62,6 +66,10 @@ const (
 	SchemeHeader Scheme = "header"
 	// SchemeBasic sends `Authorization: Basic base64(<Username>:<secret>)`.
 	SchemeBasic Scheme = "basic"
+	// SchemePostgres is a database connector: the secret is the password of
+	// Username on the connector's one host, used by muster-server's own
+	// connection (postgres.go). It is never sent over HTTP.
+	SchemePostgres Scheme = "postgres"
 )
 
 // Grant statuses (mirrors the connector_grants.status CHECK constraint).
@@ -103,17 +111,21 @@ var ErrTooManyPending = fmt.Errorf("connectors: this agent already has %d reques
 // page or JSON projection can leak one: the secret exists in plaintext only on
 // the stack of the proxy call that injects it ([Store.Credential]).
 type Connector struct {
-	ID         int64      `json:"id"`
-	Name       string     `json:"name"`
-	Platform   string     `json:"platform"`
-	Hosts      []string   `json:"hosts"`
-	Scheme     Scheme     `json:"scheme"`
-	HeaderName string     `json:"headerName,omitempty"`
-	Username   string     `json:"username,omitempty"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
-	RotatedAt  *time.Time `json:"rotatedAt,omitempty"`
-	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	ID         int64    `json:"id"`
+	Name       string   `json:"name"`
+	Platform   string   `json:"platform"`
+	Hosts      []string `json:"hosts"`
+	Scheme     Scheme   `json:"scheme"`
+	HeaderName string   `json:"headerName,omitempty"`
+	Username   string   `json:"username,omitempty"`
+	// Postgres is a SchemePostgres connector's non-secret settings (database,
+	// sslmode, the TLS requirement and the per-query caps); nil for every other
+	// scheme. Hosts holds its one host:port and Username its database user.
+	Postgres   *PostgresSettings `json:"postgres,omitempty"`
+	CreatedAt  time.Time         `json:"createdAt"`
+	UpdatedAt  time.Time         `json:"updatedAt"`
+	RotatedAt  *time.Time        `json:"rotatedAt,omitempty"`
+	LastUsedAt *time.Time        `json:"lastUsedAt,omitempty"`
 }
 
 // AllowsHost reports whether host (as it appears in a proxy path) is one of the
@@ -262,6 +274,8 @@ type NewConnector struct {
 	HeaderName string
 	Username   string
 	Secret     string
+	// Postgres is required for SchemePostgres and must be nil otherwise.
+	Postgres *PostgresSettings
 }
 
 // Store persists connectors, grants and the audit trail.
@@ -399,6 +413,12 @@ func (nc NewConnector) Validate() (NewConnector, error) {
 	if nc.Platform == "" {
 		nc.Platform = "custom"
 	}
+	if nc.Scheme == SchemePostgres {
+		return nc.validatePostgres()
+	}
+	if nc.Postgres != nil {
+		return nc, fmt.Errorf("%w: postgres settings are only for a postgres connector", ErrInvalid)
+	}
 	seen := map[string]bool{}
 	var hosts []string
 	for _, h := range nc.Hosts {
@@ -435,7 +455,7 @@ func (nc NewConnector) Validate() (NewConnector, error) {
 			return nc, fmt.Errorf("%w: a basic-auth username may not contain ':' or a line break", ErrInvalid)
 		}
 	default:
-		return nc, fmt.Errorf("%w: auth scheme %q is not one of bearer, header, basic", ErrInvalid, nc.Scheme)
+		return nc, fmt.Errorf("%w: auth scheme %q is not one of bearer, header, basic, postgres", ErrInvalid, nc.Scheme)
 	}
 	if err := ValidateSecret(nc.Secret); err != nil {
 		return nc, err
@@ -495,8 +515,20 @@ var GitHubPreset = Preset{
 		"and for git over HTTPS.",
 }
 
+// PostgresPreset is the database connector (postgres.go). It has no fixed
+// hosts: the form asks for the host, port, database, user and TLS settings.
+var PostgresPreset = Preset{
+	Key:         "postgres",
+	Label:       "PostgreSQL (read-only SQL)",
+	Scheme:      SchemePostgres,
+	SecretLabel: "Database password",
+	Help: "muster-server connects to the database itself and runs each agent query as ONE statement inside " +
+		"BEGIN READ ONLY, with a statement timeout and row and byte caps; the agent gets rows, never the password. " +
+		"Use a dedicated login role with no table grants (docs/connectors.md has the recipe). Admins only.",
+}
+
 // Presets is every built-in preset, in display order.
-func Presets() []Preset { return []Preset{GitHubPreset} }
+func Presets() []Preset { return []Preset{GitHubPreset, PostgresPreset} }
 
 // PresetFor returns the preset with key, or false.
 func PresetFor(key string) (Preset, bool) {

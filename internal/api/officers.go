@@ -163,28 +163,36 @@ func (s *Server) agentRepo(a agents.Agent) string {
 }
 
 // officerConnectorRefusal is why officer instance a may not use connector
-// name, or nil. 🔴 AN OFFICER USES THE `github` CONNECTOR ONLY (operator
-// decision, PR #337 round 1): it reads its one repository and nothing else, so
-// a request for any other connector — a stored chat, mail or cloud credential
+// name, or nil. 🔴 AN OFFICER USES THE `github` CONNECTOR, AND ONLY THE
+// CONNECTORS ITS OFFICER DECLARES (operator decision, PR #337 round 1, widened
+// by the officer's `connectors` field: officers.MayRequestConnector): a
+// request for any other connector — a stored chat, mail or cloud credential
 // its owner happens to hold — is refused at every door that would file or
-// serve one (AgentRequestConnector, the proxy, and the owner's approval), not
-// left for the owner to notice. Every other agent: nil.
+// serve one (AgentRequestConnector, the proxy, postgres_query, and the owner's
+// approval), not left for the owner to notice. Every other agent: nil.
 func (s *Server) officerConnectorRefusal(a agents.Agent, name string) error {
 	o, _, ok := s.officerOf(a)
-	if !ok || name == officers.GitHubConnector {
+	if !ok || officers.MayRequestConnector(o, name) {
 		return nil
 	}
-	return errOfficerConnector{agent: a.Name, officer: o.ID, connector: name}
+	return errOfficerConnector{agent: a.Name, officer: o.ID, connector: name, declared: o.Connectors}
 }
 
 // errOfficerConnector is officerConnectorRefusal's refusal. It is
 // connectors.ErrInvalid (errors.Is), so the agent's request route answers 400
 // and its connector_request tool shows it verbatim, as any invalid request.
-type errOfficerConnector struct{ agent, officer, connector string }
+type errOfficerConnector struct {
+	agent, officer, connector string
+	declared                  []string
+}
 
 func (e errOfficerConnector) Error() string {
-	return fmt.Sprintf("%s is an instance of officer %s, and an officer may use only the %q connector (to read its "+
-		"repository); %q was refused", e.agent, e.officer, officers.GitHubConnector, e.connector)
+	if len(e.declared) == 0 {
+		return fmt.Sprintf("%s is an instance of officer %s, and an officer may use only the %q connector (to read its "+
+			"repository); %q was refused", e.agent, e.officer, officers.GitHubConnector, e.connector)
+	}
+	return fmt.Sprintf("%s is an instance of officer %s, which may use only the %q connector and the connectors it "+
+		"declares (%s); %q was refused", e.agent, e.officer, officers.GitHubConnector, strings.Join(e.declared, ", "), e.connector)
 }
 
 func (e errOfficerConnector) Is(target error) bool { return target == connectors.ErrInvalid }
@@ -466,7 +474,8 @@ func (s *Server) WaitForOfficerReprompts() {
 //     callerOf), and its pod's network policy.
 //   - AllowMCPTools: the officer tools it is offered, in registry order, then —
 //     when the connector store is configured (so the instance is offered
-//     them) — connectors_list, connector_request, connector_status. Redundant
+//     them) — connectors_list, connector_request, connector_status, and
+//     postgres_query when the officer declares `connectors`. Redundant
 //     under bypass, and kept: it names exactly the muster tools the instance
 //     is for, and holds if bypass is ever lifted.
 //   - Model: the officer's configured model.
@@ -483,6 +492,11 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	}
 	if s.ext.Connectors != nil {
 		for _, d := range connectorToolDefs() {
+			// postgres_query only for an officer that declares a connector it
+			// could serve; every officer still reaches github.
+			if d.Name == postgresQueryToolName && len(o.Connectors) == 0 {
+				continue
+			}
 			allow = append(allow, d.Name)
 		}
 	}

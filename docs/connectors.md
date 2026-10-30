@@ -14,7 +14,9 @@ once **per repository**. A claude-code agent dispatched with a repository that
 it cannot clone asks for `github` itself, before its session starts
 ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). An agent's
 grant lasts until the agent is destroyed, the grant or the shared approval it
-came from is revoked, or the connector is deleted. Connectors handle HTTP only.
+came from is revoked, or the connector is deleted. Connectors handle HTTP —
+and one database kind, [postgres](#postgres-connectors), whose queries
+muster-server runs itself.
 
 **The `github` connector can come from a GitHub App.** When
 `MUSTER_GITHUB_APP_ID` and `MUSTER_GITHUB_APP_PRIVATE_KEY` are set, `github` is
@@ -37,6 +39,138 @@ and setup are in [github-app.md](github-app.md).
 While the key is unset, every connector route answers 503, the Connectors tab is
 hidden, and members cannot store credentials of their own. The key also seals
 members' stored Claude and OpenRouter credentials.
+
+## Postgres connectors
+
+A **postgres connector** lets an agent run read-only SQL against one database
+without ever holding its credential. It is not proxied: **muster-server makes
+the connection**, so the agent's pod needs no route to the database (an
+[officer](officers.md)'s pod reaches only muster's connect port), and the agent
+gets columns and rows back as JSON.
+
+The connector holds the database password, sealed like every connector secret,
+and non-secret settings: the host and port, the database, the user, the
+`sslmode` (`require` by default; `verify-full`/`verify-ca` verify against the
+system roots, `prefer`, or `disable`) and whether TLS is **required** (a
+plaintext connection is then refused whatever `sslmode` negotiated, checked on
+the live connection). The database, `sslmode` and TLS requirement are bound to
+the sealed password along with the host and user, so editing any of them in
+the database outside muster makes the password fail to open. The password never
+appears in a route, the tool's output, the agent's environment, a file, a log
+line, the audit trail or an error string: errors are scrubbed of the password
+and of any DSN form (`postgres://user:password@…`, `password=…`).
+
+**Only an admin can create one** (the store refuses a member): muster-server
+dials whatever host it names, with no private-address rule, so the connector is
+the admin's decision about which one database is reached. The proxy at
+`/connect/` refuses a postgres connector (400) rather than send its password
+over HTTP.
+
+### The tool: `postgres_query`
+
+```
+postgres_query {connector, sql, params?}
+→ {columns: [{name, type}], rows: [[text | null, …]], row_count,
+   truncated, truncated_by, max_rows, max_bytes, command, duration_ms}
+```
+
+Every value is Postgres's text form; `params` are positional values for `$1`,
+`$2`, … (strings, numbers, booleans, null). The tool is on `POST /mcp` and the
+gateway's tool list for every agent but the chief, beside `connector_request`
+and `connector_status`; `connector_status` names it as the connector's usage.
+
+**The grant is the proxy's.** A call runs only for an agent whose owner
+approved **that agent's** grant for the connector (`Proxy.CheckAccess`, the
+same row and the same reconciliation as `/connect/`). An agent with no grant is
+refused, and its first call files a pending request exactly as a proxy request
+does; an officer instance is refused for any connector its officer does not
+declare (below). Shared approvals apply as for any stored connector — and never
+to an officer.
+
+**The guards are muster-server's, whatever the database role allows.** Each
+call, on a pooled connection:
+
+| guard | |
+|---|---|
+| a per-agent rate limit | 30 queries a minute, bursts of 10 (in memory, per muster-server process) |
+| `BEGIN READ ONLY` | a write is refused by Postgres (SQLSTATE `25006`), a writable CTE included |
+| `SET LOCAL statement_timeout` | the connector's timeout: default 5s, 100ms–30s; `lock_timeout` is 2s or the statement timeout if shorter, and `idle_in_transaction_session_timeout` is set too |
+| one statement | the SQL is sent as ONE extended-protocol Parse/Bind/Execute, never the simple protocol, so a string with two statements is refused by Postgres's parser before anything runs (`cannot insert multiple commands into a prepared statement`, `42601`) |
+| a row cap and a byte cap | default 200 rows and 256 KiB, at most 1000 rows and 1 MiB; `truncated` says when one cut the result and `truncated_by` which |
+| `ROLLBACK`, always | and a statement that ends the transaction itself (`COMMIT`, `ROLLBACK`) is refused and its connection closed, so no session state an agent set outlives its call |
+| a small pool | at most 2 connections per connector; a call that waits 5s for one is refused as busy |
+
+**Audit.** Every query writes one line to muster-server's log and one row to
+the connector audit trail (kind `query`): the agent, the connector, a
+fingerprint of the SQL (`sha256:` and 16 hex characters of the
+whitespace-collapsed text) with its first 120 characters, the row count, the
+duration and the outcome class (`ok`, `timeout`, `read_only`, `syntax`,
+`permission`, `refused`, `busy`, `auth`, `connect`, `tls`, `lock_timeout` or
+`sql_<SQLSTATE>`). Never a parameter value, the password or a DSN — put values
+in `params`, not in the SQL text, to keep them out of the audit.
+
+### The database role
+
+Create the role **in the target database, not through muster**. It is the
+second wall: muster's read-only transaction is the first.
+
+```sql
+CREATE ROLE muster_ro LOGIN PASSWORD '<a long random password>' CONNECTION LIMIT 2;
+ALTER ROLE muster_ro SET statement_timeout = '5s';
+ALTER ROLE muster_ro SET default_transaction_read_only = on;
+-- No table grants. The system catalogs (pg_catalog: pg_namespace, pg_class,
+-- pg_attribute, pg_index, …) are readable by every role, which is enough to
+-- answer "does this table / column exist". Grant SELECT on specific tables only
+-- if an agent must read rows.
+```
+
+⚠ With no table grants, `information_schema.tables` and `.columns` show
+nothing for the application's tables (they list only what the role has a
+privilege on); query `pg_catalog` instead:
+
+```sql
+SELECT c.relname AS table_name, a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS type
+FROM pg_catalog.pg_attribute a
+JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
+ORDER BY a.attnum
+```
+
+On a CloudNativePG cluster the role can be declared in the `Cluster`'s
+`spec.managed.roles` (with `connectionLimit: 2` and the password from a
+Secret), and the two `ALTER ROLE … SET` lines run once by hand.
+
+### Creating one, and granting it to an officer
+
+1. **The role**, as above, in the target database.
+2. **The network.** muster-server — not the agent pod — must reach the
+   database's host and port: allow muster-server's egress to it, and the
+   database's ingress from muster-server, in whatever network policy guards
+   either. No agent's or officer's policy changes.
+3. **The connector.** Signed in to muster as an **admin** (the officer's
+   `owner`), open the Connectors tab → **Add a connector** → Platform
+   **PostgreSQL (read-only SQL)**, and fill in the name (e.g. `prod-db-ro`), the
+   host, port, database, the user (`muster_ro`), `sslmode`, **Require TLS**,
+   optionally the statement timeout, and the password. Save. (A connector is
+   created on the tab, like every stored connector; there is no environment
+   variable for one.)
+4. **The officer.** Add the connector's name to the officer's `connectors` in
+   `MUSTER_OFFICERS` ([officers.md](officers.md#configuration)) and restart
+   muster-server:
+   ```json
+   {"id": "release:example-web", "hq_url": "…", "repo": "example-org/example-web",
+    "connectors": ["prod-db-ro"]}
+   ```
+   Its instances are then told about the connector in their first message, may
+   request it, and have `postgres_query` in their session's allow list.
+5. **The grant.** The instance asks (`connector_request{name: "prod-db-ro"}`);
+   approve that request on the Connectors tab (or with
+   [`connector_request_decide`](#deciding-a-request-from-your-own-session)).
+   Each instance is approved on its own, as for `github`. Any other agent of an
+   admin may ask the same way; revoking its grant stops it at the next call.
+6. **Check it.** The audit trail on the Connectors tab shows a `query` row per
+   call, and a refused write reads `class=read_only`.
 
 ## Routes
 

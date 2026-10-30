@@ -71,10 +71,15 @@ type binding struct {
 	Scheme     Scheme
 	HeaderName string
 	Username   string
+	// Postgres is a SchemePostgres connector's settings: its database, sslmode
+	// and TLS requirement are bound too (aad), so a row edited to point the
+	// password at another database, or to drop TLS, fails to open.
+	Postgres *PostgresSettings
 }
 
 func bindingOf(owner int64, c Connector) binding {
-	return binding{Owner: owner, Name: c.Name, Hosts: c.Hosts, Scheme: c.Scheme, HeaderName: c.HeaderName, Username: c.Username}
+	return binding{Owner: owner, Name: c.Name, Hosts: c.Hosts, Scheme: c.Scheme, HeaderName: c.HeaderName, Username: c.Username,
+		Postgres: c.Postgres}
 }
 
 // aad is the binding's canonical encoding: hosts lowercased and sorted (neither
@@ -103,6 +108,24 @@ func (b binding) aad() []byte {
 	out = binary.BigEndian.AppendUint32(out, uint32(len(hosts)))
 	for _, h := range hosts {
 		put(h)
+	}
+	// A postgres connector appends its connection settings. Only for that
+	// scheme, so every HTTP connector's encoding — and every ciphertext sealed
+	// before the scheme existed — is unchanged. The caps are not bound: the
+	// executor clamps them to its own hard limits whatever the row says.
+	if b.Scheme == SchemePostgres {
+		var ps PostgresSettings
+		if b.Postgres != nil {
+			ps = *b.Postgres
+		}
+		put("postgres")
+		put(ps.Database)
+		put(strings.ToLower(ps.SSLMode))
+		if ps.RequireTLS {
+			put("tls-required")
+		} else {
+			put("tls-optional")
+		}
 	}
 	return out
 }

@@ -129,7 +129,24 @@ type ConnectorFormView struct {
 	Header    string
 	Username  string
 	Error     string
+	// The postgres preset's fields (PostgresPresetKey): the database host,
+	// port, name, sslmode, whether TLS is required, and the statement timeout.
+	// The user is Username.
+	PGHost       string
+	PGPort       string
+	PGDatabase   string
+	PGSSLMode    string
+	PGRequireTLS bool
+	PGTimeoutMS  string
 }
+
+// PostgresPresetKey is the postgres connector preset's key
+// (connectors.PostgresPreset): the form asks for the database settings
+// instead of naming fixed hosts.
+const PostgresPresetKey = "postgres"
+
+// pgSSLModes are the sslmode choices, in display order (connectors.PGSSLModes).
+var pgSSLModes = []string{"require", "verify-full", "verify-ca", "prefer", "disable"}
 
 // ConnectorsContent is the whole /ui/connectors partial.
 type ConnectorsContent struct {
@@ -358,7 +375,8 @@ func ConnectorForm(f ConnectorFormView) g.Node {
 					g.If(f.RequestID != 0, g.Attr("readonly", "")),
 					g.Attr("pattern", "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"), g.Attr("spellcheck", "false"),
 					g.Attr("autocapitalize", "off"), Class(fieldCls))),
-			g.If(preset != nil, P(Class("break-all text-xs text-muted"), g.Text("Hosts: "+presetHosts))),
+			g.If(preset != nil && preset.Key != PostgresPresetKey, P(Class("break-all text-xs text-muted"), g.Text("Hosts: "+presetHosts))),
+			g.If(preset != nil && preset.Key == PostgresPresetKey, postgresFields(f)),
 			g.If(preset == nil, g.Group([]g.Node{
 				labelledFieldFor("connector-hosts", "Allowed hosts (one per line, e.g. api.example.com)",
 					Textarea(ID("connector-hosts"), Name("hosts"), Rows("2"), Required(), g.Attr("spellcheck", "false"),
@@ -388,6 +406,35 @@ func ConnectorForm(f ConnectorFormView) g.Node {
 			),
 		),
 	)
+}
+
+// postgresFields are the postgres preset's settings.
+func postgresFields(f ConnectorFormView) g.Node {
+	text := func(id, name, label, value, placeholder string) g.Node {
+		return labelledFieldFor(id, label,
+			Input(ID(id), Name(name), Type("text"), Value(value), g.Attr("placeholder", placeholder),
+				g.Attr("spellcheck", "false"), g.Attr("autocapitalize", "off"), Class(fieldCls)))
+	}
+	mode := f.PGSSLMode
+	if mode == "" {
+		mode = "require"
+	}
+	var opts []g.Node
+	for _, m := range pgSSLModes {
+		opts = append(opts, Option(Value(m), g.If(m == mode, Selected()), g.Text(m)))
+	}
+	return g.Group([]g.Node{
+		text("connector-pg-host", "pg_host", "Database host (a hostname or IP muster-server can reach)", f.PGHost, "db.example.svc"),
+		text("connector-pg-port", "pg_port", "Port", f.PGPort, "5432"),
+		text("connector-pg-database", "pg_database", "Database name", f.PGDatabase, "app"),
+		text("connector-username", "username", "Database user (a read-only login role)", f.Username, "muster_ro"),
+		labelledFieldFor("connector-pg-sslmode", "sslmode", Select(ID("connector-pg-sslmode"), Name("pg_sslmode"), Class(fieldCls), g.Group(opts))),
+		Label(Class("flex items-center gap-2 text-xs text-muted"),
+			Input(Type("checkbox"), ID("connector-pg-require-tls"), Name("pg_require_tls"), Value("on"),
+				g.If(f.PGRequireTLS || f.PGHost == "", Checked())),
+			g.Text("Require TLS (refuse a plaintext connection)")),
+		text("connector-pg-timeout", "pg_statement_timeout_ms", "Statement timeout in ms (default 5000, at most 30000)", f.PGTimeoutMS, "5000"),
+	})
 }
 
 // ConnectorRotateForm replaces a connector's secret.
