@@ -37,7 +37,8 @@
 #   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json;
 #   9. with muster's connector store offered (FAKE url and token), seed registers
 #      muster's MCP server and `seed --check` agrees; `ccd connect-git` against
-#      an unreachable muster fails fast and writes no git routing; curl is present;
+#      an unreachable muster fails fast and writes no git routing; curl and ssh
+#      are present;
 #  10. the seeded settings pin default permission mode and the approval hooks,
 #      and `ccd approve` with muster unreachable makes no decision (prints nothing).
 #  11. (runs FIRST, as part of step 0) with CCD_REPO (a local bare repository
@@ -324,6 +325,8 @@ rc=0; timeout 15 ccd connect-git --timeout 3s github >/tmp/cg.out 2>&1 || rc=$?
 [[ "$rc" == "1" ]] || fail "connect-git against an unreachable muster exited $rc, want 1: $(cat /tmp/cg.out)"
 if git config --global --get-regexp '^url\.' >/dev/null 2>&1; then fail "connect-git wrote git routing without a grant"; fi
 curl --version >/dev/null || fail "curl is missing"
+# A private-repository pool's deploy key is used through ssh (podagent deploykey.go).
+ssh -V >/dev/null 2>&1 || fail "ssh (openssh-client) is missing"
 echo "cc-smoke: connector store wiring ok"
 
 # 10. Approvals: the seeded settings pin default permission mode (never auto,

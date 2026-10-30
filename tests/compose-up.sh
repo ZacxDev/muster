@@ -85,7 +85,14 @@ echo "ok   /health: $body"
 code="$(curl -sS -o /dev/null -w '%{http_code}' "$base/readyz")"
 [ "$code" = 200 ] || fail "/readyz answered $code"
 echo "ok   /readyz: 200"
-curl -fsS "$base/login" | grep -q 'Sign in to muster' || fail "/login is not the sign-in page"
+# ⚠ EVERY CHECK BELOW CAPTURES, THEN GREPS — never `cmd | grep -q`. Under
+# pipefail, grep -q exits at the first match and a writer still writing dies of
+# SIGPIPE (141), so the pipeline reports a match as a FAILURE. It did: the
+# placeholder-hook-token check failed with that very line in the dumped log
+# (muster restart-loops, so `dc logs` writes one line per restart, and how many
+# it has to write is timing).
+login="$(curl -fsS "$base/login")" || fail "/login did not answer 200"
+grep -q 'Sign in to muster' <<<"$login" || fail "/login is not the sign-in page"
 echo "ok   /login: sign-in page"
 
 # Sign in with the shared password; a wrong one is the negative control.
@@ -111,8 +118,8 @@ if dc up -d --wait --wait-timeout 180 >/dev/null 2>&1; then
 fi
 h="$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q muster)")"
 [ "$h" = unhealthy ] || fail "with the placeholder password muster is '$h', want unhealthy"
-docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$(dc ps -q muster)" | grep -q 'MUSTER_UI_PASSWORD' ||
-  fail "the health log does not name MUSTER_UI_PASSWORD"
+health="$(docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$(dc ps -q muster)")"
+grep -q 'MUSTER_UI_PASSWORD' <<<"$health" || fail "the health log does not name MUSTER_UI_PASSWORD"
 echo "ok   placeholder password: up --wait fails, muster unhealthy, health log names MUSTER_UI_PASSWORD"
 
 # Negative control: the placeholder HOOK token (the admin bearer), with a good
@@ -122,7 +129,8 @@ sed -i -e "s/^MUSTER_UI_PASSWORD=.*/MUSTER_UI_PASSWORD=$PASSWORD/" -e "s/^MUSTER
 if dc up -d --wait --wait-timeout 90 >/dev/null 2>&1; then
   fail "up --wait SUCCEEDED with MUSTER_HOOK_TOKEN=CHANGE-ME (a public admin bearer)"
 fi
-dc logs --no-color muster 2>&1 | grep -q 'MUSTER_HOOK_TOKEN is the placeholder' ||
+logs="$(dc logs --no-color muster 2>&1)"
+grep -q 'MUSTER_HOOK_TOKEN is the placeholder' <<<"$logs" ||
   fail "muster's log does not say MUSTER_HOOK_TOKEN is the placeholder"
 echo "ok   placeholder hook token: muster refuses to boot, naming MUSTER_HOOK_TOKEN"
 echo "compose-up: PASS"

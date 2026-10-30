@@ -37,7 +37,9 @@ it names, or one muster chooses from a named **worker pool**.
 >   ([`realcli_test.go`](../internal/agentprovision/realcli_test.go), in CI's
 >   image job).
 > - **Write access to the repository, on a pool worker.** The commit is
->   fetched anonymously, as
+>   fetched anonymously (or, for a pool with a
+>   [read-only deploy key](#private-repositories-a-pools-deploy-key), by the
+>   pod's key holder with that key and nothing else), as
 >   pull request `pr`'s head from `https://github.com/<repo>` — not through
 >   muster's credentialed proxy, whatever git routing the pod has (in CI, with
 >   that routing in force, a plain fetch reaches the proxy and the job's fetch
@@ -89,6 +91,7 @@ POST /api/jobs
   "sha": "0123456789abcdef0123456789abcdef01234567", // optional: a full 40-hex commit id
   "pr": 42,                        // required with sha (and only with it): the pull request the commit is on
   "config_ref": "89abcdef0123456789abcdef0123456789abcdef", // optional, only with sha: the default-branch commit the agent configuration comes from
+  "base_sha": "abcdefabcdefabcdefabcdefabcdefabcdefabcd", // optional, only with sha: a commit fetched into refs/muster-jobs/<job_id>-base to diff against
   "model": "sonnet",               // optional: the Claude model the job's own session runs on
   "result_path": "out/review.md",  // optional: relative to the job's working directory
   "timeout_s": 1800,               // optional: 1-2100, default 1800
@@ -103,9 +106,9 @@ job that returns the wrong thing.
 
 | answer | when |
 |---|---|
-| 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted; a `config_ref` that is not a full 40-character id, or one without a `sha`; a `model` outside the pattern below |
+| 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted; a `config_ref` that is not a full 40-character id, or one without a `sha`; a `base_sha` that is not a full 40-character id, or one without a `sha`; a `model` outside the pattern below |
 | 404 | no agent by that name; no agent is a member of that `worker_pool` |
-| 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository; an `idempotency_key` already used with a different `model` or `config_ref` (below) |
+| 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository; an `idempotency_key` already used with a different `model`, `config_ref` or `base_sha` (below); a `config_ref` on a pool with a [deploy key](#private-repositories-a-pools-deploy-key) (by the pool's name or one of its workers'), whose jobs get none of the repository's agent configuration |
 | 429 | the agent already has 4 jobs queued or running (the per-agent limit); for a `worker_pool`, every member that could otherwise take the job has 4, or runs on a Claude account that is cooling down after a rate limit or already running its limit of concurrent jobs (`error` names each, and when a cooldown ends). Submit again once one finishes or the cooldown ends |
 | 501 | `sha` / `result_path` on a deployment with no provisioner |
 | 503 | no database, no agent gateway, or the service tier is unarmed; or, for a `worker_pool`, no member can take the job for a reason other than the limits above (`error` says why for each) |
@@ -115,8 +118,8 @@ records nothing and answers the first job, with **200** and
 `"deduplicated": true` — before any agent is looked up or worker chosen, so a
 retry is answered even when its pool now has no eligible worker.
 
-The key is compared with `model` and `config_ref` and with nothing else in the
-body. If either differs from the first job's — including one sent where the
+The key is compared with `model`, `config_ref` and `base_sha` and with nothing
+else in the body. If any differs from the first job's — including one sent where the
 first had none, or left out where it had one — the answer is **409** with
 `"idempotency_mismatch": true`, the first job's fields, and an `error` naming
 the first job and each difference
@@ -170,6 +173,51 @@ read and the job's start does not change what the job runs with.
   configuration back.
 - **Read back:** `config_ref` on the job (`""` when none was given).
 
+### A deploy-key pool's jobs get none of the repository's configuration
+
+Whether a `sha` job's worktree gets the repository's agent configuration is
+decided by the **pool**, on the server, not by the job: there is no field for
+it. A job on a worker of a pool with a
+[deploy key](#private-repositories-a-pools-deploy-key) always has the overlaid
+paths **removed** — every `.claude/` at any depth, the root `CLAUDE.md`,
+`CLAUDE.local.md`, `AGENTS.md` and `.mcp.json` — and **nothing restored**,
+neither the commit's copies nor the default branch's. The turn then has the
+job's prompt and muster's own configuration only: the managed-policy
+`CLAUDE.md` an agent's instructions are placed in, and the pod's user settings.
+Every other pool, and an agent in no pool, gets the overlay above, as before.
+
+- **A `config_ref` on such a pool is refused (409)** — by the pool's name, or
+  naming one of its workers — rather than silently ignored: it names a
+  configuration to overlay, and the pool's jobs have none. Nothing is recorded.
+  A job that reaches a worker anyway (the configuration changed in between)
+  fails `checkout_failed` before anything runs.
+- **Not changed by it:** everything else in the commit is still the commit's,
+  including `CLAUDE.md` / `AGENTS.md` files below the root (see the note at the
+  top). The fetch and the `sha`-on-the-pull-request check are the same.
+
+### `base_sha`
+
+A commit for the turn to compare the pull request against — typically the
+pull request's base. The job's worktree script fetches it **with the same
+credential path as the pull request's head**: anonymously from
+`https://github.com/<repo>`, or, for a pool with a
+[deploy key](#private-repositories-a-pools-deploy-key), over SSH with that key.
+It is stored at **`refs/muster-jobs/<job_id>-base`** in the agent's checkout,
+whose objects and refs the job's worktree shares, so the turn can run
+`git diff <base_sha>...HEAD` (or `git log <base_sha>..HEAD`) with no credential
+of its own. A lane session's own `git fetch` has no credential on a deploy-key
+pool, so this is the way a turn gets a commit that is not already in the
+checkout.
+
+- **Accepted:** a full 40-character lowercase hex commit id, on a job with a
+  `sha` only. It is not required to be on the default branch or on the pull
+  request; it must be a commit GitHub serves by id.
+- **Fetched before the worktree is made.** A base that cannot be fetched
+  fails the job `checkout_failed`, with an `error` that starts "the job's base
+  commit could not be fetched" and names the `base_sha`; nothing is run.
+- **Removed with the worktree**, like the job's pull-request ref.
+- **Read back:** `base_sha` on the job (`""` when none was given).
+
 ## Worker pools
 
 A worker pool is a name carried by long-lived `claude-code` agents. An agent
@@ -186,7 +234,9 @@ while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
 3. Enter the pool's name, for example `reviewers`.
 4. Leave the Claude account on **Auto** unless you want to pin one; the account
    pool chooses as it does for any agent. Pick the repository the pool's jobs
-   will name (with `repo`), which must be a **public** one (see below).
+   will name (with `repo`), which must be a **public** one (see below), or the
+   one private repository the pool has a
+   [deploy key](#private-repositories-a-pools-deploy-key) for.
 5. **Dispatch** (or **Save for later** and Start it). A pool job can run only on
    a `running` worker.
 
@@ -220,7 +270,99 @@ An agent joins its pool when it is created, before it can hold any grant, so
 with both rules it never holds one. A worker therefore cannot clone a
 **private** repository (its clone has no credential, and the access request
 ccd files can never be approved): pools serve public repositories, the same
-ones a job's anonymous fetch can read.
+ones a job's anonymous fetch can read — unless the pool is given a read-only
+deploy key, below.
+
+### Private repositories: a pool's deploy key
+
+A pool can serve ONE private repository with a **read-only deploy key**, and
+nothing else changes: no GitHub grant, no proxy, no token.
+
+1. Make an SSH key pair and add its public half to the repository as a
+   **deploy key, without "Allow write access"** (Settings → Deploy keys).
+2. Store the private half in a Secret in the agents' namespace, key
+   `ssh-privatekey`:
+   `kubectl create secret generic <secret> --type=kubernetes.io/ssh-auth --from-file=ssh-privatekey=<file>`.
+3. Set `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS=<pool>=<owner>/<name>:<secret>`
+   ([configuration](configuration.md)) and restart muster.
+4. Create the pool's workers on that repository (Start an existing one again to
+   give it the mount).
+
+A worker of such a pool runs a second container beside the agent's, the **key
+holder** (`deploy-key`), under its own uid (1001, the image's `muster-keyholder`
+user, which ssh needs to exist; the agent's session runs as 1000). The holder, and only the holder, mounts the Secret's one key at
+`/etc/muster/deploy-key/ssh-privatekey` and GitHub's pinned host keys at
+`/etc/muster/deploy-key/known_hosts`. Every use of the key is the holder's:
+
+- **At the pod's start** it clones the repository from
+  `ssh://git@ssh.github.com:443/<owner>/<name>.git` into a bare **mirror** at
+  `/var/lib/muster-mirror/repo.git`, retrying every 30 s until it can. That
+  directory is an `emptyDir` the holder writes and the agent's container mounts
+  **read-only**. ccd is told the mirror's path (`CCD_REPO_MIRROR`) and clones
+  the agent's checkout from it — locally, with no credential. ccd's clone and
+  muster's job scripts pass
+  `--upload-pack='git -c safe.directory=<mirror> upload-pack'` on every git
+  that reads the mirror: the mirror belongs to uid 1001, and git 2.39's
+  upload-pack refuses another user's repository unless its own command line
+  marks it safe. **The session's own git cannot fetch `origin`** (the
+  mirror) on such a pool: the clone does not record that option, so a plain
+  `git fetch origin` in the checkout fails with "detected dubious
+  ownership". That is intended — a job's commits, its `base_sha` included
+  (`refs/muster-jobs/<id>-base`), are fetched for it before its turn.
+- **For each job**, muster execs into the holder: it probes the key for write
+  access and fetches the pull request's head (and the `base_sha`) into the
+  mirror; the job's worktree script then fetches them from the mirror, in the
+  agent's container. The pool's jobs get none of the repository's agent
+  configuration
+  ([above](#a-deploy-key-pools-jobs-get-none-of-the-repositorys-configuration)).
+
+Port 443, because a worker may reach public addresses on 443 only; GitHub
+serves the same SSH endpoint there. The ssh command fixes every option
+(`-F /dev/null`, no agent, only this identity, only the pinned host keys), and
+the holder's gits ignore the system and global configuration and run in the
+mirror, whose configuration only the holder can write.
+
+- **Read-only, verified per job as far as muster can.** Before the fetch, the
+  holder opens GitHub's receive-pack with the key — a FORCED `git push
+  --dry-run` to `refs/heads/muster-read-only-probe`, which sends nothing and
+  writes no ref. (Forced, so a branch of that name already on GitHub, at any
+  commit, cannot turn the push into a non-fast-forward refused before write
+  access is asked.) GitHub refuses that for a read-only deploy key; if it is
+  accepted the key can push, and the job fails `checkout_failed` without
+  fetching. A probe that fails for any other reason (the network) is not a
+  refusal; the fetch then fails on its own. muster cannot see the key's setting
+  on GitHub, only how GitHub answers.
+- **One repository.** A worker of the pool on another repository is refused at
+  dispatch and Start, and a job naming another repository fails
+  `checkout_failed` before anything runs — never a silent anonymous fetch.
+- **Every other pool is unchanged:** anonymous, public repositories only, no
+  key holder.
+
+🔴 **How far the key is exposed.** The key is a file in the **holder's**
+container only (mode `0440`, root with the pod's group, mounted through a
+`subPath`). No process of the agent's session — ccd, the agent's main CLI,
+every lane's tools, whatever a lane's `Bash` runs, bypassed or not — can read
+its bytes or use it as a credential:
+
+- the file does not exist in the agent's container at any path: the secret
+  volume is mounted into the holder alone, and nothing in the agent's
+  container names its path (`CCD_REPO_MIRROR` names the mirror, not the key);
+- the holder runs as another uid, non-root, without privilege escalation or
+  capabilities, and the pod shares no process namespace, so the session cannot
+  reach the holder's `/proc/<pid>/root`, `environ` or memory; the key reaches
+  no argv or environment there either (ssh is given its path);
+- the session has no channel to the holder: it listens on nothing, and the
+  directory they share is read-only on the session's side, so the session can
+  neither plant configuration the holder reads nor ask it to fetch. Only muster
+  (an exec through the Kubernetes API) runs anything in it.
+
+What remains: the **mirror's contents** — the repository's branches at the
+pod's start, and every pull-request head and base fetched for the worker's
+jobs — are readable by the session, as the checkout always was. Whoever can
+exec into the pod or read the Secret through the Kubernetes API (muster's
+ServiceAccount, cluster admins) can read the key; the agent's pod mounts no
+ServiceAccount token. Rotating the key: replace the Secret's key, then Stop →
+Start each worker (a `subPath` mount is not refreshed).
 
 A job naming a pool runs on the member chosen when it is submitted. A member is
 **eligible** when it is a `claude-code` agent whose status is `running`, works
@@ -281,7 +423,7 @@ GET /api/jobs/{id}
   "finished_at": "…",
   "created_at": "…",
   "repo": "", "sha": "", "result_path": "", "timeout_s": 1800,
-  "model": "", "config_ref": "",
+  "model": "", "config_ref": "", "base_sha": "",
   "session_id": 412
 }
 ```
@@ -339,7 +481,7 @@ kept — the job keeps its status and `error` says
 | other ccd types | `busy`, `capacity`, `not_ready`, `empty_reply`, `turn_failed`, … — ccd's vocabulary, passed through unchanged |
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
-| `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously (a private repository, no such pull request, no network), the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the `config_ref` is not on the default branch (or the default branch could not be fetched to look for it), the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
+| `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously, or with the pool's deploy key (a private repository without one, a key GitHub refuses, no such pull request, no network), the pool's deploy key can push (a dry-run push was accepted), the job's repository is not the one the pool's deploy key is for, the `base_sha` could not be fetched, the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the `config_ref` is not on the default branch (or the default branch could not be fetched to look for it), the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
 | `workdir_unconfirmed` | a `sha` job's turn succeeded, but the agent's runtime did not confirm it ran in the job's worktree (its image predates job worktrees); the reply was discarded — update the agent's image |
 | `model_unconfirmed` | a `model` job's turn succeeded, but the agent's runtime did not confirm it ran in a Claude Code session of the job's own (no `X-Muster-CC-Workdir-Used` on the answer, which ccd sends only from such a session's CLI): an image that ignores the session and model headers runs the turn in the agent's own session on that session's model. The reply was discarded — update the agent's image |
 | `result_read_failed` | the turn succeeded but `result_path` could not be returned |
@@ -359,6 +501,12 @@ kept — the job keeps its status and `error` says
 3. With `sha`, through the provisioner's exec in the agent's instance:
    - `refs/remotes/origin/HEAD` is resolved (asking `origin` once if the ref is
      missing; the job fails `checkout_failed` if it still cannot be);
+   - for a pool with a [deploy key](#private-repositories-a-pools-deploy-key),
+     FIRST, through an exec into the pod's key holder: the key is probed for
+     write access (a forced dry-run push) and the pull request's head (and the
+     `base_sha`) is fetched from `ssh://git@ssh.github.com:443/<repo>.git` into
+     the holder's mirror; every fetch below is then from that mirror, a local
+     path, with no credential, instead of anonymously from GitHub;
    - pull request `pr`'s head is fetched anonymously from
      `https://github.com/<repo>` (`+refs/pull/<pr>/head`, into a ref of the
      job's own) with git's global and system configuration ignored — where the
@@ -367,12 +515,15 @@ kept — the job keeps its status and `error` says
      own configuration would still rewrite that URL or add a header or
      credential, or if the `sha` is neither the fetched head nor an ancestor
      of it. `repo` is the agent's repository when the request names none;
+   - with `base_sha`, that commit is fetched the same way, into
+     `refs/muster-jobs/<job_id>-base`;
    - with `config_ref`, the commit is checked to be on the default branch
      (fetching the default branch anonymously when the checkout's
      `origin/HEAD` does not reach it), and becomes the overlay's source;
    - `git worktree add --detach` creates the job's worktree at
      `<the agent's workspace>/.muster-jobs/<job_id>` — beside the agent's
-     checkout, on its volume — and the overlay above is applied to it.
+     checkout, on its volume — and the overlay above is applied to it (on a
+     pool with a deploy key, the configuration is removed and none restored).
 
    The agent's checkout, its branch, HEAD and working tree are not touched: an
    agent with uncommitted work is not refused and not changed.
@@ -385,7 +536,7 @@ kept — the job keeps its status and `error` says
 5. With `result_path`, the file is read back through the provisioner's exec.
 6. A `sha` job's worktree is removed (`git worktree remove --force`, the
    directory if git left it, `git worktree prune`), and its fetched
-   pull-request and default-branch refs deleted. For a job without a
+   pull-request, default-branch and base refs deleted. For a job without a
    `sha`, the result file is deleted as above.
 
 The job's `timeout_s` covers steps 3–5, not the wait in step 1; the removal in

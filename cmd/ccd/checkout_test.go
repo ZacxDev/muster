@@ -431,6 +431,27 @@ func TestTheCheckoutComesOnlyFromCCDRepo(t *testing.T) {
 	}
 }
 
+// TestCcdReadsTheMirrorPath: ccd hands CCD_REPO_MIRROR to the checkout — a
+// relative or unclean path stops ccd naming the variable (it would otherwise
+// fail every clone, silently), and an absolute one (or none) is a checkout
+// that clones from it (or anonymously).
+func TestCcdReadsTheMirrorPath(t *testing.T) {
+	t.Setenv(envRepo, "example-org/tide-charts")
+	for _, m := range []string{"var/lib/muster-mirror/repo.git", "/var/lib/../lib/muster-mirror/repo.git"} {
+		t.Setenv(envRepoMirror, m)
+		_, err := checkoutFromEnv("/data/workspace/tide-charts")
+		if err == nil || !strings.Contains(err.Error(), "CCD_REPO_MIRROR") {
+			t.Errorf("mirror %q: err = %v", m, err)
+		}
+	}
+	for _, m := range []string{"/var/lib/muster-mirror/repo.git", ""} {
+		t.Setenv(envRepoMirror, m)
+		if co, err := checkoutFromEnv("/data/workspace/tide-charts"); err != nil || co == nil {
+			t.Errorf("control: mirror %q: %v %v", m, co, err)
+		}
+	}
+}
+
 // TestARequestIsFiledOnceEvenIfTheGrantStaysNone: when muster still answers
 // `none` after ccd filed the request, ccd does not file it again on every
 // retry — it says the request is no longer pending instead.

@@ -334,9 +334,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// task-linked, the title is a button that opens the full task detail
 				// in a modal (hx-loads /ui/agents/{name}/task into #task-modal).
 				agentTitle(v),
-				newChatButton(v.ID),
-				chatHistoryButton(sessionDrawerID),
-				g.If(v.FocusHistory != "", focusHistoryButton()),
+				agentHeaderTools(v),
 			),
 			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
 			// (agent_actions.go): the live status strip and the ⋯ menu, at the
@@ -345,8 +343,16 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// down the right edge past every control there, and a ⋯ at the end
 			// pushed it from under the header to mid-screen on a phone held
 			// sideways (e2e update.spec's 844×390 placement).
+			//
+			// 🔴 AND THE ROW IS THE ⋯'S HEIGHT FROM ITS OPENING TAG (menuRowMin).
+			// It centres its items, and the strip before the ⋯ is shorter than
+			// the ⋯'s 44px: a frame painted with the strip parsed and the ⋯ not
+			// yet drew the row at the strip's height, and the ⋯'s arrival grew it
+			// and moved the status icon down (main's CI re-run: 0.00002 from
+			// #agent-status's `span.relative.inline-flex.shrink-0`; e2e
+			// cls-long-transcript's stall after the strip makes it deterministic).
 			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, Div(
-				Class("flex items-center gap-2 pl-11 text-xs"),
+				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
 				agentMenuSlot(v.Card),
 				agentModelControl(v),
@@ -357,7 +363,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// window has (viewToggle), on both of its pages. An agent of a kind
 			// with no terminal has one view and no switch.
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"),
+				Div(Class("flex items-center gap-2"+menuRowMin(v.Card)),
 					g.If(v.Card.ID != 0, agentStrip(v.Card)),
 					agentMenuSlot(v.Card),
 					chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
@@ -369,6 +375,53 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 		// the transcript, taking no room in either.
 		updatingChip("agent-updating", "right-3 top-full mt-1"),
 	)
+}
+
+// agentHeaderTools is the first header row's controls right of the title: new
+// chat, chat history and (when the agent has one) focus history.
+//
+// 🔴 THEIR BOX IS ITS FINAL WIDTH FROM ITS OPENING TAG. The parser can yield
+// anywhere, and under load it did inside this row: a frame painted the
+// new-chat button with the controls after it not yet parsed, pushed to the
+// row's right end by the title's mr-auto, and the next frame moved it left by a
+// control and a gap for each that arrived (CI: 0.00017 from
+// `button.press.inline-flex.h-11` at 1280px; e2e cls-long-transcript's stall
+// after the new-chat button makes it deterministic). With the width reserved,
+// the controls fill from the box's fixed left edge and the title's width is
+// settled before any of them is parsed. The width is the controls' own — each
+// h-11 w-11 (2.75rem), gap-3 (0.75rem) between — and a unit test pins it
+// against the rendered children.
+func agentHeaderTools(v AgentDetailView) g.Node {
+	n := 2
+	if v.FocusHistory != "" {
+		n = 3
+	}
+	return Div(
+		g.Attr("data-header-tools", ""),
+		Class("flex shrink-0 items-center gap-3 "+agentHeaderToolsWidth(n)),
+		newChatButton(v.ID),
+		chatHistoryButton(sessionDrawerID),
+		g.If(v.FocusHistory != "", focusHistoryButton()),
+	)
+}
+
+// menuRowMin is the header second row's minimum height: the ⋯ trigger's own
+// (agentActionsMenu, h-11), when the row has one (agentMenuSlot) — so the row
+// is its final height before the ⋯ is parsed.
+func menuRowMin(a AgentCardView) string {
+	if a.ID == 0 {
+		return ""
+	}
+	return " min-h-11"
+}
+
+// agentHeaderToolsWidth is the width class of n 2.75rem controls with 0.75rem
+// gaps between them, spelled as literals so Tailwind's content scan sees them.
+func agentHeaderToolsWidth(n int) string {
+	if n == 3 {
+		return "w-[9.75rem]"
+	}
+	return "w-[6.25rem]"
 }
 
 // agentTitle renders the header title. For a task-linked agent it is a clickable
