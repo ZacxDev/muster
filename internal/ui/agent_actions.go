@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"encoding/json"
 	"io"
+	"net/url"
 	"strconv"
 
 	g "maragu.dev/gomponents"
@@ -50,16 +52,25 @@ const (
 // AgentHeaderPath is the strip's refresh: GET /ui/agents/{id}/header.
 func AgentHeaderPath(id int64) string { return "/ui/agents/" + strconv.FormatInt(id, 10) + "/header" }
 
-// agentStripTrigger is the strip's hx-trigger: a local lifecycle action, the
-// status poll's "what you drew is stale", and the agent stream event.
-const agentStripTrigger = "agents:changed from:body, " + AgentsAwaitingEvent + " from:body, sse:agent.changed from:body delay:50ms"
+// agentStripTrigger is the strip's hx-trigger for the agent named name: a
+// local lifecycle action, the status poll's "what you drew is stale", and the
+// agent stream event — for THIS agent only (the event's id is the agent's
+// name, as the chat log's trigger reads it). Not another agent's change, and
+// not the empty-id broadcast a mirrored host's churn sends: nothing on the
+// strip is mirror state, and each refresh reads the agent, the provisioner's
+// instances and the agent list.
+func agentStripTrigger(name string) string {
+	quoted, _ := json.Marshal(name) // a string always marshals
+	return "agents:changed from:body, " + AgentsAwaitingEvent + " from:body, " +
+		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body delay:50ms"
+}
 
 // agentStrip is the header's live status: its element, refreshing itself.
 func agentStrip(a AgentCardView) g.Node {
 	return Span(
 		ID(AgentStripID),
 		hx("hx-get", AgentHeaderPath(a.ID)),
-		hx("hx-trigger", agentStripTrigger),
+		hx("hx-trigger", agentStripTrigger(a.Name)),
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
 		Class("inline-flex shrink-0 items-center gap-2"),
@@ -75,7 +86,11 @@ func agentStripBody(a AgentCardView) g.Node {
 		Span(
 			ID("agent-status"),
 			g.Attr("data-agent-status", a.Status),
-			hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval, a.Work)),
+			// status=: the status it was drawn with, so a change the poll sees
+			// re-fetches the strip — which redraws data-agent-status, the
+			// attribute the ⋯ menu's Start/Stop follows (this span's own swap
+			// replaces only its icon).
+			hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval, a.Work)+"&status="+url.QueryEscape(a.Status)),
 			hx("hx-trigger", "every 10s"),
 			hx("hx-target", "this"),
 			hx("hx-swap", "innerHTML"),
@@ -100,7 +115,7 @@ func agentStripBody(a AgentCardView) g.Node {
 func agentActionsMenu(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	lifecycle := agentLifecycleItems(ids)
-	deletable := !a.IsChief && !a.DeleteProtected
+	deletable := a.Deletable()
 	return g.Group{
 		Button(
 			Type("button"),
@@ -135,6 +150,12 @@ func agentActionsMenu(a AgentCardView) g.Node {
 		),
 	}
 }
+
+// Deletable is whether the ⋯ menu offers Delete: not for the chief, not for a
+// declared officer's instance (the server refuses either regardless). ONE
+// predicate: the menu draws by it, and internal/api's tests ask it of the card
+// the page composes.
+func (a AgentCardView) Deletable() bool { return !a.IsChief && !a.DeleteProtected }
 
 // agentLifecycleItems is the menu's lifecycle action: BOTH Start and Stop are
 // drawn, and the stylesheet shows the one the status calls for — Stop while
@@ -255,10 +276,6 @@ func agentNoticesBody(a AgentCardView) g.Node {
 func agentNotices(a AgentCardView) g.Node {
 	return Div(ID(AgentNoticesID), Class("flex flex-col gap-2 empty:hidden"), agentNoticesBody(a))
 }
-
-// RenderAgentMenu writes the ⋯ menu exactly as the agent page draws it
-// (agentMenuSlot), for a caller that has the card but not the page.
-func RenderAgentMenu(w io.Writer, a AgentCardView) error { return agentMenuSlot(a).Render(w) }
 
 // RenderAgentHeader writes the strip's refresh (GET AgentHeaderPath): the
 // strip's body (its #agent-status carries the status the ⋯ menu's lifecycle

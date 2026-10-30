@@ -56,13 +56,13 @@ func TestADispatchedAgentsCardShowsTheSameWorkChip(t *testing.T) {
 		t.Errorf("the agent page's chip is not the work chip %s", chip)
 	}
 	for _, want := range []string{">3 subagents · 2+ shells<", `class="sr-only">3 subagents and at least 2 background shells running<`,
-		`/ui/agents/9/status?awaiting=0&amp;work=3.2p"`} {
+		`/ui/agents/9/status?awaiting=0&amp;work=3.2p&amp;status=running"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the card lacks %s", want)
 		}
 	}
 	plain := renderNode(t, agentStrip(AgentCardView{ID: 9, Name: "worker", Status: "running", Kind: "claude-code"}))
-	if strings.Contains(plain, "data-mirror-work") || !strings.Contains(plain, `work=0.0"`) {
+	if strings.Contains(plain, "data-mirror-work") || !strings.Contains(plain, `work=0.0&amp;status=running"`) {
 		t.Errorf("a card with nothing running draws a chip, or its poll does not say none: %s", plain)
 	}
 }

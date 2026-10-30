@@ -735,8 +735,10 @@ func agentModelControl(v AgentDetailView) g.Node {
 	}
 }
 
-// agentMenuSlot is the header's ⋯ menu (agentActionsMenu) in the element its
-// refresh replaces; nothing for a view with no card.
+// agentMenuSlot is the header's ⋯ menu (agentActionsMenu) in its own element,
+// drawn once with the page — the strip's refresh never replaces it (its
+// Start/Stop follows the strip's status by a stylesheet rule); nothing for a
+// view with no card.
 func agentMenuSlot(a AgentCardView) g.Node {
 	if a.ID == 0 {
 		return nil
@@ -1386,9 +1388,15 @@ func chatProvisioningIndicator(status string) g.Node {
 // Agents list page, which is retired.
 const HomePath = "/"
 
-// HomeLeaveParam names, on HomePath, an agent home must not open: the page
-// the viewer is leaving (HomeLeavingPath).
-const HomeLeaveParam = "leave"
+// The parameters on HomePath naming the session home must not open: the page
+// the viewer is leaving — an agent by name (HomeLeaveParam, HomeLeavingPath),
+// or a mirrored window by its address (the three below, HomeLeavingMirrorPath).
+const (
+	HomeLeaveParam        = "leave"
+	HomeLeaveHostParam    = "leave_host"
+	HomeLeaveSessionParam = "leave_session"
+	HomeLeaveWindowParam  = "leave_window"
+)
 
 // HomeLeavingPath is home, leaving the agent named name out — where a page
 // that sends the viewer away from that agent (Mark complete) sends them.
@@ -1399,6 +1407,20 @@ func HomeLeavingPath(name string) string {
 		return HomePath
 	}
 	return HomePath + "?" + HomeLeaveParam + "=" + url.QueryEscape(name)
+}
+
+// HomeLeavingMirrorPath is home, leaving the mirrored window at r out — where
+// that window's Rendered view and terminal send their Home arrow. Opening the
+// view records a visit, so without it home with no chief is this very window.
+func HomeLeavingMirrorPath(r MirrorRef) string {
+	if r.Host == "" {
+		return HomePath
+	}
+	v := url.Values{HomeLeaveHostParam: {r.Host}, HomeLeaveSessionParam: {r.Session}}
+	if r.Window != "" {
+		v.Set(HomeLeaveWindowParam, r.Window)
+	}
+	return HomePath + "?" + v.Encode()
 }
 
 // HomeFallbackPath is the retired Agents list page's URL, GET /agents: home's

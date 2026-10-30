@@ -217,7 +217,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// same name — the sidebar row's own qualifier (mirror.Qualified).
 		TitleQualifier: e.Qualifier,
 		RawName:        rawName,
-		BackHref:       ui.HomePath,
+		BackHref:       ui.HomeLeavingMirrorPath(mirrorRef(e)),
 		Badge:          "Mirrored · " + h.Host,
 		BadgeHost:      h.Host,
 		BadgeHostIcon:  s.mirrorHostIcon(r.Context(), h.Host),

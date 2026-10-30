@@ -456,6 +456,12 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	if drawn := r.URL.Query().Get("work"); drawn != "" && drawn != ui.WorkPollToken(s.cardWork(a.ID, status)) {
 		stale = true
 	}
+	// And the status itself: the poll swaps only its icon, so the strip's
+	// data-agent-status — which the ⋯ menu's Start/Stop follows — is redrawn by
+	// asking for the strip when the status moved.
+	if drawn := r.URL.Query().Get("status"); drawn != "" && drawn != status {
+		stale = true
+	}
 	if stale {
 		w.Header().Set("HX-Trigger", ui.AgentsAwaitingEvent)
 	}
@@ -1260,7 +1266,8 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 	// The provisioner is called HERE, in this route's own closure: the route is
 	// behind requireLifecycleProvisioner, which is its nil barrier.
 	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-	switch _, err := s.destroyAgent(r.Context(), id, destroy, destroyHooks{}); {
+	deleted, err := s.destroyAgent(r.Context(), id, destroy, destroyHooks{})
+	switch {
 	case err == nil:
 	case errors.As(err, &chief):
 		http.Error(w, chief.Error(), http.StatusConflict)
@@ -1270,15 +1277,25 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not check whether this is the chief agent; nothing was deleted", http.StatusInternalServerError)
 		return
 	}
-	to, herr := s.homeTarget(r, id)
+	to, herr := s.homeTarget(r, homeExcept{agent: id})
 	if herr != nil {
 		s.logger.Printf("agents: home after delete %d: %v", id, herr)
 	}
-	if to == "" {
-		to = ui.HomeFallbackPath
-	}
+	to = homeAfterDelete(to, deleted.Name)
 	w.Header().Set("HX-Redirect", to)
 	w.WriteHeader(http.StatusOK)
+}
+
+// homeAfterDelete is where a DELETE sends the page: home as computed without
+// the deleted agent (to), or — when that found nowhere, or its read failed —
+// home again LEAVING THE DELETED AGENT (ui.HomeLeavingPath), so neither `/`
+// nor its /agents fallback can land back on the row the teardown has not
+// removed yet.
+func homeAfterDelete(to, deleted string) string {
+	if to != "" {
+		return to
+	}
+	return ui.HomeLeavingPath(deleted)
 }
 
 // errDestroyChief is destroyAgent's refusal of the chief; its text is

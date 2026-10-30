@@ -488,3 +488,34 @@ test.describe('phone 393×852, a real tap', () => {
     expect(await overflowX(page), 'no sideways scroll at 393px').toBe(0);
   });
 });
+
+// HOME FROM A MIRRORED WINDOW LEAVES THAT WINDOW. Its Rendered view's back
+// arrow (#mv-back, "Home") and its terminal's (#term-back) go to `/` LEAVING
+// THE WINDOW OUT (ui.HomeLeavingMirrorPath): opening the window recorded a
+// visit, and this server has no chief, so bare home is the session opened
+// last — this very window, which the arrow then reloaded. At both sizes.
+// REGRESSION TEST (round-1 audit): the arrow came straight back.
+for (const vp of [
+  { name: 'phone 390×844', width: 390, height: 844 },
+  { name: 'desktop 1280×800', width: 1280, height: 800 },
+]) {
+  test.describe(vp.name, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+    test('Home from a window\'s Rendered view and its terminal lands on ANOTHER session', async ({ page }) => {
+      await ready(page);
+      const s = 'release-notes-drafter';
+      const leftOut = (u: URL) => !(u.searchParams.get('session') === s && u.pathname.startsWith('/mirror/'));
+      await page.goto(viewOf(s, winOf(s)));
+      await expect(page.locator('#mv-back')).toBeVisible();
+      // CONTROL: bare home is this window (it was just opened).
+      const bare = await page.request.get(origin + '/', { maxRedirects: 0 });
+      expect(new URL(bare.headers()['location'], origin).searchParams.get('session'), 'control: bare home is this window').toBe(s);
+      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/view' || u.searchParams.get('session') !== s), page.locator('#mv-back').click()]);
+      expect(leftOut(new URL(page.url())), `the view's Home landed on ${page.url()}`).toBe(true);
+      await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(rig.host)}&session=${encodeURIComponent(s)}&window=${encodeURIComponent(winOf(s))}`);
+      await expect(page.locator('#term-back')).toBeVisible();
+      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/terminal'), page.locator('#term-back').click()]);
+      expect(leftOut(new URL(page.url())), `the terminal's Home landed on ${page.url()}`).toBe(true);
+    });
+  });
+}

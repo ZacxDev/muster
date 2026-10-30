@@ -618,10 +618,10 @@ func TestADeclaredOfficersInstanceCannotBeDeleted(t *testing.T) {
 		}
 	})
 	// The agent page's ⋯ menu (the retired list card's) reads the same rule.
-	if menu := agentMenu(t, r.s, r.h, inst.ID); strings.Contains(menu, `hx-delete="/agents/`+itoa(inst.ID)+`"`) {
+	if deletableOnPage(t, r.s, inst.ID) {
 		t.Error("the officer instance's menu offers Delete")
 	}
-	if menu := agentMenu(t, r.s, r.h, officerOrdinaryID); !strings.Contains(menu, `hx-delete="/agents/`+itoa(officerOrdinaryID)+`"`) {
+	if !deletableOnPage(t, r.s, officerOrdinaryID) {
 		t.Error("control: an ordinary agent's menu lost Delete")
 	}
 }

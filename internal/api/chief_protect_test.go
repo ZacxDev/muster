@@ -21,7 +21,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/notes"
-	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -292,45 +291,32 @@ func equalIDs(a, b []int64) bool {
 // menu that dropped Delete everywhere would pass a check that only looked at
 // the chief).
 func TestTheChiefsCardOffersNoDelete(t *testing.T) {
-	s, h, _, _, _ := chiefFixture()
+	s, _, _, _, _ := chiefFixture()
 	for _, tc := range []struct {
 		id         int64
 		wantDelete bool
 	}{
 		{chiefSlugID, false}, {chiefResolvedID, false}, {lateLabelID, true}, {workerID, true},
 	} {
-		menu := agentMenu(t, s, h, tc.id)
-		has := strings.Contains(menu, `hx-delete="/agents/`+itoa(tc.id)+`"`)
-		if has != tc.wantDelete {
-			t.Errorf("agent %d's menu offers delete = %v, want %v", tc.id, has, tc.wantDelete)
-		}
-		// The menu itself is still there: Start/Stop stays available to the chief.
-		if !strings.Contains(menu, `aria-label="Agent actions"`) || !strings.Contains(menu, `data-agent-action="Start"`) &&
-			!strings.Contains(menu, `data-agent-action="Stop"`) {
-			t.Errorf("agent %d's page has no ⋯ menu with Start/Stop at all:\n%s", tc.id, menu)
+		if has := deletableOnPage(t, s, tc.id); has != tc.wantDelete {
+			t.Errorf("agent %d's page offers delete = %v, want %v", tc.id, has, tc.wantDelete)
 		}
 	}
 }
 
-// agentMenu is one agent's ⋯ menu as its page composes it: the page's card
-// (agentPageCard, which decides the chief and officer protection) drawn by the
-// page's own menu renderer (ui.RenderAgentMenu). The strip's refresh no longer
-// carries the menu — it is drawn once, with the page.
-func agentMenu(t *testing.T, s *Server, h http.Handler, id int64) string {
+// deletableOnPage is whether one agent's page offers Delete in its ⋯ menu:
+// the card the page composes (agentPageCard, which decides the chief and
+// officer protection) asked the predicate the menu draws by
+// (ui.AgentCardView.Deletable; internal/ui's tests pin that the menu follows
+// it).
+func deletableOnPage(t *testing.T, s *Server, id int64) bool {
 	t.Helper()
 	ctx := operatorCtx()
 	a, err := s.ext.Agents.Get(ctx, id)
 	if err != nil {
 		t.Fatalf("agent %d: %v", id, err)
 	}
-	var b strings.Builder
-	if err := ui.RenderAgentMenu(&b, s.agentPageCard(ctx, a, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(b.String(), `id="`+ui.AgentMenuSlot+`"`) {
-		t.Fatalf("instrument check FAILED: agent %d's menu has no #%s:\n%s", id, ui.AgentMenuSlot, b.String())
-	}
-	return b.String()
+	return s.agentPageCard(ctx, a, nil).Deletable()
 }
 
 // TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every top-level

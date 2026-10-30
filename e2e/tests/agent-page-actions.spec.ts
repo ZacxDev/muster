@@ -201,6 +201,24 @@ for (const [label, viewport] of sizes) {
       await page.keyboard.press('Escape');
       await expect(page.locator('#agent-actions-open')).toBeVisible();
 
+      // The strip refreshes for THIS agent's stream event only: another
+      // agent's change, and the empty-id broadcast a mirrored host's churn
+      // sends, fetch nothing; this agent's does.
+      const headerPath = `/ui/agents/${a.id}/header`;
+      let fetched = 0;
+      const count = (r: import('@playwright/test').Request) => { if (new URL(r.url()).pathname === headerPath) fetched++; };
+      page.on('request', count);
+      const sse = (id: string) => page.evaluate((id) => (window as any).htmx.trigger(document.body, 'sse:agent.changed', { data: JSON.stringify({ id }) }), id);
+      await sse('some-other-agent');
+      await sse('');
+      await page.waitForTimeout(600);
+      expect(fetched, "another agent's change and the empty broadcast refresh nothing").toBe(0);
+      const own = page.waitForResponse((r) => new URL(r.url()).pathname === headerPath);
+      await sse(a.name);
+      await own;
+      expect(fetched, "this agent's change refreshes the strip").toBe(1);
+      page.off('request', count);
+
       // Rename.
       const name = `Renamed at ${label}`;
       m = await menu(page);

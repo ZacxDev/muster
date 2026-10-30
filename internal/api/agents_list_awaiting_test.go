@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,5 +105,26 @@ func TestAnAgentAwaitingApprovalIsWaitingOnAnAskOnTheList(t *testing.T) {
 	block(false)
 	if got := poll(true); got != ui.AgentsAwaitingEvent {
 		t.Errorf("a card drawn blocked, now free: HX-Trigger %q, want %q", got, ui.AgentsAwaitingEvent)
+	}
+
+	// The STATUS the strip was drawn with rides on the poll too (status=): the
+	// poll swaps only its icon, so a status that moved asks for the strip,
+	// which redraws data-agent-status — what the ⋯ menu's Start/Stop follows.
+	m := regexp.MustCompile(`data-agent-status="([^"]+)"`).FindStringSubmatch(agentStrip(t, get, relayAgentA.ID))
+	if m == nil {
+		t.Fatal("instrument check FAILED: the strip carries no data-agent-status")
+	}
+	statusPoll := func(drawn string) string {
+		return get(ui.StatusPollPath(relayAgentA.ID, false, mirror.WindowWork{}) + "&status=" + drawn).Header().Get("HX-Trigger")
+	}
+	if got := statusPoll(m[1]); got != "" {
+		t.Errorf("drawn %s, still %s: HX-Trigger %q, want none", m[1], m[1], got)
+	}
+	other := "stopped"
+	if m[1] == other {
+		other = "running"
+	}
+	if got := statusPoll(other); got != ui.AgentsAwaitingEvent {
+		t.Errorf("drawn %s, now %s: HX-Trigger %q, want %q", other, m[1], got, ui.AgentsAwaitingEvent)
 	}
 }

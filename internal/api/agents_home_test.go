@@ -10,6 +10,8 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -94,19 +96,19 @@ func TestHomeAfterADeleteLeavesTheDeletedAgentOut(t *testing.T) {
 	// the rule is the rule) goes to the worker.
 	s, _ := homeServer(t, store)
 	r := asOperator(httptest.NewRequest(http.MethodGet, "/", nil))
-	if got, err := s.homeTarget(r, homeWorkerID); err != nil || got != chiefHref {
+	if got, err := s.homeTarget(r, homeExcept{agent: homeWorkerID}); err != nil || got != chiefHref {
 		t.Errorf("home except the worker = %q, %v; want the chief %q", got, err, chiefHref)
 	}
-	if got, err := s.homeTarget(r, homeChiefID); err != nil || got != ui.AgentListHref("brave-otter", 55) {
+	if got, err := s.homeTarget(r, homeExcept{agent: homeChiefID}); err != nil || got != ui.AgentListHref("brave-otter", 55) {
 		t.Errorf("home except the chief = %q, %v; want the worker", got, err)
 	}
 	noChief := &homeAgents{rows: homeRows(false), latest: map[int64]int64{homeWorkerID: 55}}
 	s, _ = homeServer(t, noChief)
 	r = asOperator(httptest.NewRequest(http.MethodGet, "/", nil))
-	if got, err := s.homeTarget(r, 0); err != nil || got != ui.AgentListHref("brave-otter", 55) {
+	if got, err := s.homeTarget(r, homeExcept{}); err != nil || got != ui.AgentListHref("brave-otter", 55) {
 		t.Fatalf("CONTROL: home = %q, %v; want the worker", got, err)
 	}
-	if got, err := s.homeTarget(r, homeWorkerID); err != nil || got != "" {
+	if got, err := s.homeTarget(r, homeExcept{agent: homeWorkerID}); err != nil || got != "" {
 		t.Errorf("home except the only agent = %q, %v; want nothing (the onboarding page)", got, err)
 	}
 }
@@ -146,5 +148,70 @@ func TestHomeLeavingAnAgentDoesNotOpenIt(t *testing.T) {
 	// An unknown name leaves nothing out.
 	if rec := homeGet(s, h, "/?leave=no-such-agent", nil); rec.Header().Get("Location") != ui.AgentListHref("brave-otter", 55) {
 		t.Errorf("GET /?leave=no-such-agent → %q, want the worker", rec.Header().Get("Location"))
+	}
+}
+
+// TestHomeLeavingAMirroredWindowDoesNotOpenIt: a mirrored window's Rendered
+// view and terminal send their Home arrow to ui.HomeLeavingMirrorPath. Opening
+// the view recorded a visit, so with no chief bare home IS that window; the
+// leaving home opens another session. And when leaving leaves nothing, the
+// onboarding fallback (/agents) carries the leave along and must not send the
+// viewer back either.
+//
+// REGRESSION TEST (round-1 audit): red before the mirror half of `leave`.
+func TestHomeLeavingAMirroredWindowDoesNotOpenIt(t *testing.T) {
+	s, h, _ := listServer(t)
+	mem := s.ext.Recents.(*memRecents)
+	key := pins.MirrorKey{Host: "ws", Session: "main", Window: "@1"}
+	mem.put(recents.Entry{Mirror: key})
+	ref := ui.MirrorRef{Host: key.Host, Session: key.Session, Window: key.Window}
+	window := ui.MirrorCardHref(ui.MirrorCardView{Host: key.Host, Session: key.Session, Window: key.Window})
+	// CONTROL: bare home opens the window just visited.
+	if rec := homeGet(s, h, "/", nil); rec.Header().Get("Location") != window {
+		t.Fatalf("CONTROL: GET / → %q, want the visited window %q", rec.Header().Get("Location"), window)
+	}
+	leave := ui.HomeLeavingMirrorPath(ref)
+	if want := "/?leave_host=ws&leave_session=main&leave_window=%401"; leave != want {
+		t.Errorf("HomeLeavingMirrorPath = %q, want %q", leave, want)
+	}
+	rec := homeGet(s, h, leave, nil)
+	if to := rec.Header().Get("Location"); rec.Code != http.StatusFound || to == window || to == "" || to == ui.HomeFallbackPath {
+		t.Errorf("GET %s = %d → %q, want another session (agent-5, the next visit)", leave, rec.Code, to)
+	} else if to != ui.AgentListHref("idle-newest", 0) && !strings.HasPrefix(to, "/agents/") {
+		t.Errorf("GET %s → %q, want an agent's page", leave, to)
+	}
+}
+
+// TestTheFallbackKeepsTheLeave: with nothing left once the session being left
+// is left out, `/` falls back to /agents CARRYING the leave, and /agents draws
+// the onboarding page instead of sending the viewer back to that session.
+// (The delete path's own fallback is HomeLeavingPath of the deleted agent.)
+func TestTheFallbackKeepsTheLeave(t *testing.T) {
+	only := &homeAgents{rows: homeRows(false), latest: map[int64]int64{homeWorkerID: 55}}
+	s, h := homeServer(t, only)
+	rec := homeGet(s, h, ui.HomeLeavingPath("brave-otter"), nil)
+	if to := rec.Header().Get("Location"); to != ui.HomeFallbackPath+"?leave=brave-otter" {
+		t.Fatalf("GET /?leave=brave-otter → %q, want /agents carrying the leave", to)
+	}
+	rec = homeGet(s, h, ui.HomeFallbackPath+"?leave=brave-otter", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `id="`+ui.HomeEmptyID+`"`) {
+		t.Errorf("GET /agents?leave=brave-otter = %d → %q, want the onboarding page", rec.Code, rec.Header().Get("Location"))
+	}
+	// CONTROL: without the leave, /agents opens the agent.
+	if rec := homeGet(s, h, ui.HomeFallbackPath, nil); rec.Code != http.StatusFound {
+		t.Errorf("CONTROL: GET /agents = %d, want a redirect to the agent", rec.Code)
+	}
+}
+
+// TestADeleteWithNowhereToGoStillLeavesTheDeletedAgent: when home without the
+// deleted agent finds nothing (or its read failed), the DELETE's redirect is
+// home LEAVING that agent — never bare /agents, which would compute home again
+// with the row still there.
+func TestADeleteWithNowhereToGoStillLeavesTheDeletedAgent(t *testing.T) {
+	if got := homeAfterDelete("", "brave-otter"); got != "/?leave=brave-otter" {
+		t.Errorf("nowhere found: %q, want /?leave=brave-otter", got)
+	}
+	if got := homeAfterDelete("/agents/calm-heron?session=7", "brave-otter"); got != "/agents/calm-heron?session=7" {
+		t.Errorf("a home found: %q, want it unchanged", got)
 	}
 }

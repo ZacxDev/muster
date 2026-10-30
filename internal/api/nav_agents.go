@@ -51,9 +51,10 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 //  3. "" when there is nothing to open — no agent store, no principal, no
 //     entry at all.
 //
-// except leaves one agent out of step 2 (0 for none): the agent a DELETE just
-// started tearing down, whose row outlives the response by a moment and must
-// not be where the deleting page lands.
+// except leaves one session out (homeExcept's zero value: none): the page the
+// viewer is leaving (`?leave…`, ui.HomeLeavingPath / HomeLeavingMirrorPath),
+// or the agent a DELETE just started tearing down, whose row outlives the
+// response by a moment — home must not be where the leaving page lands.
 //
 // The error is a failed read; the caller decides what to draw for it (the
 // redirect falls back to /agents, which reports it).
@@ -69,7 +70,7 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 // stays at /tasks, and `/?shell=1` — the service worker's offline copy
 // (offlineShellParam) — still serves the shell, which draws the Tasks tab
 // there (defaultTab).
-func (s *Server) homeTarget(r *http.Request, except int64) (string, error) {
+func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) {
 	ctx := r.Context()
 	if s.ext.Agents == nil || requestOwner(ctx) <= 0 {
 		return "", nil
@@ -78,7 +79,7 @@ func (s *Server) homeTarget(r *http.Request, except int64) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("agent list: %w", err)
 	}
-	if chief, ok := primaryChief(list); ok && chief.ID != except {
+	if chief, ok := primaryChief(list); ok && chief.ID != except.agent {
 		// A chief its owner turned off is not home (chief_toggle.go).
 		on, err := s.chiefOn(ctx, requestOwner(ctx), list)
 		if err != nil {
@@ -92,14 +93,23 @@ func (s *Server) homeTarget(r *http.Request, except int64) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("entries: %w", err)
 	}
-	if except != 0 {
+	if except.agent != 0 {
 		kept := cards[:0]
 		for _, c := range cards {
-			if c.ID != except {
+			if c.ID != except.agent {
 				kept = append(kept, c)
 			}
 		}
 		cards = kept
+	}
+	if except.mirror.Host != "" {
+		kept := mirrors[:0]
+		for _, m := range mirrors {
+			if (ui.MirrorRef{Host: m.Host, Session: m.Session, Window: m.Window}) != except.mirror {
+				kept = append(kept, m)
+			}
+		}
+		mirrors = kept
 	}
 	return ui.HomeHref(cards, mirrors, s.recentRefs(ctx)), nil
 }
@@ -111,29 +121,46 @@ func (s *Server) homeTarget(r *http.Request, except int64) (string, error) {
 // carrying HX-Redirect, because htmx follows a 3xx inside its XHR and would
 // swap the target's body under a `/` left in the address bar.
 func (s *Server) redirectHome(w http.ResponseWriter, r *http.Request) {
-	to, err := s.homeTarget(r, s.leavingAgent(r))
+	to, err := s.homeTarget(r, s.leaving(r))
 	if err != nil {
 		s.logger.Printf("home: %v (opening /agents)", err)
 	}
 	if to == "" {
+		// The onboarding page's URL, carrying the `leave…` query along: it
+		// computes home again, and must leave the same session out.
 		to = ui.HomeFallbackPath
+		if r.URL.RawQuery != "" && s.leaving(r) != (homeExcept{}) {
+			to += "?" + r.URL.RawQuery
+		}
 	}
 	s.redirectTo(w, r, to)
 }
 
-// leavingAgent is the agent `/?leave=<name>` (ui.HomeLeavingPath) asks home
-// to leave out — the page the viewer is leaving — or 0: none named, or none
-// of that name the viewer can read (row-level security), or a failed read.
-func (s *Server) leavingAgent(r *http.Request) int64 {
-	name := r.URL.Query().Get(ui.HomeLeaveParam)
+// homeExcept is the one session home leaves out (homeTarget): an agent by id,
+// or a mirrored window by its address. The zero value leaves nothing out.
+type homeExcept struct {
+	agent  int64
+	mirror ui.MirrorRef
+}
+
+// leaving is the session `/?leave…` asks home to leave out — the page the
+// viewer is leaving: an agent by name (ui.HomeLeavingPath; none when no agent
+// of that name is readable, or the read fails) or a mirrored window by its
+// address (ui.HomeLeavingMirrorPath).
+func (s *Server) leaving(r *http.Request) homeExcept {
+	q := r.URL.Query()
+	if host := q.Get(ui.HomeLeaveHostParam); host != "" {
+		return homeExcept{mirror: ui.MirrorRef{Host: host, Session: q.Get(ui.HomeLeaveSessionParam), Window: q.Get(ui.HomeLeaveWindowParam)}}
+	}
+	name := q.Get(ui.HomeLeaveParam)
 	if name == "" || s.ext.Agents == nil {
-		return 0
+		return homeExcept{}
 	}
 	a, err := s.ext.Agents.GetByName(r.Context(), name)
 	if err != nil {
-		return 0
+		return homeExcept{}
 	}
-	return a.ID
+	return homeExcept{agent: a.ID}
 }
 
 // redirectTo is redirectHome's answer for a destination: no copy kept (where
@@ -156,7 +183,7 @@ func (s *Server) redirectTo(w http.ResponseWriter, r *http.Request, to string) {
 // here rather than looping. A failed read is a 500 that says so, never the
 // "No agents yet" page over agents that exist.
 func (s *Server) handleAgentsHome(w http.ResponseWriter, r *http.Request) {
-	to, err := s.homeTarget(r, 0)
+	to, err := s.homeTarget(r, s.leaving(r))
 	if to != "" {
 		s.redirectTo(w, r, to)
 		return

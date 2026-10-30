@@ -306,3 +306,26 @@ func TestAMirroredWindowsPagesSayTheHostIsOfflineAndItsNote(t *testing.T) {
 		t.Error("an online window with no note draws the line")
 	}
 }
+
+// TestTheStripRefreshesForItsOwnAgentOnly: the strip's stream trigger is
+// filtered to the agent the page is for (the event's id is its name, as the
+// chat log's trigger reads it) — not every agent's change, and not the
+// empty-id broadcast a mirrored host's churn sends; its local triggers stay.
+func TestTheStripRefreshesForItsOwnAgentOnly(t *testing.T) {
+	strip := renderString(t, agentStrip(AgentCardView{ID: 41, Name: "keen-wren", Status: "running"}))
+	want := `sse:agent.changed[JSON.parse(detail.data).id===&#34;keen-wren&#34;] from:body delay:50ms`
+	if !strings.Contains(strip, want) {
+		t.Errorf("the strip's stream trigger is not this agent's:\n%s", strip)
+	}
+	if strings.Contains(strip, `sse:agent.changed from:body`) {
+		t.Errorf("the strip still refreshes on every agent's change:\n%s", strip)
+	}
+	for _, local := range []string{"agents:changed from:body", AgentsAwaitingEvent + " from:body"} {
+		if !strings.Contains(strip, local) {
+			t.Errorf("the strip lost its local trigger %s", local)
+		}
+	}
+	if !strings.Contains(strip, `&amp;status=running"`) {
+		t.Errorf("the status poll does not carry the status the strip was drawn with:\n%s", strip)
+	}
+}

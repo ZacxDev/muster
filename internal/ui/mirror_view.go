@@ -206,7 +206,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						ID("mv-back"),
 						// Home (the chief, or the session opened last): the Agents list
 						// page this arrow went back to is retired.
-						Href(HomePath),
+						Href(HomeLeavingMirrorPath(ref)),
 						g.Attr("aria-label", "Home"),
 						Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
