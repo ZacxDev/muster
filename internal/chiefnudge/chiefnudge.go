@@ -566,6 +566,24 @@ type Decision struct {
 	SendQueueID   int64
 	RelayText     string
 	UpdatedAt     time.Time
+	// The stall classifier's result on the session's last message (jev.go):
+	// zero values with JevError "" mean it was not run.
+	JevLabel          string
+	JevNeedsInput     float64
+	JevAsksPermission float64
+	JevNeither        float64
+	JevAskScore       float64
+	JevModel          string
+	JevLatencyMS      int
+	JevError          string
+}
+
+// WithJev is d carrying classification r.
+func (d Decision) WithJev(r Result) Decision {
+	d.JevLabel, d.JevModel, d.JevLatencyMS, d.JevError = r.Label, r.Model, r.LatencyMS, r.Err
+	d.JevNeedsInput, d.JevAsksPermission, d.JevNeither = r.Scores[LabelNeedsInput], r.Scores[LabelAsksPermission], r.Scores[LabelNeither]
+	d.JevAskScore = r.AskScore
+	return d
 }
 
 // Clean bounds d's free-text fields to the table's CHECKs.
@@ -578,6 +596,8 @@ func Clean(d Decision) Decision {
 	d.Reason = cut(oneLine(d.Reason), maxReasonRunes)
 	d.Detail = cut(oneLine(d.Detail), maxDetailRunes)
 	d.RelayText = cut(d.RelayText, 8000)
+	d.JevModel = cut(oneLine(d.JevModel), 200)
+	d.JevError = cut(oneLine(d.JevError), 100)
 	if d.Options == nil {
 		d.Options = []string{}
 	}

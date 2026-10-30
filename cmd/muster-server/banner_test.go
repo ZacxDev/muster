@@ -442,7 +442,8 @@ var bannerLedger = []string{
 var bannerExempt = map[string]string{
 	envChiefNudgeLiveOwners: "counted on the `chief nudges: ON` line when set, and named there as empty on the SHADOW line; " +
 		"it means nothing with the sweep off, whose OFF line names " + envChiefNudges,
-	envChiefNudgeIdle: "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
+	envChiefNudgeIdle:         "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
+	envChiefNudgeAskThreshold: "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
 	envChiefNudgeHourlyCap: "printed with its VALUE on the live `chief nudges: ON` line (and enforced in shadow too); " +
 		"it means nothing with the sweep off",
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +

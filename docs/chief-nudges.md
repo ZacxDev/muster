@@ -66,6 +66,47 @@ streak, so each streak is judged at most once.
 **Only candidates reach the chief.** A sweep with no candidate makes no model
 call. A sweep puts at most 5 sessions to the chiefs, across all owners.
 
+## The stall classifier
+
+Before the chief is asked, the candidate's **last message** is classified:
+does it end by asking you something? The model is Jev (TypeSafe), `~typesafe/jev-latest`,
+called through OpenRouter's Decisions API (`POST /api/alpha/decisions`, one
+`choice` question) on **your OpenRouter key**, resolved as for focus summaries.
+The three labels and their rubrics are the operator-approved, backtested ones
+(one constant, `chiefnudge.JevRubrics`, pinned by a test):
+
+| label | meaning |
+|---|---|
+| `needs_input` | it ends asking a question or a decision only you can give (not permission for a step it already proposed) |
+| `asks_permission` | it is holding its own next planned step until you approve it ("shall I…") |
+| `neither` | a finished report, status, work in progress, or an optional offer |
+
+**The rule** (from a backtest on 590 real idle stalls): the **ask score** is
+P(`needs_input`) + P(`asks_permission`). At or over
+`MUSTER_CHIEF_NUDGE_ASK_THRESHOLD` (default `0.9`) the stall is an unasked
+question or permission request, and the **default outcome is an ask**: the chief
+is told so and writes the question and 2 to 4 options. A nudge survives it only
+when the label is `asks_permission` **and** the quote guard passes; a "leave", or
+any other nudge, becomes the ask (with muster's question — the session's title
+and the end of its last message — when the chief gave none). Under the
+threshold, the chief decides as before.
+
+**It never wedges the sweep.** The call is capped at 5 seconds; on any error
+(no key, timeout, an HTTP error, an unreadable answer) the error is recorded and
+the chief decides alone. The label is the argmax of the returned probabilities,
+never the response's own `choice`.
+
+**What leaves for OpenRouter and TypeSafe:** the last assistant message of a
+session that has already been idle for `MUSTER_CHIEF_NUDGE_IDLE` — redacted like
+everything sent to the chief, and only its last 8 KB — plus the fixed rubrics.
+Nothing for any other session, and never per turn: only when the sweep has a
+candidate. It runs in **shadow mode too** — measuring the classifier on real
+stalls is what shadow mode is for.
+
+Every decision records the label, all three probabilities, the ask score, the
+model the response says it served (e.g. `typesafe/jev-1.14-…`) and the call's
+latency, or its error, and the tab shows them.
+
 ## What the chief is asked
 
 For each candidate, the chief gets one bounded call on its own runtime. Every
@@ -128,7 +169,7 @@ replaced by `«redacted»` (the same heuristic redaction as `sessions_overview`;
 secret in a shape it does not know passes), to the chief's model provider:
 OpenRouter for a `gateway` chief, Anthropic for a `claude-code` chief. No earlier
 check is in the context (each call is fresh), and nothing is sent for a session
-that is not a candidate.
+that is not a candidate. The stall classifier is a separate call, to OpenRouter (above).
 
 The chief answers with one decision:
 

@@ -78,6 +78,19 @@ CREATE TABLE IF NOT EXISTS public.chief_nudges (
     send_queue_id  BIGINT,
     relay_text     TEXT        NOT NULL DEFAULT '' CHECK (char_length(relay_text) <= 8000),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- The stall classifier (Jev, internal/chiefnudge/jev.go) on the session's
+    -- last message: its label, its three probabilities, the ask score (the
+    -- needs_input and asks_permission probabilities summed), the model the
+    -- response says it served, the call's latency, and its error class ('' =
+    -- none; all zero with no error = not run).
+    jev_label           TEXT             NOT NULL DEFAULT '' CHECK (jev_label IN ('', 'needs_input', 'asks_permission', 'neither')),
+    jev_needs_input     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    jev_asks_permission DOUBLE PRECISION NOT NULL DEFAULT 0,
+    jev_neither         DOUBLE PRECISION NOT NULL DEFAULT 0,
+    jev_ask_score       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    jev_model           TEXT             NOT NULL DEFAULT '' CHECK (char_length(jev_model) <= 200),
+    jev_latency_ms      INTEGER          NOT NULL DEFAULT 0,
+    jev_error           TEXT             NOT NULL DEFAULT '' CHECK (char_length(jev_error) <= 100),
     -- 🔴 A LIVE SEND ONLY: a shadow decision never holds an ask or a queued row.
     CONSTRAINT chief_nudges_shadow_sends_nothing CHECK (
         mode = 'live' OR (ask_id IS NULL AND send_queue_id IS NULL)),

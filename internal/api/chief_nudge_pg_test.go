@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -881,5 +883,140 @@ func TestChiefNudgeARelayOlderThanItsBoundIsDropped(t *testing.T) {
 	}
 	if d := f.one(t); d.Outcome != chiefnudge.OutcomeFailed || !strings.Contains(d.Detail, "not delivered within") {
 		t.Fatalf("after the bound: %+v", d)
+	}
+}
+
+// jevFake is a Decisions API stand-in: it answers probs (or fails with status)
+// and counts calls.
+type jevFake struct {
+	mu     sync.Mutex
+	status int
+	probs  [3]float64 // needs_input, asks_permission, neither
+	calls  int
+	text   string
+}
+
+func (j *jevFake) serve(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			State map[string]string `json:"state"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		j.calls++
+		j.text = body.State["text"]
+		if j.status != 0 && j.status != http.StatusOK {
+			w.WriteHeader(j.status)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "typesafe/jev-1.14-fake", "answers": map[string]any{"ask": map[string]any{
+			"type": "choice", "probabilities": map[string]float64{"needs_input": j.probs[0], "asks_permission": j.probs[1], "neither": j.probs[2]}}}})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (j *jevFake) set(status int, ni, ap, ne float64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.status, j.probs = status, [3]float64{ni, ap, ne}
+}
+
+// withJev wires a fake classifier into f.
+func withJev(t *testing.T, f *nudgeFixture) *jevFake {
+	t.Helper()
+	j := &jevFake{}
+	srv := j.serve(t)
+	f.cfg.Classifier = &chiefnudge.Classifier{URL: srv.URL, Key: func(context.Context, int64) (string, error) { return "sk-test", nil }}
+	return j
+}
+
+// TestChiefNudgeTheClassifierLineDecidesTheDefault is the backtested rule at
+// the server, on both sides of 0.9: at 0.91 (needs_input) the chief's nudge
+// — with a GOOD quote — becomes an ask; at 0.89 the same nudge stands. The
+// classification is persisted on the row and shown on the tab, and shadow
+// mode still sends nothing and raises no ask.
+func TestChiefNudgeTheClassifierLineDecidesTheDefault(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	j := withJev(t, f)
+	queued0, asks0 := f.queuedRows(t), f.askRows(t)
+
+	j.set(200, 0.81, 0.10, 0.09) // ask score 0.91
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
+	d := f.one(t)
+	if d.Decision != chiefnudge.DecisionAsk || d.Outcome != chiefnudge.OutcomeWouldAsk || d.Message != "" ||
+		!strings.HasPrefix(d.Reason, "classifier: needs_input, ask score 0.91") || d.Question == "" {
+		t.Fatalf("at 0.91: %+v", d)
+	}
+	if d.JevLabel != chiefnudge.LabelNeedsInput || d.JevNeedsInput != 0.81 || d.JevAsksPermission != 0.10 || d.JevNeither != 0.09 ||
+		d.JevAskScore < 0.909 || d.JevAskScore > 0.911 || d.JevModel != "typesafe/jev-1.14-fake" || d.JevError != "" {
+		t.Fatalf("the classification was not persisted: %+v", d)
+	}
+	j.mu.Lock()
+	sent := j.text
+	j.mu.Unlock()
+	if sent != "CI is green on the PR. Shall I merge it?" {
+		t.Fatalf("the classifier was sent %q, not the session's last message", sent)
+	}
+	body := f.page(t, "/attention?tab=nudges")
+	if !strings.Contains(body, "Classifier: needs_input · ask score 0.91 (needs_input 0.81, asks_permission 0.10, neither 0.09) · typesafe/jev-1.14-fake") {
+		t.Fatalf("the tab lacks the classification:\n%s", htmlRegion(body, `data-testid="nudges-list"`, `</ul>`))
+	}
+
+	j.set(200, 0.79, 0.10, 0.11) // ask score 0.89
+	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 60_000 })
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
+	if d := f.decisions(t)[0]; d.Decision != chiefnudge.DecisionNudge || d.Outcome != chiefnudge.OutcomeWouldSend {
+		t.Fatalf("at 0.89: %+v", d)
+	}
+	if q, a := f.queuedRows(t), f.askRows(t); q != queued0 || a != asks0 {
+		t.Fatalf("shadow with the classifier wrote send_queue %d→%d, attention_asks %d→%d", queued0, q, asks0, a)
+	}
+}
+
+// TestChiefNudgeAnAskStallKeepsANudgeOnlyForPermissionWithAGoodQuote: over
+// the line, a nudge survives when the label is asks_permission and the quote
+// guard passes; a "leave" becomes an ask with muster's fallback question.
+func TestChiefNudgeAnAskStallKeepsANudgeOnlyForPermissionWithAGoodQuote(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	j := withJev(t, f)
+	j.set(200, 0.05, 0.92, 0.03)
+	f.pass(t)
+	if d := f.one(t); d.Decision != chiefnudge.DecisionNudge || d.Outcome != chiefnudge.OutcomeWouldSend || d.JevLabel != chiefnudge.LabelAsksPermission {
+		t.Fatalf("asks_permission + a good quote: %+v", d)
+	}
+	f.gw.set(`{"decision":"leave","reason":"it is done"}`)
+	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 60_000 })
+	f.pass(t)
+	if d := f.decisions(t)[0]; d.Decision != chiefnudge.DecisionAsk || d.Outcome != chiefnudge.OutcomeWouldAsk ||
+		!strings.Contains(d.Question, "seems to be waiting on you") || !strings.Contains(d.Reason, "the chief said leave it") {
+		t.Fatalf("an ask-stall the chief would leave: %+v", d)
+	}
+}
+
+// TestChiefNudgeAClassifierFailureFallsBackToTheChief: the Decisions API
+// fails; the error is recorded on the row and the chief's own decision stands.
+func TestChiefNudgeAClassifierFailureFallsBackToTheChief(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	j := withJev(t, f)
+	j.set(http.StatusBadGateway, 0, 0, 0)
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
+	d := f.one(t)
+	if d.JevError != "http-502" || d.JevLabel != "" || d.Decision != chiefnudge.DecisionNudge || d.Outcome != chiefnudge.OutcomeWouldSend {
+		t.Fatalf("after a classifier failure: %+v", d)
+	}
+	if checks, _ := f.gw.seen(); len(checks) != 1 {
+		t.Fatalf("the chief was not asked: %v", checks)
+	}
+	if body := f.page(t, "/attention?tab=nudges"); !strings.Contains(body, "Classifier: failed (http-502); the chief decided alone") {
+		t.Fatal("the tab does not show the classifier's failure")
 	}
 }

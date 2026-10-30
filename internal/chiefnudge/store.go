@@ -80,7 +80,8 @@ func NewPG(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
 const cols = `id, owner_id, session_kind, session_key, mirror_host, mirror_session, mirror_window, coalesce(agent_id, 0), coalesce(chat_session_id, 0),
 	title, streak_key, anchor_key, coalesce(idle_since, 'epoch'::timestamptz), decided_at, decision, message, quote_id,
 	coalesce(quote_at, 'epoch'::timestamptz), quote_text, covered_action, question, options, reason, mode, outcome, detail,
-	coalesce(ask_id, 0), coalesce(send_queue_id, 0), relay_text, updated_at`
+	coalesce(ask_id, 0), coalesce(send_queue_id, 0), relay_text, updated_at,
+	jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error`
 
 func scan(row pgx.Row) (Decision, error) {
 	var d Decision
@@ -88,7 +89,8 @@ func scan(row pgx.Row) (Decision, error) {
 	err := row.Scan(&d.ID, &d.Owner, &d.Kind, &d.Key, &d.Host, &d.TmuxSession, &d.Window, &d.AgentID, &d.ChatSessionID,
 		&d.Title, &d.StreakKey, &d.AnchorKey, &d.IdleSince, &d.DecidedAt, &d.Decision, &d.Message, &d.QuoteID,
 		&d.QuoteAt, &d.QuoteText, &d.Covered, &d.Question, &opts, &d.Reason, &d.Mode, &d.Outcome, &d.Detail,
-		&d.AskID, &d.SendQueueID, &d.RelayText, &d.UpdatedAt)
+		&d.AskID, &d.SendQueueID, &d.RelayText, &d.UpdatedAt,
+		&d.JevLabel, &d.JevNeedsInput, &d.JevAsksPermission, &d.JevNeither, &d.JevAskScore, &d.JevModel, &d.JevLatencyMS, &d.JevError)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -208,13 +210,16 @@ func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, b
 	err = pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `INSERT INTO chief_nudges (session_kind, session_key, mirror_host, mirror_session, mirror_window, agent_id,
 				title, streak_key, anchor_key, idle_since, decision, message, quote_id, quote_at, quote_text, covered_action,
-				question, options, reason, mode, outcome, detail, ask_id, send_queue_id, relay_text, chat_session_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+				question, options, reason, mode, outcome, detail, ask_id, send_queue_id, relay_text, chat_session_id,
+				jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
+				$27, $28, $29, $30, $31, $32, $33, $34)
 			ON CONFLICT ON CONSTRAINT chief_nudges_one_per_streak DO NOTHING
 			RETURNING `+cols,
 			d.Kind, d.Key, d.Host, d.TmuxSession, d.Window, nullID(d.AgentID), d.Title, d.StreakKey, d.AnchorKey, nullTime(d.IdleSince),
 			d.Decision, d.Message, d.QuoteID, nullTime(d.QuoteAt), d.QuoteText, d.Covered, d.Question, opts, d.Reason, d.Mode,
-			d.Outcome, d.Detail, nullID(d.AskID), nullID(d.SendQueueID), d.RelayText, nullID(d.ChatSessionID))
+			d.Outcome, d.Detail, nullID(d.AskID), nullID(d.SendQueueID), d.RelayText, nullID(d.ChatSessionID),
+			d.JevLabel, d.JevNeedsInput, d.JevAsksPermission, d.JevNeither, d.JevAskScore, d.JevModel, d.JevLatencyMS, d.JevError)
 		var err error
 		out, err = scan(row)
 		if errors.Is(err, pgx.ErrNoRows) {

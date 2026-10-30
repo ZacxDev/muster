@@ -206,6 +206,9 @@ const (
 	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
 	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
 	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
+	// The stall classifier's ask-score line: at or over it a stall defaults
+	// to an ask (internal/chiefnudge jev.go).
+	envChiefNudgeAskThreshold = "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD"
 	// CHIEF SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
 	// chief chat session may be started on, comma-separated. claude-code (a CLI
 	// of its own in ccd, with a chosen Claude model; needs a claude-code chief on
@@ -659,10 +662,11 @@ type config struct {
 	// ChiefNudges is MUSTER_CHIEF_NUDGES=1; ChiefNudgeIdle, ChiefNudgeHourlyCap
 	// and ChiefNudgeLiveOwners its settings (loadConfig refuses a value that
 	// does not parse).
-	ChiefNudges          bool
-	ChiefNudgeIdle       time.Duration
-	ChiefNudgeHourlyCap  int
-	ChiefNudgeLiveOwners map[int64]bool
+	ChiefNudges            bool
+	ChiefNudgeIdle         time.Duration
+	ChiefNudgeHourlyCap    int
+	ChiefNudgeLiveOwners   map[int64]bool
+	ChiefNudgeAskThreshold float64
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
 	// (validateSessionRuntimes refuses an unknown or repeated entry), without
 	// the retired `gateway`; ChiefSessionRuntimeGatewayIgnored is whether it
@@ -1450,6 +1454,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefNudgeLiveOwners, err)
 	}
 	c.ChiefNudgeLiveOwners = liveOwners
+	c.ChiefNudgeAskThreshold = chiefnudge.DefaultAskThreshold
+	if v := strings.TrimSpace(getenv(envChiefNudgeAskThreshold)); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 2 {
+			return config{}, fmt.Errorf("invalid %s %q: want a number above 0 and at most 2 (the sum of two probabilities)", envChiefNudgeAskThreshold, v)
+		}
+		c.ChiefNudgeAskThreshold = f
+	}
 	c.ChiefSessionRuntimes, c.ChiefSessionRuntimeGatewayIgnored = withoutRetiredSessionRuntime(splitList(getenv(envChiefSessionRuntimes)))
 
 	icons, err := parseHostIcons(getenv(envHostIcons))

@@ -109,6 +109,10 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-covers>Covers: ` + esc(d.Covered) + `</p>
 `)
 	}
+	if line := nudgeJevLine(d); line != "" {
+		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-jev data-jev-label="` + esc(d.JevLabel) + `">` + esc(line) + `</p>
+`)
+	}
 	if d.Reason != "" {
 		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-reason>Reason: ` + esc(d.Reason) + `</p>
 `)
@@ -121,6 +125,22 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 </li>
 `)
 	return b.String()
+}
+
+// nudgeJevLine is the stall classifier's verdict as the card shows it: the
+// label, the ask score and the three probabilities, the model served and the
+// call's time — or its error; "" when it was not run.
+func nudgeJevLine(d chiefnudge.Decision) string {
+	switch {
+	case d.JevError != "":
+		return "Classifier: failed (" + d.JevError + "); the chief decided alone"
+	case d.JevLabel == "":
+		return ""
+	}
+	f := func(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
+	return "Classifier: " + d.JevLabel + " · ask score " + f(d.JevAskScore) + " (needs_input " + f(d.JevNeedsInput) +
+		", asks_permission " + f(d.JevAsksPermission) + ", neither " + f(d.JevNeither) + ") · " + d.JevModel +
+		" · " + strconv.Itoa(d.JevLatencyMS) + " ms"
 }
 
 func nudgeDecisionLabel(decision string) string {

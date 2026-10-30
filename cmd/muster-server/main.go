@@ -466,7 +466,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
 			ext.ChiefNudges = chiefnudge.NewPG(a.pool)
-			ext.ChiefNudge = &api.ChiefNudges{Idle: cfg.ChiefNudgeIdle, HourlyCap: cfg.ChiefNudgeHourlyCap, Live: cfg.ChiefNudgeLiveOwners}
+			// The stall classifier runs on the owner's OpenRouter key, resolved
+			// exactly as the focus summarizer's (the credential plane).
+			ext.ChiefNudge = &api.ChiefNudges{Idle: cfg.ChiefNudgeIdle, HourlyCap: cfg.ChiefNudgeHourlyCap, Live: cfg.ChiefNudgeLiveOwners,
+				AskThreshold: cfg.ChiefNudgeAskThreshold,
+				Classifier:   &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
 		}
 	}
 	logger.Print(suggestBootLine(cfg))
@@ -1414,12 +1418,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	}
 	switch {
 	case ext.ChiefNudge != nil && len(ext.ChiefNudge.Live) > 0:
-		l.Printf("chief nudges: ON (%s=1) — every %s the chief judges each owner's sessions idle %s or more; LIVE for %d owner(s) (%s), "+
-			"shadow for everyone else; at most %d nudges an hour", envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle,
+		l.Printf("chief nudges: ON (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall classifier "+
+			"first, ask score %.2f defaults to an ask); LIVE for %d owner(s) (%s), shadow for everyone else; at most %d nudges an hour",
+			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold,
 			len(ext.ChiefNudge.Live), envChiefNudgeLiveOwners, ext.ChiefNudge.HourlyCap)
 	case ext.ChiefNudge != nil:
-		l.Printf("chief nudges: ON in SHADOW (%s=1) — every %s the chief judges each owner's sessions idle %s or more and the "+
-			"decision is recorded; nothing is sent (%s is empty)", envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, envChiefNudgeLiveOwners)
+		l.Printf("chief nudges: ON in SHADOW (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall "+
+			"classifier first, ask score %.2f defaults to an ask) and the decision is recorded; nothing is sent (%s is empty)",
+			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold, envChiefNudgeLiveOwners)
 	case a.cfg.ChiefNudges:
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:

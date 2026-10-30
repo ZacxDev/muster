@@ -73,6 +73,12 @@ type ChiefNudges struct {
 	// Live is the owners whose nudges are SENT (MUSTER_CHIEF_NUDGE_LIVE_OWNERS);
 	// everyone else is in shadow mode.
 	Live map[int64]bool
+	// Classifier is the stall classifier (Jev over OpenRouter's Decisions API,
+	// on the owner's OpenRouter key); nil: the chief decides alone.
+	Classifier *chiefnudge.Classifier
+	// AskThreshold is the ask score at which a stall defaults to an ask
+	// (MUSTER_CHIEF_NUDGE_ASK_THRESHOLD; 0 = chiefnudge.DefaultAskThreshold).
+	AskThreshold float64
 }
 
 // ChiefNudgeInterval is how often the sweep runs.
@@ -116,6 +122,13 @@ func (s *Server) chiefNudgeIdle() time.Duration {
 		return chiefnudge.DefaultIdle
 	}
 	return s.ext.ChiefNudge.Idle
+}
+
+func (s *Server) chiefNudgeAskThreshold() float64 {
+	if s.ext.ChiefNudge == nil || s.ext.ChiefNudge.AskThreshold <= 0 {
+		return chiefnudge.DefaultAskThreshold
+	}
+	return s.ext.ChiefNudge.AskThreshold
 }
 
 func (s *Server) chiefNudgeHourlyCap() int {
@@ -426,8 +439,24 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	d := chiefnudge.Decision{Kind: c.Kind, Key: c.Key, Host: c.Host, TmuxSession: c.TmuxSession, Window: c.Window,
 		AgentID: c.AgentID, ChatSessionID: c.ChatSessionID, Title: c.Title, StreakKey: c.StreakKey, AnchorKey: chiefnudge.Anchor(owner),
 		IdleSince: c.IdleSince, Mode: s.chiefNudgeMode(o.ID)}
+	// The stall classifier first (jev.go): it runs in shadow too — measuring it
+	// on real idle stalls is the point — and a failure only means the chief
+	// decides alone.
+	var jev chiefnudge.Result
+	if cl := s.ext.ChiefNudge.Classifier; cl != nil {
+		jev = cl.Classify(octx, o.ID, last.Text)
+		if jev.Err != "" {
+			s.logger.Printf("chief nudges: %s %s: the stall classifier: %s; the chief decides alone", c.Kind, c.Key, jev.Err)
+		}
+	}
+	d = d.WithJev(jev)
+	askStall := chiefnudge.AskStall(jev, s.chiefNudgeAskThreshold())
+	hint := chiefnudge.Hint{}
+	if askStall {
+		hint = chiefnudge.Hint{AskStall: true, Label: jev.Label, AskScore: jev.AskScore}
+	}
 	raw, err := s.askChiefForNudge(octx, chief, nudgeSessionName(chief.Name, o.ID, c.Session),
-		chiefnudge.Prompt(c.Session, last, owner, c.IdleFor, fence.NewNonce()))
+		chiefnudge.Prompt(c.Session, last, owner, c.IdleFor, hint, fence.NewNonce()))
 	if errors.Is(err, errNudgeChiefBusy) {
 		return false, true
 	}
@@ -444,6 +473,33 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
 	}
 	d.Decision, d.Reason, d.Covered = prop.Decision, prop.Reason, prop.CoveredAction
+	// 🔴 THE BACKTESTED RULE: an ask-stall (ask score at or over the threshold)
+	// defaults to an ASK. A nudge survives it only when the classifier's label
+	// is asks_permission AND the quote guard passes (the owner's own words);
+	// a "leave", or any other nudge, becomes the ask.
+	if askStall && prop.Decision != chiefnudge.DecisionAsk {
+		why := ""
+		switch {
+		case prop.Decision == chiefnudge.DecisionLeave:
+			why = "the chief said leave it"
+		case jev.Label != chiefnudge.LabelAsksPermission:
+			why = "a nudge is allowed only on an asks_permission stall, and this one is " + jev.Label
+		default:
+			if _, qerr := chiefnudge.CheckQuote(prop, owner); qerr != nil {
+				why = "the nudge's quote failed: " + qerr.Error()
+			}
+		}
+		if why != "" {
+			q := prop.Question
+			if strings.TrimSpace(q) == "" {
+				q = chiefnudge.FallbackQuestion(c.Title, last.Text)
+			}
+			d.Decision, d.Question, d.Options = chiefnudge.DecisionAsk, q, chiefnudge.CleanOptions(prop.Options)
+			d.Reason = fmt.Sprintf("classifier: %s, ask score %.2f — the default is an ask (%s); %s",
+				jev.Label, jev.AskScore, why, prop.Reason)
+			return s.actAsk(octx, c, d), false
+		}
+	}
 	switch prop.Decision {
 	case chiefnudge.DecisionLeave:
 		d.Outcome = chiefnudge.OutcomeLeft
