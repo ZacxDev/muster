@@ -397,7 +397,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 		row := ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview, Body: body,
 			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
 			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered,
-			Editable: it.State == sendqueue.Queued && it.RouteID == "", Held: it.State == sendqueue.Queued && it.Held,
+			Editable: it.State == sendqueue.Queued && it.RouteID == "" && it.ChiefNudgeID == 0, Held: it.State == sendqueue.Queued && it.Held,
 			HoldLapsed: it.State == sendqueue.Queued && it.HoldLapsed, Edited: !it.EditedAt.IsZero()}
 		if row.Held && it.ID == editing.id {
 			if editing.hold != "" && subtle.ConstantTimeCompare([]byte(editing.hold), []byte(it.HoldToken)) == 1 {
@@ -548,9 +548,10 @@ func (s *Server) handleSendQueueDelete(w http.ResponseWriter, r *http.Request) {
 
 // sendQueueRetryable is whether it's row offers Retry: it failed, has not
 // been retried yet, and is a person's own — never a ROUTED row, whose failed
-// route goes back to the chief (sendqueue.PGStore.Retry refuses it otherwise).
+// route goes back to the chief, and never a chief nudge's, whose decision
+// gates it (sendqueue.PGStore.Retry refuses both otherwise).
 func sendQueueRetryable(it sendqueue.Item) bool {
-	return it.State == sendqueue.Failed && it.RetriedAs == 0 && it.RouteID == ""
+	return it.State == sendqueue.Failed && it.RetriedAs == 0 && it.RouteID == "" && it.ChiefNudgeID == 0
 }
 
 // SendQueueRetryConfirmField is the form field that says the person confirmed
@@ -862,7 +863,17 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	if why := s.sendQueueOwnerRefusal(ctx, it); why != "" {
 		return sendqueue.Outcome{Detail: why}
 	}
-	if it.RouteID == "" {
+	switch {
+	case it.ChiefNudgeID != 0:
+		// A chief nudge or a relayed answer: its decision gates it
+		// (chief_nudge.go), not a sign-in — the feature must still be on, the
+		// owner still live, the decision still waiting on this row, and the
+		// window still holding its conversation.
+		if why := s.sendQueueNudgeGate(ctx, it); why != "" {
+			return sendqueue.Outcome{Detail: why}
+		}
+		ctx = stepup.WithAuthTime(ctx, s.stepUpNow())
+	case it.RouteID == "":
 		if why := sendQueueAuthorization(it, s.sendQueueNow()); why != "" {
 			return sendqueue.Outcome{Detail: why}
 		}
@@ -870,7 +881,7 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 		// that: the delivery moment is the auth time the paste's own
 		// freshness check sees, as a routed message's is.
 		ctx = stepup.WithAuthTime(ctx, s.stepUpNow())
-	} else {
+	default:
 		why := s.sendQueueRoutedGate(ctx, it)
 		if why != "" {
 			return sendqueue.Outcome{Detail: why}

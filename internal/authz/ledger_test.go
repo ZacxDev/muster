@@ -130,6 +130,11 @@ var (
 		// message is then probed and delivered as its own owner
 		// (withPrincipalLedger's queuedPrincipal), never under System.
 		"internal/sendqueue.sys",
+		// The chief's stall nudges (migration 0064): the store's one helper. It
+		// lists the owners the sweep visits, counts every owner's nudges for the
+		// global hourly cap and reads the live decisions still in flight; each
+		// decision is then acted on as its own owner (attentionPrincipal).
+		"internal/chiefnudge.sys",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already

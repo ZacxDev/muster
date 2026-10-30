@@ -281,10 +281,28 @@ func (s *Server) agentTail(ctx context.Context, id int64) ([]focus.Entry, error)
 // mirror:sid. Every batch names its transcript (Msg.Gen); one that is not sid
 // (or names none) ends the read as errNoSession, and nothing is stored.
 func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid string) ([]focus.Entry, error) {
+	evs, err := s.mirrorEvents(ctx, e, sid)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]focus.Entry, 0, len(evs))
+	for _, ev := range evs {
+		if en, ok := focusEntryOf(ev); ok {
+			out = append(out, en)
+		}
+	}
+	return out, nil
+}
+
+// mirrorEvents is mirrorTail's read: the bounded backfill of e's transcript as
+// events (a prompt keeps its Line — its place in the transcript — which the
+// chief nudge sweep names it by), with mirrorTail's guard that the stream is
+// conversation sid.
+func (s *Server) mirrorEvents(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, error) {
 	ctx, cancel := context.WithTimeout(ctx, focusTailTimeout)
 	defer cancel()
 	var mu sync.Mutex
-	var out []focus.Entry
+	var out []cctranscript.Event
 	var otherConversation bool
 	got := make(chan struct{}, 1)
 	done := make(chan error, 1)
@@ -300,11 +318,7 @@ func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid strin
 			if m.Reset {
 				out = out[:0]
 			}
-			for _, ev := range m.Events {
-				if en, ok := focusEntryOf(ev); ok {
-					out = append(out, en)
-				}
-			}
+			out = append(out, m.Events...)
 			index := m.PromptIndex
 			mu.Unlock()
 			if index {
@@ -342,7 +356,7 @@ loop:
 	if len(out) == 0 && err != nil {
 		return nil, err
 	}
-	return append([]focus.Entry(nil), out...), nil
+	return append([]cctranscript.Event(nil), out...), nil
 }
 
 // focusEntryOf is one transcript event as a tail entry: a prompt, a reply, a

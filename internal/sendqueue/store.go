@@ -154,6 +154,12 @@ type Item struct {
 	// session_routes): "" for a person's. Its delivery is gated on the route,
 	// not on a sign-in (internal/api's sendQueueSend).
 	RouteID string
+	// ChiefNudgeID marks a message the CHIEF NUDGE sweep queued — a labelled
+	// nudge or the owner's relayed answer (migration 0064, internal/chiefnudge):
+	// 0 for any other. Like RouteID it is gated on its origin, not on a sign-in
+	// (internal/api's sendQueueNudgeGate), and is never edited or retried. A row
+	// never carries both (0064's send_queue_one_origin).
+	ChiefNudgeID int64
 	// RetriedAs is, on a failed row that was retried, the row its Retry queued
 	// (0: not retried). A row is retried at most once (Retry).
 	RetriedAs int64
@@ -219,6 +225,10 @@ var (
 	// the person's own, with no route and no session binding. It is an
 	// ErrNotRetryable (errors.Is), so a caller that maps that one maps this.
 	ErrRoutedNotRetryable = fmt.Errorf("%w: a message your chief routed is not retried here; its failed route goes back to the chief", ErrNotRetryable)
+	// ErrNudgeNotRetryable: the message is a chief nudge or a relayed answer
+	// (ChiefNudgeID). Requeued as the person's own it would lose the decision
+	// its delivery is gated on. An ErrNotRetryable (errors.Is).
+	ErrNudgeNotRetryable = fmt.Errorf("%w: a chief nudge is not retried here", ErrNotRetryable)
 )
 
 // PGStore is the queue on Postgres.
@@ -240,14 +250,14 @@ const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, st
 	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
 	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
 	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
-	coalesce(edit_stepup_at, 'epoch'::timestamptz)`
+	coalesce(edit_stepup_at, 'epoch'::timestamptz), coalesce(chief_nudge_id, 0)`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
 		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs,
-		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt}
+		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.ChiefNudgeID}
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -278,8 +288,9 @@ func targetWhere(t Target, n int) (string, []any) {
 
 // Enqueue queues it for its target, as the caller, and returns the stored row.
 // Only its Target, Body, StepUpAt, AfterSince (the status time the window
-// held at its latest paste, as the hub knows it; 0 for none) and RouteID (a
-// routed message's route, "" for a person's) are read.
+// held at its latest paste, as the hub knows it; 0 for none), RouteID (a
+// routed message's route, "" for a person's) and ChiefNudgeID (a chief
+// nudge's decision, 0 for none) are read.
 //
 // The per-target bound is checked AFTER the insert, in the same transaction,
 // serialised per owner by an advisory lock, so two concurrent messages cannot
@@ -318,9 +329,13 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 		coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
 		return Item{}, fmt.Errorf("sendqueue: lock: %w", err)
 	}
-	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id)
-		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, '')) RETURNING `+cols,
-		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID))
+	var nudge any
+	if it.ChiefNudgeID > 0 {
+		nudge = it.ChiefNudgeID
+	}
+	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id)
+		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, ''), $8) RETURNING `+cols,
+		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge))
 	if err != nil {
 		return Item{}, fmt.Errorf("sendqueue: enqueue: %w", err)
 	}
@@ -366,6 +381,9 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 		}
 		if old.RouteID != "" {
 			return ErrRoutedNotRetryable
+		}
+		if old.ChiefNudgeID != 0 {
+			return ErrNudgeNotRetryable
 		}
 		out, err = s.enqueueTx(ctx, tx, Item{Target: old.Target, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince})
 		if err != nil {

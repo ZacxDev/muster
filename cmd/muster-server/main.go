@@ -62,6 +62,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
@@ -461,6 +462,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The chief's per-user on/off toggle (migration 0060). Off by default
 		// for a user with no chief agent; see internal/api chief_toggle.go.
 		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
+		// The chief's stall nudges (migration 0064): off unless
+		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
+		if cfg.ChiefNudges {
+			ext.ChiefNudges = chiefnudge.NewPG(a.pool)
+			ext.ChiefNudge = &api.ChiefNudges{Idle: cfg.ChiefNudgeIdle, HourlyCap: cfg.ChiefNudgeHourlyCap, Live: cfg.ChiefNudgeLiveOwners}
+		}
 	}
 	logger.Print(suggestBootLine(cfg))
 	ccPool, err := buildClaudePool(cfg, plane, marks)
@@ -955,6 +962,8 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
 	// The attention queue: lapsed asks expire and leave the owner's devices.
 	go a.srv.RunAttentionSweep(ctx, 0)
+	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
+	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for
@@ -1402,6 +1411,19 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("task routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envTaskRouting)
 	default:
 		l.Printf("task routing: OFF — %s is unset, so route_to_chief is ignored and the chief has no task-routing tools", envTaskRouting)
+	}
+	switch {
+	case ext.ChiefNudge != nil && len(ext.ChiefNudge.Live) > 0:
+		l.Printf("chief nudges: ON (%s=1) — every %s the chief judges each owner's sessions idle %s or more; LIVE for %d owner(s) (%s), "+
+			"shadow for everyone else; at most %d nudges an hour", envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle,
+			len(ext.ChiefNudge.Live), envChiefNudgeLiveOwners, ext.ChiefNudge.HourlyCap)
+	case ext.ChiefNudge != nil:
+		l.Printf("chief nudges: ON in SHADOW (%s=1) — every %s the chief judges each owner's sessions idle %s or more and the "+
+			"decision is recorded; nothing is sent (%s is empty)", envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, envChiefNudgeLiveOwners)
+	case a.cfg.ChiefNudges:
+		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
+	default:
+		l.Printf("chief nudges: OFF — %s is unset", envChiefNudges)
 	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)

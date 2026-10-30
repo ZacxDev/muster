@@ -92,7 +92,7 @@ func asksFocus(r *http.Request) int64 {
 // asksTab is the tab a request names, asksTabAsk for none or an unknown one.
 func asksTab(r *http.Request) string {
 	switch v := r.URL.Query().Get(asksTabParam); v {
-	case asksTabDrafts, asksTabArchived:
+	case asksTabDrafts, asksTabArchived, asksTabNudges:
 		return v
 	}
 	return asksTabAsk
@@ -225,17 +225,26 @@ func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
 	return g.Group{g.Raw(`<div class="flex overflow-x-auto border-b border-line pt-2">`), t.List, g.Raw(`</div>`), t.Panels}
 }
 
-// asksTabsHTML is the page's two tabs over askList (the Ask tab's <ul>) and
-// the drafts, tab selected.
-func (s *Server) asksTabsHTML(askList string, pending, archived []plugins.DraftCard, tab string) string {
+// asksTabsHTML is the page's tabs over askList (the Ask tab's <ul>): Reply
+// drafts when drafts (plugins are served), Chief nudges when nudges is not ""
+// (its panel: the feature is on), tab selected.
+func (s *Server) asksTabsHTML(askList string, drafts bool, pending, archived []plugins.DraftCard, nudges, tab string) string {
 	top := asksTabAsk
-	if tab != asksTabAsk {
+	switch {
+	case tab == asksTabNudges && nudges != "":
+		top = asksTabNudges
+	case (tab == asksTabDrafts || tab == asksTabArchived) && drafts:
 		top = asksTabDrafts
 	}
-	t := ui.TabsSelected("asks-tabs", "", "Asks", top,
-		ui.Tab{ID: asksTabAsk, Label: "Ask", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3">` + askList + `</div>`)},
-		ui.Tab{ID: asksTabDrafts, Label: draftsTabLabel(len(pending)), Panel: draftsPanel(pending, archived, tab)},
-	)
+	tabs := []ui.Tab{{ID: asksTabAsk, Label: "Ask", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3">` + askList + `</div>`)}}
+	if drafts {
+		tabs = append(tabs, ui.Tab{ID: asksTabDrafts, Label: draftsTabLabel(len(pending)), Panel: draftsPanel(pending, archived, tab)})
+	}
+	if nudges != "" {
+		tabs = append(tabs, ui.Tab{ID: asksTabNudges, Label: "Chief nudges",
+			Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="nudges-panel">` + nudges + `</div>`)})
+	}
+	t := ui.TabsSelected("asks-tabs", "", "Asks", top, tabs...)
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col" data-asks-tabs><div class="flex overflow-x-auto border-b border-line">`)
 	nodes := g.Group{t.List, g.Raw(`</div>`), t.Panels, g.Raw(`</div>`), ui.TabsScript()}
@@ -293,7 +302,7 @@ const asksPageScript = `<script>
     return t ? t.getAttribute('data-tab') : '';
   }
   function syncURL() {
-    var top = selected('asks-tabs'), v = top === 'ask' ? '' : (selected('asks-drafts-tabs') || 'drafts');
+    var top = selected('asks-tabs'), v = top === 'ask' ? '' : (top === '` + asksTabNudges + `' ? top : (selected('asks-drafts-tabs') || 'drafts'));
     try {
       var u = new URL(window.location.href);
       u.pathname = '` + attentionPath + `';
