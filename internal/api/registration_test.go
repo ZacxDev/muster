@@ -107,6 +107,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		// NON-ZERO on purpose: an empty sender list is the feature off.
 		PRMail:     &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
 		PRSessions: stubPRSessions{},
+		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
+			Members: plugins.FleetReportMembers{1: "example-member"}, Replies: stubMusterReplier{}},
 		// NON-ZERO on purpose: an empty allowlist is the feature off.
 		MailResume:      &MailResume{Allow: plugins.RelayAllowlist{1: nil}},
 		MailResumes:     stubMailResumes{},
@@ -154,6 +156,7 @@ type stubSummarizer struct{ focus.Summarizer }
 type stubRoutes struct{ plugins.RouteStore }
 type stubChiefDispatch struct{ plugins.DispatchStore }
 type stubPRSessions struct{ plugins.PRSessionStore }
+type stubMusterReplier struct{ plugins.MusterReplier }
 type stubMailResumes struct{ plugins.MailResumeStore }
 type stubAttention struct{ attention.Store }
 type stubMirrorTokens struct{ MirrorTokenAuth }
