@@ -378,8 +378,11 @@ func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.
 			}
 		}
 		wantWS := strings.ReplaceAll(ui.MirrorTerminalWSPath("ws", "main"), "&", "&amp;")
-		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="/" aria-label="Back`) {
-			t.Errorf("the page does not point at the mirror socket / back home")
+		// Home LEAVING this window (ui.HomeLeavingMirrorPath): bare home would
+		// be this very window, the session opened last.
+		wantBack := strings.ReplaceAll(ui.HomeLeavingMirrorPath(ui.MirrorRef{Host: "ws", Session: "main"}), "&", "&amp;")
+		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="`+wantBack+`" aria-label="Back`) {
+			t.Errorf("the page does not point at the mirror socket / back home leaving the window (want %s)", wantBack)
 		}
 	}
 }

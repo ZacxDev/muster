@@ -134,7 +134,9 @@ test('a read-only host’s sessions appear in the sidebar and open the shared te
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
   await expect(page.locator('#term-status')).toHaveText('Connected · this host takes no keys');
   await expect(page.locator('[data-term-badge]')).toContainText(`Mirrored · ${host}`);
-  await expect(page.locator('#term-back')).toHaveAttribute('href', '/');
+  // Home LEAVING this window (ui.HomeLeavingMirrorPath): bare home would be
+  // this very window, the session opened last.
+  await expect(page.locator('#term-back')).toHaveAttribute('href', `/?${new URLSearchParams({ leave_host: rig.host, leave_session: 'main' })}`);
   // Online and with no note from its host: no line under the header.
   await expect(page.locator('#term-host-note')).toHaveCount(0);
   // The host did not advertise -interactive: its keys are off, and there is no
