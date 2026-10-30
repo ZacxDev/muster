@@ -10,7 +10,7 @@ installs on your phone as a PWA. Your other machines dial out to it.
 Not to be confused with the Mac menu-bar app also called Muster
 ([agentmuster.app](https://agentmuster.app/)): this muster is the self-hosted
 one, for your phone and every machine you run agents on. How it compares with
-Happy, Omnara, Claude Code Remote Control and SSH + tmux:
+Happy, Claude Code Remote Control and SSH + tmux:
 [docs/comparison.md](docs/comparison.md).
 
 <p align="center">
