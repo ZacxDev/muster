@@ -1,6 +1,7 @@
-import { request as pwRequest, Browser, BrowserContext, Page } from '@playwright/test';
+import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { agentActionsPort, hookToken, password, versionA } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { agentActionsPort, hookToken, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // THE AGENTS LIST PAGE IS RETIRED, AND WHAT ONLY IT OFFERED MOVED (operator
@@ -26,25 +27,16 @@ import { startServer, Running } from '../lib/server';
 
 const origin = `http://localhost:${agentActionsPort}`;
 let server: Running | undefined;
-let cookies: Parameters<BrowserContext['addCookies']>[0] = [];
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
+test.beforeAll(async () => {
   test.setTimeout(120_000);
   server = await startServer(versionA, agentActionsPort, {
     MUSTER_AGENT_PROVISIONER: 'noop',
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
   });
-  // ONE sign-in for the whole spec: the form is throttled per server.
-  const ctx = await browser.newContext();
-  const page = await ctx.newPage();
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  cookies = await ctx.cookies(origin);
-  await ctx.close();
 });
 test.afterAll(async () => {
   await server?.stop();
@@ -67,7 +59,7 @@ async function agentRows(): Promise<AgentRow[]> {
 }
 
 async function signedIn(page: Page): Promise<void> {
-  await page.context().addCookies(cookies);
+  await signIn(page, origin);
 }
 
 // sidebarShown puts the sidebar on screen: the rail on a desktop, the drawer

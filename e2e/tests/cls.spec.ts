@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Browser, BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
 import {
   baseURL, clsConnectPort, clsFullPort, clsListPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
-  clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, onboardingPort, password, repoRoot, versionA, versionTerm,
+  clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, onboardingPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
@@ -429,12 +430,10 @@ test.describe('the full server', () => {
     if (ccAgent) mkchat(ccAgent, null);
   });
 
-  async function signIn(browser: Browser, use: object): Promise<{ ctx: BrowserContext; page: Page }> {
+  async function signedInContext(browser: Browser, use: object): Promise<{ ctx: BrowserContext; page: Page }> {
     const ctx = await browser.newContext({ ...use, storageState: { cookies: [], origins: [] } });
     const page = await ctx.newPage();
-    await page.goto(morigin + '/login');
-    await page.fill('#muster-password', password);
-    await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+    await signIn(page, morigin);
     await page.addInitScript(clsInit);
     return { ctx, page };
   }
@@ -463,7 +462,7 @@ test.describe('the full server', () => {
     const term = `/mirror/terminal?host=${host}&session=scratch`;
     const bad: string[] = [];
     for (const vp of viewports) {
-      const { ctx, page } = await signIn(browser, vp.use);
+      const { ctx, page } = await signedInContext(browser, vp.use);
       try {
         // main reported as a Claude pane: its sidebar row opens a rendered view.
         await rig.waitListed(page, 'data-mirror-claude');
@@ -673,9 +672,7 @@ test.describe('the onboarding page', () => {
       const ctx = await browser.newContext({ ...vp.use, storageState: { cookies: [], origins: [] } });
       try {
         const page = await ctx.newPage();
-        await page.goto(oorigin + '/login');
-        await page.fill('#muster-password', password);
-        await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+        await signIn(page, oorigin);
         await page.addInitScript(clsInit);
         const r = await measure(page, oorigin + '/agents', '#agents-empty #onboarding-prompt');
         expect(new URL(page.url()).pathname, 'the onboarding page, not a redirect').toBe('/agents');

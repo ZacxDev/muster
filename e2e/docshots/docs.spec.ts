@@ -673,6 +673,20 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   await tapDot(page, submit, 0.6, askFlow);
   await submit.tap();
   await expect(card, `typed into the picker (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 20_000 });
+  // The conversation draws the answered call (the row the live card names in
+  // data-ask-row), and the live card goes: the question is on screen once.
+  // 🔴 By identity, not words, so the README's GIF cannot go back to showing
+  // it twice: exactly one visible element is this call, and it is the row.
+  const rowID = await card.getAttribute('data-ask-row');
+  const answered = page.locator(`#mv-log [id="${rowID}"]`);
+  const shownOnce = async () => {
+    await expect(answered).toHaveAttribute('data-ask-state', 'history', { timeout: 20_000 });
+    await expect(answered).toBeVisible();
+    await expect(card, 'the live card of a call the conversation shows answered').toBeHidden();
+    await expect(page.locator(`#mv-log [id="${rowID}"]:visible, #mv-asks [data-ask-live][data-ask-tool="toolu_docs_release"]:visible`)).toHaveCount(1);
+  };
+  await shownOnce();
+  await answered.scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
   await askFlow.frame(page, 1.4);
 
@@ -683,6 +697,7 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   fs.appendFileSync(tr('falcon'), FALCON_NEXT);
   await expect(page.locator('#mv-log [data-bubble="assistant"]').last()).toContainText('Published v2.4.0', { timeout: 20_000 });
   await page.waitForTimeout(500);
+  await shownOnce();
   await askFlow.frame(page, 3.5);
   askFlow.write();
   expect(mirrorLog).not.toContain('panic');

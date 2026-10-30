@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page } from '@playwright/test';
+import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
 import { hookToken, mirrorPort, password } from '../lib/env';
 import { entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 import { Pt, touchDrag } from '../lib/touch';
@@ -48,24 +49,6 @@ test.afterAll(async () => {
   await rig.stop();
 });
 
-// login signs the page's (fresh) context in. The FORM is driven once per run of
-// this file and the session cookie it earns is handed to every later test:
-// password-mode sign-in is throttled to 10 attempts a minute in ONE shared
-// bucket (internal/api's loginRate), and this file has more tests than that —
-// a later one's form was refused (429) and it timed out on /login. None of
-// these tests is about signing in.
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
-
 async function noHorizontalScroll(page: Page) {
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw, 'document scrollWidth').toBeLessThanOrEqual(cw);
@@ -110,7 +93,7 @@ async function waitForCards(page: Page, online: boolean) {
 
 test('a read-only host’s sessions appear in the sidebar and open the shared terminal with its keys off', async ({ page }) => {
   await startMirror(false);
-  await login(page);
+  await signIn(page, origin);
   await waitForCards(page, true);
 
   // Not an agent: the machine roster never lists it.
@@ -190,7 +173,7 @@ test('a labelled session shows its pretty name, follows the active window, and s
   writeFileAtomic(activeFile, 'main=1\nscratch=4\n');
   try {
     await startMirror(false, undefined, { MUSTER_MIRROR_LABELS_FILE: labelsFile, MUSTER_MIRROR_E2E_ACTIVE_FILE: activeFile });
-    await login(page);
+    await signIn(page, origin);
     await waitForCards(page, true);
     await openSidebar(page);
     const main = card(page, 'main');
@@ -245,7 +228,7 @@ test('mirrored sessions are listed most recently active first, and the open list
   try {
     await stopMirror();
     await startMirror(false, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
-    await login(page);
+    await signIn(page, origin);
     await waitForCards(page, true);
     await openSidebar(page);
     const order = () => hostRows(page).evaluateAll((els) => els.map((e) => e.getAttribute('title')));
@@ -272,7 +255,7 @@ test('mirrored sessions are listed most recently active first, and the open list
 
 test('an -interactive host types into the session with live keys from the start', async ({ page }) => {
   await startMirror(true);
-  await login(page);
+  await signIn(page, origin);
   await waitForCards(page, true);
   await page.goto(origin + termPath('main'));
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw');
@@ -323,7 +306,7 @@ async function readOnlyShown(page: Page, except: string[] = []): Promise<string[
 test('the terminal never says read-only where its composer can send; a read-only host explains once, in its composer’s note', async ({ page }) => {
   await stopMirror();
   await startMirror(true);
-  await login(page);
+  await signIn(page, origin);
   await waitForCards(page, true);
   for (const session of ['main', 'scratch']) {
     await page.goto(origin + termPath(session));
@@ -354,7 +337,7 @@ test('the terminal never says read-only where its composer can send; a read-only
 
 test('a host that disconnects reads offline and its terminal says why', async ({ page }) => {
   if (!rig.running()) await startMirror(false);
-  await login(page);
+  await signIn(page, origin);
   await waitForCards(page, true);
   await stopMirror();
   await waitForCards(page, false);
@@ -443,7 +426,7 @@ test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, li
   await stopMirror();
   const tr = newTranscript();
   await startMirror(false, tr);
-  await login(page);
+  await signIn(page, origin);
   await waitForClaude(page, 'read-only');
 
   // The sidebar row for the Claude pane opens the rendered view; the other
@@ -521,7 +504,7 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
   await stopMirror();
   const tr = newTranscript();
   await startMirror(true, tr);
-  await login(page);
+  await signIn(page, origin);
   await waitForClaude(page, 'interactive');
   await page.goto(origin + viewPath('main'));
   await expect(page.locator('#mv-log [data-tool-row]')).toHaveCount(1);
@@ -626,7 +609,7 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
       .toBe(true);
   }
 
-  await login(page);
+  await signIn(page, origin);
   await waitForClaude(page, 'interactive');
   // The real path: a page scrolled (as a phone collapses its toolbar on),
   // then the session's row in the sidebar.
@@ -764,7 +747,7 @@ for (const size of [
       });
       const act = (l: ReturnType<Page['locator']>) => (size.touch ? l.tap() : l.click());
       try {
-        await login(page);
+        await signIn(page, origin);
         await waitForClaude(page, 'interactive');
 
         // The row of a session with no Claude pane opens its TERMINAL.
@@ -868,7 +851,7 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
   // Read-only: the Terminal page of either kind of session has the message
   // box, disabled, with the reason under it (it used to have none at all).
   await startMirror(false, tr);
-  await login(page);
+  await signIn(page, origin);
   await waitForClaude(page, 'read-only');
   for (const session of ['scratch', 'main']) {
     await page.goto(origin + termPath(session));
@@ -991,7 +974,7 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       posts.push(r.status());
     });
     try {
-      await login(page);
+      await signIn(page, origin);
       await waitForCards(page, true);
       await page.goto(origin + termPath('scratch'));
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
@@ -1106,7 +1089,7 @@ test.describe('drag-to-scroll when scrolls fail (412×915, touch)', () => {
     const hostLines = () => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0);
     const attr = async (name: string) => Number((await page.locator('#term').getAttribute(name)) ?? '0');
     try {
-      await login(page);
+      await signIn(page, origin);
       await waitForCards(page, true);
       await page.route('**/mirror/terminal/scroll', async (route) => {
         attempts++;
@@ -1186,7 +1169,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
     let posts = 0;
     const hostLines = () => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0);
     try {
-      await login(page);
+      await signIn(page, origin);
       await waitForCards(page, true);
       await page.route('**/mirror/terminal/scroll', async (route) => {
         posts++;
@@ -1314,7 +1297,7 @@ test.describe('drag-to-scroll on a desktop (1280×900, mouse)', () => {
     const scrollFile = path.join(dir, 'scrolls');
     await startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile });
     try {
-      await login(page);
+      await signIn(page, origin);
       await waitForCards(page, true);
       await page.goto(origin + termPath('main'));
       await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw');

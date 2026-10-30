@@ -1,6 +1,7 @@
 import { request as pwRequest, Page, WebSocket as PWWebSocket } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, password, termPort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, termPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { touchDrag } from '../lib/touch';
 import { clsInit, readCls, settle } from '../lib/cls';
@@ -48,9 +49,7 @@ async function agentNames(): Promise<Set<string>> {
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
 // saveAgent creates one agent of the kind through the dispatch sheet's "Save
