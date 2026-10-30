@@ -100,7 +100,9 @@ func TestTheHolderMakesTheMirrorOnceAndCarriesTheKeyOnlyByPath(t *testing.T) {
 	envLog := filepath.Join(t.TempDir(), "ssh.env")
 	t.Setenv(worktreetest.FakeSSHEnvLogEnv, envLog)
 	keyDir := t.TempDir()
-	const keyBytes = "-----BEGIN OPENSSH PRIVATE KEY-----\nfixture-deploy-key-bytes-5c1e\n-----END OPENSSH PRIVATE KEY-----\n"
+	// Not key-shaped (the leak gate refuses anything that is): a marker the
+	// checks below look for.
+	const keyBytes = "fixture-deploy-key-bytes-5c1e\n"
 	key, hosts := filepath.Join(keyDir, "ssh-privatekey"), filepath.Join(keyDir, "known_hosts")
 	if err := os.WriteFile(key, []byte(keyBytes), 0o400); err != nil {
 		t.Fatal(err)
@@ -128,7 +130,7 @@ func TestTheHolderMakesTheMirrorOnceAndCarriesTheKeyOnlyByPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, got := range map[string]string{"argv": l, "environment": string(env)} {
-		if strings.Contains(got, "fixture-deploy-key-bytes-5c1e") || strings.Contains(got, "PRIVATE KEY") {
+		if strings.Contains(got, "fixture-deploy-key-bytes-5c1e") {
 			t.Errorf("ssh's %s carries the key's bytes", name)
 		}
 	}
