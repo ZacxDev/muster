@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -50,8 +51,13 @@ import (
 //     turn). Both are HELD through the restart when taken, so no turn starts
 //     on a pod that is about to stop. force skips the refusal — exactly the
 //     browser Stop's behaviour — and holds whichever of the two it could take.
-//   - It WAITS, bounded by chiefRestartWait, for the chief's instance to be
-//     observed running and ready on a NEW pod (when there was one before), and
+//     🔴 force overrides a TURN only: a claim or gate held by another
+//     chief_restart or a chief replacement is refused whatever force says
+//     (KickoffClaimHolder names the claim's holder; turnGate.closeFor refuses
+//     a second closure).
+//   - It WAITS, bounded by chiefRestartWait, for the chief — its row re-read
+//     on every poll — to be observed running and ready on a NEW pod (when there
+//     was one before; with no before reading it says the pod is unconfirmed), and
 //     reports the pod and the image its application container runs. It
 //     REPORTS that image and does not compare it with MUSTER_AGENT_CC_IMAGE:
 //     that check stays the operator's (muster-ops chief-restart).
@@ -79,10 +85,29 @@ var (
 // chiefRestartReadBound bounds each instance read the tool makes.
 const chiefRestartReadBound = 15 * time.Second
 
-// chiefRestartClaimTTL is the session claim the restart holds: past its own
-// wait, with room for the stop and the start. The claim is released on every
-// exit; the TTL is the backstop for a process that dies mid-restart.
-const chiefRestartClaimTTL = 10 * time.Minute
+// chiefRestartOpBound is the longest one Provisioner.Stop or Start may run: the
+// lifecycle adapter bounds each operation by agentprovision.DefaultOpTimeout
+// (TestChiefRestartClaimOutlivesTheRestart pins that this is not shorter).
+const chiefRestartOpBound = 5 * time.Minute
+
+// The session-claim owner prefixes of the two operations that stop the chief's
+// pod or delete its row. A claim held under either is NOT a turn, so force
+// never overrides it (toolChiefRestart).
+const (
+	chiefRestartClaimPrefix = "chief-restart/"
+	chiefReplaceClaimPrefix = "chief-replace/"
+)
+
+// chiefRestartClaimTTL is the session claim the restart holds, sized from the
+// restart's own worst case: the Stop and the Start (each up to
+// chiefRestartOpBound), the instance read before them, and the wait with its
+// reads, plus a minute. The claim is released on every exit; the TTL is the
+// backstop for a process that dies mid-restart, and a TTL shorter than the
+// worst case would let a delivery claim the chief while it is still being
+// restarted. A func because chiefRestartWait is a var.
+func chiefRestartClaimTTL() time.Duration {
+	return 2*chiefRestartOpBound + chiefRestartReadBound + chiefRestartWait + chiefRestartReadBound + time.Minute
+}
 
 // chiefRestartToolDef is the mirrored sessions' chief_restart.
 func chiefRestartToolDef() agents.ToolDef {
@@ -173,8 +198,8 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 	}
 
 	// MID-TURN: the session claim, then the turn gate, as replaceChief takes them.
-	claimOwner := "chief-restart/" + randomHex(6)
-	claimed, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, claimOwner, chiefRestartClaimTTL)
+	claimOwner := chiefRestartClaimPrefix + randomHex(6)
+	claimed, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, claimOwner, chiefRestartClaimTTL())
 	if err != nil {
 		s.logger.Printf("chief_restart: claim %s: %v", chief.Name, err)
 		return toolErr("could not check whether the chief is mid-turn; nothing was restarted")
@@ -185,20 +210,46 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 			defer cancel()
 			_ = s.ext.Agents.ReleaseKickoffClaim(rctx, chief.ID, claimOwner)
 		}()
-	} else if !in.Force {
-		return toolErr("the chief %s is mid-turn (a plugin message, its kickoff or a memo is being delivered to it); nothing was "+
-			"restarted — retry when it finishes, or pass force:true to cut the turn off as Stop does", chief.Name)
+	} else {
+		// 🔴 WHO HOLDS IT DECIDES WHAT force MAY DO. A delivery, a kickoff or a
+		// memo turn is a TURN, which force cuts off as the browser's Stop would.
+		// Another chief_restart or a chief replacement is not a turn: it is
+		// stopping the pod or deleting the row right now, and a forced restart
+		// over it would race it (and, before turnGate.closeFor, reopen its gate
+		// early). Refused whatever force says.
+		holder, err := s.ext.Agents.KickoffClaimHolder(ctx, chief.ID)
+		if err != nil {
+			s.logger.Printf("chief_restart: read the claim holder of %s: %v", chief.Name, err)
+			return toolErr("could not check whether the chief is mid-turn; nothing was restarted")
+		}
+		switch {
+		case strings.HasPrefix(holder, chiefRestartClaimPrefix):
+			return toolErr("the chief %s is already being restarted (another chief_restart is running); nothing was restarted — "+
+				"retry when it finishes", chief.Name)
+		case strings.HasPrefix(holder, chiefReplaceClaimPrefix):
+			return toolErr("the chief %s is being replaced right now (a chief replacement is running); nothing was restarted — "+
+				"retry when it finishes", chief.Name)
+		case !in.Force:
+			return toolErr("the chief %s is mid-turn (a plugin message, its kickoff or a memo is being delivered to it); nothing was "+
+				"restarted — retry when it finishes, or pass force:true to cut the turn off as Stop does", chief.Name)
+		}
 	}
-	gated := s.turns.close(chief.ID)
-	if gated {
+	gated, why := s.turns.closeFor(chief.ID)
+	switch {
+	case gated:
 		defer s.turns.reopen(chief.ID)
-	} else if !in.Force {
+	case why == gateClosed:
+		// Another restart or a replacement owns the gate (closeFor: one owner);
+		// force does not override it, for the reason above.
+		return toolErr("the chief %s is being restarted or replaced right now; nothing was restarted — retry when it finishes", chief.Name)
+	case !in.Force:
 		return toolErr("a chat turn to the chief %s is running; nothing was restarted — retry when it finishes, or pass "+
 			"force:true to cut the turn off as Stop does", chief.Name)
 	}
 	forced := in.Force && (!claimed || !gated)
 
-	before, _ := sideOf(chief, s.instanceIndexWithin(ctx, chiefRestartReadBound))
+	beforeIdx := s.instanceIndexWithin(ctx, chiefRestartReadBound)
+	before, beforeObserved := sideOf(chief, beforeIdx)
 	from := c.asker.MirrorHost + "/" + c.asker.MirrorSession
 	s.logger.Printf("agents: restart of the chief %d (%s) started by the operator via MCP from %s (mid-turn force: %v)", chief.ID, chief.Name, from, forced)
 
@@ -211,7 +262,9 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 	s.clearAgentWork(chief.ID)
 	if err := s.ext.Provisioner.Stop(opCtx, chief.ID); err != nil {
 		s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: stop: %v", chief.ID, chief.Name, from, err)
-		return toolErr("the chief %s could not be stopped (%v); it was not restarted", chief.Name, err)
+		// Stop can fail AFTER scaling to zero (writing the stopped status), so
+		// the pod may well be down: say so rather than "not stopped".
+		return toolErr("stopping the chief %s failed (%v); it may be stopped — check its agent page. It was not started again", chief.Name, err)
 	}
 	// The agent page's Start (handleAgentStart; its refusal was checked above).
 	if err := s.ext.Provisioner.Start(opCtx, chief.ID); err != nil {
@@ -219,36 +272,66 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 		return toolErr("the chief %s was STOPPED but could not be started again (%v); start it from its agent page", chief.Name, err)
 	}
 
+	started := time.Now()
 	after, observed := s.awaitChiefRunning(ctx, chief, before.Pod)
+	waited := time.Since(started).Round(100 * time.Millisecond)
 	out := map[string]any{"agent_id": chief.ID, "agent": chief.Name, "before": before, "after": after}
 	if forced {
 		out["forced"] = true
 	}
 	if !observed || after.Status != agents.StatusRunning || !after.Ready || (before.Pod != "" && after.Pod == before.Pod) {
-		s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: not confirmed running within %s (status %s, pod %q, was %q)",
-			chief.ID, chief.Name, from, chiefRestartWait, after.Status, after.Pod, before.Pod)
-		return toolErr("the chief %s was stopped and started, but was not seen running on a new pod within %s: status %s, pod %q "+
-			"(before: %s, pod %q); check its agent page", chief.Name, chiefRestartWait, after.Status, after.Pod, before.Status, before.Pod)
+		s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: not confirmed running after %s (status %s, pod %q, was %q)",
+			chief.ID, chief.Name, from, waited, after.Status, after.Pod, before.Pod)
+		return toolErr("the chief %s was stopped and started, but was not seen running on a new pod after waiting %s: status %s, pod %q "+
+			"(before: %s, pod %q); check its agent page", chief.Name, waited, after.Status, after.Pod, before.Status, before.Pod)
 	}
 	out["restarted"] = true
-	s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: running on pod %s (was %q), image %q", chief.ID, chief.Name, from, after.Pod, before.Pod, after.Image)
+	// 🔴 WITHOUT A BEFORE READING THE NEW POD IS UNCONFIRMED. The wait judged
+	// "a pod other than the one before" against nothing, so a listing that
+	// still shows the OLD pod would pass. The chief is running and ready; that
+	// it is a new pod is not claimed.
+	if !beforeObserved {
+		out["new_pod_confirmed"] = false
+		out["note"] = "the chief's pod before the restart could not be read, so the pod after it is not confirmed to be a new one"
+	}
+	s.logger.Printf("agents: restart of the chief %d (%s) via MCP from %s: running on pod %s (was %q, read before: %v), image %q",
+		chief.ID, chief.Name, from, after.Pod, before.Pod, beforeObserved, after.Image)
 	return toolJSON(out)
 }
 
-// awaitChiefRunning reads the chief's instance until it is running and ready
-// on a pod other than prevPod (any pod when prevPod is ""), chiefRestartWait
-// passes, or ctx ends. It returns the last side read and whether live state
-// was observed at all on that read. A status of error (an image that will not
-// pull, a crash loop) ends the wait at once.
+// awaitChiefRunning reads the chief until it is running and ready on a pod
+// other than prevPod (any pod when prevPod is ""), its new pod reports an
+// error, chiefRestartWait passes, or ctx ends. It returns the last side read
+// and whether live state was observed on that read.
+//
+// 🔴 EACH POLL RE-READS THE AGENT ROW. The status is agents.ComputeStatus over
+// the row AND the instance, and a stored `error` wins over any instance — so
+// judging from the row read before the Stop answered `error` for a chief that
+// had been errored, on the first poll, and the restart that had just cleared
+// it (the Stop writes stopped, the Start provisioning/running) was reported
+// failed after ~0s. A row read that fails counts as not observed.
+//
+// ⚠ AN ERROR ENDS THE WAIT EARLY ONLY WHEN THE NEW POD SHOWS IT (a crash loop,
+// an image that will not pull, a failed phase on a pod other than prevPod). A
+// stored `error` alone keeps waiting: the instance is the evidence.
 func (s *Server) awaitChiefRunning(ctx context.Context, chief agents.Agent, prevPod string) (chiefRestartSide, bool) {
 	deadline := time.Now().Add(chiefRestartWait)
 	for {
-		side, observed := sideOf(chief, s.instanceIndexWithin(ctx, chiefRestartReadBound))
-		if observed && side.Status == agents.StatusRunning && side.Ready && side.Pod != "" && side.Pod != prevPod {
-			return side, true
-		}
-		if observed && side.Status == agents.StatusError {
-			return side, true
+		var side chiefRestartSide
+		observed := false
+		if row, err := s.ext.Agents.Get(ctx, chief.ID); err == nil {
+			idx := s.instanceIndexWithin(ctx, chiefRestartReadBound)
+			side, observed = sideOf(row, idx)
+			if observed && side.Status == agents.StatusRunning && side.Ready && side.Pod != "" && side.Pod != prevPod {
+				return side, true
+			}
+			if inst := idx[row.Name]; observed && inst != nil && inst.InstanceID != "" && inst.InstanceID != prevPod &&
+				agents.InstanceFailed(inst) {
+				return side, true
+			}
+		} else {
+			s.logger.Printf("chief_restart: re-read the chief %d: %v", chief.ID, err)
+			side.Status = chief.Status
 		}
 		if !time.Now().Before(deadline) {
 			return side, observed

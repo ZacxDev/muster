@@ -172,12 +172,20 @@ unlike [replacing the chief](#replacing-the-chief-on-another-kind).
 
   It is refused while the chief is mid-turn: a plugin message, its kickoff or a
   memo being delivered, or a chat turn running. Retry when the turn ends, or pass
-  `force: true` to cut the turn off, which is what the browser's Stop does. It
+  `force: true` to cut the turn off, which is what the browser's Stop does.
+  `force` overrides a turn only: while another `chief_restart` or a chief
+  replacement is running it is refused either way — retry when that finishes. It
   is also refused when you have no chief, or have turned it off.
 
+  A chief whose status was `error` restarts like any other; the wait judges the
+  chief as it is after the start. If its pod before the restart could not be
+  read, a successful answer carries `new_pod_confirmed: false`: the chief is
+  running and ready, but that it is a new pod is not confirmed.
+
   Nothing is stopped when the Start would be refused (for example, a claude-code
-  chief whose owner has no Claude account). If the start fails after the stop, the
-  answer says the chief is **stopped**: start it from its agent page.
+  chief whose owner has no Claude account). If the stop fails, the chief may
+  already be stopped: check its agent page. If the start fails after the stop,
+  the answer says the chief is **stopped**: start it from its agent page.
 
   The restart writes no audit row, like the browser's Stop/Start and
   `agent_destroy`. The calling host and session and the outcome are in muster's

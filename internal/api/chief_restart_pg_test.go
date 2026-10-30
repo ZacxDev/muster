@@ -56,6 +56,13 @@ type restartProv struct {
 	// instance as it was BEFORE the Stop (a lagging backend listing).
 	staleReads int
 	stale      map[string]provision.Instance
+	// startStatus, when set, is the status Start stores instead of running (a
+	// row that is `error` again after the start).
+	startStatus string
+	// failReads is how many Instances reads fail from now on.
+	failReads int
+	// stopFails makes Stop fail AFTER scaling to zero.
+	stopFails error
 }
 
 func (p *restartProv) name(id int64) string {
@@ -91,7 +98,11 @@ func (p *restartProv) Stop(_ context.Context, id int64) error {
 		p.stale[k] = v
 	}
 	p.insts[n] = provision.Instance{Ref: provision.Ref{Name: n}, Phase: provision.PhaseStopped, Reason: "scaled to zero"}
+	stopErr := p.stopFails
 	p.mu.Unlock()
+	if stopErr != nil {
+		return stopErr
+	}
 	return p.setStatus(id, agents.StatusStopped)
 }
 
@@ -107,13 +118,21 @@ func (p *restartProv) Start(_ context.Context, id int64) error {
 	p.pods++
 	p.insts[n] = provision.Instance{Ref: provision.Ref{Name: n}, InstanceID: n + "-pod-" + strconv.Itoa(p.pods),
 		Phase: provision.PhaseRunning, Ready: !p.noReady, Replicas: 1, Image: p.image}
+	status := p.startStatus
 	p.mu.Unlock()
-	return p.setStatus(id, agents.StatusRunning)
+	if status == "" {
+		status = agents.StatusRunning
+	}
+	return p.setStatus(id, status)
 }
 
 func (p *restartProv) Instances(context.Context) ([]provision.Instance, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.failReads > 0 {
+		p.failReads--
+		return nil, context.DeadlineExceeded
+	}
 	src := p.insts
 	if p.staleReads > 0 && p.pods > 0 && p.stale != nil {
 		p.staleReads--
@@ -497,6 +516,224 @@ func TestChiefRestartIsRefusedBeforeTheStopWhenTheStartWouldBe(t *testing.T) {
 	if !isToolErr(text) || !strings.Contains(text, "was STOPPED but could not be started again") {
 		t.Fatalf("a failed start: %s", text)
 	}
+	// The failed start released the session claim and reopened the turn gate.
+	assertRestartReleased(t, f, owner, chief.ID)
+}
+
+// assertRestartReleased fails t unless chief id's session claim is free and its
+// turn gate open.
+func assertRestartReleased(t *testing.T, f *restartFixture, owner, id int64) {
+	t.Helper()
+	if won, err := f.srv.ext.Agents.ClaimKickoff(asUser(owner), id, "probe", time.Minute); err != nil || !won {
+		t.Errorf("the chief's session claim is still held (%v)", err)
+	} else {
+		_ = f.srv.ext.Agents.ReleaseKickoffClaim(asUser(owner), id, "probe")
+	}
+	if !f.srv.turns.enter(id) {
+		t.Errorf("the chief's turn gate is still closed")
+	} else {
+		f.srv.turns.leave(id)
+	}
+}
+
+// setRowStatus stores status on agent id's row.
+func (f *restartFixture) setRowStatus(t *testing.T, id int64, status string) {
+	t.Helper()
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = $2 WHERE id = $1`, id, status); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRestartingAnErroredChiefSucceeds: a chief whose stored status is `error`
+// (ComputeStatus answers error whatever the instance says) is restarted — the
+// Stop and the Start rewrite the row — and the result is success on the new
+// pod. Before the fix the wait judged the row read BEFORE the Stop, saw the
+// stale `error` and reported the working restart failed at once.
+func TestRestartingAnErroredChiefSucceeds(t *testing.T) {
+	f := newRestartFixture(t)
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rserrchief")
+	f.prov.seed(chief, "old-pod", "")
+	f.setRowStatus(t, chief.ID, agents.StatusError)
+	text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
+	r := decodeRestart(t, text)
+	if !r.Restarted || r.Before.Status != agents.StatusError || r.After.Status != agents.StatusRunning || !r.After.Ready ||
+		r.After.Pod == "" || r.After.Pod == "old-pod" {
+		t.Fatalf("an errored chief restarted: %s", text)
+	}
+}
+
+// TestAChiefStillErroredAfterTheStartFailsAfterTheWait: a row that is `error`
+// again after the start (its new pod running and ready) is a failure — but only after the wait has run
+// (the stored error alone is not evidence; the instance is), and the message
+// says how long it really waited.
+func TestAChiefStillErroredAfterTheStartFailsAfterTheWait(t *testing.T) {
+	f := newRestartFixture(t)
+	chiefRestartWait = 600 * time.Millisecond
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rsstuckchief")
+	f.prov.seed(chief, "old-pod", "")
+	f.setRowStatus(t, chief.ID, agents.StatusError)
+	f.prov.mu.Lock()
+	f.prov.startStatus = agents.StatusError
+	f.prov.mu.Unlock()
+	t0 := time.Now()
+	text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
+	took := time.Since(t0)
+	if !isToolErr(text) || !strings.Contains(text, "was stopped and started, but was not seen running on a new pod after waiting ") ||
+		!strings.Contains(text, ": status error,") {
+		t.Fatalf("a chief still errored: %s", text)
+	}
+	if took < chiefRestartWait {
+		t.Fatalf("a chief still errored failed after %s, before the %s wait ran: %s", took, chiefRestartWait, text)
+	}
+	if strings.Contains(text, "after waiting 0s") || strings.Contains(text, "after waiting 100ms") {
+		t.Fatalf("the message does not report the real wait: %s", text)
+	}
+}
+
+// TestACrashingNewPodEndsTheWaitEarly: the NEW pod reporting a crash loop ends
+// the wait at once (the instance is the evidence) — long before chiefRestartWait.
+func TestACrashingNewPodEndsTheWaitEarly(t *testing.T) {
+	f := newRestartFixture(t)
+	chiefRestartWait = 5 * time.Second
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rscrashchief")
+	f.prov.seed(chief, "old-pod", "")
+	f.srv.ext.Provisioner = crashingStart{f.prov}
+	t0 := time.Now()
+	text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
+	if !isToolErr(text) || !strings.Contains(text, ": status error,") {
+		t.Fatalf("a crashing new pod: %s", text)
+	}
+	if took := time.Since(t0); took > 2*time.Second {
+		t.Fatalf("a crashing new pod waited %s", took)
+	}
+	if strings.Contains(text, "after waiting "+chiefRestartWait.String()) {
+		t.Fatalf("the message reports the wait's bound, not the time it really waited: %s", text)
+	}
+}
+
+// crashingStart is restartProv whose started pod is in CrashLoopBackOff.
+type crashingStart struct{ *restartProv }
+
+func (c crashingStart) Start(ctx context.Context, id int64) error {
+	if err := c.restartProv.Start(ctx, id); err != nil {
+		return err
+	}
+	n := c.name(id)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inst := c.insts[n]
+	inst.Ready, inst.Reason = false, "CrashLoopBackOff"
+	c.insts[n] = inst
+	return nil
+}
+
+// TestAForcedRestartNeverOverridesAnotherRestartOrAReplacement: force cuts off a
+// TURN; a chief replacement or another chief_restart holding the session claim
+// and the turn gate is not one. Each is refused with a message naming it, the
+// provisioner is not reached, and the other operation's claim and gate are
+// left exactly as held. Then: the gate alone closed by another operation (claim
+// free) is refused under force too, and left closed.
+func TestAForcedRestartNeverOverridesAnotherRestartOrAReplacement(t *testing.T) {
+	f := newRestartFixture(t)
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rsforcechief")
+	f.prov.seed(chief, "old-pod", "")
+	for holder, want := range map[string]string{
+		"chief-replace/abc123": `{"error":"the chief ` + chief.Name + ` is being replaced right now (a chief replacement is running); nothing was restarted — retry when it finishes"}`,
+		"chief-restart/abc123": `{"error":"the chief ` + chief.Name + ` is already being restarted (another chief_restart is running); nothing was restarted — retry when it finishes"}`,
+	} {
+		if won, err := f.srv.ext.Agents.ClaimKickoff(asUser(owner), chief.ID, holder, time.Minute); err != nil || !won {
+			t.Fatalf("take the claim as %s: %v", holder, err)
+		}
+		if !f.srv.turns.close(chief.ID) {
+			t.Fatalf("close the gate as %s", holder)
+		}
+		for _, args := range []string{`{"force":true}`, `{}`} {
+			if text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), args); text != want {
+				t.Errorf("%s holding, %s: %s", holder, args, text)
+			}
+		}
+		if got := f.prov.callList(); len(got) != 0 {
+			t.Fatalf("%s holding: the restart reached the provisioner: %v", holder, got)
+		}
+		if f.srv.turns.enter(chief.ID) {
+			f.srv.turns.leave(chief.ID)
+			t.Errorf("%s holding: the refused restart reopened its turn gate", holder)
+		}
+		if got, err := f.srv.ext.Agents.KickoffClaimHolder(asUser(owner), chief.ID); err != nil || got != holder {
+			t.Errorf("%s holding: the claim is now %q (%v)", holder, got, err)
+		}
+		f.srv.turns.reopen(chief.ID)
+		_ = f.srv.ext.Agents.ReleaseKickoffClaim(asUser(owner), chief.ID, holder)
+	}
+
+	// The gate alone, closed by another operation: refused under force, left closed.
+	if !f.srv.turns.close(chief.ID) {
+		t.Fatal("close the gate")
+	}
+	want := `{"error":"the chief ` + chief.Name + ` is being restarted or replaced right now; nothing was restarted — retry when it finishes"}`
+	if text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{"force":true}`); text != want {
+		t.Errorf("gate closed by another operation, forced: %s", text)
+	}
+	if got := f.prov.callList(); len(got) != 0 {
+		t.Fatalf("gate closed by another operation: the restart reached the provisioner: %v", got)
+	}
+	if f.srv.turns.enter(chief.ID) {
+		f.srv.turns.leave(chief.ID)
+		t.Errorf("the refused restart reopened a gate it did not close")
+	}
+	f.srv.turns.reopen(chief.ID)
+	// The refusal released the claim it took.
+	assertRestartReleased(t, f, owner, chief.ID)
+	// CONTROL: nothing held, the same forced call restarts it.
+	if text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{"force":true}`); isToolErr(text) {
+		t.Fatalf("control: %s", text)
+	}
+}
+
+// TestChiefRestartWithoutABeforeReadingDoesNotClaimANewPod: the instance read
+// before the Stop fails, so there is no pod to compare with; the restart
+// succeeds (running and ready) but says the new pod is unconfirmed.
+func TestChiefRestartWithoutABeforeReadingDoesNotClaimANewPod(t *testing.T) {
+	f := newRestartFixture(t)
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rsnobeforechief")
+	f.prov.seed(chief, "old-pod", "")
+	f.prov.mu.Lock()
+	f.prov.failReads = 1
+	f.prov.mu.Unlock()
+	text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
+	if isToolErr(text) || !strings.Contains(text, `"new_pod_confirmed":false`) ||
+		!strings.Contains(text, "could not be read, so the pod after it is not confirmed to be a new one") {
+		t.Fatalf("no before reading: %s", text)
+	}
+	// CONTROL: with a before reading the result claims nothing extra.
+	if text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`); strings.Contains(text, "new_pod_confirmed") {
+		t.Fatalf("with a before reading: %s", text)
+	}
+}
+
+// TestAFailedStopSaysTheChiefMayBeStopped: Stop can fail after scaling to zero,
+// so the refusal says the chief may be stopped, and nothing is started.
+func TestAFailedStopSaysTheChiefMayBeStopped(t *testing.T) {
+	f := newRestartFixture(t)
+	owner := f.newMember(t)
+	chief := f.labelledChief(t, owner, "rsstopchief")
+	f.prov.seed(chief, "old-pod", "")
+	f.prov.mu.Lock()
+	f.prov.stopFails = context.DeadlineExceeded
+	f.prov.mu.Unlock()
+	text := f.srv.toolChiefRestart(asUser(owner), sessionCaller(), `{}`)
+	if text != `{"error":"stopping the chief `+chief.Name+` failed (context deadline exceeded); it may be stopped — check its agent page. It was not started again"}` {
+		t.Fatalf("a failed stop: %s", text)
+	}
+	if got := strings.Join(f.prov.callList(), " "); got != "stop:"+strconv.FormatInt(chief.ID, 10) {
+		t.Fatalf("calls after a failed stop: %q", got)
+	}
+	assertRestartReleased(t, f, owner, chief.ID)
 }
 
 // TestOnlyAMirroredSessionCanRestartTheChief: chief_restart is not reachable by

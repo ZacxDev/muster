@@ -14,6 +14,7 @@ import (
 // chat turn does not, and making it take one would change chat (a message typed
 // during a delivery would be refused). The replacement needs only "no chat turn
 // is running, and none starts until I am done", which this answers in-process.
+// chief_restart closes it the same way; a closure has ONE owner (closeFor).
 //
 // ⚠ IN-PROCESS ONLY. muster runs one replica by design (its deployment says why);
 // a second replica's chat turns would not be seen here.
@@ -81,21 +82,49 @@ func (g *turnGate) leave(id int64) {
 	g.running[id]--
 }
 
-// close stops new turns for id, reporting false (and closing nothing) when a
-// turn is running. reopen undoes it.
-func (g *turnGate) close(id int64) bool {
+// Why a close was refused (closeFor's why).
+const (
+	// gateBusy: a turn of id's is running here.
+	gateBusy = "busy"
+	// gateClosed: id is ALREADY closed — another chief replacement or
+	// chief_restart holds it.
+	gateClosed = "closed"
+)
+
+// closeFor stops new turns for id and reports ok; ok false (and NOTHING
+// changed) with why gateBusy when a turn is running, or gateClosed when id is
+// already closed. reopen undoes a close that returned ok — and only the caller
+// that got ok may call it.
+//
+// 🔴 A SECOND CLOSE IS REFUSED, NOT ACCEPTED. It used to answer true for an id
+// that was already closed, so two operations (a chief replacement and a forced
+// chief_restart, or two restarts) could both "own" the closure, and the first
+// to finish reopened it while the other was still mid-swap — a chat turn could
+// then start on a pod being stopped or a row being deleted. Refusing makes the
+// closure single-owner: whoever got ok is the only one who reopens.
+func (g *turnGate) closeFor(id int64) (ok bool, why string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.closed[id] {
+		return false, gateClosed
+	}
 	if g.running[id] > 0 {
-		return false
+		return false, gateBusy
 	}
 	if g.closed == nil {
 		g.closed = map[int64]bool{}
 	}
 	g.closed[id] = true
-	return true
+	return true, ""
 }
 
+// close is closeFor without the why.
+func (g *turnGate) close(id int64) bool {
+	ok, _ := g.closeFor(id)
+	return ok
+}
+
+// reopen undoes the caller's own successful close (see closeFor).
 func (g *turnGate) reopen(id int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
