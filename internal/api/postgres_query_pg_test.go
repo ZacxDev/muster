@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -112,4 +113,37 @@ func (f *connFixture) pgToolStatus(t *testing.T, tok string) (string, bool, *mcp
 	}
 	text, isErr := toolText(t, r)
 	return text, isErr, nil
+}
+
+// TestTheConnectorsTabCreatesAPostgresConnector: the operator recipe's step —
+// the form's PostgreSQL preset renders the database fields, and submitting it
+// stores a postgres connector with those settings (and no password in any
+// answer).
+func TestTheConnectorsTabCreatesAPostgresConnector(t *testing.T) {
+	f := newConnFixture(t)
+	w := f.call(t, "GET", "/ui/connectors/new?preset=postgres", nil, f.operator())
+	for _, want := range []string{`name="pg_host"`, `name="pg_database"`, `name="pg_sslmode"`, `name="pg_require_tls"`, "Database password"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the postgres form lacks %s", want)
+		}
+	}
+	const pw = "tab-created-Pw-0123456789"
+	body, hdr := form(url.Values{"preset": {"postgres"}, "name": {"prod-db-ro"}, "pg_host": {"db.internal"}, "pg_port": {"6432"},
+		"pg_database": {"app"}, "username": {"muster_ro"}, "pg_sslmode": {"require"}, "pg_require_tls": {"on"},
+		"pg_statement_timeout_ms": {"4000"}, "secret": {pw}})
+	w = f.call(t, "POST", "/connectors", body, merge(f.operator(), hdr))
+	if strings.Contains(w.Body.String(), pw) {
+		t.Fatal("the create answer carries the password")
+	}
+	c, err := f.store.GetConnector(f.ctx, "prod-db-ro")
+	if err != nil {
+		t.Fatalf("the connector was not created (HTTP %d): %v\n%s", w.Code, err, w.Body)
+	}
+	if c.Scheme != connectors.SchemePostgres || strings.Join(c.Hosts, ",") != "db.internal:6432" || c.Username != "muster_ro" ||
+		c.Postgres == nil || *c.Postgres != (connectors.PostgresSettings{Database: "app", SSLMode: "require", RequireTLS: true, StatementTimeoutMS: 4000}) {
+		t.Errorf("created = %+v %+v", c, c.Postgres)
+	}
+	if _, secret, err := f.store.Credential(f.ctx, "prod-db-ro"); err != nil || secret != pw {
+		t.Errorf("the sealed password does not open to what was entered: %v", err)
+	}
 }
