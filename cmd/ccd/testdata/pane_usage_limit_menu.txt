@@ -1,0 +1,50 @@
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   /data/workspace
+
+❯ Cut the release notes for the LA build and post them to the release thread
+
+  ⎿  You’ve hit your weekly limit · resets Nov 2, 1am (UTC)
+     /upgrade to increase your usage limit.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ What do you want to do?
+
+ ❯ 1. Stop and wait for limit to reset
+   2. Wait here, then continue automatically at Nov 2, 1am
+   3. Upgrade your plan
+
+ Enter to confirm · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

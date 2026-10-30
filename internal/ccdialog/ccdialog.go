@@ -123,6 +123,97 @@ func OnScreen(capture string) (what string, shown bool) {
 	return "", false
 }
 
+// optionRow is one numbered option of a select menu, with or without the
+// cursor on it: "❯ 1. Stop and wait for limit to reset", "  2. Upgrade your
+// plan". Group 1 is the option's label.
+var optionRow = regexp.MustCompile(`^\s*(?:❯[ \x{00a0}]+)?\d+\.\s+(.*?)\s*$`)
+
+// limitStop is the usage-limit menu's own option: it stops the turn and waits
+// for the account's limit to reset (the CLI's value "cancel"). With usage
+// credits on, the CLI labels the same option just "Stop".
+const limitStop = "Stop and wait for limit to reset"
+
+// limitSiblings are the label prefixes of the usage-limit menu's OTHER
+// options, as the CLI builds them (Claude Code 2.1.289's rate-limit options
+// menu): read only to tell its bare "Stop" from any other menu's.
+var limitSiblings = []string{
+	"Wait here, then continue automatically",
+	"Add funds to continue with",
+	"Switch to usage",
+	"Ask your admin for more usage",
+	"Don’t continue automatically", "Don't continue automatically",
+}
+
+// limitLine is the CLI's own statement of the limit it hit, as it writes it
+// into the transcript above the menu: "You've hit your weekly limit · resets
+// Nov 2, 1am (UTC)", "You've reached your … limit".
+var limitLine = regexp.MustCompile(`You[\x{2019}']ve (?:hit|reached) your .*`)
+
+// UsageLimit reports whether capture shows Claude Code's USAGE-LIMIT menu —
+// the select menu the CLI raises when the account hit its session or weekly
+// limit ("❯ 1. Stop and wait for limit to reset") — and the CLI's limit line
+// when the screen still shows it ("You've hit your weekly limit · resets Nov 2,
+// 1am (UTC)"), "" when it does not.
+//
+// 🔴 IT REFINES OnScreen, NEVER WIDENS IT: a screen OnScreen does not read as a
+// dialog is never the limit menu, and the option must be a numbered row below
+// the screen's last rule — the same anchoring, so the menu's words quoted in
+// the transcript or typed into the input box are not it. Inside that dialog it
+// is the menu when one option's label is exactly [limitStop], or exactly "Stop"
+// beside one of [limitSiblings]. Any other dialog is not it.
+//
+// 🔴 WHY IT EXISTS: a pane parked on this menu refuses every later turn as a
+// dialog, which ccd answered `awaiting_approval` — so an agent that reached
+// the menu without a `rate_limited` turn being seen (failover not yet shipped,
+// or that turn's failure missed) reported awaiting_approval for ever and was
+// never failed over. ccd answers it as the rate limit it is (cmd/ccd dialog.go).
+//
+// The limit line is the LAST such line on screen, from "You" to the end of its
+// row. It is not anchored: once the menu is recognised, it is only the reset
+// time's source, and a misread one is bounded by the account pool's own limits
+// on a stated reset (internal/ccpool statedReset).
+func UsageLimit(capture string) (limit string, shown bool) {
+	if _, dialog := OnScreen(capture); !dialog {
+		return "", false
+	}
+	lines, _ := screenLines(capture)
+	from := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		if IsRule(lines[i]) {
+			from = i + 1
+			break
+		}
+	}
+	stop, bareStop, sibling := false, false, false
+	for _, l := range lines[from:] {
+		m := optionRow.FindStringSubmatch(l)
+		if m == nil {
+			continue
+		}
+		switch label := m[1]; {
+		case label == limitStop:
+			stop = true
+		case label == "Stop":
+			bareStop = true
+		default:
+			for _, p := range limitSiblings {
+				if strings.HasPrefix(label, p) {
+					sibling = true
+				}
+			}
+		}
+	}
+	if !stop && !(bareStop && sibling) {
+		return "", false
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if m := limitLine.FindString(lines[i]); m != "" {
+			return strings.TrimSpace(m), true
+		}
+	}
+	return "", true
+}
+
 // InputBox is what Claude Code's input box holds on capture, and whether the
 // box was found at all. The CLI draws the box between the screen's LAST TWO
 // horizontal rules, its first row starting with the prompt mark `❯`; the

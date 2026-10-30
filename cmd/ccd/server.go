@@ -770,6 +770,15 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	}()
 
 	if err := s.term.Paste(ctx, pane, prompt); err != nil {
+		// The usage-limit menu first: it is a dialog too (errDialogShown), but
+		// the account's limit, not an approval (dialog.go limitMenuShown).
+		var lm *limitMenuShown
+		if errors.As(err, &lm) {
+			s.setScreenBlocked(true, err.Error())
+			f := limitMenuFailure(lm)
+			s.auth.observeTurn(f)
+			return turnOutcome{}, f
+		}
 		if errors.Is(err, errDialogShown) {
 			s.setScreenBlocked(true, err.Error())
 			return turnOutcome{}, awaitingApproval(err.Error())

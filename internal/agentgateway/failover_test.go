@@ -30,6 +30,10 @@ func TestATypedCcdFailureIsHandedToTheAccountFailover(t *testing.T) {
 		{"rate limited", 429, ccdRateLimited, "|work|rate_limited|You've hit your limit · resets 5pm"},
 		{"auth failed", 502, ccdAuthFailed, "|work|auth_failed|OAuth access token is invalid"},
 		{"busy", 409, ccdBusy, ""},
+		// The usage-limit menu on the pane: a dialog ccd refused at 409, but
+		// the rate limit, so the agent is failed over with the CLI's limit line.
+		{"limit menu", 409, ccdLimitMenu, "|work|rate_limited|You\u2019ve hit your weekly limit · resets Nov 2, 1am (UTC) — " +
+			"the CLI's pane shows its usage-limit menu (a select menu (❯ 1. Stop and wait for limit to reset)); nothing was typed — the account hit its limit"},
 	} {
 		for _, shape := range []string{"chat", "tools"} {
 			t.Run(c.name+"/"+shape, func(t *testing.T) {
@@ -58,5 +62,36 @@ func TestATypedCcdFailureIsHandedToTheAccountFailover(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// 🔴 THE LIMIT-MENU REFUSAL IS FAILED OVER AND IS STILL "NOTHING WAS SENT".
+// ccd answers a pane parked on the usage-limit menu 409 rate_limited (cmd/ccd
+// limitMenuFailure): Unsent must read it as busy, so a deliverer queues the
+// message again (it was never pasted) rather than recording it as possibly
+// delivered. The control: a rate_limited turn that WAS pasted (429) is not unsent.
+func TestTheLimitMenuRefusalReadsAsUnsentAndAPastedRateLimitDoesNot(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"limit menu", 409, ccdLimitMenu, UnsentBusy},
+		{"rate-limited turn", 429, ccdRateLimited, ""},
+		{"busy", 409, ccdBusy, UnsentBusy},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := ccdFailing(c.status, c.body)
+			defer srv.Close()
+			gw := markGateway(t, srv, &recordingMarker{})
+			_, err := gw.Chat(context.Background(), ccAgent(), "k", "hello", nil)
+			if err == nil {
+				t.Fatal("a failing turn returned no error")
+			}
+			if got := Unsent(err); got != c.want {
+				t.Fatalf("Unsent(%v) = %q; want %q", err, got, c.want)
+			}
+		})
 	}
 }

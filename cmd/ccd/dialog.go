@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/ZacxDev/muster/internal/ccdialog"
 )
@@ -41,6 +42,29 @@ var errDialogShown = errors.New("the CLI's pane shows a dialog that a paste or E
 // Claude prompt guard, which runs the same check before it pastes into a
 // mirrored Claude Code pane.
 func dialogOnScreen(capture string) (what string, shown bool) { return ccdialog.OnScreen(capture) }
+
+// limitMenuShown is errDialogShown for the one dialog that is NOT awaiting
+// approval: the CLI's usage-limit menu (ccdialog.UsageLimit). The account hit
+// its limit; nothing was typed. runTurn answers it as the rate limit
+// (limitMenuFailure), so muster marks the account and fails the agent over
+// instead of reading awaiting_approval on every turn until the limit resets.
+// limit is the CLI's limit line when the screen shows it, "" when not.
+//
+// It wraps errDialogShown, so every check for "a dialog refused the keys"
+// still holds for it.
+type limitMenuShown struct{ what, limit string }
+
+func (e *limitMenuShown) Error() string { return errDialogShown.Error() + ": " + e.what }
+func (e *limitMenuShown) Unwrap() error { return errDialogShown }
+
+// dialogRefusal is the error for a screen showing a dialog: limitMenuShown for
+// the usage-limit menu, else errDialogShown naming what.
+func dialogRefusal(screen, what string) error {
+	if limit, ok := ccdialog.UsageLimit(screen); ok {
+		return &limitMenuShown{what: what, limit: limit}
+	}
+	return fmt.Errorf("%w: %s", errDialogShown, what)
+}
 
 // isRule is ccdialog.IsRule.
 var isRule = ccdialog.IsRule

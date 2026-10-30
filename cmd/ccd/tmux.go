@@ -243,7 +243,7 @@ func (t tmuxTerminal) noDialog(ctx context.Context, ref paneRef) error {
 		return fmt.Errorf("%w: reading the screen before typing: %v", errPaneNotLive, err)
 	}
 	if what, shown := dialogOnScreen(screen); shown {
-		return fmt.Errorf("%w: %s", errDialogShown, what)
+		return dialogRefusal(screen, what)
 	}
 	return nil
 }
