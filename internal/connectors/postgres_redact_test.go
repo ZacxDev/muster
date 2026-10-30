@@ -16,10 +16,10 @@ import (
 func TestAPostgresErrorIsRedactedOfItsDSN(t *testing.T) {
 	const secret = "s3cr3t-Pa55word-xyz"
 	dsns := []string{
-		"postgres://muster_ro:" + secret + "@db.internal:5432/app?sslmode=require",
-		"postgresql://muster_ro:" + secret + "@db.internal/app",
-		"host=db.internal user=muster_ro password=" + secret + " dbname=app",
-		"host=db.internal user=muster_ro password='" + secret + " with space' dbname=app",
+		"postgres://muster_ro:" + secret + "@db.example.com:5432/app?sslmode=require",
+		"postgresql://muster_ro:" + secret + "@db.example.com/app",
+		"host=db.example.com user=muster_ro password=" + secret + " dbname=app",
+		"host=db.example.com user=muster_ro password='" + secret + " with space' dbname=app",
 		"the password is " + secret,
 	}
 	for _, dsn := range dsns {

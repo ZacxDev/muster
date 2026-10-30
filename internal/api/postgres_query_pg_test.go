@@ -128,7 +128,7 @@ func TestTheConnectorsTabCreatesAPostgresConnector(t *testing.T) {
 		}
 	}
 	const pw = "tab-created-Pw-0123456789"
-	body, hdr := form(url.Values{"preset": {"postgres"}, "name": {"prod-db-ro"}, "pg_host": {"db.internal"}, "pg_port": {"6432"},
+	body, hdr := form(url.Values{"preset": {"postgres"}, "name": {"prod-db-ro"}, "pg_host": {"db.example.com"}, "pg_port": {"6432"},
 		"pg_database": {"app"}, "username": {"muster_ro"}, "pg_sslmode": {"require"}, "pg_require_tls": {"on"},
 		"pg_statement_timeout_ms": {"4000"}, "secret": {pw}})
 	w = f.call(t, "POST", "/connectors", body, merge(f.operator(), hdr))
@@ -139,7 +139,7 @@ func TestTheConnectorsTabCreatesAPostgresConnector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the connector was not created (HTTP %d): %v\n%s", w.Code, err, w.Body)
 	}
-	if c.Scheme != connectors.SchemePostgres || strings.Join(c.Hosts, ",") != "db.internal:6432" || c.Username != "muster_ro" ||
+	if c.Scheme != connectors.SchemePostgres || strings.Join(c.Hosts, ",") != "db.example.com:6432" || c.Username != "muster_ro" ||
 		c.Postgres == nil || *c.Postgres != (connectors.PostgresSettings{Database: "app", SSLMode: "require", RequireTLS: true, StatementTimeoutMS: 4000}) {
 		t.Errorf("created = %+v %+v", c, c.Postgres)
 	}

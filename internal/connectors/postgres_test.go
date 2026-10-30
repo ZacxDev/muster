@@ -409,19 +409,19 @@ func TestThePostgresRateLimitIsPerAgent(t *testing.T) {
 // TestAPostgresConnectorValidates: the settings' refusals.
 func TestAPostgresConnectorValidates(t *testing.T) {
 	ok := func() connectors.NewConnector {
-		return connectors.NewConnector{Name: "db", Scheme: connectors.SchemePostgres, Hosts: []string{"db.internal"},
+		return connectors.NewConnector{Name: "db", Scheme: connectors.SchemePostgres, Hosts: []string{"db.example.com"},
 			Username: "ro", Secret: "a-long-enough-password", Postgres: &connectors.PostgresSettings{Database: "app", RequireTLS: true}}
 	}
 	nc, err := ok().Validate()
 	if err != nil {
 		t.Fatalf("a valid postgres connector: %v", err)
 	}
-	if nc.Hosts[0] != "db.internal:5432" || nc.Postgres.SSLMode != "require" || nc.Platform != "postgres" {
+	if nc.Hosts[0] != "db.example.com:5432" || nc.Postgres.SSLMode != "require" || nc.Platform != "postgres" {
 		t.Errorf("normalised = %v %q %q", nc.Hosts, nc.Postgres.SSLMode, nc.Platform)
 	}
 	for name, mut := range map[string]func(*connectors.NewConnector){
 		"no settings":          func(n *connectors.NewConnector) { n.Postgres = nil },
-		"two hosts":            func(n *connectors.NewConnector) { n.Hosts = []string{"a.internal", "b.internal"} },
+		"two hosts":            func(n *connectors.NewConnector) { n.Hosts = []string{"a.example.com", "b.example.com"} },
 		"a URL host":           func(n *connectors.NewConnector) { n.Hosts = []string{"postgres://u:p@db/app"} },
 		"bad port":             func(n *connectors.NewConnector) { n.Hosts = []string{"db:99999"} },
 		"no user":              func(n *connectors.NewConnector) { n.Username = "" },
