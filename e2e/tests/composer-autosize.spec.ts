@@ -1,5 +1,6 @@
 import { Page } from '@playwright/test';
-import { test, expect, useSuiteSession } from '../lib/fixtures';
+import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
 import { composerFitPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
@@ -134,7 +135,7 @@ for (const vp of [
 
       test('the agent chat box grows, caps at 40%, scrolls, and shrinks after a send', async ({ page, baseURL }) => {
         // Signed in on the shared server, where the agent is.
-        await useSuiteSession(page);
+        await signIn(page);
         // A socket that accepts the message and finishes the turn: the send path
         // that empties the box is the WebSocket one.
         const sent: string[] = [];

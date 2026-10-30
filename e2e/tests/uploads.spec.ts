@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page, request as pwRequest } from '@playwright/test';
+import { Page, request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, fakeS3Port, password, repoRoot, uploadsOffPort, uploadsPort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, fakeS3Port, repoRoot, uploadsOffPort, uploadsPort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -191,20 +192,8 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const signedIn: Record<string, Awaited<ReturnType<BrowserContext['cookies']>>> = {};
-async function login(page: Page, at: string) {
-  if (signedIn[at]) {
-    await page.context().addCookies(signedIn[at]);
-    return;
-  }
-  await page.goto(at + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn[at] = await page.context().cookies(at);
-}
-
 async function openView(page: Page, at = origin, h = host) {
-  await login(page, at);
+  await signIn(page, at);
   await page.goto(at + viewPath(h));
   await expect(page.locator('#mv-input'), `the composer is enabled (muster-mirror log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
 }
@@ -423,7 +412,7 @@ test('with no S3 configured there is no paperclip, and the routes do not exist',
   const exp = Math.floor(Date.now() / 1000) + 600;
   expect((await fetchNoCookies(`${offOrigin}/f/${id}?exp=${exp}&sig=${sign(id, exp)}`)).status).toBe(404);
   // The control for the 404 above: the ON server answers the same upload 201.
-  await login(page, origin);
+  await signIn(page, origin);
   const on = await page.request.post(origin + '/uploads', {
     multipart: { file: { name: 'a.png', mimeType: 'image/png', buffer: PNG } },
     headers: { Origin: origin, 'X-Requested-With': 'XMLHttpRequest' },
@@ -440,7 +429,7 @@ test('with no S3 configured there is no paperclip, and the routes do not exist',
 // muster's origin and watches the detector fire, so the zeroes below are
 // zeroes of a detector that can see.
 test('an uploaded HTML file opened in the browser does not run script in the muster origin', async ({ page }) => {
-  await login(page, origin);
+  await signIn(page, origin);
   const MARK = 'MUSTER-XSS-RAN-' + stamp;
   const PAYLOAD = Buffer.from(
     `<!DOCTYPE html><html><body><script>console.log(${JSON.stringify(MARK)});` +

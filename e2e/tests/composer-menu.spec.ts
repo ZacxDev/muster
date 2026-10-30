@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
 import { binDir, composerMenuPort, dsn, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, settle } from '../lib/cls';
@@ -141,20 +142,6 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// One password sign-in, its cookie handed to every context (sign-in is
-// throttled); a password sign-in is a FRESH one.
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
-
 // makeStale replaces the session cookie with one the server signed 13 hours
 // ago (internal/auth.SignSession: "<issued>|<expiry>|hex(hmac)", keyed by
 // sha256("muster-ui-session-v1\0" + password)).
@@ -167,7 +154,7 @@ async function makeStale(context: BrowserContext) {
 }
 
 async function openView(page: Page, host = newHost) {
-  await login(page);
+  await signIn(page, origin);
   await page.goto(origin + viewPath(host));
   await expect(page.locator('#mv-input'), `the composer is enabled (muster-mirror log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
 }
@@ -563,7 +550,7 @@ for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
   test.describe(`layout shift at ${vp.width}×${vp.height}`, () => {
     test.use({ viewport: vp });
     test(`the mirrored view with its split button and menus shifts less than 0.01`, async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.addInitScript(clsInit);
 
       await page.goto(origin + viewPath(newHost));

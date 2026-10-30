@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page, request as pwRequest } from '@playwright/test';
+import { Page, request as pwRequest } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
-import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, password, repoRoot, sttToken, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, repoRoot, sttToken, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 import { openDispatchSheet } from '../lib/dispatch';
@@ -144,7 +145,7 @@ test.afterAll(async ({ browser }) => {
     if (agent) {
       const ctx = await browser.newContext();
       const page = await ctx.newPage();
-      await login(page);
+      await signIn(page, origin);
       const r = await page.request.delete(`${origin}/agents/${agent.id}`, { headers: { Origin: origin } });
       expect(r.status(), `deleting ${agent.name}: ${await r.text()}`).toBeLessThan(300);
       await expectAgentsDestroyed(agentRows, [agent.id], 'the agent this spec made is still there');
@@ -175,20 +176,6 @@ async function agentRows(): Promise<AgentRow[]> {
   const rows = (await r.json()) as AgentRow[];
   await ctx.dispose();
   return rows;
-}
-
-// Password sign-in is throttled in one shared bucket: the form is driven once,
-// and its cookie handed to every later page.
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
 }
 
 // runningAgent is one claude-code agent, saved and started once for the spec.
@@ -300,7 +287,7 @@ for (const vp of [
     test.use(vp.use);
 
     test('a mirrored session’s Rendered view: dictate at the caret, then Send delivers it', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       fs.rmSync(transcript + '.pasted', { force: true });
       await page.goto(origin + '/mirror/view?' + q(claudeWin));
       await expect(page.locator('#mv-input'), `the composer (mirror log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
@@ -313,7 +300,7 @@ for (const vp of [
     });
 
     test('a mirrored session’s Terminal view: dictate at the caret, then Send delivers it', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       fs.rmSync(pasteFile, { force: true });
       await page.goto(origin + '/mirror/terminal?' + q(shellWin));
       await expect(page.locator('#mv-input'), `the composer (mirror log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
@@ -326,7 +313,7 @@ for (const vp of [
 
     test('an agent’s chat and Terminal views: dictate at the caret, then Send delivers it', async ({ page }) => {
       test.setTimeout(150_000);
-      await login(page);
+      await signIn(page, origin);
       const a = await runningAgent(page);
 
       await page.goto(`${origin}/agents/${a.name}/terminal`);
@@ -407,7 +394,7 @@ test.describe('the view switch finishes the recording in the view it hides', () 
         sizes.push(r.request().postDataBuffer()?.length ?? 0);
         await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${FAKE_TEXT} ` });
       });
-      await login(page);
+      await signIn(page, origin);
       if (c.agent) {
         const a = await runningAgent(page);
         await page.goto(`${origin}/agents/${a.name}`);
@@ -485,7 +472,7 @@ test.describe('failures, said inline', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
   async function openRendered(page: Page) {
-    await login(page);
+    await signIn(page, origin);
     await page.goto(origin + '/mirror/view?' + q(claudeWin));
     await expect(page.locator('#mv-dictate')).toBeVisible({ timeout: 20_000 });
   }
@@ -559,7 +546,7 @@ test.describe('failures, said inline', () => {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, javaScriptEnabled: false });
     const page = await ctx.newPage();
     try {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(origin + '/mirror/view?' + q(claudeWin));
       await expect(page.locator('#mv-input')).toBeVisible();
       await expect(page.locator('#mv-dictate')).toHaveCount(1);

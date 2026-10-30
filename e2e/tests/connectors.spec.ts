@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { agentToken, connectPort, connectorsPort, fakeUpstreamPort, password, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { agentToken, connectPort, connectorsPort, fakeUpstreamPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // The secure connector store, end to end, at a phone's width (412×915): an
@@ -62,9 +63,7 @@ async function asAgent(path: string, init: RequestInit = {}): Promise<{ status: 
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
 async function noHorizontalScroll(page: Page) {

@@ -1,6 +1,7 @@
 import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, password, polishPort, versionA } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, polishPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 
@@ -61,9 +62,7 @@ async function agentRows(): Promise<AgentRow[]> {
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
 // saveAgent fills the sidebar "+"'s dispatch sheet and presses "Save for later"
