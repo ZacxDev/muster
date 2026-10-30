@@ -16,6 +16,13 @@
 // than handed on. A restarted WORKER (Playwright starts a new one after a
 // failure) starts with an empty cache and signs in again on its first call.
 //
+// ⚠ WHERE THE PAGE IS AFTERWARDS DEPENDS ON THE PATH: after the form it is on
+// the origin's home (where the sign-in redirects), after a reused session it
+// has not moved. So a caller navigates to what it tests. Landing every path on
+// home was tried and reverted: home opens the default session's view, and its
+// sockets broke five tests that count sockets and streams (mirror-windows,
+// mirrored, view-swap, hermes-view).
+//
 // A test that needs a session of its OWN — one it signs out, or a sign-in whose
 // issue time a step-up check reads — passes { fresh: true }. That still goes
 // through here, so the budget (lib/server.ts signInBudget) counts it.
@@ -36,16 +43,6 @@ const key = (origin: string, pw: string) => `${origin}\n${pw}`;
 async function signedIn(page: Page, origin: string): Promise<boolean> {
   const r = await page.context().request.get(origin + '/login', { maxRedirects: 0 });
   return r.status() >= 300 && r.status() < 400;
-}
-
-// land leaves the page where the form's sign-in leaves it: the origin's home
-// (the form redirects to /, with no ?next=). 🔴 EVERY PATH ENDS THERE, so a
-// test cannot pass only because it happens to be its file's first: one that
-// used whatever page signing in left it on worked after the form and timed out
-// after a reused session, which left the page blank (claude-code-polish's
-// desktop 1a, the first run of this helper).
-async function land(page: Page, origin: string): Promise<void> {
-  await page.goto(origin + '/');
 }
 
 export interface SignInOptions {
@@ -69,7 +66,7 @@ export async function signIn(page: Page, origin: string = baseURL, opts: SignInO
       await page.context().addCookies(cached);
       if (await signedIn(page, origin)) {
         sessions.set(k, cached);
-        return land(page, origin);
+        return;
       }
       sessions.delete(k);
     } else if (await signedIn(page, origin)) {
@@ -77,7 +74,7 @@ export async function signIn(page: Page, origin: string = baseURL, opts: SignInO
       // a key derived from the password, so the suite's session from another
       // of its servers is good here too). /login would only redirect.
       sessions.set(k, await page.context().cookies(origin));
-      return land(page, origin);
+      return;
     }
   } else {
     // A session the context already holds would send /login straight on.

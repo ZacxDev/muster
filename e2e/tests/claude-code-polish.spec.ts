@@ -112,6 +112,9 @@ for (const vp of [
 
     test('1a. picking Claude Code removes the model selector and the OpenRouter options from the dispatch form', async ({ page }) => {
       await login(page);
+      // On a page of this server's own: after a reused session (lib/signin.ts)
+      // the page has not moved, and only the form's sign-in lands on home.
+      await page.goto(origin + '/tasks');
       await openDispatchSheet(page);
       const sheet = page.locator('#agent-modal form');
       await expect(sheet.locator('input[name="kind"][value="gateway"]')).toBeChecked();
