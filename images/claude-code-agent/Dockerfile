@@ -57,6 +57,7 @@ COPY --from=build /ccd /usr/local/bin/ccd
 COPY images/claude-code-agent/settings.json /etc/ccd/settings.json
 COPY --chmod=0755 images/claude-code-agent/entrypoint.sh /usr/local/bin/cc-entrypoint
 COPY --chmod=0755 images/claude-code-agent/smoke.sh /usr/local/bin/cc-smoke
+COPY --chmod=0755 images/claude-code-agent/deploykey-smoke.sh /usr/local/bin/cc-deploykey-smoke
 
 # /data is the persistent volume's mount point: the CLI's config (credentials from
 # /login, settings, and the session transcripts `--resume <id>` resumes) and the

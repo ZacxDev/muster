@@ -581,6 +581,13 @@ jobs:
       # A FRESH volume at /data, shaped as local-path + fsGroup 1000 makes one
       # (root:1000, 2777). A tmpfs, not a named volume: docker copies the image's
       # own uid-1000 /data into an empty named volume, which hides the shape.
+      # A deploy-key pool's two uids on this image: the key holder's ssh runs
+      # as 1001, and the session (1000) clones and fetches the holder's
+      # mirror with production's flags (pinned; see the script). Root only to
+      # switch uids.
+      - name: cc-deploykey-smoke (holder uid 1001, session uid 1000)
+        run: docker run --rm --user 0 claude-code-agent:ci cc-deploykey-smoke
+
       - name: cc-smoke (fresh volume)
         run: docker run --rm --tmpfs /data:rw,exec,mode=2777,uid=0,gid=1000 -e CC_SMOKE_VOLUME=fresh claude-code-agent:ci cc-smoke
 
