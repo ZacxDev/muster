@@ -300,3 +300,72 @@ func jsonQuote(s string) string {
 	b.WriteByte('"')
 	return b.String()
 }
+
+// GitShimLogEnv names the file GitShim's `git` appends each invocation to.
+const GitShimLogEnv = "MUSTER_GIT_SHIM_LOG"
+
+// gitShim records its argv (one line per call, arguments separated by \x1f)
+// and then execs the real git (REALGIT, its absolute path): what a call sent,
+// without changing what it does.
+const gitShim = `#!/bin/sh
+{
+	sep=
+	for a do printf '%s%s' "$sep" "$a"; sep=$(printf '\037'); done
+	printf '\n'
+} >> "$MUSTER_GIT_SHIM_LOG"
+exec REALGIT "$@"
+`
+
+// GitShim puts a `git` first on PATH (path is the caller's PATH, which the
+// test reads) for the rest of the test that logs every invocation's argv and
+// then runs the real git — including the gits git itself starts through the
+// shell (an --upload-pack command) — and returns the log's path (GitShimCalls).
+func GitShim(t *testing.T, path string) string {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on PATH")
+	}
+	if real, err = filepath.Abs(real); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(strings.Replace(gitShim, "REALGIT", shQuote(real), 1)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(t.TempDir(), "git.log")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+path)
+	t.Setenv(GitShimLogEnv, log)
+	return log
+}
+
+// GitShimCalls is every argv GitShim logged, in order.
+func GitShimCalls(t *testing.T, log string) [][]string {
+	t.Helper()
+	b, err := os.ReadFile(log)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		if line != "" {
+			calls = append(calls, strings.Split(line, "\x1f"))
+		}
+	}
+	return calls
+}
+
+// GitSubcommand is argv's git subcommand: the first argument that is not a
+// global option (-c and -C take a value).
+func GitSubcommand(argv []string) string {
+	for i := 0; i < len(argv); i++ {
+		switch a := argv[i]; {
+		case a == "-c" || a == "-C":
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			return a
+		}
+	}
+	return ""
+}

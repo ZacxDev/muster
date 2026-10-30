@@ -299,11 +299,16 @@ user, which ssh needs to exist; the agent's session runs as 1000). The holder, a
   `/var/lib/muster-mirror/repo.git`, retrying every 30 s until it can. That
   directory is an `emptyDir` the holder writes and the agent's container mounts
   **read-only**. ccd is told the mirror's path (`CCD_REPO_MIRROR`) and clones
-  the agent's checkout from it — locally, with no credential. Every git that
-  reads the mirror from the agent's container passes
-  `--upload-pack='git -c safe.directory=<mirror> upload-pack'`: the mirror
-  belongs to uid 1001, and git 2.39's upload-pack refuses another user's
-  repository unless its own command line marks it safe.
+  the agent's checkout from it — locally, with no credential. ccd's clone and
+  muster's job scripts pass
+  `--upload-pack='git -c safe.directory=<mirror> upload-pack'` on every git
+  that reads the mirror: the mirror belongs to uid 1001, and git 2.39's
+  upload-pack refuses another user's repository unless its own command line
+  marks it safe. **The session's own git cannot fetch `origin`** (the
+  mirror) on such a pool: the clone does not record that option, so a plain
+  `git fetch origin` in the checkout fails with "detected dubious
+  ownership". That is intended — a job's commits, its `base_sha` included
+  (`refs/muster-jobs/<id>-base`), are fetched for it before its turn.
 - **For each job**, muster execs into the holder: it probes the key for write
   access and fetches the pull request's head (and the `base_sha`) into the
   mirror; the job's worktree script then fetches them from the mirror, in the

@@ -18,7 +18,10 @@
 #       succeed against it — git refuses another user's repository ("detected
 #       dubious ownership") unless told it is safe in a way upload-pack sees;
 #   (c) as uid 1000, a 0440 file owned by root and a group uid 1000 is not in
-#       cannot be read (the key's mode, read by any other uid).
+#       cannot be read (the key's mode, read by any other uid). An INVARIANT
+#       check of the kernel's file modes, not regression coverage: in a pod the
+#       key is not in the session's container at all (the k8s render tests pin
+#       that), and nothing muster changed could make this go red.
 #
 # 🔴 THE FLAGS BELOW ARE PINNED, NOT COPIED BY HAND: the Go test
 # TestTheDeployKeySmokePinsProductionsFlags (internal/agentspec) asserts each
@@ -34,6 +37,8 @@ GIT_PRE=''
 # PINNED: podagent.MirrorUploadPack(MIRROR), the --upload-pack command for a
 # clone or fetch from the mirror ('' = none).
 UPLOAD_PACK='git -c safe.directory=/var/lib/muster-mirror/repo.git upload-pack'
+# PINNED: the flags ccd's clone of the mirror passes (besides --upload-pack).
+CLONE_FLAGS='--quiet --no-local'
 HOLDER_UID=1001
 SESSION_UID=1000
 
@@ -83,7 +88,7 @@ check_b() (
 	up=()
 	[ -z "$UPLOAD_PACK" ] || up=(--upload-pack="$UPLOAD_PACK")
 	# shellcheck disable=SC2086
-	out=$(as "$SESSION_UID" git $GIT_PRE clone --quiet --no-local "${up[@]}" -- "$MIRROR" "$dest/co" 2>&1) ||
+	out=$(as "$SESSION_UID" git $GIT_PRE clone $CLONE_FLAGS "${up[@]}" -- "$MIRROR" "$dest/co" 2>&1) ||
 		fail "(b) clone of the mirror as uid $SESSION_UID: $out"
 	[ "$(cat "$dest/co/f")" = mirrored ] || fail "(b) the clone does not hold the mirror's file"
 	echo "deploykey-smoke: (b) clone --no-local of a uid-$HOLDER_UID mirror as uid $SESSION_UID: ok"
@@ -95,7 +100,7 @@ check_b() (
 
 )
 check_c() (
-	# (c) the key's mode, against another uid.
+	# (c) the key's mode, against another uid (an invariant check: see the top).
 	key=$(mktemp)
 	echo "smoke-marker" > "$key"
 	chown "0:$HOLDER_UID" "$key"

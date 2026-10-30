@@ -20,7 +20,7 @@ func smokePins(t *testing.T) map[string]string {
 	for _, m := range regexp.MustCompile(`(?m)^([A-Z_]+)='([^']*)'$`).FindAllStringSubmatch(string(b), -1) {
 		pins[m[1]] = m[2]
 	}
-	for _, k := range []string{"SSH_CMD", "MIRROR", "GIT_PRE", "UPLOAD_PACK"} {
+	for _, k := range []string{"SSH_CMD", "MIRROR", "GIT_PRE", "UPLOAD_PACK", "CLONE_FLAGS"} {
 		if _, ok := pins[k]; !ok {
 			t.Fatalf("the smoke pins no %s (found %v)", k, pins)
 		}
