@@ -113,8 +113,8 @@ test('a read-only host’s sessions appear in the sidebar and open the shared te
   // swaps its rows, and a row replaced between the locator resolving it and its
   // box being read has no box (null — CI run 41003756952, "Cannot read
   // properties of null (reading 'x')"). Each try resolves the row again; a try
-  // that found no box reads Infinity, which never passes. Same as
-  // mirror-windows.spec.ts's row measurement.
+  // that found no box reads Infinity, which never passes. (mirror-windows.spec
+  // meets the same swap with a toPass block, because it also scrolls the row.)
   await expect
     .poll(
       async () => {
