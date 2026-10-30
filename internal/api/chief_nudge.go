@@ -34,8 +34,8 @@ import (
 // makes no model call.
 //
 // For each, the chief is asked once (a bounded call on the chief's own runtime,
-// under a gateway key of its own so it never enters the operator's
-// conversation) for ONE decision: nudge, ask, or leave. Then the guards — in
+// in a context of its own so it never enters the operator's conversation:
+// nudgeSessionName, nudgeRoute) for ONE decision: nudge, ask, or leave. Then the guards — in
 // code, never in the prompt — decide what muster does with it:
 //
 //   - a nudge is accepted only when its quote is, byte for byte, inside one of
@@ -89,8 +89,13 @@ const (
 	// owner: a fleet that stalls all at once costs a few calls a tick, not one
 	// per session.
 	chiefNudgeMaxPerPass = 5
-	// chiefNudgeTurnBudget bounds one chief call.
-	chiefNudgeTurnBudget = 3 * time.Minute
+	// chiefNudgeTurnBudget bounds one chief call: the three minutes a check's
+	// turn has always had, plus one for a claude-code chief's ccd to start the
+	// check's own CLI first (nudgeRoute) — ccd waits up to its laneStartTimeout
+	// (60s, cmd/ccd/lanes.go) for a new lane's CLI to reach its prompt, and
+	// answers a typed 503 not_ready past it (unsent: the check is retried next
+	// pass), so a check whose CLI did start still has at least three minutes.
+	chiefNudgeTurnBudget = 4 * time.Minute
 	// chiefNudgeAgentMessages is how many of an agent's newest messages are read.
 	chiefNudgeAgentMessages = 200
 	// chiefNudgePendingBatch bounds one reconcile.
@@ -737,21 +742,57 @@ func nudgeMirrorComplete(evs []cctranscript.Event, idx mirrorIndex, now time.Tim
 	return true
 }
 
-// nudgeSessionName is the chief's gateway key for ONE stall check: derived
-// from the decision it is for (owner, session, idle streak), so every check
-// starts a fresh context — no check sees another's, none grows with the ones
-// before it — and never an operator thread's key, so a check never enters the
-// operator's conversation with the chief. No chat_sessions row exists for it
-// (chief_agent.go says why).
+// nudgeSessionName is the session key of ONE stall check: derived from the
+// decision it is for (owner, session, idle streak), and never an operator
+// thread's key. No chat_sessions row exists for it (chief_agent.go says why).
+//
+// What makes the check's context fresh is what the chief's runtime does with
+// the key, and that differs by kind:
+//
+//   - a `gateway` chief keys its sessions by the session key it is sent
+//     (X-Openclaw-Session-Key), so this key alone is a session of its own;
+//   - a `claude-code` chief's ccd does NOT: a turn without
+//     agents.HeaderCCSession goes to its primary CLI — the operator's own
+//     conversation with the chief — whatever its session key. So the check
+//     also carries the key as an explicit session (nudgeRoute), and ccd runs it
+//     in a CLI of its own (a lane, cmd/ccd/lanes.go), started with an empty
+//     conversation.
+//
+// Either way no check sees another's and none grows with the ones before it.
+// The key is the same only for the same decision, and a decision is asked
+// again only after a call that sent nothing (errNudgeChiefBusy) — so a lane
+// that resumes its key's transcript resumes one holding no earlier check.
 func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) string {
 	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + c.Kind + "\x00" + c.Key + "\x00" + c.StreakKey))
 	return "agent:" + agentName + ":webchat:nudge:" + hex.EncodeToString(sum[:8])
 }
 
+// nudgeRoute is ctx carrying the route of a stall check under key: for a
+// claude-code chief, key as an explicit claude-code session (withSessionRoute,
+// the one place that route is built), with no model — ccd starts the lane's
+// CLI on the pod's default model, as the primary runs. A gateway chief gets no
+// route, and its request is exactly what it was before: its runtime has no
+// lanes, and its per-decision session key is already a session of its own.
+//
+// ⚠ EVICTION, STATED: ccd keeps a lane's CLI running after its turn, and when
+// it needs a slot (CCD_MAX_SESSIONS, default 3) it stops the least recently
+// used idle lane — which can be one of the operator's explicit sessions as
+// readily as an earlier check's. ccd has no way to be told a lane is
+// disposable; an evicted session is resumed from its transcript on its next
+// turn, at the cost of a cold start.
+func nudgeRoute(ctx context.Context, chief agents.Agent, key string) context.Context {
+	if agents.ResolveKind(chief.Kind) != agents.KindClaudeCode {
+		return ctx
+	}
+	return withSessionRoute(ctx, chief, agents.ChatSession{SessionKey: key, Runtime: agents.SessionRuntimeClaudeCode})
+}
+
 // askChiefForNudge puts prompt to the chief and returns its answer, holding
 // the chief's session claim and turn gate (as a question turn does) so it never
 // overlaps another of the chief's turns. errNudgeChiefBusy when the chief
-// cannot take it now. The test hook nudgeChief replaces the call itself.
+// cannot take it now — including when its ccd has no slot for the check's own
+// CLI (agentgateway.LanesFull): nothing was sent, so the decision is not
+// recorded and the streak is asked about again next pass.
 func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, prompt string) (string, error) {
 	if s.ext.Gateway == nil || s.ext.Agents == nil {
 		return "", errNudgeChiefBusy
@@ -775,10 +816,10 @@ func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, 
 		return "", errNudgeChiefBusy
 	}
 	defer s.turns.leave(chief.ID)
-	tctx, cancel := context.WithTimeout(ctx, chiefNudgeTurnBudget)
+	tctx, cancel := context.WithTimeout(nudgeRoute(ctx, chief, key), chiefNudgeTurnBudget)
 	defer cancel()
 	reply, err := s.ext.Gateway.Chat(tctx, chief, key, prompt, nil)
-	if agentgateway.Unsent(err) != "" {
+	if agentgateway.Unsent(err) != "" || agentgateway.LanesFull(err) {
 		return "", errNudgeChiefBusy
 	}
 	return reply, err

@@ -23,6 +23,14 @@ func TestTheLaneHeadersAreMustersHeaders(t *testing.T) {
 	}
 }
 
+// TestTheCapacityFailureIsMusters: the type of ccd's lanes-full refusal is the
+// one muster reads as "not sent, retry later" (agentgateway.LanesFull).
+func TestTheCapacityFailureIsMusters(t *testing.T) {
+	if failCapacity != agents.FailureCapacity {
+		t.Fatalf("ccd answers %q, muster reads %q", failCapacity, agents.FailureCapacity)
+	}
+}
+
 // TestTheLaneModelSetIsMusters: every model muster accepts for a claude-code
 // session, ccd passes to --model, and ccd refuses what muster refuses — so a
 // session muster created can always start, and nothing muster would not store

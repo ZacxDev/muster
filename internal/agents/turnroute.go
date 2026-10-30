@@ -40,6 +40,13 @@ const (
 	HeaderCCWorkdirUsed = "X-Muster-CC-Workdir-Used"
 )
 
+// FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names
+// an explicit session (HeaderCCSession) whose CLI is not running while every
+// CLI ccd may run at once (CCD_MAX_SESSIONS) is held by a turn. ccd answers it
+// from lane selection, BEFORE it starts a CLI or pastes anything. cmd/ccd spells
+// it itself (failCapacity); TestTheCapacityFailureIsMusters pins the two.
+const FailureCapacity = "capacity"
+
 // TurnRoute is what a turn carries about where in the pod it goes.
 type TurnRoute struct {
 	// Runtime is the session's runtime (SessionRuntime*); "" is the agent's own.
