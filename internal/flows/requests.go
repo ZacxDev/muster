@@ -83,15 +83,38 @@ var ErrTooManyPendingRequests = errors.New("flows: too many pending flow request
 // may carry no character the owner cannot see, and the card spells out every
 // non-ASCII code point. This list only refuses the obvious shapes before
 // they reach that screen.
-var agentTextDeny = []struct {
-	re   *regexp.Regexp
-	what string
-}{
+//
+// secretShapedDeny is the part of it that is about SECRETS rather than
+// infrastructure: the one part StripSecretShaped also applies to text muster
+// itself sends (a fleet report's titles), where the rest is not wanted.
+var agentTextDeny = append([]textDeny{
 	{regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`), "an IP address"},
 	{regexp.MustCompile(`(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:lan|local|internal|svc|cluster|dev|com|net|org|io|ai|app)\b`), "a host name"},
+}, append(secretShapedDeny,
+	textDeny{regexp.MustCompile(`(?i)\b(?:kubeconfig|kubectl|namespace|password|secret)\b`), "an infrastructure word"})...)
+
+type textDeny struct {
+	re   *regexp.Regexp
+	what string
+}
+
+var secretShapedDeny = []textDeny{
 	{regexp.MustCompile(`(?i)\b(?:mst|mfr|ghp|gho|ghs|sk|xox[abprs])[-_][A-Za-z0-9_-]{8,}`), "a credential-shaped string"},
 	{regexp.MustCompile(`[A-Za-z0-9+/_=-]{32,}`), "a long token-shaped string"},
-	{regexp.MustCompile(`(?i)\b(?:kubeconfig|kubectl|namespace|password|secret)\b`), "an infrastructure word"},
+}
+
+// SecretRemoved is what StripSecretShaped puts where it removed something.
+const SecretRemoved = "[removed]"
+
+// StripSecretShaped is text with every credential-shaped or long token-shaped
+// run (secretShapedDeny: the screen's secret patterns, and only those)
+// replaced by SecretRemoved, and how many runs it replaced.
+func StripSecretShaped(text string) (string, int) {
+	n := 0
+	for _, d := range secretShapedDeny {
+		text = d.re.ReplaceAllStringFunc(text, func(string) string { n++; return SecretRemoved })
+	}
+	return text, n
 }
 
 // AgentTextRefusal reports why agent-composed free text is refused, or "".

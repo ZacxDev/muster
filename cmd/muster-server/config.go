@@ -178,6 +178,18 @@ const (
 	// on. Unset (the default): off — the route answers 404 and every message is
 	// handed on as before.
 	envPRMailSenders = "MUSTER_PR_MAIL_SENDERS"
+	// A FLEET-REPORT REQUEST (internal/api/fleet_report.go): the agent-mail
+	// senders ("<owner>/<handle>,…", MUSTER_PR_MAIL_SENDERS's grammar) whose
+	// VERIFIED mail, when its body is a fleet_report_request, muster answers
+	// itself with a report of the owner's sessions over the requested window,
+	// filed as an already-approved reply. Needs the plugin interface and
+	// MUSTER_FLEET_REPORT_PATHS. Unset (the default): off — such mail goes to
+	// the chief, as before.
+	envFleetReportSenders = "MUSTER_FLEET_REPORT_SENDERS"
+	// The working-directory prefixes ("/abs/path,…") whose sessions a fleet
+	// report REPLY may describe; every other session never leaves muster.
+	// Required with the senders (fail closed: refuse to boot).
+	envFleetReportPaths = "MUSTER_FLEET_REPORT_PATHS"
 	// RESUMING AN ENDED SESSION FOR ITS MAIL (internal/api/mail_resume.go): the
 	// senders, per owner and plugin, VERIFIED only, in MUSTER_ROUTE_RELAY_ALLOW's
 	// grammar, whose mail for a session muster would route itself (by thread,
@@ -651,6 +663,11 @@ type config struct {
 	// that does not parse); empty is pull-request routing off.
 	PRMailSendersRaw string
 	PRMailSenders    plugins.PRMailSenders
+	// FleetReportSenders and FleetReportPaths are MUSTER_FLEET_REPORT_SENDERS
+	// and MUSTER_FLEET_REPORT_PATHS, parsed (loadConfig refuses either that
+	// does not parse, and senders without paths); empty senders is off.
+	FleetReportSenders plugins.AgentMailSenders
+	FleetReportPaths   plugins.FleetReportPaths
 	// MailResumeAllow is MUSTER_MAIL_RESUME_ALLOW, parsed (loadConfig refuses
 	// one that does not parse); empty is the mail resume off. MailResumeOff is
 	// MUSTER_MAIL_RESUME_OFF=1, its kill switch.
@@ -1423,6 +1440,21 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envPRMailSenders, err)
 	}
 	c.PRMailSenders = prSenders
+	frSenders, err := plugins.ParseAgentMailSenders(strings.TrimSpace(getenv(envFleetReportSenders)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envFleetReportSenders, err)
+	}
+	frPaths, err := plugins.ParseFleetReportPaths(strings.TrimSpace(getenv(envFleetReportPaths)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want absolute directory prefixes, comma-separated)", envFleetReportPaths, err)
+	}
+	// 🔴 FAIL CLOSED: requests on with no prefix would describe nothing — or,
+	// to a later reader "fixing" that, everything. Refuse instead.
+	if len(frSenders) > 0 && len(frPaths) == 0 {
+		return config{}, fmt.Errorf("invalid %s: it is set but %s is not, so muster does not know which sessions a reply may "+
+			"describe", envFleetReportSenders, envFleetReportPaths)
+	}
+	c.FleetReportSenders, c.FleetReportPaths = frSenders, frPaths
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)
 		if err != nil {
