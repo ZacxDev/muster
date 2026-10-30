@@ -163,6 +163,19 @@ record any of the owner's Claude session ids as the author of any pull
 request or branch**, and the next review of it is then pasted into that
 session — the thread bind's risk, for review mail.
 
+### Fleet-report requests
+
+A [fleet-report request](plugins.md#a-fleet-report-request) is answered with
+**no chief and no owner in between**: muster files an already-approved reply
+holding the owner's session names, hosts and focus titles over the requested
+window. Two things decide it: the mail's sender, which must be on
+`MUSTER_FLEET_REPORT_SENDERS` **and** marked `sender_verified` by the
+agent-mail plugin, and the request's `member`, which must be the owner's
+GitHub login as `MUSTER_FLEET_REPORT_MEMBERS` gives it. Every read runs as the
+owner the plugin token acts for, under row-level security; the `member` never
+selects whose rows are read. 🔴 **Accepted risk: a listed sender reads the
+owner's session titles without approval**, for any window of up to four days.
+
 ## Paired devices
 
 The native Android app gets its own credential, the **device credential**

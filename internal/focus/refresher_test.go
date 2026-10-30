@@ -72,6 +72,9 @@ func (m *memStore) MatchHistory(context.Context, string, Live, time.Time, int, i
 func (m *memStore) RecentTitles(context.Context, Live, time.Time) (map[Subject][]TitleAt, error) {
 	return nil, nil
 }
+func (m *memStore) WindowHistory(context.Context, time.Time, time.Time) (WindowReport, error) {
+	return WindowReport{}, nil
+}
 
 type fakeSource struct {
 	cands []Candidate

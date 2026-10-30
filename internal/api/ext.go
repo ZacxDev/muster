@@ -282,6 +282,13 @@ type Extensions struct {
 	PRMail     *PRMail
 	PRSessions plugins.PRSessionStore
 
+	// FleetReport is the fleet-report request's configuration
+	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_MEMBERS;
+	// fleet_report.go). nil — the senders unset — is OFF: such a mail is handed
+	// on as any other. The chief's fleet_report tool needs only Focus, and
+	// lists pull requests only with PRSessions.
+	FleetReport *FleetReport
+
 	// MailResume is the mail resume's configuration (MUSTER_MAIL_RESUME_ALLOW,
 	// MUSTER_MAIL_RESUME_OFF; mail_resume.go) and MailResumes its durable
 	// record (migration 0056). nil — the allowlist unset — is OFF: mail for a

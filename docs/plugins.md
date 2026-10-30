@@ -1122,6 +1122,79 @@ but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a
 command behind a wrapper the hook does not read), and anything from a host
 without the hook.
 
+### A fleet-report request
+
+A team console's standup can ask your muster what you worked on. A **fleet-report
+request** is answered by muster itself, in code, with no chief turn and no
+owner in between. Off unless `MUSTER_FLEET_REPORT_SENDERS` lists the asking
+agent-mail address and `MUSTER_FLEET_REPORT_MEMBERS` gives your GitHub login
+([configuration](configuration.md)).
+
+1. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
+   is on the list **and** that the plugin marked `sender_verified`, and whose
+   **whole body** is one JSON object (the subject is not read):
+
+   ```json
+   {"type": "fleet_report_request", "v": 1, "request_id": "<opaque, at most 64 bytes>",
+    "member": "<github login>",
+    "window": {"since": "<RFC 3339>", "until": "<RFC 3339>", "zone": "<IANA zone>"}}
+   ```
+
+   A body that is not such an object (prose, another `type`, anything after
+   the object), an unverified or unlisted sender, a `no_reply` message, or an
+   owner with no chief: the ordinary delivery, unchanged.
+2. **The reply.** muster hands the message to your chief **without a turn**,
+   settled (it never becomes an [unrouted ask](#a-message-the-chief-does-not-act-on)),
+   and files its reply draft **already approved**; the plugin's next claim
+   sends it on the request's thread through the usual claim and result
+   routes. The reply's whole body is JSON:
+
+   ```json
+   {"type": "fleet_report", "v": 1, "request_id": "<echoed>", "generated_at": "<RFC 3339>",
+    "window": {"since": "…", "until": "…", "zone": "…"},
+    "coverage": {"sessions": 3, "omitted": 0, "hosts": ["<online host>"], "gaps": ["<what did not answer>"]},
+    "sessions": [{"id": "agent:<id> | mirror:<claude session id>", "kind": "agent | mirror",
+      "name": "<window or agent name>", "host": "<host, or empty>", "repo": "<repo> | null",
+      "state": "active | waiting | ended", "first_seen": "<RFC 3339>", "last_seen": "<RFC 3339>",
+      "focus": [{"title": "<focus title>", "at": "<RFC 3339>"}], "prs": ["<owner>/<repo>#<n>"]}]}
+   ```
+
+   It is the chief's [`fleet_report`](focus.md#the-tools) over the request's
+   window, capped at **16 KiB** (a reply draft's limit, not the tool's 32):
+   the least recently active sessions are left out first and counted in
+   `omitted`. `hosts` are the mirror hosts online now; `gaps` names each
+   offline host (whether its sessions still run is unknown), a store that
+   could not be read, and how many titles and fields were left out or
+   withheld. Every character outside ASCII is written as a JSON `\u` escape.
+3. **An error** — a version other than 1, a malformed field, a window that is
+   empty or longer than 4 days, or a `member` that is not your GitHub login
+   (or no login configured for you) — is the same reply with no data:
+
+   ```json
+   {"type": "fleet_report", "v": 1, "request_id": "<echoed, or empty>", "error": "<plain English>"}
+   ```
+
+🔴 **What leaves muster.** The reply goes to the asking service and, from
+there, to whatever model reads it. It carries ids, names, hosts, repositories,
+focus **titles**, times and pull-request references — never a focus
+description, transcript text, a command or tool output. Each free-text field
+(a name, a repository, a title) passes the reply screen one at a time; a field
+it refuses (an IP address, a dotted host name, a token-shaped string, an
+infrastructure word, one of `MUSTER_FLOW_AGENT_DENY_WORDS`) is replaced by
+`(withheld by muster's reply screen)` and counted in `gaps`. The **host**
+names in `host` and `hosts` are muster's own labels for your mirror hosts and
+are **not** screened: the report exists to say where work ran. ⚠ So a host
+label that is also on `MUSTER_FLOW_AGENT_DENY_WORDS` is still sent.
+
+🔴 **Accepted risk: a listed sender reads your sessions' titles.** Anyone who
+can send verified agent mail as a listed address gets, for any window of up to
+4 days, every session's name, host and focus titles, without your approval.
+The `member` check makes a request meant for someone else fail loudly; it does
+not protect you from the listed sender itself. List only a sender you would
+show your standup to. Every reply writes `plugin.delivered`,
+`plugin.message.settled`, `plugin.draft.filed` and `plugin.draft.approved`
+(`"auto": true`, `"via": "fleet_report"`) audit rows.
+
 ### Resuming an ended session
 
 When agent mail would be routed by muster itself — a [reply on a thread a

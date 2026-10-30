@@ -85,6 +85,9 @@ func (m *memFocus) MatchHistory(context.Context, string, focus.Live, time.Time, 
 func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time) (map[focus.Subject][]focus.TitleAt, error) {
 	return nil, nil
 }
+func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time) (focus.WindowReport, error) {
+	return focus.WindowReport{}, nil
+}
 
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()

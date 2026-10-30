@@ -95,7 +95,7 @@ func (f *ccChiefFixture) listed(t *testing.T, token string) map[string]bool {
 // the registry (a list derived from the implementation would agree with any bug
 // in it).
 var chiefToolNames = []string{"task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search",
-	"sessions_overview", "route_to_session", "attention_list"}
+	"sessions_overview", "fleet_report", "route_to_session", "attention_list"}
 
 // TestAClaudeCodeChiefIsOfferedEveryChiefToolOverMCPAndAWorkerNone.
 func TestAClaudeCodeChiefIsOfferedEveryChiefToolOverMCPAndAWorkerNone(t *testing.T) {

@@ -101,7 +101,7 @@ The chief is offered these tools, and no other agent is:
 | tool | needs |
 |---|---|
 | `task_create_gated`, `reply_draft`, `plugin_message_settle` | plugins on |
-| `fleet_list`, `focus_search`, `sessions_overview` | session focus |
+| `fleet_list`, `focus_search`, `sessions_overview`, `fleet_report` | session focus |
 | `route_to_session` (a plugin message, or one of your tasks: [plugins.md](plugins.md#routing-a-task-to-a-session)) | session routing |
 | `attention_list` | the attention queue |
 | `answer_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |

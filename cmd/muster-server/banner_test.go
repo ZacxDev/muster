@@ -403,6 +403,11 @@ var bannerLedger = []string{
 	// which of the owner's sessions it is pasted into, so the log must say
 	// which state this is.
 	envPRMailSenders,
+	// 🔴 FLEET-REPORT REQUESTS ARE LEDGERED: ON, a listed sender's mail gets a
+	// reply muster sends without the owner's approval, carrying the owner's
+	// session names, hosts and focus titles, so the log must say which state
+	// this is.
+	envFleetReportSenders,
 	// 🔴 THE MAIL RESUME IS LEDGERED: ON, a listed sender's mail can make a
 	// host START A PROCESS (claude --resume), so the log must say which state
 	// this is — and whether the kill switch holds it off.
@@ -435,6 +440,8 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envFleetReportMembers: "counted on the `fleet-report requests: ON` line, which names it; it does nothing without " +
+		"MUSTER_FLEET_REPORT_SENDERS, and senders set without it refuse to boot, so there is no silent state to announce",
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
@@ -769,6 +776,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Pull-request routing: the banner branches on ext.PRMail (below).
 		PRMailSendersRaw: "review-gate/pr-check",
 		PRMailSenders:    plugins.PRMailSenders{"review-gate/pr-check": true},
+		// Fleet-report requests: the banner branches on ext.FleetReport (below).
+		FleetReportSenders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
+		FleetReportMembers: plugins.FleetReportMembers{1: "example-member"},
 		// The mail resume: the banner branches on ext.MailResume (below).
 		MailResumeAllowRaw: "1:agent-mail:review-gate/pr-check",
 		MailResumeAllow:    bannerResumeAllowlist(t),
@@ -811,6 +821,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Routes:          bannerStubRoutes{},
 		Routing:         &api.Routing{Allow: bannerAllowlist(t)},
 		PRMail:          &api.PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
+		FleetReport:     &api.FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true}, Members: plugins.FleetReportMembers{1: "example-member"}},
 		MailResume:      &api.MailResume{Allow: bannerResumeAllowlist(t)},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code"},
