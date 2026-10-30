@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // SESSION FOCUS ACROSS THE MIRROR SEAM: a window's Claude session id (the wire
@@ -108,21 +109,23 @@ func claudeWindows() []mirror.Window {
 	}
 }
 
-// TestAMirrorCardShowsTheFocusOfItsClaudeSession: the agents list draws the
-// focus keyed by the window's Claude session id on THAT window's card, and
-// none on the window whose host reported no id.
+// TestAMirrorCardShowsTheFocusOfItsClaudeSession: the focus keyed by the
+// window's Claude session id reaches THAT window's entry — its sidebar row's
+// title, what the palette finds it by (data-switcher-title; the retired list
+// card's focus chip, with its description, has no successor) — and none
+// reaches the window whose host reported no id.
 func TestAMirrorCardShowsTheFocusOfItsClaudeSession(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{
 		focus.MirrorSubject(focusSID): {Subject: focus.MirrorSubject(focusSID), Title: "Porting the importer", Description: "Dates next.", UpdatedAt: time.Now()},
 	}}
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: claudeWindows()}
 	s, ts := focusMirrorServer(t, fm, store, nil)
-	_, body := mirrorGet(t, s, ts, "/ui/agents")
-	if n := strings.Count(body, "data-card-focus"); n != 1 {
-		t.Fatalf("%d focus chips, want exactly 1 (only @1 reports a session id)", n)
+	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	if n := strings.Count(body, "Porting the importer"); n != 1 {
+		t.Fatalf("the focus is on %d rows, want exactly 1 (only @1 reports a session id):\n%s", n, body)
 	}
-	if !strings.Contains(body, "Porting the importer") || !strings.Contains(body, "Dates next.") {
-		t.Fatal("the focus text is not on the card")
+	if row := cardFor(t, body, ref("main", "@1").ViewPath()); !strings.Contains(row, `data-switcher-title="Porting the importer"`) {
+		t.Fatalf("the focus is not @1's row's title:\n%s", row)
 	}
 	cards := s.mirrorCards(operatorCtx(), pins.Set{}, s.focusIndex(operatorCtx()))
 	for _, c := range cards {
@@ -147,7 +150,8 @@ func (r *recordingSummarizer) Summarize(_ context.Context, _ int64, tail string)
 // TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream: a refresh of
 // mirror:<sid> reads the window's backfill through WatchWindow (prompts,
 // replies and tool calls — not tool output), stops at the prompt index, and
-// stores the summary under the session id; the card then shows it.
+// stores the summary under the session id; the window's sidebar row then
+// carries it.
 func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
 	summ := &recordingSummarizer{}
@@ -180,9 +184,9 @@ func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) 
 	if fm.asked[len(fm.asked)-1] != "@1" {
 		t.Fatalf("watched window %q, want @1", fm.asked)
 	}
-	_, body := mirrorGet(t, s, ts, "/ui/agents")
-	if !strings.Contains(body, "Fixing the mirror reconnect") {
-		t.Fatal("the refreshed focus is not on the card")
+	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	if row := cardFor(t, body, ref("main", "@1").ViewPath()); !strings.Contains(row, `data-switcher-title="Fixing the mirror reconnect"`) {
+		t.Fatalf("the refreshed focus is not on the window's row:\n%s", row)
 	}
 }
 
@@ -251,8 +255,12 @@ func (f failingSummarizer) Summarize(context.Context, int64, string) (focus.Summ
 }
 
 // TestAFailedRefreshShowsItsReasonOnTheCard: the summarizer's failure reaches
-// the mirror card as its short reason — never the provider's text — first as
-// "no focus", then, after a success, as a stale one.
+// the window's focus view (ui.FocusView.Problem, the one composer mirrorCards
+// feeds every surface from) as its short reason — never the provider's text,
+// on any page — first as "no focus", then, after a success, as a stale one.
+// (The retired list card drew the reason as its focus chip; no page draws it
+// now, so the view is where it is pinned, and the sidebar is searched for the
+// provider's text.)
 func TestAFailedRefreshShowsItsReasonOnTheCard(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
@@ -263,22 +271,36 @@ func TestAFailedRefreshShowsItsReasonOnTheCard(t *testing.T) {
 	if _, err := s.refresher().Refresh(operatorCtx(), 1, focus.MirrorSubject(focusSID)); err == nil {
 		t.Fatal("the failing refresh succeeded")
 	}
-	_, body := mirrorGet(t, s, ts, "/ui/agents")
-	if !strings.Contains(body, "No focus: summarizer error (HTTP 502)") || !strings.Contains(body, "data-focus-stale") {
-		t.Fatalf("the card does not say why there is no focus:\n%s", body)
+	view := func() ui.FocusView {
+		t.Helper()
+		for _, c := range s.mirrorCards(operatorCtx(), pins.Set{}, s.focusIndex(operatorCtx())) {
+			if c.Window == "@1" {
+				if c.Focus == nil {
+					t.Fatal("window @1 has no focus view")
+				}
+				return *c.Focus
+			}
+		}
+		t.Fatal("no window @1")
+		return ui.FocusView{}
 	}
-	if strings.Contains(body, "sk-or-v1") {
-		t.Fatal("the provider's error text reached the page")
+	if v := view(); v.Title != "" || v.Problem != "summarizer error (HTTP 502)" {
+		t.Fatalf("the focus view = %+v, want no title and the short reason", v)
 	}
-	// A focus, then a later failure: the card shows both.
+	if _, body := mirrorGet(t, s, ts, ui.NavAgentsPath); strings.Contains(body, "sk-or-v1") || !strings.Contains(body, `data-nav-agent="mirror"`) {
+		t.Fatalf("the provider's error text reached the sidebar, or it lists no window:\n%s", body)
+	}
+	// A focus, then a later failure: the view keeps both.
 	store.mu.Lock()
 	f := store.rows[focus.MirrorSubject(focusSID)]
 	f.Title, f.UpdatedAt = "Fixing the reconnect", f.ErrorAt.Add(-time.Minute)
 	store.rows[focus.MirrorSubject(focusSID)] = f
 	store.mu.Unlock()
-	_, body = mirrorGet(t, s, ts, "/ui/agents")
-	if !strings.Contains(body, "Fixing the reconnect") || !strings.Contains(body, "Last refresh failed: summarizer error (HTTP 502)") {
-		t.Fatalf("a stale focus does not say its refresh failed:\n%s", body)
+	if v := view(); v.Title != "Fixing the reconnect" || v.Problem != "summarizer error (HTTP 502)" {
+		t.Fatalf("a stale focus view = %+v, want its title and the refresh's failure", v)
+	}
+	if _, body := mirrorGet(t, s, ts, ui.NavAgentsPath); !strings.Contains(body, `data-switcher-title="Fixing the reconnect"`) || strings.Contains(body, "sk-or-v1") {
+		t.Fatalf("the stale focus is not the row's title (or the provider's text is there):\n%s", body)
 	}
 }
 

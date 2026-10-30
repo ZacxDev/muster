@@ -11,6 +11,7 @@ import {
 import { serverBinary, startServer, Running } from '../lib/server';
 import { Authenticator, authenticator, credentialIds, removeCredential, setUserVerified } from '../lib/webauthn';
 import { landedHome } from '../lib/nav';
+import { entryMatches, mirroredEntries } from '../lib/mirrorhost';
 
 // STEP-UP for typing into a mirrored session, end to end against the REAL
 // GoTrue image (e2e/gotrue/compose.yml, the deployment's pin), a gotrue-mode
@@ -209,15 +210,12 @@ test('live keys on a mirrored session need a fresh sign-in, and a key pressed on
     if (ws.url().includes('/mirror/terminal/ws') && ws.url().includes('mode=rw')) rwOpened.push(ws.url());
   });
 
-  // The card announces the host is interactive.
-  await expect.poll(async () => (await (await page.request.get(browserURL + '/ui/agents')).text()).includes(`Mirrored · ${host}`), {
-    message: `the host's card (muster-mirror log:\n${mirrorLog})`, timeout: 20_000,
+  // The host's session is listed, online, in the sidebar's rows (GET
+  // /ui/nav/agents). (What the host announced, interactive, was a field of the
+  // retired Agents list's card; the terminal's rw attach below is the proof.)
+  await expect.poll(async () => mirroredEntries(await (await page.request.get(browserURL + '/ui/nav/agents')).text()).some((e) => e.state === 'online' && e.markup.includes(`host=${encodeURIComponent(host)}&`)), {
+    message: `the host's row (muster-mirror log:\n${mirrorLog})`, timeout: 20_000,
   }).toBe(true);
-  await page.goto(browserURL + '/agents');
-  const card = page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) });
-  // What the host announced is a filter field now, not a badge on the card.
-  await expect(card).toHaveAttribute('data-f-mode', 'interactive');
-  await expect(card.locator('[data-mirror-interactive]')).toHaveCount(0);
 
   // 1. FRESH (just signed in): the page attaches rw at once — live keys are
   // always on, there is no switch — at the session's own size (a phone does
@@ -338,8 +336,8 @@ test.describe('at a desktop width (1280px)', () => {
 
 // ---------------------------------------------------------------------------
 // SENDING FROM THE RENDERED VIEW, on a phone (390×844, touch), by the real tap
-// path: the Agents list → the Claude session's card → the rendered view → type
-// → Send. With real GoTrue, so the stale refusal is the SERVER's own (in
+// path: the sidebar → the Claude session's row → the rendered view → type →
+// Send. With real GoTrue, so the stale refusal is the SERVER's own (in
 // mirrored.spec.ts it is played, because a password-mode session cannot be
 // aged in a browser).
 //
@@ -368,11 +366,16 @@ test.describe('the rendered view on a phone (390×844)', () => {
       if (new URL(r.url()).pathname === '/mirror/view/send') sends.push(r.status());
     });
 
-    // The card of a Claude session opens the rendered view.
-    await page.goto(browserURL + '/agents');
-    const card = page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) });
-    await expect(card.locator('[data-mirror-claude]'), `main is a Claude pane (muster-mirror log:\n${mirrorLog})`).toBeVisible({ timeout: 20_000 });
-    await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), card.locator('a').first().tap()]);
+    // The row of a Claude session opens the rendered view: the sidebar's
+    // drawer, opened on the board (its list loads as it opens).
+    await expect.poll(async () => mirroredEntries(await (await page.request.get(browserURL + '/ui/nav/agents')).text()).some((e) => e.state === 'online' && e.markup.includes(`host=${encodeURIComponent(host)}&`) && entryMatches(e.markup, 'data-mirror-claude')), {
+      message: `main is a Claude pane (muster-mirror log:\n${mirrorLog})`, timeout: 20_000,
+    }).toBe(true);
+    await page.goto(browserURL + '/tasks');
+    await page.locator('#sidebar-open').tap();
+    const card = page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href^="/mirror/view?host=${encodeURIComponent(host)}&"]`);
+    await expect(card).toBeVisible();
+    await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), card.tap()]);
     await expect(page.locator('#mv-log [data-bubble="assistant"]').first()).toContainText('Hi.');
 
     // The composer is THERE, enabled and on screen, with nothing to switch on.
@@ -1744,7 +1747,7 @@ test.describe('with no script at all (390×844)', () => {
     test.setTimeout(120_000);
     await signIn(page);
     const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
-    await expect.poll(async () => (await (await page.request.get(browserURL + '/ui/agents')).text()).includes('data-mirror-claude'), {
+    await expect.poll(async () => mirroredEntries(await (await page.request.get(browserURL + '/ui/nav/agents')).text()).some((e) => e.state === 'online' && entryMatches(e.markup, 'data-mirror-claude')), {
       message: `main is a Claude pane (muster-mirror log:\n${mirrorLog})`, timeout: 20_000,
     }).toBe(true);
     const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');

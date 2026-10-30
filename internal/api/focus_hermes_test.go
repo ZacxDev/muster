@@ -9,12 +9,13 @@ import (
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // FOCUS FOR A HERMES WINDOW (docs/design/hermes.md, "Listing" §Focus; built
 // in the Phase 2 fix pass): keyed by the runtime-qualified session id,
 // mirror:hermes:<id>, refreshed from the window's rendered-view backfill like
-// a Claude Code window's, and shown on its card. A Hermes window with no
+// a Claude Code window's, and shown on its entry (its sidebar row's title). A Hermes window with no
 // session (a stale breadcrumb) has none.
 
 func hermesFocusWindows() []mirror.Window {
@@ -65,9 +66,12 @@ func TestAHermesWindowsFocusIsRefreshedAndShown(t *testing.T) {
 	if fm.asked[len(fm.asked)-1] != "@1" {
 		t.Fatalf("watched window %q, want @1", fm.asked)
 	}
-	_, body := mirrorGet(t, s, ts, "/ui/agents")
-	if !strings.Contains(body, "Fixing the mirror reconnect") || strings.Count(body, "data-card-focus") != 1 {
-		t.Fatal("the Hermes window's focus is not on (exactly) its card")
+	// Its sidebar row's title (what the palette finds it by — where the
+	// retired list card's focus went), and no other row's.
+	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	row := cardFor(t, body, ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}.ViewPath())
+	if !strings.Contains(row, `data-switcher-title="Fixing the mirror reconnect"`) || strings.Count(body, "Fixing the mirror reconnect") != 1 {
+		t.Fatalf("the Hermes window's focus is not on (exactly) its row:\n%s", body)
 	}
 }
 

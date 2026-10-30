@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -137,69 +136,25 @@ func TestAPaleColourIsDarkenedOnWhite(t *testing.T) {
 	}
 }
 
-// TestOnlyAWireColourReachesTheStyleAttribute: a value that is not exactly a
-// lowercase #rrggbb — markup, a CSS injection, a name, uppercase, a short form
-// — draws no tint at all: no data-identity, no style attribute. A valid one
-// draws exactly the four integer triplets.
-func TestOnlyAWireColourReachesTheStyleAttribute(t *testing.T) {
-	for _, bad := range []string{"", "red", "#ABCDEF", "#abc", "#3a7bd5;background:url(x)", `#3a7bd5"><script>`, "rgb(1,2,3)", "#3a7bd5 "} {
-		html := renderNode(t, mirrorCard(MirrorCardView{Host: "h", Session: "s", Window: "@1", Online: true, Claude: true, Color: bad}))
-		if strings.Contains(html, "data-identity") || strings.Contains(html, "style=") || strings.Contains(html, "--id-") {
-			t.Errorf("colour %q reached the card: %s", bad, html)
-		}
-	}
-	html := renderNode(t, mirrorCard(MirrorCardView{Host: "h", Session: "s", Window: "@1", Online: true, Claude: true, Color: "#3a7bd5"}))
-	tint, _ := identityTint("#3a7bd5")
-	trip := func(c idRGB) string { return fmt.Sprintf("%d %d %d", c.r, c.g, c.b) }
-	want := `data-identity="#3a7bd5" style="--id-bd-d:` + trip(tint.BorderDark) + `;--id-bd-l:` + trip(tint.BorderLight) +
-		`;--id-tt-d:` + trip(tint.TitleDark) + `;--id-tt-l:` + trip(tint.TitleLight) + `"`
-	if !strings.Contains(html, want) {
-		t.Fatalf("a tinted card lacks %s:\n%s", want, html)
-	}
-	if !regexp.MustCompile(`style="(--id-(bd|tt)-[dl]:\d{1,3} \d{1,3} \d{1,3};?){4}"`).MatchString(html) {
-		t.Fatalf("the style attribute is not four integer triplets: %s", html)
-	}
-}
-
 // TestTheStylesheetTintsTheBorderAndTheTitle pins the CSS half: the variables
-// switch with the theme, and the border, ring and title read them — with
-// selectors that out-rank the card's own utilities.
+// switch with the theme (the sidebar row's left edge reads --id-bd). The card
+// border, ring and title rules went with the retired Agents list's cards, and
+// no rule may come back for them.
 func TestTheStylesheetTintsTheBorderAndTheTitle(t *testing.T) {
 	css := readInputCSS(t)
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	for sel, want := range map[string]string{
-		"[data-identity]":                   "--id-bd: var(--id-bd-d); --id-tt: var(--id-tt-d);",
-		":root:not(.dark) [data-identity]":  "--id-bd: var(--id-bd-l); --id-tt: var(--id-tt-l);",
-		"[data-identity][data-mirror-card]": "border-color: rgb(var(--id-bd)); --tw-ring-color: rgb(var(--id-bd));",
-		"[data-identity] [data-mirror-name], [data-identity] [data-card-title]": "color: rgb(var(--id-tt));",
+		"[data-identity]":                  "--id-bd: var(--id-bd-d); --id-tt: var(--id-tt-d);",
+		":root:not(.dark) [data-identity]": "--id-bd: var(--id-bd-l); --id-tt: var(--id-tt-l);",
 	} {
 		if got := norm(cssBlock(t, css, sel)); got != want {
 			t.Errorf("%s { %s }, want { %s }", sel, got, want)
 		}
 	}
-}
-
-// TestATintedCardsBorderAndTitleCarryTheColourAndAnUntintedOneIsUnchanged: the
-// card's article carries data-identity (the border's selector) and its title
-// is a data-mirror-name (the title's) — for a short title, a long title and a
-// title under a focus. A card with no colour has neither attribute value.
-func TestATintedCardsBorderAndTitleCarryTheColourAndAnUntintedOneIsUnchanged(t *testing.T) {
-	for _, m := range []MirrorCardView{
-		{Host: "h", Session: "s", Window: "@1", Online: true, Claude: true, Color: "#d79921"},
-		{Host: "h", Session: strings.Repeat("long-session-name-", 6), Window: "@2", Online: true, Claude: true, Color: "#d79921"},
-		{Host: "h", Session: "s", Window: "@3", Online: true, Claude: true, Color: "#d79921", Focus: &FocusView{Title: "fixture focus"}},
-	} {
-		html := renderNode(t, mirrorCard(m))
-		if !regexp.MustCompile(`<article[^>]*data-mirror-card[^>]*data-identity="#d79921"`).MatchString(html) {
-			t.Errorf("window %s: the article does not carry the colour: %s", m.Window, html)
+	for _, gone := range []string{"[data-identity][data-mirror-card]", "[data-identity] [data-mirror-name]", "[data-identity] [data-card-title]"} {
+		if strings.Contains(css, gone) {
+			t.Errorf("input.css still has a rule for %s, which no element carries", gone)
 		}
-		if !strings.Contains(html, "data-mirror-name") && !strings.Contains(html, "data-card-title") {
-			t.Errorf("window %s: no title element the title rule reaches: %s", m.Window, html)
-		}
-	}
-	plain := renderNode(t, mirrorCard(MirrorCardView{Host: "h", Session: "s", Window: "@1", Online: true, Claude: true}))
-	if strings.Contains(plain, "data-identity") || strings.Contains(plain, "style=") {
-		t.Fatalf("an untinted card carries a tint: %s", plain)
 	}
 }
 
@@ -243,8 +198,10 @@ func TestTheTintIsOnTheCardsOnly(t *testing.T) {
 			callers[f] = n
 		}
 	}
-	if len(callers) != 2 || callers["mirror.go"] != 1 || callers["nav_agents.go"] != 1 {
-		t.Fatalf("identityAttrs is called from %v, want exactly once from mirror.go (the card) and once from nav_agents.go (the sidebar row)", callers)
+	// The sidebar row only: the Agents list's mirrored card, its other
+	// caller, is retired with the list.
+	if len(callers) != 1 || callers["nav_agents.go"] != 1 {
+		t.Fatalf("identityAttrs is called from %v, want exactly once, from nav_agents.go (the sidebar row)", callers)
 	}
 	if css := readInputCSS(t); strings.Contains(css, "data-identity-title") {
 		t.Fatal("input.css still tints a [data-identity-title] (a page header's title)")

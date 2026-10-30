@@ -24,7 +24,7 @@ func TestAHermesDispatchIsRefusedAsAnUnknownKind(t *testing.T) {
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) || len(store.rows()) != 0 {
 		t.Fatalf("hermes dispatch: %d %q, %d row(s)", rec.Code, rec.Body, len(store.rows()))
 	}
-	if rec := postDispatch(t, s, h, url.Values{"kind": {"gateway"}, "note_text": {"t"}}); rec.Code != http.StatusOK || len(store.rows()) != 1 {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"gateway"}, "note_text": {"t"}}); !dispatched(rec, store) || len(store.rows()) != 1 {
 		t.Fatalf("control: gateway dispatch: %d %s, %d row(s)", rec.Code, rec.Body, len(store.rows()))
 	}
 	code, out := s.replaceChief(context.Background(), 1, chiefReplaceRequest{Kind: "hermes", Confirm: "replace"})

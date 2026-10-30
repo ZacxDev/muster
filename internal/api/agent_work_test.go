@@ -55,17 +55,44 @@ func (r *workRig) get(path string) *httptest.ResponseRecorder {
 	return w
 }
 
-// cardBody is agent id's whole <article> on the list.
-func cardBody(t *testing.T, list string, id int64) string {
+// agentStrip is agent id's status strip as its page's header refresh draws it
+// (GET ui.AgentHeaderPath: the strip's body, then the notices out of band) —
+// the strip alone, where the retired list card's chip moved.
+func agentStrip(t *testing.T, get func(string) *httptest.ResponseRecorder, id int64) string {
 	t.Helper()
-	m := regexp.MustCompile(`(?s)<article id="agent-` + strconv.FormatInt(id, 10) + `".*?</article>`).FindString(list)
+	body := get(ui.AgentHeaderPath(id)).Body.String()
+	end := strings.Index(body, `<div id="`+ui.AgentNoticesID+`"`)
+	if !strings.Contains(body, `id="agent-status"`) || end < 0 {
+		t.Fatalf("instrument check FAILED: agent %d's header answer has no status strip before #%s:\n%s", id, ui.AgentNoticesID, body)
+	}
+	return body[:end]
+}
+
+// navRow is the sidebar row of id ("nav-agent-11") in a GET ui.NavAgentsPath
+// answer: its whole <a>.
+func navRow(t *testing.T, nav, id string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?s)<a id="` + regexp.QuoteMeta(id) + `".*?</a>`).FindString(nav)
 	if m == "" {
-		t.Fatalf("instrument check FAILED: agent %d's card is not on the list", id)
+		t.Fatalf("instrument check FAILED: the sidebar has no row %s:\n%s", id, nav)
 	}
 	return m
 }
 
-// chipShown is the work chip's visible text on a card, "" for none.
+// navWorkShown is a sidebar row's work mark (its data-nav-work, the chip's
+// text), "" for none.
+func navWorkShown(row string) string {
+	m := regexp.MustCompile(`data-nav-work="([^"]*)"`).FindStringSubmatch(row)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// agentNavID is agent id's sidebar row id.
+func agentNavID(id int64) string { return "nav-agent-" + strconv.FormatInt(id, 10) }
+
+// chipShown is the work chip's visible text on a strip, "" for none.
 func chipShown(card string) string {
 	m := regexp.MustCompile(`data-mirror-work[^>]*><span aria-hidden="true">([^<]*)</span>`).FindStringSubmatch(card)
 	if m == nil {
@@ -75,30 +102,36 @@ func chipShown(card string) string {
 }
 
 // TestAnAgentsWorkReportDrawsTheMirroredChipOnItsCard: ccd's POST /agent/work
-// puts the SAME chip a mirrored window's card wears on the reporting agent's
-// card — "3 subagents · 2 shells", "1+ shell" — and on no other agent's; a
-// report with nothing running takes it off; counts are clamped as a window's
-// are.
+// puts the SAME chip a mirrored window's wears on the reporting agent — on its
+// page's status strip (where the retired list card's chip moved) "3 subagents
+// · 2 shells", "1+ shell", and the same text as its sidebar row's work mark —
+// and on no other agent's; a report with nothing running takes it off; counts
+// are clamped as a window's are.
 //
 // Red before: no /agent/work route (404) and no chip on an agent card.
 func TestAnAgentsWorkReportDrawsTheMirroredChipOnItsCard(t *testing.T) {
 	r := newWorkRig(t)
-	list := func() string { return r.get("/ui/agents").Body.String() }
-	if got := chipShown(cardBody(t, list(), relayAgentA.ID)); got != "" {
-		t.Fatalf("control: a card with no report shows a chip %q", got)
+	strip := func(id int64) string { return chipShown(agentStrip(t, r.get, id)) }
+	row := func(id int64) string {
+		return navWorkShown(navRow(t, r.get(ui.NavAgentsPath).Body.String(), agentNavID(id)))
+	}
+	if got, side := strip(relayAgentA.ID), row(relayAgentA.ID); got != "" || side != "" {
+		t.Fatalf("control: an agent with no report shows a chip %q / a sidebar mark %q", got, side)
 	}
 	if code := r.report(relayTokenA, `{"subagents":3,"shells":2}`); code != http.StatusNoContent {
 		t.Fatalf("POST /agent/work: %d, want 204", code)
 	}
-	l := list()
-	if got := chipShown(cardBody(t, l, relayAgentA.ID)); got != "3 subagents · 2 shells" {
+	if got := strip(relayAgentA.ID); got != "3 subagents · 2 shells" {
 		t.Errorf("the reporting agent's chip reads %q, want %q", got, "3 subagents · 2 shells")
 	}
-	if got := chipShown(cardBody(t, l, relayAgentB.ID)); got != "" {
-		t.Errorf("an agent that reported nothing shows %q", got)
+	if got := row(relayAgentA.ID); got != "3 subagents · 2 shells" {
+		t.Errorf("the reporting agent's sidebar row marks %q, want %q", got, "3 subagents · 2 shells")
+	}
+	if got, side := strip(relayAgentB.ID), row(relayAgentB.ID); got != "" || side != "" {
+		t.Errorf("an agent that reported nothing shows %q / %q", got, side)
 	}
 	r.report(relayTokenA, `{"shells":1,"shellsAtLeast":true}`)
-	if got := chipShown(cardBody(t, list(), relayAgentA.ID)); got != "1+ shell" {
+	if got := strip(relayAgentA.ID); got != "1+ shell" {
 		t.Errorf("a lower-bound report reads %q, want %q", got, "1+ shell")
 	}
 	r.report(relayTokenA, `{"subagents":500}`)
@@ -106,8 +139,8 @@ func TestAnAgentsWorkReportDrawsTheMirroredChipOnItsCard(t *testing.T) {
 		t.Errorf("an out-of-range count is kept as %+v, want it clamped to %d", got, mirror.MaxWorkCount)
 	}
 	r.report(relayTokenA, `{"subagents":0,"shells":0}`)
-	if got := chipShown(cardBody(t, list(), relayAgentA.ID)); got != "" {
-		t.Errorf("a report of nothing running still shows %q", got)
+	if got, side := strip(relayAgentA.ID), row(relayAgentA.ID); got != "" || side != "" {
+		t.Errorf("a report of nothing running still shows %q / %q", got, side)
 	}
 	if code := r.report(relayTokenA, `not json`); code != http.StatusBadRequest {
 		t.Errorf("a malformed report: %d, want 400", code)
@@ -116,8 +149,8 @@ func TestAnAgentsWorkReportDrawsTheMirroredChipOnItsCard(t *testing.T) {
 
 // TestAnAgentsWorkChipExpiresAndItsPollSaysSo: a report not refreshed within
 // agentWorkTTL counts for nothing — a dead pod's chip disappears rather than
-// freezing — and the card's status poll, which carries the chip it was drawn
-// with, asks the list to re-render when that is no longer the server's answer:
+// freezing — and the page's status poll, which carries the chip it was drawn
+// with, asks the strip to re-render when that is no longer the server's answer:
 // on a new report, and on an expiry that no POST announced.
 func TestAnAgentsWorkChipExpiresAndItsPollSaysSo(t *testing.T) {
 	r := newWorkRig(t)
@@ -150,7 +183,10 @@ func TestAnAgentsWorkChipExpiresAndItsPollSaysSo(t *testing.T) {
 	if got := poll(drawn); got != ui.AgentsAwaitingEvent {
 		t.Errorf("a card drawn with a chip that expired: HX-Trigger %q, want %q", got, ui.AgentsAwaitingEvent)
 	}
-	if got := chipShown(cardBody(t, r.get("/ui/agents").Body.String(), relayAgentA.ID)); got != "" {
-		t.Errorf("the list still draws an expired chip %q", got)
+	if got := chipShown(agentStrip(t, r.get, relayAgentA.ID)); got != "" {
+		t.Errorf("the agent page still draws an expired chip %q", got)
+	}
+	if got := navWorkShown(navRow(t, r.get(ui.NavAgentsPath).Body.String(), agentNavID(relayAgentA.ID))); got != "" {
+		t.Errorf("the sidebar still marks an expired chip %q", got)
 	}
 }

@@ -1,11 +1,18 @@
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { dsn, e2eRoot, gotrueSecret, port, repoRoot, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 import { landedHome } from '../lib/nav';
+
+// kindChip is the agent page header's kind chip (ui.chip: a muted "kind" label,
+// then the value), matched whole — "kind" then exactly value.
+const kindChip = (page: Page, value: string) =>
+  page.locator('header span:has(> span.text-muted)').filter({ hasText: new RegExp(`^kind${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) });
+
 
 // Bring-your-own credentials, end to end at 412 px against the REAL GoTrue
 // (e2e/gotrue/compose.yml) and a gotrue-mode muster with the claude-code kind
@@ -116,7 +123,7 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
 
   const sheet = page.locator('#agent-modal form');
   const open = async () => {
-    await page.goto(browserURL + '/agents');
+    await page.goto(browserURL + '/tasks');
     await openDispatchSheet(page);
     await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
   };
@@ -162,13 +169,18 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
   await expect(sheet.locator('[data-kind-unavailable-notice]')).toContainText('OpenRouter key');
   expect(await page.content()).not.toContain(ADMIN_POOL);
 
-  // 4. Save for later: the agent lands on the member's own account.
+  // 4. Save for later: the agent lands on the member's own account — its own
+  //    page (where the sheet's answer sends the browser) says so in its
+  //    header's second row.
   await sheet.locator('textarea[name="note_text"]').fill('e2e byo: on my own account');
   const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
   await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
-  await page.goto(browserURL + '/agents');
-  await expect(page.getByText(`Claude Code · ${MEMBER_ACCOUNT}`).first()).toBeVisible();
+  const saved = await resp;
+  expect(saved.status()).toBe(200);
+  const to = saved.headers()['hx-redirect'] ?? '';
+  expect(to, 'the answer sends the page to the new agent').toMatch(/^\/agents\/[^/?]+(\?session=\d+)?$/);
+  await page.waitForURL((u) => u.pathname === to.split('?')[0]);
+  await expect(kindChip(page, `Claude Code · ${MEMBER_ACCOUNT}`)).toBeVisible();
   const agentsPage = await page.content();
   expect(agentsPage).not.toContain(ADMIN_POOL);
   expect(agentsPage).not.toContain('sk-ant-oat01');

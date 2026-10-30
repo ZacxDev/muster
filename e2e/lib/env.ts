@@ -281,6 +281,10 @@ export const onboardingPort = port + 240;
 // provisioner (noop). The shared server has none, like the docker compose
 // install, so it offers no dispatch sheet to measure.
 export const layoutDispatchPort = port + 250;
+// tests/agent-page-actions.spec.ts: where the retired Agents list's actions
+// went — a server WITH an agent provisioner (noop), so Start, Stop, Delete and
+// the sidebar's dispatch "+" are offered.
+export const agentActionsPort = port + 251;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

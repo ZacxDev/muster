@@ -159,19 +159,23 @@ export class MirrorRig {
     this.session = await page.context().cookies(this.origin);
   }
 
-  // waitListed waits until the host's sessions are on the Agents list (the
-  // tunnel is up and has reported), with the host's log in the failure: until
-  // `needle` is in the markup of a mirrored entry (a card or a pinned chip)
-  // that is ONLINE.
+  // waitListed waits until the host's sessions are listed (the tunnel is up
+  // and has reported), with the host's log in the failure: until `needle`
+  // matches a mirrored entry of the sidebar's list (GET /ui/nav/agents — the
+  // Agents list page this read is retired) that is ONLINE. needle is either a
+  // plain substring of the entry's row markup (a session name, a label) or
+  // one of two spellings kept from the retired list's card attributes:
+  // 'data-mirror-claude' (the row opens a rendered view: a Claude Code or a
+  // Hermes window) and 'data-f-session="<name>"' (the row's address names
+  // that tmux session).
   //
   // 🔴 A MATCH ANYWHERE ON THE LIST IS NOT READINESS. The server keeps a
   // stopped host's last list, drawn offline (mirror.Hub's offlineRetention),
   // so after a host RESTART — startHost stops the previous one — the old
-  // host's offline card already carries every session name and
-  // data-mirror-claude. A bare `includes(needle)` passed on it before the new
-  // host had connected, and the view the spec opened next redirected to the
-  // terminal (handleMirrorViewPage: an offline entry has no rendered view):
-  // telemetry.spec's "#mv-log not found".
+  // host's offline row already carries every session name. A bare
+  // `includes(needle)` passed on it before the new host had connected, and the
+  // view the spec opened next redirected to the terminal (handleMirrorViewPage:
+  // an offline entry has no rendered view): telemetry.spec's "#mv-log not found".
   //
   // The list is parsed here, not in the page: a page mid-navigation throws
   // from evaluate, and expect.poll does not retry a throw.
@@ -180,9 +184,9 @@ export class MirrorRig {
     await expect
       .poll(
         async () => {
-          const html = await (await page.request.get(this.origin + '/ui/agents')).text();
+          const html = await (await page.request.get(this.origin + '/ui/nav/agents')).text();
           const states = mirroredEntries(html)
-            .filter((e) => e.markup.includes(needle))
+            .filter((e) => entryMatches(e.markup, needle))
             .map((e) => e.state);
           last = states.length ? `entries holding it: ${states.join(', ')}` : 'no mirrored entry holds it';
           return states.includes('online');
@@ -207,31 +211,34 @@ export class MirrorRig {
   }
 }
 
-// mirroredEntries is every mirrored entry (a card or a pinned chip: an element
-// carrying data-f-type="mirrored") in the Agents list's markup — the element
-// whole, from its opening tag to its matching close — with its state:
-// "offline" when its data-f-state says so, else "online". The server writes
-// attribute values escaped, so a '>' inside a tag is never one.
+// mirroredEntries is every mirrored entry of the sidebar's list markup (GET
+// /ui/nav/agents: a row, an <a data-nav-agent="mirror">, whole to its </a>),
+// with its state: "offline" when the row carries the offline mark
+// (data-nav-offline), else "online". The server writes attribute values
+// escaped, so a '>' inside a tag is never one, and a row holds no nested <a>.
 export function mirroredEntries(html: string): { state: string; markup: string }[] {
   const out: { state: string; markup: string }[] = [];
-  const open = /<([a-zA-Z][\w-]*)\b[^>]*\bdata-f-type="mirrored"[^>]*>/g;
+  const open = /<a\b[^>]*\bdata-nav-agent="mirror"[^>]*>/g;
   for (let m = open.exec(html); m; m = open.exec(html)) {
-    const name = m[1].toLowerCase();
-    const tag = new RegExp(`<(/?)${name}\\b[^>]*>`, 'gi');
-    tag.lastIndex = m.index + m[0].length;
-    let depth = 1;
-    let end = html.length;
-    for (let t = tag.exec(html); t; t = tag.exec(html)) {
-      depth += t[1] ? -1 : 1;
-      if (depth === 0) {
-        end = t.index + t[0].length;
-        break;
-      }
-    }
-    const state = /\bdata-f-state="([^"]*)"/.exec(m[0])?.[1] || 'online';
-    out.push({ state, markup: html.slice(m.index, end) });
+    const end = html.indexOf('</a>', m.index);
+    const markup = html.slice(m.index, end < 0 ? html.length : end + 4);
+    out.push({ state: markup.includes('data-nav-offline') ? 'offline' : 'online', markup });
   }
   return out;
+}
+
+// entryMatches is whether a row's markup matches waitListed's needle (see
+// there): 'data-mirror-claude' is a row that opens a rendered view,
+// 'data-f-session="<name>"' a row whose address names that tmux session,
+// anything else a substring.
+export function entryMatches(markup: string, needle: string): boolean {
+  if (needle === 'data-mirror-claude') return /\bhref="\/mirror\/view\?/.test(markup);
+  const sess = /^data-f-session="(.*)"$/.exec(needle);
+  if (sess) {
+    const href = /\bhref="([^"]*)"/.exec(markup)?.[1] ?? '';
+    return new URLSearchParams(href.replace(/^[^?]*\?/, '').replace(/&amp;/g, '&')).get('session') === sess[1];
+  }
+  return markup.includes(needle);
 }
 
 // mkchat runs e2e/mkchat: an agent of the caller's own with a persisted chat

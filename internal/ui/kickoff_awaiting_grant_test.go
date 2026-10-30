@@ -14,7 +14,7 @@ import (
 // without the flag shows none of it.
 func TestAHeldKickoffShowsTheGithubApprovalLineOutsideTheCardLink(t *testing.T) {
 	card := func(waiting bool) string {
-		return renderString(t, agentCard(AgentCardView{
+		return agentPageParts(t, (AgentCardView{
 			ID: 31, Name: "teal-brant", DisplayName: "teal-brant", Status: "running",
 			Repo: "example-org/shoal-map", KickoffOwed: true, KickoffAwaitingGrant: waiting,
 		}))

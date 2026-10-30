@@ -11,7 +11,8 @@ import { openMore } from '../lib/nav';
 // server, in a real browser — at a phone's size, set HERE (390×844 and 360
 // wide, touch), and at a desktop's (1280×800):
 //
-//   1. `/` opens the chief agent's chat; with no chief, the Agents list;
+//   1. `/` opens the chief agent's chat; with no chief, the session opened
+//      last (the Agents list it once opened is retired);
 //   2. the sidebar lists the agents: the chief first and marked as the page
 //      on its own chat, then whoever waits on the operator (an open ask), then
 //      the rest; a tap on a row opens that agent, whose row is then marked;
@@ -265,12 +266,15 @@ test.describe('desktop', () => {
     }
   });
 
-  test('`/` opens the Agents list when there is no chief', async ({ page }) => {
+  test('`/` opens the session opened last when there is no chief', async ({ page }) => {
     fix('label', chiefId, 'retired');
     try {
+      // The chief's chat was opened last before: open the asker's after it.
+      await page.goto(`/agents/${CHIEF}`);
+      await page.goto(`/agents/${ASKER}`);
+      await expect(page.locator('[data-agent-title]')).toBeVisible();
       await page.goto('/');
-      await expect(page).toHaveURL(/\/agents$/);
-      await expect(page.locator('#panel-agents')).toBeVisible();
+      await expect(page, 'with no chief, `/` opens the session opened last').toHaveURL(onAgent(ASKER));
       // …and the sidebar pins no chief either: the two agree.
       await expect(rows(page).first()).toBeVisible();
       await expect(page.locator('#sidebar-agents-list [data-nav-chief]')).toHaveCount(0);

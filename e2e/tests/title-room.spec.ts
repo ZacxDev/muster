@@ -2,7 +2,7 @@ import { FrameLocator, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { titleRoomPort } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
-import { cc, MirrorRig } from '../lib/mirrorhost';
+import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 
 // ROOM FOR A TITLE — four operator asks about titles cut off a few characters
 // short, measured on a REAL muster-server and a REAL per-window muster-mirror
@@ -17,10 +17,12 @@ import { cc, MirrorRig } from '../lib/mirrorhost';
 //      the agent page's pinned list — show their WHOLE title, however long
 //      (were 10rem, 20rem, then 26rem and still "often cut off"): the pill is
 //      as wide as its label and the row scrolls sideways, never the page;
-//   4. on the Agents list the same switcher, docked at the bottom, draws the
-//      Pins and Recent views whole too. (It replaced the list's pinned chips,
-//      which a 36-character title once clipped at 390px, and its "Recently
-//      viewed" strip, whose entries were capped at 26rem.)
+//   4. the same switcher's Pins and Recent views draw whole too. (They were
+//      the retired Agents list's docked bar, which had replaced its pinned
+//      chips — a 36-character title once clipped at 390px — and its "Recently
+//      viewed" strip, whose entries were capped at 26rem. That bar is gone with
+//      the list; the guarantee is kept on the session pages' bar: Pins below a
+//      rendered view, Recent on an agent's page.)
 //
 // Each width assertion is a title that was clipped at the base (red there) and
 // fits here; the title lengths are pairwise distinct so no assertion can pass
@@ -43,8 +45,8 @@ const WINDOWS: [string, string][] = [
   ['quarterly-revenue-forecast-reconciliation-batch', '@9'],
   ['enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3', '@11'],
 ];
-// Windows that are NOT pinned, visited so the Agents list's switcher shows
-// them in Recent. Lengths 27, 34, 36.
+// Windows that are NOT pinned, visited so the switcher shows them in Recent.
+// Lengths 27, 34, 36.
 const UNPINNED: [string, string][] = [
   ['cache-warmup-orchestrator', '@6'],
   ['inventory-forecast-model-refresh', '@7'],
@@ -81,8 +83,10 @@ let pinned = false;
 async function ready(page: Page) {
   await rig.login(page);
   if (pinned) return;
+  // The sidebar's rows (GET /ui/nav/agents): this host's windows, online,
+  // each a row that opens its Rendered view.
   await expect
-    .poll(async () => ((await (await page.request.get(origin + '/ui/agents')).text()).match(/data-mirror-claude/g) || []).length, {
+    .poll(async () => mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter((e) => e.state === 'online' && e.markup.includes(`host=${rig.host}`) && entryMatches(e.markup, 'data-mirror-claude')).length, {
       message: `every window listed as Claude Code (muster-mirror log:\n${rig.log})`,
       timeout: 20_000,
     })
@@ -106,7 +110,7 @@ const fitOf = (el: Element): Fit => {
 // this tree's whole one are the same element).
 const switcherLabel = (page: Page, title: string, view = 'all') =>
   page.locator(`#session-switcher [data-switcher-list="${view}"] [data-switcher-entry] > span > span:last-child`, { hasText: title }).first();
-// On the Agents list: the docked switcher's Pins and Recent labels.
+// The switcher's Pins and Recent labels.
 const chipLabel = (page: Page, title: string) => switcherLabel(page, title, 'pins');
 const recentLabel = (page: Page, title: string) => switcherLabel(page, title, 'recent');
 
@@ -152,9 +156,9 @@ async function openAgent(page: Page, view: string) {
 // The switcher's titles (WINDOWS) are 23 to 84 characters; every one must be
 // drawn whole (the 26rem cap clipped the 84-character one at both sizes, and
 // everything from 34 characters at 390).
-// The titles the Agents list's pinned chips and Recent strip once clipped (a
-// 36-character one at 390px; 27 and 34 characters in a 14rem entry), drawn
-// whole by its switcher now.
+// The titles the retired Agents list's pinned chips and Recent strip once
+// clipped (a 36-character one at 390px; 27 and 34 characters in a 14rem
+// entry), drawn whole by the switcher's Pins and Recent views.
 const CHIP_FITS = 'customer-onboarding-email-sequence';
 const RECENT_FITS = ['cache-warmup-orchestrator', 'inventory-forecast-model-refresh'];
 
@@ -192,21 +196,22 @@ for (const vp of [
       const pins: Record<string, Fit> = {};
       for (const [s] of WINDOWS) pins[titleOf(s)] = await switcherLabel(page, titleOf(s), 'pins').evaluate(fitOf);
       out.switcherAgentPagePins = pins;
-      await setView(page, 'pins');
-      await page.goto(origin + '/agents');
+      await openView(page, LONG, 'pins');
       await expect(chipLabel(page, titleOf(WINDOWS[0][0]))).toBeVisible();
       const chips: Record<string, Fit> = {};
-      for (const [s] of WINDOWS) chips[titleOf(s)] = await chipLabel(page, titleOf(s)).evaluate(fitOf);
-      out.agentsListPins = chips;
+      for (const [s] of WINDOWS) {
+        if (s === LONG) continue; // the page's own entry is the "current" chip
+        chips[titleOf(s)] = await chipLabel(page, titleOf(s)).evaluate(fitOf);
+      }
+      out.switcherRenderedViewPins = chips;
       await visitUnpinned(page);
-      await setView(page, 'recent');
-      await page.goto(origin + '/agents');
+      await openAgent(page, 'recent');
       const recent: Record<string, Fit> = {};
       for (const [s] of UNPINNED) {
         await expect(recentLabel(page, titleOf(s))).toBeVisible();
         recent[titleOf(s)] = await recentLabel(page, titleOf(s)).evaluate(fitOf);
       }
-      out.agentsListRecent = recent;
+      out.switcherAgentPageRecent = recent;
       out.overflowX = await overflowX(page);
       console.log('TITLE-ROOM ' + JSON.stringify(out));
     });
@@ -344,14 +349,12 @@ for (const vp of [
       expect(cls.total, `agent page layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
     });
 
-    // A 14rem entry once left the Recent strip's label 156px; the switcher
-    // that replaced it draws the title whole.
-    test('the Agents list\'s Recent view draws a 27- and a 34-character title whole; no shift', async ({ page }) => {
+    // A 14rem entry once left the Recent strip's label 156px; the switcher's
+    // Recent view, on an agent's page, draws the title whole.
+    test('the switcher\'s Recent view, on an agent\'s page, draws a 27- and a 34-character title whole; no shift', async ({ page }) => {
       await ready(page);
       await visitUnpinned(page);
-      await setView(page, 'recent');
-      await page.addInitScript(clsInit);
-      await page.goto(origin + '/agents');
+      await openAgent(page, 'recent');
       await settle(page);
       for (const s of RECENT_FITS) {
         await expect(recentLabel(page, titleOf(s))).toBeVisible();
@@ -364,12 +367,10 @@ for (const vp of [
     });
 
     // At 390 a pinned chip once left a 36-character title 302px of its 315;
-    // the switcher's Pins view that replaced the chips draws it whole.
-    test('the Agents list\'s Pins view draws a 36-character title whole; no sideways scroll; no shift', async ({ page }) => {
+    // the switcher's Pins view, below a rendered view, draws it whole.
+    test('the switcher\'s Pins view, below a rendered view, draws a 36-character title whole; no sideways scroll; no shift', async ({ page }) => {
       await ready(page);
-      await setView(page, 'pins');
-      await page.addInitScript(clsInit);
-      await page.goto(origin + '/agents');
+      await openView(page, LONG, 'pins');
       await settle(page);
       await expect(chipLabel(page, titleOf(CHIP_FITS))).toBeVisible();
       const f = await chipLabel(page, titleOf(CHIP_FITS)).evaluate(fitOf);
@@ -487,3 +488,34 @@ test.describe('phone 393×852, a real tap', () => {
     expect(await overflowX(page), 'no sideways scroll at 393px').toBe(0);
   });
 });
+
+// HOME FROM A MIRRORED WINDOW LEAVES THAT WINDOW. Its Rendered view's back
+// arrow (#mv-back, "Home") and its terminal's (#term-back) go to `/` LEAVING
+// THE WINDOW OUT (ui.HomeLeavingMirrorPath): opening the window recorded a
+// visit, and this server has no chief, so bare home is the session opened
+// last — this very window, which the arrow then reloaded. At both sizes.
+// REGRESSION TEST (round-1 audit): the arrow came straight back.
+for (const vp of [
+  { name: 'phone 390×844', width: 390, height: 844 },
+  { name: 'desktop 1280×800', width: 1280, height: 800 },
+]) {
+  test.describe(vp.name, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+    test('Home from a window\'s Rendered view and its terminal lands on ANOTHER session', async ({ page }) => {
+      await ready(page);
+      const s = 'release-notes-drafter';
+      const leftOut = (u: URL) => !(u.searchParams.get('session') === s && u.pathname.startsWith('/mirror/'));
+      await page.goto(viewOf(s, winOf(s)));
+      await expect(page.locator('#mv-back')).toBeVisible();
+      // CONTROL: bare home is this window (it was just opened).
+      const bare = await page.request.get(origin + '/', { maxRedirects: 0 });
+      expect(new URL(bare.headers()['location'], origin).searchParams.get('session'), 'control: bare home is this window').toBe(s);
+      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/view' || u.searchParams.get('session') !== s), page.locator('#mv-back').click()]);
+      expect(leftOut(new URL(page.url())), `the view's Home landed on ${page.url()}`).toBe(true);
+      await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(rig.host)}&session=${encodeURIComponent(s)}&window=${encodeURIComponent(winOf(s))}`);
+      await expect(page.locator('#term-back')).toBeVisible();
+      await Promise.all([page.waitForURL((u) => u.pathname !== '/mirror/terminal'), page.locator('#term-back').click()]);
+      expect(leftOut(new URL(page.url())), `the terminal's Home landed on ${page.url()}`).toBe(true);
+    });
+  });
+}

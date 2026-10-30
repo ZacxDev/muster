@@ -31,7 +31,7 @@ import (
 //
 // 🔴 WHOSE ASKS: an agent page shows the asks whose asker IS that agent
 // (Asker.AgentID); a window's view shows the asks of the mirrored Claude
-// sessions that window runs, by the rule the Agents-list badges and the push
+// sessions that window runs, by the rule the sidebar's attention counts and the push
 // use (claudeSessionWindow). Never another asker's, and row-level security keeps
 // it to the signed-in owner's.
 //

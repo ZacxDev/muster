@@ -7,21 +7,16 @@ import (
 )
 
 // HOST PREFERENCES: what the operator calls their own hosts, which this code
-// cannot know. Two settings, both empty by default:
+// cannot know. One setting, empty by default:
 //
-//   - Order: the hosts whose tabs come FIRST on the Agents list, after "All",
-//     in this order. Every other mirrored host follows, A–Z by its label; the
-//     cluster (dispatched pod agents, podHost) is always LAST.
 //   - Icons: a host's icon BY ITS NAME ("laptop" draws the laptop glyph),
 //     whatever its registration rank. No host picked by rank draws a glyph
 //     named here, so a named glyph means that host.
 //
-// They are configuration (MUSTER_HOST_ORDER, MUSTER_HOST_ICONS, read in
-// cmd/muster-server) rather than a list in this file because host names are
-// the operator's own, and a deployment's real ones must not be written into
-// this repository.
+// It is configuration (MUSTER_HOST_ICONS, read in cmd/muster-server) rather
+// than a list in this file because host names are the operator's own, and a
+// deployment's real ones must not be written into this repository.
 type HostPreferences struct {
-	Order []string
 	Icons map[string]string
 }
 
@@ -43,25 +38,12 @@ func SetHostPreferences(p HostPreferences) error {
 // Normalized is p checked, with its host names lower-cased and trimmed: they
 // are matched case-insensitively (the list's host field is lower-cased). It
 // refuses:
-//   - an empty or repeated host, or the cluster's own name (it is always last,
-//     and draws clusterIcon);
+//   - the cluster's own name (it draws clusterIcon);
 //   - a name that is not a host name (hostNamePattern: no space, no separator);
 //   - an icon that is not one of hostIconSet's keys, or one named for two hosts
 //     (it would no longer say which host it is).
 func (p HostPreferences) Normalized() (HostPreferences, error) {
 	norm := HostPreferences{Icons: map[string]string{}}
-	seen := map[string]bool{}
-	for _, h := range p.Order {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if err := checkPrefHost(h); err != nil {
-			return HostPreferences{}, fmt.Errorf("host order: %w", err)
-		}
-		if seen[h] {
-			return HostPreferences{}, fmt.Errorf("host order: %q is listed twice", h)
-		}
-		seen[h] = true
-		norm.Order = append(norm.Order, h)
-	}
 	inSet := map[string]bool{}
 	for _, d := range hostIconSet {
 		inSet[d.Key] = true
@@ -90,7 +72,7 @@ func (p HostPreferences) Normalized() (HostPreferences, error) {
 // checkPrefHost is why h cannot be named in a preference, nil if it can be.
 func checkPrefHost(h string) error {
 	if h == podHost {
-		return fmt.Errorf("%q is the dispatched agents' host: its tab is always last and its icon its own", podHost)
+		return fmt.Errorf("%q is the dispatched agents' host: its icon is its own", podHost)
 	}
 	if !hostNamePattern.MatchString(h) {
 		return fmt.Errorf("%q is not a host name (lower-case letters, digits and inner hyphens, at most 63)", h)

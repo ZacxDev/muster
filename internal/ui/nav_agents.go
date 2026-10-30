@@ -9,26 +9,41 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE SIDEBAR IS A LIST OF AGENTS (operator decision: "like channels in a chat
 // app"), on every signed-in page that draws the nav (sidebarIn): the chief
 // pinned first, then every session waiting on the operator, then the rest by
-// recency (navOrder, list_order.go). Each row is one entry of the Agents list
-// — its identity colour on the row's left edge, its recency dot, its host
-// icon, its whole name (sessionSwitcherLabels, the switcher's labels) and its
-// attention count — and opens what its card opens. The page's own session is
-// marked.
+// recency (navOrder, list_order.go). Each row is one entry — a dispatched
+// agent or a mirrored window: its identity colour on the row's left edge, its
+// recency dot, its host icon, its whole name (sessionSwitcherLabels, the
+// switcher's labels) and its attention count — and opens what the switcher's
+// pill for it opens. The page's own session is marked.
 //
-// The pages (Tasks, the Agents list page, Connectors, Asks, Install,
-// Account, Admin) moved into ONE collapsed "More" disclosure at the
-// bottom of the sidebar (navMore); the Asks count rides on its header, so it
-// shows while More is shut.
+// The pages (Tasks, Connectors, Asks, Install, Account, Admin) moved into ONE
+// collapsed "More" disclosure at the bottom of the sidebar (navMore); the Asks
+// count rides on its header, so it shows while More is shut.
+//
+// 🔴 THE SIDEBAR IS WHERE THE RETIRED AGENTS LIST PAGE'S LIST FEATURES WENT
+// (operator decision: the sidebar and the session switcher's bar are how a
+// person moves between agents):
+//
+//   - the dispatch "+" (task-less, with "Save for later") sits beside the
+//     Agents label, or, on a server with no agent runtime, the "Agent dispatch
+//     not set up" hint (navAgentsHead);
+//   - the Idle section: entries idle past MUSTER_AGENTS_IDLE_AFTER are drawn
+//     last, in a collapsed "Idle (N)" group (navIdleGroup);
+//   - a mirrored window whose host is offline says so on its row, and so does
+//     the work it has running (navOffline, navWork);
+//   - the host tabs became a word: the palette finds an entry by its host's
+//     name (switcherItems' Words).
 //
 // 🔴 THE ROWS ARE A LAZY PARTIAL (GET NavAgentsPath), NOT THE FIRST PAINT. The
 // sidebar is on every document — a mirrored view, a terminal, the account page
-// — and building the list there would put the Agents list's reads in front of
-// each of those documents' first byte. The partial is built like the session
+// — and building the list there would put its reads in front of each of
+// those documents' first byte. The partial is built like the session
 // switcher (internal/api's agentsListCardsLive with no live instance read):
 // names, recency and attention, never a pod's status.
 //
@@ -43,11 +58,11 @@ import (
 //   - a page with the rail: on load, but only where the rail is on screen (a
 //     desktop: navShownJS's musterNavShown); on a phone, where it is a closed
 //     drawer, on the drawer's first and every open (appScript's setOpen fires
-//     NavOpenEvent) instead. Then it follows the Agents list's own refresh
-//     events (agentsListLiveTrigger's: agents:changed, agent.changed,
-//     chat.reply, the attention queue, muster:resync — the SSE ones heard only
-//     on a document that already holds a stream; the nav opens none,
-//     TestTheNavAddsNoStream) and a minute's tick, each skipped while the list
+//     NavOpenEvent) instead. Then it follows the agents' refresh events
+//     (agents:changed, agent.changed, chat.reply, the attention queue,
+//     muster:resync — the events the retired Agents list refreshed on; the
+//     SSE ones heard only on a document that already holds a stream; the nav
+//     opens none, TestTheNavAddsNoStream) and a minute's tick, each skipped while the list
 //     is not on screen, the tick also while the tab is hidden.
 //   - a page whose sidebar is an overlay at every width (the mirrored
 //     Rendered view and the terminal, whose open path is measured): only on
@@ -82,7 +97,7 @@ const NavOpenEvent = "muster:nav-open"
 const navShownJS = "!window.musterNavShown||musterNavShown()"
 
 // navAgentsRailTrigger is the list's refresh on a page with the rail: the
-// Agents list's own events (agentsListLiveTrigger's), each filtered by
+// agents' refresh events (the retired Agents list's), each filtered by
 // navShownJS. The SSE ones are debounced as attentionBadgeTrigger is, for its
 // reason: one event is dispatched on every element listening for it and heard
 // at body once per dispatch.
@@ -107,16 +122,16 @@ func navAgentsTrigger(overlay bool) string {
 	return navAgentsRailTrigger
 }
 
-// navAgentsSlot is the sidebar's list region: its label and the element the
-// partial fills. It scrolls inside itself, so thirty agents never push More
-// off the panel.
-func navAgentsSlot(overlay bool) g.Node {
+// navAgentsSlot is the sidebar's list region: its head (navAgentsHead) and the
+// element the partial fills. It scrolls inside itself, so thirty agents never
+// push More off the panel.
+func navAgentsSlot(overlay bool, feat Features) g.Node {
 	return Div(
 		ID("sidebar-agents"),
 		// A sideways swipe here is still the sidebar's (its edge-swipe close);
 		// a vertical one scrolls the list.
 		Class("flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2 pb-2"),
-		P(ID(navAgentsLabelID), Class("px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
+		navAgentsHead(feat),
 		Div(
 			ID(NavAgentsListID),
 			hx("hx-get", NavAgentsPath),
@@ -126,6 +141,52 @@ func navAgentsSlot(overlay bool) g.Node {
 			// attributes must not send a row's load anywhere else.
 			hx("hx-target", "this"),
 			P(g.Attr("data-nav-agents-pending", ""), Class("px-3 py-2 text-xs text-muted"), g.Text("Loading…")),
+		),
+	)
+}
+
+// NavDeployID is the sidebar's dispatch "+" (navDeployButton).
+const NavDeployID = "sidebar-deploy"
+
+// navAgentsHead is the list's head row: the "Agents" label that names the list
+// and, at its end, the dispatch "+" (Features.Dispatch) or — on a server with
+// no agent runtime — the hint that says why there is none (dispatchOffHint).
+// A fixed 44px row whatever it holds, drawn with the sidebar, so neither
+// moves anything.
+func navAgentsHead(feat Features) g.Node {
+	var end g.Node
+	if feat.Dispatch {
+		end = navDeployButton()
+	} else {
+		end = dispatchOffHint()
+	}
+	return Div(
+		Class("flex min-h-[44px] shrink-0 items-center gap-2 pl-3 pt-1"),
+		P(ID(navAgentsLabelID), Class("flex-1 text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
+		end,
+	)
+}
+
+// navDeployButton is the sidebar's "+": it opens the task-less dispatch sheet
+// (GET /ui/agents/new, DispatchModalBody) — the sheet the retired Agents list's
+// bar opened — loading its body into the sheet (agentModalShell, which every
+// document with the sidebar carries) and revealing it (modalOpenClick). A 44px
+// target around a 32px face.
+func navDeployButton() g.Node {
+	return Button(
+		ID(NavDeployID),
+		Type("button"),
+		g.Attr("aria-label", "Deploy agent"),
+		g.Attr("title", "Deploy agent"),
+		g.Attr("aria-haspopup", "dialog"),
+		Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
+		hx("hx-get", "/ui/agents/new"),
+		hx("hx-target", "#agent-modal-body"),
+		hx("hx-swap", "innerHTML"),
+		hx("hx-on:click", modalOpenClick("agent-modal")),
+		Span(
+			Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent transition group-hover:bg-accent/90"),
+			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
 		),
 	)
 }
@@ -173,20 +234,81 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	// The switcher's items for the same entries: each row's label, and what
 	// the command palette finds it by on a page with no switcher (palette.go).
 	items := switcherItems(es, cur)
-	rows := make([]g.Node, len(es))
+	var rows, idle []g.Node
 	for i, e := range es {
-		rows[i] = navAgentRow(e, items[i], now)
+		if navInIdleGroup(e, items[i]) {
+			idle = append(idle, navAgentRow(e, items[i], now))
+			continue
+		}
+		rows = append(rows, navAgentRow(e, items[i], now))
 	}
-	return Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))
+	return g.Group{
+		g.If(len(rows) > 0, Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))),
+		navIdleGroup(idle),
+	}
 }
+
+// navInIdleGroup is whether a row is drawn in the Idle group: the entry is in
+// the Idle section (MarkIdle's InIdleSection — past the threshold, not pinned,
+// activity known), and it is neither waiting on the operator nor the chief
+// nor the page's own session — each of those is a row the operator is looking
+// for, so it stays in the list above.
+func navInIdleGroup(e listEntry, it SwitcherItem) bool {
+	return e.idle() && !e.waiting() && !e.chief() && !it.Current
+}
+
+// NavIdleID is the sidebar's Idle group (navIdleGroup).
+const NavIdleID = "sidebar-idle"
+
+// navIdleGroup is the Idle section, in the sidebar: the idle rows, last, under
+// a "Idle (N)" disclosure that starts shut — the retired Agents list's
+// collapsed Idle section, whose open/closed choice (agentsIdleOpenKey) it
+// keeps. Nothing when no row is idle.
+//
+// 🔴 THE CHOICE IS RE-APPLIED BY THE SCRIPT AFTER IT, ON EVERY SWAP. The list
+// is the partial's innerHTML and is swapped on every refresh (a minute's tick,
+// each SSE nudge), so a plain <details> would shut under a reader who opened
+// it. Storage that throws leaves it shut, and it still opens for the page.
+func navIdleGroup(rows []g.Node) g.Node {
+	if len(rows) == 0 {
+		return nil
+	}
+	n := strconv.Itoa(len(rows))
+	return g.Group{
+		Details(
+			ID(NavIdleID),
+			g.Attr("data-nav-idle", ""),
+			Class("group/idle mt-1 border-t border-line pt-1"),
+			Summary(
+				Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-2 rounded-lg px-3 text-xs font-medium uppercase tracking-wide text-muted transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition-transform group-open/idle:rotate-90" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5l5 5-5 5"/></svg>`),
+				Span(g.Text("Idle")),
+				Span(g.Attr("data-nav-idle-count", ""), Class("tabular-nums"), g.Text("("+n+")")),
+			),
+			Ul(g.Attr("aria-label", "Idle agents"), Class("flex flex-col gap-0.5"), g.Group(rows)),
+		),
+		Script(g.Raw(navIdleJS)),
+	}
+}
+
+// navIdleJS keeps the Idle group's open state across the list's refreshes and
+// page loads (agentsIdleOpenKey: "1" open, anything else shut).
+var navIdleJS = `(function () {
+  var d = document.getElementById('` + NavIdleID + `');
+  if (!d) return;
+  try { if (localStorage.getItem('` + agentsIdleOpenKey + `') === '1') d.open = true; } catch (e) {}
+  d.addEventListener('toggle', function () {
+    try { localStorage.setItem('` + agentsIdleOpenKey + `', d.open ? '1' : '0'); } catch (e) {}
+  });
+})();`
 
 // RenderNavAgents writes NavAgentsList.
 func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, currentURL string) error {
 	return NavAgentsList(list, mirrors, currentURL, time.Now()).Render(w)
 }
 
-// navAgentRow is one row: a real-load link (hx-boost="false", as a card's and
-// a switcher pill's), 44px tall, the whole row the tap target.
+// navAgentRow is one row: a real-load link (hx-boost="false", as a switcher
+// pill's), 44px tall, the whole row the tap target.
 //
 // 🔴 THE CURRENT ROW SAYS aria-current="true", NOT "page". The page's own nav
 // entry (the Agents link, for a session page — sidebar's currentTab) already
@@ -219,7 +341,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 		Class("min-w-0"),
 		A(
 			// 🔴 A STABLE ID, THE ENTRY'S OWN (its agent id, or its window's
-			// address hashed as its card's is). A refresh swaps the list's
+			// address hashed, mirrorCardID). A refresh swaps the list's
 			// innerHTML, and htmx re-focuses the element of the id that had
 			// focus — so a row focused by keyboard keeps it across a refresh,
 			// wherever the new order put it.
@@ -246,8 +368,51 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			Span(Class("inline-flex w-2 shrink-0 justify-center"), recencyDot(now, e.activeAt())),
 			hostMarkDecorative(host, icon),
 			Span(Class("min-w-0 flex-1 truncate"), g.Text(label)),
+			g.If(e.mirror != nil && !e.mirror.Online, navOffline()),
+			navWork(e.work()),
 			navAttentionPill(att, e.waiting()),
 		),
+	)
+}
+
+// navOffline is a mirrored window's "offline" on its row: the host's
+// muster-mirror is not connected, or the host no longer lists the session —
+// the retired list card's "offline" chip (data-mirror-offline there).
+func navOffline() g.Node {
+	return Span(
+		g.Attr("data-nav-offline", ""),
+		g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),
+		Class("shrink-0 text-[11px] font-normal text-muted"),
+		g.Text("offline"),
+	)
+}
+
+// navWork is a row's work: how many subagents and background shells the entry
+// has running (workChip's numbers), drawn compact — one count beside a stack
+// icon, the whole sentence its accessible name and tooltip. Nothing when
+// nothing runs.
+func navWork(w mirror.WindowWork) g.Node {
+	label := workChipLabel(w)
+	if label == "" {
+		return nil
+	}
+	n := w.Subagents
+	if w.Shells > 0 || w.ShellsAtLeast {
+		n += max(w.Shells, 1)
+	}
+	count := workCount(n)
+	if w.ShellsAtLeast && !strings.HasSuffix(count, "+") {
+		count += "+"
+	}
+	return Span(
+		g.Attr("data-nav-work", workChipText(w)),
+		g.Attr("role", "img"),
+		g.Attr("aria-label", label),
+		g.Attr("title", label),
+		Class("inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium tabular-nums text-fg2"),
+		g.Raw(`<svg class="h-3 w-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3l7 4-7 4-7-4z"/><path d="M3 11l7 4 7-4"/></svg>`),
+		Span(Class("sr-only"), g.Text(label)),
+		Span(g.Attr("aria-hidden", "true"), g.Text(count)),
 	)
 }
 
@@ -259,7 +424,7 @@ func navRowTone(current bool) string {
 	return "text-fg2 hover:bg-s2 hover:text-fg"
 }
 
-// navAttentionPill is a row's attention: the card badge's icon and count
+// navAttentionPill is a row's attention: the kind's icon and the count
 // (AttentionKindIcons) — NOT a link, the row is one (an anchor cannot nest
 // in it) — or, for an entry waiting with no item to count (an agent at a
 // permission prompt), the switcher's waiting dot. Nothing otherwise.

@@ -247,7 +247,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// (same-origin; api.FaroRelayPath) and the relay forwards to the receiver,
 	// so no LAN address and no key reach the browser.
 	ui.SetFaroConfig(cfg.faroSettings(api.BuildVersion))
-	// The operator's own hosts: the host tabs' order and icons by name. Checked
+	// The operator's own hosts: their icons by name. Checked
 	// by loadConfig; installed here, before any page is rendered.
 	if err := ui.SetHostPreferences(cfg.HostPrefs); err != nil {
 		return nil, fmt.Errorf("host preferences: %w", err)
@@ -329,9 +329,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.
 		ext.Flows = flows.NewPG(pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
-		// The Agents list's per-user pins (migration 0017).
+		// The per-user pins the session switcher sets (migration 0017).
 		ext.Pins = pins.NewPG(pool)
-		// The Agents list's per-user recently viewed entries (migration 0018).
+		// The per-user recently viewed entries (migration 0018): the switcher's Recent.
 		ext.Recents = recents.NewPG(pool)
 		// The server-side send queue (migration 0019); RunSendQueue delivers it.
 		ext.SendQueue = sendqueue.NewPG(pool)
@@ -614,7 +614,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if mirrorSvc != nil {
 		// No agent name: a mirrored session is not an agent. The nudge makes the
-		// host OWNER's open Agents views re-fetch — and only that owner's: an SSE
+		// host OWNER's open sidebars re-fetch — and only that owner's: an SSE
 		// event reaches its owner's streams alone (accounts PR 3b), so a nudge
 		// with no owner would reach nobody.
 		mirrorSvc.SetNotify(srv.BroadcastAgentsChangedFor)
@@ -657,7 +657,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
 	// deliverability was computed from, so "a dispatch is accepted" and "something
 	// delivers it" cannot disagree. startBackgroundLoops runs it. It is built after
-	// srv so its card changes reach open Agents lists through srv's broadcast.
+	// srv so its changes reach open agent pages and sidebars through srv's broadcast.
 	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, logger); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("kickoff deliverer: %w", err)
@@ -1126,13 +1126,13 @@ func displayOrDefault(v string) string {
 func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
 
-	// The Agents list's Idle section (internal/ui/idle_section.go), in both
+	// The Idle section (internal/ui/idle_section.go), in both
 	// directions: the threshold in force, or OFF.
 	if a.cfg.AgentsIdleAfter > 0 {
-		l.Printf("agents list: idle section ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" header (%s=%s)",
+		l.Printf("sidebar: idle group ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" group (%s=%s)",
 			ui.IdleSectionAfterLabel(a.cfg.AgentsIdleAfter), a.cfg.AgentsIdleAfter, envAgentsIdleAfter, displayOrDefault(a.cfg.AgentsIdleAfterRaw))
 	} else {
-		l.Printf("agents list: idle section OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+		l.Printf("sidebar: idle group OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
 	}
 
 	// The officer runtime (docs/officers.md), in both directions. Each

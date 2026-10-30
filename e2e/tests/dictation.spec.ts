@@ -195,7 +195,7 @@ async function login(page: Page) {
 async function runningAgent(page: Page): Promise<AgentRow> {
   if (agent) return agent;
   const before = new Set((await agentRows()).map((a) => a.name));
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
@@ -206,6 +206,8 @@ async function runningAgent(page: Page): Promise<AgentRow> {
   expect((await resp).status()).toBe(200);
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
+  // The sheet's answer sends the page to the new agent's own page.
+  await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
   agent = created[0];
   const started = await page.request.post(`${origin}/agents/${agent.id}/start`, { headers: { Origin: origin } });
   expect(started.status(), await started.text()).toBe(200);

@@ -540,7 +540,9 @@ for (const uncontrolled of ['first', 'second'] as const) {
     const worker = await signedInWorker(page, context);
     const tap = await tapHarness(page, context, worker);
     const other = await context.newPage();
-    await other.goto(origin + '/agents');
+    // Any page but the board: Account (it does not redirect, so its path is
+    // what the worker sees).
+    await other.goto(origin + '/account');
     await waitControlled(other);
     const [stale, live] = uncontrolled === 'first' ? [page, other] : [other, page];
     await hardReload(stale, await context.newCDPSession(stale));
@@ -548,7 +550,7 @@ for (const uncontrolled of ['first', 'second'] as const) {
     const livePath = new URL(live.url()).pathname;
     const stalePath = new URL(stale.url()).pathname;
     expect(await tap.controlledURLs(), 'CONTROL: the worker controls the other tab only').toEqual([livePath]);
-    expect((await tap.allURLs()).sort(), 'CONTROL: the worker sees both tabs').toEqual(['/agents', '/tasks']);
+    expect((await tap.allURLs()).sort(), 'CONTROL: the worker sees both tabs').toEqual(['/account', '/tasks']);
 
     await tap.deliverAndTap('ask-71');
     await expect(live, 'the controlled tab moved').toHaveURL(origin + '/attention#ask-71');

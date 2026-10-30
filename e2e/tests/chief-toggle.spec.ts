@@ -9,13 +9,19 @@ import { openMore } from '../lib/nav';
 // no agent provisioner — at a phone's size (390×844, touch) and a desktop's
 // (1280×800):
 //
-//   1. a fresh user (no chief agent, no choice): `/` lands on the Agents list,
-//      the sidebar has no chief row, and Account → Chief says the chief is not
-//      available on this install, with no switch;
+//   1. a fresh user (no chief agent, no choice): `/` opens the session the
+//      viewer opened last (the Agents list page is retired; home with no chief
+//      is that session — internal/api/nav_agents.go homeTarget), the sidebar
+//      has no chief row, and Account → Chief says the chief is not available
+//      on this install, with no switch;
 //   2. a user who already has a chief (this spec's own row, e2e/pluginfix):
 //      it is on with no choice made — `/` opens it and the sidebar lists it
-//      first; Account → Chief turns it OFF (`/` → the Agents list, no chief
-//      row) and back ON (`/` → the chief again, first row again).
+//      first; Account → Chief turns it OFF (`/` → the session opened last, no
+//      chief row) and back ON (`/` → the chief again, first row again).
+//
+// The "opened last" session is a DIFFERENT seeded agent in each test
+// (docs-sweeper, release-helper), visited just before `/`, so the two
+// assertions name two different destinations rather than one constant.
 //
 // 🔴 REGRESSION TESTS: on origin/main the Account page has no Chief section
 // and POST /account/chief does not exist.
@@ -29,7 +35,17 @@ const CHIEF = `e2e-toggle-chief-${stamp}`;
 const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
-const onAgents = /\/agents$/;
+// lastOpened is home with no chief on: the page of the agent the viewer opened
+// last, through the list link (ui.AgentListHref: its latest session, marked
+// &from=list).
+const lastOpened = (name: string) => new RegExp(`/agents/${name}\\?session=\\d+&from=list$`);
+
+// visit opens a seeded agent's page, which records it as the viewer's most
+// recently opened session.
+async function visit(page: Page, name: string) {
+  await page.goto('/agents/' + name);
+  await expect(page).toHaveURL(new RegExp(`/agents/${name}\\?session=\\d+$`));
+}
 const onChief = new RegExp(`/agents/${CHIEF}(\\?|$)`);
 const rows = (page: Page) => page.locator('#sidebar-agents-list a[data-nav-agent]');
 
@@ -88,13 +104,14 @@ for (const [name, size, phone] of [
   test.describe(name, () => {
     test.use(phone ? { viewport: size, hasTouch: true, isMobile: true } : { viewport: size });
 
-    test('a fresh user has no chief: home is the Agents list, no chief row, and Account says it is not available here', async ({ page }) => {
+    test('a fresh user has no chief: home is the session opened last, no chief row, and Account says it is not available here', async ({ page }) => {
       // EVERY chief of the user goes, not only this spec's: a chief another
       // spec left behind would make "fresh" false and decide this test.
       fix('rmchiefs', '1');
       fix('chiefpref', '1', 'clear');
+      await visit(page, 'docs-sweeper');
       await page.goto('/');
-      await expect(page, '`/` lands on the Agents list').toHaveURL(onAgents);
+      await expect(page, '`/` opens the session opened last').toHaveURL(lastOpened('docs-sweeper'));
       await showSidebar(page, phone);
       await expectNoChiefRow(page);
 
@@ -118,7 +135,7 @@ for (const [name, size, phone] of [
         await expectChiefFirst(page);
 
         // Off, from Account → Chief.
-        await page.goto('/agents');
+        await page.goto('/tasks');
         await openAccount(page, phone);
         await expect(chiefState(page)).toHaveAttribute('data-state', 'on');
         await expect(page.locator('#chief-toggle')).toHaveText('Turn the chief off');
@@ -130,8 +147,9 @@ for (const [name, size, phone] of [
         await expect(page.locator('[data-testid="chief-settings"] [role="status"]')).toHaveText('Saved.');
         await expect(page.locator('#chief-toggle')).toHaveText('Turn the chief on');
 
+        await visit(page, 'release-helper');
         await page.goto('/');
-        await expect(page, 'off: `/` lands on the Agents list').toHaveURL(onAgents);
+        await expect(page, 'off: `/` opens the session opened last, not the chief').toHaveURL(lastOpened('release-helper'));
         await showSidebar(page, phone);
         await expectNoChiefRow(page);
 

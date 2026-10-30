@@ -60,7 +60,7 @@ func TestAClaudeCodeDispatchChecksTheAppsRepositories(t *testing.T) {
 		t.Fatalf("a repository outside the installation: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
 	}
 	rec = postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"Example-Org/Widget"}})
-	if rec.Code != http.StatusOK || len(store.rows()) != 1 {
+	if !dispatched(rec, store) || len(store.rows()) != 1 {
 		t.Fatalf("an installation repository: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
 	}
 	if b := store.rows()[0].RepoBranch; b != "trunk" {

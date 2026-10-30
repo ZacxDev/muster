@@ -11,24 +11,24 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// LIVE WORK COUNTS ON A DISPATCHED claude-code AGENT'S CARD
+// LIVE WORK COUNTS OF A DISPATCHED claude-code AGENT
 // (docs/design/agent-cards.md (a), "ccd: POST /agent/work"): how many subagents
 // and background shells the agent's pod has running now, as ccd last reported
-// them — the same mirror.WindowWork, and the same chip, a mirrored window's card
-// shows.
+// them — the same mirror.WindowWork a mirrored window reports, drawn as the
+// agent page strip's chip and the sidebar row's count.
 //
 // 🔴 STALE-SAFE: A REPORT COUNTS ONLY WHILE IT IS REFRESHED. ccd posts on every
 // change and re-posts a non-zero report every minute (cmd/ccd/work.go); one not
 // seen for agentWorkTTL is dropped, so a pod that died — or a ccd that stopped
-// reporting — loses its chip instead of freezing it. The card's status poll
-// carries what the card was drawn with (ui.StatusPollPath), so an expiry that no
-// POST announces still re-renders the list within one poll.
+// reporting — loses its chip instead of freezing it. The agent page's status
+// poll carries what the strip was drawn with (ui.StatusPollPath), so an expiry
+// that no POST announces still re-renders the strip within one poll.
 //
 // The route is the relay's (requireRelayAgent): the agent's OWN token, refused
 // for the shared tokens, and served on the connect listener
 // (ConnectSurfacePrefixes). ⚠ That token is one the CLI and its tool calls hold
 // (cmd/ccd/turncred.go cliKeeps), exactly as for /agent/blocked: a tool call can
-// post a count. The chip is display only and on that agent's own card, so the
+// post a count. The chip is display only and on that agent's own page and row, so the
 // most a forged report does is mislabel the agent that forged it.
 
 // agentWorkTTL is how long a work report counts without a refresh: three of
@@ -65,11 +65,12 @@ func (s *Server) AgentWork(id int64) mirror.WindowWork {
 	return r.work
 }
 
-// cardWork is what agent id's card may show for status (its live status): its
+// cardWork is what agent id's view may show for status (its live status): its
 // report while it is running, and nothing otherwise. 🔴 ONE RULE FOR EVERY DOOR
 // THAT STOPS AN AGENT: a stopped pod's ccd cannot post its clear (it is gone),
-// so a stopped agent's last report would otherwise stay on its card until the
-// TTL. Both the card and its status poll read it, so they cannot disagree.
+// so a stopped agent's last report would otherwise stay on its page until the
+// TTL. Both the view (cardViewIndexed) and the status poll read it, so they
+// cannot disagree.
 func (s *Server) cardWork(id int64, status string) mirror.WindowWork {
 	if status != agents.StatusRunning {
 		return mirror.WindowWork{}

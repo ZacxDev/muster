@@ -67,11 +67,11 @@ const pluginsMigrationVersion = 15
 // the same row-level security; same treatment again, keyed on that table.
 const pluginRepliesMigrationVersion = 16
 
-// pinsMigrationVersion is 0017: pins (the Agents list's pinned entries), owned
+// pinsMigrationVersion is 0017: pins (the session switcher's pinned entries), owned
 // and under the same row-level security; same treatment again.
 const pinsMigrationVersion = 17
 
-// recentsMigrationVersion is 0018: recents (the Agents list's recently viewed
+// recentsMigrationVersion is 0018: recents (the session switcher's recently viewed
 // entries), owned and under the same row-level security; same treatment again.
 const recentsMigrationVersion = 18
 

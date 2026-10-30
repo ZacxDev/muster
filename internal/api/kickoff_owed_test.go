@@ -11,11 +11,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -66,6 +70,43 @@ func (s *owedStore) Get(_ context.Context, id int64) (agents.Agent, error) {
 }
 
 func (s *owedStore) LastMessageByAgentIDs(context.Context, []int64) (map[int64]time.Time, error) {
+	return nil, nil
+}
+
+// What the agent's own page reads (GET /agents/{name}?session=…), so the page
+// — the surface the retired list card's badges moved to — renders from the
+// same rows: each agent has one session, owedSessionID(id), and no messages.
+func (s *owedStore) GetByName(_ context.Context, name string) (agents.Agent, error) {
+	for _, a := range s.rows {
+		if a.Name == name {
+			return a, nil
+		}
+	}
+	return agents.Agent{}, pgx.ErrNoRows
+}
+
+func owedSessionID(agentID int64) int64 { return 100 + agentID }
+
+func (s *owedStore) LatestOrCreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {
+	return agents.ChatSession{ID: owedSessionID(agentID), AgentID: agentID, SessionKey: "owed-key"}, nil
+}
+
+func (s *owedStore) GetSession(_ context.Context, id int64) (agents.ChatSession, error) {
+	for _, a := range s.rows {
+		if owedSessionID(a.ID) == id {
+			return agents.ChatSession{ID: id, AgentID: a.ID, SessionKey: "owed-key"}, nil
+		}
+	}
+	return agents.ChatSession{}, pgx.ErrNoRows
+}
+
+func (s *owedStore) ListSessions(_ context.Context, agentID int64) ([]agents.ChatSession, error) {
+	return []agents.ChatSession{{ID: owedSessionID(agentID), AgentID: agentID, SessionKey: "owed-key"}}, nil
+}
+
+func (s *owedStore) MarkSessionRead(context.Context, int64) error { return nil }
+
+func (s *owedStore) ListRecentChatMessages(context.Context, int64, int) ([]agents.ChatMessage, error) {
 	return nil, nil
 }
 
@@ -142,30 +183,29 @@ func getOwed(t *testing.T, s *Server, h http.Handler, path string) *httptest.Res
 	return rec
 }
 
-// cardsByAgent splits the rendered card list into one chunk per agent card, keyed
-// by the agent's slug.
+// headersByAgent is each fixture agent's card as its own page's header draws
+// it — GET ui.AgentHeaderPath(id): the status strip, the ⋯ menu and the
+// notices, what the retired Agents list's card showed — keyed by the agent's
+// slug.
 //
-// 🔴 PER-CARD, BECAUSE A DOCUMENT-WIDE SUBSTRING CHECK CANNOT ATTRIBUTE. "The list
-// contains a badge" is satisfied by a badge on the WRONG agent — which is exactly
-// the failure a predicate wired to the wrong field produces — so every assertion
-// below names the card it is about.
-func cardsByAgent(t *testing.T, markup string) map[string]string {
+// 🔴 PER-AGENT, BECAUSE A DOCUMENT-WIDE SUBSTRING CHECK CANNOT ATTRIBUTE. "A
+// response contains a badge" is satisfied by a badge on the WRONG agent — which
+// is exactly the failure a predicate wired to the wrong field produces — so
+// every assertion below names the agent it is about, and each answer is one
+// agent's alone.
+func headersByAgent(t *testing.T, s *Server, h http.Handler) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for _, a := range owedFixtureRows() {
-		marker := `href="/agents/` + a.Name + `"`
-		i := strings.Index(markup, marker)
-		if i < 0 {
-			t.Fatalf("the rendered list has no card for %q (looked for %s).\nlist:\n%s",
-				a.Name, marker, markup)
-		}
-		rest := markup[i:]
-		if j := strings.Index(rest, "</article>"); j >= 0 {
-			rest = rest[:j]
-		}
-		out[a.Name] = rest
+		out[a.Name] = getOwed(t, s, h, ui.AgentHeaderPath(a.ID)).Body.String()
 	}
 	return out
+}
+
+// owedPage is an agent's own page (its first paint), as the signed-in operator.
+func owedPage(t *testing.T, s *Server, h http.Handler, a agents.Agent) string {
+	t.Helper()
+	return getOwed(t, s, h, "/agents/"+a.Name+"?session="+strconv.FormatInt(owedSessionID(a.ID), 10)).Body.String()
 }
 
 // TestBothTiersReportAnOwedKickoffForTheSameRow is the relationship guard.
@@ -181,7 +221,7 @@ func cardsByAgent(t *testing.T, markup string) map[string]string {
 func TestBothTiersReportAnOwedKickoffForTheSameRow(t *testing.T) {
 	s, h, _ := owedServer(t)
 
-	cards := cardsByAgent(t, getOwed(t, s, h, "/ui/agents").Body.String())
+	cards := headersByAgent(t, s, h)
 
 	var wire []agentJSON
 	body := getOwed(t, s, h, "/api/agents").Body.Bytes()
@@ -315,7 +355,19 @@ func TestAnOwedKickoffIsReportedWithoutTheNotesText(t *testing.T) {
 			"as a failed kickoff (err %v): %+v", err, failed)
 	}
 
-	for _, path := range []string{"/ui/agents", "/api/agents", "/ui/agents/1/card", "/ui/agents/4/card"} {
+	rows := owedFixtureRows()
+	page1, page4 := "/agents/owed-running?session="+strconv.FormatInt(owedSessionID(1), 10),
+		"/agents/failed-running?session="+strconv.FormatInt(owedSessionID(4), 10)
+	if rows[0].Name != "owed-running" || rows[3].Name != "failed-running" {
+		t.Fatal("fixture: rows 1 and 4 are not owed-running and failed-running")
+	}
+	// The sidebar lists every row but reports no kickoff: it is searched for
+	// the text, not for the signal.
+	if got := getOwed(t, s, h, ui.NavAgentsPath).Body.String(); strings.Contains(got, owedKickoffNote) ||
+		!strings.Contains(got, `id="nav-agent-4"`) {
+		t.Errorf("the sidebar emits the pending note's TEXT, or lists no row 4 to search:\n%s", got)
+	}
+	for _, path := range []string{"/api/agents", ui.AgentHeaderPath(1), ui.AgentHeaderPath(4), page1, page4} {
 		got := getOwed(t, s, h, path).Body.String()
 		if strings.Contains(got, owedKickoffNote) {
 			t.Errorf("%s emits the pending note's TEXT.\n"+
@@ -325,15 +377,16 @@ func TestAnOwedKickoffIsReportedWithoutTheNotesText(t *testing.T) {
 				"body:\n%s", path, got)
 		}
 		// And the tier still reports the state — otherwise "no leak" is satisfied
-		// by a surface that says nothing at all.
-		if !strings.Contains(got, "kickoff") && !strings.Contains(got, "kickoffOwed") {
+		// by a surface that says nothing at all. (Row 1's surfaces carry the owed
+		// badge, row 4's the failure; /api/agents both.)
+		if !strings.Contains(got, "data-kickoff-owed") && !strings.Contains(got, "data-kickoff-failed") && !strings.Contains(got, `"kickoffOwed":true`) {
 			t.Errorf("%s mentions no kickoff signal at all, so its clean leak result is "+
 				"a claim about an empty surface", path)
 		}
 		// PR #37 round 1 (F3): the remedy now carries the agent's namespace and name.
 		// Both HTML surfaces that render row 4 must have the remedy IN the body just
 		// searched, so the clean result above covers its dynamic part too.
-		if path == "/ui/agents" || path == "/ui/agents/4/card" {
+		if path == ui.AgentHeaderPath(4) || path == page4 {
 			wantCmd := "kubectl -n " + failed.Namespace + " logs deploy/" + failed.Name + " -c agent"
 			if !strings.Contains(got, "data-kickoff-remedy") || !strings.Contains(got, wantCmd) {
 				t.Errorf("%s does not render row 4's remedy with %q, so the leak search above "+
@@ -350,29 +403,37 @@ func TestAnOwedKickoffIsReportedWithoutTheNotesText(t *testing.T) {
 // It is here because the DUPLICATE is what makes the next additive card field go
 // out of sync: handleAgentsContent built the list's AgentCardView literal and
 // cardViewFor built the single-card re-render's, the same eleven fields spelled
-// twice. The observable of a drift is a badge that appears on the list and
-// disappears when the card is re-rendered (the inline rename's Cancel, GET
-// /ui/agents/{id}/card) — which reads as "the warning went away".
+// twice. The observable of a drift is a badge that appears on one surface and
+// disappears on the other — today the agent page's first paint and its header's
+// refresh (GET /ui/agents/{id}/header, after a Start/Stop or a status change),
+// both agentPageCard over cardViewIndexed — which reads as "the warning went
+// away".
 //
 // 🔴 IT COUNTS COMPOSITE LITERALS THAT SET Status, NOT ALL OF THEM. The rename
 // form legitimately builds a ui.AgentCardView with three identity fields and no
 // status — it renders an edit form, not a card — so a blanket count would be red on
 // correct code.
 func TestOneCardComposerFeedsEverySurface(t *testing.T) {
-	// Behavioural half: the list and the single-card route render the SAME badge
-	// state for the same row. Two composers that drift produce two answers here.
+	// Behavioural half: the agent page and its header's refresh render the SAME
+	// badge state for the same row. Two composers that drift produce two answers
+	// here. Row 3 (owed nothing) is the control: neither may badge it.
 	s, h, _ := owedServer(t)
-	list := cardsByAgent(t, getOwed(t, s, h, "/ui/agents").Body.String())
-	single := getOwed(t, s, h, "/ui/agents/1/card").Body.String()
-
-	fromList := strings.Contains(list["owed-running"], "data-kickoff-owed")
-	fromCard := strings.Contains(single, "data-kickoff-owed")
-	if !fromList || !fromCard || fromList != fromCard {
-		t.Errorf("the list and the single-card re-render disagree about the owed badge "+
-			"for one row: list = %v, /ui/agents/1/card = %v (both want true).\n"+
-			"    These are the two surfaces an operator sees in one session — the board, "+
-			"and the card that comes back after a rename is cancelled.\ncard:\n%s",
-			fromList, fromCard, single)
+	rows := owedFixtureRows()
+	for _, c := range []struct {
+		a    agents.Agent
+		want bool
+	}{{rows[0], true}, {rows[2], false}} {
+		page := owedPage(t, s, h, c.a)
+		header := getOwed(t, s, h, ui.AgentHeaderPath(c.a.ID)).Body.String()
+		fromPage := strings.Contains(page, "data-kickoff-owed")
+		fromHeader := strings.Contains(header, "data-kickoff-owed")
+		if fromPage != c.want || fromHeader != c.want {
+			t.Errorf("%s: the agent page and its header's refresh disagree about the owed badge "+
+				"(or both are wrong): page = %v, %s = %v (both want %v).\n"+
+				"    These are the two surfaces an operator sees in one session — the page as "+
+				"opened, and its header after a Start/Stop or a status change.\nheader:\n%s",
+				c.a.Name, fromPage, ui.AgentHeaderPath(c.a.ID), fromHeader, c.want, header)
+		}
 	}
 
 	// Structural half: exactly one place in this package composes a card view with
@@ -396,10 +457,10 @@ func TestOneCardComposerFeedsEverySurface(t *testing.T) {
 // field.
 //
 // 🔴 THE Status KEY IS THE FILTER, AND IT IS WHAT KEEPS THIS GATE OFF CORRECT
-// CODE. handleAgentRenameForm builds a ui.AgentCardView holding only ID/Name/
-// DisplayName to render the inline rename FORM — no status, no card — so counting
-// every literal would be red from day one, and a permanently-red gate is worse
-// than no gate.
+// CODE. A view that names an agent without being its card (a literal holding
+// only ID/Name/DisplayName, as the retired inline rename form's was) is not a
+// composer, so counting every literal would be red on correct code, and a
+// permanently-red gate is worse than no gate.
 //
 // ⚠ IT MATCHES A COMPOSITE LITERAL, so a card assembled field-by-field
 // (`var v ui.AgentCardView; v.Status = …`) is invisible to it. Nothing in this
@@ -473,7 +534,7 @@ func TestTheCardsRemedyFollowsTheRecordedCause(t *testing.T) {
 	s, h, store := owedServer(t)
 	checkFirst := "kubectl -n devpod-failed-running logs deploy/failed-running -c agent"
 
-	card := getOwed(t, s, h, "/ui/agents/4/card").Body.String()
+	card := getOwed(t, s, h, ui.AgentHeaderPath(4)).Body.String()
 	if !strings.Contains(card, checkFirst) || strings.Contains(card, "re-sending cannot pay") {
 		t.Errorf("a failure that may have left a turn running does not tell the operator to check "+
 			"first (want %q).\ncard:\n%s", checkFirst, card)
@@ -485,7 +546,7 @@ func TestTheCardsRemedyFollowsTheRecordedCause(t *testing.T) {
 				": request: dial tcp 192.0.2.61:18789: connect: connection refused"
 		}
 	}
-	card = getOwed(t, s, h, "/ui/agents/4/card").Body.String()
+	card = getOwed(t, s, h, ui.AgentHeaderPath(4)).Body.String()
 	if !strings.Contains(card, "re-sending cannot pay for the task twice") || strings.Contains(card, checkFirst) {
 		t.Errorf("a failure that proves nothing was sent does not say re-sending is safe.\ncard:\n%s", card)
 	}
@@ -500,20 +561,7 @@ func TestTheCardsRemedyFollowsTheRecordedCause(t *testing.T) {
 // failure was in kickoff_error only, which no page rendered.
 func TestBothTiersReportAFailedKickoffForTheSameRow(t *testing.T) {
 	s, h, _ := owedServer(t)
-	listMarkup := getOwed(t, s, h, "/ui/agents").Body.String()
-	cards := map[string]string{}
-	for _, a := range owedFixtureRows() {
-		marker := `href="/agents/` + a.Name + `"`
-		i := strings.Index(listMarkup, marker)
-		if i < 0 {
-			t.Fatalf("no card for %q", a.Name)
-		}
-		rest := listMarkup[i:]
-		if j := strings.Index(rest, "</article>"); j >= 0 {
-			rest = rest[:j]
-		}
-		cards[a.Name] = rest
-	}
+	cards := headersByAgent(t, s, h)
 	var wire []agentJSON
 	body := getOwed(t, s, h, "/api/agents").Body.Bytes()
 	if err := json.Unmarshal(body, &wire); err != nil {
@@ -557,9 +605,9 @@ func TestBothTiersReportAFailedKickoffForTheSameRow(t *testing.T) {
 	if got := byName["failed-running"].ErrorMessage; got != "earlier verdict, last send error: "+agents.NoteWithheld {
 		t.Errorf("wire errorMessage = %q, want it scrubbed of the note", got)
 	}
-	single := getOwed(t, s, h, "/ui/agents/4/card").Body.String()
-	if !strings.Contains(single, "data-kickoff-failed") || !strings.Contains(single, "rejected-mq58") {
-		t.Errorf("the single-card re-render of a failed kickoff drops the badge or its text:\n%s", single)
+	page := owedPage(t, s, h, owedFixtureRows()[3])
+	if !strings.Contains(page, "data-kickoff-failed") || !strings.Contains(page, "echoed input "+agents.NoteWithheld+" rejected-mq58") {
+		t.Errorf("the agent page of a failed kickoff drops the badge or its scrubbed text:\n%s", page)
 	}
 }
 
@@ -572,7 +620,7 @@ func TestBothTiersReportAFailedKickoffForTheSameRow(t *testing.T) {
 func TestTheCardSaysAHeldKickoffIsWaitingForTheGithubApproval(t *testing.T) {
 	s, h, store := owedServer(t)
 	const line = "data-kickoff-awaiting-grant"
-	if card := getOwed(t, s, h, "/ui/agents/1/card").Body.String(); strings.Contains(card, line) {
+	if card := getOwed(t, s, h, ui.AgentHeaderPath(1)).Body.String(); strings.Contains(card, line) {
 		t.Fatalf("an owed card with no recorded wait carries the waiting line:\n%s", card)
 	}
 	for i := range store.rows {
@@ -580,14 +628,14 @@ func TestTheCardSaysAHeldKickoffIsWaitingForTheGithubApproval(t *testing.T) {
 			store.rows[i].KickoffError = agents.KickoffAwaitingGrantReason + ": approve-kt20"
 		}
 	}
-	card := getOwed(t, s, h, "/ui/agents/1/card").Body.String()
+	card := getOwed(t, s, h, ui.AgentHeaderPath(1)).Body.String()
 	if !strings.Contains(card, line) || !strings.Contains(card, `href="/connectors"`) {
 		t.Errorf("a turn held for the github grant does not say so on its card.\ncard:\n%s", card)
 	}
 	if strings.Contains(card, "approve-kt20") {
 		t.Errorf("the card rendered ccd's detail text; only the fixed line may cross:\n%s", card)
 	}
-	if card := getOwed(t, s, h, "/ui/agents/2/card").Body.String(); strings.Contains(card, line) {
+	if card := getOwed(t, s, h, ui.AgentHeaderPath(2)).Body.String(); strings.Contains(card, line) {
 		t.Errorf("a kicked-off row carries the waiting line:\n%s", card)
 	}
 }

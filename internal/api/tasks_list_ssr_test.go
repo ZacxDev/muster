@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -121,13 +122,15 @@ func listOf(t *testing.T, doc string) (open, rest string) {
 // only with the list's own GET /ui/tasks.
 func TestTheBoardIsInTheFirstPaint(t *testing.T) {
 	f := newBoardFixture(t)
+	// The Connectors tab on, so its panel follows the board's and bounds it.
+	f.srv.ext.Connectors = shellOnlyConnectors{}
 	for _, path := range []string{"/tasks"} {
 		open, rest := listOf(t, f.get(t, path))
 		// The list ends where the panel's next sibling begins; the titles must be
 		// INSIDE it, not anywhere in the document.
-		end := strings.Index(rest, `<div id="panel-agents"`)
+		end := strings.Index(rest, `<div id="panel-connectors"`)
 		if end < 0 {
-			t.Fatalf("%s: no #panel-agents after #tasks-list to bound it", path)
+			t.Fatalf("%s: no #panel-connectors after #tasks-list to bound it", path)
 		}
 		list := rest[:end]
 		for _, title := range boardTitles {
@@ -182,17 +185,27 @@ func TestTheBoardDocumentDrawsThePartial(t *testing.T) {
 // not make every page of the app pay for the board.
 func TestOtherTabsStillLoadTheBoardThemselves(t *testing.T) {
 	f := newBoardFixture(t)
-	open, rest := listOf(t, f.get(t, "/agents"))
+	// The Connectors tab is drawn only with a connector store; the document
+	// itself reads nothing from it (its panel loads /ui/connectors).
+	f.srv.ext.Connectors = shellOnlyConnectors{}
+	// /connectors: the shell's one other tab (the Agents tab is retired; GET
+	// /agents is home's redirect).
+	open, rest := listOf(t, f.get(t, "/connectors"))
 	if !strings.Contains(open, `hx-trigger="load, `) {
-		t.Errorf("the /agents document's hidden board does not load itself: %s", open)
+		t.Errorf("the /connectors document's hidden board does not load itself: %s", open)
 	}
 	if strings.Contains(open, "data-sse-mark") || strings.Contains(open, "data-tasks-drawn") {
 		t.Errorf("an undrawn board carries a drawn board's marks: %s", open)
 	}
 	if !strings.HasPrefix(rest, `<div id="tasks-list-skeleton"`) {
-		t.Errorf("the /agents document drew the board instead of the skeleton: %.200s", rest)
+		t.Errorf("the /connectors document drew the board instead of the skeleton: %.200s", rest)
 	}
 }
+
+// shellOnlyConnectors is a connector store that is only ever present: it
+// turns the shell's Connectors tab on (Features.Connectors) and panics if any
+// document read it.
+type shellOnlyConnectors struct{ connectors.Store }
 
 // markOf is the data-sse-mark #tasks-list carries.
 func markOf(t *testing.T, doc string) string {
@@ -329,7 +342,9 @@ func TestTheOfflineShellURLIsBoardless(t *testing.T) {
 func TestTheShellDocumentIsPrivateAndRevalidated(t *testing.T) {
 	f := newBoardFixture(t)
 	// "/?shell=1", not "/": `/` itself is a redirect now (redirectHome).
-	for _, path := range []string{"/?" + offlineShellParam + "=1", "/tasks", "/agents"} {
+	// (/agents is not a shell document any more: home's no-store redirect.)
+	f.srv.ext.Connectors = shellOnlyConnectors{}
+	for _, path := range []string{"/?" + offlineShellParam + "=1", "/tasks", "/connectors"} {
 		r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(f.ctx)
 		r.Header.Set("Cookie", sessionCookieFor(f.srv))
 		r.Header.Set(boardUserHeader, strconv.FormatInt(f.user, 10))

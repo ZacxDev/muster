@@ -45,88 +45,21 @@ func svAttr(n *html.Node, key string) (string, bool) {
 	return "", false
 }
 
-// chipShownHrefs is the href of every card the Agents list's "Waiting on you"
-// chip SHOWS in the rendered list partial: its selector (chipSelector — the
-// script's own, chipSelectorsJSON), evaluated on each card article, and the
-// card's own link. A card whose article carries no link fails the instrument.
-func chipShownHrefs(t *testing.T, partial string) (shown, all []string) {
-	t.Helper()
-	sel := chipSelector([]string{"waiting"})
-	m := regexp.MustCompile(`^\[data-([a-z]+)~="([^"]+)"\]$`).FindStringSubmatch(sel)
-	if m == nil {
-		t.Fatalf("instrument check FAILED: the chip's selector %q is not one [attr~=word] test this test can evaluate", sel)
-	}
-	attr, word := "data-"+m[1], m[2]
-	doc, err := html.Parse(strings.NewReader(partial))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "article" {
-			href := ""
-			var find func(*html.Node)
-			find = func(c *html.Node) {
-				if href != "" {
-					return
-				}
-				if c.Type == html.ElementNode && c.Data == "a" {
-					if h, ok := svAttr(c, "href"); ok && (strings.HasPrefix(h, "/agents/") || strings.HasPrefix(h, "/mirror/")) {
-						href = h
-						return
-					}
-				}
-				for k := c.FirstChild; k != nil; k = k.NextSibling {
-					find(k)
-				}
-			}
-			find(n)
-			if href == "" {
-				t.Fatalf("instrument check FAILED: a card article links nowhere")
-			}
-			all = append(all, href)
-			if v, ok := svAttr(n, attr); ok {
-				for _, f := range strings.Fields(v) {
-					if f == word {
-						shown = append(shown, href)
-						break
-					}
-				}
-			}
-			return
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
-		}
-	}
-	walk(doc)
-	return shown, all
-}
-
 // TestTheWaitingViewIsTheWaitingChipsSet: 🔴 a SEAM guard, pinning a
 // RELATIONSHIP. The session switcher's Waiting view holds EXACTLY the entries
-// the Agents list's "Waiting on you" chip shows — the chip's real selector
-// evaluated on the real rendered cards — in the list's order; and the sidebar
-// marks the same set waiting. One of each way to wait and not to wait, so a
-// predicate that drops a kind, or adds the reply draft, moves the sets apart.
+// the sidebar marks waiting (data-nav-wait) — both read listEntry.waiting —
+// one of each way to wait and not to wait, so a predicate that drops a kind,
+// or adds the reply draft, moves the sets apart. (The Agents list's "Waiting on
+// you" chip, the third reader this used to pin, is retired with the list.)
 //
 // REGRESSION TEST for the Waiting view (operator ask: a bar view "that uses
 // the same filter as the waiting for you filter on the agent's list page"):
 // red at the commit before, which had no such view.
 func TestTheWaitingViewIsTheWaitingChipsSet(t *testing.T) {
 	list, mirrors := waitingFixture()
-	shown, all := chipShownHrefs(t, listPartial(t, list, mirrors, nil))
-	if len(shown) == 0 || len(shown) == len(all) {
-		t.Fatalf("CONTROL: the chip shows %d of %d cards; the fixture must leave some out and keep some", len(shown), len(all))
-	}
 	s := NewSwitcher(list, mirrors, nil, SwitcherCurrent{})
-	var view []string
-	for _, it := range s.Waiting {
-		view = append(view, strings.ReplaceAll(it.Href, "&amp;", "&"))
-	}
-	// The list partial's hrefs are parsed (unescaped) HTML; the items' are raw.
-	if strings.Join(view, " | ") != strings.Join(shown, " | ") {
-		t.Errorf("the Waiting view is\n%v\nthe chip shows\n%v\n(same set, same order)", view, shown)
+	if len(s.Waiting) == 0 || len(s.Waiting) == len(s.All) {
+		t.Fatalf("CONTROL: Waiting holds %d of %d entries; the fixture must leave some out and keep some", len(s.Waiting), len(s.All))
 	}
 	// The ways to wait, by name: an ask, approval, a prompt, a picker.
 	var labels []string
@@ -170,8 +103,8 @@ func TestTheWaitingViewDrawsThePageAsCurrentAndSaysWhenEmpty(t *testing.T) {
 // TestThePinToggleIsOnASessionsBarOnly: a session's page — an agent's chat, a
 // mirrored window's view — draws a pin toggle for ITS session in the bar,
 // before the search: posting that subject's fields to pin (unpressed) or unpin
-// (pressed), with view=switcher and the page to come back to. The Agents
-// list's dock, which has no page session, draws none. Red at the commit
+// (pressed), with view=switcher and the page to come back to. A bar with no
+// page session draws none. Red at the commit
 // before: no toggle anywhere on the bar.
 func TestThePinToggleIsOnASessionsBarOnly(t *testing.T) {
 	list, mirrors := switcherFixture() // ag-two and mango:2 (@2) pinned
@@ -222,9 +155,9 @@ func TestThePinToggleIsOnASessionsBarOnly(t *testing.T) {
 			t.Errorf("%s: the toggle is not before the search button", c.name)
 		}
 	}
-	dock := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
-	if strings.Contains(dock, "data-switcher-pin") || strings.Contains(dock, `id="`+SwitcherPinID+`"`) {
-		t.Error("the Agents list's dock (no page session) draws a pin toggle")
+	none := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
+	if strings.Contains(none, "data-switcher-pin") || strings.Contains(none, `id="`+SwitcherPinID+`"`) {
+		t.Error("a bar with no page session draws a pin toggle")
 	}
 	// A page whose session is not among the entries draws none either.
 	gone := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{AgentID: 99}), false))

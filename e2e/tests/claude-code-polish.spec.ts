@@ -1,5 +1,5 @@
 import { request as pwRequest, Page } from '@playwright/test';
-import { test, expect, takeNew } from '../lib/fixtures';
+import { test, expect } from '../lib/fixtures';
 import { hookToken, password, polishPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
@@ -10,7 +10,8 @@ import { openDispatchSheet } from '../lib/dispatch';
 // setup-tokens are obvious fakes and never leave this process.
 //
 //   1. a Claude Code agent shows no model selector / OpenRouter controls;
-//   2. the Agents list is ordered by most recent activity, and re-orders LIVE;
+//   2. the agents' list — the sidebar's rows, where the retired Agents list's
+//      cards went — is ordered by most recent activity, and re-orders LIVE;
 //   3. the Tasks board prints the activity time it is ordered by;
 //   4. a Started agent's STORED status reaches `running` once its instance is ready.
 //
@@ -65,10 +66,11 @@ async function login(page: Page) {
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
 }
 
-// saveAgent fills the FAB form and presses "Save for later" (nothing provisioned);
-// it returns the ONE row that appeared.
+// saveAgent fills the sidebar "+"'s dispatch sheet and presses "Save for later"
+// (nothing provisioned); it returns the ONE row that appeared, once the page has
+// been sent to that agent's own page (the answer's HX-Redirect).
 async function saveAgent(page: Page, note: string, kind: 'gateway' | 'claude-code' = 'gateway'): Promise<AgentRow> {
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
@@ -80,15 +82,26 @@ async function saveAgent(page: Page, note: string, kind: 'gateway' | 'claude-cod
   expect((await resp).status()).toBe(200);
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
+  await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
   return created[0];
 }
 
-// cardOrder reads the Agents list's card ids, top to bottom, restricted to ids.
-async function cardOrder(page: Page, ids: number[]): Promise<number[]> {
-  const all = await page.locator('#agents-list article[id^="agent-"]').evaluateAll((els) =>
-    els.map((e) => Number(e.id.replace('agent-', ''))),
+// rowOrder reads the sidebar's agent row ids (nav-agent-<id>), top to bottom,
+// restricted to ids.
+async function rowOrder(page: Page, ids: number[]): Promise<number[]> {
+  const all = await page.locator('#sidebar-agents-list a[data-nav-agent="agent"]').evaluateAll((els) =>
+    els.map((e) => Number(e.id.replace('nav-agent-', ''))),
   );
   return all.filter((id) => ids.includes(id));
+}
+
+// showSidebar puts the sidebar on screen: the rail is there on a desktop; on a
+// phone it is a drawer, opened the way a person does. Its rows load (and follow
+// the server's events) only while it can be seen.
+async function showSidebar(page: Page) {
+  const list = page.locator('#sidebar-agents-list');
+  if (!(await list.isVisible())) await page.locator('#sidebar-open').click();
+  await expect(list).toBeVisible();
 }
 
 for (const vp of [
@@ -100,7 +113,6 @@ for (const vp of [
 
     test('1a. picking Claude Code removes the model selector and the OpenRouter options from the dispatch form', async ({ page }) => {
       await login(page);
-      await page.goto(origin + '/agents');
       await openDispatchSheet(page);
       const sheet = page.locator('#agent-modal form');
       await expect(sheet.locator('input[name="kind"][value="gateway"]')).toBeChecked();
@@ -187,15 +199,16 @@ for (const vp of [
       expect(await page.content()).not.toContain('sk-ant-oat01');
     });
 
-    test('2+4. the Agents list is most-recently-active first and re-orders live; a Started agent is stored running', async ({ page }) => {
+    test('2+4. the sidebar lists agents most-recently-active first and re-orders live; a Started agent is stored running', async ({ page }) => {
       await login(page);
       const oldest = await saveAgent(page, `polish ${vp.label}: oldest`);
       const middle = await saveAgent(page, `polish ${vp.label}: middle`);
       const newest = await saveAgent(page, `polish ${vp.label}: newest`);
       const ids = [oldest.id, middle.id, newest.id];
 
-      await page.goto(origin + '/agents');
-      await expect.poll(() => cardOrder(page, ids)).toEqual([newest.id, middle.id, oldest.id]);
+      await page.goto(origin + '/tasks');
+      await showSidebar(page);
+      await expect.poll(() => rowOrder(page, ids)).toEqual([newest.id, middle.id, oldest.id]);
 
       // Start the OLDEST from outside this page. Nothing in this tab makes a
       // request: the list must re-order off the server's own event, once the
@@ -206,20 +219,14 @@ for (const vp of [
       await expect
         .poll(async () => (await agentRows()).find((a) => a.id === oldest.id)?.status, { timeout: 30_000 })
         .toBe('running');
-      // The new order waits behind the "N new ↑" pill (nothing moves under the
-      // reader); a tap applies it.
-      await expect(page.locator('#agents-new-pill'), 'the re-order waits behind the pill').toBeVisible({ timeout: 20_000 });
-      expect(await cardOrder(page, ids), 'held: no card moved').toEqual([newest.id, middle.id, oldest.id]);
-      await takeNew(page);
-      await expect.poll(() => cardOrder(page, ids), { timeout: 20_000 }).toEqual([oldest.id, newest.id, middle.id]);
+      await expect.poll(() => rowOrder(page, ids), { timeout: 20_000 }).toEqual([oldest.id, newest.id, middle.id]);
       // Live, not reloaded: the page never navigated.
-      expect(new URL(page.url()).pathname).toBe('/agents');
+      expect(new URL(page.url()).pathname).toBe('/tasks');
       // A SECOND server-driven re-render re-orders the list again.
       const res2 = await page.request.post(`${origin}/agents/${middle.id}/start`, { headers: { Origin: origin } });
       expect(res2.status()).toBe(200);
-      await expect(page.locator('#agents-new-pill')).toBeVisible({ timeout: 30_000 });
-      await takeNew(page);
-      await expect.poll(() => cardOrder(page, ids), { timeout: 30_000 }).toEqual([middle.id, oldest.id, newest.id]);
+      await expect.poll(() => rowOrder(page, ids), { timeout: 30_000 }).toEqual([middle.id, oldest.id, newest.id]);
+      expect(new URL(page.url()).pathname).toBe('/tasks');
     });
 
     test('3. the Tasks board prints the activity time it is ordered by', async ({ page }) => {

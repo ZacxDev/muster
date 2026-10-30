@@ -21,17 +21,17 @@ import (
 // FOUR VIEWS, picked from a menu the button on the bar's left opens (it
 // animates open UPWARD, the bar being at the screen's bottom — switcherViewMenu):
 //
-//   - Recent: the sessions the viewer last OPENED — the SAME server-side,
-//     cross-device list the Agents tab's "Recently viewed" strip reads
-//     (internal/recents; recents.go), newest first. Unlike the strip it keeps
-//     pinned entries: here the pins are a view of their own, not the head of a
-//     list beside it. The page's own session is left out (it is always the
-//     newest: the page recorded the visit before it was drawn).
-//   - Waiting: every entry waiting on the viewer, in the list's order — the
-//     Agents list's "Waiting on you" chip's set, by the SAME predicate
-//     (listEntry.waiting, which is that chip's token: list_order.go).
-//   - Pins: the viewer's pins (internal/pins), in the list's order.
-//   - All: every entry the Agents list draws, in its order (orderList).
+//   - Recent: the sessions the viewer last OPENED — the server-side,
+//     cross-device list internal/recents keeps (recents.go), newest first.
+//     It keeps pinned entries: the pins are a view of their own. The page's
+//     own session is left out (it is always the newest: the page recorded the
+//     visit before it was drawn).
+//   - Waiting: every entry waiting on the viewer, in orderList's order, by the
+//     predicate the sidebar marks its waiting rows by (listEntry.waiting,
+//     list_order.go).
+//   - Pins: the viewer's pins (internal/pins), in orderList's order.
+//   - All: every entry, in orderList's order (the sidebar lists the same
+//     entries, in navOrder's).
 //
 // In Waiting, Pins and All the page's own session is drawn as "current"
 // (aria-current, not a link), so the bar says where the viewer is.
@@ -39,8 +39,8 @@ import (
 // Every entry is labelled by its WHOLE name (sessionSwitcherLabels: a window's
 // codename WITH its ":<index>", an agent's whole name — qualified only when
 // another entry of the same view reads the same; plained through
-// textplain.Title there, once) and opens what its card opens (MirrorCardHref,
-// "/agents/<name>") with a real load.
+// textplain.Title there, once) and opens what its sidebar row opens
+// (MirrorCardHref, the agent's PageHref) with a real load.
 //
 // 🔴 A PILL IS ALWAYS AS WIDE AS ITS WHOLE LABEL (operator ask: the pills were
 // "often cut off … ensure that it's always wide enough to show the full
@@ -59,9 +59,8 @@ import (
 // search: it pins or unpins the page's own session — an agent, or the mirrored
 // window — in the viewer's pins (internal/pins), the set the Pins view shows.
 //
-// ON THE AGENTS LIST THE BAR ALSO HAS A "+" (switcherDeployButton), beside the
-// search: the task-less dispatch sheet the list's old FAB opened (operator
-// ask: deploy "In the bottom bar"). A session's page draws no "+".
+// The bar draws no "+": the task-less dispatch sheet's "+", which the retired
+// Agents list's docked bar carried, is the sidebar's (navDeployButton).
 //
 // 🔴 THE MENU AND THE PALETTE ARE POPOVERS (the top layer), so opening either
 // moves nothing on the page: no layout shift, and no clipping by the
@@ -78,12 +77,10 @@ import (
 // 🔴 IT SCROLLS SIDEWAYS INSIDE ITSELF (each row is overflow-x-auto, min-w-0),
 // so thirty long names never widen the page.
 //
-// THE AGENTS LIST DRAWS IT TOO (operator ask: "Include the bottom bar on the
-// main agent list page as well"), docked to the bottom of the viewport
-// (switcherDock). There is no page session there: nothing is current and
-// nothing is left out (SwitcherCurrent{}). The bar replaced the list's own
-// search box, its "Recently viewed" strip and its pinned chips. Its rows follow
-// the list: every list render carries them out of band (switcherRefresh).
+// ONLY SESSION PAGES DRAW IT. The retired Agents list page also drew it, docked
+// to the bottom of the viewport with no page session, and refreshed its rows
+// out of band on every list render; out of band they now arrive only with the
+// pin toggle's answer (switcherRefresh, RenderSwitcherPin).
 
 // SwitcherID is the bar's element id.
 const SwitcherID = "session-switcher"
@@ -115,7 +112,7 @@ const switcherRecentMax = 8
 
 // SwitcherCurrent names the page's own session: an agent by id, or a mirrored
 // window by its address (AgentID 0). A window addressed by its session alone
-// (Window "") is the current one whichever of that session's windows a card
+// (Window "") is the current one whichever of that session's windows an entry
 // names.
 type SwitcherCurrent struct {
 	AgentID int64
@@ -136,19 +133,9 @@ func (c SwitcherCurrent) is(e listEntry) bool {
 type Switcher struct {
 	Recent, Waiting, Pins, All []SwitcherItem
 	// pin is the page's own session as the bar's pin toggle posts it; nil
-	// when the page is no session (the Agents list) or its session is not
-	// among the entries.
+	// when the page is no session or its session is not among the entries.
 	pin *switcherPin
-	// unknown: the entries are not known yet (switcherPending) — the rows
-	// and counts are drawn blank, not as "Nothing pinned", until the list's
-	// first render fills them out of band.
-	unknown bool
 }
-
-// switcherPending is the bar of a document that does not build the list: the
-// Agents panel of another tab's document, shown by a client-side tab switch.
-// Its rows are filled by the list's own first load (switcherRefresh).
-func switcherPending() *Switcher { return &Switcher{unknown: true} }
 
 // SwitcherItem is one entry of a view.
 type SwitcherItem struct {
@@ -157,9 +144,9 @@ type SwitcherItem struct {
 	Kind string
 	// Current: the page's own session (drawn, not linked).
 	Current bool
-	// Waiting: the entry waits on the viewer (its card's data-wait).
+	// Waiting: the entry waits on the viewer (listEntry.waiting).
 	Waiting bool
-	// Host and HostIcon are the entry's host and its icon key — its card's:
+	// Host and HostIcon are the entry's host and its icon key — its sidebar row's:
 	// the cluster for an agent, the window's host's otherwise. HostNamed: the
 	// label already spells the host (labelNamesHost), so the icon is
 	// decorative.
@@ -239,9 +226,9 @@ func labelNamesHost(m MirrorCardView, label string) bool {
 	return first == m.Host
 }
 
-// NewSwitcher resolves the bar against the entries the Agents list draws
-// (list, mirrors — internal/api builds them the way it builds the list) and
-// the viewer's recently opened refs (newest first, as the strip's).
+// NewSwitcher resolves the bar against the entries (list, mirrors — internal/api
+// builds them as it builds the sidebar's) and the viewer's recently opened refs
+// (newest first).
 func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef, cur SwitcherCurrent) *Switcher {
 	entries := orderList(list, mirrors)
 	byAgent := map[int64]listEntry{}
@@ -299,7 +286,9 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
 			it.Title = switcherSearchTitle(a.Name, plainOr(a.DisplayName, ""), focusTitle(a.Focus))
-			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind))
+			// The host is a word too (the retired Agents list's host tabs): a
+			// dispatched agent's is the cluster.
+			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost)
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
@@ -307,8 +296,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.HostNamed = labelNamesHost(*m, labels[i])
 			it.Code = switcherName(e)
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
-			f := mirrorFields(*m)
-			it.Words = switcherSearchWords(f.Repo, f.Kind, m.Session)
+			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host)
 		}
 		out[i] = it
 	}
@@ -370,12 +358,7 @@ func (s *Switcher) view(key string) []SwitcherItem {
 // inset, being the last thing above the screen's edge; otherwise (the agent
 // page, inside its already-inset pane) it lines up with the form above it.
 // Nothing when s is nil.
-func switcherBar(s *Switcher, pinned bool) g.Node { return switcherBarWith(s, pinned, switcherScript(), nil) }
-
-// switcherBarWith is switcherBar with its script tag (switcherScript, or the
-// shell's switcherStaticScript) and, last on its row, extra (the Agents list's
-// "+", switcherDeployButton; nil for none).
-func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
+func switcherBar(s *Switcher, pinned bool) g.Node {
 	if s == nil {
 		return nil
 	}
@@ -453,12 +436,11 @@ func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 						g.Raw(searchIconSVG),
 					),
 				),
-				extra,
 			),
 			switcherViewMenu(s),
 		),
-		script,
-		NoScript(StyleEl(g.Raw(`#`+SwitcherID+` { visibility: visible !important; }`))),
+		switcherScript(),
+		NoScript(StyleEl(g.Raw(`#` + SwitcherID + ` { visibility: visible !important; }`))),
 	}
 }
 
@@ -540,25 +522,18 @@ func switcherToggleLabel(key string) string {
 }
 
 // switcherRowID and switcherCountID are a view's row and its count in the
-// menu: the ids the list's out-of-band refresh swaps into (switcherRefresh).
+// menu: the ids the out-of-band refresh swaps into (switcherRefresh).
 func switcherRowID(key string) string   { return "switcher-list-" + key }
 func switcherCountID(key string) string { return "switcher-count-" + key }
 
-// switcherCountText is how many entries view key holds; nothing while they
-// are not known (switcherPending).
+// switcherCountText is how many entries view key holds.
 func switcherCountText(s *Switcher, key string) g.Node {
-	if s.unknown {
-		return nil
-	}
 	return g.Text(strconv.Itoa(len(s.view(key))))
 }
 
 // switcherRowBody is what a view's row holds: its entries, or the line saying
-// it holds none — nothing while they are not known (switcherPending).
+// it holds none.
 func switcherRowBody(s *Switcher, key, empty string) g.Node {
-	if s.unknown {
-		return nil
-	}
 	items := s.view(key)
 	if len(items) == 0 {
 		return P(g.Attr("data-switcher-empty", ""), Class("truncate text-xs text-muted"), g.Text(empty))
@@ -583,74 +558,8 @@ func switcherRow(s *Switcher, key, empty string, hidden bool) g.Node {
 	)
 }
 
-// SwitcherDockID is the Agents list's dock: the fixed box at the bottom of the
-// viewport that holds its bar (switcherDock).
-const SwitcherDockID = "agents-switcher-dock"
-
-// switcherDock is the bar as the Agents list draws it: FIXED to the bottom of
-// the viewport (the list is the document's own scroll, so a bar in flow would
-// sit under the last card), offset right of the desktop sidebar as the content
-// column is, and as wide as that column (contentMaxW). The bar is the pinned
-// form (switcherBar): inset, and padded by the safe-area inset, being the last
-// thing above the screen's edge.
-//
-// 🔴 OUT OF FLOW, SO ITS ARRIVAL MOVES NOTHING; THE LIST'S ROOM FOR IT IS THE
-// PANEL'S OWN PADDING (agentsPanel, switcherRoom), in the panel's first byte,
-// so the last card scrolls clear of the bar and nothing shifts when it paints.
-// Inside the Agents panel, so it shows only while the panel does (a hidden
-// panel is display:none, and so is everything in it).
-//
-// dispatch is Features.Dispatch: false draws the bar with no "+" at all, since
-// the sheet it opens could only submit into a 503 on a server with no agent
-// runtime (the docker compose install's default). The Agents empty state is
-// where that absence is explained (agentsEmptyState).
-func switcherDock(s *Switcher, dispatch bool) g.Node {
-	if s == nil {
-		return nil
-	}
-	var deploy g.Node
-	if dispatch {
-		deploy = switcherDeployButton()
-	}
-	return Div(
-		ID(SwitcherDockID),
-		Class("fixed inset-x-0 bottom-0 z-20 bg-bg lg:left-72"),
-		Div(
-			Class("relative "+contentMaxW()+" "+switcherRoom(true)),
-			switcherBarWith(s, true, switcherStaticScript(), deploy),
-		),
-	)
-}
-
-// SwitcherDeployID is the Agents list bar's "+" (switcherDeployButton).
-const SwitcherDeployID = "switcher-deploy"
-
-// switcherDeployButton is the Agents list bar's "+": it opens the task-less
-// dispatch sheet (GET /ui/agents/new, DispatchModalBody) exactly as the list's
-// FAB did — load the body into the always-present sheet, reveal it
-// (modalOpenClick). A 44px target around a 32px face, like the search button
-// beside it, in the bar's fixed h-11 row, so it moves nothing.
-func switcherDeployButton() g.Node {
-	return Button(
-		ID(SwitcherDeployID),
-		Type("button"),
-		g.Attr("aria-label", "Deploy agent"),
-		g.Attr("title", "Deploy agent"),
-		g.Attr("aria-haspopup", "dialog"),
-		Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
-		hx("hx-get", "/ui/agents/new"),
-		hx("hx-target", "#agent-modal-body"),
-		hx("hx-swap", "innerHTML"),
-		hx("hx-on:click", modalOpenClick("agent-modal")),
-		Span(
-			Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent transition group-hover:bg-accent/90"),
-			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
-		),
-	)
-}
-
-// switcherRefresh is the bar's rows and counts as a list render carries them,
-// out of band (RenderAgentsList): each swaps its CHILDREN into the element of
+// switcherRefresh is the bar's rows and counts as the pin toggle's answer
+// carries them, out of band (RenderSwitcherPin): each swaps its CHILDREN into the element of
 // its id, so the shown row (a `hidden` the script set) and the view stay as
 // the viewer left them. The script skips a copy identical to what is drawn
 // (switcherScript), so a refresh that changes nothing leaves focus and the
@@ -676,14 +585,14 @@ const switcherEntryBoxClass = "inline-flex h-11 shrink-0 items-center"
 const switcherLabelClass = "whitespace-nowrap"
 
 // switcherEntry is one entry: a real-load link (hx-boost="false", like a
-// card's), or — the page's own session — the same chip, not a link.
+// sidebar row's), or — the page's own session — the same chip, not a link.
 func switcherEntry(it SwitcherItem) g.Node {
 	// 🔴 A 44px TAP TARGET AROUND A 32px PILL: the entry fills the bar's h-11
 	// row (every control in the app is a 44px target; e2e/tests/layout.spec.ts
 	// measures it), and only the pill inside it is drawn.
 	const pill = "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold ring-1 ring-inset "
 	const box = switcherEntryBoxClass
-	// The host's icon, as its card draws it (#252): hostMark's fixed
+	// The host's icon (#252): hostMark's fixed
 	// 16px box, server-rendered, so it moves nothing; decorative when the
 	// label already names the host.
 	icon := hostMark(it.Host, it.HostIcon)
@@ -733,22 +642,14 @@ func switcherEntry(it SwitcherItem) g.Node {
 // palette. Storage that throws (a private window, blocked site data) leaves
 // Recent, and the menu still works for the page.
 //
-// INLINE on a session's page (the agent page, the Rendered view), as it was
-// measured there. The app shell — whose Agents panel docks the bar — carries
-// it as the static file switcherStaticScript names instead: the shell's
-// documents send their code by reference (static_script.go, held to a budget by
-// TestTheShellCarriesNoInlineScriptOverTheBudget), and a boosted swap runs it
-// inline from the text the window holds (swap_inline.go). One text, switcherJS.
+// INLINE on a session's page (the agent page, the Rendered view) — the only
+// pages that draw the bar now — as it was measured there. (The app shell, whose
+// retired Agents panel docked the bar, carried it as a static file instead.)
+// One text, switcherJS.
 func switcherScript() g.Node { return Script(g.Raw(switcherJS)) }
 
-// switcherStaticScript is switcherScript as the app shell's static file.
-func switcherStaticScript() g.Node { return staticScript(switcherScriptSrc) }
-
-// switcherScriptSrc is the path switcherJS is served at, /static/js/switcher.js.
-var switcherScriptSrc = staticJS("switcher", switcherJS)
-
-// switcherOOBHandler takes the Agents list's out-of-band copies of the bar's
-// rows and counts (switcherRefresh) and swaps them ITSELF, not htmx: the
+// switcherOOBHandler takes the out-of-band copies of the bar's rows and
+// counts (switcherRefresh, in the pin toggle's answer) and swaps them ITSELF, not htmx: the
 // copy's CHILDREN go into the element of its id, which keeps the row itself
 // (its hidden, the view), and a copy that says what is drawn already is not
 // swapped at all.
@@ -906,7 +807,7 @@ var switcherJS = func() string {
 
   window.addEventListener('resize', function () { if (isOpen(menu)) placeMenu(); });
 
-  // The Agents list's refresh rows (switcherOOBJS): bound per window AND
+  // The out-of-band refresh rows (switcherOOBJS): bound per window AND
   // VERSION, not under a once-per-window flag — a window still running an
   // older build's switcher would have that flag set, and never bind this.
   ` + switcherOOBJS + `

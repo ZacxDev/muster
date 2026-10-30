@@ -31,8 +31,8 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		name, want string
 		render     func() g.Node
 	}{
-		{"agent card", "#12 · Fix login old flow", func() g.Node {
-			return agentCard(AgentCardView{ID: 1, Name: "a1", Status: "running", DisplayName: "#12 · **Fix** [login](https://example.com/l) ~~old~~ flow"})
+		{"sidebar row", "#12 · Fix login old flow", func() g.Node {
+			return NavAgentsList([]AgentCardView{{ID: 1, Name: "a1", Status: "running", DisplayName: "#12 · **Fix** [login](https://example.com/l) ~~old~~ flow"}}, nil, "", now)
 		}},
 		{"agent detail <title>", "<title>Port C# parser · muster</title>", func() g.Node {
 			return AgentDetailPage(AgentDetailView{Name: "a2", Status: "running", DisplayName: "Port [C#](https://example.com/c) `parser`"}, Features{})
@@ -43,14 +43,14 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		{"task detail <title>", "<title>Ship v2 for a*b · muster</title>", func() g.Node {
 			return TaskDetailPage(TaskCardView{Note: notes.Note{ID: 4, Title: "~~Ship~~ <b>v2</b> for a*b", Status: notes.StatusInProgress}}, Features{})
 		}},
-		{"focus title", "Fixing auth flow #7", func() g.Node {
-			return cardFocusTitle("c5", &FocusView{Title: "Fixing [auth](https://example.com/a) **flow** #7"}, "")
+		{"focus title (the palette's search title)", "Fixing auth flow #7", func() g.Node {
+			return NavAgentsList([]AgentCardView{{ID: 5, Name: "a5", Focus: &FocusView{Title: "Fixing [auth](https://example.com/a) **flow** #7"}}}, nil, "", now)
 		}},
 		{"focus history", "Drafted the release notes", func() g.Node {
 			return focusHistoryRows(FocusHistoryPageView{Entries: []FocusHistoryEntry{{Title: "## Drafted the _release_ notes", At: now}}})
 		}},
-		{"mirror card", "Hermes chat about x_y", func() g.Node {
-			return mirrorCard(MirrorCardView{Host: "h1", Session: "s6", Label: "**Hermes** chat about `x_y`", Online: true})
+		{"mirror sidebar row", "Hermes chat about x_y", func() g.Node {
+			return NavAgentsList(nil, []MirrorCardView{{Host: "h1", Session: "s6", Label: "**Hermes** chat about `x_y`", Online: true}}, "", now)
 		}},
 		{"mirror view <title>", "<title>Session one · Mirrored · muster</title>", func() g.Node {
 			return MirrorViewPage(MirrorViewView{Host: "h1", Session: "s7", Label: "> Session ~~one~~"})
@@ -65,7 +65,7 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 			return notifRow(NotificationRow{Name: "a10", DisplayName: "Agent `ten` **done**", Count: 1})
 		}},
 		{"switcher Recent view", "Eleven builds", func() g.Node {
-			return switcherRefresh(agentsSwitcher([]AgentCardView{{ID: 11, Name: "a11", DisplayName: "<i>Eleven</i> builds"}}, nil, []RecentRef{{AgentID: 11}}))
+			return switcherRefresh(NewSwitcher([]AgentCardView{{ID: 11, Name: "a11", DisplayName: "<i>Eleven</i> builds"}}, nil, []RecentRef{{AgentID: 11}}, SwitcherCurrent{}))
 		}},
 		{"dispatch picker option", "Twelve tasks", func() g.Node {
 			return g.Text(noteOptions([]NoteOption{{ID: 12, Label: "1. **Twelve** tasks"}})[0].Label)
@@ -108,17 +108,5 @@ func TestTheTerminalTitleAndHeadingAgree(t *testing.T) {
 	h1 = h1[:strings.Index(h1, "</h1>")]
 	if !strings.Contains(h1, ">**x**<") {
 		t.Errorf("the <h1> does not show the same name as the <title> (%q):\n%s", "**x**", h1)
-	}
-}
-
-// TestAFocusStoredWithMarkdownLookalikesRendersRight: the focus store keeps
-// "C#", "a*b" and "#123" as written (internal/focus), and the card renders them
-// as written while still removing real markup around them.
-func TestAFocusStoredWithMarkdownLookalikesRendersRight(t *testing.T) {
-	out := renderString(t, cardFocusTitle("c16", &FocusView{Title: "**Port** C# to a*b for #123", Description: "Uses `cfg` and C#."}, ""))
-	for _, want := range []string{">Port C# to a*b for #123<", ">Uses cfg and C#.<"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("render lacks %q:\n%s", want, out)
-		}
 	}
 }

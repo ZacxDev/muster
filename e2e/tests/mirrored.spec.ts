@@ -4,7 +4,7 @@ import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, mirrorPort, password } from '../lib/env';
-import { MirrorRig } from '../lib/mirrorhost';
+import { entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 import { Pt, touchDrag } from '../lib/touch';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -16,8 +16,9 @@ import { writeFileAtomic } from '../lib/atomic';
 // The token is minted by the server binary's own `mirror token create` (as the
 // operator), the path an operator uses. The host name is unique per run.
 //
-// A mirrored session is NOT an agent: it is never in /api/agents; it is a card
-// of its own on the Agents view, rendered from the hub's memory.
+// A mirrored session is NOT an agent: it is never in /api/agents; it is a row
+// of its own in the sidebar's list of agents (the retired Agents list's card),
+// rendered from the hub's memory.
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
 // The server, its mirror token and the fake host are e2e/lib/mirrorhost.ts's.
@@ -72,24 +73,42 @@ async function noHorizontalScroll(page: Page) {
 
 const screen = (page: Page) => page.locator('#term .xterm-rows');
 const termPath = (session: string) => `/mirror/terminal?host=${encodeURIComponent(host)}&session=${encodeURIComponent(session)}`;
-const card = (page: Page, session: string) => page.locator(`#agents-list article[data-mirror-card]:has(a[href="${termPath(session)}"])`);
+// A session's row in the sidebar's list, by the page it opens.
+const navRow = (page: Page, href: string) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href="${href}"]`);
+const card = (page: Page, session: string) => navRow(page, termPath(session));
+// This host's rows, in the list's order.
+const hostRows = (page: Page) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="host=${encodeURIComponent(host)}&"]`);
 
-// waitForCards polls the session-scoped list partial until this host's cards
-// are (or are not) there, with the given online state.
+// openSidebar opens the sidebar the way a person does, on a page of its own
+// (the board): on a phone its hamburger opens the drawer, whose list loads on
+// that open; at a desktop width it is the rail, loaded with the page.
+async function openSidebar(page: Page) {
+  await page.goto(origin + '/tasks');
+  await openSidebarHere(page);
+}
+async function openSidebarHere(page: Page) {
+  const open = page.locator('#sidebar-open');
+  if (await open.isVisible()) await open.click();
+  await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
+  await expect(page.locator('#sidebar-agents-list [data-nav-agents-pending]')).toHaveCount(0);
+}
+
+// waitForCards polls the sidebar's list partial (GET /ui/nav/agents) until
+// this host's rows are there, every one in the given online state.
 async function waitForCards(page: Page, online: boolean) {
   await expect
     .poll(
       async () => {
-        const html = await (await page.request.get(origin + '/ui/agents')).text();
-        const has = html.includes(`Mirrored · ${host}`);
-        return has && html.includes('data-mirror-offline') === !online;
+        const html = await (await page.request.get(origin + '/ui/nav/agents')).text();
+        const mine = mirroredEntries(html).filter((e) => e.markup.includes(`host=${encodeURIComponent(host)}&`));
+        return mine.length > 0 && mine.every((e) => e.state === (online ? 'online' : 'offline'));
       },
-      { message: `this host's cards, online=${online} (muster-mirror log:\n${rig.log})`, timeout: 15_000 },
+      { message: `this host's rows, online=${online} (muster-mirror log:\n${rig.log})`, timeout: 15_000 },
     )
     .toBe(true);
 }
 
-test('a read-only host’s sessions appear as Mirrored cards and open the shared terminal with its keys off', async ({ page }) => {
+test('a read-only host’s sessions appear in the sidebar and open the shared terminal with its keys off', async ({ page }) => {
   await startMirror(false);
   await login(page);
   await waitForCards(page, true);
@@ -98,24 +117,28 @@ test('a read-only host’s sessions appear as Mirrored cards and open the shared
   const roster = await (await page.request.get(origin + '/api/agents', { headers: { Authorization: `Bearer ${hookToken}` } })).text();
   expect(roster).not.toContain(host);
 
-  await page.goto(origin + '/agents');
+  await openSidebar(page);
   const main = card(page, 'main');
   await expect(main).toBeVisible();
   await expect(card(page, 'scratch')).toBeVisible();
-  await expect(main.locator('[data-mirror-badge]')).toHaveAttribute('aria-label', `Mirrored · ${host}`);
-  await expect(main.locator('[data-mirror-host]')).toHaveText(host);
-  await expect(main.locator('[data-mirror-offline]')).toHaveCount(0);
-  await expect(main.locator('button[aria-label="Agent actions"]')).toHaveCount(0);
+  await expect(main).toHaveAttribute('title', 'main');
+  // The palette finds the row by its host (the last of its words).
+  expect((await main.getAttribute('data-switcher-words'))!.split(' ').pop(), 'the row names its host').toBe(host.toLowerCase());
+  await expect(main.locator('[data-nav-offline]')).toHaveCount(0);
   await noHorizontalScroll(page);
   const cb = (await main.boundingBox())!;
-  expect(cb.x + cb.width, 'the card fits 412px').toBeLessThanOrEqual(412);
+  expect(cb.x + cb.width, 'the row fits 412px').toBeLessThanOrEqual(412);
 
-  await main.locator('a').first().click();
+  await main.tap();
   await page.waitForURL((u) => u.pathname === '/mirror/terminal');
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
   await expect(page.locator('#term-status')).toHaveText('Connected · this host takes no keys');
   await expect(page.locator('[data-term-badge]')).toContainText(`Mirrored · ${host}`);
-  await expect(page.locator('#term-back')).toHaveAttribute('href', '/agents');
+  // Home LEAVING this window (ui.HomeLeavingMirrorPath): bare home would be
+  // this very window, the session opened last.
+  await expect(page.locator('#term-back')).toHaveAttribute('href', `/?${new URLSearchParams({ leave_host: rig.host, leave_session: 'main' })}`);
+  // Online and with no note from its host: no line under the header.
+  await expect(page.locator('#term-host-note')).toHaveCount(0);
   // The host did not advertise -interactive: its keys are off, and there is no
   // switch to turn them on.
   await expect(page.locator('#term')).toHaveAttribute('data-keys-off', '');
@@ -154,11 +177,11 @@ test('a read-only host’s sessions appear as Mirrored cards and open the shared
 });
 
 // PRETTY NAMES: a host with a labels file (muster-mirror -labels-file) shows a
-// session it has a codename for as `<codename>:<active window>` — and the card
-// FOLLOWS the active window with the session set unchanged, live, with no
-// reload. The label is display-only: the card still opens the session by its
-// tmux name, which stays visible beside the label. A session with no codename
-// keeps its raw name.
+// session it has a codename for as `<codename>:<active window>` — and its row
+// in the sidebar FOLLOWS the active window with the session set unchanged,
+// live, with no reload. The label is display-only: the row still opens the
+// session by its tmux name, which the session's own pages show beside the
+// label. A session with no codename keeps its raw name.
 test('a labelled session shows its pretty name, follows the active window, and still opens by its tmux name', async ({ page }) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-labels-'));
   const labelsFile = path.join(dir, 'labels.json');
@@ -169,26 +192,25 @@ test('a labelled session shows its pretty name, follows the active window, and s
     await startMirror(false, undefined, { MUSTER_MIRROR_LABELS_FILE: labelsFile, MUSTER_MIRROR_E2E_ACTIVE_FILE: activeFile });
     await login(page);
     await waitForCards(page, true);
-    await page.goto(origin + '/agents');
+    await openSidebar(page);
     const main = card(page, 'main');
-    await expect(main.locator('[data-mirror-label]')).toHaveText('Mango:1');
-    // The card draws no raw session name beside the label (its pages do,
-    // below); it stays the name's tooltip.
-    await expect(main.locator('[data-mirror-session]')).toHaveCount(0);
-    await expect(main.locator('[data-mirror-name]')).toHaveText('Mango:1');
-    await expect(main.locator('[data-mirror-name]')).toHaveAttribute('title', 'tmux session main');
+    // The row draws the label, whole (its title), and no raw session name
+    // beside it (its pages do, below).
+    await expect(main).toHaveAttribute('title', 'Mango:1');
+    await expect(main).toHaveText('Mango:1');
     // No codename: the raw name, and nothing else.
     const scratch = card(page, 'scratch');
-    await expect(scratch.locator('[data-mirror-name]')).toHaveText('scratch');
-    await expect(scratch.locator('[data-mirror-label]')).toHaveCount(0);
+    await expect(scratch).toHaveAttribute('title', 'scratch');
+    await expect(scratch).toHaveText('scratch');
 
     // The operator moves main to window 3; the session SET is unchanged. The
-    // open page follows without a reload.
+    // open sidebar follows without a reload.
     writeFileAtomic(activeFile, 'main=3\nscratch=4\n');
-    await expect(main.locator('[data-mirror-label]'), `the card follows the window (muster-mirror log:\n${rig.log})`).toHaveText('Mango:3', { timeout: 20_000 });
+    await expect(main, `the row follows the window (muster-mirror log:\n${rig.log})`).toHaveAttribute('title', 'Mango:3', { timeout: 20_000 });
+    await expect(main).toHaveText('Mango:3');
     await noHorizontalScroll(page);
 
-    await main.locator('a').first().click();
+    await main.tap();
     await page.waitForURL((u) => u.pathname === '/mirror/terminal');
     expect(new URL(page.url()).searchParams.get('session'), 'opened by the tmux name, not the label').toBe('main');
     await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
@@ -204,9 +226,11 @@ test('a labelled session shows its pretty name, follows the active window, and s
 
 // MOST RECENTLY ACTIVE FIRST: a host reports when each session was last active
 // (real tmux: the newest of its windows' activity; here the fake's
-// MUSTER_MIRROR_E2E_ACTIVITY_FILE), and the Agents list shows the session active
-// last on top — then FOLLOWS, live and with no reload, when another session
-// becomes the most recent. The session set never changes.
+// MUSTER_MIRROR_E2E_ACTIVITY_FILE), and the sidebar's list shows the session
+// active last on top — then FOLLOWS, live and with no reload, when another
+// session becomes the most recent. The session set never changes. (The
+// retired Agents list held a re-order behind an "N new ↑" pill; the sidebar
+// has no hold, so the open list moves at once.)
 //
 // The times are whole MINUTES apart on purpose: activity is carried floored to
 // a minute (mirror.ActivityBucket), and two sessions inside one minute tie and
@@ -223,25 +247,16 @@ test('mirrored sessions are listed most recently active first, and the open list
     await startMirror(false, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
     await login(page);
     await waitForCards(page, true);
-    await page.goto(origin + '/agents');
-    const order = () =>
-      page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) }).locator('[data-mirror-name]').allTextContents();
+    await openSidebar(page);
+    const order = () => hostRows(page).evaluateAll((els) => els.map((e) => e.getAttribute('title')));
     await expect.poll(order, { message: `scratch was active last (muster-mirror log:\n${rig.log})`, timeout: 20_000 }).toEqual(['scratch', 'main']);
 
-    // main's pane produces output now; scratch has not moved. The open list
-    // HOLDS its order (nothing moves under the reader) and offers the new one
-    // behind the "N new ↑" pill; a tap applies it.
-    // The two cards are put IN VIEW first: a re-order wholly below the screen
-    // moves nothing the reader sees and is applied at once (no pill), and how
-    // far down they sit depends on how many cards this shared server holds.
-    await page.locator('#agents-list article[data-mirror-card]').filter({ hasText: 'scratch' }).first().scrollIntoViewIfNeeded();
+    // main's pane produces output now; scratch has not moved. The open
+    // sidebar follows, with no reload.
+    const doc = await page.evaluate(() => performance.timeOrigin);
     writeFileAtomic(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
-    const pill = page.locator('#agents-new-pill');
-    await expect(pill, `the new order waits behind the pill (muster-mirror log:\n${rig.log})`).toBeVisible({ timeout: 20_000 });
-    expect(await order(), 'held: the open list did not move').toEqual(['scratch', 'main']);
-    await pill.tap();
-    await expect.poll(order, { message: 'the tap applied main becoming the most recent' }).toEqual(['main', 'scratch']);
-    await expect(pill).toBeHidden();
+    await expect.poll(order, { message: `main became the most recent (muster-mirror log:\n${rig.log})`, timeout: 20_000 }).toEqual(['main', 'scratch']);
+    expect(await page.evaluate(() => performance.timeOrigin), 'the same document: no reload').toBe(doc);
     await noHorizontalScroll(page);
   } finally {
     await stopMirror();
@@ -249,155 +264,11 @@ test('mirrored sessions are listed most recently active first, and the open list
   }
 });
 
-// The operator report "agent cards and mirrored cards look like two different
-// apps": both are laid out from the same slots, at the same insets, with no
-// chat preview on either; the mirrored card's footer prints the window's last
-// activity with the agent card's own component; and "Mirrored · <host>" is an
-// icon whose tooltip a TAP opens (a phone has no hover) without opening the
-// window. The host is -interactive and still draws no mode badge.
-test('an agent card and a mirrored card share one layout: no preview, the last activity in the footer, a mirrored mark a tap explains', async ({ page }) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-cards-'));
-  const activityFile = path.join(dir, 'activity');
-  const t0 = Math.floor(Date.now() / 1000);
-  const mainAt = t0 - 300;
-  writeFileAtomic(activityFile, `main=${mainAt}\nscratch=${t0 - 7200}\n`);
-  const previews: string[] = [];
-  page.on('request', (r) => {
-    if (/^\/ui\/agents\/\d+\/recent$/.test(new URL(r.url()).pathname)) previews.push(r.url());
-  });
-  try {
-    await stopMirror();
-    await startMirror(true, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
-    await login(page);
-    await waitForCards(page, true);
-    await page.goto(origin + '/agents');
-    const m = card(page, 'main');
-    const a = page.locator('#agents-list article[id^="agent-"]').first();
-    await expect(m).toBeVisible();
-    await expect(a).toBeVisible();
-
-    // Same slots, same nesting.
-    const slots = (loc: typeof m) =>
-      loc.evaluate((el) =>
-        [...el.querySelectorAll<HTMLElement>('[data-card-slot]')].map((s) => {
-          const p: string[] = [];
-          for (let n: HTMLElement | null = s; n && n !== el; n = n.parentElement) if (n.dataset.cardSlot) p.unshift(n.dataset.cardSlot);
-          return p.join('>');
-        }),
-      );
-    expect(await slots(a)).toEqual(['controls', 'body', 'body>header', 'footer']);
-    expect(await slots(m)).toEqual(await slots(a));
-    // Same insets: the header row starts, the controls sit and the footer ends
-    // at the same place on both cards.
-    const geo = (loc: typeof m) =>
-      loc.evaluate((el) => {
-        const r = el.getBoundingClientRect();
-        const g = (n: string) => el.querySelector(`[data-card-slot="${n}"]`)!.getBoundingClientRect();
-        return {
-          headerLeft: Math.round(g('header').left - r.left),
-          headerTop: Math.round(g('header').top - r.top),
-          controlsRight: Math.round(r.right - g('controls').right),
-          controlsTop: Math.round(g('controls').top - r.top),
-          footerBottom: Math.round(r.bottom - g('footer').bottom),
-          width: Math.round(r.width),
-        };
-      });
-    expect(await geo(m)).toEqual(await geo(a));
-
-    // No preview on any card, and nothing fetches one.
-    await expect(page.locator('#agents-list article pre')).toHaveCount(0);
-    await page.waitForTimeout(500);
-    expect(previews, 'card preview requests').toEqual([]);
-
-    // The host, visible in the body; the footer: the window's own last
-    // activity, and not the host.
-    await expect(m.locator('[data-card-slot="header"] [data-mirror-host]')).toHaveText(host);
-    await expect(m.locator('[data-card-slot="footer"]')).not.toContainText(host);
-    await expect(m.locator('[data-card-active] time')).toHaveAttribute('data-ts', String((mainAt - (mainAt % 60)) * 1000));
-    await expect(m.locator('[data-card-active]')).toBeVisible();
-
-    // The host announced -interactive; the card draws no mode badge for it.
-    await expect(m).toHaveAttribute('data-f-mode', 'interactive');
-    await expect(m.getByText('interactive', { exact: true })).toHaveCount(0);
-    await expect(m.locator('[data-card-slot="body"]')).not.toContainText('Mirrored');
-
-    // The mark: an icon; a TAP shows its tooltip and does not open the window.
-    const mark = m.locator('[data-mirror-badge]');
-    await expect(mark).toHaveAttribute('aria-label', `Mirrored · ${host}`);
-    await expect(mark).toHaveAttribute('title', `Mirrored · ${host}`);
-    const tip = page.locator('#' + (await mark.getAttribute('popovertarget')));
-    await expect(tip).toBeHidden();
-    await mark.tap();
-    await expect(tip).toBeVisible();
-    await expect(tip).toHaveText(`Mirrored · ${host}`);
-    expect(new URL(page.url()).pathname, 'the tap did not open the window').toBe('/agents');
-    const mb = (await mark.boundingBox())!;
-    const tb = (await tip.boundingBox())!;
-    expect(tb.y, 'the tooltip sits below its mark').toBeGreaterThanOrEqual(mb.y + mb.height - 1);
-    expect(tb.x + tb.width, 'the tooltip fits the phone').toBeLessThanOrEqual(412);
-    // A tap elsewhere dismisses it.
-    await page.locator('#panel-agents h2').first().tap();
-    await expect(tip).toBeHidden();
-    await noHorizontalScroll(page);
-  } finally {
-    await stopMirror();
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-// The control cluster (two 44 px buttons and a gap, 12 px in) is 104 px wide,
-// and the card's nav anchor reserved only 80 px for it: a long title ran under
-// the mirrored mark, where a tap opens the mark's tooltip instead of the card.
-// At an iPhone's 390 px, on BOTH card kinds, a title long enough to wrap must
-// end left of the first control.
-test('at 390 px a long title wraps before the card controls, on both card kinds', async ({ page }) => {
-  // 60 characters: the longest name a card draws whole (longer ones are
-  // clamped behind a "…" button, agents-list-ux.spec.ts), and still far wider
-  // than a phone card, so it wraps.
-  const long = 'a-long-session-name-that-runs-past-the-width-of-a-phone-card';
-  expect(long.length, 'the fixture is at the clamp, not past it').toBe(60);
-  try {
-    await stopMirror();
-    await startMirror(false, undefined, { MUSTER_MIRROR_E2E_SESSIONS: `main,${long}` });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await login(page);
-    await waitForCards(page, true);
-    await page.goto(origin + '/agents');
-    const m = card(page, long);
-    const a = page.locator('#agents-list article[id^="agent-"]').first();
-    await expect(m).toBeVisible();
-    await expect(a).toBeVisible();
-    // Title and first control, measured in ONE evaluate. The agent's title is
-    // a short seeded name, so it is lengthened in place first — what is under
-    // test is the card's layout, not the data — and measured in the same task,
-    // before any list re-render can replace it.
-    const measure = (loc: typeof m, title: string, text?: string) =>
-      loc.evaluate(
-        (el, [title, text]) => {
-          const t = el.querySelector<HTMLElement>(title)!;
-          if (text) t.textContent = text;
-          const tr = t.getBoundingClientRect();
-          const c = el.querySelector<HTMLElement>('[data-card-slot="controls"] button')!.getBoundingClientRect();
-          const lh = parseFloat(getComputedStyle(t).lineHeight);
-          return { titleRight: tr.right, titleLines: Math.round(tr.height / lh), controlLeft: c.left, vw: window.innerWidth };
-        },
-        [title, text] as const,
-      );
-    for (const [name, got] of [
-      ['mirrored', await measure(m, '[data-mirror-name]')],
-      ['agent', await measure(a, '[data-card-slot="header"] > span.mr-auto', 'a-long-agent-display-name-that-runs-well-past-the-width-of-a-phone-card')],
-    ] as const) {
-      expect(got.vw, 'the viewport is 390 px').toBe(390);
-      // Positive control: the title wrapped, so it is long enough to have
-      // reached the controls had the anchor not stopped it.
-      expect(got.titleLines, `${name} card: the long title wraps`).toBeGreaterThanOrEqual(2);
-      expect(got.titleRight, `${name} card: the title ends left of the first control`).toBeLessThanOrEqual(got.controlLeft);
-    }
-    await noHorizontalScroll(page);
-  } finally {
-    await stopMirror();
-  }
-});
+// (Two tests here pinned the retired Agents list's CARDS: that an agent card
+// and a mirrored card shared one slot layout, footer and tooltip mark, and
+// that a long title wrapped before the card's controls at 390px. The cards
+// and their controls are gone; a sidebar row is one line, its whole label its
+// title.)
 
 test('an -interactive host types into the session with live keys from the start', async ({ page }) => {
   await startMirror(true);
@@ -488,15 +359,15 @@ test('a host that disconnects reads offline and its terminal says why', async ({
   await stopMirror();
   await waitForCards(page, false);
 
-  await page.goto(origin + '/agents');
-  await expect(card(page, 'main').locator('[data-mirror-offline]')).toContainText('offline');
-  // Beside the "host <name>" chip it does not read as a second host: it is
-  // the card's state (the filter field state:offline).
-  await expect(card(page, 'main').locator('[data-mirror-offline]')).toHaveText(/^\s*state\s*offline\s*$/);
-  await expect(card(page, 'main').locator('[data-card-host]')).toHaveText(new RegExp(`^\\s*host\\s*${host}\\s*$`));
+  // Its row in the sidebar says so.
+  await openSidebar(page);
+  await expect(card(page, 'main').locator('[data-nav-offline]')).toHaveText('offline');
+  await expect(card(page, 'scratch').locator('[data-nav-offline]')).toHaveText('offline');
   await noHorizontalScroll(page);
 
+  // And so does the terminal: the line under its header, and its error.
   await page.goto(origin + termPath('main'));
+  await expect(page.locator('#term-host-note [data-mirror-offline]')).toContainText('Offline.');
   await expect(page.locator('#term-error')).toBeVisible();
   await expect(page.locator('#term-error-text')).toContainText('the host is offline');
   await noHorizontalScroll(page);
@@ -536,32 +407,37 @@ function newTranscript(): string {
   return p;
 }
 
-// waitForClaude waits until the list shows main as a Claude pane of a host that
-// is ONLINE in the given mode.
+// waitForClaude waits until the sidebar lists main as a Claude pane (a row
+// that opens its Rendered view) of a host that is ONLINE in the given mode.
 //
 // 🔴 ONLINE, AND IN THE MODE THE NEW HOST WAS STARTED IN — not just "a Claude
-// card". A stopped host's card stays listed OFFLINE with its Claude chip, so a
-// wait for the chip alone returned while the restarted host had not connected
-// yet, and the page it then opened was the offline one, with no composer
-// (CI: "#mv-input … element(s) not found"; reproduced by starting the host two
+// entry". A stopped host's entry stays listed OFFLINE, so a wait for the
+// Claude row alone returned while the restarted host had not connected yet,
+// and the page it then opened was the offline one, with no composer (CI:
+// "#mv-input … element(s) not found"; reproduced by starting the host two
 // seconds late). Where a test restarts a read-only host as an interactive one,
-// the mode is what tells the NEW connection from the old.
+// the mode is what tells the NEW connection from the old. A sidebar row does
+// not carry the mode (the retired card's data-f-mode did), so it is read off
+// the Rendered view itself: a read-only host's composer says why it is off
+// (#mv-readonly), an interactive one's does not.
 async function waitForClaude(page: Page, mode: 'interactive' | 'read-only') {
   await expect
     .poll(
       async () => {
-        const html = await (await page.request.get(origin + '/ui/agents')).text();
-        const cards = html.split('<article').filter((a) => a.includes('data-mirror-claude'));
-        if (cards.length !== 1) return `${cards.length} Claude cards`;
-        if (cards[0].includes('data-mirror-offline')) return 'offline';
-        return cards[0].includes('data-f-mode="interactive"') ? 'interactive' : 'read-only';
+        const html = await (await page.request.get(origin + '/ui/nav/agents')).text();
+        const rows = mirroredEntries(html).filter((e) => e.markup.includes(`host=${encodeURIComponent(host)}&`) && entryMatches(e.markup, 'data-mirror-claude'));
+        if (rows.length !== 1) return `${rows.length} Claude rows`;
+        if (rows[0].state === 'offline') return 'offline';
+        const view = await page.request.get(origin + viewPath('main'));
+        if (new URL(view.url()).pathname !== '/mirror/view') return 'no rendered view';
+        return (await view.text()).includes('id="mv-readonly"') ? 'read-only' : 'interactive';
       },
       { message: `main reported as a Claude pane of an online ${mode} host (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
     )
     .toBe(mode);
 }
 
-const viewCard = (page: Page, session: string) => page.locator(`#agents-list article[data-mirror-card]:has(a[href="${viewPath(session)}"])`);
+const viewCard = (page: Page, session: string) => navRow(page, viewPath(session));
 
 test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, live updates, a Terminal toggle, no send on a read-only host', async ({ page }) => {
   await stopMirror();
@@ -570,12 +446,12 @@ test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, li
   await login(page);
   await waitForClaude(page, 'read-only');
 
-  // The card for the Claude pane opens the rendered view; the other the terminal.
-  await page.goto(origin + '/agents');
+  // The sidebar row for the Claude pane opens the rendered view; the other
+  // the terminal.
+  await openSidebar(page);
   await expect(viewCard(page, 'main')).toBeVisible();
-  await expect(viewCard(page, 'main').locator('[data-mirror-claude]')).toContainText('Claude Code');
   await expect(card(page, 'scratch')).toBeVisible();
-  await viewCard(page, 'main').locator('a').first().click();
+  await viewCard(page, 'main').click();
   await page.waitForURL((u) => u.pathname === '/mirror/view');
 
   const log = page.locator('#mv-log');
@@ -752,12 +628,13 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
 
   await login(page);
   await waitForClaude(page, 'interactive');
-  // The real path: the Agents list, scrolled (as a phone collapses its toolbar
-  // on), then the card.
-  await page.goto(origin + '/agents');
-  await expect(viewCard(page, 'main')).toBeVisible();
+  // The real path: a page scrolled (as a phone collapses its toolbar on),
+  // then the session's row in the sidebar.
+  await page.goto(origin + '/tasks');
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-  await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), viewCard(page, 'main').locator('a').first().tap()]);
+  await openSidebarHere(page);
+  await expect(viewCard(page, 'main')).toBeVisible();
+  await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), viewCard(page, 'main').tap()]);
   await expect(page.locator('#mv-input')).toBeEnabled();
 
   // As loaded: on screen, phone-shaped, and the transcript ends above it.
@@ -852,11 +729,11 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
 // ---------------------------------------------------------------------------
 // THE TERMINAL VIEW'S COMPOSER: a message box for a session whose pane is NOT
 // Claude Code (here `scratch` — a shell, opencode, anything). Such a session has
-// no rendered view, so before this its card opened a Terminal with no way to
+// no rendered view, so before this its card (now its row) opened a Terminal with no way to
 // send it a message short of flipping Interactive and typing key by key.
 //
-// By the real tap path at a phone's size and at a desktop's: the Agents list →
-// the session's card → the Terminal → type → Send. The fake host records a
+// By the real tap path at a phone's size and at a desktop's: the sidebar →
+// the session's row → the Terminal → type → Send. The fake host records a
 // paste into a session's active pane (`%e2e-<session>`) in
 // MUSTER_MIRROR_E2E_PASTE_FILE; everything in muster and the tunnel is real.
 //
@@ -890,12 +767,12 @@ for (const size of [
         await login(page);
         await waitForClaude(page, 'interactive');
 
-        // The card of a session with no Claude pane opens its TERMINAL.
-        await page.goto(origin + '/agents');
+        // The row of a session with no Claude pane opens its TERMINAL.
+        await openSidebar(page);
         const scratch = card(page, 'scratch');
         await expect(scratch).toBeVisible();
-        await expect(scratch.locator('[data-mirror-claude]')).toHaveCount(0);
-        await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/terminal'), act(scratch.locator('a').first())]);
+        await expect(navRow(page, viewPath('scratch')), 'no row to a rendered view').toHaveCount(0);
+        await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/terminal'), act(scratch)]);
         await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
         await expect(page.locator('#view-rendered'), 'scratch has no rendered view').toHaveCount(0);
 

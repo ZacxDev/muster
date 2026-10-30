@@ -5,7 +5,7 @@ import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { dsn, mirrorChatPort, password, repoRoot } from '../lib/env';
-import { MirrorRig } from '../lib/mirrorhost';
+import { entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 
 // THE MIRRORED RENDERED VIEW'S CHAT, on a phone with touch (412×915), against a
 // REAL muster-server and a REAL muster-mirror built with `-tags e2emirror`
@@ -89,7 +89,7 @@ const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 //
 // The signal is the new process's own "connected to" line: muster registers
 // the connection BEFORE it sends the welcome that line follows, so once it is
-// logged the view resolves to this connection. The card must also be online.
+// logged the view resolves to this connection. The entry must also be online.
 async function openView(page: Page, transcript: string, extra: NodeJS.ProcessEnv = {}) {
   await startMirror(transcript, extra);
   await login(page);
@@ -97,9 +97,11 @@ async function openView(page: Page, transcript: string, extra: NodeJS.ProcessEnv
     .poll(
       async () => {
         if (!rig.log.includes('muster-mirror: connected to ')) return 'muster-mirror not connected yet';
-        const html = await (await page.request.get(origin + '/ui/agents')).text();
-        if (!html.includes('data-mirror-claude')) return 'main not reported as a Claude pane';
-        if (html.includes('data-mirror-offline')) return 'the host is listed offline';
+        // The sidebar's rows (GET /ui/nav/agents): main is a row that opens a
+        // Rendered view (a Claude pane), and it is online.
+        const rows = mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter((e) => entryMatches(e.markup, 'data-mirror-claude'));
+        if (!rows.length) return 'main not reported as a Claude pane';
+        if (rows.some((e) => e.state === 'offline')) return 'the host is listed offline';
         return 'ready';
       },
       { message: `this test's muster-mirror connected, main online as a Claude pane (muster-mirror log:\n${rig.log})`, timeout: 20_000 },

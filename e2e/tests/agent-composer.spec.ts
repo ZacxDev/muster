@@ -2,7 +2,7 @@ import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { agentComposerPort, hookToken, password, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
-import { agentLink, agentPageRe } from '../lib/agent-link';
+import { agentPageRe } from '../lib/agent-link';
 import { openDispatchSheet } from '../lib/dispatch';
 
 // A DISPATCHED AGENT'S TWO VIEWS, in a real browser against a REAL muster-server
@@ -98,7 +98,7 @@ async function login(page: Page) {
 // sheet's "Save for later" and returns its row (diffed against what was there).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.name));
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
@@ -110,6 +110,8 @@ async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<A
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
   made.push(created[0]);
+  // The sheet's answer sends the page to the new agent's own page.
+  await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
   return created[0];
 }
 
@@ -134,11 +136,14 @@ for (const vp of [
       await login(page);
       const agent = await saveAgent(page, 'claude-code');
 
-      // The card opens the RENDERED view: the chat.
-      await page.goto(origin + '/agents');
-      const card = page.locator(`#agents-list article:has(${agentLink(agent.name)})`);
-      await expect(card).toBeVisible();
-      await card.locator(agentLink(agent.name)).first().click();
+      // Its sidebar row (where the retired Agents list's card went) opens the
+      // RENDERED view: the chat. The sidebar is a drawer on a phone, the rail
+      // on a desktop.
+      await page.goto(origin + '/tasks');
+      const row = page.locator(`#sidebar-agents-list a#nav-agent-${agent.id}`);
+      if (!(await page.locator('#sidebar-agents-list').isVisible())) await page.locator('#sidebar-open').click();
+      await expect(row).toBeVisible();
+      await row.click();
       await page.waitForURL((u) => u.pathname === '/agents/' + agent.name);
 
       // The switch: Rendered is where we are, Terminal one tap away, thumb-sized.

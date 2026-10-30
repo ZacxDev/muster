@@ -5,7 +5,8 @@ import { test, expect } from '../lib/fixtures';
 test('every manifest shortcut opens the right view', async ({ page, request }) => {
   const manifest = await (await request.get('/manifest.webmanifest')).json();
   const shortcuts: { name: string; url: string }[] = manifest.shortcuts;
-  expect(shortcuts.length).toBe(3);
+  // New task and Tasks: the Agents shortcut went with the Agents list page.
+  expect(shortcuts.map((s) => s.url)).toEqual(['/tasks?new=1', '/tasks']);
 
   for (const sc of shortcuts) {
     const res = await page.goto(sc.url);

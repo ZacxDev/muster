@@ -170,7 +170,7 @@ func notifRow(it NotificationRow) g.Node {
 	}
 	// The operator lives at /operator (not /agents/operator); everything else at
 	// /agents/{name}. Boosted SPA nav: the detail/operator page is now a full shell
-	// document and this row is NOT inside #agents-list, so a boosted body-swap
+	// document, so a boosted body-swap
 	// re-renders the transcript + agentChatScript's boost-safe init reconnects the
 	// WS for the picked session.
 	return A(

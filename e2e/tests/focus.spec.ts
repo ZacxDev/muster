@@ -8,25 +8,23 @@ import { binDir, dsn, focusPort, password, repoRoot, versionTerm } from '../lib/
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
-import { agentLink } from '../lib/agent-link';
 
-// SESSION FOCUS ON THE CARDS, in a real browser, against a real muster-server
+// SESSION FOCUS, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, its own port) and a real muster-mirror over the tunnel (the
 // `-tags e2emirror` per-window fake). A dispatched agent of this spec's own
 // (e2e/mkchat) and a mirrored Claude Code window each carry a focus (written by
 // mkchat's MUSTER_E2E_FOCUS — the mirrored one keyed by the window's CLAUDE
 // SESSION ID, which the host reports from the transcript's name). On a phone
-// and on a desktop, each card's footer chip opens a popover with the title,
-// the description and "updated … ago", inside the viewport; and the filter
-// box finds each card by a word only its focus carries.
+// and on a desktop: the session switcher's palette finds each session by a
+// word only its focus carries (and a window with no Claude session has none).
 //
-// FOCUS AS THE CARD'S TITLE, AND FOCUS HISTORY (migration 0022): the focus
-// title heads each card — a popover trigger that does not navigate, reached by
-// Tab, opened by Enter, closed by Escape — over the card's own name; the
-// rendered view's "Your messages" sheet is tabbed with "Focus history" (arrow
-// keys, the choice kept across a reload) and scrolls back through 46 history
-// rows a page at a time; the agent's page has the same history in a dialog;
-// and none of it shifts the layout.
+// FOCUS HISTORY (migration 0022), on the session's own page: the rendered
+// view's "Your messages" sheet is tabbed with "Focus history" (arrow keys, the
+// choice kept across a reload) and scrolls back through 46 history rows a page
+// at a time, newest — the current focus, with its description and age — first;
+// the agent's page has the same history in a dialog, inside the viewport; and
+// none of it shifts the layout. (The retired Agents list's card focus chip and
+// its popover are gone.)
 
 const origin = `http://localhost:${focusPort}`;
 const stamp = Date.now().toString(36);
@@ -37,7 +35,8 @@ const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-'));
 const windowsFile = path.join(dir, 'windows');
 const transcript = path.join(dir, sid + '.jsonl');
-// A second Claude window whose only refresh FAILED: its card says why.
+// A second Claude window whose only refresh FAILED (no focus, a recorded
+// problem): the palette must not find it by the other window's focus.
 const sid2 = '0b2c3d4e-5f60-4718-8a9c-' + stamp.padStart(12, '0').slice(-12);
 const transcript2 = path.join(dir, sid2 + '.jsonl');
 // `history`: that many earlier focuses are written first (e2e/mkchat), so the
@@ -120,20 +119,25 @@ async function login(page: Page) {
   signedIn = await page.context().cookies(origin);
 }
 
-const claudeCard = (page: Page) =>
-  page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%401"])`);
-const shellCard = (page: Page) =>
-  page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%402"])`);
-const failedCard = (page: Page) =>
-  page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%403"])`);
-const agentCard = (page: Page) => page.locator(`#agents-list article[id^="agent-"]:has(${agentLink(agentName)})`);
 const viewURL = origin + '/mirror/view?' + new URLSearchParams({ host, session: 'focuswin', window: '@1' }).toString();
 
-async function openList(page: Page) {
+// navRows is the sidebar's list partial (GET /ui/nav/agents: the rows the
+// session switcher's palette also searches), as markup.
+const navRows = async (page: Page) => (await page.request.get(origin + '/ui/nav/agents')).text();
+// rowOf is the sidebar row (its whole <a>…</a>) of this host's window `win`.
+const rowOf = (html: string, win: string) =>
+  [...html.matchAll(/<a\b[^>]*data-nav-agent="mirror"[^>]*>[\s\S]*?<\/a>/g)].map((m) => m[0]).find((a) => a.includes(`host=${host}`) && a.includes(`window=%40${win}`)) ?? '';
+
+// listed waits until the sidebar lists the host's Claude window @1 and the
+// shell window @2, and this spec's agent (the host is up and has reported).
+async function listed(page: Page) {
   await login(page);
-  await page.goto(origin + '/agents');
-  await expect(claudeCard(page), `the host's Claude window (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  await expect(agentCard(page)).toHaveCount(1);
+  await expect
+    .poll(async () => {
+      const html = await navRows(page);
+      return !!rowOf(html, '1') && !!rowOf(html, '2') && html.includes(`/agents/${agentName}`);
+    }, { message: `the host's windows and the agent are listed (log:\n${mirrorLog})`, timeout: 20_000 })
+    .toBe(true);
 }
 
 for (const vp of [
@@ -143,146 +147,30 @@ for (const vp of [
   test.describe(vp.name, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
-    for (const c of [
-      { kind: 'agent card', card: agentCard, title: 'Reconciling the quarterly ledgers', desc: 'Matching payouts to the bank export. Two left.', name: agentName },
-      { kind: 'mirror card', card: claudeCard, title: 'Bisecting the flaky tunnel test', desc: 'The backoff resets too early.', name: 'focuswin:1' },
-    ]) {
-      test(`the ${c.kind}'s focus title heads it and opens a popover with the focus, without navigating`, async ({ page }) => {
-        await openList(page);
-        const card = c.card(page);
-        const chip = card.locator('[data-card-focus]');
-        await expect(chip).toHaveCount(1);
-        await expect(chip).toContainText(c.title);
-        // It HEADS the card: its own slot, above the nav anchor, with the card's
-        // name under it as the subtitle.
-        await expect(card.locator('[data-card-slot="focus"] [data-card-focus]')).toHaveCount(1);
-        const subtitle = card.locator('[data-card-subtitle]');
-        await expect(subtitle).toContainText(c.name);
-        const tb = (await chip.boundingBox())!;
-        // The mirrored subtitle's wrapper is display:contents; its box is the name.
-        const subBox = card.locator('[data-card-subtitle], [data-card-subtitle] > [data-mirror-name]').last();
-        const sb = (await subBox.boundingBox())!;
-        expect(tb.y + tb.height, 'the focus title sits above the subtitle').toBeLessThanOrEqual(sb.y + 1);
-        const tfs = await chip.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
-        const sfs = await subBox.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
-        expect(tfs, 'the title is drawn larger than the subtitle').toBeGreaterThan(sfs);
-        expect(tb.height, 'the title is a 44px tap target').toBeGreaterThanOrEqual(44);
-        // It LOOKS pressable: a chevron, and a pointer.
-        await expect(chip.locator('svg')).toBeVisible();
-        const pop = card.locator('[data-focus-popover]');
-        await expect(pop).toBeHidden();
-        await expect(chip).toHaveAttribute('aria-expanded', 'false');
-        if (vp.use.hasTouch) await chip.tap();
-        else await chip.click();
-        await expect(pop).toBeVisible();
-        await expect(chip).toHaveAttribute('aria-expanded', 'true');
-        await expect(pop.locator('[data-focus-title]')).toHaveText(c.title);
-        await expect(pop.locator('[data-focus-description]')).toHaveText(c.desc);
-        await expect(pop.locator('[data-focus-updated]')).toContainText('updated');
-        await expect(pop.locator('[data-focus-updated]')).toContainText('ago');
-        // Placed (no longer invisible) and inside the viewport.
-        await expect.poll(() => pop.evaluate((e) => getComputedStyle(e).visibility)).toBe('visible');
-        const pb = (await pop.boundingBox())!;
-        expect(pb.x, 'the popover starts inside the viewport').toBeGreaterThanOrEqual(0);
-        expect(pb.x + pb.width, 'the popover ends inside the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
-        expect(pb.y + pb.height).toBeLessThanOrEqual(vp.use.viewport.height);
-        // The title is outside the card's nav anchor: opening it did not navigate.
-        await page.waitForTimeout(300);
-        expect(new URL(page.url()).pathname).toBe('/agents');
-        await page.keyboard.press('Escape');
-        await expect(pop).toBeHidden();
-        await expect(chip).toHaveAttribute('aria-expanded', 'false');
-        // The rest of the card still opens it: its subtitle is in the nav anchor.
-        await Promise.all([page.waitForURL((u) => u.pathname !== '/agents'), subtitle.click()]);
-      });
+    // (The Agents list's cards — retired — headed each session with its focus
+    // title, a popover trigger with the description and "updated … ago"; four
+    // tests here pinned that chip, its keyboard path, its survival of a list
+    // morph, and a failed refresh's "unavailable" on it. The focus is now shown
+    // on the session's own page — its focus history, whose newest row is the
+    // current focus with its description and age (the tests below) — and is the
+    // title the palette finds a session by.)
 
-      test(`the ${c.kind}'s focus title works from the keyboard: Tab reaches it, Enter opens, Escape closes`, async ({ page }) => {
-        await openList(page);
-        const card = c.card(page);
-        const chip = card.locator('[data-card-focus]');
-        const pop = card.locator('[data-focus-popover]');
-        // Tab from the last control of the card's control cluster lands on it.
-        await card.locator('[data-card-slot="controls"] button:visible').last().focus();
-        await page.keyboard.press('Tab');
-        await expect(chip).toBeFocused();
-        await page.keyboard.press('Enter');
-        await expect(pop).toBeVisible();
-        await expect(chip).toHaveAttribute('aria-expanded', 'true');
-        expect(new URL(page.url()).pathname, 'Enter on the title does not navigate').toBe('/agents');
-        await page.keyboard.press('Escape');
-        await expect(pop).toBeHidden();
-        await expect(chip).toHaveAttribute('aria-expanded', 'false');
-        expect(new URL(page.url()).pathname).toBe('/agents');
-      });
-    }
-
-    // A list refresh MORPHS the open card: the trigger's attributes are
-    // rewritten to the server's aria-expanded="false" while the popover stays
-    // open, and no toggle fires. The title must still say expanded — and keep
-    // the chevron turned and the highlight, both keyed on aria-expanded.
-    test('an open focus popover keeps its title expanded through a list refresh', async ({ page }) => {
-      await openList(page);
-      // Styles are read as end states: no transition caught half-way.
-      await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
-      const card = agentCard(page);
-      const chip = card.locator('[data-card-focus]');
-      const pop = card.locator('[data-focus-popover]');
-      const chevron = chip.locator('svg');
-      const closedBg = await chip.evaluate((e) => getComputedStyle(e).backgroundColor);
-      const closedTurn = await chevron.evaluate((e) => getComputedStyle(e).transform);
-      await chip.click();
-      await expect(pop).toBeVisible();
-      await expect(chip).toHaveAttribute('aria-expanded', 'true');
-      await page.mouse.move(0, 0); // no hover, so the highlight is aria-expanded's alone
-      const openBg = await chip.evaluate((e) => getComputedStyle(e).backgroundColor);
-      const openTurn = await chevron.evaluate((e) => getComputedStyle(e).transform);
-      expect(openBg, 'control: the open title is highlighted').not.toBe(closedBg);
-      expect(openTurn, 'control: the open chevron is turned').not.toBe(closedTurn);
-      // A refresh of the list, as an agent event would start it; wait for it to land.
-      const settled = page.evaluate(() => new Promise<void>((resolve) => {
-        document.body.addEventListener('htmx:afterSettle', (e) => {
-          if ((e.target as HTMLElement).id === 'agents-list') resolve();
-        });
-      }));
-      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
-      await settled;
-      await expect(pop, 'the popover stays open through the morph').toBeVisible();
-      await expect(chip).toHaveAttribute('aria-expanded', 'true');
-      expect(await chip.evaluate((e) => getComputedStyle(e).backgroundColor), 'the highlight stays').toBe(openBg);
-      expect(await chevron.evaluate((e) => getComputedStyle(e).transform), 'the chevron stays turned').toBe(openTurn);
-      await page.keyboard.press('Escape');
-      await expect(chip).toHaveAttribute('aria-expanded', 'false');
-    });
-
-    // (A test here pinned that the list's search box ranked a card by its NAME,
-    // not by the focus title heading it. The box and its rank are gone: the
-    // session switcher's palette superseded them.)
-
-    test('a session whose refresh failed says why it has no focus', async ({ page }) => {
-      await openList(page);
-      const card = failedCard(page);
-      await expect(card).toHaveCount(1);
-      const chip = card.locator('[data-card-focus]');
-      await expect(chip).toContainText('unavailable');
-      await expect(chip).toHaveAttribute('data-focus-stale', '');
-      if (vp.use.hasTouch) await chip.tap();
-      else await chip.click();
-      const pop = card.locator('[data-focus-popover]');
-      await expect(pop).toBeVisible();
-      await expect(pop.locator('[data-focus-problem]')).toContainText('No focus: no OpenRouter key');
-      await expect(pop.locator('[data-focus-title]')).toHaveCount(0);
-      const pb = (await pop.boundingBox())!;
-      expect(pb.x).toBeGreaterThanOrEqual(0);
-      expect(pb.x + pb.width).toBeLessThanOrEqual(vp.use.viewport.width);
-    });
-
-    test('a window whose host reports no Claude session has no chip, and the session switcher finds a session by its focus', async ({ page }) => {
-      await openList(page);
-      await expect(shellCard(page)).toHaveCount(1);
-      await expect(shellCard(page).locator('[data-card-focus]')).toHaveCount(0);
-      // The switcher docked on the list (its search replaced the list's box)
-      // finds an entry by its focus title: one option, whose second line is it.
-      await page.locator('#switcher-search-open').click();
+    test('a window whose host reports no Claude session has no focus, and the session switcher finds a session by its focus', async ({ page }) => {
+      await listed(page);
+      // The shell window (@2, no Claude session) is listed with no focus in
+      // what the palette finds it by; POSITIVE CONTROL: the Claude window's
+      // row (@1) does carry its focus title there.
+      const html = await navRows(page);
+      expect(rowOf(html, '1'), "the Claude window's row is searched by its focus").toContain('Bisecting the flaky tunnel test');
+      expect(rowOf(html, '2'), 'the shell window has no focus').not.toContain('Bisecting the flaky tunnel test');
+      // The command palette, opened from the sidebar's magnifier on a page
+      // that is neither session (the board: so neither is left out as the
+      // page's own), finds an entry by its focus title: one option, whose
+      // second line is it.
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      await expect(page.locator(`#sidebar-agents-list a[href^="/agents/${agentName}"]`)).toHaveCount(1);
+      await page.locator('#sidebar-search').click();
       const input = page.locator('#switcher-search-input');
       const options = page.locator('#switcher-search-results [role="option"]');
       await input.fill('quarterly ledgers');
@@ -395,6 +283,9 @@ for (const vp of [
       const items = dialog.locator('[data-focus-history-item]');
       await expect(items).toHaveCount(AGENT_HISTORY + 1);
       await expect(items.first()).toContainText('Reconciling the quarterly ledgers');
+      // The newest row is the current focus, whole: its description and age.
+      await expect(items.first().locator('[data-focus-history-description]')).toHaveText('Matching payouts to the bank export. Two left.');
+      await expect(items.first().locator('[data-focus-history-at]')).toContainText('ago');
       await expect(items.last()).toContainText('Earlier focus 01');
       await expect(dialog.locator('[data-focus-history-end]')).toBeVisible();
       const db = (await dialog.boundingBox())!;
@@ -411,12 +302,11 @@ for (const vp of [
       await expect(dialog).toBeHidden();
     });
 
-    test('a card with its focus as its title, the rendered view and the agent page shift the layout less than 0.01', async ({ page }, testInfo) => {
+    test('the rendered view and the agent page shift the layout less than 0.01', async ({ page }) => {
       await login(page);
       await page.addInitScript(clsInit);
       const bad: string[] = [];
       for (const [label, url, ready] of [
-        ['/agents', origin + '/agents', '#agents-list [data-card-slot="focus"] [data-card-focus]'],
         ['rendered view', viewURL, '#mv-log'],
         ['agent page', origin + '/agents/' + agentName, '#focus-history-open'],
       ] as const) {
@@ -427,10 +317,6 @@ for (const vp of [
         await expect(page.locator(ready).first(), `${label} drew its content`).toBeVisible();
         console.log(`[focus cls ${vp.name}] ${label} ${r.total}`);
         if (r.total >= 0.01) bad.push(`${label}: ${r.total} ${JSON.stringify(r.shifts)}`);
-        if (label === '/agents') {
-          await agentCard(page).screenshot({ path: testInfo.outputPath(`agent-card-focus-${vp.use.viewport.width}.png`) });
-          await claudeCard(page).screenshot({ path: testInfo.outputPath(`mirror-card-focus-${vp.use.viewport.width}.png`) });
-        }
       }
       // The history arriving (by script: no input, so every shift counts)
       // moves nothing: the sheet is a fixed height, the rows land inside it.
