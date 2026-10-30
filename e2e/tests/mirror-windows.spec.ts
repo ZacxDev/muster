@@ -209,25 +209,25 @@ for (const vp of [
 
       await noHorizontalScroll(page);
       // ⚠ THE LIST REFRESHES ITSELF UNDER THE TEST (the agents' SSE events,
-      // nav_agents.go's trigger), so a row is measured by a poll that finds
-      // it again each time, never by one element handle: a swap between
-      // resolving the row and reading its box detaches it, and the box reads
-      // null (muster#357's CI, run 41014171994, both attempts: solo:3, with
-      // a nav refresh in flight). Its place in the list is not this
-      // file's to fix either — agents left by earlier specs in the same leg
-      // sort above it when they are newer, below the drawer's fold — so the
-      // row is scrolled to first, as a person would.
+      // nav_agents.go's trigger), and each refresh swaps every row for a new
+      // element. Any step that resolves a row and then acts on that element
+      // in a SECOND call can catch it mid-swap: boundingBox read null
+      // (muster#357's CI, run 41014171994, both attempts), and with the
+      // box polled, scrollIntoViewIfNeeded run alone ahead of the poll threw
+      // "Element is not attached to the DOM" (run 41093948598). So scrolling
+      // and measuring are ONE retried block that finds the row again on each
+      // try. The row is scrolled to first because its place in the list is
+      // not this file's to fix: agents left by earlier specs in the same leg
+      // sort above it when they are newer, below the drawer's fold. (The
+      // other reads of a row above — innerText, getAttribute, evaluateAll,
+      // the toHave* assertions — each resolve and read in one call.)
       for (const c of [eleven, solo]) {
-        await c.scrollIntoViewIfNeeded();
-        await expect
-          .poll(
-            async () => {
-              const b = await c.boundingBox();
-              return b ? b.x + b.width : Number.POSITIVE_INFINITY;
-            },
-            { message: 'the row fits the viewport (Infinity: the row had no box)' },
-          )
-          .toBeLessThanOrEqual(vp.use.viewport.width);
+        await expect(async () => {
+          await c.scrollIntoViewIfNeeded({ timeout: 2_000 });
+          const b = await c.boundingBox({ timeout: 2_000 });
+          expect(b, 'the row has a box').not.toBeNull();
+          expect(b!.x + b!.width, 'the row fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+        }).toPass({ timeout: 15_000 });
       }
 
       // Live, with no reload: a window is renumbered (its row follows, same
