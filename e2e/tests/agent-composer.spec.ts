@@ -1,4 +1,4 @@
-import { request as pwRequest, Page } from '@playwright/test';
+import { request as pwRequest, BrowserContext, Page } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { agentComposerPort, hookToken, password, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
@@ -66,6 +66,8 @@ test.afterAll(async ({ browser }) => {
       );
       await ctx.close();
     }
+    // At least one (the count can see a sign-in at all), and no more than one.
+    expect(sessionsIssued(), 'browser sessions this file signed in (see login)').toBe(1);
   } finally {
     await server?.stop();
   }
@@ -88,11 +90,29 @@ async function agentRows(): Promise<AgentRow[]> {
 
 const storedStatus = async (name: string) => (await agentRows()).find((a) => a.name === name)?.status ?? '(missing)';
 
+// login signs the page's (fresh) context in. 🔴 THE FORM IS DRIVEN ONCE PER
+// RUN OF THIS FILE, and the session cookie it earns is handed to every later
+// test and to afterAll: password sign-in is throttled to loginRateBurst (10)
+// attempts per loginRateWindow (a minute) in ONE server-wide bucket
+// (internal/api login.go), and this file signed in 11 times — ten tests and
+// afterAll. Whether the 11th landed inside the first one's minute was a race
+// on the runner's speed: on main's CI (run 40987376283) the last test's POST
+// /login got a 429, the page stayed on /login, and waitForURL timed out at 60 s.
+// None of these tests is about signing in; afterAll counts the sign-ins the
+// server issued, so a test that starts driving the form again fails here
+// whatever the runner's speed.
+let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
 async function login(page: Page) {
+  if (signedIn) {
+    await page.context().addCookies(signedIn);
+    return;
+  }
   await page.goto(origin + '/login');
   await page.fill('#muster-password', password);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  signedIn = await page.context().cookies(origin);
 }
+const sessionsIssued = () => (server?.log().match(/login: a browser session was issued/g) ?? []).length;
 
 // saveAgent creates one agent of the kind with no note through the dispatch
 // sheet's "Save for later" and returns its row (diffed against what was there).
