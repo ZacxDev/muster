@@ -1,6 +1,7 @@
 # muster documentation
 
 Start with the [project README](../README.md) for the pitch and the two ways to install.
+[comparison.md](comparison.md) sets muster beside other ways to reach coding agents from a phone.
 
 **Using it**
 
