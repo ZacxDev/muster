@@ -208,9 +208,26 @@ for (const vp of [
       expect(await names(page)).toEqual(['Gold:11', 'solo:3', 'Gold:8', 'Gold:1']);
 
       await noHorizontalScroll(page);
+      // ⚠ THE LIST REFRESHES ITSELF UNDER THE TEST (the agents' SSE events,
+      // nav_agents.go's trigger), so a row is measured by a poll that finds
+      // it again each time, never by one element handle: a swap between
+      // resolving the row and reading its box detaches it, and the box reads
+      // null (muster#357's CI, run 41014171994, both attempts: solo:3, with
+      // a nav refresh in flight). Its place in the list is not this
+      // file's to fix either — agents left by earlier specs in the same leg
+      // sort above it when they are newer, below the drawer's fold — so the
+      // row is scrolled to first, as a person would.
       for (const c of [eleven, solo]) {
-        const b = (await c.boundingBox())!;
-        expect(b.x + b.width, 'the row fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+        await c.scrollIntoViewIfNeeded();
+        await expect
+          .poll(
+            async () => {
+              const b = await c.boundingBox();
+              return b ? b.x + b.width : Number.POSITIVE_INFINITY;
+            },
+            { message: 'the row fits the viewport (Infinity: the row had no box)' },
+          )
+          .toBeLessThanOrEqual(vp.use.viewport.width);
       }
 
       // Live, with no reload: a window is renumbered (its row follows, same
