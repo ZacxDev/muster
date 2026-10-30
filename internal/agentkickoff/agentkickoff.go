@@ -777,12 +777,15 @@ func runtimeNotReady(err error) bool {
 }
 
 // runtimeRefusedUnsent reports a typed refusal ccd gives BEFORE it types
-// anything: `503 not_ready`, or `409 busy` (a turn already holds the session, or,
-// with code awaiting_approval, its pane shows a dialog). Typed bodies only, as
-// runtimeNotReady.
+// anything: `503 not_ready`, `409 busy` (a turn already holds the session, or,
+// with code awaiting_approval, its pane shows a dialog), or `409 rate_limited`
+// (its pane shows the CLI's usage-limit menu; the gateway has marked the
+// account and failed the agent over by the time Send returns). Typed bodies
+// only, as runtimeNotReady.
 func runtimeRefusedUnsent(err error) bool {
 	var rt *agents.RuntimeError
-	return runtimeNotReady(err) || errors.As(err, &rt) && rt.Status == http.StatusConflict && rt.Type == "busy"
+	return runtimeNotReady(err) || errors.As(err, &rt) && rt.Status == http.StatusConflict &&
+		(rt.Type == "busy" || rt.Type == "rate_limited")
 }
 
 // ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was

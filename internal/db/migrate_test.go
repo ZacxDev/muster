@@ -24,7 +24,7 @@ import (
 // applied. (0005 dropped the five privilege and runbook tables 0001 created;
 // 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens;
 // 0011 added user_credentials; 0012 added flow_jobs and flow_runner_tokens;
-// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs; 0039 added devices and device_pairing_codes; 0043 added connector_standing_grants; 0048 added suggest_preferences; 0049 added suggest_usage; 0054 added plugin_threads; 0055 added session_prs; 0056 added mail_resumes; 0058 added device_challenges; 0059 dropped github_connection; 0060 added chief_preferences; 0064 added chief_nudges.)
+// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs; 0039 added devices and device_pairing_codes; 0043 added connector_standing_grants; 0048 added suggest_preferences; 0049 added suggest_usage; 0054 added plugin_threads; 0055 added session_prs; 0056 added mail_resumes; 0058 added device_challenges; 0059 dropped github_connection; 0060 added chief_preferences; 0064 added chief_nudges; 0066 added cc_account_failovers.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
@@ -38,6 +38,7 @@ var tablesThisSchemaMustHave = []string{
 	"api_tokens",
 	"attention_asks",
 	"audit_log",
+	"cc_account_failovers",
 	"cc_account_marks",
 	"chat_messages",
 	"chat_sessions",

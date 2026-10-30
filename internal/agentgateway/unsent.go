@@ -40,6 +40,11 @@ func (u unresolved) Unwrap() error { return u.err }
 //     400 (`bad_request`, `invalid_input`) — are each answered before it pastes anything. Only
 //     its typed body sets Type, so an untyped 409 or 503 from anything else is NOT read as
 //     "nothing was sent";
+//   - a 409 `rate_limited`: ccd's refusal from a pane parked on the CLI's usage-limit menu
+//     (cmd/ccd failure.go limitMenuFailure), also before anything is typed. It reads as
+//     [UnsentBusy], so a deliverer queues the message again as it did when ccd answered that
+//     menu `busy`; the gateway has already marked the account and failed the agent over.
+//     A rate-limited turn that WAS pasted is a 429 and is not read here;
 //   - a dial error is a connection that was never opened, so no byte of the request left;
 //   - a [Gateway.Resolve] failure, from a turn that resolves its agent itself, contacted nothing.
 //
@@ -69,7 +74,7 @@ func Unsent(err error) string {
 	var rt *agents.RuntimeError
 	if errors.As(err, &rt) {
 		switch {
-		case rt.Status == http.StatusConflict && rt.Type == "busy":
+		case rt.Status == http.StatusConflict && (rt.Type == "busy" || rt.Type == "rate_limited"):
 			return UnsentBusy
 		case rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready":
 			return UnsentNotReady

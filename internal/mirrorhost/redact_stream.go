@@ -57,6 +57,11 @@ func redactLines(lines []cctranscript.Line) {
 func redactEvent(ev *cctranscript.Event) {
 	ev.Text = cctranscript.Cap(redactText(ev.Text), cctranscript.MaxText)
 	ev.Target = cctranscript.Cap(redact.Secrets(ev.Target), cctranscript.MaxText)
+	// A working directory the redactor would change is dropped, not sent
+	// redacted: a rewritten path is a wrong one, and unknown is safe.
+	if ev.Cwd != "" && redact.Secrets(ev.Cwd) != ev.Cwd {
+		ev.Cwd = ""
+	}
 	ev.Output = cctranscript.Cap(redact.Secrets(ev.Output), cctranscript.MaxOutput)
 	ev.Input = redactInput(ev.Input)
 	if ev.Ask != nil {

@@ -504,6 +504,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if gw != nil {
 		ext.Gateway = gw
 	}
+	// The claude-code account failover (internal/ccfailover): with the pool, the
+	// lifecycle adapter and the gateway that reports the failures it acts on.
+	if f, err := buildAccountFailover(cfg, ccPool, ext.Agents, prov, a.pool, logger); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("account failover: %w", err)
+	} else if f != nil {
+		ext.AccountFailover = f
+		if gw != nil {
+			gw.UseFailover(f)
+		}
+	}
 	// The runtimes a chief session may be started on (MUSTER_CHIEF_SESSION_RUNTIMES;
 	// internal/api/session_runtime.go). Empty: the picker is not drawn.
 	ext.SessionRuntimes = cfg.ChiefSessionRuntimes
@@ -571,6 +582,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				ext.MailResume = &api.MailResume{Allow: cfg.MailResumeAllow, Off: cfg.MailResumeOff}
 				ext.MailResumes = pluginStore
 			}
+		}
+		// A fleet-report request (MUSTER_FLEET_REPORT_SENDERS): muster answers a
+		// listed, verified sender's request itself. Not gated on session
+		// routing: it routes nothing.
+		if len(cfg.FleetReportSenders) > 0 {
+			ext.FleetReport = &api.FleetReport{Senders: cfg.FleetReportSenders, Paths: cfg.FleetReportPaths, Replies: pluginStore}
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
 		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
@@ -1386,6 +1403,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"POST /api/pr-sessions answers 404 and nothing is routed", envPRMailSenders, envSessionRouting)
 	default:
 		l.Printf("pull-request routing: OFF — %s is unset, so POST /api/pr-sessions answers 404 and review mail goes to the chief", envPRMailSenders)
+	}
+	switch {
+	case ext.FleetReport != nil:
+		l.Printf("fleet-report requests: ON (%s) — %d agent-mail sender(s) whose VERIFIED fleet_report_request muster answers "+
+			"itself, with an already-approved reply listing the owner's sessions in the requested window (focus titles, "+
+			"repos, pull requests; no host labels, window titles unqualified, never transcripts), only those working under %d "+
+			"prefix(es) (%s)",
+			envFleetReportSenders, len(ext.FleetReport.Senders), len(ext.FleetReport.Paths), envFleetReportPaths)
+	case len(a.cfg.FleetReportSenders) > 0:
+		l.Printf("fleet-report requests: INERT — %s is set but the plugin interface is off, so nothing is answered", envFleetReportSenders)
+	default:
+		l.Printf("fleet-report requests: OFF — %s is unset, so a fleet_report_request goes to the chief as any other mail", envFleetReportSenders)
 	}
 	switch {
 	case ext.MailResume != nil && ext.MailResume.Off:

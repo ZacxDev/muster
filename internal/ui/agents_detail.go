@@ -88,6 +88,9 @@ type AgentDetailView struct {
 	// one), so a picker there would be a control that can only fail.
 	Kind      string
 	CCAccount string
+	// LastFailover is the agent's latest Claude account failover, one line
+	// ("from north · rate_limited · resets …"); "" when it has none.
+	LastFailover string
 	// WorkerPool is the agent's machine-job worker pool; "" for none.
 	WorkerPool string
 	Messages   []ChatLine
@@ -367,6 +370,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 					g.If(v.Card.ID != 0, agentStrip(v.Card)),
 					agentMenuSlot(v.Card),
 					chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
+					g.If(v.LastFailover != "", chip("failed over", v.LastFailover)),
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
 					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 		),

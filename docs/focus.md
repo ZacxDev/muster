@@ -69,6 +69,29 @@ A pass only looks at sessions that were active since their focus was
 written, at most 20 per user, and skips disabled users. Calls are capped at
 60 per user and 300 in all per hour, two at a time.
 
+### The working directory
+
+With the focus, the pass stores the session's **working directory** as its
+transcript last named it (`agent_focus.cwd`, migration `0065`). Claude Code
+writes a `cwd` on every transcript record; `muster-mirror` passes the one on
+each human prompt along with the prompt (and drops one the secret redactor
+would rewrite, or one over 512 bytes), and the newest prompt in the tail
+decides. It is read for one thing only: the [fleet report](plugins.md#a-fleet-report-request)'s
+mail reply describes a session only when that directory is under
+`MUSTER_FLEET_REPORT_PATHS`. It is never shown, never searched and never sent.
+
+It is **untrusted** — it arrives beside text a model wrote — so it is kept only
+in a narrow shape: absolute, cleaned (`filepath.Clean`), at most 512 bytes, no
+control or invisible characters. A tail whose newest prompt names a malformed
+directory makes it **unknown** (an older one never stands in: the session may
+have moved); a tail that names none — no prompt in its 40 entries — keeps the
+one stored. Unknown is what a dispatched agent, a Hermes window, a host older
+than this change, and a session whose focus has not been written since the
+upgrade have; the report leaves all of them out. The directory lives on the
+focus row, so an ended session keeps it until that row is swept (below):
+longer than any report window, unless `MUSTER_FOCUS_RETENTION` is set under 4
+days.
+
 **Retention.** A sweep runs at startup and then hourly. It runs whether or not
 the refresh pass does: with no summarizer, or with `MUSTER_FOCUS_INTERVAL=0`.
 It marks every enabled user's visible mirrored sessions as seen, then deletes
@@ -151,8 +174,9 @@ the chief that focus is data, never instructions. Neither makes the text safe
 | `fleet_list` | chief | every session: id, kind, name, status, focus title, and `focus_problem` (the reason) when its focus is missing or stale |
 | `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, title and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
 | `sessions_overview(limit?)` | chief | every live session (running agents, online mirrored windows) active in the last 24 h, newest-active first: id, kind, name, host, status, current focus, the distinct focus titles of the last 6 h with their times, its pending attention item, and its last three user and assistant messages (300 characters each, secrets redacted, no tool output). A session whose transcript does not arrive within 5 s reads `"transcript": "unavailable (timed out)"`; all the reads share a 12 s budget, and a session it cuts or never reaches reads `"unavailable (overview budget)"`. The answer is capped at 32 KiB and says how many sessions it left out |
+| `fleet_report(since, until?)` | chief | every session of the owner's — running agents and mirrored windows, **ended ones included** — with focus activity between `since` and `until` (RFC 3339; `until` defaults to now; at most 4 days apart), most recently active first: id, kind, name, host, repo, state (`waiting`: an attention item is pending; `active`: live now; `ended`), first and last seen, the distinct focus titles of the window with their times (at most 20 per session, the newest), and the pull requests it created or pushed. The chief itself is left out. Capped at 32 KiB; `coverage` says how many sessions were left out and what did not answer (an offline host, a store that could not be read). It shows the owner **everything**, hosts included and unfiltered, because its answer never leaves muster; the same report answering a [fleet-report request](plugins.md#a-fleet-report-request) is narrowed to `MUSTER_FLEET_REPORT_PATHS`, with no hosts and secret-shaped strings removed |
 
-All three are on the agent gateway and on `/mcp`. A subject is spelled
+All four are on the agent gateway and on `/mcp`. A subject is spelled
 `agent:<id>` or `mirror:<claude session id>`, as `fleet_list` and
 `focus_search` return it.
 
@@ -170,3 +194,22 @@ hint and `sessions_overview` read **six hours** of history
 (`focus.HistoryWindow`), and `focus_search`'s `since_hours` is a window too.
 Every one of these reads filters on liveness in SQL before its limit, as the
 current-focus search does.
+
+### `fleet_report`: every session in a window, ended ones included
+
+`fleet_report` answers a different question — what was worked on — so it has
+**no liveness filter**: a session that ended last night is exactly what a
+standup needs. What it shares with the reads above is the rest: it runs under
+the caller's principal on tables under forced row-level security, so another
+owner's session never appears, and it reads a time window, never the newest N
+rows. A session counts as active in the window when either of two rows falls
+inside it:
+
+- a focus **history** row (its focus changed), or
+- its **current** focus row's last refresh: muster refreshes a focus only when
+  the session's transcript moved, so a session that worked all day on one
+  unchanged focus is not missed because its last history row is older.
+
+A session with neither in the window — idle, or not summarised because session
+focus could not read it — is not listed. The report carries focus **titles**
+only: no description, transcript text, command or tool output.

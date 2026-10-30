@@ -39,6 +39,13 @@ func (m *memStore) Upsert(_ context.Context, s Subject, w Write) (Focus, error) 
 		return Focus{}, err
 	}
 	f := Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now()}
+	// PGStore.Upsert's rule: a tail naming no directory keeps the stored one;
+	// a named one replaces it, malformed ones with "" (unknown).
+	if w.CwdNamed {
+		f.Cwd, _ = CleanCwd(w.Cwd)
+	} else {
+		f.Cwd = m.rows[s].Cwd
+	}
 	m.rows[s] = f
 	delete(m.errs, s)
 	return f, nil
@@ -71,6 +78,9 @@ func (m *memStore) MatchHistory(context.Context, string, Live, time.Time, int, i
 }
 func (m *memStore) RecentTitles(context.Context, Live, time.Time) (map[Subject][]TitleAt, error) {
 	return nil, nil
+}
+func (m *memStore) WindowHistory(context.Context, time.Time, time.Time, int) (WindowReport, error) {
+	return WindowReport{}, nil
 }
 
 type fakeSource struct {
@@ -220,8 +230,8 @@ func TestRenderTailBoundsAndFingerprint(t *testing.T) {
 	if fp != Fingerprint(tail) || len(fp) != 64 {
 		t.Fatalf("fingerprint %q", fp)
 	}
-	t1, f1 := RenderTail([]Entry{{"user", "a"}, {"assistant", "b"}})
-	_, f2 := RenderTail([]Entry{{"user", "a"}, {"assistant", "c"}})
+	t1, f1 := RenderTail([]Entry{{Role: "user", Text: "a"}, {Role: "assistant", Text: "b"}})
+	_, f2 := RenderTail([]Entry{{Role: "user", Text: "a"}, {Role: "assistant", Text: "c"}})
 	if t1 != "user: a\nassistant: b" || f1 == f2 {
 		t.Fatalf("t1=%q f1=%s f2=%s", t1, f1, f2)
 	}

@@ -29,7 +29,7 @@ import (
 // existing tools are gateway-only).
 var (
 	mcpLedger = []string{"connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle",
-		"fleet_list", "focus_search", "sessions_overview",
+		"fleet_list", "focus_search", "sessions_overview", "fleet_report",
 		// The attention queue (attention_tools.go): every agent asks and works the
 		// owner's tasks; the chief alone lists the queue.
 		"attention_ask", "attention_wait", "attention_cancel",
@@ -47,7 +47,7 @@ var (
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
 	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search",
-		"sessions_overview", "attention_list", "answer_session_question"}
+		"sessions_overview", "fleet_report", "attention_list", "answer_session_question"}
 )
 
 // without returns list minus the names in drop, in order.
