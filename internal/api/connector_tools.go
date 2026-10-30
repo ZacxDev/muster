@@ -94,7 +94,16 @@ func (s *Server) toolPostgresQuery(ctx context.Context, a agents.Agent, argument
 		return toolErr("%s", err.Error())
 	}
 	caller := s.callerOf(a)
-	// MUTANT: the grant check removed
+	acc, err := s.connectProxy.CheckAccess(ctx, caller, name, "")
+	switch {
+	case errors.Is(err, connectors.ErrRoleUncertain):
+		return toolErr("%s", err.Error())
+	case err != nil:
+		return s.connectorToolResult(postgresQueryToolName, a, nil, err)
+	case !acc.Usable:
+		return toolErr("this agent has no approved grant for connector %s (grant: %s): ask with connector_request{name: %q, "+
+			"reason}, then wait with connector_status until it is approved", name, acc.Grant.Status, name)
+	}
 	res, err := s.pgExec.Query(ctx, caller, name, connectors.PGQuery{SQL: in.SQL, Params: in.Params})
 	var pgErr *connectors.PGError
 	switch {
