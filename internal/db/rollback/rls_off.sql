@@ -225,6 +225,13 @@ BEGIN
         ALTER TABLE public.chief_preferences DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.chief_preferences ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0064 (cc_account_failovers), when this schema has it; same reason as
+    -- 0011.
+    IF to_regclass('public.cc_account_failovers') IS NOT NULL THEN
+        ALTER TABLE public.cc_account_failovers NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_failovers DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_failovers ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

@@ -63,13 +63,16 @@ CREATE TABLE IF NOT EXISTS public.cc_account_failovers (
     owner_id     BIGINT      NOT NULL
                  DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
                  REFERENCES public.users (id),
-    agent_id     BIGINT      NOT NULL REFERENCES public.agents (id) ON DELETE CASCADE,
+    agent_id     BIGINT      NOT NULL,
     agent_name   TEXT        NOT NULL,
     from_account TEXT        NOT NULL,
     to_account   TEXT        NOT NULL,
     reason       TEXT        NOT NULL,
     resets_at    TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 0006's composite key: the event's owner IS its agent's owner.
+    CONSTRAINT cc_account_failovers_agent_owner_fkey FOREIGN KEY (agent_id, owner_id)
+        REFERENCES public.agents (id, owner_id) ON DELETE CASCADE,
     CONSTRAINT cc_account_failovers_reason_check CHECK (reason IN ('rate_limited', 'auth_failed')),
     CONSTRAINT cc_account_failovers_accounts_check CHECK (
         from_account <> '' AND to_account <> '' AND from_account <> to_account

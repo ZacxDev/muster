@@ -123,6 +123,8 @@ var pgBackedPackages = []string{
 	// "a revoked token / a disabled owner stops authenticating" are claims
 	// about SQL and row-level security.
 	"internal/apitokens",
+	// The account failover's event store (cc_account_failovers, 0064).
+	"internal/ccfailover",
 	"internal/ccpool",
 	// The chief's on/off switch (migration 0060): "one user's choice is theirs
 	// alone" is a claim about row-level security.
