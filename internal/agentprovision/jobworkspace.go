@@ -138,16 +138,18 @@ var gitRunsNoRepoCommands = func() string {
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
 // of pull request $5 of the repository at the URL $4, taking the agent
 // configuration from commit $6 ("" = the default branch's tip). $7 is "" for
-// an ANONYMOUS fetch of an https URL, or — for a worker pool with a deploy key
-// — the path of the KEY HOLDER's mirror, which $4 then is too (see "THE DEPLOY
+// an ANONYMOUS fetch of an https URL, or — for a worker pool with a deploy key,
+// whose $4 is then the path of the KEY HOLDER's mirror — the --upload-pack
+// command every fetch from it runs (podagent.MirrorUploadPack; see "THE DEPLOY
 // KEY" below). $8 is 1 to overlay the repository's agent configuration, 0 to
 // strip it and restore none (a deploy-key pool's job:
 // agentspec.StripsRepoConfig). $9 is a BASE commit to fetch ("" = none; see
 // "THE BASE" below). The remaining arguments are JobOverlayRootFiles:
 //
-//  1. resolve the default branch, refs/remotes/origin/HEAD (asking origin with
-//     `git remote set-head --auto` only when the ref is missing), and fail
-//     with NoDefaultBranchMessage when it cannot be resolved: there is then
+//  1. with $8 = 1 (an overlay to take from it), resolve the default branch,
+//     refs/remotes/origin/HEAD (asking origin with `git remote set-head --auto`
+//     only when the ref is missing), and fail with NoDefaultBranchMessage when
+//     it cannot be resolved: there is then
 //     no trusted configuration to give the job;
 //  2. fetch refs/pull/$5/head ANONYMOUSLY from $4 into refs/muster-jobs/<job
 //     id> (see below), and refuse (NotOnPullRequestMessage) unless $3 is that
@@ -189,9 +191,16 @@ var gitRunsNoRepoCommands = func() string {
 // pod's KEY HOLDER (another container, another uid) probe the key for write
 // access and fetch the pull request's head and the base INTO ITS MIRROR
 // (podagent.MirrorScript); $4 is that mirror's path, mounted read-only here,
-// and the fetches below are local ones from it. $7 is marked safe.directory
-// (as command-line config, which git honours for it): the mirror is owned by
-// the holder's uid, and git refuses another user's repository otherwise.
+// and the fetches below are local ones from it, each with --upload-pack=$7. The
+// mirror is owned by the holder's uid, and git refuses another user's
+// repository ("detected dubious ownership"). 🔴 safe.directory as `-c` or
+// GIT_CONFIG_* on THIS git does not help: for a local path git clears the
+// config environment before it spawns upload-pack, and git 2.39's upload-pack
+// checks ownership itself (measured on the image's git, 2.39.5). $7 puts the
+// `-c safe.directory=<mirror>` on upload-pack's own command line. A newer git
+// (2.55) fetches without it, so this side's tests cannot show the failure; the
+// image's cc-deploykey-smoke does. No default branch is resolved here ($8 is 0
+// on such a pool), so origin — the mirror — is never asked.
 // (Whatever this side runs, it runs as the session's uid with the turn
 // credentials scrubbed — the class "WHAT STILL RUNS" above names — and the
 // key is not in this container to be reached.)
@@ -246,18 +255,17 @@ var gitRunsNoRepoCommands = func() string {
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
 var jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
-main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6 mirror=$7 overlay=$8 base=$9
+main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6 up=$7 overlay=$8 base=$9
 shift 9
 unset GIT_SSH_COMMAND
-if [ -n "$mirror" ]; then
-	n=${GIT_CONFIG_COUNT:-0}
-	export "GIT_CONFIG_KEY_$n=safe.directory" "GIT_CONFIG_VALUE_$n=$mirror" GIT_CONFIG_COUNT=$((n + 1))
-fi
 cd "$main" || exit 1
-def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
-	{ git remote set-head origin --auto >/dev/null 2>&1 &&
-		def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}'); } ||
-	{ echo "` + NoDefaultBranchMessage + `" >&2; exit 4; }
+def=
+if [ "$overlay" = 1 ]; then
+	def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
+		{ git remote set-head origin --auto >/dev/null 2>&1 &&
+			def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}'); } ||
+		{ echo "` + NoDefaultBranchMessage + `" >&2; exit 4; }
+fi
 ref=refs/muster-jobs/${wt##*/}
 got=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git ls-remote --get-url "$url") || exit 1
 creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --show-scope --get-regexp '^(http\..*extraheader|credential\..*)$' |
@@ -267,7 +275,7 @@ if [ "$got" != "$url" ] || [ -n "$creds" ]; then
 	exit 7
 fi
 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-	git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+refs/pull/$pr/head:$ref" ||
+	git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags ${up:+"--upload-pack=$up"} "$url" "+refs/pull/$pr/head:$ref" ||
 	{ echo "` + PullFetchMessage + `" >&2; exit 8; }
 head=$(git rev-parse --verify --quiet "$ref^{commit}") || exit 1
 if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
@@ -276,7 +284,7 @@ if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev
 fi
 if [ -n "$base" ]; then
 	GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-		git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+$base:$ref-base" ||
+		git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags ${up:+"--upload-pack=$up"} "$url" "+$base:$ref-base" ||
 		{ echo "` + BaseFetchMessage + ` (base_sha $base)" >&2; exit 12; }
 	got=$(git rev-parse --verify --quiet "$ref-base^{commit}") && [ "$got" = "$base" ] ||
 		{ echo "` + BaseFetchMessage + ` (base_sha $base: the fetched ref names ${got:-nothing})" >&2; exit 12; }
@@ -287,7 +295,7 @@ if [ "$overlay" != 1 ]; then
 elif [ -n "$cfg" ]; then
 	if ! git merge-base --is-ancestor "$cfg" "$def" 2>/dev/null; then
 		GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-			git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+HEAD:$ref-config" ||
+			git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags ${up:+"--upload-pack=$up"} "$url" "+HEAD:$ref-config" ||
 			{ echo "` + DefaultBranchFetchMessage + `" >&2; exit 10; }
 		tip=$(git rev-parse --verify --quiet "$ref-config^{commit}") || exit 1
 		if ! git merge-base --is-ancestor "$cfg" "$tip" 2>/dev/null; then
@@ -466,12 +474,15 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	if err != nil {
 		return "", err
 	}
-	url, mirror := AnonymousFetchURL(a.anonGitBase, repo), ""
+	url, uploadPack := AnonymousFetchURL(a.anonGitBase, repo), ""
 	if k, ok := agentspec.PoolDeployKeyFor(ag, a.spec); ok {
 		if err := a.jobFetchWithKey(ctx, ag, k, repo, pr, baseSHA); err != nil {
 			return "", err
 		}
-		url, mirror = agentspec.MirrorPath, agentspec.MirrorPath
+		if uploadPack, err = podagent.MirrorUploadPack(agentspec.MirrorPath); err != nil {
+			return "", err
+		}
+		url = agentspec.MirrorPath
 	}
 	overlay := "1"
 	if strip {
@@ -479,7 +490,7 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	}
 	var out bytes.Buffer
 	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
-		url, strconv.Itoa(pr), configRef, mirror, overlay, baseSHA}, JobOverlayRootFiles...)
+		url, strconv.Itoa(pr), configRef, uploadPack, overlay, baseSHA}, JobOverlayRootFiles...)
 	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}

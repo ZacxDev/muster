@@ -10,6 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentprovision/worktreetest"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -86,7 +87,8 @@ func execContainers(d *localExecDriver) []string {
 // naming ONLY that key and GitHub's pinned host keys: it clones the mirror (an
 // upload-pack), probes the key (a receive-pack, refused) and fetches the pull
 // request (an upload-pack). THEN into the agent's own container, the worktree
-// script, whose fetch URL is the MIRROR's path — no ssh, no key — and which
+// script, whose fetch URL is the MIRROR's path, fetched through
+// podagent.MirrorUploadPack — no ssh, no key — and which
 // strips the repository's configuration (overlay 0). The worktree is the
 // commit.
 func TestAPrivatePoolsJobFetchesThroughItsKeyHolder(t *testing.T) {
@@ -112,8 +114,10 @@ func TestAPrivatePoolsJobFetchesThroughItsKeyHolder(t *testing.T) {
 		}
 	}
 	main := lastArgs(t, d)
-	if main[4] != agentspec.MirrorPath || main[7] != agentspec.MirrorPath || main[8] != "0" {
-		t.Fatalf("worktree script: fetch URL %q, mirror %q, overlay %q; want the mirror twice and 0", main[4], main[7], main[8])
+	up, _ := podagent.MirrorUploadPack(agentspec.MirrorPath)
+	if main[4] != agentspec.MirrorPath || main[7] != up || main[8] != "0" {
+		t.Fatalf("worktree script: fetch URL %q, upload-pack %q, overlay %q; want the mirror, %q (the string the image's smoke pins) and 0",
+			main[4], main[7], main[8], up)
 	}
 	for _, arg := range main {
 		if strings.Contains(arg, agentspec.DeployKeyPath) || strings.Contains(arg, "ssh://") {

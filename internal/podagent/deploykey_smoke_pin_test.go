@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 )
 
@@ -38,10 +37,17 @@ func TestTheDeployKeySmokePinsTheCheckoutsMirrorFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(c.gitArgs(), " "); got != pins["GIT_PRE"] {
-		t.Errorf("the checkout's pre-subcommand arguments are %q; the smoke pins %q", got, pins["GIT_PRE"])
+	if pins["GIT_PRE"] != "" {
+		t.Errorf("the smoke pins arguments before git's subcommand (%q); the checkout puts none there", pins["GIT_PRE"])
 	}
-	if pins["UPLOAD_PACK"] != "" {
-		t.Errorf("the smoke pins an --upload-pack %q the checkout does not use", pins["UPLOAD_PACK"])
+	want, err := MirrorUploadPack(pins["MIRROR"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.uploadPack(); got != want || got != pins["UPLOAD_PACK"] {
+		t.Errorf("the checkout's --upload-pack is %q (MirrorUploadPack %q); the smoke pins %q", got, want, pins["UPLOAD_PACK"])
+	}
+	if args := c.remoteArgs("clone"); len(args) != 2 || args[1] != "--upload-pack="+pins["UPLOAD_PACK"] {
+		t.Errorf("the clone's arguments are %q", args)
 	}
 }

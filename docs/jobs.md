@@ -289,8 +289,8 @@ nothing else changes: no GitHub grant, no proxy, no token.
    give it the mount).
 
 A worker of such a pool runs a second container beside the agent's, the **key
-holder** (`deploy-key`), under its own uid (1001; the agent's session runs as
-1000). The holder, and only the holder, mounts the Secret's one key at
+holder** (`deploy-key`), under its own uid (1001, the image's `muster-keyholder`
+user, which ssh needs to exist; the agent's session runs as 1000). The holder, and only the holder, mounts the Secret's one key at
 `/etc/muster/deploy-key/ssh-privatekey` and GitHub's pinned host keys at
 `/etc/muster/deploy-key/known_hosts`. Every use of the key is the holder's:
 
@@ -299,7 +299,11 @@ holder** (`deploy-key`), under its own uid (1001; the agent's session runs as
   `/var/lib/muster-mirror/repo.git`, retrying every 30 s until it can. That
   directory is an `emptyDir` the holder writes and the agent's container mounts
   **read-only**. ccd is told the mirror's path (`CCD_REPO_MIRROR`) and clones
-  the agent's checkout from it — locally, with no credential.
+  the agent's checkout from it — locally, with no credential. Every git that
+  reads the mirror from the agent's container passes
+  `--upload-pack='git -c safe.directory=<mirror> upload-pack'`: the mirror
+  belongs to uid 1001, and git 2.39's upload-pack refuses another user's
+  repository unless its own command line marks it safe.
 - **For each job**, muster execs into the holder: it probes the key for write
   access and fetches the pull request's head (and the `base_sha`) into the
   mirror; the job's worktree script then fetches them from the mirror, in the

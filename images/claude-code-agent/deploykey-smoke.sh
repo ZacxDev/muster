@@ -29,10 +29,11 @@ set -euo pipefail
 SSH_CMD='ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=/etc/muster/deploy-key/ssh-privatekey -o UserKnownHostsFile=/etc/muster/deploy-key/known_hosts -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o PermitLocalCommand=no'
 # PINNED: agentspec.MirrorPath
 MIRROR='/var/lib/muster-mirror/repo.git'
-# PINNED: the arguments a mirror checkout puts before git's subcommand.
-GIT_PRE='-c safe.directory=/var/lib/muster-mirror/repo.git'
-# PINNED: the --upload-pack command for a fetch from the mirror ('' = none).
-UPLOAD_PACK=''
+# PINNED: the arguments a mirror checkout puts before git's subcommand ('' = none).
+GIT_PRE=''
+# PINNED: podagent.MirrorUploadPack(MIRROR), the --upload-pack command for a
+# clone or fetch from the mirror ('' = none).
+UPLOAD_PACK='git -c safe.directory=/var/lib/muster-mirror/repo.git upload-pack'
 HOLDER_UID=1001
 SESSION_UID=1000
 

@@ -167,6 +167,33 @@ if [ -n "$base" ]; then
 		{ echo "` + BaseFetchMessage + ` (base_sha $base)" >&2; exit 12; }
 fi`
 
+// MirrorUploadPack is the --upload-pack command for every fetch, clone and
+// ls-remote the agent's container makes from the key holder's mirror at
+// mirror (ccd's clone, the job script's fetches).
+//
+// 🔴 WHY UPLOAD-PACK'S OWN COMMAND LINE. The mirror is owned by the holder's
+// uid, and git refuses another user's repository ("detected dubious
+// ownership") unless safe.directory names it in protected configuration. For a
+// local path git CLEARS the config environment before it spawns upload-pack,
+// so `-c safe.directory=…` or GIT_CONFIG_* on the calling git never reach it,
+// and git 2.39's upload-pack checks ownership itself (measured on the image's
+// git 2.39.5: clone and fetch die with rc 128). Global and system config are
+// off for muster's gits (GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1),
+// and the global file is the session's to write anyway. So the `-c` goes on
+// upload-pack's own command line, which git runs through a shell with the
+// path appended. git 2.55 needs none of it, so only the image's smoke
+// (images/claude-code-agent/deploykey-smoke.sh, which pins this string) can
+// show the failure.
+//
+// The path is interpolated into that shell command, so it is held to
+// DeployKeySSHCommand's rule (absolute, [A-Za-z0-9._/-] only).
+func MirrorUploadPack(mirror string) (string, error) {
+	if !sshSafePath.MatchString(mirror) || strings.Contains(mirror, "..") {
+		return "", fmt.Errorf("podagent: mirror path %q is not an absolute path of [A-Za-z0-9._/-]", mirror)
+	}
+	return "git -c safe.directory=" + mirror + " upload-pack", nil
+}
+
 // mirrorHolderBoot is the key holder's command: run MirrorScript ($1) until
 // the mirror exists — retrying every 30 s, so a key not yet added on GitHub
 // only delays the agent's clone — then idle, ending at once on SIGTERM.

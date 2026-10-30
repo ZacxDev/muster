@@ -72,6 +72,16 @@ ENV CLAUDE_CONFIG_DIR=/data/claude \
     HOME=/home/node
 RUN install -d -o 1000 -g 1000 -m 0700 /data /data/claude /data/workspace
 
+# uid/gid 1001 is a deploy-key pool's KEY HOLDER (internal/agentspec
+# DeployKeyHolderUID): the second container that alone mounts the key. It
+# needs a passwd entry because OpenSSH refuses to run for a uid without one
+# ("No user exists for uid 1001", exit 255). No login shell and no home: the
+# holder's ssh reads no ~/.ssh (-F /dev/null, explicit UserKnownHostsFile and
+# IdentityFile, StrictHostKeyChecking=yes, so it never writes known_hosts).
+# cc-deploykey-smoke checks it on this image.
+RUN groupadd -g 1001 muster-keyholder \
+ && useradd -u 1001 -g 1001 -M -d /nonexistent -s /usr/sbin/nologin muster-keyholder
+
 # uid 1000 is the base image's `node` user.
 USER 1000:1000
 # 🔴 NOT /data/workspace. A container runtime creates a missing WORKDIR as ROOT,

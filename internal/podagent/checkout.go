@@ -122,8 +122,9 @@ type Checkout struct {
 	repo, branch, dir  string
 	connectBase, token string
 	voice              Voice
-	// mirror is CheckoutConfig.Mirror; "" = anonymous HTTPS.
-	mirror string
+	// mirror is CheckoutConfig.Mirror; "" = anonymous HTTPS. mirrorUploadPack
+	// is MirrorUploadPack(mirror).
+	mirror, mirrorUploadPack string
 	// Retry is how often a failed clone is retried.
 	Retry time.Duration
 	// Timeout bounds one clone; 0 is CheckoutTimeout.
@@ -155,7 +156,11 @@ func NewCheckout(cfg CheckoutConfig) (*Checkout, error) {
 		if !filepath.IsAbs(cfg.Mirror) || filepath.Clean(cfg.Mirror) != cfg.Mirror {
 			return nil, fmt.Errorf("podagent: the repository mirror %q is not a clean absolute path", cfg.Mirror)
 		}
-		c.mirror = cfg.Mirror
+		up, err := MirrorUploadPack(cfg.Mirror)
+		if err != nil {
+			return nil, err
+		}
+		c.mirror, c.mirrorUploadPack = cfg.Mirror, up
 	}
 	c.st = CheckoutState{Repo: c.repo, Branch: c.branch, Dir: c.dir, State: CheckoutCloning}
 	return c, nil
@@ -170,17 +175,18 @@ func (c *Checkout) remoteURL() string {
 	return GithubCloneBase + c.repo + ".git"
 }
 
-// gitArgs is a git command line reaching the remote: with a mirror, preceded by
-// `-c safe.directory=<mirror>` — the mirror belongs to the key holder's uid,
-// not this process's, and git refuses a repository another user owns unless
-// told it is safe (a command-line value is one git honours for it). The mirror
-// is the holder's, mounted read-only here, so marking it safe trusts nothing
-// this pod's session can write.
-func (c *Checkout) gitArgs(args ...string) []string {
-	if c.mirror == "" {
-		return args
+// uploadPack is the --upload-pack command a git reaching the mirror runs
+// (MirrorUploadPack); "" without a mirror.
+func (c *Checkout) uploadPack() string { return c.mirrorUploadPack }
+
+// remoteArgs is subcommand sub's arguments for reaching the remote: with a
+// mirror, --upload-pack=<MirrorUploadPack> first.
+func (c *Checkout) remoteArgs(sub string, args ...string) []string {
+	out := []string{sub}
+	if up := c.uploadPack(); up != "" {
+		out = append(out, "--upload-pack="+up)
 	}
-	return append([]string{"-c", "safe.directory=" + c.mirror}, args...)
+	return append(out, args...)
 }
 
 // gitEnv is the environment a git reaching the remote runs with:
@@ -379,7 +385,7 @@ func (c *Checkout) clone(ctx context.Context, scratch, branch string) error {
 	if err := os.RemoveAll(scratch); err != nil {
 		return local(err)
 	}
-	args := []string{"clone", "--quiet"}
+	args := c.remoteArgs("clone", "--quiet")
 	if c.mirror != "" {
 		// Through upload-pack, as a job's fetch from the mirror is, rather than
 		// git's local copy of another user's object store.
@@ -389,7 +395,7 @@ func (c *Checkout) clone(ctx context.Context, scratch, branch string) error {
 		args = append(args, "--branch="+branch)
 	}
 	args = append(args, "--", c.remoteURL(), scratch)
-	cmd := exec.CommandContext(ctx, "git", c.gitArgs(args...)...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = c.gitEnv(cmd.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -410,7 +416,7 @@ func (c *Checkout) clone(ctx context.Context, scratch, branch string) error {
 // no refs at all: an empty repository. False when ls-remote fails (unreadable
 // is not empty).
 func (c *Checkout) remoteHasNoRefs(ctx context.Context) bool {
-	cmd := exec.CommandContext(ctx, "git", c.gitArgs("ls-remote", "--", c.remoteURL())...)
+	cmd := exec.CommandContext(ctx, "git", c.remoteArgs("ls-remote", "--", c.remoteURL())...)
 	cmd.Env = c.gitEnv(cmd.Environ())
 	out, err := cmd.Output()
 	return err == nil && len(bytes.TrimSpace(out)) == 0
