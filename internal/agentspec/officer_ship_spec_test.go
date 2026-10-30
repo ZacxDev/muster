@@ -66,9 +66,7 @@ func TestAShippingOfficersPodSpecCarriesNoAppKeyOrWebhook(t *testing.T) {
 			tools = append(tools, n)
 		}
 	}
-	cfgPlant := ccConfig()
-	cfgPlant.ClaudeCode.Accounts["beta"] = ccTokenBeta + "\n" + keyPEM // THROWAWAY: watch the guard go red
-	spec := mustBuild(t, a, cfgPlant, Options{ClaudeCodeSession: ClaudeCodeSession{AllowMCPTools: tools, BypassPermissions: true}})
+	spec := mustBuild(t, a, ccConfig(), Options{ClaudeCodeSession: ClaudeCodeSession{AllowMCPTools: tools, BypassPermissions: true}})
 	haystack := specHaystack(t, spec)
 	if !strings.Contains(haystack, ccTokenBeta) {
 		t.Fatal("positive control failed: the scan does not see the account token the spec carries")
