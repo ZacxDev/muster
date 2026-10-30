@@ -297,6 +297,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// this line is ever dropped, because an empty prefix beside a wired
 		// Provisioner reproduces that defect exactly.
 		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
+		AgentCCImage:         cfg.AgentCCImage,
 		PublicURL:            cfg.PublicURL,
 	}
 

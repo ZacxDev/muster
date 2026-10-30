@@ -55,7 +55,10 @@ import (
 // owner's sessions may approve, the one a message was routed to included) —
 // and 🔴 through agent_destroy
 // (agent_destroy_tool.go, operator decision), the teardown of any agent of
-// the owner's but the chief, with NO audit row (the server log names the host). Never another task, another host's session, another owner's ask
+// the owner's but the chief, with NO audit row (the server log names the host) — and 🔴
+// through chief_restart (chief_restart_tool.go, operator ask "wire the mcp so this can be
+// done more easily"), a Stop then Start of the owner's OWN chief (refused mid-turn unless
+// force, which cuts the turn off as the browser's Stop does), again with no audit row. Never another task, another host's session, another owner's ask
 // or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);
 // only the HOST is proven, which is why attention_answer's rule is per host.
 //
@@ -215,6 +218,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 			out = append(out, chiefAskToolDef())
 		}
 	}
+	// chief_restart — the operator restarting their own chief through their own
+	// session (chief_restart_tool.go) — with the agent store and a provisioner.
+	if s.chiefRestartOn() {
+		out = append(out, chiefRestartToolDef())
+	}
 	if s.connectorDecideToolsOn() {
 		out = append(out, connectorDecideToolDefs()...)
 	}
@@ -268,6 +276,11 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// with chiefAskOn, and serveMCP refuses an unlisted name).
 			if name == chiefAskTool {
 				return s.toolChiefAsk(r.Context(), c, args)
+			}
+			// So is chief_restart (listed only with chiefRestartOn): it is not in
+			// dispatchCallerTool, so no gateway agent can name it.
+			if name == chiefRestartTool {
+				return s.toolChiefRestart(r.Context(), c, args)
 			}
 			// route_reply is this door's alone: it is not in dispatchCallerTool,
 			// which a gateway agent reaches naming any tool.

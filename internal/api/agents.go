@@ -1145,25 +1145,59 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 	// says why at the door. The row is read as the caller (row-level security),
 	// so another user's agent is not found here and falls through to the
 	// lifecycle path exactly as before.
-	if s.ext.Kinds != nil && s.ext.Agents != nil {
+	if s.ext.Agents != nil {
 		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 			if a, err := s.ext.Agents.Get(r.Context(), id); err == nil {
-				if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.ResolveKind(a.Kind)]; why != "" {
+				if why := s.agentStartRefusal(r.Context(), a); why != "" {
 					http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
 					return
 				}
 			}
 		}
 	}
-	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Start(ctx, id) }, "start")
+	s.agentLifecycle(w, r, s.startAgent, "start")
 }
 
 func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
-	// A stopped pod cannot post its own clear: forget its work report now.
-	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
-		s.clearAgentWork(id)
+	s.agentLifecycle(w, r, s.stopAgent, "stop")
+}
+
+// errNoLifecycleProvisioner is startAgent's and stopAgent's answer on a
+// deployment with no provisioner wired. The browser routes never see it (they
+// are behind requireLifecycleProvisioner); it is the nil barrier for the other
+// door that calls them, chief_restart (chief_restart_tool.go).
+var errNoLifecycleProvisioner = errors.New("this deployment has no agent provisioner wired")
+
+// agentStartRefusal is why a start of agent a is refused for its caller, or ""
+// — 🔴 ONE RULE FOR EVERY DOOR THAT STARTS AN AGENT (the agent page's Start and
+// chief_restart): a kind the caller has no credential for (see handleAgentStart).
+func (s *Server) agentStartRefusal(ctx context.Context, a agents.Agent) string {
+	if s.ext.Kinds == nil {
+		return ""
 	}
-	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Stop(ctx, id) }, "stop")
+	return s.ext.Kinds.Unavailable(ctx, callerID(ctx))[agents.ResolveKind(a.Kind)]
+}
+
+// startAgent is a Start of agent id: the provisioner re-applies its spec and
+// scales it up (agentprovision.Adapter.Start). 🔴 ONE PATH FOR EVERY DOOR THAT
+// STARTS AN AGENT: the agent page's Start (handleAgentStart) and chief_restart.
+func (s *Server) startAgent(ctx context.Context, id int64) error {
+	if s.ext.Provisioner == nil {
+		return errNoLifecycleProvisioner
+	}
+	return s.ext.Provisioner.Start(ctx, id)
+}
+
+// stopAgent is a Stop of agent id: its work report is forgotten (a stopped pod
+// cannot post its own clear) and the provisioner scales it to zero, keeping its
+// declaration (agentprovision.Adapter.Stop). 🔴 ONE PATH FOR EVERY DOOR THAT
+// STOPS AN AGENT: the agent page's Stop (handleAgentStop) and chief_restart.
+func (s *Server) stopAgent(ctx context.Context, id int64) error {
+	if s.ext.Provisioner == nil {
+		return errNoLifecycleProvisioner
+	}
+	s.clearAgentWork(id)
+	return s.ext.Provisioner.Stop(ctx, id)
 }
 
 // agentLifecycle runs a start/stop action in the background and answers an
