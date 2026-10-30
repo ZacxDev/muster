@@ -434,7 +434,7 @@ func Fingerprint(s Spec) string {
 			w("network-no-cluster-dns")
 		}
 		// And again: only when set (sorted: order allows nothing different).
-		if !redStub && len(n.PublicEgressHosts) > 0 {
+		if len(n.PublicEgressHosts) > 0 {
 			hosts := append([]string(nil), n.PublicEgressHosts...)
 			sort.Strings(hosts)
 			w("network-hosts", strings.Join(hosts, "\x1f"))

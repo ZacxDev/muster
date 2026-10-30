@@ -1632,7 +1632,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				// Egress-locked pools: listed in MUSTER_AGENT_CC_POOL_EGRESS or given
 				// a deploy key. Without a name-filtering driver their workers are
 				// refused at dispatch/Start, which the line says.
-				if !redStub && a.cfg.poolEgressLocked() {
+				if a.cfg.poolEgressLocked() {
 					locked := map[string]bool{}
 					for p := range a.cfg.AgentCCPoolEgress {
 						locked[p] = true

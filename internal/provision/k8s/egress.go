@@ -14,9 +14,6 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// redStub disables this change's behaviour: the tests-first commit (red).
-const redStub = true
-
 // The per-instance name-filtered egress policy: a CiliumNetworkPolicy, written
 // for a spec that names Network.PublicEgressHosts, on a driver whose
 // NetworkPolicyConfig.CiliumFQDN says the cluster runs Cilium.
@@ -63,9 +60,6 @@ var ciliumPolicyRBACHint = "grant muster's ClusterRole apiGroups [\"cilium.io\"]
 // namedEgress reports whether spec's public egress is confined by name, which
 // is what moves its DNS and public rules out of the NetworkPolicy.
 func namedEgress(spec provision.Spec) bool {
-	if redStub {
-		return false
-	}
 	return spec.Network.Isolate && len(spec.Network.PublicEgressHosts) > 0
 }
 
@@ -148,9 +142,6 @@ func (d *Driver) renderEgressPolicy(spec provision.Spec, ns string) (*unstructur
 // a spec that stops naming hosts keeps its policy until Destroy (leaving it is
 // harmless: plugins union allows, and it allows only what the spec allowed).
 func (d *Driver) applyEgressPolicy(ctx context.Context, spec provision.Spec, ns string) error {
-	if redStub {
-		return nil
-	}
 	obj, err := d.renderEgressPolicy(spec, ns)
 	if err != nil || obj == nil {
 		return err
@@ -203,9 +194,6 @@ func (d *Driver) applyEgressPolicy(ctx context.Context, spec provision.Spec, ns 
 // deleteEgressPolicy is Destroy's removal of the instance's CiliumNetworkPolicy
 // (a no-op when the driver is not configured for it).
 func (d *Driver) deleteEgressPolicy(ctx context.Context, ns, instance string) error {
-	if redStub {
-		return nil
-	}
 	if d.cfg.NetworkPolicy == nil || !d.cfg.NetworkPolicy.CiliumFQDN || d.cfg.Dynamic == nil {
 		return nil
 	}

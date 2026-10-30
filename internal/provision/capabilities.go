@@ -5,9 +5,6 @@ import (
 	"strings"
 )
 
-// redStub disables this change's behaviour: the tests-first commit (red).
-const redStub = true
-
 // Isolation is how well a driver separates an instance from the machine it runs
 // on. It is ordered, so a caller can compare.
 type Isolation int
@@ -197,7 +194,7 @@ func CheckSpec(caps Capabilities, s Spec) error {
 			"starting it anyway would run something that is declared confined and can reach everything",
 			ErrUnsupported)
 	}
-	if !redStub && !caps.NetworkEgressByName && len(s.Network.PublicEgressHosts) > 0 {
+	if !caps.NetworkEgressByName && len(s.Network.PublicEgressHosts) > 0 {
 		return fmt.Errorf("%w: driver cannot confine egress to host names, and the spec allows only %s; starting it "+
 			"anyway would let it reach every public address on its ports", ErrUnsupported,
 			strings.Join(s.Network.PublicEgressHosts, ", "))

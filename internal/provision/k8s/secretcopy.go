@@ -39,7 +39,7 @@ import (
 // source's, nothing is copied (the Secret is already where the pod mounts it).
 func (d *Driver) copyKeyHolderSecrets(ctx context.Context, spec provision.Spec, ns string) error {
 	src := d.cfg.SecretSourceNamespace
-	if redStub || src == "" || spec.KeyHolder == nil {
+	if src == "" || spec.KeyHolder == nil {
 		return nil
 	}
 	c := d.cfg.Client.CoreV1()

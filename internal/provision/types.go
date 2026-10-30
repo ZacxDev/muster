@@ -714,7 +714,7 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("%w: network sets NoClusterDNS without Isolate; on an unconfined instance that "+
 			"restricts nothing and reads as if it did", ErrInvalidSpec)
 	}
-	if !redStub && len(s.Network.PublicEgressHosts) > 0 {
+	if len(s.Network.PublicEgressHosts) > 0 {
 		switch {
 		case !s.Network.Isolate:
 			return fmt.Errorf("%w: network names public egress hosts %v without Isolate; on an unconfined instance "+

@@ -481,9 +481,6 @@ const resolvConfPath = "/etc/resolv.conf"
 // name-filtered pod looks up unresolvable, so a resolv.conf this cannot read is
 // a boot refusal, not a guess.
 func clusterDomainFromResolvConf(content, ns string) (string, error) {
-	if redStub {
-		return "", fmt.Errorf("stub")
-	}
 	prefix := ns + ".svc."
 	for _, line := range strings.Split(content, "\n") {
 		f := strings.Fields(line)
@@ -561,14 +558,12 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 			ControllerPodLabels: labels,
 			// MUSTER_AGENT_NETPOL_FQDN=cilium: egress-locked pools' workers get
 			// a CiliumNetworkPolicy. Unset, the driver refuses them.
-			CiliumFQDN: !redStub && cfg.AgentNetpolFQDN == netpolFQDNCilium,
+			CiliumFQDN: cfg.AgentNetpolFQDN == netpolFQDNCilium,
 		}
 		// 🔴 A deploy-key pool's Secret is kept in muster's OWN namespace (the
 		// one this variable names) and copied into each worker's namespace
 		// before its pod (k8s secretcopy.go).
-		if !redStub {
-			dc.SecretSourceNamespace = cfg.AgentNetpolFromNS
-		}
+		dc.SecretSourceNamespace = cfg.AgentNetpolFromNS
 	}
 	return dc
 }

@@ -35,9 +35,6 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// redStub disables this change's behaviour: the tests-first commit (red).
-const redStub = true
-
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
 //
 // ⚠ IT IS NOT 8104. That is the permission router's port, and the two services
@@ -1115,9 +1112,6 @@ const netpolFQDNCilium = "cilium"
 // defaults. A pool listed twice, or a host twice in one pool, is refused. "" is
 // nil.
 func parsePoolEgress(v string) (map[string][]string, error) {
-	if redStub {
-		return nil, nil
-	}
 	out := map[string][]string{}
 	for _, e := range strings.Split(v, ";") {
 		e = strings.TrimSpace(e)
@@ -2248,10 +2242,10 @@ func (c config) validateKinds() error {
 	// to be given the selector. k8s.New refuses an empty one as well, at boot —
 	// but in the driver's words (Config.NetworkPolicy.ControllerNamespace), which
 	// name nothing an operator can set. Refused here first, naming both variables.
-	if !redStub && c.AgentNetpolFQDN != "" && c.AgentNetpolFQDN != netpolFQDNCilium {
+	if c.AgentNetpolFQDN != "" && c.AgentNetpolFQDN != netpolFQDNCilium {
 		return fmt.Errorf("invalid %s %q: the one value is %q (or unset)", envAgentNetpolFQDN, c.AgentNetpolFQDN, netpolFQDNCilium)
 	}
-	if !redStub && c.AgentNetpolFQDN != "" && !c.agentNetworkPolicy() {
+	if c.AgentNetpolFQDN != "" && !c.agentNetworkPolicy() {
 		return fmt.Errorf("%s is set but nothing would render a name-filtered policy from it: that needs %s to "+
 			"include %s AND %s=%s. Unset it, or enable the kind on that driver", envAgentNetpolFQDN, envAgentKinds,
 			agents.KindClaudeCode, envAgentProvisioner, provisionerK8s)
