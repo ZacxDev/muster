@@ -62,18 +62,7 @@ func newLaneRig(t *testing.T, max int) *laneRig {
 		return p
 	}
 	r.s = newServer(serverConfig{Bearer: "b", ConfigDir: r.l.configDir}, nil, newAuthTracker())
-	r.s.lanes = r.l
-	t.Cleanup(func() {
-		r.l.mu.Lock()
-		list := make([]*lane, 0, len(r.l.set))
-		for _, ln := range r.l.set {
-			list = append(list, ln)
-		}
-		r.l.mu.Unlock()
-		for _, ln := range list {
-			ln.stop()
-		}
-	})
+	r.s.lanes = r.l // testLanes' cleanup stops every lane and waits for it
 	return r
 }
 

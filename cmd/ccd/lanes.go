@@ -441,6 +441,11 @@ type lanes struct {
 
 	mu  sync.Mutex
 	set map[string]*lane // by laneID
+
+	// runs counts the lanes' run goroutines still going, stopped or not, so a
+	// test can wait for every one of them to end (stopAll) before the next
+	// test swaps the global logger they write to.
+	runs sync.WaitGroup
 }
 
 // errLanesFull: every lane is mid-turn and the cap is reached.
@@ -535,7 +540,11 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, ephem
 		}
 		evict.stop()
 	}
-	go ln.run(runCtx, l)
+	l.runs.Add(1)
+	go func() {
+		defer l.runs.Done()
+		ln.run(runCtx, l)
+	}()
 	return ln, nil
 }
 
