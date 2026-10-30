@@ -74,7 +74,7 @@
 // 🔴 AN AGENT KEEPS ITS ACCOUNT UNTIL AN ACCOUNT FAILOVER MOVES IT. Select runs
 // once, before the agent's row exists; the row stores the NAME
 // (agents.cc_account) and migration 0003's trigger refuses any later change
-// except the failover's (internal/ccfailover, migration 0065), which moves an
+// except the failover's (internal/ccfailover, migration 0066), which moves an
 // agent off an account that answered rate_limited or auth_failed onto one
 // [ChooseFailover] picks. A restart, a re-provision, a model of the pool
 // changing under it — none of them re-select.

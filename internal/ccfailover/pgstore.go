@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGStore is the Postgres [Store] (table cc_account_failovers, migration 0065).
+// PGStore is the Postgres [Store] (table cc_account_failovers, migration 0066).
 type PGStore struct{ pool *pgxpool.Pool }
 
 // NewPG constructs the Postgres store.

@@ -155,11 +155,11 @@ const chiefPreferencesMigrationVersion = 60
 // again.
 const chiefNudgesMigrationVersion = 64
 
-// ccAccountFailoversMigrationVersion is 0065: cc_account_failovers (a
+// ccAccountFailoversMigrationVersion is 0066: cc_account_failovers (a
 // claude-code agent's account rebinds), owned and under the same row-level
 // security; same treatment again. Its body is idempotent (IF NOT EXISTS, DROP
 // … IF EXISTS, CREATE OR REPLACE), so re-applying it is safe.
-const ccAccountFailoversMigrationVersion = 65
+const ccAccountFailoversMigrationVersion = 66
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

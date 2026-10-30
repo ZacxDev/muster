@@ -141,11 +141,11 @@ type Agent struct {
 	// setup-token this claude-code agent runs on; "" for every other kind. It is a
 	// NAME, never the token. Chosen at dispatch by internal/ccpool; it changes
 	// afterwards ONLY by an account failover (internal/ccfailover, migration
-	// 0065), which migration 0003's trigger refuses to every other UPDATE.
+	// 0066), which migration 0003's trigger refuses to every other UPDATE.
 	CCAccount string `json:"ccAccount,omitempty"`
 	// CCAccountPinned: the account was named explicitly at creation (a pin), so
 	// the agent is not failed over to another account unless CCFailover is also
-	// set (agents.cc_account_pinned / cc_failover, migration 0065).
+	// set (agents.cc_account_pinned / cc_failover, migration 0066).
 	CCAccountPinned bool `json:"ccAccountPinned,omitempty"`
 	// CCFailover is a pinned agent's opt-in to account failover. It means
 	// nothing on an unpinned agent, which fails over by default.

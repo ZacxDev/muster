@@ -217,7 +217,7 @@ type Job struct {
 	StartedAt  time.Time
 	FinishedAt time.Time
 	// Failovers are the account failovers the job was re-queued for, oldest
-	// first (jobs.failovers, migration 0065).
+	// first (jobs.failovers, migration 0066).
 	Failovers []Failover
 }
 
@@ -240,7 +240,7 @@ func (j Job) Tried(account string) bool {
 	return false
 }
 
-// MaxFailovers bounds a job's re-queues (migration 0065's
+// MaxFailovers bounds a job's re-queues (migration 0066's
 // jobs_failovers_check); with at most once per FROM account a job reaches it
 // only with that many accounts.
 const MaxFailovers = 16
