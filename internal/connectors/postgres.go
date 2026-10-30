@@ -91,7 +91,7 @@ const (
 
 // pgBeginReadOnly opens every query's transaction. 🔴 It is THE read-only
 // guard; TestAPostgresWriteIsRefusedInsideTheReadOnlyTransaction pins it.
-const pgBeginReadOnly = "BEGIN READ ONLY"
+const pgBeginReadOnly = "BEGIN" // MUTANT: READ ONLY removed
 
 // PGSSLModes are the sslmode values a postgres connector may use. allow is
 // left out (it tries plaintext first); verify-ca and verify-full verify against
