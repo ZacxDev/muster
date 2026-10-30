@@ -466,6 +466,16 @@ async function usePassword(page: Page) {
 const subOf = (token: string) => String(b64urlJSON(token.split('.')[1]).sub);
 
 async function signIn(page: Page, email = adminEmail, pw = adminPW) {
+  // 🔴 A WORKER THAT HAS NOT CLAIMED THE ADMIN CLAIMS IT HERE. After a failed
+  // test Playwright ends the worker — afterAll takes GoTrue down with its volume
+  // — and a new one runs beforeAll again, which re-seeds the accounts: there is
+  // no admin to sign in as. Every later test's sign-in then failed too, so one
+  // failure read as five (#342's run). Claimed now, the next test stands alone.
+  if (email === adminEmail && !adminClaimed) {
+    await claimAndSignIn(page);
+    if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();
+    return;
+  }
   await page.goto(browserURL + '/login');
   await page.fill('#muster-email', email);
   await page.fill('#muster-password', pw);
@@ -868,6 +878,21 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     return [n, rest];
   });
   const fetches = (evs: Ev[]) => evs.filter(([n]) => n === 'stepup.passkey_options');
+  // optionsAnswered resolves once the page's NEXT /options response has been
+  // read to its end, and gives its status. A stepup.passkey_options event is
+  // sent when its fetch answers (stepup_confirm.go fetchOptions), so a test that
+  // reads events waits on THIS first: a poll of the events alone gives the
+  // fetch expect's 5 s, and on a slow runner the answer took longer (#342).
+  // Start it before the action that fetches, once every earlier /options has
+  // answered, so the response it resolves on is that action's.
+  function optionsAnswered(page: Page): Promise<number> {
+    return page
+      .waitForResponse((r) => new URL(r.url()).pathname === optionsPath)
+      .then(async (r) => {
+        await r.finished();
+        return r.status();
+      });
+  }
 
   async function staleTerminal(page: Page, context: BrowserContext) {
     await makeStale(context);
@@ -1058,8 +1083,10 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     //    sent when the options answer, and no tap event. (The passkey is
     //    offered from the open's first frame, BEFORE that answer, so its being
     //    visible says nothing about the event: the event itself is awaited.)
+    const openAnswered = optionsAnswered(page);
     await page.locator('#term-keys [data-key="up"]').click();
     await expect(passkeyBtn(page)).toBeVisible();
+    expect(await openAnswered, 'the open\'s /options answered').toBe(200);
     await expect.poll(async () => (await events()).length, { message: 'the open\'s fetch sent its event' }).toBe(1);
     const open1 = await events();
     expect(open1.map(([n, a]) => [n, a.trigger, a.status, a.taps])).toEqual([['stepup.passkey_options', 'open', 200, 0]]);
@@ -1090,9 +1117,27 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     expect(await options.inPage(), 'the stale tap fetched once').toBe(2);
 
     // 4. A REFUSED /verify (401): its replacement is a retry fetch, after tap 2.
+    //    🔴 THE REPLACEMENT'S ANSWER IS AWAITED, NOT A WINDOW (#342): the event
+    //    is sent when the fetch answers, and a poll of the events alone gave it
+    //    expect's 5 s — on a slow CI runner the answer came later, and the
+    //    test read 2 of 3. So the replacement here is HELD 6 s, past that
+    //    window, on every run: a test that goes back to polling for it fails
+    //    every time instead of on a slow runner. (Under the dialog's 28 s limit,
+    //    so the fetch itself still answers.) Every earlier /options has
+    //    answered (tap 1 awaited the stale one), so the next is the retry's.
     await page.route('**/auth/confirm/passkey/verify', (r) => r.fulfill({ status: 401, json: { error: 'That passkey was not accepted.' } }), { times: 1 });
+    await page.route(
+      '**/auth/confirm/passkey/options',
+      async (r) => {
+        await new Promise((res) => setTimeout(res, 6_000));
+        await r.continue();
+      },
+      { times: 1 },
+    );
+    const retried = optionsAnswered(page);
     await passkeyBtn(page).click();
     await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
+    expect(await retried, 'the retry /options answered').toBe(200);
     await expect.poll(async () => fetches(await events()).length, { message: 'the retry fetch sent its event' }).toBe(3);
     await page.unrouteAll({ behavior: 'wait' });
     await expect(passkeyBtn(page)).toBeEnabled();
@@ -1117,10 +1162,12 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
 
     // 6. A NEW OPEN in the same document, closed with no tap: one fetch event,
     //    a NEW id, and no tap event.
+    const reopenAnswered = optionsAnswered(page);
     await page.evaluate(() => (window as unknown as { musterStepUp: { ask: (w: string, cb: null) => void } }).musterStepUp.ask('', null));
     await expect(passkeyBtn(page)).toBeVisible();
     // The passkey shows at the open's first frame, before /options answers:
     // its event is awaited, not inferred from the button.
+    expect(await reopenAnswered, 'the new open\'s /options answered').toBe(200);
     await expect.poll(async () => (await events()).length, { message: 'the new open\'s fetch sent its event' }).toBe(all1.length + 1);
     await page.locator('#term-confirm-cancel').click();
     await expect(dialog(page)).toBeHidden();
