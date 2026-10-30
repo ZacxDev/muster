@@ -85,7 +85,7 @@ Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 **Queue**. A queued message is kept by the server (`send_queue`, migration
 `0019`) and sent there, so it is sent with the page closed, and every device of
 yours shows the same queue under the box. Each message not yet being sent has a **⋯**
-menu with **Send now**, **Edit** (not on a message your chief routed), **Copy message**
+menu with **Send now**, **Edit** (not on a message your chief routed, nor on a [chief nudge](chief-nudges.md#live-mode) or a relayed answer), **Copy message**
 and **Cancel**. It is pasted into the
 window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
 dispatched agents and the chief panel have no Queue.

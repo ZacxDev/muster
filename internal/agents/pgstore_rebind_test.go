@@ -10,7 +10,7 @@ import (
 )
 
 // TestRebindCCAccountMovesOnlyOffTheNamedAccount: the account failover's one
-// write (migration 0064). It moves a claude-code agent off `from` exactly once
+// write (migration 0065). It moves a claude-code agent off `from` exactly once
 // — a second move off the same account matches no row — keeps the pin flags,
 // and every OTHER UPDATE of cc_account is still refused by 0003's trigger.
 func TestRebindCCAccountMovesOnlyOffTheNamedAccount(t *testing.T) {

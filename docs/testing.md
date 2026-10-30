@@ -130,6 +130,17 @@ In CI the suite runs as parallel legs, each with its own Postgres
 (`e2e/legs.json`). The `e2e` check aggregates them, and refuses a spec that ran
 in no leg or in two.
 
+**Signing in.** Password sign-in is throttled to 10 attempts a minute per
+server, so a spec that fills the sign-in form for every test gets a 429 on a
+fast runner and passes on a slow one. Specs sign in with `signIn(page, origin)`
+from `e2e/lib/signin.ts`, which drives the form once per server and worker and
+reuses that session afterwards; the session key comes from the password, so a
+restarted server still accepts it. Pass `{ fresh: true }`
+when a test needs a session of its own. Every server the suite starts counts the
+password sign-ins it handled, from its own log. A test fails once any server has
+handled more than half of `loginRateBurst` (read from `internal/api/login.go`),
+however the form was filled. The shared server is checked in global teardown.
+
 ## Screenshots
 
 The images in [`docs/img/`](img) are generated, not hand-made:

@@ -6,7 +6,7 @@ import (
 )
 
 // TestRequeueIsOncePerAccountAndOnlyFromRunning: the account failover's
-// re-queue (migration 0064's jobs.failovers). A running job goes back to
+// re-queue (migration 0065's jobs.failovers). A running job goes back to
 // queued with the failover recorded; a second re-queue off the SAME account is
 // refused (so a job never loops); one off another account is accepted; a job
 // that is not running is never re-queued; and the failovers read back in

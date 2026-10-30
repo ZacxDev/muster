@@ -93,6 +93,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO push_preferences (muted) VALUES ('{}')`, func() []any { return nil }, nil},
 		{`INSERT INTO suggest_preferences (disabled) VALUES (true)`, func() []any { return nil }, nil},
 		{`INSERT INTO chief_preferences (enabled) VALUES (true)`, func() []any { return nil }, nil},
+		{`INSERT INTO chief_nudges (session_kind, session_key, streak_key, decision, mode, outcome) VALUES ('mirror', $1, 'since:1', 'leave', 'shadow', 'left')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO suggest_usage (shown) VALUES (1)`, func() []any { return nil }, nil},
 		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
 		{`INSERT INTO mail_resumes (plugin_message_id, claude_session, sender, via) VALUES (7, $1, 'review-gate/pr-check', 'pr')`, func() []any { return []any{"sess-" + tag} }, nil},

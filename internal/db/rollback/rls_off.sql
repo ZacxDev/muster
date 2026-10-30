@@ -225,7 +225,13 @@ BEGIN
         ALTER TABLE public.chief_preferences DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.chief_preferences ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0064 (cc_account_failovers), when this schema has it; same reason as
+    -- 0064 (chief_nudges), when this schema has it; same reason as 0011.
+    IF to_regclass('public.chief_nudges') IS NOT NULL THEN
+        ALTER TABLE public.chief_nudges NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_nudges DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_nudges ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0065 (cc_account_failovers), when this schema has it; same reason as
     -- 0011.
     IF to_regclass('public.cc_account_failovers') IS NOT NULL THEN
         ALTER TABLE public.cc_account_failovers NO FORCE ROW LEVEL SECURITY;

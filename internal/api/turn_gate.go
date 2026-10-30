@@ -62,6 +62,14 @@ func (g *turnGate) enterIdle(id int64) (ok bool, why string) {
 	return true, ""
 }
 
+// busy reports whether a turn of id's is running here (a read; it counts
+// nothing). The chief nudge sweep reads it to leave a working agent alone.
+func (g *turnGate) busy(id int64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.running[id] > 0
+}
+
 // leave ends a turn enter counted.
 func (g *turnGate) leave(id int64) {
 	g.mu.Lock()

@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { test, expect } from '../lib/fixtures';
-import type { BrowserContext, CDPSession, Cookie, Page, Worker } from '@playwright/test';
-import { dsn, password, pushPort, repoRoot, versionA } from '../lib/env';
+import { signIn } from '../lib/signin';
+import type { BrowserContext, CDPSession, Page, Worker } from '@playwright/test';
+import { dsn, pushPort, repoRoot, versionA } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { waitControlled } from '../lib/sw';
 
@@ -83,12 +84,6 @@ async function stubPush(page: Page, opts: { existingKey?: number[]; perm?: Notif
   }, opts);
 }
 
-async function signIn(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
-
 async function serverKey(page: Page): Promise<number[]> {
   const r = await page.request.get(origin + '/api/push/vapid-public-key');
   expect(r.status()).toBe(200);
@@ -106,7 +101,7 @@ const pushState = (page: Page) => page.evaluate(() => (window as unknown as { __
 test('inside the Android app shell the page offers no Enable', async ({ page }) => {
   await stubPush(page);
   await page.addInitScript(() => { (window as unknown as { musterApp: { postMessage(m: string): void } }).musterApp = { postMessage: () => {} }; });
-  await signIn(page);
+  await signIn(page, origin);
   await page.goto(origin + '/tasks');
   await expect(page.locator('#push-status')).toBeHidden();
   await expect(page.locator('#enable-push')).toBeHidden();
@@ -134,7 +129,7 @@ test('Account → Devices shows a paired phone and its push registration without
     w.__appMsgs = [];
     w.musterApp = { postMessage: (m: string) => w.__appMsgs.push(m) };
   });
-  await signIn(page);
+  await signIn(page, origin);
   // The operator's phones are shared with the other specs on this database. A
   // phone another spec left behind, freshly paired and unregistered, would keep
   // the list polling, so every one is removed first, through the page's own
@@ -202,7 +197,7 @@ test('Account → Devices shows a paired phone and its push registration without
 
 test('Enable subscribes with the server key and the device appears on the account page', async ({ page }) => {
   await stubPush(page);
-  await signIn(page);
+  await signIn(page, origin);
   const key = await serverKey(page);
   expect(key.length, 'an uncompressed P-256 public key').toBe(65);
 
@@ -225,7 +220,7 @@ test('Enable subscribes with the server key and the device appears on the accoun
 test('a subscription made with an old VAPID key is replaced with one on the current key', async ({ page }) => {
   const stale = Array.from({ length: 65 }, (_, i) => (i === 0 ? 4 : (i * 7) % 256));
   await stubPush(page, { existingKey: stale, perm: 'granted' });
-  await signIn(page);
+  await signIn(page, origin);
   const key = await serverKey(page);
   const resubscribed = page.waitForResponse((r) => r.url().endsWith('/api/push/subscribe') && r.request().method() === 'POST');
   await page.goto(origin + '/tasks');
@@ -246,7 +241,7 @@ test.describe('on an iPhone Safari tab', () => {
     await page.addInitScript(() => {
       delete (window as unknown as { PushManager?: unknown }).PushManager;
     });
-    await signIn(page);
+    await signIn(page, origin);
     await page.goto(origin + '/tasks');
     const status = page.locator('#push-status');
     await expect(status).toContainText('Add to Home Screen');
@@ -271,7 +266,7 @@ test.describe('on an iPhone Safari tab', () => {
 // getNotifications are replaced by a recorder; what is real is the push event,
 // the worker's handler and its branch on the payload.
 test('an attention notification is shown with its tag and link, and its resolved message closes it', async ({ page, context }) => {
-  await signIn(page);
+  await signIn(page, origin);
   const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
   await page.goto(origin + '/tasks');
   const worker = await registered;
@@ -417,22 +412,11 @@ async function tapHarness(page: Page, context: BrowserContext, worker: Worker) {
   };
 }
 
-// signedInWorker signs in, opens /tasks and returns the origin's worker once it
-// controls the tab.
-//
-// 🔴 ONE SIGN-IN FOR ALL THE TAP TESTS. Password-mode sign-in is throttled
-// server-wide (internal/api login.go: loginRateBurst per loginRateWindow, 10 a
-// minute), and this file runs in seconds. When each tap test signed in on its
-// own, the file made 11 sign-ins and the 11th got a 429 ("Too many attempts").
-// So the first test signs in and the rest reuse its session cookie.
-let tapSession: Cookie[] | undefined;
+// signedInWorker signs in (lib/signin.ts: the form once for the file, then
+// its session), opens /tasks and returns the origin's worker once it controls
+// the tab.
 async function signedInWorker(page: Page, context: BrowserContext): Promise<Worker> {
-  if (tapSession) {
-    await context.addCookies(tapSession);
-  } else {
-    await signIn(page);
-    tapSession = await context.cookies();
-  }
+  await signIn(page, origin);
   const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
   await page.goto(origin + '/tasks');
   const worker = await registered;

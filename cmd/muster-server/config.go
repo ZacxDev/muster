@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
@@ -196,6 +197,18 @@ const (
 	// agents. Non-empty (with task routing on) is what offers the chief
 	// task_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
+	// THE CHIEF'S STALL NUDGES (internal/api/chief_nudge.go,
+	// docs/chief-nudges.md): the sweep's switch (off by default; on, every
+	// owner is in SHADOW mode — decisions recorded, nothing sent), how long a
+	// session must be idle, the global hourly cap, and the owners whose nudges
+	// are sent (live).
+	envChiefNudges          = "MUSTER_CHIEF_NUDGES"
+	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
+	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
+	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
+	// The stall classifier's ask-score line: at or over it a stall defaults
+	// to an ask (internal/chiefnudge jev.go).
+	envChiefNudgeAskThreshold = "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD"
 	// CHIEF SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
 	// chief chat session may be started on, comma-separated. claude-code (a CLI
 	// of its own in ccd, with a chosen Claude model; needs a claude-code chief on
@@ -650,6 +663,14 @@ type config struct {
 	TaskRouting            bool
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
+	// ChiefNudges is MUSTER_CHIEF_NUDGES=1; ChiefNudgeIdle, ChiefNudgeHourlyCap
+	// and ChiefNudgeLiveOwners its settings (loadConfig refuses a value that
+	// does not parse).
+	ChiefNudges            bool
+	ChiefNudgeIdle         time.Duration
+	ChiefNudgeHourlyCap    int
+	ChiefNudgeLiveOwners   map[int64]bool
+	ChiefNudgeAskThreshold float64
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
 	// (validateSessionRuntimes refuses an unknown or repeated entry), without
 	// the retired `gateway`; ChiefSessionRuntimeGatewayIgnored is whether it
@@ -1425,6 +1446,36 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
 	}
 	c.ChiefDispatchOwners = owners
+	c.ChiefNudges = envFlag(getenv, envChiefNudges)
+	c.ChiefNudgeIdle = chiefnudge.DefaultIdle
+	if v := strings.TrimSpace(getenv(envChiefNudgeIdle)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < chiefnudge.MinIdle || d > chiefnudge.MaxIdle {
+			return config{}, fmt.Errorf("invalid %s %q: want a duration from %s to %s", envChiefNudgeIdle, v, chiefnudge.MinIdle, chiefnudge.MaxIdle)
+		}
+		c.ChiefNudgeIdle = d
+	}
+	c.ChiefNudgeHourlyCap = chiefnudge.DefaultHourlyCap
+	if v := strings.TrimSpace(getenv(envChiefNudgeHourlyCap)); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			return config{}, fmt.Errorf("invalid %s %q: want a whole number from 1 to 1000", envChiefNudgeHourlyCap, v)
+		}
+		c.ChiefNudgeHourlyCap = n
+	}
+	liveOwners, err := parseOwnerIDs(strings.TrimSpace(getenv(envChiefNudgeLiveOwners)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefNudgeLiveOwners, err)
+	}
+	c.ChiefNudgeLiveOwners = liveOwners
+	c.ChiefNudgeAskThreshold = chiefnudge.DefaultAskThreshold
+	if v := strings.TrimSpace(getenv(envChiefNudgeAskThreshold)); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 2 {
+			return config{}, fmt.Errorf("invalid %s %q: want a number above 0 and at most 2 (the sum of two probabilities)", envChiefNudgeAskThreshold, v)
+		}
+		c.ChiefNudgeAskThreshold = f
+	}
 	c.ChiefSessionRuntimes, c.ChiefSessionRuntimeGatewayIgnored = withoutRetiredSessionRuntime(splitList(getenv(envChiefSessionRuntimes)))
 
 	icons, err := parseHostIcons(getenv(envHostIcons))

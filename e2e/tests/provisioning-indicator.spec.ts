@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, password, provPort, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { hookToken, provPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 
@@ -70,9 +71,7 @@ async function storedStatus(name: string): Promise<string> {
 }
 
 async function login(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 }
 
 // saveAgent creates one agent of the kind with NO note through the dispatch

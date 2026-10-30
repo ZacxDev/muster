@@ -150,11 +150,16 @@ const deviceChallengesMigrationVersion = 58
 // treatment again.
 const chiefPreferencesMigrationVersion = 60
 
-// ccAccountFailoversMigrationVersion is 0064: cc_account_failovers (a
+// chiefNudgesMigrationVersion is 0064: chief_nudges (the chief's stall-nudge
+// decisions), owned and under the same row-level security; same treatment
+// again.
+const chiefNudgesMigrationVersion = 64
+
+// ccAccountFailoversMigrationVersion is 0065: cc_account_failovers (a
 // claude-code agent's account rebinds), owned and under the same row-level
 // security; same treatment again. Its body is idempotent (IF NOT EXISTS, DROP
 // … IF EXISTS, CREATE OR REPLACE), so re-applying it is safe.
-const ccAccountFailoversMigrationVersion = 64
+const ccAccountFailoversMigrationVersion = 65
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
@@ -166,7 +171,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasCCAccountFailovers bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -192,8 +197,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.mail_resumes') IS NOT NULL,
 		to_regclass('public.device_challenges') IS NOT NULL,
 		to_regclass('public.chief_preferences') IS NOT NULL,
+		to_regclass('public.chief_nudges') IS NOT NULL,
 		to_regclass('public.cc_account_failovers') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasCCAccountFailovers); err != nil {
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -223,6 +229,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == mailResumesMigrationVersion && hasMailResumes) &&
 			!(m.version == deviceChallengesMigrationVersion && hasDeviceChallenges) &&
 			!(m.version == chiefPreferencesMigrationVersion && hasChiefPreferences) &&
+			!(m.version == chiefNudgesMigrationVersion && hasChiefNudges) &&
 			!(m.version == ccAccountFailoversMigrationVersion && hasCCAccountFailovers) {
 			continue
 		}

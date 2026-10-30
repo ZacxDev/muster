@@ -193,7 +193,7 @@ func (s *Server) sendQueueEdit(w http.ResponseWriter, r *http.Request, ctx conte
 // "" when it can as far as this read of it goes.
 func sendQueueEditRefusal(it sendqueue.Item) (msg, notice string) {
 	switch {
-	case it.RouteID != "":
+	case it.RouteID != "", it.ChiefNudgeID != 0:
 		return SendQueueRoutedNotEditable, noticeRoutedNotEditable
 	case it.State == sendqueue.Sending:
 		return SendQueueEditSending, noticeEditSending
@@ -257,7 +257,7 @@ func (s *Server) sendQueueEditSave(w http.ResponseWriter, r *http.Request, ctx c
 		}
 		http.Error(w, msg, status)
 	}
-	if it.RouteID != "" {
+	if it.RouteID != "" || it.ChiefNudgeID != 0 {
 		refuse(http.StatusConflict, SendQueueRoutedNotEditable, noticeRoutedNotEditable, false)
 		return
 	}

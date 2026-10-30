@@ -60,6 +60,14 @@ not available instead of showing a switch that cannot work. (An install without
 a provisioner that already holds a chief agent still gets the switch, to turn
 that chief off.)
 
+## Stall nudges
+
+With `MUSTER_CHIEF_NUDGES=1` the chief also judges your sessions that have
+stalled — idle, with the last word theirs — and either nudges one on with a
+labelled message quoting your own recent instruction to it, or asks you on the
+Attention page and relays your answer. It ships in shadow mode: decisions are
+recorded, nothing is sent. See [chief-nudges.md](chief-nudges.md).
+
 ## Which agent is the chief
 
 Two rules, both in `internal/api/chief_agent.go`:

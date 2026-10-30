@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/devices"
@@ -258,6 +259,13 @@ type Extensions struct {
 	// stored choice, so the chief is on exactly when the user has a chief
 	// agent (chiefOn), and the Account page cannot change it.
 	ChiefPrefs chiefpref.Store
+
+	// ChiefNudge is the chief's STALL NUDGES' configuration (MUSTER_CHIEF_NUDGES,
+	// chief_nudge.go; docs/chief-nudges.md) and ChiefNudges its decisions
+	// (internal/chiefnudge, migration 0064). Either nil: the feature is off —
+	// no sweep, no tab, and any queued nudge is refused at its paste.
+	ChiefNudge  *ChiefNudges
+	ChiefNudges chiefnudge.Store
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

@@ -306,7 +306,7 @@ func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string)
 // 🔴 CONDITIONAL ON from, SO A REBIND IS IDEMPOTENT ON (agent, from). Two turns
 // on one agent hitting the limit at once — in this process or another — both
 // ask to move it off from; the first moves it, and the second matches no row
-// (false) instead of moving it again. Migration 0064's trigger refuses this
+// (false) instead of moving it again. Migration 0065's trigger refuses this
 // UPDATE unless the transaction set muster.cc_account_rebind, which only this
 // statement does.
 func (s *PGStore) RebindCCAccount(ctx context.Context, id int64, from, to string) (bool, error) {
