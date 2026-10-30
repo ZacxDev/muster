@@ -59,11 +59,12 @@ var (
 	// not one (group 1); the bare '#' form must not follow a word character,
 	// '&' (an HTML entity) or '/' (group 2); GitHub's cross-repo form
 	// owner/repo#N must not follow a word character, '&' (a query string),
-	// '/' or '.', and its owner holds no '.' (group 3) — so a path or URL
-	// fragment (`a/b/c#1`, `example.com/page#1`) is not one.
+	// '/', '.' or '-', and its owner holds no '.' (group 3) — so a path or URL
+	// fragment (`a/b/c#1`, `example.com/page#1`, `docs/my-guide/page#1`) is
+	// not one: without the '-', the owner could start inside `my-guide`.
 	refRE = regexp.MustCompile(`(?i)(?:\bpull[ \t]+requests?|\bprs?)[ \t]*[-#]?[ \t]*(\d+)\b` +
 		`|(?:^|[^\w&#/])#(\d+)\b` +
-		`|(?:^|[^\w&/.])[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+#(\d+)\b`)
+		`|(?:^|[^\w&/.-])[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+#(\d+)\b`)
 	// versionRE: v1.2(.3…) or 1.2.3(.4…).
 	versionRE = regexp.MustCompile(`(?i)\bv(\d+(?:\.\d+)+)\b|\b(\d+\.\d+\.\d+(?:\.\d+)*)\b`)
 	// tokenRE: a word, with inner '.', '_' or '-' joining its parts.

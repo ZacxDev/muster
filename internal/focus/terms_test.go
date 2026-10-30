@@ -33,6 +33,8 @@ func TestWhatIsDistinctive(t *testing.T) {
 		{"abc#12 and x_y#12", []string{"x_y"}},
 		{"https://example.com/acme/widgets#12", []string{"example.com"}},
 		{"see example.com/page#12 and docs/a/b#12", []string{"example.com"}},
+		{"docs/my-guide/page#12", nil},
+		{"https://example.com/some-page/section#12", []string{"example.com"}},
 		{"acme/widgets#x and acme/w&#39;", nil},
 		{"?q=1&acme/widgets#12", nil},
 		// Versions.
