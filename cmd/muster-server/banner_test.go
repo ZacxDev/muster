@@ -415,6 +415,11 @@ var bannerLedger = []string{
 	// CHIEF SESSION RUNTIMES ARE LEDGERED: ON, the chief's sessions may run on
 	// another runtime and model than its own, so the log must name which.
 	envChiefSessionRuntimes,
+	// 🔴 THE CHIEF'S STALL NUDGES ARE LEDGERED: ON, the chief reads the owner's
+	// stalled sessions and sends their text to its model provider, and a live
+	// owner's sessions get pasted into — so the log must say which state this
+	// is, shadow or live.
+	envChiefNudges,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -435,6 +440,12 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envChiefNudgeLiveOwners: "counted on the `chief nudges: ON` line when set, and named there as empty on the SHADOW line; " +
+		"it means nothing with the sweep off, whose OFF line names " + envChiefNudges,
+	envChiefNudgeIdle:         "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
+	envChiefNudgeAskThreshold: "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
+	envChiefNudgeHourlyCap: "printed with its VALUE on the live `chief nudges: ON` line (and enforced in shadow too); " +
+		"it means nothing with the sweep off",
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
@@ -782,6 +793,11 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefDispatchOwners:    map[int64]bool{1: true},
 		// Chief session runtimes: the banner branches on ext.SessionRuntimes (below).
 		ChiefSessionRuntimes: []string{"claude-code"},
+		// The chief's stall nudges: the banner branches on ext.ChiefNudge (below).
+		ChiefNudges:          true,
+		ChiefNudgeIdle:       15 * time.Minute,
+		ChiefNudgeHourlyCap:  4,
+		ChiefNudgeLiveOwners: map[int64]bool{1: true},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
@@ -818,6 +834,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		MailResume:      &api.MailResume{Allow: bannerResumeAllowlist(t)},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code"},
+		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut

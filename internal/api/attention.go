@@ -934,7 +934,7 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 // handleAttentionPage is GET /attention, the Asks page (asks_drafts.go):
 // served when the queue or plugins (its Reply drafts tab) is.
 func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil && s.ext.Plugins == nil {
+	if s.ext.Attention == nil && s.ext.Plugins == nil && !s.chiefNudgesOn() {
 		http.NotFound(w, r)
 		return
 	}
@@ -968,21 +968,31 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	now := time.Now()
 	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
 		askTabListHTML(items, answeredAsksHTML(s.recentAnswers(r.Context()), now), now) + `</ul>`
-	if s.ext.Plugins == nil {
+	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
 		b.WriteString(askList)
 	} else {
-		pending, archived, ok := s.readDraftViews(r.Context(), focus)
-		if !ok && problem == "" {
-			b.WriteString(problemNode("The reply drafts could not be read."))
+		var pending, archived []plugins.DraftCard
+		if s.ext.Plugins != nil {
+			var ok bool
+			pending, archived, ok = s.readDraftViews(r.Context(), focus)
+			if !ok && problem == "" {
+				b.WriteString(problemNode("The reply drafts could not be read."))
+			}
 		}
-		b.WriteString(s.asksTabsHTML(askList, pending, archived, tab))
+		nudges := ""
+		if s.chiefNudgesOn() {
+			nudges = s.chiefNudgesPanelHTML(r.Context(), now)
+		}
+		b.WriteString(s.asksTabsHTML(askList, s.ext.Plugins != nil, pending, archived, nudges, tab))
 	}
 	b.WriteString(`
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	b.WriteString(attentionPageScript)
-	if s.ext.Plugins != nil {
+	if s.ext.Plugins != nil || s.chiefNudgesOn() {
 		b.WriteString(asksPageScript)
+	}
+	if s.ext.Plugins != nil {
 		b.WriteString(s.draftStepUpHTML(r))
 	}
 	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String())
@@ -1163,6 +1173,9 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 		// An ask raised for a plugin message the chief did not act on
 		// (unrouted.go): the answer settles that message.
 		s.settleAnsweredMessage(ctx, a)
+		// An ask a chief nudge raised (chief_nudge.go): the answer is relayed
+		// into the stalled session, verbatim.
+		s.relayNudgeAnswer(ctx, a)
 	}
 	return a, err
 }

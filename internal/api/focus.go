@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -281,10 +282,53 @@ func (s *Server) agentTail(ctx context.Context, id int64) ([]focus.Entry, error)
 // mirror:sid. Every batch names its transcript (Msg.Gen); one that is not sid
 // (or names none) ends the read as errNoSession, and nothing is stored.
 func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid string) ([]focus.Entry, error) {
+	evs, err := s.mirrorEvents(ctx, e, sid)
+	if errors.Is(err, errNoSession) {
+		return nil, err
+	}
+	out := make([]focus.Entry, 0, len(evs))
+	for _, ev := range evs {
+		if en, ok := focusEntryOf(ev); ok {
+			out = append(out, en)
+		}
+	}
+	// As before mirrorEvents existed: a read that ended in an error is an
+	// error only when it yielded no ENTRY (events this tail does not keep,
+	// tool output, do not count).
+	if len(out) == 0 && err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// mirrorEvents is mirrorTail's read: the bounded backfill of e's transcript as
+// events (a prompt keeps its Line — its place in the transcript — which the
+// chief nudge sweep names it by), with mirrorTail's guard that the stream is
+// conversation sid (errNoSession). It returns what it read AND the watch's
+// error, so each caller decides what a partial read is worth.
+func (s *Server) mirrorEvents(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, error) {
+	evs, _, err := s.mirrorRead(ctx, e, sid)
+	return evs, err
+}
+
+// mirrorIndex is what a mirrored read learned about its own completeness: Got,
+// that the host's prompt index arrived (the backfill was sent in full — the
+// read did not end on the quiet timer or the deadline); Lines, the place of
+// every prompt the index lists (the whole transcript's, up to the backfill's
+// end); More, how many earlier ones it left out.
+type mirrorIndex struct {
+	Got   bool
+	Lines []int64
+	More  int
+}
+
+// mirrorRead is mirrorEvents with the read's prompt index.
+func (s *Server) mirrorRead(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, mirrorIndex, error) {
 	ctx, cancel := context.WithTimeout(ctx, focusTailTimeout)
 	defer cancel()
 	var mu sync.Mutex
-	var out []focus.Entry
+	var out []cctranscript.Event
+	var idx mirrorIndex
 	var otherConversation bool
 	got := make(chan struct{}, 1)
 	done := make(chan error, 1)
@@ -300,12 +344,14 @@ func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid strin
 			if m.Reset {
 				out = out[:0]
 			}
-			for _, ev := range m.Events {
-				if en, ok := focusEntryOf(ev); ok {
-					out = append(out, en)
+			out = append(out, m.Events...)
+			index := m.PromptIndex
+			if index {
+				idx.Got, idx.More, idx.Lines = true, m.PromptsMore, nil
+				for _, p := range m.Prompts {
+					idx.Lines = append(idx.Lines, p.Line)
 				}
 			}
-			index := m.PromptIndex
 			mu.Unlock()
 			if index {
 				// The prompt index follows the backfill: it is complete.
@@ -337,12 +383,9 @@ loop:
 	defer mu.Unlock()
 	if otherConversation {
 		s.logger.Printf("focus: %s@%s %s%s holds another conversation now, not %s; nothing stored", e.Session, e.Host, e.Session, e.Window, sid)
-		return nil, errNoSession
+		return nil, mirrorIndex{}, errNoSession
 	}
-	if len(out) == 0 && err != nil {
-		return nil, err
-	}
-	return append([]focus.Entry(nil), out...), nil
+	return append([]cctranscript.Event(nil), out...), idx, err
 }
 
 // focusEntryOf is one transcript event as a tail entry: a prompt, a reply, a
