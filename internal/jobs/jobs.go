@@ -27,6 +27,7 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -215,6 +216,44 @@ type Job struct {
 	// StartedAt and FinishedAt are zero until set.
 	StartedAt  time.Time
 	FinishedAt time.Time
+	// Failovers are the account failovers the job was re-queued for, oldest
+	// first (jobs.failovers, migration 0064).
+	Failovers []Failover
+}
+
+// Failover is one re-queue of a job after its agent was moved off the Claude
+// account its turn hit a limit on (internal/ccfailover).
+type Failover struct {
+	From   string    `json:"from"`
+	To     string    `json:"to"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
+}
+
+// Tried reports whether the job was already re-queued off account.
+func (j Job) Tried(account string) bool {
+	for _, f := range j.Failovers {
+		if f.From == account {
+			return true
+		}
+	}
+	return false
+}
+
+// MaxFailovers bounds a job's re-queues (migration 0064's
+// jobs_failovers_check); with at most once per FROM account a job reaches it
+// only with that many accounts.
+const MaxFailovers = 16
+
+// Requeuer is the store's conditional re-queue, asserted by the job runner
+// rather than added to Store: a store without it re-queues nothing, and a job
+// whose account failed is failed as before.
+type Requeuer interface {
+	// Requeue moves running job id back to queued, appending f to its
+	// failovers, and reports whether it did: false when the job is not running
+	// any more, already holds a failover FROM f.From (at most once per account
+	// per job), or holds MaxFailovers.
+	Requeue(ctx context.Context, id int64, f Failover) (bool, error)
 }
 
 // Terminal reports whether the job has finished.
@@ -395,16 +434,22 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 const jobColumns = `id, coalesce(agent_id, 0), agent_name, worker_pool, prompt, repo, sha, pr, result_path, timeout_s,
 	coalesce(idempotency_key, ''), model, config_ref, base_sha, requested_by, status, result, reason, error, cc_account,
-	coalesce(session_id, 0), created_at, started_at, finished_at`
+	coalesce(session_id, 0), created_at, started_at, finished_at, failovers`
 
 func scanJob(row pgx.Row) (Job, error) {
 	var j Job
 	var result *string
 	var started, finished *time.Time
+	var failovers []byte
 	if err := row.Scan(&j.ID, &j.AgentID, &j.Agent, &j.WorkerPool, &j.Prompt, &j.Repo, &j.SHA, &j.PR, &j.ResultPath, &j.TimeoutSeconds,
 		&j.IdempotencyKey, &j.Model, &j.ConfigRef, &j.BaseSHA, &j.RequestedBy, &j.Status, &result, &j.Reason, &j.Error, &j.CCAccount,
-		&j.SessionID, &j.CreatedAt, &started, &finished); err != nil {
+		&j.SessionID, &j.CreatedAt, &started, &finished, &failovers); err != nil {
 		return Job{}, err
+	}
+	if len(failovers) > 0 {
+		if err := json.Unmarshal(failovers, &j.Failovers); err != nil {
+			return Job{}, fmt.Errorf("jobs: job %d: read failovers: %w", j.ID, err)
+		}
 	}
 	if result != nil {
 		j.Result, j.HasResult = *result, true
@@ -618,6 +663,31 @@ func (s *PGStore) Start(ctx context.Context, id int64, ccAccount string, session
 	}
 	return tag.RowsAffected() == 1, nil
 }
+
+// Requeue implements [Requeuer].
+//
+// 🔴 ONE CONDITIONAL UPDATE: running, no failover from f.From yet, and room for
+// one more. So a job is re-queued at most once per account it failed on, and a
+// runner racing the reaper (or a shutdown) never re-queues a finished job.
+func (s *PGStore) Requeue(ctx context.Context, id int64, f Failover) (bool, error) {
+	if f.At.IsZero() {
+		f.At = time.Now()
+	}
+	b, err := json.Marshal([]Failover{f})
+	if err != nil {
+		return false, err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET status = 'queued', failovers = failovers || $2::jsonb
+		WHERE id = $1 AND status = 'running' AND jsonb_array_length(failovers) < $4
+		  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(failovers) e WHERE e->>'from' = $3)`,
+		id, string(b), f.From, MaxFailovers)
+	if err != nil {
+		return false, fmt.Errorf("jobs: requeue %d: %w", id, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+var _ Requeuer = (*PGStore)(nil)
 
 // Finish moves a queued or running job to o's terminal status.
 func (s *PGStore) Finish(ctx context.Context, id int64, o Outcome) (bool, error) {

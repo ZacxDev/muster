@@ -139,9 +139,17 @@ type Agent struct {
 	Kind string `json:"kind"`
 	// CCAccount is the Claude account (a name from MUSTER_AGENT_CC_ACCOUNTS) whose
 	// setup-token this claude-code agent runs on; "" for every other kind. It is a
-	// NAME, never the token. Chosen once at dispatch by internal/ccpool and kept
-	// for the agent's life (migration 0003 enforces both halves).
+	// NAME, never the token. Chosen at dispatch by internal/ccpool; it changes
+	// afterwards ONLY by an account failover (internal/ccfailover, migration
+	// 0064), which migration 0003's trigger refuses to every other UPDATE.
 	CCAccount string `json:"ccAccount,omitempty"`
+	// CCAccountPinned: the account was named explicitly at creation (a pin), so
+	// the agent is not failed over to another account unless CCFailover is also
+	// set (agents.cc_account_pinned / cc_failover, migration 0064).
+	CCAccountPinned bool `json:"ccAccountPinned,omitempty"`
+	// CCFailover is a pinned agent's opt-in to account failover. It means
+	// nothing on an unpinned agent, which fails over by default.
+	CCFailover bool `json:"ccFailover,omitempty"`
 	// WorkerPool is the named worker pool this claude-code agent serves machine
 	// jobs for (agents.worker_pool, migration 0042); "" for an agent in none.
 	// Set at creation (dispatch's worker_pool) and never written after; a job

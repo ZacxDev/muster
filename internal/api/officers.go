@@ -283,6 +283,7 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 			DisplayName: fmt.Sprintf("officer %s #%d", o.ID, n),
 			Kind:        agents.KindClaudeCode,
 			CCAccount:   o.CCAccount,
+			CCFailover:  o.CCFailover,
 			NoteText:    kickoff,
 			Kickoff:     true,
 		})

@@ -99,6 +99,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentprovision/scrubexec"
@@ -402,6 +403,29 @@ type Adapter struct {
 	// officer runtime's pre-allowed tools, model and permission bypass); nil =
 	// none for anyone.
 	ccSession func(agents.Agent) (agentspec.ClaudeCodeSession, bool)
+	// lifecycle serialises Start, Stop, Destroy and Rebind per agent in this
+	// process (lockAgent), so an account failover cannot race a Stop or a
+	// Destroy into bringing a stopped agent back or re-creating a deleted one.
+	lifecycleMu sync.Mutex
+	lifecycle   map[int64]*sync.Mutex
+}
+
+// lockAgent blocks until no other lifecycle operation of agentID holds its
+// lane in this process, and returns the release. The map only grows (one
+// mutex per agent ever operated on), which is bounded by the agents table.
+func (a *Adapter) lockAgent(agentID int64) func() {
+	a.lifecycleMu.Lock()
+	if a.lifecycle == nil {
+		a.lifecycle = make(map[int64]*sync.Mutex)
+	}
+	m, ok := a.lifecycle[agentID]
+	if !ok {
+		m = &sync.Mutex{}
+		a.lifecycle[agentID] = m
+	}
+	a.lifecycleMu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // UseClaudeCodeSession installs the source of claude-code agents' per-agent
@@ -680,6 +704,7 @@ func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) err
 func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
+	defer a.lockAgent(agentID)()
 
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
@@ -746,6 +771,7 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 func (a *Adapter) Stop(ctx context.Context, agentID int64) error {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
+	defer a.lockAgent(agentID)()
 
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
@@ -796,6 +822,7 @@ func (a *Adapter) Stop(ctx context.Context, agentID int64) error {
 func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
+	defer a.lockAgent(agentID)()
 
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {

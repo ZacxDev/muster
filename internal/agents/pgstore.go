@@ -47,7 +47,8 @@ func NewPGTx(tx pgx.Tx) *PGStore { return &PGStore{pool: tx} }
 
 const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id, note_text,
 	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
-	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool, gateway_secret`
+	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool, gateway_secret,
+	cc_account_pinned, cc_failover`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -57,18 +58,20 @@ func scanAgent(row interface {
 		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.HooksToken, &a.KickedOff,
 		&a.LastOutput, &a.ErrorMessage, &a.CreatedAt, &a.UpdatedAt,
 		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID, &a.WorkerPool,
-		&a.GatewaySecret)
+		&a.GatewaySecret, &a.CCAccountPinned, &a.CCFailover)
 	return a, err
 }
 
 // Create inserts an agent and returns it with generated id/timestamps.
 func (s *PGStore) Create(ctx context.Context, a Agent) (Agent, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool,
+			cc_account_pinned, cc_failover)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		RETURNING `+agentCols,
 		a.Name, a.Namespace, a.DisplayName, a.Repo, a.RepoBranch, a.NoteID, a.NoteText,
-		a.PendingNote, a.Model, nonEmptyStatus(a.Status), a.HooksToken, ResolveKind(a.Kind), a.CCAccount, a.WorkerPool)
+		a.PendingNote, a.Model, nonEmptyStatus(a.Status), a.HooksToken, ResolveKind(a.Kind), a.CCAccount, a.WorkerPool,
+		a.CCAccountPinned, a.CCFailover)
 	return scanAgent(row)
 }
 
@@ -293,6 +296,40 @@ func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last 
 func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1`, id, secret)
 	return err
+}
+
+// RebindCCAccount moves claude-code agent id from Claude account from to
+// account to, and reports whether it did. It is the ACCOUNT FAILOVER's one
+// write (internal/ccfailover, through agentprovision.Adapter.Rebind), and not
+// on the Store interface for RearmKickoff's reason.
+//
+// 🔴 CONDITIONAL ON from, SO A REBIND IS IDEMPOTENT ON (agent, from). Two turns
+// on one agent hitting the limit at once — in this process or another — both
+// ask to move it off from; the first moves it, and the second matches no row
+// (false) instead of moving it again. Migration 0064's trigger refuses this
+// UPDATE unless the transaction set muster.cc_account_rebind, which only this
+// statement does.
+func (s *PGStore) RebindCCAccount(ctx context.Context, id int64, from, to string) (bool, error) {
+	if from == "" || to == "" || from == to {
+		return false, fmt.Errorf("agents: rebind agent %d: from %q to %q is not a move between two accounts", id, from, to)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('muster.cc_account_rebind', 'on', true)`); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE agents SET cc_account=$3, updated_at=now()
+		WHERE id=$1 AND cc_account=$2 AND kind='claude-code'`, id, from, to)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // AppendPendingNote appends text to agent id's first message while that

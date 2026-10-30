@@ -107,7 +107,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - mail_resumes (0056, the ended sessions mail resumed).
 //   - device_challenges (0058, a paired phone's signed-action challenges).
 //   - chief_preferences (0060, the chief's per-user on/off toggle).
-var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+//   - cc_account_failovers (0064, a claude-code agent's account rebinds).
+var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
 

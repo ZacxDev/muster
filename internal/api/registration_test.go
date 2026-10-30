@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -123,11 +124,18 @@ func fullyWiredServer(t *testing.T) *Server {
 		Transcriber:     stubTranscriber{},
 		Jobs:            stubJobs{},
 		JobWorkspace:    stubJobWorkspace{},
+		AccountFailover: stubAccountFailover{},
 		Uploads:         &uploads.Service{},
 	})
 	s.UseRouter(stubRouter{})
 	return s
 }
+
+// stubAccountFailover satisfies AccountFailover for registration only; any
+// method but UseHooks (which UseExtensions calls) panics.
+type stubAccountFailover struct{ AccountFailover }
+
+func (stubAccountFailover) UseHooks(ccfailover.Policy, ccfailover.Prepare) {}
 
 // stubMirror satisfies Mirror for registration only; any method call panics.
 type stubMirror struct{ Mirror }

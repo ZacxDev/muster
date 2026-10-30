@@ -52,12 +52,14 @@
 // [Limits.Cooldown] (default [DefaultCooldown]). It is over at exactly that
 // instant.
 //
-// 🔴 ONLY THE JOB API REFUSES FOR IT. Its worker-pool choice (internal/api
-// chooseWorker, reading [AccountState.CoolingUntil]) skips a worker on a
-// cooling account and answers 429 when every worker is skipped. Agent dispatch
-// ([Choose]) only ranks a cooling account last and still picks it when it is
-// all there is: an agent keeps its account for life, so refusing to create it
-// for a window of hours would buy nothing.
+// 🔴 ONLY THE JOB API AND THE FAILOVER REFUSE FOR IT. The job API's
+// worker-pool choice (internal/api chooseWorker, reading
+// [AccountState.CoolingUntil]) skips a worker on a cooling account and answers
+// 429 when every worker is skipped, and [ChooseFailover] never moves an agent
+// onto a cooling account. Agent dispatch ([Choose]) only ranks a cooling
+// account last and still picks it when it is all there is: an agent outlives a
+// rate-limit window, so refusing to create it for a window of hours would buy
+// nothing.
 //
 // [Limits.MaxConcurrentJobs] caps how many JOBS one account runs at once, and
 // is OPT-IN: zero (the default) is no cap, because an account's real capacity
@@ -69,9 +71,12 @@
 // including for an account the pool would skip — but must name a configured
 // account.
 //
-// 🔴 AN AGENT KEEPS ITS ACCOUNT FOR LIFE. Select runs once, before the agent's
-// row exists; the row stores the NAME (agents.cc_account) and migration 0003
-// refuses any later change. A restart, a re-provision, a model of the pool
+// 🔴 AN AGENT KEEPS ITS ACCOUNT UNTIL AN ACCOUNT FAILOVER MOVES IT. Select runs
+// once, before the agent's row exists; the row stores the NAME
+// (agents.cc_account) and migration 0003's trigger refuses any later change
+// except the failover's (internal/ccfailover, migration 0064), which moves an
+// agent off an account that answered rate_limited or auth_failed onto one
+// [ChooseFailover] picks. A restart, a re-provision, a model of the pool
 // changing under it — none of them re-select.
 //
 // 🔴 [Pool.Token] IS THE ONE PLACE A TOKEN LEAVES THIS PACKAGE: the pod-spec
@@ -588,6 +593,77 @@ func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[st
 		return a.name < b.name
 	})
 	return cands[0].name, nil
+}
+
+// ChooseFailover is the account a claude-code agent on account from is REBOUND
+// to after from hit its limit or failed authentication (internal/ccfailover):
+// pure, like [Choose], over the same marks, the same "current token" rule and
+// the same cooldown.
+//
+// 🔴 UNLIKE [Choose] IT REFUSES RATHER THAN RANKING LAST. Choose still picks a
+// cooling account when it is all there is, because a new agent outlives a
+// rate-limit window; a failover exists only to move OFF a limited account, so
+// moving onto another one that is still cooling (or whose token failed) would
+// restart the agent's pod to buy nothing. ok is false then, and the agent stays
+// where it is.
+//
+// Of the usable accounts other than from — not auth_failed for its current
+// token, not cooling down at now — it prefers the order the pool and the job
+// API use: never rate-limited first, then the one rate-limited longest ago,
+// then the name (deterministic).
+func ChooseFailover(now time.Time, cooldown time.Duration, names []string, tokens map[string]string, marks map[string]Mark, from string) (string, bool) {
+	best, found := "", false
+	var bestRL time.Time
+	for _, n := range names {
+		if n == from {
+			continue
+		}
+		m := marks[n]
+		if authFailedNow(m, tokens[n]) || !coolingUntil(m, cooldown, now).IsZero() {
+			continue
+		}
+		rl := m.RateLimitedAt
+		better := !found
+		if found {
+			switch {
+			case rl.Equal(bestRL):
+				better = n < best
+			case rl.IsZero() || bestRL.IsZero():
+				better = rl.IsZero()
+			default:
+				better = rl.Before(bestRL)
+			}
+		}
+		if better {
+			best, bestRL, found = n, rl, true
+		}
+	}
+	return best, found
+}
+
+// FailoverTarget is [ChooseFailover] over owner's accounts and marks, read now.
+// ok is false when no other account of owner's is usable.
+func (p *Pool) FailoverTarget(ctx context.Context, owner int64, from string) (string, bool, error) {
+	tokens, names, err := p.accounts(ctx, owner)
+	if err != nil {
+		return "", false, err
+	}
+	marks, err := p.store.Marks(ctx, owner)
+	if err != nil {
+		return "", false, fmt.Errorf("ccpool: read account marks: %w", err)
+	}
+	to, ok := ChooseFailover(p.now(), p.limits.Cooldown, names, tokens, marks, from)
+	return to, ok, nil
+}
+
+// CoolingUntil is when owner's account stops cooling down after its latest
+// rate_limited mark ([CooldownUntil]), or zero when it is not cooling now.
+func (p *Pool) CoolingUntil(ctx context.Context, owner int64, account string) (time.Time, error) {
+	marks, err := p.store.Marks(ctx, owner)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("ccpool: read account marks: %w", err)
+	}
+	return coolingUntil(marks[account], p.limits.Cooldown, p.now()), nil
 }
 
 // maxDetail bounds the stored detail. ccd's message carries the CLI's "resets …"
