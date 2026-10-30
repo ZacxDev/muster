@@ -285,43 +285,38 @@ func equalIDs(a, b []int64) bool {
 	return true
 }
 
-// TestTheChiefsCardOffersNoDelete: the card list reads the same predicate, so
-// the menu never offers a Delete the server refuses — and still offers it on
-// every other card (a menu that dropped Delete everywhere would pass a check
-// that only looked at the chief).
+// TestTheChiefsCardOffersNoDelete: the agent page's ⋯ menu (the retired list
+// card's, GET ui.AgentHeaderPath) reads the same predicate, so it never offers
+// a Delete the server refuses — and still offers it on every other agent (a
+// menu that dropped Delete everywhere would pass a check that only looked at
+// the chief).
 func TestTheChiefsCardOffersNoDelete(t *testing.T) {
-	s, h, _, _, _ := chiefFixture()
-	body := getOwed(t, s, h, "/ui/agents").Body.String()
+	s, _, _, _, _ := chiefFixture()
 	for _, tc := range []struct {
 		id         int64
 		wantDelete bool
 	}{
 		{chiefSlugID, false}, {chiefResolvedID, false}, {lateLabelID, true}, {workerID, true},
 	} {
-		card := cardChunk(t, body, tc.id)
-		has := strings.Contains(card, `hx-delete="/agents/`+itoa(tc.id)+`"`)
-		if has != tc.wantDelete {
-			t.Errorf("agent %d's card offers delete = %v, want %v", tc.id, has, tc.wantDelete)
-		}
-		// The menu itself is still there: Start/Stop stays available to the chief.
-		if !strings.Contains(card, `aria-label="Agent actions"`) {
-			t.Errorf("agent %d's card has no ⋯ menu at all", tc.id)
+		if has := deletableOnPage(t, s, tc.id); has != tc.wantDelete {
+			t.Errorf("agent %d's page offers delete = %v, want %v", tc.id, has, tc.wantDelete)
 		}
 	}
 }
 
-// cardChunk is one agent's card: from its <article> to the next one.
-func cardChunk(t *testing.T, markup string, id int64) string {
+// deletableOnPage is whether one agent's page offers Delete in its ⋯ menu:
+// the card the page composes (agentPageCard, which decides the chief and
+// officer protection) asked the predicate the menu draws by
+// (ui.AgentCardView.Deletable; internal/ui's tests pin that the menu follows
+// it).
+func deletableOnPage(t *testing.T, s *Server, id int64) bool {
 	t.Helper()
-	start := strings.Index(markup, `<article id="agent-`+itoa(id)+`"`)
-	if start < 0 {
-		t.Fatalf("no card for agent %d", id)
+	ctx := operatorCtx()
+	a, err := s.ext.Agents.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("agent %d: %v", id, err)
 	}
-	rest := markup[start+1:]
-	if end := strings.Index(rest, `<article id="agent-`); end >= 0 {
-		return markup[start : start+1+end]
-	}
-	return markup[start:]
+	return s.agentPageCard(ctx, a, nil).Deletable()
 }
 
 // TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every top-level

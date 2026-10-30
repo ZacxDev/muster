@@ -9,19 +9,26 @@ import (
 )
 
 // TestMirrorLabelsReachEverySurfaceAndNeverTheAddress: a host's labels (the
-// plugin's HostView.Labels) title the Agents card, the terminal page and the
-// rendered view, through the real mux — while every href and socket path still
+// plugin's HostView.Labels) title the sidebar's row (where the retired Agents
+// list's card went), the terminal page and the rendered view, through the real
+// mux — while every href and socket path still
 // names the SESSION. Its control is the same host with no labels: raw names.
 func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, labels: map[string]string{"main": "mango:1"}}
 	s, ts := viewServer(t, fm)
 
-	_, list := mirrorGet(t, s, ts, "/ui/agents")
-	for _, want := range []string{`<span data-mirror-label="">mango:1</span>`, `title="tmux session main"`,
-		`href="` + amp(ui.MirrorViewPath("ws", "main")) + `"`, `data-mirror-name="">chief</span>`} {
-		if !strings.Contains(list, want) {
-			t.Errorf("the Agents list lacks %q", want)
+	_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	// The labelled row: named by its label, found by its raw session name too
+	// (the card's "tmux session main" tooltip is the palette's word now), and
+	// linking the session by its NAME. The unlabelled one: its raw name.
+	main := cardFor(t, list, ui.MirrorViewPath("ws", "main"))
+	for _, want := range []string{`title="mango:1"`, `truncate">mango:1</span>`, `data-switcher-words="claude code main ws"`} {
+		if !strings.Contains(main, want) {
+			t.Errorf("the labelled row lacks %q:\n%s", want, main)
 		}
+	}
+	if chief := cardFor(t, list, ui.MirrorTerminalPath("ws", "chief")); !strings.Contains(chief, `truncate">chief</span>`) {
+		t.Errorf("the unlabelled row is not its raw name:\n%s", chief)
 	}
 	if strings.Contains(list, "session=mango") {
 		t.Error("a link addresses the session by its label")
@@ -46,36 +53,37 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 
 	// Control: no labels — every surface is the raw name.
 	s2, ts2 := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}})
-	_, plain := mirrorGet(t, s2, ts2, "/ui/agents")
-	if strings.Contains(plain, "data-mirror-label") || !strings.Contains(plain, `data-mirror-name="">main</span>`) {
-		t.Error("an unlabelled host's card is not its raw name")
+	_, plain := mirrorGet(t, s2, ts2, ui.NavAgentsPath)
+	if row := cardFor(t, plain, ui.MirrorViewPath("ws", "main")); strings.Contains(row, "mango") || !strings.Contains(row, `truncate">main</span>`) {
+		t.Errorf("an unlabelled host's row is not its raw name:\n%s", row)
 	}
 }
 
 // TestASharedLabelIsQualifiedByItsHostOnEverySurface: two hosts both list
 // "mango:1" (the measured bug: two cards titled exactly that, the operator
-// opened the wrong one). Through the real mux, the card, the terminal page and
-// the rendered view all call ws's entry "mango:1 · ws" — header AND <title> —
-// and the other host's card "mango:1 · tower". A label only ONE host lists
-// ("solo" below) is left as it is.
+// opened the wrong one). Through the real mux, the sidebar's row (where the
+// retired list's card went), the terminal page and the rendered view all call
+// ws's entry "mango:1 · ws" — header AND <title> — and the other host's row
+// "mango:1 · tower". A label only ONE host lists ("solo" below) is left as it
+// is.
 func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, labels: map[string]string{"main": "mango:1", "chief": "solo"},
 		others: []mirror.HostView{{Host: "tower", Online: true, Sessions: []string{"mango"}, Labels: map[string]string{"mango": "mango:1"}}}}
 	s, ts := viewServer(t, fm)
 
-	_, list := mirrorGet(t, s, ts, "/ui/agents")
-	for _, want := range []string{
-		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · ws</span>`,
-		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · tower</span>`,
-		// Unqualified, and (on a card) with no raw session name beside it.
-		`<span data-mirror-label="">solo</span></span>`,
+	_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	for _, c := range []struct{ href, name string }{
+		{ui.MirrorViewPath("ws", "main"), "mango:1 · ws"},
+		{ui.MirrorTerminalPath("tower", "mango"), "mango:1 · tower"},
+		// Unqualified, and with no raw session name beside it.
+		{ui.MirrorTerminalPath("ws", "chief"), "solo"},
 	} {
-		if !strings.Contains(list, want) {
-			t.Errorf("the Agents list lacks %q", want)
+		if row := cardFor(t, list, c.href); !strings.Contains(row, `title="`+c.name+`"`) || !strings.Contains(row, `truncate">`+c.name+`</span>`) {
+			t.Errorf("the row of %s is not named %q:\n%s", c.href, c.name, row)
 		}
 	}
-	if n := strings.Count(list, "data-mirror-qualifier"); n != 2 {
-		t.Errorf("%d qualified titles, want 2 (the two mango:1 cards, not solo)", n)
+	if n := strings.Count(list, `mango:1 · `); n != 4 {
+		t.Errorf("%d qualified names, want 4 (the two mango:1 rows' title and text, not solo)", n)
 	}
 
 	_, term := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
@@ -105,9 +113,9 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 	fm.mu.Lock()
 	fm.others = nil
 	fm.mu.Unlock()
-	_, alone := mirrorGet(t, s, ts, "/ui/agents")
-	if strings.Contains(alone, "data-mirror-qualifier") {
-		t.Error("with no clash left, a card is still qualified")
+	_, alone := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	if row := cardFor(t, alone, ui.MirrorViewPath("ws", "main")); strings.Contains(row, " · ws") || !strings.Contains(row, `truncate">mango:1</span>`) {
+		t.Errorf("with no clash left, the row is still qualified:\n%s", row)
 	}
 	_, aloneTerm := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
 	if !strings.Contains(aloneTerm, "<title>Terminal · mango:1 · muster</title>") {

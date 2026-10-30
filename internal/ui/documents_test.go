@@ -58,13 +58,11 @@ type documentRenderer struct {
 var standaloneDocuments = []documentRenderer{
 	{
 		// PageWith is where the shell's Doctype is (Page calls it with no
-		// ShellData). The full render is the Agents tab with its list and its
-		// session switcher drawn on first paint, so the cards and the switcher's
-		// entries are in the sweep.
+		// ShellData). The full render is the Tasks tab with its board drawn on
+		// first paint.
 		fn: "PageWith", label: "the app shell (/)",
 		render: func(w io.Writer) error {
-			list := []AgentCardView{{ID: 1, Name: "keen-wren", DisplayName: "#12 · **fix** the `chip` row", Status: "running"}}
-			return RenderPageWith(w, "agents", featuresAllOn, ShellData{}.WithList(list, nil, []RecentRef{{AgentID: 1}}, 0))
+			return RenderPageWith(w, "tasks", featuresAllOn, ShellData{}.WithTasks(sampleTasksView(), ""))
 		},
 		renderEmpty: func(w io.Writer) error { return RenderPage(w, "", featuresAllOn) },
 	},
@@ -299,8 +297,10 @@ var featuresAllOn = Features{Connectors: true, Dispatch: true}
 // see a task card or an agent card.
 func listFragments() []namedDoc {
 	return []namedDoc{
+		// The agent page's status strip refresh (agent_actions.go): its strip,
+		// ⋯ menu and notices, for a card with every notice drawn.
+		{"agent-header", g.Group{agentStripBody(sampleHeaderCard()), agentActionsMenu(sampleHeaderCard()), agentNoticesBody(sampleHeaderCard())}},
 		{"tasks-list", NotesCards(sampleTasksView())},
-		{"agents-cards", AgentsCards(sampleAgentCards())},
 		{"notes-edit-modal", NotesEditModalBody(sampleNoteEditView())},
 		// The sidebar's agent list (nav_agents.go), one agent marked current.
 		{"nav-agents", NavAgentsList(sampleAgentCards(), navMirrorFixture(), "/agents/"+sampleAgentCards()[0].Name, time.Now())},
@@ -730,4 +730,15 @@ func TestTheShellCarriesNoPermissionRouterSurface(t *testing.T) {
 				"value that never changes.", s)
 		}
 	}
+}
+
+// sampleHeaderCard is an agent card with every line its page draws: the owed
+// badge is exclusive with the failed one, so this one has failed, awaits its
+// github grant, has a GitHub problem and has work running.
+func sampleHeaderCard() AgentCardView {
+	a := sampleAgentCards()[0]
+	a.KickoffFailed, a.KickoffFailure, a.Namespace = true, "the turn timed out", "ns-keen"
+	a.KickoffAwaitingGrant, a.GitHubProblem, a.AwaitingApproval = true, "the installation does not cover the repository", true
+	a.Work.Subagents = 2
+	return a
 }

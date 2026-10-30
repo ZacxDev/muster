@@ -103,8 +103,8 @@ func (s SessionView) Address() string {
 // qualify sets every entry's Qualifier over list — the WHOLE list, across
 // hosts, as Ordered produces it.
 //
-// 🔴 ONE RULE, ONE PLACE. The Agents card and the pages it opens (their header
-// and their <title>) all take an entry's name from here, so they cannot
+// 🔴 ONE RULE, ONE PLACE. The sidebar's row, the switcher's pill and the pages
+// they open (their header and their <title>) all take an entry's name from here, so they cannot
 // disagree about whether "mango:1" needs its host. It is decided over the list
 // as it is NOW, so a host connecting with a clashing label — or the one it
 // clashed with going away — changes the answer on the next render; the hub
@@ -304,13 +304,13 @@ func (s SessionView) Kind() string {
 	return s.Command
 }
 
-// ActiveAt is the time the entry's card prints as "active … ago": its
-// Activity (already floored to ActivityBucket by NormalizeActivity /
-// NormalizeWindows), or zero for unknown so the card prints no "active" at all
-// rather than "active 56y ago".
+// ActiveAt is the entry's last activity, as the sidebar row's recency dot reads
+// it: its Activity (already floored to ActivityBucket by NormalizeActivity /
+// NormalizeWindows), or zero for unknown so no time is drawn at all rather than
+// one 56 years ago.
 //
-// 🔴 ONE RULE, ONE PLACE: the Agents view's card takes its time from here, and
-// the hub decides from here (listed) whether an update moved a card's time.
+// 🔴 ONE RULE, ONE PLACE: the sidebar takes an entry's time from here, and the
+// hub decides from here (listed) whether an update moved an entry's time.
 func (s SessionView) ActiveAt() time.Time {
 	if s.Activity <= 0 {
 		return time.Time{}
@@ -393,7 +393,7 @@ func (v HostView) CanPaste(session string) bool {
 // muster-mirror) comes after all that did, in that same order. With no
 // activity anywhere the result is exactly the old list.
 //
-// 🔴 ONE RULE, ONE PLACE. The Agents view renders this list and the hub
+// 🔴 ONE RULE, ONE PLACE. The sidebar renders this list and the hub
 // decides from this same list (listed) whether a host's update changed what the
 // view shows: the order, which it re-renders for at once, and each entry's
 // ActiveAt, which it re-renders for throttled. A second copy of either

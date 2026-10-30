@@ -1,6 +1,6 @@
-// Package recents is the Agents list's "recently viewed" entries (migration
-// 0018): per user, server-stored, so the strip follows its owner across
-// devices. An entry names a dispatched agent or a mirrored tmux window, keyed
+// Package recents is the "recently viewed" entries (migration 0018) — the
+// session switcher's Recent view, and where home goes with no chief: per user,
+// server-stored, so they follow their owner across devices. An entry names a dispatched agent or a mirrored tmux window, keyed
 // exactly as a pin is (pins.MirrorKey).
 //
 // 🔴 EVERY METHOD RUNS UNDER THE CALLER'S PRINCIPAL. recents is under FORCE

@@ -189,8 +189,8 @@ type Extensions struct {
 
 	// Mirror is the optional MIRRORED-sessions plugin (internal/mirror). nil
 	// means the plugin is off (MUSTER_MIRROR unset), which is the default: GET
-	// /mirror/connect and the mirror terminal routes answer 404 and the Agents
-	// view draws no mirrored card. See mirror.go.
+	// /mirror/connect and the mirror terminal routes answer 404 and the sidebar
+	// lists no mirrored entry. See mirror.go.
 	Mirror Mirror
 
 	// Flows is the browser-flow queue and its runner tokens (internal/flows,
@@ -208,14 +208,14 @@ type Extensions struct {
 	// Plugins set: messages are stored and stay queued — nothing is delivered.
 	PluginGateway plugins.Gateway
 
-	// Pins is the Agents list's per-user pins (internal/pins, migration 0017).
-	// nil (no database): nothing is pinned, no card is drawn pinned, and the pin
-	// routes answer 404.
+	// Pins is the per-user pins the session switcher sets and shows (internal/pins,
+	// migration 0017). nil (no database): nothing is pinned, the switcher's Pins
+	// view is empty, and the pin routes answer 404.
 	Pins pins.Store
 
-	// Recents is the Agents list's per-user "recently viewed" entries
-	// (internal/recents, migration 0018). nil (no database): no visit is
-	// recorded and the strip is never drawn.
+	// Recents is the per-user "recently viewed" entries (internal/recents,
+	// migration 0018): the session switcher's Recent view, and where home goes
+	// with no chief. nil (no database): no visit is recorded and Recent is empty.
 	Recents recents.Store
 
 	// SendQueue is the server-side send queue (internal/sendqueue, migration
@@ -227,15 +227,15 @@ type Extensions struct {
 	// sendqueue.DefaultIdleFor.
 	SendQueueIdle time.Duration
 
-	// AgentsIdleAfter is the Agents list's Idle section threshold
-	// (MUSTER_AGENTS_IDLE_AFTER, ui.DefaultIdleSectionAfter when unset): an
-	// entry with no activity for longer is drawn under the collapsed "Idle (N)"
-	// header (internal/ui/idle_section.go). 0 — the zero value, so every test
+	// AgentsIdleAfter is the Idle section's threshold (MUSTER_AGENTS_IDLE_AFTER,
+	// ui.DefaultIdleSectionAfter when unset): an entry with no activity for longer
+	// is drawn in the sidebar's collapsed "Idle (N)" group
+	// (internal/ui/idle_section.go). 0 — the zero value, so every test
 	// fixture that does not set it — draws no section.
 	AgentsIdleAfter time.Duration
 
 	// Focus is session focus (internal/focus, migration 0020): what each of a
-	// user's sessions is working on. nil (no database): no card shows a focus
+	// user's sessions is working on. nil (no database): no entry has a focus
 	// and the focus tools are not offered.
 	Focus focus.Store
 	// FocusSummarizer computes a focus from a transcript tail (the ScaleDown
@@ -643,7 +643,7 @@ const ProvisionerUnwiredField = "provisionerUnwired"
 // surface stating a falsehood with nothing logged where a user is looking.
 //
 // 🔴 IT IS THE SAME OBSERVABLE doc_seams.go ENTRY 1 ARGUES AGAINST. That entry
-// refuses to wire a FAKE provisioner because a fake "would make the Agents tab
+// refuses to wire a FAKE provisioner because a fake "would make the agent pages
 // LOOK operational: dispatch would report success, no pod would exist, and the
 // agent would sit in `provisioning` for ever." Wiring nil produced exactly that,
 // byte for byte. The nil was never the honest option on its own — this wrapper
@@ -695,7 +695,7 @@ func (s *Server) requireLifecycleProvisioner(next http.HandlerFunc) http.Handler
 
 // dispatchServed reports whether this server holds an agent provisioner. It is
 // the ONE predicate behind requireLifecycleProvisioner's 503 AND every surface
-// that offers a dispatch: Features.Dispatch (the Agents bar's "+"),
+// that offers a dispatch: Features.Dispatch (the sidebar's "+"),
 // TaskCardView.Dispatch (a task card's Dispatch button) and the
 // /ui/agents/new sheet's body. A UI that decided "can this server dispatch?"
 // from anything else could draw a button over the very 503 this answers —

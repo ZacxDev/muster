@@ -27,8 +27,8 @@ func snapServer(t *testing.T) (*Server, *httptest.Server, *fakeMirror, *memRecen
 	return s, ts, fm, mem
 }
 
-// Every page that reads or warms snapshots — the rendered view, the Agents
-// list, an agent's page — carries the store's tag naming the REQUEST'S
+// Every page that reads or warms snapshots — the rendered view, the shell, an
+// agent's page — carries the store's tag naming the REQUEST'S
 // principal and the running build (shellFeatures). Red before: none did.
 func TestThePagesThatReadOrWarmSnapshotsCarryThePrincipalAndBuild(t *testing.T) {
 	s, ts, _, _ := snapServer(t)
@@ -43,16 +43,18 @@ func TestThePagesThatReadOrWarmSnapshotsCarryThePrincipalAndBuild(t *testing.T) 
 		}
 		pages[path] = body
 	}
-	// The Agents list, over the list's own fixture server.
+	// The shell (its sidebar's rows warm the windows they link), over the
+	// list fixture's server. (The Agents list page, which warmed its pinned
+	// and recent windows, is retired.)
 	ls, h, _ := listServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
 	admit(ls, req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /agents: %d", rec.Code)
+		t.Fatalf("GET /tasks: %d", rec.Code)
 	}
-	pages["/agents"] = rec.Body.String()
+	pages["/tasks"] = rec.Body.String()
 	for path, body := range pages {
 		m := tag.FindStringSubmatch(body)
 		if m == nil {

@@ -151,7 +151,7 @@ func TestADispatchOfAKindTheCallerHasNoCredentialForIsRefusedWithWhatToAdd(t *te
 	if len(store.created) != 0 {
 		t.Fatalf("a refused dispatch created %d row(s)", len(store.created))
 	}
-	if rec := postDispatch(t, s, h, url.Values{"kind": {agents.KindClaudeCode}, "note_text": {"t"}}); rec.Code != http.StatusOK {
+	if rec := postDispatch(t, s, h, url.Values{"kind": {agents.KindClaudeCode}, "note_text": {"t"}}); !dispatched(rec, store) {
 		t.Fatalf("control: claude-code (available): %d %s", rec.Code, rec.Body)
 	}
 	if len(owners) != 1 || owners[0] != authz.OperatorUserID {

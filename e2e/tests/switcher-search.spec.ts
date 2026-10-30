@@ -260,6 +260,15 @@ for (const vp of [
       await expect(options(page)).toHaveCount(0);
       await expect(pal(page).locator('[data-switcher-search-empty]')).toBeVisible();
       await expect(pal(page).locator('[data-switcher-search-empty]')).toHaveText('No session matches');
+      // BY HOST (the retired Agents list's host tabs became a word the palette
+      // finds by): the mirrored host's name finds its windows (all but the
+      // page's own) and not the dispatched agent; "cluster", a dispatched
+      // agent's host, finds the agent and none of the windows.
+      await input(page).fill(rig.host);
+      await expect.poll(async () => (await optionLabels(page)).sort()).toEqual([label('buckwheat'), label('vapor'), label('wheat')]);
+      await input(page).fill('cluster');
+      await expect.poll(() => optionLabels(page)).toContain(AGENT_TITLE);
+      for (const [w] of WINDOWS) expect(await optionLabels(page), `${w} is not on the cluster`).not.toContain(label(w));
 
       // 🔴 TYPED AS THE OPERATOR TYPES IT: the bare codename "wheat" (no ":1")
       // ranks wheat:1 first, and a session whose TITLE holds the word (the

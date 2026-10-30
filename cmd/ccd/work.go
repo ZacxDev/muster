@@ -49,7 +49,7 @@ import (
 // only while its pid runs with the start time the file records.
 
 // workInterval is how often ccd samples its CLIs' work. The chip is display
-// only: this, plus the card's 10 s status poll, bounds how stale it can be.
+// only: this, plus the agent page's 10 s status poll, bounds how stale it can be.
 const workInterval = 5 * time.Second
 
 // workHeartbeat is how often an unchanged non-zero report is re-sent.

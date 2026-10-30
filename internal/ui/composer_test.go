@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 )
@@ -160,7 +161,7 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 }
 
 // TestAnAgentsRenderedViewIsItsDefaultAndBothViewsHaveTheSwitch: an agent's
-// card opens its chat page (the rendered view of its work), and a claude-code
+// sidebar row opens its chat page (the rendered view of its work), and a claude-code
 // agent — the kind with a terminal — carries the SAME Rendered | Terminal
 // switch a mirrored Claude Code window has, on both pages. A kind with no
 // terminal has one view and no switch.
@@ -169,9 +170,9 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 // "Terminal" link (#open-terminal) and the terminal page had nothing leading
 // back but the back arrow.
 func TestAnAgentsRenderedViewIsItsDefaultAndBothViewsHaveTheSwitch(t *testing.T) {
-	card := renderNode(t, agentCard(AgentCardView{ID: 7, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha", Status: "running"}))
-	if !strings.Contains(card, `<a href="/agents/keen-wren"`) || strings.Contains(card, "/terminal") {
-		t.Errorf("an agent's card does not open its rendered view:\n%s", card)
+	row := renderNode(t, NavAgentsList([]AgentCardView{{ID: 7, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha", Status: "running"}}, nil, "", time.Now()))
+	if !strings.Contains(row, `href="/agents/keen-wren"`) || strings.Contains(row, "/terminal") {
+		t.Errorf("an agent's sidebar row does not open its rendered view:\n%s", row)
 	}
 
 	cc := sampleAgentDetailView()

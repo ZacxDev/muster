@@ -10,8 +10,8 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// AN OPENCODE WINDOW's RENDERED VIEW (docs/design/opencode.md): its card opens
-// the rendered view when the host names the session its pane title matched,
+// AN OPENCODE WINDOW's RENDERED VIEW (docs/design/opencode.md): its sidebar
+// row opens the rendered view when the host names the session its pane title matched,
 // the page draws the conversation socket like a Claude Code window's, and its
 // composer is DISABLED, saying why, with no send queue — on an interactive
 // host too: muster views opencode and sends nothing to it.
@@ -27,17 +27,20 @@ func TestAnOpenCodeWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 	}
 	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, windows: windows, statusReport: true}
 	s, ts := viewServer(t, fm)
-	_, list := mirrorGet(t, s, ts, "/ui/agents")
+	// The sidebar's rows (where the retired Agents list's cards went).
+	_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
 	view := ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}
 	none := ui.MirrorRef{Host: "ws", Session: "main", Window: "@2"}
 	if !strings.Contains(list, `href="`+amp(view.ViewPath())+`"`) {
-		t.Fatalf("the opencode card with a session does not open its rendered view:\n%s", list)
+		t.Fatalf("the opencode row with a session does not open its rendered view:\n%s", list)
 	}
 	if !strings.Contains(list, `href="`+amp(none.TerminalPath())+`"`) {
-		t.Fatal("the opencode card with no session does not open its terminal")
+		t.Fatal("the opencode row with no session does not open its terminal")
 	}
-	if n := strings.Count(list, `data-f-kind="opencode"`); n != 2 {
-		t.Errorf("%d cards filter as kind:opencode, want 2", n)
+	// Found by the kind (the palette's words; the card's filter field has no
+	// successor on the row).
+	if n := strings.Count(list, `data-switcher-words="opencode main ws"`); n != 2 {
+		t.Errorf("%d rows are found as opencode, want 2:\n%s", n, list)
 	}
 
 	resp, page := mirrorGet(t, s, ts, view.ViewPath())
@@ -69,7 +72,10 @@ func TestAnOpenCodeWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 
 // TestAnOpenCodeWindowsCardSaysWhyItHasNoView: the host's reason for each
 // state the person must act on (mirror.Window.AgentNote, spelled by
-// internal/mirrorhost) is drawn on the window's card, as it was sent.
+// internal/mirrorhost) is drawn, as it was sent, on the page the window's
+// entry opens — its terminal, since none of them has a view (the retired
+// Agents list drew it on the window's card) — and each page says its OWN
+// window's reason only.
 func TestAnOpenCodeWindowsCardSaysWhyItHasNoView(t *testing.T) {
 	reasons := []string{
 		"opencode is not paired on this host: run muster-mirror opencode-pair",
@@ -86,13 +92,19 @@ func TestAnOpenCodeWindowsCardSaysWhyItHasNoView(t *testing.T) {
 	}
 	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, windows: windows, statusReport: true}
 	s, ts := viewServer(t, fm)
-	_, list := mirrorGet(t, s, ts, "/ui/agents")
-	if n := strings.Count(list, "data-mirror-note"); n != len(reasons) {
-		t.Errorf("%d notes drawn, want %d", n, len(reasons))
-	}
-	for _, r := range reasons {
-		if !strings.Contains(list, html.EscapeString(r)) {
-			t.Errorf("the card does not say %q", r)
+	for i, r := range reasons {
+		w := ui.MirrorRef{Host: "ws", Session: "main", Window: "@" + strconv.Itoa(i+1)}
+		resp, page := mirrorGet(t, s, ts, w.TerminalPath())
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s = %d", w.TerminalPath(), resp.StatusCode)
+		}
+		if !strings.Contains(page, html.EscapeString(r)) {
+			t.Errorf("%s does not say %q", w.TerminalPath(), r)
+		}
+		for j, other := range reasons {
+			if j != i && strings.Contains(page, html.EscapeString(other)) {
+				t.Errorf("%s says another window's reason %q", w.TerminalPath(), other)
+			}
 		}
 	}
 }

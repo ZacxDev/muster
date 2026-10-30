@@ -15,7 +15,7 @@ import (
 const EnvSampleRatio = "MUSTER_TRACE_SAMPLE_RATIO"
 
 // DefaultSampleRatio is EnvSampleRatio's default: one trace in twenty for
-// everything that is not an open. The Agents list re-renders, the event
+// everything that is not an open. The sidebar's re-fetches, the event
 // stream and the badge poll are most of a busy page's requests, and at 1.0
 // they would bury the opens this exists for.
 const DefaultSampleRatio = 0.05

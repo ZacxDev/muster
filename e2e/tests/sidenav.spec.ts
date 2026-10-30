@@ -1,7 +1,7 @@
 import { FrameLocator, Page, request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, sidenavPort } from '../lib/env';
-import { cc, MirrorRig } from '../lib/mirrorhost';
+import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 import { openDispatchSheet } from '../lib/dispatch';
 import { openMore } from '../lib/nav';
 
@@ -143,7 +143,9 @@ async function bothWindowsListed(page: Page): Promise<void> {
   await rig.login(page);
   await expect.poll(() => rig.log.includes('connected to '), { message: `the host connected (log:\n${rig.log})`, timeout: 20_000 }).toBe(true);
   await expect
-    .poll(async () => ((await (await page.request.get(origin + '/ui/agents')).text()).match(/data-mirror-claude/g) || []).length, {
+    // The sidebar's rows (GET /ui/nav/agents): this host's windows, online,
+    // each a row that opens its Rendered view.
+    .poll(async () => mirroredEntries(await (await page.request.get(origin + '/ui/nav/agents')).text()).filter((e) => e.state === 'online' && e.markup.includes(`host=${rig.host}`) && entryMatches(e.markup, 'data-mirror-claude')).length, {
       message: `both windows listed as Claude Code (log:\n${rig.log})`,
       timeout: 20_000,
     })
@@ -163,7 +165,7 @@ async function ccAgent(page: Page): Promise<string> {
     return new Set(rows.map((a) => a.name));
   };
   const before = await names();
-  await page.goto(origin + '/agents');
+  await page.goto(origin + '/tasks');
   await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await sheet.locator('[data-kind-option="claude-code"]').click();
@@ -174,6 +176,9 @@ async function ccAgent(page: Page): Promise<string> {
   const created = [...(await names())].filter((n) => !before.has(n));
   expect(created.length, 'exactly one agent created').toBe(1);
   agent = created[0];
+  // Save for later answers with an HX-Redirect to the new agent's page: let
+  // that navigation land, or it interrupts the caller's next one.
+  await page.waitForURL((u) => u.pathname === `/agents/${agent}`);
   return agent;
 }
 
@@ -219,10 +224,16 @@ for (const size of [
       await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText('window ONE');
       await expect(page.locator('#mv-status')).toHaveText('Live');
       await expect(toggle(page), 'the hamburger is shown at this size too').toBeVisible();
-      // A mirrored window hangs off the Agents list, as an agent's page does.
-      await marks(page, 'a[data-tab="agents"]');
+      // No page entry is this page's (the Agents tab is retired): the window's
+      // own row in the sidebar's list is the current one instead.
+      await marks(page, null);
       const before = { log: await box(page, '#mv-log'), compose: await box(page, '#mv-compose') };
       await openByToggle(page);
+      // The list loaded on that open; its current row is this window's.
+      const cur = panel(page).locator('#sidebar-agents-list a[data-nav-current]');
+      await expect(cur).toHaveCount(1);
+      await expect(cur).toHaveAttribute('aria-current', 'true');
+      expect(new URL((await cur.getAttribute('href'))!, origin).searchParams.get('window'), "the current row is this window's").toBe('@1');
       expect(await box(page, '#mv-log')).toEqual(before.log);
       expect(await box(page, '#mv-compose')).toEqual(before.compose);
       expect(before.compose.x, 'the pinned composer spans the window: no rail beside it').toBe(0);
@@ -266,9 +277,10 @@ for (const size of [
       // full-height view); on a phone its hamburger opens it.
       await navOnTopInFrame(page, desktop);
       await openMore(framed(page));
-      await framed(page).locator('#sidebar a[data-tab="agents"]').click();
-      await expect.poll(() => pathOf(page)).toBe('/agents');
+      await framed(page).locator('#sidebar a[data-tab="tasks"]').click();
+      await expect.poll(() => pathOf(page)).toBe('/tasks');
       await expect(frameEl(page)).toHaveCount(0);
+      await expect(page.locator('#panel-tasks')).toBeVisible();
     });
   });
 }

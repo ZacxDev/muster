@@ -168,6 +168,11 @@ jobs:
       - name: INSTALL.md's blocks do what they say
         run: python3 tests/install_guide_test.py
 
+      # The Claude Code plugin marketplace: names, source path, skill
+      # frontmatter, and the setup skill pointing at INSTALL.md's URL.
+      - name: the Claude Code plugin is what the README installs
+        run: python3 tests/claude_plugin_test.py
+
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
       # MUSTER_TEST_REQUIRE_DB should make a skip impossible — verdict.py is the

@@ -240,7 +240,6 @@ var isolationClasses = map[string]routeClass{
 	"POST /telemetry/faro":         classList,
 	"GET /share":                   classList,
 	"GET /tasks":                   classList,
-	"GET /ui/agents":               classList,
 	"GET /ui/nav/agents":           classList,
 	"GET /ui/agents/new":           classList,
 	"GET /ui/agents/notes":         classList,
@@ -276,9 +275,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /agents/{name}/ws":                    classParam,
 	"GET /tasks/{id}":                          classParam,
 	"GET /tasks/{id}/attachments/{aid}":        classParam,
-	"GET /ui/agents/{id}/card":                 classParam,
+	"GET /ui/agents/{id}/header":               classParam,
 	"GET /ui/focus/history":                    classParam,
-	"GET /ui/agents/{id}/rename":               classParam,
 	"GET /ui/agents/{id}/status":               classParam,
 	"GET /ui/agents/{name}/chat-log":           classParam,
 	"GET /ui/agents/{name}/task":               classParam,
@@ -509,7 +507,7 @@ var isolationClasses = map[string]routeClass{
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
-	"GET /ui/agents", "GET /ui/nav/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
+	"GET /ui/nav/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
 	"GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
 	// across rows rather than by id, which is exactly where a missing scope
@@ -1225,6 +1223,16 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 		r.Header.Set("Authorization", "Bearer "+c.pluginToken)
 	case c.deviceToken != "":
 		r.Header.Set("Authorization", "Bearer "+c.deviceToken)
+	}
+	// A dispatch naming a task is the task's own Dispatch sheet, which targets
+	// that task's card (HX-Target "task-<id>") and gets the card back — so A's
+	// dispatch of A's task answers A's task (its canary), a ghost's the
+	// new-agent redirect, and B's of A's task must be the ghost's. (The answer
+	// without the header is the HX-Redirect for every caller alike.)
+	if method == http.MethodPost && path == "/agents" && r.Header.Get("HX-Request") == "true" {
+		if v, err := url.ParseQuery(body); err == nil && v.Get("note_id") != "" {
+			r.Header.Set("HX-Target", "task-"+v.Get("note_id"))
+		}
 	}
 	rec := httptest.NewRecorder()
 	func() {

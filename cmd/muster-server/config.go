@@ -113,9 +113,7 @@ const (
 	// (api.FaroRelayPath): the page posts same-origin and never learns it.
 	envFaroUpstream = "MUSTER_FARO_UPSTREAM"
 
-	// The operator's own hosts (ui.HostPreferences): the host tabs named
-	// first, in order, and a host's icon by its name.
-	envHostOrder = "MUSTER_HOST_ORDER"
+	// The operator's own hosts (ui.HostPreferences): a host's icon by its name.
 	envHostIcons = "MUSTER_HOST_ICONS"
 
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
@@ -148,9 +146,8 @@ const (
 	// The OpenRouter model suggestions are generated with (suggest.DefaultModel
 	// when unset), spelled as OpenRouter's model list names it.
 	envSuggestModel = "MUSTER_SUGGEST_MODEL"
-	// The Agents list's Idle section (internal/ui/idle_section.go): how long an
-	// entry must have had no activity to be drawn under the collapsed "Idle"
-	// header. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
+	// The Idle section (internal/ui/idle_section.go): how long an entry must
+	// have had no activity to be drawn in the sidebar's collapsed "Idle" group. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
 	// off, refused outside 1h–365d otherwise.
 	envAgentsIdleAfter = "MUSTER_AGENTS_IDLE_AFTER"
 
@@ -592,7 +589,7 @@ type config struct {
 	// forwards to. Set, it takes precedence over FaroURL.
 	FaroUpstream string
 
-	// HostPrefs is MUSTER_HOST_ORDER and MUSTER_HOST_ICONS, checked
+	// HostPrefs is MUSTER_HOST_ICONS, checked
 	// (ui.HostPreferences.Normalized); the zero value names no host.
 	HostPrefs ui.HostPreferences
 
@@ -1420,8 +1417,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v (want <host>=<icon>, comma-separated)", envHostIcons, err)
 	}
-	if c.HostPrefs, err = (ui.HostPreferences{Order: splitList(getenv(envHostOrder)), Icons: icons}).Normalized(); err != nil {
-		return config{}, fmt.Errorf("invalid %s / %s: %v", envHostOrder, envHostIcons, err)
+	if c.HostPrefs, err = (ui.HostPreferences{Icons: icons}).Normalized(); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v", envHostIcons, err)
 	}
 
 	if err := c.loadGitHubApp(getenv); err != nil {

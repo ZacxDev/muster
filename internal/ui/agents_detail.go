@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,11 @@ type AgentDetailView struct {
 	// Switcher is the session switcher below the chat form (switcher.go), on
 	// the page surface only; nil for none.
 	Switcher *Switcher
+	// Card is the agent as its card was composed (internal/api's
+	// cardViewIndexed, the one composer): what the page's status strip, its ⋯
+	// menu and its notices draw (agent_actions.go). Zero (Card.ID 0) draws
+	// none of them — the chief panel's pane, and a minimal test view.
+	Card AgentCardView
 }
 
 // SessionView is one chat session in the switcher.
@@ -221,12 +227,10 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// its tabs are boosted <a>s that navigate to the shell, so the detail
 				// page gets the same chrome as the home shell.
 				//
-				// currentTab = "agents": /agents/<name> is a child of the Agents
-				// section AND appScript's tabFromPath('/agents/x') resolves to
-				// 'agents', so the server's first paint and the client's show()
-				// agree on which link is current. Marking the section index for a
-				// detail view is standard practice.
-				sidebar("agents", "agents", false, feat),
+				// No nav entry is current: the Agents section this page used to be
+				// a child of (the list page) is retired. The page's own ROW in the
+				// sidebar's agent list is marked instead (navAgentRow).
+				sidebar("", "", false, feat),
 				// Content column: offset right of the persistent desktop sidebar (lg+),
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
@@ -280,9 +284,11 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// focusHistoryButton opens.
 				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.FocusHistory != "", focusHistoryScript()),
+				// The rename form the header's ⋯ menu opens (agent_actions.go).
+				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
 				// Places the header's full-title popover (agentTitle) beside its "…"
-				// and keeps that button's aria-expanded in step — the same script
-				// the shell runs for the cards' popovers.
+				// and keeps that button's aria-expanded in step, and places the ⋯
+				// menu (agentActionsMenu).
 				floatingMenuScript(),
 				// Shows that "…" whenever the title is visibly clipped, not only
 				// when the server clamped it (agentTitle).
@@ -332,14 +338,29 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				chatHistoryButton(sessionDrawerID),
 				g.If(v.FocusHistory != "", focusHistoryButton()),
 			),
-			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
+			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID
+			// (agent_actions.go): the live status strip and the ⋯ menu, at the
+			// row's START — the first row stays the title's, and the row's right
+			// end keeps what it had: the update pill (pwa.go placeToast) slides
+			// down the right edge past every control there, and a ⋯ at the end
+			// pushed it from under the header to mid-screen on a phone held
+			// sideways (e2e update.spec's 844×390 placement).
+			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, Div(
+				Class("flex items-center gap-2 pl-11 text-xs"),
+				g.If(v.Card.ID != 0, agentStrip(v.Card)),
+				agentMenuSlot(v.Card),
+				agentModelControl(v),
+			)),
 			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
-			// card opens this page. A claude-code agent also has a Terminal — the
-			// same Rendered | Terminal switch a mirrored Claude Code window has
-			// (viewToggle), on both of its pages. An agent of a kind with no
-			// terminal has one view and no switch.
+			// row in the sidebar opens this page. A claude-code agent also has a
+			// Terminal — the same Rendered | Terminal switch a mirrored Claude Code
+			// window has (viewToggle), on both of its pages. An agent of a kind
+			// with no terminal has one view and no switch.
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
+				Div(Class("flex items-center gap-2"),
+					g.If(v.Card.ID != 0, agentStrip(v.Card)),
+					agentMenuSlot(v.Card),
+					chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
 					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 		),
@@ -359,7 +380,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // wrapped into a wall of lines that pushed the header controls and the chat
 // down the screen. Two guards now, because either alone leaves a hole:
 //   - the TEXT is clamped to cardTitleMax runes (clampTitle — the same budget
-//     and the same rune-safe cut the agent cards use);
+//     and the same rune-safe cut the retired Agents list's cards used);
 //   - the BOX is one line that can only shrink (min-w-0 on every flex parent,
 //     nowrap + overflow hidden), so even the clamped words cannot widen the row.
 //
@@ -368,7 +389,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // title is CLIPPED by the box though it is well inside the budget — and with
 // the "…" drawn only for a rune-clamped title, its full text was unreadable on
 // the operator's main device. So the "…" (titleMoreButton) and the full-title
-// popover (fullTitlePopover — the cards' own pair) are ALWAYS rendered; the
+// popover (fullTitlePopover — the pair the retired cards used) are ALWAYS rendered; the
 // button starts `hidden` unless the server clamped, and agentTitleFitScript
 // shows it whenever the text is clipped (scrollWidth > clientWidth), re-checked
 // by a ResizeObserver (rotation, resize, a late font). The button sits INSIDE
@@ -376,8 +397,8 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // header control. The text clips rather than drawing a CSS ellipsis: the "…"
 // button IS the ellipsis.
 //
-// textplain.Title (via plainOr), the SAME treatment agentCard gives this
-// string in the list — see textplain.Title for why it is stripped, not rendered.
+// textplain.Title (via plainOr), the SAME treatment the sidebar and the
+// switcher give this string — see textplain.Title for why it is stripped, not rendered.
 func agentTitle(v AgentDetailView) g.Node {
 	full := plainOr(v.DisplayName, v.Name)
 	short, clamped := clampTitle(full)
@@ -669,38 +690,20 @@ func newChatButton(agentID int64) g.Node {
 	)
 }
 
-// liveStatusIcon is the header status indicator: a bare colored dot (no text
-// label) that self-refreshes. It renders statusIcon(status) for an instant first
-// paint, then polls GET /ui/agents/{id}/status on load + every 10s and swaps the
-// fresh icon into itself — so the header reflects the agent's live pod state
-// without a label. htmx only (boost-safe). Shared by the agent-detail and
-// operator headers.
-func liveStatusIcon(agentID int64, status string) g.Node {
-	return Span(
-		ID("agent-status"),
-		hx("hx-get", "/ui/agents/"+strconv.FormatInt(agentID, 10)+"/status"),
-		hx("hx-trigger", "load, every 10s"),
-		hx("hx-target", "this"),
-		hx("hx-swap", "innerHTML"),
-		statusIcon(status),
-	)
-}
-
 // agentModelControl renders the agent's model directly AS the searchable model
 // combobox (no separate badge chip, no "change" expander): the combobox shows the
 // current model as its trimmed display value and hx-posts the chosen model to
 // POST /agents/{id}/model with form field `model` (empty = cluster default). A
 // repo chip sits alongside when the agent is repo-backed. A successful post
-// returns 200 + HX-Trigger: agents:changed; the list/detail refresh via the
+// returns 200 + HX-Trigger: agents:changed; the sidebar/strip refresh via the
 // existing agents:changed/SSE wiring. Changing the model restarts the agent, so a
 // clear hint says so and a brief "restarting…" state is shown after the request.
 func agentModelControl(v AgentDetailView) g.Node {
 	ids := strconv.FormatInt(v.ID, 10)
-	return Div(
-		// Single compact row: the model selector flexes to fill and the repo chip
-		// sits alongside it (shrink-0, truncates) — keeps the header tight instead
-		// of spending a second row on the repo.
-		Class("flex items-center gap-2 pl-11 text-xs"),
+	// The header's second row (agentDetailHeader) holds these: the model
+	// selector flexes to fill and the repo chip sits alongside it (shrink-0,
+	// truncates) — keeps the header tight instead of spending a row on the repo.
+	return g.Group{
 		Form(
 			hx("hx-post", "/agents/"+ids+"/model"),
 			// Autosave: picking a model dispatches `change` on the hidden #model
@@ -729,7 +732,18 @@ func agentModelControl(v AgentDetailView) g.Node {
 			Class("inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full bg-s2/80 px-2.5 py-1 text-[11px] text-muted ring-1 ring-inset ring-line"),
 			g.Text(v.Repo),
 		)),
-	)
+	}
+}
+
+// agentMenuSlot is the header's ⋯ menu (agentActionsMenu) in its own element,
+// drawn once with the page — the strip's refresh never replaces it (its
+// Start/Stop follows the strip's status by a stylesheet rule); nothing for a
+// view with no card.
+func agentMenuSlot(a AgentCardView) g.Node {
+	if a.ID == 0 {
+		return nil
+	}
+	return Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenu(a))
 }
 
 // ChatSurfaceQueryParam is the query-string name the chat-log partial reads its
@@ -769,6 +783,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// positioning at all. See ChatSurface.
 		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
 		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// What the retired list's card said under its title (agent_actions.go).
+		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		Div(
 			ID("chat-log"),
 			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0 [&[data-cg-unlaid]>*]:invisible"),
@@ -1082,8 +1098,7 @@ func sessionDrawer(v AgentDetailView) g.Node {
 			Href(AgentSessionHref(v.Name, sess.ID)),
 			// Boosted SPA nav: picking a session body-swaps the page (transcript +
 			// fresh data-session); agentChatScript's boost-safe init reconnects the WS
-			// to the picked session. The link is NOT inside #agents-list, so boosting
-			// is a safe top-level body swap.
+			// to the picked session. Boosting is a safe top-level body swap.
 			Class(cls+" gap-2"),
 			Span(Class("mr-auto truncate"), g.Text(title)),
 			g.If(!sess.LastActive.IsZero(),
@@ -1367,12 +1382,54 @@ func chatProvisioningIndicator(status string) g.Node {
 	)
 }
 
-// AgentsListPath is where marking a task complete from an agent's page lands:
-// the Agents list, on both the htmx and the no-JS path.
-const AgentsListPath = "/agents"
+// HomePath is home: the chief's chat, or the session opened last
+// (internal/api homeTarget). Marking a task complete from an agent's page
+// lands there, on both the htmx and the no-JS path — it used to land on the
+// Agents list page, which is retired.
+const HomePath = "/"
+
+// The parameters on HomePath naming the session home must not open: the page
+// the viewer is leaving — an agent by name (HomeLeaveParam, HomeLeavingPath),
+// or a mirrored window by its address (the three below, HomeLeavingMirrorPath).
+const (
+	HomeLeaveParam        = "leave"
+	HomeLeaveHostParam    = "leave_host"
+	HomeLeaveSessionParam = "leave_session"
+	HomeLeaveWindowParam  = "leave_window"
+)
+
+// HomeLeavingPath is home, leaving the agent named name out — where a page
+// that sends the viewer away from that agent (Mark complete) sends them.
+// Without it, home with no chief is the session opened last: the very page
+// being left.
+func HomeLeavingPath(name string) string {
+	if name == "" {
+		return HomePath
+	}
+	return HomePath + "?" + HomeLeaveParam + "=" + url.QueryEscape(name)
+}
+
+// HomeLeavingMirrorPath is home, leaving the mirrored window at r out — where
+// that window's Rendered view and terminal send their Home arrow. Opening the
+// view records a visit, so without it home with no chief is this very window.
+func HomeLeavingMirrorPath(r MirrorRef) string {
+	if r.Host == "" {
+		return HomePath
+	}
+	v := url.Values{HomeLeaveHostParam: {r.Host}, HomeLeaveSessionParam: {r.Session}}
+	if r.Window != "" {
+		v.Set(HomeLeaveWindowParam, r.Window)
+	}
+	return HomePath + "?" + v.Encode()
+}
+
+// HomeFallbackPath is the retired Agents list page's URL, GET /agents: home's
+// redirect, or — when home has nothing to open — the onboarding page
+// (RenderAgentsHome).
+const HomeFallbackPath = "/agents"
 
 // TaskCompletePath is the no-JS Mark-complete form's action: a POST that
-// completes the task and redirects to AgentsListPath.
+// completes the task and redirects to HomePath.
 func TaskCompletePath(id int64) string { return "/tasks/" + strconv.FormatInt(id, 10) + "/complete" }
 
 // agentTaskBanner renders the completion banner for a TASK-LINKED agent whose
@@ -1412,19 +1469,25 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	if !complete {
 		children = append(children, Form(
 			// THE NO-JS PATH: a plain POST to TaskCompletePath, which completes
-			// the task and answers 303 → AgentsListPath. htmx's hx-patch below
+			// the task and answers 303 → home leaving this agent
+			// (HomeLeavingPath, from the `leave` field). htmx's hx-patch below
 			// takes precedence over method/action whenever the script runs.
 			Method("post"),
 			Action(TaskCompletePath(*v.NoteID)),
 			hx("hx-patch", "/tasks/"+id+"/status"),
 			hx("hx-swap", "none"),
-			// On success, leave the agent and go back OUT to the Agents list (operator
+			// On success, leave the agent and go back OUT home (operator
 			// ask: "after marking a task complete, it should just redirect back out of
 			// the agent instead of to another page" — it used to open /tasks). Full
 			// navigation, the same place the no-JS path's redirect lands.
-			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+AgentsListPath+"'}"),
+			//
+			// 🔴 HOME LEAVING THIS AGENT (HomeLeavingPath), not bare home: with no
+			// chief, home is the session opened LAST — this one — so a bare `/`
+			// landed straight back on the page the operator was leaving.
+			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+HomeLeavingPath(v.Name)+"'}"),
 			Class("contents"),
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
+			Input(Type("hidden"), Name(HomeLeaveParam), Value(v.Name)),
 			Button(
 				Type("submit"),
 				Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98]"),

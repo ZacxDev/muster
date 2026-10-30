@@ -29,8 +29,9 @@ func (l stoppedListing) LastMessageByAgentIDs(context.Context, []int64) (map[int
 }
 
 // TestAStoppedAgentsCardShowsNoWorkChip: a stopped agent's pod is gone and
-// cannot post its own clear, so whatever it last reported is NOT drawn on its
-// card — and its status poll agrees, so it asks for no re-render.
+// cannot post its own clear, so whatever it last reported is NOT drawn — on
+// its page's status strip (the retired list card's chip) nor on its sidebar
+// row — and its status poll agrees, so it asks for no re-render.
 //
 // Red before: the card drew the stopped agent's last report until the TTL.
 func TestAStoppedAgentsCardShowsNoWorkChip(t *testing.T) {
@@ -45,12 +46,18 @@ func TestAStoppedAgentsCardShowsNoWorkChip(t *testing.T) {
 			t.Fatalf("report: %d", code)
 		}
 	}
-	list := r.get("/ui/agents").Body.String()
-	if got := chipShown(cardBody(t, list, relayAgentB.ID)); got != "1 subagent" {
+	if got := chipShown(agentStrip(t, r.get, relayAgentB.ID)); got != "1 subagent" {
 		t.Fatalf("control: the running agent's chip reads %q, want %q", got, "1 subagent")
 	}
-	if got := chipShown(cardBody(t, list, relayAgentA.ID)); got != "" {
-		t.Errorf("a stopped agent's card shows %q", got)
+	if got := chipShown(agentStrip(t, r.get, relayAgentA.ID)); got != "" {
+		t.Errorf("a stopped agent's page shows %q", got)
+	}
+	nav := r.get(ui.NavAgentsPath).Body.String()
+	if got := navWorkShown(navRow(t, nav, agentNavID(relayAgentB.ID))); got != "1 subagent" {
+		t.Errorf("control: the running agent's sidebar row marks %q, want %q", got, "1 subagent")
+	}
+	if got := navWorkShown(navRow(t, nav, agentNavID(relayAgentA.ID))); got != "" {
+		t.Errorf("a stopped agent's sidebar row marks %q", got)
 	}
 	if got := r.get(ui.StatusPollPath(relayAgentA.ID, false, mirror.WindowWork{})).Header().Get("HX-Trigger"); got != "" {
 		t.Errorf("a stopped agent's card drawn without a chip is told to re-render (%q)", got)

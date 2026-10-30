@@ -12,7 +12,7 @@ import (
 // session, the current agent, from within the rendered view"): on a session's
 // page — a dispatched agent's chat, a mirrored window's Rendered view or
 // terminal — the bar holds a pin toggle for the page's OWN session, beside its
-// search. It pins what a card's toggle pins: the agent (by id), or the
+// search. It pins one of the two subjects: the agent (by id), or the
 // mirrored window (host, session, window) — the two subjects internal/pins
 // has; there is no other kind of pin.
 //
@@ -30,7 +30,7 @@ import (
 const SwitcherPinID = "switcher-pin"
 
 // SwitcherPinView is the form field value that asks the pin routes to answer
-// with the bar's toggle (internal/api pins.go) rather than the Agents list.
+// with the bar's toggle (internal/api pins.go) rather than an empty answer.
 const SwitcherPinView = "switcher"
 
 // switcherPin is the page's own session as the bar's pin toggle posts it.
@@ -40,7 +40,7 @@ type switcherPin struct {
 	back   string
 }
 
-// newSwitcherPin is e's pin toggle: its subject's fields (pinForm's) and the
+// newSwitcherPin is e's pin toggle: its subject's fields (pins.go) and the
 // page to come back to after a post without script.
 func newSwitcherPin(e listEntry) *switcherPin {
 	if e.agent != nil {
@@ -50,9 +50,9 @@ func newSwitcherPin(e listEntry) *switcherPin {
 }
 
 // switcherPinToggle is the bar's pin toggle for s's page; nothing when the
-// page is no session (the Agents list), or the entries are not known yet.
+// page is no session, or the entries are not known yet.
 func switcherPinToggle(s *Switcher) g.Node {
-	if s == nil || s.unknown || s.pin == nil {
+	if s == nil || s.pin == nil {
 		return nil
 	}
 	return SwitcherPinToggle(s.pin.pinned, s.pin.fields, s.pin.back)
@@ -108,4 +108,23 @@ func RenderSwitcherPin(w io.Writer, pinned bool, fields [][2]string, back string
 		return nil
 	}
 	return switcherRefresh(s).Render(w)
+}
+
+// TerminalPin is a mirrored window's pin on its terminal page
+// (AgentTerminalView.Pin): whether it is pinned, and the window's address.
+type TerminalPin struct {
+	Pinned bool
+	Ref    MirrorRef
+}
+
+// terminalPinToggle is the bar's pin toggle (SwitcherPinToggle) for the
+// window p names, posting back to its terminal page — nothing when there is
+// no pin to draw or the window has a rendered view (renderedHref), whose page
+// carries the switcher and its pin.
+func terminalPinToggle(renderedHref string, p *TerminalPin) g.Node {
+	if p == nil || renderedHref != "" {
+		return nil
+	}
+	fields := [][2]string{{"kind", "mirror"}, {"host", p.Ref.Host}, {"session", p.Ref.Session}, {"window", p.Ref.Window}}
+	return SwitcherPinToggle(p.Pinned, fields, p.Ref.TerminalPath())
 }

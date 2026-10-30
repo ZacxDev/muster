@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 )
@@ -73,76 +71,6 @@ func TestMarkIdleReadsWhatTheCardPrints(t *testing.T) {
 	MarkIdle(agents, mirrors, idleNow, idleAfter)
 	if mirrors[0].Idle {
 		t.Error("a window active again is still marked idle by the next build")
-	}
-}
-
-// articleOrHead is each card's id and the Idle header, in document order.
-var articleOrHead = regexp.MustCompile(`<article id="([^"]+)"([^>]*)>|<div id="(agents-idle-head)"`)
-
-// TestTheListDrawsTheIdleSectionLast: the working entries (pins first, then by
-// activity), then the header with the count, then the idle entries — each idle
-// card carrying data-idle-section, no working card carrying it.
-func TestTheListDrawsTheIdleSectionLast(t *testing.T) {
-	old := idleNow.Add(-30 * 24 * time.Hour)
-	agents := []AgentCardView{
-		{ID: 1, Name: "idle-agent", Status: "running", LastActiveAt: old.Add(-5 * time.Hour)},
-		{ID: 2, Name: "busy-agent", Status: "running", LastActiveAt: idleNow.Add(-9 * time.Minute)},
-		{ID: 3, Name: "pinned-old-agent", Status: "stopped", LastActiveAt: old.Add(-6 * time.Hour), Pinned: true},
-	}
-	mirrors := []MirrorCardView{
-		{Host: "h", Session: "w-old", Window: "@1", Online: true, ActiveAt: old.Add(-time.Hour)},
-		{Host: "h", Session: "w-new", Window: "@2", Online: true, ActiveAt: idleNow.Add(-2 * time.Minute)},
-	}
-	MarkIdle(agents, mirrors, idleNow, idleAfter)
-	html := renderNode(t, agentsListBody(agents, mirrors, idleAfter))
-	var order []string
-	idleAttr := map[string]bool{}
-	for _, m := range articleOrHead.FindAllStringSubmatch(html, -1) {
-		if m[3] != "" {
-			order = append(order, "HEAD")
-			continue
-		}
-		order = append(order, m[1])
-		idleAttr[m[1]] = strings.Contains(m[2], "data-idle-section")
-	}
-	wOld, wNew := mirrorCardID(mirrors[0]), mirrorCardID(mirrors[1])
-	want := []string{"agent-3", wNew, "agent-2", "HEAD", wOld, "agent-1"}
-	if strings.Join(order, ",") != strings.Join(want, ",") {
-		t.Fatalf("list order = %v, want %v", order, want)
-	}
-	for id, idle := range idleAttr {
-		if wantIdle := id == wOld || id == "agent-1"; idle != wantIdle {
-			t.Errorf("%s: data-idle-section = %v, want %v", id, idle, wantIdle)
-		}
-	}
-	head := regexp.MustCompile(`(?s)<div id="agents-idle-head".*?</button>`).FindString(html)
-	for _, want := range []string{`data-idle-count="" class="tabular-nums">(2)</span>`, `aria-expanded="false"`, "no activity in over 10 days"} {
-		if !strings.Contains(head, want) {
-			t.Errorf("the header lacks %q:\n%s", want, head)
-		}
-	}
-	// Control: with the section off (0), nothing is marked and no header is drawn.
-	MarkIdle(agents, mirrors, idleNow, 0)
-	off := renderNode(t, agentsListBody(agents, mirrors, 0))
-	if strings.Contains(off, "agents-idle-head") || strings.Contains(off, "data-idle-section") {
-		t.Error("the section is drawn with the threshold 0 (off)")
-	}
-}
-
-// TestTheIdleSectionStartsCollapsed: the server draws no open state — the
-// stylesheet hides idle cards unless <html> carries data-agents-idle-open
-// (set from localStorage by the head script before the first paint) or the
-// search box has a term — and places them after the header.
-func TestTheIdleSectionStartsCollapsed(t *testing.T) {
-	page := renderString(t, Page("agents", featuresAllOn))
-	if strings.Contains(page, "data-agents-idle-open") && !strings.Contains(scriptWith(t, page, "__musterAgentsRules ="), "data-agents-idle-open") {
-		t.Error("the server draws the Idle section open")
-	}
-	head := scriptWith(t, page, "__musterAgentsRules =")
-	for _, want := range []string{"'" + agentsIdleOpenKey + "'", "toggleAttribute('data-agents-idle-open'"} {
-		if !strings.Contains(head, want) {
-			t.Errorf("the head script does not set the section's state before the first paint: missing %s", want)
-		}
 	}
 }
 

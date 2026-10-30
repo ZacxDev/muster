@@ -45,8 +45,8 @@ type Features struct {
 	Attention bool
 	// Dispatch is true when the server holds an agent provisioner
 	// (MUSTER_AGENT_PROVISIONER is not `none`), i.e. when POST /agents can do
-	// anything but answer 503. False draws no "+" on the Agents list's bar
-	// (switcherDock) and no Dispatch button on a task card (TaskCardView's
+	// anything but answer 503. False draws no "+" in the sidebar (navAgentsHead
+	// draws the "not set up" hint instead) and no Dispatch button on a task card (TaskCardView's
 	// field of the same name, set from the same server predicate): the docker
 	// compose install ships with no agent runtime, and a "+" over a 503 is a
 	// button that can only fail.

@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/taskstatus"
 )
 
@@ -88,13 +89,35 @@ const attentionToolNote = " Use it whenever you need your owner's input instead 
 
 // attentionInstruction is the paragraph every DISPATCHED agent's instructions
 // carry (AgentInstructions for a gateway agent, the MCP initialize instructions
-// for a claude-code one). Its answer is pushed to it (attention_delivery.go), so
-// it need not wait; it may.
+// for a claude-code one), except an officer instance's (attentionInstructionFor).
+// Its answer is pushed to it (attention_delivery.go), so it need not wait; it
+// may.
 const attentionInstruction = "If you need your owner's input — a decision, a missing fact, an approval — call attention_ask{question, options?}. " +
 	"Your owner sees the question in muster's Attention view and on their phone. When they answer, muster delivers the answer to you " +
 	"as a new message in your default session, so you do NOT need to wait for it: you may end your turn. If you cannot continue " +
 	"without it, you MAY instead block on it with attention_wait{id} (repeat it while it answers \"pending\"); an answer you read " +
 	"there is not delivered a second time."
+
+// officerAttentionInstruction replaces attentionInstruction for an officer
+// instance (attentionInstructionFor). An officer escalates through HQ, not the
+// attention queue: its charter (HQ's, read with officer_brief) decides, and by
+// default it finishes the item with outcome "escalated" and HQ notifies the
+// officer's owner. An officers muster usually runs headless, so an attention
+// ask there reaches nobody. The attention tools stay offered, for a charter
+// that names them. officers.KickoffText's step 3 says the same.
+const officerAttentionInstruction = "For anything that needs a human, follow your officer charter. By default, finish the item with " +
+	officers.ToolComplete + "{item_id, outcome: \"escalated\", summary} saying who must act and why — HQ notifies the officer's owner — " +
+	"rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to."
+
+// attentionInstructionFor is THE attention paragraph agent a's instructions
+// carry: officerAttentionInstruction for an officer instance (officerOf),
+// attentionInstruction for every other dispatched agent.
+func (s *Server) attentionInstructionFor(a agents.Agent) string {
+	if _, _, ok := s.officerOf(a); ok {
+		return officerAttentionInstruction
+	}
+	return attentionInstruction
+}
 
 // mirrorAttentionInstruction is a MIRRORED Claude Code session's paragraph
 // (mirror_mcp.go). muster never types into a mirrored window unasked, so its

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/taskstatus"
@@ -393,11 +394,12 @@ func TestBothSurfacesRenderAnAgentNameTheSameWay(t *testing.T) {
 	const name = "**fix** the `chip` row"
 	const want = "fix the chip row"
 
-	card := renderString(t, agentCard(AgentCardView{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}))
-	// spanContaining, not between(): between() would start mid-ATTRIBUTE and the
-	// rest of the class string would read as body text. This backs up to the
-	// <span> element itself.
-	cardTitle := textOf(spanContaining(card, "text-base font-semibold leading-tight"))
+	// The sidebar row (the Agents list card's successor as the place an
+	// agent is found). spanContaining, not between(): between() would start
+	// mid-ATTRIBUTE and the rest of the class string would read as body text.
+	// This backs up to the <span> element itself.
+	card := renderString(t, NavAgentsList([]AgentCardView{{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}}, nil, "", time.Now()))
+	cardTitle := textOf(spanContaining(card, "min-w-0 flex-1 truncate"))
 
 	// ⚠ BOTH Features SHAPES, AND THE REASON IS THE EXTRACTION RATHER THAN THE
 	// ASSERTION. between() takes the FIRST <h1>, and the sidebar — whose contents
@@ -450,8 +452,8 @@ func TestBothSurfacesRenderAnAgentNameTheSameWay(t *testing.T) {
 func TestAnAgentNameCannotEmitMarkupOnEitherSurface(t *testing.T) {
 	const name = "<img src=x onerror=alert(1)> see https://example.test/p/1"
 
-	card := renderString(t, agentCard(AgentCardView{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}))
-	cardTitle := spanContaining(card, "text-base font-semibold leading-tight")
+	card := renderString(t, NavAgentsList([]AgentCardView{{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}}, nil, "", time.Now()))
+	cardTitle := spanContaining(card, "min-w-0 flex-1 truncate")
 
 	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
 		// documentSource for the same reason as the test above: appScript's
@@ -494,7 +496,7 @@ func TestAnAgentNameCannotEmitMarkupOnEitherSurface(t *testing.T) {
 // silence.
 func TestEachLazyRegistryIsMountedExactlyOnce(t *testing.T) {
 	// Mounted on every shell regardless of Features.
-	always := []string{"/ui/agents", "/ui/tasks"}
+	always := []string{"/ui/tasks"}
 	// Mounted only when its subsystem was built — the pair is (partial, the
 	// Features predicate that draws it).
 	gated := map[string]func(Features) bool{

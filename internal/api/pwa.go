@@ -112,7 +112,6 @@ func Manifest() WebManifest {
 		Shortcuts: []manifestShortcut{
 			shortcut("New task", "New task", "/tasks?new=1", "/static/icons/shortcut-new-96.png"),
 			shortcut("Tasks", "Tasks", "/tasks", "/static/icons/shortcut-tasks-96.png"),
-			shortcut("Agents", "Agents", "/agents", "/static/icons/shortcut-agents-96.png"),
 		},
 		ShareTarget: manifestShareTarget{
 			Action: "/share",
@@ -128,7 +127,7 @@ func Manifest() WebManifest {
 		// planned to be reachable without auth, so anything in them is public.
 		Screenshots: []manifestImage{
 			shot("/static/icons/screenshot-tasks-narrow.png", "The task board, with a task ready for review"),
-			shot("/static/icons/screenshot-agents-narrow.png", "Agents at work, each with its live status"),
+			shot("/static/icons/screenshot-agents-narrow.png", "An agent at work: its chat, with its live status"),
 		},
 	}
 }

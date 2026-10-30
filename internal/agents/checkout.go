@@ -101,8 +101,8 @@ func CheckoutGates(a Agent, inst *provision.Instance) bool {
 }
 
 // KickoffAwaitingGrant reports a first turn held because the agent's github
-// connector request is not approved yet: the card's "waiting for your github
-// approval" line. Like [KickoffOwed] it is a separate boolean, never a status.
+// connector request is not approved yet: the agent page's "waiting for your
+// github approval" notice. Like [KickoffOwed] it is a separate boolean, never a status.
 // An errored row answers false: the wait ended (see [DecideFirstTurn]).
 func KickoffAwaitingGrant(a Agent) bool {
 	return KickoffOwed(a) && a.Status != StatusError && strings.HasPrefix(a.KickoffError, KickoffAwaitingGrantReason)

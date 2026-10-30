@@ -8,7 +8,8 @@ import (
 )
 
 // TestTheAgentsListShowsMirroredSessionsMostRecentlyActiveFirst: through the
-// real mux, the mirrored cards come out in mirror.Ordered's order — the
+// real mux, the sidebar's mirrored rows (where agents are listed since the
+// Agents list page was retired) come out in mirror.Ordered's order — the
 // session active last on top — and a host that reports no activity keeps the
 // name order it always had (the control, and the reason the first half is not
 // vacuous: "main" before "chief" is the REVERSE of the name order).
@@ -17,10 +18,10 @@ func TestTheAgentsListShowsMirroredSessionsMostRecentlyActiveFirst(t *testing.T)
 	positions := func(fm *fakeMirror) (int, int) {
 		t.Helper()
 		s, ts := viewServer(t, fm)
-		_, list := mirrorGet(t, s, ts, "/ui/agents")
+		_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
 		c, m := strings.Index(list, chief), strings.Index(list, main)
 		if c < 0 || m < 0 {
-			t.Fatalf("instrument check FAILED: the list lacks a card (chief at %d, main at %d)", c, m)
+			t.Fatalf("instrument check FAILED: the sidebar lacks a row (chief at %d, main at %d)", c, m)
 		}
 		return c, m
 	}
@@ -34,6 +35,6 @@ func TestTheAgentsListShowsMirroredSessionsMostRecentlyActiveFirst(t *testing.T)
 	}
 	// Control: no activity — the name order, as before.
 	if c, m := positions(&fakeMirror{online: true}); c > m {
-		t.Errorf("with no activity the cards are not in name order (chief at %d, main at %d)", c, m)
+		t.Errorf("with no activity the rows are not in name order (chief at %d, main at %d)", c, m)
 	}
 }

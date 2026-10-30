@@ -88,7 +88,7 @@ type agentJSON struct {
 	// the at-most-once delivery's accepted cost: such a turn is never retried
 	// automatically. Re-sending it through the agent's chat is safe only when the
 	// recorded cause proves nothing was sent (agents.KickoffResendSafe); otherwise the
-	// runtime may still be running the turn, and the card's remedy says to check first.
+	// runtime may still be running the turn, and the agent page's remedy says to check first.
 	KickoffFailed bool `json:"kickoffFailed"`
 	// ErrorMessage is the stored provisioning/reconcile failure reason, or "" when
 	// none was recorded. NOT omitempty, for the same reason: a red agent with an
@@ -120,7 +120,7 @@ type agentJSON struct {
 	LastMessageAt *time.Time `json:"lastMessageAt"`
 	// LastActivityAt is the LIVENESS field: the newest durable event muster holds
 	// for this agent — max(LastMessageAt, UpdatedAt), computed by
-	// agents.LastActivity, which is also what the Agents list orders its cards by.
+	// agents.LastActivity, which is also what the sidebar orders its agents by.
 	// Never null, so a consumer can always threshold on it.
 	//
 	// 🔴 WHY A STATUS FIELD IS NOT ENOUGH, and what this can and cannot detect.
@@ -186,7 +186,7 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		KickoffAttempts: a.KickoffAttempts,
 		CreatedAt:       a.CreatedAt,
 		UpdatedAt:       a.UpdatedAt,
-		// agents.LastActivity is the one definition; the Agents list sorts by it.
+		// agents.LastActivity is the one definition; the sidebar sorts by it.
 		LastActivityAt: agents.LastActivity(a, lastMsg),
 	}
 	if a.NoteID != nil {
@@ -234,7 +234,7 @@ func (s *Server) lastMessageByAgents(ctx context.Context, list []agents.Agent) m
 // ROUTE NO LONGER EXISTS AT ALL (task #653 phase two deleted the operator tier),
 // so this is now the only JSON agent read, full stop. Unlike the operator route
 // it makes NO live k8s call — it is a pure DB read of the
-// stored status, matching how the agents list and the task-card join already
+// stored status, matching how the sidebar's agent list and the task-card join already
 // avoid per-agent pod lookups, so it is cheap enough to poll.
 func (s *Server) handleAPIAgentList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

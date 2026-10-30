@@ -1,8 +1,14 @@
-import { request as pwRequest } from '@playwright/test';
+import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, kindsPort, password, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
+
+// kindChip is the agent page header's kind chip (ui.chip: a muted "kind" label,
+// then the value), matched whole — "kind" then exactly value.
+const kindChip = (page: Page, value: string) =>
+  page.locator('header span:has(> span.text-muted)').filter({ hasText: new RegExp(`^kind${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) });
+
 
 // The dispatch form's agent-kind picker and the Claude account pin, at a phone
 // width (412×915), against a REAL muster-server with the claude-code kind
@@ -53,7 +59,7 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
 
   const open = async () => {
-    await page.goto(origin + '/agents');
+    await page.goto(origin + '/tasks');
     await openDispatchSheet(page);
     await expect(page.locator('#agent-modal [data-kind-picker]')).toBeVisible();
   };
@@ -71,6 +77,8 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
     expect((await resp).status()).toBe(200);
     const created = (await agentRows()).filter((a) => !before.has(a.name));
     expect(created.length, 'exactly one agent created').toBe(1);
+    // The sheet's answer sends the page to the new agent's own page.
+    await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
     return created[0];
   };
 
@@ -153,10 +161,16 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   expect([worker.kind, worker.ccAccount, worker.workerPool]).toEqual(['claude-code', 'alpha', 'reviewers']);
   expect([pinned.workerPool, pooled.workerPool, standard.workerPool]).toEqual(['', '', '']);
 
-  // 5. The card says which kind and account, and nothing on the page carries a token.
-  await page.goto(origin + '/agents');
-  await expect(page.getByText('Claude Code · beta').first()).toBeVisible();
-  // …and a pool worker's card says which pool.
-  await expect(page.locator(`#agent-${worker.id} [data-worker-pool="reviewers"]`)).toBeVisible();
+  // 5. The agent's own page (where its retired list card's chips went: the
+  //    header's second row) says which kind and account, and nothing on the
+  //    page carries a token.
+  await page.goto(origin + '/agents/' + pinned.name);
+  await expect(kindChip(page, 'Claude Code · beta')).toBeVisible();
+  await expect(page.locator('header [data-worker-pool]'), 'a worker pinned to no pool shows no pool chip').toHaveCount(0);
+  expect(await page.content()).not.toContain('sk-ant-oat01');
+  // …and a pool worker's page says which pool.
+  await page.goto(origin + '/agents/' + worker.name);
+  await expect(kindChip(page, 'Claude Code · alpha')).toBeVisible();
+  await expect(page.locator('header [data-worker-pool="reviewers"]')).toBeVisible();
   expect(await page.content()).not.toContain('sk-ant-oat01');
 });

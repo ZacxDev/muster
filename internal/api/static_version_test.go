@@ -60,13 +60,14 @@ func checkVersioned(t *testing.T, page, body string) int {
 
 func TestEveryStaticLinkCarriesItsContentHash(t *testing.T) {
 	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, &memPins{})
-	shell := getOwed(t, s, h, "/agents").Body.String()
+	// The shell's document is /tasks (GET /agents is home's redirect now).
+	shell := getOwed(t, s, h, "/tasks").Body.String()
 	// The stylesheet itself, spelled out: the one 0.43.0 shipped stale.
 	css := `<link rel="stylesheet" href="/static/app.css?v=` + wantHash(t, "/static/app.css") + `">`
 	if !strings.Contains(shell, css) {
 		t.Errorf("the shell does not link %s", css)
 	}
-	if n := checkVersioned(t, "GET /agents", shell); n < 4 {
+	if n := checkVersioned(t, "GET /tasks", shell); n < 4 {
 		t.Errorf("control: only %d /static/ links on the shell (stylesheet, icons, htmx, idiomorph, sse expected)", n)
 	}
 

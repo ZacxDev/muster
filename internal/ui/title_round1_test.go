@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestATitleThatIsAllMarkupFallsBack: a display name that the title rule
@@ -14,12 +15,12 @@ func TestATitleThatIsAllMarkupFallsBack(t *testing.T) {
 	for _, c := range []struct {
 		name, want, out string
 	}{
-		{"agent card", ">agent_17<", renderString(t, agentCard(AgentCardView{ID: 17, Name: "agent_17", Status: "running", DisplayName: "<b></b>"}))},
+		{"sidebar row", ">agent_17<", renderString(t, NavAgentsList([]AgentCardView{{ID: 17, Name: "agent_17", Status: "running", DisplayName: "<b></b>"}}, nil, "", time.Now()))},
 		{"agent detail <title>", "<title>agent_18 · muster</title>", renderString(t, AgentDetailPage(AgentDetailView{Name: "agent_18", Status: "running", DisplayName: "<b></b>"}, Features{}))},
 		{"agent detail <h1>", ">agent_19</h1>", renderString(t, agentTitle(AgentDetailView{Name: "agent_19", Status: "running", DisplayName: "<i> </i>"}))},
 		{"terminal <title>", "<title>Terminal · agent_20 · muster</title>", renderString(t, AgentTerminalPage(AgentTerminalView{Name: "agent_20", DisplayName: "<b></b>"}))},
-		{"mirror card", ">_s21_<", renderString(t, mirrorCard(MirrorCardView{Host: "h", Session: "_s21_", Label: "<b></b>", Online: true}))},
-		{"switcher Recent view", ">agent_22<", renderString(t, switcherRefresh(agentsSwitcher([]AgentCardView{{ID: 22, Name: "agent_22", DisplayName: "<b></b>"}}, nil, []RecentRef{{AgentID: 22}})))},
+		{"mirror sidebar row", ">_s21_<", renderString(t, NavAgentsList(nil, []MirrorCardView{{Host: "h", Session: "_s21_", Label: "<b></b>", Online: true}}, "", time.Now()))},
+		{"switcher Recent view", ">agent_22<", renderString(t, switcherRefresh(NewSwitcher([]AgentCardView{{ID: 22, Name: "agent_22", DisplayName: "<b></b>"}}, nil, []RecentRef{{AgentID: 22}}, SwitcherCurrent{})))},
 	} {
 		if n := strings.Count(c.out, c.want); n < 1 {
 			t.Errorf("%s: %q drawn %d time(s), want ≥1 (the fallback, as written)", c.name, c.want, n)

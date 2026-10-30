@@ -2,7 +2,7 @@ package ui
 
 // rankJS is the browser's copy of internal/searchrank — window.musterFold and
 // window.musterRank — spelled ONCE and embedded in every document that ranks:
-// the app shell (appScript: the pickers, the Agents filter) and the mirrored
+// the app shell (appScript: the pickers) and the mirrored
 // Rendered view's `/` and `:` menu (composerMenuScript). The Rendered view
 // carries appScript too (overlayNavScript, for its side nav), so it holds two
 // byte-identical copies; the menu embeds its own anyway, so it never depends

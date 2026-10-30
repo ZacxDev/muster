@@ -349,7 +349,7 @@ package main
 //	  over instances, with a noop driver and a Kubernetes driver. Adapting one to
 //	  the other is a chunk of work with its own design question — where
 //	  gateway chat and tool dispatch live, since provision.Driver has no notion
-//	  of either. Wiring a fake here would make the Agents tab LOOK operational:
+//	  of either. Wiring a fake here would make the agent pages LOOK operational:
 //	  dispatch would report success, no pod would exist, and the agent would sit
 //	  in `provisioning` for ever. That is the "lies silently" side of the line.
 //	WHAT IT COSTS MEANWHILE, PRECISELY: every agent-control route is REGISTERED
@@ -357,7 +357,7 @@ package main
 //	  makes the route golden a claim about production — and each one refuses at
 //	  request time with 503 + provisionerUnwired:true, through the
 //	  api.requireLifecycleProvisioner / api.requireGatewayProvisioner wrapper it is
-//	  registered behind. The Agents tab is
+//	  registered behind. The agent pages are
 //	  read-only: existing rows render, nothing can be provisioned, started,
 //	  stopped or destroyed, no logs stream and no chat turn runs. The boot banner
 //	  says so on every start, unconditionally.

@@ -114,6 +114,12 @@ type MirrorViewView struct {
 	// under another session id (mirror.SessionView.LiveCopyWarning), "" for
 	// none: a banner under the header (livecopy.go).
 	LiveCopy string
+	// Offline: the host is not serving the window now (its muster-mirror is
+	// not connected, or it no longer lists the session). Note is the host's
+	// line about the window (mirror.SessionView.AgentNote), "" for none. Both
+	// drawn under the header (mirrorHostBanner).
+	Offline bool
+	Note    string
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -192,14 +198,16 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Class(shell+" bg-bg text-fg antialiased"),
 				// The navigation: position:fixed, so it takes no room in the
 				// column (nothing below moves), and an overlay at every width.
-				overlayNav(v.Nav, "agents"),
+				overlayNav(v.Nav, ""),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
 					overlayNavButton(),
 					A(
 						ID("mv-back"),
-						Href("/agents"),
-						g.Attr("aria-label", "Back to the list"),
+						// Home (the chief, or the session opened last): the Agents list
+						// page this arrow went back to is retired.
+						Href(HomeLeavingMirrorPath(ref)),
+						g.Attr("aria-label", "Home"),
 						Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
@@ -224,6 +232,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				liveCopyBanner("mv-live-copy", v.LiveCopy),
+				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
 				Div(
 					ID("mv-error"),
 					g.Attr("role", "alert"),

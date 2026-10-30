@@ -481,7 +481,7 @@ in these ways, each decided while building it:
   four CHECKs. `attention_asks.answered_via_session` (0034) and
   `connector_grants.decided_via_session` (0035), both newer than this page,
   are left at 64: each names an MCP caller, which Hermes cannot be yet (see
-  [listing](#listing-host-icons-and-the-rest-of-the-agents-list)).
+  [listing](#listing-host-icons-and-the-rest-of-the-list)).
 - **The strict mirroring identity rule landed here, not in Phase 2.** It had
   been moved to Phase 2 by operator decision; it was pulled forward from
   Phase 2 into 1b by coordinator decision, to avoid churn, together with the
@@ -1885,11 +1885,14 @@ dropped on receipt, `sudo` frames included.
 
 Questions and approvals live in muster's memory, as Claude Code's do.
 
-### Listing, host icons and the rest of the Agents list
+### Listing, host icons and the rest of the list
+
+(As built, the Agents list page these lines describe was later retired: a
+window is listed in the sidebar and the session switcher, and the kind is a
+search word there. There are no host tabs or filter chips any more.)
 
 - **Kind.** `SessionView.Kind()` gains `"Hermes"` from `Window.Runtime`, so the
-  card chip, `kind:hermes` in the filter and `type:mirrored` all work. Host
-  icons and host tabs are per host and need no change.
+  kind is shown and searched. Host icons are per host and need no change.
 - **Rendered view by default** for a Hermes window, Terminal one tap away.
 - **Attention and push.** The hub's waiting set (`hub.go`, today
   `w.Claude && w.Status == waiting`) becomes runtime-neutral. A push names the

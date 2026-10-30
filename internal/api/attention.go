@@ -191,8 +191,8 @@ type attentionItem struct {
 	// session, a waiting window's Claude session); zero for a reply draft.
 	// sessions_overview reads it.
 	subject focus.Subject
-	// card is the Agents-list card the item is counted on (its attention badge,
-	// cards_attention.go); zero for none.
+	// card is the entry the item is counted on (its sidebar row's attention
+	// count, cards_attention.go); zero for none.
 	card attentionCard
 	// hermes is a waiting HERMES window's ask (Hermes Phase 4): what it waits
 	// on, and the approval muster can answer; nil for any other item.
@@ -220,7 +220,7 @@ type hermesAsk struct {
 	choices  []string
 }
 
-// attentionCard is the card an attention item belongs to: an agent's (an
+// attentionCard is the entry an attention item belongs to: an agent's (an
 // asking agent, a reply draft's drafting agent), a mirrored window by its
 // address (a waiting window, a held question), or a mirrored Claude session
 // on a host (an asking session), which the host's window list resolves to
@@ -312,7 +312,7 @@ func attentionHostBelieved(h mirror.HostView, now time.Time) bool {
 }
 
 // waitingSessions is ctx's principal's mirrored windows whose Claude Code
-// session reports StatusWaiting, in the Agents list's order, for every host
+// session reports StatusWaiting, in the hub's host order (Mirror.Hosts), for every host
 // attentionHostBelieved believes.
 func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 	if s.ext.Mirror == nil {

@@ -2,9 +2,6 @@ package ui
 
 import (
 	"io"
-	"time"
-
-	g "maragu.dev/gomponents"
 
 	"github.com/ZacxDev/muster/internal/notes"
 )
@@ -56,24 +53,8 @@ func RenderTaskNotFound(w io.Writer, id string, feat Features) error {
 	return TaskNotFoundPage(id, feat).Render(w)
 }
 
-// RenderAgentsCards writes the /ui/agents partial (just the cards, morphed into
-// #agents-list).
-func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
-	return AgentsCards(list).Render(w)
-}
-
-// RenderAgentsList writes the /ui/agents partial: the agent cards and, when the
-// mirror plugin is on, the viewer's mirrored sessions, as ONE list by activity
-// (AgentsCardsWithMirrors) — plus, out of band, the session switcher's rows
-// and counts resolved against those same cards (switcherRefresh). recent is
-// the viewer's recently opened entries, newest first.
-//
-// idleAfter is the Idle section's threshold, for its header's hint (0 = none).
-func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, recent []RecentRef, idleAfter time.Duration) error {
-	return g.Group{agentsListBody(list, mirrors, idleAfter), switcherRefresh(agentsSwitcher(list, mirrors, recent))}.Render(w)
-}
-
-// RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form
+// RenderDispatchModal writes the /ui/agents/new partial (the task-less dispatch form
+// the sidebar's "+" opens
 // body: Model, Repository, Existing task, ad-hoc task).
 func RenderDispatchModal(w io.Writer, k KindChoices) error {
 	return DispatchModalBodyFor(k).Render(w)

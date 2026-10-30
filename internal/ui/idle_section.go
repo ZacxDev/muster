@@ -5,24 +5,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	g "maragu.dev/gomponents"
-	. "maragu.dev/gomponents/html"
 )
 
-// THE AGENTS LIST'S "IDLE" SECTION. A real operator's list is a hundred-odd
-// cards, almost all of them live tmux windows mirrored from their hosts, and
-// most of those untouched for days. Entries with no activity for
-// MUSTER_AGENTS_IDLE_AFTER (14 days by default) are drawn LAST, under a
-// collapsed "Idle (N)" header, instead of among the working ones.
+// THE "IDLE" SECTION. A real operator's list is a hundred-odd entries, almost
+// all of them live tmux windows mirrored from their hosts, and most of those
+// untouched for days. Entries with no activity for MUSTER_AGENTS_IDLE_AFTER
+// (14 days by default) are drawn LAST in the sidebar, under a collapsed
+// "Idle (N)" disclosure (navIdleGroup), instead of among the working ones. (It
+// began as the retired Agents list page's section.)
 //
 // 🔴 COLLAPSE ONLY. Nothing is closed, stopped or hidden on a host: an idle
 // window is still listed, searchable, pinnable and openable — it is only drawn
 // in the section, which starts collapsed.
 //
 // WHAT "ACTIVITY" IS: the entry's activeAt (list_order.go) — the SAME number the
-// card prints as "active … ago" and the list is ordered by, so the section can
-// never disagree with the card's own label:
+// sidebar row's recency dot reads and the entries are ordered by, so the
+// section can never disagree with the dot:
 //
 //   - a mirrored Claude Code window: its conversation's LAST MESSAGE — the
 //     newest non-meta user or assistant row in its transcript, read by
@@ -44,25 +42,16 @@ import (
 // says when muster last looked, not when the window was last used.
 //
 // The rule (InIdleSection): past the threshold STRICTLY (an entry idle exactly
-// the threshold is not idle — the same strictness as the idle chips'
-// idleTokens), never when pinned, never when the activity is unknown (a host
-// that did not say), never when the threshold is 0 (the section is off). It is
-// decided by the SERVER, on every list render, with the server's clock — so a
-// window that becomes active again leaves the section on the next live refresh
-// (behind the "N new ↑" pill when applying it would move cards in view, like
-// any other move: agentsFilterScript's pendingSect).
+// the threshold is not idle), never when pinned, never when the activity is
+// unknown (a host that did not say), never when the threshold is 0 (the section
+// is off). It is decided by the SERVER, on every build of the entries, with the
+// server's clock — so a window that becomes active again leaves the section on
+// the sidebar's next refresh.
 //
-// HOW IT IS DRAWN. Every entry stays a direct <article> child of #agents-list
-// (the filter's `#agents-list > article` rules, its counts and the hold all
-// rely on it), idle ones carrying data-idle-section; the header is a <div>
-// among them. Their PLACE is CSS `order` (web/css/input.css): header after the
-// working entries, idle entries after it — so a background refresh that keeps
-// the drawn DOM order (the hold's keepDrawnOrder) still draws the sections
-// right. The collapse is a stylesheet rule on the <html> element's
-// data-agents-idle-open, which the head script sets from localStorage BEFORE
-// the first paint: collapsed by default, and never drawn open and then shut.
-// (The list's search box, whose term once drew the section open, is gone: the
-// session switcher's search finds an idle entry without opening it.)
+// HOW IT IS DRAWN: see navIdleGroup (nav_agents.go). The sidebar also keeps a
+// row that is waiting on the operator, the chief or the page's own session out
+// of the group (navInIdleGroup). The session switcher's search finds an idle
+// entry without opening it.
 
 // DefaultIdleSectionAfter is how long an entry must be idle to be drawn in the
 // section when MUSTER_AGENTS_IDLE_AFTER is unset.
@@ -84,9 +73,9 @@ func InIdleSection(now, activeAt time.Time, pinned bool, after time.Duration) bo
 	return after > 0 && !pinned && !activeAt.IsZero() && now.Sub(activeAt) > after
 }
 
-// MarkIdle sets each view's Idle by InIdleSection over the time its card
-// prints (listEntry.activeAt), in place. internal/api calls it once per list
-// build, after the pins are marked.
+// MarkIdle sets each view's Idle by InIdleSection over its last activity
+// (listEntry.activeAt), in place. internal/api calls it once per build of the
+// entries, after the pins are marked.
 func MarkIdle(agents []AgentCardView, mirrors []MirrorCardView, now time.Time, after time.Duration) {
 	for i := range agents {
 		agents[i].Idle = InIdleSection(now, agents[i].lastActive(), agents[i].Pinned, after)
@@ -126,8 +115,9 @@ func ParseIdleSectionAfter(v string) (time.Duration, error) {
 	return d, nil
 }
 
-// IdleSectionAfterLabel is a threshold as the header and the boot banner say
-// it: whole days ("14 days"), else whole hours ("36 hours"), else the duration.
+// IdleSectionAfterLabel is a threshold as the boot banner says it (the retired
+// Agents list's Idle header said it too): whole days ("14 days"), else whole
+// hours ("36 hours"), else the duration.
 func IdleSectionAfterLabel(d time.Duration) string {
 	plural := func(n int64, unit string) string {
 		if n == 1 {
@@ -142,26 +132,4 @@ func IdleSectionAfterLabel(d time.Duration) string {
 		return plural(int64(d/time.Hour), "hour")
 	}
 	return d.String()
-}
-
-// idleHead is the section's header: a full-width toggle naming how many entries
-// it holds. Drawn only when there is at least one; the script keeps the count
-// to what the filter shows, and its aria-expanded to the state in force.
-func idleHead(n int, after time.Duration) g.Node {
-	return Div(
-		ID("agents-idle-head"),
-		g.Attr("data-idle-head", ""),
-		Class("col-span-full mt-2 flex min-h-[44px] items-center border-t border-line pt-2"),
-		Button(
-			Type("button"),
-			ID("agents-idle-toggle"),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-controls", "agents-list"),
-			Class("press inline-flex min-h-[44px] items-center gap-2 rounded-xl px-2 text-sm font-medium text-fg2 transition hover:text-fg"),
-			g.Raw(`<svg data-idle-chevron class="h-4 w-4 shrink-0 transition-transform" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5l5 5-5 5"/></svg>`),
-			Span(g.Text("Idle")),
-			Span(g.Attr("data-idle-count", ""), Class("tabular-nums"), g.Text("("+strconv.Itoa(n)+")")),
-			g.If(after > 0, Span(Class("text-xs font-normal text-muted"), g.Text("no activity in over "+IdleSectionAfterLabel(after)))),
-		),
-	)
 }

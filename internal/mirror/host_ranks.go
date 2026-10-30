@@ -53,7 +53,7 @@ func RanksByRegistration(tokens []Token) map[string]int {
 // HostRanks is the viewing principal's hosts' registration ranks
 // (RanksByRegistration over its own tokens — mirror_tokens is under row-level
 // security, so ListTokens runs as the viewer and reads only theirs). Read on
-// every call, uncached, like the rest of the Agents list's per-render reads. A
+// every call, uncached, like the rest of the sidebar's per-render reads. A
 // failed read is logged and answers nil: the caller's fallback (ui.HostIconFor's
 // hash) still draws an icon.
 func (s *Service) HostRanks(ctx context.Context) map[string]int {

@@ -263,7 +263,6 @@ icons:
 	$(RSVG) -w 72 -h 72 $(ICON_SRC)/badge.svg -o $(ICON_OUT)/badge-72.png
 	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-new.svg -o $(ICON_OUT)/shortcut-new-96.png
 	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-tasks.svg -o $(ICON_OUT)/shortcut-tasks-96.png
-	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-agents.svg -o $(ICON_OUT)/shortcut-agents-96.png
 
 # Rebuild the stylesheet from the Go views.
 css:

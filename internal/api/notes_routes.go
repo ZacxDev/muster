@@ -137,7 +137,7 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	mux.HandleFunc("DELETE /tasks/{id}", s.requireSession(s.handleNoteDelete))
 	mux.HandleFunc("PATCH /tasks/{id}/status", s.requireSession(s.handleNoteStatus))
 	// The agent page's Mark-complete form WITHOUT JavaScript (a plain form can
-	// only GET or POST): completes the task and answers 303 → the Agents list.
+	// only GET or POST): completes the task and answers 303 → home (ui.HomePath).
 	mux.HandleFunc("POST /tasks/{id}/complete", s.requireSession(s.requireSameOrigin(s.handleNoteComplete)))
 	mux.HandleFunc("POST /tasks/{id}/comments", s.requireSession(s.handleNoteComment))
 	// The UI's per-comment trash control. 🔴 On the SESSION tier, like every other

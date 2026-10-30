@@ -483,12 +483,8 @@ test.describe('a 200-message mirrored transcript', () => {
     const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
     const page = await ctx.newPage();
     await rig.login(page);
-    await expect
-      .poll(async () => (await (await page.request.get(rig.origin + '/ui/agents')).text()).includes('data-mirror-claude'), {
-        message: `main reported as a Claude pane (muster-mirror log:\n${rig.log})`,
-        timeout: 20_000,
-      })
-      .toBe(true);
+    // main reported as a Claude pane: its sidebar row opens a rendered view.
+    await rig.waitListed(page, 'data-mirror-claude');
     state = await ctx.storageState();
     await ctx.close();
   });

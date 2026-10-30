@@ -52,9 +52,11 @@ async function openAgent(page: Page, name: string) {
 }
 
 async function agentID(page: Page, name: string): Promise<string> {
-  const html = await (await page.request.get('/ui/agents')).text();
-  const m = new RegExp(`<article id="agent-(\\d+)"[^>]*data-f-name="${name}"`).exec(html);
-  expect(m, `${name} is on the list`).not.toBeNull();
+  // The agent's row in the sidebar's list (GET /ui/nav/agents): its id is
+  // nav-agent-<id>, its link the agent's page.
+  const html = await (await page.request.get('/ui/nav/agents')).text();
+  const m = new RegExp(`<a id="nav-agent-(\\d+)" href="/agents/${name}[?"]`).exec(html);
+  expect(m, `${name} is in the sidebar's list`).not.toBeNull();
   return m![1];
 }
 

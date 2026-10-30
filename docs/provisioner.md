@@ -6,12 +6,13 @@ route is registered but answers **503**, with `"provisionerUnwired": true` in th
 body. The boot banner says `agent provisioning: UNWIRED`.
 
 The web UI offers no dispatch on such a deployment, the docker compose install
-included: the Agents list's bar has no **+**, task cards have no **Dispatch**
+included: the sidebar has no **+** beside **Agents** (it says "Agent dispatch
+not set up" there instead, linking here), task cards have no **Dispatch**
 button, and the dispatch sheet, if an old page still opens it, says that no
 agent runtime is configured and points here. Setting `MUSTER_AGENT_PROVISIONER`
 brings all three back.
 
-The Agents list still works without it: it shows mirrored sessions
+Everything else still works without it: the sidebar lists mirrored sessions
 ([mirroring.md](mirroring.md)) and any agent rows already stored.
 
 ## The two switches
@@ -198,11 +199,24 @@ When a gateway is configured, three routes are live:
 A `claude-code` agent has the same Rendered | Terminal switch as a mirrored
 session.
 
+## An agent's page
+
+A dispatched agent's page shows, under its title, the agent's live status (with
+**awaiting approval** while it waits at a permission prompt, **kickoff owed** or
+**kickoff failed**, and what it has running), and a **⋯** menu: **Rename**,
+**Start** or **Stop**, and **Delete** (two steps; never for the chief). A failed
+kickoff, a first turn held for your GitHub approval, or a GitHub App problem is
+explained above the transcript. To start a new agent, use the **+** beside
+**Agents** in the sidebar: **Dispatch**, or **Save for later** to start it later
+from its page.
+
+![An agent's page on a phone, its live status and its ⋯ menu open](img/agent-actions.png)
+
 ## Destroying an agent
 
 Two doors take the same teardown (`destroyAgent` in `internal/api/agents.go`):
 
-- **Delete** on the Agents page (`DELETE /agents/{id}`, a signed-in session);
+- **Delete** in an agent page's **⋯** menu (`DELETE /agents/{id}`, a signed-in session);
 - **`agent_destroy {name | id}`** from one of your own mirrored Claude Code
   sessions (`POST /mirror/mcp` only — see
   [attention.md](attention.md#the-agent-tools)), so a stuck agent can be torn
@@ -223,7 +237,7 @@ After a **successful** teardown, on both doors:
   chief's one start on that task is **released** (an
   `task.chief_dispatch_released` row in the chief-dispatch ledger; nothing is
   deleted), so the chief may start one new agent there — see
-  [chief.md](chief.md). ⚠ This is new for the Agents page's Delete too.
+  [chief.md](chief.md). ⚠ This is new for the agent page's Delete too.
 - your open tabs re-fetch: `agent.changed` and `attention_queue.changed` are
   broadcast to you.
 
@@ -248,7 +262,7 @@ the **stopped-agent reaper**, through the same teardown as the two doors above
 (`destroyAgent`, acting as the agent's owner): the chief is refused, then the
 provisioner's `Destroy` removes the instance and then the row, and after a
 successful teardown the chief's start on the agent's task is released and your
-open tabs are told, exactly as for the Agents page's Delete. Like that Delete,
+open tabs are told, exactly as for the agent page's Delete. Like that Delete,
 it leaves the agent's task as it was.
 
 - **The clock** is `agents.stopped_at` (migration 0045): the time the row last
@@ -286,7 +300,7 @@ it leaves the agent's task as it was.
   the provisioner's instances and skips (and logs: `agent-reap: agent <id>
   (<name>) is stored stopped but its instance reads <status>; not reaped`)
   any due agent whose instance reads anything but stopped, by the same rule
-  the Agents page uses. No instance at all, or one scaled to zero, counts as
+  the agent's page uses. No instance at all, or one scaled to zero, counts as
   stopped. If the instances cannot be read, or the read has not answered
   within 30 seconds, the pass destroys nothing.
 - **The record** is one server log line per agent whose teardown it started

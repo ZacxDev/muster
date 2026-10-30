@@ -62,17 +62,10 @@ func TestBothDispatchFormsOfferAWorkerPoolOnlyForClaudeCode(t *testing.T) {
 	}
 }
 
-// TestAPoolWorkersCardAndPageShowItsPool: the card and the detail page carry
-// the pool chip; an agent in no pool carries none.
+// TestAPoolWorkersCardAndPageShowItsPool: the detail page carries the pool
+// chip; an agent in no pool carries none. (The Agents list's card, which
+// carried it too, is retired.)
 func TestAPoolWorkersCardAndPageShowItsPool(t *testing.T) {
-	card := AgentCardView{ID: 3, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha"}
-	if html := renderString(t, agentCard(card)); strings.Contains(html, "data-worker-pool") {
-		t.Fatalf("a card in no pool shows a pool chip")
-	}
-	card.WorkerPool = "reviewers"
-	if html := renderString(t, agentCard(card)); !strings.Contains(html, `data-worker-pool="reviewers"`) {
-		t.Fatalf("a pool worker's card has no pool chip:\n%s", html)
-	}
 	page := AgentDetailView{ID: 3, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha"}
 	if html := renderString(t, AgentDetailPage(page, Features{})); strings.Contains(html, "data-worker-pool") {
 		t.Fatalf("a detail page in no pool shows a pool chip")

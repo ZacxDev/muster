@@ -177,15 +177,16 @@ func TestManifestContract(t *testing.T) {
 		t.Errorf("icons: any192=%v any512=%v maskable=%v, want all true", any192, any512, maskable)
 	}
 
-	// Shortcuts: exactly these three, in this order (Android shows three).
+	// Shortcuts: exactly these two, in this order. (The third, Agents, opened
+	// the Agents list page, which is retired: home is the start_url.)
 	var urls, names []string
 	for _, sc := range m["shortcuts"].([]any) {
 		s := sc.(map[string]any)
 		urls = append(urls, s["url"].(string))
 		names = append(names, s["name"].(string))
 	}
-	if strings.Join(urls, " ") != "/tasks?new=1 /tasks /agents" || strings.Join(names, ",") != "New task,Tasks,Agents" {
-		t.Errorf("shortcuts = %v %v, want [New task Tasks Agents] → [/tasks?new=1 /tasks /agents]", names, urls)
+	if strings.Join(urls, " ") != "/tasks?new=1 /tasks" || strings.Join(names, ",") != "New task,Tasks" {
+		t.Errorf("shortcuts = %v %v, want [New task Tasks] → [/tasks?new=1 /tasks]", names, urls)
 	}
 
 	// share_target: the WHOLE object, pinned literally — a field-by-field check
@@ -224,9 +225,9 @@ func TestManifestImagesShipAtTheirDeclaredSize(t *testing.T) {
 	collect(shots)
 	// Positive control: the derivation reached every list, so a short list here
 	// is a manifest that lost entries, not a lean one.
-	if n := len(staticRef.FindAllString(string(raw), -1)); n != len(imgs) || n < 9 {
-		t.Fatalf("collected %d images but the served manifest names %d /static/ paths (want ≥9: "+
-			"4 icons, 3 shortcut icons, ≥2 screenshots)", len(imgs), n)
+	if n := len(staticRef.FindAllString(string(raw), -1)); n != len(imgs) || n < 8 {
+		t.Fatalf("collected %d images but the served manifest names %d /static/ paths (want ≥8: "+
+			"4 icons, 2 shortcut icons, ≥2 screenshots)", len(imgs), n)
 	}
 
 	sub := mustSub(t)

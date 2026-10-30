@@ -112,14 +112,16 @@ at 390×844 (touch) and 1280×800. What it measures, exactly:
   `internal/api/testdata/routes.golden`: a new `GET` route fails the spec until
   it is measured there or named as not a page;
 - the chief panel opened, and restored open on a load;
-- **after a load**, started by script so nothing counts as input: the Agents
-  list re-rendering with nothing changed, an agent arriving while the list is
-  open (held behind the "N new ↑" pill, so nothing moves until the reader taps
-  it — with a positive control: a fresh arrival APPLIED at once must read a
-  shift above 0), an in-page tab switch, and a boosted navigation and the
-  loads it starts. ⚠ Chromium's layout-shift entries leave out a node MOVED in
-  the DOM, so a re-order done by moving cards reads 0 however far they jump;
-  the hold's own e2e (agents-hold) pins the DOM order instead;
+- **after a load**, started by script so nothing counts as input: the
+  sidebar's list refreshing, and a boosted navigation and the loads it starts,
+  with a positive control (an unprovoked shift must read above 0). ⚠ Chromium's
+  layout-shift entries leave out a node REPLACED or MOVED in the DOM, and a
+  sidebar refresh replaces its rows: its own rows read 0 however they change,
+  so the measurement is of what stays on the page around it;
+- a long list of mirrored windows (the sidebar's), arriving, refreshing live,
+  restored by Back and left by a boosted navigation;
+- the onboarding page `/agents` draws when home has nothing to open, on an
+  empty database;
 - a tapped tool-group expand is excluded as input, and the same expand by
   script is counted (the spec's own check of its exclusion).
 

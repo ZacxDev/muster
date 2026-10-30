@@ -63,7 +63,7 @@ func TestTheShellCarriesNoInlineScriptOverTheBudget(t *testing.T) {
 		docs[name+" +faro"] = doc
 	}
 	restore()
-	for _, name := range []string{"shell tasks", "shell agents", "compose", "shell tasks +faro", "shell agents +faro", "compose +faro"} {
+	for _, name := range []string{"shell tasks", "shell connectors", "compose", "shell tasks +faro", "shell connectors +faro", "compose +faro"} {
 		doc := docs[name]
 		total, linked := 0, 0
 		for _, m := range anyScript.FindAllStringSubmatch(doc, -1) {
@@ -112,7 +112,7 @@ func TestStaticScriptsAreTheSameForEveryone(t *testing.T) {
 
 	withHostPrefs(t, HostPreferences{})
 	docsA := scriptedDocuments(t, a)
-	withHostPrefs(t, HostPreferences{Order: []string{"hostzulu", "hostyankee"}})
+	withHostPrefs(t, HostPreferences{Icons: map[string]string{"hostzulu": "laptop"}})
 	docsB := scriptedDocuments(t, b)
 
 	urls := func(doc string) map[string]string { // path → ?v=
@@ -151,7 +151,7 @@ func TestStaticScriptsAreTheSameForEveryone(t *testing.T) {
 	appA, appB := html.UnescapeString(docsA["shell tasks"]), html.UnescapeString(docsB["shell tasks"])
 	for _, c := range []struct{ doc, want string }{
 		{appA, `data-build="build-alpha-1111"`}, {appB, `data-build="build-omega-9999"`},
-		{appB, `"agents","connectors"]`}, {appB, `["hostzulu","hostyankee","*","cluster"]`},
+		{appB, `["tasks","connectors"]`},
 	} {
 		if !strings.Contains(c.doc, c.want) {
 			t.Errorf("CONTROL: the per-document input %s is not on the page's tags", c.want)

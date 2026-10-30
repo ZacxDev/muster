@@ -170,8 +170,8 @@ a new one.
 
 | event | sent | fields |
 |---|---|---|
-| `stepup.passkey_options` | once per `POST /auth/confirm/passkey/options` the dialog makes, when it answers | `open_id`; `trigger`: `open` (the open's prefetch), `stale` (a tap found the challenge older than 4 minutes) or `retry` (a `/verify` GoTrue refused spent it, or the last answer was unusable; a refusal muster made before asking GoTrue answers `challenge_unspent: true` and keeps the challenge, and after a `429` the replacement waits for the next tap); `status`: the HTTP status, or `network`; `taps`: how many taps this open had made when it was fetched (0 for the open's own) |
-| `stepup.passkey` | once per tap on "Confirm with passkey" | `open_id`; `attempt` (the tap's number in this open); `options_trigger` and `options_status` (the fetch whose challenge it used); `get`: how `navigator.credentials.get` ended (`ok`, the DOMException's name, or `not-called`); `verify`: `/verify`'s status, or empty when it was not sent |
+| `stepup.passkey_options` | once per `POST /auth/confirm/passkey/options` the dialog makes, when it answers or when the dialog gives up on it | `open_id`; `trigger`: `open` (the open's prefetch), `stale` (a tap found the challenge older than 4 minutes) or `retry` (a `/verify` GoTrue refused spent it, or the last answer was unusable; a refusal muster made before asking GoTrue answers `challenge_unspent: true` and keeps the challenge, and after a `429` the replacement waits for the next tap); `status`: the HTTP status, `network`, or `timeout` (no answer within the dialog's limit — 28 s, above the server's own bounds for the route — sent when it gives up; a late answer then sends nothing); `taps`: how many taps this open had made when it was fetched (0 for the open's own) |
+| `stepup.passkey` | once per tap on "Confirm with passkey" | `open_id`; `attempt` (the tap's number in this open); `options_trigger` and `options_status` (the fetch whose challenge it used: its HTTP status, `network`, or `timeout` when it had not answered within the dialog's limit); `get`: how `navigator.credentials.get` ended (`ok`, the DOMException's name, or `not-called`); `verify`: `/verify`'s status, `network`, `timeout` (no answer within the dialog's limit), or empty when it was not sent |
 
 A run of `stepup.passkey_options` with no `stepup.passkey` is options calls with
 no tap: a burst within one open shows as several fetch events under one
@@ -213,7 +213,7 @@ Every request that opens a session — the GET of `/mirror/view`,
 `/mirror/terminal` or `/agents/{name}`, and each of their sockets — is always
 traced, and so is everything under it (the hub's requests, the host's spans, the
 queries) — in-process children follow their parent, and so do a host's spans,
-whose parent is muster's own. Every other server request — the Agents list's
+whose parent is muster's own. Every other server request — the sidebar's
 refreshes, the event stream, the badge and ask polls — is kept at
 `MUSTER_TRACE_SAMPLE_RATIO` (default 5%), **even when it carries the browser's
 sampled `traceparent`**: Faro samples every page, so following it would trace
