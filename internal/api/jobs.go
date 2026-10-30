@@ -24,9 +24,9 @@ import (
 // submits a one-shot job — "run this prompt on this agent, optionally at this
 // commit, and give me the result" — and polls for its outcome.
 //
-//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, pr?, config_ref?, repo_config_overlay?, base_sha?, model?, result_path?, timeout_s?, idempotency_key?}
+//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, pr?, config_ref?, base_sha?, model?, result_path?, timeout_s?, idempotency_key?}
 //	                     → 202 {job_id, status: "queued", …}  (200 + deduplicated:true on a repeated key;
-//	                       409 when that key's job has a different model, config_ref, repo_config_overlay or base_sha)
+//	                       409 when that key's job has a different model, config_ref or base_sha)
 //	GET  /api/jobs/{id}  → {job_id, status, result?, reason?, error?, started_at, finished_at, agent, cc_account, …}
 //
 // 🔴 ASYNCHRONOUS OVER THE EXISTING SYNCHRONOUS TURN, NOT NEW ccd PLUMBING. A
@@ -119,10 +119,6 @@ type jobRequest struct {
 	// job's worktree takes its agent configuration from (absent: the default
 	// branch's tip, origin/HEAD).
 	ConfigRef string `json:"config_ref"`
-	// RepoConfigOverlay false gives a sha job's worktree NONE of the
-	// repository's agent configuration (absent or true: the default branch's, as
-	// before). A pointer, so absent and true are told from false.
-	RepoConfigOverlay *bool `json:"repo_config_overlay"`
 	// BaseSHA is a full commit id a sha job's worktree fetches (with the head's
 	// credential path) into refs/muster-jobs/<job id>-base, so the turn can
 	// diff against it with no credential of its own.
@@ -185,6 +181,10 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n.WorkerPool = strings.TrimSpace(req.WorkerPool)
+	if status, msg := s.configRefRefusal(n, agents.Agent{WorkerPool: n.WorkerPool}); status != 0 {
+		s.writeJSON(w, status, map[string]any{"error": msg})
+		return
+	}
 	n.RequestedBy, _ = serviceActorFromContext(ctx)
 	var j jobs.Job
 	var created bool
@@ -201,6 +201,10 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if n, status, msg = jobOnAgent(n, a); status != 0 {
+			s.writeJSON(w, status, map[string]any{"error": msg})
+			return
+		}
+		if status, msg := s.configRefRefusal(n, a); status != 0 {
 			s.writeJSON(w, status, map[string]any{"error": msg})
 			return
 		}
@@ -246,11 +250,10 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 
 // writeJobReplay answers a submission whose idempotency key already names job
 // j: that job, with 200 and deduplicated:true — unless the submission asks for
-// a different model, config_ref, repo_config_overlay or base_sha
-// (replayMismatch), which is a 409 naming the fields, recording and running
-// nothing.
+// a different model, config_ref or base_sha (replayMismatch), which is a 409
+// naming the fields, recording and running nothing.
 //
-// 🔴 ONLY THOSE FOUR FIELDS ARE COMPARED. Before they existed the key was
+// 🔴 ONLY THOSE THREE FIELDS ARE COMPARED. Before they existed the key was
 // compared with nothing (docs/jobs.md, "Idempotency"), and a caller may rely on
 // that for the rest of the body; but a caller that changes the model or the
 // configuration a review runs with and gets the OLD job back would record a
@@ -271,8 +274,7 @@ func (s *Server) writeJobReplay(w http.ResponseWriter, j jobs.Job, n jobs.NewJob
 
 // replayMismatch is "" when submission n may be answered with job j (its
 // idempotency key's), else how they differ: the model, the config_ref and the
-// repo_config_overlay, each as recorded (absent and "" are the same, and so are
-// an absent repo_config_overlay and true).
+// base_sha, each as recorded (absent and "" are the same).
 func replayMismatch(j jobs.Job, n jobs.NewJob) string {
 	var diffs []string
 	if j.Model != n.Model {
@@ -283,9 +285,6 @@ func replayMismatch(j jobs.Job, n jobs.NewJob) string {
 	}
 	if j.BaseSHA != n.BaseSHA {
 		diffs = append(diffs, fmt.Sprintf("has base_sha %q, not %q", j.BaseSHA, n.BaseSHA))
-	}
-	if j.RepoConfigOverlay == n.SkipRepoConfig {
-		diffs = append(diffs, fmt.Sprintf("has repo_config_overlay %t, not %t", j.RepoConfigOverlay, !n.SkipRepoConfig))
 	}
 	return strings.Join(diffs, " and ")
 }
@@ -348,14 +347,7 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 	case n.BaseSHA != "" && n.SHA == "":
 		return n, http.StatusBadRequest, "base_sha is only for a job with a sha: it is fetched into the job's worktree, " +
 			"which only a sha job has"
-	case req.RepoConfigOverlay != nil && !*req.RepoConfigOverlay && n.SHA == "":
-		return n, http.StatusBadRequest, "repo_config_overlay false is only for a job with a sha: a job without one " +
-			"runs in the agent's own checkout, which has no overlay to skip"
-	case req.RepoConfigOverlay != nil && !*req.RepoConfigOverlay && n.ConfigRef != "":
-		return n, http.StatusBadRequest, "config_ref names the agent configuration to overlay, and repo_config_overlay " +
-			"false overlays none: send one or the other"
 	}
-	n.SkipRepoConfig = req.RepoConfigOverlay != nil && !*req.RepoConfigOverlay
 	// The same check a Claude Code chat session's model gets: it becomes the
 	// CLI's --model argument.
 	model, err := agents.ValidateSessionRuntime(agents.SessionRuntimeClaudeCode, req.Model)
@@ -401,6 +393,21 @@ func jobOnAgent(n jobs.NewJob, a agents.Agent) (jobs.NewJob, int, string) {
 		n.Repo = strings.TrimSpace(a.Repo)
 	}
 	return n, 0, ""
+}
+
+// configRefRefusal is the 409 for a job with a config_ref on agent a — or, for
+// a pool job (a carries only the pool's name), on any worker of a's pool —
+// whose jobs get none of the repository's agent configuration
+// (JobWorkspace.StripsRepoConfig: a pool with a deploy key). A config_ref
+// names a configuration to overlay, and such a job has none, so it is refused
+// rather than silently run without it. 0 when the job may proceed.
+func (s *Server) configRefRefusal(n jobs.NewJob, a agents.Agent) (int, string) {
+	if n.ConfigRef == "" || s.ext.JobWorkspace == nil || a.WorkerPool == "" || !s.ext.JobWorkspace.StripsRepoConfig(a) {
+		return 0, ""
+	}
+	return http.StatusConflict, fmt.Sprintf("config_ref cannot be honoured: worker pool %q never gives a job the "+
+		"repository's agent configuration (it has a deploy key), so there is no configuration to overlay; "+
+		"submit the job without config_ref", a.WorkerPool)
 }
 
 // namedJobAgent loads the agent a job names; jobs run on claude-code agents only.
@@ -672,8 +679,6 @@ func jobView(j jobs.Job) map[string]any {
 		"started_at":  jobTime(j.StartedAt),
 		"finished_at": jobTime(j.FinishedAt),
 	}
-	// Always present: true for every job but one submitted with false.
-	v["repo_config_overlay"] = j.RepoConfigOverlay
 	v["base_sha"] = j.BaseSHA
 	if j.IdempotencyKey != "" {
 		v["idempotency_key"] = j.IdempotencyKey
@@ -1009,7 +1014,7 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	if j.SHA != "" {
 		// Registered BEFORE the worktree is made, so a half-made one goes too.
 		defer func() { o = s.removeJobWorktree(ctx, a, j, o) }()
-		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA, j.ConfigRef, !j.RepoConfigOverlay, j.BaseSHA)
+		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA, j.ConfigRef, j.BaseSHA)
 		if err != nil {
 			if expired() {
 				return jobs.TimedOut("the job's timeout elapsed while creating its worktree at " + j.SHA + ": " + err.Error())

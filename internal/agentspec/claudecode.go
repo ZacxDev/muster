@@ -211,23 +211,41 @@ type PoolDeployKey struct {
 	Secret string
 }
 
-// The deploy key's place in the pod. The Secret's one key is mounted read-only
-// at DeployKeyPath, GitHub's pinned host keys (podagent.GitHubKnownHosts) are
-// placed at KnownHostsPath, and ccd is told both paths (EnvCCDRepoDeployKey,
-// EnvCCDRepoKnownHosts) — never the key, which is in no variable at all.
+// The deploy key's place in the pod: in its KEY HOLDER alone
+// (provision.KeyHolder) — a container named DeployKeyHolderName, under uid
+// DeployKeyHolderUID — which mounts the Secret's one key at DeployKeyPath,
+// GitHub's pinned host keys (podagent.GitHubKnownHosts) at KnownHostsPath, and
+// keeps the repository's mirror at MirrorPath in MirrorDir, which the agent's
+// container mounts READ-ONLY. ccd is told only the mirror's path
+// (EnvCCDRepoMirror): no path to the key, and the key, are in no variable of
+// the agent's container.
 const (
 	// DeployKeySecretKey is the key of the operator's Secret that holds the
 	// private key: the key a `kubernetes.io/ssh-auth` Secret uses.
 	DeployKeySecretKey = "ssh-privatekey"
-	// DeployKeyPath is where that key is mounted, outside the workspace volume.
+	// DeployKeyPath is where that key is mounted, in the holder only.
 	DeployKeyPath = "/etc/muster/deploy-key/ssh-privatekey"
-	// KnownHostsPath is where GitHub's pinned host keys are placed.
+	// KnownHostsPath is where GitHub's pinned host keys are placed, in the
+	// holder only.
 	KnownHostsPath = "/etc/muster/deploy-key/known_hosts"
-	// EnvCCDRepoDeployKey and EnvCCDRepoKnownHosts hand ccd the two paths
-	// (cmd/ccd/checkout.go).
-	EnvCCDRepoDeployKey  = "CCD_REPO_DEPLOY_KEY"
-	EnvCCDRepoKnownHosts = "CCD_REPO_KNOWN_HOSTS"
+	// DeployKeyHolderName is the holder's container.
+	DeployKeyHolderName = "deploy-key"
+	// DeployKeyHolderUID is the holder's uid and gid: not ClaudeCodeUID, which
+	// the agent's session runs as.
+	DeployKeyHolderUID = 1001
+	// MirrorDir is the directory the holder shares (an emptyDir: written by the
+	// holder, read-only in the agent's container), outside the workspace.
+	MirrorDir = "/var/lib/muster-mirror"
+	// MirrorPath is the bare mirror of the repository in it.
+	MirrorPath = MirrorDir + "/repo.git"
+	// EnvCCDRepoMirror hands ccd the mirror's path (cmd/ccd/checkout.go): it
+	// clones from it.
+	EnvCCDRepoMirror = "CCD_REPO_MIRROR"
 )
+
+// DeployKeyHolderResources is the holder's budget: it idles, and clones and
+// fetches one repository.
+var DeployKeyHolderResources = provision.Resources{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "1Gi"}
 
 // PoolDeployKeyFor is the deploy key agent a's pool is configured with: ONLY a
 // pooled agent (a.WorkerPool set), never a chief, and only for a pool
@@ -244,6 +262,18 @@ func PoolDeployKeyFor(a agents.Agent, cfg Config) (PoolDeployKey, bool) {
 	}
 	k, ok := cc.PoolDeployKeys[a.WorkerPool]
 	return k, ok
+}
+
+// StripsRepoConfig reports whether a job on agent a gets NONE of its
+// repository's agent configuration — every `.claude/`, the root CLAUDE.md,
+// CLAUDE.local.md, AGENTS.md and .mcp.json removed from its worktree and none
+// restored — whatever the job asks: an agent of a pool with a deploy key (a
+// private repository's reviewers, whose configuration muster does not vouch
+// for). It is THE predicate; the job API refuses a config_ref by it and the
+// worktree script strips by it.
+func StripsRepoConfig(a agents.Agent, cfg Config) bool {
+	_, ok := PoolDeployKeyFor(a, cfg)
+	return ok
 }
 
 // SameRepo reports whether two owner/name spellings name one GitHub repository
@@ -387,11 +417,24 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 				"repository %q, but it works on %q; a pool with a deploy key serves that one repository",
 				a.Name, a.WorkerPool, k.Repo, a.Repo)
 		}
-		spec.SecretMounts = []provision.SecretMount{{Secret: k.Secret, Key: DeployKeySecretKey, Path: DeployKeyPath}}
-		spec.Files = append(spec.Files, provision.File{Path: KnownHostsPath, Content: []byte(podagent.GitHubKnownHosts)})
-		spec.Env = append(spec.Env,
-			provision.EnvVar{Name: EnvCCDRepoDeployKey, Value: DeployKeyPath},
-			provision.EnvVar{Name: EnvCCDRepoKnownHosts, Value: KnownHostsPath})
+		cmd, err := podagent.MirrorHolderCommand(k.Repo, MirrorPath, DeployKeyPath, KnownHostsPath)
+		if err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q: %w", a.Name, err)
+		}
+		// 🔴 THE KEY IS THE HOLDER'S ALONE: mounted into its container only,
+		// under DeployKeyHolderUID; the agent's container gets the mirror's
+		// directory read-only and the mirror's path, nothing more.
+		spec.KeyHolder = &provision.KeyHolder{
+			Name:         DeployKeyHolderName,
+			RunAsUser:    DeployKeyHolderUID,
+			Command:      cmd,
+			Env:          []provision.EnvVar{{Name: "HOME", Value: "/tmp"}},
+			Files:        []provision.File{{Path: KnownHostsPath, Content: []byte(podagent.GitHubKnownHosts)}},
+			SecretMounts: []provision.SecretMount{{Secret: k.Secret, Key: DeployKeySecretKey, Path: DeployKeyPath}},
+			SharedDir:    MirrorDir,
+			Resources:    DeployKeyHolderResources,
+		}
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvCCDRepoMirror, Value: MirrorPath})
 	}
 	// The agent's own session settings (podagent/session.go), only when set:
 	// an agent without them keeps the spec — and so the fingerprint — it had.

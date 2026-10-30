@@ -27,12 +27,10 @@ import (
 const (
 	envRepo       = "CCD_REPO"
 	envRepoBranch = "CCD_REPO_BRANCH"
-	// envRepoDeployKey and envRepoKnownHosts are the PATHS of a mounted
-	// read-only deploy key and of GitHub's pinned known_hosts
-	// (agentspec.EnvCCDRepoDeployKey / EnvCCDRepoKnownHosts): both set, the
-	// clone goes over SSH with that key; both unset, anonymous HTTPS.
-	envRepoDeployKey  = "CCD_REPO_DEPLOY_KEY"
-	envRepoKnownHosts = "CCD_REPO_KNOWN_HOSTS"
+	// envRepoMirror is the path of a bare mirror of the repository that the
+	// pod's deploy-key holder makes (agentspec.EnvCCDRepoMirror): set, the
+	// clone is from it; unset, anonymous HTTPS. ccd never holds the key.
+	envRepoMirror = "CCD_REPO_MIRROR"
 )
 
 // The states /healthz reports under `repo` (podagent's, which are
@@ -71,14 +69,13 @@ func checkoutFromEnv(workspace string) (*checkout, error) {
 	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
 		cfg.ConnectBase, cfg.Token = base, tok
 	}
-	// A private repository's read-only deploy key (a worker pool muster mounts
-	// one for): the clone goes over SSH with it. The two PATHS are read; the
-	// key is not, and neither variable is a secret.
-	cfg.DeployKey = strings.TrimSpace(os.Getenv(envRepoDeployKey))
-	cfg.KnownHosts = strings.TrimSpace(os.Getenv(envRepoKnownHosts))
+	// A private repository (a worker pool with a deploy key): the clone is
+	// from the mirror the pod's key holder makes with the key, which this
+	// process cannot read.
+	cfg.Mirror = strings.TrimSpace(os.Getenv(envRepoMirror))
 	c, err := podagent.NewCheckout(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("ccd: %s / %s: %w", envRepoDeployKey, envRepoKnownHosts, err)
+		return nil, fmt.Errorf("ccd: %s: %w", envRepoMirror, err)
 	}
 	c.Logf = log.Printf
 	return c, nil

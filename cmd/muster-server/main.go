@@ -1620,8 +1620,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					}
 					slices.Sort(pools)
 					line += fmt.Sprintf(" Read-only deploy keys CONFIGURED for worker pools [%s] (%s): those pools' "+
-						"workers clone, and their jobs fetch, that one repository over SSH with the key; a worker gets "+
-						"the key mounted when its spec is applied (dispatch, Start, reapply).",
+						"workers clone, and their jobs fetch, that one repository through a key holder (a second container, "+
+						"another uid) that alone mounts the key, and their jobs get none of its agent configuration; a "+
+						"worker gets the holder when its spec is applied (dispatch, Start, reapply).",
 						strings.Join(pools, ", "), envAgentCCPoolDeployKeys)
 				} else {
 					line += fmt.Sprintf(" No worker pool has a deploy key (%s unset): every pool clones and fetches "+

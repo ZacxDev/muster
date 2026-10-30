@@ -431,25 +431,23 @@ func TestTheCheckoutComesOnlyFromCCDRepo(t *testing.T) {
 	}
 }
 
-// TestCcdReadsTheDeployKeyPaths: ccd hands both deploy-key variables to the
-// checkout — one without the other stops ccd naming both variables (it would
-// otherwise clone anonymously, or fail every clone, silently), and both (or
-// neither) is a checkout.
-func TestCcdReadsTheDeployKeyPaths(t *testing.T) {
+// TestCcdReadsTheMirrorPath: ccd hands CCD_REPO_MIRROR to the checkout — a
+// relative or unclean path stops ccd naming the variable (it would otherwise
+// fail every clone, silently), and an absolute one (or none) is a checkout
+// that clones from it (or anonymously).
+func TestCcdReadsTheMirrorPath(t *testing.T) {
 	t.Setenv(envRepo, "example-org/tide-charts")
-	for _, c := range []struct{ key, hosts string }{{"/etc/k", ""}, {"", "/etc/h"}} {
-		t.Setenv(envRepoDeployKey, c.key)
-		t.Setenv(envRepoKnownHosts, c.hosts)
+	for _, m := range []string{"var/lib/muster-mirror/repo.git", "/var/lib/../lib/muster-mirror/repo.git"} {
+		t.Setenv(envRepoMirror, m)
 		_, err := checkoutFromEnv("/data/workspace/tide-charts")
-		if err == nil || !strings.Contains(err.Error(), "CCD_REPO_DEPLOY_KEY / CCD_REPO_KNOWN_HOSTS") {
-			t.Errorf("key %q known_hosts %q: err = %v", c.key, c.hosts, err)
+		if err == nil || !strings.Contains(err.Error(), "CCD_REPO_MIRROR") {
+			t.Errorf("mirror %q: err = %v", m, err)
 		}
 	}
-	for _, c := range []struct{ key, hosts string }{{"/etc/k", "/etc/h"}, {"", ""}} {
-		t.Setenv(envRepoDeployKey, c.key)
-		t.Setenv(envRepoKnownHosts, c.hosts)
+	for _, m := range []string{"/var/lib/muster-mirror/repo.git", ""} {
+		t.Setenv(envRepoMirror, m)
 		if co, err := checkoutFromEnv("/data/workspace/tide-charts"); err != nil || co == nil {
-			t.Errorf("control: key %q known_hosts %q: %v %v", c.key, c.hosts, co, err)
+			t.Errorf("control: mirror %q: %v %v", m, co, err)
 		}
 	}
 }

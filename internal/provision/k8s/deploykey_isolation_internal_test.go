@@ -171,6 +171,30 @@ func TestTheSessionContainerHasNoDeployKeyVolumeOrVariable(t *testing.T) {
 	}
 }
 
+// TestTheSessionMountsTheHoldersMirrorReadOnly: the directory the key holder
+// writes its mirror into is mounted into the session's container (ccd clones
+// from it) and the init container READ-ONLY — so the session can plant nothing
+// the holder's gits read — and read-write into the holder alone.
+func TestTheSessionMountsTheHoldersMirrorReadOnly(t *testing.T) {
+	pod := deployKeyPodSpec(t)
+	seen := 0
+	for _, c := range allContainers(pod) {
+		for _, m := range c.VolumeMounts {
+			if m.MountPath != agentspec.MirrorDir {
+				continue
+			}
+			seen++
+			holder := c.Name == agentspec.DeployKeyHolderName
+			if holder == m.ReadOnly {
+				t.Errorf("container %q mounts %s read-only=%t; want read-write in the holder only", c.Name, m.MountPath, m.ReadOnly)
+			}
+		}
+	}
+	if seen < 2 {
+		t.Fatalf("%d container(s) mount %s, want the holder's and the session's", seen, agentspec.MirrorDir)
+	}
+}
+
 // TestADeployKeyPodSharesNoProcessNamespace: with a shared process namespace
 // (or the host's), the session could read the key holder's /proc/<pid>/root,
 // environ and memory. Neither is set.

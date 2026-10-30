@@ -109,11 +109,11 @@ type CheckoutConfig struct {
 	// is not offered the connector store.
 	ConnectBase, Token string
 	Voice              Voice
-	// DeployKey and KnownHosts, both set, clone over SSH (DeployKeyURL) with the
-	// read-only deploy key at DeployKey, checking GitHub against the pinned
-	// known_hosts file at KnownHosts (deploykey.go). Both empty: the anonymous
-	// HTTPS clone (GithubCloneBase).
-	DeployKey, KnownHosts string
+	// Mirror, set, is the absolute path of a bare MIRROR of the repository that
+	// the pod's deploy-key holder made (deploykey.go): the clone is a local
+	// one, from it, and needs no credential — this process never holds the
+	// key. Empty: the anonymous HTTPS clone (GithubCloneBase).
+	Mirror string
 }
 
 // Checkout is one agent's repository checkout. Retry, Timeout and Logf may be
@@ -122,8 +122,8 @@ type Checkout struct {
 	repo, branch, dir  string
 	connectBase, token string
 	voice              Voice
-	// sshCommand is GIT_SSH_COMMAND for a deploy-key clone; "" = anonymous HTTPS.
-	sshCommand string
+	// mirror is CheckoutConfig.Mirror; "" = anonymous HTTPS.
+	mirror string
 	// Retry is how often a failed clone is retried.
 	Retry time.Duration
 	// Timeout bounds one clone; 0 is CheckoutTimeout.
@@ -144,49 +144,50 @@ func ParseRepo(repo string) bool {
 
 // NewCheckout makes the checkout cfg describes, in state cloning. The caller has
 // validated cfg.Repo with ParseRepo and made cfg.Dir absolute. It refuses a
-// deploy key without its known_hosts (or the reverse), and a path
-// DeployKeySSHCommand refuses.
+// mirror path that is not a clean absolute one.
 func NewCheckout(cfg CheckoutConfig) (*Checkout, error) {
 	c := &Checkout{
 		repo: cfg.Repo, branch: cfg.Branch, dir: filepath.Clean(cfg.Dir),
 		connectBase: cfg.ConnectBase, token: cfg.Token, voice: cfg.Voice,
 		Retry: CheckoutRetry, Logf: func(string, ...any) {}, done: make(chan struct{}),
 	}
-	if (cfg.DeployKey == "") != (cfg.KnownHosts == "") {
-		return nil, fmt.Errorf("podagent: a deploy key and its known_hosts file are both required or both empty (key %q, known_hosts %q)",
-			cfg.DeployKey, cfg.KnownHosts)
-	}
-	if cfg.DeployKey != "" {
-		cmd, err := DeployKeySSHCommand(cfg.DeployKey, cfg.KnownHosts)
-		if err != nil {
-			return nil, err
+	if cfg.Mirror != "" {
+		if !filepath.IsAbs(cfg.Mirror) || filepath.Clean(cfg.Mirror) != cfg.Mirror {
+			return nil, fmt.Errorf("podagent: the repository mirror %q is not a clean absolute path", cfg.Mirror)
 		}
-		c.sshCommand = cmd
+		c.mirror = cfg.Mirror
 	}
 	c.st = CheckoutState{Repo: c.repo, Branch: c.branch, Dir: c.dir, State: CheckoutCloning}
 	return c, nil
 }
 
-// remoteURL is where the repository is cloned from: DeployKeyURL with a deploy
-// key, else the anonymous HTTPS URL.
+// remoteURL is where the repository is cloned from: the mirror, else the
+// anonymous HTTPS URL.
 func (c *Checkout) remoteURL() string {
-	if c.sshCommand != "" {
-		return DeployKeyURL(c.repo)
+	if c.mirror != "" {
+		return c.mirror
 	}
 	return GithubCloneBase + c.repo + ".git"
 }
 
-// gitEnv is the environment a git reaching the remote runs with:
-// GIT_TERMINAL_PROMPT=0 always (the hang guard muster also sets on the pod: with
-// nobody to answer, a credential prompt must fail the clone, not block it), and
-// GIT_SSH_COMMAND for a deploy-key clone — on that git only, never in an
-// environment the agent's session inherits.
-func (c *Checkout) gitEnv(base []string) []string {
-	env := append(base, "GIT_TERMINAL_PROMPT=0")
-	if c.sshCommand != "" {
-		env = append(env, "GIT_SSH_COMMAND="+c.sshCommand)
+// gitArgs is a git command line reaching the remote: with a mirror, preceded by
+// `-c safe.directory=<mirror>` — the mirror belongs to the key holder's uid,
+// not this process's, and git refuses a repository another user owns unless
+// told it is safe (a command-line value is one git honours for it). The mirror
+// is the holder's, mounted read-only here, so marking it safe trusts nothing
+// this pod's session can write.
+func (c *Checkout) gitArgs(args ...string) []string {
+	if c.mirror == "" {
+		return args
 	}
-	return env
+	return append([]string{"-c", "safe.directory=" + c.mirror}, args...)
+}
+
+// gitEnv is the environment a git reaching the remote runs with:
+// GIT_TERMINAL_PROMPT=0 (the hang guard muster also sets on the pod: with
+// nobody to answer, a credential prompt must fail the clone, not block it).
+func (c *Checkout) gitEnv(base []string) []string {
+	return append(base, "GIT_TERMINAL_PROMPT=0")
 }
 
 // State is what /healthz reports.
@@ -379,11 +380,16 @@ func (c *Checkout) clone(ctx context.Context, scratch, branch string) error {
 		return local(err)
 	}
 	args := []string{"clone", "--quiet"}
+	if c.mirror != "" {
+		// Through upload-pack, as a job's fetch from the mirror is, rather than
+		// git's local copy of another user's object store.
+		args = append(args, "--no-local")
+	}
 	if branch != "" {
 		args = append(args, "--branch="+branch)
 	}
 	args = append(args, "--", c.remoteURL(), scratch)
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", c.gitArgs(args...)...)
 	cmd.Env = c.gitEnv(cmd.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -404,7 +410,7 @@ func (c *Checkout) clone(ctx context.Context, scratch, branch string) error {
 // no refs at all: an empty repository. False when ls-remote fails (unreadable
 // is not empty).
 func (c *Checkout) remoteHasNoRefs(ctx context.Context) bool {
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--", c.remoteURL())
+	cmd := exec.CommandContext(ctx, "git", c.gitArgs("ls-remote", "--", c.remoteURL())...)
 	cmd.Env = c.gitEnv(cmd.Environ())
 	out, err := cmd.Output()
 	return err == nil && len(bytes.TrimSpace(out)) == 0
@@ -523,12 +529,13 @@ func (c *Checkout) Explain(ctx context.Context, cloneErr error) (detail string, 
 		what += " (branch " + c.branch + ")"
 	}
 	msg := fmt.Sprintf("the repository %s could not be cloned: %v", what, cloneErr)
-	if c.sshCommand != "" {
+	if c.mirror != "" {
 		// No github connector request: a deploy-key pod is a pool worker, which
 		// never holds such a grant, and the key is what decides this clone.
-		return msg + fmt.Sprintf(". This pod clones over SSH (%s:%d) with its worker pool's read-only deploy key: check the "+
-			"key is added to %s as a deploy key and that its Secret holds the matching private key; %s retries every %s",
-			DeployKeyHost, DeployKeyPort, c.repo, who, c.Retry), false
+		return msg + fmt.Sprintf(". This pod clones from the mirror its deploy-key holder makes over SSH (%s:%d) with "+
+			"its worker pool's read-only deploy key; until that mirror exists this clone fails. Check the holder "+
+			"container's log, that the key is added to %s as a deploy key and that its Secret holds the matching "+
+			"private key; %s retries every %s", DeployKeyHost, DeployKeyPort, c.repo, who, c.Retry), false
 	}
 	if c.connectBase == "" {
 		return msg + ". This pod is not offered muster's connector store, so only a public repository can be cloned", false

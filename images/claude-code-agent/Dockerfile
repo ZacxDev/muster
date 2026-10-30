@@ -34,9 +34,11 @@ FROM node:22-bookworm-slim
 # fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
 #
 # openssh-client is for a PRIVATE-repository worker pool's read-only deploy key
-# (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): ccd's clone and a job's fetch reach
-# ssh.github.com:443 with it (internal/podagent deploykey.go). Nothing else in
-# the pod is configured to use ssh.
+# (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): the pod's KEY HOLDER — this image, run as
+# a second container under uid 1001, the only one the key is mounted into —
+# reaches ssh.github.com:443 with it to mirror the repository and fetch each
+# job's commits (internal/podagent deploykey.go). Nothing in the agent's own
+# container is configured to use ssh.
 #
 # 🔴 PINNED. A floating CLI is a different program on every rebuild, and ccd parses
 # that program's transcript and hook payloads. Bump deliberately, re-record the

@@ -7,10 +7,17 @@ import (
 )
 
 // A PRIVATE repository's read-only DEPLOY KEY, for a worker pool configured with
-// one (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS; internal/agentspec mounts the key and
-// hands ccd its path). The supervisor's clone of the agent's repository and every
-// machine job's fetch (internal/agentprovision jobworkspace.go) go over SSH with
-// this key and nothing else; every other pod keeps the anonymous HTTPS clone.
+// one (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS). Every use of the key is made by the
+// pod's KEY HOLDER — a container of its own, under a uid that is not the
+// session's, the only container the key is mounted into (internal/agentspec,
+// provision.KeyHolder) — running MirrorScript: at the pod's start (its
+// command, MirrorHolderCommand) it clones the repository into a bare MIRROR in
+// a directory it shares READ-ONLY with the agent's container; for each machine
+// job muster execs the same script into it to probe the key and fetch the
+// job's commits into that mirror. ccd clones the agent's checkout FROM the
+// mirror (CheckoutConfig.Mirror), and a job's worktree script fetches from it
+// (internal/agentprovision jobworkspace.go): neither holds, nor can name, the
+// key. Every other pod keeps the anonymous HTTPS clone.
 //
 // 🔴 ssh.github.com ON PORT 443, NOT github.com ON 22. A claude-code pod may reach
 // public addresses on TCP 443 only (agentspec.ClaudeCodeNetwork), and GitHub
@@ -69,4 +76,121 @@ func DeployKeySSHCommand(keyPath, knownHostsPath string) (string, error) {
 		" -o UserKnownHostsFile=" + knownHostsPath + " -o GlobalKnownHostsFile=/dev/null" +
 		" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ProxyCommand=none -o ProxyJump=none" +
 		" -o ControlMaster=no -o ControlPath=none -o PermitLocalCommand=no", nil
+}
+
+// The messages MirrorScript fails with (each opens the error a job records).
+const (
+	// MirrorCloneMessage: the holder could not clone the repository with the key.
+	MirrorCloneMessage = "the worker pool's deploy-key holder could not clone the repository with the key (a key GitHub refuses, a repository it does not open, or no network); nothing was run"
+	// MirrorNoDefaultBranchMessage: the mirror has no default branch to probe with.
+	MirrorNoDefaultBranchMessage = "the deploy-key holder's mirror of the repository has no default branch to probe the key's write access with; nothing was run"
+	// DeployKeyWritableMessage: the key could open GitHub's receive-pack.
+	DeployKeyWritableMessage = "the worker pool's deploy key has WRITE access (a dry-run push to the repository was accepted), so it was not used: add it to the repository as a deploy key WITHOUT write access; nothing was run"
+	// PullFetchMessage: the pull request's head could not be fetched.
+	PullFetchMessage = "the pull request's head could not be fetched — anonymously, or with the worker pool's deploy key where it has one — (a private repository without a deploy key, a deploy key GitHub refuses, no such pull request, or no network); nothing was run"
+	// BaseFetchMessage: the job's base_sha could not be fetched; the base follows.
+	BaseFetchMessage = "the job's base commit could not be fetched — anonymously, or with the worker pool's deploy key where it has one — (no such commit in the repository, a key GitHub refuses, or no network); nothing was run"
+)
+
+// ReadOnlyProbeRef is the ref the write probe dry-run-pushes to. Nothing is
+// ever written there: a dry run sends no objects and updates no ref.
+const ReadOnlyProbeRef = "refs/heads/muster-read-only-probe"
+
+// MirrorScript runs in the KEY HOLDER, as its uid, with the key: $1 the
+// repository's SSH URL (DeployKeyURL), $2 the mirror's path (a bare repository
+// in the directory shared read-only with the agent's container), $3
+// GIT_SSH_COMMAND (DeployKeySSHCommand), $4 a pull request number ("" = only
+// make sure the mirror exists), $5 a base commit to fetch ("" = none).
+//
+//  1. Without a mirror, clone one (`--bare`) into a temporary directory beside
+//     it and rename it into place, so a reader sees no mirror or a whole one;
+//     `uploadpack.allowAnySHA1InWant`, so a job can fetch its base by id.
+//  2. With $4: PROBE the key for write access — a `git push --dry-run` of the
+//     mirror's default branch to ReadOnlyProbeRef. A dry run sends nothing; it
+//     only opens GitHub's receive-pack, which GitHub refuses for a read-only
+//     deploy key. Accepted: the key can push, exit 11 (DeployKeyWritableMessage).
+//     🔴 THE REFSPEC IS FORCED ("+"): unforced, a branch of that name already on
+//     GitHub at a commit the default branch does not descend from is refused as
+//     a non-fast-forward BEFORE write access is asked, and a writable key read as
+//     read-only. A probe that fails for any other reason (the network) is not a
+//     refusal: the fetch then fails on its own.
+//  3. Fetch refs/pull/$4/head into the mirror at the same name (exit 8), and
+//     $5 by id (exit 12), for the job's worktree script to fetch from the
+//     mirror with no credential.
+//
+// 🔴 IT READS NO CONFIGURATION THE SESSION CAN WRITE. Its git directory is the
+// mirror, which only this uid writes (the agent's container mounts it
+// read-only); GIT_CONFIG_NOSYSTEM and GIT_CONFIG_GLOBAL=/dev/null drop the
+// image's and $HOME's; the ssh command fixes every option (-F /dev/null, …).
+// So a push URL, receive-pack or upload-pack program planted in the AGENT's
+// checkout — which once made the probe exit 128 and a writable key read as
+// read-only — is not seen here at all.
+//
+// ⚠ The key reaches no argv and no environment: ssh is given its PATH
+// (IdentityFile=), and reads it itself, in this container.
+//
+// Serialised by flock(1) on <mirror>.lock where the image has it (Debian's
+// util-linux does): two jobs fetching one pull request's ref at once would
+// otherwise fail one of them on git's ref lock.
+const MirrorScript = `export LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$3"
+unset GIT_DIR GIT_WORK_TREE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_PROXY_COMMAND GIT_ASKPASS SSH_ASKPASS
+url=$1 m=$2 pr=$4 base=$5
+umask 022
+mkdir -p "${m%/*}" || exit 1
+if command -v flock >/dev/null 2>&1; then
+	exec 9>"$m.lock" && flock 9 || exit 1
+fi
+if [ ! -f "$m/HEAD" ]; then
+	t=$(mktemp -d "$m.XXXXXX") || exit 1
+	if ! git clone --bare --quiet -- "$url" "$t/r"; then
+		rm -rf "$t"
+		echo "` + MirrorCloneMessage + `" >&2
+		exit 13
+	fi
+	git -C "$t/r" config uploadpack.allowAnySHA1InWant true || { rm -rf "$t"; exit 1; }
+	mv -T "$t/r" "$m" 2>/dev/null
+	rm -rf "$t"
+	[ -f "$m/HEAD" ] || exit 1
+fi
+[ -n "$pr" ] || exit 0
+cd "$m" || exit 1
+head=$(git rev-parse --verify --quiet 'HEAD^{commit}') ||
+	{ echo "` + MirrorNoDefaultBranchMessage + `" >&2; exit 4; }
+if git push --dry-run --quiet --no-verify "$url" "+$head:` + ReadOnlyProbeRef + `" >/dev/null 2>&1; then
+	echo "` + DeployKeyWritableMessage + `" >&2
+	exit 11
+fi
+git fetch --quiet --no-tags "$url" "+refs/pull/$pr/head:refs/pull/$pr/head" ||
+	{ echo "` + PullFetchMessage + `" >&2; exit 8; }
+if [ -n "$base" ]; then
+	git fetch --quiet --no-tags --no-write-fetch-head "$url" "$base" && git cat-file -e "$base^{commit}" ||
+		{ echo "` + BaseFetchMessage + ` (base_sha $base)" >&2; exit 12; }
+fi`
+
+// mirrorHolderBoot is the key holder's command: run MirrorScript ($1) until
+// the mirror exists — retrying every 30 s, so a key not yet added on GitHub
+// only delays the agent's clone — then idle, ending at once on SIGTERM.
+const mirrorHolderBoot = `s=$1
+shift
+trap 'exit 0' TERM INT
+until sh -c "$s" muster-mirror "$1" "$2" "$3" "" ""; do
+	echo "muster: the repository mirror could not be made; retrying in 30s" >&2
+	sleep 30 &
+	wait $!
+done
+echo "muster: the repository mirror is ready at $2" >&2
+while :; do
+	sleep 3600 &
+	wait $!
+done`
+
+// MirrorHolderCommand is the key holder's container command for repository
+// owner/name, its mirror at mirrorPath, and the key and known_hosts at keyPath
+// and knownHostsPath (DeployKeySSHCommand's refusals apply).
+func MirrorHolderCommand(repo, mirrorPath, keyPath, knownHostsPath string) ([]string, error) {
+	ssh, err := DeployKeySSHCommand(keyPath, knownHostsPath)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"sh", "-c", mirrorHolderBoot, "muster-deploy-key-holder", MirrorScript, DeployKeyURL(repo), mirrorPath, ssh}, nil
 }

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -472,17 +473,65 @@ type Spec struct {
 	// existed (agentspec's spec golden is a json.Marshal of a Spec).
 	Sidecar *Sidecar `json:",omitempty"`
 
-	// SecretMounts place keys of confidential objects the OPERATOR made — not
-	// muster — into the instance's own process, read-only. See the type.
+	// KeyHolder, when non-nil, is a container that ALONE holds confidential
+	// objects the OPERATOR made, under a uid that is not the instance's. See
+	// the type.
 	//
 	// ⚠ omitempty, for Sidecar's reason: a spec without one serialises exactly
 	// as before the field existed.
-	SecretMounts []SecretMount `json:",omitempty"`
+	KeyHolder *KeyHolder `json:",omitempty"`
+}
+
+// KeyHolder is a container beside the instance's that alone mounts
+// operator-made secrets (SecretMounts) and does the work that needs them,
+// handing the instance only the RESULT through a shared directory. On
+// Kubernetes: a second container in the pod, under its own runAsUser.
+//
+// 🔴 THE INSTANCE'S PROCESS CANNOT READ WHAT IT HOLDS — AND THAT IS THE WHOLE
+// POINT OF IT. The guarantee is structural, not a file mode:
+//   - the secret volumes are mounted into THIS container only, so the file does
+//     not exist in the instance's mount namespace at any mode;
+//   - it runs as RunAsUser, which Validate requires to differ from the
+//     instance's (non-zero) Security.RunAsUser, non-root, without privilege
+//     escalation;
+//   - the pod shares no process namespace (the driver never sets one), so the
+//     instance cannot reach its /proc/<pid>/root, environ or memory;
+//   - SharedDir is writable HERE and mounted READ-ONLY into the instance's
+//     container, so the instance cannot plant anything this container reads.
+//     It is NOT the workspace, which the instance writes; this container never
+//     mounts the workspace.
+//
+// It is reached by exec into the named container (ContainerExecer), so only
+// whoever can exec into the pod — muster — can ask it to do anything; the
+// instance has no channel to it.
+type KeyHolder struct {
+	// Name names the container: a DNS label, not the instance's own container's
+	// or a sidecar's.
+	Name string
+	// RunAsUser is the holder's uid (and gid): non-zero, and not the instance's.
+	RunAsUser int64
+	// Command is what the holder runs, with the instance's image. Required: a
+	// holder has no other entry point.
+	Command []string
+	// Env and Files are the holder's own (Files are placed in it alone; their
+	// paths must not repeat the instance's or a sidecar's).
+	Env   []EnvVar
+	Files []File
+	// SecretMounts place keys of the operator's objects into the holder,
+	// read-only. At least one: a holder that holds nothing has no reason to
+	// exist.
+	SecretMounts []SecretMount
+	// SharedDir is an absolute path, empty at the pod's start (an emptyDir),
+	// writable by the holder and mounted READ-ONLY at the same path into the
+	// instance's container.
+	SharedDir string
+	// Resources is the holder's own budget.
+	Resources Resources
 }
 
 // SecretMount places one key of an EXISTING confidential object at Path inside
-// the instance, read-only: on Kubernetes, a key of a Secret in the instance's
-// namespace, mounted from a secret volume.
+// a [KeyHolder], read-only: on Kubernetes, a key of a Secret in the instance's
+// namespace, mounted from a secret volume into the holder's container only.
 //
 // 🔴 IT IS A REFERENCE, AND MUSTER NEVER READS WHAT IT NAMES. Unlike a secret
 // [File], whose bytes muster holds and writes into an object of its own, the
@@ -491,10 +540,8 @@ type Spec struct {
 // that does not exist leaves the pod unable to start (the kubelet's
 // FailedMount), which is loud.
 //
-// ⚠ THE INSTANCE'S PROCESS CAN READ IT. That is what a mount is for; the file
-// is owned by the backend (root) and mode 0440 under the instance's fsGroup,
-// so every process of the instance's user can open it. It is NOT mounted into
-// a sidecar.
+// It is a field of [KeyHolder], never of the Spec itself: a type that cannot
+// place it into the instance's container is what keeps it out of there.
 type SecretMount struct {
 	// Secret names the object (a DNS subdomain).
 	Secret string
@@ -582,21 +629,6 @@ func (s Spec) Validate() error {
 		}
 		seen[f.Path] = true
 	}
-	for _, m := range s.SecretMounts {
-		if !strings.HasPrefix(m.Path, "/") {
-			return fmt.Errorf("%w: secret mount path %q must be absolute", ErrInvalidSpec, m.Path)
-		}
-		if seen[m.Path] {
-			return fmt.Errorf("%w: secret mount path %q appears twice (or is also a file's)", ErrInvalidSpec, m.Path)
-		}
-		seen[m.Path] = true
-		if !secretObjectName.MatchString(m.Secret) || len(m.Secret) > 253 {
-			return fmt.Errorf("%w: secret mount at %q names object %q, which is not a DNS subdomain", ErrInvalidSpec, m.Path, m.Secret)
-		}
-		if !secretKeyName.MatchString(m.Key) || len(m.Key) > 253 {
-			return fmt.Errorf("%w: secret mount at %q names key %q, which is not [-._a-zA-Z0-9]+", ErrInvalidSpec, m.Path, m.Key)
-		}
-	}
 	names := map[string]bool{}
 	for _, p := range s.Ports {
 		if p.Port < 1 || p.Port > 65535 {
@@ -683,6 +715,9 @@ func (s Spec) Validate() error {
 			seen[f.Path] = true
 		}
 	}
+	if err := s.validateKeyHolder(seen); err != nil {
+		return err
+	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)
 		if err != nil {
@@ -693,6 +728,70 @@ func (s Spec) Validate() error {
 		// driver redacts.
 		if u.User != nil {
 			return fmt.Errorf("%w: repo url must not carry credentials; supply the token via Secrets and let the instance's credential helper read it", ErrInvalidSpec)
+		}
+	}
+	return nil
+}
+
+// validateKeyHolder checks s.KeyHolder (nil is valid). seen holds the file
+// paths already placed (the instance's and its sidecar's).
+func (s Spec) validateKeyHolder(seen map[string]bool) error {
+	k := s.KeyHolder
+	if k == nil {
+		return nil
+	}
+	if !sidecarName.MatchString(k.Name) {
+		return fmt.Errorf("%w: key holder name %q is not a DNS label", ErrInvalidSpec, k.Name)
+	}
+	if s.Sidecar != nil && s.Sidecar.Name == k.Name {
+		return fmt.Errorf("%w: key holder name %q is the sidecar's", ErrInvalidSpec, k.Name)
+	}
+	// 🔴 THE HOLDER'S UID IS NOT THE INSTANCE'S, AND THE INSTANCE'S IS KNOWN. A
+	// holder under the instance's uid (or under an image default nobody
+	// declared) would hold the secret for the very process it exists to keep it
+	// from.
+	if s.Security.RunAsUser <= 0 {
+		return fmt.Errorf("%w: key holder %q needs the instance's own uid declared (Security.RunAsUser), to run under another", ErrInvalidSpec, k.Name)
+	}
+	if k.RunAsUser <= 0 || k.RunAsUser == s.Security.RunAsUser {
+		return fmt.Errorf("%w: key holder %q runs as uid %d; it must be non-zero and not the instance's %d",
+			ErrInvalidSpec, k.Name, k.RunAsUser, s.Security.RunAsUser)
+	}
+	if len(k.Command) == 0 {
+		return fmt.Errorf("%w: key holder %q has no command", ErrInvalidSpec, k.Name)
+	}
+	if len(k.SecretMounts) == 0 {
+		return fmt.Errorf("%w: key holder %q holds no secret", ErrInvalidSpec, k.Name)
+	}
+	if !strings.HasPrefix(k.SharedDir, "/") || path.Clean(k.SharedDir) != k.SharedDir || k.SharedDir == "/" {
+		return fmt.Errorf("%w: key holder %q's shared directory %q must be a clean absolute path", ErrInvalidSpec, k.Name, k.SharedDir)
+	}
+	if ws := path.Clean(s.Workspace.Path); s.Workspace.Path != "" && (ws == k.SharedDir ||
+		strings.HasPrefix(k.SharedDir, ws+"/") || strings.HasPrefix(ws, k.SharedDir+"/")) {
+		return fmt.Errorf("%w: key holder %q's shared directory %q overlaps the workspace %q", ErrInvalidSpec, k.Name, k.SharedDir, s.Workspace.Path)
+	}
+	for _, f := range k.Files {
+		if !strings.HasPrefix(f.Path, "/") {
+			return fmt.Errorf("%w: key holder file path %q must be absolute", ErrInvalidSpec, f.Path)
+		}
+		if seen[f.Path] {
+			return fmt.Errorf("%w: file path %q appears twice (the instance, a sidecar or the key holder)", ErrInvalidSpec, f.Path)
+		}
+		seen[f.Path] = true
+	}
+	for _, m := range k.SecretMounts {
+		if !strings.HasPrefix(m.Path, "/") {
+			return fmt.Errorf("%w: secret mount path %q must be absolute", ErrInvalidSpec, m.Path)
+		}
+		if seen[m.Path] {
+			return fmt.Errorf("%w: secret mount path %q appears twice (or is also a file's)", ErrInvalidSpec, m.Path)
+		}
+		seen[m.Path] = true
+		if !secretObjectName.MatchString(m.Secret) || len(m.Secret) > 253 {
+			return fmt.Errorf("%w: secret mount at %q names object %q, which is not a DNS subdomain", ErrInvalidSpec, m.Path, m.Secret)
+		}
+		if !secretKeyName.MatchString(m.Key) || len(m.Key) > 253 {
+			return fmt.Errorf("%w: secret mount at %q names key %q, which is not [-._a-zA-Z0-9]+", ErrInvalidSpec, m.Path, m.Key)
 		}
 	}
 	return nil

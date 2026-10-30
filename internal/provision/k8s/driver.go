@@ -188,6 +188,7 @@ func (d *Driver) Capabilities() provision.Capabilities {
 		// why that is not a claim that anything enforces it.
 		NetworkIsolation: d.cfg.NetworkPolicy != nil,
 		Sidecar:          true,
+		KeyHolder:        true,
 	}
 }
 

@@ -183,6 +183,9 @@ const (
 	FakeSSHLogEnv      = "MUSTER_FAKE_SSH_LOG"
 	FakeSSHRootEnv     = "MUSTER_FAKE_SSH_ROOT"
 	FakeSSHWritableEnv = "MUSTER_FAKE_SSH_WRITABLE"
+	// FakeSSHEnvLogEnv, set, is a file each invocation appends its whole
+	// environment to (`env`), for a test that reads what reached ssh.
+	FakeSSHEnvLogEnv = "MUSTER_FAKE_SSH_ENVLOG"
 )
 
 // FakeSSHReadOnlyRefusal is what the fake answers git-receive-pack with unless
@@ -197,6 +200,7 @@ const FakeSSHReadOnlyRefusal = "ERROR: The key you are authenticating with has b
 // $MUSTER_FAKE_SSH_WRITABLE is set.
 const fakeSSH = `#!/bin/sh
 printf '%s\n' "$*" >> "$MUSTER_FAKE_SSH_LOG"
+[ -z "$MUSTER_FAKE_SSH_ENVLOG" ] || env >> "$MUSTER_FAKE_SSH_ENVLOG"
 last=
 for a do last=$a; done
 prog=${last%% *}

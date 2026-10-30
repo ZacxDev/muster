@@ -78,6 +78,28 @@ func (d *Driver) Exec(ctx context.Context, ref provision.Ref, cmd []string, stdi
 	}))
 }
 
+// ExecContainer implements provision.ContainerExecer: Exec, into the named
+// container of the instance's pod (a key holder's) rather than its own.
+func (d *Driver) ExecContainer(ctx context.Context, ref provision.Ref, container string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(cmd) == 0 || container == "" {
+		return fmt.Errorf("%w: exec needs a container and a command", provision.ErrInvalidSpec)
+	}
+	exec, err := d.execStreamIn(ctx, ref, container, &corev1.PodExecOptions{
+		Command: cmd,
+		Stdin:   stdin != nil,
+		Stdout:  stdout != nil,
+		Stderr:  stderr != nil,
+	})
+	if err != nil {
+		return err
+	}
+	return execError(ref, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+	}))
+}
+
 // ExecTTY implements provision.TTYExecer: the command runs on a pseudo-terminal
 // in the instance's container, with stderr merged into stdout by the terminal
 // and every size from resize applied to it.
@@ -119,6 +141,11 @@ func (d *Driver) ExecTTY(ctx context.Context, ref provision.Ref, cmd []string, s
 
 // execStream resolves the instance's pod and builds the exec stream for it.
 func (d *Driver) execStream(ctx context.Context, ref provision.Ref, opts *corev1.PodExecOptions) (remotecommand.Executor, error) {
+	return d.execStreamIn(ctx, ref, containerName, opts)
+}
+
+// execStreamIn is execStream into the named container.
+func (d *Driver) execStreamIn(ctx context.Context, ref provision.Ref, container string, opts *corev1.PodExecOptions) (remotecommand.Executor, error) {
 	if d.cfg.RESTConfig == nil {
 		return nil, fmt.Errorf("%w: this driver was built without a RESTConfig, so it cannot exec "+
 			"(Capabilities.Exec is false and provision.Exec refuses before reaching here)", provision.ErrUnsupported)
@@ -132,7 +159,7 @@ func (d *Driver) execStream(ctx context.Context, ref provision.Ref, opts *corev1
 	}
 	// Named, for the same reason the log reads are. An unnamed container
 	// silently means "the first one".
-	opts.Container = containerName
+	opts.Container = container
 	u, err := execURL(d.cfg.RESTConfig, ns, pod, opts)
 	if err != nil {
 		return nil, fmt.Errorf("exec into %s: %w", ref.Name, err)

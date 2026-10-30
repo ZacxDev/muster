@@ -326,14 +326,20 @@ type Extensions struct {
 type JobWorkspace interface {
 	// PrepareJobWorktree creates job jobID's own git worktree of the agent's
 	// repository at sha — which must be pull request pr's head of repo, or an
-	// ancestor of it, fetched anonymously, or with the agent's worker pool's
-	// read-only deploy key when it has one — outside the agent's checkout, with
-	// the agent configuration overlaid from the default branch (from commit
-	// configRef of it when non-empty, refused unless the default branch reaches
-	// it), or with none of it when skipRepoConfig, and — with baseSHA — that
-	// commit fetched the same way into refs/muster-jobs/<jobID>-base, and
-	// returns its path. The agent's checkout is not moved.
-	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef string, skipRepoConfig bool, baseSHA string) (string, error)
+	// ancestor of it, fetched anonymously, or through the pod's deploy-key
+	// holder when the agent's worker pool has a key — outside the agent's
+	// checkout, with the agent configuration overlaid from the default branch
+	// (from commit configRef of it when non-empty, refused unless the default
+	// branch reaches it), or with none of it when StripsRepoConfig, and — with
+	// baseSHA — that commit fetched the same way into
+	// refs/muster-jobs/<jobID>-base, and returns its path. The agent's
+	// checkout is not moved.
+	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef, baseSHA string) (string, error)
+	// StripsRepoConfig reports whether a job on agent a gets NONE of the
+	// repository's agent configuration, whatever it asks — decided by a's
+	// worker pool (one with a deploy key), not by the job. For a pool job
+	// before its worker is chosen, a carries only the pool's name.
+	StripsRepoConfig(a agents.Agent) bool
 	// RemoveJobWorktree removes that worktree; one that is not there is not an
 	// error.
 	RemoveJobWorktree(ctx context.Context, a agents.Agent, jobID int64) error

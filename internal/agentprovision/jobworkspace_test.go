@@ -38,6 +38,9 @@ type localExecDriver struct {
 	execs int
 	cmds  [][]string // each exec's command, as the adapter sent it, without the scrub prefix
 	bare  int        // execs that arrived WITHOUT the turn-credential scrub prefix
+	// containers is each exec's container: "" for the instance's own, else
+	// the named one (ExecContainer: the deploy-key holder's).
+	containers []string
 }
 
 func (d *localExecDriver) Capabilities() provision.Capabilities {
@@ -47,8 +50,21 @@ func (d *localExecDriver) Capabilities() provision.Capabilities {
 }
 
 func (d *localExecDriver) Exec(ctx context.Context, _ provision.Ref, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return d.exec(ctx, "", cmd, stdin, stdout, stderr)
+}
+
+// ExecContainer runs the command as Exec does, recording the container: on
+// this machine the key holder's "container" is the same user and filesystem —
+// what is tested is the script and where its results land, not the uid
+// separation (the k8s render tests pin that).
+func (d *localExecDriver) ExecContainer(ctx context.Context, _ provision.Ref, container string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return d.exec(ctx, container, cmd, stdin, stdout, stderr)
+}
+
+func (d *localExecDriver) exec(ctx context.Context, container string, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	d.mu.Lock()
 	d.execs++
+	d.containers = append(d.containers, container)
 	// Recorded WITHOUT the credential scrub's prefix, which every exec must
 	// carry (bare counts the ones that did not).
 	inner, scrubbed := unscrub(cmd)
@@ -65,7 +81,9 @@ func (d *localExecDriver) Exec(ctx context.Context, _ provision.Ref, cmd []strin
 		if d.unlayered {
 			a = strings.Replace(a, gitRunsNoRepoCommands, "", 1)
 		}
-		args[i] = strings.Replace(a, agentspec.ClaudeCodeWorkspacePath, d.root, 1)
+		a = strings.Replace(a, agentspec.ClaudeCodeWorkspacePath, d.root, 1)
+		// The deploy-key holder's shared directory: beside the workspace here.
+		args[i] = strings.Replace(a, agentspec.MirrorDir, filepath.Join(d.root, ".mirror"), 1)
 	}
 	// The terminal release scans EVERY process's environ for its tag and kills
 	// the matches: on this machine that is the host, so it is not run here.
@@ -145,7 +163,7 @@ const overlayJobID = 41
 // fixture's pull request, fetched from the fixture's origin.
 func prepareJob(a *Adapter, r worktreetest.Repo, sha string) (string, error) {
 	a.anonGitBase = r.AnonBase
-	return a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, worktreetest.PR, sha, "", false, "")
+	return a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, worktreetest.PR, sha, "", "")
 }
 
 // overlayPaths are every path the overlay decides, as the fixture lays them
@@ -351,25 +369,25 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 		a, d := newWorkspaceAdapter(t)
 		before := d.count()
 		sha := strings.Repeat("a", 40)
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, "HEAD~1", "", false, ""); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, "HEAD~1", "", ""); err == nil {
 			t.Error("a non-hex sha was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, sha[:8], "", false, ""); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, sha[:8], "", ""); err == nil {
 			t.Error("an abbreviated sha was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, 0, worktreetest.RepoName, 7, sha, "", false, ""); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, 0, worktreetest.RepoName, 7, sha, "", ""); err == nil {
 			t.Error("job id 0 was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), agents.Agent{Name: "no-repo", Kind: agents.KindClaudeCode}, overlayJobID, worktreetest.RepoName, 7, sha, "", false, ""); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), agents.Agent{Name: "no-repo", Kind: agents.KindClaudeCode}, overlayJobID, worktreetest.RepoName, 7, sha, "", ""); err == nil {
 			t.Error("an agent with no repository was given a worktree")
 		}
 		for _, pr := range []int{0, -1} {
-			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, pr, sha, "", false, ""); err == nil {
+			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, pr, sha, "", ""); err == nil {
 				t.Errorf("pull request %d was accepted", pr)
 			}
 		}
 		for _, repo := range []string{"", "acme", "acme/widgets/x", "../widgets", "acme/..", "-x/y y"} {
-			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, repo, 7, sha, "", false, ""); err == nil {
+			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, repo, 7, sha, "", ""); err == nil {
 				t.Errorf("repository %q was accepted", repo)
 			}
 		}
@@ -393,7 +411,7 @@ func TestTheFetchNamesThePublicURLAndThePullRequest(t *testing.T) {
 	}
 	a, d := newWorkspaceAdapter(t)
 	sha := strings.Repeat("c", 40)
-	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, "acme/widgets", 7, sha, "", false, ""); err == nil {
+	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, "acme/widgets", 7, sha, "", ""); err == nil {
 		t.Fatal("prepare with no checkout succeeded")
 	}
 	d.mu.Lock()
@@ -482,7 +500,7 @@ func TestAShaNotOnThePullRequestIsRefused(t *testing.T) {
 	}
 
 	a.anonGitBase = r.AnonBase
-	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 8, r.Commit, "", false, ""); err == nil ||
+	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 8, r.Commit, "", ""); err == nil ||
 		!strings.Contains(err.Error(), PullFetchMessage) {
 		t.Fatalf("pull request 8 (none): prepare = %v, want an error carrying %q", err, PullFetchMessage)
 	}

@@ -19,7 +19,7 @@ import (
 
 func prepareWithBase(a *Adapter, r worktreetest.Repo, ag agents.Agent, base string) (string, error) {
 	a.anonGitBase = r.AnonBase
-	return a.PrepareJobWorktree(context.Background(), ag, overlayJobID, worktreetest.RepoName, worktreetest.PR, r.Commit, "", false, base)
+	return a.PrepareJobWorktree(context.Background(), ag, overlayJobID, worktreetest.RepoName, worktreetest.PR, r.Commit, "", base)
 }
 
 // hasObject reports whether the checkout holds commit sha.
@@ -65,8 +65,9 @@ func TestAJobsBaseIsFetchedAnonymouslyForAPublicPool(t *testing.T) {
 }
 
 // TestAJobsBaseIsFetchedWithThePoolsDeployKey: on a deploy-key pool the base
-// goes through ssh with the key, like the head: the fake logs two upload-packs
-// after the write probe.
+// goes through the key holder, like the head: the holder's exec is handed the
+// base, and ssh (the key) served the mirror's clone and the head's fetch and
+// the base's; the instance's script fetched it from the mirror.
 func TestAJobsBaseIsFetchedWithThePoolsDeployKey(t *testing.T) {
 	a, d := newDeployKeyAdapter(t, worktreetest.RepoName)
 	r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
@@ -75,9 +76,15 @@ func TestAJobsBaseIsFetchedWithThePoolsDeployKey(t *testing.T) {
 	if _, err := prepareWithBase(a, r, ag, r.Stray); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
+	d.mu.Lock()
+	holder := d.cmds[0]
+	d.mu.Unlock()
+	if d.containers[0] != "deploy-key" || holder[len(holder)-1] != r.Stray {
+		t.Fatalf("first exec in %q with %q, want the deploy-key holder handed the base", d.containers[0], holder[3:])
+	}
 	got := worktreetest.SSHLog(t, log)
-	if n := strings.Count(got, "git-upload-pack '/acme/widgets.git'"); n != 2 {
-		t.Fatalf("ssh served %d upload-pack(s), want the head's and the base's:\n%s", n, got)
+	if n := strings.Count(got, "git-upload-pack '/acme/widgets.git'"); n < 2 {
+		t.Fatalf("ssh served %d upload-pack(s), want the mirror's clone and the job's fetches:\n%s", n, got)
 	}
 	assertBaseFetched(t, a, ag, d, r)
 }

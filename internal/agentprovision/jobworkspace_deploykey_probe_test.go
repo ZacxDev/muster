@@ -30,7 +30,7 @@ func TestAProbeBranchAtAnUnrelatedCommitDoesNotHideAWritableKey(t *testing.T) {
 	worktreetest.Git(t, r.Origin, "update-ref", "refs/heads/muster-read-only-probe", orphan)
 	worktreetest.FakeSSH(t, os.Getenv("PATH"), r.AnonRoot(), true)
 
-	_, err := prepareAs(a, r, poolAgent(privatePool), false)
+	_, err := prepareAs(a, r, poolAgent(privatePool))
 	if err == nil || !strings.Contains(err.Error(), DeployKeyWritableMessage) {
 		t.Fatalf("prepare = %v, want the writable-key refusal %q", err, DeployKeyWritableMessage)
 	}
@@ -54,7 +54,7 @@ func TestTheCheckoutsConfigCannotSteerTheWriteProbe(t *testing.T) {
 			r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
 			worktreetest.Git(t, r.Checkout, "config", kv[0], kv[1])
 			worktreetest.FakeSSH(t, os.Getenv("PATH"), r.AnonRoot(), true)
-			_, err := prepareAs(a, r, poolAgent(privatePool), false)
+			_, err := prepareAs(a, r, poolAgent(privatePool))
 			if err == nil || !strings.Contains(err.Error(), DeployKeyWritableMessage) {
 				t.Fatalf("with %s planted: prepare = %v, want the writable-key refusal", kv[0], err)
 			}
@@ -63,14 +63,15 @@ func TestTheCheckoutsConfigCannotSteerTheWriteProbe(t *testing.T) {
 }
 
 // TestTheCheckoutsConfigCannotBreakAReadOnlyKeysFetch: an upload-pack program
-// planted for the fetch URL in the checkout's config does not reach the
-// key's fetch: with a read-only key the job is made, at the commit.
+// planted for the key's fetch URL in the checkout's config does not reach the
+// key's fetch (it once replaced the program ssh asked GitHub to run, failing
+// every job): with a read-only key the job is made, at the commit.
 func TestTheCheckoutsConfigCannotBreakAReadOnlyKeysFetch(t *testing.T) {
 	a, d := newDeployKeyAdapter(t, worktreetest.RepoName)
 	r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
 	worktreetest.Git(t, r.Checkout, "config", "remote."+sshRepoURL+".uploadpack", "no-such-upload-pack")
 	log := worktreetest.FakeSSH(t, os.Getenv("PATH"), r.AnonRoot(), false)
-	if _, err := prepareAs(a, r, poolAgent(privatePool), false); err != nil {
+	if _, err := prepareAs(a, r, poolAgent(privatePool)); err != nil {
 		t.Fatalf("prepare: %v\nssh log:\n%s", err, worktreetest.SSHLog(t, log))
 	}
 	if got := worktreetest.Git(t, filepath.Join(d.root, ".muster-jobs", "41"), "rev-parse", "HEAD"); got != r.Commit {
@@ -92,7 +93,7 @@ func TestADeployKeyPoolsJobGetsNoRepositoryConfiguration(t *testing.T) {
 	worktreetest.FakeSSH(t, os.Getenv("PATH"), r.AnonRoot(), false)
 	wt := filepath.Join(d.root, ".muster-jobs", "41")
 
-	if _, err := prepareAs(a, r, poolAgent("public-review"), false); err != nil {
+	if _, err := prepareAs(a, r, poolAgent("public-review")); err != nil {
 		t.Fatalf("control prepare: %v", err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(wt, "CLAUDE.md")); string(b) != "# default instructions\n" {
@@ -102,7 +103,7 @@ func TestADeployKeyPoolsJobGetsNoRepositoryConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := prepareAs(a, r, poolAgent(privatePool), false); err != nil {
+	if _, err := prepareAs(a, r, poolAgent(privatePool)); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
 	for _, p := range append(overlayPaths, ".claude", "sub/.claude", "deep/.claude") {

@@ -199,10 +199,6 @@ type Job struct {
 	// ConfigRef is the commit a sha job's worktree takes its agent
 	// configuration from ("" = the default branch).
 	ConfigRef string
-	// RepoConfigOverlay is whether a sha job's worktree gets the repository's
-	// agent configuration from the default branch (true, the default) or none
-	// of it (false: the commit's is removed and nothing restored).
-	RepoConfigOverlay bool
 	// BaseSHA is a commit a sha job's turn may diff against ("" = none): it is
 	// fetched with the head's credential path into refs/muster-jobs/<id>-base.
 	BaseSHA     string
@@ -240,9 +236,6 @@ type NewJob struct {
 	IdempotencyKey string
 	Model          string
 	ConfigRef      string
-	// SkipRepoConfig records repo_config_overlay=false. Inverted here so the
-	// zero NewJob is the default (the overlay on).
-	SkipRepoConfig bool
 	BaseSHA        string
 	RequestedBy    string
 }
@@ -401,7 +394,7 @@ type PGStore struct{ pool *pgxpool.Pool }
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 const jobColumns = `id, coalesce(agent_id, 0), agent_name, worker_pool, prompt, repo, sha, pr, result_path, timeout_s,
-	coalesce(idempotency_key, ''), model, config_ref, repo_config_overlay, base_sha, requested_by, status, result, reason, error, cc_account,
+	coalesce(idempotency_key, ''), model, config_ref, base_sha, requested_by, status, result, reason, error, cc_account,
 	coalesce(session_id, 0), created_at, started_at, finished_at`
 
 func scanJob(row pgx.Row) (Job, error) {
@@ -409,7 +402,7 @@ func scanJob(row pgx.Row) (Job, error) {
 	var result *string
 	var started, finished *time.Time
 	if err := row.Scan(&j.ID, &j.AgentID, &j.Agent, &j.WorkerPool, &j.Prompt, &j.Repo, &j.SHA, &j.PR, &j.ResultPath, &j.TimeoutSeconds,
-		&j.IdempotencyKey, &j.Model, &j.ConfigRef, &j.RepoConfigOverlay, &j.BaseSHA, &j.RequestedBy, &j.Status, &result, &j.Reason, &j.Error, &j.CCAccount,
+		&j.IdempotencyKey, &j.Model, &j.ConfigRef, &j.BaseSHA, &j.RequestedBy, &j.Status, &result, &j.Reason, &j.Error, &j.CCAccount,
 		&j.SessionID, &j.CreatedAt, &started, &finished); err != nil {
 		return Job{}, err
 	}
@@ -532,10 +525,10 @@ func (s *PGStore) create(ctx context.Context, n NewJob, lockIDs []int64, choose 
 		}
 	}
 	j, err := scanJob(tx.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, worker_pool, prompt, repo, sha, pr, result_path,
-		timeout_s, idempotency_key, requested_by, model, config_ref, repo_config_overlay, base_sha) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		timeout_s, idempotency_key, requested_by, model, config_ref, base_sha) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING `+jobColumns,
-		agentID, n.Agent, n.WorkerPool, n.Prompt, n.Repo, n.SHA, n.PR, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy, n.Model, n.ConfigRef, !n.SkipRepoConfig, n.BaseSHA))
+		agentID, n.Agent, n.WorkerPool, n.Prompt, n.Repo, n.SHA, n.PR, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy, n.Model, n.ConfigRef, n.BaseSHA))
 	if err == nil {
 		if err := tx.Commit(ctx); err != nil {
 			return Job{}, false, fmt.Errorf("jobs: create: commit: %w", err)

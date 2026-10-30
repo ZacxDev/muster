@@ -114,6 +114,11 @@ type Capabilities struct {
 	// Sidecar: the driver runs Spec.Sidecar beside the instance, sharing its
 	// network and workspace (see provision.Sidecar).
 	Sidecar bool
+
+	// KeyHolder: the driver runs Spec.KeyHolder as its own container under its
+	// own uid, mounts the holder's secrets into it alone, shares its directory
+	// read-only with the instance, and execs into it (ContainerExecer).
+	KeyHolder bool
 }
 
 // CheckSpec is THE capability branch. It is the answer to "Capabilities is
@@ -162,12 +167,13 @@ func CheckSpec(caps Capabilities, s Spec) error {
 			}
 		}
 	}
-	// A referenced secret is mounted from the driver's confidential store, as a
-	// file: both capabilities, or the spec is refused rather than started without
-	// the file its process needs (or with it somewhere readable).
-	if len(s.SecretMounts) > 0 && (!caps.Secrets || !caps.Files) {
-		return fmt.Errorf("%w: driver cannot mount an existing confidential object, and the spec mounts %q at %q",
-			ErrUnsupported, s.SecretMounts[0].Secret, s.SecretMounts[0].Path)
+	// A key holder is a container of its own under another uid, mounting the
+	// driver's confidential objects as files: all three capabilities, or the
+	// spec is refused rather than started with the secret somewhere the
+	// instance could read it (or not at all).
+	if k := s.KeyHolder; k != nil && (!caps.KeyHolder || !caps.Secrets || !caps.Files) {
+		return fmt.Errorf("%w: driver cannot run a key holder beside the instance, and the spec carries one (%q, holding %q)",
+			ErrUnsupported, k.Name, k.SecretMounts[0].Secret)
 	}
 	if !caps.Persistence && s.Workspace.Persist {
 		return fmt.Errorf("%w: driver has no persistent storage, and the spec asks for a persistent workspace at %q", ErrUnsupported, s.Workspace.Path)
