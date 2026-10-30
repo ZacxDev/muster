@@ -434,3 +434,83 @@ func TestTmuxLaneASlowNewSessionStillServesTheFirstTurns(t *testing.T) {
 		t.Fatalf("recorded primary session %s does not hold the primary's turn", got)
 	}
 }
+
+// checkChat is laneChat for a chief's stall check as muster sends it
+// (internal/api nudgeRoute): the check's key as the explicit session, no
+// model, marked a throwaway check (X-Muster-CC-Ephemeral: 1).
+func (r *serveRig) checkChat(key, p string) (string, error) {
+	h := http.Header{}
+	h.Set(agents.HeaderCCSession, key)
+	h.Set(agents.HeaderCCEphemeral, "1")
+	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Runtime: agents.SessionRuntimeClaudeCode, Header: h})
+	return mustersGatewayNoT(r.gwAddr).Chat(ctx, contractAgent, key, p, nil)
+}
+
+// 🔴 A CHIEF STALL CHECK'S LANE IS THROWAWAY, on real tmux through the whole
+// binary and muster's own client:
+//
+//   - its turn is answered by a new CLI started with --session-id and no
+//     --model, its prompt is in that lane's transcript only (never the
+//     primary's, the operator's conversation with the chief), and /healthz
+//     names the lane ephemeral while the turn runs;
+//   - once the turn is over its tmux session — the CLI with it — is gone, and
+//     /healthz lists no lane;
+//   - at the cap with only operator lanes, a check is refused with the typed
+//     503 capacity, starts no CLI, and every operator lane keeps its CLI.
+func TestTmuxLaneACheckLaneIsStoppedAfterItsTurnAndNeverStopsAnOperatorLane(t *testing.T) {
+	r := startServe(t, "CCD_MAX_SESSIONS=2")
+	r.waitHealth(t, "primary start", primaryReady)
+	r.chat(t, "operator talks to the chief")
+	k1, k2 := "agent:chief-x:webchat:nudge:0123456789abcdef", "agent:chief-x:webchat:nudge:fedcba9876543210"
+
+	done := make(chan error, 1)
+	go func() {
+		got, err := r.checkChat(k1, "SLOW stall check one")
+		if err == nil && got != wantReply("SLOW stall check one", "") {
+			err = fmt.Errorf("reply %q", got)
+		}
+		done <- err
+	}()
+	waitLane(t, "the check lane on /healthz, ephemeral, mid-turn", func() bool {
+		h := r.waitHealth(t, "health", func(health) bool { return true })
+		return len(h.Lanes) == 1 && h.Lanes[0].ID == laneID(k1) && h.Lanes[0].Ephemeral && h.Lanes[0].Busy
+	}, r)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the check's turn: %v; ccd log:\n%s", err, r.logs.String())
+		}
+	case <-time.After(laneTurnWait):
+		t.Fatalf("the check's turn never returned within %s; ccd log:\n%s", laneTurnWait, r.logs.String())
+	}
+	waitLane(t, "the check's tmux session gone after its turn", func() bool { return !r.hasTmuxSession("cc-" + laneID(k1)) }, r)
+	if h := r.waitHealth(t, "health", func(health) bool { return true }); len(h.Lanes) != 0 {
+		t.Errorf("/healthz after the check's turn: %+v; want no lane", h.Lanes)
+	}
+	one, p := r.transcript(t, laneUUID(k1)), r.transcript(t, r.primaryID(t))
+	if !has(one, "SLOW stall check one") || has(one, "operator talks to the chief") {
+		t.Errorf("the check's transcript: %q", one)
+	}
+	if has(p, "SLOW stall check one") || !has(p, "operator talks to the chief") {
+		t.Errorf("the primary's transcript holds the stall check: %q", p)
+	}
+	if want := fmt.Sprintf("lane=%s args=[\"--session-id\" %q]", laneID(k1), laneUUID(k1)); !strings.Contains(r.argvLog(t), want) {
+		t.Errorf("no fresh CLI started as %s; argv log:\n%s", want, r.argvLog(t))
+	}
+
+	r.mustLaneChat(t, "sess-a", "opus", "a1")
+	r.mustLaneChat(t, "sess-b", "sonnet", "b1")
+	_, err := r.checkChat(k2, "stall check two")
+	var rt *agents.RuntimeError
+	if !errors.As(err, &rt) || rt.Type != failCapacity {
+		t.Errorf("a check at the cap of two idle operator lanes: %v; want a typed %s refusal", err, failCapacity)
+	}
+	for _, k := range []string{"sess-a", "sess-b"} {
+		if !r.hasTmuxSession("cc-" + laneID(k)) {
+			t.Errorf("OPERATOR LANE %s STOPPED FOR A CHECK; ccd log:\n%s", k, r.logs.String())
+		}
+	}
+	if r.hasTmuxSession("cc-" + laneID(k2)) {
+		t.Error("the refused check started a CLI")
+	}
+}

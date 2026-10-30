@@ -91,3 +91,22 @@ func Unsent(err error) string {
 	}
 	return ""
 }
+
+// LanesFull reports whether err is ccd's typed 503 `capacity` refusal
+// (agents.FailureCapacity): the turn named an explicit session, its CLI was
+// not running, and every CLI ccd may run at once is held by a turn. ccd answers
+// it before starting a CLI or pasting anything, so it too proves the turn was
+// not sent.
+//
+// ⚠ IT IS NOT ONE OF [Unsent]'s REASONS, DELIBERATELY. Adding it there would
+// change what every unsolicited deliverer does with it (a plugin delivery to a
+// chief whose default session is an explicit one, the memo relay, …), and each
+// of those is its own decision. A caller that routes a turn to a lane of its own
+// and wants "skip, retry later" asks this as well (chief_nudge.go).
+func LanesFull(err error) bool {
+	if err == nil || agents.PastFirstRequest(err) {
+		return false
+	}
+	var rt *agents.RuntimeError
+	return errors.As(err, &rt) && rt.Status == http.StatusServiceUnavailable && rt.Type == agents.FailureCapacity
+}

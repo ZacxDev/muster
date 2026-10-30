@@ -70,12 +70,23 @@ func (s *Server) sessionRoute(ctx context.Context, a agents.Agent, sessionKey st
 
 // withSessionRoute is sessionRoute for a caller holding the session row.
 func withSessionRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession) context.Context {
+	return withRoute(ctx, a, sess, false)
+}
+
+// withRoute builds a session's route: the one place it is built. ephemeral
+// adds agents.HeaderCCEphemeral to a claude-code route, and ccd then stops the
+// session's CLI once its turn is over and never stops another session's CLI to
+// make room for it. Only a chief's stall check asks for that (nudgeRoute).
+func withRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession, ephemeral bool) context.Context {
 	h := http.Header{}
 	switch sess.Runtime {
 	case agents.SessionRuntimeClaudeCode:
 		h.Set(agents.HeaderCCSession, sess.SessionKey)
 		if sess.Model != "" {
 			h.Set(agents.HeaderCCModel, sess.Model)
+		}
+		if ephemeral {
+			h.Set(agents.HeaderCCEphemeral, "1")
 		}
 	default:
 		return ctx
