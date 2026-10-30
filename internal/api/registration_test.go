@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -97,6 +98,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		FocusRetention:  time.Hour,
 		Suggest:         &suggest.Engine{},
 		ChiefPrefs:      &memChiefPrefs{},
+		ChiefNudge:      &ChiefNudges{},
+		ChiefNudges:     chiefnudge.NewPG(nil),
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
 		MirrorTokens:    stubMirrorTokens{},

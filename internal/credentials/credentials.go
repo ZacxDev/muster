@@ -23,17 +23,23 @@
 // name, a fingerprint and timestamps — nothing a page could echo back. Opening
 // a secret is [PGStore.ClaudeTokens] and [PGStore.OpenRouterKey], whose only
 // callers are the pod-spec path (internal/agentprovision, through [Plane]) and,
-// for the OpenRouter key, session focus's server-side summarizer (also through
-// [Plane]). Neither hands it to a page.
+// for the OpenRouter key, muster's server-side OpenRouter calls listed below
+// (all through [Plane]). None hands it to a page.
 //
 // # OpenRouter: an ordinary API key, used as entered
 //
 // The member pastes an ordinary OpenRouter API key (operator decision on #69);
 // it is sealed like a setup-token and placed, as entered, in the member's
-// gateway pods as OPENROUTER_API_KEY. muster's ONE OpenRouter call with it is
-// session focus's summarizer (internal/focus.ScaleDown, through
-// [Plane.OpenRouterKey]): it summarizes that member's own sessions' transcripts,
-// server-side, on their key.
+// gateway pods as OPENROUTER_API_KEY. muster's own server-side calls with it,
+// each through [Plane.OpenRouterKey] and each about that member's own sessions,
+// on their key:
+//   - session focus's summarizer (internal/focus.ScaleDown): summarizes a
+//     session's transcript;
+//   - suggested replies (internal/suggest.OpenRouter): suggests replies for a
+//     mirrored session's composer and an ask;
+//   - the chief nudges' stall classifier (internal/chiefnudge.Classifier, Jev
+//     over OpenRouter's Decisions API): classifies a stalled session's last
+//     message.
 package credentials
 
 import (

@@ -1,6 +1,7 @@
-import { request as pwRequest, BrowserContext, Page } from '@playwright/test';
+import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
-import { agentComposerPort, hookToken, password, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { agentComposerPort, hookToken, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { agentPageRe } from '../lib/agent-link';
 import { openDispatchSheet } from '../lib/dispatch';
@@ -54,7 +55,7 @@ test.afterAll(async ({ browser }) => {
     if (made.length) {
       const ctx = await browser.newContext();
       const page = await ctx.newPage();
-      await login(page);
+      await signIn(page, origin);
       for (const a of made) {
         const r = await page.request.delete(`${origin}/agents/${a.id}`, { headers: { Origin: origin } });
         expect(r.status(), `deleting ${a.name}: ${await r.text()}`).toBeLessThan(300);
@@ -90,28 +91,12 @@ async function agentRows(): Promise<AgentRow[]> {
 
 const storedStatus = async (name: string) => (await agentRows()).find((a) => a.name === name)?.status ?? '(missing)';
 
-// login signs the page's (fresh) context in. 🔴 THE FORM IS DRIVEN ONCE PER
-// RUN OF THIS FILE, and the session cookie it earns is handed to every later
-// test and to afterAll: password sign-in is throttled to loginRateBurst (10)
-// attempts per loginRateWindow (a minute) in ONE server-wide bucket
-// (internal/api login.go), and this file signed in 11 times — ten tests and
-// afterAll. Whether the 11th landed inside the first one's minute was a race
-// on the runner's speed: on main's CI (run 40987376283) the last test's POST
-// /login got a 429, the page stayed on /login, and waitForURL timed out at 60 s.
-// None of these tests is about signing in; afterAll counts the sign-ins the
-// server issued, so a test that starts driving the form again fails here
-// whatever the runner's speed.
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
+// 🔴 THE FORM IS DRIVEN ONCE PER RUN OF THIS FILE (lib/signin.ts), and the
+// session it earns is handed to every later test and to afterAll: this file
+// signed in 11 times — ten tests and afterAll — and on main's CI (run
+// 40987376283) the last test's POST /login got a 429 (lib/server.ts
+// signInBudget says why). None of these tests is about signing in; afterAll
+// counts the sign-ins the server issued, and pins this file's to exactly one.
 const sessionsIssued = () => (server?.log().match(/login: a browser session was issued/g) ?? []).length;
 
 // saveAgent creates one agent of the kind with no note through the dispatch
@@ -153,7 +138,7 @@ for (const vp of [
     // link, the terminal page had no way back but the arrow, and the terminal
     // had no message box at all.
     test('an agent opens on its rendered view; both views have the switch and a message box; a stopped agent’s says why it cannot be sent to', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
 
       // Its sidebar row (where the retired Agents list's card went) opens the
@@ -218,7 +203,7 @@ for (const vp of [
 
     test('a running agent is sent a message from its Terminal view, and the conversation shows it', async ({ page }) => {
       test.setTimeout(120_000);
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
       const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
       expect(started.status(), await started.text()).toBe(200);
@@ -297,7 +282,7 @@ for (const vp of [
     // agent's chat box is kept as it is typed, restored on coming back, and
     // never offered in ANOTHER agent's chat. On origin/main nothing is kept.
     test('the chat box keeps its draft across navigation, for that agent only', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       const a = await saveAgent(page, 'gateway');
       const b = await saveAgent(page, 'gateway');
       await page.goto(`${origin}/agents/${a.name}`);
@@ -330,7 +315,7 @@ for (const vp of [
     // catch up when the stream opens.
     test('a reply stored before the event stream connects is still shown', async ({ page }) => {
       test.setTimeout(120_000);
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
       const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
       expect(started.status(), await started.text()).toBe(200);
@@ -373,7 +358,7 @@ for (const vp of [
     // so a page whose script had not run could not send at all.
     test('with no script at all, the chat form and the Terminal’s composer still send', async ({ page, browser }) => {
       test.setTimeout(120_000);
-      await login(page);
+      await signIn(page, origin);
       const agent = await saveAgent(page, 'claude-code');
       expect((await page.request.post(`${origin}/agents/${agent.id}/start`)).status()).toBe(200);
       await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
@@ -407,7 +392,7 @@ for (const vp of [
 // A gateway agent has no terminal: one view, and no switch to a page that
 // would 404.
 test('an agent of a kind with no terminal has no view switch', async ({ page }) => {
-  await login(page);
+  await signIn(page, origin);
   const agent = await saveAgent(page, 'gateway');
   await page.goto(`${origin}/agents/${agent.name}`);
   await expect(page.locator('#chat-input')).toBeVisible();

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
-import { binDir, cardsConnectPort, cardsPort, dsn, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, cardsConnectPort, cardsPort, dsn, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -135,12 +136,6 @@ async function ask(question: string): Promise<number> {
   return (JSON.parse(j.result.content[0].text) as { id: number }).id;
 }
 
-async function signIn(page: import('@playwright/test').Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
-
 // reportWork is what ccd's work reporter sends (cmd/ccd/work.go): POST
 // /agent/work on the connect listener, with the agent's own token.
 async function reportWork(body: object, token = agentToken): Promise<number> {
@@ -164,7 +159,7 @@ async function openSidebar(page: P) {
 
 test('each sidebar row shows its attention, live, and a tap on the row opens the agent', async ({ page }) => {
   test.setTimeout(120_000);
-  await signIn(page);
+  await signIn(page, origin);
   await ask('Ship the importer today?');
   await page.goto(origin + '/tasks');
   await openSidebar(page);
@@ -202,7 +197,7 @@ const words = (page: P, title: string) => row(page, title).getAttribute('data-sw
 
 test("a mirrored window's row carries its repo, and the palette finds it by it", async ({ page }) => {
   test.setTimeout(60_000);
-  await signIn(page);
+  await signIn(page, origin);
   await page.goto(origin + '/tasks');
   await openSidebar(page);
   await expect(row(page, 'fleet:5'), mirrorLog).toBeVisible({ timeout: 30_000 });
@@ -218,7 +213,7 @@ test("a mirrored window's row carries its repo, and the palette finds it by it",
 
 test('a plain shell window carries its repo and its kind too', async ({ page }) => {
   test.setTimeout(60_000);
-  await signIn(page);
+  await signIn(page, origin);
   await page.goto(origin + '/tasks');
   await openSidebar(page);
   // Every window keeps its row, a shell's included.
@@ -241,7 +236,7 @@ test('a plain shell window carries its repo and its kind too', async ({ page }) 
 // provisioner then reports it live — because only a running agent wears a chip.
 test("a dispatched agent's page shows the work its pod reports, live, and loses it; its menu starts and stops it", async ({ page }) => {
   test.setTimeout(90_000);
-  await signIn(page);
+  await signIn(page, origin);
   await page.goto(origin + '/agents/' + agentName);
   const status = page.locator('#agent-status');
   const more = page.locator('#agent-actions-open');
@@ -293,7 +288,7 @@ test("the agent page's menu deletes the agent in two steps and goes home", async
   fix('agent', '1', name, 'e2e-cards-del-token-not-a-real-one-' + stamp);
   let deleted = false;
   try {
-    await signIn(page);
+    await signIn(page, origin);
     await page.goto(origin + '/agents/' + name);
     await page.locator('#agent-actions-open').click();
     const menu = page.locator('#agent-actions');

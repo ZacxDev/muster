@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
-import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -149,9 +150,7 @@ async function ask(question: string, options: string[]): Promise<number> {
 
 test('an agent asks over MCP, the operator answers in the Attention view, and the waiting agent gets the answer', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
 
   const id = await ask('Deploy the importer to production now?', ['deploy now', 'wait until Monday']);
   // The agent blocks on the answer — a real long poll through the connect door.
@@ -273,9 +272,7 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
   expect(id).toBeGreaterThan(0);
 
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Merge the schema change?');
@@ -310,9 +307,7 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   expect(id).toBeGreaterThan(0);
   const waited = localCall('attention_wait', { id, wait_seconds: 90 }, auth).then((r) => r.json());
 
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Tag the release latest too?');
@@ -367,9 +362,7 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
   const waited = localCall('attention_wait', { id, wait_seconds: 90 }, auth).then((r) => r.json());
 
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   await page.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
   await expect(page.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
   await page.locator('#mv-input').fill('yes, a minor bump');
@@ -415,9 +408,7 @@ for (const vp of [
       };
       const id = await askLocal(`Merge on the ${vp.name}?`, ['merge', 'hold']);
 
-      await page.goto(origin + '/login');
-      await page.fill('#muster-password', password);
-      await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+      await signIn(page, origin);
       // The notification's URL (the tap route) resolves to the ask's page,
       // whose context link is the window's view.
       const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
@@ -483,9 +474,7 @@ test('the rendered view\'s asks hide until the next ask, without answering or se
   };
   const id = await askLocal('Rotate the staging key?', ['rotate', 'later']);
 
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
   await page.goto(view);
   const block = page.locator('#asker-asks');

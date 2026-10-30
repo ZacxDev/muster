@@ -2,9 +2,10 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page } from '@playwright/test';
+import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, focusPort, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, focusPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
@@ -52,7 +53,6 @@ let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 let agentCleanup = false;
-let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
 
 function mkchat(extra: NodeJS.ProcessEnv, input = '') {
   execFileSync('go', ['run', './e2e/mkchat'], {
@@ -108,17 +108,6 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  signedIn = await page.context().cookies(origin);
-}
-
 const viewURL = origin + '/mirror/view?' + new URLSearchParams({ host, session: 'focuswin', window: '@1' }).toString();
 
 // navRows is the sidebar's list partial (GET /ui/nav/agents: the rows the
@@ -131,7 +120,7 @@ const rowOf = (html: string, win: string) =>
 // listed waits until the sidebar lists the host's Claude window @1 and the
 // shell window @2, and this spec's agent (the host is up and has reported).
 async function listed(page: Page) {
-  await login(page);
+  await signIn(page, origin);
   await expect
     .poll(async () => {
       const html = await navRows(page);
@@ -183,7 +172,7 @@ for (const vp of [
     });
 
     test('the rendered view\'s sheet tabs "Your messages" with "Focus history", by arrow keys, and keeps the choice', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(viewURL);
       // Start from no stored choice.
       await page.evaluate(() => { try { localStorage.clear(); } catch (e) {} });
@@ -237,7 +226,7 @@ for (const vp of [
     });
 
     test('the focus history scrolls back through every page, newest first, to its start', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(viewURL);
       await page.locator('#chat-index-open').click();
       await page.locator('#chat-index [role="tab"][data-tab="focus"]').click();
@@ -269,7 +258,7 @@ for (const vp of [
     });
 
     test("the dispatched agent's page has its focus history in a dialog", async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.goto(origin + '/agents/' + agentName);
       const open = page.locator('#focus-history-open');
       const dialog = page.locator('dialog#focus-history');
@@ -303,7 +292,7 @@ for (const vp of [
     });
 
     test('the rendered view and the agent page shift the layout less than 0.01', async ({ page }) => {
-      await login(page);
+      await signIn(page, origin);
       await page.addInitScript(clsInit);
       const bad: string[] = [];
       for (const [label, url, ready] of [

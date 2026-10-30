@@ -56,6 +56,9 @@ var (
 	// ErrRoutedNotEditable: the chief routed it; its text is the chief's. An
 	// ErrNotEditable (errors.Is).
 	ErrRoutedNotEditable = fmt.Errorf("%w: a message your chief routed is not edited here", ErrNotEditable)
+	// ErrNudgeNotEditable: a chief nudge or a relayed answer (ChiefNudgeID) is
+	// sent as decided, or cancelled — never edited.
+	ErrNudgeNotEditable = fmt.Errorf("%w: a chief nudge is not edited here", ErrNotEditable)
 	// ErrHoldLapsed: Save (or Cancel) presented a hold that is no longer the
 	// row's live one — it ran out, or a later Edit took the row over. The row
 	// is still queued, with the text it had.
@@ -95,7 +98,7 @@ func (s *PGStore) Hold(ctx context.Context, id int64) (Item, error) {
 		return Item{}, err
 	}
 	it, err := scanItem(s.pool.QueryRow(ctx, `UPDATE send_queue SET held_until = now() + $2 * interval '1 microsecond', hold_token = $3,
-		hold_lapsed_at = NULL WHERE id = $1 AND state = 'queued' AND route_id IS NULL RETURNING `+cols, id, leaseMicros(s.editHold()), tok))
+		hold_lapsed_at = NULL WHERE id = $1 AND state = 'queued' AND route_id IS NULL AND chief_nudge_id IS NULL RETURNING `+cols, id, leaseMicros(s.editHold()), tok))
 	if err == nil {
 		return it, nil
 	}
@@ -108,6 +111,8 @@ func (s *PGStore) Hold(ctx context.Context, id int64) (Item, error) {
 		return Item{}, gerr
 	case cur.RouteID != "":
 		return cur, ErrRoutedNotEditable
+	case cur.ChiefNudgeID != 0:
+		return cur, ErrNudgeNotEditable
 	case cur.State == Sending:
 		return cur, ErrEditSending
 	}

@@ -212,7 +212,7 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 // recorded error: ($1 kind, $2 key, $3 agent id or NULL, $4 title, $5
 // description, $6 source, $7 fingerprint, $8 cwd or ”, $9 whether the tail
 // named one). A write whose tail named no working directory keeps the stored
-// one (migration 0064).
+// one (migration 0065).
 const upsertFocusSQL = `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
 		source, fingerprint, updated_at, last_error, error_at, cwd)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL, $8)

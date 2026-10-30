@@ -72,7 +72,7 @@ written, at most 20 per user, and skips disabled users. Calls are capped at
 ### The working directory
 
 With the focus, the pass stores the session's **working directory** as its
-transcript last named it (`agent_focus.cwd`, migration `0064`). Claude Code
+transcript last named it (`agent_focus.cwd`, migration `0065`). Claude Code
 writes a `cwd` on every transcript record; `muster-mirror` passes the one on
 each human prompt along with the prompt (and drops one the secret redactor
 would rewrite, or one over 512 bytes), and the newest prompt in the tail

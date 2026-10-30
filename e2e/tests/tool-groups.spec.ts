@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { Page } from '@playwright/test';
-import { test, expect, useSuiteSession } from '../lib/fixtures';
+import { test, expect } from '../lib/fixtures';
+import { signIn as signInShared } from '../lib/signin';
 import { toolGroupsPort } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
 
@@ -91,7 +92,7 @@ const shapeJS = (root: Element) => {
 };
 
 async function signIn(page: Page, _baseURL: string) {
-  await useSuiteSession(page);
+  await signInShared(page);
 }
 
 test('history: a run of calls is one row; text and a single call stay where they were; a group opens to its rows', async ({ page, baseURL }) => {

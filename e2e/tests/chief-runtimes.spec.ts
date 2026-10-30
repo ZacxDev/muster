@@ -1,6 +1,7 @@
 import { Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { chiefRuntimesPort, password, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { chiefRuntimesPort, versionTerm } from '../lib/env';
 import { mkchat } from '../lib/mirrorhost';
 import { startServer, Running } from '../lib/server';
 
@@ -52,12 +53,6 @@ test.afterAll(async () => {
   await server?.stop();
 });
 
-async function signIn(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
-
 // openThreads opens the chief panel (its toggle is delegated on the document)
 // and then its thread list.
 async function openThreads(page: Page) {
@@ -82,7 +77,7 @@ const row = (page: Page, text: string): Locator =>
   page.locator('#chief-thread-results > *').filter({ hasText: text });
 
 test('a session is started on a picked runtime and model, listed with them, and can be made the default', async ({ page }) => {
-  await signIn(page);
+  await signIn(page, origin);
   await page.goto(origin + '/tasks');
   await openThreads(page);
 
@@ -130,7 +125,7 @@ test('a session is started on a picked runtime and model, listed with them, and 
 });
 
 test('a bad model is refused and starts no session', async ({ page }) => {
-  await signIn(page);
+  await signIn(page, origin);
   const before = await page.request.get(origin + '/ui/chief/threads/search?q=');
   const count = ((await before.text()).match(/data-chief-thread=/g) || []).length;
   // The route the picker posts to, with a model the store refuses.

@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 import { Page, Request } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { askPageConnectPort, askPageFakePort, askPagePort, dsn, password, repoRoot, versionTerm } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { askPageConnectPort, askPageFakePort, askPagePort, dsn, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // THE ASK PAGE A NOTIFICATION OPENS (internal/api attention_ask_page.go), in a
@@ -102,12 +103,6 @@ async function ask(question: string): Promise<number> {
   return (JSON.parse(text) as { id: number }).id;
 }
 
-async function signIn(page: Page) {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
-
 // posts records every POST the page makes.
 function posts(page: Page): string[] {
   const seen: string[] = [];
@@ -139,7 +134,7 @@ for (const vp of [
       let release = () => {};
       hold = vp.live ? new Promise<void>((r) => (release = r)) : undefined;
       const before = calls;
-      await signIn(page);
+      await signIn(page, origin);
       const id = await ask(question(vp.name));
       if (!vp.live) await expect.poll(() => calls - before, { timeout: 15_000 }).toBe(1);
 
@@ -217,7 +212,7 @@ test.describe('answered elsewhere, phone 390×844', () => {
   test('the open page closes live: no answer box, no Dismiss', async ({ page }) => {
     test.setTimeout(90_000);
     hold = undefined;
-    await signIn(page);
+    await signIn(page, origin);
     const id = await ask(question('elsewhere'));
     await page.goto(origin + `/attention/asks/${id}`);
     await expect(page.locator('[data-ask-dismiss]')).toBeVisible();
@@ -239,7 +234,7 @@ test.describe('desktop 1280×800', () => {
   test('the ask page keeps the side nav and a centred column; an option answers at once', async ({ page }) => {
     test.setTimeout(90_000);
     hold = undefined;
-    await signIn(page);
+    await signIn(page, origin);
     const id = await ask(question('desktop'));
     await page.goto(origin + `/attention/open/ask-${id}`);
     await page.waitForURL(origin + `/attention/asks/${id}`);

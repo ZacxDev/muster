@@ -50,6 +50,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -126,6 +127,13 @@ type Server struct {
 
 	startedAt time.Time
 	now       func() time.Time
+
+	// nudgeReadHook, when set (a test), replaces the chief nudge sweep's
+	// transcript read (chief_nudge.go nudgeTranscript).
+	nudgeReadHook func(ctx context.Context, c chiefnudge.Session) (nudgeRead, error)
+	// nudgeKick wakes the chief nudge sweep (kickNudges), made once.
+	nudgeKick     chan struct{}
+	nudgeKickOnce sync.Once
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's

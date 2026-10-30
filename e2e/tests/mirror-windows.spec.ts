@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, password, repoRoot, versionTerm, windowsPort } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, repoRoot, versionTerm, windowsPort } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 
@@ -125,17 +126,11 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// The form is driven once; the cookie it earns is handed to every later test
-// (password-mode sign-in is throttled to 10 a minute in one shared bucket).
+// login signs in (lib/signin.ts) and keeps the session for a context the test
+// makes itself.
 let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
 async function login(page: Page) {
-  if (signedIn) {
-    await page.context().addCookies(signedIn);
-    return;
-  }
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, origin);
   signedIn = await page.context().cookies(origin);
 }
 

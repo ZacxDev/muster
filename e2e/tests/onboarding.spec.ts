@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dsn, layoutDispatchPort, onboardingPort, password, repoRoot, versionA } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { dsn, layoutDispatchPort, onboardingPort, repoRoot, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // A brand-new install's home: no agent, no mirrored host, so home has nothing
@@ -53,9 +54,7 @@ test.afterAll(async () => {
 });
 
 async function login(page: Page, at: string) {
-  await page.goto(at + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await signIn(page, at);
 }
 
 for (const vp of [

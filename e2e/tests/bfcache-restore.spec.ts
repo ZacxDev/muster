@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import http from 'node:http';
 import { Browser, BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { authState, baseURL, bfcacheAwayPort, bfcacheBuildPort, bfcacheRestorePort, password, versionA, versionB } from '../lib/env';
+import { signIn } from '../lib/signin';
+import { authState, baseURL, bfcacheAwayPort, bfcacheBuildPort, bfcacheRestorePort, versionA, versionB } from '../lib/env';
 import { launchWithBfcache } from '../lib/bfcache';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { cc, mkchat, MirrorRig } from '../lib/mirrorhost';
@@ -534,13 +535,9 @@ for (const width of [390, 1280]) {
 
 // --- sign-out ----------------------------------------------------------------
 
-// signIn signs a fresh context in through the form (its own session, so the
-// sign-out ends no other spec's).
-async function signIn(page: Page, origin = baseURL): Promise<void> {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-}
+// signIn (lib/signin.ts) hands each context the suite's session: a password
+// session is a signed cookie, so a sign-out here clears this context's copy and
+// ends no other spec's.
 
 // ⚠ ON AN AGENT PAGE THIS HOLDS EVEN WITHOUT Clear-Site-Data: the sign-in
 // page's snapshot purge evicts it first (see the terminal's case below, which
