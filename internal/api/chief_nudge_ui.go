@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // THE "CHIEF NUDGES" TAB of the Asks page (docs/chief-nudges.md): every
@@ -44,7 +45,7 @@ func (s *Server) chiefNudgesPanelHTML(ctx context.Context, now time.Time) string
 <ul class="flex flex-col gap-2" data-testid="nudges-stallers">`)
 		for _, st := range stallers {
 			b.WriteString(`<li class="` + flowsCardClass + `" data-nudge-staller="` + esc(st.Kind+":"+st.Key) + `"><p class="break-words text-sm text-fg"><span class="font-semibold">` +
-				esc(nudgeWhere(st.Title, st.Kind, st.Key, st.Host)) + `</span> · ` + strconv.Itoa(st.Count) + ` decisions in the last day</p></li>`)
+				esc(nudgeWhere(textplain.Title(st.Title), st.Kind, st.Key, st.Host)) + `</span> · ` + strconv.Itoa(st.Count) + ` decisions in the last day</p></li>`)
 		}
 		b.WriteString(`</ul>`)
 	}
@@ -91,7 +92,7 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		`" data-outcome="` + esc(d.Outcome) + `" data-mode="` + esc(d.Mode) + `">
 <span class="text-xs text-fg2"><span class="font-semibold" data-nudge-mode>` + mode + `</span> · <span data-nudge-decision>` + esc(nudgeDecisionLabel(d.Decision)) +
 		`</span> · <time datetime="` + d.DecidedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.DecidedAt))) + `</time></span>
-<p class="break-words text-sm text-fg"><span class="font-semibold" data-nudge-session>` + esc(nudgeWhere(d.Title, d.Kind, d.Key, d.Host)) + `</span></p>
+<p class="break-words text-sm text-fg"><span class="font-semibold" data-nudge-session>` + esc(nudgeWhere(textplain.Title(d.Title), d.Kind, d.Key, d.Host)) + `</span></p>
 `)
 	switch {
 	case d.Message != "":
