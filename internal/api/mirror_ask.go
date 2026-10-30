@@ -74,9 +74,10 @@ const (
 	mirrorAskBodyMax = 256 << 10
 	// mirrorAskFormMax bounds an answer form.
 	mirrorAskFormMax = 64 << 10
-	// mirrorAskShownFor is how long a resolved question stays in the live
-	// region (until the conversation draws the call, which it usually does at
-	// once).
+	// mirrorAskShownFor is how long a resolved question stays listed in the
+	// live region's poll, whatever the conversation shows. The page hides a
+	// listed card once its conversation holds the call's result row (which it
+	// usually does at once; ui askScript), so it is shown in the meantime only.
 	mirrorAskShownFor = 3 * time.Minute
 )
 

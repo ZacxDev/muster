@@ -173,3 +173,48 @@ func TestTheRenderedViewHasTheLiveRegion(t *testing.T) {
 		t.Fatalf("no ask script")
 	}
 }
+
+// TestTheLiveCardNamesTheConversationsResultRow pins the seam the page's
+// dedupe stands on (askScript's drawn): a live card's data-ask-row is the id
+// of the element the conversation draws for THE SAME tool_use id's result, and
+// that element carries data-ask-state="history" — whichever way the result
+// reaches the page (after its call, alone, on a resumed socket). Another call's
+// row is never named. An invariant guard: origin/main already met it; the
+// page did not read it.
+func TestTheLiveCardNamesTheConversationsResultRow(t *testing.T) {
+	rowOf := func(html string) string {
+		m := regexp.MustCompile(`data-ask-row="([^"]+)"`).FindStringSubmatch(html)
+		if m == nil {
+			t.Fatalf("a live card without data-ask-row:\n%s", html)
+		}
+		return m[1]
+	}
+	answers := map[string]string{"Which color do you prefer?": "Red"}
+	result := func(id string) cctranscript.Event {
+		return cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: id, OK: true, Ask: &cctranscript.Ask{Questions: askQs[:1], Answers: answers}}
+	}
+	ref := MirrorRef{Host: "lap", Session: "work", Window: "@3"}
+	for _, id := range []string{"toolu_A", "toolu_B"} {
+		for _, state := range []string{AskStatePending, AskStateAnswered, AskStateAnsweredTerminal, AskStateDeclined, AskStateExpired} {
+			row := rowOf(render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: id, State: state, Questions: askQs[:1], Answers: answers})))
+			var after MirrorTranscript
+			after.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolCall, ToolID: id, Tool: askq.ToolName, Ask: &cctranscript.Ask{Questions: askQs[:1]}}})
+			var alone MirrorTranscript
+			resumed := MirrorTranscript{Resumed: true}
+			for name, ops := range map[string][]MirrorOp{
+				"after its call": after.Ops([]cctranscript.Event{result(id)}),
+				"alone":          alone.Ops([]cctranscript.Event{result(id)}),
+				"resumed":        resumed.Ops([]cctranscript.Event{result(id)}),
+			} {
+				if len(ops) != 1 || ops[0].ID != row || !strings.Contains(ops[0].HTML, `id="`+row+`"`) || !strings.Contains(ops[0].HTML, `data-ask-state="`+AskStateHistory+`"`) {
+					t.Errorf("%s %s, result %s: the live card names row %q; the conversation drew %+v", id, state, name, row, ops)
+				}
+			}
+		}
+	}
+	a := rowOf(render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: "toolu_A", State: AskStateAnswered, Questions: askQs[:1]})))
+	b := rowOf(render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: "toolu_B", State: AskStateAnswered, Questions: askQs[:1]})))
+	if a == b {
+		t.Fatalf("two calls' cards name one row %q", a)
+	}
+}
