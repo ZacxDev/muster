@@ -143,6 +143,8 @@ against a throwaway database.
   target, shortcuts and a badge. → [docs/push.md](docs/push.md)
 - **Asks.** A single queue of everything waiting on you. An agent can ask you a
   question and wait for your answer instead of stopping. → [docs/attention.md](docs/attention.md)
+
+  <p align="center"><img src="docs/img/ask-flow.gif" width="270" alt="On a phone: the sidebar lists sessions on two machines; one asks whether to tag and publish a release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"></p>
 - **Context badges.** Each tool call in a Claude Code session shows how much
   context it added. → [docs/mirroring.md](docs/mirroring.md)
 - **Task board.** Tasks have statuses, comments, attachments, tags and a review
