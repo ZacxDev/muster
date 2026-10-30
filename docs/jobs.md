@@ -323,10 +323,19 @@ user, which ssh needs to exist; the agent's session runs as 1000). The holder, a
   configuration
   ([above](#a-deploy-key-pools-jobs-get-none-of-the-repositorys-configuration)).
 
+⚠ **Upgrading from v0.110.0:** that release's docs had the operator create
+the Secret in each worker's namespace. Since this release it lives in
+**muster's own namespace**: create it there, and **delete every hand-made copy
+in the worker namespaces** — muster refuses a Secret of that name it did not
+make (the dispatch or Start fails naming it), and never overwrites one.
+
 **The Secret is copied, not shared.** Each time a worker's spec is applied
 (dispatch, Start, reapply) muster reads the Secret in its own namespace and
-writes its data and type — nothing else of it, under muster's ownership labels
-— to a Secret of the same name in the worker's namespace, before the pod. A
+writes the key the pod mounts (`ssh-privatekey`) and the Secret's type — no
+other key, label or annotation of it, under muster's ownership labels — to a
+Secret of the same name in the worker's namespace, before the pod. A source
+recreated with another type replaces muster's copy (a type cannot be changed
+in place). A
 source that is missing, or has no `ssh-privatekey`, fails that dispatch or
 Start with an error naming the Secret and the namespace, and no pod is started
 (it would otherwise wait in `ContainerCreating` forever). The copy is removed
@@ -476,10 +485,20 @@ started by an older muster keeps its public-443 rule until Stop → Start.
 Check with `kubectl -n <worker namespace> get networkpolicy -o yaml`: the
 egress list has no `ipBlock` and no port 53.
 
-What it still allows: anything those hosts accept. A session can push what it
-reads to a GitHub repository or gist of an attacker's, or call the Anthropic
-API with an attacker's key and put data in the request; closing that needs an
-egress proxy that checks credentials, which muster does not ship.
+What it still allows:
+
+- anything those hosts accept. A session can push what it reads to a GitHub
+  repository or gist of an attacker's, or call the Anthropic API with an
+  attacker's key and put data in the request; closing that needs an egress
+  proxy that checks credentials, which muster does not ship;
+- **muster's connector proxy**, when the connector store is offered: the
+  NetworkPolicy keeps egress to muster's connect port (`MUSTER_CONNECT_PORT`),
+  which the cluster policy does not see. An **approved connector grant** is
+  therefore an egress path out of a locked worker, bounded by muster's own
+  policy on that connector (its hosts and credential), not by the cluster's.
+  A pool worker can never hold an approved grant reaching github.com
+  ([Worker pools](#worker-pools)); grants to other connectors are decided by
+  their owner.
 
 A job naming a pool runs on the member chosen when it is submitted. A member is
 **eligible** when it is a `claude-code` agent whose status is `running`, works

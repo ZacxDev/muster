@@ -2269,6 +2269,25 @@ func (c config) validateClaudeCodeKind() error {
 				"letter or digit", envAgentCCEgressLockedPools, p)
 		}
 	}
+	// 🔴 A LOCKED POOL'S NAME IS A LABEL VALUE (muster.agent/pool). A pool name
+	// may end in "-", which a label value may not, and the apiserver would then
+	// refuse every object of such a worker with 422 at dispatch. Refused here,
+	// naming the variable that locks it.
+	for _, l := range []struct {
+		env   string
+		pools []string
+	}{
+		{envAgentCCEgressLockedPools, c.AgentCCEgressLockedPools},
+		{envAgentCCPoolDeployKeys, slices.Sorted(maps.Keys(c.AgentCCPoolDeployKeys))},
+	} {
+		for _, p := range l.pools {
+			if msgs := validation.IsValidLabelValue(p); len(msgs) > 0 {
+				return fmt.Errorf("invalid %s entry %q: the pool is egress-locked and its name is the value of the "+
+					"pod label %s, but it is not a valid label value (%s); rename the pool (it must also end with a "+
+					"letter or digit)", l.env, p, agentspec.LabelPool, strings.Join(msgs, "; "))
+			}
+		}
+	}
 	for _, p := range c.AgentCCBypassPools {
 		if !agents.ValidWorkerPool(p) {
 			return fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
