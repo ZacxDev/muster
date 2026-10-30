@@ -12,7 +12,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -69,8 +72,9 @@ func seedSource(t *testing.T, cs *fake.Clientset, name string, typ corev1.Secret
 }
 
 // TestTheKeyHoldersSecretIsCopiedWithItsDataAndType: the worker's namespace gets
-// a Secret under the source's name whose data map and type are IDENTICAL to the
-// source's (two keys, so a copy of one key only fails), carrying muster's
+// a Secret under the source's name holding ONLY the key the pod mounts, with the
+// source's bytes for it, and the source's type — the source's other key (a
+// public half) never lands in the worker's namespace. It carries muster's
 // ownership labels and NONE of the source's labels or annotations. The pod
 // mounts it by that name.
 func TestTheKeyHoldersSecretIsCopiedWithItsDataAndType(t *testing.T) {
@@ -85,8 +89,8 @@ func TestTheKeyHoldersSecretIsCopiedWithItsDataAndType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no copy in the worker's namespace: %v", err)
 	}
-	if !reflect.DeepEqual(got.Data, data) {
-		t.Errorf("copied data differs from the source's (keys %v)", keysOf(got.Data))
+	if want := map[string][]byte{"ssh-privatekey": keyBytes}; !reflect.DeepEqual(got.Data, want) {
+		t.Errorf("copied keys %v, want only the mounted ssh-privatekey with the source's bytes", keysOf(got.Data))
 	}
 	if got.Type != corev1.SecretTypeSSHAuth {
 		t.Errorf("type = %q, want %q", got.Type, corev1.SecretTypeSSHAuth)
@@ -158,8 +162,7 @@ func TestAMissingSourceFailsProvisioningByName(t *testing.T) {
 }
 
 // TestAChangedSourcePropagatesOnUpdate: after the operator replaces the key, a
-// re-apply (Update: Start / reapply) writes the new data over the copy; a key
-// removed from the source is removed from the copy too.
+// re-apply (Update: Start / reapply) writes the new data over the copy.
 func TestAChangedSourcePropagatesOnUpdate(t *testing.T) {
 	d, cs, _ := copyDriver(t)
 	ctx := context.Background()
@@ -301,5 +304,67 @@ func TestTheKeyNeverReachesALogOrAnError(t *testing.T) {
 		if strings.Contains(e, needle) {
 			t.Errorf("the key's bytes reached an error: %q", e)
 		}
+	}
+}
+
+// TestASourceRecreatedWithAnotherTypeIsReCopied: a Secret's type is immutable,
+// so the apiserver answers an Update that changes it with 422 Invalid (the fake
+// clientset does not, so a reactor plays the apiserver). When the operator
+// recreates the source with another type, the re-apply replaces muster's OWN
+// copy (delete, create) and succeeds with the new type and data, instead of
+// failing every Start until the namespace is recreated.
+func TestASourceRecreatedWithAnotherTypeIsReCopied(t *testing.T) {
+	d, cs, _ := copyDriver(t)
+	ctx := context.Background()
+	seedSource(t, cs, "app-deploy-key", corev1.SecretTypeOpaque, map[string][]byte{"ssh-privatekey": keyBytes})
+	spec := copySpec("keyed", "app-deploy-key")
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	cs.PrependReactor("update", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		u := a.(k8stesting.UpdateAction).GetObject().(*corev1.Secret)
+		cur, err := cs.Tracker().Get(corev1.SchemeGroupVersion.WithResource("secrets"), a.GetNamespace(), u.Name)
+		if err == nil && cur.(*corev1.Secret).Type != u.Type {
+			return true, nil, apierrors.NewInvalid(corev1.SchemeGroupVersion.WithKind("Secret").GroupKind(), u.Name,
+				field.ErrorList{field.Invalid(field.NewPath("type"), u.Type, "field is immutable")})
+		}
+		return false, nil, nil
+	})
+	if err := cs.CoreV1().Secrets(copySourceNS).Delete(ctx, "app-deploy-key", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	rotated := []byte("rotated-key-9c41")
+	seedSource(t, cs, "app-deploy-key", corev1.SecretTypeSSHAuth, map[string][]byte{"ssh-privatekey": rotated})
+	if err := d.Update(ctx, spec); err != nil {
+		t.Fatalf("re-apply after the source changed type: %v", err)
+	}
+	got, _ := cs.CoreV1().Secrets("muster-agent-keyed").Get(ctx, "app-deploy-key", metav1.GetOptions{})
+	if got.Type != corev1.SecretTypeSSHAuth || !bytes.Equal(got.Data["ssh-privatekey"], rotated) || !owned(got.Labels) {
+		t.Errorf("copy type %q owned %v: want the new type and data under muster's labels", got.Type, owned(got.Labels))
+	}
+}
+
+// TestAStrangersSecretOfAnotherTypeIsNotReplaced: the delete-and-recreate is for
+// muster's own copy only; a co-named Secret muster did not make, of another
+// type, is refused (ErrNotManaged) and left as it was.
+func TestAStrangersSecretOfAnotherTypeIsNotReplaced(t *testing.T) {
+	d, cs, _ := copyDriver(t)
+	ctx := context.Background()
+	seedSource(t, cs, "app-deploy-key", corev1.SecretTypeSSHAuth, map[string][]byte{"ssh-privatekey": keyBytes})
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "muster-agent-keyed",
+		Labels: instanceLabels("keyed")}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().Secrets("muster-agent-keyed").Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "app-deploy-key", Namespace: "muster-agent-keyed", Labels: map[string]string{"by": "hand"}},
+		Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"x": []byte("y")}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(ctx, copySpec("keyed", "app-deploy-key")); !errors.Is(err, provision.ErrNotManaged) {
+		t.Fatalf("err = %v, want ErrNotManaged", err)
+	}
+	got, _ := cs.CoreV1().Secrets("muster-agent-keyed").Get(ctx, "app-deploy-key", metav1.GetOptions{})
+	if got.Type != corev1.SecretTypeOpaque || got.Labels["by"] != "hand" {
+		t.Errorf("the stranger's Secret was replaced: type %q labels %v", got.Type, got.Labels)
 	}
 }

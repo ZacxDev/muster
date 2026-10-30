@@ -104,3 +104,30 @@ func TestTheKindsBannerLineAnnouncesTheEgressLock(t *testing.T) {
 		t.Fatalf("no lock announces one: %q", off)
 	}
 }
+
+// TestALockedPoolNameThatIsNotALabelValueIsRefusedAtBoot: a locked pool's name
+// becomes the value of muster.agent/pool, and a worker-pool name may end in
+// "-", which a label value may not (the apiserver would refuse the worker's
+// objects with 422 at dispatch). Such a name is refused at boot, naming the
+// variable and the name, whether it is locked by the list or by a deploy key.
+// The control: a name a label value accepts boots.
+func TestALockedPoolNameThatIsNotALabelValueIsRefusedAtBoot(t *testing.T) {
+	ok := ccK8sTestConfig()
+	ok.AgentCCEgressLockedPools = []string{"review-1"}
+	ok.AgentCCPoolDeployKeys, ok.AgentCCPoolDeployKeysErr = parsePoolDeployKeys("keyed-2=acme/private-app:deploy-key")
+	if err := ok.validate(); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	listed := ok
+	listed.AgentCCEgressLockedPools = []string{"review-"}
+	if err := listed.validate(); err == nil || !strings.Contains(err.Error(), "MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS") ||
+		!strings.Contains(err.Error(), `"review-"`) || !strings.Contains(err.Error(), "label value") {
+		t.Errorf("listed pool ending in -: %v", err)
+	}
+	keyed := ok
+	keyed.AgentCCPoolDeployKeys, keyed.AgentCCPoolDeployKeysErr = parsePoolDeployKeys("keyed-=acme/private-app:deploy-key")
+	if err := keyed.validate(); err == nil || !strings.Contains(err.Error(), "MUSTER_AGENT_CC_POOL_DEPLOY_KEYS") ||
+		!strings.Contains(err.Error(), `"keyed-"`) || !strings.Contains(err.Error(), "label value") {
+		t.Errorf("deploy-key pool ending in -: %v", err)
+	}
+}
