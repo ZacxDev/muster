@@ -285,6 +285,17 @@ test.describe('a 200-message agent transcript', () => {
         at: (html: string) => { const n = html.indexOf('<details id="sidebar-more"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; },
         held: `!!document.getElementById('sidebar-more') && !document.getElementById('sidebar-more-summary')`,
       },
+      // Inside the header's first row, straight after its new-chat button and
+      // before chat history: main's CI frame (0.00017 at 1280px, from
+      // `button.press.inline-flex.h-11` — the new-chat button, the row's only
+      // id-less one) made deterministic. The button was painted at the row's
+      // right end and moved left as each later control arrived
+      // (agents_detail.go agentHeaderTools).
+      {
+        label: "inside the header's first row, after its new-chat button",
+        at: (html: string) => { const n = html.indexOf('aria-label="New chat session"'); return n < 0 ? -1 : html.indexOf('</form>', n) + '</form>'.length; },
+        held: `!!document.querySelector('button[aria-label="New chat session"]') && !document.querySelector('label[aria-label="Chat history"]')`,
+      },
     ];
     for (const stall of stalls)
     test(`${vp.name}: a frame painted ${stall.label} moves nothing`, async ({ browser }) => {
