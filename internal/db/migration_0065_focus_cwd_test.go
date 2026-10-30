@@ -24,7 +24,7 @@ func TestMigration0065AddsAnAbsoluteOrUnknownCwd(t *testing.T) {
 		t.Fatalf("control: at version 64 agent_focus has a cwd column (%v)", err)
 	}
 
-	applyThroughFrom(ctx, t, pool, 64)
+	applyThroughFrom(ctx, t, pool, 65)
 
 	var cwd string
 	if err := pool.QueryRow(ctx, `SELECT cwd FROM agent_focus WHERE subject_key = 'cwd-old'`).Scan(&cwd); err != nil || cwd != "" {
