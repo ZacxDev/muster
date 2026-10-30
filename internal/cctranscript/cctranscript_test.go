@@ -140,6 +140,10 @@ func TestEventsRecordShapes(t *testing.T) {
 		// record with "isMeta":true and content "Stop hook feedback:\n<reason>"
 		// (the shape read off a real transcript). It must never be a prompt —
 		// the chief nudge sweep reads prompts as the owner's own words.
+		// ⚠ AN INVARIANT GUARD, NOT REGRESSION COVERAGE: the reader already
+		// dropped every isMeta record before this case existed, so it never
+		// failed on old code; it pins that behaviour (dropping the IsMeta check
+		// in PromptText reddens it).
 		{"a Stop hook's block reason is dropped",
 			`{"type":"user","isMeta":true,"userType":"external","message":{"role":"user","content":"Stop hook feedback:\nCall attention_ask with your question before you stop."}}`, nil},
 		{"a subagent's records are dropped",

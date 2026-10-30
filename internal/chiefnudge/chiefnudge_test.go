@@ -228,3 +228,42 @@ func TestThePromptFencesTheSessionAndShowsTheIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestPhraseBoundariesAreUnicodeAware: both sides are NFC-normalised, and
+// combining marks and apostrophes are word characters — so a quote cut inside
+// a decomposed accented word, inside a Devanagari word (before its virama), or
+// right after an apostrophe is not a whole phrase; the same quote in a
+// composed or decomposed spelling of a real phrase is.
+func TestPhraseBoundariesAreUnicodeAware(t *testing.T) {
+	cases := []struct {
+		name, text, q string
+		want          bool
+	}{
+		{"a decomposed accent after the cut", "please mergéx now", "please merge", false},
+		{"decomposed text, composed quote", "ship the café build now", "the café build", true},
+		{"composed text, decomposed quote", "ship the café build now", "the café build", true},
+		{"a Devanagari word cut before its virama", "कृपया नमस्ते करो", "कृपया नमस", false},
+		{"a whole Devanagari phrase", "कृपया नमस्ते करो", "कृपया नमस्ते", true},
+		{"after an apostrophe", "don't go ahead with the deploy", "t go ahead with", false},
+		{"after a typographic apostrophe", "don’t go ahead with the deploy", "t go ahead with", false},
+		{"a word with an apostrophe, whole", "don't go ahead with the deploy", "don't go ahead", true},
+	}
+	for _, c := range cases {
+		if got := containsPhrase(c.text, c.q); got != c.want {
+			t.Errorf("%s: %t, want %t", c.name, got, c.want)
+		}
+	}
+}
+
+func TestTheGenericAskIsRecognisedAndRelaysNoOption(t *testing.T) {
+	if !IsGenericAsk(GenericAskOptions) || IsGenericAsk([]string{"Open session"}) || IsGenericAsk([]string{"main", "release"}) {
+		t.Fatal("IsGenericAsk")
+	}
+	if !IsGenericChoice(GenericAskOptions, " Dismiss ") || IsGenericChoice(GenericAskOptions, "merge into main") ||
+		IsGenericChoice([]string{"Dismiss", "Open session"}, "Dismiss") {
+		t.Fatal("IsGenericChoice")
+	}
+	if q := GenericAskQuestion("Fix CI"); q != "Fix CI is waiting on you. Its last turn looks like it asked you something." {
+		t.Fatalf("%q", q)
+	}
+}

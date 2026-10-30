@@ -83,13 +83,14 @@ func (g *nudgeGateway) seen() (checks, turns []string) {
 
 type nudgeFixture struct {
 	*attnFixture
-	gw     *nudgeGateway
-	nudges *chiefnudge.PG
-	queue  *sendqueue.PGStore
-	cfg    *ChiefNudges
-	boss   agents.Agent // user 1's chief
-	mu     sync.Mutex
-	script []chiefnudge.Msg
+	gw      *nudgeGateway
+	nudges  *chiefnudge.PG
+	queue   *sendqueue.PGStore
+	cfg     *ChiefNudges
+	boss    agents.Agent // user 1's chief
+	mu      sync.Mutex
+	script  []chiefnudge.Msg
+	partial bool // the scripted read reports itself incomplete
 }
 
 // nudgeReply is the chief's JSON for a nudge quoting quote from message id.
@@ -120,10 +121,10 @@ func newNudgeFixture(t *testing.T, live bool) *nudgeFixture {
 		{Role: "user", Text: nudgeOwnerText, ID: nudgeOwnerID, At: time.Now().Add(-10 * time.Minute)},
 		{Role: "assistant", Text: "CI is green on the PR. Shall I merge it?"},
 	}
-	f.srv.nudgeRead = func(context.Context, chiefnudge.Session) ([]chiefnudge.Msg, bool, error) {
+	f.srv.nudgeReadHook = func(context.Context, chiefnudge.Session) (nudgeRead, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		return append([]chiefnudge.Msg(nil), f.script...), false, nil
+		return nudgeRead{Msgs: append([]chiefnudge.Msg(nil), f.script...), Partial: f.partial}, nil
 	}
 	t.Cleanup(func() {
 		sys := authz.System(context.Background())
@@ -615,7 +616,7 @@ func TestChiefNudgeLiveNudgeIsQueuedPastedAndGatedByTheKillSwitch(t *testing.T) 
 // chief.
 func TestChiefNudgeCoverageLeavesOutOfficersTheChiefAndOtherUsersAgents(t *testing.T) {
 	f := newNudgeFixture(t, true)
-	f.srv.nudgeRead = nil
+	f.srv.nudgeReadHook = nil
 	f.mirror.windows = nil
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	worker := f.agentFor(t, authz.OperatorUserID, "nudgeworker-"+suffix, "worker", "nudge-worker-tok-"+suffix)
@@ -803,7 +804,7 @@ func TestChiefNudgeAFailedCallIsRecordedAndEachCheckIsAFreshContext(t *testing.T
 // Attention view. It returns the decision, the two sessions and the answer.
 func liveAgentAsk(t *testing.T, f *nudgeFixture) (chiefnudge.Decision, agents.ChatSession, agents.ChatSession, string) {
 	t.Helper()
-	f.srv.nudgeRead = nil
+	f.srv.nudgeReadHook = nil
 	f.mirror.windows = nil
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	worker := f.agentFor(t, authz.OperatorUserID, "nudgeworker-"+suffix, "worker", "nudge-worker-tok-"+suffix)
@@ -995,7 +996,7 @@ func TestChiefNudgeAnAskStallKeepsANudgeOnlyForPermissionWithAGoodQuote(t *testi
 	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 60_000 })
 	f.pass(t)
 	if d := f.decisions(t)[0]; d.Decision != chiefnudge.DecisionAsk || d.Outcome != chiefnudge.OutcomeWouldAsk ||
-		!strings.Contains(d.Question, "seems to be waiting on you") || !strings.Contains(d.Reason, "the chief said leave it") {
+		d.Question != chiefnudge.GenericAskQuestion("") || !chiefnudge.IsGenericAsk(d.Options) || !strings.Contains(d.Reason, "the chief said leave it") {
 		t.Fatalf("an ask-stall the chief would leave: %+v", d)
 	}
 }
@@ -1018,5 +1019,109 @@ func TestChiefNudgeAClassifierFailureFallsBackToTheChief(t *testing.T) {
 	}
 	if body := f.page(t, "/attention?tab=nudges"); !strings.Contains(body, "Classifier: failed (http-502); the chief decided alone") {
 		t.Fatal("the tab does not show the classifier's failure")
+	}
+}
+
+// TestChiefNudgeAWindowRelayIsTiedToItsStall: the owner answers the ask, then
+// types into the window themselves (a newer turn) before the relay is pasted:
+// the relay is refused at the paste and recorded superseded, never pasted
+// into the newer turn.
+func TestChiefNudgeAWindowRelayIsTiedToItsStall(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	f.gw.set(nudgeAskReply)
+	f.pass(t)
+	d := f.one(t)
+	rd, hdr := form(url.Values{"answer": {"main"}})
+	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
+		t.Fatalf("answer: %d", w.Code)
+	}
+	f.pass(t) // queues the relay
+	if d = f.one(t); d.Outcome != chiefnudge.OutcomeRelayQueued || d.SendQueueID == 0 {
+		t.Fatalf("queued: %+v", d)
+	}
+	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 90_000 }) // the owner typed: a newer turn, now idle again
+	f.tick(t)
+	if p := f.pastes(); len(p) != 0 {
+		t.Fatalf("a relay was pasted into a newer turn: %+v", p)
+	}
+	f.pass(t)
+	d, err := f.nudges.Get(asUser(authz.OperatorUserID), d.ID)
+	if err != nil || d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardSuperseded) || d.Detail != SendQueueRelayStale {
+		t.Fatalf("after the refusal: %+v", d)
+	}
+}
+
+// TestChiefNudgeTheGenericAskCarriesNoSessionText: an ask-stall the chief
+// would leave raises the GENERIC ask — muster's sentence and the focus title,
+// not a word of the session's — and choosing one of its options relays nothing.
+func TestChiefNudgeTheGenericAskCarriesNoSessionText(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	j := withJev(t, f)
+	j.set(200, 0.90, 0.05, 0.05)
+	f.gw.set(`{"decision":"leave","reason":"done"}`)
+	f.pass(t)
+	d := f.one(t)
+	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
+	if err != nil || d.Outcome != chiefnudge.OutcomeAsked || strings.Join(a.Options, "|") != "Open session|Dismiss" {
+		t.Fatalf("the generic ask: %+v %+v %v", d, a, err)
+	}
+	last := f.script[len(f.script)-1].Text
+	for _, w := range strings.Fields(strings.Trim(last, "?.")) {
+		if len(w) > 3 && (strings.Contains(a.Question, w) || strings.Contains(d.Question, w)) {
+			t.Fatalf("session text %q reached the ask: %q / %q", w, a.Question, d.Question)
+		}
+	}
+	if !strings.Contains(a.Question, "Its last turn looks like it asked you something.") {
+		t.Fatalf("the ask: %q", a.Question)
+	}
+	queued0 := f.queuedRows(t)
+	rd, hdr := form(url.Values{"option": {"Dismiss"}, "answer": {""}})
+	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
+		t.Fatalf("answer: %d", w.Code)
+	}
+	f.pass(t)
+	if d = f.one(t); d.Outcome != chiefnudge.OutcomeAskClosed || !strings.Contains(d.Detail, "nothing to relay") {
+		t.Fatalf("after Dismiss: %+v", d)
+	}
+	if q := f.queuedRows(t); q != queued0 {
+		t.Fatalf("a generic option was relayed: %d→%d", queued0, q)
+	}
+}
+
+// TestChiefNudgeAPartialReadAuthorisesNoNudge: a read that cannot vouch for
+// the owner's last six hours turns the chief's (otherwise good) nudge into an
+// ask, with the reason partial_read.
+func TestChiefNudgeAPartialReadAuthorisesNoNudge(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	f.partial = true
+	f.pass(t)
+	d := f.one(t)
+	if d.Decision != chiefnudge.DecisionAsk || d.Outcome != chiefnudge.OutcomeWouldAsk || d.Message != "" ||
+		!strings.HasPrefix(d.Reason, "partial_read:") || !strings.Contains(d.Question, "could not read enough") {
+		t.Fatalf("a partial read: %+v", d)
+	}
+	f.partial = false // the control: the same read, complete, nudges
+	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 60_000 })
+	f.pass(t)
+	if d := f.decisions(t)[0]; d.Outcome != chiefnudge.OutcomeWouldSend {
+		t.Fatalf("a complete read: %+v", d)
+	}
+}
+
+// TestChiefNudgeShadowDecisionsDoNotCountTowardTheLiveCap: many shadow
+// nudges in the hour leave a live owner's cap untouched (NudgesSince counts
+// live sends only).
+func TestChiefNudgeShadowDecisionsDoNotCountTowardTheLiveCap(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	f.cfg.HourlyCap = 1
+	for i := 0; i < 3; i++ {
+		if _, ok, err := f.nudges.Insert(asUser(authz.OperatorUserID), chiefnudge.Decision{Kind: chiefnudge.KindMirror, Key: "shadow-" + strconv.Itoa(i),
+			StreakKey: "since:1", Decision: chiefnudge.DecisionNudge, Mode: chiefnudge.ModeShadow, Outcome: chiefnudge.OutcomeWouldSend}, ""); err != nil || !ok {
+			t.Fatalf("seed: %v %v", ok, err)
+		}
+	}
+	f.pass(t)
+	if d := f.decisions(t)[0]; d.Outcome != chiefnudge.OutcomeQueued {
+		t.Fatalf("shadow decisions held a live nudge back: %+v", d)
 	}
 }

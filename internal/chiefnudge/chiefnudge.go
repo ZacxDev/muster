@@ -26,6 +26,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/ZacxDev/muster/internal/fence"
 )
 
@@ -76,6 +78,8 @@ const (
 	GuardMovedOn    = "moved_on"         // the session left its idle streak before muster acted
 	GuardAskCap     = "ask_cap"          // the owner's open asks are at attention's cap
 	GuardChiefError = "chief_error"      // the chief's call failed (Detail says how); the next streak is judged again
+	GuardSuperseded = "superseded"       // a queued nudge or relay was refused at its paste: the session had moved on
+	GuardPartial    = "partial_read"     // reason text only: the transcript read was incomplete, so no owner message authorises a nudge
 )
 
 // Suppressed is the outcome for guard.
@@ -435,11 +439,18 @@ func CheckQuote(p Proposal, owner []Msg) (Msg, error) {
 // containsPhrase reports whether q occurs in text with a word boundary on
 // each side: no letter or digit right before it or right after it (an edge of
 // q that is itself not a letter or digit needs none).
+//
+// Both sides are NFC-normalised first, so a composed and a decomposed spelling
+// of the same word match — and a quote that ends where a decomposed text has a
+// combining mark is not a whole word. Word characters are letters, combining
+// marks (a Devanagari vowel sign or virama is part of its word), digits and
+// apostrophes ("t go ahead" is not a phrase of "don't go ahead").
 func containsPhrase(text, q string) bool {
+	text, q = norm.NFC.String(text), norm.NFC.String(q)
 	if q == "" {
 		return false
 	}
-	word := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+	word := isWordRune
 	first, _ := utf8.DecodeRuneInString(q)
 	last, _ := utf8.DecodeLastRuneInString(q)
 	for from := 0; from <= len(text)-len(q); {
@@ -459,6 +470,22 @@ func containsPhrase(text, q string) bool {
 		from = i + size
 	}
 	return false
+}
+
+// isWordRune is containsPhrase's word character.
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsDigit(r) || r == '\'' || r == '\u2019'
+}
+
+// EscalationPartial is the ask raised in place of a nudge when the
+// transcript read was incomplete: no instruction of the owner's can be checked.
+func EscalationPartial(title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		t = "This session"
+	}
+	return t + " stopped. muster could not read enough of its conversation to check an instruction of yours " +
+		"that covers the next step. Should it continue?"
 }
 
 // EscalationNoTimes is the ask raised in place of a nudge for a session whose

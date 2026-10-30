@@ -409,7 +409,8 @@ var errNudgeChiefBusy = errors.New("the chief is busy")
 // under the guards. decided: a decision was recorded; stop: the owner's other
 // candidates should wait (the chief is busy).
 func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief agents.Agent, c nudgeCandidate, p *nudgePass) (decided, stop bool) {
-	msgs, full, err := s.nudgeTranscript(octx, c)
+	read, err := s.nudgeTranscript(octx, c)
+	msgs, full := read.Msgs, read.Full
 	if err != nil {
 		s.logger.Printf("chief nudges: %s %s: transcript: %v", c.Kind, c.Key, err)
 		return false, false
@@ -490,11 +491,13 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 			}
 		}
 		if why != "" {
-			q := prop.Question
+			q, opts := prop.Question, chiefnudge.CleanOptions(prop.Options)
 			if strings.TrimSpace(q) == "" {
-				q = chiefnudge.FallbackQuestion(c.Title, last.Text)
+				// 🔴 NO SESSION TEXT: the generic ask (jev.go), never an excerpt
+				// of the session's last message under the chief's label.
+				q, opts = chiefnudge.GenericAskQuestion(c.Title), append([]string(nil), chiefnudge.GenericAskOptions...)
 			}
-			d.Decision, d.Question, d.Options = chiefnudge.DecisionAsk, q, chiefnudge.CleanOptions(prop.Options)
+			d.Decision, d.Question, d.Options = chiefnudge.DecisionAsk, q, opts
 			d.Reason = fmt.Sprintf("classifier: %s, ask score %.2f — the default is an ask (%s); %s",
 				jev.Label, jev.AskScore, why, prop.Reason)
 			return s.actAsk(octx, c, d), false
@@ -509,6 +512,15 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return s.actAsk(octx, c, d), false
 	}
 	// A nudge.
+	if read.Partial {
+		// The read cannot vouch for the owner's last six hours (it ended
+		// early, has a gap, or a cap cut the window): its owner messages
+		// authorise nothing, so the nudge is an ask, and the row says why.
+		d.Decision = chiefnudge.DecisionAsk
+		d.Question, d.Options = chiefnudge.EscalationPartial(c.Title), chiefnudge.CleanOptions(nil)
+		d.Reason = chiefnudge.GuardPartial + ": the transcript read was incomplete, so no owner message can authorise a nudge; " + d.Reason
+		return s.actAsk(octx, c, d), false
+	}
 	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
 	quoted, qerr := chiefnudge.CheckQuote(prop, owner)
 	if qerr != nil && untimed > 0 && len(owner) == 0 {
@@ -588,18 +600,31 @@ func (s *Server) nudgeInjected(ctx context.Context, c chiefnudge.Session) ([]str
 	return out, nil
 }
 
-// nudgeTranscript is c's conversation, oldest first; full reports that it is
-// the WHOLE conversation (its first message is the session's first), which is
-// what lets OwnerMessages leave out a dispatched agent's kickoff. The test
-// hook nudgeRead replaces it.
-func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) ([]chiefnudge.Msg, bool, error) {
-	if s.nudgeRead != nil {
-		return s.nudgeRead(ctx, c.Session)
+// nudgeRead is one candidate's transcript as the sweep read it.
+type nudgeRead struct {
+	Msgs []chiefnudge.Msg
+	// Full: the read holds the WHOLE conversation (its first message is the
+	// session's first), which is what lets OwnerMessages leave out a
+	// dispatched agent's kickoff.
+	Full bool
+	// Partial: the read cannot vouch for the owner's last six hours — it ended
+	// before the host finished, it has a gap the prompt index shows, or the
+	// window was cut by a cap before reaching six hours back. Its owner
+	// messages then authorise NO nudge (a nudge becomes an ask, partial_read).
+	Partial bool
+}
+
+// nudgeTranscript is c's conversation, oldest first (nudgeRead). The test
+// hook nudgeReadHook replaces it.
+func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) (nudgeRead, error) {
+	if s.nudgeReadHook != nil {
+		return s.nudgeReadHook(ctx, c.Session)
 	}
+	now := s.now()
 	if c.Kind == chiefnudge.KindAgent {
 		msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, c.ChatSessionID, chiefNudgeAgentMessages)
 		if err != nil {
-			return nil, false, err
+			return nudgeRead{}, err
 		}
 		var out []chiefnudge.Msg
 		for _, m := range msgs {
@@ -608,13 +633,31 @@ func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) ([]chief
 			}
 			out = append(out, chiefnudge.Msg{Role: m.Role, Text: m.Content, ID: strconv.FormatInt(m.ID, 10), At: m.CreatedAt})
 		}
-		return out, len(msgs) < chiefNudgeAgentMessages, nil
+		full := len(msgs) < chiefNudgeAgentMessages
+		// Capped at chiefNudgeAgentMessages before reaching six hours back:
+		// older owner messages of the window were not read.
+		partial := !full && len(msgs) > 0 && msgs[0].CreatedAt.After(now.Add(-chiefnudge.OwnerWindow))
+		return nudgeRead{Msgs: out, Full: full, Partial: partial}, nil
 	}
 	e := mirror.SessionView{Host: c.Host, Session: c.TmuxSession, Window: c.Window, ClaudeSession: c.Key}
-	evs, err := s.mirrorEvents(ctx, e, c.Key)
+	evs, idx, err := s.mirrorRead(ctx, e, c.Key)
 	if err != nil && (len(evs) == 0 || errors.Is(err, errNoSession)) {
-		return nil, false, err
+		return nudgeRead{}, err
 	}
+	return nudgeRead{Msgs: nudgeMirrorMessages(evs, now), Partial: !nudgeMirrorComplete(evs, idx, now)}, nil
+}
+
+// nudgeFutureSkew is how far ahead of muster's clock a prompt's time may be
+// and still be believed (host clocks drift); further ahead, it is untimed.
+const nudgeFutureSkew = 5 * time.Minute
+
+// nudgeMirrorMessages is a mirrored backfill's events as transcript messages,
+// oldest first (the host's backfill is chronological: cctranscript.Backfill
+// reads the window backwards and reverses what it keeps). A prompt is named by
+// its place ("line:<offset>") and timed by its own record (PromptAt, the host's
+// clock) — a time more than nudgeFutureSkew ahead of now is not believed, and
+// the message is untimed (it authorises nothing).
+func nudgeMirrorMessages(evs []cctranscript.Event, now time.Time) []chiefnudge.Msg {
 	var out []chiefnudge.Msg
 	for _, ev := range evs {
 		switch ev.Kind {
@@ -625,14 +668,73 @@ func (s *Server) nudgeTranscript(ctx context.Context, c nudgeCandidate) ([]chief
 			}
 			var at time.Time
 			if ev.PromptAt > 0 {
-				at = time.UnixMilli(ev.PromptAt) // the host's clock: a six-hour window shrugs off skew
+				if t := time.UnixMilli(ev.PromptAt); !t.After(now.Add(nudgeFutureSkew)) {
+					at = t
+				}
 			}
 			out = append(out, chiefnudge.Msg{Role: "user", Text: ev.Text, ID: id, At: at})
 		case cctranscript.KindText:
 			out = append(out, chiefnudge.Msg{Role: "assistant", Text: ev.Text})
 		}
 	}
-	return out, false, nil
+	return out
+}
+
+// nudgeMirrorComplete reports whether a mirrored read can vouch for the
+// owner's last six hours:
+//
+//   - the host's prompt index arrived (the backfill was sent in full; a read
+//     that ended on the quiet timer or the deadline is not complete);
+//   - the backfill's prompts are in transcript order (their places ascend);
+//   - every prompt the index lists from the backfill's oldest prompt on is in
+//     the backfill (no gap), and so is the newest one the index lists;
+//   - when the index lists prompts OLDER than the backfill (a cap cut the
+//     window), the backfill's oldest prompt is itself older than six hours —
+//     so nothing inside the window was cut.
+func nudgeMirrorComplete(evs []cctranscript.Event, idx mirrorIndex, now time.Time) bool {
+	if !idx.Got {
+		return false
+	}
+	have := map[int64]bool{}
+	var lines []int64
+	var oldestAt int64
+	for _, ev := range evs {
+		if ev.Kind != cctranscript.KindPrompt || ev.Line <= 0 {
+			continue
+		}
+		if n := len(lines); n > 0 && ev.Line <= lines[n-1] {
+			return false // out of order: ordering cannot be confirmed
+		}
+		if len(lines) == 0 {
+			oldestAt = ev.PromptAt
+		}
+		lines = append(lines, ev.Line)
+		have[ev.Line] = true
+	}
+	if len(idx.Lines) == 0 {
+		return len(lines) == 0 // the index lists none: nothing can be missing
+	}
+	if len(lines) == 0 {
+		return false
+	}
+	cut := idx.More > 0
+	newest := idx.Lines[0]
+	for _, l := range idx.Lines {
+		newest = max(newest, l)
+		switch {
+		case l < lines[0]:
+			cut = true
+		case !have[l]:
+			return false
+		}
+	}
+	if !have[newest] {
+		return false
+	}
+	if cut && (oldestAt <= 0 || time.UnixMilli(oldestAt).After(now.Add(-chiefnudge.OwnerWindow))) {
+		return false
+	}
+	return true
 }
 
 // nudgeSessionName is the chief's gateway key for ONE stall check: derived
@@ -847,7 +949,7 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 	}
 	ask, err := s.ext.Attention.Create(ctx, attention.New{
 		Asker:    attention.Asker{System: true, Label: chiefNudgeAskLabel},
-		Question: nudgeAskQuestion(c.Session, d.Question),
+		Question: nudgeAskQuestion(c.Session, d.Question, chiefnudge.IsGenericAsk(d.Options)),
 		Options:  d.Options,
 	})
 	switch {
@@ -873,7 +975,10 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 // nudgeAskQuestion is the ask's text: which session (its focus title and
 // where), the question the chief extracted, and what happens to the answer.
 // The session's words reach the owner only through the chief's own question.
-func nudgeAskQuestion(c chiefnudge.Session, q string) string {
+//
+// generic: the generic ask (chiefnudge.GenericAskQuestion) — muster's own
+// sentence, whose options send nothing.
+func nudgeAskQuestion(c chiefnudge.Session, q string, generic bool) string {
 	where := c.Title
 	if where == "" {
 		where = "A session"
@@ -889,6 +994,10 @@ func nudgeAskQuestion(c chiefnudge.Session, q string) string {
 	}
 	text := where + " stopped and is waiting on you:\n\n" + strings.TrimSpace(q) +
 		"\n\nYour answer is sent into that session word for word."
+	if generic {
+		text = where + " is waiting on you. Its last turn looks like it asked you something.\n\n" +
+			"Choosing an option sends nothing into the session; an answer you type is sent into it word for word."
+	}
 	return fence.Cut(text, attention.MaxQuestionRunes)
 }
 
@@ -918,6 +1027,10 @@ func (s *Server) relayNudgeAnswer(ctx context.Context, a attention.Ask) {
 		return
 	case !s.chiefNudgeLive(d.Owner):
 		closeAsk("chief nudges are off or in shadow mode for this owner now: not relayed")
+		return
+	case chiefnudge.IsGenericChoice(d.Options, a.Answer):
+		// The generic ask's options are not an answer to forward.
+		closeAsk("the owner chose \u201c" + strings.TrimSpace(a.Answer) + "\u201d: nothing to relay")
 		return
 	case d.Kind == chiefnudge.KindAgent && s.ext.Gateway == nil:
 		// An agent's relay is a turn, and with no gateway there is none to run
@@ -999,6 +1112,12 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 			_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{d.Outcome}, chiefnudge.Move{Outcome: sent, Detail: it.Detail}, action)
 			return true
 		case sendqueue.Failed, sendqueue.Cancelled:
+			if it.Detail == SendQueueRelayStale || it.Detail == SendQueueNudgeStale {
+				// Superseded by a newer turn: not a failure to retry.
+				_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{d.Outcome}, chiefnudge.Move{
+					Outcome: chiefnudge.Suppressed(chiefnudge.GuardSuperseded), Detail: it.Detail}, "chief_nudge.suppressed")
+				return true
+			}
 			s.failNudge(octx, d, d.Outcome, it.Detail)
 			return true
 		}
@@ -1041,6 +1160,7 @@ const (
 	SendQueueNudgeClosed  = "Not sent: its chief nudge is no longer waiting to be sent"
 	SendQueueNudgeMoved   = "Not sent: the window no longer holds the conversation the chief nudged."
 	SendQueueNudgeStale   = "Not sent: the session moved on after the chief decided to nudge it."
+	SendQueueRelayStale   = "Not sent: the session moved on after the ask was raised, so your answer is not pasted into its newer turn."
 )
 
 // sendQueueNudgeGate is why chief-nudge row it may not be pasted now, "" when
@@ -1070,7 +1190,13 @@ func (s *Server) sendQueueNudgeGate(ctx context.Context, it sendqueue.Item) stri
 	if holds != d.Key {
 		return SendQueueNudgeMoved
 	}
-	if d.Outcome == chiefnudge.OutcomeQueued && !s.stillStalled(ctx, d) {
+	if !s.stillStalled(ctx, d) {
+		// 🔴 A RELAY IS TIED TO THE STALL IT ANSWERS, like an agent's
+		// (sendNudgeTurn): an owner who typed into the window after answering
+		// started a newer turn, and the answer is not pasted into it.
+		if d.Outcome == chiefnudge.OutcomeRelayQueued {
+			return SendQueueRelayStale
+		}
 		return SendQueueNudgeStale
 	}
 	return ""

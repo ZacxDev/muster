@@ -171,6 +171,8 @@ func nudgeOutcomeLabel(outcome string) string {
 			return "Suppressed: the session moved on first"
 		case chiefnudge.GuardAskCap:
 			return "Suppressed: your open asks are at their cap"
+		case chiefnudge.GuardSuperseded:
+			return "Not sent: the session moved on before it was pasted"
 		case chiefnudge.GuardAskFailed:
 			return "Suppressed: the ask could not be raised"
 		}

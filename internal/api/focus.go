@@ -307,10 +307,28 @@ func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid strin
 // conversation sid (errNoSession). It returns what it read AND the watch's
 // error, so each caller decides what a partial read is worth.
 func (s *Server) mirrorEvents(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, error) {
+	evs, _, err := s.mirrorRead(ctx, e, sid)
+	return evs, err
+}
+
+// mirrorIndex is what a mirrored read learned about its own completeness: Got,
+// that the host's prompt index arrived (the backfill was sent in full — the
+// read did not end on the quiet timer or the deadline); Lines, the place of
+// every prompt the index lists (the whole transcript's, up to the backfill's
+// end); More, how many earlier ones it left out.
+type mirrorIndex struct {
+	Got   bool
+	Lines []int64
+	More  int
+}
+
+// mirrorRead is mirrorEvents with the read's prompt index.
+func (s *Server) mirrorRead(ctx context.Context, e mirror.SessionView, sid string) ([]cctranscript.Event, mirrorIndex, error) {
 	ctx, cancel := context.WithTimeout(ctx, focusTailTimeout)
 	defer cancel()
 	var mu sync.Mutex
 	var out []cctranscript.Event
+	var idx mirrorIndex
 	var otherConversation bool
 	got := make(chan struct{}, 1)
 	done := make(chan error, 1)
@@ -328,6 +346,12 @@ func (s *Server) mirrorEvents(ctx context.Context, e mirror.SessionView, sid str
 			}
 			out = append(out, m.Events...)
 			index := m.PromptIndex
+			if index {
+				idx.Got, idx.More, idx.Lines = true, m.PromptsMore, nil
+				for _, p := range m.Prompts {
+					idx.Lines = append(idx.Lines, p.Line)
+				}
+			}
 			mu.Unlock()
 			if index {
 				// The prompt index follows the backfill: it is complete.
@@ -359,9 +383,9 @@ loop:
 	defer mu.Unlock()
 	if otherConversation {
 		s.logger.Printf("focus: %s@%s %s%s holds another conversation now, not %s; nothing stored", e.Session, e.Host, e.Session, e.Window, sid)
-		return nil, errNoSession
+		return nil, mirrorIndex{}, errNoSession
 	}
-	return append([]cctranscript.Event(nil), out...), err
+	return append([]cctranscript.Event(nil), out...), idx, err
 }
 
 // focusEntryOf is one transcript event as a tail entry: a prompt, a reply, a

@@ -298,16 +298,50 @@ func AskStall(r Result, threshold float64) bool {
 	return r.OK() && r.AskScore >= threshold
 }
 
-// FallbackQuestion is the ask raised for an ask-stall when the chief gave no
-// question: the session's title and the end of its last message.
-func FallbackQuestion(title, last string) string {
-	t := strings.TrimSpace(title)
+// The GENERIC ASK: raised for an ask-stall when the chief gave no question
+// (it said leave, or proposed a nudge the rule refuses). It carries NO session
+// text — only the focus title (the summarizer's, which the Asks page already
+// shows) and muster's own sentence — and its two options are not an answer:
+// choosing one relays nothing (IsGenericChoice).
+const genericAskBody = "Its last turn looks like it asked you something."
+
+// GenericAskOptions are the generic ask's options.
+var GenericAskOptions = []string{"Open session", "Dismiss"}
+
+// GenericAskQuestion is the generic ask's text for a session titled title.
+func GenericAskQuestion(title string) string {
+	t := strings.TrimSpace(oneLine(title))
 	if t == "" {
-		t = "This session"
+		t = "A session"
 	}
-	tail := oneLine(last)
-	if r := []rune(tail); len(r) > 300 {
-		tail = "…" + string(r[len(r)-300:])
+	return t + " is waiting on you. " + genericAskBody
+}
+
+// IsGenericAsk reports whether options are the generic ask's.
+func IsGenericAsk(options []string) bool {
+	if len(options) != len(GenericAskOptions) {
+		return false
 	}
-	return t + " seems to be waiting on you. Its last message ends: “" + tail + "”"
+	for i := range options {
+		if options[i] != GenericAskOptions[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// IsGenericChoice reports whether answer, to a decision whose options are
+// options, is one of the generic ask's options — which is not an answer to
+// forward to the session.
+func IsGenericChoice(options []string, answer string) bool {
+	if !IsGenericAsk(options) {
+		return false
+	}
+	a := strings.TrimSpace(answer)
+	for _, o := range GenericAskOptions {
+		if a == o {
+			return true
+		}
+	}
+	return false
 }

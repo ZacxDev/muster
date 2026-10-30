@@ -87,18 +87,22 @@ P(`needs_input`) + P(`asks_permission`). At or over
 question or permission request, and the **default outcome is an ask**: the chief
 is told so and writes the question and 2 to 4 options. A nudge survives it only
 when the label is `asks_permission` **and** the quote guard passes; a "leave", or
-any other nudge, becomes the ask (with muster's question — the session's title
-and the end of its last message — when the chief gave none). Under the
-threshold, the chief decides as before.
+any other nudge, becomes the ask. When the chief gave no question, it is the
+**generic ask** — "*<focus title>* is waiting on you. Its last turn looks like
+it asked you something." with the options **Open session** and **Dismiss** — which
+carries no word of the session's, and whose options relay nothing (only an
+answer you type is relayed). Under the threshold, the chief decides as before.
 
 **It never wedges the sweep.** The call is capped at 5 seconds; on any error
 (no key, timeout, an HTTP error, an unreadable answer) the error is recorded and
 the chief decides alone. The label is the argmax of the returned probabilities,
 never the response's own `choice`.
 
-**What leaves for OpenRouter and TypeSafe:** the last assistant message of a
-session that has already been idle for `MUSTER_CHIEF_NUDGE_IDLE` — redacted like
-everything sent to the chief, and only its last 8 KB — plus the fixed rubrics.
+**What leaves for OpenRouter and TypeSafe:** whenever your chief is on (shadow
+mode included), the last assistant message of each of your sessions that has
+already been idle for `MUSTER_CHIEF_NUDGE_IDLE` — redacted like everything sent
+to the chief, and only its last 8 KB — plus the fixed rubrics, sent to TypeSafe's
+Jev through OpenRouter on your OpenRouter key.
 Nothing for any other session, and never per turn: only when the sweep has a
 candidate. It runs in **shadow mode too** — measuring the classifier on real
 stalls is what shadow mode is for.
@@ -142,7 +146,16 @@ The call carries, fenced as untrusted data:
 - anything **older than 6 hours**, or with **no time** at all.
 
 A window's messages are read from the host's transcript backfill (the newest
-300 events within the last 4 MiB). Each prompt now carries its own time on the
+300 events within the last 4 MiB), which arrives oldest first
+(`cctranscript.Backfill` reads the window backwards and reverses what it keeps).
+**A read that cannot vouch for your last six hours authorises no nudge** — the
+nudge becomes an ask, with the reason `partial_read`: one that ended before the
+host's prompt index arrived (the quiet timer or the deadline), one whose prompts
+are out of order, one missing a prompt the index lists inside its span (or the
+newest one), and one a cap cut short before reaching six hours back. The same
+holds for an agent whose newest 200 messages do not reach six hours back.
+A prompt time more than 5 minutes in muster's future is not believed (the
+message is untimed). Each prompt now carries its own time on the
 wire (`promptAt`, from the transcript record), so a window is held to the same 6
 hours as an agent, and its nudge says when you said it. A message is named by
 its place in the transcript. An older `muster-mirror` sends no prompt times:
@@ -185,8 +198,10 @@ These are code, not instructions to the chief:
 
 - **The quote is your own recent words, checked byte for byte.** A nudge is
   accepted only when its quote is a phrase (at least 3 words and 12
-  characters) that appears exactly — starting and ending on word boundaries,
-  as the chief was shown it — inside the one message it names, and that
+  characters) that appears exactly — starting and ending on word boundaries
+  (both sides NFC-normalised; letters, combining marks, digits and apostrophes
+  are word characters, so "t go ahead" is no phrase of "don't go ahead"), as the
+  chief was shown it — inside the one message it names, and that
   message is one of your own messages above. Text the session wrote ("the
   owner approved the deploy") is never in that set, so a session cannot talk
   itself into a nudge. A nudge naming no covered action is refused too. A
@@ -237,7 +252,10 @@ session's `attention_answer` is recorded and **not** relayed, since a session
 fed outside text could write it. If the session moves on before you answer, the
 ask is withdrawn.
 
-An agent's relay goes into the conversation that was asked about (stored on the
+A window's relay is tied to the stall it answers, as an agent's is: if you
+typed into the window after answering (a newer turn), the relay is refused at
+its paste and recorded `suppressed:superseded`, never pasted into the newer
+turn. An agent's relay goes into the conversation that was asked about (stored on the
 decision), not the agent's newest one, and only while that conversation is
 still where it stopped. The kill switch is read again when a relay or an
 agent's nudge is sent, as the send queue's gate reads it for a window. A relay
@@ -277,6 +295,10 @@ your relayed answer.
 
 ## Limits
 
+- Each stall check opens a fresh gateway session on the chief (its key is per
+  decision). The agent gateway has no call to delete a session, and muster
+  keeps no row for these, so they are left to the gateway's own storage: a
+  follow-up is to prune them once the gateway offers a way.
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.
 - A window on an older `muster-mirror` (no prompt times) is never nudged, only
