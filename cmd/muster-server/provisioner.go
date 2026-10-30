@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 
 	"k8s.io/client-go/kubernetes"
@@ -608,5 +609,5 @@ func claudeCodeSpecConfig(cfg config) *agentspec.ClaudeCodeConfig {
 		accounts[k] = v
 	}
 	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage,
-		BypassPools: slices.Clone(cfg.AgentCCBypassPools)}
+		BypassPools: slices.Clone(cfg.AgentCCBypassPools), PoolDeployKeys: maps.Clone(cfg.AgentCCPoolDeployKeys)}
 }

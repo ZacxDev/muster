@@ -114,7 +114,7 @@ func (m *memJobs) insertLocked(n jobs.NewJob) (jobs.Job, bool, error) {
 	}
 	m.next++
 	j := jobs.Job{ID: m.next, AgentID: n.AgentID, Agent: n.Agent, WorkerPool: n.WorkerPool, Prompt: n.Prompt, Repo: n.Repo, SHA: n.SHA, PR: n.PR,
-		ResultPath: n.ResultPath, TimeoutSeconds: n.TimeoutSeconds, IdempotencyKey: n.IdempotencyKey, Model: n.Model, ConfigRef: n.ConfigRef,
+		ResultPath: n.ResultPath, TimeoutSeconds: n.TimeoutSeconds, IdempotencyKey: n.IdempotencyKey, Model: n.Model, ConfigRef: n.ConfigRef, BaseSHA: n.BaseSHA,
 		RequestedBy: n.RequestedBy, Status: jobs.StatusQueued, CreatedAt: time.Now()}
 	m.rows[j.ID] = j
 	return j, true, nil
@@ -361,6 +361,9 @@ type jobWorkspace struct {
 	removes   []string
 	removeErr error
 	tracked   map[string]bool
+	// stripPools names the worker pools whose jobs get none of the
+	// repository's agent configuration (StripsRepoConfig).
+	stripPools map[string]bool
 }
 
 func (w *jobWorkspace) RemoveUntrackedWorkspaceFile(_ context.Context, _ agents.Agent, rel string) (bool, error) {
@@ -377,12 +380,15 @@ func (w *jobWorkspace) RemoveUntrackedWorkspaceFile(_ context.Context, _ agents.
 	return true, nil
 }
 
-func (w *jobWorkspace) PrepareJobWorktree(_ context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef string) (string, error) {
+func (w *jobWorkspace) PrepareJobWorktree(_ context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef, baseSHA string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	made := a.Name + "#" + strconv.FormatInt(jobID, 10) + " " + repo + "#" + strconv.Itoa(pr) + "@" + sha
 	if configRef != "" {
 		made += " config=" + configRef
+	}
+	if baseSHA != "" {
+		made += " base=" + baseSHA
 	}
 	w.worktrees = append(w.worktrees, made)
 	if w.prepareErr != nil {

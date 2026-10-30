@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -135,13 +136,20 @@ var gitRunsNoRepoCommands = func() string {
 }()
 
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
-// of pull request $5 of the repository at the anonymous URL $4, taking the
-// agent configuration from commit $6 ("" = the default branch's tip), the
-// remaining arguments being JobOverlayRootFiles:
+// of pull request $5 of the repository at the URL $4, taking the agent
+// configuration from commit $6 ("" = the default branch's tip). $7 is "" for
+// an ANONYMOUS fetch of an https URL, or — for a worker pool with a deploy key,
+// whose $4 is then the path of the KEY HOLDER's mirror — the --upload-pack
+// command every fetch from it runs (podagent.MirrorUploadPack; see "THE DEPLOY
+// KEY" below). $8 is 1 to overlay the repository's agent configuration, 0 to
+// strip it and restore none (a deploy-key pool's job:
+// agentspec.StripsRepoConfig). $9 is a BASE commit to fetch ("" = none; see
+// "THE BASE" below). The remaining arguments are JobOverlayRootFiles:
 //
-//  1. resolve the default branch, refs/remotes/origin/HEAD (asking origin with
-//     `git remote set-head --auto` only when the ref is missing), and fail
-//     with NoDefaultBranchMessage when it cannot be resolved: there is then
+//  1. with $8 = 1 (an overlay to take from it), resolve the default branch,
+//     refs/remotes/origin/HEAD (asking origin with `git remote set-head --auto`
+//     only when the ref is missing), and fail with NoDefaultBranchMessage when
+//     it cannot be resolved: there is then
 //     no trusted configuration to give the job;
 //  2. fetch refs/pull/$5/head ANONYMOUSLY from $4 into refs/muster-jobs/<job
 //     id> (see below), and refuse (NotOnPullRequestMessage) unless $3 is that
@@ -161,6 +169,41 @@ var gitRunsNoRepoCommands = func() string {
 //     worktree, then restore every `.claude` the source has, at the same
 //     paths; remove each root file in JobOverlayRootFiles, then restore the
 //     source's copy where it has one.
+//
+// 🔴 WITH $8 = 0 THE REMOVAL STILL RUNS AND NOTHING IS RESTORED: none of the
+// repository's agent configuration — the commit's or the default branch's —
+// is in the worktree, so the turn has the job's prompt and muster's own
+// configuration (the managed-policy CLAUDE.md, the pod's user settings) only.
+// Skipping the overlay never means "leave the commit's configuration in place".
+// Steps 3 and 4 (the source) are skipped: there is no source.
+//
+// 🔴 THE BASE ($9 set). The commit is fetched from $4 — the same URL, the same
+// anonymity or deploy key, the same refusals as the pull request's head — into
+// refs/muster-jobs/<job id>-base, BEFORE the worktree is made, so the turn can
+// `git diff <base>...HEAD` with no credential of its own (the worktree shares
+// the checkout's objects and refs). A base that cannot be fetched fails the job
+// (BaseFetchMessage, naming it) and nothing is made. The ref is deleted with
+// the worktree (jobRemoveScript).
+//
+// 🔴 THE DEPLOY KEY ($7 set). This script never sees the key, and nothing it
+// runs can use it: it runs in the AGENT's container, as the session's uid,
+// where the key is not mounted. Before it runs, PrepareJobWorktree has had the
+// pod's KEY HOLDER (another container, another uid) probe the key for write
+// access and fetch the pull request's head and the base INTO ITS MIRROR
+// (podagent.MirrorScript); $4 is that mirror's path, mounted read-only here,
+// and the fetches below are local ones from it, each with --upload-pack=$7. The
+// mirror is owned by the holder's uid, and git refuses another user's
+// repository ("detected dubious ownership"). 🔴 safe.directory as `-c` or
+// GIT_CONFIG_* on THIS git does not help: for a local path git clears the
+// config environment before it spawns upload-pack, and git 2.39's upload-pack
+// checks ownership itself (measured on the image's git, 2.39.5). $7 puts the
+// `-c safe.directory=<mirror>` on upload-pack's own command line. A newer git
+// (2.55) fetches without it, so this side's tests cannot show the failure; the
+// image's cc-deploykey-smoke does. No default branch is resolved here ($8 is 0
+// on such a pool), so origin — the mirror — is never asked.
+// (Whatever this side runs, it runs as the session's uid with the turn
+// credentials scrubbed — the class "WHAT STILL RUNS" above names — and the
+// key is not in this container to be reached.)
 //
 // 🔴 WHY A CONFIG REF MUST BE ON THE DEFAULT BRANCH. Its purpose is to pin
 // WHICH trusted configuration a job runs with (the caller recorded a version of
@@ -212,13 +255,17 @@ var gitRunsNoRepoCommands = func() string {
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
 var jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
-main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6
-shift 6
+main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6 up=$7 overlay=$8 base=$9
+shift 9
+unset GIT_SSH_COMMAND
 cd "$main" || exit 1
-def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
-	{ git remote set-head origin --auto >/dev/null 2>&1 &&
-		def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}'); } ||
-	{ echo "` + NoDefaultBranchMessage + `" >&2; exit 4; }
+def=
+if [ "$overlay" = 1 ]; then
+	def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
+		{ git remote set-head origin --auto >/dev/null 2>&1 &&
+			def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}'); } ||
+		{ echo "` + NoDefaultBranchMessage + `" >&2; exit 4; }
+fi
 ref=refs/muster-jobs/${wt##*/}
 got=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git ls-remote --get-url "$url") || exit 1
 creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --show-scope --get-regexp '^(http\..*extraheader|credential\..*)$' |
@@ -228,18 +275,27 @@ if [ "$got" != "$url" ] || [ -n "$creds" ]; then
 	exit 7
 fi
 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-	git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+refs/pull/$pr/head:$ref" ||
+	git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags ${up:+"--upload-pack=$up"} "$url" "+refs/pull/$pr/head:$ref" ||
 	{ echo "` + PullFetchMessage + `" >&2; exit 8; }
 head=$(git rev-parse --verify --quiet "$ref^{commit}") || exit 1
 if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
 	echo "` + NotOnPullRequestMessage + ` (pull request $pr's head is $head)" >&2
 	exit 6
 fi
+if [ -n "$base" ]; then
+	GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+		git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags ${up:+"--upload-pack=$up"} "$url" "+$base:$ref-base" ||
+		{ echo "` + BaseFetchMessage + ` (base_sha $base)" >&2; exit 12; }
+	got=$(git rev-parse --verify --quiet "$ref-base^{commit}") && [ "$got" = "$base" ] ||
+		{ echo "` + BaseFetchMessage + ` (base_sha $base: the fetched ref names ${got:-nothing})" >&2; exit 12; }
+fi
 src=$def
-if [ -n "$cfg" ]; then
+if [ "$overlay" != 1 ]; then
+	src=
+elif [ -n "$cfg" ]; then
 	if ! git merge-base --is-ancestor "$cfg" "$def" 2>/dev/null; then
 		GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-			git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+HEAD:$ref-config" ||
+			git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags ${up:+"--upload-pack=$up"} "$url" "+HEAD:$ref-config" ||
 			{ echo "` + DefaultBranchFetchMessage + `" >&2; exit 10; }
 		tip=$(git rev-parse --verify --quiet "$ref-config^{commit}") || exit 1
 		if ! git merge-base --is-ancestor "$cfg" "$tip" 2>/dev/null; then
@@ -249,18 +305,20 @@ if [ -n "$cfg" ]; then
 	fi
 	src=$cfg
 fi
-tab=$(printf '\t')
-links=$(git ls-tree -r -z "$src" | grep -azE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
-for p in "$@"; do
-	case $(git ls-tree "$src" -- "$p") in
-	120000\ *) links="$links
+if [ -n "$src" ]; then
+	tab=$(printf '\t')
+	links=$(git ls-tree -r -z "$src" | grep -azE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
+	for p in "$@"; do
+		case $(git ls-tree "$src" -- "$p") in
+		120000\ *) links="$links
 $p" ;;
-	esac
-done
-if [ -n "$links" ]; then
-	echo "` + SymlinkOverlayMessage + `" >&2
-	printf '%s\n' "$links" | head -n 20 >&2
-	exit 5
+		esac
+	done
+	if [ -n "$links" ]; then
+		echo "` + SymlinkOverlayMessage + `" >&2
+		printf '%s\n' "$links" | head -n 20 >&2
+		exit 5
+	fi
 fi
 mkdir -p "${wt%/*}" || exit 1
 git worktree add --quiet --detach "$wt" "$sha" || exit 1
@@ -269,6 +327,7 @@ find . -name .git -prune -o -name .claude -prune -exec rm -rf {} + || exit 1
 for p in "$@"; do
 	rm -rf ./"$p" || exit 1
 done
+[ -n "$src" ] || exit 0
 git ls-tree -r -z --name-only "$src" | grep -azE '(^|/)\.claude(/|$)' |
 	sed -zE 's#^((.*/)?\.claude)(/.*)?$#\1#' | sort -zu |
 	xargs -0r -n1 sh -c 'git --literal-pathspecs checkout --quiet "$1" -- "$2" || exit 255' sh "$src" || exit 1
@@ -288,8 +347,30 @@ const NoDefaultBranchMessage = "the repository's default branch (origin/HEAD) co
 const AnonymousFetchMessage = "the checkout's git configuration rewrites the anonymous fetch URL or adds a header or credential to it, so the pull request was not fetched; nothing was run"
 
 // PullFetchMessage opens the error of a job whose pull request could not be
-// fetched anonymously.
-const PullFetchMessage = "the pull request's head could not be fetched anonymously (a private repository, no such pull request, or no network); nothing was run"
+// fetched (podagent's, which the key holder's script fails with too).
+const PullFetchMessage = podagent.PullFetchMessage
+
+// BaseFetchMessage opens the error of a job whose base_sha could not be
+// fetched; the base follows it.
+const BaseFetchMessage = podagent.BaseFetchMessage
+
+// BaseRefSuffix is what a job's base ref adds to its pull-request ref:
+// refs/muster-jobs/<job id>-base.
+const BaseRefSuffix = "-base"
+
+// DeployKeyWritableMessage opens the error of a job whose worker pool's deploy
+// key could open GitHub's receive-pack: it can push, so it was not used.
+const DeployKeyWritableMessage = podagent.DeployKeyWritableMessage
+
+// ConfigRefStrippedMessage opens the error of a job with a config_ref on an
+// agent whose jobs get none of the repository's configuration
+// (agentspec.StripsRepoConfig). The job API refuses such a job when it is
+// submitted; this holds when the configuration moved since.
+const ConfigRefStrippedMessage = "the job names a config_ref, but its worker pool's jobs get none of the repository's agent configuration (a pool with a deploy key), so there is nothing to overlay; nothing was run"
+
+// DeployKeyRepoMismatchMessage opens the error of a job whose repository is
+// not the one its worker pool's deploy key is configured for.
+const DeployKeyRepoMismatchMessage = "the job's repository is not the one its worker pool's deploy key is configured for (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS), so the key was not used; nothing was run"
 
 // NotOnPullRequestMessage opens the error of a job whose sha is not on its pull
 // request; the pull request's head follows it.
@@ -322,6 +403,7 @@ rm -rf "$2"
 cd "$1" 2>/dev/null && git worktree prune >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}" >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}-config" >/dev/null 2>&1
+cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}-base" >/dev/null 2>&1
 if [ -e "$2" ] || [ -L "$2" ]; then
 	echo "the job's worktree $2 could not be removed" >&2
 	exit 1
@@ -359,17 +441,24 @@ func AnonymousFetchURL(base, repo string) string {
 
 // PrepareJobWorktree creates job jobID's worktree of ag's repository at sha,
 // which must be pull request pr's head of repo (owner/name) or an ancestor of
-// it — fetched anonymously (jobOverlayScript) — with the overlay taken from
+// it — fetched anonymously, or, for an agent of a pool with a deploy key,
+// through the pod's key holder (jobFetchWithKey) — with the overlay taken from
 // configRef ("" = the default branch's tip; else a full commit id the default
-// branch must reach), and returns its absolute path in the instance. ag's own checkout is not moved. On an
-// error a partly made worktree may be left; RemoveJobWorktree removes it
-// either way.
-func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha, configRef string) (string, error) {
+// branch must reach), and returns its absolute path in the instance. On a pool
+// with a deploy key the repository's agent configuration is removed and none
+// restored (agentspec.StripsRepoConfig), and a configRef is refused. With
+// baseSHA that commit is fetched the same way into
+// refs/muster-jobs/<jobID>-base. ag's own checkout is not moved. On an error a
+// partly made worktree may be left; RemoveJobWorktree removes it either way.
+func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha, configRef, baseSHA string) (string, error) {
 	if !jobs.ValidSHA(sha) {
 		return "", fmt.Errorf("agentprovision: %q is not a full commit id (40 lowercase hex)", sha)
 	}
 	if configRef != "" && !jobs.ValidSHA(configRef) {
 		return "", fmt.Errorf("agentprovision: config ref %q is not a full commit id (40 lowercase hex)", configRef)
+	}
+	if baseSHA != "" && !jobs.ValidSHA(baseSHA) {
+		return "", fmt.Errorf("agentprovision: base %q is not a full commit id (40 lowercase hex)", baseSHA)
 	}
 	if pr <= 0 {
 		return "", fmt.Errorf("agentprovision: pull request %d is not positive", pr)
@@ -377,17 +466,72 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	if !jobs.ValidRepo(repo) {
 		return "", fmt.Errorf("agentprovision: %q is not a repository owner/name", repo)
 	}
+	strip := a.StripsRepoConfig(ag)
+	if strip && configRef != "" {
+		return "", fmt.Errorf("%s (pool %q, config_ref %s)", ConfigRefStrippedMessage, ag.WorkerPool, configRef)
+	}
 	main, wt, err := jobDirs(ag, jobID)
 	if err != nil {
 		return "", err
 	}
+	url, uploadPack := AnonymousFetchURL(a.anonGitBase, repo), ""
+	if k, ok := agentspec.PoolDeployKeyFor(ag, a.spec); ok {
+		if err := a.jobFetchWithKey(ctx, ag, k, repo, pr, baseSHA); err != nil {
+			return "", err
+		}
+		if uploadPack, err = podagent.MirrorUploadPack(agentspec.MirrorPath); err != nil {
+			return "", err
+		}
+		url = agentspec.MirrorPath
+	}
+	overlay := "1"
+	if strip {
+		overlay = "0"
+	}
 	var out bytes.Buffer
 	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
-		AnonymousFetchURL(a.anonGitBase, repo), strconv.Itoa(pr), configRef}, JobOverlayRootFiles...)
+		url, strconv.Itoa(pr), configRef, uploadPack, overlay, baseSHA}, JobOverlayRootFiles...)
 	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return wt, nil
+}
+
+// StripsRepoConfig reports whether ag's jobs get none of the repository's
+// agent configuration (agentspec.StripsRepoConfig, with this adapter's
+// configuration). The job API asks it before recording a job with a
+// config_ref.
+func (a *Adapter) StripsRepoConfig(ag agents.Agent) bool {
+	return agentspec.StripsRepoConfig(ag, a.spec)
+}
+
+// jobFetchWithKey has ag's KEY HOLDER — the container of its pod that alone
+// holds the pool's deploy key k, under its own uid — probe the key for write
+// access and fetch pull request pr's head (and baseSHA) of repo into its
+// mirror (podagent.MirrorScript), for the worktree script to fetch from with no
+// credential.
+//
+// 🔴 THE KEY IS ONE REPOSITORY'S. A job naming any other repository is refused
+// here, before any exec (DeployKeyRepoMismatchMessage) — never fetched
+// anonymously instead, which would hide a misconfigured pool behind a
+// public-repository fallback. (agentspec refuses a worker on another repository
+// too; this holds when the configuration moved after the worker was built.)
+func (a *Adapter) jobFetchWithKey(ctx context.Context, ag agents.Agent, k agentspec.PoolDeployKey, repo string, pr int, baseSHA string) error {
+	if !agentspec.SameRepo(repo, k.Repo) {
+		return fmt.Errorf("%s (job repository %q, pool %q's deploy key: %q)", DeployKeyRepoMismatchMessage, repo, ag.WorkerPool, k.Repo)
+	}
+	ssh, err := podagent.DeployKeySSHCommand(agentspec.DeployKeyPath, agentspec.KnownHostsPath)
+	if err != nil {
+		return err
+	}
+	var out bytes.Buffer
+	cmd := []string{"sh", "-c", podagent.MirrorScript, "muster-deploy-key-fetch",
+		podagent.DeployKeyURL(repo), agentspec.MirrorPath, ssh, strconv.Itoa(pr), baseSHA}
+	if err := provision.ExecIn(ctx, a.driver, agents.RefOf(ag), agentspec.DeployKeyHolderName, cmd, nil, &out, &out); err != nil {
+		return fmt.Errorf("fetch pull request %d with the deploy key (container %s): %w: %s", pr, agentspec.DeployKeyHolderName, err,
+			strings.TrimSpace(capString(out.String(), 1024)))
+	}
+	return nil
 }
 
 // RemoveJobWorktree removes job jobID's worktree of ag's repository
