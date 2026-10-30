@@ -1199,8 +1199,9 @@ there, to whatever model reads it. So, unlike the chief's tool:
   unnamed.
 - **Which sessions, decided once.** A session is included or left out by the
   directory its **newest** prompt named, as last stored; when it is included,
-  **all** its focus titles in the window are reported — including any written
-  while it worked somewhere else earlier in the window.
+  up to 20 of its focus titles in the window (the newest; the rest counted as
+  a gap) are reported — including any written while it worked somewhere else
+  earlier in the window.
 - **Caps count only what may be described.** At most 200 sessions and, per
   session, 50 pull requests (more is a counted gap). `omitted` counts only
   sessions under the prefixes that a cap left out: the prefix filter runs

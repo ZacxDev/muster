@@ -479,7 +479,8 @@ func TestNoHostLabelLeavesEvenWhenTitlesClash(t *testing.T) {
 	if by["mirror:"+routeSID].Name != "work:1" || by["mirror:"+frEndedSID].Name != "work:1" {
 		t.Errorf("names %q / %q; want the unqualified title", by["mirror:"+routeSID].Name, by["mirror:"+frEndedSID].Name)
 	}
-	for _, host := range []string{"tower", "hostbeta", "lab-2", "·"} {
+	// The body is asciiJSON, so a qualifier's "·" would appear escaped.
+	for _, host := range []string{"tower", "hostbeta", `\u00b7`} {
 		if strings.Contains(body, host) {
 			t.Errorf("the reply carries %q: %s", host, body)
 		}
@@ -516,5 +517,33 @@ func TestASessionsPullRequestsAreCapped(t *testing.T) {
 	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("fleet_report", `{"since":"`+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+`"}`)
 	if !strings.Contains(text, "acme-labs/gizmo-53#53") {
 		t.Fatalf("the tool, which never leaves muster, must show them all: %.300s", text)
+	}
+}
+
+// 🔴 THE IN-PREFIX CAP: more than focus.MaxWindowSubjects sessions UNDER the
+// prefixes — the reply describes the cap's worth, newest first, and omitted
+// counts exactly the rest. (buildFleetReport with a byte cap that never
+// binds, so only the subject cap is measured.)
+func TestTheSubjectCapDescribesAtMostTheCapAndCountsTheRest(t *testing.T) {
+	f := newFleetReportFixture(t)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM agent_focus WHERE owner_id = `+strconv.FormatInt(f.owner, 10))
+	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM agent_focus_history WHERE owner_id = `+strconv.FormatInt(f.owner, 10))
+	n := focus.MaxWindowSubjects + 5
+	for i := 0; i < n; i++ {
+		f.cwd(t, f.asOwner, focus.MirrorSubject("inside-"+strconv.Itoa(i)), "Inside step "+strconv.Itoa(i), frPrefix+"/app")
+	}
+	now := time.Now()
+	out, err := f.srv.buildFleetReport(f.asOwner, f.chief.ID, now.Add(-time.Hour), now.Add(time.Minute), fleetWindow{}, nil,
+		&fleetMail{paths: plugins.FleetReportPaths{frPrefix}}, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := decodeReply(t, out)
+	if len(r.Sessions) != focus.MaxWindowSubjects || r.Coverage.Omitted != 5 || r.Coverage.Sessions != focus.MaxWindowSubjects {
+		t.Fatalf("%d sessions, omitted %d (coverage.sessions %d); want %d and 5", len(r.Sessions), r.Coverage.Omitted,
+			r.Coverage.Sessions, focus.MaxWindowSubjects)
+	}
+	if _, ok := r.byID()["mirror:inside-"+strconv.Itoa(n-1)]; !ok {
+		t.Fatal("the newest session is not among those described")
 	}
 }
