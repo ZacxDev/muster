@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
@@ -265,7 +266,7 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 		for _, a := range list {
 			_, _, officer := s.officerOf(a)
 			c := chiefnudge.Session{Kind: chiefnudge.KindAgent, Key: strconv.FormatInt(a.ID, 10), AgentID: a.ID,
-				Label: a.DisplayName, OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
+				Label: firstNonBlank(a.DisplayName, a.Name), OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
 				OpenAsk: asked["agent:"+strconv.FormatInt(a.ID, 10)] || inFlight[chiefnudge.KindAgent+":"+strconv.FormatInt(a.ID, 10)]}
 			nc := nudgeCandidate{Session: c, agent: a}
 			if c.OtherUser || c.Chief || c.Officer {
@@ -298,6 +299,9 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 		if chiefnudge.Exclude(c.Session, idle) != "" {
 			continue
 		}
+		if s.nudgeSkipped(owner, c.Session) {
+			continue
+		}
 		decided, err := s.ext.ChiefNudges.Decided(octx, c.Kind, c.Key, c.StreakKey)
 		if err != nil || decided {
 			continue
@@ -306,6 +310,36 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 		out = append(out, c)
 	}
 	return out
+}
+
+// nudgeSkips is the idle streaks a pass read and found not to be candidates
+// after all (the owner spoke last), so later passes do not read their
+// transcripts again: in memory, keyed owner/kind/key/streak, and dropped
+// whole once it holds nudgeSkipsMax (a skip lost costs one re-read).
+type nudgeSkips struct {
+	mu sync.Mutex
+	m  map[string]bool
+}
+
+const nudgeSkipsMax = 10000
+
+func nudgeSkipKey(owner int64, c chiefnudge.Session) string {
+	return strconv.FormatInt(owner, 10) + "/" + c.Kind + "/" + c.Key + "/" + c.StreakKey
+}
+
+func (s *Server) nudgeSkip(owner int64, c chiefnudge.Session) {
+	s.nudgeSkipSet.mu.Lock()
+	defer s.nudgeSkipSet.mu.Unlock()
+	if s.nudgeSkipSet.m == nil || len(s.nudgeSkipSet.m) >= nudgeSkipsMax {
+		s.nudgeSkipSet.m = map[string]bool{}
+	}
+	s.nudgeSkipSet.m[nudgeSkipKey(owner, c)] = true
+}
+
+func (s *Server) nudgeSkipped(owner int64, c chiefnudge.Session) bool {
+	s.nudgeSkipSet.mu.Lock()
+	defer s.nudgeSkipSet.mu.Unlock()
+	return s.nudgeSkipSet.m[nudgeSkipKey(owner, c)]
 }
 
 // nudgeOpenAskers is the sessions of octx's owner with an open attention ask of
@@ -363,6 +397,9 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	}
 	last, ok := chiefnudge.LastIsAssistant(msgs)
 	if !ok {
+		// The owner spoke last (or the session said nothing): not stalled on
+		// its own word. Not re-read for this streak (nudgeSkip).
+		s.nudgeSkip(requestOwner(octx), c.Session)
 		return false, false
 	}
 	injected, err := s.ext.ChiefNudges.Injected(octx, c.Kind, c.Key)

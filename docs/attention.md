@@ -19,6 +19,16 @@ creation), ties broken by the item's key:
 | Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open the task**. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
 | Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Ask tab: with [plugins](plugins.md) on, the page has a second tab, **Reply drafts** (below), whose label carries the count ("Reply drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
 
+### The Chief nudges tab
+
+With [stall nudges](chief-nudges.md) on (`MUSTER_CHIEF_NUDGES=1`), the page
+has a **Chief nudges** tab (`/attention?tab=nudges`, with or without plugins):
+every decision your chief took about one of your stalled sessions, newest
+first, with the sessions that stalled 3 or more times in a day at the top. A
+live ask the chief raises about a stalled session is an ordinary question on
+the **Ask** tab, asked by *your chief*; your answer there is sent into that
+session word for word ([how](chief-nudges.md#live-mode)).
+
 ### The Reply drafts tab
 
 With plugins on, the page has two tabs, **Ask** (the table above and the

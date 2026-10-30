@@ -131,6 +131,8 @@ type Server struct {
 	// nudgeRead, when set (a test), replaces the chief nudge sweep's
 	// transcript read (chief_nudge.go nudgeTranscript).
 	nudgeRead func(ctx context.Context, c chiefnudge.Session) ([]chiefnudge.Msg, bool, error)
+	// nudgeSkipSet is the chief nudge sweep's streaks found not stalled.
+	nudgeSkipSet nudgeSkips
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's
