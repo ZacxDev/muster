@@ -67,8 +67,13 @@ prints how to fix each failure. [INSTALL.md](../INSTALL.md) ends with it.
 
 ```sh
 muster doctor --deploy-env ~/muster/.env    # on the machine running the server
-muster doctor                               # on any other machine
+muster doctor --api-url https://<your-muster-address>   # on any other machine
 ```
+
+On a machine other than the server, the doctor needs the server's address:
+`--api-url`, or `MUSTER_API_URL` in the environment or in the env file. The API
+URL has no default, so without one the doctor stops before checking anything.
+INSTALL.md's Step 10 passes `--api-url` there.
 
 | check | PASS means | read from |
 |---|---|---|
