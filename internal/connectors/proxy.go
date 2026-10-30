@@ -180,7 +180,45 @@ type Caller struct {
 	// an officer instance (api.Server.callerOf). A stored connector ignores
 	// it: its secret is whatever the operator stored.
 	ReadOnly bool
+	// Gate, when set, REPLACES the connector's own credential for this caller
+	// and decides every request before a credential exists (see [Gate]). Set
+	// for an officer instance that ships code (api.Server.callerOf); nil for
+	// every other caller.
+	Gate Gate
 }
+
+// Gate is a per-caller WRITE POLICY with its own credential: an officer
+// instance whose writes muster must filter, because the platform it writes to
+// enforces nothing itself (a private repository with no branch protection).
+//
+// 🔴 THE GATE RUNS IN muster-server, BEFORE ANY CREDENTIAL IS MINTED, AND IT IS
+// THE ONLY WAY A GATED CALLER'S REQUEST GETS ONE. Serve asks Admit first; a
+// refusal is a 403 and the upstream never sees a byte. Only an admitted request
+// is handed a credential, and it comes from Gate.Credential — never from the
+// connector's stored secret or the deployment's App — so a gated caller cannot
+// reach an ungated credential by any path through this proxy.
+type Gate interface {
+	// Connector is the connector name the gate serves. A gated caller's
+	// request for any other connector is refused.
+	Connector() string
+	// Describe is the connector's description as the gate serves it: its
+	// hosts (the allowlist) and auth shape.
+	Describe() Connector
+	// Admit decides one request (host on Describe().Hosts; rest escaped, no
+	// leading slash). It may return a request whose body was re-wrapped after
+	// inspection. A refusal must wrap [ErrGateRefused]; its text is shown to
+	// the agent and must carry no secret. Any other error is a 502.
+	Admit(r *http.Request, host, rest string) (*http.Request, error)
+	// Credential is the secret for an admitted request (anonymous=true: send
+	// none), as [Virtual.Credential].
+	Credential(ctx context.Context, caller Caller, host, rest string) (secret string, anonymous bool, err error)
+	// Rejected is told the upstream answered 401 to a request that carried
+	// Credential's secret.
+	Rejected(caller Caller)
+}
+
+// ErrGateRefused is a [Gate]'s refusal of one request.
+var ErrGateRefused = errors.New("connectors: refused by this agent's write policy")
 
 // Proxy forwards an agent's request to a connector's upstream with the
 // credential injected.
@@ -432,6 +470,56 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			msg += "the grant was " + st + "; file a new request with POST /agent/connectors/" + connector + "/request"
 		}
 		refuse(http.StatusForbidden, RefusalBody{Error: msg, Grant: st, GrantID: acc.Grant.ID}, "no grant: "+st)
+		return
+	}
+
+	// A GATED caller (an officer that ships code) is served by its gate and
+	// nothing else: its connector only, the gate's hosts, Admit before any
+	// credential, and the gate's own credential.
+	if caller.Gate != nil {
+		g := caller.Gate
+		c := g.Describe()
+		if connector != g.Connector() {
+			refuse(http.StatusForbidden, RefusalBody{Error: "this agent's write policy serves connector " + g.Connector() +
+				" only; " + connector + " was refused"}, "gate: other connector")
+			return
+		}
+		if !c.AllowsHost(host) {
+			refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
+				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
+			return
+		}
+		admitted, err := g.Admit(r, strings.ToLower(host), rest)
+		switch {
+		case errors.Is(err, ErrGateRefused):
+			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "gate refused")
+			return
+		case err != nil:
+			p.logf("connectors: gate for agent %q: %v", caller.AgentName, err)
+			refuse(http.StatusBadGateway, RefusalBody{Error: "the write policy could not decide this request: " + err.Error()},
+				"gate failed")
+			return
+		}
+		secret, anonymous, err := g.Credential(ctx, caller, strings.ToLower(host), rest)
+		switch {
+		case errors.Is(err, ErrTargetRefused):
+			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "target refused")
+			return
+		case err != nil:
+			p.logf("connectors: gate credential for agent %q: %v", caller.AgentName, err)
+			refuse(http.StatusBadGateway, RefusalBody{Error: "connector " + connector + " could not obtain a credential: " +
+				err.Error()}, "credential unavailable")
+			return
+		}
+		var onStatus func(int)
+		if !anonymous {
+			onStatus = func(code int) {
+				if code == http.StatusUnauthorized {
+					g.Rejected(caller)
+				}
+			}
+		}
+		p.forward(w, admitted, caller, acc, c, secret, anonymous, onStatus, connector, host, rest, &status, &detail, refuse)
 		return
 	}
 

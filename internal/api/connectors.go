@@ -211,9 +211,15 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 // MUSTER_GITHUB_APP_ACCESS is write (the default). An officer never pushes or
 // merges, and it runs with every tool allowed (OfficerClaudeCodeSession), so
 // its token is what bounds it.
+//
+// A SHIPPING officer's instance (officers.Officer.Ship) also carries a Gate
+// (shipGate): every request it makes is decided by the officer's push gate
+// before any credential exists, and is served with the officer's OWN App
+// token — never the deployment App's — so ReadOnly then has nothing left to
+// limit, and stays set.
 func (s *Server) callerOf(a agents.Agent) connectors.Caller {
 	_, _, officer := s.officerOf(a)
-	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadOnly: officer}
+	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadOnly: officer, Gate: s.shipGate(a)}
 }
 
 // --- the proxy ------------------------------------------------------------------------

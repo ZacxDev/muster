@@ -434,3 +434,64 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+// Enabled reads GET /officers/{id} and reports HQ's `enabled` for the
+// officer. A body without a boolean `enabled` is an error, never "enabled":
+// a shipping gate that cannot read the switch fails closed.
+func (c *Client) Enabled(ctx context.Context) (bool, error) {
+	raw, err := c.Do(ctx, http.MethodGet, c.officerPath(), nil)
+	if err != nil {
+		return false, err
+	}
+	var o struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil || o.Enabled == nil {
+		return false, fmt.Errorf("officers: HQ's officer %s carries no boolean `enabled`", c.officer.ID)
+	}
+	return *o.Enabled, nil
+}
+
+// Notice is the body a shipping officer's notice is POSTed with (the
+// sensitive-path notice before a merge). Kept small: HQ renders and signs it.
+type Notice struct {
+	PR      int      `json:"pr"`
+	HeadSHA string   `json:"head_sha"`
+	Paths   []string `json:"paths"`
+	Summary string   `json:"summary"`
+	Channel string   `json:"channel"`
+}
+
+// MaxNoticePaths bounds a notice's path list; the rest are counted in Summary.
+const MaxNoticePaths = 50
+
+// PostNotice POSTs n to path (under hq_url; ship.NoticeURLPath). Any failure
+// — a 4xx, a 5xx, no answer — is an error: the caller refuses the merge.
+func (c *Client) PostNotice(ctx context.Context, path string, n Notice) error {
+	_, err := c.Do(ctx, http.MethodPost, path, n)
+	return err
+}
+
+// Preflight is HQ's view of its database's backup health before a release
+// that adds a migration (POST /officers/{id}/preflight).
+type Preflight struct {
+	WAL struct {
+		LastArchivedTime *time.Time `json:"last_archived_time"`
+		LastFailedTime   *time.Time `json:"last_failed_time"`
+		FailedCount      *int64     `json:"failed_count"`
+	} `json:"wal"`
+	LastBackupTime *time.Time `json:"last_backup_time"`
+}
+
+// Preflight calls POST /officers/{id}/preflight.
+func (c *Client) Preflight(ctx context.Context) (Preflight, error) {
+	raw, err := c.Do(ctx, http.MethodPost, c.officerPath()+"/preflight", map[string]any{})
+	if err != nil {
+		return Preflight{}, err
+	}
+	var p Preflight
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return Preflight{}, fmt.Errorf("officers: HQ's preflight answer is not the expected JSON: %v", err)
+	}
+	return p, nil
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // ---------------------------------------------------------------------------
@@ -164,15 +165,23 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 		v := connectorRequestView{ID: g.ID, AgentID: g.AgentID, Agent: g.AgentName, Connector: g.Connector,
 			Reason: g.Reason, Requested: g.RequestedAt}
 		officer := false
+		shipNote := ""
 		if a, err := s.ext.Agents.Get(ctx, g.AgentID); err == nil {
 			v.Agent, v.TaskID, v.Repo = firstNonBlank(a.DisplayName, a.Name), a.NoteID, s.agentRepo(a)
-			_, _, officer = s.officerOf(a)
+			var o officers.Officer
+			o, _, officer = s.officerOf(a)
+			if officer && o.Ship != nil {
+				shipNote = shipGrantsDescription(o)
+			}
 		}
 		k, err := s.ext.Connectors.GetConnector(ctx, g.Connector)
 		switch {
 		case err == nil:
 			v.Exists, v.Hosts = true, k.Hosts
 			v.Grants, v.Problem = s.grantsDescription(ctx, g, k, v.Repo, officer)
+			if shipNote != "" && g.Connector == officers.GitHubConnector {
+				v.Grants, v.Problem = shipNote, ""
+			}
 			v.Shares = s.requestShares(ctx, g)
 		case errors.Is(err, connectors.ErrNotFound):
 			v.Grants = "nothing yet: no connector named " + g.Connector + " exists, so this cannot be approved over MCP — " +
