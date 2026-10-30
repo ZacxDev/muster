@@ -114,14 +114,30 @@ latency, or its error, and the tab shows them.
 ## What the chief is asked
 
 For each candidate, the chief gets one bounded call on its own runtime. Every
-call is a **fresh context**: its gateway session key is derived from the
-decision it is for (`agent:<chief>:webchat:nudge:<hash of owner, session and
-idle streak>`), so no check sees another's, none grows with the ones before it,
-and none appears in your conversation with the chief. The call holds the
-chief's turn lock: a busy chief is skipped until the next sweep. A call that
-fails is recorded on that session as `suppressed:chief_error` (that idle streak
-is not retried; the next one is judged afresh) and the sweep goes on to the
-next session.
+call is a **fresh context**, under a session key derived from the decision it
+is for (`agent:<chief>:webchat:nudge:<hash of owner, session and idle
+streak>`), so no check sees another's, none grows with the ones before it, and
+none appears in your conversation with the chief:
+
+- a `gateway` chief keys its sessions by that session key, so each check is a
+  session of its own there;
+- a `claude-code` chief's ccd sends every turn that does not name an explicit
+  session to its primary Claude Code CLI, which is your conversation with the
+  chief. So the check also names its key as an explicit session
+  (`X-Muster-CC-Session`, as a chat session started on the Claude Code runtime
+  does), and ccd runs it in a CLI of its own, a *lane*, started with an empty
+  conversation on the pod's default model.
+
+The call holds the chief's turn lock: a busy chief is skipped until the next
+sweep, and so is a claude-code chief whose ccd has no free lane for the check
+(its `503 capacity`, answered before anything is sent): nothing is recorded,
+and the same streak is asked about next sweep. The call's budget is four
+minutes: the three a check's turn has always had, plus one for ccd to start
+the lane's CLI (ccd gives up on a start after 60 seconds with a `503
+not_ready`, which is skipped the same way). A call that fails otherwise is
+recorded on that session as `suppressed:chief_error` (that idle streak is not
+retried; the next one is judged afresh) and the sweep goes on to the next
+session.
 
 The call carries, fenced as untrusted data:
 
@@ -295,10 +311,19 @@ your relayed answer.
 
 ## Limits
 
-- Each stall check opens a fresh gateway session on the chief (its key is per
-  decision). The agent gateway has no call to delete a session, and muster
-  keeps no row for these, so they are left to the gateway's own storage: a
-  follow-up is to prune them once the gateway offers a way.
+- On a `gateway` chief each stall check opens a fresh gateway session (its key
+  is per decision). The agent gateway has no call to delete a session, and
+  muster keeps no row for these, so they pile up in the gateway's own storage:
+  a follow-up is to prune them once the gateway offers a way. Nothing in this
+  feature prunes them.
+- On a `claude-code` chief each stall check is a lane in the chief's ccd. Its
+  CLI stays running after the check, and the processes are bounded by ccd's
+  lane cap (`CCD_MAX_SESSIONS`, default 3): at the cap ccd stops the least
+  recently used idle lane to start a new one. That can be one of your own
+  explicit Claude Code sessions with the chief as readily as an earlier check's
+  lane — ccd cannot be told a lane is disposable. A stopped session is resumed
+  from its transcript on its next turn, at the cost of a cold start. Each
+  check's transcript stays on the chief's volume; nothing prunes those either.
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.
 - A window on an older `muster-mirror` (no prompt times) is never nudged, only

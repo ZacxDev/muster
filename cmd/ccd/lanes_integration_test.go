@@ -434,3 +434,38 @@ func TestTmuxLaneASlowNewSessionStillServesTheFirstTurns(t *testing.T) {
 		t.Fatalf("recorded primary session %s does not hold the primary's turn", got)
 	}
 }
+
+// 🔴 A CHIEF STALL CHECK'S KEY (muster's internal/api nudgeSessionName:
+// `agent:<chief>:webchat:nudge:<16 hex>`, sent as the explicit session with no
+// model) IS A LANE OF ITS OWN, STARTED FRESH:
+//
+//   - its turn is answered by a new CLI started with --session-id (not
+//     --resume) and no --model;
+//   - its prompt is in that lane's transcript only — never the primary's, the
+//     operator's conversation with the chief;
+//   - a second check's key is another lane, whose transcript holds none of the
+//     first's.
+func TestTmuxLaneAChiefNudgeKeyRunsFreshAndOffThePrimary(t *testing.T) {
+	r := startServe(t)
+	r.waitHealth(t, "primary start", primaryReady)
+	r.chat(t, "operator talks to the chief")
+	k1, k2 := "agent:chief-x:webchat:nudge:0123456789abcdef", "agent:chief-x:webchat:nudge:fedcba9876543210"
+	r.mustLaneChat(t, k1, "", "stall check one")
+	r.mustLaneChat(t, k2, "", "stall check two")
+	one, two, p := r.transcript(t, laneUUID(k1)), r.transcript(t, laneUUID(k2)), r.transcript(t, r.primaryID(t))
+	switch {
+	case !has(one, "stall check one") || has(one, "stall check two") || has(one, "operator talks to the chief"):
+		t.Errorf("check one's transcript: %q", one)
+	case !has(two, "stall check two") || has(two, "stall check one"):
+		t.Errorf("check two's transcript: %q", two)
+	case has(p, "stall check one") || has(p, "stall check two") || !has(p, "operator talks to the chief"):
+		t.Errorf("the primary's transcript holds a stall check: %q", p)
+	}
+	argv := r.argvLog(t)
+	for _, k := range []string{k1, k2} {
+		want := fmt.Sprintf("lane=%s args=[\"--session-id\" %q]", laneID(k), laneUUID(k))
+		if !strings.Contains(argv, want) {
+			t.Errorf("no fresh CLI started as %s; argv log:\n%s", want, argv)
+		}
+	}
+}
