@@ -21,15 +21,15 @@ Each claim about muster links to the page of this repository it comes from.
 | Desktop platforms | Linux; macOS hosts are experimental. Windows not listed | macOS, Windows, Linux | Wherever Claude Code runs (CLI, Desktop app, VS Code) | Any machine with an SSH server |
 | Several machines | Yes, side by side | Yes | Not stated; sessions are listed at claude.ai/code, named by default after the machine's hostname | One connection per machine |
 | How the agent's machine connects | `muster-mirror` dials out to your server; no port opens on the host (optional MCP on loopback only). The server is reached only over your Tailscale tailnet | Through Happy's relay (end-to-end encrypted). A remote Happy Agent is reached over Tailcat, with no open port | Outbound HTTPS only; no inbound ports | The phone connects in to the machine's SSH or Mosh server |
-| Push notifications | Web Push (on iOS, after installing to the Home Screen) | Yes, through Expo's push service | Yes, in the Claude app | Blink: an alert when the terminal prints BEL, OSC 9 or OSC 777, while its connection is alive; no server-side push. Termius: not stated |
+| Push notifications | Web Push (on iOS, after installing to the Home Screen) | Yes, through Expo's push service | Yes, in the Claude app | Blink: an alert when the terminal prints BEL, OSC 9 or OSC 777, while its connection is alive; server-side push: not stated. Termius: not stated |
 | Agent asks a question and waits | Yes: `attention_ask` / `attention_wait`, for Claude Code sessions (via the host's loopback MCP endpoint) and dispatched agents | Yes: answer permission requests and questions from the phone | Yes: permission prompts and questions, with push | Only as a prompt in the terminal; no ask/answer queue |
 | Voice | Dictation into the message box: a local speech-to-text model on your server, or your own OpenAI-compatible API key. You read it, then press Send | A voice agent (ElevenLabs) that relays requests and approvals. Paid beyond a free allowance, or bring your own ElevenLabs agent | Not stated | Not stated |
 | Sessions: wrapper or existing | Picks up any session already in tmux; nothing to wrap. Sessions outside tmux are not seen | Started through `happy claude` / `happy codex`, or run by Happy Desktop. Attaching to an already-running session: not stated | `/remote-control` connects a session already running; or start with `claude remote-control` / `claude --remote-control` | `tmux attach` to any existing session |
 | Install | One prompt pasted into your coding agent, the Claude Code plugin (`/plugin marketplace add ZacxDev/muster`), or [INSTALL.md](../INSTALL.md) by hand. Needs Docker, Tailscale and tmux | `npm install -g happy`; the desktop app (download or Homebrew cask); App Store / Google Play | Built into Claude Code | Install the app; run an SSH server |
 | Cost | Free; you run the server | Free; voice is the one paid feature | Included with a paid Claude plan (Pro, Max, Team, Enterprise); API keys not supported | Blink: paid, after a free trial. Termius: free tier with SSH and Mosh, and paid tiers |
-| Telemetry | Nothing is sent unless you configure it: OTLP tracing and Faro front-end monitoring are both off by default | The app sends product analytics to PostHog; it can be turned off | Claude Code sends usage metrics (never code, prompts or file paths) by default; `DISABLE_TELEMETRY=1` turns them off, but can make Remote Control unavailable | Not stated |
+| Telemetry | Nothing is sent unless you configure it: OTLP tracing and Faro front-end monitoring are both off by default | The app sends product analytics to PostHog; it can be turned off | Claude Code sends usage metrics (never code, prompts or file paths) by default; `DISABLE_TELEMETRY=1` turns them off, and Remote Control keeps working (on recent versions) unless Trusted Devices is required for your account. Error reports are separate and are turned off with `DISABLE_ERROR_REPORTING=1` | Not stated |
 
-Omnara, often listed as a way to use Claude Code from a phone, now describes
+Omnara now describes
 itself as a managed agent platform: it runs its own agent rather than mirroring
 sessions you started, so it is out of scope here (see [Sources](#sources)).
 
@@ -98,8 +98,8 @@ works around that), and some sequences are not supported over Mosh.
 Where it is better than muster: nothing to run beyond an SSH server, any
 operating system, full terminal control, and no service in between. Where it
 differs: the phone has to reach the machine (a port forward or a VPN), you work
-in a terminal on a small screen, and there is no server-side push or
-ask/answer queue.
+in a terminal on a small screen, alerts arrive only while the connection is
+alive, and there is no ask/answer queue.
 
 ## Sources
 
