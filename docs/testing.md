@@ -149,11 +149,19 @@ never part of `make e2e`. It drives:
 - Chromium's fake microphone and a fake speech-to-text service.
 
 Phone shots are 390×844 at 2×; `desktop.png` is 1280×800 at 2×. The spec also
-writes the frames of the README's animation, `phone-flow.gif`, to
-`e2e/.state/phone-flow/` with an ffmpeg concat list (each frame's hold), and the
-make target assembles the GIF from them. Then it compresses each PNG with
-pngquant when it is installed, and fails if a PNG is over 200 KB or
-the GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the
+writes the frames of the README's two animations, each to its own directory with
+an ffmpeg concat list (each frame's hold), and the make target assembles each GIF
+from them:
+
+- `phone-flow.gif` (`e2e/.state/phone-flow/`): switch to a session by search,
+  dictate a reply, send it, and watch the session answer;
+- `ask-flow.gif` (`e2e/.state/ask-flow/`): a session asks a question (Claude
+  Code's `AskUserQuestion`, registered by the real `muster-mirror ask` hook), it
+  shows in the sidebar and on the Asks page, the answer is tapped in the session
+  and typed into the fake host's picker, and the session carries on.
+
+Then it compresses each PNG with pngquant when it is installed, and fails if a
+PNG is over 200 KB or a GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the
 PWA manifest's install-sheet screenshots.
 
 ## What green does not prove

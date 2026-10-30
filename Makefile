@@ -340,28 +340,31 @@ e2e:
 
 # Regenerate the documentation's screenshots (docs/img/) from the e2e harness:
 # the seeded fixture board and two fake mirrored hosts, phone shots at 390×844
-# and 2× (one desktop shot at 1280×800, also 2×), plus the README's phone-flow animation,
-# assembled here from the frames the spec writes to e2e/.state/phone-flow/. A
+# and 2× (one desktop shot at 1280×800, also 2×), plus the README's two animations,
+# phone-flow.gif and ask-flow.gif, assembled here from the frames the spec writes
+# to e2e/.state/phone-flow/ and e2e/.state/ask-flow/. A
 # GENERATOR, NOT A GATE — like `icons`, CI does not run it. Needs what `make
 # e2e` needs, plus Docker for the GoTrue container the passkey shot signs in
 # against, and ffmpeg for the animation. pngquant is used when present. On
 # NixOS:
 #   nix-shell -p ffmpeg pngquant --run 'make screenshots'
-# Every PNG must end up at or under 200 KB and the GIF under 2 MB either way.
-FLOW_FRAMES := e2e/.state/phone-flow/frames.txt
-FLOW_GIF := docs/img/phone-flow.gif
+# Every PNG must end up at or under 200 KB and each GIF under 2 MB either way.
+# Each animation is <name>: frames in e2e/.state/<name>/frames.txt, the GIF at
+# docs/img/<name>.gif.
+FLOWS := phone-flow ask-flow
 screenshots:
-	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; it assembles $(FLOW_GIF) (nix-shell -p ffmpeg)"; exit 1; }
+	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; it assembles the docs/img/*.gif animations (nix-shell -p ffmpeg)"; exit 1; }
 	@cd e2e && MUSTER_E2E_DOCSHOTS=1 npx playwright test
 	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 docs/img/*.png; \
 	  else echo "screenshots: pngquant not found; images left as captured"; fi
-	@ffmpeg -loglevel error -y -f concat -safe 0 -i $(FLOW_FRAMES) \
-	  -vf 'split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle' \
-	  -loop 0 $(FLOW_GIF)
+	@for n in $(FLOWS); do \
+	  ffmpeg -loglevel error -y -f concat -safe 0 -i e2e/.state/$$n/frames.txt \
+	    -vf 'split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle' \
+	    -loop 0 docs/img/$$n.gif || exit 1; done
 	@for f in docs/img/*.png; do s=$$(wc -c < "$$f"); echo "$$f: $$s bytes"; \
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
-	@s=$$(wc -c < $(FLOW_GIF)); echo "$(FLOW_GIF): $$s bytes"; \
-	  test "$$s" -le 2097152 || { echo "screenshots: $(FLOW_GIF) is over 2 MB"; exit 1; }
+	@for n in $(FLOWS); do f=docs/img/$$n.gif; s=$$(wc -c < $$f); echo "$$f: $$s bytes"; \
+	  test "$$s" -le 2097152 || { echo "screenshots: $$f is over 2 MB"; exit 1; }; done
 
 # INSTALL.md's shell blocks, run against faked docker/curl/tailscale/ssh in a
 # temp HOME (tests/install_guide_test.py): nothing on this machine is touched.
