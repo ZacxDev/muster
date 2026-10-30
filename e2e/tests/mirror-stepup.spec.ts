@@ -73,6 +73,22 @@ fs.writeFileSync(
 
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
+// 🔴 REQUEST INTERCEPTION STAYS ON FOR THE WHOLE TEST. Playwright turns the
+// browser's interception off when a page's LAST route goes — a `{ times: 1 }`
+// route expiring, or an unrouteAll — and a request the page sends at that
+// moment can be paused by the browser and never resumed: it hangs, with no
+// response and no failure. This file does exactly that: a one-shot /verify
+// route answers 401, its route expires, and the page fetches the replacement
+// /options 5 ms later. CI run 40999312494 hung there until the test's 180 s
+// timeout (its trace: that /options with no response). Measured outside muster:
+// a fetch sent straight after a one-shot route's answer hung 24 of 300 times,
+// and 0 of 300 with a context route held, as here. A context route is not
+// removed by any page.unroute*, so the page's routes come and go without
+// interception ever switching off. It only falls through.
+test.beforeEach(async ({ context }) => {
+  await context.route('**/*', (r) => r.fallback());
+});
+
 test.beforeAll(async () => {
   test.setTimeout(300_000);
   execFileSync('docker', ['compose', '-f', compose, 'up', '-d', '--wait'], { env: composeEnv, stdio: 'inherit' });
