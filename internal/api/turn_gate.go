@@ -23,9 +23,9 @@ type turnGate struct {
 	closed  map[int64]bool
 }
 
-// ErrAgentBeingReplaced refuses a chat turn to an agent the chief replacement has
-// closed: it is about to be deleted.
-var ErrAgentBeingReplaced = errors.New("this agent is being replaced; send the message to the new chief once it is up")
+// ErrAgentBeingReplaced refuses a chat turn to an agent the chief replacement
+// (about to delete it) or chief_restart (about to stop and start it) has closed.
+var ErrAgentBeingReplaced = errors.New("this agent is being replaced or restarted; send the message again once it is up")
 
 // enter starts a turn for id; false (nothing counted) when id is closed.
 func (g *turnGate) enter(id int64) bool {

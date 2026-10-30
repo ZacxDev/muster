@@ -160,7 +160,11 @@ func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments s
 	if !found {
 		return toolErr("your owner has no chief (no agent labelled %q); nothing was restarted", ChiefDisplayName)
 	}
-	if on, err := s.chiefOn(ctx, owner, list); err != nil || !on {
+	switch on, err := s.chiefOn(ctx, owner, list); {
+	case err != nil:
+		s.logger.Printf("chief_restart: read the chief switch of %d: %v", owner, err)
+		return toolErr("could not read whether your owner's chief is on; nothing was restarted")
+	case !on:
 		return toolErr("your owner's chief %s is turned off; nothing was restarted — turn it on from muster first", chief.Name)
 	}
 	if why := s.agentStartRefusal(ctx, chief); why != "" {
