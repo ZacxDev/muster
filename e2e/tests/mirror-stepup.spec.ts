@@ -109,7 +109,7 @@ const serverEnv = () => ({ ...process.env, DATABASE_URL: dsn, MUSTER_PUBLIC_URL:
 // claimAndSignIn claims the admin (user 1, the owner of every mirror token the
 // server binary mints) and leaves the page signed in.
 // adminClaimed: this run has claimed the admin (the file's first test does).
-// A test run on its own claims it itself (adminSignIn).
+// A test run on its own claims it itself (signIn).
 let adminClaimed = false;
 async function claimAndSignIn(page: Page) {
   adminClaimed = true;
@@ -305,12 +305,9 @@ test.describe('at a desktop width (1280px)', () => {
 
   test('a stale desktop session is asked to confirm at its first key before it attaches rw (real GoTrue)', async ({ page, context }) => {
     test.setTimeout(120_000);
-    // Signed in through /login this time (the 412px test claimed the account).
-    await page.goto(browserURL + '/login');
-    await page.fill('#muster-email', adminEmail);
-    await page.fill('#muster-password', adminPW);
-    await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
-    if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();
+    // Signed in through /login this time (the 412px test claimed the account;
+    // run after a failed test, signIn claims it itself).
+    await signIn(page);
 
     await makeStale(context);
     await page.goto(browserURL + termPath);
@@ -353,13 +350,9 @@ test.describe('the rendered view on a phone (390×844)', () => {
 
   test('a message is typed and sent from the rendered view: at once when the sign-in is fresh, after an inline confirm when it is stale (real GoTrue)', async ({ page, context }) => {
     test.setTimeout(120_000);
-    // Signed in through /login: like the desktop test above, this relies on the
-    // 412px test having claimed the account (the file's tests run in order).
-    await page.goto(browserURL + '/login');
-    await page.fill('#muster-email', adminEmail);
-    await page.fill('#muster-password', adminPW);
-    await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
-    if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();
+    // Signed in through /login, like the desktop test above (signIn claims the
+    // account when this worker has not).
+    await signIn(page);
     const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
     const sends: number[] = [];
     page.on('response', (r) => {
@@ -1884,10 +1877,9 @@ for (const size of [
           },
         });
       });
-      // Self-sufficient: run alone (a filter, --last-failed), it claims the
-      // admin itself.
-      if (adminClaimed) await signIn(page);
-      else await claimAndSignIn(page);
+      // Self-sufficient: run alone (a filter, --last-failed), signIn claims
+      // the admin itself.
+      await signIn(page);
       if (mirrorProc && mirrorProc.exitCode === null) {
         const done = new Promise((r) => mirrorProc!.once('exit', r));
         mirrorProc.kill('SIGTERM');
