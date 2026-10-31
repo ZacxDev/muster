@@ -1348,8 +1348,8 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 		switch a.Status {
 		case attention.Open:
 			// 🔴 ONLY A STATE THAT WAS READ withdraws the ask. One that could not
-			// be read (the host's connection dropped — 2026-10-31, four open asks
-			// withdrawn in one pass while their sessions sat still) leaves it open
+			// be read (the host's connection dropped, which once withdrew every
+			// open ask on a host in one pass while its sessions sat still) leaves it open
 			// for the next pass; the ask's own expiry still ends it.
 			if s.nudgeStateNow(octx, d) == nudgeMovedOn {
 				// The owner (or anything) moved the session on: the question is
