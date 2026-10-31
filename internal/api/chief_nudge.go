@@ -848,8 +848,8 @@ func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) strin
 // ⚠ VERSION SKEW, TOOLS: a ccd that predates agents.HeaderCCToolless ignores it
 // and starts the check's CLI with the chief's full tool set (built-ins and
 // muster's MCP tools). Restart the chief on the current image (chief_restart)
-// before turning nudges on; /healthz shows `"toolless": true` on a check lane
-// whose ccd honoured it.
+// before turning nudges on; ccd's /healthz shows `"toolless": true` on a check
+// lane whose ccd honoured it, while the check's turn runs.
 //
 // ⚠ VERSION SKEW: a ccd that predates agents.HeaderCCEphemeral ignores it and
 // keeps the check's CLI like any session's. At its cap it then stops the least

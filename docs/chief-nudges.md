@@ -43,6 +43,14 @@ onto the new `claude-code-agent` image BEFORE setting (or re-enabling)
 `MUSTER_CHIEF_NUDGES`**, and leave the feature off while any chief pod still
 runs an older image.
 
+The same restart is what makes a check **tool-less** (`X-Muster-CC-Toolless`,
+below): an older ccd ignores that mark too and starts each check's CLI with the
+chief's full tool set — its built-in tools and muster's MCP tools. muster does
+not detect that either. A chief can restart itself with the `chief_restart`
+MCP tool. To confirm, read the chief pod's ccd `/healthz` while a check is
+running: the check's lane shows `"ephemeral": true, "toolless": true` (the lane
+is gone once the check's turn ends).
+
 ## What counts as stalled
 
 Every 2 minutes the sweep looks at each owner who has a chief (and has it
@@ -143,7 +151,9 @@ none appears in your conversation with the chief:
   conversation on the pod's default model. The check is marked throwaway
   (`X-Muster-CC-Ephemeral: 1`): ccd stops that CLI as soon as the check's
   turn is over, whether it succeeded or failed, so no check CLI stays in the
-  pod's memory or holds a lane.
+  pod's memory or holds a lane. It is also marked **tool-less**
+  (`X-Muster-CC-Toolless: 1`, always sent with the throwaway mark): ccd starts
+  that CLI with no tools at all (see **A check cannot call tools** below).
 
 The call holds the chief's turn lock: a busy chief is skipped until the next
 sweep — nothing is recorded, and the same streak is asked about next sweep.
@@ -246,6 +256,33 @@ The chief answers with one decision:
 | `nudge` | The session stopped short of something one of your messages already authorises. It names that message's id, an exact quote from it, and the pending action the quote covers. |
 | `ask` | The session needs a decision none of your messages covers. It gives the question and 2 to 4 options. |
 | `leave` | It finished, is reporting, or is waiting on something that is not you. |
+
+### A check cannot call tools
+
+The check's prompt quotes text from your other sessions' transcripts. It is
+redacted and fenced as data, not instructions — but a fence is only prose, and
+a transcript written to steer the chief could try to get it to call a tool
+during the check. Shadow mode does not help there: it gates only what the sweep
+itself sends, not what the chief does.
+
+So a `claude-code` chief's check runs in a CLI that has **no tools**. ccd starts
+it with `--tools= --strict-mcp-config`: an empty list of built-in tools (no
+Bash, Edit, WebFetch, Task, …) and no MCP server at all (muster's MCP server,
+with `route_to_session`, `task_dispatch`, `answer_session_question` and the
+rest, is not even started). The check's only possible effect is its text reply,
+which muster parses and validates like any check answer. Your own sessions with
+the chief, and its primary CLI, keep their tools.
+
+What this covers, and what it does not:
+
+- It is enforced by the Claude Code CLI, measured on the pinned version
+  (2.1.296): with both flags the CLI declares no tools and no MCP server, and
+  starts none; with either flag alone, the other half is still there
+  ([configuration](configuration.md#tool-less-check-lanes)).
+- A `gateway` chief has no lanes and is **not** tool-less: its check runs in a
+  gateway session of its own with whatever tools that runtime gives it.
+- A chief pod running a ccd older than this muster ignores the mark (see
+  **Rolling out**).
 
 ## The guards
 
@@ -368,8 +405,10 @@ your relayed answer.
   It keeps each check's CLI running after the check and, at its lane cap,
   stops the least recently used idle lane to start a new one, which can be one
   of your own sessions (resumed from its transcript on its next turn, with a
-  cold start). muster does not detect this. Restarting the chief on the current
-  image ends it — see **Rolling out** above.
+  cold start). It also ignores the tool-less mark, so each check's CLI has the
+  chief's full tool set. muster does not detect either. Restarting the chief on
+  the current image ends both — see **Rolling out** above.
+- A `gateway` chief's checks are not tool-less (above).
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.
 - A window on an older `muster-mirror` (no prompt times) is never nudged, only

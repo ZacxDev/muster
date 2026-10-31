@@ -373,6 +373,61 @@ cannot close.
   It authenticates the hook channel only; `/v1/responses` refuses it.
 - `MUSTER_HOOK_TOKEN` stays, because it is the agent's muster identity.
 
+### Tool-less check lanes
+
+A turn that names an explicit session (`X-Muster-CC-Session`) and carries
+`X-Muster-CC-Toolless: 1` runs in a lane whose Claude Code CLI starts with
+**no tools**: `claude … --tools= --strict-mcp-config`. muster sends it on a
+chief's stall check only, always together with `X-Muster-CC-Ephemeral: 1`
+(see [chief nudges](chief-nudges.md#a-check-cannot-call-tools)); any other
+value is a lane with the CLI's usual tools. No variable turns it on or off.
+
+- `--tools=` is the one-token spelling of the CLI's `--tools ""` ("Use "" to
+  disable all tools"): an empty list of built-in tools.
+- `--strict-mcp-config` with no `--mcp-config` loads only the MCP servers
+  `--mcp-config` names, which is none. muster's MCP server (registered in
+  `.claude.json` by `ccd seed`) and any project `.mcp.json` are not started.
+- Hooks are not tools, so the lane's `SessionStart`, `UserPromptSubmit`,
+  `Stop`/`StopFailure` and `SessionEnd` still reach `ccd`, and its turn runs
+  like any lane's. `PermissionRequest`, `Notification` (permission prompt) and
+  `PostToolUse` cannot fire: there is nothing to ask about.
+- It is fixed for the lane's life, like the model, the workdir and ephemeral:
+  a turn for a running lane whose `X-Muster-CC-Toolless` disagrees is refused
+  (`400`). The flags are on every start of the lane, a resume included.
+  `/healthz` lists the lane with `"toolless": true` while it runs.
+- The primary CLI and every other lane never get the flags.
+
+**Measured on the pinned CLI (2.1.296)**, with an invalid API key, so the
+CLI's `init` event is read but no model call succeeds. The test configuration
+had a user-scope MCP server and a project `.mcp.json`, each a stub that marks its own
+start:
+
+| flags | tools in `init` | MCP servers in `init` | MCP processes started |
+|---|---|---|---|
+| none | 24 | 2 | 2 |
+| `--tools=` | 0 | 2 | 2 |
+| `--strict-mcp-config` | 24 | 0 | 0 |
+| both | 0 | 0 | 0 |
+
+So neither flag alone is enough. In the interactive TUI (the way `ccd` runs
+it), `/context` shows no "System tools" entry with both flags and 25.2k tokens
+of them without, and the `SessionStart` hook fires either way. Run end to end
+through a real `ccd serve` with the real CLI: a check turn's lane started with
+both flags, the turn was driven through its hooks (`SessionStart`,
+`UserPromptSubmit`, `StopFailure`, then `SessionEnd` as `ccd` stopped it) to
+the CLI's typed `auth_failed` (the invalid key), and its CLI started no MCP
+server while the primary and an operator lane each started one. `Stop` needs a
+successful model turn, so it was seen only through the test suite's fake CLI.
+
+**What is not covered.** No real model turn was run, so it is the CLI's own
+report (`init`, `/context`) that says the model is offered no tool, not an
+observed refusal. Both flags are allow-lists that are empty, so a tool a later
+CLI adds is not in them; re-run the measurement when the pin moves.
+Slash commands typed into the pane are not tools and are not removed (a turn's
+prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
+this flag ignores the header and starts the CLI with every tool: restart the
+agent on the current image.
+
 ## Test and e2e harness
 
 These variables are read by non-test code that exists only for testing. That
