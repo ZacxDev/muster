@@ -618,6 +618,62 @@ func testRestartReasonSurvivesTheRestartThatHidesIt(t *testing.T, m nsMode) {
 	}
 }
 
+// TestInstanceImageIsTheApplicationContainers: Instance.Image is the newest
+// pod's APPLICATION container image ("agent", containerName), never a sidecar's — the
+// agent container sits BETWEEN two sidecars and all three images differ, so a
+// driver taking the first container, the last, or none reads wrong. Both Get
+// and List carry it.
+func TestInstanceImageIsTheApplicationContainers(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testInstanceImageIsTheApplicationContainers(t, m) })
+}
+
+func testInstanceImageIsTheApplicationContainers(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
+	ctx := context.Background()
+	spec := provisiontest.MinimalSpec("imaged")
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ns := m.ns("imaged")
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "imaged-5f6a7", Namespace: ns, Labels: map[string]string{
+			"app.kubernetes.io/name": "muster-agent", "app.kubernetes.io/instance": "imaged", "app.kubernetes.io/managed-by": "muster",
+		}},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{
+			{Name: "egress-sidecar", Image: "ghcr.io/example-org/sidecar:1"},
+			{Name: "agent", Image: "ghcr.io/example-org/cc@sha256:abcd"},
+			{Name: "log-sidecar", Image: "ghcr.io/example-org/logs:3"},
+		}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "agent", Ready: true}}},
+	}
+	if _, err := cs.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed pod: %v", err)
+	}
+	inst, err := d.Get(ctx, spec.Ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if inst.Image != "ghcr.io/example-org/cc@sha256:abcd" {
+		t.Errorf("Get: Image = %q, want the application container's", inst.Image)
+	}
+	list, err := d.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	found := false
+	for _, i := range list {
+		if i.Ref.Name == "imaged" {
+			found = true
+			if i.Image != "ghcr.io/example-org/cc@sha256:abcd" {
+				t.Errorf("List: Image = %q, want the application container's", i.Image)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("List does not carry the instance: %+v", list)
+	}
+}
+
 // TestCorrelationIDRoundTripsWhenSet is the other half: an id that WAS supplied
 // comes back.
 func TestCorrelationIDRoundTripsWhenSet(t *testing.T) {

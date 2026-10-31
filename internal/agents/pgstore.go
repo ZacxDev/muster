@@ -508,6 +508,20 @@ func (s *PGStore) ReleaseKickoffClaim(ctx context.Context, id int64, owner strin
 	return err
 }
 
+// KickoffClaimHolder reads who holds the agent's claim (see the Store
+// contract): "" when unheld or expired — by Postgres's clock, as ClaimKickoff
+// judges it — and for a row that does not exist.
+func (s *PGStore) KickoffClaimHolder(ctx context.Context, id int64) (string, error) {
+	var owner string
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(kickoff_claim_owner, '') FROM agents
+		 WHERE id=$1 AND kickoff_claim_expires_at > now()`, id).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return owner, err
+}
+
 // ClearKickoffClaimsByOwnerPrefix clears claims whose owner begins with prefix
 // (see the Store contract). An empty prefix is REFUSED rather than treated as
 // "match everything": `LIKE '%'` would clear every live peer pod's claim.

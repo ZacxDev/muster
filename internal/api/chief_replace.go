@@ -251,7 +251,7 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 		return deleted
 	}
 	if hasOld {
-		claimOwner := "chief-replace/" + randomHex(6)
+		claimOwner := chiefReplaceClaimPrefix + randomHex(6)
 		won, err := s.ext.Agents.ClaimKickoff(ctx, old.ID, claimOwner, chiefReplaceClaimTTL)
 		if err != nil {
 			return refuse(http.StatusInternalServerError, "could not take the chief's session claim; nothing was changed: %v", err)
@@ -276,8 +276,14 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 		// so the turn gate (turn_gate.go) is closed too — refused while a chat turn
 		// is running, and no new one starts until the swap is over. Reopened on
 		// every exit; after a destroy the id is gone and reopening is harmless.
-		if !s.turns.close(old.ID) {
+		if ok, why := s.turns.closeFor(old.ID); !ok {
 			release()
+			if why == gateClosed {
+				// Another operation holds the gate (closeFor: one owner): a
+				// chief_restart forced past a delivery's claim, which then ended.
+				return refuse(http.StatusConflict, "the chief is being restarted or replaced right now; nothing was "+
+					"changed — retry when it finishes")
+			}
 			return refuse(http.StatusConflict, "a chat turn to the chief is running right now; nothing was changed — "+
 				"retry when it finishes")
 		}
