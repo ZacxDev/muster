@@ -2,7 +2,7 @@
 
 ## Run this first — the index, one command
 ```bash
-$DEVRC/scripts/cairn-ops/read.sh recall --repo "$(git rev-parse --show-toplevel)"
+<dotfiles>/scripts/cairn-ops/read.sh recall --repo "$(git rev-parse --show-toplevel)"
 ```
 Terse pointers this doc does not carry, curated by past sessions and outliving it.
 🔴 RECALL, NOT LIVE OBSERVATION — every line is a pointer to VERIFY, never a current
@@ -18,8 +18,8 @@ Messages and tasks reaching the chief were not routed to the live sessions alrea
 - **Shipped and live:**
   - muster 0.118.0 (tag v0.118.0, commit 98ff27db): `muster_help` plus `current_definition` on every refused MCP call, on both doors (#376).
   - The hint extractor reads `owner/repo#N` as `#N` (#367); it shipped in an earlier release by another session.
-  - devrc #2431 (ec263e60): the PR-authorship hook reports `gh -R/--repo` creates and a first-line PR URL. Shipped to both hosts via `ship.sh`; the deployed hook's hash matches main.
-  - devrc #2441 (fc320674): the host muster CLI and muster-mirror are at 98ff27d. Both hosts' mirrors are confirmed in their own unit.
+  - dotfiles #2431 (ec263e60): the PR-authorship hook reports `gh -R/--repo` creates and a first-line PR URL. Shipped to both hosts via `ship.sh`; the deployed hook's hash matches main.
+  - dotfiles #2441 (fc320674): the host muster CLI and muster-mirror are at 98ff27d. Both hosts' mirrors are confirmed in their own unit.
 - **Verified live:**
   - The MCP door, called with the chief's token: `tools/list` offers `muster_help`; `muster_help` for `route_to_session` lists `task_id`; a refused call carries `current_definition`.
   - After a chief pod restart, the chief's own log shows it loaded `muster_help` and received the current definition.
@@ -46,9 +46,9 @@ Messages and tasks reaching the chief were not routed to the live sessions alrea
 ## Gotchas / decisions / dead-ends
 - **The cause of the stale tool schema, measured:** Claude Code saves a deferred MCP tool's schema in the transcript (`deferred_tools_record`) and replays it on every `--resume`. A pod restart does NOT refresh it, a ToolSearch re-fetch returns the saved copy, and `alwaysLoad` does not survive a resume either. The client does not enforce the stale schema: a call with an argument absent from it still succeeds.
 - **What fixes staleness:** `current_definition` on a refused call. In a real CLI repro the model recovered on its first refusal. A tool-set version stamp in descriptions was ignored by the model, so it was dropped.
-- **Two separate routing paths, two separate misses.** The PR-author route needs a `session_prs` row, written by the devrc hook; the chief's hint needs a shared distinctive term between the message and a session's focus. Review mails missed both.
+- **Two separate routing paths, two separate misses.** The PR-author route needs a `session_prs` row, written by the dotfiles hook; the chief's hint needs a shared distinctive term between the message and a session's focus. Review mails missed both.
 - **Releasing muster ships everything merged since the last tag.** Check `git log <last-tag>..<ref>` and its migrations before applying; another session's unreleased PR rides along.
-- **A replay of 14 days of transcripts is the gate for hook changes.** The first hook rewrite passed its own tests yet would have dropped 200 PR creates the old hook recorded (heredoc bodies). The replay script lives only in a scratchpad; rebuild it from the PR description of devrc #2431 if needed.
+- **A replay of 14 days of transcripts is the gate for hook changes.** The first hook rewrite passed its own tests yet would have dropped 200 PR creates the old hook recorded (heredoc bodies). The replay script lives only in a scratchpad; rebuild it from the PR description of dotfiles #2431 if needed.
 
 ## How to verify
 - MCP door, with the chief's token (never print it): `tools/list` contains `"name":"muster_help"`; `tools/call muster_help {"tool":"route_to_session"}` contains `task_id`; a refused `route_to_session {"message_id":<a no-reply message>,"subject":"mirror:none"}` has `"isError":true` and `current_definition`.
