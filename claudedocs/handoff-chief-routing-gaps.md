@@ -35,13 +35,13 @@ Messages and tasks reaching the chief were not routed to the live sessions alrea
   - Quiet pushes (rank 3) stay dropped.
 
 ## Open investigations — live diagnosis state
-### A routed message never reaches a busy session
+### ~~A routed message never reaches a busy session~~ RESOLVED — the hand-back now says when a route was never delivered (#378); see the RESOLVED block below
 - as-of: 2026-10-31
 - **Symptom + exact repro:** route a plugin message to a session that stays busy. The paste waits for 30 s of idle, never gets it, and the route times out after `RouteTimeout` (30 min) as `no answer before the deadline`. Nobody is told that it was never delivered.
 - **Observed (with values):** two manual routes ended with send_queue rows `state=cancelled detail=cancelled claimed_at=NULL` at the deadline, and session_routes `state=timed_out`. One other route ended `failed` with "May have been sent: muster handed it to the host, which did not confirm it".
 - **Ruled out:** the route tool refusing the target. via: command — `plugin_message_route` returned `state=routed` for each.
 - **Leading hypothesis:** by design, the send queue never interrupts a working session. The gap is the silent hand-back: the hand-back does not say "never delivered (session busy the whole window)" as opposed to "delivered, not answered".
-- **Next probe:** `select r.route_id, r.state, q.state, q.claimed_at from session_routes r join send_queue q on q.id=r.send_queue_id where r.state='timed_out' order by r.id desc limit 20;` — count how many timed-out routes were never claimed.
+- **Next probe (DONE, results in the RESOLVED block below):** `select r.route_id, r.state, q.state, q.claimed_at from session_routes r join send_queue q on q.id=r.send_queue_id where r.state='timed_out' order by r.id desc limit 20;` — count how many timed-out routes were never claimed.
 
 ### RESOLVED: a routed message never reaches a busy session (the block above)
 - as-of: 2026-10-31
