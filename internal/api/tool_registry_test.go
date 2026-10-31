@@ -134,20 +134,14 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 				gateway[d.Name] = normJSON(t, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
 				gatewayNames = append(gatewayNames, d.Name)
 			}
-			// The transport adds two things of its own (mcp_help.go): muster_help,
-			// last, and the rev stamp on every description. Both are taken off
-			// here and nothing else is.
+			// The transport adds one tool of its own (mcp_help.go): muster_help,
+			// last. It is taken off here; every other tool is compared as served.
 			if mcpNames[len(mcpNames)-1] != mcpHelpTool {
 				t.Fatalf("/mcp does not end with %s: %v", mcpHelpTool, mcpNames)
 			}
 			mcpNames, tools = mcpNames[:len(mcpNames)-1], tools[:len(tools)-1]
 			for _, tl := range tools {
 				name, _ := tl["name"].(string)
-				desc, _ := tl["description"].(string)
-				if !revStampRE.MatchString(desc) {
-					t.Errorf("/mcp's %q carries no rev stamp: %q", name, desc)
-				}
-				tl["description"] = revStampRE.ReplaceAllString(desc, "")
 				want, ok := gateway[name]
 				if !ok {
 					t.Errorf("/mcp lists %q, which the gateway tool defs do not have: a tool was added to one transport only", name)

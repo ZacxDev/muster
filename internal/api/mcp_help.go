@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -21,15 +19,15 @@ import (
 // lacks a field that was added since (the client does not enforce the stale
 // schema: the call itself would have worked).
 //
-// Three things, all in serveMCP, so they hold on every door and for every tool:
+// Two things, both in serveMCP, so they hold on every door and for every tool:
 //
-//   - every description ends with the surface's rev stamp (mcpRevStamp), and
-//     the initialize instructions carry the same rev (mcpRevInstruction), so a
-//     model can see that a definition it holds is from another release;
 //   - muster_help (mcpHelpTool) answers the current definition of any tool on
 //     the door, or the door's list of tools;
 //   - a refused call carries the called tool's current definition
 //     (withCurrentDefinition), so the refusal itself says what changed.
+//
+// Every other tool's description, and the initialize instructions, are served
+// exactly as the surface gives them.
 
 // mcpHelpTool is the name of the doors' own help tool. It is the transport's,
 // not the registry's: it is not in agentTools and the gateway does not offer it
@@ -41,7 +39,8 @@ func mcpHelpToolDef() agents.ToolDef {
 		Type: "function",
 		Name: mcpHelpTool,
 		Description: "muster's current tool definitions on this connection. With no tool: every tool here, by name and one-line summary. " +
-			"With tool: that tool's full current definition (description and input schema), as tools/list serves it now.",
+			"With tool: that tool's full current definition (description and input schema), as tools/list serves it now. " +
+			"Call it when a muster call is refused or a tool seems to lack something: the definition you hold may be from an older muster.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -54,75 +53,33 @@ func mcpHelpToolDef() agents.ToolDef {
 
 // mcpCurrentDefinitionMax bounds the definition a refused call carries. A
 // larger one is replaced by a pointer to muster_help, so a refusal never grows
-// past it by more than that pointer.
+// past it by more than that pointer. It is a size guard, not a working limit:
+// when this was written the largest definition either door serves was under
+// 2 KB (attention_answer, about 1.4 KB as served).
 const mcpCurrentDefinitionMax = 8 << 10
 
 // mcpHelpSummaryMax bounds one tool's summary in muster_help's list, in runes.
 const mcpHelpSummaryMax = 160
 
 // mcpCatalog is one surface's tool set as it is served at one moment: the
-// surface's tools plus muster_help, each description stamped with rev.
+// surface's tools plus muster_help.
 type mcpCatalog struct {
-	base   []agents.ToolDef // unstamped, muster_help last
+	base   []agents.ToolDef // muster_help last
 	served []map[string]any // what tools/list answers, in base's order
-	rev    string
 }
 
 // newMCPCatalog builds the catalog of a surface offering tools. A surface
-// offering none gets an empty catalog: no muster_help and no rev.
+// offering none gets an empty catalog: no muster_help.
 func newMCPCatalog(tools []agents.ToolDef) mcpCatalog {
 	if len(tools) == 0 {
 		return mcpCatalog{}
 	}
 	base := append(append([]agents.ToolDef(nil), tools...), mcpHelpToolDef())
-	c := mcpCatalog{base: base, rev: mcpToolsRev(base)}
+	c := mcpCatalog{base: base}
 	for _, d := range base {
-		c.served = append(c.served, map[string]any{"name": d.Name, "description": d.Description + mcpRevStamp(c.rev), "inputSchema": d.Parameters})
+		c.served = append(c.served, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
 	}
 	return c
-}
-
-// mcpToolsRev is a short hash of a tool set: every tool's name, description
-// and input schema, in order. 🔴 IT IS COMPUTED OVER THE UNSTAMPED
-// DEFINITIONS, so the stamp never feeds into its own hash. json.Marshal sorts
-// map keys, so the same set always hashes the same.
-func mcpToolsRev(defs []agents.ToolDef) string {
-	type entry struct {
-		Name        string         `json:"name"`
-		Description string         `json:"description"`
-		InputSchema map[string]any `json:"inputSchema"`
-	}
-	entries := make([]entry, 0, len(defs))
-	for _, d := range defs {
-		entries = append(entries, entry{d.Name, d.Description, d.Parameters})
-	}
-	b, err := json.Marshal(entries)
-	if err != nil {
-		return "unknown"
-	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:4])
-}
-
-// mcpRevStamp is what every served description ends with.
-func mcpRevStamp(rev string) string { return " [muster tools rev " + rev + "]" }
-
-// mcpRevInstruction is the initialize instructions' sentence about the rev.
-func mcpRevInstruction(rev string) string {
-	return "muster's tool definitions change between releases, and this connection's tools are at rev " + rev +
-		" (each muster MCP endpoint has its own rev): if a muster tool definition you hold carries a different rev, " +
-		"or a muster call is refused, call " + mcpHelpTool + " for the current one."
-}
-
-// withInstruction is a surface's instructions with the rev sentence added.
-func (c mcpCatalog) withInstruction(instructions string) string {
-	if c.rev == "" {
-		return instructions
-	}
-	if instructions == "" {
-		return mcpRevInstruction(c.rev)
-	}
-	return instructions + " " + mcpRevInstruction(c.rev)
 }
 
 // lookup is tool name's served definition, if the surface offers it.
@@ -166,7 +123,7 @@ func (c mcpCatalog) help(args string) string {
 	for _, d := range c.base {
 		rows = append(rows, row{d.Name, mcpSummary(d.Description)})
 	}
-	return toolJSON(map[string]any{"rev": c.rev, "tools": rows,
+	return toolJSON(map[string]any{"tools": rows,
 		"note": "call " + mcpHelpTool + "{tool} for one tool's full current definition"})
 }
 

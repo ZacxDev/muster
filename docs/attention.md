@@ -466,27 +466,21 @@ can believe a field added since does not exist. (The client does not check the
 call against the saved schema, so a call using the new field works.)
 
 Both MCP endpoints (`POST /mcp` for agents and `POST /mirror/mcp` for mirrored
-sessions) give the model three ways to notice and recover:
+sessions) add two things. Every other tool's description, and the
+`initialize` instructions, are served unchanged.
 
-- Every tool description ends with ` [muster tools rev <hash>]`. The hash is
-  8 hex characters over the endpoint's tool names, descriptions and input
-  schemas, computed without the stamp. Each endpoint has its own rev, and
-  `/mcp`'s also depends on which tools that agent is offered. The `initialize`
-  instructions end with one sentence that names the current rev and says to call
-  `muster_help` when a definition carries a different rev or a muster call is
-  refused.
 - `muster_help` lists every tool on the endpoint by name and one-line summary.
   Called with `{tool}`, it returns that tool's current definition, exactly as
   `tools/list` serves it. An unknown name is an error that lists the valid names.
 - A refused call (a tool error) carries the tool's current definition under
   `current_definition`. Past 8 KiB, it carries a pointer to `muster_help`
-  instead.
+  instead. This is what a model holding an old definition recovers from: its
+  call is refused, it reads the current definition, and it calls again.
 
 A session does not need a new conversation. A refused call carries the
-definition as soon as muster is released. `muster_help` and the instruction
-sentence reach a session the next time it connects, for example when it is
-resumed: Claude Code reads the tool list and the instructions when it
-connects.
+definition as soon as muster is released. `muster_help` reaches a session the
+next time it connects, for example when it is resumed: Claude Code reads the
+tool list when it connects.
 
 ## Asking the chief
 

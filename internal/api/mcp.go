@@ -27,8 +27,8 @@ import (
 // and tools/call runs the registry's one dispatcher (dispatchAgentTool). Which
 // tools are on /mcp is a per-tool flag in agentTools (agent.go), whose comment
 // says which tools carry it and why. The one tool it adds itself is muster_help,
-// with the rev stamp and a refusal's current_definition (mcp_help.go): those
-// are about the served definitions, so they live with the transport.
+// with a refusal's current_definition (mcp_help.go): those are about the
+// served definitions, so they live with the transport.
 
 // mcpProtocolVersions are the protocol revisions this server answers. A client
 // asking for one gets it back; any other gets the newest.
@@ -187,7 +187,7 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "muster", "version": BuildVersion},
-			"instructions":    newMCPCatalog(surface.tools()).withInstruction(surface.instructions),
+			"instructions":    surface.instructions,
 		}, nil)
 	case "ping":
 		s.writeMCP(w, req.ID, map[string]any{}, nil)

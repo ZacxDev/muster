@@ -1,33 +1,20 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
-// muster_help, the rev stamp and a refusal's current_definition (mcp_help.go),
-// on both MCP doors.
-
-var revStampRE = regexp.MustCompile(` \[muster tools rev ([0-9a-f]{8})\]$`)
-
-// mcpRevInstructionWant is the instruction sentence, pinned whole: it is the
-// one thing a model holding a stale definition is told.
-func mcpRevInstructionWant(rev string) string {
-	return "muster's tool definitions change between releases, and this connection's tools are at rev " + rev +
-		" (each muster MCP endpoint has its own rev): if a muster tool definition you hold carries a different rev, " +
-		"or a muster call is refused, call muster_help for the current one."
-}
+// muster_help and a refusal's current_definition (mcp_help.go), on both MCP
+// doors — and nothing else about what the doors serve changes.
 
 // servedTools decodes a tools/list result.
 func servedTools(t *testing.T, r *mcpReply) []map[string]any {
@@ -42,28 +29,6 @@ func servedTools(t *testing.T, r *mcpReply) []map[string]any {
 		t.Fatal(err)
 	}
 	return res.Tools
-}
-
-// toolsRev is the one rev every served description carries; the test fails if
-// any description has no stamp or a different one.
-func toolsRev(t *testing.T, tools []map[string]any) string {
-	t.Helper()
-	if len(tools) == 0 {
-		t.Fatal("positive control FAILED: no tools served")
-	}
-	rev := ""
-	for _, tl := range tools {
-		desc, _ := tl["description"].(string)
-		m := revStampRE.FindStringSubmatch(desc)
-		if m == nil {
-			t.Fatalf("%v's description carries no rev stamp: %q", tl["name"], desc)
-		}
-		if rev != "" && m[1] != rev {
-			t.Fatalf("%v carries rev %s, another tool %s", tl["name"], m[1], rev)
-		}
-		rev = m[1]
-	}
-	return rev
 }
 
 func instructionsOf(t *testing.T, r *mcpReply) string {
@@ -92,15 +57,13 @@ func checkHelp(t *testing.T, rpc func(body string) *mcpReply) {
 	t.Helper()
 	tools := servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	names := toolNamesOf(tools)
-	if names[len(names)-1] != "muster_help" {
+	if len(names) < 2 || names[len(names)-1] != "muster_help" {
 		t.Fatalf("muster_help is not offered last: %v", names)
 	}
-	rev := toolsRev(t, tools)
 
 	// No tool: every tool on THIS door, by name and summary.
 	text, isErr := toolText(t, rpc(mcpToolCall("muster_help", map[string]any{})))
 	var list struct {
-		Rev   string `json:"rev"`
 		Tools []struct{ Name, Summary string }
 	}
 	if isErr || json.Unmarshal([]byte(text), &list) != nil {
@@ -109,12 +72,12 @@ func checkHelp(t *testing.T, rpc func(body string) *mcpReply) {
 	var listed []string
 	for _, tl := range list.Tools {
 		listed = append(listed, tl.Name)
-		if tl.Summary == "" || len([]rune(tl.Summary)) > mcpHelpSummaryMax || strings.Contains(tl.Summary, "muster tools rev") {
+		if tl.Summary == "" || len([]rune(tl.Summary)) > mcpHelpSummaryMax {
 			t.Errorf("%s's summary %q", tl.Name, tl.Summary)
 		}
 	}
-	if !reflect.DeepEqual(listed, names) || list.Rev != rev {
-		t.Fatalf("muster_help{} lists %v at rev %s; tools/list serves %v at rev %s", listed, list.Rev, names, rev)
+	if !reflect.DeepEqual(listed, names) {
+		t.Fatalf("muster_help{} lists %v; tools/list serves %v", listed, names)
 	}
 
 	// A name: exactly what tools/list serves for it.
@@ -168,8 +131,61 @@ func checkRefusalCarriesDefinition(t *testing.T, tools []map[string]any, name st
 	}
 }
 
-// TestTheAgentDoorOffersMusterHelpAndStampsItsTools: POST /mcp.
-func TestTheAgentDoorOffersMusterHelpAndStampsItsTools(t *testing.T) {
+// checkServedUnchanged: every tool a door serves except muster_help is, byte
+// for byte (name, description, input schema) and in order, the surface's own
+// definition, and initialize answers exactly wantInstructions. muster_help
+// adds a tool; it changes no other tool and no instruction.
+func checkServedUnchanged(t *testing.T, rpc func(body string) *mcpReply, defs []agents.ToolDef, wantInstructions string) {
+	t.Helper()
+	tools := servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	// Positive control: there is something to compare.
+	if len(defs) == 0 || len(tools) != len(defs)+1 {
+		t.Fatalf("positive control: %d tools served for %d surface definitions", len(tools), len(defs))
+	}
+	for i, d := range defs {
+		tl := tools[i]
+		if tl["name"] != d.Name || tl["description"] != d.Description {
+			t.Errorf("tool %d: served %v %q, the surface's is %s %q", i, tl["name"], tl["description"], d.Name, d.Description)
+		}
+		if a, b := normJSON(t, tl), normJSON(t, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters}); a != b {
+			t.Errorf("%s served\n  %s\nthe surface's\n  %s", d.Name, a, b)
+		}
+	}
+	if got := instructionsOf(t, rpc(`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)); got != wantInstructions {
+		t.Errorf("initialize instructions:\n  %q\nwant exactly\n  %q", got, wantInstructions)
+	}
+}
+
+// TestTheDoorsServeTheirToolsAndInstructionsUnchanged: on POST /mcp (the
+// chief and a worker) and POST /mirror/mcp, descriptions and instructions are
+// exactly what the surface defines — no stamp, no added sentence.
+func TestTheDoorsServeTheirToolsAndInstructionsUnchanged(t *testing.T) {
+	g := newGatedFixture(t)
+	for _, c := range []struct {
+		name  string
+		agent agents.Agent
+		token string
+	}{{"chief", g.chief, g.chiefTok}, {"worker", g.worker, g.workerTok}} {
+		t.Run("agent door "+c.name, func(t *testing.T) {
+			rpc := func(body string) *mcpReply { r, _ := g.mcp(t, c.token, body, nil); return r }
+			checkServedUnchanged(t, rpc, g.srv.MCPToolDefsFor(g.asOwner, c.agent), g.srv.mcpInstructionsFor(g.asOwner, c.agent))
+		})
+	}
+	t.Run("mirror door", func(t *testing.T) {
+		f, ws, _, _ := newMirrorMCPFixture(t)
+		rpc := func(body string) *mcpReply {
+			_, r, raw := f.mirrorRPC(t, mirrorAs(ws, focusSID), body)
+			if r == nil {
+				t.Fatalf("/mirror/mcp: %s", raw)
+			}
+			return r
+		}
+		checkServedUnchanged(t, rpc, f.srv.mirrorTools(), "muster's tools for a mirrored Claude Code session. "+mirrorAttentionInstruction)
+	})
+}
+
+// TestTheAgentDoorOffersMusterHelp: POST /mcp.
+func TestTheAgentDoorOffersMusterHelp(t *testing.T) {
 	f := newConnFixture(t)
 	tok := "help-agent-token-0123456789"
 	f.seedAgent(t, "help-agent", tok)
@@ -177,30 +193,18 @@ func TestTheAgentDoorOffersMusterHelpAndStampsItsTools(t *testing.T) {
 
 	checkHelp(t, rpc)
 
-	tools := servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	rev := toolsRev(t, tools)
-	// Stable across calls.
-	if again := toolsRev(t, servedTools(t, rpc(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))); again != rev {
-		t.Fatalf("rev moved between two tools/list calls: %s then %s", rev, again)
-	}
-	// The same rev in the instructions, in the instruction sentence.
-	in := instructionsOf(t, rpc(`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
-	if !strings.HasSuffix(in, " "+mcpRevInstructionWant(rev)) {
-		t.Fatalf("the agent door's instructions do not end with the rev sentence for %s:\n%s", rev, in)
-	}
-
 	// A refused call carries the definition; a successful one does not.
+	tools := servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	checkRefusalCarriesDefinition(t, tools, "connector_status",
 		rpc(mcpToolCall("connector_status", map[string]any{"name": "Bad Name"})))
-	text, isErr := toolText(t, rpc(mcpToolCall("connectors_list", map[string]any{})))
+	text, isErr := toolTextRaw(t, rpc(mcpToolCall("connectors_list", map[string]any{})))
 	if isErr || strings.Contains(text, "current_definition") {
 		t.Fatalf("a successful call: %v %s", isErr, text)
 	}
 }
 
-// TestTheMirrorDoorOffersMusterHelpAndStampsItsTools: POST /mirror/mcp, with
-// its own rev.
-func TestTheMirrorDoorOffersMusterHelpAndStampsItsTools(t *testing.T) {
+// TestTheMirrorDoorOffersMusterHelp: POST /mirror/mcp.
+func TestTheMirrorDoorOffersMusterHelp(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
 	rpc := func(body string) *mcpReply {
 		_, r, raw := f.mirrorRPC(t, mirrorAs(ws, focusSID), body)
@@ -212,28 +216,19 @@ func TestTheMirrorDoorOffersMusterHelpAndStampsItsTools(t *testing.T) {
 	checkHelp(t, rpc)
 
 	tools := servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	rev := toolsRev(t, tools)
-	if again := toolsRev(t, servedTools(t, rpc(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))); again != rev {
-		t.Fatalf("rev moved between two tools/list calls: %s then %s", rev, again)
-	}
-	in := instructionsOf(t, rpc(`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{}}`))
-	if !strings.HasSuffix(in, " "+mcpRevInstructionWant(rev)) {
-		t.Fatalf("the mirror door's instructions do not end with the rev sentence for %s:\n%s", rev, in)
-	}
-
 	checkRefusalCarriesDefinition(t, tools, attentionWaitTool,
 		rpc(mcpToolCall(attentionWaitTool, map[string]any{"id": 987654, "wait_seconds": 0})))
-	text, isErr := toolText(t, rpc(mcpToolCall("tasks_list", map[string]any{})))
+	text, isErr := toolTextRaw(t, rpc(mcpToolCall("tasks_list", map[string]any{})))
 	if isErr || strings.Contains(text, "current_definition") {
 		t.Fatalf("a successful call: %v %s", isErr, text)
 	}
-	// muster_help answers before the session is bound: a host lists no
+	// muster_help answers before the session is bound: the host lists no
 	// window for this session, and help still works.
 	_, r, raw := f.mirrorRPC(t, mirrorAs(ws, "9f9f9f9f-0000-4000-8000-000000000000"), mcpToolCall("muster_help", map[string]any{}))
 	if r == nil {
 		t.Fatal(raw)
 	}
-	if text, isErr := toolText(t, r); isErr || !strings.Contains(text, `"rev":"`+rev+`"`) {
+	if text, isErr := toolText(t, r); isErr || !strings.Contains(text, `"name":"tasks_list"`) {
 		t.Fatalf("muster_help from an unbound session: %s", text)
 	}
 }
@@ -260,68 +255,20 @@ func echoDef(desc string, props map[string]any) agents.ToolDef {
 		Parameters: map[string]any{"type": "object", "properties": props}}
 }
 
-// TestTheRevFollowsTheToolSetAndNotItsOwnStamp: the rev changes when a schema
-// or a description changes and not otherwise, two surfaces with different
-// tools get different revs, and the rev is the hash of the UNSTAMPED
-// definitions.
-func TestTheRevFollowsTheToolSetAndNotItsOwnStamp(t *testing.T) {
-	never := func(string, string) string { return `{}` }
-	revOf := func(d agents.ToolDef) string {
-		return toolsRev(t, servedTools(t, serveSurface(t, testSurface([]agents.ToolDef{d}, never), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
-	}
-	v1 := echoDef("Echo a session.", map[string]any{"session": strProp("s")})
-	r1 := revOf(v1)
-	if again := revOf(echoDef("Echo a session.", map[string]any{"session": strProp("s")})); again != r1 {
-		t.Fatalf("the same tool set hashed %s then %s", r1, again)
-	}
-	v2 := echoDef("Echo a session.", map[string]any{"session": strProp("s"), "task_id": map[string]any{"type": "integer"}})
-	if r2 := revOf(v2); r2 == r1 {
-		t.Fatalf("adding task_id to the schema left the rev at %s", r1)
-	}
-	if r3 := revOf(echoDef("Echo a session, or a task.", map[string]any{"session": strProp("s")})); r3 == r1 {
-		t.Fatalf("changing the description left the rev at %s", r1)
-	}
-	renamed := v1
-	renamed.Name = "echo2"
-	if r4 := revOf(renamed); r4 == r1 {
-		t.Fatalf("renaming the tool left the rev at %s", r1)
-	}
-
-	// Not fed by its own stamp: the rev is the first 4 bytes of SHA-256 over
-	// the served definitions with the stamps taken off — computed here
-	// independently of mcpToolsRev — in tools/list's order and field names.
-	tools := servedTools(t, serveSurface(t, testSurface([]agents.ToolDef{v1, v2}, never), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	rev := toolsRev(t, tools)
-	type entry struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		InputSchema any    `json:"inputSchema"`
-	}
-	var unstamped []entry
-	for _, tl := range tools {
-		unstamped = append(unstamped, entry{tl["name"].(string), revStampRE.ReplaceAllString(tl["description"].(string), ""), tl["inputSchema"]})
-	}
-	raw, _ := json.Marshal(unstamped)
-	sum := sha256.Sum256(raw)
-	if want := hex.EncodeToString(sum[:4]); rev != want {
-		t.Fatalf("the served rev %s is not the hash of the unstamped definitions (%s)", rev, want)
-	}
-
-	// Instructions carry the same rev; a surface with no tools gets no line
-	// and no muster_help.
-	in := instructionsOf(t, serveSurface(t, testSurface([]agents.ToolDef{v1}, never), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
-	if in != "base instructions. "+mcpRevInstructionWant(r1) {
-		t.Fatalf("instructions: %q", in)
-	}
-	empty := testSurface(nil, never)
+// TestASurfaceWithNoToolsGetsNoMusterHelp: muster_help is offered only where
+// some tool is.
+func TestASurfaceWithNoToolsGetsNoMusterHelp(t *testing.T) {
+	empty := testSurface(nil, func(string, string) string { return `{}` })
 	if got := servedTools(t, serveSurface(t, empty, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)); len(got) != 0 {
 		t.Fatalf("a surface with no tools serves %v", got)
 	}
-	if in := instructionsOf(t, serveSurface(t, empty, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)); in != "base instructions." {
-		t.Fatalf("a surface with no tools: instructions %q", in)
-	}
 	if r := serveSurface(t, empty, mcpToolCall("muster_help", map[string]any{})); r.Error == nil || r.Error.Code != -32602 {
 		t.Fatalf("muster_help on a surface with no tools: %+v", r)
+	}
+	// Control: with one tool, it is offered.
+	one := testSurface([]agents.ToolDef{echoDef("Echo.", map[string]any{})}, func(string, string) string { return `{}` })
+	if got := toolNamesOf(servedTools(t, serveSurface(t, one, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))); !reflect.DeepEqual(got, []string{"echo", "muster_help"}) {
+		t.Fatalf("a surface with one tool serves %v", got)
 	}
 }
 
