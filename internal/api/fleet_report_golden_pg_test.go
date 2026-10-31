@@ -116,8 +116,21 @@ func TestFleetReportGolden(t *testing.T) {
 	t.Run("rich", func(t *testing.T) {
 		f := newFleetReportFixture(t)
 		f.richen(t)
-		f.golden(t, "rich.tool.json", f.goldTool(t))
-		f.golden(t, "rich.mail.json", f.goldMail(t, "rich"))
+		tool, mail := f.goldTool(t), f.goldMail(t, "rich")
+		f.golden(t, "rich.tool.json", tool)
+		f.golden(t, "rich.mail.json", mail)
+		// Spelled out as well as pinned: a stored description reaches neither
+		// door, and the mail names no host and no directory.
+		for door, out := range map[string]string{"tool": tool, "mail": mail} {
+			if strings.Contains(out, frGoldDescr) {
+				t.Errorf("the %s carries the focus description: %s", door, out)
+			}
+		}
+		for _, never := range []string{"tower", "lab-2", frPrefix} {
+			if strings.Contains(mail, never) {
+				t.Errorf("the mail carries %q: %s", never, mail)
+			}
+		}
 	})
 	t.Run("clash", func(t *testing.T) {
 		f := newFleetReportFixture(t)
