@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // SESSION ROUTES (session_routes, migration 0021): the chief hands a plugin
@@ -689,15 +688,10 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 const RouteNeverDeliveredError = "never delivered: the session stayed busy until the deadline, so its queued message was cancelled"
 
 // routeNeverDeliveredHandBack is the hand-back TimedOutUndelivered owes the
-// chief for route r: how long the session stayed busy (r's whole window, when
-// it has one) and until when.
+// chief for route r: the session stayed busy until r's deadline.
 func routeNeverDeliveredHandBack(r Route) string {
-	at := r.TimeoutAt.UTC().Format(time.RFC3339)
-	busy := "until its deadline (" + at + ")"
-	if d := r.TimeoutAt.Sub(r.CreatedAt).Round(time.Minute); d > 0 {
-		busy = "for the whole " + stepup.HumanDuration(d) + " it had (until " + at + ")"
-	}
-	return "it was never delivered: the session stayed busy " + busy + ", and its queued message was cancelled unsent"
+	return "it was never delivered: the session stayed busy until the deadline (" + r.TimeoutAt.UTC().Format(time.RFC3339) +
+		"), and its queued message was cancelled unsent"
 }
 
 // TimedOutUndelivered records that timed-out routeID's message was NEVER

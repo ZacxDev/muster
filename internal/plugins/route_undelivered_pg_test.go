@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
@@ -25,13 +26,12 @@ func TestTimedOutUndeliveredTouchesOnlyATimedOutRoute(t *testing.T) {
 }
 
 // TestTimedOutUndeliveredRewordsTheOwedHandBack: owed, the hand-back says it
-// was never delivered, naming the route's window and deadline; the error is
+// was never delivered, naming the route's deadline; the error is
 // RouteNeverDeliveredError; and the hand-back is still given out exactly once.
 func TestTimedOutUndeliveredRewordsTheOwedHandBack(t *testing.T) {
 	w := newDraftWorld(t)
 	r := w.route(t, w.m)
-	dbtest.OwnerExec(t, w.dsn, `UPDATE session_routes SET created_at = now() - interval '241 minutes',
-		timeout_at = now() - interval '1 minute' WHERE route_id = '`+r.RouteID+`'`)
+	dbtest.OwnerExec(t, w.dsn, `UPDATE session_routes SET timeout_at = now() - interval '1 minute' WHERE route_id = '`+r.RouteID+`'`)
 	to, timedOut, err := w.s.TimeOutRoute(session(2), r.RouteID)
 	if err != nil || !timedOut {
 		t.Fatal(timedOut, err)
@@ -41,8 +41,8 @@ func TestTimedOutUndeliveredRewordsTheOwedHandBack(t *testing.T) {
 		got.Error != "never delivered: the session stayed busy until the deadline, so its queued message was cancelled" {
 		t.Fatalf("noted=%v %v, route %+v", noted, err, got)
 	}
-	want := "it was never delivered: the session stayed busy for the whole 4 hours it had (until " +
-		to.TimeoutAt.UTC().Format("2006-01-02T15:04:05Z07:00") + "), and its queued message was cancelled unsent"
+	want := "it was never delivered: the session stayed busy until the deadline (" +
+		to.TimeoutAt.UTC().Format(time.RFC3339) + "), and its queued message was cancelled unsent"
 	if _, reason, ok, err := w.s.TakeHandBack(session(2), r.RouteID); err != nil || !ok || reason != want {
 		t.Fatalf("the hand-back: %q (%v %v), want %q", reason, ok, err, want)
 	}

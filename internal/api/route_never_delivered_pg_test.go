@@ -47,12 +47,10 @@ func timeOutRouteFixture(t *testing.T, f *routeFixture, external string) (string
 	return id, items[0], sess
 }
 
-// pastDeadline moves route id's 30-minute window into the past: made 31
-// minutes ago, due a minute ago.
+// pastDeadline moves route id's deadline a minute into the past.
 func pastDeadline(t *testing.T, id string) {
 	t.Helper()
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET created_at = now() - interval '31 minutes',
-		timeout_at = now() - interval '1 minute' WHERE route_id = '`+id+`'`)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET timeout_at = now() - interval '1 minute' WHERE route_id = '`+id+`'`)
 }
 
 // handBackNote is the one note the chief's session holds.
@@ -67,7 +65,7 @@ func (f *routeFixture) handBackNote(t *testing.T, sessID int64) string {
 
 // TestATimedOutRouteNeverPastedSaysItWasNeverDelivered: the row is still
 // queued at the deadline, so the cancel wins: the route's error and the
-// chief's hand-back say it was never delivered, naming the window and its end.
+// chief's hand-back say it was never delivered, naming the deadline.
 func TestATimedOutRouteNeverPastedSaysItWasNeverDelivered(t *testing.T) {
 	f := newRouteFixture(t)
 	id, row, sess := timeOutRouteFixture(t, f, "route-never-delivered")
@@ -86,7 +84,7 @@ func TestATimedOutRouteNeverPastedSaysItWasNeverDelivered(t *testing.T) {
 		t.Errorf("the route's error = %q, want %q", r.Error, want)
 	}
 	want := "[muster] Route " + id + " (plugin message_id " + itoa(r.MessageID) + " → mirror:" + routeSID + "): " +
-		"it was never delivered: the session stayed busy for the whole 30 minutes it had (until " +
+		"it was never delivered: the session stayed busy until the deadline (" +
 		r.TimeoutAt.UTC().Format(time.RFC3339) + "), and its queued message was cancelled unsent, so the message is back with you: " +
 		routeHandBackChoices
 	if got := f.handBackNote(t, sess.ID); got != want {
