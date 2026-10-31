@@ -985,6 +985,13 @@ type health struct {
 	// Repo is the agent's repository checkout (checkout.go); absent when the
 	// pod was given none. Reported, never gating.
 	Repo *checkoutState `json:"repo,omitempty"`
+	// ToollessLanes says this ccd honours X-Muster-CC-Toolless (lanes.go "A
+	// CHECK LANE HAS NO TOOLS"), for an operator to read by hand after
+	// restarting a chief onto a new image: a ccd that predates it has no such
+	// field, and would start a check's CLI with every tool. True whenever ccd
+	// runs lanes (one with none refuses every session turn anyway). Reported,
+	// never gating; muster does not read it.
+	ToollessLanes bool `json:"toolless_lanes,omitempty"`
 	authSnapshot
 }
 
@@ -1039,6 +1046,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	h.Session = s.sessionState(started, ended)
 	if s.lanes != nil {
 		h.Lanes = s.lanes.health()
+		h.ToollessLanes = true
 	}
 	h.OK = (h.Terminal == "ok" || waitingCheckout) && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")

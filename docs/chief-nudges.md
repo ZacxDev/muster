@@ -44,12 +44,19 @@ onto the new `claude-code-agent` image BEFORE setting (or re-enabling)
 runs an older image.
 
 The same restart is what makes a check **tool-less** (`X-Muster-CC-Toolless`,
-below): an older ccd ignores that mark too and starts each check's CLI with the
-chief's full tool set — its built-in tools and muster's MCP tools. muster does
-not detect that either. A chief can restart itself with the `chief_restart`
-MCP tool. To confirm, read the chief pod's ccd `/healthz` while a check is
-running: the check's lane shows `"ephemeral": true, "toolless": true` (the lane
-is gone once the check's turn ends).
+below). **This is rollout discipline, not something muster enforces:** an older
+ccd ignores the header and the check's lane keeps the chief's full tool set —
+its built-in tools and muster's MCP tools — and muster neither detects that nor
+holds the check back. So after deploying this muster:
+
+1. restart the chief onto the new `claude-code-agent` image (the chief can do
+   it itself with the `chief_restart` MCP tool);
+2. confirm the chief pod's ccd `/healthz` says `"toolless_lanes": true` (an
+   older ccd has no such field);
+3. only then rely on checks being tool-less: turn on (or re-enable)
+   `MUSTER_CHIEF_NUDGES` after this, not before.
+
+While a check runs, its lane also shows on `/healthz` with `"toolless": true`.
 
 ## What counts as stalled
 
@@ -281,8 +288,10 @@ What this covers, and what it does not:
   ([configuration](configuration.md#tool-less-check-lanes)).
 - A `gateway` chief has no lanes and is **not** tool-less: its check runs in a
   gateway session of its own with whatever tools that runtime gives it.
-- A chief pod running a ccd older than this muster ignores the mark (see
-  **Rolling out**).
+- A chief pod running a ccd older than this muster ignores the mark and the
+  check's lane keeps its tools; muster does not detect or prevent that. The
+  rollout steps under **Rolling out** (restart the chief, confirm
+  `"toolless_lanes": true`) are what close it.
 
 ## The guards
 

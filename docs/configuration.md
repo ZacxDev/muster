@@ -395,6 +395,9 @@ value is a lane with the CLI's usual tools. No variable turns it on or off.
   a turn for a running lane whose `X-Muster-CC-Toolless` disagrees is refused
   (`400`). The flags are on every start of the lane, a resume included.
   `/healthz` lists the lane with `"toolless": true` while it runs.
+- `/healthz` also says `"toolless_lanes": true` at its top level whenever ccd
+  runs lanes: this ccd honours the header. It is for an operator to check by
+  hand after restarting an agent onto a new image; muster does not read it.
 - The primary CLI and every other lane never get the flags.
 
 **Measured on the pinned CLI (2.1.296)**, with an invalid API key, so the
@@ -425,8 +428,10 @@ observed refusal. Both flags are allow-lists that are empty, so a tool a later
 CLI adds is not in them; re-run the measurement when the pin moves.
 Slash commands typed into the pane are not tools and are not removed (a turn's
 prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
-this flag ignores the header and starts the CLI with every tool: restart the
-agent on the current image.
+this flag ignores the header and starts the CLI with every tool, and muster
+does not detect it. Rollout discipline closes it: restart the agent onto the
+current image (a chief can use `chief_restart`) and confirm
+`"toolless_lanes": true` on its `/healthz` before relying on tool-less checks.
 
 ## Test and e2e harness
 

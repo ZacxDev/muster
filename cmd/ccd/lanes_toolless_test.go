@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,32 @@ import (
 func TestTheToollessHeaderIsMusters(t *testing.T) {
 	if headerCCToolless != agents.HeaderCCToolless {
 		t.Fatalf("ccd reads a tool-less lane as %q, muster marks it %q", headerCCToolless, agents.HeaderCCToolless)
+	}
+}
+
+// The rollout check an operator does by hand after restarting a chief: ccd's
+// /healthz says `"toolless_lanes": true` — read here as raw JSON from ccd's own
+// handler, the way an operator's curl sees it — whenever it runs lanes, and
+// says nothing when it runs none.
+func TestHealthzSaysItHonoursToollessLanes(t *testing.T) {
+	srv, _ := newScripted(t, cliScript{})
+	url := gatewayServer(t, srv).URL
+	read := func() (bool, bool) {
+		t.Helper()
+		_, body, _ := getHealth(t, url, "/healthz")
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatalf("/healthz body: %v", err)
+		}
+		v, present := raw["toolless_lanes"]
+		return v == true, present
+	}
+	if v, present := read(); v || present {
+		t.Errorf("a ccd with no lanes reports toolless_lanes (%v, present=%v)", v, present)
+	}
+	srv.lanes = testLanes(t, 3)
+	if v, _ := read(); !v {
+		t.Error(`a ccd that runs lanes does not report "toolless_lanes": true — the operator's rollout check would read it as an old ccd`)
 	}
 }
 
