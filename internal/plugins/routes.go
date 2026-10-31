@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // SESSION ROUTES (session_routes, migration 0021): the chief hands a plugin
@@ -73,6 +74,9 @@ type RouteStore interface {
 	AnswerRoute(ctx context.Context, routeID, body string) (Route, bool, error)
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
+	// TimedOutUndelivered records that a timed-out route's message was never
+	// pasted into the session: its error and owed hand-back say so.
+	TimedOutUndelivered(ctx context.Context, routeID string) (Route, bool, error)
 	ExpiredRoutes(ctx context.Context) ([]DueRoute, error)
 	// RoutedPastes is every route still routed with a paste row, across every
 	// owner (the sweep's second read; see there).
@@ -651,7 +655,9 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 
 // TimeOutRoute times routeID out when it is still routed and its deadline has
 // passed (on the database's clock). timedOut is false — and nothing changes —
-// otherwise.
+// otherwise. The hand-back it owes says no answer came by the deadline;
+// TimedOutUndelivered re-words it once the message is known never to have
+// reached the session.
 func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, timedOut bool, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockRoute(ctx, tx, routeID)
@@ -676,6 +682,57 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 			"timeout_at": cur.TimeoutAt.UTC().Format(time.RFC3339)})
 	})
 	return r, timedOut, err
+}
+
+// RouteNeverDeliveredError is a timed-out route's error once its message is
+// known never to have been pasted (TimedOutUndelivered).
+const RouteNeverDeliveredError = "never delivered: the session stayed busy until the deadline, so its queued message was cancelled"
+
+// routeNeverDeliveredHandBack is the hand-back TimedOutUndelivered owes the
+// chief for route r: how long the session stayed busy (r's whole window, when
+// it has one) and until when.
+func routeNeverDeliveredHandBack(r Route) string {
+	at := r.TimeoutAt.UTC().Format(time.RFC3339)
+	busy := "until its deadline (" + at + ")"
+	if d := r.TimeoutAt.Sub(r.CreatedAt).Round(time.Minute); d > 0 {
+		busy = "for the whole " + stepup.HumanDuration(d) + " it had (until " + at + ")"
+	}
+	return "it was never delivered: the session stayed busy " + busy + ", and its queued message was cancelled unsent"
+}
+
+// TimedOutUndelivered records that timed-out routeID's message was NEVER
+// pasted into the session: its error becomes RouteNeverDeliveredError and,
+// while the chief is still owed its hand-back (TakeHandBack has not taken it),
+// the hand-back says so instead of TimeOutRoute's "no answer came by". The
+// caller's evidence is a send-queue Cancel that succeeded on the route's row
+// AFTER TimeOutRoute: Cancel takes only a row still queued, and a row is
+// queued again after a claim only when nothing reached the host
+// (sendqueue.Outcome.Superseded), so a successful Cancel is proof no paste
+// happened — and, the route being timed_out by then, none can
+// (internal/api's sendQueueRoutedGate). noted is false — and nothing changes
+// — for a route that is not timed_out.
+func (s *PGStore) TimedOutUndelivered(ctx context.Context, routeID string) (r Route, noted bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := lockRoute(ctx, tx, routeID)
+		if err != nil {
+			return err
+		}
+		r = cur
+		if cur.State != RouteTimedOut {
+			return nil
+		}
+		// handback is rewritten only while it is still owed: a hand-back already
+		// taken was delivered in TimeOutRoute's words, and is not owed twice.
+		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET error = $2,
+			handback = CASE WHEN handback IS NULL THEN NULL ELSE $3 END WHERE route_id = $1 RETURNING `+routeCols,
+			routeID, RouteNeverDeliveredError, clampHandBack(routeNeverDeliveredHandBack(cur)))); err != nil {
+			return err
+		}
+		noted = true
+		return audit(ctx, tx, "session_route.undelivered", RouteObject(routeID), map[string]any{
+			"send_queue_id": cur.SendQueueID})
+	})
+	return r, noted, err
 }
 
 // DueRoute is one route the sweep must act on, and whose: a ROUTED one past
