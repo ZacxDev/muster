@@ -240,3 +240,50 @@ func TestTheToollessHeaderStartsAToollessCLI(t *testing.T) {
 		}
 	}
 }
+
+// 🔴 A RESTARTED TOOL-LESS CLI IS STILL TOOL-LESS (lanes.go: "Read on every
+// start, so a restart or a resume is tool-less too"). A lane's CLI killed with
+// no SessionEnd (SIGKILL, OOM) is respawned by its supervisor; the command line
+// the terminal is handed for that RESPAWN — not a re-derivation — must carry
+// the flags exactly as the first start did, and an operator lane's respawn must
+// still carry none. The whole argv of both starts is compared literally.
+func TestARespawnedToollessLaneIsStillToolless(t *testing.T) {
+	for _, c := range []struct {
+		name, key string
+		mode      laneMode
+		want      string
+	}{
+		{name: "check lane", key: "agent:chief:webchat:nudge:3333333333333333", mode: laneMode{ephemeral: true, toolless: true},
+			want: "env CCD_LANE=%id claude --tools= --strict-mcp-config --session-id %uuid"},
+		{name: "operator lane", key: "sess-r",
+			want: "env CCD_LANE=%id claude --session-id %uuid"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pane := newKillablePane()
+			l := testLanes(t, 1)
+			l.newTerm = func(string) laneTerminal { return pane }
+			l.tweak = fastRestarts
+			ln, f := l.acquireIn(context.Background(), c.key, "", "", c.mode)
+			if f != nil {
+				t.Fatalf("acquire: %v", f)
+			}
+			t.Cleanup(ln.stop)
+			waitUntil(t, "the first start", func() bool { _, ok := ln.sup.inputPane(); return ok })
+			killAndRespawn(t, pane, ln.sup)
+			l.release(ln)
+
+			want := strings.NewReplacer("%id", laneID(c.key), "%uuid", laneUUID(c.key)).Replace(c.want)
+			pane.mu.Lock()
+			argvs := slices.Clone(pane.argvs)
+			pane.mu.Unlock()
+			if len(argvs) != 2 {
+				t.Fatalf("precondition: %d starts recorded (%q), want the first start and one respawn", len(argvs), argvs)
+			}
+			for i, what := range []string{"first start", "respawn"} {
+				if got := strings.Join(argvs[i], " "); got != want {
+					t.Errorf("%s argv\n got  %s\n want %s", what, got, want)
+				}
+			}
+		})
+	}
+}
