@@ -442,6 +442,8 @@ func (r *serveRig) checkChat(key, p string) (string, error) {
 	h := http.Header{}
 	h.Set(agents.HeaderCCSession, key)
 	h.Set(agents.HeaderCCEphemeral, "1")
+	// As muster's check route sets them (internal/api withRoute): always both.
+	h.Set(agents.HeaderCCToolless, "1")
 	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Runtime: agents.SessionRuntimeClaudeCode, Header: h})
 	return mustersGatewayNoT(r.gwAddr).Chat(ctx, contractAgent, key, p, nil)
 }
@@ -449,8 +451,11 @@ func (r *serveRig) checkChat(key, p string) (string, error) {
 // 🔴 A CHIEF STALL CHECK'S LANE IS THROWAWAY, on real tmux through the whole
 // binary and muster's own client:
 //
-//   - its turn is answered by a new CLI started with --session-id and no
-//     --model, its prompt is in that lane's transcript only (never the
+//   - its turn is answered by a new CLI started TOOL-LESS (toollessArgs:
+//     `--tools= --strict-mcp-config`) with --session-id and no --model — every
+//     hook ccd drives a turn by (SessionStart, UserPromptSubmit, Stop) still
+//     arrives, or the turn would not be answered — while an operator lane's CLI
+//     starts with neither flag; its prompt is in that lane's transcript only (never the
 //     primary's, the operator's conversation with the chief), and /healthz
 //     names the lane ephemeral while the turn runs;
 //   - once the turn is over its tmux session — the CLI with it — is gone, and
@@ -494,8 +499,8 @@ func TestTmuxLaneACheckLaneIsStoppedAfterItsTurnAndNeverStopsAnOperatorLane(t *t
 	if has(p, "SLOW stall check one") || !has(p, "operator talks to the chief") {
 		t.Errorf("the primary's transcript holds the stall check: %q", p)
 	}
-	if want := fmt.Sprintf("lane=%s args=[\"--session-id\" %q]", laneID(k1), laneUUID(k1)); !strings.Contains(r.argvLog(t), want) {
-		t.Errorf("no fresh CLI started as %s; argv log:\n%s", want, r.argvLog(t))
+	if want := fmt.Sprintf("lane=%s args=[\"--tools=\" \"--strict-mcp-config\" \"--session-id\" %q]", laneID(k1), laneUUID(k1)); !strings.Contains(r.argvLog(t), want) {
+		t.Errorf("no fresh TOOL-LESS CLI started as %s; argv log:\n%s", want, r.argvLog(t))
 	}
 
 	r.mustLaneChat(t, "sess-a", "opus", "a1")
@@ -509,6 +514,16 @@ func TestTmuxLaneACheckLaneIsStoppedAfterItsTurnAndNeverStopsAnOperatorLane(t *t
 		if !r.hasTmuxSession("cc-" + laneID(k)) {
 			t.Errorf("OPERATOR LANE %s STOPPED FOR A CHECK; ccd log:\n%s", k, r.logs.String())
 		}
+	}
+	// An operator lane's CLI keeps its tools: no line of the argv log that is
+	// not the check's carries a tool-less flag.
+	for _, line := range strings.Split(strings.TrimSpace(r.argvLog(t)), "\n") {
+		if !strings.Contains(line, "lane="+laneID(k1)+" ") && (strings.Contains(line, "--tools") || strings.Contains(line, "--strict-mcp-config")) {
+			t.Errorf("A CLI THAT IS NOT THE CHECK'S STARTED TOOL-LESS: %s", line)
+		}
+	}
+	if n := strings.Count(r.argvLog(t), "lane="+laneID("sess-a")+" "); n != 1 {
+		t.Errorf("precondition: operator lane sess-a started %d times in the argv log, want 1", n)
 	}
 	if r.hasTmuxSession("cc-" + laneID(k2)) {
 		t.Error("the refused check started a CLI")

@@ -46,7 +46,7 @@ func (c *nudgeCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	c.turns = append(c.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
 		ccSession: r.Header.Get("X-Muster-CC-Session"), ccModel: r.Header.Get("X-Muster-CC-Model"),
-		ccEphemeral: r.Header.Get("X-Muster-CC-Ephemeral")})
+		ccEphemeral: r.Header.Get("X-Muster-CC-Ephemeral"), ccToolless: r.Header.Get("X-Muster-CC-Toolless")})
 	full, notReady, reply := c.full, c.notReady, c.reply
 	c.mu.Unlock()
 	if notReady && r.Header.Get("X-Muster-CC-Session") != "" {
@@ -127,7 +127,10 @@ func newLaneNudgeFixture(t *testing.T, kind string) (*nudgeFixture, *nudgeCCD) {
 // the chief, which is where a turn without that header goes. No model header:
 // the lane starts on the pod's default model, as the primary does. And it is
 // marked a throwaway check (X-Muster-CC-Ephemeral: 1), so ccd stops its CLI
-// once its turn is over and never stops an operator's session to make room.
+// once its turn is over and never stops an operator's session to make room —
+// and TOOL-LESS (X-Muster-CC-Toolless: 1), so ccd starts that CLI with no
+// built-in tool and no MCP server: a transcript quoted in the check's prompt
+// cannot steer the chief into calling one.
 func TestChiefNudgeOnAClaudeCodeChiefRunsInALaneOfItsOwn(t *testing.T) {
 	f, ccd := newLaneNudgeFixture(t, agents.KindClaudeCode)
 	if n := f.pass(t); n != 1 {
@@ -152,6 +155,9 @@ func TestChiefNudgeOnAClaudeCodeChiefRunsInALaneOfItsOwn(t *testing.T) {
 	}
 	if got.ccEphemeral != "1" {
 		t.Fatalf("X-Muster-CC-Ephemeral %q, want \"1\": without it ccd keeps the check's CLI and may stop an operator's session for it", got.ccEphemeral)
+	}
+	if got.ccToolless != "1" {
+		t.Fatalf("X-Muster-CC-Toolless %q, want \"1\": without it ccd starts the check's CLI with the chief's full tool set", got.ccToolless)
 	}
 }
 
@@ -195,7 +201,7 @@ func TestChiefNudgeOnAGatewayChiefCarriesNoLaneHeader(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("turns %v, want 1", turns)
 	}
-	if got := turns[0]; !strings.HasPrefix(got.key, "agent:"+f.boss.Name+":webchat:nudge:") || got.ccSession != "" || got.ccModel != "" || got.ccEphemeral != "" {
+	if got := turns[0]; !strings.HasPrefix(got.key, "agent:"+f.boss.Name+":webchat:nudge:") || got.ccSession != "" || got.ccModel != "" || got.ccEphemeral != "" || got.ccToolless != "" {
 		t.Fatalf("gateway chief's check: %v, want its own session key and no claude-code route", got)
 	}
 }

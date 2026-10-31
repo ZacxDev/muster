@@ -30,7 +30,7 @@ func TestACheckLaneReleaseNeverStopsItsReplacement(t *testing.T) {
 	ctx := context.Background()
 	key := "agent:chief:webchat:nudge:feedfacefeedface"
 
-	a, f := l.acquireIn(ctx, key, "", "", true)
+	a, f := l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
@@ -42,7 +42,7 @@ func TestACheckLaneReleaseNeverStopsItsReplacement(t *testing.T) {
 		t.Fatalf("precondition: A's CLI ended: in set=%v kills=%d, want dropped and killed once", l.get(a.id) != nil, panes[0].kills())
 	}
 	// The retry for the same key starts lane B: same id, same tmux name.
-	b, f := l.acquireIn(ctx, key, "", "", true)
+	b, f := l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
@@ -115,12 +115,12 @@ func TestALateSessionKillSparesAReplacement(t *testing.T) {
 	}
 	ctx := context.Background()
 	key := "agent:chief:webchat:nudge:5ca1ab1e5ca1ab1e"
-	a, f := l.acquireIn(ctx, key, "", "", true)
+	a, f := l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
 	l.release(a) // stopped while its new-session is still running
-	b, f := l.acquireIn(ctx, key, "", "", true)
+	b, f := l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
