@@ -148,40 +148,74 @@ func TestOnlyThePrimaryProcessSessionStartIsRecorded(t *testing.T) {
 // passes without it), and with CLAUDE_CODE_ENTRYPOINT unset (the end-to-end
 // check is TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels).
 func TestEveryArgvIsExecdWithoutAnInheritedEntrypoint(t *testing.T) {
-	const live = " --system-prompt-snapshot off"
-	if got := strings.Join(execArgv([]string{"claude"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT ENABLE_TOOL_SEARCH=false claude"+live {
+	if got := strings.Join(execArgv([]string{"claude"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT claude" {
 		t.Errorf("lone argv: %q", got)
 	}
-	if got := strings.Join(execArgv([]string{"env", "CCD_LANE=x", "claude", "--resume", "id"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT ENABLE_TOOL_SEARCH=false env CCD_LANE=x claude --resume id"+live {
+	if got := strings.Join(execArgv([]string{"env", "CCD_LANE=x", "claude", "--resume", "id"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT env CCD_LANE=x claude --resume id" {
 		t.Errorf("argv: %q", got)
 	}
 }
 
-// 🔴 Every CLI ccd starts — the primary and each lane, fresh or resumed — runs
-// with tool search off and without the system-prompt snapshot, so a resumed
-// conversation is sent the tool schemas muster serves now, not the ones it first
-// loaded (liveToolsEnv in tmux.go has the measurements). This runs execArgv's
-// command line for real, with a stand-in CLI printing the environment and
-// arguments it got — and with ENABLE_TOOL_SEARCH=true inherited, which the start
-// must override. Through tmux and `ccd serve`, the primary's and each lane's
-// starts are checked in TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels.
-func TestEveryCLIStartSendsLiveToolSchemas(t *testing.T) {
-	argv := execArgv([]string{"env", "CCD_LANE=x", "claude", "--resume", "id"})
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(), "ENABLE_TOOL_SEARCH=true")
-	// `env` resolves "claude" on PATH: a script standing in for it prints what it got.
+// runExecArgv runs execArgv(argv) for real, with stand-in programs on PATH ahead
+// of the system's, and ENABLE_TOOL_SEARCH=true inherited (as a start must not
+// pass it on); it returns the combined output and the exit error.
+func runExecArgv(t *testing.T, argv []string, stubs map[string]string) (string, error) {
+	t.Helper()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "claude"),
-		[]byte("#!/bin/sh\necho \"ets=$ENABLE_TOOL_SEARCH args=$*\"\n"), 0o755); err != nil {
-		t.Fatal(err)
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	cmd.Env = append(cmd.Env, "PATH="+bin+":"+os.Getenv("PATH"))
-	out, err := cmd.Output()
+	full := execArgv(argv)
+	cmd := exec.Command(full[0], full[1:]...)
+	cmd.Env = append(os.Environ(), "ENABLE_TOOL_SEARCH=true", "PATH="+bin+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// 🔴 THE TERMINAL LAYER ADDS NO CLAUDE FLAG. tmuxTerminal starts whatever it is
+// given (the tmuxit suite starts `sleep 60` through it); a claude-only flag
+// appended there makes `sleep` exit 1 at once ("unrecognized option") and the
+// pane die. The real `sleep` is run, not a stand-in.
+func TestANonClaudeCommandGetsNoClaudeSettings(t *testing.T) {
+	out, err := runExecArgv(t, []string{"sleep", "0"}, nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("`sleep 0` through execArgv failed: %v: %s", err, out)
 	}
-	if got, want := strings.TrimSpace(string(out)), "ets=false args=--resume id --system-prompt-snapshot off"; got != want {
-		t.Errorf("the CLI started with\n  %s\nwant\n  %s", got, want)
+	if got := strings.Join(execArgv([]string{"sleep", "60"}), " "); strings.Contains(got, "--system-prompt-snapshot") || strings.Contains(got, "ENABLE_TOOL_SEARCH") {
+		t.Errorf("a non-claude command was given claude's settings: %q", got)
+	}
+}
+
+// 🔴 EVERY CLAUDE START — the primary's and each lane's, fresh or resumed — runs
+// with tool search off and without the system-prompt snapshot, so a resumed
+// conversation gets the tool schemas muster serves now (claudeArgv). Checked on
+// the command the supervisor STARTS, run for real through execArgv with a
+// stand-in claude that prints what it got; the lane's form is the one argvFn
+// gives the same supervisor (lanes.newLane).
+func TestEveryClaudeStartSendsLiveToolSchemas(t *testing.T) {
+	stub := map[string]string{"claude": `echo "ets=$ENABLE_TOOL_SEARCH lane=$CCD_LANE args=$*"`}
+	for _, c := range []struct {
+		name, want string
+		argvFn     func() ([]string, string)
+	}{
+		{"primary, fresh", "ets=false lane= args=--system-prompt-snapshot off", nil},
+		{"lane, resumed", "ets=false lane=x args=--model haiku --resume id --system-prompt-snapshot off",
+			func() ([]string, string) {
+				return []string{"env", "CCD_LANE=x", "claude", "--model", "haiku", "--resume", "id"}, modeContinue
+			}},
+	} {
+		s := newSupervisor(&fakePane{}, "claude", t.TempDir(), t.TempDir())
+		s.argvFn = c.argvFn
+		argv, _ := s.cliArgv()
+		out, err := runExecArgv(t, argv, stub)
+		if err != nil {
+			t.Fatalf("%s: %v: %s", c.name, err, out)
+		}
+		if out != c.want {
+			t.Errorf("%s: the CLI started with\n  %s\nwant\n  %s", c.name, out, c.want)
+		}
 	}
 }
 

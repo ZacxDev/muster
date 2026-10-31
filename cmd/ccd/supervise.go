@@ -226,6 +226,34 @@ func (s *supervisor) argv() ([]string, string) {
 	return []string{s.bin}, modeFresh
 }
 
+// cliArgv is the command line the supervisor starts (and restarts) its CLI with:
+// argv's choice — the primary's, or a lane's through argvFn — given
+// claudeArgv's settings. Every claude start ccd makes is a supervisor's, so this
+// is the one place they are added; the terminal layer (execArgv) runs whatever
+// it is given and adds no claude flag.
+func (s *supervisor) cliArgv() ([]string, string) {
+	argv, mode := s.argv()
+	return claudeArgv(argv), mode
+}
+
+// claudeArgv is a claude command line with the settings that make a resumed
+// conversation get the tool schemas its MCP servers serve NOW: `env
+// ENABLE_TOOL_SEARCH=false <argv…> --system-prompt-snapshot off` (env execs it, so
+// the pane's process is still the CLI).
+//
+// 🔴 By default the CLI replays the tool definitions a conversation first saw —
+// a deferred tool's from the transcript's deferred_tools_record, an inline one's
+// from its prompt_snapshot — so the chief kept route_to_session without the
+// task_id muster had since added. On the pinned CLI neither setting alone, nor
+// `"alwaysLoad": true` on the server, fixed that; both together did, on every
+// resume. The measurements are in this change's commit message.
+// ⚠ Cost: every MCP server's tools in context on every turn (ccd seeds only
+// muster's), and the system prompt rendered per request.
+func claudeArgv(argv []string) []string {
+	out := append([]string{"env", "ENABLE_TOOL_SEARCH=false"}, argv...)
+	return append(out, "--system-prompt-snapshot", "off")
+}
+
 // inputPane is the pane the server pastes into: the CLI's paneRef, and only while
 // the supervisor believes the CLI in it is running. Before the first start,
 // between an exit and its restart, in crash_loop and in terminal_lost it reports
@@ -383,7 +411,7 @@ func (s *supervisor) run(ctx context.Context) error {
 	if err := stripSettingsFile(s.configDir, log.Writer()); err != nil {
 		return fmt.Errorf("before starting the CLI: %w", err)
 	}
-	argv, mode := s.argv()
+	argv, mode := s.cliArgv()
 	pane, err := s.pane.Start(ctx, s.workspace, argv)
 	if err != nil {
 		return err
@@ -473,7 +501,7 @@ func (s *supervisor) run(ctx context.Context) error {
 			s.restartFailed("before restarting the CLI: " + err.Error())
 			continue
 		}
-		argv, mode = s.argv()
+		argv, mode = s.cliArgv()
 		if err := s.pane.Respawn(ctx, pane, s.workspace, argv); err != nil {
 			if errors.Is(err, errTerminalLost) {
 				s.lose(err)

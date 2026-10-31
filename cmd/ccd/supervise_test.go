@@ -153,7 +153,11 @@ func TestARestartResumesTheConversationTheFirstRunCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	const id = "11111111-2222-4333-8444-555555555555"
-	want := [][]string{{"claude"}, {"claude", "--resume", id}, {"claude", "--resume", id}}
+	// Every start is claudeArgv's: tool search off and no system-prompt snapshot.
+	live := func(args ...string) []string {
+		return append(append([]string{"env", "ENABLE_TOOL_SEARCH=false"}, args...), "--system-prompt-snapshot", "off")
+	}
+	want := [][]string{live("claude"), live("claude", "--resume", id), live("claude", "--resume", id)}
 	if !reflect.DeepEqual(pane.starts, want) {
 		t.Fatalf("starts %q, want %q", pane.starts, want)
 	}

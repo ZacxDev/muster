@@ -160,9 +160,10 @@ func TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot(t *testing
 	// What the CLI resumes, read the way the fake CLI reads it as it starts.
 	var got string
 	switch {
-	case len(argv) == 3 && argv[1] == "--resume":
-		got = argv[2]
-	case len(argv) == 2 && argv[1] == "--continue":
+	// argv is claudeArgv's: env ENABLE_TOOL_SEARCH=false claude … --system-prompt-snapshot off.
+	case len(argv) == 7 && argv[3] == "--resume":
+		got = argv[4]
+	case len(argv) == 6 && argv[3] == "--continue":
 		got = fakeContinueTarget(dir)
 	}
 	if got != primary {
