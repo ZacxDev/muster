@@ -73,11 +73,22 @@ func withSessionRoute(ctx context.Context, a agents.Agent, sess agents.ChatSessi
 	return withRoute(ctx, a, sess, false)
 }
 
-// withRoute builds a session's route: the one place it is built. ephemeral
-// adds agents.HeaderCCEphemeral to a claude-code route, and ccd then stops the
-// session's CLI once its turn is over and never stops another session's CLI to
-// make room for it. Only a chief's stall check asks for that (nudgeRoute).
-func withRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession, ephemeral bool) context.Context {
+// withRoute builds a session's route: the one place it is built. check marks
+// the route a CHECK's (only a chief's stall check asks, nudgeRoute) and adds
+// two headers to a claude-code route, always together:
+//
+//   - agents.HeaderCCEphemeral: ccd stops the session's CLI once its turn is
+//     over and never stops another session's CLI to make room for it;
+//   - agents.HeaderCCToolless: ccd starts the session's CLI with NO tools — no
+//     built-in tool, no MCP server — so a check prompt quoting other sessions'
+//     transcripts cannot steer the chief into calling one; its only effect is
+//     its text reply, which muster parses and validates.
+//
+// 🔴 ONE PARAMETER FOR BOTH, so a check route cannot be built throwaway but
+// with tools. ccd reads them as two headers because they are two properties
+// of a lane (its lifetime, its capability), not because muster ever wants one
+// without the other.
+func withRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession, check bool) context.Context {
 	h := http.Header{}
 	switch sess.Runtime {
 	case agents.SessionRuntimeClaudeCode:
@@ -85,8 +96,9 @@ func withRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession, eph
 		if sess.Model != "" {
 			h.Set(agents.HeaderCCModel, sess.Model)
 		}
-		if ephemeral {
+		if check {
 			h.Set(agents.HeaderCCEphemeral, "1")
+			h.Set(agents.HeaderCCToolless, "1")
 		}
 	default:
 		return ctx

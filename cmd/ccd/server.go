@@ -688,8 +688,11 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// primary — every request without the header, as before (lanes.go).
 	target := s
 	if key := r.Header.Get(headerCCSession); key != "" {
-		ephemeral := r.Header.Get(headerCCEphemeral) == "1"
-		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), ephemeral)
+		mode := laneMode{
+			ephemeral: r.Header.Get(headerCCEphemeral) == "1",
+			toolless:  r.Header.Get(headerCCToolless) == "1",
+		}
+		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), mode)
 		if f != nil {
 			writeFailure(w, f)
 			return
@@ -982,6 +985,14 @@ type health struct {
 	// Repo is the agent's repository checkout (checkout.go); absent when the
 	// pod was given none. Reported, never gating.
 	Repo *checkoutState `json:"repo,omitempty"`
+	// ToollessLanes says this ccd honours X-Muster-CC-Toolless (lanes.go "A
+	// CHECK LANE HAS NO TOOLS"), for an operator to read by hand after
+	// restarting a chief onto a new image (docs/chief-nudges.md, "Rolling
+	// out"): a ccd that predates it has no such field, and would start a
+	// check's CLI with every tool. True whenever ccd
+	// runs lanes (one with none refuses every session turn anyway). Reported,
+	// never gating; muster does not read it.
+	ToollessLanes bool `json:"toolless_lanes,omitempty"`
 	authSnapshot
 }
 
@@ -1036,6 +1047,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	h.Session = s.sessionState(started, ended)
 	if s.lanes != nil {
 		h.Lanes = s.lanes.health()
+		h.ToollessLanes = true
 	}
 	h.OK = (h.Terminal == "ok" || waitingCheckout) && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
@@ -1093,10 +1105,11 @@ func credentialVisible(configDir string) func() bool {
 // (agents.IsJobWorktreeDir) and an existing directory, not a symlink — so the
 // header cannot point a CLI anywhere else on the volume (checkJobDir).
 //
-// ephemeral (X-Muster-CC-Ephemeral: 1) makes it a throwaway check lane
+// mode.ephemeral (X-Muster-CC-Ephemeral: 1) makes it a throwaway check lane
 // (lanes.go): refused rather than stopping an operator lane at the cap, and
 // stopped when released — here too, when its CLI never reached its prompt.
-func (s *server) laneFor(ctx context.Context, key, model, workdir string, ephemeral bool) (*lane, *failure) {
+// mode.toolless (X-Muster-CC-Toolless: 1) starts its CLI with no tools.
+func (s *server) laneFor(ctx context.Context, key, model, workdir string, mode laneMode) (*lane, *failure) {
 	if s.lanes == nil {
 		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
 			"or CCD_MAX_SESSIONS is 0), so it cannot run a session of its own for " + strconv.Quote(key))
@@ -1118,7 +1131,7 @@ func (s *server) laneFor(ctx context.Context, key, model, workdir string, epheme
 			return nil, f
 		}
 	}
-	ln, f := s.lanes.acquireIn(ctx, key, model, workdir, ephemeral)
+	ln, f := s.lanes.acquireIn(ctx, key, model, workdir, mode)
 	if f != nil {
 		return nil, f
 	}
