@@ -324,8 +324,21 @@ These are code, not instructions to the chief:
   Shadow mode is not capped and does not count: it records what it would send
   (operator decision).
 - **Still stalled.** Right before anything is sent or asked, muster checks the
-  session is still in the same idle streak; if not, the decision is recorded as
+  session is still in the same idle streak; if it was read and is not (not
+  idle, a newer streak, another conversation in the window, a window its
+  connected host no longer lists), the decision is recorded as
   `suppressed:moved_on`.
+- **Unknown is not moved on.** When the session's state cannot be read — its
+  host's connection dropped, the host has sent no window list yet (its first
+  read failed), or it does not report status — nothing is
+  decided on it: a nudge or ask about to be sent is held (nothing recorded; the
+  streak is judged again on a later pass), an open ask stays open, and a queued
+  nudge or relay goes back to the queue to be tried again. The existing bounds
+  still end a hold: an ask's own expiry, the send queue's 7-day limit on a
+  queued message, and the 2-hour relay bound. One limit: a host whose window
+  list arrives but whose process read failed (on macOS, `ps` failing) reports
+  no Claude Code in its windows, which muster cannot tell from Claude Code
+  having exited, so it counts as moved on.
 - **Never into a prompt.** A nudge to a window goes through the [send
   queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle), which
   waits for idle and refuses while Claude Code is waiting on a prompt or has
@@ -345,7 +358,8 @@ window's queue, and cannot be edited or retried); to an agent it is sent as a
 turn when no other turn of the agent's is running. When muster pastes a queued
 nudge it checks again that the feature is on, you are live, the window still
 holds the same conversation, and the session is still in the idle streak the
-chief judged.
+chief judged; if it cannot read the session's state, the nudge stays queued and
+is tried again.
 
 **An ask** is an attention ask on your queue, asked by *your chief*, naming the
 session's focus title and where it runs, the chief's question and its options.
@@ -355,7 +369,9 @@ word** by the sweep, which the answer wakes (queued for a window, a turn for an
 agent). Nothing else is added to it. An answer given through a mirrored
 session's `attention_answer` is recorded and **not** relayed, since a session
 fed outside text could write it. If the session moves on before you answer, the
-ask is withdrawn.
+ask is withdrawn — only on a state muster actually read: while the session's
+host is disconnected (or its state otherwise cannot be read) the ask stays
+open.
 
 A window's relay is tied to the stall it answers, as an agent's is: if you
 typed into the window after answering (a newer turn), the relay is refused at

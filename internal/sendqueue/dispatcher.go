@@ -368,8 +368,8 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 		}
 		if o.Superseded {
 			// Nothing reached the host: queued again, decided on afresh.
-			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was superseded by a newer turn before it was pasted; queued again",
-				it.ID, len(it.Body), it.Target, it.Owner)
+			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was not pasted (%s); queued again",
+				it.ID, len(it.Body), it.Target, it.Owner, o.Detail)
 			continue
 		}
 		if o.Sent {

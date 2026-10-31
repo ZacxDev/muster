@@ -48,6 +48,9 @@ type nudgeGateway struct {
 	checks []string // "<agent> <key>"
 	prompt []string
 	turns  []string // "<agent> <text>"
+	// during, when set, runs inside each stall check before it answers: what
+	// changes while the chief is thinking (chief_nudge_unknown_pg_test.go).
+	during func()
 }
 
 func (g *nudgeGateway) Chat(_ context.Context, a agents.Agent, key, msg string, _ func(string)) (string, error) {
@@ -55,6 +58,9 @@ func (g *nudgeGateway) Chat(_ context.Context, a agents.Agent, key, msg string, 
 	defer g.mu.Unlock()
 	g.checks = append(g.checks, a.Name+" "+key)
 	g.prompt = append(g.prompt, msg)
+	if g.during != nil {
+		g.during()
+	}
 	if g.fails > 0 {
 		g.fails--
 		return "", errors.New("nudgeGateway: the provider is down")
@@ -804,6 +810,18 @@ func TestChiefNudgeAFailedCallIsRecordedAndEachCheckIsAFreshContext(t *testing.T
 // Attention view. It returns the decision, the two sessions and the answer.
 func liveAgentAsk(t *testing.T, f *nudgeFixture) (chiefnudge.Decision, agents.ChatSession, agents.ChatSession, string) {
 	t.Helper()
+	d, stalled, other := liveAgentAskOpen(t, f)
+	answer := "release, please"
+	rd, hdr := form(url.Values{"answer": {answer}})
+	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
+		t.Fatalf("answer: %d %s", w.Code, w.Body)
+	}
+	return f.one(t), stalled, other, answer
+}
+
+// liveAgentAskOpen is liveAgentAsk up to the open ask, unanswered.
+func liveAgentAskOpen(t *testing.T, f *nudgeFixture) (chiefnudge.Decision, agents.ChatSession, agents.ChatSession) {
+	t.Helper()
 	f.srv.nudgeReadHook = nil
 	f.mirror.windows = nil
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -825,12 +843,7 @@ func liveAgentAsk(t *testing.T, f *nudgeFixture) (chiefnudge.Decision, agents.Ch
 	if d.Outcome != chiefnudge.OutcomeAsked || d.ChatSessionID != stalled.ID || d.Key != chiefnudge.AgentKey(worker.ID, stalled.ID) {
 		t.Fatalf("the ask is not about the stalled conversation %d: %+v", stalled.ID, d)
 	}
-	answer := "release, please"
-	rd, hdr := form(url.Values{"answer": {answer}})
-	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
-		t.Fatalf("answer: %d %s", w.Code, w.Body)
-	}
-	return f.one(t), stalled, other, answer
+	return d, stalled, other
 }
 
 // TestChiefNudgeAnAgentRelayGoesToTheConversationAskedAbout: the owner's

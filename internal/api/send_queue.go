@@ -869,7 +869,16 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 		// (chief_nudge.go), not a sign-in — the feature must still be on, the
 		// owner still live, the decision still waiting on this row, and the
 		// window still holding its conversation.
-		if why := s.sendQueueNudgeGate(ctx, it); why != "" {
+		switch why := s.sendQueueNudgeGate(ctx, it); why {
+		case "":
+		case SendQueueNudgeWait:
+			// The session's state could not be read: nothing reached the
+			// host, so the row goes back to queued for a later pass (the
+			// dispatcher's one way back), not failed. A person's Send now
+			// never requeues (sendqueue.Dispatcher.SendNow), so there it ends
+			// failed with these words.
+			return sendqueue.Outcome{Superseded: true, Detail: why}
+		default:
 			return sendqueue.Outcome{Detail: why}
 		}
 		ctx = stepup.WithAuthTime(ctx, s.stepUpNow())
