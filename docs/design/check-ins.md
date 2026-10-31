@@ -1,9 +1,11 @@
 # Design: check-ins (a periodic report of every session)
 
 **Status: proposal. Nothing here is built.** The operator settled cadence,
-authoring, delivery and contents before this was written; those answers are
-recorded under [Operator decisions](#operator-decisions) and the design follows
-them. Questions still open are under [Open questions](#open-questions).
+authoring, delivery and contents before this was written. On the draft they
+then answered the seven open questions and added one requirement (a tool-less
+narrative lane). All of these are recorded under
+[Operator decisions](#operator-decisions), and the design follows them. No
+questions remain open.
 
 The ask, verbatim: *"Chief occasionally checks all of the current focuses and
 what each session is doing, and then creates a check-in report. This way it
@@ -12,8 +14,9 @@ needing to check each session individually. It also gives us a historical
 record of progress over time."*
 
 Where this page says how muster works today, the code is the authority (see
-[decisions.md](../decisions.md)). It cites `path:line` at commit `b3fef26f`
-(`main`, 2026-10-30).
+[decisions.md](../decisions.md)). It cites `path:line` at commit `d55f5bd4`
+(`main`, 2026-10-30). The cited files are byte-identical to the first draft's
+base, `b3fef26f`.
 
 ## Summary
 
@@ -21,13 +24,13 @@ Where this page says how muster works today, the code is the authority (see
 |---|---|
 | What a check-in is | A row in muster's own tables: a per-session **snapshot** (built in code), the **delta** against the previous full check-in (computed in code), and an optional **chief narrative** whose every item is tied to a snapshotted session by a foreign key |
 | Data layer | Split `buildFleetReport` into a collector and its encoders, and build check-ins on the collector. One builder, not two |
-| When | Owner-chosen local times (default `09:00,13:00,17:00`) plus **Check in now** and a chief tool. A scheduled run with no change records a one-line "no change" entry and makes no model call |
+| When | `09:00`, `13:00` and `17:00` in the owner's time zone, **every day, weekends included**; times and zone editable per owner. Plus **Check in now** and a chief tool (at most one per 5 minutes and 24 a day per owner). A scheduled run with no change records a one-line "no change" entry and makes no model call |
 | Single run | `UNIQUE (owner_id, slot_at)` plus "one in flight per owner" (a partial unique index). No leader election: muster has none and runs one replica |
-| Narrative | One throwaway ccd lane turn on the chief (the stall-check mechanism, `nudgeRoute`). Strict JSON, validated in code. Any failure publishes the code-only report |
-| Delivery | A **Check-ins** page (history, open any one, compare with any earlier one) and a push whose text is code-computed counts only: `3 moved · 2 stuck · 1 needs you` |
-| Retention | 365 days, configurable. Snapshots are copies, so focus retention never empties a past check-in |
-| Cost | No change: nothing. Full report: one chief turn on about 5–8k tokens of input, which the chief's account pays. No transcript is read |
-| Effort | Six PRs. The first is a pure refactor; check-ins without the chief are usable after the second |
+| Narrative | One throwaway chief turn in a **tool-less** ccd lane (the stall-check mechanism, `nudgeRoute`, plus the tool-less mode a separate PR adds). Strict JSON, validated in code. No confirmed tool-less lane, or any other failure, publishes the code-only report |
+| Delivery | A **Check-ins** page (history, open any one, compare with any earlier one) and a push for **every check-in that changed**, scheduled or manual, whose text is code-computed counts only: `3 moved · 2 stuck · 1 needs you`. An unchanged check-in never pushes |
+| Retention | **Forever.** No sweep. Snapshots are copies, so focus retention never empties a past check-in. About 50–80 MB per owner per year at 30 sessions; bounds under [Storage growth](#storage-growth) |
+| Cost | No change: nothing. Full report: one chief turn on about 5–8k tokens of input, which the chief's account pays. One batched GitHub call for merged state. No transcript is read |
+| Effort | Six PRs plus one prerequisite (the tool-less ccd lane, a separate PR). The first is a pure refactor; check-ins without the chief are usable after the second |
 
 ## Goals
 
@@ -38,7 +41,8 @@ Where this page says how muster works today, the code is the authority (see
   those facts. It never supplies them.
 - **A durable record.** Each check-in keeps its own copy of what it showed.
   Focus retention ([focus.md](../focus.md), "Retention") deletes the source
-  rows within 7 to 30 days; a check-in stays readable after that.
+  rows within 7 to 30 days; a check-in stays readable after that, and is kept
+  for good.
 - **Cheap when idle.** A quiet afternoon costs a row, not a model call.
 - **Never a new way to fail silently.** A chief that is busy, out of lanes, or
   wrong delays or drops the narrative. The report itself is still published.
@@ -102,8 +106,8 @@ on tables under forced row-level security.
 | **stall state** | "stuck" is half the report | the stall rule's inputs (`internal/api/chief_nudge.go:298-361`), below |
 | **all needs-you items** per session | `pendingBySubject` keeps only the newest item per session (`sessions_overview.go:308-325`) | `attentionItems` (`internal/api/attention.go:512`) |
 | a dispatched agent's **task status** | operator decision: dispatched agents with task status | `Agent.NoteID` (`internal/agents/store.go:95`) → the task's status (`internal/taskstatus/taskstatus.go:32-36`) |
-| a dispatched agent's **PRs** | `SessionPRs` is asked about mirrored keys only (`fleet_report.go:273-287`) | no source today. Agents' PRs stay a coverage gap in v1 |
-| PR **merged** state | operator decision: "PRs opened/merged" | not recorded: `session_prs.kind` is `gh-pr-create` or `git-push` only (`0055_session_prs.sql:21`). See [Phase 6](#phased-plan) |
+| a dispatched agent's **PRs** | `SessionPRs` is asked about mirrored keys only (`fleet_report.go:273-287`) | no source today. Agents' PRs are a coverage gap until PR 6 attributes them by repository and branch |
+| PR **merged** state | operator decision: "PRs opened/merged", shown (decision 7) | not recorded: `session_prs.kind` is `gh-pr-create` or `git-push` only (`0055_session_prs.sql:21`). One batched GitHub read per check-in; see [Merged PRs](#merged-prs) |
 | **deltas** | the whole point of "since the last check-in" | new: a pure function over two snapshots |
 | no cap-by-truncation | a check-in must not silently drop sessions | its own bound (200 sessions, `MaxWindowSubjects`), stated in coverage |
 
@@ -182,16 +186,19 @@ checkin_now tool ─────┘        │                                on
                                ▼
                  status=published (the code report is live now)
                                ▼
-                 narrative: one ephemeral chief lane turn ──▶ validate ──▶ checkin_items (FK)
-                               │ busy/lanes full: retry ≤ 20m; error: record
+                 narrative: one ephemeral, TOOL-LESS chief lane turn ──▶ validate ──▶ checkin_items (FK)
+                               │ lane not confirmed tool-less: off; busy/lanes full: retry ≤ 20m; error: record
                                ▼
-                 push once (counts only), when the narrative settles or at 20m
+                 changed? push once (counts only), when the narrative settles or at 20m
+                 (scheduled, manual and chief alike; unchanged → no push)
 ```
 
 ### Data model
 
-Migration numbers: `0066` is the highest on `main`. Open PR #370 adds
-`0067_postgres_connector.sql`, so this proposes **`0068`** and **`0069`**.
+Migration numbers, re-verified against `origin/main` at `d55f5bd4`:
+`0066_cc_account_failover.sql` is the highest on `main`. Open PR #370 adds
+`0067_postgres_connector.sql`, and no other open PR or remote branch adds a
+migration numbered `0067` or above. This proposes **`0068`** and **`0069`**.
 Re-check both when implementing.
 
 Both migrations follow the `0060`/`0064` shape. `owner_id` defaults to the
@@ -241,9 +248,9 @@ checkin_sessions (                       -- the snapshot: a COPY, never a refere
   idle_since   TIMESTAMPTZ,
   focus_title  TEXT, focus_description TEXT, focus_at TIMESTAMPTZ,
   focus_titles JSONB NOT NULL DEFAULT '[]',  -- the window's distinct titles with times (≤ 20)
-  prs          JSONB NOT NULL DEFAULT '[]',  -- ["owner/repo#12", …] (+ state when known)
+  prs          JSONB NOT NULL DEFAULT '[]',  -- [{ref:"owner/repo#12", state:"open"|"merged"|"closed"|"unknown", merged_at?}]
   task         JSONB,                        -- {id, title, status} for a dispatched agent
-  needs_you    JSONB NOT NULL DEFAULT '[]',  -- [{kind, since, text≤200, key}]
+  needs_you    JSONB NOT NULL DEFAULT '[]',  -- [{kind, since, text≤200, key}], ≤ 10 (the rest counted in coverage)
   delta        JSONB NOT NULL DEFAULT '{}',  -- the flags below, vs base
   first_seen   TIMESTAMPTZ, last_seen TIMESTAMPTZ,
   PRIMARY KEY (checkin_id, subject)
@@ -268,24 +275,64 @@ This does not depend on matching words; the database refuses the row.
 **`0069_checkin_preferences.sql`**: one row per owner, in the shape of
 `chief_preferences` (`0060`): `enabled BOOLEAN`, `tz TEXT` (an IANA name,
 validated by `time.LoadLocation` on write), `times TEXT[]` (`HH:MM`, 1 to 6
-entries, sorted, distinct), `updated_at`. **No row means off**, so owners opt
-in. That is the rollout gate.
+entries, sorted, distinct; default `{09:00,13:00,17:00}`), `updated_at`. The
+times apply **every day of the week**. There is no weekday mask (decision 1);
+an owner who wants quiet weekends turns check-ins off. **No row means off**, so
+owners opt in. That is the rollout gate.
 
-**Size.** A snapshot row is about 1–2 KB. At 4 full check-ins a day and 30
-sessions, that is about 200 KB a day, or about 70 MB a year. A no-change entry
-is one small `checkins` row with no snapshot copy.
+Every `owner_id` here is `REFERENCES users(id)` with no `ON DELETE` action,
+the same as every other owner table (`0060`, `0064`). See
+[Accounts disabled or deleted](#accounts-disabled-or-deleted).
 
-### Retention (recommended: 365 days)
+### Retention: forever (decision 5)
 
-A daily sweep deletes check-ins older than `MUSTER_CHECKIN_RETENTION`
-(default `8760h`). Snapshot and item rows cascade. A deleted base sets its
-dependants' `base_id` to NULL; their stored deltas stay. **Why a year and not
-forever:** the record is the point and a year costs about 70 MB, but snapshots
-copy focus descriptions. Those are model summaries of transcripts and can hold
-anything a session wrote. Keeping them forever would quietly undo the focus
-feature's 30-day bound on that text. A year is long enough for a "what did we
-do this quarter" question. `0` means keep forever, for an operator who chooses
-that.
+**No sweep.** Check-ins, their snapshots and their narrative items are kept
+until the owner's account is purged by hand (below). There is no
+`MUSTER_CHECKIN_RETENTION`. `base_id` keeps `ON DELETE SET NULL` so that a
+purge, or a later compaction, can delete a base without failing; a dependant's
+stored delta stays.
+
+**The trade-off, accepted by the operator.** Snapshots copy focus
+descriptions, which are model summaries of transcripts and can hold anything a
+session wrote. Keeping them forever means that text outlives the focus
+feature's own 30-day bound ([focus.md](../focus.md), "Retention"). It stays
+owner-scoped under FORCE row-level security, readable only by its owner and by
+system passes.
+
+#### Storage growth
+
+What bounds it, per owner:
+
+| factor | bound | where it comes from |
+|---|---|---|
+| snapshot row | typically about 1–2 KB (an estimate; **measure it in PR 2** on a real fleet); at most about 10 KB when every capped field is full | title ≤ 300 runes and description ≤ 600 (`internal/focus/focus.go:56-58`), ≤ 20 window titles of ≤ 300 each, ≤ 10 needs-you items of ≤ 200 characters, PR refs, about 300 B of fixed columns |
+| sessions per check-in | typically about 30; at most 200 | `MaxWindowSubjects` (`internal/focus/history_window.go:37`) |
+| full check-ins per day | 3 scheduled, plus manual/chief ones | the schedule (decision 1); manual and chief are limited to one per 5 minutes and **24 per owner per day** |
+| no-change entries | about 0.3 KB each, no snapshot | one `checkins` row |
+
+**Typical estimate (30 sessions, 1.5 KB a row):** 45 KB per full check-in.
+Three a day, every day, all changed: about 135 KB a day, or **about 50 MB a
+year**. With two manual check-ins a day as well: about 225 KB a day, or **about
+80 MB a year**. Ten years is roughly 0.5–0.8 GB per owner. No-change entries
+add under 0.5 MB a year.
+
+**Ceiling (every field full, 200 sessions):** 2 MB per check-in. Scheduled
+only, that is 6 MB a day, about 2.2 GB a year. With the manual cap used every
+day, 27 check-ins a day, it is about 54 MB a day, about 20 GB a year. That
+ceiling is why manual and chief check-ins get a daily cap and not only the
+5-minute limit: without it, a chief in a loop could take 288 a day. Postgres
+compresses large `JSONB` and `TEXT` values (TOAST), but these numbers do not
+count on it.
+
+**A later compaction option (noted, not proposed for v1).** If the table
+grows past what the operator wants to keep, or if keeping old focus text
+forever stops being acceptable, a sweep could **thin** snapshots older than N
+days: clear `focus_description`, `focus_titles` and needs-you text, and keep
+the structural columns (state, stall, delta flags, PR refs, task status, focus
+title). That keeps the record of what moved and what was stuck at roughly a
+quarter of the size, and the delta stays readable because it is stored. A
+second option is exporting old months as JSON to object storage and deleting
+the rows. Neither is built until one of those conditions is real.
 
 ### The builder (one collector, two consumers)
 
@@ -327,7 +374,8 @@ principal) calls `collectFleet` with `[base.published_at, now]`, or
    shadow-mode `would_ask` decisions (live ones are already asks). Session-less
    items (reply drafts) become one owner-level count linking to
    `/attention?tab=drafts`. Text is cut to 200 characters with
-   `redact.Secrets`.
+   `redact.Secrets`. At most 10 items per session are copied, newest first;
+   the rest are counted in `coverage`.
 5. **Task** for a dispatched agent: `NoteID` → `{id, title, status}`.
 6. **Repo grouping**, first match wins:
 
@@ -340,11 +388,17 @@ principal) calls `collectFleet` with `[base.published_at, now]`, or
 
    The label is copied into the snapshot, so a session ended last month keeps
    its group after its focus row and hub entry are gone. Agent labels drop the
-   `owner/` prefix to match the chip's short name. Two repositories with the
-   same short name share a group; see the open questions.
-7. **The chief itself is excluded**, as in `fleet_report`. Officers are
-   included as rows and marked as officers. They are never marked
-   "stalled on you": officers escalate through HQ ([chief-nudges.md](../chief-nudges.md)).
+   `owner/` prefix to match the chip's short name. **Known limit, accepted
+   (decision 2):** two repositories with the same short name (`alice/api` and
+   `bob/api`) share one group, `api`. Keeping `owner/name` for agents would
+   instead split one repository across two groups, because a mirrored window's
+   chip carries only the short name. See [Risks](#risks).
+7. **The chief itself is excluded**, as in `fleet_report`. **Officers are
+   shown** (decision 6), as rows marked as officers. They are never marked
+   "stalled on you" and never counted in "needs you" for a stall: officers
+   escalate through HQ ([chief-nudges.md](../chief-nudges.md)). An officer's
+   own `attentionItems` entry, if it has one, is still listed, because that
+   is a real ask.
 
 **Bound, not truncation.** The snapshot holds at most 200 sessions
 (`MaxWindowSubjects`), most recently active first, with `coverage.omitted`
@@ -365,14 +419,16 @@ table-tested. Per subject it computes these flags:
 | `newly_needs_you` / `needs_you_cleared` | the set of needs-you item **keys** grew, or shrank to empty |
 | `state_changed` | `active ↔ waiting` (ended is covered above) |
 | `pr_opened` | a PR ref in `cur.prs` not in `base.prs` |
-| `pr_merged` | a ref's recorded state became `merged` (only once Phase 6 records it) |
+| `pr_merged` | a ref's state became `merged` (read once per check-in; see [Merged PRs](#merged-prs)). A ref whose state is `unknown` sets no flag |
 | `task_changed` | the agent's task status differs |
 
 A check-in has **changed** exactly when any session has any flag set.
-**Deliberately not counted:** a description-only rewrite (the summariser
-rephrases), `last_seen` or `focus_at` moving, a stale focus or focus problem,
-and a host going offline (its sessions' liveness becomes unknown; it is shown
-as a coverage gap, not as "ended").
+**Deliberately not counted:** a description-only rewrite (decision 4: the
+summariser rephrases, so a new description under the same title is not news),
+`last_seen` or `focus_at` moving, a stale focus or focus problem, a PR's state
+going from known to `unknown` (a failed GitHub read), and a host going offline
+(its sessions' liveness becomes unknown; it is shown as a coverage gap, not as
+"ended").
 
 - **Base** = the owner's newest check-in with `status = 'published'`. A
   no-change entry stores no snapshot and records the `base_id` it matched, so
@@ -381,7 +437,7 @@ as a coverage gap, not as "ended").
 - **Scheduled + unchanged** → `status = 'no_change'`. No snapshot copy, no
   model call, no push.
 - **Manual or chief + unchanged** → a full report anyway (the owner asked),
-  with "No change since 13:00" at the top.
+  with "No change since 13:00" at the top, and **no push** (see [Push](#push)).
 
 **The headline is code:** `moved` = sessions with any of `new`,
 `focus_changed`, `pr_opened`, `pr_merged`, `task_changed` or `ended`;
@@ -393,10 +449,12 @@ qualifies for, and the page says so.
 
 `RunCheckinSweep` is a 1-minute ticker started in `startBackgroundLoops`. It
 does nothing unless `MUSTER_CHECKINS=1`. On each tick, for each owner with
-`enabled` preferences:
+`enabled` preferences whose account is **not disabled** (`users.disabled_at IS
+NULL`, the filter focus's `Owners` uses, `internal/focus/pgstore.go:369`):
 
 1. `slot` = the newest configured `HH:MM` in the owner's zone at or before now
-   (`time.Date(y, m, d, hh, mm, 0, 0, loc)`, then UTC).
+   (`time.Date(y, m, d, hh, mm, 0, 0, loc)`, then UTC). Every calendar day
+   has the same slots; there is no weekday check (decision 1).
 2. If `now - slot ≤ 2h` (the **catch-up window**) and no row exists for
    `(owner, slot)`, `INSERT … status='building'`. A unique violation means
    another tick or pod has it, so skip.
@@ -422,20 +480,84 @@ unique key on the UTC instant means one run either way.
 
 **Manual and chief triggers** insert with `slot_at NULL`. They are refused when
 one is building (`409`, "a check-in is already being written") and limited to
-**one per 5 minutes per owner**, checked against `started_at`.
+**one per 5 minutes** and **24 per day per owner** (the owner's local day),
+both counted over manual and chief rows by `started_at` (`429` with the time
+the next one is allowed). Scheduled rows do not count against either limit.
+The daily cap bounds storage and pushes (both now follow manual check-ins) and
+stops a looping chief: see [Storage growth](#storage-growth) and
+[Push](#push).
+
+#### Accounts disabled or deleted
+
+- **Disabled** (`users.disabled_at`, `SetDisabledAs`,
+  `internal/users/users.go:240-272`): the sweep skips the owner, so no
+  scheduled check-ins are written. Disabling also stamps
+  `sessions_not_before`, so the owner cannot sign in to read them. **Rows are
+  kept**, preferences included. Re-enabling resumes at the
+  next slot. Missed slots are not backfilled. The first check-in after a long
+  gap compares with the old base: its delta is right, and its activity window
+  is clamped (see [Risks](#risks)).
+- **Deleted.** muster has no account-deletion path: no non-test code deletes
+  from `users` (the same search finds the `devices` and `push` deletes, as a
+  control). An operator purging an account by hand must delete the owner's
+  `checkins` rows first (snapshots and items cascade) and its
+  `checkin_preferences` row, under the system scope. Until they do, the
+  foreign key refuses the `users` delete, the same as for every other owner
+  table. Because retention is forever, this purge is the **only** way an
+  owner's check-ins are removed.
 
 ### The chief narrative
 
-**Optional by design.** It runs when the owner's chief is on (`chiefOn`) and
-`MUSTER_CHECKIN_NARRATIVE` is not `0`. Otherwise `narrative_state='off'` and
-the report is complete without it.
+**Optional by design.** It runs when the owner's chief is on (`chiefOn`),
+`MUSTER_CHECKIN_NARRATIVE` is not `0`, and the chief can run a **confirmed
+tool-less** turn (below). Otherwise `narrative_state='off'` and the report is
+complete without it.
 
-**Mechanism: the stall check's, unchanged.**
+**🔴 Hard dependency: the narrative lane MUST be tool-less** (operator
+requirement). The turn's input is focus text, which an outside party can
+influence, and today a `claude-code` lane runs with the chief's full tool set,
+because ccd has no header to restrict tools (`internal/agents/turnroute.go:20-47`
+lists every header it has). Fencing labels the text; it does not stop an
+injected instruction from calling a tool. So:
+
+- A **separate PR** adds a tool-less mode to ccd's explicit sessions: a request
+  header (`X-Muster-CC-Toolless`, or whatever name that PR settles on) under
+  which the session's CLI starts with no tools. It is meant for chief checks:
+  stall nudges first, check-ins next. This design does not specify that PR; it
+  depends on it.
+- **The narrative fails closed on version skew.** A ccd that predates the
+  ephemeral header ignores it (`turnroute.go:41-46`), and an old ccd would
+  ignore a tool-less header the same way and run the turn **with** tools. An
+  answer header alone cannot fix that: it arrives **after** the turn, when any
+  tool call has already happened. So two checks, both required:
+  1. **Before the turn:** muster sends the narrative only to a ccd that has
+     **advertised** the tool-less mode (a capability ccd reports before any
+     turn, for example on its readiness answer). No advertisement → the turn
+     is never sent: `narrative_state='off'`, `narrative_detail='no_toolless_lane'`.
+  2. **After the turn:** ccd's **answer** confirms that this lane really was
+     tool-less, the way `X-Muster-CC-Workdir-Used` confirms a job's directory
+     (`turnroute.go:35-39`). No confirmation → the answer is discarded unread:
+     `narrative_state='failed'`, `narrative_detail='not_toolless'`. This
+     catches a ccd that advertises the mode and then does not honour it on
+     this session.
+
+  If the tool-less PR ships without either signal, adding them is part of this
+  design's prerequisite.
+- **A `gateway` chief.** Its turns already carry no tools in the request
+  (`agents.RunToollessTurn` via `Gateway.Send`,
+  `internal/agentgateway/agentgateway.go:291`). Whether that runtime can still
+  reach tools of its own is **not established** here. Until it is, a
+  `gateway` chief gets `narrative_state='off'`, `narrative_detail='no_toolless_lane'`,
+  and code-only check-ins.
+
+**Mechanism: the stall check's, plus the tool-less mode.**
 
 - Session key `agent:<chief>:webchat:checkin:<hash(owner, checkin id)>`. That
   is fresh per check-in and never the operator's thread.
 - `nudgeRoute`, so a `claude-code` chief runs it in an **ephemeral** ccd lane
-  and it never appears in the operator's conversation.
+  and it never appears in the operator's conversation, with the tool-less
+  header set, sent only to a ccd that advertised the mode, and its answer's
+  confirmation checked.
   `askChiefForNudge`'s claim and turn gate (generalised to `askChiefThrowaway`,
   shared by both features). Optionally pin a cheaper model through
   `ChatSession.Model` → `X-Muster-CC-Model` (`session_runtime.go:85-87`) with
@@ -449,7 +571,8 @@ the report is complete without it.
   (`chiefNudgeTurnBudget`).
 - 🔴 `checkin_now` called **from the chief's own turn** cannot get the turn
   gate until that turn ends. The tool returns the code report's id at once,
-  and the narrative arrives after the chief's turn.
+  and the narrative (and the push, if the check-in changed) arrives after the
+  chief's turn.
 
 **Prompt inputs** (fenced as untrusted with an `internal/fence` nonce, as
 `chiefnudge.Prompt` does, `internal/chiefnudge/prompt.go:31`):
@@ -524,7 +647,11 @@ on and the owner has a preferences row. A `Features.CheckIns` flag follows the
   which shows "Writing summary…" until the narrative settles. It uses the
   existing SSE stream with a new event, `checkins.changed`.
 - **Schedule** (a `<details>` on the page): on/off, time zone (a datalist of
-  IANA names, with the browser's `Intl` zone pre-filled), and times.
+  IANA names, with the browser's `Intl` zone pre-filled), and times
+  (pre-filled `09:00`, `13:00`, `17:00`; 1 to 6). The form says "every day,
+  weekends included", and offers no weekday mask.
+- A manual check-in refused by the limits shows when the next one is allowed
+  ("24 manual check-ins today; the next is allowed at 00:00").
 
 **`/checkins/{id}`**, top to bottom:
 
@@ -534,13 +661,16 @@ on and the owner has a preferences row. A `Features.CheckIns` flag follows the
 2. **Summary** (the narrative): *Moved*, *Stuck*, each item linked to its
    session row below and to the session itself.
 3. **Sessions, grouped by repo.** Groups are ordered by most recent activity,
-   with Ungrouped last. Each session shows name, kind, state, stall badge,
-   focus title (the description in a `<details>`), delta badges (`new`,
+   with Ungrouped last. A group label shared by two repositories with one
+   short name is shown as one group (the known limit). Officers carry an
+   `officer` badge and never a "stalled on you" badge. Each session shows
+   name, kind, state, stall badge, focus title (the description in a `<details>`), delta badges (`new`,
    `ended`, `focus changed`, `newly stalled`, `PR opened`, `merged`, `task →
    ready_for_review`), PR links, task chip and `focus 3 h old` when stale.
    An ended or deleted session shows its snapshot and no link.
 4. **Coverage**: omitted sessions and gaps (offline hosts, focus off, agents'
-   PRs unknown).
+   PRs unknown, PR states unknown when the GitHub read failed, needs-you items
+   beyond 10, narrative off for want of a tool-less lane).
 
 **Compare.** The default view shows the delta against its base. A **Compare
 with…** select lists earlier full check-ins; choosing one recomputes the delta
@@ -557,19 +687,47 @@ Tailwind sees the classes. Playwright covers the 390 px layout (below).
 - A new event, `checkin`, in `push.Events`: "A check-in report is ready". It is
   on by default, like every event (operator decision recorded at
   `events.go:3-8`), and has its own toggle on `/account`.
-- **Text is code-only:** title `Check-in · 13:00`, body
-  `3 moved · 2 stuck · 1 needs you` (zero terms omitted; all zero → `No change
-  that needs you`, but see below). The body never contains focus or narrative
-  text, the same policy as the `plugin` event. Tag `checkin`, so a newer one
-  replaces the older one on the phone. Tapping opens `/checkins/<id>`.
+- **Which check-ins push (decision 3):** every check-in that **changed**,
+  whatever its trigger: scheduled, **Check in now**, or the chief's
+  `checkin_now`. A check-in that did not change never pushes: a scheduled
+  no-change entry, and equally a manual or chief check-in whose delta is empty
+  (it still gets its full report page). The rule is one predicate,
+  `changed`, the same one that decides `no_change`, so there is no
+  per-trigger push logic.
+- **Text is code-only:** title `Check-in · 13:00` (the slot for a scheduled
+  one, the publish time with `· now` for manual and chief ones), body
+  `3 moved · 2 stuck · 1 needs you`, zero terms omitted. A check-in can change
+  with all three at zero (a session only came unstuck, or an ask was
+  answered), so the body then falls back to the number of sessions with any
+  delta flag, `2 sessions changed`. It is never empty. The body
+  never contains focus or narrative text, the same policy as the `plugin`
+  event. Tag `checkin`, so a newer one replaces the older one on the phone.
+  Tapping opens `/checkins/<id>`.
 - **Once per check-in**, recorded in `pushed_at`, so a restart does not send it
   twice. It is sent when the narrative settles or at the 20-minute bound,
-  whichever comes first. It goes through `goNotify`, so the per-owner cap
+  whichever comes first; with the narrative off (or not yet built), at
+  publish. It goes through `goNotify`, so the per-owner cap
   applies.
-- **No push for a no-change entry**, and none for a manual or chief check-in
-  (the owner is already looking, or asked the chief). **No quiet-hours
-  machinery:** the times are the owner's own choice, and that is the quiet
-  hours.
+- **No quiet-hours machinery:** the scheduled times are the owner's own
+  choice, and a manual check-in is the owner's own action (or the chief's,
+  under the daily cap).
+
+**Rate limits and dedupe, re-checked now that manual check-ins push.** A burst
+of manual check-ins cannot become a burst of pushes:
+
+| guard | what it bounds |
+|---|---|
+| one building per owner (`checkins_one_building`) | a double click or a click during a scheduled run makes no second check-in (`409`) |
+| one manual/chief check-in per 5 minutes | at most 2 manual pushes in any 10 minutes, plus a scheduled one: 3 of the owner's 30-per-10-minutes push cap (`push_routes.go:222-225`), so check-ins cannot starve other events |
+| 24 manual/chief per day | at most 27 check-in pushes a day, even from a chief calling `checkin_now` in a loop |
+| `changed` vs the newest published check-in | each manual check-in becomes the next one's base. A second click minutes later usually finds nothing new and does not push. A push means "something changed since the last report", not "you clicked" |
+| `pushed_at` | one push per check-in across restarts |
+| tag `checkin` | a newer push replaces the older one on the phone, so even allowed pushes never stack |
+
+**Why no time-window dedupe beyond that** (for example "skip the push if one
+went out in the last 15 minutes"): the operator asked for manual check-ins to
+push, and a changed check-in is by definition news the last push did not
+carry. The tag already collapses them on the phone.
 
 ### Chief tools
 
@@ -578,12 +736,37 @@ Registered `chiefOnly`, on the gateway and `/mcp`, beside `fleet_report`
 
 | tool | what |
 |---|---|
-| `checkin_now()` | starts a manual check-in (trigger `chief`), returns `{id, url, status}`; the same 5-minute limit and one-building rule; its narrative follows the chief's current turn |
+| `checkin_now()` | starts a manual check-in (trigger `chief`), returns `{id, url, status}`; the same 5-minute and 24-a-day limits and one-building rule; its narrative follows the chief's current turn; it pushes like a click on **Check in now** (only if it changed) |
 | `checkins_list(since?, until?, limit?)` | headlines of check-ins in a window (no span cap: they are small), newest first, ≤ 50 |
 | `checkin_get(id, compare_to?)` | one check-in's code table, delta (against `compare_to` when given) and narrative, capped at 32 KiB. Narrative and focus text are labelled `untrusted` (`focusUntrustedTail`) |
 
 These give the chief history that focus retention would otherwise erase: "what
-was the connector work's state last Tuesday" can be answered a year later.
+was the connector work's state last Tuesday" can be answered years later,
+since check-ins are kept for good.
+
+### Merged PRs
+
+Shown (decision 7), at the cost of **one GitHub call per check-in**:
+
+- **Which refs.** The PR refs in the new snapshot whose state is not already
+  terminal. `merged` and `closed` are carried forward from the base snapshot
+  and never read again, so the call shrinks as PRs land.
+- **One call.** One GraphQL query with one alias per ref
+  (`repository(owner:, name:) { pullRequest(number:) { state mergedAt } }`),
+  at most 100 refs, made with the GitHub App's installation token. muster has
+  no GraphQL client today (`internal/githubapp/app.go:423` mentions `/graphql`
+  only as a path that names no repository), so this is new code. Refs beyond
+  100, or in a repository the installation cannot read, get `state:"unknown"`
+  and a coverage line. An installation token reads one installation's
+  repositories, so refs spread over several installations would need one query
+  each. That is one call in the usual single-installation case; the design
+  keeps the bound at one by default and lists the other installations' refs as
+  `unknown`.
+- **Failure is never a missing report.** A failed or slow call (10 s budget)
+  leaves every unread ref `unknown`. An `unknown` sets no delta flag in either
+  direction, so a GitHub outage cannot make a check-in "changed" or push.
+- Agents' PRs: attributed by their repository and branch, as the first draft
+  proposed, so they stop being a coverage gap.
 
 ### Configuration
 
@@ -592,8 +775,11 @@ was the connector work's state last Tuesday" can be answered a year later.
 | `MUSTER_CHECKINS` | off | `1` runs the sweep and draws the page. **Kill switch**: unset it and restart. Building rows left behind are cleared as `interrupted` on the next boot with it on |
 | `MUSTER_CHECKIN_NARRATIVE` | on | `0` publishes code-only reports and never calls the chief |
 | `MUSTER_CHECKIN_MODEL` | (pod default) | the model a `claude-code` chief's lane uses for the narrative |
-| `MUSTER_CHECKIN_DEFAULT_TIMES` | `09:00,13:00,17:00` | pre-filled for an owner turning check-ins on |
-| `MUSTER_CHECKIN_RETENTION` | `8760h` | `0` keeps forever |
+| `MUSTER_CHECKIN_DEFAULT_TIMES` | `09:00,13:00,17:00` | pre-filled for an owner turning check-ins on; applies every day |
+| `MUSTER_CHECKIN_MANUAL_PER_DAY` | `24` | the daily cap on manual and chief check-ins per owner |
+
+There is deliberately no retention variable: check-ins are kept forever
+(decision 5).
 
 All of these are read at boot and listed in `docs/configuration.md`
 (`internal/modulegate/envdoc_test.go` fails otherwise).
@@ -603,16 +789,19 @@ staged gates are: server flag → per-owner opt-in (preferences row) → narrati
 flag. As with nudges: **restart the chief on the current `claude-code-agent`
 image before turning the narrative on.** An older ccd ignores the ephemeral
 mark and can evict an operator lane ([chief-nudges.md](../chief-nudges.md),
-"Rolling out").
+"Rolling out"). It would also not advertise the tool-less mode, so the
+narrative is never sent to it (`no_toolless_lane`, code-only check-ins), never
+run as a turn with tools.
 
 ### Privacy: what leaves muster
 
 | data | stays in muster | sent to the chief's provider (Anthropic for `claude-code`, OpenRouter for `gateway`) |
 |---|---|---|
-| snapshot rows (names, hosts, repos, focus, PRs, tasks, asks) | yes, owner-scoped, 365 days | names, repo labels, focus titles and descriptions (≤ 300), states, PR refs, task status, ask text (≤ 120), redacted |
+| snapshot rows (names, hosts, repos, focus, PRs, tasks, asks) | yes, owner-scoped, **kept forever** (until a manual account purge) | names, repo labels, focus titles and descriptions (≤ 300), states, PR refs, task status, ask text (≤ 120), redacted |
 | hosts, cwd | yes | **never** |
 | transcripts, messages, tool output | not read | **never** |
 | the push | | counts only, to the owner's push services |
+| PR refs | yes | `owner/repo#n` only, to GitHub, to read merged state |
 
 The chief's account pays. No OpenRouter key is used, except for a `gateway`
 chief, which already runs on its owner's key. The focus summariser's calls do
@@ -628,41 +817,63 @@ the chief can already read with `sessions_overview`, and no transcript text.
 - **Injection.** Focus text can carry an outside party's words. Inside the
   narrative call it is fenced and labelled. The output can only anchor short
   text to an existing session in an agreeing section, and is rendered escaped.
-  ⚠ **What fencing does not stop:** a `claude-code` lane runs with the chief's
-  full tool set, because ccd has no header to restrict tools
-  (`internal/agents/turnroute.go:25-47`). An injected focus could ask the
-  chief to call a tool during the narrative turn. Stall checks have the same
-  exposure today, from more text (they read transcripts). A tool-less lane
-  mode in ccd would close it for both; see the improvements.
+  🔴 **What fencing does not stop, and what does:** fencing cannot stop an
+  injected focus from asking the chief to call a tool. Today a `claude-code`
+  lane runs with the chief's full tool set. So the narrative runs **only** in
+  a lane ccd has confirmed is tool-less, and otherwise does not run
+  ([The chief narrative](#the-chief-narrative)). The worst an injection can
+  then do is write a wrong sentence, which validation confines to an existing
+  session in a section the code agrees with. Stall checks have the same
+  exposure today, from more text (they read transcripts); the same tool-less
+  mode is meant to close it for them.
+- **Manual triggers** (`POST /checkins/now`, `checkin_now`) are capped per
+  owner per day, so an injected chief cannot turn check-ins into a push or
+  storage flood.
 - `POST /checkins/now` is a session route. It is not a machine route, and the
   rate limit is per owner.
 
 ### Cost per day
 
-| | per day (4 slots, 2 manual) |
+| | per day (3 slots every day, 2 manual) |
 |---|---|
-| scheduled, unchanged | 0 model calls |
-| full report | 1 chief turn: about 4–5k tokens of fenced input (16 KiB cap) + about 1k of instructions; output ≤ about 1k |
-| lane overhead (`claude-code`) | the CLI's own system prompt and tools on each lane start (unmeasured here; stall checks already pay it), plus 250–550 MiB for the few minutes the lane lives ([chief-nudges.md](../chief-nudges.md), "Limits") |
-| total | ≤ 6 turns, roughly 40–80k input tokens a day before lane overhead, on the chief's account |
-| database | about 200 KB a day |
+| scheduled, unchanged | 0 model calls, 0 GitHub calls |
+| full report | 1 chief turn: about 4–5k tokens of fenced input (16 KiB cap) + about 1k of instructions; output ≤ about 1k. Plus 1 GitHub GraphQL call when the snapshot has non-terminal PR refs |
+| lane overhead (`claude-code`) | the CLI's own system prompt on each lane start (unmeasured here; stall checks already pay it; a tool-less lane should carry fewer tool definitions, also unmeasured), plus 250–550 MiB for the few minutes the lane lives ([chief-nudges.md](../chief-nudges.md), "Limits") |
+| total | ≤ 5 turns at about 5–8k input each, so roughly 25–40k input tokens a day before lane overhead, on the chief's account; ≤ 5 GitHub calls |
+| ceiling | 27 turns a day (3 scheduled + the 24-a-day manual cap) |
+| database | about 135–225 KB a day, kept forever (see [Storage growth](#storage-growth)) |
 
 The token figures are estimates from the prompt bound. **Measure them in the
-Phase 3 rollout** from the lane's usage before quoting them.
+PR 4 rollout** from the lane's usage before quoting them.
 
 ### Testing
 
 - **Pure functions, table tests:** `Delta`, the no-change rule (one case per
   flag, plus one case per *ignored* change: description-only, `last_seen`,
-  host offline), the headline, `slot` computation (zones, a DST gap and a DST
-  repeat, the catch-up edge at exactly 2 h), repo grouping order, and narrative
-  validation (one refusal case per rule, each failing on its own message).
+  host offline, a PR going to `unknown`), the headline and its
+  `N sessions changed` fallback, `slot` computation (zones, a DST gap and a DST
+  repeat, the catch-up edge at exactly 2 h, a Saturday and a Sunday producing
+  the same slots as a weekday), repo grouping order (including two
+  `owner/api` repos landing in one `api` group, pinning the accepted limit),
+  and narrative validation (one refusal case per rule, each failing on its own
+  message).
 - **PG tests (`dbtest`):** one row per slot under two concurrent builders, both
   orderings; `checkins_one_building`; RLS: owner B reads none of A's check-ins,
   items or snapshots, with a positive control in which A reads its own; the
-  composite FK refuses an item whose subject is not in the snapshot; the
-  retention cascade; "a past check-in survives focus retention" (run
-  `PruneHistory` and the focus sweep, then read the check-in unchanged).
+  composite FK refuses an item whose subject is not in the snapshot; "a past
+  check-in survives focus retention" (run `PruneHistory` and the focus sweep,
+  then read the check-in unchanged); the 5-minute and 24-a-day limits (the
+  25th manual check-in of a local day is refused, a scheduled one is not, and
+  the cap resets at local midnight); a disabled owner gets no scheduled
+  check-in, with a positive control in which an enabled owner in the same tick
+  does, and keeps its rows; deleting a `users` row with check-ins is refused
+  until the purge deletes them.
+- **Officers:** an officer row is listed with its badge and is never
+  `stalled_on_you`, even with a `would_ask` nudge row for it (the fixture that
+  would mark a non-officer).
+- **Merged PRs:** a fake GitHub answering one query for all refs (assert one
+  request); `merged` carried forward and not re-read; a failed call leaves refs
+  `unknown`, sets no flag and does not make the check-in changed.
 - **The refactor (PR 1):** `fleet_report_pg_test.go` unchanged and green. Plus
   a **ledger test** that `buildFleetReport` and the check-in builder both reach
   `collectFleet` and nothing else reads `WindowHistory` for a report.
@@ -674,10 +885,24 @@ Phase 3 rollout** from the lane's usage before quoting them.
   section. In each case the report is published and `narrative_state` /
   `narrative_detail` say why. Mutation-check the section-agreement rule: drop
   it and confirm the "contradicting section" case fails on that rule's message.
+- **Tool-less gate, before the turn:** a fake ccd that does not advertise the
+  mode receives **no** turn at all (assert zero requests to it), and the
+  check-in records `'off'`, `'no_toolless_lane'`; positive control: the same
+  ccd advertising it receives exactly one.
+- **Tool-less gate, after the turn:** a fake ccd that advertises the mode,
+  accepts the turn, but returns **no** tool-less confirmation → the answer is discarded, `narrative_state='failed'`,
+  `'not_toolless'`, no `checkin_items` written, even though the answer is
+  valid JSON. Positive control: the same answer **with** the confirmation is
+  stored. Mutation-check: drop the confirmation check and watch this case fail
+  on its own message. A `gateway` chief gets `'off'`, `'no_toolless_lane'`.
 - **Push:** exactly one send per check-in across a simulated restart
-  (`pushed_at`). None for no-change or manual check-ins. The body contains no
-  focus text, using a fixture whose focus title is a distinctive string, with a
-  negative control in which the title is the body's only source.
+  (`pushed_at`). A changed **manual** and a changed **chief** check-in each
+  push; an unchanged manual check-in and a no-change entry do not. A burst:
+  of two clicks 5 minutes apart with nothing new in between, the second does
+  not push. The body
+  contains no focus text, using a fixture whose focus title is a distinctive
+  string, with a negative control in which the title is the body's only
+  source. A change that is only `unstalled` produces `1 session changed`.
 - **Playwright:** open `/checkins` at 390 px and 1280 px. Needs-you is first
   and above the fold on the phone. Check in now → a new card. Compare with an
   older one. An ended session's row renders without a link.
@@ -690,11 +915,15 @@ Sizes are calibrated on #355 (fleet_report, +2.6k across 45 files), #360
 | # | PR | contents | size | shippable alone? |
 |---|---|---|---|---|
 | 1 | `fleet: split the report into a collector and encoders` | `collectFleet`, no behaviour change; `stallInputs` extracted from `nudgeCandidates` | S, ~+400 | yes: refactor |
-| 2 | `check-ins: code-only reports` | migrations 0068/0069, `internal/checkins` (types, `Delta`, no-change rule, headline, slot), PG store, builder, sweep, `/checkins` list + detail + compare + schedule + Check in now, retention, config, docs | L, ~+3k | **yes: usable without the chief** |
-| 3 | `check-ins: the chief's narrative` | `askChiefThrowaway` shared with nudges, prompt, schema, validation, `checkin_items`, retries, `MUSTER_CHECKIN_NARRATIVE` / `_MODEL` | M, ~+1.5k | yes |
-| 4 | `check-ins: push` | `checkin` event, toggle, `pushed_at`, headline text | S, ~+400 | yes |
-| 5 | `check-ins: chief tools` | `checkin_now`, `checkins_list`, `checkin_get` on gateway + `/mcp` | S, ~+600 | yes |
-| 6 | `session PRs: record merged` (optional) | read PR state for refs already in `session_prs` through the GitHub App's installation token (`internal/githubapp/app.go:813` lists PRs; `github.PullRequest` needs `merged_at`), and attribute agents' PRs by their repo and branch | M, ~+1k | yes; turns on `pr_merged` |
+| 2 | `check-ins: code-only reports` | migrations 0068/0069, `internal/checkins` (types, `Delta`, no-change rule, headline, slot every day), PG store, builder (officers shown, short-name groups), sweep (skips disabled owners), `/checkins` list + detail + compare + schedule + Check in now, manual limits (5 min, 24/day), config, docs. **No retention sweep** | L, ~+3k | **yes: usable without the chief** |
+| 3 | `check-ins: push` | `checkin` event, toggle, `pushed_at`, headline text and fallback; pushes every **changed** check-in, scheduled, manual or chief | S, ~+400 | yes |
+| P | **prerequisite, separate PR:** `ccd: tool-less lane mode` | the tool-less header for explicit sessions (`X-Muster-CC-Toolless` or similar), ccd **advertising** the mode before a turn, **and** ccd's answer confirming it, for chief checks. Being added independently of this design; PR 4 must not merge before it is on `main` and on the chief's image | (own PR) | yes |
+| 4 | `check-ins: the chief's narrative` | **depends on P.** `askChiefThrowaway` shared with nudges, the tool-less header, the capability check before the turn and the confirmation check after it, prompt, schema, validation, `checkin_items`, retries, `MUSTER_CHECKIN_NARRATIVE` / `_MODEL` | M, ~+1.5k | yes |
+| 5 | `check-ins: chief tools` | `checkin_now` (pushes when changed, daily cap), `checkins_list`, `checkin_get` on gateway + `/mcp` | S, ~+600 | yes |
+| 6 | `check-ins: merged PRs` | one batched GraphQL read per check-in through the GitHub App's installation token, terminal states carried forward, `unknown` on failure; attribute agents' PRs by their repo and branch | M, ~+1k | yes; turns on `pr_merged` |
+
+Push moved ahead of the narrative: with push decoupled from the trigger, it
+needs only PR 2, and it should not wait on the prerequisite.
 
 ## Risks
 
@@ -711,25 +940,24 @@ Sizes are calibrated on #355 (fleet_report, +2.6k across 45 files), #360
   check-in, the "who was active" window is clamped to 4 days. The delta is
   still correct (it compares snapshots), but sessions that started and ended
   inside the gap are missed, and coverage says so.
+- **Same-short-name repos share a group** (known limit, accepted in
+  decision 2). `alice/api` and `bob/api` both appear under `api`. Each row
+  still carries its own PR refs (`owner/repo#n`), so the repository is
+  recoverable from the row; only the grouping merges them.
+- **Unbounded history** (decision 5). Storage grows about 50–80 MB per owner
+  per year at 30 sessions, with a 20 GB-a-year ceiling at every cap. The
+  compaction option under [Storage growth](#storage-growth) is the way out if
+  that becomes a problem; it is not built ahead of need.
+- **The narrative waits on another PR.** Until the tool-less ccd lane is on
+  `main` and on the chief's image, check-ins are code-only. That is by design:
+  code-only is a complete report.
 
 ## Open questions
 
-1. **Default times.** Is `09:00,13:00,17:00` right, and should weekends be
-   skipped by default (a per-owner "weekdays only" box)?
-2. **Same-short-name repos.** Is grouping `alice/api` and `bob/api` together
-   under `api` acceptable, or should agent labels keep `owner/name`?
-   Mirrored chips only carry the short name, so keeping the owner would split
-   one repo across two groups.
-3. **Push for manual check-ins.** The proposal sends none. Do you want one when
-   you click **Check in now** and leave the page?
-4. **"No change" granularity.** Should a description-only change count as
-   change? The proposal says no, because the summariser rephrases.
-5. **Retention.** Is 365 days right, or should it be forever? Forever keeps
-   focus descriptions past their 30-day bound.
-6. **Officers.** Should they appear in check-ins at all (shown, never marked
-   stalled on you), or be left out like the chief?
-7. **Merged PRs (Phase 6).** Is reading PR state from GitHub worth an outbound
-   call per open PR per check-in, or is "PRs opened" enough?
+None. The seven questions the first draft asked were answered on the draft
+and are recorded as decisions 1–7 under
+[Operator decisions](#operator-decisions), with decision 8 (the tool-less
+narrative lane) added by the operator.
 
 ## Recommended improvements (not asked for)
 
@@ -741,9 +969,6 @@ Sizes are calibrated on #355 (fleet_report, +2.6k across 45 files), #360
   30-day focus history.
 - **Link check-ins to tasks.** A task's page lists the check-ins in which its
   agent appeared, and `ready_for_review` deltas link to the review banner.
-- **A tool-less ccd lane** (`X-Muster-CC-Tools: none`, or a fixed allowlist)
-  for narrative and stall-check turns. This closes the injection-to-tool path
-  noted under Security for both features.
 - **"Time in state."** Store `stall_since` and show "stuck 2 days" rather than
   "idle". Computed from consecutive snapshots, at no extra cost.
 - **Tune nudges with check-ins.** "Stalled on you" sessions that recur across
@@ -752,8 +977,10 @@ Sizes are calibrated on #355 (fleet_report, +2.6k across 45 files), #360
 
 ## Operator decisions
 
-Answered before this proposal. The design follows them and does not reopen
-them.
+The first four were answered before this proposal. Decisions 1–8 were
+answered on the draft (PR #371): 1–7 settle what the first draft
+listed as open questions, and 8 is a requirement the operator added. The design
+follows all of them and does not reopen them.
 
 | question | decision |
 |---|---|
@@ -761,3 +988,16 @@ them.
 | Authoring | **Code table + chief summary**: the per-session table (focus, state, PRs, stalls, asks) is built in code. The chief writes a short narrative (what moved, what's stuck, what needs you) whose every claim links to a session. A claim naming an unknown session is rejected, structurally |
 | Delivery | A **Check-ins page** with history (newest first, open any past one, compare with the previous) and a **phone push** with a one-line headline opening the report. No outside delivery for now |
 | Contents | Changes since the last check-in (new, ended, focus changed, newly stalled, PRs opened/merged). **Needs you first** (open asks, nudge would-asks, sessions stalled on the owner's input). Grouped by repo/project. **Dispatched agents too**, with task status |
+
+**Answered on the draft:**
+
+| # | question | decision | where it lands |
+|---|---|---|---|
+| 1 | Default times; skip weekends? | **`09:00`, `13:00`, `17:00` in the owner's time zone, every day, weekends included.** Editable per owner (times and zone). No weekday mask | data model (`times` default), scheduler (no weekday check), page (schedule form), cost |
+| 2 | Same-short-name repos | **One group, accepted for now**, noted as a known limit | builder (repo grouping), page, risks, testing |
+| 3 | Push for manual check-ins | **Manual check-ins push too** (**Check in now** and the chief's `checkin_now`), not only scheduled ones. An unchanged check-in never pushes. Rate limits re-checked: a 24-a-day manual cap added beside the 5-minute limit | scheduler (limits), push (one `changed` rule, burst table), chief tools, security, phased plan (push before narrative) |
+| 4 | Description-only change | **Not a change**, as proposed | the no-change rule |
+| 5 | Retention | **Forever, no sweep.** Ownership and RLS unchanged; disabled accounts keep their rows; deletion only by manual purge | data model, retention and storage growth, accounts, configuration (no retention variable), privacy, testing |
+| 6 | Officers | **Shown, never marked as waiting on the owner**, as proposed | builder, page, testing |
+| 7 | Merged PRs | **Shown**: one batched GitHub call per check-in, as proposed | merged PRs, delta, privacy, cost, phased plan (PR 6 no longer optional) |
+| 8 | (added) Narrative lane | **The narrative's lane MUST be tool-less.** A separate PR adds a tool-less ccd lane mode for chief checks; the narrative depends on it, and fails closed: no turn to a ccd that has not advertised the mode, and no stored answer without ccd's confirmation | the chief narrative, security, rollout, testing, phased plan (prerequisite P before PR 4) |
