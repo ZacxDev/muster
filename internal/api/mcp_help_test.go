@@ -203,6 +203,50 @@ func TestTheAgentDoorOffersMusterHelp(t *testing.T) {
 	}
 }
 
+// TestMusterHelpAnswersOnlyTheCallingAgentsTools: on POST /mcp muster_help
+// sees exactly what that agent is offered — the ledgered sets — and a tool the
+// agent is not offered is an unknown name to it, for the chief (the
+// not-chief tools) and for a worker (the chief-only tools).
+func TestMusterHelpAnswersOnlyTheCallingAgentsTools(t *testing.T) {
+	g := newGatedFixture(t)
+	for _, c := range []struct {
+		name     string
+		token    string
+		want     []string
+		hiddenTo []string
+	}{
+		{"chief", g.chiefTok, mcpLedger, notChiefToolList},
+		{"worker", g.workerTok, workerMCPLedger, chiefOnlyLedger},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rpc := func(body string) *mcpReply { r, _ := g.mcp(t, c.token, body, nil); return r }
+			checkHelp(t, rpc)
+			text, isErr := toolText(t, rpc(mcpToolCall("muster_help", map[string]any{})))
+			var list struct{ Tools []struct{ Name string } }
+			if isErr || json.Unmarshal([]byte(text), &list) != nil {
+				t.Fatalf("muster_help{}: %s", text)
+			}
+			var got []string
+			for _, tl := range list.Tools {
+				got = append(got, tl.Name)
+			}
+			if want := append(append([]string(nil), c.want...), "muster_help"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("muster_help{} lists %v, want exactly %v", got, want)
+			}
+			// Positive control: there is a tool this agent must not see.
+			if len(c.hiddenTo) == 0 {
+				t.Fatal("positive control: no tool is hidden from this agent")
+			}
+			for _, n := range c.hiddenTo {
+				text, isErr := toolText(t, rpc(mcpToolCall("muster_help", map[string]any{"tool": n})))
+				if !isErr || !strings.Contains(text, "unknown tool \\\""+n+"\\\"") {
+					t.Errorf("muster_help{tool:%s} for the %s: %v %s", n, c.name, isErr, text)
+				}
+			}
+		})
+	}
+}
+
 // TestTheMirrorDoorOffersMusterHelp: POST /mirror/mcp.
 func TestTheMirrorDoorOffersMusterHelp(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
@@ -302,6 +346,14 @@ func TestARefusalCarriesABoundedDefinitionAndStaysAnError(t *testing.T) {
 		mcpToolCall("echo", map[string]any{}))
 	if text, isErr := toolText(t, ok); isErr || text != `{"ok":true}` {
 		t.Fatalf("a success was changed: %v %s", isErr, text)
+	}
+
+	// A tool that panics answers "the tool failed", and that refusal carries
+	// the definition too.
+	crash := serveSurface(t, testSurface([]agents.ToolDef{echoDef("Echo.", map[string]any{})}, func(string, string) string { panic("boom") }),
+		mcpToolCall("echo", map[string]any{}))
+	if text, isErr := toolTextRaw(t, crash); !isErr || !strings.HasPrefix(text, `{"error":"the tool failed","current_definition":{"description":"Echo.",`) {
+		t.Errorf("a panicking tool: %v %s", isErr, text)
 	}
 
 	big := echoDef(strings.Repeat("x", mcpCurrentDefinitionMax), map[string]any{})

@@ -214,16 +214,11 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
 			return
 		}
-		s.writeMCPToolResult(w, req.ID, func() string {
-			var text string
+		s.writeMCPToolResult(w, req.ID, def, func() string {
 			if p.Name == mcpHelpTool {
-				text = catalog.help(string(p.Arguments))
-			} else {
-				text = surface.call(p.Name, string(p.Arguments))
+				return catalog.help(string(p.Arguments))
 			}
-			// A refused call carries the tool's current definition: the caller
-			// may be holding an older one (mcp_help.go).
-			return withCurrentDefinition(text, def)
+			return surface.call(p.Name, string(p.Arguments))
 		})
 	default:
 		s.writeMCP(w, req.ID, nil, &mcpError{Code: -32601, Message: "method not found: " + req.Method})
@@ -253,16 +248,21 @@ func toolResult(text string) map[string]any {
 // answer, which is then written after them. Leading whitespace is legal JSON
 // (RFC 8259 §2), so the body still parses as the one JSON-RPC response the
 // transport promises; a call that finishes sooner is written exactly as before.
-func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, run func() string) {
+//
+// def is the called tool's served definition. Whatever the call answers — the
+// tool's own text, or "the tool failed" when it panicked — a refusal carries
+// def under current_definition (withCurrentDefinition, mcp_help.go): the caller
+// may be holding an older one.
+func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, def map[string]any, run func() string) {
 	done := make(chan string, 1)
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.logger.Printf("PANIC in MCP tool call: %v", rec)
-				done <- toolErr("the tool failed")
+				done <- withCurrentDefinition(toolErr("the tool failed"), def)
 			}
 		}()
-		done <- run()
+		done <- withCurrentDefinition(run(), def)
 	}()
 	t := time.NewTicker(mcpHeartbeatEvery)
 	defer t.Stop()

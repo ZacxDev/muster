@@ -472,8 +472,8 @@ sessions) add two things. Every other tool's description, and the
 - `muster_help` lists every tool on the endpoint by name and one-line summary.
   Called with `{tool}`, it returns that tool's current definition, exactly as
   `tools/list` serves it. An unknown name is an error that lists the valid names.
-- A refused call (a tool error) carries the tool's current definition under
-  `current_definition`. Past 8 KiB, it carries a pointer to `muster_help`
+- A refused call (a tool error, including `the tool failed` when the tool
+  crashed) carries the tool's current definition under `current_definition`. Past 8 KiB, it carries a pointer to `muster_help`
   instead. This is what a model holding an old definition recovers from: its
   call is refused, it reads the current definition, and it calls again.
 
