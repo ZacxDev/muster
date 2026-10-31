@@ -134,6 +134,12 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 				gateway[d.Name] = normJSON(t, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
 				gatewayNames = append(gatewayNames, d.Name)
 			}
+			// The transport adds one tool of its own (mcp_help.go): muster_help,
+			// last. It is taken off here; every other tool is compared as served.
+			if mcpNames[len(mcpNames)-1] != mcpHelpTool {
+				t.Fatalf("/mcp does not end with %s: %v", mcpHelpTool, mcpNames)
+			}
+			mcpNames, tools = mcpNames[:len(mcpNames)-1], tools[:len(tools)-1]
 			for _, tl := range tools {
 				name, _ := tl["name"].(string)
 				want, ok := gateway[name]

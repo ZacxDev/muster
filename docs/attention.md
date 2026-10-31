@@ -339,7 +339,8 @@ too, through its host's `muster-mirror`:
    [connectors.md](connectors.md#deciding-a-request-from-your-own-session)) and,
    with the plugin store, `plugin_drafts_list` / `plugin_draft_decide` (the
    operator approving or rejecting a reply draft —
-   [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)); the
+   [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), plus
+   `muster_help` ([below](#stale-tool-definitions)); the
    chief's tools are not on it. The token is checked on every call (a revoked
    one is refused at its next call, `initialize` included). After 10 failed checks of one token from
    one address within a minute, that token from that address is answered 429 —
@@ -454,6 +455,32 @@ names and server instructions load at startup",
 
 If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 `GET /mirror/connect` does.
+
+### Stale tool definitions
+
+Claude Code loads an MCP tool's name at start and fetches its definition only
+when it needs it. It then saves that definition in the conversation and replays
+it on every resume, and fetching the tool again does not replace it. So after a
+muster release, a long-lived session can still hold a tool's old definition, and
+can believe a field added since does not exist. (The client does not check the
+call against the saved schema, so a call using the new field works.)
+
+Both MCP endpoints (`POST /mcp` for agents and `POST /mirror/mcp` for mirrored
+sessions) add two things. Every other tool's description, and the
+`initialize` instructions, are served unchanged.
+
+- `muster_help` lists every tool on the endpoint by name and one-line summary.
+  Called with `{tool}`, it returns that tool's current definition, exactly as
+  `tools/list` serves it. An unknown name is an error that lists the valid names.
+- A refused call (a tool error, including `the tool failed` when the tool
+  crashed) carries the tool's current definition under `current_definition`. Past 8 KiB, it carries a pointer to `muster_help`
+  instead. This is what a model holding an old definition recovers from: its
+  call is refused, it reads the current definition, and it calls again.
+
+A session does not need a new conversation. A refused call carries the
+definition as soon as muster is released. `muster_help` reaches a session the
+next time it connects, for example when it is resumed: Claude Code reads the
+tool list when it connects.
 
 ## Asking the chief
 

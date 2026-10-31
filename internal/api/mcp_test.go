@@ -30,8 +30,38 @@ func (f *connFixture) mcp(t *testing.T, token, body string, extra map[string]str
 	return &r, w.Code
 }
 
-// toolText unwraps a tools/call result's single text content.
+// toolText unwraps a tools/call result's single text content, as the tool
+// wrote it: serveMCP's current_definition (mcp_help.go) is taken off a refusal
+// again, so a tool's own tests can pin its refusal text exactly.
+//
+// 🔴 IT IS NOT IGNORED: every refusal any test reads through here must carry a
+// current_definition naming a tool, and no success may — so every MCP refusal
+// in the suite also checks that the definition was attached. mcp_help_test.go
+// checks what the definition holds (toolTextRaw).
 func toolText(t *testing.T, r *mcpReply) (string, bool) {
+	t.Helper()
+	text, isErr := toolTextRaw(t, r)
+	const key = `,"current_definition":`
+	i := strings.LastIndex(text, key)
+	if !isErr {
+		if i >= 0 {
+			t.Fatalf("a successful tool call carries current_definition: %s", text)
+		}
+		return text, false
+	}
+	var def struct {
+		CurrentDefinition struct {
+			Name string `json:"name"`
+		} `json:"current_definition"`
+	}
+	if i < 0 || json.Unmarshal([]byte(text), &def) != nil || def.CurrentDefinition.Name == "" {
+		t.Fatalf("a refused tool call carries no current_definition: %s", text)
+	}
+	return text[:i] + "}", true
+}
+
+// toolTextRaw unwraps a tools/call result's single text content as served.
+func toolTextRaw(t *testing.T, r *mcpReply) (string, bool) {
 	t.Helper()
 	var res struct {
 		Content []struct {
@@ -79,7 +109,7 @@ func TestTheMCPServerSpeaksTheToolProtocolAsTheCallingAgent(t *testing.T) {
 			t.Errorf("%s has no object input schema", tl.Name)
 		}
 	}
-	if strings.Join(names, ",") != "connectors_list,connector_request,connector_status,postgres_query,browser_flow_request,browser_flow_status" {
+	if strings.Join(names, ",") != "connectors_list,connector_request,connector_status,postgres_query,browser_flow_request,browser_flow_status,muster_help" {
 		t.Fatalf("tools = %v", names)
 	}
 

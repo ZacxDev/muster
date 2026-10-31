@@ -26,7 +26,9 @@ import (
 // filtered to what the calling agent may see)
 // and tools/call runs the registry's one dispatcher (dispatchAgentTool). Which
 // tools are on /mcp is a per-tool flag in agentTools (agent.go), whose comment
-// says which tools carry it and why.
+// says which tools carry it and why. The one tool it adds itself is muster_help,
+// with a refusal's current_definition (mcp_help.go): those are about the
+// served definitions, so they live with the transport.
 
 // mcpProtocolVersions are the protocol revisions this server answers. A client
 // asking for one gets it back; any other gets the newest.
@@ -88,6 +90,8 @@ const mcpGitNote = "For git, plain `git clone/fetch/push https://<host>/...` goe
 
 // isToolErr reports whether a dispatched tool's text is toolErr's encoding —
 // the registry's one spelling of a failed tool call — so MCP can flag it isError.
+// serveMCP adds current_definition to such a text (withCurrentDefinition), and
+// the result must still read as an error, so that key is allowed too.
 func isToolErr(text string) bool {
 	var m map[string]json.RawMessage
 	if json.Unmarshal([]byte(text), &m) != nil {
@@ -99,10 +103,11 @@ func isToolErr(text string) bool {
 	// toolErr's {error}, plus only the keys a structured refusal adds:
 	// `refused` (session_routes.go's routeRefusal), `budget`
 	// (task_dispatch's dispatchRefusal) and `candidates`
-	// (plugin_message_route's subject refusals) — nothing else.
+	// (plugin_message_route's subject refusals), and `current_definition`
+	// (serveMCP's, on any of them) — nothing else.
 	for k := range m {
 		switch k {
-		case "error", "refused", "budget", "candidates":
+		case "error", "refused", "budget", "candidates", "current_definition":
 		default:
 			return false
 		}
@@ -187,10 +192,9 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 	case "ping":
 		s.writeMCP(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
-		defs := surface.tools()
-		tools := make([]map[string]any, 0, len(defs))
-		for _, d := range defs {
-			tools = append(tools, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
+		tools := newMCPCatalog(surface.tools()).served
+		if tools == nil {
+			tools = []map[string]any{}
 		}
 		s.writeMCP(w, req.ID, map[string]any{"tools": tools}, nil)
 	case "tools/call":
@@ -204,15 +208,18 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 		}
 		// Only a tool this surface LISTS may be called through it: a gateway-only
 		// tool's name is as unknown here as a made-up one.
-		listed := false
-		for _, d := range surface.tools() {
-			listed = listed || d.Name == p.Name
-		}
+		catalog := newMCPCatalog(surface.tools())
+		def, listed := catalog.lookup(p.Name)
 		if !listed {
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
 			return
 		}
-		s.writeMCPToolResult(w, req.ID, func() string { return surface.call(p.Name, string(p.Arguments)) })
+		s.writeMCPToolResult(w, req.ID, def, func() string {
+			if p.Name == mcpHelpTool {
+				return catalog.help(string(p.Arguments))
+			}
+			return surface.call(p.Name, string(p.Arguments))
+		})
 	default:
 		s.writeMCP(w, req.ID, nil, &mcpError{Code: -32601, Message: "method not found: " + req.Method})
 	}
@@ -241,16 +248,21 @@ func toolResult(text string) map[string]any {
 // answer, which is then written after them. Leading whitespace is legal JSON
 // (RFC 8259 §2), so the body still parses as the one JSON-RPC response the
 // transport promises; a call that finishes sooner is written exactly as before.
-func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, run func() string) {
+//
+// def is the called tool's served definition. Whatever the call answers — the
+// tool's own text, or "the tool failed" when it panicked — a refusal carries
+// def under current_definition (withCurrentDefinition, mcp_help.go): the caller
+// may be holding an older one.
+func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, def map[string]any, run func() string) {
 	done := make(chan string, 1)
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.logger.Printf("PANIC in MCP tool call: %v", rec)
-				done <- toolErr("the tool failed")
+				done <- withCurrentDefinition(toolErr("the tool failed"), def)
 			}
 		}()
-		done <- run()
+		done <- withCurrentDefinition(run(), def)
 	}()
 	t := time.NewTicker(mcpHeartbeatEvery)
 	defer t.Stop()
