@@ -211,12 +211,10 @@ type fleetFact struct {
 	Name, Title string
 	Host        string // a mirrored window's host; "" for an agent or an unknown window
 	Repo        string // the agent's Repo or the window's repo chip; "" none
-	// RepoSource is where Repo came from: "agent", "chip", or "" (none).
-	RepoSource string
-	State      string // "waiting", "active" or "ended"
-	FirstAt    time.Time
-	LastAt     time.Time
-	Titles     []focus.TitleAt
+	State       string // "waiting", "active" or "ended"
+	FirstAt     time.Time
+	LastAt      time.Time
+	Titles      []focus.TitleAt
 	// TitlesOmitted counts the window's older titles past focus.MaxWindowTitles.
 	TitlesOmitted int
 	PRs           []string // every pull request recorded for it, uncapped; nil none
@@ -366,12 +364,6 @@ func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until t
 				}
 			}
 			f.PRs = prs[w.Subject.Key]
-		}
-		if f.Repo != "" {
-			f.RepoSource = "chip"
-			if w.Subject.Kind == focus.KindAgent {
-				f.RepoSource = "agent"
-			}
 		}
 		if pending[w.Subject] != nil {
 			f.State = "waiting"

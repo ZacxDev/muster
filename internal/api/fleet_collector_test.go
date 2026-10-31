@@ -160,9 +160,8 @@ func TestTheToolEncoderShowsWhatTheMailWithholds(t *testing.T) {
 			t.Errorf("the tool lacks %q: %s", want, out)
 		}
 	}
-	// Neither door writes the directory or the repo's source: no encoder
-	// carries them today.
-	for _, never := range []string{"zqleaf", fcSentinel + " reposource"} {
+	// Neither door writes the directory: no encoder carries it today.
+	for _, never := range []string{"zqleaf"} {
 		if strings.Contains(out, never) {
 			t.Errorf("the tool carries %q: %s", never, out)
 		}
