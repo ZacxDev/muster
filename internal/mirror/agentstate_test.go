@@ -77,6 +77,43 @@ func TestAHostThatDoesNotAdvertiseStatusIsNeverIdle(t *testing.T) {
 	}
 }
 
+// TestAHostWhoseFirstWindowsReadFailedIsUnknownNotGone: muster-mirror
+// registers with an EMPTY listing (no sessions, no windows) when its first
+// windows read fails. Until a window list arrives every target on it is
+// UNKNOWN (ErrNoStatusReport), never ErrSessionGone — which the chief-nudge
+// sweep reads as "moved on" and withdraws open asks on. Once the host sends a
+// list, the window's state is its report.
+func TestAHostWhoseFirstWindowsReadFailedIsUnknownNotGone(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "flaky")
+	m := hello("flaky", true) // what mirrorhost sends after a failed first read
+	m.Sessions, m.StatusReport = []string{}, true
+	h, err := r.rawConnect(t, tok, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st mirror.AgentState
+	eventually(t, "the host registered", func() bool {
+		st = r.svc.AgentState(asUser(1), "flaky", "work", "@1")
+		return !errors.Is(st.Unknown, mirror.ErrHostOffline)
+	})
+	if !errors.Is(st.Unknown, mirror.ErrNoStatusReport) || errors.Is(st.Unknown, mirror.ErrSessionGone) || errors.Is(st.Unknown, mirror.ErrWindowGone) {
+		t.Fatalf("a host with no window list yet: %+v, want ErrNoStatusReport (unknown), not gone", st)
+	}
+	h.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: statusWindows(mirror.StatusIdle, t2)})
+	eventually(t, "the list arrived", func() bool {
+		st = r.svc.AgentState(asUser(1), "flaky", "work", "@1")
+		return st.Unknown == nil
+	})
+	if st.Status != mirror.StatusIdle || st.Since != t2 {
+		t.Fatalf("after the list: %+v, want idle since %d", st, t2)
+	}
+	// And a window the list does NOT carry is now a read: gone.
+	if st := r.svc.AgentState(asUser(1), "flaky", "work", "@9"); !errors.Is(st.Unknown, mirror.ErrWindowGone) {
+		t.Fatalf("a window the host's list lacks: %+v, want ErrWindowGone", st)
+	}
+}
+
 // TestTheAgentStateIsTheCLIsOwnStatusAndTime: the state is the host's latest
 // report for that window, and Since is EXACTLY the time Claude Code wrote the
 // status (Window.StatusSince) — not when muster saw it. So a turn that began

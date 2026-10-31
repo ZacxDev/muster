@@ -99,6 +99,20 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	if hc == nil {
 		return AgentState{Unknown: fmt.Errorf("%w (host %q)", ErrHostOffline, host)}
 	}
+	// 🔴 A HOST THAT REPORTS STATUS BUT HAS SENT NO WINDOW LIST HAS NOT BEEN
+	// READ — not "every session gone". muster-mirror registers with an empty
+	// listing when its first windows read fails (internal/mirrorhost's
+	// connect), so judging the target against that empty list would call every
+	// window gone (ErrSessionGone), which the chief-nudge sweep reads as moved
+	// on. It is unknown until a list arrives. (An empty list that WAS read is
+	// sent as no list too — Msg.Windows is omitempty — so a host with no tmux
+	// windows at all is unknown here as well, never "gone".)
+	hc.mu.Lock()
+	unread := hc.statusReport && hc.windows == nil
+	hc.mu.Unlock()
+	if unread {
+		return AgentState{Unknown: fmt.Errorf("%w (host %q has sent no window list)", ErrNoStatusReport, host)}
+	}
 	id, runtime, err := hc.targetRuntime(session, window)
 	if err != nil {
 		return AgentState{Unknown: err}

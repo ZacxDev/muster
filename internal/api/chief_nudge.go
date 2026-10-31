@@ -949,77 +949,90 @@ type nudgeState int
 
 const (
 	// nudgeUnknown: the session's state could not be read — its host is
-	// disconnected or does not report it, or a read failed. 🔴 UNKNOWN IS NOT
-	// MOVED ON: whatever was about to happen (a send, an ask, a withdrawal, a
-	// paste) is HELD for a later pass, never suppressed, withdrawn or marked
-	// stale on it. Existing bounds still end a hold: an ask's own expiry, the
-	// send queue's AuthorizedFor, RelayMaxAge.
+	// disconnected or has sent no window list, the window reports no status
+	// time, or a read failed. 🔴 UNKNOWN IS NOT MOVED ON: whatever was about to
+	// happen (a send, an ask, a withdrawal, a paste) is HELD for a later pass,
+	// never suppressed, withdrawn or marked stale on it. Existing bounds still
+	// end a hold: an ask's own expiry, the send queue's AuthorizedFor,
+	// RelayMaxAge.
 	nudgeUnknown nudgeState = iota
 	// nudgeStalled: read, and still in the idle streak the decision was taken
 	// on.
 	nudgeStalled
-	// nudgeMovedOn: read, and NOT that streak — not idle, a newer streak, a
-	// different Claude conversation in the window, or a window the connected
-	// host no longer lists.
+	// nudgeMovedOn: read, the same conversation, and NOT that streak — not
+	// idle, a newer streak, an agent turn running, a newer message.
 	nudgeMovedOn
+	// nudgeMovedAway: read, and the window no longer holds the conversation —
+	// another Claude conversation in it, or a window or session the connected
+	// host no longer lists, or one it reports no Claude Code in. Moved on too
+	// (movedOn); kept apart so the send queue's gate can say which, from this
+	// one read.
+	nudgeMovedAway
 )
+
+// movedOn: a state that was read and is not the decision's streak.
+func (st nudgeState) movedOn() bool { return st == nudgeMovedOn || st == nudgeMovedAway }
 
 // nudgeStateNow is d's session's state now against the streak d was decided
 // on: the last thing muster checks before it sends, asks, withdraws an ask or
-// pastes anything. The ONE predicate for "moved on" — every live step asks it
-// and switches on all three answers.
+// pastes anything. The ONE predicate for "moved on" — every live step asks it,
+// handles nudgeUnknown as a wait, and only movedOn() as moved on.
 func (s *Server) nudgeStateNow(ctx context.Context, d chiefnudge.Decision) nudgeState {
-	streak, known := s.nudgeStreakNow(ctx, d)
-	switch {
-	case !known:
+	if d.Kind == chiefnudge.KindMirror {
+		if s.ext.Mirror == nil {
+			return nudgeUnknown
+		}
+		st := s.ext.Mirror.AgentState(ctx, d.Host, d.TmuxSession, d.Window)
+		switch {
+		case st.Unknown != nil && nudgeTargetGone(st.Unknown):
+			return nudgeMovedAway
+		case st.Unknown != nil:
+			return nudgeUnknown
+		case st.Session != d.Key:
+			return nudgeMovedAway
+		case st.Status != mirror.StatusIdle:
+			return nudgeMovedOn
+		case st.Since <= 0:
+			return nudgeUnknown
+		}
+		return nudgeStreakState("since:"+strconv.FormatInt(st.Since, 10), d)
+	}
+	if s.ext.Agents == nil || d.ChatSessionID == 0 {
 		return nudgeUnknown
-	case streak == d.StreakKey:
+	}
+	if s.turns.busy(d.AgentID) {
+		return nudgeMovedOn
+	}
+	last, err := s.ext.Agents.ListRecentChatMessages(ctx, d.ChatSessionID, 1)
+	switch {
+	case err != nil:
+		return nudgeUnknown
+	case len(last) == 0:
+		return nudgeMovedOn
+	}
+	return nudgeStreakState("msg:"+strconv.FormatInt(last[len(last)-1].ID, 10), d)
+}
+
+// nudgeStreakState is a streak that was read, against d's.
+func nudgeStreakState(streak string, d chiefnudge.Decision) nudgeState {
+	if streak == d.StreakKey {
 		return nudgeStalled
 	}
 	return nudgeMovedOn
 }
 
-// nudgeStreakNow is d's session's idle streak now. known is false when the
-// state could not be read (nudgeUnknown); streak is "" when it was read and
-// the session is not in an idle streak (not idle, another conversation, a
-// window gone from a connected host, a conversation with no messages).
-func (s *Server) nudgeStreakNow(ctx context.Context, d chiefnudge.Decision) (streak string, known bool) {
-	if d.Kind == chiefnudge.KindMirror {
-		if s.ext.Mirror == nil {
-			return "", false
-		}
-		st := s.ext.Mirror.AgentState(ctx, d.Host, d.TmuxSession, d.Window)
-		switch {
-		case st.Unknown != nil:
-			return "", nudgeTargetGone(st.Unknown)
-		case st.Status != mirror.StatusIdle || st.Session != d.Key:
-			return "", true
-		case st.Since <= 0:
-			return "", false
-		}
-		return "since:" + strconv.FormatInt(st.Since, 10), true
-	}
-	if s.ext.Agents == nil || d.ChatSessionID == 0 {
-		return "", false
-	}
-	if s.turns.busy(d.AgentID) {
-		return "", true
-	}
-	last, err := s.ext.Agents.ListRecentChatMessages(ctx, d.ChatSessionID, 1)
-	switch {
-	case err != nil:
-		return "", false
-	case len(last) == 0:
-		return "", true
-	}
-	return "msg:" + strconv.FormatInt(last[len(last)-1].ID, 10), true
-}
-
 // nudgeTargetGone: an AgentState refusal that is a READ of the target, not a
-// failure to read it — the host is connected (the hub registers a host with
-// its full list, mirror.Hub's welcome) and no longer lists the tmux session or
-// window, or reports no Claude Code in it. Every other refusal (the host
-// offline or not reporting status) is unknown.
+// failure to read it — the host is connected and its window list no longer
+// carries the tmux session or window, or reports no Claude Code in it. A host
+// that has sent no window list yet (its first read failed) is unknown, not
+// gone (mirror.Hub.AgentState). Every other refusal (the host offline or not
+// reporting status) is unknown.
+//
+// ⚠ LIMIT: this trusts the host's list. A host whose process-table read
+// fails (macOS: `ps` failing) still sends its windows, with no Claude Code
+// found in any of them — indistinguishable here from Claude Code having
+// exited, so read as gone. Fixing that belongs in muster-mirror (keep the
+// last good process table), not here.
 func nudgeTargetGone(err error) bool {
 	return errors.Is(err, mirror.ErrSessionGone) || errors.Is(err, mirror.ErrWindowGone) || errors.Is(err, mirror.ErrNotClaude)
 }
@@ -1028,12 +1041,12 @@ func nudgeTargetGone(err error) bool {
 // re-checks it at the paste), a turn for an agent. The decision is recorded
 // FIRST — the streak's claim — so two passes never send it twice.
 func (s *Server) actNudge(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision) bool {
-	switch s.nudgeStateNow(ctx, d) {
-	case nudgeUnknown:
+	switch st := s.nudgeStateNow(ctx, d); {
+	case st == nudgeUnknown:
 		// Held: nothing recorded, so a later pass judges this streak again.
 		s.logger.Printf("chief nudges: %s %s: the session's state could not be read; the nudge waits for a later pass", d.Kind, d.Key)
 		return false
-	case nudgeMovedOn:
+	case st.movedOn():
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardMovedOn), "the session left its idle streak before muster acted"
 		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
 	}
@@ -1104,10 +1117,10 @@ func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, text,
 		s.failNudge(ctx, d, state, "the agent is not running")
 		return
 	}
-	switch s.nudgeStateNow(ctx, d) {
-	case nudgeUnknown:
+	switch st := s.nudgeStateNow(ctx, d); {
+	case st == nudgeUnknown:
 		return // held: the next pass's reconcile tries again (a relay up to RelayMaxAge)
-	case nudgeMovedOn:
+	case st.movedOn():
 		if done == chiefnudge.OutcomeRelayed && s.turns.busy(a.ID) {
 			return // busy for now: the next pass retries it, up to RelayMaxAge
 		}
@@ -1152,13 +1165,13 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardAskFailed), "the attention queue is off"
 		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
 	}
-	switch s.nudgeStateNow(ctx, d) {
-	case nudgeUnknown:
+	switch st := s.nudgeStateNow(ctx, d); {
+	case st == nudgeUnknown:
 		// Held: nothing raised or recorded, so a later pass judges this streak
 		// again.
 		s.logger.Printf("chief nudges: %s %s: the session's state could not be read; the ask waits for a later pass", d.Kind, d.Key)
 		return false
-	case nudgeMovedOn:
+	case st.movedOn():
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardMovedOn), "the session left its idle streak before muster acted"
 		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
 	}
@@ -1351,7 +1364,7 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 			// be read (the host's connection dropped, which once withdrew every
 			// open ask on a host in one pass while its sessions sat still) leaves it open
 			// for the next pass; the ask's own expiry still ends it.
-			if s.nudgeStateNow(octx, d) == nudgeMovedOn {
+			if s.nudgeStateNow(octx, d).movedOn() {
 				// The owner (or anything) moved the session on: the question is
 				// stale. Withdraw it rather than relay an answer later.
 				if _, err := s.cancelAsk(octx, a.ID); err == nil {
@@ -1384,7 +1397,9 @@ const (
 	// session's state could not be read (nudgeUnknown), so the row goes back to
 	// queued (sendQueueDeliver hands it on as sendqueue.Outcome.Superseded:
 	// nothing reached the host) and is decided on afresh by a later pass.
-	SendQueueNudgeWait = "Not sent yet: the session's state could not be read (is its host connected?)."
+	// Its words hold on both paths: the dispatcher requeues the row, a
+	// person's Send now ends it failed.
+	SendQueueNudgeWait = "Not pasted: muster could not read the session's state (is its host connected?)."
 )
 
 // sendQueueNudgeGate is why chief-nudge row it may not be pasted now, "" when
@@ -1411,16 +1426,11 @@ func (s *Server) sendQueueNudgeGate(ctx context.Context, it sendqueue.Item) stri
 		// 🔴 A DISCONNECTED HOST IS NOT A MOVED WINDOW: its windows are simply
 		// absent from the list, which says nothing about what they hold.
 		return SendQueueNudgeWait
+	case nudgeMovedAway:
+		// Read from the same AgentState as the rest of this decision: one read,
+		// so a disconnect between two reads cannot mislabel the row.
+		return SendQueueNudgeMoved
 	case nudgeMovedOn:
-		holds := ""
-		for _, e := range s.mirrorClaudeEntries(ctx) {
-			if e.Host == it.Target.Host && e.Session == it.Target.Session && e.Window == it.Target.Window {
-				holds = e.ClaudeSession
-			}
-		}
-		if holds != d.Key {
-			return SendQueueNudgeMoved
-		}
 		// 🔴 A RELAY IS TIED TO THE STALL IT ANSWERS, like an agent's
 		// (sendNudgeTurn): an owner who typed into the window after answering
 		// started a newer turn, and the answer is not pasted into it.

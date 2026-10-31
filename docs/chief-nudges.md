@@ -329,12 +329,16 @@ These are code, not instructions to the chief:
   connected host no longer lists), the decision is recorded as
   `suppressed:moved_on`.
 - **Unknown is not moved on.** When the session's state cannot be read — its
-  host's connection dropped, or the host does not report status — nothing is
+  host's connection dropped, the host has sent no window list yet (its first
+  read failed), or it does not report status — nothing is
   decided on it: a nudge or ask about to be sent is held (nothing recorded; the
   streak is judged again on a later pass), an open ask stays open, and a queued
   nudge or relay goes back to the queue to be tried again. The existing bounds
   still end a hold: an ask's own expiry, the send queue's 7-day limit on a
-  queued message, and the 2-hour relay bound.
+  queued message, and the 2-hour relay bound. One limit: a host whose window
+  list arrives but whose process read failed (on macOS, `ps` failing) reports
+  no Claude Code in its windows, which muster cannot tell from Claude Code
+  having exited, so it counts as moved on.
 - **Never into a prompt.** A nudge to a window goes through the [send
   queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle), which
   waits for idle and refuses while Claude Code is waiting on a prompt or has

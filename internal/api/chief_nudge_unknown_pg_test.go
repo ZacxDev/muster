@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -65,6 +68,9 @@ func TestChiefNudgeAnOpenAskSurvivesAnUnreadableState(t *testing.T) {
 		{"host reports no status", func(f *nudgeFixture) {
 			f.state(func(s *mirror.AgentState) { s.Unknown = fmt.Errorf("%w (host %q)", mirror.ErrNoStatusReport, "ws") })
 		}},
+		{"idle with no status time", func(f *nudgeFixture) {
+			f.state(func(s *mirror.AgentState) { s.Since = 0 })
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newNudgeFixture(t, true)
@@ -84,7 +90,7 @@ func TestChiefNudgeAnOpenAskSurvivesAnUnreadableState(t *testing.T) {
 				t.Fatalf("with the state unreadable the ask is %q, want open", st)
 			}
 			f.hostReturns()
-			f.state(func(s *mirror.AgentState) { s.Unknown = nil })
+			f.state(func(s *mirror.AgentState) { s.Unknown, s.Since = nil, nudgeSince })
 			f.pass(t)
 			if got := f.one(t); got.Outcome != chiefnudge.OutcomeAsked || f.askStatus(t, d.AskID) != attention.Open {
 				t.Fatalf("back, unmoved: %+v", got)
@@ -107,6 +113,12 @@ func TestChiefNudgeAnOpenAskIsWithdrawnWhenTheSessionWasReadAndMovedOn(t *testin
 		{"another conversation", func(s *mirror.AgentState) { s.Session = nudgeOtherSID }},
 		{"window gone from a connected host", func(s *mirror.AgentState) {
 			s.Unknown = fmt.Errorf("%w (host %q, session %q, window %q)", mirror.ErrWindowGone, "ws", "main", "@1")
+		}},
+		{"session gone from a connected host", func(s *mirror.AgentState) {
+			s.Unknown = fmt.Errorf("%w (host %q, session %q)", mirror.ErrSessionGone, "ws", "main")
+		}},
+		{"no Claude Code in the window", func(s *mirror.AgentState) {
+			s.Unknown = fmt.Errorf("%w (host %q, session %q)", mirror.ErrNotClaude, "ws", "main")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -288,4 +300,113 @@ func TestChiefNudgeANudgeOrAskIsHeldWhenTheStateGoesUnreadableMidDecision(t *tes
 			}
 		})
 	}
+}
+
+// TestChiefNudgeTheGateLabelsAMoveFromItsOneRead: the AgentState read says the
+// same conversation moved to a newer streak, while the host list no longer
+// shows the window (the connection dropping between two reads). The row is
+// SendQueueNudgeStale, from the one read the decision was made on — never
+// SendQueueNudgeMoved from a second read that saw the host half gone.
+func TestChiefNudgeTheGateLabelsAMoveFromItsOneRead(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	f.pass(t)
+	d := f.one(t)
+	octx := f.srv.queuedPrincipal(context.Background(), authz.OperatorUserID)
+	it, err := f.queue.Get(octx, d.SendQueueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 48_000 })
+	f.mirror.mu.Lock()
+	f.mirror.online = false
+	f.mirror.mu.Unlock()
+	if why := f.srv.sendQueueNudgeGate(octx, it); why != SendQueueNudgeStale {
+		t.Fatalf("gate: %q, want %q", why, SendQueueNudgeStale)
+	}
+}
+
+// recentFails is the agent store with ListRecentChatMessages failing for one
+// conversation while fail is set: a database read of the agent's conversation
+// that errors, which is unknown, not moved on.
+type recentFails struct {
+	agents.Store
+	mu      sync.Mutex
+	session int64
+	fail    bool
+}
+
+func (r *recentFails) ListRecentChatMessages(ctx context.Context, sessionID int64, limit int) ([]agents.ChatMessage, error) {
+	r.mu.Lock()
+	fail := r.fail && sessionID == r.session
+	r.mu.Unlock()
+	if fail {
+		return nil, errors.New("recentFails: the database is unreachable")
+	}
+	return r.Store.ListRecentChatMessages(ctx, sessionID, limit)
+}
+
+func (r *recentFails) set(fail bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fail = fail
+}
+
+// failRecent wraps f's agent store so that session's recent-messages read
+// fails while set.
+func (f *nudgeFixture) failRecent(session int64) *recentFails {
+	r := &recentFails{Store: f.srv.ext.Agents, session: session, fail: true}
+	f.srv.ext.Agents = r
+	return r
+}
+
+// TestChiefNudgeAnAgentsOpenAskSurvivesAFailedConversationRead: an open ask on
+// an agent's conversation, and the read of that conversation's latest message
+// fails. The ask stays open and the decision asked.
+func TestChiefNudgeAnAgentsOpenAskSurvivesAFailedConversationRead(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	d, stalled, _ := liveAgentAskOpen(t, f)
+	r := f.failRecent(stalled.ID)
+	f.pass(t)
+	if got := f.one(t); got.Outcome != chiefnudge.OutcomeAsked {
+		t.Fatalf("with the conversation unreadable: outcome %q detail %q", got.Outcome, got.Detail)
+	}
+	if st := f.askStatus(t, d.AskID); st != attention.Open {
+		t.Fatalf("the ask is %q, want open", st)
+	}
+	r.set(false)
+	f.pass(t)
+	if got := f.one(t); got.Outcome != chiefnudge.OutcomeAsked {
+		t.Fatalf("readable again, unmoved: %+v", got)
+	}
+}
+
+// TestChiefNudgeAnAgentRelayWaitsOutAFailedConversationRead: the owner
+// answered an agent's ask; the read of the conversation fails when the relay
+// is due. sendNudgeTurn holds it (relay_queued, no turn) instead of recording
+// it moved on, and relays it once the read works.
+func TestChiefNudgeAnAgentRelayWaitsOutAFailedConversationRead(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	d, stalled, _, answer := liveAgentAsk(t, f)
+	if d.Outcome != chiefnudge.OutcomeRelayQueued {
+		t.Fatalf("claimed: %+v", d)
+	}
+	r := f.failRecent(stalled.ID)
+	f.pass(t)
+	f.pass(t)
+	if _, turns := f.gw.seen(); len(turns) != 0 {
+		t.Fatalf("relayed while unreadable: %v", turns)
+	}
+	if got := f.one(t); got.Outcome != chiefnudge.OutcomeRelayQueued {
+		t.Fatalf("with the conversation unreadable: outcome %q detail %q, want relay_queued", got.Outcome, got.Detail)
+	}
+	r.set(false)
+	f.pass(t)
+	waitFor(t, func() bool { _, turns := f.gw.seen(); return len(turns) == 1 })
+	if got := f.one(t); got.Outcome != chiefnudge.OutcomeRelayed {
+		t.Fatalf("after the read works: %+v", got)
+	}
+	waitFor(t, func() bool {
+		got := f.sessionMessages(t, stalled.ID, "user")
+		return len(got) > 0 && got[len(got)-1] == answer
+	})
 }
