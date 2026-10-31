@@ -303,13 +303,23 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 	return out
 }
 
-// 🔴 THE STALL FACTS, ONE PLACE. stallInputs is every one of octx's owner's
-// sessions with the facts the stall rule (chiefnudge.Exclude) reads — Status,
+// 🔴 THE STALL FACTS, ONE PLACE. stallInputs is octx's owner's sessions with
+// the facts the stall rule (chiefnudge.Exclude) reads — Status,
 // IdleFor/IdleSince and StreakKey, Shell (background work), TurnError,
-// OpenAsk, and the Chief/Officer/OtherUser marks — UNFILTERED, in the sweep's
-// order: mirrored Claude Code windows on hosts that report status, then
-// dispatched agents (one entry per recent conversation of an agent that could
-// be sent to; one status-less entry for any other agent). Anything that
+// OpenAsk, and the Chief/Officer/OtherUser marks — NOT yet filtered by that
+// rule, in the sweep's order: mirrored Claude Code windows, then dispatched
+// agents (one entry per recent conversation of an agent that could be sent
+// to; one status-less entry for any other agent).
+//
+// It is NOT one entry per subject. Already left out, with no entry at all:
+// every window of a mirror host that is offline or reports no status; a window
+// that is not Claude Code, has no Claude session, has a runtime, or repeats a
+// conversation an earlier window already listed; for an agent that could be
+// sent to, a conversation older than chiefNudgeAgentSessionAge (and every one
+// after it), a conversation with no message or whose messages cannot be read,
+// and all its conversations when ListSessions fails; and every agent when the
+// agent list itself cannot be read (logged, not returned). A caller that needs every
+// subject must not expect an entry for each here. Anything that
 // classifies a session as stalled reads these, never its own copy, so the
 // nudge sweep and any report agree on who is stalled. inFlight (may be nil)
 // names sessions with a live nudge decision in flight; they read as OpenAsk.

@@ -31,10 +31,10 @@ import (
 // stopped cutting it out still shows up, as <SECRET> where [removed] was).
 
 const (
-	frGoldSecret   = "ghp_" + "GoLdEnFiXtUrEaBcDeF0123"
-	frGoldDescr    = "Description-only zibblewump detail never in a report"
-	frGoldInfra    = "Debugging kubectl access to build.example.com"
-	frGoldHidden   = "Hidden\u200bcharacter title"
+	frGoldSecret = "ghp_" + "GoLdEnFiXtUrEaBcDeF0123"
+	frGoldDescr  = "Description-only zibblewump detail never in a report"
+	frGoldInfra  = "Debugging kubectl access to build.example.com"
+	frGoldHidden = "Hidden\u200bcharacter title"
 )
 
 var frGoldTime = regexp.MustCompile(`\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)`)

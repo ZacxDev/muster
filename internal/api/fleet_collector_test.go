@@ -36,18 +36,62 @@ const (
 const fcSentinel = "zq sentinel"
 
 // fcMailAllowed is the fleetFact fields whose VALUE the mail reply may carry
-// (screened). Every other string field is set to a sentinel and must not
-// appear: a field added to fleetFact is forbidden until it is listed here.
-var fcMailAllowed = map[string]bool{"Title": true, "Repo": true, "State": true}
+// (screened); fcFact sets them to real values. Every OTHER field is filled
+// with sentinels, recursively, and none may appear: a field added to fleetFact
+// is forbidden until it is listed here — and if it is of a kind fcFill cannot
+// sentinel, the test FAILS until someone decides deliberately.
+var fcMailAllowed = map[string]bool{"Subject": true, "Title": true, "Repo": true, "State": true, "FirstAt": true,
+	"LastAt": true, "Titles": true, "TitlesOmitted": true, "PRs": true}
 
-func fcFact(sub focus.Subject, title, cwd string) fleetFact {
+// fcFill puts a sentinel naming path into every string reachable from v:
+// a string, each element of a (one-element) slice, each field of a struct,
+// the target of a pointer. Any other kind — a number, a bool, a map, a struct
+// with unexported fields such as time.Time — cannot carry a sentinel, so it
+// fails the test instead of passing unseen.
+func fcFill(t *testing.T, v reflect.Value, path string) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(fcSentinel + " " + strings.ToLower(path))
+	case reflect.Slice:
+		s := reflect.MakeSlice(v.Type(), 1, 1)
+		fcFill(t, s.Index(0), path+"0")
+		v.Set(s)
+	case reflect.Pointer:
+		p := reflect.New(v.Type().Elem())
+		fcFill(t, p.Elem(), path)
+		v.Set(p)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			fld := v.Type().Field(i)
+			if !fld.IsExported() {
+				t.Fatalf("fleetFact field %s (%s) holds an unexported field %s: fcFill cannot sentinel it; "+
+					"list it in fcMailAllowed or teach fcFill", path, v.Type(), fld.Name)
+			}
+			fcFill(t, v.Field(i), path+strings.ToLower(fld.Name))
+		}
+	default:
+		t.Fatalf("fleetFact field %s is a %s, which fcFill cannot sentinel: list it in fcMailAllowed or teach fcFill",
+			path, v.Kind())
+	}
+}
+
+func fcFact(t *testing.T, sub focus.Subject, title, cwd string) fleetFact {
+	t.Helper()
 	f := fleetFact{Subject: sub, State: "active", FirstAt: time.Unix(1_700_000_000, 0), LastAt: time.Unix(1_700_000_100, 0),
 		Titles: []focus.TitleAt{{Title: title, At: time.Unix(1_700_000_050, 0)}}, PRs: []string{"acme-labs/wombat#7"}}
 	v := reflect.ValueOf(&f).Elem()
+	fields := map[string]bool{}
 	for i := 0; i < v.NumField(); i++ {
 		fld := v.Type().Field(i)
-		if fld.Type.Kind() == reflect.String && !fcMailAllowed[fld.Name] {
-			v.Field(i).SetString(fcSentinel + " " + strings.ToLower(fld.Name))
+		fields[fld.Name] = true
+		if !fcMailAllowed[fld.Name] {
+			fcFill(t, v.Field(i), fld.Name)
+		}
+	}
+	for name := range fcMailAllowed {
+		if !fields[name] {
+			t.Fatalf("fcMailAllowed lists %s, which fleetFact no longer has", name)
 		}
 	}
 	f.Title, f.Repo = "pane-"+title[len("Collector-test "):len("Collector-test ")+4], "wombat-repo"
@@ -57,12 +101,13 @@ func fcFact(sub focus.Subject, title, cwd string) fleetFact {
 	return f
 }
 
-func fcCollected() fleetCollected {
+func fcCollected(t *testing.T) fleetCollected {
+	t.Helper()
 	return fleetCollected{
 		Facts: []fleetFact{
-			fcFact(focus.MirrorSubject("fc-in"), fcInTitle, fcPrefix+"/zqleaf"),
-			fcFact(focus.MirrorSubject("fc-out"), fcOutTitle, "/opt/zqelse"),
-			fcFact(focus.MirrorSubject("fc-unk"), fcUnkTitle, ""),
+			fcFact(t, focus.MirrorSubject("fc-in"), fcInTitle, fcPrefix+"/zqleaf"),
+			fcFact(t, focus.MirrorSubject("fc-out"), fcOutTitle, "/opt/zqelse"),
+			fcFact(t, focus.MirrorSubject("fc-unk"), fcUnkTitle, ""),
 		},
 		Online:  []string{"zqonlinehost"},
 		Offline: []fleetOffline{{Host: "zqofflinehost", Since: time.Unix(1_600_000_000, 0)}},
@@ -86,7 +131,7 @@ func fcMail(t *testing.T, c fleetCollected) string {
 // with the contract's exact shape, and no sentinel, host, directory or
 // out-of-prefix/unknown-directory session anywhere.
 func TestTheMailEncoderCarriesNoCollectorOnlyField(t *testing.T) {
-	out := fcMail(t, fcCollected())
+	out := fcMail(t, fcCollected(t))
 	// Positive control: the in-prefix session IS described, so the absences
 	// below are not those of an empty reply.
 	if !strings.Contains(out, fcInTitle) || !strings.Contains(out, "acme-labs/wombat#7") || !strings.Contains(out, `"name":"pane-in-p"`) {
@@ -150,7 +195,7 @@ func TestTheMailEncoderCarriesNoCollectorOnlyField(t *testing.T) {
 // carry the host and the qualified name — so the sentinels are reachable by an
 // encoder, and their absence from the mail is the mail encoder's doing.
 func TestTheToolEncoderShowsWhatTheMailWithholds(t *testing.T) {
-	out, err := encodeFleetReport(fcCollected(), fleetWindow{}, nil, time.Unix(1_700_000_200, 0), nil, overviewMaxBytes)
+	out, err := encodeFleetReport(fcCollected(t), fleetWindow{}, nil, time.Unix(1_700_000_200, 0), nil, overviewMaxBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,28 +245,46 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 			return err
 		}
 		files++
-		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				var name string
-				switch fx := call.Fun.(type) {
-				case *ast.SelectorExpr:
-					name = fx.Sel.Name
-				case *ast.Ident:
-					name = fx.Name
-				}
-				if _, tracked := want[name]; tracked {
-					got[name] = append(got[name], f.Name.Name+"."+fn.Name.Name)
+		// 🔴 ANY REFERENCE, NOT ONLY A DIRECT CALL: a method value
+		// (`cf := s.collectFleet; cf(...)`), a function passed as an argument
+		// and a method expression all name the function without calling it
+		// there, and each is a second user. Every identifier spelling a tracked
+		// name counts — a SelectorExpr's Sel is itself an Ident, so `s.x` and a
+		// bare `x` are both seen once. The declaring name (FuncDecl.Name) is not
+		// walked, so a definition is not a reference.
+		record := func(root ast.Node, owner string) {
+			ast.Inspect(root, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok {
+					if _, tracked := want[id.Name]; tracked {
+						got[id.Name] = append(got[id.Name], f.Name.Name+"."+owner)
+					}
 				}
 				return true
 			})
+		}
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if d.Body != nil {
+					record(d.Body, d.Name.Name)
+				}
+			case *ast.GenDecl:
+				// A package-level `var x = func() { … }` (or any initializer)
+				// is code too; its owner is the declared names.
+				for _, spec := range d.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					var names []string
+					for _, n := range vs.Names {
+						names = append(names, n.Name)
+					}
+					for _, v := range vs.Values {
+						record(v, "var:"+strings.Join(names, "+"))
+					}
+				}
+			}
 		}
 		return nil
 	})
@@ -235,7 +298,7 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 	for name, callers := range want {
 		sort.Strings(got[name])
 		if g := strings.Join(got[name], ","); g != callers {
-			t.Errorf("%s is called from [%s]; the ledger says [%s]", name, g, callers)
+			t.Errorf("%s is referenced from [%s]; the ledger says [%s]", name, g, callers)
 		}
 	}
 }

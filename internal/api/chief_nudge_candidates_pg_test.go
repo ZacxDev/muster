@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -32,7 +31,7 @@ type nudgeCandFixture struct {
 	worker            agents.Agent
 	workerSess        agents.ChatSession
 	officer           agents.Agent
-	ids               map[string]string // a database id -> its placeholder
+	ids               map[string]string // "a"/"s" + an agent/session id -> its placeholder (agent and session ids can coincide)
 	baseScriptWindows []mirror.Window
 }
 
@@ -47,8 +46,8 @@ func newNudgeCandFixture(t *testing.T) *nudgeCandFixture {
 	f.stallAgent(t, f.officer, authz.OperatorUserID)
 	f.stallAgent(t, f.boss, authz.OperatorUserID)
 	f.stallAgent(t, f.nudgeFixture.worker, f.member) // another user's agent
-	f.ids[strconv.FormatInt(f.worker.ID, 10)] = "<WORKER>"
-	f.ids[strconv.FormatInt(f.workerSess.ID, 10)] = "<WSESS>"
+	f.ids["a"+strconv.FormatInt(f.worker.ID, 10)] = "<WORKER>"
+	f.ids["s"+strconv.FormatInt(f.workerSess.ID, 10)] = "<WSESS>"
 	f.baseScriptWindows = append([]mirror.Window(nil), f.mirror.windows...)
 	return f
 }
@@ -56,16 +55,18 @@ func newNudgeCandFixture(t *testing.T) *nudgeCandFixture {
 // describe is one candidate, every field, database ids replaced.
 func (f *nudgeCandFixture) describe(c nudgeCandidate) string {
 	s := c.Session
-	id := func(v int64) string {
+	ph := func(ns string, v int64) string {
 		k := strconv.FormatInt(v, 10)
-		if p, ok := f.ids[k]; ok {
+		if p, ok := f.ids[ns+k]; ok {
 			return p
 		}
 		return k
 	}
+	aid := func(v int64) string { return ph("a", v) }
+	sid := func(v int64) string { return ph("s", v) }
 	key := s.Key
 	if s.Kind == chiefnudge.KindAgent {
-		key = "agent/" + id(s.AgentID) + "/" + id(s.ChatSessionID)
+		key = "agent/" + aid(s.AgentID) + "/" + sid(s.ChatSessionID)
 	}
 	streak := s.StreakKey
 	if strings.HasPrefix(streak, "msg:") {
@@ -74,8 +75,8 @@ func (f *nudgeCandFixture) describe(c nudgeCandidate) string {
 	return fmt.Sprintf("%s|%s|host=%s|tmux=%s|win=%s|label=%s|status=%s|streak=%s|idle=%s|shell=%t|turnerr=%t|ask=%t|"+
 		"agent=%s|chat=%s|other=%t|chief=%t|officer=%t|decided=%t|title=%q|ca=%s|cs=%s",
 		s.Kind, key, s.Host, s.TmuxSession, s.Window, s.Label, s.Status, streak, s.IdleFor.Round(time.Minute), s.Shell, s.TurnError,
-		s.OpenAsk, id(s.AgentID), id(s.ChatSessionID), s.OtherUser, s.Chief, s.Officer, s.Decided, s.Title,
-		id(c.agent.ID), id(c.session.ID))
+		s.OpenAsk, aid(s.AgentID), sid(s.ChatSessionID), s.OtherUser, s.Chief, s.Officer, s.Decided, s.Title,
+		aid(c.agent.ID), sid(c.session.ID))
 }
 
 func (f *nudgeCandFixture) candidates(t *testing.T, inFlight map[string]bool) []string {
@@ -230,15 +231,61 @@ func TestNudgeCandidatesCharacterization(t *testing.T) {
 		}
 	}
 
-	// Two stalled conversations of one agent are two candidates, each on its own.
+	// 🔴 THE ORDER IS PINNED, NOT SORTED AWAY. Two stalled conversations of one
+	// agent are two candidates, each on its own, the most recently active
+	// first: set the recency explicitly, read the order, flip it, read again.
 	reset()
 	second, _ := f.stallAgent(t, f.worker, authz.OperatorUserID)
-	f.ids[strconv.FormatInt(second.ID, 10)] = "<WSESS2>"
-	got := f.candidates(t, nil)
-	sort.Strings(got)
-	want := []string{candMirror, candWorker, strings.ReplaceAll(candWorker, "<WSESS>", "<WSESS2>")}
-	sort.Strings(want)
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("two conversations:\n got  %v\n want %v", got, want)
+	f.ids["s"+strconv.FormatInt(second.ID, 10)] = "<WSESS2>"
+	candWorker2 := strings.ReplaceAll(candWorker, "<WSESS>", "<WSESS2>")
+	recency := func(newer, older int64) {
+		for q, id := range map[string]int64{
+			`UPDATE chat_sessions SET updated_at = now() WHERE id = $1`:                       newer,
+			`UPDATE chat_sessions SET updated_at = now() - interval '1 minute' WHERE id = $1`: older,
+		} {
+			if _, err := f.pool.Exec(sys, q, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, o := range []struct {
+		name         string
+		newer, older int64
+		want         []string
+	}{
+		{"two conversations, the first newer", f.workerSess.ID, second.ID, []string{candMirror, candWorker, candWorker2}},
+		{"two conversations, the second newer", second.ID, f.workerSess.ID, []string{candMirror, candWorker2, candWorker}},
+	} {
+		recency(o.newer, o.older)
+		if got := f.candidates(t, nil); strings.Join(got, "\n") != strings.Join(o.want, "\n") {
+			t.Errorf("%s:\n got  %v\n want %v", o.name, got, o.want)
+		}
+	}
+
+	// A mix: three mirrored windows (three conversations; appended out of index
+	// order on purpose, read in the hub's window order, which is by index) and
+	// two agents (the newer agent first), the worker with both conversations,
+	// the second newer. Mirrored windows all come before every agent.
+	const sidB, sidC = "1c6e8b63-7a2f-4d4a-8b4f-3e5d9c2a1f88", "2d7f9c74-8b3a-4e5b-9c5a-4f6eab3b2a99"
+	other := f.agentFor(t, authz.OperatorUserID, "nudgecand2-"+strconv.FormatInt(time.Now().UnixNano(), 36), "cand worker two",
+		"nudge-cand2-tok-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	otherSess, _ := f.stallAgent(t, other, authz.OperatorUserID)
+	f.ids["a"+strconv.FormatInt(other.ID, 10)] = "<OTHER>"
+	f.ids["s"+strconv.FormatInt(otherSess.ID, 10)] = "<OSESS>"
+	f.mirror.mu.Lock()
+	w := f.mirror.windows[0]
+	wC, wB := w, w
+	wC.ID, wC.Index, wC.Active, wC.Label, wC.ClaudeSession = "@3", 3, false, "Gold:3", sidC
+	wB.ID, wB.Index, wB.Active, wB.Label, wB.ClaudeSession = "@2", 2, false, "Gold:2", sidB
+	f.mirror.windows = append(f.mirror.windows, wC, wB)
+	f.mirror.mu.Unlock()
+	recency(second.ID, f.workerSess.ID)
+	mirrorAs := func(sid, win, label string) string {
+		return strings.Replace(strings.Replace(strings.Replace(candMirror, nudgeSID, sid, 1), "win=@1", "win="+win, 1), "Gold:1", label, 1)
+	}
+	candOther := strings.NewReplacer("<WORKER>", "<OTHER>", "<WSESS>", "<OSESS>", "label=cand worker", "label=cand worker two").Replace(candWorker)
+	want := []string{candMirror, mirrorAs(sidB, "@2", "Gold:2"), mirrorAs(sidC, "@3", "Gold:3"), candOther, candWorker2, candWorker}
+	if got := f.candidates(t, nil); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("a mix of windows and agents:\n got  %v\n want %v", got, want)
 	}
 }
