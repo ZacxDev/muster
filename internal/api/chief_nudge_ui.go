@@ -175,6 +175,10 @@ func nudgeOutcomeLabel(outcome string) string {
 			return "Not sent: the session moved on before it was pasted"
 		case chiefnudge.GuardAskFailed:
 			return "Suppressed: the ask could not be raised"
+		case chiefnudge.GuardLanesFull:
+			return "Not asked: the chief's lanes stayed full (every one held by your own sessions)"
+		case chiefnudge.GuardChiefNotReady:
+			return "Not asked: the chief's runtime stayed not ready"
 		}
 		return "Suppressed: " + g
 	}

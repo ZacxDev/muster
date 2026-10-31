@@ -34,8 +34,8 @@ import (
 // makes no model call.
 //
 // For each, the chief is asked once (a bounded call on the chief's own runtime,
-// under a gateway key of its own so it never enters the operator's
-// conversation) for ONE decision: nudge, ask, or leave. Then the guards — in
+// in a context of its own so it never enters the operator's conversation:
+// nudgeSessionName, nudgeRoute) for ONE decision: nudge, ask, or leave. Then the guards — in
 // code, never in the prompt — decide what muster does with it:
 //
 //   - a nudge is accepted only when its quote is, byte for byte, inside one of
@@ -89,8 +89,13 @@ const (
 	// owner: a fleet that stalls all at once costs a few calls a tick, not one
 	// per session.
 	chiefNudgeMaxPerPass = 5
-	// chiefNudgeTurnBudget bounds one chief call.
-	chiefNudgeTurnBudget = 3 * time.Minute
+	// chiefNudgeTurnBudget bounds one chief call: the three minutes a check's
+	// turn has always had, plus one for a claude-code chief's ccd to start the
+	// check's own CLI first (nudgeRoute) — ccd waits up to its laneStartTimeout
+	// (60s, cmd/ccd/lanes.go) for a new lane's CLI to reach its prompt, and
+	// answers a typed 503 not_ready past it (unsent: the check is retried next
+	// pass), so a check whose CLI did start still has at least three minutes.
+	chiefNudgeTurnBudget = 4 * time.Minute
 	// chiefNudgeAgentMessages is how many of an agent's newest messages are read.
 	chiefNudgeAgentMessages = 200
 	// chiefNudgePendingBatch bounds one reconcile.
@@ -251,13 +256,25 @@ func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFl
 	if err != nil {
 		return
 	}
-	for _, c := range s.nudgeCandidates(octx, inFlight) {
+	cands := s.nudgeCandidates(octx, inFlight)
+	for i, c := range cands {
 		if p.budget <= 0 || octx.Err() != nil {
 			return
 		}
-		decided, stop := s.decideNudge(octx, o, chief, c, p)
+		decided, stop, refused := s.decideNudge(octx, o, chief, c, p)
 		if decided {
 			p.decided++
+		}
+		if refused != "" {
+			// 🔴 THE CANDIDATES WAITING BEHIND A REFUSED CHECK START THEIR CLOCKS
+			// TOO (chief_nudge_retry.go): the chief's lanes are full for them as
+			// much as for this one. Without it each would start its own bound
+			// only once the one before it was recorded — one bound per
+			// candidate, in a line. Nothing is called for them.
+			now := s.now()
+			for _, w := range cands[i+1:] {
+				s.nudgeRetry.refused(nudgeRetryKey(o.ID, w.Session), false, now)
+			}
 		}
 		if stop {
 			return
@@ -402,29 +419,33 @@ func (s *Server) nudgeTitle(ctx context.Context, c chiefnudge.Session) string {
 }
 
 // errNudgeChiefBusy: the chief could not take the call now (busy, not running,
-// claimed); the owner's other candidates wait for the next pass.
+// claimed); the owner's other candidates wait for the next pass. A refusal for
+// capacity or not-ready is a nudgeRefusal, retried bounded
+// (chief_nudge_retry.go).
 var errNudgeChiefBusy = errors.New("the chief is busy")
 
 // decideNudge reads c's transcript, asks the chief and acts on its answer
 // under the guards. decided: a decision was recorded; stop: the owner's other
-// candidates should wait (the chief is busy).
-func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief agents.Agent, c nudgeCandidate, p *nudgePass) (decided, stop bool) {
+// candidates should wait (the chief is busy); refused: the chief's runtime
+// refused the check for a reason that does not pass on its own (nudgeRefusal's
+// reason, chief_nudge_retry.go), "" otherwise.
+func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief agents.Agent, c nudgeCandidate, p *nudgePass) (decided, stop bool, refused string) {
 	read, err := s.nudgeTranscript(octx, c)
 	msgs, full := read.Msgs, read.Full
 	if err != nil {
 		s.logger.Printf("chief nudges: %s %s: transcript: %v", c.Kind, c.Key, err)
-		return false, false
+		return false, false, ""
 	}
 	last, ok := chiefnudge.LastIsAssistant(msgs)
 	if !ok {
 		// The owner spoke last (or the session said nothing): not stalled on
 		// its own word.
-		return false, false
+		return false, false, ""
 	}
 	injected, err := s.nudgeInjected(octx, c.Session)
 	if err != nil {
 		s.logger.Printf("chief nudges: %s %s: injected: %v", c.Kind, c.Key, err)
-		return false, false
+		return false, false, ""
 	}
 	owner := chiefnudge.OwnerMessages(msgs, injected, nudgeInjectedPrefixes, s.now().Add(-chiefnudge.OwnerWindow),
 		c.Kind == chiefnudge.KindAgent && full)
@@ -443,8 +464,13 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	// The stall classifier first (jev.go): it runs in shadow too — measuring it
 	// on real idle stalls is the point — and a failure only means the chief
 	// decides alone.
-	var jev chiefnudge.Result
-	if cl := s.ext.ChiefNudge.Classifier; cl != nil {
+	//
+	// 🔴 ONCE PER STREAK, NOT ONCE PER PASS: a streak whose call sent nothing is
+	// asked about again next pass, and reuses the Result kept for it
+	// (chief_nudge_retry.go) rather than bill the owner's key again.
+	rkey := nudgeRetryKey(o.ID, c.Session)
+	jev, cached := s.nudgeRetry.cachedJev(rkey, s.now())
+	if cl := s.ext.ChiefNudge.Classifier; cl != nil && !cached {
 		jev = cl.Classify(octx, o.ID, last.Text)
 		if jev.Err != "" {
 			s.logger.Printf("chief nudges: %s %s: the stall classifier: %s; the chief decides alone", c.Kind, c.Key, jev.Err)
@@ -458,20 +484,46 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	}
 	raw, err := s.askChiefForNudge(octx, chief, nudgeSessionName(chief.Name, o.ID, c.Session),
 		chiefnudge.Prompt(c.Session, last, owner, c.IdleFor, hint, fence.NewNonce()))
-	if errors.Is(err, errNudgeChiefBusy) {
-		return false, true
+	var refusal nudgeRefusal
+	if errors.As(err, &refusal) {
+		// Refused for capacity or not-ready: retried, bounded, then recorded
+		// (chief_nudge_retry.go).
+		now := s.now()
+		s.nudgeRetry.keepJev(rkey, jev, now)
+		since, logNow := s.nudgeRetry.refused(rkey, true, now)
+		if logNow {
+			s.logger.Printf("chief nudges: %s %s: the chief refused the check (%s); retrying each pass, and recording it %s after %s of refusals",
+				c.Kind, c.Key, refusal.reason, chiefnudge.Suppressed(nudgeRefusedGuard(refusal.reason)), chiefNudgeRefusedBound)
+		}
+		if now.Sub(since) < chiefNudgeRefusedBound {
+			return false, true, refusal.reason
+		}
+		s.nudgeRetry.forget(rkey)
+		d.Decision, d.Outcome, d.Detail = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(nudgeRefusedGuard(refusal.reason)),
+			nudgeRefusedDetail(refusal.reason, chiefNudgeRefusedBound)
+		// The owner's other candidates are refused alike; their clocks started
+		// with this one's, so they are recorded as they are reached.
+		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, refusal.reason
 	}
+	if errors.Is(err, errNudgeChiefBusy) {
+		s.nudgeRetry.keepJev(rkey, jev, s.now())
+		return false, true, ""
+	}
+	// The chief took the call: this streak is decided below, and the owner's
+	// chief was not refusing.
+	s.nudgeRetry.forget(rkey)
+	s.nudgeRetry.answered(o.ID)
 	if err != nil {
 		// 🔴 ONE FAILED CALL DOES NOT WEDGE THE OWNER'S SWEEP: it is recorded
 		// on THIS candidate (so this streak is not retried every pass) and the
 		// owner's next candidate is judged. A new streak is judged afresh.
 		d.Decision, d.Outcome, d.Detail = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardChiefError), "the chief's call failed"+failureKind(err)
-		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
+		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
 	prop, perr := chiefnudge.ParseProposal(raw)
 	if perr != nil {
 		d.Decision, d.Outcome, d.Reason = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardInvalid), perr.Error()
-		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
+		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
 	d.Decision, d.Reason, d.Covered = prop.Decision, prop.Reason, prop.CoveredAction
 	// 🔴 THE BACKTESTED RULE: an ask-stall (ask score at or over the threshold)
@@ -500,16 +552,16 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 			d.Decision, d.Question, d.Options = chiefnudge.DecisionAsk, q, opts
 			d.Reason = fmt.Sprintf("classifier: %s, ask score %.2f — the default is an ask (%s); %s",
 				jev.Label, jev.AskScore, why, prop.Reason)
-			return s.actAsk(octx, c, d), false
+			return s.actAsk(octx, c, d), false, ""
 		}
 	}
 	switch prop.Decision {
 	case chiefnudge.DecisionLeave:
 		d.Outcome = chiefnudge.OutcomeLeft
-		return s.recordNudge(octx, d, "chief_nudge.left"), false
+		return s.recordNudge(octx, d, "chief_nudge.left"), false, ""
 	case chiefnudge.DecisionAsk:
 		d.Question, d.Options = prop.Question, chiefnudge.CleanOptions(prop.Options)
-		return s.actAsk(octx, c, d), false
+		return s.actAsk(octx, c, d), false, ""
 	}
 	// A nudge.
 	if read.Partial {
@@ -519,7 +571,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision = chiefnudge.DecisionAsk
 		d.Question, d.Options = chiefnudge.EscalationPartial(c.Title), chiefnudge.CleanOptions(nil)
 		d.Reason = chiefnudge.GuardPartial + ": the transcript read was incomplete, so no owner message can authorise a nudge; " + d.Reason
-		return s.actAsk(octx, c, d), false
+		return s.actAsk(octx, c, d), false, ""
 	}
 	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
 	quoted, qerr := chiefnudge.CheckQuote(prop, owner)
@@ -530,17 +582,17 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision = chiefnudge.DecisionAsk
 		d.Question, d.Options = chiefnudge.EscalationNoTimes(c.Title), chiefnudge.CleanOptions(nil)
 		d.Detail = strconv.Itoa(untimed) + " message(s) of the owner's arrived with no time (an older muster-mirror): none can authorise a nudge"
-		return s.actAsk(octx, c, d), false
+		return s.actAsk(octx, c, d), false, ""
 	}
 	if qerr != nil {
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardQuote), qerr.Error()
-		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
+		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
 	d.QuoteAt = quoted.At
 	n, err := s.ext.ChiefNudges.NudgesForAnchor(octx, c.Kind, c.Key, d.AnchorKey)
 	if err != nil {
 		s.logger.Printf("chief nudges: %s %s: nudge count: %v", c.Kind, c.Key, err)
-		return false, false
+		return false, false, ""
 	}
 	if n >= chiefnudge.MaxNudgesPerAnchor {
 		// 🔴 THE THIRD NUDGE IS AN ASK: the session has been told twice on the
@@ -548,25 +600,25 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision = chiefnudge.DecisionAsk
 		d.Question, d.Options = chiefnudge.EscalationQuestion(c.Title), chiefnudge.CleanOptions(nil)
 		d.Reason = "escalated: " + strconv.Itoa(n) + " nudges since the owner's last message; " + d.Reason
-		return s.actAsk(octx, c, d), false
+		return s.actAsk(octx, c, d), false, ""
 	}
 	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
 	// unsuppressed (operator decision), and is not counted.
 	if d.Mode == chiefnudge.ModeLive && p.hourly >= s.chiefNudgeHourlyCap() {
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardHourlyCap),
 			strconv.Itoa(p.hourly)+" nudges in the last hour (cap "+strconv.Itoa(s.chiefNudgeHourlyCap())+")"
-		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false
+		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
 	d.Message = chiefnudge.NudgeText(o.Name, quoted, prop.Quote, time.Local)
 	if d.Mode != chiefnudge.ModeLive {
 		d.Outcome = chiefnudge.OutcomeWouldSend
-		return s.recordNudge(octx, d, "chief_nudge.would_send"), false
+		return s.recordNudge(octx, d, "chief_nudge.would_send"), false, ""
 	}
 	if s.actNudge(octx, c, d) {
 		p.hourly++
-		return true, false
+		return true, false, ""
 	}
-	return false, false
+	return false, false, ""
 }
 
 // nudgeInjectedPrefixes are the openings of muster's own pastes, from the
@@ -737,21 +789,75 @@ func nudgeMirrorComplete(evs []cctranscript.Event, idx mirrorIndex, now time.Tim
 	return true
 }
 
-// nudgeSessionName is the chief's gateway key for ONE stall check: derived
-// from the decision it is for (owner, session, idle streak), so every check
-// starts a fresh context — no check sees another's, none grows with the ones
-// before it — and never an operator thread's key, so a check never enters the
-// operator's conversation with the chief. No chat_sessions row exists for it
-// (chief_agent.go says why).
+// nudgeSessionName is the session key of ONE stall check: derived from the
+// decision it is for (owner, session, idle streak), and never an operator
+// thread's key. No chat_sessions row exists for it (chief_agent.go says why).
+//
+// What makes the check's context fresh is what the chief's runtime does with
+// the key, and that differs by kind:
+//
+//   - a `gateway` chief keys its sessions by the session key it is sent
+//     (X-Openclaw-Session-Key), so this key alone is a session of its own;
+//   - a `claude-code` chief's ccd does NOT: a turn without
+//     agents.HeaderCCSession goes to its primary CLI — the operator's own
+//     conversation with the chief — whatever its session key. So the check
+//     also carries the key as an explicit session (nudgeRoute), and ccd runs it
+//     in a CLI of its own (a lane, cmd/ccd/lanes.go), started with an empty
+//     conversation and stopped as soon as the check's turn is over.
+//
+// Either way no check sees another's and none grows with the ones before it.
+// The key is the same only for the same decision, and a decision is asked
+// again after a call that sent nothing (errNudgeChiefBusy) — and also after a
+// call that DID paste but whose answer muster never recorded: muster restarted
+// mid-check, so the next pass asks again under the same key, and the lane
+// resumes a transcript that holds that earlier prompt (and any answer to it).
+// Harmless: the model sees its own earlier question once, before the same
+// question again.
 func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) string {
 	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + c.Kind + "\x00" + c.Key + "\x00" + c.StreakKey))
 	return "agent:" + agentName + ":webchat:nudge:" + hex.EncodeToString(sum[:8])
 }
 
+// nudgeRoute is ctx carrying the route of a stall check under key: for a
+// claude-code chief, key as an explicit claude-code session marked EPHEMERAL
+// (withRoute, the one place that route is built), with no model — ccd starts
+// the lane's CLI on the pod's default model, as the primary runs. A gateway
+// chief gets no route: its runtime has no lanes, and its per-decision session
+// key is already a session of its own. Its request carries the same headers as
+// before lanes — but what changed around it applies to every kind of chief: the
+// call's budget is chiefNudgeTurnBudget (4m, was 3m) and the chief's claim
+// lease is that plus a minute (5m, was 4m), and a 503 not_ready is now retried
+// bounded, then recorded (chief_nudge_retry.go).
+//
+// 🔴 EPHEMERAL IS WHAT KEEPS A CHECK OFF THE OPERATOR'S SESSIONS. ccd stops a
+// check's CLI as soon as its turn is over, so no idle check CLI holds a slot or
+// pod memory. When every slot (CCD_MAX_SESSIONS, default 3) is taken by an
+// operator session, ccd refuses the check (503 capacity) rather than stop one of
+// them to make room. ccd never stops an idle operator lane on its own, so that
+// does not pass by itself: the check is retried for chiefNudgeRefusedBound,
+// then recorded suppressed:lanes_full (chief_nudge_retry.go).
+//
+// ⚠ VERSION SKEW: a ccd that predates agents.HeaderCCEphemeral ignores it and
+// keeps the check's CLI like any session's. At its cap it then stops the least
+// recently used idle lane, which may be the operator's. The header ships in the
+// same release as the claude-code agent image; a chief pod still running an
+// older image behaves that way until it is restarted on the new one.
+func nudgeRoute(ctx context.Context, chief agents.Agent, key string) context.Context {
+	if agents.ResolveKind(chief.Kind) != agents.KindClaudeCode {
+		return ctx
+	}
+	return withRoute(ctx, chief, agents.ChatSession{SessionKey: key, Runtime: agents.SessionRuntimeClaudeCode}, true)
+}
+
 // askChiefForNudge puts prompt to the chief and returns its answer, holding
 // the chief's session claim and turn gate (as a question turn does) so it never
 // overlaps another of the chief's turns. errNudgeChiefBusy when the chief
-// cannot take it now. The test hook nudgeChief replaces the call itself.
+// cannot take it now: nothing was sent, so the decision is not recorded and the
+// streak is asked about again next pass. Two refusals that do not pass on their
+// own come back as a nudgeRefusal (which IS errNudgeChiefBusy): ccd has no slot
+// for the check's own CLI (agentgateway.LanesFull), or the runtime answered a
+// typed 503 not_ready — decideNudge retries those bounded
+// (chief_nudge_retry.go).
 func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, prompt string) (string, error) {
 	if s.ext.Gateway == nil || s.ext.Agents == nil {
 		return "", errNudgeChiefBusy
@@ -775,10 +881,15 @@ func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, 
 		return "", errNudgeChiefBusy
 	}
 	defer s.turns.leave(chief.ID)
-	tctx, cancel := context.WithTimeout(ctx, chiefNudgeTurnBudget)
+	tctx, cancel := context.WithTimeout(nudgeRoute(ctx, chief, key), chiefNudgeTurnBudget)
 	defer cancel()
 	reply, err := s.ext.Gateway.Chat(tctx, chief, key, prompt, nil)
-	if agentgateway.Unsent(err) != "" {
+	switch {
+	case agentgateway.LanesFull(err):
+		return "", nudgeRefusal{refusalLanesFull}
+	case agentgateway.Unsent(err) == agentgateway.UnsentNotReady:
+		return "", nudgeRefusal{refusalNotReady}
+	case agentgateway.Unsent(err) != "":
 		return "", errNudgeChiefBusy
 	}
 	return reply, err

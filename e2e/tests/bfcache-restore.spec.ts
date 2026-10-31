@@ -731,6 +731,68 @@ test.describe('mirrored', () => {
     }
   });
 
+  // 🔴 A CLOSE OF THE SOCKET THE PAGE LEFT, DISPATCHED AFTER THE RESTORE, IS NOT
+  // THE NEW SOCKET'S CLOSE. pagehide closes the view's socket without detaching
+  // it, and its close event can come only after pageshow has opened the next
+  // one. Taken as the live socket's close, it dropped the restore's socket from
+  // the view (still attached and streaming) and opened another from the same
+  // offset: two streams, and the reply that came meanwhile drawn TWICE — the
+  // CI flake of the test above (5 bubbles, not 4). Forced here: every socket
+  // closed while the page is away has its close handler run only after the
+  // next pageshow. Before the fix the status check is red every time (5/5:
+  // "Connecting…" became "Disconnected — reconnecting…" under a live socket);
+  // the double draw itself needs the third socket to resume before the second
+  // draws, which the forced late close produced in 1 run of 5.
+  test('a close of the socket it left, dispatched after the restore, neither drops the new socket nor draws a reply twice', async () => {
+    const lateClose = `(() => {
+      let away = false;
+      addEventListener('pagehide', (e) => { away = e.persisted; }, true);
+      addEventListener('pageshow', () => { away = false; }, true);
+      const WS = window.WebSocket;
+      window.WebSocket = function (u, p) {
+        const s = p === undefined ? new WS(u) : new WS(u, p);
+        let h = null;
+        Object.defineProperty(s, 'onclose', { configurable: true, get() { return h; }, set(fn) { h = fn; } });
+        s.addEventListener('close', (ev) => {
+          const run = () => {
+            const st = document.getElementById('mv-status');
+            const was = st ? st.textContent : null;
+            if (h) h.call(s, ev);
+            window.__lateClose = { was, now: st ? st.textContent : null };
+          };
+          if (away) addEventListener('pageshow', () => setTimeout(run, 0), { once: true }); else run();
+        });
+        return s;
+      };
+      window.WebSocket.prototype = WS.prototype;
+      Object.assign(window.WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    })()`;
+    const { ctx, page } = await mirrorPage(390, [lateClose]);
+    try {
+      await page.goto(rig.origin + view());
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+      await expect(page.locator('#mv-log')).toContainText('The first answer.');
+      const before = await page.locator('#mv-log [data-bubble]').count();
+      const doc = await docOf(page);
+      await page.evaluate(() => { delete (window as unknown as { __lateClose?: unknown }).__lateClose; });
+      const t0 = Date.now();
+      const marker = 'A reply written while the view was away, its old socket closing late ' + Date.now();
+      await awayAndBack(page, rig.origin + '/tasks', async () => fs.appendFileSync(trPath, cc.reply(marker)));
+      await expectRestored(page, await backShow(page, '/mirror/view', t0), doc);
+      // The instrument: the left socket's close handler ran after the restore.
+      const late = () => page.evaluate(() => (window as unknown as { __lateClose?: { was: string; now: string } }).__lateClose ?? null);
+      await expect.poll(late, { message: 'the old socket\'s close ran after pageshow' }).not.toBeNull();
+      const lc = (await late())!;
+      expect(lc.now, `the late close changed the view's status (${lc.was} → ${lc.now}): it was taken for the live socket's`).toBe(lc.was);
+      await expect(page.locator('#mv-log')).toContainText(marker, { timeout: 10_000 });
+      await expect(page.locator('#mv-status')).toHaveText('Live');
+      expect(await page.locator('#mv-log').getByText(marker).count(), 'the reply that came meanwhile, drawn once').toBe(1);
+      expect(await page.locator('#mv-log [data-bubble]').count()).toBe(before + 1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   // 🔴 THE SAME TEXT SENT TWICE ACROSS A BACK IS TWO MESSAGES. The server
   // delivers a (nonce, text) pair once and answers a repeat "sent" without
   // delivering it. A page shown again from a cache used to carry the nonce of

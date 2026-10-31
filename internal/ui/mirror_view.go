@@ -1173,10 +1173,19 @@ func mirrorViewScript() g.Node {
   }
   // A socket's events, in order: as they come once the document is parsed,
   // queued until then. An event of a socket that has since been replaced is
-  // dropped.
+  // dropped — queued or not.
+  //
+  // 🔴 NOT ONLY ON THE QUEUED PATH. pagehide closes the socket without
+  // detaching it, and its close can be dispatched only after the restore's
+  // pageshow has opened the next one. Applied, that stale close ran onClose for
+  // the NEW socket: sock = null and a retry opened a third socket while the
+  // restore's stayed live and attached — two host streams, and when both
+  // resumed from the same offset, the reply that came meanwhile painted TWICE
+  // (CI flake of bfcache-restore.spec.ts; forced by delaying that close past
+  // pageshow).
   function deliver(s, fn) {
-    if (parsed) { fn(); return; }
-    queued.push(function () { if (s === sock) fn(); });
+    if (!parsed) { queued.push(function () { if (s === sock) fn(); }); return; }
+    if (s === sock) fn();
   }
   // drop detaches the current socket and closes it: what it says from now
   // on is nobody's, and its close is not a disconnect to recover from.

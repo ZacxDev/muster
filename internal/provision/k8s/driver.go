@@ -96,6 +96,12 @@ type Config struct {
 	// destroy of any instance fails after its Deployment is removed. See Destroy.
 	NetworkPolicy *NetworkPolicyConfig
 
+	// SecretSourceNamespace, when set, is where the Secrets a key holder mounts
+	// (provision.SecretMount) are kept — muster's own namespace — and apply
+	// copies each into the instance's namespace before the pod (secretcopy.go).
+	// Empty: the operator places them in the instance's namespace, unchanged.
+	SecretSourceNamespace string
+
 	// Logger is optional.
 	Logger *log.Logger
 }
@@ -642,6 +648,11 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	// applyNetworkPolicy: after a refusal here this call must WRITE no Deployment
 	// and no Secret. (What an existing instance already has, it keeps.)
 	if err := d.applyNetworkPolicy(ctx, spec, ns); err != nil {
+		return err
+	}
+	// A key holder's Secrets, copied from muster's namespace (secretcopy.go):
+	// a missing one fails here, before the pod that would wait on it forever.
+	if err := d.copyKeyHolderSecrets(ctx, spec, ns); err != nil {
 		return err
 	}
 

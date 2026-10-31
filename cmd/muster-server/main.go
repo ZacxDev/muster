@@ -1685,6 +1685,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					line += fmt.Sprintf(" No worker pool has a deploy key (%s unset): every pool clones and fetches "+
 						"anonymously, so pools serve public repositories only.", envAgentCCPoolDeployKeys)
 				}
+				// Egress-locked pools: listed in MUSTER_AGENT_CC_EGRESS_LOCKED_POOLS
+				// or given a deploy key. muster removes their egress and labels
+				// them; the operator's cluster policy is their only allow.
+				if pools := a.cfg.egressLockedPools(); len(pools) > 0 {
+					line += fmt.Sprintf(" Egress LOCKED for worker pools [%s] (%s, and every deploy-key pool): their "+
+						"NetworkPolicy allows no DNS and no public address, and their pods carry %s=%s and %s=<pool>, so "+
+						"the operator's cluster policy selecting that label is their ONLY egress allow (none = nothing "+
+						"public); applied when a worker's spec is applied.", strings.Join(pools, ", "),
+						envAgentCCEgressLockedPools, agentspec.LabelEgress, agentspec.EgressLocked, agentspec.LabelPool)
+				}
 			}
 			l.Print(line)
 			// The confined kind's network line (claude-code is the one confined kind).

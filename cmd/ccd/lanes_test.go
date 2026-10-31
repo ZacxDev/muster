@@ -21,6 +21,17 @@ func TestTheLaneHeadersAreMustersHeaders(t *testing.T) {
 	if headerCCSession != agents.HeaderCCSession || headerCCModel != agents.HeaderCCModel {
 		t.Fatalf("ccd reads %q/%q, muster sends %q/%q", headerCCSession, headerCCModel, agents.HeaderCCSession, agents.HeaderCCModel)
 	}
+	if headerCCEphemeral != agents.HeaderCCEphemeral {
+		t.Fatalf("ccd reads a throwaway check as %q, muster marks it %q", headerCCEphemeral, agents.HeaderCCEphemeral)
+	}
+}
+
+// TestTheCapacityFailureIsMusters: the type of ccd's lanes-full refusal is the
+// one muster reads as "not sent, retry later" (agentgateway.LanesFull).
+func TestTheCapacityFailureIsMusters(t *testing.T) {
+	if failCapacity != agents.FailureCapacity {
+		t.Fatalf("ccd answers %q, muster reads %q", failCapacity, agents.FailureCapacity)
+	}
 }
 
 // TestTheLaneModelSetIsMusters: every model muster accepts for a claude-code
