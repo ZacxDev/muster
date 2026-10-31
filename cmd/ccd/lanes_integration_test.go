@@ -175,8 +175,13 @@ func TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels(t *testing.T) {
 	if n := strings.Count(argv, " entrypoint= cwd="); n < 3 || strings.Contains(argv, "entrypoint=sdk-cli") {
 		t.Errorf("CLAUDE_CODE_ENTRYPOINT REACHED A CLI: %d start(s) without it (want >= 3: the primary and two lanes); argv log:\n%s", n, argv)
 	}
+	// Every start runs with tool search off and the snapshot off (execArgv's
+	// liveToolsEnv/liveToolsFlags), the primary's and each lane's alike.
+	if starts, live := strings.Count(argv, "sid="), strings.Count(argv, `"--system-prompt-snapshot" "off"] toolsearch=false `); starts < 3 || live != starts {
+		t.Errorf("%d of %d CLI start(s) would send live tool schemas (want all, >= 3); argv log:\n%s", live, starts, argv)
+	}
 	for _, c := range []struct{ key, model string }{{"sess-a", "opus"}, {"sess-b", "sonnet"}} {
-		want := fmt.Sprintf("sid=%s source=startup model=%s lane=%s args=[\"--model\" %q \"--session-id\" %q]",
+		want := fmt.Sprintf("sid=%s source=startup model=%s lane=%s args=[\"--model\" %q \"--session-id\" %q \"--system-prompt-snapshot\" \"off\"]",
 			laneUUID(c.key), c.model, laneID(c.key), c.model, laneUUID(c.key))
 		if !strings.Contains(argv, want) {
 			t.Errorf("no CLI started as\n  %s\nargv log:\n%s", want, argv)
@@ -217,7 +222,7 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	target := "=cc-" + laneID("sess-a") + ":"
 	r.tmux(t, "send-keys", "-t", target, "-l", "/exit")
 	r.tmux(t, "send-keys", "-t", target, "Enter")
-	resumed := fmt.Sprintf("sid=%s source=resume model=haiku lane=%s args=[\"--model\" \"haiku\" \"--resume\" %q]", lane, laneID("sess-a"), lane)
+	resumed := fmt.Sprintf("sid=%s source=resume model=haiku lane=%s args=[\"--model\" \"haiku\" \"--resume\" %q \"--system-prompt-snapshot\" \"off\"]", lane, laneID("sess-a"), lane)
 	waitLane(t, "the lane's restart", func() bool { return strings.Contains(r.argvLog(t), resumed) }, r)
 	r.waitHealth(t, "lane restarted", func(h health) bool {
 		return len(h.Lanes) == 1 && h.Lanes[0].Session == sessionStartedState
@@ -244,7 +249,7 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	r.waitHealth(t, "primary restart", func(h health) bool {
 		return primaryReady(h) && h.Supervisor.Starts == 2
 	})
-	if want := fmt.Sprintf("sid=%s source=resume model= lane= args=[\"--resume\" %q]", primary, primary); !strings.Contains(r.argvLog(t), want) {
+	if want := fmt.Sprintf("sid=%s source=resume model= lane= args=[\"--resume\" %q \"--system-prompt-snapshot\" \"off\"]", primary, primary); !strings.Contains(r.argvLog(t), want) {
 		t.Fatalf("the primary did not resume its own session:\n  want %s\nargv log:\n%s", want, r.argvLog(t))
 	}
 	r.chat(t, "p2")
@@ -494,7 +499,7 @@ func TestTmuxLaneACheckLaneIsStoppedAfterItsTurnAndNeverStopsAnOperatorLane(t *t
 	if has(p, "SLOW stall check one") || !has(p, "operator talks to the chief") {
 		t.Errorf("the primary's transcript holds the stall check: %q", p)
 	}
-	if want := fmt.Sprintf("lane=%s args=[\"--session-id\" %q]", laneID(k1), laneUUID(k1)); !strings.Contains(r.argvLog(t), want) {
+	if want := fmt.Sprintf("lane=%s args=[\"--session-id\" %q \"--system-prompt-snapshot\" \"off\"]", laneID(k1), laneUUID(k1)); !strings.Contains(r.argvLog(t), want) {
 		t.Errorf("no fresh CLI started as %s; argv log:\n%s", want, r.argvLog(t))
 	}
 

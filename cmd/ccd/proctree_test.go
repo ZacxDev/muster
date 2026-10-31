@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -147,11 +148,40 @@ func TestOnlyThePrimaryProcessSessionStartIsRecorded(t *testing.T) {
 // passes without it), and with CLAUDE_CODE_ENTRYPOINT unset (the end-to-end
 // check is TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels).
 func TestEveryArgvIsExecdWithoutAnInheritedEntrypoint(t *testing.T) {
-	if got := strings.Join(execArgv([]string{"claude"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT claude" {
+	const live = " --system-prompt-snapshot off"
+	if got := strings.Join(execArgv([]string{"claude"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT ENABLE_TOOL_SEARCH=false claude"+live {
 		t.Errorf("lone argv: %q", got)
 	}
-	if got := strings.Join(execArgv([]string{"env", "CCD_LANE=x", "claude", "--resume", "id"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT env CCD_LANE=x claude --resume id" {
+	if got := strings.Join(execArgv([]string{"env", "CCD_LANE=x", "claude", "--resume", "id"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT ENABLE_TOOL_SEARCH=false env CCD_LANE=x claude --resume id"+live {
 		t.Errorf("argv: %q", got)
+	}
+}
+
+// 🔴 Every CLI ccd starts — the primary and each lane, fresh or resumed — runs
+// with tool search off and without the system-prompt snapshot, so a resumed
+// conversation is sent the tool schemas muster serves now, not the ones it first
+// loaded (liveToolsEnv in tmux.go has the measurements). This runs execArgv's
+// command line for real, with a stand-in CLI printing the environment and
+// arguments it got — and with ENABLE_TOOL_SEARCH=true inherited, which the start
+// must override. Through tmux and `ccd serve`, the primary's and each lane's
+// starts are checked in TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels.
+func TestEveryCLIStartSendsLiveToolSchemas(t *testing.T) {
+	argv := execArgv([]string{"env", "CCD_LANE=x", "claude", "--resume", "id"})
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = append(os.Environ(), "ENABLE_TOOL_SEARCH=true")
+	// `env` resolves "claude" on PATH: a script standing in for it prints what it got.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"),
+		[]byte("#!/bin/sh\necho \"ets=$ENABLE_TOOL_SEARCH args=$*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(cmd.Env, "PATH="+bin+":"+os.Getenv("PATH"))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "ets=false args=--resume id --system-prompt-snapshot off"; got != want {
+		t.Errorf("the CLI started with\n  %s\nwant\n  %s", got, want)
 	}
 }
 

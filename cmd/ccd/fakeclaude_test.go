@@ -95,6 +95,14 @@ func fakeClaude() int {
 		switch os.Args[i] {
 		case "--continue":
 			resume = true
+		case "--system-prompt-snapshot":
+			// execArgv's liveToolsFlags: the fake has no snapshot to switch off,
+			// but it takes only the value the real CLI accepts.
+			if i+1 >= len(os.Args) || (os.Args[i+1] != "on" && os.Args[i+1] != "off") {
+				fmt.Print("--system-prompt-snapshot needs on or off\r\n")
+				return 1
+			}
+			i++
 		case "--resume", "--session-id", "--model":
 			if i+1 >= len(os.Args) {
 				fmt.Printf("%s needs a value\r\n", os.Args[i])
@@ -162,8 +170,10 @@ func fakeClaude() int {
 		skills[i] = filepath.Base(filepath.Dir(sk))
 	}
 	// entrypoint= is CLAUDE_CODE_ENTRYPOINT as the CLI sees it (execArgv unsets it).
-	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q entrypoint=%s cwd=%s skills=%s\n",
-		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:], os.Getenv("CLAUDE_CODE_ENTRYPOINT"), cwd, strings.Join(skills, ",")))
+	// toolsearch= is ENABLE_TOOL_SEARCH as the CLI sees it (execArgv sets it).
+	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q toolsearch=%s entrypoint=%s cwd=%s skills=%s\n",
+		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:], os.Getenv("ENABLE_TOOL_SEARCH"),
+		os.Getenv("CLAUDE_CODE_ENTRYPOINT"), cwd, strings.Join(skills, ",")))
 	if resume {
 		newest := fakeContinueTarget(projDir)
 		if newest == "" {

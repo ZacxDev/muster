@@ -297,9 +297,47 @@ func (t tmuxTerminal) Respawn(ctx context.Context, ref paneRef, dir string, argv
 // that variable when it is set, and an `sdk-*` value inherited from whatever
 // started ccd would label the interactive CLI as a `claude -p` run, which the
 // primary's fallback prefers not to resume (newestPrimaryTranscript).
+//
+// It also makes every start send the tool definitions the MCP servers serve NOW
+// (liveToolsEnv, liveToolsFlags), so a resumed conversation cannot keep a schema
+// from before a muster release.
 func execArgv(argv []string) []string {
-	return append([]string{"env", "-u", "CLAUDE_CODE_ENTRYPOINT"}, argv...)
+	out := append([]string{"env", "-u", "CLAUDE_CODE_ENTRYPOINT"}, liveToolsEnv...)
+	out = append(out, argv...)
+	return append(out, liveToolsFlags...)
 }
+
+// 🔴 A RESUMED CONVERSATION REPLAYS THE TOOL DEFINITIONS IT FIRST SAW, not the
+// ones its MCP servers serve now. Measured on the pinned CLI (2.1.296), by
+// recording what it sent to the API across resumes while a stdio MCP server's
+// schema changed under it:
+//
+//   - a DEFERRED tool (tool search on, the default) is sent with the schema in
+//     the transcript's deferred_tools_record, written the first time the tool was
+//     loaded: a property the server added after that never reaches the model;
+//   - an INLINE tool is sent as the transcript's prompt_snapshot recorded it, the
+//     same way. `"alwaysLoad": true` on the server makes its tools inline, so it
+//     moves the pin, it does not remove it — and on a conversation that already
+//     loaded the tool deferred, the tool stays deferred and stale with it;
+//   - ENABLE_TOOL_SEARCH=false alone sends a once-deferred tool fresh on the next
+//     start, and that start's snapshot then pins it again;
+//   - `--system-prompt-snapshot off` alone keeps inline tools fresh, not
+//     deferred ones;
+//   - both together sent the live schema on every resume, through two changes
+//     in a row (a property added, then removed again).
+//
+// The chief's long-lived conversation hit the first case: route_to_session kept
+// the schema it was first loaded with, without the task_id a later muster added,
+// while muster served the new one.
+//
+// ⚠ COST: with tool search off, every MCP server's tools are in context on every
+// turn (ccd seeds only muster's server); and the system prompt is rendered each
+// request rather than replayed from the record. What that does to prompt-cache
+// hits was not measured.
+var (
+	liveToolsEnv   = []string{"ENABLE_TOOL_SEARCH=false"}
+	liveToolsFlags = []string{"--system-prompt-snapshot", "off"}
+)
 
 // PanePID is the pid of ref's pane process: the CLI (see Start).
 func (t tmuxTerminal) PanePID(ctx context.Context, ref paneRef) (int, error) {
