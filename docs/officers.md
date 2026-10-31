@@ -58,6 +58,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `cc_failover` | `false` | With `cc_account`: let a pinned instance fail over to another account anyway ([account failover](#account-failover)). Without `cc_account` it changes nothing: an unpinned instance fails over by default. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
+| `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
@@ -155,7 +156,8 @@ three things in that session's `settings.json` at provision time (the pod's
   `release:*` officer `…officer_release_evaluation`; then, when the connector
   store is configured (`MUSTER_CONNECTOR_ENCRYPTION_KEY`, so the instance is
   offered them), `…connectors_list`, `…connector_request` and
-  `…connector_status`. Redundant under bypass and kept: it names the muster
+  `…connector_status` — and `…postgres_query` when the officer declares
+  `connectors`. Redundant under bypass and kept: it names the muster
   tools the instance is for, and holds if bypass is ever lifted. The channel
   only takes bare tool names and always writes them as `mcp__muster__<name>`
   (a name holding `__` or anything but `[a-z0-9_]` is refused and the pod does
@@ -266,9 +268,10 @@ asks "which repository is this agent's" for a connector reads it from there:
 - the repository a grant is recorded as approved FOR (below),
 - the App's problem line on the agent's card.
 
-**`github` only.** An officer instance may request and use the `github`
-connector and nothing else. A request for any other connector its owner holds
-is refused with an error naming the officer — by `connector_request` and
+**`github`, and the connectors it declares, only.** An officer instance may
+request and use the `github` connector and the connectors its officer lists in
+`connectors` (`officers.MayRequestConnector`), and nothing else. A request for
+any other connector its owner holds is refused with an error naming the officer — by `connector_request` and
 `POST /agent/connectors/{name}/request` (400), and by the proxy (403, before it
 would file an implicit request) — and an officer's request for another
 connector filed before this rule cannot be approved (the tab and
@@ -508,6 +511,13 @@ then `git clone https://github.com/<owner>/<name>.git`) or with `curl` on
 carrying `Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster holds a read-only
 token, there is no checkout, and it never pushes or merges. Without a `repo` the
 text is unchanged.
+
+An officer that declares `connectors` is also told their names, that each is
+requested once and decided by hand, and how to query a postgres one:
+`postgres_query{connector, sql, params?}`, one statement per call in a
+read-only transaction with a timeout and capped rows, reading `pg_catalog` to
+check tables and columns (the github sentence then says "the only connector
+you may use for it").
 
 (`officers.KickoffText` has the whole text.) It carries no charter and no
 credential.
@@ -796,11 +806,14 @@ releases the fix.
   declared officer". The chief predicate itself is unchanged, so an officer is
   never offered the chief's tools. Remove an officer from `MUSTER_OFFICERS` and
   its instances become ordinary, deletable agents.
-- **No production access.** Instances are ordinary `claude-code` pods: no
-  service-account token, and egress **narrower** than every other claude-code
-  agent: muster's connect port only, with name-filtered DNS and the Anthropic
-  API allowed by the cluster, by name
-  ([The instance's network](#the-instances-network)).
+- **No production access from the pod.** Instances are ordinary `claude-code`
+  pods: no service-account token, and egress **narrower** than every other
+  claude-code agent: muster's connect port only, with name-filtered DNS and the
+  Anthropic API allowed by the cluster, by name
+  ([The instance's network](#the-instances-network)). An officer that declares
+  a [postgres connector](connectors.md#postgres-connectors) reads that one
+  database through muster-server, which holds the password and runs each
+  statement read-only; the pod's network is unchanged.
 
 ## cairn
 

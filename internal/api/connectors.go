@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -293,6 +294,13 @@ func ProxyRecipe(connector, host string) string {
 		"`Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster replaces it with the credential."
 }
 
+// PostgresUsage is a postgres connector's usage line: the query tool, not the
+// proxy.
+func PostgresUsage(name string) string {
+	return "Query it with the " + postgresQueryToolName + " tool: " + postgresQueryToolName + "{connector: \"" + name +
+		"\", sql, params?}. One read-only statement per call; muster connects to the database, you never see the credential."
+}
+
 func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name string) (AgentConnectorView, error) {
 	v := AgentConnectorView{Name: name, Grant: "none"}
 	c, err := s.ext.Connectors.GetConnector(ctx, name)
@@ -315,6 +323,10 @@ func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name st
 	}
 	if v.Exists && v.Grant == connectors.StatusApproved {
 		v.Usage = ProxyUsage(name, v.Hosts)
+		if c.Scheme == connectors.SchemePostgres {
+			// A database is never reached through the HTTP proxy (it refuses one).
+			v.Usage = PostgresUsage(name)
+		}
 	}
 	return v, nil
 }
@@ -720,6 +732,13 @@ func (s *Server) connectorForm(ctx context.Context, q url.Values) (ui.ConnectorF
 		Scheme:   q.Get("scheme"),
 		Header:   q.Get("header_name"),
 		Username: q.Get("username"),
+		// The postgres preset's (ui.PostgresPresetKey).
+		PGHost:       strings.TrimSpace(q.Get("pg_host")),
+		PGPort:       strings.TrimSpace(q.Get("pg_port")),
+		PGDatabase:   strings.TrimSpace(q.Get("pg_database")),
+		PGSSLMode:    strings.TrimSpace(q.Get("pg_sslmode")),
+		PGRequireTLS: q.Get("pg_require_tls") == "on",
+		PGTimeoutMS:  strings.TrimSpace(q.Get("pg_statement_timeout_ms")),
 	}
 	if id, err := strconv.ParseInt(q.Get("request"), 10, 64); err == nil && id > 0 {
 		f.RequestID = id
@@ -799,7 +818,15 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{EditorForm: &f})
 	}
 	nc := connectors.NewConnector{Name: f.Name, Secret: r.PostForm.Get("secret")}
-	if p, ok := connectors.PresetFor(f.Preset); ok {
+	if f.Preset == connectors.PostgresPreset.Key {
+		pg, msg := postgresConnectorFrom(f)
+		if msg != "" {
+			fail(msg)
+			return
+		}
+		pg.Name, pg.Secret = nc.Name, nc.Secret
+		nc = pg
+	} else if p, ok := connectors.PresetFor(f.Preset); ok {
 		nc.Platform, nc.Hosts, nc.Scheme, nc.HeaderName, nc.Username = p.Key, p.Hosts, p.Scheme, p.HeaderName, p.Username
 	} else {
 		nc.Platform = "custom"
@@ -853,6 +880,27 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.broadcast(r.Context(), EventConnectorChanged, c.Name)
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice, Error: refused})
+}
+
+// postgresConnectorFrom is the postgres preset's form as a NewConnector (name
+// and secret still to set), or the message a malformed field fails with.
+// Everything else is validated by the store (connectors.NewConnector.Validate)
+// — which also refuses a member: postgres connectors are admins'.
+func postgresConnectorFrom(f ui.ConnectorFormView) (connectors.NewConnector, string) {
+	host := f.PGHost
+	if f.PGPort != "" {
+		host = net.JoinHostPort(strings.Trim(f.PGHost, "[]"), f.PGPort)
+	}
+	ps := connectors.PostgresSettings{Database: f.PGDatabase, SSLMode: f.PGSSLMode, RequireTLS: f.PGRequireTLS}
+	if f.PGTimeoutMS != "" {
+		ms, err := strconv.Atoi(f.PGTimeoutMS)
+		if err != nil {
+			return connectors.NewConnector{}, "The statement timeout is a number of milliseconds."
+		}
+		ps.StatementTimeoutMS = ms
+	}
+	return connectors.NewConnector{Platform: "postgres", Hosts: []string{host}, Scheme: connectors.SchemePostgres,
+		Username: f.Username, Postgres: &ps}, ""
 }
 
 func (s *Server) auditGrant(ctx context.Context, g connectors.Grant, detail string) {

@@ -295,6 +295,10 @@ type Server struct {
 	// connectProxy is the connector proxy, built by UseExtensions when a
 	// connector store is wired. See connectors.go.
 	connectProxy *connectors.Proxy
+	// pgExec runs postgres connectors' queries (connector_tools.go's
+	// postgres_query), built by UseExtensions with connectProxy. Its pools
+	// outlive a re-wiring only until the next UseExtensions closes them.
+	pgExec *connectors.PostgresExecutor
 
 	// principalProbe, when set, is called by admit (principal.go) with every
 	// request it hands to a handler. TEST-ONLY: nothing in production sets it,

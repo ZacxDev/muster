@@ -38,6 +38,11 @@ var (
 		// A mirrored session's question to the chief (chief_ask_tool.go).
 		"answer_session_question"}
 	workerMCPLedger = []string{"connectors_list", "connector_request", "connector_status",
+		// postgres_query (connector_tools.go): read-only SQL on a postgres
+		// connector the agent holds an approved grant for. On MCP because a
+		// claude-code pod reaches nothing but the connect port, and like the
+		// HTTP proxy it spends only a credential the owner granted THAT agent.
+		"postgres_query",
 		"browser_flow_request", "browser_flow_status",
 		"attention_ask", "attention_wait", "attention_cancel",
 		"tasks_list", "task_get", "task_comment", "task_set_status"}

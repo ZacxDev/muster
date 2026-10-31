@@ -574,6 +574,14 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		refuse(http.StatusInternalServerError, RefusalBody{Error: "could not load the connector"}, "load failed")
 		return
 	}
+	// 🔴 A DATABASE PASSWORD IS NEVER SENT OVER HTTP. A postgres connector is
+	// used through the postgres_query tool, where muster-server makes the
+	// connection; forwarding here would put its password in a header.
+	if c.Scheme == SchemePostgres {
+		refuse(http.StatusBadRequest, RefusalBody{Error: "connector " + connector + " is a postgres connector: " +
+			"query it with the postgres_query tool, not through the HTTP proxy"}, "postgres connector")
+		return
+	}
 	if !c.AllowsHost(host) {
 		refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
 			"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
