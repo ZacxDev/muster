@@ -38,7 +38,8 @@ import (
 //	   reply draft: APPROVED when the sender is on the owner's allowlist (the
 //	   plugin's next claim sends it), PENDING for the owner otherwise
 //	no answer by the deadline ──▶ timed_out, the queued injection cancelled,
-//	   and the message handed back to the chief in a turn
+//	   and the message handed back to the chief in a turn — saying it was
+//	   never delivered when the injection was still queued (the cancel won)
 //
 // 🔴 ONLY THE STORED MESSAGE IS INJECTED, FENCED, NEVER CHIEF-AUTHORED TEXT. The
 // chief picks WHICH message and WHICH session; muster renders the block from the
@@ -855,9 +856,18 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 		if r.SendQueueID != nil && s.ext.SendQueue != nil {
 			switch _, err := s.ext.SendQueue.Cancel(octx, *r.SendQueueID, s.sendQueueNow()); {
 			case err == nil:
-				s.logger.Printf("routes: %s: its queued message %d was cancelled", r.RouteID, *r.SendQueueID)
+				// Still queued at the deadline, and cancelled AFTER the time-out:
+				// it was never pasted, and now never will be. The hand-back says
+				// so (plugins.PGStore.TimedOutUndelivered has the proof), not "no
+				// answer came" — the session never had the message to answer.
+				s.logger.Printf("routes: %s: its queued message %d was cancelled, never delivered", r.RouteID, *r.SendQueueID)
+				if _, _, err := s.ext.Routes.TimedOutUndelivered(octx, r.RouteID); err != nil {
+					s.logger.Printf("routes: %s: record it as never delivered: %v (the hand-back says only that no answer came)", r.RouteID, err)
+				}
 			case errors.Is(err, sendqueue.ErrNotCancellable):
-				// Already sent, or being sent: past cancelling.
+				// Already sent, or being sent (a claim that won the race with
+				// this cancel): past cancelling, and possibly delivered, so the
+				// hand-back keeps TimeOutRoute's "no answer came by".
 			case errors.Is(err, sendqueue.ErrNotFound):
 				// Its owner deleted it once it had finished (only a finished
 				// row can be deleted): nothing to cancel, and the hand-back
