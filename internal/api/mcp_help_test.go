@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -285,18 +287,24 @@ func TestTheRevFollowsTheToolSetAndNotItsOwnStamp(t *testing.T) {
 		t.Fatalf("renaming the tool left the rev at %s", r1)
 	}
 
-	// Not fed by its own stamp: the rev is the hash of what is served with the
-	// stamps taken off.
+	// Not fed by its own stamp: the rev is the first 4 bytes of SHA-256 over
+	// the served definitions with the stamps taken off — computed here
+	// independently of mcpToolsRev — in tools/list's order and field names.
 	tools := servedTools(t, serveSurface(t, testSurface([]agents.ToolDef{v1, v2}, never), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	rev := toolsRev(t, tools)
-	var unstamped []agents.ToolDef
-	for _, tl := range tools {
-		desc := revStampRE.ReplaceAllString(tl["description"].(string), "")
-		params, _ := tl["inputSchema"].(map[string]any)
-		unstamped = append(unstamped, agents.ToolDef{Name: tl["name"].(string), Description: desc, Parameters: params})
+	type entry struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		InputSchema any    `json:"inputSchema"`
 	}
-	if got := mcpToolsRev(unstamped); got != rev {
-		t.Fatalf("the served rev %s is not the hash of the unstamped definitions (%s)", rev, got)
+	var unstamped []entry
+	for _, tl := range tools {
+		unstamped = append(unstamped, entry{tl["name"].(string), revStampRE.ReplaceAllString(tl["description"].(string), ""), tl["inputSchema"]})
+	}
+	raw, _ := json.Marshal(unstamped)
+	sum := sha256.Sum256(raw)
+	if want := hex.EncodeToString(sum[:4]); rev != want {
+		t.Fatalf("the served rev %s is not the hash of the unstamped definitions (%s)", rev, want)
 	}
 
 	// Instructions carry the same rev; a surface with no tools gets no line
