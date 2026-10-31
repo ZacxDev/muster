@@ -779,6 +779,8 @@ type Outcome struct {
 	// the window (or its status moved) after the decision (mirror.ErrSuperseded).
 	// NOTHING reached the host, so the row goes back to queued — the one way
 	// back — waiting behind AfterSince (the window's Pasted at the refusal).
+	// internal/api's chief-nudge gate uses the same way back, with AfterSince
+	// 0, for a row whose session state could not be read (SendQueueNudgeWait).
 	Superseded bool
 	AfterSince int64
 	// Pasted: the text was pasted into Hermes's input box and Enter withheld

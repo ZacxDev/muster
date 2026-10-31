@@ -48,6 +48,9 @@ type nudgeGateway struct {
 	checks []string // "<agent> <key>"
 	prompt []string
 	turns  []string // "<agent> <text>"
+	// during, when set, runs inside each stall check before it answers: what
+	// changes while the chief is thinking (chief_nudge_unknown_pg_test.go).
+	during func()
 }
 
 func (g *nudgeGateway) Chat(_ context.Context, a agents.Agent, key, msg string, _ func(string)) (string, error) {
@@ -55,6 +58,9 @@ func (g *nudgeGateway) Chat(_ context.Context, a agents.Agent, key, msg string, 
 	defer g.mu.Unlock()
 	g.checks = append(g.checks, a.Name+" "+key)
 	g.prompt = append(g.prompt, msg)
+	if g.during != nil {
+		g.during()
+	}
 	if g.fails > 0 {
 		g.fails--
 		return "", errors.New("nudgeGateway: the provider is down")
