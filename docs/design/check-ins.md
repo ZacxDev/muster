@@ -3,7 +3,9 @@
 **Status: proposal. Nothing here is built.** The operator settled cadence,
 authoring, delivery and contents before this was written. On the draft they
 then answered the seven open questions and added one requirement (a tool-less
-narrative lane). All of these are recorded under
+narrative lane), and in the review's round 0 settled how that lane is made safe
+(rollout discipline, no in-band capability signals) and deleted the "compare
+with any earlier check-in" view. All of these are recorded under
 [Operator decisions](#operator-decisions), and the design follows them. No
 questions remain open.
 
@@ -26,11 +28,11 @@ base, `b3fef26f`.
 | Data layer | Split `buildFleetReport` into a collector and its encoders, and build check-ins on the collector. One builder, not two |
 | When | `09:00`, `13:00` and `17:00` in the owner's time zone, **every day, weekends included**; times and zone editable per owner. Plus **Check in now** and a chief tool (at most one per 5 minutes and 24 a day per owner). A scheduled run with no change records a one-line "no change" entry and makes no model call |
 | Single run | `UNIQUE (owner_id, slot_at)` plus "one in flight per owner" (a partial unique index). No leader election: muster has none and runs one replica |
-| Narrative | One throwaway chief turn in a **tool-less** ccd lane (the stall-check mechanism, `nudgeRoute`, plus the tool-less mode a separate PR adds). Strict JSON, validated in code. No confirmed tool-less lane, or any other failure, publishes the code-only report |
-| Delivery | A **Check-ins** page (history, open any one, compare with any earlier one) and a push for **every check-in that changed**, scheduled or manual, whose text is code-computed counts only: `3 moved · 2 stuck · 1 needs you`. An unchanged check-in never pushes |
+| Narrative | One throwaway chief turn in a **tool-less** ccd lane (the stall-check mechanism, `nudgeRoute`, plus the `X-Muster-CC-Toolless` lane mode of the separate PR #373). Strict JSON, validated in code. Its safety rests on **rollout discipline**: restart the chief onto the new image and confirm `"toolless": true` on ccd `/healthz` before turning the narrative on. Any failure publishes the code-only report |
+| Delivery | A **Check-ins** page (history, open any one; each shows its changes since the previous check-in) and a push for **every check-in that changed**, scheduled or manual, whose text is code-computed counts only: `3 moved · 2 stuck · 1 needs you`. An unchanged check-in never pushes |
 | Retention | **Forever.** No sweep. Snapshots are copies, so focus retention never empties a past check-in. About 50–80 MB per owner per year at 30 sessions; bounds under [Storage growth](#storage-growth) |
 | Cost | No change: nothing. Full report: one chief turn on about 5–8k tokens of input, which the chief's account pays. One batched GitHub call for merged state. No transcript is read |
-| Effort | Six PRs plus one prerequisite (the tool-less ccd lane, a separate PR). The first is a pure refactor; check-ins without the chief are usable after the second |
+| Effort | Six PRs plus one prerequisite (the tool-less ccd lane, PR #373). The first is a pure refactor; check-ins without the chief are usable after the second |
 
 ## Goals
 
@@ -187,7 +189,7 @@ checkin_now tool ─────┘        │                                on
                  status=published (the code report is live now)
                                ▼
                  narrative: one ephemeral, TOOL-LESS chief lane turn ──▶ validate ──▶ checkin_items (FK)
-                               │ lane not confirmed tool-less: off; busy/lanes full: retry ≤ 20m; error: record
+                               │ busy/lanes full: retry ≤ 20m; error: record; gateway chief: off
                                ▼
                  changed? push once (counts only), when the narrative settles or at 20m
                  (scheduled, manual and chief alike; unchanged → no push)
@@ -509,46 +511,53 @@ stops a looping chief: see [Storage growth](#storage-growth) and
 ### The chief narrative
 
 **Optional by design.** It runs when the owner's chief is on (`chiefOn`),
-`MUSTER_CHECKIN_NARRATIVE` is not `0`, and the chief can run a **confirmed
-tool-less** turn (below). Otherwise `narrative_state='off'` and the report is
-complete without it.
+`MUSTER_CHECKIN_NARRATIVE` is not `0`, and the chief is a `claude-code` chief
+(below). Otherwise `narrative_state='off'` and the report is complete without
+it.
 
 **🔴 Hard dependency: the narrative lane MUST be tool-less** (operator
-requirement). The turn's input is focus text, which an outside party can
-influence, and today a `claude-code` lane runs with the chief's full tool set,
-because ccd has no header to restrict tools (`internal/agents/turnroute.go:20-47`
-lists every header it has). Fencing labels the text; it does not stop an
-injected instruction from calling a tool. So:
+requirement, decision 8). The turn's input is focus text, which an outside
+party can influence. At `d55f5bd4` a `claude-code` lane runs with the chief's
+full tool set, because ccd has no header to restrict tools
+(`internal/agents/turnroute.go:20-47` lists every header it has). Fencing
+labels the text; it does not stop an injected instruction from calling a tool.
+So:
 
-- A **separate PR** adds a tool-less mode to ccd's explicit sessions: a request
-  header (`X-Muster-CC-Toolless`, or whatever name that PR settles on) under
-  which the session's CLI starts with no tools. It is meant for chief checks:
-  stall nudges first, check-ins next. This design does not specify that PR; it
-  depends on it.
-- **The narrative fails closed on version skew.** A ccd that predates the
-  ephemeral header ignores it (`turnroute.go:41-46`), and an old ccd would
-  ignore a tool-less header the same way and run the turn **with** tools. An
-  answer header alone cannot fix that: it arrives **after** the turn, when any
-  tool call has already happened. So two checks, both required:
-  1. **Before the turn:** muster sends the narrative only to a ccd that has
-     **advertised** the tool-less mode (a capability ccd reports before any
-     turn, for example on its readiness answer). No advertisement → the turn
-     is never sent: `narrative_state='off'`, `narrative_detail='no_toolless_lane'`.
-  2. **After the turn:** ccd's **answer** confirms that this lane really was
-     tool-less, the way `X-Muster-CC-Workdir-Used` confirms a job's directory
-     (`turnroute.go:35-39`). No confirmation → the answer is discarded unread:
-     `narrative_state='failed'`, `narrative_detail='not_toolless'`. This
-     catches a ccd that advertises the mode and then does not honour it on
-     this session.
-
-  If the tool-less PR ships without either signal, adding them is part of this
-  design's prerequisite.
+- **The lane mode is PR #373** (separate, open, the prerequisite "P"). On a
+  check route muster's one route builder, `withRoute`, sends
+  `X-Muster-CC-Toolless: 1` together with `X-Muster-CC-Ephemeral: 1`, and ccd
+  starts that lane's CLI with `--tools= --strict-mcp-config`: no built-in tools
+  and no MCP servers. The mode is fixed for the lane's life; a turn whose
+  header disagrees with its lane is refused (`400`). ccd's `/healthz` lists
+  such a lane with `"toolless": true` while it runs. The narrative uses
+  `nudgeRoute` like a stall check, so it gets the header with no code of its
+  own.
+- **The safety rests on rollout discipline, not on an in-band check**
+  (decision Q1, round 0). muster does **not** ask ccd whether it supports the
+  mode before the turn, and does **not** look for a confirmation in the
+  answer. Instead, after the deploy that carries #373: restart the chief onto
+  the new `claude-code-agent` image (the `chief_restart` MCP tool, muster
+  #369, does this), then confirm `"toolless": true` on ccd `/healthz` while a
+  check lane runs, and only then turn the narrative on (see
+  [Rollout](#configuration)). This is the same discipline stall checks
+  follow.
+- 🔴 **Residual risk, stated plainly.** An older ccd **ignores**
+  `X-Muster-CC-Toolless` (`turnroute.go:41-46` shows how it treats a header it
+  does not know), so if the narrative is turned on while the chief still runs
+  a pre-#373 image, the narrative lane **keeps every tool**, and muster does
+  not detect it. Nothing in muster stops that; only the rollout steps do. The
+  window is the time between turning the narrative on and the chief being
+  restarted, and the narrative flag defaults to on once the feature is on, so
+  the rollout keeps it off (`MUSTER_CHECKIN_NARRATIVE=0`) until the `/healthz`
+  check has passed. Stall checks carry the same exposure today, from more
+  text.
 - **A `gateway` chief.** Its turns already carry no tools in the request
   (`agents.RunToollessTurn` via `Gateway.Send`,
   `internal/agentgateway/agentgateway.go:291`). Whether that runtime can still
   reach tools of its own is **not established** here. Until it is, a
-  `gateway` chief gets `narrative_state='off'`, `narrative_detail='no_toolless_lane'`,
-  and code-only check-ins.
+  `gateway` chief gets `narrative_state='off'`, `narrative_detail='gateway_chief'`,
+  and code-only check-ins. This is a check on the chief's runtime kind, which
+  muster already knows, not a capability query.
 
 **Mechanism: the stall check's, plus the tool-less mode.**
 
@@ -556,8 +565,7 @@ injected instruction from calling a tool. So:
   is fresh per check-in and never the operator's thread.
 - `nudgeRoute`, so a `claude-code` chief runs it in an **ephemeral** ccd lane
   and it never appears in the operator's conversation, with the tool-less
-  header set, sent only to a ccd that advertised the mode, and its answer's
-  confirmation checked.
+  header set by the same route builder.
   `askChiefForNudge`'s claim and turn gate (generalised to `askChiefThrowaway`,
   shared by both features). Optionally pin a cheaper model through
   `ChatSession.Model` → `X-Muster-CC-Model` (`session_runtime.go:85-87`) with
@@ -670,12 +678,12 @@ on and the owner has a preferences row. A `Features.CheckIns` flag follows the
    An ended or deleted session shows its snapshot and no link.
 4. **Coverage**: omitted sessions and gaps (offline hosts, focus off, agents'
    PRs unknown, PR states unknown when the GitHub read failed, needs-you items
-   beyond 10, narrative off for want of a tool-less lane).
+   beyond 10, narrative off for a `gateway` chief).
 
-**Compare.** The default view shows the delta against its base. A **Compare
-with…** select lists earlier full check-ins; choosing one recomputes the delta
-with the same pure function over the two stored snapshots, so nothing new is
-stored. `?compare=<id>` is linkable.
+**Changes are always against the previous check-in** (decision D2, round 0).
+Each report shows the delta stored with it, computed against its base, the
+previous full check-in. There is no "compare with an earlier check-in" select
+and no `?compare=` parameter; to see an older state, open that check-in.
 
 **Phone width.** Below `sm`, each session is a card, not a table row. The
 needs-you list comes first, so it is above the fold. Every control is at least
@@ -738,7 +746,7 @@ Registered `chiefOnly`, on the gateway and `/mcp`, beside `fleet_report`
 |---|---|
 | `checkin_now()` | starts a manual check-in (trigger `chief`), returns `{id, url, status}`; the same 5-minute and 24-a-day limits and one-building rule; its narrative follows the chief's current turn; it pushes like a click on **Check in now** (only if it changed) |
 | `checkins_list(since?, until?, limit?)` | headlines of check-ins in a window (no span cap: they are small), newest first, ≤ 50 |
-| `checkin_get(id, compare_to?)` | one check-in's code table, delta (against `compare_to` when given) and narrative, capped at 32 KiB. Narrative and focus text are labelled `untrusted` (`focusUntrustedTail`) |
+| `checkin_get(id)` | one check-in's code table, its stored delta (against the previous check-in) and narrative, capped at 32 KiB. Narrative and focus text are labelled `untrusted` (`focusUntrustedTail`) |
 
 These give the chief history that focus retention would otherwise erase: "what
 was the connector work's state last Tuesday" can be answered years later,
@@ -786,12 +794,20 @@ All of these are read at boot and listed in `docs/configuration.md`
 
 **Rollout.** There is no shadow mode, because a check-in takes no action. The
 staged gates are: server flag → per-owner opt-in (preferences row) → narrative
-flag. As with nudges: **restart the chief on the current `claude-code-agent`
-image before turning the narrative on.** An older ccd ignores the ephemeral
-mark and can evict an operator lane ([chief-nudges.md](../chief-nudges.md),
-"Rolling out"). It would also not advertise the tool-less mode, so the
-narrative is never sent to it (`no_toolless_lane`, code-only check-ins), never
-run as a turn with tools.
+flag. The narrative's gate is **rollout discipline** (decision Q1):
+
+1. Deploy muster with check-ins on and `MUSTER_CHECKIN_NARRATIVE=0`.
+2. Restart the chief onto the `claude-code-agent` image that carries #373
+   (the `chief_restart` MCP tool, muster #369).
+3. Confirm `"toolless": true` on ccd `/healthz` for a check lane while one
+   runs (a stall check uses the same lane mode).
+4. Only then set `MUSTER_CHECKIN_NARRATIVE` back to on.
+
+An older ccd ignores both the ephemeral mark (it can evict an operator lane,
+[chief-nudges.md](../chief-nudges.md), "Rolling out") and the tool-less header,
+in which case the narrative lane keeps its tools. muster does not detect that;
+steps 2 and 3 are what prevent it. See the residual risk under
+[The chief narrative](#the-chief-narrative).
 
 ### Privacy: what leaves muster
 
@@ -819,13 +835,16 @@ the chief can already read with `sessions_overview`, and no transcript text.
   text to an existing session in an agreeing section, and is rendered escaped.
   🔴 **What fencing does not stop, and what does:** fencing cannot stop an
   injected focus from asking the chief to call a tool. Today a `claude-code`
-  lane runs with the chief's full tool set. So the narrative runs **only** in
-  a lane ccd has confirmed is tool-less, and otherwise does not run
-  ([The chief narrative](#the-chief-narrative)). The worst an injection can
-  then do is write a wrong sentence, which validation confines to an existing
-  session in a section the code agrees with. Stall checks have the same
-  exposure today, from more text (they read transcripts); the same tool-less
-  mode is meant to close it for them.
+  lane runs with the chief's full tool set. So the narrative runs in a
+  tool-less lane (PR #373), and the rollout confirms on ccd `/healthz` that
+  the chief's ccd honours the mode before the narrative is turned on
+  ([The chief narrative](#the-chief-narrative)). With a tool-less lane, the
+  worst an injection can do is write a wrong sentence, which validation
+  confines to an existing session in a section the code agrees with. 🔴 If the
+  rollout steps are skipped and the chief runs a pre-#373 ccd, the header is
+  ignored and the lane has tools; muster does not detect this. Stall checks
+  have the same exposure, from more text (they read transcripts), and the
+  same lane mode closes it for them.
 - **Manual triggers** (`POST /checkins/now`, `checkin_now`) are capped per
   owner per day, so an injected chief cannot turn check-ins into a push or
   storage flood.
@@ -885,16 +904,15 @@ PR 4 rollout** from the lane's usage before quoting them.
   section. In each case the report is published and `narrative_state` /
   `narrative_detail` say why. Mutation-check the section-agreement rule: drop
   it and confirm the "contradicting section" case fails on that rule's message.
-- **Tool-less gate, before the turn:** a fake ccd that does not advertise the
-  mode receives **no** turn at all (assert zero requests to it), and the
-  check-in records `'off'`, `'no_toolless_lane'`; positive control: the same
-  ccd advertising it receives exactly one.
-- **Tool-less gate, after the turn:** a fake ccd that advertises the mode,
-  accepts the turn, but returns **no** tool-less confirmation → the answer is discarded, `narrative_state='failed'`,
-  `'not_toolless'`, no `checkin_items` written, even though the answer is
-  valid JSON. Positive control: the same answer **with** the confirmation is
-  stored. Mutation-check: drop the confirmation check and watch this case fail
-  on its own message. A `gateway` chief gets `'off'`, `'no_toolless_lane'`.
+- **Tool-less route:** the narrative's request to a fake ccd carries
+  `X-Muster-CC-Toolless: 1` and `X-Muster-CC-Ephemeral: 1` (assert the
+  headers on the request the fake received). Mutation-check: build the
+  narrative's route without the check flag and watch this case fail on the
+  missing header. Positive control: an operator-lane turn in the same test
+  carries neither. A `gateway` chief gets `'off'`, `'gateway_chief'` and no
+  turn (assert zero requests). ccd's own handling of the header (the CLI's
+  argv, the `400` on a disagreeing turn, `/healthz`) is #373's test surface,
+  not this design's.
 - **Push:** exactly one send per check-in across a simulated restart
   (`pushed_at`). A changed **manual** and a changed **chief** check-in each
   push; an unchanged manual check-in and a no-change entry do not. A burst:
@@ -904,8 +922,8 @@ PR 4 rollout** from the lane's usage before quoting them.
   string, with a negative control in which the title is the body's only
   source. A change that is only `unstalled` produces `1 session changed`.
 - **Playwright:** open `/checkins` at 390 px and 1280 px. Needs-you is first
-  and above the fold on the phone. Check in now → a new card. Compare with an
-  older one. An ended session's row renders without a link.
+  and above the fold on the phone. Check in now → a new card. An ended
+  session's row renders without a link.
 
 ## Phased plan
 
@@ -915,10 +933,10 @@ Sizes are calibrated on #355 (fleet_report, +2.6k across 45 files), #360
 | # | PR | contents | size | shippable alone? |
 |---|---|---|---|---|
 | 1 | `fleet: split the report into a collector and encoders` | `collectFleet`, no behaviour change; `stallInputs` extracted from `nudgeCandidates` | S, ~+400 | yes: refactor |
-| 2 | `check-ins: code-only reports` | migrations 0068/0069, `internal/checkins` (types, `Delta`, no-change rule, headline, slot every day), PG store, builder (officers shown, short-name groups), sweep (skips disabled owners), `/checkins` list + detail + compare + schedule + Check in now, manual limits (5 min, 24/day), config, docs. **No retention sweep** | L, ~+3k | **yes: usable without the chief** |
+| 2 | `check-ins: code-only reports` | migrations 0068/0069, `internal/checkins` (types, `Delta`, no-change rule, headline, slot every day), PG store, builder (officers shown, short-name groups), sweep (skips disabled owners), `/checkins` list + detail + schedule + Check in now, manual limits (5 min, 24/day), config, docs. **No retention sweep** | L, ~+3k | **yes: usable without the chief** |
 | 3 | `check-ins: push` | `checkin` event, toggle, `pushed_at`, headline text and fallback; pushes every **changed** check-in, scheduled, manual or chief | S, ~+400 | yes |
-| P | **prerequisite, separate PR:** `ccd: tool-less lane mode` | the tool-less header for explicit sessions (`X-Muster-CC-Toolless` or similar), ccd **advertising** the mode before a turn, **and** ccd's answer confirming it, for chief checks. Being added independently of this design; PR 4 must not merge before it is on `main` and on the chief's image | (own PR) | yes |
-| 4 | `check-ins: the chief's narrative` | **depends on P.** `askChiefThrowaway` shared with nudges, the tool-less header, the capability check before the turn and the confirmation check after it, prompt, schema, validation, `checkin_items`, retries, `MUSTER_CHECKIN_NARRATIVE` / `_MODEL` | M, ~+1.5k | yes |
+| P | **prerequisite, separate PR #373:** `ccd: tool-less check lanes` | `X-Muster-CC-Toolless: 1` sent with `X-Muster-CC-Ephemeral: 1` on every check route; ccd starts that lane's CLI with `--tools= --strict-mcp-config`, refuses a disagreeing turn (`400`), and shows `"toolless": true` on `/healthz`. PR 4 must not merge before it is on `main`, and the narrative must not be turned on before the chief runs its image (see [Rollout](#configuration)) | (own PR) | yes |
+| 4 | `check-ins: the chief's narrative` | **depends on P.** `askChiefThrowaway` shared with nudges, the narrative on `nudgeRoute` (so the tool-less header comes from the shared route builder), prompt, schema, validation, `checkin_items`, retries, `gateway` chief off, `MUSTER_CHECKIN_NARRATIVE` / `_MODEL`, the rollout steps in `docs/configuration.md` | M, ~+1.2k | yes |
 | 5 | `check-ins: chief tools` | `checkin_now` (pushes when changed, daily cap), `checkins_list`, `checkin_get` on gateway + `/mcp` | S, ~+600 | yes |
 | 6 | `check-ins: merged PRs` | one batched GraphQL read per check-in through the GitHub App's installation token, terminal states carried forward, `unknown` on failure; attribute agents' PRs by their repo and branch | M, ~+1k | yes; turns on `pr_merged` |
 
@@ -948,16 +966,25 @@ needs only PR 2, and it should not wait on the prerequisite.
   per year at 30 sessions, with a 20 GB-a-year ceiling at every cap. The
   compaction option under [Storage growth](#storage-growth) is the way out if
   that becomes a problem; it is not built ahead of need.
-- **The narrative waits on another PR.** Until the tool-less ccd lane is on
-  `main` and on the chief's image, check-ins are code-only. That is by design:
-  code-only is a complete report.
+- **The narrative waits on another PR.** Until PR #373 is on `main` and on
+  the chief's image, check-ins are code-only. That is by design: code-only is
+  a complete report.
+- 🔴 **Tool-less safety rests on rollout discipline** (decision Q1). muster
+  does not check that the chief's ccd honours `X-Muster-CC-Toolless`. An older
+  ccd ignores the header and the narrative lane keeps its tools, so focus text
+  an outside party influenced could steer a tool call. The mitigation is
+  procedural: keep the narrative off until the chief has been restarted onto
+  the #373 image and ccd `/healthz` shows `"toolless": true`. The same holds
+  for every later ccd rollback. Accepted by the operator, as for stall
+  checks.
 
 ## Open questions
 
 None. The seven questions the first draft asked were answered on the draft
 and are recorded as decisions 1–7 under
 [Operator decisions](#operator-decisions), with decision 8 (the tool-less
-narrative lane) added by the operator.
+narrative lane) added by the operator. Round 0 of the review settled Q1 and
+D1–D6, recorded in the same section.
 
 ## Recommended improvements (not asked for)
 
@@ -986,7 +1013,7 @@ follows all of them and does not reopen them.
 |---|---|
 | Cadence | **Schedule + on demand**: a few fixed local times a day (configurable, owner's zone), a **Check in now** button and a chief tool. A scheduled run with nothing changed records a short "no change" entry instead of a report |
 | Authoring | **Code table + chief summary**: the per-session table (focus, state, PRs, stalls, asks) is built in code. The chief writes a short narrative (what moved, what's stuck, what needs you) whose every claim links to a session. A claim naming an unknown session is rejected, structurally |
-| Delivery | A **Check-ins page** with history (newest first, open any past one, compare with the previous) and a **phone push** with a one-line headline opening the report. No outside delivery for now |
+| Delivery | A **Check-ins page** with history (newest first, open any past one, each showing its changes since the previous) and a **phone push** with a one-line headline opening the report. No outside delivery for now |
 | Contents | Changes since the last check-in (new, ended, focus changed, newly stalled, PRs opened/merged). **Needs you first** (open asks, nudge would-asks, sessions stalled on the owner's input). Grouped by repo/project. **Dispatched agents too**, with task status |
 
 **Answered on the draft:**
@@ -1000,4 +1027,16 @@ follows all of them and does not reopen them.
 | 5 | Retention | **Forever, no sweep.** Ownership and RLS unchanged; disabled accounts keep their rows; deletion only by manual purge | data model, retention and storage growth, accounts, configuration (no retention variable), privacy, testing |
 | 6 | Officers | **Shown, never marked as waiting on the owner**, as proposed | builder, page, testing |
 | 7 | Merged PRs | **Shown**: one batched GitHub call per check-in, as proposed | merged PRs, delta, privacy, cost, phased plan (PR 6 no longer optional) |
-| 8 | (added) Narrative lane | **The narrative's lane MUST be tool-less.** A separate PR adds a tool-less ccd lane mode for chief checks; the narrative depends on it, and fails closed: no turn to a ccd that has not advertised the mode, and no stored answer without ccd's confirmation | the chief narrative, security, rollout, testing, phased plan (prerequisite P before PR 4) |
+| 8 | (added) Narrative lane | **The narrative's lane MUST be tool-less.** A separate PR (#373) adds a tool-less ccd lane mode for chief checks; the narrative depends on it. How it is enforced was settled in round 0 (Q1, below) | the chief narrative, security, rollout, testing, phased plan (prerequisite P before PR 4) |
+
+**Settled in the review's round 0** (recorded on PR #371):
+
+| # | question | decision | where it lands |
+|---|---|---|---|
+| Q1 | Should muster check before the turn that ccd supports the tool-less mode, and look for a confirmation after it, or is rollout discipline enough? | **Rollout discipline only.** No pre-send capability check, no after-turn confirmation, no discarded answers. After a deploy, restart the chief onto the new `claude-code-agent` image (`chief_restart`, #369) and confirm `"toolless": true` on ccd `/healthz` before turning the narrative on, as for stall checks. Residual risk (an older ccd ignores the header and the lane keeps its tools) stated, not engineered away | the chief narrative, configuration (rollout), security, testing, phased plan, risks |
+| D1 | Drop `checkins_list` / `checkin_get`? | **Kept** | chief tools |
+| D2 | Drop "compare with any earlier check-in"? | **Deleted.** Each report shows its changes against the previous check-in only; no compare select, no `?compare=`, no `compare_to` | page, chief tools, testing, phased plan |
+| D3 | Drop the three settings (`_MODEL`, `_DEFAULT_TIMES`, `_MANUAL_PER_DAY`)? | **Kept** | configuration |
+| D4 | Reuse the REST PR read instead of a GraphQL client? | **Kept as designed** (one batched GraphQL call) | merged PRs |
+| D5 | Drop the after-turn confirmation? | **Moot**: Q1 removed it | |
+| D6 | Drop the `checkins.changed` live-update event? | **Kept** | page |
