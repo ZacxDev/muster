@@ -14,9 +14,10 @@ import (
 )
 
 // 🔴 AN UNREADABLE SESSION STATE IS UNKNOWN, NOT MOVED ON (nudgeStateNow).
-// 2026-10-31 19:38:59–19:40:10Z a host's muster-mirror lost its websocket; the
-// sweep at 19:40:07Z read every one of its windows as "moved on" and withdrew
-// four open asks whose sessions had not moved. Each live step that consults
+// Before this, a host's muster-mirror losing its websocket for about a minute
+// was enough: a sweep inside that window read every one of its windows as
+// "moved on" and withdrew every open ask on that host, though no session had
+// moved. Each live step that consults
 // the streak is driven here with the host disconnected (or not reporting
 // status) and must WAIT; a state that was read and differs still counts as
 // moved on.
