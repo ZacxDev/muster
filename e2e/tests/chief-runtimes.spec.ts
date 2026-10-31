@@ -93,11 +93,21 @@ test('a session is started on a picked runtime and model, listed with them, and 
   await expect(original.locator('[data-session-runtime]')).toHaveCount(0);
 
   // Claude Code on sonnet, then on haiku.
+  //
+  // 🔴 WAIT FOR THE START'S OWN ANSWER — THE ACTIVE SESSION MOVING OFF THE ONE
+  // SHOWN BEFORE IT — not for "some session is active": the original thread
+  // already is, so that wait passed before the answer landed. The next
+  // iteration then picked haiku on the OLD form, the late answer swapped in a
+  // fresh form (on its first model), and Start made an opus session (CI, run
+  // 41097735578; forced by delaying the POST, 5/5).
+  const active = page.locator('[data-chief-active-session]');
   for (const model of ['sonnet', 'haiku']) {
+    const was = await active.getAttribute('data-chief-active-session');
     const cc = page.locator('[data-session-picker] form[data-new-session="claude-code"]');
     await cc.locator('select[name="model"]').selectOption(model);
     await cc.getByRole('button', { name: 'Start' }).click();
-    await expect(page.locator('[data-chief-active-session]')).not.toHaveAttribute('data-chief-active-session', '');
+    await expect(active).not.toHaveAttribute('data-chief-active-session', was ?? '');
+    await expect(active).not.toHaveAttribute('data-chief-active-session', '');
     await openThreads(page);
   }
   const haiku = page.locator('#chief-thread-results [data-session-runtime="claude-code"]').filter({ hasText: 'haiku' });

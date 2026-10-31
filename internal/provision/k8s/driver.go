@@ -1294,6 +1294,14 @@ func (d *Driver) instanceFrom(dep *appsv1.Deployment, pods []corev1.Pod) provisi
 	}
 	inst.InstanceID = pod.Name
 	inst.Phase = phaseOf(pod)
+	// The application container's image (containerName), never a sidecar's or
+	// the init container's: it is the one the instance's spec Runtime.Image
+	// rendered (render.go).
+	for _, c := range pod.Spec.Containers {
+		if c.Name == containerName {
+			inst.Image = c.Image
+		}
+	}
 
 	ready := len(pod.Status.ContainerStatuses) > 0
 	for _, cs := range pod.Status.ContainerStatuses {
