@@ -24,7 +24,8 @@ import (
 // ---------------------------------------------------------------------------
 // THE FLEET REPORT: every session of the owner's with focus activity in a
 // window — ended ones included — built in CODE from muster's own rows, never by
-// a model. Two doors, one builder (buildFleetReport):
+// a model. Two doors, one collector (collectFleet) and one encoder per door
+// (encodeFleetReport), joined by buildFleetReport:
 //
 //	the chief's fleet_report tool {since, until?}        ──▶ the report (32 KiB)
 //	a NEW agent-mail message from a sender on
@@ -188,38 +189,93 @@ type fleetMail struct {
 	paths plugins.FleetReportPaths
 }
 
-// buildFleetReport is the report of ctx's principal's sessions with focus
-// activity in [since, until], the chief (exclude) left out, encoded within
-// maxBytes; mail non-nil narrows it for the mail door. window is what the
-// report echoes.
-func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, until time.Time, window fleetWindow,
-	requestID *string, mail *fleetMail, maxBytes int) (string, error) {
+// --- the collector ----------------------------------------------------------
+//
+// 🔴 ONE COLLECTOR, DOORS ENCODE. collectFleet reads muster's rows into typed,
+// UNNARROWED facts — hosts, the host-qualified name, the stored working
+// directory and every pull request included — and is the only reader of the
+// window history for a report. What leaves muster is decided ONLY by an
+// encoder (encodeFleetReport): the mail door's prefix filter, host blanking,
+// unqualified name, secret cut and per-session PR cap all live there. A field
+// added to fleetFact reaches no output until an encoder writes it.
+
+// fleetFact is one session as muster's rows describe it, before any door
+// narrows or encodes it. Free text is RAW: not normalised, not screened.
+type fleetFact struct {
+	Subject focus.Subject
+	// Name is what the owner's own views call it: an agent's display name, a
+	// window's DisplayTitle (which appends " · <host>" when two listed
+	// entries share a title). Title is a window's UNQUALIFIED title (an
+	// agent's: its Name). Both "" when the hub or agent list no longer knows
+	// the session.
+	Name, Title string
+	Host        string // a mirrored window's host; "" for an agent or an unknown window
+	Repo        string // the agent's Repo or the window's repo chip; "" none
+	State       string // "waiting", "active" or "ended"
+	FirstAt     time.Time
+	LastAt      time.Time
+	Titles      []focus.TitleAt
+	// TitlesOmitted counts the window's older titles past focus.MaxWindowTitles.
+	TitlesOmitted int
+	PRs           []string // every pull request recorded for it, uncapped; nil none
+	// Cwd is the working directory stored with its focus, as stored (raw;
+	// focus.CleanCwd decides whether it is known). "" unknown.
+	Cwd string
+}
+
+// fleetOffline is a mirror host that is offline, and since when (zero:
+// unknown).
+type fleetOffline struct {
+	Host  string
+	Since time.Time
+}
+
+// fleetCollected is one collection: the sessions with focus activity in the
+// window, most recently active first, the chief left out, and what could not
+// be read. The gap fields are typed, not worded, so each door words — or
+// withholds — them itself (the mail door never names a host).
+type fleetCollected struct {
+	Facts []fleetFact
+	// Omitted counts sessions active in the window past the read's limit.
+	Omitted int
+	// Online is the online mirror hosts, sorted; Offline the offline ones,
+	// sorted by host.
+	Online  []string
+	Offline []fleetOffline
+	// AgentsUnread says why agents' names and liveness are unknown ("" when
+	// they are known); MirrorOff that there is no mirrored-session registry;
+	// PRsUnread why sessions' pull requests are unknown ("" when known);
+	// CwdUnread that the stored working directories could not be read.
+	AgentsUnread string
+	MirrorOff    bool
+	PRsUnread    string
+	CwdUnread    bool
+}
+
+// collectFleet is ctx's principal's sessions with focus activity in [since,
+// until], the chief (exclude) left out, reading at most limit sessions from
+// the window history. It reads under ctx's principal on tables under FORCE
+// row-level security, exactly as sessions_overview does.
+func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until time.Time, limit int) (fleetCollected, error) {
+	var c fleetCollected
 	if s.ext.Focus == nil {
-		return "", errFleetReport("session focus is off on this muster, so it keeps no session history to report")
-	}
-	// 🔴 THE MAIL DOOR FILTERS BEFORE IT CAPS. Its omitted count must be of
-	// sessions it may describe: a cap applied before the prefix filter would
-	// count — and so reveal — sessions outside the prefixes.
-	limit := focus.MaxWindowSubjects
-	if mail != nil {
-		limit = focus.MaxWindowScan
+		return c, errFleetReport("session focus is off on this muster, so it keeps no session history to report")
 	}
 	wr, err := s.ext.Focus.WindowHistory(ctx, since, until, limit)
 	if err != nil {
 		s.logger.Printf("fleet_report: window history: %v", err)
-		return "", errFleetReport("the session history could not be read")
+		return c, errFleetReport("the session history could not be read")
 	}
-	var gaps []string
-	gap := func(format string, a ...any) { gaps = append(gaps, fmt.Sprintf(format, a...)) }
+	c.Omitted = wr.Omitted
 
 	// Agents: name, repo, and whether each is running now.
 	byAgent := map[int64]agents.Agent{}
 	running := map[int64]bool{}
 	if s.ext.Agents == nil {
-		gap("no agent store: agents' names and liveness are unknown")
+		c.AgentsUnread = "no agent store"
 	} else if list, err := s.ext.Agents.List(ctx); err != nil {
 		s.logger.Printf("fleet_report: list agents: %v", err)
-		gap("the agent list could not be read: agents' names and liveness are unknown")
+		c.AgentsUnread = "the agent list could not be read"
 	} else {
 		idx := s.instanceIndex(ctx)
 		for _, a := range list {
@@ -229,30 +285,18 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 	}
 
 	// Mirrored windows: every entry the hub knows, online or recently offline.
-	var hosts []string
 	byKey := map[string]mirror.SessionView{}
 	if s.ext.Mirror == nil {
-		gap("no mirrored-session registry: mirrored sessions' names, hosts and liveness are unknown")
+		c.MirrorOff = true
 	} else {
 		hv := s.ext.Mirror.Hosts(ctx)
 		sort.Slice(hv, func(i, j int) bool { return hv[i].Host < hv[j].Host })
-		offline := 0
 		for _, h := range hv {
-			switch {
-			case h.Online:
-				hosts = append(hosts, h.Host)
-			case mail != nil:
-				offline++ // never named in a reply
-			default:
-				since := "an unknown time"
-				if !h.OfflineSince.IsZero() {
-					since = h.OfflineSince.UTC().Format(time.RFC3339)
-				}
-				gap("host %s has been offline since %s: whether its sessions are still running is unknown", h.Host, since)
+			if h.Online {
+				c.Online = append(c.Online, h.Host)
+			} else {
+				c.Offline = append(c.Offline, fleetOffline{Host: h.Host, Since: h.OfflineSince})
 			}
-		}
-		if offline > 0 {
-			gap("%d mirror host(s) offline: whether their sessions are still running is unknown", offline)
 		}
 		for _, e := range mirror.Ordered(hv) { // most recently active first
 			k := e.SessionKey()
@@ -263,9 +307,6 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 				byKey[k] = e
 			}
 		}
-	}
-	if hosts == nil || mail != nil {
-		hosts = []string{}
 	}
 
 	pending := s.pendingBySubject(ctx)
@@ -278,30 +319,127 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 	}
 	prs := map[string][]string{}
 	if s.ext.PRSessions == nil {
-		gap("pull-request authorship is not recorded on this muster, so no session lists its pull requests")
+		c.PRsUnread = "not recorded"
 	} else if got, err := s.ext.PRSessions.SessionPRs(ctx, mirrorKeys, since); err != nil {
 		s.logger.Printf("fleet_report: session prs: %v", err)
-		gap("the pull requests sessions authored could not be read")
+		c.PRsUnread = "could not be read"
 	} else {
 		prs = got
 	}
 
-	// The mail door describes only sessions under the configured prefixes:
-	// each session's directory is the one its focus row stores (cwd.go).
+	// Each session's working directory is the one its focus row stores
+	// (cwd.go). Only an encoder decides what it is used for.
 	cwds := map[focus.Subject]string{}
-	unknownCwd := 0
-	if mail != nil {
-		list, err := s.ext.Focus.List(ctx)
-		if err != nil {
-			s.logger.Printf("fleet_report: focus list: %v", err)
-			gap("the sessions' working directories could not be read, so none is described")
-		}
-		for _, f := range list {
-			cwds[f.Subject] = f.Cwd
-		}
+	list, err := s.ext.Focus.List(ctx)
+	if err != nil {
+		s.logger.Printf("fleet_report: focus list: %v", err)
+		c.CwdUnread = true
+	}
+	for _, f := range list {
+		cwds[f.Subject] = f.Cwd
 	}
 
-	withheld, secrets, titlesLeft, prsLeft := 0, 0, 0, 0
+	c.Facts = []fleetFact{}
+	for _, w := range wr.Subjects {
+		if w.Subject.Kind == focus.KindAgent && w.Subject.AgentID() == exclude {
+			continue
+		}
+		f := fleetFact{Subject: w.Subject, State: "ended", FirstAt: w.FirstAt, LastAt: w.LastAt, Titles: w.Titles,
+			TitlesOmitted: w.TitlesOmitted, Cwd: cwds[w.Subject]}
+		switch w.Subject.Kind {
+		case focus.KindAgent:
+			id := w.Subject.AgentID()
+			if a, ok := byAgent[id]; ok {
+				f.Name, f.Repo = firstNonBlank(a.DisplayName, a.Name), a.Repo
+				f.Title = f.Name
+			}
+			if running[id] {
+				f.State = "active"
+			}
+		case focus.KindMirror:
+			if e, ok := byKey[w.Subject.Key]; ok {
+				f.Name, f.Title, f.Host, f.Repo = e.DisplayTitle(), e.Title(), e.Host, e.Repo
+				if e.Online {
+					f.State = "active"
+				}
+			}
+			f.PRs = prs[w.Subject.Key]
+		}
+		if pending[w.Subject] != nil {
+			f.State = "waiting"
+		}
+		c.Facts = append(c.Facts, f)
+	}
+	return c, nil
+}
+
+// --- the encoders -----------------------------------------------------------
+
+// buildFleetReport is the report of ctx's principal's sessions with focus
+// activity in [since, until], the chief (exclude) left out, encoded within
+// maxBytes; mail non-nil narrows it for the mail door. window is what the
+// report echoes. It is collectFleet, then encodeFleetReport.
+func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, until time.Time, window fleetWindow,
+	requestID *string, mail *fleetMail, maxBytes int) (string, error) {
+	// 🔴 THE MAIL DOOR FILTERS BEFORE IT CAPS. Its omitted count must be of
+	// sessions it may describe: a cap applied before the prefix filter would
+	// count — and so reveal — sessions outside the prefixes. So it reads the
+	// wider scan, and encodeFleetReport caps after filtering.
+	limit := focus.MaxWindowSubjects
+	if mail != nil {
+		limit = focus.MaxWindowScan
+	}
+	c, err := s.collectFleet(ctx, exclude, since, until, limit)
+	if err != nil {
+		return "", err
+	}
+	return encodeFleetReport(c, window, requestID, s.now(), mail, maxBytes)
+}
+
+// encodeFleetReport encodes c for a door within maxBytes: mail nil is the
+// chief's tool (everything, hosts included: it never leaves muster); mail
+// non-nil is the agent-mail reply, narrowed as the file comment says. This is
+// the ONLY place a door's narrowing lives.
+func encodeFleetReport(c fleetCollected, window fleetWindow, requestID *string, now time.Time, mail *fleetMail,
+	maxBytes int) (string, error) {
+	var gaps []string
+	gap := func(format string, a ...any) { gaps = append(gaps, fmt.Sprintf(format, a...)) }
+	if c.AgentsUnread != "" {
+		gap("%s: agents' names and liveness are unknown", c.AgentsUnread)
+	}
+	if c.MirrorOff {
+		gap("no mirrored-session registry: mirrored sessions' names, hosts and liveness are unknown")
+	}
+	// 🔴 THE MAIL DOOR NAMES NO HOST: not in coverage.hosts, not in a gap.
+	hosts := []string{}
+	if mail == nil && c.Online != nil {
+		hosts = append(hosts, c.Online...)
+	}
+	if mail != nil {
+		if len(c.Offline) > 0 {
+			gap("%d mirror host(s) offline: whether their sessions are still running is unknown", len(c.Offline))
+		}
+	} else {
+		for _, h := range c.Offline {
+			since := "an unknown time"
+			if !h.Since.IsZero() {
+				since = h.Since.UTC().Format(time.RFC3339)
+			}
+			gap("host %s has been offline since %s: whether its sessions are still running is unknown", h.Host, since)
+		}
+	}
+	switch c.PRsUnread {
+	case "":
+	case "not recorded":
+		gap("pull-request authorship is not recorded on this muster, so no session lists its pull requests")
+	default:
+		gap("the pull requests sessions authored could not be read")
+	}
+	if mail != nil && c.CwdUnread {
+		gap("the sessions' working directories could not be read, so none is described")
+	}
+
+	withheld, secrets, titlesLeft, prsLeft, unknownCwd := 0, 0, 0, 0, 0
 	field := func(v string) string {
 		v = flows.NormalizeAgentText(strings.TrimSpace(v))
 		if v == "" {
@@ -319,14 +457,11 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 		return v
 	}
 	rows := []fleetSession{}
-	for _, w := range wr.Subjects {
-		if w.Subject.Kind == focus.KindAgent && w.Subject.AgentID() == exclude {
-			continue
-		}
+	for _, f := range c.Facts {
 		if mail != nil {
 			// 🔴 FAIL CLOSED: no stored directory, or one that is not well
 			// formed, is unknown — whatever kind of session it is.
-			cwd, ok := focus.CleanCwd(cwds[w.Subject])
+			cwd, ok := focus.CleanCwd(f.Cwd)
 			if !ok {
 				unknownCwd++
 				continue
@@ -335,57 +470,33 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 				continue // outside the prefixes: never described, never counted
 			}
 		}
-		row := fleetSession{ID: w.Subject.String(), Kind: string(w.Subject.Kind), State: "ended",
-			FirstSeen: w.FirstAt.UTC().Format(time.RFC3339), LastSeen: w.LastAt.UTC().Format(time.RFC3339),
-			Focus: []fleetFocus{}, PRs: []string{}}
-		var repo string
-		switch w.Subject.Kind {
-		case focus.KindAgent:
-			id := w.Subject.AgentID()
-			if a, ok := byAgent[id]; ok {
-				row.Name, repo = firstNonBlank(a.DisplayName, a.Name), a.Repo
-			}
-			if running[id] {
-				row.State = "active"
-			}
-		case focus.KindMirror:
-			if e, ok := byKey[w.Subject.Key]; ok {
-				// 🔴 THE MAIL DOOR NAMES A SESSION BY ITS UNQUALIFIED TITLE.
-				// DisplayTitle appends " · <host>" when two listed entries share
-				// a title (mirror's qualify) — a host label inside the name.
-				row.Name, row.Host, repo = e.DisplayTitle(), e.Host, e.Repo
-				if mail != nil {
-					row.Name = e.Title()
-				}
-				if e.Online {
-					row.State = "active"
-				}
-			}
-			if p := prs[w.Subject.Key]; p != nil {
-				row.PRs = p
-				if mail != nil && len(p) > fleetMaxPRs {
-					prsLeft += len(p) - fleetMaxPRs
-					row.PRs = p[:fleetMaxPRs]
-				}
-			}
-		}
-		if pending[w.Subject] != nil {
-			row.State = "waiting"
-		}
+		row := fleetSession{ID: f.Subject.String(), Kind: string(f.Subject.Kind), State: f.State,
+			FirstSeen: f.FirstAt.UTC().Format(time.RFC3339), LastSeen: f.LastAt.UTC().Format(time.RFC3339),
+			Name: f.Name, Host: f.Host, Focus: []fleetFocus{}, PRs: []string{}}
 		if mail != nil {
-			row.Host = ""
+			// 🔴 THE MAIL DOOR NAMES A SESSION BY ITS UNQUALIFIED TITLE.
+			// DisplayTitle appends " · <host>" when two listed entries share
+			// a title (mirror's qualify) — a host label inside the name.
+			row.Name, row.Host = f.Title, ""
+		}
+		if f.PRs != nil {
+			row.PRs = f.PRs
+			if mail != nil && len(f.PRs) > fleetMaxPRs {
+				prsLeft += len(f.PRs) - fleetMaxPRs
+				row.PRs = f.PRs[:fleetMaxPRs]
+			}
 		}
 		row.Name = field(row.Name)
-		if repo = field(repo); repo != "" {
+		if repo := field(f.Repo); repo != "" {
 			row.Repo = &repo
 		}
-		for _, t := range w.Titles {
+		for _, t := range f.Titles {
 			row.Focus = append(row.Focus, fleetFocus{Title: field(t.Title), At: t.At.UTC().Format(time.RFC3339)})
 		}
-		titlesLeft += w.TitlesOmitted
+		titlesLeft += f.TitlesOmitted
 		rows = append(rows, row)
 	}
-	omitted := wr.Omitted
+	omitted := c.Omitted
 	if mail != nil {
 		// The cap, on the sessions the reply may describe only.
 		omitted = 0
@@ -393,13 +504,13 @@ func (s *Server) buildFleetReport(ctx context.Context, exclude int64, since, unt
 			omitted = len(rows) - focus.MaxWindowSubjects
 			rows = rows[:focus.MaxWindowSubjects]
 		}
-		if wr.Omitted > 0 {
+		if c.Omitted > 0 {
 			gap("more sessions were active in the window than muster reads for one report; some may be left out")
 		}
 	}
 
 	rep := fleetReport{Type: fleetReportType, V: fleetReportVersion, RequestID: requestID,
-		GeneratedAt: s.now().UTC().Format(time.RFC3339), Window: window, Sessions: rows}
+		GeneratedAt: now.UTC().Format(time.RFC3339), Window: window, Sessions: rows}
 	finish := func(omitted int) string {
 		g := append([]string(nil), gaps...)
 		if titlesLeft > 0 {

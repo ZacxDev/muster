@@ -1,0 +1,1 @@
+{"type":"fleet_report","v":1,"request_id":"req-gold-nocwd","generated_at":"<TIME>","window":{"since":"<TIME>","until":"<TIME>","zone":"Europe/Berlin"},"coverage":{"sessions":0,"omitted":0,"hosts":[],"gaps":["1 mirror host(s) offline: whether their sessions are still running is unknown","6 session(s) whose working directory muster does not know were left out"]},"sessions":[]}

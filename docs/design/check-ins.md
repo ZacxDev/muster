@@ -342,7 +342,9 @@ the rows. Neither is built until one of those conditions is real.
 
 - `collectFleet(ctx, exclude, since, until, opts) (fleetCollected, error)`:
   lines `:197-387` today. It returns typed rows (subject, kind, name, host,
-  repo, repo source, state, first/last seen, titles, PRs, cwd) and gaps.
+  repo, state, first/last seen, titles, PRs, cwd) and gaps. The repo source
+  is not stored on the row: PR 2's grouping function derives it (see
+  [Repo grouping](#the-builder-one-collector-two-consumers), step 6).
 - the encoders: the tool's JSON (32 KiB cap) and the mail door's narrowing
   (path filter **before** cap, `:200-206`). These do not change.
 
@@ -361,8 +363,11 @@ principal) calls `collectFleet` with `[base.published_at, now]`, or
    sessions per user per pass).
 3. **Stall**, from one extracted rule. Move the per-session status assembly in
    `nudgeCandidates` (`chief_nudge.go:298-361`) into
-   `stallInputs(ctx) map[focus.Subject]chiefnudge.Session`. The sweep and the
-   builder then read the same facts (one rule, one place). Then:
+   `stallInputs(ctx, inFlight) []nudgeCandidate`, unfiltered and in the
+   sweep's order. It is a slice, not a map keyed by subject, because the order
+   sets the per-pass budget and retry clocks, and one agent can have several
+   conversations. The sweep and the builder then read the same facts (one
+   rule, one place). Then:
    - `stall = 'turn_error'` when `TurnError` is set (usage limit, auth, API
      error);
    - `stall = 'idle'` when `Status == "idle"`, `IdleFor >= MUSTER_CHIEF_NUDGE_IDLE`
@@ -379,7 +384,9 @@ principal) calls `collectFleet` with `[base.published_at, now]`, or
    `redact.Secrets`. At most 10 items per session are copied, newest first;
    the rest are counted in `coverage`.
 5. **Task** for a dispatched agent: `NoteID` → `{id, title, status}`.
-6. **Repo grouping**, first match wins:
+6. **Repo grouping**, first match wins. One function in PR 2 computes the
+   label and `repo_source` in this order; the collector's row carries only
+   `Repo` and `cwd`, never the source:
 
    | source | label | `repo_source` |
    |---|---|---|
