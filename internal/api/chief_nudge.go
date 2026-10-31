@@ -820,7 +820,7 @@ func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) strin
 
 // nudgeRoute is ctx carrying the route of a stall check under key: for a
 // claude-code chief, key as an explicit claude-code session marked EPHEMERAL
-// (withRoute, the one place that route is built), with no model — ccd starts
+// and TOOL-LESS (withRoute, the one place that route is built), with no model — ccd starts
 // the lane's CLI on the pod's default model, as the primary runs. A gateway
 // chief gets no route: its runtime has no lanes, and its per-decision session
 // key is already a session of its own. Its request carries the same headers as
@@ -836,6 +836,20 @@ func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) strin
 // them to make room. ccd never stops an idle operator lane on its own, so that
 // does not pass by itself: the check is retried for chiefNudgeRefusedBound,
 // then recorded suppressed:lanes_full (chief_nudge_retry.go).
+//
+// 🔴 TOOL-LESS IS WHAT KEEPS A CHECK FROM ACTING. The check's prompt quotes
+// other sessions' transcripts (redacted, fenced as data) — but the fence is
+// prose. ccd starts the check's CLI with no built-in tool and no MCP server
+// (agents.HeaderCCToolless, cmd/ccd toollessArgs), so whatever a transcript
+// says, the chief's only possible effect in a check is its text reply, which
+// decideNudge parses and validates. Shadow mode gates only the sweep's own
+// sends; this gates the chief's tools.
+//
+// ⚠ VERSION SKEW, TOOLS: a ccd that predates agents.HeaderCCToolless ignores it
+// and starts the check's CLI with the chief's full tool set (built-ins and
+// muster's MCP tools). Restart the chief on the current image (chief_restart)
+// before turning nudges on; /healthz shows `"toolless": true` on a check lane
+// whose ccd honoured it.
 //
 // ⚠ VERSION SKEW: a ccd that predates agents.HeaderCCEphemeral ignores it and
 // keeps the check's CLI like any session's. At its cap it then stops the least

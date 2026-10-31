@@ -688,8 +688,11 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// primary — every request without the header, as before (lanes.go).
 	target := s
 	if key := r.Header.Get(headerCCSession); key != "" {
-		ephemeral := r.Header.Get(headerCCEphemeral) == "1"
-		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), ephemeral)
+		mode := laneMode{
+			ephemeral: r.Header.Get(headerCCEphemeral) == "1",
+			toolless:  r.Header.Get(headerCCToolless) == "1",
+		}
+		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), mode)
 		if f != nil {
 			writeFailure(w, f)
 			return
@@ -1093,10 +1096,11 @@ func credentialVisible(configDir string) func() bool {
 // (agents.IsJobWorktreeDir) and an existing directory, not a symlink — so the
 // header cannot point a CLI anywhere else on the volume (checkJobDir).
 //
-// ephemeral (X-Muster-CC-Ephemeral: 1) makes it a throwaway check lane
+// mode.ephemeral (X-Muster-CC-Ephemeral: 1) makes it a throwaway check lane
 // (lanes.go): refused rather than stopping an operator lane at the cap, and
 // stopped when released — here too, when its CLI never reached its prompt.
-func (s *server) laneFor(ctx context.Context, key, model, workdir string, ephemeral bool) (*lane, *failure) {
+// mode.toolless (X-Muster-CC-Toolless: 1) starts its CLI with no tools.
+func (s *server) laneFor(ctx context.Context, key, model, workdir string, mode laneMode) (*lane, *failure) {
 	if s.lanes == nil {
 		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
 			"or CCD_MAX_SESSIONS is 0), so it cannot run a session of its own for " + strconv.Quote(key))
@@ -1118,7 +1122,7 @@ func (s *server) laneFor(ctx context.Context, key, model, workdir string, epheme
 			return nil, f
 		}
 	}
-	ln, f := s.lanes.acquireIn(ctx, key, model, workdir, ephemeral)
+	ln, f := s.lanes.acquireIn(ctx, key, model, workdir, mode)
 	if f != nil {
 		return nil, f
 	}

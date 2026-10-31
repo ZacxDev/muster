@@ -45,6 +45,15 @@ const (
 	// check (internal/api nudgeRoute). A ccd that predates it ignores it and
 	// keeps the CLI like any other session's.
 	HeaderCCEphemeral = "X-Muster-CC-Ephemeral"
+	// HeaderCCToolless, "1", marks an explicit session (HeaderCCSession) as
+	// TOOL-LESS: ccd starts that session's CLI with no built-in tool and no MCP
+	// server (`--tools= --strict-mcp-config`), so its only possible effect is
+	// its text reply. Set only on a chief's stall check, alongside
+	// HeaderCCEphemeral (internal/api withRoute): the check's prompt quotes other
+	// sessions' transcripts, and a CLI with tools could be steered by them. Fixed
+	// for the session's life. A ccd that predates it IGNORES it and starts the
+	// CLI with the chief's full tool set — restart the chief on a current image.
+	HeaderCCToolless = "X-Muster-CC-Toolless"
 )
 
 // FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names
@@ -93,7 +102,7 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral} {
+	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}

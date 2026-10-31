@@ -88,6 +88,17 @@ import (
 //
 // Its transcript stays on disk (a few KiB a check); nothing deletes it.
 //
+// 🔴 A CHECK LANE HAS NO TOOLS (X-Muster-CC-Toolless: 1 — muster sets it on the
+// same route as ephemeral, internal/api withRoute). A check's prompt quotes
+// OTHER sessions' transcripts; fencing them as "data, not instructions" is
+// prose, and a CLI with the chief's tools (Bash, Edit, WebFetch, muster's MCP
+// route_to_session/task_dispatch/…) could be steered into calling one. So the
+// lane's CLI is started with toollessArgs: no built-in tool and no MCP server,
+// and its only possible effect is its text reply, which muster parses and
+// validates. Hooks are not tools: SessionStart, UserPromptSubmit and Stop still
+// reach ccd, so the turn is driven exactly as any lane's. Fixed for the lane's
+// life like ephemeral; operator lanes and the primary never carry the flags.
+//
 // A lane at a permission prompt shows on the agent's "awaiting approval" badge
 // like the primary (blockedReporter), and one left there past stuckAfter may be
 // stopped for a new session (pickEvictLocked).
@@ -113,7 +124,40 @@ const (
 	// Read only on a turn that names a session (headerCCSession); any other
 	// value is an ordinary lane.
 	headerCCEphemeral = "X-Muster-CC-Ephemeral"
+	// headerCCToolless: "1" starts the lane's CLI with NO tools (see "A CHECK
+	// LANE HAS NO TOOLS" above). Read only on a turn that names a session; any
+	// other value is a lane with the CLI's usual tools.
+	headerCCToolless = "X-Muster-CC-Toolless"
 )
+
+// toollessArgs are the flags a tool-less lane's CLI starts with: no built-in
+// tool (`--tools=`, the one-token spelling of the CLI's documented `--tools ""`
+// — "Use "" to disable all tools") and no MCP server (`--strict-mcp-config`
+// with no --mcp-config: only the servers --mcp-config names are loaded, which
+// is none, so the user-scope muster server `ccd seed` registers in .claude.json
+// and any project .mcp.json are not even started).
+//
+// 🔴 BOTH ARE NEEDED; NEITHER IS A DENY-LIST. `--tools` governs the BUILT-IN set
+// only: measured on the pinned CLI (2.1.296), `--tools=` alone still starts
+// every configured MCP server, and `--strict-mcp-config` alone keeps all 24
+// built-ins. Together the CLI's init reports tools [] and mcp_servers [], no
+// MCP server process is spawned, and SessionStart/UserPromptSubmit hooks still
+// fire (docs/configuration.md, "Tool-less check lanes"). Both are allow-lists
+// that are empty, so a tool added to a later CLI is not in them.
+//
+// One token, not `--tools ""`: an empty argv element must survive tmux
+// new-session and env intact, and this spelling does not depend on it.
+var toollessArgs = []string{"--tools=", "--strict-mcp-config"}
+
+// laneMode is what a turn's headers say about its lane beyond model and
+// workdir. Both are fixed for the lane's life (acquireIn refuses a turn that
+// disagrees with the running lane).
+type laneMode struct {
+	// ephemeral: headerCCEphemeral — a throwaway check lane.
+	ephemeral bool
+	// toolless: headerCCToolless — the CLI starts with toollessArgs.
+	toolless bool
+}
 
 // laneModelPattern is what a lane's --model may be: an alias ("opus") or a model
 // id, optionally with the CLI's "[1m]" suffix. It is argv, so it is a closed set.
@@ -393,12 +437,15 @@ type lane struct {
 	// last turn releases it and never the reason an operator lane is stopped.
 	// Fixed for the lane's life.
 	ephemeral bool
-	srv       *server
-	sup       *supervisor
-	term      laneTerminal
-	cancel    context.CancelFunc
-	done      chan struct{} // closed when the supervisor's run returns
-	lastUsed  time.Time
+	// toolless: the CLI starts with toollessArgs (headerCCToolless). Fixed for
+	// the lane's life; set before its supervisor first builds argv.
+	toolless bool
+	srv      *server
+	sup      *supervisor
+	term     laneTerminal
+	cancel   context.CancelFunc
+	done     chan struct{} // closed when the supervisor's run returns
+	lastUsed time.Time
 	// reserved counts the turns holding this lane, from acquire until their
 	// runTurn has returned (lanes.release). Guarded by lanes.mu.
 	//
@@ -472,7 +519,7 @@ func (l *lanes) get(id string) *lane {
 
 // acquire is acquireIn in ccd's own workspace, for an operator lane.
 func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure) {
-	return l.acquireIn(ctx, key, model, "", false)
+	return l.acquireIn(ctx, key, model, "", laneMode{})
 }
 
 // acquireIn returns key's lane, starting it in workdir ("" = ccd's workspace;
@@ -481,9 +528,11 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 // running lane's. The lane comes back RESERVED (lane.reserved): the caller
 // releases it once its turn is over.
 //
-// ephemeral marks a throwaway check lane: at the cap it may stop only another
-// check lane, never an operator's (pickEvictLocked), and release stops it.
-func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, ephemeral bool) (*lane, *failure) {
+// mode.ephemeral marks a throwaway check lane: at the cap it may stop only
+// another check lane, never an operator's (pickEvictLocked), and release stops
+// it. mode.toolless starts its CLI with toollessArgs.
+func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode laneMode) (*lane, *failure) {
+	ephemeral := mode.ephemeral
 	id := laneID(key)
 	l.mu.Lock()
 	if ln, ok := l.set[id]; ok {
@@ -501,6 +550,13 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, ephem
 			l.mu.Unlock()
 			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
 				Message: fmt.Sprintf("session %q is ephemeral=%v, not %v: whether a session is a throwaway check is fixed", key, ln.ephemeral, ephemeral)}
+		}
+		// 🔴 A running lane's tools are what it was started with: a turn asking
+		// for a tool-less CLI must never be pasted into one that has tools.
+		if ln.toolless != mode.toolless {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q is toolless=%v, not %v: whether a session's CLI has tools is fixed", key, ln.toolless, mode.toolless)}
 		}
 		ln.reserved++
 		l.mu.Unlock()
@@ -522,7 +578,7 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, ephem
 		delete(l.set, evict.id)
 	}
 	ln := l.newLane(id, key, model, workdir)
-	ln.ephemeral = ephemeral
+	ln.ephemeral, ln.toolless = ephemeral, mode.toolless
 	// Detached from the turn's request: the CLI outlives the turn that started it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ln.cancel = cancel
@@ -654,6 +710,11 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		// opted in (jobmode.go). The seeded settings refuse this flag otherwise.
 		if workdir != "" && l.jobBypass {
 			argv = append(argv, "--permission-mode", jobPermissionBypass)
+		}
+		// 🔴 A CHECK LANE'S CLI HAS NO TOOLS (see "A CHECK LANE HAS NO TOOLS").
+		// Read on every start, so a restart or a resume is tool-less too.
+		if ln.toolless {
+			argv = append(argv, toollessArgs...)
 		}
 		if transcriptExists(l.configDir, dir, uuid) {
 			return append(argv, "--resume", uuid), modeContinue
@@ -833,6 +894,8 @@ type laneHealth struct {
 	// Ephemeral: a throwaway check lane (headerCCEphemeral), stopped when its
 	// turn is over — seen here only while that turn runs.
 	Ephemeral bool `json:"ephemeral,omitempty"`
+	// Toolless: the lane's CLI was started with no tools (headerCCToolless).
+	Toolless bool `json:"toolless,omitempty"`
 	// AwaitingApproval: the lane's CLI is at a permission prompt (since
 	// AwaitingSince); Stuck: for longer than stuckAfter, so a new session at
 	// the cap may stop it (pickEvictLocked).
@@ -852,7 +915,7 @@ func (l *lanes) health() []laneHealth {
 	for _, ln := range list {
 		started, ended, busy := ln.srv.snapshot()
 		h := laneHealth{ID: ln.id, Model: ln.model, CLI: ln.sup.state().CLI,
-			Session: ln.srv.sessionState(started, ended), Busy: busy, Ephemeral: ln.ephemeral}
+			Session: ln.srv.sessionState(started, ended), Busy: busy, Ephemeral: ln.ephemeral, Toolless: ln.toolless}
 		if since, waiting := ln.srv.awaitingSince(); waiting {
 			h.AwaitingApproval, h.AwaitingSince = true, since.UTC().Format(time.RFC3339)
 			h.Stuck = l.now().Sub(since) >= l.stuckAfterOr()
