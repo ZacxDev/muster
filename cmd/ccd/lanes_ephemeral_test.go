@@ -187,11 +187,11 @@ func TestACheckLaneHeldTwiceIsStoppedByTheLastReleaseOnly(t *testing.T) {
 	r := newLaneRig(t, 3)
 	ctx := context.Background()
 	key := "agent:chief:webchat:nudge:aaaaaaaaaaaaaaaa"
-	a, f := r.l.acquireIn(ctx, key, "", "", true)
+	a, f := r.l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
-	if b, f := r.l.acquireIn(ctx, key, "", "", true); f != nil || b != a {
+	if b, f := r.l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true}); f != nil || b != a {
 		t.Fatalf("the same check key again: %v %v", b, f)
 	}
 	r.l.release(a)
@@ -202,7 +202,7 @@ func TestACheckLaneHeldTwiceIsStoppedByTheLastReleaseOnly(t *testing.T) {
 	if r.l.get(a.id) != nil || r.pane(key).kills() != 1 {
 		t.Fatalf("both released: in set=%v kills=%d; want stopped", r.l.get(a.id) != nil, r.pane(key).kills())
 	}
-	again, f := r.l.acquireIn(ctx, key, "", "", true)
+	again, f := r.l.acquireIn(ctx, key, "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
@@ -263,7 +263,7 @@ func TestACheckAtTheCapWithOnlyOperatorLanesIsRefusedAndStopsNothing(t *testing.
 func TestACheckMayStopAnotherCheckLane(t *testing.T) {
 	r := newLaneRig(t, 2)
 	ctx := context.Background()
-	old, f := r.l.acquireIn(ctx, "agent:chief:webchat:nudge:3333333333333333", "", "", true)
+	old, f := r.l.acquireIn(ctx, "agent:chief:webchat:nudge:3333333333333333", "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
@@ -283,7 +283,7 @@ func TestACheckMayStopAnotherCheckLane(t *testing.T) {
 		t.Errorf("/healthz ephemeral: %v; want the check lane %s only", eph, old.id)
 	}
 
-	next, f := r.l.acquireIn(ctx, "agent:chief:webchat:nudge:4444444444444444", "", "", true)
+	next, f := r.l.acquireIn(ctx, "agent:chief:webchat:nudge:4444444444444444", "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatalf("a check at the cap beside an idle check lane: %v; want that lane stopped", f)
 	}
@@ -316,7 +316,7 @@ func TestAnOperatorLaneAtTheCapStillStopsTheLeastRecentlyUsedIdleLane(t *testing
 	// An idle check lane (planted, see TestACheckMayStopAnotherCheckLane) that
 	// is the least recently used is the one an operator session stops.
 	r2 := newLaneRig(t, 2)
-	chk, f := r2.l.acquireIn(ctx, "agent:chief:webchat:nudge:5555555555555555", "", "", true)
+	chk, f := r2.l.acquireIn(ctx, "agent:chief:webchat:nudge:5555555555555555", "", "", laneMode{ephemeral: true})
 	if f != nil {
 		t.Fatal(f)
 	}
@@ -337,7 +337,7 @@ func TestAnOperatorLaneAtTheCapStillStopsTheLeastRecentlyUsedIdleLane(t *testing
 func TestWhetherALaneIsACheckIsFixed(t *testing.T) {
 	r := newLaneRig(t, 3)
 	r.operator(t, "sess-a")
-	if _, f := r.l.acquireIn(context.Background(), "sess-a", "", "", true); f == nil || f.Type != failBadRequest {
+	if _, f := r.l.acquireIn(context.Background(), "sess-a", "", "", laneMode{ephemeral: true}); f == nil || f.Type != failBadRequest {
 		t.Fatalf("a check turn for a running operator lane: %v; want %s", f, failBadRequest)
 	}
 }

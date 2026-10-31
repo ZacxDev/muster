@@ -88,13 +88,19 @@ func fakeClaude() int {
 	}
 	// The flags ccd passes: --continue (the primary, before lanes), --resume
 	// <id> (the primary once recorded, a lane once its transcript exists),
-	// --session-id <id> (a lane's first start) and --model <m> (a lane's).
+	// --session-id <id> (a lane's first start), --model <m> (a lane's), and a
+	// tool-less lane's --tools= --strict-mcp-config.
 	var resume bool
 	var resumeID, sessionID, model string
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--continue":
 			resume = true
+		case "--tools=", "--strict-mcp-config":
+			// A tool-less lane's flags (toollessArgs). The fake has no tools to
+			// remove; it accepts exactly these spellings, and fake-argv.log shows
+			// whether ccd passed them (TestTmuxLaneACheckLane…). Any other
+			// --tools value is an unknown argument below.
 		case "--resume", "--session-id", "--model":
 			if i+1 >= len(os.Args) {
 				fmt.Printf("%s needs a value\r\n", os.Args[i])
