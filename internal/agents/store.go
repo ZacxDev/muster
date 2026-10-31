@@ -433,6 +433,12 @@ type Store interface {
 	// the next kickoff can start immediately instead of waiting out the TTL. The
 	// TTL is the crash backstop, not the normal path.
 	ReleaseKickoffClaim(ctx context.Context, id int64, owner string) error
+	// KickoffClaimHolder reports the owner string of the agent's claim while it is
+	// held (unexpired), or "" when it is unheld or expired. A READ, for a caller
+	// that lost ClaimKickoff and must say who won (chief_restart tells a delivery,
+	// which force may cut off, from a chief restart or replacement, which it may
+	// not). It decides nothing by itself: the holder can release a moment later.
+	KickoffClaimHolder(ctx context.Context, id int64) (string, error)
 	// ClearKickoffClaimsByOwnerPrefix clears every claim whose owner starts with
 	// prefix, returning how many rows it cleared. It backs the STARTUP sweep
 	// (Provisioner.SweepOwnStaleKickoffClaims), whose prefix is this pod's own

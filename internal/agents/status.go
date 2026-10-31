@@ -37,7 +37,7 @@ func ComputeStatus(a Agent, inst *provision.Instance) string {
 		}
 		return a.Status
 	}
-	if inst.Reason == "CrashLoopBackOff" || inst.Reason == "ImagePullBackOff" || inst.Reason == "ErrImagePull" {
+	if InstanceFailed(inst) {
 		return StatusError
 	}
 	switch inst.Phase {
@@ -69,6 +69,19 @@ func ComputeStatus(a Agent, inst *provision.Instance) string {
 		// not the place to answer it.
 		return StatusProvisioning
 	}
+}
+
+// InstanceFailed reports whether a live instance ITSELF shows a failure — a
+// crash loop, an image that will not pull, a failed phase — whatever the stored
+// row says. ComputeStatus's instance half of `error`; chief_restart reads it to
+// end its wait early on a new pod that is failing (a stored `error` alone is not
+// that evidence).
+func InstanceFailed(inst *provision.Instance) bool {
+	if inst == nil {
+		return false
+	}
+	return inst.Reason == "CrashLoopBackOff" || inst.Reason == "ImagePullBackOff" || inst.Reason == "ErrImagePull" ||
+		inst.Phase == provision.PhaseFailed
 }
 
 // KickoffOwed reports whether this agent still OWES its first turn: a kickoff

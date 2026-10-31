@@ -84,7 +84,7 @@ func TestALaneKilledMidTurnIsEvictableWhileItRestarts(t *testing.T) {
 		t.Fatalf("BUSY AFTER DEATH: a lane killed mid-turn, held in its respawn: busy=%v idle=%v; want not busy and idle", busy, ln.srv.idle())
 	}
 	l.mu.Lock()
-	evict, stuck := l.pickEvictLocked()
+	evict, stuck := l.pickEvictLocked(false)
 	l.mu.Unlock()
 	if evict != ln || stuck {
 		t.Fatalf("a lane killed mid-turn is not chosen for eviction while it restarts (got %v, stuck=%v)", evict, stuck)

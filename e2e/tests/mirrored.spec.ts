@@ -109,8 +109,21 @@ test('a read-only host’s sessions appear in the sidebar and open the shared te
   expect((await main.getAttribute('data-switcher-words'))!.split(' ').pop(), 'the row names its host').toBe(host.toLowerCase());
   await expect(main.locator('[data-nav-offline]')).toHaveCount(0);
   await noHorizontalScroll(page);
-  const cb = (await main.boundingBox())!;
-  expect(cb.x + cb.width, 'the row fits 412px').toBeLessThanOrEqual(412);
+  // 🔴 Measured by a poll, not one boundingBox(): the sidebar's list refresh
+  // swaps its rows, and a row replaced between the locator resolving it and its
+  // box being read has no box (null — CI run 41003756952, "Cannot read
+  // properties of null (reading 'x')"). Each try resolves the row again; a try
+  // that found no box reads Infinity, which never passes. (mirror-windows.spec
+  // meets the same swap with a toPass block, because it also scrolls the row.)
+  await expect
+    .poll(
+      async () => {
+        const b = await main.boundingBox();
+        return b ? b.x + b.width : Number.POSITIVE_INFINITY;
+      },
+      { message: 'the row fits 412px (Infinity: the row had no box)' },
+    )
+    .toBeLessThanOrEqual(412);
 
   await main.tap();
   await page.waitForURL((u) => u.pathname === '/mirror/terminal');

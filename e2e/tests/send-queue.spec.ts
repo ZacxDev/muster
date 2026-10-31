@@ -1281,12 +1281,20 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     const waiting = page.locator('#mv-queue-waiting');
     await expect(waiting).toContainText('working', { timeout: 20_000 });
     await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    // 🔴 EVERY READ OF THE COUNT IS settled(): a rendered frame, then the
+    // observer's pending records taken. An observer's entries reach its
+    // callback in a task of their own, AFTER the frame that made them — so a
+    // read straight after a change can miss that change's shift, which is then
+    // counted against whatever is measured next. CI (run 40915016547): the
+    // 320px resize's own shift (0.26) was not yet in before320 (0.0815, the
+    // control alone), so it was charged to the tap — 0.3424, "opening the whole
+    // line shifts nothing" red. takeRecords() makes the read include it.
     await page.evaluate(() => {
-      const w = window as unknown as { __shift: number; __shifts: string[] };
+      const w = window as unknown as { __shift: number; __shifts: string[]; __drain: () => void };
       w.__shift = 0;
       w.__shifts = [];
-      new PerformanceObserver((l) => {
-        for (const e of l.getEntries() as unknown as { value: number; hadRecentInput: boolean; sources: { node?: Node | null }[] }[]) {
+      const take = (list: PerformanceEntryList) => {
+        for (const e of list as unknown as { value: number; hadRecentInput: boolean; sources: { node?: Node | null }[] }[]) {
           const nodes = (e.sources || []).map((x) => x.node).filter((n): n is Node => !!n);
           const ours = nodes.some((n) => {
             const el = n instanceof Element ? n : n.parentElement;
@@ -1295,8 +1303,26 @@ test.describe('a usage limit, phone 390×844 touch', () => {
           if (ours) w.__shift += e.value;
           w.__shifts.push(`${e.value.toFixed(4)} ours=${ours} ` + nodes.map((n) => (n instanceof Element ? n.id || n.tagName : n.nodeName)).join(','));
         }
-      }).observe({ type: 'layout-shift', buffered: false });
+      };
+      const obs = new PerformanceObserver((l) => take(l.getEntries()));
+      obs.observe({ type: 'layout-shift', buffered: false });
+      w.__drain = () => take(obs.takeRecords());
     });
+    // settled: two frames (the second begins after the first's layout, where a
+    // shift is measured), then every entry the observer holds, then the count.
+    const settled = () =>
+      page.evaluate(
+        () =>
+          new Promise<{ shift: number; log: string[] }>((res) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                const w = window as unknown as { __shift: number; __shifts: string[]; __drain: () => void };
+                w.__drain();
+                res({ shift: w.__shift, log: w.__shifts.slice() });
+              }),
+            ),
+          ),
+      );
     const before = await rowIn(page, text, 'queued').boundingBox();
     // A prompt typed by hand, rejected by a limit that names no reset; the
     // turn ends.
@@ -1305,10 +1331,8 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     await expect(waiting, `held (log:\n${mirrorLog})`).toContainText('Held — usage limit; no reset time given', { timeout: 20_000 });
     const lines = await waiting.evaluate((el) => Math.round(el.scrollHeight / parseFloat(getComputedStyle(el).lineHeight)));
     expect(lines, 'instrument check: the held line wraps, so the reservation is what keeps it still').toBe(2);
-    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
     await page.waitForTimeout(300);
-    const shift = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
-    const log = await page.evaluate(() => (window as unknown as { __shifts: string[] }).__shifts);
+    const { shift, log } = await settled();
     test.info().annotations.push({ type: 'layout-shift', description: `held line: ${shift} ${JSON.stringify(log)}` });
     // Under 0.001, not the page budget's 0.01: one line of growth with no
     // reservation measured 0.005–0.006 here (the composer's top moving), which the
@@ -1323,9 +1347,8 @@ test.describe('a usage limit, phone 390×844 touch', () => {
       d.style.height = '120px';
       q?.parentElement?.insertBefore(d, q);
     });
-    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
     await page.waitForTimeout(300);
-    const control = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
+    const control = (await settled()).shift;
     test.info().annotations.push({ type: 'layout-shift', description: `control: ${control}` });
     expect(control, 'CONTROL: the same observer sees an inserted block shift the queue').toBeGreaterThan(shift);
     // At 320px the held line still takes at most its two reserved lines —
@@ -1339,14 +1362,14 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     expect(at320.title).toContain('Held — usage limit; no reset time given');
     // A tap shows the whole line in a popover — the clamped end ("…or tap
     // Send now.") included — and moves nothing on the page.
-    const before320 = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
+    const before320 = (await settled()).shift;
     const rowBefore = await rowIn(page, text, 'queued').boundingBox();
     await waiting.tap();
     const full = page.locator('#mv-queue-waiting-full');
     await expect(full).toBeVisible();
     await expect(full).toContainText('Send now');
-    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
-    expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'opening the whole line shifts nothing').toBe(before320);
+    const opened = await settled();
+    expect(opened.shift, 'opening the whole line shifts nothing: ' + JSON.stringify(opened.log)).toBe(before320);
     expect(await rowIn(page, text, 'queued').boundingBox(), 'the queued row did not move').toEqual(rowBefore);
     await page.keyboard.press('Escape');
     await expect(full).toBeHidden();

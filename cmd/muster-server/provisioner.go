@@ -545,6 +545,10 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 			ControllerNamespace: cfg.AgentNetpolFromNS,
 			ControllerPodLabels: labels,
 		}
+		// 🔴 A deploy-key pool's Secret is kept in muster's OWN namespace (the
+		// one this variable names) and copied into each worker's namespace
+		// before its pod (k8s secretcopy.go).
+		dc.SecretSourceNamespace = cfg.AgentNetpolFromNS
 	}
 	return dc
 }
@@ -648,5 +652,6 @@ func claudeCodeSpecConfig(cfg config) *agentspec.ClaudeCodeConfig {
 		accounts[k] = v
 	}
 	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage,
-		BypassPools: slices.Clone(cfg.AgentCCBypassPools), PoolDeployKeys: maps.Clone(cfg.AgentCCPoolDeployKeys)}
+		BypassPools: slices.Clone(cfg.AgentCCBypassPools), PoolDeployKeys: maps.Clone(cfg.AgentCCPoolDeployKeys),
+		EgressLockedPools: slices.Clone(cfg.AgentCCEgressLockedPools)}
 }

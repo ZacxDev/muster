@@ -185,6 +185,15 @@ func (f *fakeStore) ClaimKickoff(_ context.Context, id int64, owner string, ttl 
 	return true, nil
 }
 
+func (f *fakeStore) KickoffClaimHolder(_ context.Context, id int64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c, ok := f.claims[id]; ok && c.expires.After(time.Now()) {
+		return c.owner, nil
+	}
+	return "", nil
+}
+
 func (f *fakeStore) RenewKickoffClaim(_ context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

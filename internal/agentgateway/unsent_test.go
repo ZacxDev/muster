@@ -62,3 +62,48 @@ func TestAResolveFailureFromInsideATurnReadsAsUnsent(t *testing.T) {
 		t.Fatalf("a 500 after resolution: err=%v Unsent=%q; want an error that is NOT unsent", err, Unsent(err))
 	}
 }
+
+// TestLanesFullReadsOnlyCcdsTypedCapacityRefusal: LanesFull is true for ccd's
+// typed 503 `capacity` (a turn whose explicit session found no free slot) and
+// for nothing else — not an untyped 503, not a typed 503 not_ready, not a 409
+// busy. And the capacity refusal is NOT one of Unsent's reasons: adding it there
+// would change every unsolicited deliverer's handling (unsent.go says why).
+func TestLanesFullReadsOnlyCcdsTypedCapacityRefusal(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"typed capacity", http.StatusServiceUnavailable, `{"error":{"type":"capacity","message":"every Claude Code session ccd may run at once is mid-turn"}}`, true},
+		{"untyped 503", http.StatusServiceUnavailable, `upstream unavailable`, false},
+		{"typed not_ready", http.StatusServiceUnavailable, `{"error":{"type":"not_ready","message":"starting"}}`, false},
+		{"capacity type on a 409", http.StatusConflict, `{"error":{"type":"capacity","message":"x"}}`, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+			g, err := New(Config{Driver: &fixedResolver{ep: endpointOf(t, srv.URL)}, Runtime: HooksSHA256(), Model: testSentinel, Client: srv.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = g.Chat(context.Background(), fixtureAgent(), "s", "hi", nil)
+			if err == nil {
+				t.Fatal("the turn succeeded")
+			}
+			if got := LanesFull(err); got != c.want {
+				t.Fatalf("LanesFull(%v) = %v, want %v", err, got, c.want)
+			}
+			if c.want && Unsent(err) != "" {
+				t.Fatalf("Unsent(%v) = %q, want \"\" (capacity is deliberately not an Unsent reason)", err, Unsent(err))
+			}
+		})
+	}
+	if LanesFull(nil) {
+		t.Fatal("LanesFull(nil)")
+	}
+}

@@ -215,6 +215,23 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 			},
 		},
 		{
+			// A co-named Secret in the worker's namespace that muster did not
+			// copy (one copied there by hand) is refused, never overwritten.
+			site: "apply/key holder secret copy",
+			kind: "secret",
+			seed: func(cs *fake.Clientset) {
+				cs.CoreV1().Secrets("ops-home").Create(ctx, &corev1.Secret{ //nolint:errcheck
+					ObjectMeta: metav1.ObjectMeta{Name: "kh-key", Namespace: "ops-home"},
+					Data:       map[string][]byte{"ssh-privatekey": []byte("k")}}, metav1.CreateOptions{})
+				cs.CoreV1().Secrets(internalNS).Create(ctx, //nolint:errcheck
+					&corev1.Secret{ObjectMeta: internalForeignMeta("kh-key")}, metav1.CreateOptions{})
+			},
+			act: func(d *Driver) error {
+				d.cfg.SecretSourceNamespace = "ops-home"
+				return d.Create(ctx, copySpec("kh", "kh-key"))
+			},
+		},
+		{
 			// ⚠ THIS ROW REACHES UPDATE'S PRE-FLIGHT, NOT apply'S DEPLOYMENT
 			// UPSERT, and it used to be labelled "apply/deployment (via
 			// Update)" — a name for a site it never touches. Measured: mutating
@@ -467,12 +484,15 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			// itself — the classification network.go gives the same cause.
 			"ensureNamespace":     3,
 			"checkNamespaceOwned": 1,
-			"Scale":               1,
-			"Destroy":             1,
-			"List":                2,
-			"Get":                 1,
-			"podFor":              1,
-			"StreamLogs":          1,
+			// The read of the operator's SOURCE Secret, in muster's namespace:
+			// a read that cannot collide (secretcopy.go).
+			"copyKeyHolderSecrets": 1,
+			"Scale":                1,
+			"Destroy":              1,
+			"List":                 2,
+			"Get":                  1,
+			"podFor":               1,
+			"StreamLogs":           1,
 		},
 		// Every write that CAN collide returns through applyFailed, which is
 		// what keeps a permanent refusal out of ErrBlind. Six object kinds in
@@ -484,9 +504,12 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// calls: the default arm, and the arm for a 403 from a namespace that is
 		// still terminating (a transient). Every OTHER 403 does not come through
 		// here — networkPolicyForbidden names the verb instead.
-		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2},
+		//
+		// The key holder's Secret copy (secretcopy.go) has one: its 403 that is
+		// not a terminating namespace is named instead, as above.
+		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2, "copyKeyHolderSecrets": 1},
 		// The create-then-update-if-ours predicate.
-		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1},
+		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1, "copyKeyHolderSecrets": 1},
 		// The create-only-if-ours predicate: a bound claim, immutable in the
 		// fields that matter.
 		"createOwned": {"apply": 1},

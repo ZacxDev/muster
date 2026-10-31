@@ -1148,7 +1148,7 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Kinds != nil && s.ext.Agents != nil {
 		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 			if a, err := s.ext.Agents.Get(r.Context(), id); err == nil {
-				if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.ResolveKind(a.Kind)]; why != "" {
+				if why := s.agentStartRefusal(r.Context(), a); why != "" {
 					http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
 					return
 				}
@@ -1164,6 +1164,25 @@ func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
 		s.clearAgentWork(id)
 	}
 	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Stop(ctx, id) }, "stop")
+}
+
+// agentStartRefusal is why a start of agent a is refused for its caller, or ""
+// — 🔴 ONE RULE FOR EVERY DOOR THAT STARTS AN AGENT (the agent page's Start and
+// chief_restart, chief_restart_tool.go): a kind the caller has no credential
+// for (see handleAgentStart). Both doors then call the provisioner's own Start
+// (and chief_restart its Stop, after clearAgentWork, as handleAgentStop does):
+// the provisioner method is the lifecycle, so neither door re-implements it.
+//
+// ⚠ EACH DOOR CALLS s.ext.Provisioner ITSELF, deliberately, rather than through
+// a shared helper: provisioner_seam_test.go's walk needs the browser routes to
+// REACH an unguarded provisioner call (their requireLifecycleProvisioner is what
+// refuses on a nil provisioner — a nil-safe helper would let the route answer 200
+// and fail in the background), and the MCP door to nil-check in its own body.
+func (s *Server) agentStartRefusal(ctx context.Context, a agents.Agent) string {
+	if s.ext.Kinds == nil {
+		return ""
+	}
+	return s.ext.Kinds.Unavailable(ctx, callerID(ctx))[agents.ResolveKind(a.Kind)]
 }
 
 // agentLifecycle runs a start/stop action in the background and answers an
