@@ -52,7 +52,7 @@ const (
 	// HeaderCCEphemeral (internal/api withRoute): the check's prompt quotes other
 	// sessions' transcripts, and a CLI with tools could be steered by them. Fixed
 	// for the session's life. A ccd that predates it IGNORES it and starts the
-	// CLI with the chief's full tool set — restart the chief on a current image.
+	// CLI with the chief's full tool set (docs/chief-nudges.md, "Rolling out").
 	HeaderCCToolless = "X-Muster-CC-Toolless"
 )
 

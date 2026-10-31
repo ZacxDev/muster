@@ -33,28 +33,33 @@ each one is checked again when it would be pasted, and a nudge whose owner is no
 longer live, or whose feature is off, fails with *Not sent: chief nudges are
 off, or in shadow mode for you, on this server* and is never pasted.
 
-**Rolling out.** A `claude-code` chief runs each check in a throwaway lane only
-if its pod's ccd knows the throwaway mark (`X-Muster-CC-Ephemeral`), which ships
-in the same release as the `claude-code-agent` image. An older ccd ignores the
-mark and keeps every check's CLI, and at its lane cap stops an idle one to start
-the next — which can be one of your own sessions (see **Limits**). muster does
-not detect that. So, as part of rolling out this muster: **restart the chief
-onto the new `claude-code-agent` image BEFORE setting (or re-enabling)
-`MUSTER_CHIEF_NUDGES`**, and leave the feature off while any chief pod still
-runs an older image.
+### Rolling out
 
-The same restart is what makes a check **tool-less** (`X-Muster-CC-Toolless`,
-below). **This is rollout discipline, not something muster enforces:** an older
-ccd ignores the header and the check's lane keeps the chief's full tool set —
-its built-in tools and muster's MCP tools — and muster neither detects that nor
-holds the check back. So after deploying this muster:
+This is the one place the rollout steps are written down; the other docs and
+the code comments link here.
+
+A `claude-code` chief runs each check in a lane that is **throwaway**
+(`X-Muster-CC-Ephemeral`) and **tool-less** (`X-Muster-CC-Toolless`,
+[below](#a-check-cannot-call-tools)) only if its pod's ccd knows those marks,
+and that ccd ships in the same release as the `claude-code-agent` image. An
+older ccd ignores both: it keeps every check's CLI, at its lane cap stops an
+idle one to start the next — which can be one of your own sessions (see
+[Limits](#limits)) — and starts each check's CLI with the chief's full tool
+set, its built-in tools and muster's MCP tools. muster neither detects that
+nor holds the check back: **this is rollout discipline, not something muster
+enforces.** So after deploying this muster:
 
 1. restart the chief onto the new `claude-code-agent` image (the chief can do
    it itself with the `chief_restart` MCP tool);
-2. confirm the chief pod's ccd `/healthz` says `"toolless_lanes": true` (an
-   older ccd has no such field);
-3. only then rely on checks being tool-less: turn on (or re-enable)
-   `MUSTER_CHIEF_NUDGES` after this, not before.
+2. confirm the chief pod's ccd `/healthz` says `"toolless_lanes": true` at
+   its top level (an older ccd has no such field);
+3. only then turn on (or re-enable) `MUSTER_CHIEF_NUDGES`, and leave it off
+   while any chief pod still runs an older image.
+
+Nudges are already on in the current deployment, so there the protection
+starts only once `MUSTER_AGENT_CC_IMAGE` has been bumped to the new image
+**and** the chief has been restarted onto it: do both as part of the same
+rollout.
 
 While a check runs, its lane also shows on `/healthz` with `"toolless": true`.
 
@@ -289,9 +294,8 @@ What this covers, and what it does not:
 - A `gateway` chief has no lanes and is **not** tool-less: its check runs in a
   gateway session of its own with whatever tools that runtime gives it.
 - A chief pod running a ccd older than this muster ignores the mark and the
-  check's lane keeps its tools; muster does not detect or prevent that. The
-  rollout steps under **Rolling out** (restart the chief, confirm
-  `"toolless_lanes": true`) are what close it.
+  check's lane keeps its tools; muster does not detect or prevent that.
+  [Rolling out](#rolling-out) is what closes it.
 
 ## The guards
 
@@ -415,8 +419,8 @@ your relayed answer.
   stops the least recently used idle lane to start a new one, which can be one
   of your own sessions (resumed from its transcript on its next turn, with a
   cold start). It also ignores the tool-less mark, so each check's CLI has the
-  chief's full tool set. muster does not detect either. Restarting the chief on
-  the current image ends both — see **Rolling out** above.
+  chief's full tool set. muster does not detect either. See
+  [Rolling out](#rolling-out).
 - A `gateway` chief's checks are not tool-less (above).
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.

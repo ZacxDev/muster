@@ -848,9 +848,8 @@ func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) strin
 // ⚠ VERSION SKEW, TOOLS: a ccd that predates agents.HeaderCCToolless ignores it
 // and starts the check's CLI with the chief's full tool set (built-ins and
 // muster's MCP tools), and muster does not detect it: tool-lessness is
-// ROLLOUT DISCIPLINE (operator decision), not enforced here. Restart the
-// chief on the current image (chief_restart) and confirm ccd's /healthz says
-// `"toolless_lanes": true` before turning nudges on.
+// ROLLOUT DISCIPLINE (operator decision), not enforced here. The steps are in
+// docs/chief-nudges.md, "Rolling out".
 //
 // ⚠ VERSION SKEW: a ccd that predates agents.HeaderCCEphemeral ignores it and
 // keeps the check's CLI like any session's. At its cap it then stops the least

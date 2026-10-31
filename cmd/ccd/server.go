@@ -987,8 +987,9 @@ type health struct {
 	Repo *checkoutState `json:"repo,omitempty"`
 	// ToollessLanes says this ccd honours X-Muster-CC-Toolless (lanes.go "A
 	// CHECK LANE HAS NO TOOLS"), for an operator to read by hand after
-	// restarting a chief onto a new image: a ccd that predates it has no such
-	// field, and would start a check's CLI with every tool. True whenever ccd
+	// restarting a chief onto a new image (docs/chief-nudges.md, "Rolling
+	// out"): a ccd that predates it has no such field, and would start a
+	// check's CLI with every tool. True whenever ccd
 	// runs lanes (one with none refuses every session turn anyway). Reported,
 	// never gating; muster does not read it.
 	ToollessLanes bool `json:"toolless_lanes,omitempty"`
