@@ -19,6 +19,8 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -107,14 +109,18 @@ func newNudgeFixture(t *testing.T, live bool) *nudgeFixture {
 	if live {
 		f.cfg.Live[authz.OperatorUserID] = true
 	}
+	store := &nudgeAgents{}
 	f.attnFixture = newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		f.nudges, f.queue = chiefnudge.NewPG(pool), sendqueue.NewPG(pool)
 		ext.ChiefNudges, ext.ChiefNudge, ext.SendQueue, ext.Gateway = f.nudges, f.cfg, f.queue, f.gw
+		store.Store = ext.Agents
+		ext.Agents = store
 	})
 	f.gw.set(nudgeReply(nudgeOwnerID, "keep going until merged", "merge the pull request"))
 	f.mirror.windows = []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Label: "Gold:1", Claude: true,
 		ClaudeSession: nudgeSID, Status: mirror.StatusIdle, StatusSince: nudgeSince}}
 	f.idle(20 * time.Minute)
+	store.hideChiefsOf(t, authz.OperatorUserID)
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	f.boss = f.agentFor(t, authz.OperatorUserID, "nudgechief-"+suffix, "chief", "nudge-chief-tok-"+suffix)
 	f.script = []chiefnudge.Msg{
@@ -140,6 +146,67 @@ func newNudgeFixture(t *testing.T, live bool) *nudgeFixture {
 		}
 	})
 	return f
+}
+
+// nudgeAgents is the nudge fixture's agent store: the real one, with every
+// agent the owner already had labelled chief left out of List.
+//
+// 🔴 THE FIXTURE'S BOSS MUST BE THE OWNER'S ONLY CHIEF, and the package's
+// shared database need not agree: a run cut short leaves its rows behind
+// (agent_destroy_pg_test.go reuses the reserved slug `chief` rather than
+// removing it), and chiefAgent resolves the LOWEST-id agent labelled chief, so
+// any such row outranks the boss made here — the boss turns into a nudge
+// candidate and every expectation breaks. Those rows are another test's (or a
+// live reproduction), and the tests relabel and delete the boss, so the
+// fixture neither adopts nor alters them: it stops the server SEEING them.
+// Only List is filtered, which is the one read the chief is resolved from
+// (chiefAgent, chiefPredicate, chiefOn).
+type nudgeAgents struct {
+	agents.Store
+	mu     sync.Mutex
+	hidden map[int64]bool
+}
+
+func (s *nudgeAgents) List(ctx context.Context) ([]agents.Agent, error) {
+	list, err := s.Store.List(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := list[:0:0]
+	for _, a := range list {
+		if !s.hidden[a.ID] {
+			out = append(out, a)
+		}
+	}
+	return out, err
+}
+
+// hideChiefsOf hides every agent owner has now that chiefAgent's own rule
+// (resolveChief) would pick, one after another until it picks none. Called
+// before the boss is made, so the boss is never among them.
+func (s *nudgeAgents) hideChiefsOf(t *testing.T, owner int64) {
+	t.Helper()
+	list, err := s.Store.List(asUser(owner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list = ownedBy(list, owner)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hidden = map[int64]bool{}
+	for {
+		c, ok := resolveChief(list)
+		if !ok {
+			return
+		}
+		s.hidden[c.ID] = true
+		kept := list[:0]
+		for _, a := range list {
+			if a.ID != c.ID {
+				kept = append(kept, a)
+			}
+		}
+		list = kept
+	}
 }
 
 // idle puts the window idle for d on muster's clock, in streak nudgeSince.
@@ -241,6 +308,49 @@ func (f *nudgeFixture) tick(t *testing.T) {
 	f.srv.sendQueueClock = func() time.Time { return time.Now().Add(time.Hour) }
 	if _, err := f.srv.newSendQueueDispatcher().Tick(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestNudgeFixtureBossOutranksAnOlderChiefInTheDatabase is the fixture's own
+// guard: an agent the operator already has labelled chief — what a run cut
+// short leaves in the package's shared database — has a LOWER id than the
+// fixture's boss, so chiefAgent would resolve it. The fixture's boss is still
+// the chief that is asked, it is not itself a candidate (one decision, for the
+// window), and the older row is left exactly as it was.
+func TestNudgeFixtureBossOutranksAnOlderChiefInTheDatabase(t *testing.T) {
+	dsn := dbtest.DSN(t)
+	pool, err := db.Connect(dbtest.AsOperator(context.Background()), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	name := "nudgeleftover-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	old, err := agents.NewPG(pool).Create(asUser(authz.OperatorUserID), agents.Agent{Name: name, Namespace: "devpod-" + name,
+		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "nudge-leftover-tok-" + name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, old.ID)
+	})
+
+	f := newNudgeFixture(t, false)
+	if old.ID >= f.boss.ID {
+		t.Fatalf("the planted chief %d does not outrank the boss %d: the case is not built", old.ID, f.boss.ID)
+	}
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d, want 1 (the window): %+v", n, f.decisions(t))
+	}
+	if d := f.one(t); d.Kind != chiefnudge.KindMirror || d.Key != nudgeSID {
+		t.Fatalf("decided %+v, want the window %s", d, nudgeSID)
+	}
+	checks, _ := f.gw.seen()
+	if len(checks) != 1 || !strings.HasPrefix(checks[0], f.boss.Name+" ") {
+		t.Fatalf("chief calls %v, want one by the boss %s", checks, f.boss.Name)
+	}
+	got, err := agents.NewPG(pool).Get(asUser(authz.OperatorUserID), old.ID)
+	if err != nil || got.DisplayName != "chief" || got.Name != name {
+		t.Fatalf("the older chief was altered: %+v, %v", got, err)
 	}
 }
 
