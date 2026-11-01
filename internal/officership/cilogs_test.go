@@ -310,9 +310,13 @@ func TestCILogsRespectsTheByteCap(t *testing.T) {
 	if total > r.Config.MaxBytes || total < r.Config.MaxBytes/2 {
 		t.Fatalf("excerpts total %d bytes; cap %d (and it should be used, not wasted)", total, r.Config.MaxBytes)
 	}
-	// Excerpt alone, at a budget that lands inside a multi-byte character.
+	// Excerpt alone, at every budget up to 200 bytes, so some land inside a
+	// multi-byte character. A 40-line log suffices (and keeps this loop cheap:
+	// over the 5000-line one it took ~10 s locally and ~10 min under CI's
+	// coverage run).
+	small := strings.Join(strings.SplitAfterN(big.String(), "\n", 41)[:40], "")
 	for cap := 1; cap < 200; cap++ {
-		ex, _ := Excerpt(big.String(), cap)
+		ex, _ := Excerpt(small, cap)
 		if len(ex) > cap || !utf8.ValidString(ex) {
 			t.Fatalf("Excerpt(cap %d) = %d bytes, valid %v", cap, len(ex), utf8.ValidString(ex))
 		}
