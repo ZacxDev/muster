@@ -371,15 +371,44 @@ func (c *Client) PostTranscript(ctx context.Context, item ItemID, instance strin
 // tokenWithheld is what Scrub writes in place of the officer token.
 const tokenWithheld = "[officer token withheld]"
 
-// Scrub is s with every occurrence of the officer's own token replaced. It is
-// how text built from an instance's session (which could echo anything) is
-// cleared of the one credential this client holds, without the token leaving
-// the client: a shape-based secret filter cannot know an opaque token's shape.
+// Scrub is s with every occurrence of the officer's own token replaced — and
+// every word a cap cut short ("…" right after it) that ends in the token's
+// first 4 or more bytes. It is how text built from an instance's session
+// (which could echo anything) is cleared of the one credential this client
+// holds, without the token leaving the client: a shape-based secret filter
+// cannot know an opaque token's shape. (officership.RedactCutTail is the same
+// cut rule for the token SHAPES; it cannot be given this token.)
 func (c *Client) Scrub(s string) string {
-	if t := c.officer.Token(); t != "" && strings.Contains(s, t) {
-		return strings.ReplaceAll(s, t, tokenWithheld)
+	t := c.officer.Token()
+	if t == "" {
+		return s
 	}
-	return s
+	s = strings.ReplaceAll(s, t, tokenWithheld)
+	const cut = "…"
+	if !strings.Contains(s, cut) || len(t) < 8 {
+		return s
+	}
+	var b strings.Builder
+	for rest := s; ; {
+		j := strings.Index(rest, cut)
+		if j < 0 {
+			b.WriteString(rest)
+			break
+		}
+		before := rest[:j]
+		k := strings.LastIndexAny(before, " \t\n\"'=:") + 1
+		word := before[k:]
+		for i := 0; len(word)-i >= 4; i++ {
+			if strings.HasPrefix(t, word[i:]) {
+				before = before[:k] + word[:i] + tokenWithheld
+				break
+			}
+		}
+		b.WriteString(before)
+		b.WriteString(cut)
+		rest = rest[j+len(cut):]
+	}
+	return b.String()
 }
 
 // --- the release captain route (POST /releases/captain) ---------------------

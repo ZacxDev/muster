@@ -136,17 +136,22 @@ func TestAReclaimByAnotherInstanceLandsAboveHQsLastSeq(t *testing.T) {
 	r.src.others = map[string]*fakeSource{two: other}
 	item := r.claim()
 	r.fwd.Claimed(r.o, instance, officers.ItemID(item))
-	for i := 0; i < 10; i++ {
+	// Two lines from instance one; five from instance two, whose first two
+	// offsets fall at or below HQ's last_seq and the rest above it: a batch
+	// that STRADDLES HQ's last_seq, which HQ would store only in part.
+	for i := 0; i < 2; i++ {
 		r.src.add(at(1), text("instance one"))
 	}
 	r.tick()
 	r.fwd.Ended(r.o, instance, officers.ItemID(item))
 	r.hq.SetClaim(item, two, r.now.Add(time.Hour))
 	r.fwd.Claimed(r.o, two, officers.ItemID(item))
-	other.add(at(2), text("instance two"))
+	for i := 0; i < 5; i++ {
+		other.add(at(2), text("instance two "+itoa(i)))
+	}
 	r.advance(3 * time.Second)
 	got := stored(r, item)
-	if len(got) != 11 || got[10].Text != "instance two" || got[10].Instance != two {
+	if len(got) != 7 || got[6].Text != "instance two 4" || got[2].Text != "instance two 0" || got[6].Instance != two {
 		t.Fatalf("stored %q (log: %s)", texts(got), r.log)
 	}
 }
@@ -161,7 +166,7 @@ func TestATooLargeAnswerDropsTheBatchAndHalvesTheNext(t *testing.T) {
 	r.tick() // the probe
 	before := counter(t, "dropped_too_large")
 	r.hq.FailTranscript(http.StatusRequestEntityTooLarge, 1, false)
-	for i := 0; i < 150; i++ {
+	for i := 0; i < 250; i++ {
 		r.src.add(at(1), text("e"+itoa(i)))
 	}
 	r.tick()
@@ -175,7 +180,7 @@ func TestATooLargeAnswerDropsTheBatchAndHalvesTheNext(t *testing.T) {
 		}
 	}
 	got := stored(r, item)
-	if len(got) != 50 || got[0].Text != "e100" {
+	if len(got) != 150 || got[0].Text != "e100" {
 		t.Fatalf("stored %d events after the 413, first %+v", len(got), got)
 	}
 	if len(r.fwd.Active()) != 1 {

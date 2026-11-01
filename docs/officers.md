@@ -967,6 +967,10 @@ the officer's token:
 
 HQ answers `{"stored": n, "last_seq": s}`; it skips a `seq` at or below its
 highest stored (idempotent). At most 100 events a call and 8 KiB a text.
+Before the first events for an item, muster sends one post with
+`"events": []` to learn HQ's `last_seq` for it (the PROBE); an HQ that answers
+that with 400 is handled (muster then sends without it), but loses the
+resume and re-claim handling below.
 
 | transcript entry | `kind` | `text` |
 |---|---|---|
@@ -978,11 +982,17 @@ highest stored (idempotent). At most 100 events a call and 8 KiB a text.
 
 **When.** `officer_claim` succeeding starts forwarding for that item, from the
 claim on (the first read takes the tail and keeps the lines written since the
-claim, less a 5 s clock slack). `officer_complete` or `officer_release`
-succeeding stops it. Every wake-loop pass also reconciles: an item one of the
-officer's instances holds under a live lease that muster is not forwarding
-(after a muster restart) is RESUMED from a 256 KiB backfill window, and
-forwarding stops for an item no instance holds any more. HQ answering a
+claim, less a 5 s clock slack; a line with no timestamp there is not sent).
+`officer_complete` or `officer_release` succeeding stops it. Every wake-loop
+pass also reconciles: an item one of the officer's instances holds under a
+live lease that muster is not forwarding is RESUMED, and forwarding stops for
+an item no instance holds any more. A resume after a muster restart re-reads a
+256 KiB backfill window and sends only what is above HQ's `last_seq` (the
+probe); when HQ holds NOTHING for the item, that window is the instance's
+earlier work, not this item's, and the resume starts live instead. A resume
+of an instance this muster has already forwarded for (it held another item,
+completed one) always starts live: what its transcript holds since is another
+item's. HQ answering a
 decision — 409 `not_claimed` (the item is not this instance's), 409
 `officer_disabled`, 404, 401/403 — stops forwarding for that item; a pass does
 not restart it until a new claim (or until the item leaves the held list). An
@@ -993,8 +1003,16 @@ replaced (`officers.Client.Scrub` — a shape filter cannot know an opaque
 token); the CI-log secret filter (`officership.RedactText`, the same
 `RedactLines` `officer_ci_logs` uses: a line that looks like it carries a
 credential is withheld whole, a PEM block is withheld from BEGIN to END, a URL's
-userinfo is masked); the 8 KiB cut, marked `… [truncated N bytes]`. Transcript
-text is never logged.
+userinfo is masked; it knows GitHub, GitLab `glpat-`, AWS `AKIA`/`ASIA` and
+`aws_secret_access_key`, Slack `xox?-`, Stripe `sk_`/`rk_` live/test, Google
+`AIza…`, Hugging Face `hf_`, npm `npm_`, PyPI `pypi-`, `sk-`/`sk-proj-`/`sk-ant-`
+and JWT shapes, and a kubeconfig's `client-key-data`/`client-certificate-data`);
+then a line in which a word cut by a cap (`…` right after it — `ccd` caps long
+fields before they reach muster) starts like one of those shapes is withheld
+(`officership.RedactCutTail`), and a cut word ending in the officer token's
+first bytes has that part replaced (`Client.Scrub`, which runs first); only then the 8 KiB cut, marked `… [truncated N bytes]`. No
+cut of muster's own happens before the filters. Transcript text is never
+logged.
 
 **`seq`** is the event's position in the transcript FILE: the end offset of
 its line × 32768 + its index within the line (15 bits: ccd never serves a
@@ -1007,21 +1025,32 @@ operator's `/clear`; `ccd` resumes the primary's own conversation by id on a
 restart) is shifted above the seqs before it; a muster that restarts INTO such
 a conversation has lost that shift, sees HQ answer `stored: 0` with a
 `last_seq` above a batch it read live, and re-sequences that batch and the ones
-after it above `last_seq`. What that double edge can lose is the part of the
-resume's window HQ skipped as old.
+after it above `last_seq` — on a batch's FIRST send only: a re-send answered
+`stored: 0` is a lost acknowledgement (HQ committed, then failed to answer)
+and is NOT re-sequenced, so it is stored once. What that double edge can lose
+is the part of the resume's window HQ skipped as old. A batch whose seqs are
+not above HQ's `last_seq` from the probe — a RE-CLAIM of the item by another
+instance, whose transcript is its own file with its own offsets — is shifted
+above it rather than skipped (HQ's `last_seq` is per item).
 
 **Cadence and back-pressure.** Each forwarding instance is read and posted
 every 2 s, in batches of at most 100. An HQ outage (5xx, 429, no answer) backs
 off — 2 s doubling to 1 min — and a batch is dropped after 5 failed re-sends.
-A 400 drops the batch. The forwarder never blocks the officer: the officer
+A 400 drops the batch. A 413 drops that batch and halves the batch size for
+the rest of the item. The forwarder never blocks the officer: the officer
 tools and the wake loop only record state; reads and posts run on the
 forwarder's own loop. Each instance's buffer holds at most 1000 events
 waiting for HQ; past that the OLDEST are dropped. Every drop is logged and
-counted on `muster_officer_transcript_events_total{result}` (`posted`,
-`dropped_buffer`, `dropped_retries`, `dropped_refused`, `dropped_superseded`,
-`dropped_unsequenced`).
+counted on `muster_officer_transcript_events_total{result}`: `posted` (what HQ
+answered as STORED), `skipped_by_hq` (sent, HQ already held it — a re-send
+after a lost answer), `skipped_resume` (a resume's re-read HQ already held, or
+earlier work), `dropped_buffer`, `dropped_retries`, `dropped_refused` (400),
+`dropped_too_large` (413), `dropped_superseded`, `dropped_unsequenced`.
 
-**Deploy order.** `MUSTER_OFFICERS` refuses an unknown field, so the
+**Deploy order.** HQ's transcript route must be LIVE before `transcript` is
+enabled: an HQ without it answers 404, which muster reads as a decision and
+stops forwarding for that item (until its next claim) — every item, quietly.
+`MUSTER_OFFICERS` refuses an unknown field, so the
 `transcript` key must reach a deployment only with (or after) a muster image
 that knows it — the other way round, muster-server refuses to boot. The
 instance pods need a `ccd` that serves `GET /v1/transcript`: an older pod

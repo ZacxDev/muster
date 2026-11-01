@@ -142,6 +142,9 @@ const (
 	resultRefused      = "dropped_refused"
 	resultSuperseded   = "dropped_superseded"
 	resultUnsequenced  = "dropped_unsequenced"
+	resultTooLarge     = "dropped_too_large"
+	resultSkippedByHQ  = "skipped_by_hq"
+	resultSkipResume   = "skipped_resume"
 	truncatedMarkerFmt = "… [truncated %d bytes]"
 )
 
@@ -160,6 +163,11 @@ type Forwarder struct {
 	// restarted by a pass until a new claim, or until the item leaves the
 	// held list.
 	stopped map[key]bool
+	// seen is every instance this forwarder has had a worker for. A resume
+	// of an instance it has SEEN starts live: what the transcript holds since
+	// it last forwarded is another item's work (it claimed another, or
+	// completed one), not this one's.
+	seen map[string]bool
 }
 
 type key struct {
@@ -196,9 +204,20 @@ type worker struct {
 	// maxSeq is the highest seq this worker has assigned.
 	maxSeq int64
 	// replayMax is the highest seq its FIRST read (a claim's or a resume's
-	// window) assigned: a batch above it was read live.
-	replayMax   int64
-	reads       int
+	// window) assigned.
+	replayMax int64
+	reads     int
+	// resume: this worker began on a pass's view of a held item, not on a
+	// claim. probed: HQ's last_seq for the item is known (floor), learned by
+	// an empty post before the first events are sent.
+	resume bool
+	probed bool
+	floor  int64
+	// ackedOwn is the highest seq of this worker's own events HQ has
+	// answered for.
+	ackedOwn int64
+	// batchMax is the most events one post carries (halved by a 413).
+	batchMax    int
 	failures    int
 	nextAt      time.Time
 	readFailing bool
@@ -236,7 +255,7 @@ func New(cfg Config) (*Forwarder, error) {
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = DefaultRequestTimeout
 	}
-	return &Forwarder{cfg: cfg, log: cfg.Logger, now: cfg.Now, workers: map[string]*worker{}, stopped: map[key]bool{}}, nil
+	return &Forwarder{cfg: cfg, log: cfg.Logger, now: cfg.Now, workers: map[string]*worker{}, stopped: map[key]bool{}, seen: map[string]bool{}}, nil
 }
 
 // ClaimSlack is how far before a claim's own time its first read reaches: the
@@ -251,6 +270,9 @@ const ClaimSlack = 5 * time.Second
 // between the claim and the forwarder's next tick is lost. An instance already
 // forwarding another item switches to this one, keeping its place in the
 // transcript.
+//
+// An untimed line in that first read cannot be shown to follow the claim and
+// is not sent.
 func (f *Forwarder) Claimed(o officers.Officer, instance string, item officers.ItemID) {
 	if !o.TranscriptEnabled() {
 		return
@@ -267,7 +289,8 @@ func (f *Forwarder) Claimed(o officers.Officer, instance string, item officers.I
 		return
 	}
 	f.workers[instance] = &worker{o: o, instance: instance, item: item, since: now, cursor: -1, backfill: f.cfg.Backfill,
-		notBefore: now.Add(-ClaimSlack)}
+		notBefore: now.Add(-ClaimSlack), batchMax: officers.MaxTranscriptEvents}
+	f.seen[instance] = true
 }
 
 // Ended is officer_complete or officer_release succeeding: the item is no
@@ -333,7 +356,13 @@ func (f *Forwarder) Sync(o officers.Officer, claimed []officers.Item, at time.Ti
 			if f.stopped[key{o.ID, inst, item}] {
 				continue
 			}
-			f.workers[inst] = &worker{o: o, instance: inst, item: item, since: f.now(), cursor: -1, backfill: f.cfg.Backfill}
+			backfill := f.cfg.Backfill
+			if f.seen[inst] {
+				backfill = 0 // live: see Forwarder.seen
+			}
+			f.workers[inst] = &worker{o: o, instance: inst, item: item, since: f.now(), cursor: -1, backfill: backfill, resume: true,
+				batchMax: officers.MaxTranscriptEvents}
+			f.seen[inst] = true
 			f.log.Printf("officers: %s: forwarding instance %s's transcript for item %s to HQ (resumed: the instance holds it)", o.ID, inst, item)
 			break
 		}
@@ -405,6 +434,7 @@ func (f *Forwarder) step(ctx context.Context, w *worker) {
 		// A new item: what was buffered for the old one is not sent to it.
 		f.count(resultSuperseded, len(w.buf))
 		w.buf, w.lastSeq, w.failures, w.nextAt, w.seenGen, w.replayMax = nil, 0, 0, time.Time{}, gen, 0
+		w.probed, w.resume, w.floor, w.ackedOwn = false, false, 0, 0
 	}
 	f.read(ctx, w)
 	f.flush(ctx, w, item, gen)
@@ -452,9 +482,9 @@ func (f *Forwarder) read(ctx context.Context, w *worker) {
 		at := now
 		if l.At > 0 {
 			at = time.UnixMilli(l.At)
-			if at.Before(notBefore) {
-				continue // the instance's work before this claim
-			}
+		}
+		if !notBefore.IsZero() && (l.At <= 0 || at.Before(notBefore)) {
+			continue // the instance's work before this claim (or not shown to follow it)
 		}
 		for i, ev := range l.Events {
 			kind, text, ok := mapEvent(ev)
@@ -491,40 +521,81 @@ func (f *Forwarder) read(ctx context.Context, w *worker) {
 	}
 }
 
-// flush posts w's buffer in batches of at most MaxTranscriptEvents.
+// flush posts w's buffer in batches of at most batchMax (MaxTranscriptEvents,
+// halved by each 413) — after, once per item, the PROBE: an empty post
+// whose answer is HQ's last_seq for the item (the floor).
+//
+//   - A RESUME drops what HQ already holds (seq at or below the floor); with
+//     nothing at HQ (floor 0) it drops the whole first read, which is the
+//     instance's EARLIER work (the claim's own time is unknown), and starts
+//     live.
+//   - Any batch whose seqs are not above the floor — a re-claim by ANOTHER
+//     instance (its own transcript, offsets from zero), or a conversation
+//     this restarted forwarder did not see begin — is shifted above it, with
+//     everything after it, instead of being skipped as old.
+//   - A probe HQ refuses with 400 (an HQ that does not take an empty post)
+//     leaves the floor at 0 and a resume starting live; the heal below still
+//     covers a shifted file.
 func (f *Forwarder) flush(ctx context.Context, w *worker, item officers.ItemID, gen int) {
 	now := f.now()
 	if now.Before(w.nextAt) {
 		return
 	}
+	if !w.probed && !f.probe(ctx, w, item, gen, now) {
+		return
+	}
 	for posts := 0; len(w.buf) > 0 && posts < f.cfg.MaxPostsPerTick; posts++ {
-		n := min(len(w.buf), officers.MaxTranscriptEvents)
+		n := min(len(w.buf), max(w.batchMax, 1))
+		if w.buf[0].Seq <= w.floor {
+			f.resequence(w, w.floor-w.buf[0].Seq+1)
+		}
 		batch := w.buf[:n]
+		first := w.failures == 0
 		pctx, cancel := context.WithTimeout(ctx, f.cfg.RequestTimeout)
 		ack, err := f.cfg.Poster.Post(pctx, w.o, item, w.instance, batch)
 		cancel()
 		var hqErr *officers.HQError
 		switch {
-		case err == nil && ack.Stored == 0 && ack.LastSeq >= batch[n-1].Seq && batch[0].Seq > w.replayMax:
-			// A LIVE batch HQ skipped whole as old: HQ's seqs for this item came
-			// from a shifted file this (restarted) forwarder never saw. Move it
-			// and everything after it above HQ's last_seq and send it again.
-			delta := ack.LastSeq - batch[0].Seq + 1
-			for i := range w.buf {
-				w.buf[i].Seq += delta
-			}
-			w.shift += delta
-			w.maxSeq += delta
-			f.log.Printf("officers: %s: instance %s: HQ holds item %s's transcript past this position (a new conversation before muster restarted); re-sequenced above %d",
+		case err == nil && first && ack.Stored == 0 && ack.LastSeq >= batch[n-1].Seq && ack.LastSeq > w.ackedOwn:
+			// A batch's FIRST send, skipped whole, with HQ past every seq this
+			// worker ever had answered: HQ's seqs for the item came from a file
+			// this forwarder never saw (a new conversation before a restart,
+			// with no usable probe). Move it and everything after it above
+			// HQ's last_seq and send it again. NOT on a re-send: a re-send
+			// answered stored 0 is a lost acknowledgement (HQ committed, then
+			// failed to answer), and re-sequencing it would duplicate it.
+			// (ackedOwn is defence in depth: no path today re-sends a batch HQ
+			// answered as a FIRST send, so the first-send rule alone decides —
+			// a mutation removing ackedOwn survives the suite for that reason.)
+			f.resequence(w, ack.LastSeq-batch[0].Seq+1)
+			w.floor = max(w.floor, ack.LastSeq)
+			f.log.Printf("officers: %s: instance %s: HQ holds item %s's transcript past this position; re-sequenced above %d",
 				w.o.ID, w.instance, item, ack.LastSeq)
 		case err == nil:
-			f.count(resultPosted, n)
+			stored := min(max(ack.Stored, 0), n)
+			f.count(resultPosted, stored)
+			if skipped := n - stored; skipped > 0 {
+				f.count(resultSkippedByHQ, skipped)
+				f.log.Printf("officers: %s: instance %s: HQ already held %d of a transcript batch of %d for item %s (a re-send after a lost answer, or a resume)",
+					w.o.ID, w.instance, skipped, n, item)
+			}
 			w.lastSeq = max(w.lastSeq, batch[n-1].Seq, ack.LastSeq)
+			w.ackedOwn = max(w.ackedOwn, batch[n-1].Seq)
 			w.buf = w.buf[n:]
 			w.failures, w.nextAt = 0, time.Time{}
+		case errors.As(err, &hqErr) && hqErr.Status == http.StatusRequestEntityTooLarge:
+			// Too large for HQ: drop THAT batch, send the rest at half the size
+			// (for the rest of this item: HQ's size limit does not shrink).
+			f.count(resultTooLarge, n)
+			w.buf = w.buf[n:]
+			w.batchMax = max(n/2, 1)
+			w.failures = 0
+			f.log.Printf("officers: %s: instance %s: HQ answered 413 to a transcript batch of %d for item %s; dropped, next batches at most %d",
+				w.o.ID, w.instance, n, item, w.batchMax)
 		case errors.As(err, &hqErr) && hqErr.Status == http.StatusBadRequest:
 			f.count(resultRefused, n)
 			w.buf = w.buf[n:]
+			w.failures = 0
 			f.log.Printf("officers: %s: instance %s: HQ refused a transcript batch of %d for item %s (400%s); dropped",
 				w.o.ID, w.instance, n, item, hqCode(hqErr))
 		case errors.As(err, &hqErr) && hqErr.Status != http.StatusTooManyRequests:
@@ -548,6 +619,60 @@ func (f *Forwarder) flush(ctx context.Context, w *worker, item officers.ItemID, 
 			return
 		}
 	}
+}
+
+// probe learns HQ's last_seq for item (an empty post) and applies it to a
+// resume's first read (flush's doc). It reports whether posting may go on.
+func (f *Forwarder) probe(ctx context.Context, w *worker, item officers.ItemID, gen int, now time.Time) bool {
+	pctx, cancel := context.WithTimeout(ctx, f.cfg.RequestTimeout)
+	ack, err := f.cfg.Poster.Post(pctx, w.o, item, w.instance, []officers.TranscriptEvent{})
+	cancel()
+	var hqErr *officers.HQError
+	switch {
+	case err == nil:
+		w.floor = max(ack.LastSeq, 0)
+	case errors.As(err, &hqErr) && hqErr.Status == http.StatusBadRequest:
+		w.floor = 0
+		f.log.Printf("officers: %s: instance %s: HQ does not answer an empty transcript post for item %s (400%s); sending without its last_seq",
+			w.o.ID, w.instance, item, hqCode(hqErr))
+	case errors.As(err, &hqErr) && hqErr.Status != http.StatusTooManyRequests && hqErr.Status != http.StatusRequestEntityTooLarge:
+		f.log.Printf("officers: %s: instance %s: stopped forwarding item %s's transcript: HQ answered %d%s",
+			w.o.ID, w.instance, item, hqErr.Status, hqCode(hqErr))
+		f.stop(w, gen, item)
+		return false
+	default:
+		w.failures++
+		w.nextAt = now.Add(f.backoff(w.failures))
+		return false
+	}
+	w.probed, w.failures, w.nextAt = true, 0, time.Time{}
+	if w.resume {
+		drop := w.floor
+		if drop == 0 {
+			drop = w.replayMax // nothing at HQ: the first read is earlier work
+		}
+		kept := w.buf[:0]
+		skipped := 0
+		for _, e := range w.buf {
+			if e.Seq <= drop {
+				skipped++
+				continue
+			}
+			kept = append(kept, e)
+		}
+		w.buf = kept
+		f.count(resultSkipResume, skipped)
+	}
+	return true
+}
+
+// resequence moves every buffered seq, and every later one, up by delta.
+func (f *Forwarder) resequence(w *worker, delta int64) {
+	for i := range w.buf {
+		w.buf[i].Seq += delta
+	}
+	w.shift += delta
+	w.maxSeq += delta
 }
 
 func (f *Forwarder) backoff(failures int) time.Duration {
@@ -585,10 +710,6 @@ func hqCode(e *officers.HQError) string {
 
 // --- mapping -----------------------------------------------------------------
 
-// maxToolArgs bounds a tool_use's argument summary when the call has no
-// one-line target.
-const maxToolArgs = 200
-
 // mapEvent is THE mapping from a transcript event to the contract's kinds:
 // the human's prompt → user; assistant text → assistant; a tool call →
 // tool_use as "ToolName: <target>"; a tool result → tool_result; an API error
@@ -621,7 +742,9 @@ func mapEvent(ev cctranscript.Event) (kind, text string, ok bool) {
 func toolSummary(ev cctranscript.Event) string {
 	arg := strings.TrimSpace(ev.Target)
 	if arg == "" {
-		arg = cctranscript.Cap(strings.Join(strings.Fields(ev.Input), " "), maxToolArgs)
+		// Not cut here: the whole input (ccd caps it at 2 KiB) is scrubbed and
+		// redacted first, and only then cut, by clean.
+		arg = strings.Join(strings.Fields(ev.Input), " ")
 	}
 	if arg == "" {
 		return ev.Tool
@@ -629,10 +752,13 @@ func toolSummary(ev cctranscript.Event) string {
 	return ev.Tool + ": " + arg
 }
 
-// clean is THE text pipeline, in this order: the officer's token replaced,
-// the CI-log secret filter, the 8 KiB cut.
+// clean is THE text pipeline, in this order: the officer's token replaced
+// (whole, and a cut prefix of it), the CI-log secret filter, a line ending in
+// a cut token prefix withheld (ccd caps long fields with "…" BEFORE they reach
+// muster, so a token can arrive cut short of its full pattern), and only then
+// the 8 KiB cut — no cut of muster's own happens before the filters.
 func (f *Forwarder) clean(o officers.Officer, s string) string {
-	return Truncate(officership.RedactText(f.cfg.Poster.Scrub(o, s)), officers.MaxTranscriptText)
+	return Truncate(officership.RedactCutTail(officership.RedactText(f.cfg.Poster.Scrub(o, s)), nil), officers.MaxTranscriptText)
 }
 
 // Truncate cuts s to at most n bytes on a character boundary, ending it with
