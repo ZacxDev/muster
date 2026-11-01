@@ -2,6 +2,8 @@ package officership
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	authv1 "k8s.io/api/authentication/v1"
@@ -64,5 +66,28 @@ func TestCIReaderConfigCarriesOnlyTheMintedToken(t *testing.T) {
 		c.TLSClientConfig.CertFile != "" || c.TLSClientConfig.KeyFile != "" || c.ExecProvider != nil || c.AuthProvider != nil ||
 		c.Impersonate.UserName != "" {
 		t.Fatalf("the reader config carries muster's own credentials: %+v", c)
+	}
+}
+
+// TestReadTailKeepsTheEnd: a log far over maxBytes made of LONG lines keeps
+// its LAST line (the API's LimitBytes would have kept the first), starts on a
+// line boundary and says cut; a small log is returned whole and not cut; a
+// log at the line cap says cut (earlier lines may be gone).
+func TestReadTailKeepsTheEnd(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 400; i++ {
+		fmt.Fprintf(&b, "line %03d %s\n", i, strings.Repeat("y", 1000))
+	}
+	b.WriteString("--- FAIL: TestTheVeryLastLine (0.1s)\n")
+	got, cut, err := readTail(strings.NewReader(b.String()), 64<<10, 20000, 64<<20)
+	if err != nil || !cut || len(got) > 64<<10 || !strings.HasSuffix(got, "--- FAIL: TestTheVeryLastLine (0.1s)\n") || !strings.HasPrefix(got, "line ") {
+		t.Fatalf("cut %v err %v len %d, prefix %.12q, suffix %.40q", cut, err, len(got), got, got[max(0, len(got)-40):])
+	}
+	small := "ok\n--- FAIL: TestX (0.1s)\n"
+	if got, cut, _ := readTail(strings.NewReader(small), 64<<10, 20000, 64<<20); got != small || cut {
+		t.Fatalf("a small log came back %q cut %v", got, cut)
+	}
+	if _, cut, _ := readTail(strings.NewReader(strings.Repeat("a\n", 50)), 64<<10, 50, 64<<20); !cut {
+		t.Fatal("a log at the line cap was not marked cut")
 	}
 }

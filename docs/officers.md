@@ -815,17 +815,24 @@ What it does, read fresh on every call:
    reports NOW, so a push moves the answer to the new run) and keeps those
    whose labels say so and whose `pr_param` is this pull request; the newest
    wins and older retries are counted (`other_runs_for_this_head`).
-3. **The failures** — every TaskRun of that run whose `Succeeded` condition is
-   `False`; for each, the logs of its failed steps' `step-<name>` containers
-   only (every step when none is marked failed, as on a timeout; never a
-   sidecar), each read as its last 8 MiB.
-4. **The excerpt** — the failing-test lines (`--- FAIL`, `FAIL …`, `✘`, `N
-   failed`) and error lines (`ERROR`, `SQLSTATE`, `panic:`, `Error:`,
-   `x_test.go:N:` and `file.go:N:M:` messages, `timed out`, …), deduplicated
-   with repeats counted, then the step's last 15 lines; ANSI colour removed,
-   each line cut at 400 bytes, all excerpts together at most `max_bytes`
-   (split evenly between the failed tasks; `truncated` says a cap cut
-   something).
+3. **The failures**: every TaskRun of that run whose `tekton.dev/pipelineRun`
+   label names it and whose `Succeeded` condition is `False`. For each, it reads
+   the logs of the failed steps' `step-<name>` containers only. When no step is
+   marked failed, as on a timeout, it reads every step. It never reads a sidecar.
+   Each log is read from its END: the API is asked for the last 20,000 lines,
+   and the last 8 MiB of those are kept, starting at a line boundary.
+4. **The excerpt**:
+   - the failing-test lines (`--- FAIL`, `FAIL …`, `✘`, `N failed`) and the
+     error lines (`ERROR`, `SQLSTATE`, `panic:`, `Error:`, `x_test.go:N:` and
+     `file.go:N:M:` messages, `timed out`, …), deduplicated with repeats
+     counted;
+   - then the step's last 15 lines.
+
+   ANSI colour is removed, each line is clipped at 400 bytes, and all excerpts
+   together stay within `max_bytes`, split evenly between the failed tasks. A
+   task's `truncated` is true when anything was cut: the log read dropped the
+   log's start (over 8 MiB, or 20,000 lines), the byte cap dropped lines, or an
+   emitted line was clipped.
 
 **Secret safety.** The log is split into lines at `\n` and at a lone `\r` (a
 progress line overwritten in place). These lines are withheld whole:

@@ -28,6 +28,7 @@ type fakeCI struct {
 	taskRuns  map[string][]TaskRun // pipelineRun -> its TaskRuns
 	logs      map[string]string    // pod/container -> log
 	logErr    map[string]error     // pod/container -> error
+	logCut    map[string]bool      // pod/container -> the read dropped the log's start
 	selectors []string             // every selector asked
 	reads     []string             // every pod/container read
 	listErr   error
@@ -36,7 +37,7 @@ type fakeCI struct {
 }
 
 func newFakeCI() *fakeCI {
-	return &fakeCI{taskRuns: map[string][]TaskRun{}, logs: map[string]string{}, logErr: map[string]error{}}
+	return &fakeCI{taskRuns: map[string][]TaskRun{}, logs: map[string]string{}, logErr: map[string]error{}, logCut: map[string]bool{}}
 }
 
 func (f *fakeCI) PipelineRuns(_ context.Context, sel string) ([]PipelineRun, error) {
@@ -54,23 +55,30 @@ func (f *fakeCI) TaskRuns(_ context.Context, pr string) ([]TaskRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return append([]TaskRun(nil), f.taskRuns[pr]...), nil
+	out := append([]TaskRun(nil), f.taskRuns[pr]...)
+	for i := range out {
+		if out[i].PipelineRun == "" { // fixture shorthand: labelled for the run asked
+			out[i].PipelineRun = pr
+		}
+	}
+	return out, nil
 }
 
-func (f *fakeCI) PodLog(_ context.Context, pod, c string, max int64) (string, error) {
+func (f *fakeCI) PodLog(_ context.Context, pod, c string, max int64) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	k := pod + "/" + c
 	f.reads = append(f.reads, k)
 	if err := f.logErr[k]; err != nil {
-		return "", err
+		return "", false, err
 	}
 	l := f.logs[k]
+	cut := f.logCut[k]
 	if int64(len(l)) > max {
-		l = l[int64(len(l))-max:]
+		l, cut = l[int64(len(l))-max:], true
 	}
-	return l, nil
+	return l, cut, nil
 }
 
 // CI fixture values. 🔴 Pairwise distinct, and none equals a constant the
@@ -546,5 +554,71 @@ func TestCILogsWithholdsEnvStyleSecrets(t *testing.T) {
 		if !strings.Contains(ex, l) {
 			t.Errorf("an ordinary failure line was withheld or changed: %q\n%s", l, ex)
 		}
+	}
+}
+
+// TestCILogsIgnoresATaskRunOfAnotherRun: a TaskRun the reader returns whose
+// tekton.dev/pipelineRun label names ANOTHER run (a reader that ignored the
+// selector) is not reported.
+func TestCILogsIgnoresATaskRunOfAnotherRun(t *testing.T) {
+	r, _, ci := greenCIFixture()
+	ci.taskRuns["run-current"] = append(ci.taskRuns["run-current"], TaskRun{Name: "run-old-head-go", PipelineRun: "run-old-head",
+		PipelineTask: "stray", PodName: "run-old-head-go-pod", Succeeded: "False",
+		Steps: []Step{{Name: "test", Container: "step-test", Terminated: true, ExitCode: 1}}})
+	out, err := r.Read(context.Background(), ciPR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range out.Failed {
+		if f.Task == "stray" || strings.Contains(f.Excerpt, "TestFromTheWrongRun") {
+			t.Fatalf("reported another run's TaskRun: %+v", f)
+		}
+	}
+	if len(out.Failed) != 2 {
+		t.Fatalf("%d failed tasks, want the run's own 2", len(out.Failed))
+	}
+}
+
+// TestCILogsRedactsTheRunMessage: a credential in the PipelineRun's own
+// message (run_message, and the note of a run that failed with no failed
+// task) is withheld like a log line.
+func TestCILogsRedactsTheRunMessage(t *testing.T) {
+	r, _, ci := greenCIFixture()
+	const secret = "runMsgSecretValue77"
+	ci.runs = []PipelineRun{ciRun("run-current", ciHead, ciPR, "False", time.Unix(1, 0))}
+	ci.runs[0].Message = "PipelineRun failed: param API_TOKEN=" + secret
+	ci.taskRuns["run-current"] = nil
+	out, err := r.Read(context.Background(), ciPR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(out)
+	if strings.Contains(string(body), secret) || !strings.Contains(out.RunMessage, "withheld") {
+		t.Fatalf("the run message's credential reached the answer: %s", body)
+	}
+}
+
+// TestCILogsTruncatedReflectsEveryCut: a log read that dropped the log's
+// start, and an emitted line clipped at maxExcerptLine, each mark the task
+// truncated; neither marks it when nothing was cut.
+func TestCILogsTruncatedReflectsEveryCut(t *testing.T) {
+	r, _, ci := greenCIFixture()
+	out, _ := r.Read(context.Background(), ciPR)
+	for _, f := range out.Failed {
+		if f.Truncated {
+			t.Fatalf("control: %s is truncated with nothing cut", f.Task)
+		}
+	}
+	r, _, ci = greenCIFixture()
+	ci.logCut["run-current-go-pod/step-test"] = true
+	out, _ = r.Read(context.Background(), ciPR)
+	if !out.Failed[1].Truncated || out.Failed[0].Truncated {
+		t.Fatalf("a read that dropped the start: go truncated %v, e2e %v; want true, false", out.Failed[1].Truncated, out.Failed[0].Truncated)
+	}
+	r, _, ci = greenCIFixture()
+	ci.logs["run-current-go-pod/step-test"] = goLog + "ERROR: " + strings.Repeat("x", 2*maxExcerptLine) + "\n"
+	out, _ = r.Read(context.Background(), ciPR)
+	if !out.Failed[1].Truncated {
+		t.Fatal("a clipped line did not mark the task truncated")
 	}
 }

@@ -1,6 +1,7 @@
 package officership
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -135,15 +136,56 @@ func (k *kubeCIReader) TaskRuns(ctx context.Context, pipelineRun string) ([]Task
 	return out, nil
 }
 
-func (k *kubeCIReader) PodLog(ctx context.Context, pod, container string, maxBytes int64) (string, error) {
-	tail := int64(20000)
-	rc, err := k.core.CoreV1().Pods(k.ns).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &tail, LimitBytes: &maxBytes}).Stream(ctx)
+// PodLog asks for the last tailLogLines lines and keeps the last maxBytes
+// bytes of them (readTail), so a log of long lines keeps its END — the
+// API's LimitBytes would keep the START of the tail instead.
+func (k *kubeCIReader) PodLog(ctx context.Context, pod, container string, maxBytes int64) (string, bool, error) {
+	tail := int64(tailLogLines)
+	rc, err := k.core.CoreV1().Pods(k.ns).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &tail}).Stream(ctx)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer rc.Close()
-	b, err := io.ReadAll(io.LimitReader(rc, maxBytes))
-	return string(b), err
+	return readTail(rc, maxBytes, tailLogLines, maxLogStream)
+}
+
+// readTail reads r (at most maxStream bytes) and returns its last maxBytes
+// bytes, starting at a line boundary when anything was dropped. cut is true
+// when bytes were dropped, the stream hit maxStream, or it held maxLines
+// lines (the API's tail may have dropped earlier ones).
+func readTail(r io.Reader, maxBytes int64, maxLines int, maxStream int64) (string, bool, error) {
+	var (
+		buf   []byte
+		total int64
+		lines int
+		chunk = make([]byte, 64<<10)
+	)
+	lr := io.LimitReader(r, maxStream)
+	for {
+		n, err := lr.Read(chunk)
+		total += int64(n)
+		lines += bytes.Count(chunk[:n], []byte{'\n'})
+		buf = append(buf, chunk[:n]...)
+		if int64(len(buf)) > 2*maxBytes {
+			buf = append(buf[:0:0], buf[int64(len(buf))-maxBytes:]...)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", false, err
+		}
+	}
+	cut := total > maxBytes || total >= maxStream || lines >= maxLines
+	if int64(len(buf)) > maxBytes {
+		buf = buf[int64(len(buf))-maxBytes:]
+	}
+	if total > maxBytes {
+		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+			buf = buf[i+1:]
+		}
+	}
+	return string(buf), cut, nil
 }
 
 // ParsePipelineRun reads a tekton.dev/v1 PipelineRun object.
@@ -165,7 +207,7 @@ func ParsePipelineRun(obj map[string]any) PipelineRun {
 // ParseTaskRun reads a tekton.dev/v1 TaskRun object.
 func ParseTaskRun(obj map[string]any) TaskRun {
 	u := unstructured.Unstructured{Object: obj}
-	t := TaskRun{Name: u.GetName(), PipelineTask: u.GetLabels()["tekton.dev/pipelineTask"]}
+	t := TaskRun{Name: u.GetName(), PipelineTask: u.GetLabels()["tekton.dev/pipelineTask"], PipelineRun: u.GetLabels()["tekton.dev/pipelineRun"]}
 	t.PodName, _, _ = unstructured.NestedString(obj, "status", "podName")
 	t.Succeeded, t.Reason, t.Message = succeeded(obj)
 	steps, _, _ := unstructured.NestedSlice(obj, "status", "steps")

@@ -56,7 +56,9 @@ type PipelineRun struct {
 
 // TaskRun is the part of a Tekton TaskRun officer_ci_logs reads.
 type TaskRun struct {
-	Name         string
+	Name string
+	// PipelineRun is the TaskRun's tekton.dev/pipelineRun label.
+	PipelineRun  string
 	PipelineTask string
 	PodName      string
 	Succeeded    string
@@ -83,13 +85,22 @@ type CIReader interface {
 	PipelineRuns(ctx context.Context, selector string) ([]PipelineRun, error)
 	// TaskRuns lists the TaskRuns of one PipelineRun.
 	TaskRuns(ctx context.Context, pipelineRun string) ([]TaskRun, error)
-	// PodLog reads the tail of one container's log (at most maxBytes).
-	PodLog(ctx context.Context, pod, container string, maxBytes int64) (string, error)
+	// PodLog reads the END of one container's log: at most its last
+	// maxBytes bytes (and last tailLogLines lines); cut reports that anything
+	// before that was dropped.
+	PodLog(ctx context.Context, pod, container string, maxBytes int64) (log string, cut bool, err error)
 }
 
-// maxLogRead bounds one container log read (the tail of it). The excerpt is
-// far smaller; this bounds memory and the API server's work.
+// maxLogRead bounds one container log read: its last 8 MiB are kept. The
+// excerpt is far smaller; this bounds memory.
 const maxLogRead = 8 << 20
+
+// tailLogLines is how many of a container's last lines are asked for;
+// maxLogStream bounds the bytes streamed for them (very long lines).
+const (
+	tailLogLines = 20000
+	maxLogStream = 64 << 20
+)
 
 // CILogsReader answers officer_ci_logs for one officer. Its caller
 // (internal/api) builds it only for an officer with a ship and ci_logs block.
@@ -136,7 +147,8 @@ type TaskFailure struct {
 	Message     string   `json:"message,omitempty"`
 	FailedSteps []string `json:"failed_steps,omitempty"`
 	Excerpt     string   `json:"excerpt"`
-	// Truncated: the excerpt hit its byte share, or a log read was cut.
+	// Truncated: something was cut — a log read dropped the log's start, an
+	// excerpt hit its byte share, or a line in it was clipped.
 	Truncated bool `json:"truncated,omitempty"`
 	// LogErrors are logs that could not be read (the pod pruned, …).
 	LogErrors []string `json:"log_errors,omitempty"`
@@ -178,7 +190,8 @@ func (r *CILogsReader) Read(ctx context.Context, n int) (CILogsOutcome, error) {
 			r.Config.Pipeline, r.Config.Namespace, n, short(pr.HeadSHA))
 		return out, nil
 	}
-	out.PipelineRun, out.OtherRuns, out.RunMessage = run.Name, others, truncate(run.Message, 300)
+	runMessage := truncate(redactText(run.Message), 300)
+	out.PipelineRun, out.OtherRuns, out.RunMessage = run.Name, others, runMessage
 	switch run.Succeeded {
 	case "True":
 		out.State = CIStateSucceeded
@@ -193,6 +206,11 @@ func (r *CILogsReader) Read(ctx context.Context, n int) (CILogsOutcome, error) {
 	}
 	var failed []TaskRun
 	for _, tr := range trs {
+		// The selector asked for this run's TaskRuns; a reader that ignored
+		// it cannot widen the answer (as pickRun for the PipelineRuns).
+		if tr.PipelineRun != run.Name {
+			continue
+		}
 		if tr.Succeeded == "False" {
 			failed = append(failed, tr)
 		}
@@ -206,7 +224,7 @@ func (r *CILogsReader) Read(ctx context.Context, n int) (CILogsOutcome, error) {
 			out.Note = fmt.Sprintf("no failure found: %s for %s succeeded. If a check is red on GitHub, it is from another run or another CI.", run.Name, short(pr.HeadSHA))
 		default:
 			out.Note = fmt.Sprintf("no failure found in any task: %s for %s failed (%s) without a failed TaskRun — a run-level timeout or cancellation, or the tasks were pruned. Its message: %q",
-				run.Name, short(pr.HeadSHA), run.Reason, truncate(run.Message, 300))
+				run.Name, short(pr.HeadSHA), run.Reason, runMessage)
 		}
 		return out, nil
 	}
@@ -254,7 +272,7 @@ func pickRun(runs []PipelineRun, c *officers.CILogs, pr PR) (PipelineRun, int, b
 // of at most budget bytes. A TaskRun with no step marked failed (a timeout)
 // has every step container read. Sidecars are never read.
 func taskFailure(ctx context.Context, ci CIReader, tr TaskRun, budget int) TaskFailure {
-	f := TaskFailure{Task: tr.PipelineTask, TaskRun: tr.Name, Reason: tr.Reason, Message: truncate(Redact(tr.Message), 300)}
+	f := TaskFailure{Task: tr.PipelineTask, TaskRun: tr.Name, Reason: tr.Reason, Message: truncate(redactText(tr.Message), 300)}
 	if f.Task == "" {
 		f.Task = tr.Name
 	}
@@ -281,12 +299,12 @@ func taskFailure(ctx context.Context, ci CIReader, tr TaskRun, budget int) TaskF
 		if !strings.HasPrefix(c, "step-") {
 			continue // only step containers; never a sidecar
 		}
-		log, err := ci.PodLog(ctx, tr.PodName, c, maxLogRead)
+		log, logCut, err := ci.PodLog(ctx, tr.PodName, c, maxLogRead)
 		if err != nil {
 			f.LogErrors = append(f.LogErrors, fmt.Sprintf("%s/%s: %s", tr.PodName, c, truncate(err.Error(), 200)))
 			continue
 		}
-		if len(log) >= maxLogRead {
+		if logCut {
 			f.Truncated = true
 		}
 		header := "== " + c + " ==\n"
@@ -376,6 +394,11 @@ func RedactLines(lines []string) []string {
 	return out
 }
 
+// redactText is RedactLines over a multi-line text (a run's message).
+func redactText(s string) string {
+	return strings.Join(RedactLines(strings.Split(s, "\n")), "\n")
+}
+
 // Redact is the one-line filter (RedactLines applies it to every line outside
 // a PEM block): a line that looks like it carries a credential, or is an
 // environment assignment, is withheld whole; a URL's userinfo is masked.
@@ -396,7 +419,7 @@ const (
 // and error lines (deduplicated, in order, repeats counted), then the log's
 // last lines — every line passed through RedactLines and cut at maxExcerptLine
 // bytes, the whole at most maxBytes bytes (never splitting a character). cut
-// reports that the cap dropped something.
+// reports that the cap dropped something or an emitted line was clipped.
 func Excerpt(log string, maxBytes int) (string, bool) {
 	if maxBytes <= 0 {
 		return "", log != ""
@@ -407,8 +430,12 @@ func Excerpt(log string, maxBytes int) (string, bool) {
 		lines[i] = strings.TrimRight(ansiRE.ReplaceAllString(l, ""), " \t\r")
 	}
 	clean := RedactLines(lines)
+	clipped := map[string]bool{}
 	for i := range clean {
-		clean[i] = clip(clean[i], maxExcerptLine)
+		if c := clip(clean[i], maxExcerptLine); c != clean[i] {
+			clean[i] = c
+			clipped[c] = true
+		}
 	}
 	type entry struct {
 		text  string
@@ -441,6 +468,9 @@ func Excerpt(log string, maxBytes int) (string, bool) {
 			cut = true
 			return false
 		}
+		if clipped[s] {
+			cut = true
+		}
 		b.WriteString(s)
 		b.WriteByte('\n')
 		return true
@@ -450,6 +480,9 @@ func Excerpt(log string, maxBytes int) (string, bool) {
 	}
 	for _, e := range picked {
 		t := e.text
+		if clipped[t] {
+			cut = true
+		}
 		if e.count > 1 {
 			t += fmt.Sprintf("  (×%d)", e.count)
 		}

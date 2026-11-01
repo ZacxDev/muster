@@ -25,11 +25,11 @@ func (f *apiFakeCI) PipelineRuns(_ context.Context, sel string) ([]officership.P
 		Params: map[string]string{officers.DefaultCIPRParam: "12"}}}, nil
 }
 func (f *apiFakeCI) TaskRuns(context.Context, string) ([]officership.TaskRun, error) {
-	return []officership.TaskRun{{Name: "gamma-pr-check-x1-go", PipelineTask: "go", PodName: "gamma-pr-check-x1-go-pod", Succeeded: "False",
+	return []officership.TaskRun{{Name: "gamma-pr-check-x1-go", PipelineRun: "gamma-pr-check-x1", PipelineTask: "go", PodName: "gamma-pr-check-x1-go-pod", Succeeded: "False",
 		Steps: []officership.Step{{Name: "test", Container: "step-test", Terminated: true, ExitCode: 1}}}}, nil
 }
-func (f *apiFakeCI) PodLog(context.Context, string, string, int64) (string, error) {
-	return "--- FAIL: TestGammaFeed (0.2s)\n    feed_test.go:9: ERROR: column \"x\" does not exist (SQLSTATE 42703)\nFAIL\n", nil
+func (f *apiFakeCI) PodLog(context.Context, string, string, int64) (string, bool, error) {
+	return "--- FAIL: TestGammaFeed (0.2s)\n    feed_test.go:9: ERROR: column \"x\" does not exist (SQLSTATE 42703)\nFAIL\n", false, nil
 }
 
 // TestOfficerCILogsIsOfferedWithACILogsBlockAndAnswersOverDispatch: the
