@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -150,24 +151,33 @@ func (k *kubeCIReader) PodLog(ctx context.Context, pod, container string, maxByt
 }
 
 // readTail reads r (at most maxStream bytes) and returns its last maxBytes
-// bytes, starting at a line boundary when anything was dropped. cut is true
-// when bytes were dropped, the stream hit maxStream, or it held maxLines
-// lines (the API's tail may have dropped earlier ones).
+// bytes. When anything was dropped, the window starts at the first line
+// boundary in it — unless the byte before the window is itself a newline
+// (the window already starts a line), or the only newline is the window's
+// last byte (one line longer than maxBytes: its end is kept) — and on a UTF-8
+// character boundary. cut is true when bytes were dropped, the stream hit
+// maxStream, or it held maxLines lines (the API's tail may have dropped
+// earlier ones; a last line without a trailing newline counts).
 func readTail(r io.Reader, maxBytes int64, maxLines int, maxStream int64) (string, bool, error) {
 	var (
-		buf   []byte
+		buf   []byte // the last maxBytes+1 bytes, at most 2*(maxBytes+1)
 		total int64
 		lines int
+		last  byte
 		chunk = make([]byte, 64<<10)
 	)
+	keep := maxBytes + 1 // one byte more: the byte before the window
 	lr := io.LimitReader(r, maxStream)
 	for {
 		n, err := lr.Read(chunk)
-		total += int64(n)
-		lines += bytes.Count(chunk[:n], []byte{'\n'})
-		buf = append(buf, chunk[:n]...)
-		if int64(len(buf)) > 2*maxBytes {
-			buf = append(buf[:0:0], buf[int64(len(buf))-maxBytes:]...)
+		if n > 0 {
+			total += int64(n)
+			lines += bytes.Count(chunk[:n], []byte{'\n'})
+			last = chunk[n-1]
+			buf = append(buf, chunk[:n]...)
+			if int64(len(buf)) > 2*keep {
+				buf = append(buf[:0:0], buf[int64(len(buf))-keep:]...)
+			}
 		}
 		if err == io.EOF {
 			break
@@ -176,16 +186,26 @@ func readTail(r io.Reader, maxBytes int64, maxLines int, maxStream int64) (strin
 			return "", false, err
 		}
 	}
-	cut := total > maxBytes || total >= maxStream || lines >= maxLines
-	if int64(len(buf)) > maxBytes {
-		buf = buf[int64(len(buf))-maxBytes:]
+	if total > 0 && last != '\n' {
+		lines++
 	}
-	if total > maxBytes {
-		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
-			buf = buf[i+1:]
+	cut := total > maxBytes || total >= maxStream || lines >= maxLines
+	if total <= maxBytes {
+		return string(buf), cut, nil
+	}
+	if int64(len(buf)) > keep {
+		buf = buf[int64(len(buf))-keep:]
+	}
+	before, win := buf[0], buf[1:]
+	if before != '\n' {
+		if i := bytes.IndexByte(win, '\n'); i >= 0 && i < len(win)-1 {
+			win = win[i+1:]
 		}
 	}
-	return string(buf), cut, nil
+	for k := 0; k < utf8.UTFMax && len(win) > 0 && !utf8.RuneStart(win[0]); k++ {
+		win = win[1:]
+	}
+	return string(win), cut, nil
 }
 
 // ParsePipelineRun reads a tekton.dev/v1 PipelineRun object.
