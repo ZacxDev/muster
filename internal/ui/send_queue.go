@@ -14,10 +14,11 @@ import (
 // "Queue for when idle" item behind Send's caret (composer_menu.go), and the
 // window's queue under the status line — what is waiting, what
 // it is waiting for, a ⋯ menu for each message not yet being sent (Send now,
-// Copy message, Cancel: sendQueueRowMenu), and each failure not yet handled,
-// with a Retry and a Delete. A sent or cancelled message leaves the list
-// (sendqueue.PGStore.List); a failed one stays until it is retried or
-// deleted. A tap on any row's preview shows its whole text (sendQueuePreview).
+// Copy message, Cancel: sendQueueRowMenu), and each of the person's own
+// failures not yet handled, with a Retry and a Delete. A sent or cancelled
+// message leaves the list (sendqueue.PGStore.List), and so does a failed
+// routed message or chief nudge (it goes back to the chief); a person's own
+// failure stays until it is retried, deleted, or pruned. A tap on any row's preview shows its whole text (sendQueuePreview).
 //
 // 🔴 THE QUEUE IS THE SERVER'S, NOT THE PAGE'S. Queue posts the message to
 // SendQueuePath and the server sends it when the target has been idle long
@@ -505,7 +506,7 @@ const sendQueueMenuItemClass = "press flex min-h-[44px] w-full items-center roun
 // opens itself (popovertarget), which closes on Escape and on a tap outside
 // with no script at all, and Send now and Cancel are each a real form. Copy
 // message needs the clipboard, so it is drawn hidden and the list's script
-// shows it; the whole message rides in the row (a template), because the
+// shows it; the whole message rides in the row (sendQueuePreview's popover), because the
 // preview is cut. sendQueueScript adds the menu-button keyboard pattern,
 // places the menu beside its button and keeps aria-expanded true.
 //
@@ -551,8 +552,6 @@ func sendQueueRowMenu(it SendQueueItem) g.Node {
 				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("aria-label", SendQueueCancelLabel),
 					Class(sendQueueMenuItemClass+" text-st-error-fg"), g.Text("Cancel"))),
 		),
-		// The whole message, for Copy message: inert, never rendered.
-		Template(g.Attr("data-queue-body", ""), g.Text(it.Body)),
 	)
 }
 
@@ -895,7 +894,7 @@ func sendQueueScript() g.Node {
     if (m) { try { m.hidePopover(); } catch (err) {} }
   }
 
-  // Copy message: the WHOLE message (the row's template; the preview is cut),
+  // Copy message: the WHOLE message (the row's popover text; the preview is cut),
   // to the clipboard, then a brief "Copied." Where the async clipboard is
   // refused (no secure context), a selected textarea and execCommand.
   function copyText(text) {
@@ -919,8 +918,8 @@ func sendQueueScript() g.Node {
     var c = e.target && e.target.closest ? e.target.closest('[data-queue-copy]') : null;
     if (!c) return;
     var row = c.closest('[data-queue-id]');
-    var tpl = row ? row.querySelector('template[data-queue-body]') : null;
-    var text = tpl ? (tpl.content ? tpl.content.textContent : tpl.textContent) : '';
+    var whole = row ? row.querySelector('[data-queue-full-text]') : null;
+    var text = whole ? whole.textContent : '';
     closeMenu(c);
     copyText(text).then(function () { noteOK('Copied.'); }, function () { note('Not copied: this browser did not allow it.'); });
   });

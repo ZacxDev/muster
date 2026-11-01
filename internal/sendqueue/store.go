@@ -200,12 +200,14 @@ const MaxOpenPerTarget = 20
 const MaxDetail = 1024
 
 // FailedShown bounds the failed messages List returns beside the open ones:
-// the most recent FailedShown failures not yet retried, newest first. A sent
-// or cancelled message is never listed — it has been handled — but a failure
-// stays until its owner Retries or Deletes it, so it does not vanish unseen.
-// The bound only keeps a target that fails again and again from drawing an
-// unbounded list; it is the open bound's size, so a whole queue that failed
-// is shown whole.
+// the FailedShown most recent of a person's own failures not yet retried,
+// newest first. A sent or cancelled message is never listed — it has been
+// handled — nor a routed message or a chief nudge that failed (its outcome
+// goes back to the chief, which is its handling). A person's own failure is
+// listed until they Retry or Delete it, or Prune deletes it Retention after it
+// failed, and only the newest FailedShown of them; an older one beyond that is
+// not shown. The bound is the open bound's size (TestFailedShownCoversAWholeQueue),
+// so a whole queue that failed is shown whole.
 const FailedShown = MaxOpenPerTarget
 
 var (
@@ -410,9 +412,10 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 
 // List is the caller's messages for t that still need something: every open
 // one (queued or being sent), oldest first, then the FailedShown most recently
-// failed ones that were not retried, newest first. A sent or cancelled message
-// is not listed, nor a failed one already retried (its retry row, a new
-// message of its own, carries it).
+// failed of the person's own (no route, no chief nudge) that were not
+// retried, newest first. A sent or cancelled message is not listed, nor a
+// failed one already retried (its retry row, a new message of its own, carries
+// it), nor a failed routed message or chief nudge (handed back to the chief).
 func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	if err := t.Valid(); err != nil {
 		return nil, err
@@ -420,7 +423,8 @@ func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	where, args := targetWhere(t, 1)
 	rows, err := s.pool.Query(ctx, `(SELECT `+cols+`, 0 AS part FROM send_queue WHERE state IN ('queued', 'sending') AND `+where+`)
 		UNION ALL
-		(SELECT `+cols+`, 1 AS part FROM send_queue WHERE state = 'failed' AND retried_as IS NULL AND `+where+`
+		(SELECT `+cols+`, 1 AS part FROM send_queue WHERE state = 'failed' AND retried_as IS NULL
+			AND route_id IS NULL AND chief_nudge_id IS NULL AND `+where+`
 			ORDER BY finished_at DESC, id DESC LIMIT `+fmt.Sprint(FailedShown)+`)
 		ORDER BY part, id`, args...)
 	if err != nil {
@@ -880,8 +884,8 @@ func (s *PGStore) Reject(ctx context.Context, id int64, detail string) (bool, er
 	return tag.RowsAffected() == 1, nil
 }
 
-// Retention is how long a finished message is kept (its outcome is shown
-// under the composer) before Prune deletes it.
+// Retention is how long a finished message is kept (a person's own failure is
+// listed under the composer, List) before Prune deletes it.
 const Retention = 7 * 24 * time.Hour
 
 // Prune deletes every message that finished before before.

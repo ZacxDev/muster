@@ -85,6 +85,47 @@ func TestListShowsOnlyWhatStillNeedsSomething(t *testing.T) {
 	}
 }
 
+// TestListLeavesOutAFailureHandedBackToTheChief: a failed ROUTED row and a
+// failed CHIEF NUDGE have no Retry here — their outcome goes back to the
+// chief, which is their handling — so neither is listed (left in, each sat in
+// the list until deleted by hand, the backlog this list exists to avoid). A
+// person's own failure, beside them, is.
+func TestListLeavesOutAFailureHandedBackToTheChief(t *testing.T) {
+	s, _ := pgStore(t)
+	routed := mustEnqueue(t, s, 2, Item{Target: win, Body: "lima routed", StepUpAt: time.Now(), RouteID: "rt_0123456789abcdef01234567"})
+	failRow(t, s, routed.ID, false)
+	nudge := mustEnqueue(t, s, 2, Item{Target: win, Body: "mike chief nudge", StepUpAt: time.Now(), ChiefNudgeID: 4242})
+	failRow(t, s, nudge.ID, false)
+	own := mustEnqueue(t, s, 2, mirrorItem("november own failure"))
+	failRow(t, s, own.ID, false)
+	items, err := s.List(as(2), win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := listed(items), "failed:november own failure#"+strconv.FormatInt(own.ID, 10); got != want {
+		t.Fatalf("user 2's list:\n got %s\nwant %s", got, want)
+	}
+	// CONTROL: the fixture really made them a routed and a nudge failure.
+	for _, c := range []struct {
+		id    int64
+		check func(Item) bool
+	}{{routed.ID, func(it Item) bool { return it.RouteID != "" }}, {nudge.ID, func(it Item) bool { return it.ChiefNudgeID == 4242 }}} {
+		if it, err := s.Get(as(2), c.id); err != nil || it.State != Failed || !c.check(it) {
+			t.Fatalf("fixture row %d: %+v %v", c.id, it, err)
+		}
+	}
+}
+
+// TestFailedShownCoversAWholeQueue pins the bound itself: a whole queue that
+// failed (MaxOpenPerTarget messages, literally 20) is listed whole. The bound
+// test below derives its fixture from FailedShown, so a smaller FailedShown
+// would pass it.
+func TestFailedShownCoversAWholeQueue(t *testing.T) {
+	if MaxOpenPerTarget != 20 || FailedShown < MaxOpenPerTarget {
+		t.Fatalf("FailedShown = %d, MaxOpenPerTarget = %d; want at least 20, so a whole failed queue is shown", FailedShown, MaxOpenPerTarget)
+	}
+}
+
 // TestListBoundsTheFailures: a target that failed more than FailedShown times
 // lists the FailedShown newest failures, newest first, and its open rows
 // whatever the bound.
@@ -100,9 +141,11 @@ func TestListBoundsTheFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != FailedShown+1 || items[0].ID != open.ID {
-		t.Fatalf("list of %d failures and 1 queued: %d rows, first %s; want %d, the queued one first",
-			n, len(items), listed(items[:1]), FailedShown+1)
+	// 21: the literal, not FailedShown+1 — the expectation is not derived from
+	// the constant it checks.
+	if len(items) != 21 || items[0].ID != open.ID {
+		t.Fatalf("list of %d failures and 1 queued: %d rows, first %s; want 21, the queued one first",
+			n, len(items), listed(items[:1]))
 	}
 	for i, it := range items[1:] {
 		if want := fmt.Sprintf("failure %02d", n-1-i); it.State != Failed || it.Body != want {

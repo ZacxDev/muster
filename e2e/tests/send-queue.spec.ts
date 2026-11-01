@@ -447,11 +447,13 @@ test.describe('desktop 1280×800', () => {
     expect(pasted(), 'an expired message is not pasted').toEqual([]);
   });
 
-  // 🔴 A ROUTED MESSAGE THAT FAILED OFFERS NO RETRY: Retry would queue it again
-  // as the person's own, with no route and no session binding, past the gate
-  // its route is. A failed route goes back to the chief instead. The test
-  // above is the control: a person's failed row draws the same button.
-  test('a routed message that failed offers no Retry', async ({ page }) => {
+  // 🔴 A ROUTED MESSAGE THAT FAILED IS HANDED BACK, NOT LISTED: it has no Retry
+  // (Retry would queue it again as the person's own, with no route and no
+  // session binding, past the gate its route is) — its failed route goes back
+  // to the chief, which is its handling, so it leaves the list rather than
+  // waiting there for a Delete. The test above is the control: a person's own
+  // failure stays, with its Retry.
+  test('a routed message that failed leaves the list and is not pasted', async ({ page }) => {
     await busyAndSeen();
     fs.rmSync(tr + '.pasted', { force: true });
     await openView(page, newHost);
@@ -460,18 +462,18 @@ test.describe('desktop 1280×800', () => {
     await expect(rowIn(page, text, 'queued')).toHaveCount(1);
     sqfix('route', newHost, text);
     busy(false);
-    const failed = rowIn(page, text, 'failed');
-    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
+    await expect(row(page, text), `the route gate fails it, and it leaves the list (log:\n${mirrorLog})`).toHaveCount(0, { timeout: 30_000 });
+    await holdWindow();
     expect(pasted(), 'a routed message whose route is gone is not pasted').toEqual([]);
-    await expect(failed.getByRole('button', { name: /Queue this/ }), 'a failed routed row offers no Retry').toHaveCount(0);
+    await expect(row(page, text), 'and it does not come back').toHaveCount(0);
     await busyAndSeen();
   });
 
-  // 🔴 A FINISHED MESSAGE CAN BE DELETED — the operator's case: a failed
-  // message the chief routed has no Retry, and used to sit in the list until it
-  // was pruned. Its Delete removes the row without a page reload, and another
-  // device's list no longer has it. A queued message has no Delete (that is
-  // Cancel). On origin/main there is no Delete, so this fails at the button.
+  // 🔴 A FAILED MESSAGE CAN BE DELETED: a person's own failure stays in the
+  // list until it is retried or deleted. Its Delete removes the row without a
+  // page reload, and another device's list no longer has it. A queued message
+  // has no Delete (that is Cancel). On origin/main there is no Delete, so this
+  // fails at the button.
   test('a failed message has Delete, and Delete removes it without a reload, on every device', async ({ page, browser }) => {
     await busyAndSeen();
     fs.rmSync(tr + '.pasted', { force: true });
@@ -481,11 +483,10 @@ test.describe('desktop 1280×800', () => {
     const queuedRow = rowIn(page, text, 'queued');
     await expect(queuedRow).toHaveCount(1);
     await expect(queuedRow.getByRole('button', { name: 'Delete this message' }), 'a queued message has no Delete').toHaveCount(0);
-    sqfix('route', newHost, text);
-    busy(false);
+    // Expired while busy: the dispatcher's own pass fails it, nothing pasted.
+    sqfix('age', newHost, text, String(7 * 24 * 3600 + 60));
     const failed = rowIn(page, text, 'failed');
-    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
-    await expect(failed.getByRole('button', { name: /Queue this/ }), 'no Retry: the operator case').toHaveCount(0);
+    await expect(failed, `the dispatcher expires it (log:\n${mirrorLog})`).toContainText('queued more than 7 days ago', { timeout: 30_000 });
 
     const other = await otherDevice(browser);
     await openView(other.page, newHost);
@@ -521,10 +522,10 @@ test.describe('desktop 1280×800', () => {
     const text = 'deleted mid-read ' + stamp;
     await queue(page, text, false);
     await expect(rowIn(page, text, 'queued')).toHaveCount(1);
-    sqfix('route', newHost, text);
-    busy(false);
+    // Expired while busy: the dispatcher's own pass fails it.
+    sqfix('age', newHost, text, String(7 * 24 * 3600 + 60));
     const failed = rowIn(page, text, 'failed');
-    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
+    await expect(failed, `the dispatcher expires it (log:\n${mirrorLog})`).toContainText('queued more than 7 days ago', { timeout: 30_000 });
 
     // Hold the NEXT list read: read the real list now (the row in it), answer
     // only once released.
