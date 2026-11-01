@@ -68,6 +68,10 @@ type Server struct {
 	NoticeStatus int
 	// Preflight is POST /officers/{id}/preflight's answer (404 when nil).
 	Preflight map[string]any
+	// Before, when set, runs ahead of every request, OUTSIDE the fake's lock
+	// (so it may call SetClaim, SetBlocked, …): a test changes HQ's state at
+	// an exact point in a multi-request exchange. Set it before any request.
+	Before func(method, path string)
 	// transcripts are the transcript events stored per item, in seq order
 	// (POST /officers/{id}/items/{item}/transcript); transcriptStatus, when
 	// non-zero, is answered instead (e.g. 503).
@@ -224,6 +228,9 @@ func (s *Server) write(w http.ResponseWriter, code int, v any) {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if s.Before != nil {
+		s.Before(r.Method, r.URL.Path)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reqs = append(s.reqs, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"), Body: body})
