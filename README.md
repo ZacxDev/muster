@@ -103,9 +103,18 @@ repository as a plugin marketplace and install the `muster` plugin:
 
 Then ask Claude Code to "set up muster". The plugin holds one skill,
 `muster-setup`, which follows the same [INSTALL.md](INSTALL.md) from its URL,
-so it never carries a copy of the steps. Agents that use the
-[skills](https://skills.sh) CLI can install the same skill with
-`npx skills add ZacxDev/muster`.
+so it never carries a copy of the steps.
+
+Other coding agents can install the same skill with the
+[skills](https://skills.sh) CLI:
+
+```text
+npx skills add ZacxDev/muster --skill muster-setup
+```
+
+This is muster by ZacxDev. Other repositories publish unrelated
+skills named `muster`, so install it by this repository's name, not by
+searching for the word.
 
 To hack on muster, [docs/development.md](docs/development.md) runs it from source
 against a throwaway database.
