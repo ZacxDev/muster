@@ -537,7 +537,7 @@ func TestCILogsWithholdsEnvStyleSecrets(t *testing.T) {
 		// No credential keyword: only the env-assignment rule catches these
 		// (a trace, a lowercase name, an assignment after a lone \r).
 		{"+ CONN_DSN=hostuserDsnValue001", "hostuserDsnValue001"},
-		{"deploy_conn_url=lowerDsnValue0002", "lowerDsnValue0002"},
+		{"export deploy_conn_url=lowerDsnValue0002", "lowerDsnValue0002"},
 		{"progress 80%\rCONN_DSN=crDsnValue0003", "crDsnValue0003"},
 	} {
 		t.Run(strings.ReplaceAll(c.secret, "\r", ""), func(t *testing.T) {
@@ -624,5 +624,87 @@ func TestCILogsTruncatedReflectsEveryCut(t *testing.T) {
 	out, _ = r.Read(context.Background(), ciPR)
 	if !out.Failed[1].Truncated {
 		t.Fatal("a clipped line did not mark the task truncated")
+	}
+}
+
+// TestCILogsRoundTwoRedaction: round 2 on the env-style filter.
+//
+// Must withhold: a whole-segment _PAT key, a logfmt line carrying a
+// password, every `set -x` trace line, a login command's -p/--password,
+// --token, a docker config's {"auth":…}, Cookie / Set-Cookie headers, a
+// signed URL's sig=/signature=, DB_PASS:, credentials:, basic auth: <b64>.
+//
+// Must pass unchanged (each was withheld by the round-1 filter): a key that
+// only CONTAINS a credential word (file_path, output_path, tokenizer), prose
+// naming a Secret by its k8s path, `pwd:` with a path, and logfmt/slog lines.
+func TestCILogsRoundTwoRedaction(t *testing.T) {
+	for _, c := range []struct{ line, secret string }{
+		{"GITHUB_PAT=ghPatWholeSegment0001", "ghPatWholeSegment0001"},
+		{"time=2026-11-01T04:12:01Z level=error password=hunter2hunter2 msg=\"login\"", "hunter2hunter2"},
+		{"+ curl -sS https://example.test/hook -d payload=traceValue0001", "traceValue0001"},
+		{"++ ./deploy.sh traceValue0002", "traceValue0002"},
+		{"Error: docker login -u ci -p dockerLoginPass01 registry.example.test", "dockerLoginPass01"},
+		{"ERROR mysql -u root -pMysqlInlinePass02 -h db", "MysqlInlinePass02"},
+		{"Error: tool --password cliPasswordValue03 rejected", "cliPasswordValue03"},
+		{"Error: gh api --token cliTokenValue000004 failed", "cliTokenValue000004"},
+		{`Error: {"auths":{"registry.example.test":{"auth":"Y2k6ZG9ja2VyQXV0aDA1"}}}`, "Y2k6ZG9ja2VyQXV0aDA1"},
+		{"Cookie: session=cookieValue0000006", "cookieValue0000006"},
+		{"Set-Cookie: sid=setCookieValue07; Path=/", "setCookieValue07"},
+		{"Error: GET https://bucket.example.test/o?X-Goog-Expires=60&sig=urlSigValue000008 403", "urlSigValue000008"},
+		{"Error: GET https://bucket.example.test/o?signature=urlSigValue000009 403", "urlSigValue000009"},
+		{"ERROR DB_PASS: dbPassValue000010", "dbPassValue000010"},
+		{"Error: credentials: credsValue0000011", "credsValue0000011"},
+		{"Error: basic auth: Y2k6YmFzaWNBdXRoMTI=", "Y2k6YmFzaWNBdXRoMTI="},
+	} {
+		t.Run(c.secret, func(t *testing.T) {
+			ex, _ := Excerpt(goLog+c.line+"\n", 64<<10)
+			if strings.Contains(ex, c.secret) {
+				t.Fatalf("the secret of %q reached the excerpt:\n%s", c.line, ex)
+			}
+		})
+	}
+	controls := []string{
+		"    config_test.go:40: file_path: expected /a/b/c, got /c/d/e",
+		"FAIL: output_path: /workspace/out missing",
+		"Error: tokenizer: failed to load vocab file",
+		"Error: Secret: default/my-secret not found",
+		"pwd: /workspace/source",
+		`time=2026-11-01T04:12:01Z level=ERROR msg="connect failed" err="dial tcp 192.0.2.10:5432: connect: connection refused"`,
+		`level=error msg="widget sync failed"`,
+		"exit_code=1",
+		// A short credential word only counts as a whole key segment.
+		"level=info compat=legacymode upass=enabled01",
+	}
+	for _, l := range controls {
+		t.Run("control "+l, func(t *testing.T) {
+			ex, _ := Excerpt(goLog+l+"\n", 64<<10)
+			if !strings.Contains(ex, l) {
+				t.Fatalf("an ordinary line was withheld or changed: %q\n%s", l, ex)
+			}
+		})
+	}
+}
+
+// TestRedactTextSplitsOnALoneCR: a run message whose credential follows a
+// lone \r is withheld like a log line (redactText splits as Excerpt does).
+func TestRedactTextSplitsOnALoneCR(t *testing.T) {
+	if got := redactText("step 3/9\rCONN_DSN=crRunMsgValue0013"); strings.Contains(got, "crRunMsgValue0013") {
+		t.Fatalf("redactText kept a credential after a lone \\r: %q", got)
+	}
+}
+
+// TestCILogsTruncatedClipChecksEachAlone: the two places a clipped line marks
+// the excerpt cut are each reached alone — a clipped error line REPEATED
+// (picked with a count suffix, so only the picked-loop check sees it) and a
+// clipped line seen only in the tail (no failure keyword).
+func TestCILogsTruncatedClipChecksEachAlone(t *testing.T) {
+	long := strings.Repeat("x", 2*maxExcerptLine)
+	// Followed by more than tailLines short lines, so the clipped line is NOT in
+	// the tail (where add's own check would see it).
+	if _, cut := Excerpt("ERROR: "+long+"\nERROR: "+long+"\n"+strings.Repeat("ok\n", 2*tailLines), 64<<10); !cut {
+		t.Error("a repeated clipped error line did not mark the excerpt cut")
+	}
+	if _, cut := Excerpt("--- FAIL: TestShort (0.1s)\nplain "+long+"\n", 64<<10); !cut {
+		t.Error("a clipped tail-only line did not mark the excerpt cut")
 	}
 }

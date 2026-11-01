@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	authv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -90,4 +91,52 @@ func TestReadTailKeepsTheEnd(t *testing.T) {
 	if _, cut, _ := readTail(strings.NewReader(strings.Repeat("a\n", 50)), 64<<10, 50, 64<<20); !cut {
 		t.Fatal("a log at the line cap was not marked cut")
 	}
+}
+
+// TestReadTailEdges: the final trim decides the window when one read is
+// larger than maxBytes; a window that already starts at a line boundary keeps
+// its first line; a last line longer than maxBytes is kept (its end), never
+// emptied; the window starts on a UTF-8 boundary; exactly maxLines lines with
+// no trailing newline is cut.
+func TestReadTailEdges(t *testing.T) {
+	const max = 1000
+	// One read (strings.Reader serves all ~1.5 kB at once) larger than max but
+	// under 2*max, so the loop's slide never runs and the FINAL trim decides.
+	var b strings.Builder
+	for i := 0; i < 15; i++ {
+		fmt.Fprintf(&b, "l%02d %s\n", i, strings.Repeat("z", 95))
+	}
+	b.WriteString("--- FAIL: TestEnd (0.1s)\n")
+	got, cut, _ := readTail(strings.NewReader(b.String()), max, 20000, 64<<20)
+	if !cut || len(got) > max || !strings.HasSuffix(got, "--- FAIL: TestEnd (0.1s)\n") || !strings.HasPrefix(got, "l") {
+		t.Fatalf("one big read: cut %v len %d prefix %.8q suffix %.30q", cut, len(got), got, got[max0(len(got)-30):])
+	}
+	// The byte before the window is a newline: the first kept line is whole.
+	keepLine := "KEEP " + strings.Repeat("b", 400) + "\n"
+	in := strings.Repeat("a", 99) + "\n" + keepLine + strings.Repeat("more\n", 100)
+	if got, _, _ := readTail(strings.NewReader(in), int64(len(in)-100), 20000, 64<<20); !strings.HasPrefix(got, "KEEP ") {
+		t.Fatalf("a window starting on a line boundary lost its first line: %.12q", got)
+	}
+	// A single last line longer than max, ending in \n.
+	huge := strings.Repeat("h", 5*max) + "TAILEND\n"
+	if got, cut, _ := readTail(strings.NewReader(huge), max, 20000, 64<<20); got == "" || !cut || !strings.HasSuffix(got, "TAILEND\n") {
+		t.Fatalf("a long last line came back %d bytes cut %v", len(got), cut)
+	}
+	// A cut landing inside a multi-byte character (3001 bytes, the window's
+	// first byte at 3001-998 = 2003, mid-rune).
+	mb := strings.Repeat("✘", 1000) + "\n"
+	if got, _, _ := readTail(strings.NewReader(mb), 998, 20000, 64<<20); !utf8.ValidString(got) || got == "" {
+		t.Fatalf("the window is not valid UTF-8 (or empty): %d bytes", len(got))
+	}
+	// Exactly maxLines lines, no trailing newline.
+	if _, cut, _ := readTail(strings.NewReader(strings.TrimSuffix(strings.Repeat("a\n", 50), "\n")), 1<<20, 50, 64<<20); !cut {
+		t.Fatal("exactly maxLines lines without a trailing newline was not marked cut")
+	}
+}
+
+func max0(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
 }
