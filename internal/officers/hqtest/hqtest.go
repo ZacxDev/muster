@@ -29,6 +29,12 @@ type Item struct {
 	Outcome        string     `json:"outcome,omitempty"`
 	Summary        string     `json:"summary,omitempty"`
 	UpdatedAt      time.Time  `json:"updated_at"`
+	// Blocked and BlockedBy are HQ's task ordering: an item whose task waits
+	// on unfinished tasks says `blocked: true, blocked_by: [task ids]`, and
+	// both are ABSENT otherwise (as on an HQ without ordering). A claim on a
+	// blocked item is refused (409 blocked).
+	Blocked   bool     `json:"blocked,omitempty"`
+	BlockedBy []string `json:"blocked_by,omitempty"`
 }
 
 // Request is one recorded request.
@@ -158,6 +164,15 @@ func (s *Server) SetClaim(id, holder string, expires time.Time) {
 	defer s.mu.Unlock()
 	it := s.items[id]
 	it.Status, it.ClaimedBy, it.LeaseExpiresAt = "claimed", holder, &expires
+}
+
+// SetBlocked marks item id blocked by the tasks by (none: unblocked, both
+// fields absent from what the fake serves).
+func (s *Server) SetBlocked(id string, by ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it := s.items[id]
+	it.Blocked, it.BlockedBy = len(by) > 0, append([]string(nil), by...)
 }
 
 // Item returns a copy of item id.
@@ -353,6 +368,11 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		// lease is a 409 too (use heartbeat)").
 		if live {
 			s.write(w, http.StatusConflict, map[string]any{"error": "held", "code": "held", "held_by": it.ClaimedBy, "lease_expires_at": it.LeaseExpiresAt})
+			return
+		}
+		// HQ's task ordering: a blocked item is not claimable; nothing changes.
+		if it.Blocked {
+			s.write(w, http.StatusConflict, map[string]any{"error": "blocked", "code": "blocked", "blocked_by": it.BlockedBy})
 			return
 		}
 		exp := now.Add(time.Duration(lease) * time.Second)
