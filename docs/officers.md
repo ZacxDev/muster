@@ -827,15 +827,31 @@ What it does, read fresh on every call:
    (split evenly between the failed tasks; `truncated` says a cap cut
    something).
 
-**Secret safety.** A line that looks like it carries a credential — a GitHub,
-AWS, Slack or `sk-` key, a JWT, an `Authorization`/`Bearer` header, a
-`password=`/`token: …`-style assignment — or is an environment assignment
-(`NAME=value`, an env dump), or is nothing but 40+ characters of base64, is
-withheld whole, and a URL's `user:password@` is masked. A PEM block is
-withheld whole, every line from `-----BEGIN …-----` through `-----END …-----`
-(headers included), and to the end of the log when the END never came. That is a pattern filter, not a proof: what CI
-prints is the CI's to keep clean, and the byte cap bounds what any miss can
-carry.
+**Secret safety.** The log is split into lines at `\n` and at a lone `\r` (a
+progress line overwritten in place). These lines are withheld whole:
+
+- a token shape: GitHub (`ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`,
+  `github_pat_…`), AWS (`AKIA…`), Slack (`xox…-`), `sk-…`, a JWT (`eyJ….….`);
+- an `Authorization:` header, or `Bearer` followed by 12+ token characters;
+- a credential-named key given a value of 6+ characters. The keys are
+  `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`/`apikey`,
+  `access_key`, `private_key`, `client_secret` and `_pat`, in any case and
+  anywhere in the key, so `AWS_SECRET_ACCESS_KEY=`, `API_TOKEN=`,
+  `OAUTH_CLIENT_SECRET:` and `npm_config__authToken=` all count. The value may
+  follow `=` or `:`, with optional quotes, as in `"DATABASE_PASSWORD":"…"`;
+- an environment assignment at the start of a line, `NAME=value` in either
+  case. A `set -x` trace prefix (`+ `, `++ export `) is allowed before it;
+- a line that is nothing but 40+ characters of base64;
+- every line of a PEM block, from `-----BEGIN …-----` through
+  `-----END …-----` (headers included), and to the end of the log when the
+  END never came.
+
+A URL's `user:password@`, with or without a user, is masked to `***@`. A
+line that only names a credential (`ERROR: password authentication failed`,
+`TestTokenRefresh`) passes through unchanged.
+
+This is a pattern filter, not a proof. Keeping secrets out of the CI output
+is the CI's job, and the byte cap bounds what any miss can carry.
 
 It never answers empty: `state` is `no_run` (no run for this head yet, or
 pruned), `running`, `succeeded` (with "no failure found") or `failed`, and

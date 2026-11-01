@@ -322,19 +322,24 @@ var (
 const withheld = "[line withheld: it looks like it carries a credential]"
 
 // secretRE are lines that look like they carry a credential: a GitHub, AWS,
-// Slack, OpenAI-style or JWT token, a PEM block, an Authorization header, a
-// `password=` / `token: …` assignment, or an environment-dump line.
+// Slack, OpenAI-style or JWT token, a PEM block, an Authorization header, or
+// a credential-named key assigned a value. The key is matched anywhere in a
+// word, so a prefix joined by `_` or letters counts (AWS_SECRET_ACCESS_KEY,
+// API_TOKEN, OAUTH_CLIENT_SECRET, npm_config__authToken), with `=` or `:`
+// and an optional quote on either side (`KEY=v`, `KEY: v`, `"KEY":"v"`).
 var secretRE = regexp.MustCompile(`(?i)` +
-	`\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bsk-[A-Za-z0-9_-]{20,}|` +
+	`\bgh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bsk-[A-Za-z0-9_-]{20,}|` +
 	`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|-----BEGIN [A-Z ]*(PRIVATE KEY|CERTIFICATE)|\bauthorization:\s*\S|\bbearer\s+[A-Za-z0-9._~+/=-]{12,}|` +
-	`\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["']?[^\s"',;]{6,}`)
+	`(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|_pat)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?[^\s"',;]{6,}`)
 
 // envLineRE is a line that is one environment variable assignment
-// (`NAME=value`): an env dump, never what a failure says.
-var envLineRE = regexp.MustCompile(`^\s*(export\s+)?[A-Z][A-Z0-9_]{2,}=\S`)
+// (`NAME=value`, upper or lower case), as an env dump or a `set -x` trace
+// prints it (`+ NAME=…`, `++ export NAME=…`): never what a failure says.
+var envLineRE = regexp.MustCompile(`^[\s+]*(export\s+)?[A-Za-z_][A-Za-z0-9_]{2,}=\S`)
 
-// urlUserRE is the userinfo of a URL (`scheme://user:pass@`).
-var urlUserRE = regexp.MustCompile(`://[^/\s:@]+:[^/\s@]+@`)
+// urlUserRE is the userinfo of a URL (`scheme://user:pass@`, the user may be
+// empty).
+var urlUserRE = regexp.MustCompile(`://[^/\s:@]*:[^/\s@]+@`)
 
 // pemBeginRE / pemEndRE bound a PEM block (any type). base64LineRE is a line
 // that is nothing but a long run of base64 — a PEM body line (64 wide) whose
@@ -396,7 +401,8 @@ func Excerpt(log string, maxBytes int) (string, bool) {
 	if maxBytes <= 0 {
 		return "", log != ""
 	}
-	lines := strings.Split(strings.ReplaceAll(log, "\r\n", "\n"), "\n")
+	// A lone \r (a progress line overwritten in place) separates lines too.
+	lines := strings.FieldsFunc(strings.ReplaceAll(log, "\r\n", "\n"), func(r rune) bool { return r == '\n' || r == '\r' })
 	for i, l := range lines {
 		lines[i] = strings.TrimRight(ansiRE.ReplaceAllString(l, ""), " \t\r")
 	}
