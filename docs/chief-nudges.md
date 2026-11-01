@@ -119,19 +119,23 @@ is told so and writes the question and 2 to 4 options. A nudge survives it only
 when the label is `asks_permission` **and** the quote guard passes; a "leave", or
 any other nudge, becomes the ask. When the chief gave no question, it is the
 **generic ask** — "*<focus title>* is waiting on you. Its last turn looks like
-it asked you something." with the options **Open session** and **Dismiss** — which
-carries no word of the session's, and whose options relay nothing (only an
-answer you type is relayed). When the chief's answer gave a reason, the ask
+it asked you something." with the options **Open session** and **Dismiss** — in
+which muster puts no session text (its only words about the session are the
+chief's own, below), and whose options relay nothing (only an answer you type
+is relayed). When the chief's answer gave a reason, the ask
 adds it as one more line, "The chief's read: *<reason>*", cut to 300
 characters: the chief's own reason from its answer, never the `classifier: …`
 prefix muster puts around it in the row's `reason`. It is the chief's words,
 held exactly as a chief's question on an ordinary ask is: one line, cut, and
-not checked for session text (no ask path has such a check). With no reason,
+not checked for session text (no ask path has such a check); the prompt tells
+the chief, for the reason as for the question, never to paste the session's
+text. With no reason,
 the generic ask is unchanged. Under the threshold, the chief decides as before.
 
-The chief's ask guidance also says that a message ending with **several**
+On an ask-stall, the chief is also told that a message ending with **several**
 things waiting on you (a to-do list rather than one question) gets ONE question
-summing them up, with options, in its own words.
+summing them up, with options, in its own words. Below the threshold it is not
+told this, so a finished report listing next steps stays a leave.
 
 **It never wedges the sweep.** The call is capped at 5 seconds; on any error
 (no key, timeout, an HTTP error, an unreadable answer) the error is recorded and
@@ -428,11 +432,13 @@ The audit rows carry the decision's fields and where it went, never the
 session's text. The row itself holds the message, the quote, the question and
 your relayed answer.
 
-The row's `reason` is the chief's own one-line reason, on every decision the
-chief answered (left, asked, nudged, suppressed by a guard), prefixed by
-muster's when muster changed the decision (`classifier: …`, `partial_read: …`,
-`escalated: …`). A decision recorded without an answer from the chief (its call
-failed, or it refused) has its why in `detail` instead.
+The row's `reason` is the chief's own one-line reason on every decision whose
+answer muster could read (left, asked, nudged, suppressed by a guard), prefixed
+by muster's when muster changed the decision (`classifier: …`, `partial_read:
+…`, `escalated: …`). On an answer muster could not read (`suppressed:invalid`)
+it is muster's parse error, not the chief's words. A decision recorded without
+an answer from the chief (its call failed, or it refused) has its why in
+`detail` instead.
 
 ## Limits
 

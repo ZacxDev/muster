@@ -1174,14 +1174,16 @@ func TestChiefNudgeAWindowRelayIsTiedToItsStall(t *testing.T) {
 	}
 }
 
-// TestChiefNudgeTheGenericAskCarriesNoSessionText: an ask-stall the chief
-// would leave raises the GENERIC ask — muster's sentence and the focus title,
-// not a word of the session's — and choosing one of its options relays nothing.
-func TestChiefNudgeTheGenericAskCarriesNoSessionText(t *testing.T) {
+// TestChiefNudgeMusterPutsNoSessionTextInTheGenericAsk: an ask-stall the
+// chief would leave, with NO reason, raises the GENERIC ask — muster's sentence
+// and the focus title, not a word of the session's — and choosing one of its
+// options relays nothing. (With a reason, the chief's own words are added:
+// chief_nudge_generic_read_pg_test.go.)
+func TestChiefNudgeMusterPutsNoSessionTextInTheGenericAsk(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	j := withJev(t, f)
 	j.set(200, 0.90, 0.05, 0.05)
-	f.gw.set(`{"decision":"leave","reason":"done"}`)
+	f.gw.set(`{"decision":"leave"}`)
 	f.pass(t)
 	d := f.one(t)
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)

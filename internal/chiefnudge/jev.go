@@ -299,11 +299,11 @@ func AskStall(r Result, threshold float64) bool {
 }
 
 // The GENERIC ASK: raised for an ask-stall when the chief gave no question
-// (it said leave, or proposed a nudge the rule refuses). It carries NO session
-// text — only the focus title (the summarizer's, which the Asks page already
-// shows), muster's own sentence and the chief's own reason (GenericAskRead) —
-// and its two options are not an answer: choosing one relays nothing
-// (IsGenericChoice).
+// (it said leave, or proposed a nudge the rule refuses). Muster puts NO session
+// text in it — only the focus title (the summarizer's, which the Asks page
+// already shows) and its own sentence; its only words about the session are the
+// chief's own reason (GenericAskRead) — and its two options are not an answer:
+// choosing one relays nothing (IsGenericChoice).
 const genericAskBody = "Its last turn looks like it asked you something."
 
 // GenericAskOptions are the generic ask's options.

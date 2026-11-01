@@ -569,10 +569,11 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		if why != "" {
 			q, opts, read := prop.Question, chiefnudge.CleanOptions(prop.Options), ""
 			if strings.TrimSpace(q) == "" {
-				// 🔴 NO SESSION TEXT: the generic ask (jev.go), never an excerpt
-				// of the session's last message under the chief's label — with
-				// the chief's OWN reason (prop.Reason, never d.Reason's
-				// muster-built prefix) as its read of the session.
+				// 🔴 NO SESSION TEXT FROM MUSTER: the generic ask (jev.go), never
+				// an excerpt of the session's last message under the chief's
+				// label. Its only words about the session are the chief's own:
+				// its reason (prop.Reason, never d.Reason's muster-built prefix)
+				// as its read of the session.
 				read = prop.Reason
 				q, opts = chiefnudge.GenericAskQuestion(c.Title, read), append([]string(nil), chiefnudge.GenericAskOptions...)
 			}
