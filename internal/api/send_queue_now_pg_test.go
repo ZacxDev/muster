@@ -234,14 +234,16 @@ func TestSendNowIsRefusedWhereASendIsAndWhereTheDispatchersDeliveryIs(t *testing
 
 // TestTheListDrawsSendNowAndCopyOnQueuedRowsOnly: a queued row's ⋯ menu holds
 // Send now (a real form posting to its route), Copy message (carrying the
-// whole message, not the preview) and Cancel; a finished row has no menu and
+// whole message, not the preview) and Cancel; a failed row has no menu and
 // keeps its own buttons.
 func TestTheListDrawsSendNowAndCopyOnQueuedRowsOnly(t *testing.T) {
 	f := newSQFixture(t)
 	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now().UnixMilli()}
+	// First: expired() runs an idle dispatcher pass, which would send a row
+	// queued before it.
+	failed := f.expired(t, "already failed")
 	long := strings.Repeat("a long queued message ", 20) + "THE END"
 	q := f.enqueue(t, long, time.Minute, 0)
-	sent := f.sent(t, "already sent")
 	_, page := mirrorGet(t, f.srv, f.ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
 	rowOf := func(id int64) string {
 		i := strings.Index(page, `data-queue-id="`+strconv.FormatInt(id, 10)+`"`)
@@ -251,7 +253,7 @@ func TestTheListDrawsSendNowAndCopyOnQueuedRowsOnly(t *testing.T) {
 		j := strings.Index(page[i:], "</li>")
 		return page[i : i+j]
 	}
-	qr, sr := rowOf(q.ID), rowOf(sent.ID)
+	qr, sr := rowOf(q.ID), rowOf(failed.ID)
 	for _, want := range []string{`aria-haspopup="menu"`, `action="` + sendNowPath(q.ID) + `"`, `action="` + ui.SendQueueCancelPath(q.ID) + `"`,
 		`data-queue-copy`, "THE END"} {
 		if !strings.Contains(qr, want) {
@@ -260,10 +262,10 @@ func TestTheListDrawsSendNowAndCopyOnQueuedRowsOnly(t *testing.T) {
 	}
 	for _, not := range []string{`aria-haspopup="menu"`, "send-now", "data-queue-copy"} {
 		if strings.Contains(sr, not) {
-			t.Errorf("the sent row has %q: %s", not, sr)
+			t.Errorf("the failed row has %q: %s", not, sr)
 		}
 	}
-	if !strings.Contains(sr, `action="`+ui.SendQueueDeletePath(sent.ID)+`"`) {
-		t.Errorf("CONTROL: the sent row lost its Delete: %s", sr)
+	if !strings.Contains(sr, `action="`+ui.SendQueueDeletePath(failed.ID)+`"`) {
+		t.Errorf("CONTROL: the failed row lost its Delete: %s", sr)
 	}
 }

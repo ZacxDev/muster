@@ -158,9 +158,33 @@ func routeArgs(m plugins.Message, sub string) string {
 // queued is the owner's send-queue rows for the routed window.
 func (f *routeFixture) queued(t *testing.T) []sendqueue.Item {
 	t.Helper()
-	items, err := f.queue.List(f.asOwner, sendqueue.Target{Host: "tower", Session: "work", Window: "@4"})
+	// Every row the owner has for the window, oldest first, read as the owner
+	// (row-level security applies) — NOT List, which leaves out what is done
+	// (sent, cancelled, retried), which is what these tests assert on.
+	rows, err := f.pool.Query(f.asOwner, `SELECT id FROM send_queue
+		WHERE mirror_host = 'tower' AND mirror_session = 'work' AND mirror_window = '@4' ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	var items []sendqueue.Item
+	for _, id := range ids {
+		it, err := f.queue.Get(f.asOwner, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, it)
 	}
 	return items
 }
