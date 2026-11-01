@@ -426,19 +426,14 @@ func (s *Server) nudgeOpenAskers(octx context.Context) map[string]bool {
 	return out
 }
 
-// nudgeAskWhere is which session a nudge's ask is about, as its text
-// (nudgeAskQuestion) opens: its focus title ("A session" for none), then where
-// it is — a mirrored window's exact tmux target as the sweep saw it
-// (mirror.Where), an agent's name.
-func nudgeAskWhere(c chiefnudge.Session) string {
-	where := c.Title
-	if where == "" {
-		where = "A session"
-	}
+// nudgeAskPlace is where a nudge's ask says its session is, after its focus
+// title (nudgeAskQuestion): " (<a mirrored window's exact tmux target as the
+// sweep saw it>)" (mirror.Where), or " (agent <name>)".
+func nudgeAskPlace(c chiefnudge.Session) string {
 	if c.Kind == chiefnudge.KindMirror {
-		return where + " (" + mirror.Where(c.Host, c.TmuxSession, c.Window, c.Index, c.Label) + ")"
+		return " (" + mirror.Where(c.Host, c.TmuxSession, c.Window, c.Index, c.Label) + ")"
 	}
-	return where + " (agent " + c.Label + ")"
+	return " (agent " + c.Label + ")"
 }
 
 // nudgeTitle is c's focus title, "" for none.
@@ -1222,7 +1217,11 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 // generic: the generic ask (chiefnudge.GenericAskQuestion) — muster's own
 // sentence, whose options send nothing.
 func nudgeAskQuestion(c chiefnudge.Session, q string, generic bool) string {
-	where := nudgeAskWhere(c)
+	where := c.Title
+	if where == "" {
+		where = "A session"
+	}
+	where += nudgeAskPlace(c)
 	text := where + " stopped and is waiting on you:\n\n" + strings.TrimSpace(q) +
 		"\n\nYour answer is sent into that session word for word."
 	if generic {
