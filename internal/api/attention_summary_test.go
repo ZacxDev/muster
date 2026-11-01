@@ -34,8 +34,13 @@ var summaryNow = time.Unix(1_800_000_000, 0)
 // summary says what the lock screen says and no more.
 func TestTheSummaryItemSaysWhatItsPushSays(t *testing.T) {
 	sessKey := sessionKey("host-b", "main", "@3")
+	// The window running the asking session (its codename's index is NOT its
+	// tmux index): the title names it as askSource does, mirror.Where.
+	mirrorHosts := []mirror.HostView{{Host: "ws", Windows: []mirror.Window{
+		{Session: "main", ID: "@7", Index: 4, Label: "Gold:1", Claude: true, ClaudeSession: focusSID}}}}
 	mirrorAsk := askItem(attention.Ask{ID: 41, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID, Label: "Gold:1"},
-		Question: "Use ghp_0123abcd9 for the mirror?\n\nIt is the only key.", Options: []string{"yes", "no"}, CreatedAt: summaryNow.Add(-90 * time.Second)})
+		Question: "Use ghp_0123abcd9 for the mirror?\n\nIt is the only key.", Options: []string{"yes", "no"}, CreatedAt: summaryNow.Add(-90 * time.Second)},
+		mirrorHosts...)
 	agentAsk := askItem(attention.Ask{ID: 42, Asker: attention.Asker{AgentID: 7, Label: "deploy-bot"},
 		Question: "Deploy the importer?", Options: []string{"deploy now", "wait"}, Suggestions: []string{"go ahead"}, CreatedAt: summaryNow.Add(-2 * time.Hour)})
 	draft := attentionItem{Key: draftKey(3), Kind: attentionKindPlugin, Source: "Discord DMs",
@@ -48,7 +53,7 @@ func TestTheSummaryItemSaysWhatItsPushSays(t *testing.T) {
 		want attentionSummaryItem
 	}{
 		{"an ask from a mirrored session: its host, the question redacted, never its options", mirrorAsk, attentionSummaryItem{
-			Key: "ask-41", Kind: "ask", Host: "ws", Title: "Gold:1", Why: "Use «redacted» for the mirror? It is the only key.",
+			Key: "ask-41", Kind: "ask", Host: "ws", Title: "Gold:1 · tmux main:4 @ ws", Why: "Use «redacted» for the mirror? It is the only key.",
 			Since: 1_799_999_910, AgeSecs: 90, URL: "https://muster.example.test/attention/open/ask-41"}},
 		{"an agent's ask: no host, never its options or suggestions", agentAsk, attentionSummaryItem{
 			Key: "ask-42", Kind: "ask", Title: "deploy-bot", Why: "Deploy the importer?",

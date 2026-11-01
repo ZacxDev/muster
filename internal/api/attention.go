@@ -596,19 +596,15 @@ func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]
 		if err != nil {
 			errs = append(errs, fmt.Errorf("asks: %w", err))
 		}
-		// The owner's windows, read once and only when a mirrored ask needs them.
-		var hosts []mirror.HostView
-		listed := false
 		for _, a := range asks {
 			// A question to the chief is the chief's (chief_ask_tool.go), not
 			// the owner's: the chief asks the owner with attention_ask if it must.
 			if a.ToChief {
 				continue
 			}
-			if askNeedsHosts(a) && !listed && s.ext.Mirror != nil {
-				hosts, listed = s.ext.Mirror.Hosts(ctx), true
-			}
-			out = append(out, askItem(a, hosts...))
+			// A mirrored session's ask names its window from the SAME read of
+			// the hub as the waiting sessions below (hs): one read per build.
+			out = append(out, askItem(a, hs...))
 		}
 	}
 	out = append(out, s.waitingSessionsIn(ctx, hs)...)

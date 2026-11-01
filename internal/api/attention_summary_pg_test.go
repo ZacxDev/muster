@@ -158,9 +158,9 @@ func TestTheSummaryIsTheOwnersQueueAndHosts(t *testing.T) {
 	}
 	sess := sessionKey("ws", "main", "@1")
 	for key, want := range map[string]struct{ kind, host, title, why, url string }{
-		attentionAskKey(mirrored.ID): {"ask", "ws", "Gold:1", "Use «redacted» for the mirror?", base + attentionOpenPath + attentionAskKey(mirrored.ID)},
+		attentionAskKey(mirrored.ID): {"ask", "ws", "tmux main:1 @ ws", "Use «redacted» for the mirror?", base + attentionOpenPath + attentionAskKey(mirrored.ID)},
 		attentionAskKey(agentAsk):    {"ask", "", f.op.Name, "Which bucket?", base + attentionOpenPath + attentionAskKey(agentAsk)},
-		sess:                         {"session", "ws", "main:1 @ ws", "Waiting: main:1 @ ws", base + attentionOpenPath + sess},
+		sess:                         {"session", "ws", "tmux main:1 @ ws", "Waiting: tmux main:1 @ ws", base + attentionOpenPath + sess},
 		draftKey(d.ID):               {"plugin", "", "Attention inbox", "Reply draft: Dana (Attention inbox)", base + draftLink(d.ID)},
 	} {
 		it, ok := byKey[key]
@@ -205,7 +205,12 @@ func TestTheSummaryIsTheOwnersQueueAndHosts(t *testing.T) {
 	if got := strings.Join(summaryKeys(msum), ","); got != attentionAskKey(memberAsk) || len(msum.Hosts) != 0 {
 		t.Fatalf("the member's summary: keys %s hosts %+v; want only %s and no hosts", got, msum.Hosts, attentionAskKey(memberAsk))
 	}
-	for _, leak := range []string{"Which bucket?", "Gold:1", "Dana", `"ws"`} {
+	// "tmux main:1": the operator's windows' targets, which its own summary
+	// carries (its titles above) and the member's must not.
+	if !strings.Contains(raw, "tmux main:1 @ ws") {
+		t.Fatalf("control: the operator's summary does not name its window's target: %s", raw)
+	}
+	for _, leak := range []string{"Which bucket?", "Gold:1", "tmux main:1", "Dana", `"ws"`} {
 		if strings.Contains(mraw, leak) {
 			t.Errorf("the member's summary carries the operator's %q", leak)
 		}
