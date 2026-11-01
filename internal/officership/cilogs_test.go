@@ -2,7 +2,11 @@ package officership
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
@@ -425,5 +429,61 @@ func TestParsePipelineRunAndTaskRunReadTheRealShape(t *testing.T) {
 	if x.PipelineTask != "go" || x.PodName != "example-pr-check-abcde-go-pod" || x.Succeeded != "False" || len(x.Steps) != 2 ||
 		x.Steps[1].Container != "step-test" || x.Steps[1].ExitCode != 2 || !x.Steps[1].Terminated || x.Steps[0].ExitCode != 0 {
 		t.Fatalf("parsed %+v", x)
+	}
+}
+
+// TestCILogsWithholdsAWholePEMBlock: a private key printed by a failing step
+// — BEGIN line, base64 body, END line — is withheld WHOLE, including the body
+// lines that land in the excerpt's tail even when the BEGIN line is outside
+// the tail's window, and a block whose END never came (the step died
+// mid-print) is withheld to the end of the log.
+func TestCILogsWithholdsAWholePEMBlock(t *testing.T) {
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}))
+	var body []string
+	for _, l := range strings.Split(strings.TrimSpace(block), "\n") {
+		if !strings.HasPrefix(l, "-----") {
+			body = append(body, l)
+		}
+	}
+	if len(body) < tailLines {
+		t.Fatalf("fixture: the PEM body has %d lines; it must outnumber the %d-line tail so BEGIN falls outside it", len(body), tailLines)
+	}
+	all := strings.Split(strings.TrimSpace(block), "\n")
+	cut := strings.Join(all[:len(body)/2+1], "\n") + "\n"
+	// The log READ starts inside the block (its BEGIN was before the tail
+	// read's window): only the body and END are in it.
+	headless := strings.Join(all[3:], "\n") + "\n"
+	// An encrypted key's PEM headers are not base64: only the BEGIN…END state
+	// withholds them (the DEK-Info IV is the probe).
+	const dekIV = "8F3A1C2B4D5E6F708192A3B4C5D6E7F8"
+	// Cut short (the step died mid-print) so the headers fall in the tail.
+	encrypted := all[0] + "\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC," + dekIV + "\n\n" + strings.Join(all[1:5], "\n") + "\n"
+	for name, log := range map[string]string{
+		"whole block at the end":      goLog + "ERROR: wrote the deploy key:\n" + block,
+		"block with no END":           goLog + "ERROR: wrote the deploy key:\n" + cut,
+		"block mid-log, then failure": "ERROR: key follows\n" + block + goLog,
+		"log read starts mid-block":   headless + goLog,
+		"encrypted key's headers":     goLog + "ERROR: wrote the deploy key:\n" + encrypted,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ex, _ := Excerpt(log, 64<<10)
+			if strings.Contains(ex, dekIV) || strings.Contains(ex, "Proc-Type") {
+				t.Fatalf("an encrypted PEM block's header reached the excerpt:\n%s", ex)
+			}
+			for _, b := range body {
+				if strings.Contains(ex, b) {
+					t.Fatalf("a PEM body line reached the excerpt: %q\n%s", b, ex)
+				}
+			}
+			// Positive control: the failure around it is still reported, and
+			// the withholding marker shows the block was seen.
+			if !strings.Contains(ex, "TestWidgetFeed") || !strings.Contains(ex, "withheld") {
+				t.Fatalf("the excerpt lost the failure or never saw the block:\n%s", ex)
+			}
+		})
 	}
 }
