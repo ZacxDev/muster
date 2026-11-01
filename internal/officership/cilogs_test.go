@@ -285,7 +285,7 @@ func TestCILogsExcerptCarriesTheFailAndErrorLines(t *testing.T) {
 func TestCILogsRespectsTheByteCap(t *testing.T) {
 	r, _, ci := greenCIFixture()
 	var big strings.Builder
-	for i := 0; i < 5000; i++ {
+	for i := 0; i < 800; i++ { // ~48 kB: far over the 4 kB cap, cheap under -race
 		fmt.Fprintf(&big, "  \u2718  %d [chromium] \u203a specs/s.spec.ts:%d:7 \u203a case %d fails\n", i, i, i)
 	}
 	ci.logs["run-current-e2e-pod/step-test"] = big.String()
