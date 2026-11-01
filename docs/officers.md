@@ -997,11 +997,12 @@ userinfo is masked); the 8 KiB cut, marked `… [truncated N bytes]`. Transcript
 text is never logged.
 
 **`seq`** is the event's position in the transcript FILE: the end offset of
-its line × 16 + its index within the line. It strictly increases along the
+its line × 32768 + its index within the line (15 bits: ccd never serves a
+line over 1 MiB, so no line carries that many events, and none is dropped). It strictly increases along the
 file, so a restarted muster derives the same `seq` for the same event, and its
 resume — which re-reads the backfill window — is deduplicated by HQ's rule
 rather than by memory. It stays below 2^53 (a JSON-safe integer) for any file
-under 512 TiB. A new conversation mid-item (a new file, offsets from zero: an
+under 256 GiB (2^53 / 2^15 = 2^38 bytes). A new conversation mid-item (a new file, offsets from zero: an
 operator's `/clear`; `ccd` resumes the primary's own conversation by id on a
 restart) is shifted above the seqs before it; a muster that restarts INTO such
 a conversation has lost that shift, sees HQ answer `stored: 0` with a
@@ -1028,6 +1029,11 @@ answers 404, the forwarder logs that the transcript cannot be read and retries
 every tick, and nothing is sent until the pod runs the new image. An officer
 that enables `transcript` on a server whose agent gateway cannot read
 transcripts is a boot refusal.
+
+**Rollback order** is the reverse: remove the `transcript` key from
+`MUSTER_OFFICERS` (and let muster-server restart on that config) BEFORE rolling
+muster-server back to an image that predates it — an older image refuses the
+unknown field and does not boot.
 
 ## Security model
 

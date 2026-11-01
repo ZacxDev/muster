@@ -303,7 +303,8 @@ func TestRedactsASecretInAToolResultBeforePosting(t *testing.T) {
 	r := newRig(t, true, nil)
 	item := r.claim()
 	r.fwd.Claimed(r.o, instance, officers.ItemID(item))
-	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	// Built at runtime: a token-shaped literal in the source trips the leak gate.
+	secret := "ghp_" + strings.Repeat("A1b2", 9)
 	r.src.add(at(1), cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: "t1", OK: true,
 		Output: "fetched the release notes\nGITHUB_TOKEN=" + secret + "\nall 12 checks passed"})
 	// The officer's own token, echoed by a tool, is never sent either — even
@@ -326,7 +327,7 @@ func TestRedactsASecretInAToolResultBeforePosting(t *testing.T) {
 	}
 	for _, q := range r.posts() {
 		b, _ := json.Marshal(q.Body)
-		if strings.Contains(string(b), secret) || strings.Contains(string(b), "abcdefghijklmnopqrstuvwxyz0123456789") {
+		if strings.Contains(string(b), secret) || strings.Contains(string(b), strings.Repeat("A1b2", 9)) {
 			t.Fatalf("the secret reached HQ: %s", b)
 		}
 		if strings.Contains(string(b), officerToken) {
@@ -586,6 +587,39 @@ func TestAPassStartsAHeldItemAndStopsOneNoLongerHeld(t *testing.T) {
 	r.fwd.Sync(r.o, nil, r.now.Add(-time.Second))
 	if len(r.fwd.Active()) != 1 {
 		t.Fatalf("a stale pass stopped a fresh claim")
+	}
+}
+
+// TestALineWithManyEventsPostsEveryOne: one user record carrying 40 parallel
+// tool results is one transcript line with 40 events; every one is posted,
+// in strictly increasing seq, none dropped as unsequenced.
+func TestALineWithManyEventsPostsEveryOne(t *testing.T) {
+	r := newRig(t, true, nil)
+	item := r.claim()
+	r.fwd.Claimed(r.o, instance, officers.ItemID(item))
+	var evs []cctranscript.Event
+	for i := 0; i < 40; i++ {
+		evs = append(evs, cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: "t" + itoa(i), OK: true, Output: "result " + itoa(i)})
+	}
+	r.src.add(at(1), evs...)
+	r.src.add(at(2), cctranscript.Event{Kind: cctranscript.KindText, Text: "the next line"})
+	r.tick()
+	got := r.hq.Transcript(item)
+	if len(got) != 41 {
+		t.Fatalf("stored %d events, want all 41 (log: %s)", len(got), r.log)
+	}
+	for i := 0; i < 40; i++ {
+		if got[i].Text != "result "+itoa(i) {
+			t.Fatalf("event %d = %q", i, got[i].Text)
+		}
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Seq <= got[i-1].Seq {
+			t.Fatalf("seq not strictly increasing at %d: %d then %d", i, got[i-1].Seq, got[i].Seq)
+		}
+	}
+	if got[40].Text != "the next line" {
+		t.Fatalf("the following line: %q", got[40].Text)
 	}
 }
 

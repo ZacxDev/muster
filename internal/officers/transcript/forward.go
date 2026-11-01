@@ -18,14 +18,14 @@
 // marker. Transcript text is never logged.
 //
 // 🔴 THE SEQ IS A FUNCTION OF THE TRANSCRIPT POSITION, NOT OF MEMORY (Seq):
-// the end offset of the event's line in the transcript file times 16, plus the
+// the end offset of the event's line in the transcript file times 32768, plus the
 // event's index within that line. It strictly increases along the file, so a
 // restarted muster derives the SAME seq for the same event, and HQ's
 // idempotency rule (a seq at or below its highest stored is skipped) turns a
 // resume's re-read into no duplicates. A resume re-reads a backfill window
 // (Config.Backfill) of the transcript, so events written while muster was
 // down are sent too, as long as they fit in it. It stays below 2^53 for any
-// file under 512 TiB, so it survives a JSON reader that parses numbers as
+// file under 256 GiB, so it survives a JSON reader that parses numbers as
 // doubles.
 //
 // The one case the file position cannot order is a NEW CONVERSATION mid-item
@@ -654,18 +654,25 @@ func Truncate(s string, n int) string {
 
 // --- the seq -------------------------------------------------------------------
 
-// The seq's layout: the line's end offset in its transcript file, then 4 bits
+// The seq's layout: the line's end offset in its transcript file, then 15 bits
 // of the event's index within that line. The end offset strictly increases
 // from line to line along one file and the index within one, so seq does.
-// maxSeq keeps it a JSON-safe integer (below 2^53).
+// maxSeq keeps it a JSON-safe integer (below 2^53): 2^53 / 2^15 = 2^38, so an
+// end offset below 256 GiB (a transcript far past any session's).
+//
+// 🔴 15 BITS SO NO LINE'S EVENTS ARE EVER DROPPED. ccd never serves a line
+// longer than its 1 MiB read window (cctranscript.ReadLines skips one), and an
+// event is at least one content block of well over 32 bytes, so a served line
+// carries fewer than 2^20 / 32 = 32768 events. (4 bits dropped every event
+// past the 16th of a user record carrying many parallel tool results.)
 const (
-	idxBits = 4
+	idxBits = 15
 	maxIdx  = 1<<idxBits - 1
 	maxSeq  = 1 << 53
 )
 
 // Seq is the seq of the idx'th event of the line ending at end, or false when
-// none exists (an index past 15, an offset past 512 TiB).
+// none exists (an index past 32767, an offset past 256 GiB).
 func Seq(end int64, idx int) (int64, bool) {
 	if end <= 0 || end >= maxSeq>>idxBits || idx < 0 || idx > maxIdx {
 		return 0, false
