@@ -339,24 +339,45 @@ var (
 // What a line that looks like a credential is replaced by.
 const withheld = "[line withheld: it looks like it carries a credential]"
 
-// secretRE are lines that look like they carry a credential: a GitHub, AWS,
-// Slack, OpenAI-style or JWT token, a PEM block, an Authorization header, or
-// a credential-named key assigned a value. The key is matched anywhere in a
-// word, so a prefix joined by `_` or letters counts (AWS_SECRET_ACCESS_KEY,
-// API_TOKEN, OAUTH_CLIENT_SECRET, npm_config__authToken), with `=` or `:`
-// and an optional quote on either side (`KEY=v`, `KEY: v`, `"KEY":"v"`).
-var secretRE = regexp.MustCompile(`(?i)` +
+// tokenRE are lines carrying a credential by its SHAPE or its framing: a
+// GitHub, AWS, Slack, OpenAI-style or JWT token, a PEM header, an
+// Authorization header or a Bearer token, a Cookie / Set-Cookie header, a
+// signed URL's sig= / signature= / token= query parameter, a CLI flag
+// --password/--token/--secret/--api-key with a value, a registry or database
+// login's -p VALUE / -pVALUE, and `basic auth: <base64>`.
+var tokenRE = regexp.MustCompile(`(?i)` +
 	`\bgh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bsk-[A-Za-z0-9_-]{20,}|` +
 	`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|-----BEGIN [A-Z ]*(PRIVATE KEY|CERTIFICATE)|\bauthorization:\s*\S|\bbearer\s+[A-Za-z0-9._~+/=-]{12,}|` +
-	`(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|_pat)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?[^\s"',;]{6,}`)
+	`\b(set-)?cookie:\s*\S|[?&](sig|signature|x-amz-signature|x-goog-signature|token|access_token)=[^&\s]{6,}|` +
+	`--(password|passwd|token|secret|api[-_]?key|access[-_]?token|client[-_]?secret)(=|\s+)\S{4,}|` +
+	`\b(docker|podman|helm|oras|skopeo|buildah)\b.*\blogin\b.*\s-p\s*\S{4,}|\b(mysql|mysqladmin|mysqldump|mariadb)\b.*\s-p\S{4,}|` +
+	`\bbasic\s+auth:?\s*[A-Za-z0-9+/]{8,}={0,2}`)
 
-// envLineRE is a line that is one environment variable assignment
-// (`NAME=value`, upper or lower case), as an env dump or a `set -x` trace
-// prints it (`+ NAME=…`, `++ export NAME=…`): never what a failure says.
-var envLineRE = regexp.MustCompile(`^[\s+]*(export\s+)?[A-Za-z_][A-Za-z0-9_]{2,}=\S`)
+// keyRE is a credential-named KEY given a value: the credential word ENDS
+// the key (so file_path, output_path and tokenizer are not keys), a long word
+// may follow any key prefix (AWS_SECRET_ACCESS_KEY, npm_config__authToken),
+// a short one (pat, pass, auth, credentials) only a `_`/`.`/`-` segment break
+// or the start of the key (GITHUB_PAT, DB_PASS, {"auth":…}). Separator `=` or
+// `:`, quotes optional. Group 3 is the value; isPathValue drops prose like
+// `Secret: default/my-secret`.
+var keyRE = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(` +
+	`[A-Za-z0-9_]*(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)|` +
+	`(?:[A-Za-z0-9]+[_.-]+)*(pat|pass|pw|auth|credentials?)` +
+	`)["']?\s*[:=]\s*["']?([^\s"',;]{6,})`)
 
-// urlUserRE is the userinfo of a URL (`scheme://user:pass@`, the user may be
-// empty).
+// pathValueRE is a value that is a path, not a secret: an absolute path, or
+// lowercase segments joined by `/` (a namespace/name).
+var pathValueRE = regexp.MustCompile(`^(/|[a-z0-9._-]+/[a-z0-9._/-]*$)`)
+
+// traceRE is a `set -x` trace line (`+ cmd`, `++ cmd`): the shell echoing a
+// command, never the failure's message, and where secrets are expanded.
+var traceRE = regexp.MustCompile(`^\s*\++\s`)
+
+// envLineRE is an environment assignment at the start of a line: an
+// UPPER-case name (`NAME=value`, an env dump), or any name after `export`.
+// A lowercase `key=value` alone is a logfmt/slog field, and passes.
+var envLineRE = regexp.MustCompile(`^\s*(export\s+[A-Za-z_][A-Za-z0-9_]*|[A-Z][A-Z0-9_]{2,})=\S`)
+
 var urlUserRE = regexp.MustCompile(`://[^/\s:@]*:[^/\s@]+@`)
 
 // pemBeginRE / pemEndRE bound a PEM block (any type). base64LineRE is a line
@@ -394,16 +415,34 @@ func RedactLines(lines []string) []string {
 	return out
 }
 
-// redactText is RedactLines over a multi-line text (a run's message).
+// redactText is RedactLines over a multi-line text (a run's message), split
+// as Excerpt splits a log: at \n and at a lone \r.
 func redactText(s string) string {
-	return strings.Join(RedactLines(strings.Split(s, "\n")), "\n")
+	return strings.Join(RedactLines(splitLines(s)), "\n")
+}
+
+// splitLines splits a log at \n, \r\n and a lone \r (a progress line
+// overwritten in place).
+func splitLines(s string) []string {
+	return strings.FieldsFunc(strings.ReplaceAll(s, "\r\n", "\n"), func(r rune) bool { return r == '\n' || r == '\r' })
+}
+
+// credentialKey reports whether line gives a credential-named key a value
+// that is not a path (keyRE, pathValueRE).
+func credentialKey(line string) bool {
+	for _, m := range keyRE.FindAllStringSubmatch(line, -1) {
+		if !pathValueRE.MatchString(m[len(m)-1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Redact is the one-line filter (RedactLines applies it to every line outside
 // a PEM block): a line that looks like it carries a credential, or is an
 // environment assignment, is withheld whole; a URL's userinfo is masked.
 func Redact(line string) string {
-	if secretRE.MatchString(line) || envLineRE.MatchString(line) {
+	if tokenRE.MatchString(line) || traceRE.MatchString(line) || envLineRE.MatchString(line) || credentialKey(line) {
 		return withheld
 	}
 	return urlUserRE.ReplaceAllString(line, "://***@")
@@ -424,8 +463,7 @@ func Excerpt(log string, maxBytes int) (string, bool) {
 	if maxBytes <= 0 {
 		return "", log != ""
 	}
-	// A lone \r (a progress line overwritten in place) separates lines too.
-	lines := strings.FieldsFunc(strings.ReplaceAll(log, "\r\n", "\n"), func(r rune) bool { return r == '\n' || r == '\r' })
+	lines := splitLines(log)
 	for i, l := range lines {
 		lines[i] = strings.TrimRight(ansiRE.ReplaceAllString(l, ""), " \t\r")
 	}

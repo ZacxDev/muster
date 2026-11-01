@@ -839,26 +839,48 @@ progress line overwritten in place). These lines are withheld whole:
 
 - a token shape: GitHub (`ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`,
   `github_pat_…`), AWS (`AKIA…`), Slack (`xox…-`), `sk-…`, a JWT (`eyJ….….`);
-- an `Authorization:` header, or `Bearer` followed by 12+ token characters;
-- a credential-named key given a value of 6+ characters. The keys are
-  `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`/`apikey`,
-  `access_key`, `private_key`, `client_secret` and `_pat`, in any case and
-  anywhere in the key, so `AWS_SECRET_ACCESS_KEY=`, `API_TOKEN=`,
-  `OAUTH_CLIENT_SECRET:` and `npm_config__authToken=` all count. The value may
-  follow `=` or `:`, with optional quotes, as in `"DATABASE_PASSWORD":"…"`;
-- an environment assignment at the start of a line, `NAME=value` in either
-  case. A `set -x` trace prefix (`+ `, `++ export `) is allowed before it;
+- framing that carries a credential:
+  - an `Authorization:` header, or `Bearer` followed by 12+ token characters;
+  - a `Cookie:` or `Set-Cookie:` header;
+  - a URL query `sig=`, `signature=`, `x-amz-signature=`, `x-goog-signature=`,
+    `token=` or `access_token=`;
+  - a `--password`, `--token`, `--secret`, `--api-key`, `--access-token` or
+    `--client-secret` flag with a value;
+  - `-p VALUE` / `-pVALUE` on a `docker`, `podman`, `helm`, `oras`, `skopeo`
+    or `buildah` `login`, or on `mysql`, `mysqladmin`, `mysqldump` or
+    `mariadb`;
+  - `basic auth: <base64>`;
+- every `set -x` trace line (`+ …`, `++ …`). A trace is never the failure's
+  message, and it is where the shell prints expanded secrets;
+- a credential-named key given a value of 6+ characters that is not a path.
+  The credential word has to END the key.
+  - The long words are `password`, `passwd`, `secret`, `token`, `api_key`,
+    `access_key` and `private_key`. They may follow any prefix:
+    `AWS_SECRET_ACCESS_KEY=`, `API_TOKEN=`, `OAUTH_CLIENT_SECRET:`,
+    `npm_config__authToken=`.
+  - The short words are `pat`, `pass`, `pw`, `auth` and `credential(s)`. They
+    must be a whole segment of the key: `GITHUB_PAT=`, `DB_PASS:`,
+    `{"auth":"…"}`, `credentials:`.
+  - The separator is `=` or `:`, with optional quotes (`"KEY":"value"`).
+  - So `file_path:`, `output_path:`, `tokenizer:` and `compat=` are not
+    credential keys. Neither is a value that is a path: `Secret:
+    default/my-secret` names a Kubernetes Secret, it doesn't hold one;
+- an environment assignment at the start of a line: an UPPER-case
+  `NAME=value`, or any name after `export`. A lowercase `key=value` on its own
+  is a logfmt/slog field and passes (`level=error msg=…`, `exit_code=1`). A
+  credential key inside such a line is still withheld, as in `level=error
+  password=…`;
 - a line that is nothing but 40+ characters of base64;
 - every line of a PEM block, from `-----BEGIN …-----` through
   `-----END …-----` (headers included), and to the end of the log when the
   END never came.
 
-A URL's `user:password@`, with or without a user, is masked to `***@`. A
-line that only names a credential (`ERROR: password authentication failed`,
-`TestTokenRefresh`) passes through unchanged.
+A URL's `user:password@`, with or without a user, is masked to `***@`.
 
-This is a pattern filter, not a proof. Keeping secrets out of the CI output
-is the CI's job, and the byte cap bounds what any miss can carry.
+This is a pattern filter, not a proof. A secret in a shape not listed here,
+such as a bare value on a line of its own that isn't base64, passes. Keeping
+secrets out of the CI output is the CI's job, and the byte cap bounds what
+any miss can carry.
 
 It never answers empty: `state` is `no_run` (no run for this head yet, or
 pruned), `running`, `succeeded` (with "no failure found") or `failed`, and
