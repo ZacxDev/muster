@@ -569,6 +569,14 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		if why != "" {
 			q, opts := prop.Question, chiefnudge.CleanOptions(prop.Options)
 			if strings.TrimSpace(q) == "" {
+				// No question from the chief: it is asked ONCE more, for the
+				// question alone (reaskNudge), and the reason records how that
+				// went — ahead of the chief's own reason, which Clean may cut.
+				var note string
+				q, opts, note = s.reaskNudge(octx, o, chief, c, last, hint)
+				why += "; " + note
+			}
+			if strings.TrimSpace(q) == "" {
 				// 🔴 NO SESSION TEXT: the generic ask (jev.go), never an excerpt
 				// of the session's last message under the chief's label.
 				q, opts = chiefnudge.GenericAskQuestion(c.Title), append([]string(nil), chiefnudge.GenericAskOptions...)
@@ -840,6 +848,50 @@ func nudgeMirrorComplete(evs []cctranscript.Event, idx mirrorIndex, now time.Tim
 func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) string {
 	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + c.Kind + "\x00" + c.Key + "\x00" + c.StreakKey))
 	return "agent:" + agentName + ":webchat:nudge:" + hex.EncodeToString(sum[:8])
+}
+
+// nudgeReaskSessionName is the session key of a decision's ONE re-ask
+// (reaskNudge): nudgeSessionName's shape, from the same decision plus a marker,
+// so the re-ask is a lane of its own — a fresh, empty context, not a resume of
+// the stall check's transcript.
+func nudgeReaskSessionName(agentName string, owner int64, c chiefnudge.Session) string {
+	c.StreakKey += "\x00reask"
+	return nudgeSessionName(agentName, owner, c)
+}
+
+// reaskNudge is the ONE extra chief call an ask-stall gets when the chief's
+// answer gave no question (decideNudge): ReaskPrompt in a fresh tool-less
+// ephemeral lane (askChiefForNudge, nudgeRoute), read by ParseProposal. q is
+// the chief's question and opts its cleaned options when it answered an ask
+// with one; otherwise q is "" and the caller raises the generic ask. note is
+// what the decision's reason records either way.
+//
+// 🔴 NEVER RETRIED HERE: a busy chief, a refusal, an error or a timeout is a
+// "no question" like any other, so a stall decision costs at most two calls.
+func (s *Server) reaskNudge(octx context.Context, o chiefnudge.Owner, chief agents.Agent, c nudgeCandidate, last chiefnudge.Msg, hint chiefnudge.Hint) (q string, opts []string, note string) {
+	raw, err := s.askChiefForNudge(octx, chief, nudgeReaskSessionName(chief.Name, o.ID, c.Session),
+		chiefnudge.ReaskPrompt(c.Session, last, hint, fence.NewNonce()))
+	why := ""
+	switch {
+	case errors.Is(err, errNudgeChiefBusy):
+		why = "the chief could not take the call"
+	case err != nil:
+		why = "the chief's call failed" + failureKind(err)
+	}
+	if why == "" {
+		prop, perr := chiefnudge.ParseProposal(raw)
+		switch {
+		case perr != nil:
+			why = "its answer was not a decision"
+		case prop.Decision != chiefnudge.DecisionAsk:
+			why = "it said " + prop.Decision
+		case strings.TrimSpace(prop.Question) == "":
+			why = "its ask had no question"
+		default:
+			return prop.Question, chiefnudge.CleanOptions(prop.Options), "re-ask: gave a question"
+		}
+	}
+	return "", nil, "re-ask: no question (" + why + ") — generic ask"
 }
 
 // nudgeRoute is ctx carrying the route of a stall check under key: for a

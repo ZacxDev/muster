@@ -53,6 +53,15 @@ type nudgeGateway struct {
 	// during, when set, runs inside each stall check before it answers: what
 	// changes while the chief is thinking (chief_nudge_unknown_pg_test.go).
 	during func()
+	// answers, when set, answer the next stall checks in order, ahead of reply
+	// (chief_nudge_reask_pg_test.go).
+	answers []nudgeAnswer
+}
+
+// nudgeAnswer is one scripted stall-check answer: reply, or err when set.
+type nudgeAnswer struct {
+	reply string
+	err   error
 }
 
 func (g *nudgeGateway) Chat(_ context.Context, a agents.Agent, key, msg string, _ func(string)) (string, error) {
@@ -66,6 +75,11 @@ func (g *nudgeGateway) Chat(_ context.Context, a agents.Agent, key, msg string, 
 	if g.fails > 0 {
 		g.fails--
 		return "", errors.New("nudgeGateway: the provider is down")
+	}
+	if len(g.answers) > 0 {
+		a := g.answers[0]
+		g.answers = g.answers[1:]
+		return a.reply, a.err
 	}
 	return g.reply, nil
 }

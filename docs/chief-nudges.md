@@ -117,11 +117,25 @@ P(`needs_input`) + P(`asks_permission`). At or over
 question or permission request, and the **default outcome is an ask**: the chief
 is told so and writes the question and 2 to 4 options. A nudge survives it only
 when the label is `asks_permission` **and** the quote guard passes; a "leave", or
-any other nudge, becomes the ask. When the chief gave no question, it is the
-**generic ask** — "*<focus title>* is waiting on you. Its last turn looks like
-it asked you something." with the options **Open session** and **Dismiss** — which
-carries no word of the session's, and whose options relay nothing (only an
-answer you type is relayed). Under the threshold, the chief decides as before.
+any other nudge, becomes the ask. When the chief gave no question, it is
+**asked once more** (the *re-ask*): a second call, in a fresh tool-less
+throwaway lane of its own (a session key derived from the same decision plus a
+marker), with the focus title and the session's last message and nothing else,
+asking only for the question and 2 to 4 options. Its answer is read like the
+first, and only an `ask` with a question is used, as any chief question is: in
+the chief's own words, cut to the ask's length cap. Anything else — a busy or
+refusing chief, an error, a timeout, an unreadable answer, a `leave`, an empty
+question — is the **generic ask** — "*<focus title>* is waiting on you. Its
+last turn looks like it asked you something." with the options **Open session**
+and **Dismiss** — which carries no word of the session's, and whose options
+relay nothing (only an answer you type is relayed). There is never a third
+call, and the re-ask is never retried on a later sweep. It runs in shadow mode
+too, so a shadow row shows the question live would have raised. Under the
+threshold, the chief decides as before.
+
+Both prompts tell the chief that a message ending with **several** things
+waiting on the owner (a to-do list rather than one question) gets ONE question
+summing them up, with options, in its own words.
 
 **It never wedges the sweep.** The call is capped at 5 seconds; on any error
 (no key, timeout, an HTTP error, an unreadable answer) the error is recorded and
@@ -147,7 +161,8 @@ latency, or its error, and the tab shows them.
 
 ## What the chief is asked
 
-For each candidate, the chief gets one bounded call on its own runtime. Every
+For each candidate, the chief gets one bounded call on its own runtime (two
+on an ask-stall it gave no question for: the re-ask, above). Every
 call is a **fresh context**, under a session key derived from the decision it
 is for (`agent:<chief>:webchat:nudge:<hash of owner, session and idle
 streak>`), so no check sees another's, none grows with the ones before it, and
@@ -417,6 +432,16 @@ Every decision is a row of `chief_nudges` (migration `0064`, see
 The audit rows carry the decision's fields and where it went, never the
 session's text. The row itself holds the message, the quote, the question and
 your relayed answer.
+
+The row's `reason` is the chief's own one-line reason, on every decision the
+chief answered (left, asked, nudged, suppressed by a guard), prefixed by
+muster's when muster changed the decision (`classifier: …`, `partial_read: …`,
+`escalated: …`). On an ask-stall the chief gave no question for, it also says
+how the re-ask went, inside the classifier's part (ahead of the chief's reason,
+so the 1000-character cut never drops it): `re-ask: gave a question`, or
+`re-ask: no question (<why>) — generic ask`. A decision recorded without an
+answer from the chief (its call failed, or it refused) has its why in `detail`
+instead.
 
 ## Limits
 
