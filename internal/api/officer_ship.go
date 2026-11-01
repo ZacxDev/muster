@@ -29,8 +29,9 @@ import (
 //     officer_rollout_status, officer_mark_ready — whose gates run HERE, with
 //     muster's own token;
 //   - with a `ci_logs` block, a fifth, officer_ci_logs: read-only, the failed
-//     CI tasks' excerpts of its OWN pull request, read here with a dedicated
-//     namespace-scoped ServiceAccount token (officership.CILogsReader);
+//     CI tasks' excerpts of its OWN pull request, read here with a short-lived
+//     token of a dedicated namespace-scoped ServiceAccount, minted per call
+//     (officership.CILogsReader);
 //   - the rollout watch, resumed at boot for a release still inside its window.
 //
 // 🔴 WHY THE INSTANCE CANNOT GO AROUND IT. The instance's pod holds no GitHub
@@ -115,12 +116,13 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 	if o.CILogs != nil {
 		rt.ci = &officership.CILogsReader{Repo: o.Repo, Ship: sp, Config: o.CILogs, GH: gh}
 		if cfg.ShipCI != nil {
-			rt.ci.CI = cfg.ShipCI(o)
+			r := cfg.ShipCI(o)
+			rt.ci.Open = func(context.Context) (officership.CIReader, error) { return r, nil }
 		} else {
 			// 🔴 A CI-LOG SOURCE THAT CANNOT BE BUILT DOES NOT STOP THE SERVER:
 			// it is a read-only aid, and a boot refusal here would stop every
 			// officer's merges too. Logged now, and said on every call.
-			rt.ci.CI, rt.ciErr = officership.NewKubeCIReader(o.CILogs.Namespace, o.CILogs.TokenFile)
+			rt.ci.Open, rt.ciErr = officership.NewKubeCIOpener(o.CILogs.Namespace, o.CILogs.ServiceAccount)
 			if rt.ciErr != nil {
 				s.logger.Printf("officers: %s: officer_ci_logs is unavailable: %v", o.ID, rt.ciErr)
 			}

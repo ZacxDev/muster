@@ -20,8 +20,9 @@ import (
 // request head, labelled with the head sha by the trigger operator and
 // carrying the pull request number as a param; a TaskRun per pipeline task; a
 // pod per TaskRun whose `step-<name>` containers hold the logs. muster-server
-// reads them with a dedicated ServiceAccount that may get/list PipelineRuns,
-// TaskRuns and pods and get pods/log in that namespace and nothing else.
+// reads them with a short-lived token (TokenRequest, minted per call) of a
+// dedicated ServiceAccount that may list PipelineRuns and TaskRuns and get
+// pods/log in that namespace and nothing else.
 //
 // Gates, in order (a refusal is a *Refusal naming one):
 //
@@ -29,18 +30,16 @@ import (
 //  2. head_branch / author — it is the officer's OWN: the one own-PR rule,
 //     owner.headAndAuthor (officer_merge_pr's owner.ownPR minus the base),
 //     failing closed like every gated tool (failClosed);
-//  3. ci_runs — the PipelineRuns could be listed.
+//  3. ci_runs — a read token could be minted, and the PipelineRuns listed.
 //
 // Everything after that is an answer, never an empty one: no run for the head
 // yet, a run still going, a run with no failed task, or the failed tasks with
 // their excerpts.
 // ---------------------------------------------------------------------------
 
-// Gate names of officer_ci_logs (besides GatePR, GateHeadBranch, GateAuthor).
-const (
-	GateCIConfig = "ci_config"
-	GateCIRuns   = "ci_runs"
-)
+// GateCIRuns is officer_ci_logs's cluster gate (besides GatePR,
+// GateHeadBranch, GateAuthor).
+const GateCIRuns = "ci_runs"
 
 // PipelineRun is the part of a Tekton PipelineRun officer_ci_logs reads.
 type PipelineRun struct {
@@ -92,13 +91,17 @@ type CIReader interface {
 // far smaller; this bounds memory and the API server's work.
 const maxLogRead = 8 << 20
 
-// CILogsReader answers officer_ci_logs for one officer.
+// CILogsReader answers officer_ci_logs for one officer. Its caller
+// (internal/api) builds it only for an officer with a ship and ci_logs block.
 type CILogsReader struct {
 	Repo   string
 	Ship   *officers.Ship
 	Config *officers.CILogs
 	GH     GitHub
-	CI     CIReader
+	// Open returns a reader for ONE call — in production with a freshly
+	// minted token ([NewKubeCIOpener]). It is called only once ownership
+	// passed, and at most once per call.
+	Open func(ctx context.Context) (CIReader, error)
 }
 
 // CIRunState is a PipelineRun's state as officer_ci_logs reports it.
@@ -144,9 +147,6 @@ var shaRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // Read answers officer_ci_logs{pr}.
 func (r *CILogsReader) Read(ctx context.Context, n int) (CILogsOutcome, error) {
 	out := CILogsOutcome{PR: n, Failed: []TaskFailure{}}
-	if r.Config == nil || r.CI == nil || r.Ship == nil {
-		return out, refuse(GateCIConfig, "this officer has no ci_logs source configured")
-	}
 	pr, err := r.GH.PR(ctx, n)
 	if err != nil {
 		return out, refuse(GatePR, "could not read pull request #%d: %v", n, err)
@@ -161,8 +161,12 @@ func (r *CILogsReader) Read(ctx context.Context, n int) (CILogsOutcome, error) {
 	if !shaRE.MatchString(pr.HeadSHA) {
 		return out, refuse(GatePR, "pull request #%d's head %q is not a commit sha", n, pr.HeadSHA)
 	}
+	ci, err := r.Open(ctx)
+	if err != nil {
+		return out, refuse(GateCIRuns, "could not get a read token for the CI namespace %s: %v", r.Config.Namespace, err)
+	}
 	sel := "tekton.dev/pipeline=" + r.Config.Pipeline + "," + r.Config.CommitLabel + "=" + pr.HeadSHA
-	runs, err := r.CI.PipelineRuns(ctx, sel)
+	runs, err := ci.PipelineRuns(ctx, sel)
 	if err != nil {
 		return out, refuse(GateCIRuns, "could not list the CI runs in %s: %v", r.Config.Namespace, err)
 	}
@@ -183,7 +187,7 @@ func (r *CILogsReader) Read(ctx context.Context, n int) (CILogsOutcome, error) {
 	default:
 		out.State = CIStateRunning
 	}
-	trs, err := r.CI.TaskRuns(ctx, run.Name)
+	trs, err := ci.TaskRuns(ctx, run.Name)
 	if err != nil {
 		return out, refuse(GateCIRuns, "could not list the TaskRuns of %s: %v", run.Name, err)
 	}
@@ -208,7 +212,7 @@ func (r *CILogsReader) Read(ctx context.Context, n int) (CILogsOutcome, error) {
 	}
 	share := r.Config.MaxBytes / len(failed)
 	for _, tr := range failed {
-		out.Failed = append(out.Failed, r.taskFailure(ctx, tr, share))
+		out.Failed = append(out.Failed, taskFailure(ctx, ci, tr, share))
 	}
 	names := make([]string, 0, len(failed))
 	for _, f := range out.Failed {
@@ -249,7 +253,7 @@ func pickRun(runs []PipelineRun, c *officers.CILogs, pr PR) (PipelineRun, int, b
 // taskFailure reads one failed TaskRun's failed steps' logs into an excerpt
 // of at most budget bytes. A TaskRun with no step marked failed (a timeout)
 // has every step container read. Sidecars are never read.
-func (r *CILogsReader) taskFailure(ctx context.Context, tr TaskRun, budget int) TaskFailure {
+func taskFailure(ctx context.Context, ci CIReader, tr TaskRun, budget int) TaskFailure {
 	f := TaskFailure{Task: tr.PipelineTask, TaskRun: tr.Name, Reason: tr.Reason, Message: truncate(Redact(tr.Message), 300)}
 	if f.Task == "" {
 		f.Task = tr.Name
@@ -277,7 +281,7 @@ func (r *CILogsReader) taskFailure(ctx context.Context, tr TaskRun, budget int) 
 		if !strings.HasPrefix(c, "step-") {
 			continue // only step containers; never a sidecar
 		}
-		log, err := r.CI.PodLog(ctx, tr.PodName, c, maxLogRead)
+		log, err := ci.PodLog(ctx, tr.PodName, c, maxLogRead)
 		if err != nil {
 			f.LogErrors = append(f.LogErrors, fmt.Sprintf("%s/%s: %s", tr.PodName, c, truncate(err.Error(), 200)))
 			continue

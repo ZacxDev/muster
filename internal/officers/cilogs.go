@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -19,11 +18,13 @@ import (
 // officer with a `ci_logs` block is offered officer_ci_logs{pr}, which
 // muster-server answers itself — reading the PipelineRun for the pull
 // request's head, its failed TaskRuns and their failed steps' logs — with a
-// ServiceAccount token that may only get/list in that ONE namespace.
+// short-lived token of a dedicated ServiceAccount that may only list runs and
+// read pod logs in that ONE namespace, minted per call (TokenRequest).
 //
 // 🔴 READ-ONLY, BOUNDED, AND NO DEFAULT THAT WIDENS. The namespace, the
-// pipeline and the token file are required; nothing defaults to muster's own
-// ServiceAccount (whose grant is far wider). What reaches the instance is an
+// pipeline and the ServiceAccount are required; the reads never use muster's
+// own ServiceAccount token (whose grant is far wider) — muster's identity only
+// mints the reader's token. What reaches the instance is an
 // excerpt (failing tests and error lines), capped in bytes, with lines that
 // look like credentials withheld (officership.Excerpt).
 // ---------------------------------------------------------------------------
@@ -52,20 +53,21 @@ type CILogs struct {
 	CommitLabel string
 	// PRParam is the PipelineRun param whose value is the pull request number.
 	PRParam string
-	// TokenFile is the ServiceAccount token muster-server reads the cluster
-	// with (a dedicated, namespace-scoped, read-only one).
-	TokenFile string
+	// ServiceAccount is the dedicated read-only ServiceAccount, in muster's
+	// own namespace, whose token muster mints (TokenRequest, 600 s) for each
+	// call and reads the cluster with.
+	ServiceAccount string
 	// MaxBytes caps the excerpt text one call returns.
 	MaxBytes int
 }
 
 type declaredCILogs struct {
-	Namespace   string `json:"namespace"`
-	Pipeline    string `json:"pipeline"`
-	CommitLabel string `json:"commit_label"`
-	PRParam     string `json:"pr_param"`
-	TokenFile   string `json:"token_file"`
-	MaxBytes    int    `json:"max_bytes"`
+	Namespace      string `json:"namespace"`
+	Pipeline       string `json:"pipeline"`
+	CommitLabel    string `json:"commit_label"`
+	PRParam        string `json:"pr_param"`
+	ServiceAccount string `json:"service_account"`
+	MaxBytes       int    `json:"max_bytes"`
 }
 
 var (
@@ -74,6 +76,8 @@ var (
 	// labelKeyRE: an optional DNS-subdomain prefix and a name.
 	labelKeyRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?/)?[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$`)
 	paramRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,62}$`)
+	// saNameRE: a DNS-1123 subdomain (a ServiceAccount name).
+	saNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
 )
 
 // parseCILogs reads an officer's `ci_logs` block. It needs the officer's ship
@@ -89,12 +93,12 @@ func parseCILogs(ship *Ship, raw json.RawMessage) (*CILogs, error) {
 		return nil, fmt.Errorf("ci_logs: needs a ship block: officer_ci_logs reads only the officer's OWN pull requests, known by its App")
 	}
 	c := &CILogs{
-		Namespace:   strings.TrimSpace(d.Namespace),
-		Pipeline:    strings.TrimSpace(d.Pipeline),
-		CommitLabel: strings.TrimSpace(d.CommitLabel),
-		PRParam:     strings.TrimSpace(d.PRParam),
-		TokenFile:   strings.TrimSpace(d.TokenFile),
-		MaxBytes:    d.MaxBytes,
+		Namespace:      strings.TrimSpace(d.Namespace),
+		Pipeline:       strings.TrimSpace(d.Pipeline),
+		CommitLabel:    strings.TrimSpace(d.CommitLabel),
+		PRParam:        strings.TrimSpace(d.PRParam),
+		ServiceAccount: strings.TrimSpace(d.ServiceAccount),
+		MaxBytes:       d.MaxBytes,
 	}
 	if !dnsLabelRE.MatchString(c.Namespace) {
 		return nil, fmt.Errorf("ci_logs: namespace %q is required and must be a namespace name", d.Namespace)
@@ -114,8 +118,8 @@ func parseCILogs(ship *Ship, raw json.RawMessage) (*CILogs, error) {
 	if !paramRE.MatchString(c.PRParam) {
 		return nil, fmt.Errorf("ci_logs: pr_param %q is not a param name", d.PRParam)
 	}
-	if c.TokenFile == "" || !filepath.IsAbs(c.TokenFile) || filepath.Clean(c.TokenFile) != c.TokenFile {
-		return nil, fmt.Errorf("ci_logs: token_file %q is required: the absolute path of a DEDICATED read-only ServiceAccount token (never muster's own)", d.TokenFile)
+	if len(c.ServiceAccount) > 253 || !saNameRE.MatchString(c.ServiceAccount) {
+		return nil, fmt.Errorf("ci_logs: service_account %q is required: the name of a DEDICATED read-only ServiceAccount in muster's namespace (never muster's own)", d.ServiceAccount)
 	}
 	if c.MaxBytes == 0 {
 		c.MaxBytes = DefaultCIMaxBytes

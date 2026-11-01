@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -24,40 +26,89 @@ var (
 // maxListed bounds one list of PipelineRuns or TaskRuns.
 const maxListed = 200
 
-// kubeCIReader is [CIReader] over the in-cluster Kubernetes API, bound to one
-// namespace, authenticated by a dedicated ServiceAccount token file.
+// ciTokenSeconds is the life of a minted read token: the API server's
+// minimum, ample for one call.
+const ciTokenSeconds = 600
+
+// ownNamespaceFile is where a pod's own namespace is mounted.
+const ownNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// kubeCIReader is [CIReader] over the Kubernetes API, bound to one
+// namespace, authenticated by ONE minted token.
 type kubeCIReader struct {
 	ns   string
 	dyn  dynamic.Interface
 	core kubernetes.Interface
 }
 
-// NewKubeCIReader builds the production [CIReader]: the in-cluster API server
-// and CA, with the bearer token read from tokenFile (re-read as it rotates).
+// NewKubeCIOpener builds the production [CILogsReader.Open] for the CI
+// namespace ns: each call mints a 600 s token for ServiceAccount sa in
+// muster's OWN namespace (TokenRequest, with muster's own in-cluster
+// identity, which may create serviceaccounts/token for sa only) and returns a
+// reader authenticated by that token alone.
 //
-// 🔴 THE TOKEN IS tokenFile's, NEVER THE POD'S OWN ServiceAccount's: muster's
-// own grant is cluster-wide; this reader's must be get/list in ns only.
-func NewKubeCIReader(ns, tokenFile string) (CIReader, error) {
-	if _, err := os.Stat(tokenFile); err != nil {
-		return nil, fmt.Errorf("ci_logs token_file: %w", err)
-	}
-	cfg, err := rest.InClusterConfig()
+// 🔴 muster's own token MINTS; it never READS. The reader's config is built
+// fresh (ciReaderConfig), so nothing of muster's credentials — its token file
+// above all, which client-go would prefer over the minted token — reaches it.
+func NewKubeCIOpener(ns, sa string) (func(ctx context.Context) (CIReader, error), error) {
+	own, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("ci_logs reads the in-cluster API: %w", err)
 	}
-	cfg.BearerToken = ""
-	cfg.BearerTokenFile = tokenFile
-	cfg.Timeout = 30 * time.Second
-	cfg.UserAgent = "muster-officer-ci-logs"
-	dyn, err := dynamic.NewForConfig(cfg)
+	b, err := os.ReadFile(ownNamespaceFile)
+	if err != nil || strings.TrimSpace(string(b)) == "" {
+		return nil, fmt.Errorf("ci_logs: muster's own namespace (%s): %v", ownNamespaceFile, err)
+	}
+	ownNS := strings.TrimSpace(string(b))
+	minter, err := kubernetes.NewForConfig(own)
 	if err != nil {
 		return nil, err
 	}
-	core, err := kubernetes.NewForConfig(cfg)
+	return func(ctx context.Context) (CIReader, error) {
+		tok, err := mintCIToken(ctx, minter, ownNS, sa)
+		if err != nil {
+			return nil, err
+		}
+		cfg := ciReaderConfig(own, tok)
+		dyn, err := dynamic.NewForConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		core, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return &kubeCIReader{ns: ns, dyn: dyn, core: core}, nil
+	}, nil
+}
+
+// mintCIToken asks the API server for a ciTokenSeconds token of ServiceAccount
+// ns/sa, for the default audience (the API server's own).
+func mintCIToken(ctx context.Context, c kubernetes.Interface, ns, sa string) (string, error) {
+	exp := int64(ciTokenSeconds)
+	tr, err := c.CoreV1().ServiceAccounts(ns).CreateToken(ctx, sa, &authv1.TokenRequest{Spec: authv1.TokenRequestSpec{ExpirationSeconds: &exp}},
+		metav1.CreateOptions{})
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("minting a token for %s/%s: %w", ns, sa, err)
 	}
-	return &kubeCIReader{ns: ns, dyn: dyn, core: core}, nil
+	if tr == nil || tr.Status.Token == "" {
+		return "", fmt.Errorf("minting a token for %s/%s: the API server returned none", ns, sa)
+	}
+	return tr.Status.Token, nil
+}
+
+// ciReaderConfig is a NEW client config with own's API server and CA and the
+// bearer token tok — and no other credential of own's.
+func ciReaderConfig(own *rest.Config, tok string) *rest.Config {
+	return &rest.Config{
+		Host:        own.Host,
+		APIPath:     own.APIPath,
+		BearerToken: tok,
+		TLSClientConfig: rest.TLSClientConfig{Insecure: own.TLSClientConfig.Insecure, ServerName: own.TLSClientConfig.ServerName,
+			CAFile: own.TLSClientConfig.CAFile, CAData: own.TLSClientConfig.CAData},
+		Timeout:   30 * time.Second,
+		UserAgent: "muster-officer-ci-logs",
+	}
 }
 
 func (k *kubeCIReader) PipelineRuns(ctx context.Context, selector string) ([]PipelineRun, error) {

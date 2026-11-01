@@ -782,26 +782,26 @@ Why CI failed on the officer's own pull request, for a CI that runs as
 **Tekton PipelineRuns in a Kubernetes namespace** and posts commit statuses
 with no link (the instance has no cluster access and no toolchain, so
 otherwise it sees only "red" and escalates). Read-only; muster-server answers
-it, with a dedicated ServiceAccount token. Declared per officer, beside `ship`
+it, with a short-lived token of a dedicated ServiceAccount, minted per call. Declared per officer, beside `ship`
 (which it needs):
 
 ```json
 {"id": "engineering:example-web", "repo": "example-org/example-web", "ship": {…},
  "ci_logs": {"namespace": "example-ci", "pipeline": "example-pr-check",
-             "token_file": "/var/run/secrets/muster-ci-logs/token"}}
+             "service_account": "muster-ci-logs"}}
 ```
 
 | field | default | |
 |---|---|---|
 | `namespace` | **required** | The one namespace the PipelineRuns live in. |
 | `pipeline` | **required** | The PipelineRuns' `tekton.dev/pipeline` label. |
-| `token_file` | **required** | An absolute path to a ServiceAccount token muster-server reads the cluster with (re-read as it rotates). 🔴 There is no default: muster's own ServiceAccount is never used for this, since its grant is far wider than log reading. |
+| `service_account` | **required** | The dedicated read-only ServiceAccount, in muster-server's OWN namespace, that the reads run as. For each call muster mints it a token with a TokenRequest (`expirationSeconds` 600, the API server's default audience) and builds the reading client from that token alone. 🔴 There is no default, and muster's own token is never used for the reads (its grant is far wider): it only mints. |
 | `commit_label` | `pipeline.jquad.rocks/pr.branch.commit` | The PipelineRun label whose value is the pull request's head sha (the pipeline-trigger-operator sets it). |
 | `pr_param` | `PR_NUMBER` | The PipelineRun param whose value is the pull request number. |
 | `max_bytes` | `16384` | The excerpt text one call returns, at most (2048–65536). |
 
-A `ci_logs` block that cannot be read at boot (no token file, not in a
-cluster) does not stop the server: the tool answers that it is unavailable,
+A `ci_logs` source that cannot be built at boot (not in a cluster) does not
+stop the server: the tool answers that it is unavailable,
 and muster-server logs why.
 
 What it does, read fresh on every call:
@@ -842,9 +842,13 @@ pruned), `running`, `succeeded` (with "no failure found") or `failed`, and
 `note` says what was found. The officer's first message tells it to call this
 before escalating a red check.
 
-**The ServiceAccount** needs, in `namespace` only: `get`/`list` on
-`pipelineruns` and `taskruns` (`tekton.dev`) and `pods`, and `get` on
-`pods/log` — nothing else (no `watch`, no Secrets, no `exec`).
+**RBAC.** The ServiceAccount needs, in `namespace` only, exactly what the
+tool calls: `list` on `pipelineruns` and `taskruns` (`tekton.dev`) and `get`
+on `pods/log` — nothing else (no `watch`, no Secrets, no `exec`). muster's
+own ServiceAccount needs `create` on `serviceaccounts/token` with
+`resourceNames: [<service_account>]` in its own namespace, and nothing more
+for this. A mint that fails (that grant missing) is a `ci_runs` refusal. No
+long-lived token Secret is involved.
 
 ### Kill switches
 
