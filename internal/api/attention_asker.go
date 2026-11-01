@@ -159,6 +159,12 @@ func (s *Server) askerAsksBlock(ctx context.Context, r askerRef) (string, string
 	}
 	items := s.askerAsks(ctx, r)
 	s.withFocus(ctx, items)
+	// The mic on each answer box. The page's own composer carries the script,
+	// drawn after this block; ⚠ a mirrored view whose composer is off
+	// (mirrorComposer drops its mic) draws no script, so these mics stay hidden
+	// there — the progressive-enhancement default, the form still answers. No
+	// "View in session" here: this page IS the session.
+	s.withAskBoxes(ctx, items, false)
 	return askerAsksHTML(items, r.page(), time.Now()), r.src()
 }
 

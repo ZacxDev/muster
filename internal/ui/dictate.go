@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -17,7 +18,8 @@ import (
 //
 // 🔴 ONE CONTROL AND ONE SCRIPT, on every message box: the shared composer
 // (mirrorComposer — a mirrored session's Rendered and Terminal views and an
-// agent's Terminal view) and the agent chat form (agentChatPane). Each draws
+// agent's Terminal view), the agent chat form (agentChatPane), and the Asks
+// queue's answer boxes (through DictateControlHTML, below). Each draws
 // dictateControl beside its own textarea; dictateScript is document-wide and
 // finds the box through the button's data-dictate-input, so there is no second
 // copy to drift.
@@ -38,6 +40,61 @@ const TranscribePath = "/transcribe"
 // DictateMaxSeconds is how long one recording may run; the page stops it there
 // and transcribes what it has.
 const DictateMaxSeconds = 120
+
+// DictateRevealEvent is the event a page dispatches (bubbling) on content it
+// put on the page by itself — innerHTML, not an htmx swap, so no htmx:load —
+// for dictateScript to show the mics in it. The Asks list's and a mirrored
+// view's asks block's live refresh (AttentionLiveScript) is that case: without
+// it every mic a refresh drew stayed hidden.
+const DictateRevealEvent = "muster:dictate-reveal"
+
+// DictateIdleEvent is dispatched (bubbling) on a mic when it returns to idle —
+// recorded and transcribed, refused, or nothing heard. A live refresh the mic
+// held back (askBusyFunc) runs then (AttentionLiveScript): without it, a
+// recording that inserted nothing left the refresh pending until the next
+// focusout, which a mic tap never causes.
+const DictateIdleEvent = "muster:dictate-idle"
+
+// THE ANSWER BOXES' MICROPHONE (operator ask: "integrate the stt input option
+// for replying to asks"). The Asks queue's answer boxes — the ask page's
+// pinned composer, every ask card on /attention, and the same cards in a
+// session page's asks block — are built as raw HTML strings in internal/api,
+// so they cannot hold a g.Node. These three render THE SAME control, note and
+// script to strings: one control, never a second copy of its markup or of the
+// recorder. Each is "" when path is "" (no speech-to-text service), exactly
+// as the gomponents are nothing.
+//
+// The ids are the caller's: every box on a page needs its own input, note and
+// button ids (the Asks list draws one box per ask), and the script finds the
+// box and note through the button's data-dictate-input / data-dictate-note.
+
+// DictateControlHTML is dictateControl rendered to a string.
+func DictateControlHTML(path, inputID, noteID, buttonID string) string {
+	return nodeString(dictateControl(path, inputID, noteID, buttonID))
+}
+
+// DictateNoteHTML is dictateNote rendered to a string.
+func DictateNoteHTML(path, noteID, class string) string {
+	return nodeString(dictateNote(path, noteID, class))
+}
+
+// DictateScriptHTML is dictateScript rendered to a string: once per page,
+// AFTER every mic the page draws at load (its first run reveals the mics then
+// on the page; a later one is shown by htmx:load or DictateRevealEvent).
+func DictateScriptHTML(path string) string {
+	return nodeString(dictateScript(path))
+}
+
+// nodeString renders n ("" for nil). A gomponents render into a strings.Builder
+// cannot fail.
+func nodeString(n g.Node) string {
+	if n == nil {
+		return ""
+	}
+	var b strings.Builder
+	_ = n.Render(&b)
+	return b.String()
+}
 
 // dictateIdleLabel and friends are the button's accessible names per state.
 const (
@@ -172,6 +229,7 @@ func dictateScript(path string) g.Node {
     p.btn.setAttribute('aria-label', s === 'recording' ? M.stop : s === 'busy' ? M.busy : M.idle);
     p.btn.setAttribute('aria-pressed', s === 'recording' ? 'true' : 'false');
     p.btn.disabled = s === 'busy';
+    if (s === 'idle') { try { p.btn.dispatchEvent(new Event(` + strconv.Quote(DictateIdleEvent) + `, { bubbles: true })); } catch (e) {} }
   }
   function clock(s) { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + (s % 60 < 10 ? '0' : '') + (s % 60); }
 
@@ -244,6 +302,11 @@ func dictateScript(path string) g.Node {
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function' || type === null) { say(p, M.unsupported); return; }
     var s = { p: p, chunks: [], abandoned: false, opening: true };
     active = s;
+    // 'opening' while the browser asks for the microphone (its permission
+    // prompt can stay up for as long as the person takes): a state on the
+    // button, so a live refresh holds back for it as for a recording
+    // (askBusyFunc) and does not swap the box out from under the request.
+    state(p, 'opening');
     say(p, '');
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
       s.stream = stream;
@@ -253,7 +316,7 @@ func dictateScript(path string) g.Node {
       if (type) opts.mimeType = type;
       var rec;
       try { rec = new MediaRecorder(stream, opts); } catch (e) {
-        try { rec = new MediaRecorder(stream); } catch (e2) { active = null; release(s); say(p, M.unsupported); return; }
+        try { rec = new MediaRecorder(stream); } catch (e2) { active = null; release(s); state(p, 'idle'); say(p, M.unsupported); return; }
       }
       s.rec = rec;
       rec.addEventListener('dataavailable', function (e) { if (e.data && e.data.size > 0) s.chunks.push(e.data); });
@@ -312,6 +375,13 @@ func dictateScript(path string) g.Node {
     if (active && e.detail && e.detail.target && e.detail.target.contains(active.p.btn)) abandon();
   });
   document.addEventListener('htmx:load', function (e) { reveal(e.target); });
+  // Content a page's own script put in place (DictateRevealEvent).
+  // A recording or request whose button that content replaced is let go, as
+  // an htmx swap's is: nothing may record for a box no longer on the page.
+  document.addEventListener(` + strconv.Quote(DictateRevealEvent) + `, function (e) {
+    if (active && !active.p.btn.isConnected) abandon();
+    reveal(e.target);
+  });
   window.addEventListener('pagehide', abandon);
   // The Rendered|Terminal switch (view_swap.go) does not unload the view it
   // takes off screen: it tells that view's window 'muster:view-hidden' — the

@@ -2,11 +2,17 @@
 
 Every message box can carry a microphone: a mirrored window's Rendered and
 Terminal views, a dispatched agent's chat and Terminal views, and the chief
-panel.
+panel. So does every answer box of the [Asks](attention.md) queue: the
+question's own page (`/attention/asks/<id>`), each question on the Asks list,
+and the questions shown on a session's page.
 
 To use it, tap the mic, speak, and tap it again. The recording is transcribed
 and the text is **inserted into the box at the cursor**. It is never sent
-automatically: you read it and press Send. Send is the gated step it always was.
+automatically: you read it and press Send (on an answer box, **Answer**). Send
+is the gated step it always was.
+
+The Asks list refreshes itself as the queue changes; a refresh waits while a mic
+on it is recording or transcribing, so the text always lands in its box.
 
 ![The microphone recording into a mirrored session's message box](img/dictation.png)
 

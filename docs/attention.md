@@ -133,9 +133,14 @@ the Android app's WebView as in a browser: a top bar with a back arrow to Asks
 and who is asking; the question, large; the asker's options as full-width
 buttons that answer at once; the [suggested replies](#suggested-replies-to-an-ask)
 as chips that put their text in the answer box (nothing is sent until
-**Answer**, as on the rendered view); a link to the asking session or agent,
-and to the task, for context; **Dismiss without answering**; and the answer box
-pinned to the bottom, above the keyboard and inside the safe-area insets. It
+**Answer**, as on the rendered view); a **View in session** link to the asking
+session's rendered view or the asking agent's page — for a chief nudge's
+question, the session the nudge is about — and a link to the task;
+**Dismiss without answering**; and the answer box pinned to the bottom, above
+the keyboard and inside the safe-area insets, with the
+[dictation](dictation.md) mic beside **Answer** (it fills the box; only
+**Answer** sends). Each question on the Asks list carries the same mic and the
+same **View in session** link. The page
 posts to the same answer and dismiss routes as `/attention` and comes back to
 itself, showing the answer and where it went. It follows the queue live: chips
 that arrive after it opened appear, and a question answered elsewhere shows as

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -142,7 +143,7 @@ func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it atten
 	case attentionKindAsk:
 		switch {
 		case c.agentID > 0:
-			return s.askingAgentPath(ctx, owner, c.agentID)
+			return s.askingAgentHref(ctx, owner, c.agentID, 0)
 		case c.claudeSession != "" && c.ref.Host != "":
 			if s.ext.Mirror == nil {
 				return ""
@@ -152,16 +153,69 @@ func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it atten
 				return ""
 			}
 			return ref.ViewPath()
+		case it.systemAsk && it.AskID > 0:
+			return s.nudgeSessionPath(ctx, owner, it.AskID)
 		}
 	}
 	return ""
 }
 
-// askingAgentPath is agent id's page when it is owner's agent, else "". The
-// explicit owner check is not only row-level security's: with RLS rolled back
-// the read sees every owner's agents, and a tap must never open another
-// owner's agent.
-func (s *Server) askingAgentPath(ctx context.Context, owner, id int64) string {
+// nudgeSessionPath is the page of the session a chief nudge's ask (askID) is
+// about, "" when askID is no nudge's ask of owner's or the session cannot be
+// named now.
+//
+// A nudge's ask is raised as muster's OWN (attention.Asker{System: true},
+// chief_nudge.go actAsk), so the ask names no session; the session is on the
+// decision that raised it (chief_nudges.ask_id, ByAsk). 🔴 JOINED WHEN DRAWN,
+// NOT COPIED ONTO THE ASK. The decision row is the one record of which session
+// the nudge is about, and resolving it now is the rule every other ask follows
+// here: a mirrored session by its Claude session id (claudeSessionWindow, so a
+// window renumbered since still resolves and a closed one links nothing), an
+// agent through askingAgentHref's owner check. A copy on the ask would need a
+// column, and a second asker kind beside System, for a fact that already has
+// a home.
+//
+// 🔴 OWNER-SCOPED TWICE, as askingAgentHref is: ByAsk reads under row-level
+// security, and the explicit check holds with it rolled back — another
+// owner's decision that names this ask id never becomes a link.
+func (s *Server) nudgeSessionPath(ctx context.Context, owner, askID int64) string {
+	if s.ext.ChiefNudges == nil {
+		return ""
+	}
+	d, err := s.ext.ChiefNudges.ByAsk(ctx, askID)
+	if err != nil {
+		if !errors.Is(err, chiefnudge.ErrNotFound) {
+			s.logger.Printf("attention: the session of ask %d's chief nudge: %v", askID, err)
+		}
+		return ""
+	}
+	if d.Owner != owner || d.AskID != askID {
+		return ""
+	}
+	switch d.Kind {
+	case chiefnudge.KindAgent:
+		if d.AgentID > 0 {
+			// The conversation the nudge is about, not the agent's newest: its
+			// answer is relayed into that one (relayNudgeAnswer).
+			return s.askingAgentHref(ctx, owner, d.AgentID, d.ChatSessionID)
+		}
+	case chiefnudge.KindMirror:
+		if s.ext.Mirror == nil || d.Host == "" || d.Key == "" {
+			return ""
+		}
+		if ref, ok := claudeSessionWindow(s.ext.Mirror.Hosts(ctx), d.Host, d.Key); ok {
+			return ref.ViewPath()
+		}
+	}
+	return ""
+}
+
+// askingAgentHref is agent id's page when it is owner's agent, else "": its
+// chat session session's (ui.AgentSessionHref) when session > 0, the bare
+// page otherwise. The explicit owner check is not only row-level security's:
+// with RLS rolled back the read sees every owner's agents, and a tap must
+// never open another owner's agent.
+func (s *Server) askingAgentHref(ctx context.Context, owner, id, session int64) string {
 	if s.ext.Agents == nil {
 		return ""
 	}
@@ -175,7 +229,9 @@ func (s *Server) askingAgentPath(ctx context.Context, owner, id int64) string {
 	if a.OwnerID != owner {
 		return ""
 	}
-	// The BARE page, on purpose (#237): the tap is resolved when tapped, and the
-	// bare URL resolves the agent's latest session at that moment too.
-	return ui.AgentPath(a.Name)
+	// The BARE page for an agent's own ask, on purpose (#237): the tap is
+	// resolved when tapped, and the bare URL resolves the agent's latest session
+	// at that moment too. A chief nudge's ask names the conversation it is about
+	// (nudgeSessionPath), which need not be the latest.
+	return ui.AgentSessionHref(a.Name, session)
 }

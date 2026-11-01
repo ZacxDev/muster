@@ -156,3 +156,62 @@ func TestTheDeniedNoteNamesTheRightSettings(t *testing.T) {
 		}
 	}
 }
+
+// TestTheStringFormsAreTheSameControl: the answer boxes' string forms
+// (DictateControlHTML, DictateNoteHTML, DictateScriptHTML — internal/api's
+// Asks pages are raw HTML) are the gomponents themselves rendered, never a
+// second copy of the markup; nothing at all with no service.
+func TestTheStringFormsAreTheSameControl(t *testing.T) {
+	if got, want := DictateControlHTML(TranscribePath, "in-7", "note-7", "btn-7"), renderString(t, dictateControl(TranscribePath, "in-7", "note-7", "btn-7")); got != want || !strings.Contains(got, `id="btn-7"`) ||
+		!strings.Contains(got, `data-dictate-input="in-7"`) || !strings.Contains(got, `data-dictate-note="note-7"`) {
+		t.Errorf("the control's string form:\n%s\nwant\n%s", got, want)
+	}
+	if got, want := DictateNoteHTML(TranscribePath, "note-7", "pb-2"), renderString(t, dictateNote(TranscribePath, "note-7", "pb-2")); got != want || !strings.Contains(got, `id="note-7"`) {
+		t.Errorf("the note's string form:\n%s\nwant\n%s", got, want)
+	}
+	if got, want := DictateScriptHTML(TranscribePath), renderString(t, dictateScript(TranscribePath)); got != want || !strings.Contains(got, "window.__musterDictate") {
+		t.Error("the script's string form is not the script")
+	}
+	for name, s := range map[string]string{"control": DictateControlHTML("", "a", "b", "c"), "note": DictateNoteHTML("", "b", ""), "script": DictateScriptHTML("")} {
+		if s != "" {
+			t.Errorf("the %s with no service: %q", name, s)
+		}
+	}
+}
+
+// TestALiveRefreshRevealsTheMicsItDraws: the Asks list and a mirrored view's
+// asks block are refreshed by AttentionLiveScript's innerHTML — no htmx swap,
+// so no htmx:load — and every mic in the new content is drawn hidden. The
+// refresh dispatches DictateRevealEvent on the list and the mic's script
+// reveals on it; and the refresh counts a recording or transcribing mic as the
+// owner typing (askBusyFunc), so it never swaps a box out from under one.
+// RED at origin/main: neither the event nor the mic state was there. The click
+// path is e2e/tests/dictation.spec.ts.
+func TestALiveRefreshRevealsTheMicsItDraws(t *testing.T) {
+	live := AttentionLiveScript("attention-items", "/attention/items", "attention_queue.changed")
+	swap := strings.Index(live, "list.innerHTML = html;")
+	reveal := strings.Index(live, `list.dispatchEvent(new Event("`+DictateRevealEvent+`", { bubbles: true }))`)
+	if swap < 0 || reveal < swap {
+		t.Errorf("the refresh does not dispatch %s after its swap:\n%s", DictateRevealEvent, live)
+	}
+	script := DictateScriptHTML(TranscribePath)
+	if !strings.Contains(script, `document.addEventListener("`+DictateRevealEvent+`", function (e) {
+    if (active && !active.p.btn.isConnected) abandon();
+    reveal(e.target);
+  });`) {
+		t.Errorf("the mic's script does not reveal on %s, letting go of a replaced button's recording", DictateRevealEvent)
+	}
+	for _, s := range []string{live, askerAsksBusy} {
+		if !strings.Contains(s, `[data-dictate][data-state="opening"], [data-dictate][data-state="recording"], [data-dictate][data-state="busy"]`) {
+			t.Errorf("a refresh does not wait for an opening or recording mic:\n%s", s)
+		}
+	}
+	// The mic says when it is opening, and when it is idle again; the refresh
+	// it held back listens for the second.
+	if !strings.Contains(script, "state(p, 'opening');") || !strings.Contains(script, `if (s === 'idle') { try { p.btn.dispatchEvent(new Event("`+DictateIdleEvent+`", { bubbles: true })); } catch (e) {} }`) {
+		t.Error("the mic's script does not mark opening, or does not announce idle")
+	}
+	if !strings.Contains(live, `list.addEventListener("`+DictateIdleEvent+`", function () { if (pending) setTimeout(refresh, 0); });`) {
+		t.Error("a held-back refresh does not run when the mic is idle again")
+	}
+}

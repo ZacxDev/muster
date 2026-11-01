@@ -363,7 +363,11 @@ is tried again.
 
 **An ask** is an attention ask on your queue, asked by *your chief*, naming the
 session's focus title and where it runs, the chief's question and its options.
-It is pushed like any ask. When you answer it **on the Attention view**, your
+It is pushed like any ask, and its page and its card on the Asks list link the
+session it is about (**View in session**: the window now running that Claude
+session, or the agent's page at the conversation that stalled), found through
+this decision's record — the ask itself is muster's own and names no session.
+When you answer it **on the Attention view**, your
 answer is claimed for the relay at once and sent into that session **word for
 word** by the sweep, which the answer wakes (queued for a window, a turn for an
 agent). Nothing else is added to it. An answer given through a mirrored
