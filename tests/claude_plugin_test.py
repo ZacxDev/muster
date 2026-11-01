@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -117,11 +118,65 @@ class Skills(unittest.TestCase):
         self.assertEqual(guide_text().count(DONE_ANCHOR), 1)
 
 
+SKILLS_ADD = "npx skills add ZacxDev/muster --skill muster-setup"
+# YAML that turns a plain scalar into something other than one string: a
+# mapping (": "), a comment (" #"), or a leading indicator character.
+YAML_PLAIN_BREAKERS = (": ", " #")
+YAML_INDICATORS = tuple("-?:,[]{}#&*!|>'\"%@`")
+
+
+def tracked_files() -> list[str]:
+    # Committed files, plus untracked ones not ignored: what a push would
+    # publish, so a stray copy fails here before it is committed.
+    out = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    return [p for p in out.decode().split("\0") if p]
+
+
+class SkillsCli(unittest.TestCase):
+    """`npx skills add ZacxDev/muster` installs the plugin's own SKILL.md.
+
+    Measured with skills 1.7.4 against this repository: it finds exactly
+    `muster-setup` and installs a byte-identical copy. A second SKILL.md in any
+    of the CLI's standard locations (`skills/`, `.claude/skills/`, the root,
+    ...) is searched BEFORE the plugin's directory, so a copy there with the
+    same name silently replaces the plugin's skill for skills.sh users while
+    Claude Code keeps installing the original. One file serves both tools."""
+
+    PLUGIN_SKILL = "plugins/muster/skills/muster-setup/SKILL.md"
+
+    def test_the_plugins_skill_is_the_only_skill_file(self):
+        found = [p for p in tracked_files() if p.rsplit("/", 1)[-1] == "SKILL.md"]
+        self.assertEqual(found, [self.PLUGIN_SKILL])
+
+    def test_description_parses_as_a_plain_string(self):
+        # The CLI parses frontmatter as YAML and skips a skill whose
+        # `description` is not a string; frontmatter() above reads lines, so it
+        # would accept a value YAML reads as something else.
+        value = frontmatter(ROOT / self.PLUGIN_SKILL).get("description", "")
+        self.assertTrue(value)
+        for breaker in YAML_PLAIN_BREAKERS:
+            self.assertNotIn(breaker, value)
+        self.assertFalse(value.startswith(YAML_INDICATORS))
+
+
 class Readme(unittest.TestCase):
     def test_install_from_inside_claude_code(self):
         text = (ROOT / "README.md").read_text()
         self.assertIn("/plugin marketplace add ZacxDev/muster", text)
         self.assertIn("/plugin install muster@muster", text)
+
+    def test_install_with_the_skills_cli(self):
+        # Other repositories publish unrelated skills named `muster`, so the
+        # README names this repository and the skill explicitly.
+        text = (ROOT / "README.md").read_text()
+        self.assertIn(f"\n{SKILLS_ADD}\n", text)
+        self.assertIn("muster by ZacxDev", text)
+        # The skill the command names is one the plugin actually ships.
+        self.assertIn(SKILLS_ADD.rsplit(" ", 1)[-1], Skills().skills())
 
 
 if __name__ == "__main__":
