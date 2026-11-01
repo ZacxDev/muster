@@ -355,7 +355,7 @@ for (const vp of [
       await expect(more).toHaveAccessibleName('More for this session');
       await expect(pin, 'the pin is in the ⋯ menu, not the bar').toBeHidden();
       const mb = (await more.boundingBox())!, bb = (await bar(page).boundingBox())!;
-      expect([Math.round(mb.width), Math.round(mb.height)], 'a 40px-wide, 44px-tall target').toEqual([40, 44]);
+      expect([Math.round(mb.width), Math.round(mb.height)], 'a 44px target').toEqual([44, 44]);
       expect(mb.y >= bb.y - 0.5 && mb.y + mb.height <= bb.y + bb.height + 0.5, 'inside the bar').toBe(true);
       await (vp.use.hasTouch ? more.tap() : more.click());
       await expect(page.locator('#switcher-more')).toBeVisible();

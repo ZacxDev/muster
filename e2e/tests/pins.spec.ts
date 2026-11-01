@@ -173,8 +173,8 @@ for (const vp of [
       for (const h of [agentPath, sableHref, quinceHref]) {
         await open(page, h);
         const mb = (await moreBtn(page).boundingBox())!;
-        expect(mb.width, 'the ⋯ is at least 40px wide').toBeGreaterThanOrEqual(40);
-        expect(mb.height, 'the ⋯ is a 44px-tall target').toBeGreaterThanOrEqual(44);
+        expect(mb.width, 'the ⋯ is a 44px target').toBeGreaterThanOrEqual(44);
+        expect(mb.height, 'the ⋯ is a 44px target').toBeGreaterThanOrEqual(44);
         await pinHere(page, true, touch);
       }
       // On another session's page: Pins holds the three, and All leads with
@@ -293,8 +293,7 @@ for (const vp of [
       // The bar spans the screen here (pinned at the column's foot): its
       // shown row's width, all of what the compact bar gives the pills.
       const rowW = await page.locator('#session-switcher [data-switcher-list]:not([hidden])').evaluate((el) => el.clientWidth);
-      console.log(`PINNED-ROW-${vp.use.viewport.width} ${rowW}`);
-      if (vp.use.viewport.width === 390) expect(rowW, 'the pills\' row on a 390px Terminal view (182px on the base)').toBeGreaterThanOrEqual(240);
+      if (vp.use.viewport.width === 390) expect(rowW, 'the pills\' row on a 390px Terminal view (182px on the base, 258px here)').toBeGreaterThanOrEqual(240);
       await moreBtn(page).click();
       await pin.click();
       await expect(page.locator('#session-switcher #switcher-pin')).toHaveAttribute('data-pinned', 'true');

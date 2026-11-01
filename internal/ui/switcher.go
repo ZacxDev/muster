@@ -24,8 +24,8 @@ import (
 //
 // FOUR VIEWS, picked from a menu the button on the bar's left opens (it
 // animates open UPWARD, the bar being at the screen's bottom — switcherViewMenu).
-// The button draws only the shown view's ICON (operator ask: "we simply need
-// icons instead of showing the full text") — a clock, a bell, a pin, a grid —
+// The button draws only the shown view's ICON (the operator asked for icons
+// in place of the views' text labels) — a clock, a bell, a pin, a grid —
 // named for a screen reader and on hover by its aria-label and title; the menu
 // lists each view's icon beside its words:
 //
@@ -70,8 +70,9 @@ import (
 // with no page session draws no ⋯ (the pin is all it holds).
 //
 // 🔴 THE BAR IS TIGHT (switcherIconButtonClass, switcherPinnedPad,
-// switcherPillClass): icon buttons 40px wide (44px tall), a 4px inset, small
-// gaps and pill padding — so the row of pills, what the bar is for, gets the
+// switcherPillClass): icon buttons keep their 44×44 targets, but the bar has
+// no inset of its own beyond the safe area, no gaps between its controls, and
+// small pill padding — so the row of pills, what the bar is for, gets the
 // width.
 //
 // The bar draws no "+": the task-less dispatch sheet's "+", which the retired
@@ -433,7 +434,8 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 			// nothing; a <noscript> rule shows it without script.
 			g.Attr("data-switcher-pending", ""),
 			Div(
-				Class("flex h-11 min-w-0 items-center gap-1"),
+				// No gap: each control's 44px box spaces its 32px face from the next.
+				Class("flex h-11 min-w-0 items-center"),
 				Button(
 					ID("switcher-toggle"),
 					Type("button"),
@@ -445,12 +447,11 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 					g.Attr("aria-controls", switcherMenuID),
 					g.Attr("aria-label", switcherToggleLabel(SwitcherRecent)),
 					g.Attr("title", switcherToggleLabel(SwitcherRecent)),
-					// ICON ONLY (operator ask: "we simply need icons instead of
-					// showing the full text"): every view's icon is drawn, the
-					// shown view's visible and the others hidden, so a pick (and
-					// the stored view, before paint) only toggles `hidden` inside
-					// a fixed 32px face — nothing beside it moves. 44px tall (the
-					// row's height), 40px wide.
+					// ICON ONLY (the operator asked for an icon in place of the
+					// label): every view's icon is drawn, the shown view's
+					// visible and the others hidden, so a pick (and the stored
+					// view, before paint) only toggles `hidden` inside a fixed
+					// 32px face — nothing beside it moves. A 44×44 target.
 					Class(switcherIconButtonClass),
 					Span(
 						Class(switcherIconFaceClass+" group-aria-expanded:bg-s3 group-aria-expanded:text-fg"),
@@ -503,20 +504,23 @@ const (
 	switcherSearchOpenID = "switcher-search-open"
 )
 
-// 🔴 THE BAR IS TIGHT SO THE PILLS GET THE ROOM (operator ask: "reduce
-// padding … so there's more space to view the actual agent items"). Each icon
-// button — the view button, the search, the ⋯ — is a 44px-TALL target (the
-// row's h-11) but only 40px wide around its 32px face, and the pinned bar is
-// inset 4px a side (or the safe-area inset, when that is more). Measured at
-// 390px wide, the shown row's clientWidth: 182px → 250px on a Terminal view's
+// 🔴 THE BAR IS TIGHT SO THE PILLS GET THE ROOM (the operator asked for less
+// padding around and on the bar's buttons, so more of the session pills
+// show). 🔴 BUT EVERY ICON BUTTON — the view button, the search, the ⋯ — KEEPS
+// A 44×44 TARGET (operator decision; e2e/tests/layout.spec.ts measures it):
+// the room comes from elsewhere. The pinned bar has no inset of its own (only
+// the safe-area insets: each button's 44px box already holds its 32px face
+// 6px in from the edge), the bar's row has no gaps between its controls (the
+// same 6px margins space them), and the pills are px-2. Measured at 390px
+// wide, the shown row's clientWidth: 182px → 258px on a Terminal view's
 // screen-wide bar (e2e/tests/pins.spec.ts), 174px → 226px on an agent's chat
 // page, inside its pane (e2e/tests/composer-switcher.spec.ts).
 const (
-	switcherIconButtonClass = "press group inline-flex h-11 w-10 shrink-0 items-center justify-center"
+	switcherIconButtonClass = "press group inline-flex h-11 w-11 shrink-0 items-center justify-center"
 	switcherIconFaceClass   = "inline-flex h-8 w-8 items-center justify-center rounded-lg bg-s2 text-fg2 ring-1 ring-inset ring-line transition group-hover:bg-s3"
-	// switcherPinnedPad is the pinned bar's inset: 4px at each side, at least
-	// the safe-area inset there, and the safe-area inset at its foot.
-	switcherPinnedPad = "pl-[max(0.25rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pb-[env(safe-area-inset-bottom)]"
+	// switcherPinnedPad is the pinned bar's inset: the safe-area insets at its
+	// sides and its foot, nothing more.
+	switcherPinnedPad = "pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)]"
 )
 
 // switcherViewMenu is the menu the view button opens: one radio item per view,
@@ -969,8 +973,9 @@ var switcherJS = func() string {
   });
 
   // --- the ⋯ menu (switcherMoreMenu; absent on a bar with no page session):
-  // opens UPWARD from its button, right-aligned to it, with the menu-button
-  // keys, and closes once an item is used (the pin's form posts on).
+  // opens UPWARD from its button, right-aligned to it (an arrow key on the
+  // button opens it too, focus on its item; Escape and Tab close it), and
+  // closes once an item is used (the pin's form posts on).
   var more = document.getElementById('` + switcherMoreID + `');
   var moreBtn = document.getElementById('` + switcherMoreBtnID + `');
   var focusMore = false;
@@ -998,14 +1003,9 @@ var switcherJS = func() string {
         if (!isOpen(more)) more.showPopover();
       }
     });
+    // One item, so no arrows or Home/End to move between items.
     more.addEventListener('keydown', function (e) {
-      var it = moreItems(), i = it.indexOf(document.activeElement);
-      function to(n) { if (it.length) it[(n + it.length) % it.length].focus(); }
-      if (e.key === 'ArrowDown') { e.preventDefault(); to(i + 1); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); to(i - 1); }
-      else if (e.key === 'Home') { e.preventDefault(); to(0); }
-      else if (e.key === 'End') { e.preventDefault(); to(-1); }
-      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hide(more); moreBtn.focus(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hide(more); moreBtn.focus(); }
       else if (e.key === 'Tab') { hide(more); }
     });
     // An item's form is submitted (htmx posts it — its listener is the

@@ -20,8 +20,8 @@ import (
 // title at least 150px wide on a 393px phone (e2e/tests/title-room.spec.ts,
 // an operator ask), and one more 44px button there would take that from it.
 // The bar is also where the Pins view it changes is. And it is in a ⋯ menu,
-// not a button of its own (operator ask: "Move the pin icon button into a
-// three dots button context menu"), so the bar's width goes to the pills.
+// not a button of its own (the operator asked for the pin to move into a
+// three-dots menu), so the bar's width goes to the pills.
 //
 // Posted by htmx, the answer is the menu item in its new state and the bar's
 // rows and counts out of band (switcherRefresh), so the Pins view and its
@@ -67,8 +67,9 @@ func newSwitcherPin(e listEntry) *switcherPin {
 // IT WORKS WITHOUT SCRIPT, like the send queue's row menus
 // (sendQueueRowMenu): the menu is a POPOVER the button opens itself
 // (popovertarget), which closes on Escape and on a tap outside with no script,
-// and its item is a real form. The bar's script (switcherJS) adds the
-// menu-button keys, places the menu above the button and keeps aria-expanded.
+// and its item is a real form. The bar's script (switcherJS) opens it on an
+// arrow key too, closes it on Escape (focus back on the ⋯) and Tab, places it
+// above the button and keeps aria-expanded.
 func switcherMoreButton(s *Switcher) g.Node {
 	if s == nil || s.pin == nil {
 		return nil

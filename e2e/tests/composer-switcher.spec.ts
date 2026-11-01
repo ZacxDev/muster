@@ -243,12 +243,11 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
   expect(Math.abs(b.y + b.height - (form.y + form.height)), 'in the room the form reserves at its bottom').toBeLessThanOrEqual(1);
   expect(b.y + b.height, 'and on screen').toBeLessThanOrEqual(page.viewportSize()!.height + 1);
 
-  // Every control in the bar is a 44px-tall target, at least 40px wide (the
-  // icon buttons are tight so the pills get the room). The ⋯ menu's item is
-  // in a closed popover here: zero-sized, so skipped.
+  // Every control in the bar is a 44px target. (The ⋯ menu's item is in a
+  // closed popover here: zero-sized, so skipped.)
   const small = await bar(page).locator('a, button').evaluateAll((els) =>
-    els.filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.height < 44 || r.width < 40); }).map((e) => e.outerHTML.slice(0, 80)));
-  expect(small, 'controls under 44px tall or 40px wide in the bar').toEqual([]);
+    els.filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.height < 44 || r.width < 44); }).map((e) => e.outerHTML.slice(0, 80)));
+  expect(small, 'controls under 44px in the bar').toEqual([]);
 
   // Recent: the visits, newest first, without this page.
   const toggle = page.locator('#switcher-toggle');
@@ -311,15 +310,14 @@ test('at 390px the bar never widens the page, whatever it holds', async ({ page 
   }
 });
 
-// THE COMPACT BAR at a phone's size (operator ask: "replace the labels for
-// each view with an icon … Move the pin icon button into a three dots button
-// context menu. Reduce padding … so there's more space to view the actual
-// agent items"): the pills' row gets the width, the view button shows the
-// view's icon and changes it with the view, and the ⋯ menu pins the session.
-// The Recent row's clientWidth on this page at 390px, measured: 174px on the
-// base (feat/switcher-on-terminal-view: a 72px labelled view button, 44px
-// search and pin, 8px gaps, in the pane's 358px), 226px here (three 40px icon
-// buttons, 4px gaps). 210 is clear of the base and below this.
+// THE COMPACT BAR at a phone's size (the operator asked for icons in place
+// of the view labels, the pin in a three-dots menu, and less padding so more
+// of the session pills show): the pills' row gets the width, the view button
+// shows the view's icon and changes it with the view, and the ⋯ menu pins the
+// session. The Recent row's clientWidth on this page at 390px, measured: 174px
+// on the base (main before this change: a 72px labelled view button, 44px
+// search and pin, 8px gaps, in the pane's 358px), 226px here (three 44×44
+// icon buttons, no gaps). 210 is clear of the base and below this.
 test.describe('phone 390×844, the compact bar', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test('the pills get the width, the view button\'s icon follows the view, and the ⋯ menu pins the session into Pins', async ({ page }) => {
@@ -332,12 +330,11 @@ test.describe('phone 390×844, the compact bar', () => {
 
     // More pill width: the shown row's clientWidth.
     const rowW = await row(page, 'recent').evaluate((el) => el.clientWidth);
-    console.log('PILL-ROW-390 ' + rowW);
-    expect(rowW, 'the pills\' row at 390px (174px on the base)').toBeGreaterThanOrEqual(210);
-    // Every icon button: 44px tall, 40px wide, inside the bar; the bar inside the page.
+    expect(rowW, 'the pills\' row at 390px (174px on the base, 226px here)').toBeGreaterThanOrEqual(210);
+    // Every icon button: a 44×44 target (operator decision), inside the bar; the bar inside the page.
     for (const sel of ['#switcher-toggle', '#switcher-search-open', '#switcher-more-btn']) {
       const b = (await page.locator(sel).boundingBox())!;
-      expect([Math.round(b.width), Math.round(b.height)], `${sel} is 40×44`).toEqual([40, 44]);
+      expect([Math.round(b.width), Math.round(b.height)], `${sel} is 44×44`).toEqual([44, 44]);
     }
     const bb = (await bar(page).boundingBox())!;
     expect(bb.x + bb.width, 'the bar ends inside the viewport').toBeLessThanOrEqual(390 + 0.5);

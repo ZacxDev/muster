@@ -297,8 +297,7 @@ for (const vp of [
       await openView(page);
       const open = page.locator('#switcher-search-open');
       expect((await open.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
-      // 40px wide: the bar's icon buttons are tight, so the pills get the room.
-      expect((await open.boundingBox())!.width, 'at least 40px wide').toBeGreaterThanOrEqual(40);
+      expect((await open.boundingBox())!.width, 'a 44px target').toBeGreaterThanOrEqual(44);
 
       // The magnifier; Escape closes and gives focus back to it.
       await (vp.w === 390 ? open.tap() : open.click());
