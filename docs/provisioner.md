@@ -45,13 +45,173 @@ What happens when you dispatch:
 
 ### What a Kubernetes deployment needs that this repository does not ship
 
-- **RBAC for muster's ServiceAccount:** create, read, update and delete on
-  Namespaces, ServiceAccounts, Secrets, ConfigMaps, Deployments and Services;
-  PersistentVolumeClaims when an agent gets a volume; `create` on `pods/exec`;
-  and NetworkPolicies when `claude-code` is enabled. The Kubernetes driver's
-  `render.go` is the authority on what it creates.
+- **RBAC for muster's ServiceAccount**, in one of two layouts (see
+  [Kubernetes RBAC](#kubernetes-rbac) below). By default, a ClusterRole holding
+  every namespaced right cluster-wide; with `MUSTER_AGENT_NAMESPACE_CLUSTERROLE`
+  set, a narrow cluster-wide grant plus a per-namespace RoleBinding muster writes
+  itself. The Kubernetes driver's `render.go` is the authority on what it creates.
 - **The muster Deployment itself:** this repository ships a container image
   definition (`Dockerfile`), but no manifests.
+
+### Kubernetes RBAC
+
+Each agent lives in its own namespace, `<MUSTER_AGENT_NAMESPACE_PREFIX><agent>`
+(unless `MUSTER_AGENT_NAMESPACE_SHARED` is set), holding a ServiceAccount, up to
+three Secrets, a ConfigMap, a PersistentVolumeClaim, a Deployment, a Service and
+a NetworkPolicy. muster also execs into the pod and reads its logs. These are
+the rights it needs **inside** an agent namespace; in both layouts they go in a
+ClusterRole:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: muster-agent-namespace
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts, secrets, configmaps, services, persistentvolumeclaims]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [networking.k8s.io]   # when claude-code is enabled
+    resources: [networkpolicies]
+    verbs: [get, create, update, delete]
+```
+
+**Default layout (`MUSTER_AGENT_NAMESPACE_CLUSTERROLE` unset).** Because the
+namespaces are created at dispatch, the ClusterRole above is bound with a
+**ClusterRoleBinding**, plus `get`, `list`, `create` and `delete` on
+`namespaces`. That lets muster read Secrets and create Deployments in **every**
+namespace of the cluster.
+
+**Least-privilege layout (`MUSTER_AGENT_NAMESPACE_CLUSTERROLE=<name>`).** muster
+binds its own ServiceAccount to the named ClusterRole **inside each agent
+namespace**, with a RoleBinding named `muster-provisioner` that it writes
+immediately after creating the namespace and before anything else in it. The
+ClusterRole above is then **not** bound cluster-wide; the cluster-wide grant
+shrinks to:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: muster-provisioner
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, create, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, create]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [bind]
+    resourceNames: [muster-agent-namespace]   # = MUSTER_AGENT_NAMESPACE_CLUSTERROLE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: muster-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: muster-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: <muster's ServiceAccount>
+    namespace: <muster's namespace>
+```
+
+How it behaves:
+
+- **The subject is read off the pod's own ServiceAccount token** (its `sub`
+  claim), so there is nothing else to configure; muster refuses to boot if it
+  cannot read it.
+- **Propagation.** RBAC is not read-your-writes. After writing a binding, muster
+  probes the namespace with a real request (a `get` of the agent's
+  ServiceAccount) until it is no longer 403, for up to 30 seconds; past that the
+  dispatch fails naming the ClusterRole, having written nothing else in the
+  namespace. Check that the ClusterRole exists and grants `get` on
+  `serviceaccounts`.
+- **Agents created before you turn it on** have no RoleBinding. Every operation
+  on an agent — dispatch, Start, Stop, status, logs, terminal, Delete, and the
+  agent list — writes the binding first if it is missing. So: set the variable,
+  restart muster, and only then remove the old cluster-wide ClusterRoleBinding.
+- **A binding muster did not write**, under the name `muster-provisioner`, is
+  refused, never adopted. One of muster's with another ClusterRole or subject
+  (you renamed the role, or muster's ServiceAccount) is refused too, with an
+  error naming the mismatch: a roleRef is immutable and muster holds no `delete`
+  on RoleBindings, so delete it by hand
+  (`kubectl -n <namespace> delete rolebinding muster-provisioner`) and muster
+  writes the configured one at the agent's next operation. **Renaming the
+  ClusterRole (or muster's ServiceAccount) therefore means deleting every
+  agent's `muster-provisioner` binding by hand.** Until you do, each such agent
+  appears in the agent list with an unknown state (its card reads
+  provisioning, and the stopped-agent reaper leaves it alone), the server log
+  names its namespace once per list, and actions on that agent fail with the
+  mismatch. Every other agent is unaffected.
+- **Delete** removes the namespace, and the RoleBinding with it.
+- **The agent list** reads each agent namespace on its own instead of listing
+  Deployments and Pods cluster-wide. A namespace counts only when it is
+  muster-labelled and named exactly `<prefix><its agent label>`, so another
+  installation's namespaces are never read (or bound into), even when its prefix
+  starts with yours.
+- **Refused at boot** with any driver but `kubernetes`, and with
+  `MUSTER_AGENT_NAMESPACE_SHARED` (there is no namespace to bind in: grant muster
+  a Role in the shared namespace instead). A ClusterRole name that does not
+  exist is not caught at boot: the first dispatch fails after the propagation
+  wait, naming it.
+- **Outside agent namespaces:** a deploy-key pool's source Secret is read from
+  muster's own namespace (`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`). Under this
+  layout, grant `get` on `secrets` there with a Role and RoleBinding of its own.
+
+⚠ **What the narrow grant still allows.** `create` on `rolebindings` has to be
+cluster-wide, because agent namespaces are created at dispatch. So muster can
+still bind **itself** to that one ClusterRole in **any** namespace, and reach
+that namespace's Secrets that way: two deliberate, audited writes rather than a
+standing right, but not a boundary. (It holds no `delete` or `update` on
+RoleBindings, so it cannot remove or rewrite anyone else's.) Kubernetes RBAC
+cannot restrict a grant by namespace name. To close it, add an admission
+policy, for example:
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: muster-rolebindings-in-agent-namespaces-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [rolebindings]
+  matchConditions:
+    - name: is-muster
+      expression: request.userInfo.username == "system:serviceaccount:<muster's namespace>:<muster's ServiceAccount>"
+  validations:
+    - expression: request.namespace.startsWith("devpod-")   # = MUSTER_AGENT_NAMESPACE_PREFIX
+      message: muster may only write or delete RoleBindings in its agent namespaces
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: muster-rolebindings-in-agent-namespaces-only
+spec:
+  policyName: muster-rolebindings-in-agent-namespaces-only
+  validationActions: [Deny]
+```
 
 ## Agent kinds
 

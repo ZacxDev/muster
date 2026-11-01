@@ -488,11 +488,25 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			// a read that cannot collide (secretcopy.go).
 			"copyKeyHolderSecrets": 1,
 			"Scale":                1,
-			"Destroy":              1,
-			"List":                 2,
-			"Get":                  1,
-			"podFor":               1,
-			"StreamLogs":           1,
+			// The second is the verification's 403 in binding mode, when the
+			// namespace is NOT gone: a read, not a collision.
+			"Destroy":    2,
+			"List":       2,
+			"Get":        1,
+			"podFor":     1,
+			"StreamLogs": 1,
+			// The least-privilege RBAC layout (rolebinding.go). Every one is a
+			// read, a list, or a RoleBinding request whose ownership refusal is
+			// built with notManagedAction and %w BEFORE any of these is reached:
+			// ensureRoleBinding's is the re-read after a concurrent create,
+			// roleBindingFailed's the create/get/delete of the binding itself,
+			// waitForAccess's the probe (a non-403 error, the bound, the ctx).
+			"namespaceAccess":    1,
+			"ensureRoleBinding":  1,
+			"roleBindingFailed":  1,
+			"waitForAccess":      3,
+			"instanceNamespaces": 1,
+			"listPerNamespace":   2,
 		},
 		// Every write that CAN collide returns through applyFailed, which is
 		// what keeps a permanent refusal out of ErrBlind. Six object kinds in
@@ -536,6 +550,11 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			// exception to "the predicate lives in a helper", and it is why
 			// this row exists rather than being folded into upsertOwned.
 			"upsertService": 1,
+			// The RBAC layout: the namespace muster may bind into, the binding
+			// it may correct, and the namespaces List may read.
+			"namespaceAccess":    1,
+			"ensureRoleBinding":  1,
+			"instanceNamespaces": 1,
 		},
 	}
 
