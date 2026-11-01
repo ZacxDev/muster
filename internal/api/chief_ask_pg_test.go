@@ -223,7 +223,7 @@ func TestChiefAskPutsTheQuestionToTheChiefWithItsSessionAndRoute(t *testing.T) {
 	}
 	turn := f.turnFor(t, f.def, "session question #"+strconv.FormatInt(id, 10))
 	for _, want := range []string{"host ws", "Claude session " + focusSID, "about route " + r.RouteID, "<<<session-question untrusted nonce=",
-		"|   Should I accept noon, or propose 1pm?", "|   - propose 1pm", "@ ws",
+		"|   Should I accept noon, or propose 1pm?", "|   - propose 1pm", "@ ws", "\n| where: tmux main:1 @ ws\n",
 		"[message_id " + strconv.FormatInt(m.ID, 10) + "] from pat@example.test", "|   subject: Lunch on Friday?",
 		"|   body: Can your team do noon at the usual place?", "answer_session_question{id: " + strconv.FormatInt(id, 10)} {
 		if !strings.Contains(turn, want) {

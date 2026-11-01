@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -263,8 +264,7 @@ func sessionKey(host, session, window string) string {
 
 // askerLabel is an ask's source by what it stored: its label (for a mirrored
 // session, its name and host when it asked — no tmux target), else its ids.
-// What an OPEN ask shows as its source is askSource; this is the answered
-// list's and its delivery line's, which send the operator nowhere.
+// Every surface shows askSource, which falls back to this.
 func askerLabel(a attention.Ask) string {
 	if a.Asker.Label != "" {
 		return a.Asker.Label
@@ -301,14 +301,19 @@ func askNeedsHosts(a attention.Ask) bool {
 	return a.Asker.MirrorSession != "" && a.Asker.AgentID == 0 && !a.Asker.System
 }
 
-// askItemNow is askItem over ctx's principal's windows, read only when a
-// needs them (askNeedsHosts).
-func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem {
-	var hosts []mirror.HostView
+// askHosts is ctx's principal's windows when a needs them (askNeedsHosts),
+// else nil.
+func (s *Server) askHosts(ctx context.Context, a attention.Ask) []mirror.HostView {
 	if askNeedsHosts(a) && s.ext.Mirror != nil {
-		hosts = s.ext.Mirror.Hosts(ctx)
+		return s.ext.Mirror.Hosts(ctx)
 	}
-	return askItem(a, hosts...)
+	return nil
+}
+
+// askItemNow is askItem over ctx's principal's windows, read only when a
+// needs them (askHosts).
+func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem {
+	return askItem(a, s.askHosts(ctx, a)...)
 }
 
 // askItem is ask a as an attention item; hosts is its owner's windows, which
@@ -1053,7 +1058,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(attentionNotice(r))
 	now := time.Now()
 	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
-		askTabListHTML(items, answeredAsksHTML(s.recentAnswers(r.Context()), now), now) + `</ul>`
+		askTabListHTML(items, s.answeredAsksNow(r.Context(), now), now) + `</ul>`
 	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
 		b.WriteString(askList)
 	} else {
@@ -1104,7 +1109,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := time.Now()
-	_, _ = w.Write([]byte(askTabListHTML(items, answeredAsksHTML(s.recentAnswers(r.Context()), now), now)))
+	_, _ = w.Write([]byte(askTabListHTML(items, s.answeredAsksNow(r.Context(), now), now)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
@@ -1409,9 +1414,11 @@ func (s *Server) recentAnswers(ctx context.Context) []attention.Ask {
 }
 
 // answerDeliveryText is where an answer went, as the owner reads it, and
-// whether it offers Retry.
-func answerDeliveryText(a attention.Ask) (string, bool) {
-	who := askerLabel(a)
+// whether it offers Retry. who is the asker as askSource names it — for a
+// mirrored session the exact tmux target of the window running it now, or
+// "not shown" — since a waiting, queued or failed delivery sends the owner to
+// that session.
+func answerDeliveryText(a attention.Ask, who string) (string, bool) {
 	switch a.Delivery {
 	case attention.DeliveryQueued:
 		if a.DeliveryDetail != "" {
@@ -1435,6 +1442,17 @@ func answerDeliveryText(a attention.Ask) (string, bool) {
 	return "Not delivered.", false
 }
 
+// answeredAsksNow is answeredAsksHTML over ctx's principal's recent answers
+// and, when one of them is a mirrored session's, its windows (askSource).
+func (s *Server) answeredAsksNow(ctx context.Context, now time.Time) string {
+	asks := s.recentAnswers(ctx)
+	var hosts []mirror.HostView
+	if s.ext.Mirror != nil && slices.ContainsFunc(asks, askNeedsHosts) {
+		hosts = s.ext.Mirror.Hosts(ctx)
+	}
+	return answeredAsksHTML(asks, hosts, now)
+}
+
 // answeredAsksHTML is the "Answered" part of the list: each recent answer and
 // where it went, with Retry on a failed delivery.
 // answerLabel names who gave an answer on the Answered list: the owner, or —
@@ -1446,7 +1464,7 @@ func answerLabel(a attention.Ask) string {
 	return "Your answer: "
 }
 
-func answeredAsksHTML(asks []attention.Ask, now time.Time) string {
+func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Time) string {
 	if len(asks) == 0 {
 		return ""
 	}
@@ -1455,13 +1473,14 @@ func answeredAsksHTML(asks []attention.Ask, now time.Time) string {
 	b.WriteString(`<li class="pt-2 text-xs font-semibold uppercase tracking-wide text-fg2" data-attention-answered-heading>Answered</li>` + "\n")
 	for _, a := range asks {
 		id := strconv.FormatInt(a.ID, 10)
-		text, retry := answerDeliveryText(a)
+		who := askSource(a, hosts)
+		text, retry := answerDeliveryText(a, who)
 		age := ""
 		if !a.ResolvedAt.IsZero() {
 			age = ` · <time datetime="` + a.ResolvedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.ResolvedAt))) + `</time>`
 		}
 		b.WriteString(`<li id="answered-` + id + `" class="` + flowsCardClass + `" data-attention-answered data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">Answered</span> · <span data-attention-source>` + esc(askerLabel(a)) + `</span>` + age + `</span>
+<span class="text-xs text-fg2"><span class="font-semibold">Answered</span> · <span data-attention-source>` + esc(who) + `</span>` + age + `</span>
 <p class="break-words text-sm text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
 ` + answeredViaHTML(a) + `<p class="break-words text-sm text-fg" data-attention-delivery>` + esc(text) + `</p>

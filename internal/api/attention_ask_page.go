@@ -169,7 +169,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 `)
 		}
 		if a.Status == attention.Answered {
-			text, _ := answerDeliveryText(a)
+			text, _ := answerDeliveryText(a, it.Source)
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery>` + esc(text) + `</p>
 `)
 		}

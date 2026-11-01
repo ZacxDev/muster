@@ -118,8 +118,12 @@ command, path or URL, never what Claude said.
 Every attention text that names a mirrored window — a chief nudge's ask, a
 waiting session, a session question, a mirrored session's own ask (its source
 on the queue, its page's "*<source>* asks" header and the asks block of its
-session page), and their notifications — names it the same way
-(`mirror.Where`), so you can go straight to it in a terminal:
+session page), an answered ask's card and its delivery line ("Queued for …",
+"Waiting for … to read it"), and their notifications — names it the same way
+(`mirror.Where`), so you can go straight to it in a terminal. The chief reads
+the same text as `where` (`fleet_list`, `sessions_overview`, `fleet_report`,
+a session question's block, its session hints) and is told to give it exactly
+when it points you at a session:
 
 - `tmux <session>:<window index> @ <host>` — the tmux session name and window
   index, exactly as tmux's own target syntax takes them
