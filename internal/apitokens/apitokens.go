@@ -55,6 +55,15 @@ const Prefix = "mst_"
 // encodedLen is the base64url (no padding) length of 32 bytes.
 const encodedLen = 43
 
+// The token scopes (api_tokens.scope, migration 0068).
+const (
+	// ScopeFull acts as the owner on every route a personal token reaches.
+	ScopeFull = "full"
+	// ScopeSummary reaches GET /api/attention/summary and nothing else: what a
+	// status bar polls (internal/api's tokenScopeRoutes).
+	ScopeSummary = "summary"
+)
+
 // MaxNameLen bounds a token's label, in characters.
 const MaxNameLen = 100
 
@@ -76,6 +85,8 @@ var (
 	// ErrNoUser: a management call with no user principal on its context (or
 	// with the System principal, which is nobody's).
 	ErrNoUser = errors.New("apitokens: no user principal on this context")
+	// ErrBadScope: the scope is not ScopeFull or ScopeSummary.
+	ErrBadScope = errors.New("apitokens: unknown token scope")
 	// ErrNameTooLong: the label is longer than MaxNameLen characters.
 	ErrNameTooLong = fmt.Errorf("apitokens: a token name is at most %d characters", MaxNameLen)
 )
@@ -88,6 +99,11 @@ type Token struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt"`
 	RevokedAt  *time.Time `json:"revokedAt"`
+	// Scope is what the token may reach (migration 0068): ScopeFull, or a
+	// narrower scope. It is chosen when the token is minted and never changes;
+	// a token minted before 0068 is ScopeFull. Which routes a scope reaches is
+	// decided at the door (internal/api.admitAPIToken), not here.
+	Scope string `json:"scope"`
 }
 
 // Revoked reports whether the token is revoked.
@@ -133,13 +149,13 @@ type Store interface {
 	// ErrUserDisabled when the owner is disabled. ctx must be able to read any
 	// user's row (authz.System): the owner is what it learns.
 	Authenticate(ctx context.Context, token string) (Token, error)
-	// Create mints a token named name for ctx's user, records it in
-	// audit_log, and returns the token ONCE with its record.
+	// Create mints a token named name, of scope (CleanScope), for ctx's user,
+	// records it in audit_log, and returns the token ONCE with its record.
 	// sessionIssuedAt is the minting browser session's iat (unix seconds): a
 	// session issued at or before the user's session cutoff is refused
 	// ErrSessionEnded. Zero means the caller is not a GoTrue session (password
 	// mode, a fixture) and there is no cutoff to compare.
-	Create(ctx context.Context, name string, sessionIssuedAt int64) (string, Token, error)
+	Create(ctx context.Context, name string, sessionIssuedAt int64, scope string) (string, Token, error)
 	// List returns ctx's user's tokens, newest first, revoked included.
 	List(ctx context.Context) ([]Token, error)
 	// Revoke revokes ctx's user's token id. found is false when the user has
@@ -159,11 +175,11 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool, now: time.
 
 var _ Store = (*PGStore)(nil)
 
-const cols = `id, user_id, name, created_at, last_used_at, revoked_at`
+const cols = `id, user_id, name, created_at, last_used_at, revoked_at, scope`
 
 func scan(row pgx.Row) (Token, error) {
 	var t Token
-	err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt)
+	err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.Scope)
 	return t, err
 }
 
@@ -185,11 +201,11 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 	}
 	var t Token
 	var disabled bool
-	err := s.pool.QueryRow(ctx, `SELECT t.id, t.user_id, t.name, t.created_at, t.last_used_at, t.revoked_at,
+	err := s.pool.QueryRow(ctx, `SELECT t.id, t.user_id, t.name, t.created_at, t.last_used_at, t.revoked_at, t.scope,
 			u.disabled_at IS NOT NULL
 		FROM api_tokens t JOIN users u ON u.id = t.user_id
 		WHERE t.token_hash = $1`, Hash(token)).
-		Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &disabled)
+		Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.Scope, &disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Token{}, ErrBadToken
 	}
@@ -235,6 +251,19 @@ func CleanName(name string) (string, error) {
 	return name, nil
 }
 
+// CleanScope is scope as stored: "" is ScopeFull (a mint that names none is
+// what every mint was before 0068); anything not a known scope is ErrBadScope.
+// Exported so a handler can refuse a bad one with a 400 before minting.
+func CleanScope(scope string) (string, error) {
+	switch scope {
+	case "", ScopeFull:
+		return ScopeFull, nil
+	case ScopeSummary:
+		return ScopeSummary, nil
+	}
+	return "", ErrBadScope
+}
+
 // Create implements Store. The token row and its audit row are one
 // transaction: a token is never live without its "created" record.
 //
@@ -251,12 +280,15 @@ func CleanName(name string) (string, error) {
 // with users.sessions_not_before by the session tier's own rule (at or before
 // the cutoff's second is refused): a session the reset ended cannot mint, and
 // the session the reset signs in can (TestAMintQueuedBehindAResetIsRefused).
-func (s *PGStore) Create(ctx context.Context, name string, sessionIssuedAt int64) (string, Token, error) {
+func (s *PGStore) Create(ctx context.Context, name string, sessionIssuedAt int64, scope string) (string, Token, error) {
 	p, err := user(ctx)
 	if err != nil {
 		return "", Token{}, err
 	}
 	if name, err = CleanName(name); err != nil {
+		return "", Token{}, err
+	}
+	if scope, err = CleanScope(scope); err != nil {
 		return "", Token{}, err
 	}
 	tok, err := New()
@@ -282,12 +314,12 @@ func (s *PGStore) Create(ctx context.Context, name string, sessionIssuedAt int64
 			return ErrSessionEnded
 		}
 		var err error
-		t, err = scan(tx.QueryRow(ctx, `INSERT INTO api_tokens (user_id, name, token_hash)
-			VALUES ($1, $2, $3) RETURNING `+cols, p.UserID, name, Hash(tok)))
+		t, err = scan(tx.QueryRow(ctx, `INSERT INTO api_tokens (user_id, name, token_hash, scope)
+			VALUES ($1, $2, $3, $4) RETURNING `+cols, p.UserID, name, Hash(tok), scope))
 		if err != nil {
 			return err
 		}
-		return audit(ctx, tx, p, "api_token.create", t.ID, map[string]any{"name": t.Name})
+		return audit(ctx, tx, p, "api_token.create", t.ID, map[string]any{"name": t.Name, "scope": t.Scope})
 	})
 	if err != nil {
 		return "", Token{}, err

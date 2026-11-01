@@ -108,7 +108,7 @@ func TestAMalformedTokenIsRefusedWithoutADatabaseRead(t *testing.T) {
 
 func TestOnlyTheHashIsStoredAndTheTokenIsShownOnce(t *testing.T) {
 	w := newWorld(t)
-	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "  laptop  ", 0)
+	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "  laptop  ", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +145,11 @@ func TestOnlyTheHashIsStoredAndTheTokenIsShownOnce(t *testing.T) {
 
 func TestAuthenticateResolvesTheOwnerAndRefusesRevokedAndDisabled(t *testing.T) {
 	w := newWorld(t)
-	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
+	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b", 0)
+	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,11 +218,11 @@ func TestAuthenticateResolvesTheOwnerAndRefusesRevokedAndDisabled(t *testing.T) 
 // a token minted after the re-enable works.
 func TestDisablingAUserRevokesItsTokensForGood(t *testing.T) {
 	w := newWorld(t)
-	tokA, _, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
+	tokA, _, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b", 0)
+	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestDisablingAUserRevokesItsTokensForGood(t *testing.T) {
 	if got, err := w.s.Authenticate(sysCtx(), tokB); err != nil || got.UserID != w.b {
 		t.Fatalf("CONTROL: B's token after A's disable: %+v %v", got, err)
 	}
-	fresh, _, err := w.s.Create(as(w.a, authz.RoleMember), "after", 0)
+	fresh, _, err := w.s.Create(as(w.a, authz.RoleMember), "after", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestDisablingAUserRevokesItsTokensForGood(t *testing.T) {
 // "no such token", and A's token still works.
 func TestNobodyRevokesAnotherUsersToken(t *testing.T) {
 	w := newWorld(t)
-	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
+	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestNobodyRevokesAnotherUsersToken(t *testing.T) {
 // The positive control is A, who sees its own.
 func TestRowLevelSecurityKeepsTokensToTheirOwner(t *testing.T) {
 	w := newWorld(t)
-	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0); err != nil {
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0, ScopeFull); err != nil {
 		t.Fatal(err)
 	}
 	count := func(ctx context.Context) int {
@@ -311,7 +311,7 @@ func TestRowLevelSecurityKeepsTokensToTheirOwner(t *testing.T) {
 func TestManagementNeedsAUserPrincipal(t *testing.T) {
 	w := newWorld(t)
 	for name, ctx := range map[string]context.Context{"none": context.Background(), "system": sysCtx()} {
-		if _, _, err := w.s.Create(ctx, "x", 0); !errors.Is(err, ErrNoUser) {
+		if _, _, err := w.s.Create(ctx, "x", 0, ScopeFull); !errors.Is(err, ErrNoUser) {
 			t.Errorf("%s Create: %v", name, err)
 		}
 		if _, err := w.s.List(ctx); !errors.Is(err, ErrNoUser) {
@@ -321,10 +321,10 @@ func TestManagementNeedsAUserPrincipal(t *testing.T) {
 			t.Errorf("%s Revoke: %v", name, err)
 		}
 	}
-	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen+1), 0); !errors.Is(err, ErrNameTooLong) {
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen+1), 0, ScopeFull); !errors.Is(err, ErrNameTooLong) {
 		t.Errorf("an over-long name: %v", err)
 	}
-	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen), 0); err != nil {
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen), 0, ScopeFull); err != nil {
 		t.Errorf("a name of exactly %d characters: %v", MaxNameLen, err)
 	}
 }
@@ -333,7 +333,7 @@ func TestManagementNeedsAUserPrincipal(t *testing.T) {
 // within LastUsedGranularity does not rewrite it; a use after it does.
 func TestLastUsedIsStampedAndThrottled(t *testing.T) {
 	w := newWorld(t)
-	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
+	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0, ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func raceMintAgainstDisable(t *testing.T, w world, role authz.Role, lockTable st
 	}
 	mintc := make(chan minted, 1)
 	go func() {
-		tok, _, err := w.s.Create(as(w.a, role), "racer", 0)
+		tok, _, err := w.s.Create(as(w.a, role), "racer", 0, ScopeFull)
 		mintc <- minted{tok, err}
 	}()
 	lw.until(2, "the mint to block")
@@ -587,7 +587,7 @@ func TestAMintQueuedBehindAResetIsRefused(t *testing.T) {
 	}
 	mintc := make(chan minted, 1)
 	go func() {
-		tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "queued", oldSession)
+		tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "queued", oldSession, ScopeFull)
 		mintc <- minted{tok, err}
 	}()
 	lw.until(2, "the mint to queue behind the reset")
@@ -609,10 +609,10 @@ func TestAMintQueuedBehindAResetIsRefused(t *testing.T) {
 	}
 	// The boundary: a session stamped with the cutoff's own second is refused
 	// (the session tier's rule); the next second's is the post-reset session.
-	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "same-second", r.cut.Unix()); !errors.Is(err, ErrSessionEnded) {
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "same-second", r.cut.Unix(), ScopeFull); !errors.Is(err, ErrSessionEnded) {
 		t.Fatalf("a session issued in the cutoff's own second: %v; want ErrSessionEnded", err)
 	}
-	tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "after-reset", r.cut.Unix()+1)
+	tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "after-reset", r.cut.Unix()+1, ScopeFull)
 	if err != nil {
 		t.Fatalf("the POST-reset session cannot mint: %v", err)
 	}
@@ -655,8 +655,8 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 	target := users.Actor{UserID: w.a, Via: authz.ViaSession}
 	asX, asY := as(w.a, authz.RoleAdmin), as(w.b, authz.RoleAdmin)
 	ops := map[string]func(i int) error{
-		"mint":                  func(int) error { _, _, err := w.s.Create(asX, "stress", 0); return err },
-		"mint-by-another-admin": func(int) error { _, _, err := w.s.Create(asY, "stress", 0); return err },
+		"mint":                  func(int) error { _, _, err := w.s.Create(asX, "stress", 0, ScopeFull); return err },
+		"mint-by-another-admin": func(int) error { _, _, err := w.s.Create(asY, "stress", 0, ScopeFull); return err },
 		"revoke-one": func(int) error {
 			list, err := w.s.List(asX)
 			if err != nil {
@@ -922,4 +922,61 @@ func TestCredentialWritersNeverDeadlock(t *testing.T) {
 		t.Errorf("CONTROL: %d of %d rounds completed inside the budget", res.rounds, stressRounds)
 	}
 	t.Logf("%d lockstep rounds, 0 deadlocks; successes per writer: %v", res.rounds, res.ok)
+}
+
+// TestATokensScopeIsStoredAndReadBack (migration 0068): a token minted with
+// the summary scope says so in its record, in the list and in Authenticate's
+// answer (the door reads THAT one); a mint naming no scope is full access; an
+// unknown scope is refused before anything is written, and the database's
+// CHECK refuses one written around the store. Each mint's audit row names its
+// scope.
+func TestATokensScopeIsStoredAndReadBack(t *testing.T) {
+	w := newWorld(t)
+	sum, sumRec, err := w.s.Create(as(w.a, authz.RoleMember), "bar", 0, ScopeSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, fullRec, err := w.s.Create(as(w.a, authz.RoleMember), "cli", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sumRec.Scope != ScopeSummary || fullRec.Scope != ScopeFull {
+		t.Fatalf("records: summary %+v, unnamed %+v", sumRec, fullRec)
+	}
+	for tok, want := range map[string]string{sum: ScopeSummary, full: ScopeFull} {
+		got, err := w.s.Authenticate(sysCtx(), tok)
+		if err != nil || got.Scope != want {
+			t.Errorf("Authenticate: %+v %v; want scope %q", got, err, want)
+		}
+	}
+	list, err := w.s.List(as(w.a, authz.RoleMember))
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list = %+v, %v", list, err)
+	}
+	for _, tk := range list {
+		if want := map[bool]string{true: ScopeSummary, false: ScopeFull}[tk.ID == sumRec.ID]; tk.Scope != want {
+			t.Errorf("listed %+v: scope is not the minted %q", tk, want)
+		}
+	}
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "x", 0, "admin"); !errors.Is(err, ErrBadScope) {
+		t.Fatalf("an unknown scope: %v; want ErrBadScope", err)
+	}
+	var n int
+	if err := w.pool.QueryRow(sysCtx(), `SELECT count(*) FROM api_tokens WHERE user_id = $1`, w.a).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("after the refused mint %d tokens (%v); want 2", n, err)
+	}
+	if _, err := w.pool.Exec(sysCtx(), `UPDATE api_tokens SET scope = 'admin' WHERE id = $1`, sumRec.ID); err == nil {
+		t.Fatal("the database accepted scope 'admin'; api_tokens_scope_check must refuse it")
+	}
+	var details string
+	if err := w.pool.QueryRow(sysCtx(), `SELECT string_agg(detail->>'scope', ',' ORDER BY id) FROM audit_log
+		WHERE user_id = $1 AND action = 'api_token.create'`, w.a).Scan(&details); err != nil || details != "summary,full" {
+		t.Fatalf("the mints' audit scopes = %q (%v); want \"summary,full\"", details, err)
+	}
+	// A row written without the column (an older image's INSERT) is full.
+	var dflt string
+	if err := w.pool.QueryRow(sysCtx(), `SELECT column_default || '/' || is_nullable FROM information_schema.columns
+		WHERE table_name = 'api_tokens' AND column_name = 'scope'`).Scan(&dflt); err != nil || dflt != "'full'::text/NO" {
+		t.Fatalf("api_tokens.scope is %q (%v); want NOT NULL DEFAULT 'full'", dflt, err)
+	}
 }

@@ -1,10 +1,15 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
+	"os"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/client-go/kubernetes"
@@ -483,7 +488,53 @@ func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, erro
 	dc := k8sDriverConfig(cfg, logger)
 	dc.Client = client
 	dc.RESTConfig = rc
+	if dc.NamespaceRoleBinding != nil {
+		// The RoleBinding's subject is THIS pod's ServiceAccount, read off its
+		// own token rather than configured, so it cannot name another identity.
+		tok, err := os.ReadFile(rc.BearerTokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("%s is set but this pod's ServiceAccount token is unreadable: %w",
+				envAgentNSClusterRole, err)
+		}
+		ns, name, err := serviceAccountFromToken(tok)
+		if err != nil {
+			return nil, fmt.Errorf("%s is set but: %w", envAgentNSClusterRole, err)
+		}
+		dc.NamespaceRoleBinding.ServiceAccountNamespace = ns
+		dc.NamespaceRoleBinding.ServiceAccountName = name
+	}
 	return k8sdriver.New(dc)
+}
+
+// serviceAccountFromToken reads the ServiceAccount a Kubernetes token was
+// issued to from its `sub` claim ("system:serviceaccount:<namespace>:<name>").
+//
+// ⚠ IT DOES NOT VERIFY THE SIGNATURE, and does not need to: the token is this
+// pod's own, read from the path the in-cluster config authenticates with, and
+// the only thing taken from it is which identity to bind — the apiserver
+// authenticates every request with the same token regardless.
+func serviceAccountFromToken(tok []byte) (namespace, name string, err error) {
+	parts := strings.Split(strings.TrimSpace(string(tok)), ".")
+	if len(parts) != 3 {
+		return "", "", errors.New("the ServiceAccount token is not a JWT")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return "", "", fmt.Errorf("the ServiceAccount token's payload is not base64url: %w", err)
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", "", fmt.Errorf("the ServiceAccount token's payload is not JSON: %w", err)
+	}
+	const prefix = "system:serviceaccount:"
+	rest, ok := strings.CutPrefix(claims.Sub, prefix)
+	ns, sa, ok2 := strings.Cut(rest, ":")
+	if !ok || !ok2 || ns == "" || sa == "" || strings.Contains(sa, ":") {
+		return "", "", fmt.Errorf("the ServiceAccount token's subject %q is not %s<namespace>:<name>", claims.Sub, prefix)
+	}
+	return ns, sa, nil
 }
 
 // k8sDriverConfig maps this binary's configuration onto the driver's, WITHOUT
@@ -509,6 +560,11 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 		Namespace:            cfg.AgentNamespace,
 		EndpointTemplate:     cfg.AgentEndpointTemplate,
 		Logger:               logger,
+	}
+	if cfg.AgentNamespaceClusterRole != "" {
+		// The subject (this pod's ServiceAccount) is filled in by
+		// buildK8sDriver from the pod's token; it needs the pod.
+		dc.NamespaceRoleBinding = &k8sdriver.NamespaceRoleBindingConfig{ClusterRole: cfg.AgentNamespaceClusterRole}
 	}
 	if cfg.AgentWorkspacePersist || cfg.confinedKindsEnabled() {
 		// ⚠ ...OR A CONFINED KIND (claude-code) IS ENABLED: its /data volume

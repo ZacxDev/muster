@@ -600,3 +600,52 @@ message. Only your own messages count: a message routed by the chief, the
 chief's hand-back turn, a message over the machine door
 (`POST /api/agents/{name}/messages`) and anything an agent sends do not. A
 reply draft decided outside muster is not cleared by this (it is not an ask).
+
+## The summary API
+
+`GET /api/attention/summary` is what a status bar polls: everything waiting on
+you, your mirror hosts' busy and idle Claude windows, and your
+[chief nudge](chief-nudges.md) mode, in one JSON document, over HTTPS.
+
+- **Credential:** a [personal API token](auth.md) only (the hook token and a
+  browser session are refused with 401). It reads as the token's owner, and
+  nothing of another user's is ever in it. Give a poller a **bar summary
+  only** token ([auth.md](auth.md)): it reaches this route and nothing else.
+- **No stream, no ETag.** Poll it; the body is small. It is never cached
+  (`Cache-Control: no-store`).
+- **What "waiting" means:** exactly the items of the Asks page above — the
+  same function builds both, so the bar and the page cannot disagree. Busy and
+  idle never make anything waiting.
+
+```json
+{
+  "ts": 1800000000,
+  "nudge_mode": "off",
+  "partial": false,
+  "hosts": [
+    {"host": "host-a", "online": true, "status_report": true, "busy": 1, "idle": 0}
+  ],
+  "items": [
+    {"key": "ask-5", "kind": "ask", "host": "", "title": "chief", "why": "Ship it?",
+     "since": 1799999940, "age_secs": 60, "offline": false,
+     "url": "https://muster.example.test/attention/open/ask-5"}
+  ]
+}
+```
+
+| field | meaning |
+|---|---|
+| `ts` | The server's clock when the summary was built, Unix seconds. |
+| `nudge_mode` | `off` (chief nudges do not run on this server), `shadow` or `live` for you. |
+| `partial` | `true` when part of the queue could not be read, so `items` may be short. Do not read a partial summary as "nothing waits". |
+| `hosts[]` | Each of your mirror hosts, by the name it reports (`MUSTER_MIRROR_HOST`), in the hub's order. `online`; `status_report` (it reports its windows' Claude status, so its zeros are measurements); `busy` and `idle`, its Claude (and other agent runtime) windows by status. An offline host counts `0` and `0`: a count is a claim about now. |
+| `items[]` | Everything waiting on you, newest first. |
+| `items[].key` | The item's id (`ask-<id>`, `session-<hash>`, `draft-<id>`, `task-<id>`). A held question has its window's `session-…` key. |
+| `items[].kind` | `ask`, `session`, `question`, `plugin` (a reply draft) or `task`. |
+| `items[].host` | The mirror host it is on; `""` for an agent's ask, muster's own, a reply draft and a task. |
+| `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body. Secrets are redacted, a waiting session is `Waiting: <tool> · <window> @ <host>`, a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
+| `items[].since`, `items[].age_secs` | When it started waiting (Unix seconds) and `ts` minus that; `0` and `0` when unknown. |
+| `items[].offline` | A session item whose host dropped within the last 5 minutes, shown as last seen. |
+| `items[].url` | Where to act on it, on `MUSTER_PUBLIC_URL`: the [tap route](push.md) `/attention/open/<key>` for an ask or a session (resolved when opened), the item's own page for a draft or a task. **`""` when `MUSTER_PUBLIC_URL` is not set**: the summary names no origin it was not told. |
+
+Fields may be added; none is renamed or removed.

@@ -61,7 +61,7 @@ func TestAShippingOfficersPodSpecCarriesNoAppKeyOrWebhook(t *testing.T) {
 	a.PendingNote = a.NoteText
 	var tools []string
 	for _, n := range []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete,
-		officers.ToolRelease, officers.ToolMergePR, officers.ToolTagRelease, officers.ToolRolloutStatus} {
+		officers.ToolRelease, officers.ToolMergePR, officers.ToolTagRelease, officers.ToolRolloutStatus, officers.ToolMarkReady} {
 		if officers.ToolOffered(o, n) {
 			tools = append(tools, n)
 		}

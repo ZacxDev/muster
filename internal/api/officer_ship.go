@@ -25,8 +25,9 @@ import (
 //   - a connectors.Gate (officership.PushGate) on every proxied GitHub request
 //     its instances make (callerOf): the write filter, and the only source of
 //     the credential those requests carry;
-//   - three MCP tools — officer_merge_pr, officer_tag_release,
-//     officer_rollout_status — whose gates run HERE, with muster's own token;
+//   - four MCP tools — officer_merge_pr, officer_tag_release,
+//     officer_rollout_status, officer_mark_ready — whose gates run HERE, with
+//     muster's own token;
 //   - the rollout watch, resumed at boot for a release still inside its window.
 //
 // 🔴 WHY THE INSTANCE CANNOT GO AROUND IT. The instance's pod holds no GitHub
@@ -189,6 +190,14 @@ func shipToolDefs() []agents.ToolDef {
 				"the daily rate and minimum gap, quiet hours, CI green for the head's exact tree, migrations (and HQ's backup preflight when one is added) — then creates the tag and watches the rollout. " +
 				"A tag someone else pushes at the same moment makes this fail and nothing is created. Give item_id to have the watch name your item.",
 			Parameters: objSchema(map[string]any{"item_id": strProp("Optional: the HQ item this release is for.")})},
+		{Type: "function", Name: officers.ToolMarkReady,
+			Description: "Mark YOUR OWN draft pull request ready for review (head branch under your branch prefix, authored by your App), so the review check runs — " +
+				"a draft is not reviewed, and " + officers.ToolMergePR + " needs that review. Call it once CI is green on the draft's head. " +
+				"muster checks at call time that the pull request is open, still a draft, into the base branch, from your prefix in your repository and authored by your App, " +
+				"then converts it with GitHub's GraphQL mutation (REST PATCH cannot, and the push gate refuses a `draft` field). There is no way back to draft. " +
+				"A refusal names the gate that failed. Before the ready gate nothing is changed; a ready-gate refusal means GitHub did not CONFIRM the conversion, " +
+				"which may still have happened — re-read the pull request (its draft field) before calling again.",
+			Parameters: objSchema(map[string]any{"pr": intProp("The pull request number.", 1, 999999999)}, "pr")},
 		{Type: "function", Name: officers.ToolRolloutStatus,
 			Description: "Read muster's rollout watch of your latest release: phase, verdict (watching, healthy, not_live, unhealthy, superseded), the revert pull request and rollback tag if one was made, and its events. Put the verdict in your item's officer_complete summary.",
 			Parameters:  objSchema(map[string]any{})},
@@ -196,7 +205,7 @@ func shipToolDefs() []agents.ToolDef {
 }
 
 func isShipTool(name string) bool {
-	return name == officers.ToolMergePR || name == officers.ToolTagRelease || name == officers.ToolRolloutStatus
+	return name == officers.ToolMergePR || name == officers.ToolTagRelease || name == officers.ToolRolloutStatus || name == officers.ToolMarkReady
 }
 
 // dispatchShipTool runs a shipping officer's tool for instance a of o.
@@ -248,6 +257,17 @@ func (s *Server) dispatchShipTool(ctx context.Context, a agents.Agent, o officer
 		}
 		return toolJSON(map[string]any{"tagged": true, "result": res, "watching": watching,
 			"next": "call " + officers.ToolRolloutStatus + " for the rollout verdict before completing your item"})
+	case officers.ToolMarkReady:
+		if in.PR <= 0 {
+			return toolErr("pr is required (the pull request number)")
+		}
+		res, err := rt.gates.MarkReady(ctx, in.PR)
+		s.logShip(o, a, name, fmt.Sprintf("pr #%d", in.PR), res.Passed, err)
+		if err != nil {
+			return shipRefusal(name, err, res.Passed)
+		}
+		return toolJSON(map[string]any{"ready": true, "result": res,
+			"next": "wait for the " + o.Ship.ReviewCheck + " check on the head, then call " + officers.ToolMergePR})
 	case officers.ToolRolloutStatus:
 		if rt.watch == nil {
 			return toolErr("officer %s has no rollout watch configured", o.ID)
@@ -280,6 +300,6 @@ func shipRefusal(tool string, err error, passed []string) string {
 func shipGrantsDescription(o officers.Officer) string {
 	sp := o.Ship
 	return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), for %s only, behind muster's push gate: reads; pushes ONLY to refs/heads/%s* "+
-		"(never %s, never a tag); opening and editing its own pull requests and commenting. Merging and tagging happen only in muster, "+
-		"through the gated %s and %s tools (stage %s)", o.ID, sp.AppID, o.Repo, sp.BranchPrefix, sp.Base, officers.ToolMergePR, officers.ToolTagRelease, sp.Stage)
+		"(never %s, never a tag); opening and editing its own pull requests and commenting; marking its own draft ready (%s). Merging and tagging happen only in muster, "+
+		"through the gated %s and %s tools (stage %s)", o.ID, sp.AppID, o.Repo, sp.BranchPrefix, sp.Base, officers.ToolMarkReady, officers.ToolMergePR, officers.ToolTagRelease, sp.Stage)
 }

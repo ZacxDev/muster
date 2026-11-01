@@ -202,7 +202,8 @@ type attentionItem struct {
 	// chips. Not in the item's JSON (attention_list), which predates them.
 	suggestions []string
 	// pushText, when set, replaces Text in the notification body (muster's
-	// own unrouted-message ask: unroutedPushText); the page shows Text.
+	// own unrouted-message ask: unroutedPushText; a reply draft's
+	// draftPushBody); the page shows Text.
 	pushText string
 	// choices are a held question's choice labels, listed in its push only
 	// (never in attention_list's options).
@@ -329,6 +330,17 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 	if s.ext.Mirror == nil {
 		return nil
 	}
+	return s.waitingSessionsIn(ctx, s.ext.Mirror.Hosts(ctx))
+}
+
+// waitingSessionsIn is waitingSessions over hs, ctx's principal's hosts as
+// one read of the hub: a caller that also shows the hosts (the attention
+// summary) passes the SAME snapshot, so a host flapping between two reads
+// cannot be online in one and offline in the other.
+func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []attentionItem {
+	if s.ext.Mirror == nil {
+		return nil
+	}
 	// The open questions of a session's AskUserQuestion (internal/askq,
 	// registered by the muster-mirror ask hook), by host and Claude session:
 	// such a window is ONE item — the question, with its text — never a
@@ -342,7 +354,6 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			}
 		}
 	}
-	hs := s.ext.Mirror.Hosts(ctx)
 	type wait struct {
 		since   int64
 		q       *askq.Entry
@@ -506,7 +517,7 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 		}
 		it := attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
 			Text: draftInboundText(c.Message), Detail: "Draft reply: " + mirror.OneLine(c.Draft.Body, draftReplyMax),
-			Since: c.Draft.CreatedAt, Link: draftLink(c.Draft.ID)}
+			Since: c.Draft.CreatedAt, Link: draftLink(c.Draft.ID), pushText: draftPushBody(c.Message, c.PluginLabel)}
 		// The agent that drafted it (none once that agent is deleted).
 		if c.Draft.AgentID != nil {
 			it.card.agentID = *c.Draft.AgentID
@@ -521,6 +532,16 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 // A source that cannot be read is left out and named in the error; the rest
 // are still returned.
 func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
+	var hs []mirror.HostView
+	if s.ext.Mirror != nil {
+		hs = s.ext.Mirror.Hosts(ctx)
+	}
+	return s.attentionItemsIn(ctx, hs)
+}
+
+// attentionItemsIn is attentionItems with its waiting sessions taken from hs,
+// one read of ctx's principal's hosts (waitingSessionsIn).
+func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]attentionItem, error) {
 	var out []attentionItem
 	var errs []error
 	if s.ext.Attention != nil {
@@ -537,7 +558,7 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 			out = append(out, askItem(a))
 		}
 	}
-	out = append(out, s.waitingSessions(ctx)...)
+	out = append(out, s.waitingSessionsIn(ctx, hs)...)
 	drafts, err := s.pendingDraftItems(ctx)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))
@@ -704,10 +725,18 @@ func attentionPushTitle(it attentionItem) string {
 // command a question asks about is exactly what must not vanish from it.
 //
 // Other notifications are unchanged: a reply draft's (draftPushBody) still
-// says who and where only.
+// says who and where only — and so does its body here, so this is every
+// item's lock-screen text (the attention summary reads it,
+// attention_summary.go): a draft item carries its draftPushBody in pushText,
+// and one without (built elsewhere) says DraftPushBody, never its message.
 func attentionPushBody(it attentionItem) string {
 	var lines []string
 	switch it.Kind {
+	case attentionKindPlugin:
+		if it.pushText != "" {
+			return it.pushText
+		}
+		return DraftPushBody
 	case attentionKindSession:
 		body := "Waiting: " + textplain.Title(it.Source)
 		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
@@ -962,6 +991,10 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+attentionOpenPath+"{key}", s.requireSession(s.handleAttentionOpen))
 	mux.HandleFunc("GET "+askPagePrefix+"{id}", s.requireSession(s.handleAskPage))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
+	// What a status bar polls (attention_summary.go): a PERSONAL token only, so
+	// it reads as that token's owner. It is the one route a bar-summary token
+	// (apitokens.ScopeSummary) reaches (tokenScopeRoutes).
+	mux.HandleFunc("GET "+attentionSummaryPath, s.requireAPIToken(s.handleAttentionSummary))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))

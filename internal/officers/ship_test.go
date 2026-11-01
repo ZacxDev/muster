@@ -171,7 +171,7 @@ func TestAShadowShipNeedsNoRolloutAndMayDoNothingGated(t *testing.T) {
 		t.Fatal("a shipping officer is not offered officer_merge_pr (it is offered, and refuses by stage)")
 	}
 	plain := officers.Officer{ID: "triage:x"}
-	for _, tool := range []string{officers.ToolMergePR, officers.ToolTagRelease, officers.ToolRolloutStatus} {
+	for _, tool := range []string{officers.ToolMergePR, officers.ToolTagRelease, officers.ToolRolloutStatus, officers.ToolMarkReady} {
 		if officers.ToolOffered(plain, tool) {
 			t.Errorf("an officer with no ship block is offered %s", tool)
 		}

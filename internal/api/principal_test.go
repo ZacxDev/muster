@@ -369,6 +369,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/flows/jobs/{id}",
 		"POST /api/flows/jobs",
 		"POST /api/flows/jobs/{id}/cancel",
+		// The attention summary (attention_summary.go): a personal token ONLY.
+		"GET /api/attention/summary",
 	},
 	// A browser-flow RUNNER token (0012) opens exactly the runner door.
 	authz.ViaRunner: {
@@ -481,7 +483,7 @@ type principalAPITokens struct{ apitokens.Store }
 
 func (principalAPITokens) Authenticate(_ context.Context, tok string) (apitokens.Token, error) {
 	if tok == pAPIToken {
-		return apitokens.Token{ID: 3, UserID: authz.OperatorUserID, Name: "principal-test"}, nil
+		return apitokens.Token{ID: 3, UserID: authz.OperatorUserID, Name: "principal-test", Scope: apitokens.ScopeFull}, nil
 	}
 	return apitokens.Token{}, apitokens.ErrBadToken
 }
