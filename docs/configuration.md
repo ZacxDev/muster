@@ -163,6 +163,7 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_NAMESPACE_PREFIX` | `devpod-` | no | Each agent's namespace is this prefix plus the agent name. |
 | `MUSTER_AGENT_NAMESPACE_SHARED` | off | no | Puts every agent in `MUSTER_AGENT_NAMESPACE` instead of its own namespace. |
 | `MUSTER_AGENT_NAMESPACE` | none | when shared | The shared namespace. |
+| `MUSTER_AGENT_NAMESPACE_CLUSTERROLE` | none | no | Turns on the [least-privilege RBAC layout](provisioner.md#kubernetes-rbac): muster binds its own ServiceAccount (read off its token) to this ClusterRole inside each agent namespace, with a RoleBinding written before anything else there, so its cluster-wide grant shrinks to namespaces, RoleBindings and `bind` on this one role. Agents created before it was set get the binding at their next operation. Unset, no RoleBinding is written and the namespaced rights must be cluster-wide. Refused at boot with any driver but `kubernetes`, with `MUSTER_AGENT_NAMESPACE_SHARED`, or when not a valid name. |
 | `MUSTER_AGENT_WORKSPACE_PERSIST` | off | no | Gives each agent a workspace volume that survives restarts. |
 | `MUSTER_AGENT_WORKSPACE_STORAGE_CLASS` | the cluster default | no | The StorageClass for that volume. |
 | `MUSTER_AGENT_ENDPOINT_TEMPLATE` | the driver's (`{{.Name}}.{{.Group}}.svc` on Kubernetes) | no | How muster builds an agent's address from its name and group. |

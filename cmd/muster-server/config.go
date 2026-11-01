@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/api/validation/path"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
@@ -340,9 +341,12 @@ const (
 	envAgentNamespace      = "MUSTER_AGENT_NAMESPACE"
 	envAgentNSPrefix       = "MUSTER_AGENT_NAMESPACE_PREFIX"
 	envAgentNSShared       = "MUSTER_AGENT_NAMESPACE_SHARED"
-	envAgentWorkspaceKeep  = "MUSTER_AGENT_WORKSPACE_PERSIST"
-	envAgentStorageClass   = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
-	envAgentEndpointTmpl   = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
+	// The least-privilege RBAC layout: the ClusterRole muster binds its own
+	// ServiceAccount to inside each per-instance namespace (k8s rolebinding.go).
+	envAgentNSClusterRole = "MUSTER_AGENT_NAMESPACE_CLUSTERROLE"
+	envAgentWorkspaceKeep = "MUSTER_AGENT_WORKSPACE_PERSIST"
+	envAgentStorageClass  = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
+	envAgentEndpointTmpl  = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
 
 	// The hosted subsystem-store ("cairn") coordinates handed to the SUPERVISOR
 	// agent only. Both unset is the state this ships in, and in that state nothing
@@ -928,6 +932,12 @@ type config struct {
 	AgentNamespaceShared bool
 	AgentNamespace       string
 	AgentNamespacePrefix string
+	// AgentNamespaceClusterRole turns on the least-privilege RBAC layout: muster
+	// writes a RoleBinding of its own ServiceAccount to this ClusterRole into
+	// each per-instance namespace before anything else there, so its
+	// cluster-wide grant shrinks to namespaces and RoleBindings. Empty: no
+	// RoleBinding, the namespaced rights must be cluster-wide (as before).
+	AgentNamespaceClusterRole string
 
 	// AgentWorkspacePersist asks for a workspace that survives a restart.
 	//
@@ -1259,28 +1269,29 @@ func loadConfig(getenv func(string) string) (config, error) {
 		// changes meaning when surrounding whitespace is removed. What it buys is
 		// that a key holding only a newline reads as EMPTY and hits the refusal
 		// below, rather than reaching an instance as a one-byte script.
-		AgentRuntimeConfig:    strings.TrimSpace(getenv(envAgentRuntimeConfig)),
-		AgentRuntimeInstall:   strings.TrimSpace(getenv(envAgentRuntimeInstall)),
-		AgentImageRepo:        strings.TrimSpace(getenv(envAgentImageRepo)),
-		AgentImageTag:         strings.TrimSpace(getenv(envAgentImageTag)),
-		AgentAPIURL:           strings.TrimSpace(getenv(envAgentAPIURL)),
-		AgentModel:            strings.TrimSpace(getenv(envAgentModel)),
-		AgentOpenRouterKey:    strings.TrimSpace(getenv(envAgentOpenRouterKey)),
-		AgentNamespaceShared:  envFlag(getenv, envAgentNSShared),
-		AgentNamespace:        strings.TrimSpace(getenv(envAgentNamespace)),
-		AgentNamespacePrefix:  strings.TrimSpace(getenv(envAgentNSPrefix)),
-		AgentWorkspacePersist: envFlag(getenv, envAgentWorkspaceKeep),
-		AgentStorageClass:     strings.TrimSpace(getenv(envAgentStorageClass)),
-		AgentEndpointTemplate: strings.TrimSpace(getenv(envAgentEndpointTmpl)),
-		AgentCairnURL:         strings.TrimSpace(getenv(envAgentCairnURL)),
-		AgentCairnToken:       strings.TrimSpace(getenv(envAgentCairnToken)),
-		AgentKinds:            splitList(getenv(envAgentKinds)),
-		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
-		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
-		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
-		AgentCCBypassPools:    splitList(getenv(envAgentCCBypassPools)),
-		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
-		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
+		AgentRuntimeConfig:        strings.TrimSpace(getenv(envAgentRuntimeConfig)),
+		AgentRuntimeInstall:       strings.TrimSpace(getenv(envAgentRuntimeInstall)),
+		AgentImageRepo:            strings.TrimSpace(getenv(envAgentImageRepo)),
+		AgentImageTag:             strings.TrimSpace(getenv(envAgentImageTag)),
+		AgentAPIURL:               strings.TrimSpace(getenv(envAgentAPIURL)),
+		AgentModel:                strings.TrimSpace(getenv(envAgentModel)),
+		AgentOpenRouterKey:        strings.TrimSpace(getenv(envAgentOpenRouterKey)),
+		AgentNamespaceShared:      envFlag(getenv, envAgentNSShared),
+		AgentNamespace:            strings.TrimSpace(getenv(envAgentNamespace)),
+		AgentNamespacePrefix:      strings.TrimSpace(getenv(envAgentNSPrefix)),
+		AgentNamespaceClusterRole: strings.TrimSpace(getenv(envAgentNSClusterRole)),
+		AgentWorkspacePersist:     envFlag(getenv, envAgentWorkspaceKeep),
+		AgentStorageClass:         strings.TrimSpace(getenv(envAgentStorageClass)),
+		AgentEndpointTemplate:     strings.TrimSpace(getenv(envAgentEndpointTmpl)),
+		AgentCairnURL:             strings.TrimSpace(getenv(envAgentCairnURL)),
+		AgentCairnToken:           strings.TrimSpace(getenv(envAgentCairnToken)),
+		AgentKinds:                splitList(getenv(envAgentKinds)),
+		AgentCCImage:              strings.TrimSpace(getenv(envAgentCCImage)),
+		AgentCCAccountNames:       splitList(getenv(envAgentCCAccounts)),
+		AgentCCStorage:            strings.TrimSpace(getenv(envAgentCCStorage)),
+		AgentCCBypassPools:        splitList(getenv(envAgentCCBypassPools)),
+		AgentNetpolFromNS:         strings.TrimSpace(getenv(envAgentNetpolFromNS)),
+		AgentNetpolFromLabels:     strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
 	c.AgentCCPoolDeployKeys, c.AgentCCPoolDeployKeysErr = parsePoolDeployKeys(getenv(envAgentCCPoolDeployKeys))
 	c.AgentCCEgressLockedPools = splitList(getenv(envAgentCCEgressLockedPools))
@@ -2165,6 +2176,10 @@ func (c config) validateProvisioner() error {
 		return err
 	}
 
+	if err := c.validateNamespaceClusterRole(); err != nil {
+		return err
+	}
+
 	if named == provisionerNone {
 		// Nothing else is read in this mode, so nothing else is refused. An
 		// operator who set the image repository and forgot to name a driver is
@@ -2194,6 +2209,32 @@ func (c config) validateProvisioner() error {
 	// declares Persistence TRUE: the noop driver accepts a persistent workspace
 	// and records it. The refusal would have rejected a working configuration
 	// while reading like a safety check.
+	return nil
+}
+
+// validateNamespaceClusterRole refuses MUSTER_AGENT_NAMESPACE_CLUSTERROLE where
+// nothing would act on it — any driver but kubernetes, or the shared layout,
+// where muster creates no namespace to bind itself in — and a value that cannot
+// be a ClusterRole name. Each refusal is an armed switch that would otherwise
+// boot and do nothing.
+func (c config) validateNamespaceClusterRole() error {
+	role := c.AgentNamespaceClusterRole
+	if role == "" {
+		return nil
+	}
+	if c.agentProvisioner() != provisionerK8s {
+		return fmt.Errorf("%s is set but %s=%s: only the kubernetes driver writes the per-namespace RoleBinding",
+			envAgentNSClusterRole, envAgentProvisioner, c.agentProvisioner())
+	}
+	if c.AgentNamespaceShared {
+		return fmt.Errorf("%s is set with %s=1: in the shared layout muster creates no namespace to bind itself "+
+			"in; grant muster a Role in %s instead, and unset %s",
+			envAgentNSClusterRole, envAgentNSShared, envAgentNamespace, envAgentNSClusterRole)
+	}
+	if msgs := path.IsValidPathSegmentName(role); len(msgs) > 0 || strings.ContainsAny(role, " \t") {
+		return fmt.Errorf("invalid %s %q: not a ClusterRole name (%s)", envAgentNSClusterRole, role,
+			strings.Join(msgs, "; "))
+	}
 	return nil
 }
 

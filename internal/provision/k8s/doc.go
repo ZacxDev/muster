@@ -18,6 +18,9 @@
 // the manifest set those thirty values actually produced —
 //
 //   - a Namespace, when the driver owns one per instance;
+//   - a RoleBinding of muster's own ServiceAccount in that namespace, written
+//     before anything else there, when the least-privilege RBAC layout is on
+//     (Config.NamespaceRoleBinding, rolebinding.go);
 //   - a ServiceAccount, which is the identity a policy grant attaches to;
 //   - a Secret for confidential environment, and a SEPARATE one for
 //     confidential files — separate because the first is consumed with

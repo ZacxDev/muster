@@ -621,6 +621,10 @@ var bannerExempt = map[string]string{
 		"disagreeing with what internal/api writes into agents.namespace. That is pinned " +
 		"structurally by TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith, " +
 		"which is a stronger check than a log line a reader has to compare by eye",
+	envAgentNSClusterRole: "turns on the least-privilege RBAC layout; every combination where it would do nothing " +
+		"(another driver, the shared layout, a value that is not a ClusterRole name) is refused at boot by " +
+		"validateNamespaceClusterRole, and a cluster where the binding does not take effect fails the dispatch " +
+		"naming the ClusterRole (k8s waitForAccess), so there is no silent state to announce",
 	envAgentNSShared: "selects between the two namespace layouts; see " +
 		"MUSTER_AGENT_NAMESPACE and MUSTER_AGENT_NAMESPACE_PREFIX, both of which are " +
 		"guarded rather than announced",
