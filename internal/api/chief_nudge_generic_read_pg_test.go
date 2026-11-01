@@ -19,7 +19,7 @@ import (
 // two. With no reason it is the generic ask exactly as before.
 
 const (
-	genericAskHead = "A session (Gold:1 @ ws) is waiting on you. Its last turn looks like it asked you something."
+	genericAskHead = "A session (Gold:1 · tmux main:1 @ ws) is waiting on you. Its last turn looks like it asked you something."
 	genericAskTail = "\n\nChoosing an option sends nothing into the session; an answer you type is sent into it word for word."
 )
 
