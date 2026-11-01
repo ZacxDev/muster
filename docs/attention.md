@@ -14,7 +14,7 @@ creation), ties broken by the item's key:
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
 | Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
-| Session waiting | A mirrored Claude Code **or Hermes** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password). Shown with **what it waits on** (below), its focus title, its window @ host and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway ([mirroring.md](mirroring.md)). It leaves the list when the session stops waiting. |
+| Session waiting | A mirrored Claude Code **or Hermes** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password). Shown with **what it waits on** (below), its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway ([mirroring.md](mirroring.md)). It leaves the list when the session stops waiting. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once. | The open question (`internal/askq`), live; it leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
 | Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open the task**. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
 | Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Ask tab: with [plugins](plugins.md) on, the page has a second tab, **Reply drafts** (below), whose label carries the count ("Reply drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
@@ -108,8 +108,34 @@ command, path or URL, never what Claude said.
 | item | title | body |
 |---|---|---|
 | a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any — except muster's own ask about a [plugin message nobody acted on](plugins.md#a-message-the-chief-does-not-act-on), whose long fixed sentence would fill the body: its body is `From: <sender> · Subject: <subject>`, then the option (the page shows the whole question) |
-| a held question (a session's `AskUserQuestion`) | `<window> @ <host> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
-| a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <window> @ <host>`, or `Waiting: <window> @ <host>` when its host names no tool |
+| a held question (a session's `AskUserQuestion`) | `<where> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
+| a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <where>`, or `Waiting: <where>` when its host names no tool |
+
+`<where>` is the window's exact tmux target — see [How a window is named](#how-a-window-is-named).
+
+### How a window is named
+
+Every attention text that names a mirrored window — a chief nudge's ask, a
+waiting session, a session question, a mirrored session's own ask (its source
+on the queue, its page's "*<source>* asks" header and the asks block of its
+session page), and their notifications — names it the same way
+(`mirror.Where`), so you can go straight to it in a terminal:
+
+- `tmux <session>:<window index> @ <host>` — the tmux session name and window
+  index, exactly as tmux's own target syntax takes them
+  (`tmux build:4 @ laptop`);
+- led by the host's codename for the window when it has one
+  (`mango:1 · tmux scratch3:5 @ laptop`). The codename is a display name,
+  not a tmux name, so it is never the only one.
+
+The index is a snapshot: tmux renumbers windows, so the text says where the
+window was when it was written (a chief nudge's ask, when it was raised; the
+queue, its page and a notification, when they were drawn or sent). The **View
+in session** link finds the window by its Claude session id when you follow
+it, and is the source of truth. A mirrored session's ask whose Claude session
+no window shows now reads as its stored name and host followed by
+`(not shown in any mirrored window now)` — muster names no target it cannot
+see. An agent's ask is named by the agent.
 
 Each line is folded to one line, anything shaped like a secret is redacted, and
 the body is cut to 200 characters on a character boundary with a visible `…`

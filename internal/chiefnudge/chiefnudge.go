@@ -148,6 +148,10 @@ type Session struct {
 	Key  string // Claude session id (mirror) or agent id (agent)
 	// Mirror address (KindMirror).
 	Host, TmuxSession, Window, Label string
+	// Index is the window's tmux index when the sweep saw it (mirror
+	// Window.Index): display only, for the ask's text (mirror.Where) — tmux
+	// renumbers windows, so nothing is addressed by it.
+	Index int
 	// AgentID and ChatSessionID (KindAgent): the agent and the ONE conversation
 	// of it that stalled — an agent can hold several.
 	AgentID       int64

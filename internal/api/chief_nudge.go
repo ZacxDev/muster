@@ -341,7 +341,7 @@ func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []n
 				seen[w.ClaudeSession] = true
 				st := s.ext.Mirror.AgentState(octx, h.Host, w.Session, w.ID)
 				c := chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: w.ClaudeSession, Host: h.Host,
-					TmuxSession: w.Session, Window: w.ID, Label: w.Label, Status: st.Status,
+					TmuxSession: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Status: st.Status,
 					Shell:     !h.Work[w.ID].IsZero(),
 					TurnError: st.TurnError != nil || st.HostLimit != nil || st.GuardHeld != "",
 					OpenAsk:   asked["mirror:"+w.ClaudeSession] || inFlight[chiefnudge.KindMirror+":"+w.ClaudeSession]}
@@ -1212,11 +1212,7 @@ func nudgeAskQuestion(c chiefnudge.Session, q string, generic bool) string {
 		where = "A session"
 	}
 	if c.Kind == chiefnudge.KindMirror {
-		label := c.Label
-		if label == "" {
-			label = c.TmuxSession
-		}
-		where += " (" + label + " @ " + c.Host + ")"
+		where += " (" + mirror.Where(c.Host, c.TmuxSession, c.Window, c.Index, c.Label) + ")"
 	} else {
 		where += " (agent " + c.Label + ")"
 	}

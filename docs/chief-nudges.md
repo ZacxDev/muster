@@ -362,7 +362,13 @@ chief judged; if it cannot read the session's state, the nudge stays queued and
 is tried again.
 
 **An ask** is an attention ask on your queue, asked by *your chief*, naming the
-session's focus title and where it runs, the chief's question and its options.
+session's focus title and where it runs, the chief's question and its options:
+"*<focus title>* (*<where>*) stopped and is waiting on you: …", where *<where>*
+is a mirrored window's exact tmux target as of when the ask was raised
+(`Fix CI (tmux build:4 @ laptop)`, or
+`(mango:1 · tmux scratch3:5 @ laptop)` when its host gives the window a
+codename — [attention.md](attention.md#how-a-window-is-named)), and an agent's
+`(agent <name>)`.
 It is pushed like any ask, and its page and its card on the Asks list link the
 session it is about (**View in session**: the window now running that Claude
 session, or the agent's page at the conversation that stalled), found through

@@ -20,7 +20,7 @@ func TestTheUnroutedAskPushIsCompact(t *testing.T) {
 	q := unroutedQuestionText("Example inbox", m)
 	a := attention.Ask{ID: 9, Owner: 1, Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: q,
 		Options: []string{unroutedNoAction}}
-	it := askItem(a)
+	it := askItem(a, nil)
 	if it.Text != q {
 		t.Fatal("the page's question changed")
 	}
@@ -31,12 +31,12 @@ func TestTheUnroutedAskPushIsCompact(t *testing.T) {
 	// A verified sender carries no note; a question that is not muster's
 	// format (an agent's ask that happens to say "From:") keeps its own text.
 	m.SenderVerified = true
-	if got := attentionPushBody(askItem(attention.Ask{ID: 9, Asker: attention.Asker{System: true}, Question: unroutedQuestionText("Example inbox", m)})); got !=
+	if got := attentionPushBody(askItem(attention.Ask{ID: 9, Asker: attention.Asker{System: true}, Question: unroutedQuestionText("Example inbox", m)}, nil)); got !=
 		"From: Ada Lovelace <ada@example.test> · Subject: Invoice 1043 is overdue" {
 		t.Fatalf("verified: %q", got)
 	}
 	agent := attention.Ask{ID: 10, Asker: attention.Asker{AgentID: 3, Label: "w"}, Question: "From: x\nSubject: y — ok?"}
-	if got := attentionPushBody(askItem(agent)); got != "From: x Subject: y — ok?" {
+	if got := attentionPushBody(askItem(agent, nil)); got != "From: x Subject: y — ok?" {
 		t.Fatalf("CONTROL: an agent's question was rewritten: %q", got)
 	}
 }

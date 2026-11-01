@@ -78,7 +78,7 @@ func (s *Server) askShowsSuggestions(ctx context.Context, a attention.Ask) bool 
 
 // renderAskPage writes ask a's page (or, for ?part=live, its live region).
 func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attention.Ask) {
-	it := askItem(a)
+	it := s.askItemNow(r.Context(), a)
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil
 	}

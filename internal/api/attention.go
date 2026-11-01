@@ -261,7 +261,10 @@ func sessionKey(host, session, window string) string {
 	return "session-" + hex.EncodeToString(sum[:8])
 }
 
-// askerLabel is what the view shows as an ask's source.
+// askerLabel is an ask's source by what it stored: its label (for a mirrored
+// session, its name and host when it asked — no tmux target), else its ids.
+// What an OPEN ask shows as its source is askSource; this is the answered
+// list's and its delivery line's, which send the operator nowhere.
 func askerLabel(a attention.Ask) string {
 	if a.Asker.Label != "" {
 		return a.Asker.Label
@@ -272,8 +275,46 @@ func askerLabel(a attention.Ask) string {
 	return a.Asker.MirrorSession + " @ " + a.Asker.MirrorHost
 }
 
-func askItem(a attention.Ask) attentionItem {
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
+// askNotShown follows an asking mirrored session's stored name when no
+// window lists its Claude session now: muster says so rather than name a tmux
+// target it cannot vouch for.
+const askNotShown = " (not shown in any mirrored window now)"
+
+// askSource is what an ask names as its source: for a mirrored session, the
+// window running its Claude session NOW, by its exact tmux target
+// (mirror.Where, resolved through claudeSessionEntry over hosts) — or its
+// stored name and askNotShown when no window does; for every other asker (an
+// agent, muster itself) askerLabel.
+func askSource(a attention.Ask, hosts []mirror.HostView) string {
+	if a.Asker.MirrorSession == "" || a.Asker.AgentID > 0 || a.Asker.System {
+		return askerLabel(a)
+	}
+	if e, ok := claudeSessionEntry(hosts, a.Asker.MirrorHost, a.Asker.MirrorSession); ok {
+		return e.Where()
+	}
+	return askerLabel(a) + askNotShown
+}
+
+// askNeedsHosts reports whether askItem needs the owner's windows for a
+// (askSource): only a mirrored session's ask does.
+func askNeedsHosts(a attention.Ask) bool {
+	return a.Asker.MirrorSession != "" && a.Asker.AgentID == 0 && !a.Asker.System
+}
+
+// askItemNow is askItem over ctx's principal's windows, read only when a
+// needs them (askNeedsHosts).
+func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem {
+	var hosts []mirror.HostView
+	if askNeedsHosts(a) && s.ext.Mirror != nil {
+		hosts = s.ext.Mirror.Hosts(ctx)
+	}
+	return askItem(a, hosts)
+}
+
+// askItem is ask a as an attention item; hosts is its owner's windows, which
+// a mirrored session's ask names its source from (askSource).
+func askItem(a attention.Ask, hosts []mirror.HostView) attentionItem {
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askSource(a, hosts), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
 	if a.Asker.System {
 		it.systemAsk = true
@@ -388,7 +429,7 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			continue
 		}
 		ref := ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
-		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.DisplayTitle() + " @ " + e.Host, Text: sessionWaitingText, host: e.Host,
+		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), Text: sessionWaitingText, host: e.Host,
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
@@ -528,13 +569,19 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("asks: %w", err))
 		}
+		// The owner's windows, read once and only when a mirrored ask needs them.
+		var hosts []mirror.HostView
+		listed := false
 		for _, a := range asks {
 			// A question to the chief is the chief's (chief_ask_tool.go), not
 			// the owner's: the chief asks the owner with attention_ask if it must.
 			if a.ToChief {
 				continue
 			}
-			out = append(out, askItem(a))
+			if askNeedsHosts(a) && !listed && s.ext.Mirror != nil {
+				hosts, listed = s.ext.Mirror.Hosts(ctx), true
+			}
+			out = append(out, askItem(a, hosts))
 		}
 	}
 	out = append(out, s.waitingSessions(ctx)...)

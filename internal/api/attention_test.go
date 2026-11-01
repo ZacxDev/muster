@@ -27,7 +27,7 @@ func TestTheAttentionPayloadsAreWhatTheWorkerReads(t *testing.T) {
 	s.UseExtensions(Extensions{Users: stubUsers{}, Push: push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))})
 	a := attention.Ask{ID: 41, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "worker-7"}, Question: "Deploy the importer now?\nMore detail below.",
 		CreatedAt: time.Now()}
-	s.attentionNotify(1, askItem(a))
+	s.attentionNotify(1, askItem(a, nil))
 	s.WaitForPushes()
 	s.attentionClear(1, attentionAskKey(41))
 	s.WaitForPushes()
@@ -52,7 +52,7 @@ func TestTheAttentionMuteSilencesTheItemButNotItsClear(t *testing.T) {
 	claim(t, store, 1, ep("muted"))
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Users: stubUsers{}, Push: push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))})
-	s.attentionNotify(1, askItem(attention.Ask{ID: 5, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"}))
+	s.attentionNotify(1, askItem(attention.Ask{ID: 5, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"}, nil))
 	s.attentionClear(1, attentionAskKey(5))
 	s.WaitForPushes()
 	got := pusher.to(ep("muted"))
