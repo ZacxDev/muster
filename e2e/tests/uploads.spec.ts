@@ -389,7 +389,7 @@ for (const vp of [
       // view menu the bar's left button opens.
       await page.locator('#switcher-toggle').click();
       await page.locator('#switcher-views [data-switcher-pick="all"]').click();
-      await expect(page.locator('#switcher-toggle')).toHaveText('All');
+      await expect(page.locator('#switcher-toggle').locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
       await expect(bar.locator('[data-switcher-list="all"] [data-switcher-current]')).toHaveAttribute('data-switcher-entry', 'mirror');
     } finally {
       await ctx.close();

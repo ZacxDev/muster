@@ -267,8 +267,9 @@ test.describe('a 200-message agent transcript', () => {
     const stalls: { label: string; at: (html: string) => number; held?: string }[] = [
       { label: 'before the layout call', at: (html: string) => html.indexOf('<form id="chat-form"') },
       { label: 'inside the session switcher', at: (html: string) => { const n = html.indexOf('id="session-switcher"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; } },
-      // Inside the switcher's toggle, between its icon and its label.
-      { label: "inside the switcher's toggle", at: (html: string) => html.indexOf('<span data-switcher-label') },
+      // Inside the switcher's toggle, between its first view icon (Recent's)
+      // and the others.
+      { label: "inside the switcher's toggle", at: (html: string) => html.indexOf('<span data-switcher-icon="waiting"') },
       // Inside #chat-form, straight after its opening tag: CI's frame (the
       // form 58px with only its first <input>, then 102px) made deterministic.
       { label: 'inside the composer', at: (html: string) => { const n = html.indexOf('<form id="chat-form"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; } },

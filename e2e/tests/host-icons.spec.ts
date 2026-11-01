@@ -187,16 +187,16 @@ test.describe('scroll positions', () => {
     const visited = new URL(r.url()).pathname + new URL(r.url()).search;
     expect(before, 'control: the visited window was not in the Recent row yet').not.toContain(visited);
     const pin = page.locator('#switcher-pin');
-    const was = await pin.getAttribute('aria-pressed');
+    const was = await pin.getAttribute('data-pinned');
     try {
       await page.evaluate(() => (document.getElementById('switcher-pin') as HTMLElement).click());
-      await expect(pin).not.toHaveAttribute('aria-pressed', was!);
+      await expect(pin).not.toHaveAttribute('data-pinned', was!);
       await expect.poll(async () => (await hrefs())[0], 'the swap put the visited window first in the Recent row').toBe(visited);
       await page.waitForTimeout(300);
       expect((await pos(page)).x, 'the row kept its offset').toBe(200);
     } finally {
-      if ((await pin.getAttribute('aria-pressed')) !== was) await page.evaluate(() => (document.getElementById('switcher-pin') as HTMLElement).click());
-      await expect(pin).toHaveAttribute('aria-pressed', was!);
+      if ((await pin.getAttribute('data-pinned')) !== was) await page.evaluate(() => (document.getElementById('switcher-pin') as HTMLElement).click());
+      await expect(pin).toHaveAttribute('data-pinned', was!);
     }
   });
 });

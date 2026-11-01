@@ -161,13 +161,13 @@ for (const vp of [
         for (const src of sh.sources) expect(src, `a shift's source is the switcher: ${JSON.stringify(cls.shifts)}`).not.toMatch(/session-switcher|switcher-/);
       }
       await expectNoSidewaysScroll(page);
-      await expect(toggle(page)).toHaveText('Recent');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
       // All holds every entry, the page's own drawn current (one, not a link).
       await toggle(page).click();
       await expect(menu(page)).toBeVisible();
       await menu(page).locator('[data-switcher-pick="all"]').click();
       await expect(menu(page)).toBeHidden();
-      await expect(toggle(page)).toHaveText('All');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
       await expect(row(page, 'all')).toBeVisible();
       const n = await listed(page);
       await expect(row(page, 'all').locator('[data-switcher-entry]')).toHaveCount(n);
@@ -339,28 +339,40 @@ for (const vp of [
 
     // THE PIN ON A SESSION'S BAR (operator ask: "a way to pin the current
     // session, the current agent, from within the rendered view"): on a
-    // window's Rendered view the bar's pin toggle pins THAT window — the Pins
+    // window's Rendered view the bar's ⋯ menu's Pin pins THAT window — the Pins
     // view and its count follow at once, a reload keeps it, another session's
     // bar lists it in Pins — and unpins it again. (With the Agents list's card
     // toggles retired, this is the one way to pin: open it, then pin.)
-    test('the bar\'s pin toggle pins and unpins the page\'s own window; the Pins view follows at once', async ({ page }) => {
+    test('the bar\'s ⋯ menu pins and unpins the page\'s own window; the Pins view follows at once', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
       await unpin(page, 'tundra', '@6');
       const view = viewOf('tundra', '@6');
       await page.goto(view);
       const pin = page.locator('#switcher-pin');
+      const more = page.locator('#switcher-more-btn');
+      await expect(more).toBeVisible();
+      await expect(more).toHaveAccessibleName('More for this session');
+      await expect(pin, 'the pin is in the ⋯ menu, not the bar').toBeHidden();
+      const mb = (await more.boundingBox())!, bb = (await bar(page).boundingBox())!;
+      expect([Math.round(mb.width), Math.round(mb.height)], 'a 44px target').toEqual([44, 44]);
+      expect(mb.y >= bb.y - 0.5 && mb.y + mb.height <= bb.y + bb.height + 0.5, 'inside the bar').toBe(true);
+      await (vp.use.hasTouch ? more.tap() : more.click());
+      await expect(page.locator('#switcher-more')).toBeVisible();
+      await expect(more).toHaveAttribute('aria-expanded', 'true');
       await expect(pin).toBeVisible();
-      await expect(pin).toHaveAttribute('aria-pressed', 'false');
+      // Measured once its open animation (a scale) has finished.
+      await page.locator('#switcher-more').evaluate((m) => Promise.all(m.getAnimations().map((a) => a.finished)));
+      await expect(pin).toHaveAttribute('data-pinned', 'false');
       await expect(pin).toHaveAccessibleName('Pin this session');
-      const pb = (await pin.boundingBox())!, bb = (await bar(page).boundingBox())!;
-      expect([Math.round(pb.width), Math.round(pb.height)], 'a 44px target').toEqual([44, 44]);
-      expect(pb.y >= bb.y - 0.5 && pb.y + pb.height <= bb.y + bb.height + 0.5, 'inside the bar').toBe(true);
+      expect(Math.round((await pin.boundingBox())!.height), 'a 44px-tall item').toBeGreaterThanOrEqual(44);
       await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
       try {
         await (vp.use.hasTouch ? pin.tap() : pin.click());
-        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'true');
-        await expect(page.locator('#switcher-pin')).toHaveAccessibleName('Unpin this session');
+        await expect(page.locator('#switcher-more'), 'the menu closes once used').toBeHidden();
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('data-pinned', 'true');
+        // Its words (the menu is closed: a hidden item has no accessible name).
+        await expect(page.locator('#switcher-pin')).toHaveText('Unpin this session');
         // The Pins view and its count, at once, with no reload: the page's own
         // window, drawn current.
         await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('1');
@@ -368,14 +380,15 @@ for (const vp of [
         await expect(page.locator('[id="switcher-list-pins"]'), 'no nested copy of the row').toHaveCount(1);
         // Kept: a reload draws it pressed, and another session's bar lists it.
         await page.reload();
-        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('data-pinned', 'true');
         await page.goto(MANGO);
         await expect(row(page, 'pins').locator('a[data-switcher-entry]')).toHaveText(['tundra:1']);
-        await expect(page.locator('#switcher-pin'), "mango's own toggle is not pressed").toHaveAttribute('aria-pressed', 'false');
-        // And unpinned from the same toggle.
+        await expect(page.locator('#switcher-pin'), "mango's own item says Pin").toHaveAttribute('data-pinned', 'false');
+        // And unpinned from the same menu.
         await page.goto(view);
+        await page.locator('#switcher-more-btn').click();
         await page.locator('#switcher-pin').click();
-        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'false');
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('data-pinned', 'false');
         await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
         await expectNoSidewaysScroll(page);
       } finally {
@@ -452,7 +465,7 @@ for (const vp of [
         // Pin the page's own window: it moves to the front of All (pins lead
         // it), and Pins gains it.
         await page.evaluate(() => (document.getElementById('switcher-pin') as HTMLElement).click());
-        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('data-pinned', 'true');
         await expect.poll(async () => (await order())[0], { message: 'the swap reordered All' }).toBe('current');
         expect(before[0], 'control: the page\'s own pill was not first before').not.toBe('current');
         // No nesting, no duplicate ids.

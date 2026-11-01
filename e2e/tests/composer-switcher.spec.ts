@@ -158,12 +158,12 @@ test('after a boosted navigation and Back, the chip, Hide, a new ask and the vie
 
   // The view menu still works.
   const toggle = page.locator('#switcher-toggle');
-  await expect(toggle).toHaveText('Recent');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
   await pickView(page, 'pins');
-  await expect(toggle).toHaveText('Pins');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'pins');
   await expect(row(page, 'pins')).toBeVisible();
   await pickView(page, 'recent');
-  await expect(toggle).toHaveText('Recent');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
   // The chip reopens; Hide hides again.
   await expect(chip(page)).toHaveText('1 waiting');
   await chip(page).click();
@@ -243,14 +243,15 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
   expect(Math.abs(b.y + b.height - (form.y + form.height)), 'in the room the form reserves at its bottom').toBeLessThanOrEqual(1);
   expect(b.y + b.height, 'and on screen').toBeLessThanOrEqual(page.viewportSize()!.height + 1);
 
-  // Every control in the bar is a 44px target.
+  // Every control in the bar is a 44px target. (The ⋯ menu's item is in a
+  // closed popover here: zero-sized, so skipped.)
   const small = await bar(page).locator('a, button').evaluateAll((els) =>
     els.filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.height < 44 || r.width < 44); }).map((e) => e.outerHTML.slice(0, 80)));
   expect(small, 'controls under 44px in the bar').toEqual([]);
 
   // Recent: the visits, newest first, without this page.
   const toggle = page.locator('#switcher-toggle');
-  await expect(toggle).toHaveText('Recent');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
   await expect(row(page, 'recent')).toBeVisible();
   const recent = await hrefs(page, 'recent');
   expect(recent.slice(0, 2), 'newest first').toEqual(['/agents/release-helper', '/agents/notes-tidy']);
@@ -258,14 +259,14 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
 
   // Pins.
   await pickView(page, 'pins');
-  await expect(toggle).toHaveText('Pins');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'pins');
   await expect(row(page, 'recent')).toBeHidden();
   await expect(row(page, 'pins')).toBeVisible();
   expect(await hrefs(page, 'pins')).toEqual(['/agents/release-helper']);
 
   // All: every agent, this one drawn as current (not a link).
   await pickView(page, 'all');
-  await expect(toggle).toHaveText('All');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
   const all = row(page, 'all');
   await expect(all).toBeVisible();
   await expect(all.locator('[data-switcher-current]')).toHaveText('docs-sweeper');
@@ -275,12 +276,12 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
 
   // Kept: the next page comes up in All, drawn so before it is painted.
   await openAgent(page, 'notes-tidy');
-  await expect(toggle).toHaveText('All');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
   await expect(row(page, 'all')).toBeVisible();
   await expect(row(page, 'recent')).toBeHidden();
   // Back to Recent from the menu.
   await pickView(page, 'recent');
-  await expect(toggle).toHaveText('Recent');
+  await expect(toggle.locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
 
   // A tap is a navigation to that session.
   await Promise.all([page.waitForURL((u) => u.pathname === '/agents/release-helper'), row(page, 'recent').locator('a[href^="/agents/release-helper?"], a[href="/agents/release-helper"]').first().click()]);
@@ -307,6 +308,95 @@ test('at 390px the bar never widens the page, whatever it holds', async ({ page 
     for (const n of names) mkchat(n, null);
     await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
   }
+});
+
+// THE COMPACT BAR at a phone's size (the operator asked for icons in place
+// of the view labels, the pin in a three-dots menu, and less padding so more
+// of the session pills show): the pills' row gets the width, the view button
+// shows the view's icon and changes it with the view, and the ⋯ menu pins the
+// session. The Recent row's clientWidth on this page at 390px, measured: 174px
+// on the base (main before this change: a 72px labelled view button, 44px
+// search and pin, 8px gaps, in the pane's 358px), 226px here (three 44×44
+// icon buttons, no gaps). 210 is clear of the base and below this.
+test.describe('phone 390×844, the compact bar', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('the pills get the width, the view button\'s icon follows the view, and the ⋯ menu pins the session into Pins', async ({ page }) => {
+    await page.addInitScript(() => { try { if (!sessionStorage.getItem('cmp-cleared')) { localStorage.removeItem('muster.switcher.view'); sessionStorage.setItem('cmp-cleared', '1'); } } catch (e) {} });
+    await openAgent(page, 'docs-sweeper');
+    const id = await agentID(page, 'docs-sweeper');
+    await pin(page, id, false);
+    await page.reload();
+    await expect(bar(page)).toBeVisible();
+
+    // More pill width: the shown row's clientWidth.
+    const rowW = await row(page, 'recent').evaluate((el) => el.clientWidth);
+    expect(rowW, 'the pills\' row at 390px (174px on the base, 226px here)').toBeGreaterThanOrEqual(210);
+    // Every icon button: a 44×44 target (operator decision), inside the bar; the bar inside the page.
+    for (const sel of ['#switcher-toggle', '#switcher-search-open', '#switcher-more-btn']) {
+      const b = (await page.locator(sel).boundingBox())!;
+      expect([Math.round(b.width), Math.round(b.height)], `${sel} is 44×44`).toEqual([44, 44]);
+    }
+    const bb = (await bar(page).boundingBox())!;
+    expect(bb.x + bb.width, 'the bar ends inside the viewport').toBeLessThanOrEqual(390 + 0.5);
+
+    // The view button: an icon, no words, named for the view; it changes with
+    // the view and the button does not move or resize.
+    const toggle = page.locator('#switcher-toggle');
+    const shown = toggle.locator('[data-switcher-icon]:visible');
+    await expect(toggle).toHaveText('');
+    await expect(shown).toHaveAttribute('data-switcher-icon', 'recent');
+    await expect(toggle).toHaveAccessibleName('Showing Recent sessions; choose a view');
+    const tb = (await toggle.boundingBox())!;
+    for (const [key, name] of [['all', 'All'], ['waiting', 'Waiting'], ['pins', 'Pins']]) {
+      await toggle.tap();
+      await expect(page.locator(`#switcher-views [data-switcher-pick="${key}"] [data-switcher-menu-icon="${key}"]`), 'the menu draws the icon beside the words').toBeVisible();
+      await page.locator(`#switcher-views [data-switcher-pick="${key}"]`).tap();
+      await expect(page.locator('#switcher-views')).toBeHidden();
+      await expect(shown).toHaveCount(1);
+      await expect(shown).toHaveAttribute('data-switcher-icon', key);
+      await expect(toggle).toHaveAccessibleName(`Showing ${name} sessions; choose a view`);
+      await expect(toggle).toHaveAttribute('title', `Showing ${name} sessions; choose a view`);
+      expect(await toggle.boundingBox(), `the button stays put in ${key}`).toEqual(tb);
+    }
+    // Kept across a load, drawn before paint: Pins' icon, not Recent's.
+    await page.reload();
+    await expect(shown).toHaveAttribute('data-switcher-icon', 'pins');
+    const curPin = row(page, 'pins').locator('[data-switcher-current]');
+    await expect(curPin, 'control: this session is not pinned yet').toHaveCount(0);
+    const count = page.locator('#switcher-views [data-switcher-count="pins"]');
+    const n0 = Number(await count.textContent());
+
+    // The ⋯ menu: opened by a tap, above its button and on screen; Pin pins
+    // this session, the menu closes, and the Pins view holds it at once.
+    const more = page.locator('#switcher-more-btn');
+    const menu = page.locator('#switcher-more');
+    const item = page.locator('#switcher-pin');
+    await expect(item, 'no pin in the bar itself').toBeHidden();
+    await more.tap();
+    await expect(menu).toBeVisible();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    // Measured once its open animation (a rise and a scale) has finished.
+    await menu.evaluate((m) => Promise.all(m.getAnimations().map((a) => a.finished)));
+    const mb = (await menu.boundingBox())!, ob = (await more.boundingBox())!;
+    expect(mb.y + mb.height, 'the menu opens above the ⋯').toBeLessThanOrEqual(ob.y + 0.5);
+    expect(mb.x >= 0 && mb.x + mb.width <= 390 + 0.5, 'the menu is on screen').toBe(true);
+    await expect(item).toHaveAccessibleName('Pin this session');
+    pinned = id;
+    await item.tap();
+    await expect(menu, 'the menu closes once used').toBeHidden();
+    await expect(item).toHaveAttribute('data-pinned', 'true');
+    await expect(curPin, 'the Pins view holds this session').toHaveText('docs-sweeper');
+    await expect(curPin).toBeVisible();
+    await expect(count).toHaveText(String(n0 + 1));
+    // And Unpin from the same menu.
+    await more.tap();
+    await expect(item).toHaveAccessibleName('Unpin this session');
+    await item.tap();
+    await expect(item).toHaveAttribute('data-pinned', 'false');
+    await expect(curPin).toHaveCount(0);
+    await expect(count).toHaveText(String(n0));
+    await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+  });
 });
 
 // LAYOUT SHIFT: the agent page with the bar, loaded in each view (the stored

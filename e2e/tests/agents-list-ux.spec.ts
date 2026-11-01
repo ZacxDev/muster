@@ -345,7 +345,7 @@ for (const vp of [
       const pick = page.locator('#switcher-views [data-switcher-pick="waiting"]');
       await expect(pick).toContainText('Waiting on you');
       await press(pick);
-      await expect(page.locator('#switcher-toggle')).toHaveText('Waiting');
+      await expect(page.locator('#switcher-toggle').locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'waiting');
       const viewRow = page.locator('#session-switcher [data-switcher-list="waiting"]');
       await expect(viewRow).toBeVisible();
       const pills = (await viewRow.locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href') || ''))).map(key);

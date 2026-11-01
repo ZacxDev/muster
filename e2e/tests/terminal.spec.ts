@@ -273,7 +273,7 @@ test.describe('the switcher at 390×844', () => {
     await expect(all).toBeVisible();
     await expect(all.locator('[data-switcher-current]'), 'the page\'s own agent, current').toHaveAttribute('data-switcher-code', name);
     await expect(bar.locator('[data-switcher-list="recent"] [data-switcher-code="' + name + '"]'), 'not in Recent').toHaveCount(0);
-    await expect(bar.locator('#switcher-pin'), 'the bar\'s pin').toHaveCount(1);
+    await expect(bar.locator('#switcher-more #switcher-pin'), 'the bar\'s pin, in its ⋯ menu').toHaveCount(1);
 
     const cls = await readCls(page);
     expect(cls.total, `layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);

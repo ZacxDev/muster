@@ -11,37 +11,48 @@ import (
 // THE SESSION SWITCHER'S PIN (operator ask: "a way to pin the current
 // session, the current agent, from within the rendered view"): on a session's
 // page — a dispatched agent's chat, a mirrored window's Rendered view or
-// terminal — the bar holds a pin toggle for the page's OWN session, beside its
-// search. It pins one of the two subjects: the agent (by id), or the
-// mirrored window (host, session, window) — the two subjects internal/pins
+// terminal — the bar's ⋯ menu (switcherMoreMenu) holds Pin / Unpin for the
+// page's OWN session. It pins one of the two subjects: the agent (by id), or
+// the mirrored window (host, session, window) — the two subjects internal/pins
 // has; there is no other kind of pin.
 //
 // It is in the bar, not the header: the Rendered view's header keeps its
 // title at least 150px wide on a 393px phone (e2e/tests/title-room.spec.ts,
 // an operator ask), and one more 44px button there would take that from it.
-// The bar is also where the Pins view it changes is.
+// The bar is also where the Pins view it changes is. And it is in a ⋯ menu,
+// not a button of its own (the operator asked for the pin to move into a
+// three-dots menu), so the bar's width goes to the pills.
 //
-// Posted by htmx, the answer is the toggle in its new state and the bar's
+// Posted by htmx, the answer is the menu item in its new state and the bar's
 // rows and counts out of band (switcherRefresh), so the Pins view and its
-// count follow at once. Without script the form posts and the server sends
-// the browser back to the session's page (back).
+// count follow at once. Without script the ⋯ still opens (a popover the
+// button opens itself), the form posts and the server sends the browser back
+// to the session's page (back).
 
-// SwitcherPinID is the bar's pin toggle button.
+// SwitcherPinID is the pin's menu item (a submit button): one per page.
 const SwitcherPinID = "switcher-pin"
 
+// The ⋯ menu and its button.
+const (
+	switcherMoreID    = "switcher-more"
+	switcherMoreBtnID = "switcher-more-btn"
+	// SwitcherMoreLabel is the ⋯ button's accessible name.
+	SwitcherMoreLabel = "More for this session"
+)
+
 // SwitcherPinView is the form field value that asks the pin routes to answer
-// with the bar's toggle (internal/api pins.go) rather than an empty answer.
+// with the bar's pin item (internal/api pins.go) rather than an empty answer.
 const SwitcherPinView = "switcher"
 
-// switcherPin is the page's own session as the bar's pin toggle posts it.
+// switcherPin is the page's own session as the bar's pin item posts it.
 type switcherPin struct {
 	pinned bool
 	fields [][2]string
 	back   string
 }
 
-// newSwitcherPin is e's pin toggle: its subject's fields (pins.go) and the
-// page to come back to after a post without script.
+// newSwitcherPin is e's pin item: its subject's fields (pins.go) and the page
+// to come back to after a post without script.
 func newSwitcherPin(e listEntry) *switcherPin {
 	if e.agent != nil {
 		return &switcherPin{pinned: e.agent.Pinned, fields: agentPinFields(*e.agent), back: e.agent.PageHref()}
@@ -49,20 +60,60 @@ func newSwitcherPin(e listEntry) *switcherPin {
 	return &switcherPin{pinned: e.mirror.Pinned, fields: mirrorPinFields(*e.mirror), back: MirrorCardHref(*e.mirror)}
 }
 
-// switcherPinToggle is the bar's pin toggle for s's page; nothing when the
-// page is no session, or the entries are not known yet.
-func switcherPinToggle(s *Switcher) g.Node {
+// switcherMoreButton is the bar's ⋯ button, at its right end, opening
+// switcherMoreMenu; nothing when the page is no session (or its session is not
+// among the entries): the pin is all the menu holds.
+//
+// IT WORKS WITHOUT SCRIPT, like the send queue's row menus
+// (sendQueueRowMenu): the menu is a POPOVER the button opens itself
+// (popovertarget), which closes on Escape and on a tap outside with no script,
+// and its item is a real form. The bar's script (switcherJS) opens it on an
+// arrow key too, closes it on Escape (focus back on the ⋯) and Tab, places it
+// above the button and keeps aria-expanded.
+func switcherMoreButton(s *Switcher) g.Node {
 	if s == nil || s.pin == nil {
 		return nil
 	}
-	return SwitcherPinToggle(s.pin.pinned, s.pin.fields, s.pin.back)
+	return Button(
+		ID(switcherMoreBtnID),
+		Type("button"),
+		g.Attr("popovertarget", switcherMoreID),
+		g.Attr("aria-haspopup", "menu"),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-controls", switcherMoreID),
+		g.Attr("aria-label", SwitcherMoreLabel),
+		g.Attr("title", SwitcherMoreLabel),
+		Class(switcherIconButtonClass),
+		Span(
+			Class(switcherIconFaceClass+" group-aria-expanded:bg-s3 group-aria-expanded:text-fg"),
+			g.Raw(`<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.75"/><circle cx="10" cy="10" r="1.75"/><circle cx="16" cy="10" r="1.75"/></svg>`),
+		),
+	)
 }
 
-// SwitcherPinToggle is the bar's pin toggle: a form posting fields (the
+// switcherMoreMenu is the ⋯ menu: a popover (top layer, out of flow — opening
+// it moves nothing) holding the pin item. Nothing when switcherMoreButton is.
+// Its open and close are animated in CSS (web/css/input.css, #switcher-more),
+// as the view menu's are.
+func switcherMoreMenu(s *Switcher) g.Node {
+	if s == nil || s.pin == nil {
+		return nil
+	}
+	return Div(
+		ID(switcherMoreID),
+		g.Attr("popover", ""),
+		g.Attr("role", "menu"),
+		g.Attr("aria-label", "This session"),
+		Class("m-0 min-w-[12rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
+		SwitcherPinToggle(s.pin.pinned, s.pin.fields, s.pin.back),
+	)
+}
+
+// SwitcherPinToggle is the ⋯ menu's pin item: a form posting fields (the
 // subject) to PinPath — UnpinPath when pinned — with back, the page to return
-// to without script. Pressed (aria-pressed, the accent) when pinned. A 44px
-// target around a 32px face, like the search beside it, in the bar's fixed
-// h-11 row, so it moves nothing.
+// to without script. Its button is the menu item, named by its words: "Pin
+// this session", or "Unpin this session" (data-pinned="true", in the accent)
+// when pinned.
 func SwitcherPinToggle(pinned bool, fields [][2]string, back string) g.Node {
 	action, label := PinPath, "Pin this session"
 	if pinned {
@@ -72,7 +123,6 @@ func SwitcherPinToggle(pinned bool, fields [][2]string, back string) g.Node {
 		Method("post"),
 		Action(action),
 		g.Attr("data-switcher-pin", ""),
-		Class("shrink-0"),
 		hx("hx-post", action),
 		hx("hx-target", "this"),
 		hx("hx-swap", "outerHTML"),
@@ -86,19 +136,16 @@ func SwitcherPinToggle(pinned bool, fields [][2]string, back string) g.Node {
 		Button(
 			ID(SwitcherPinID),
 			Type("submit"),
-			g.Attr("aria-pressed", strconv.FormatBool(pinned)),
-			g.Attr("aria-label", label),
-			g.Attr("title", label),
+			g.Attr("role", "menuitem"),
+			g.Attr("data-pinned", strconv.FormatBool(pinned)),
 			hx("hx-disabled-elt", "this"),
-			Class("press group inline-flex h-11 w-11 items-center justify-center disabled:opacity-60"),
-			Span(
-				Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-s2 text-fg2 ring-1 ring-inset ring-line transition group-hover:bg-s3 group-aria-pressed:bg-accent/15 group-aria-pressed:text-accent group-aria-pressed:ring-accent/40"),
-				g.Raw(pinIcon),
-			),
+			Class("press flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold text-fg transition hover:bg-s2 focus:bg-s2 focus:outline-none disabled:opacity-60 data-[pinned=true]:text-accent"),
+			g.Raw(pinIcon),
+			Span(g.Text(label)),
 		))...)
 }
 
-// RenderSwitcherPin writes the bar's pin toggle in its new state and, when s
+// RenderSwitcherPin writes the ⋯ menu's pin item in its new state and, when s
 // is not nil, the bar's rows and counts out of band (switcherRefresh).
 func RenderSwitcherPin(w io.Writer, pinned bool, fields [][2]string, back string, s *Switcher) error {
 	if err := SwitcherPinToggle(pinned, fields, back).Render(w); err != nil {
