@@ -63,6 +63,11 @@ func (m *memQueue) List(ctx context.Context, t sendqueue.Target) ([]sendqueue.It
 	defer m.mu.Unlock()
 	var out []sendqueue.Item
 	for _, it := range m.items {
+		// What PGStore.List lists: the open rows and the unretried failures
+		// (order aside: these are in queue order).
+		if !it.State.Open() && (it.State != sendqueue.Failed || it.RetriedAs != 0) {
+			continue
+		}
 		if it.Owner == queueUser(ctx) && it.Target == t {
 			out = append(out, it)
 		}

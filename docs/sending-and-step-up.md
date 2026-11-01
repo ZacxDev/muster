@@ -131,8 +131,13 @@ dispatched agents and the chief panel have no Queue.
   status without its time.
 - 🔴 **A usage limit holds the queue.** See
   [A usage limit holds the queue](#a-usage-limit-holds-the-queue) below.
-- **At most 20** messages can wait per window. Finished ones are shown for a
-  while and deleted after 7 days, or sooner with their **Delete** (below).
+- **At most 20** messages can wait per window. The list shows only what still
+  needs something: messages queued or being sent, and failed ones you have not
+  retried or deleted (the 20 newest). A sent or cancelled message leaves the
+  list at once; a failed one stays until you **Retry** or **Delete** it, so a
+  failure never disappears unseen. Finished messages are deleted after 7 days.
+  A tap on a message in the list shows its whole text (the list shows the first
+  two lines).
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
   and never put back once anything may have reached the window. (The one way
   back to `queued` is the Send-wins case above, where nothing was pasted.) The
@@ -284,12 +289,13 @@ must be fresh like a queue post's. A message that may already have been sent
 asks you to confirm first. A message your chief routed has no Retry: its failed
 route goes back to the chief instead.
 
-A finished message (sent, failed, expired or cancelled) has a **Delete**, which
-removes it from the list on every device at once (`POST /send-queue/{id}/delete`).
-A message still queued has no Delete (Cancel it first), and neither has one
-being sent: the send in progress still holds it. Deleting a sent message does
-not let the next one in early: the next message still waits for the turn the
-deleted one started. Deleting a failed message your chief routed is fine: its
+A failed message (expired included) has a **Delete**, which removes it from the
+list on every device at once (`POST /send-queue/{id}/delete`). The route deletes
+any finished message (sent, failed or cancelled), though the list draws only
+failed ones. A message still queued has no Delete (Cancel it first), and
+neither has one being sent: the send in progress still holds it. Deleting a
+sent message does not let the next one in early: the next message still waits
+for the turn the deleted one started. Deleting a failed message your chief routed is fine: its
 route is not affected, and if the route times out, the message still goes back
 to the chief.
 

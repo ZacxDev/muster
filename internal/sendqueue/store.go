@@ -199,9 +199,14 @@ const MaxOpenPerTarget = 20
 // MaxDetail bounds an outcome's detail (0019's send_queue_detail_cap).
 const MaxDetail = 1024
 
-// HistoryShown is how many finished messages List returns beside the open
-// ones: the recent outcomes a composer shows under its queue.
-const HistoryShown = 5
+// FailedShown bounds the failed messages List returns beside the open ones:
+// the most recent FailedShown failures not yet retried, newest first. A sent
+// or cancelled message is never listed — it has been handled — but a failure
+// stays until its owner Retries or Deletes it, so it does not vanish unseen.
+// The bound only keeps a target that fails again and again from drawing an
+// unbounded list; it is the open bound's size, so a whole queue that failed
+// is shown whole.
+const FailedShown = MaxOpenPerTarget
 
 var (
 	// ErrFull refuses a message past MaxOpenPerTarget.
@@ -403,8 +408,11 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 	return out, nil
 }
 
-// List is the caller's messages for t: every open one, oldest first, then
-// the HistoryShown most recently finished, newest first.
+// List is the caller's messages for t that still need something: every open
+// one (queued or being sent), oldest first, then the FailedShown most recently
+// failed ones that were not retried, newest first. A sent or cancelled message
+// is not listed, nor a failed one already retried (its retry row, a new
+// message of its own, carries it).
 func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	if err := t.Valid(); err != nil {
 		return nil, err
@@ -412,8 +420,8 @@ func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	where, args := targetWhere(t, 1)
 	rows, err := s.pool.Query(ctx, `(SELECT `+cols+`, 0 AS part FROM send_queue WHERE state IN ('queued', 'sending') AND `+where+`)
 		UNION ALL
-		(SELECT `+cols+`, 1 AS part FROM send_queue WHERE state NOT IN ('queued', 'sending') AND `+where+`
-			ORDER BY finished_at DESC, id DESC LIMIT `+fmt.Sprint(HistoryShown)+`)
+		(SELECT `+cols+`, 1 AS part FROM send_queue WHERE state = 'failed' AND retried_as IS NULL AND `+where+`
+			ORDER BY finished_at DESC, id DESC LIMIT `+fmt.Sprint(FailedShown)+`)
 		ORDER BY part, id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sendqueue: list: %w", err)

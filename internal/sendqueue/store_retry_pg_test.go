@@ -64,8 +64,9 @@ func TestRetryQueuesAFailedMessageAgainOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := bodies(items); len(b) != 2 || b[0] != "queued:try me again" || b[1] != "failed:try me again" {
-		t.Fatalf("user 2's list: %v; want the retry queued and the failed row", b)
+	// The retried failure is not listed: its retry row carries it.
+	if b := bodies(items); len(b) != 1 || b[0] != "queued:try me again" || items[0].ID != n.ID {
+		t.Fatalf("user 2's list: %v; want the retry queued, and the retried failure not listed", b)
 	}
 	// A Retry needs the retrying sign-in's time.
 	other := mustEnqueue(t, s, 2, Item{Target: win, Body: "no time", StepUpAt: time.Now()})

@@ -390,11 +390,11 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 			// A cut through a character leaves invalid bytes; they are dropped.
 			preview = strings.ToValidUTF8(preview[:sendQueuePreview], "") + "…"
 		}
-		body := ""
-		if it.State == sendqueue.Queued {
-			body = it.Body // Copy message copies all of it, not the preview.
-		}
-		row := ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview, Body: body,
+		// The whole text rides in every row: a tap on the preview shows it, and
+		// a queued row's Copy message copies it (the preview is cut). Every row
+		// listed is the caller's own (row-level security), so this is text the
+		// reader already wrote or was routed.
+		row := ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview, Body: it.Body,
 			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
 			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered,
 			Editable: it.State == sendqueue.Queued && it.RouteID == "" && it.ChiefNudgeID == 0, Held: it.State == sendqueue.Queued && it.Held,

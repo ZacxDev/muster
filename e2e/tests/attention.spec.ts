@@ -378,7 +378,7 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   await row.getByRole('button', { name: 'More actions for this queued message' }).click();
   await row.getByRole('menuitem', { name: 'Cancel this queued message' }).click();
   await expect(page.locator('#mv-note')).toHaveText(/^Cancelled — but this message had already answered .+'s question, and that answer was delivered: it can't be un-sent\.$/);
-  await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
+  await expect(row, 'cancelled: it leaves the list').toHaveCount(0);
 });
 
 // ANSWERED ON THE ASKING SESSION'S OWN VIEW (attention_asker.go): the

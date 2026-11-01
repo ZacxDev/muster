@@ -18,8 +18,8 @@ import (
 
 // THE SEND QUEUE'S DELETE (POST /send-queue/{id}/delete), through the real
 // mux and a real Postgres (row-level security included): a FINISHED message —
-// sent, failed (expired included), cancelled — is deleted and leaves the
-// list; a queued one is refused (Cancel it), and so is one being sent (its
+// sent, failed (expired included), cancelled — is deleted (the list draws a
+// Delete only on a failed one: it does not draw the others at all); a queued one is refused (Cancel it), and so is one being sent (its
 // claim still holds the row); another user's is 404 and untouched.
 //
 // RED AT origin/main (0405925): the route is not registered, so every Delete
@@ -151,13 +151,20 @@ func TestAnotherOwnersDeleteIsNotFound(t *testing.T) {
 	}
 }
 
-// TestTheListDrawsDeleteOnFinishedRowsOnly: through GET /send-queue, the
-// finished rows (failed, cancelled, sent) each draw a Delete posting to their
-// own route, and the queued row draws none.
-func TestTheListDrawsDeleteOnFinishedRowsOnly(t *testing.T) {
+// TestTheListDrawsDeleteOnAnUnhandledFailureOnly: through GET /send-queue, a
+// failed row draws a Delete posting to its own route; a sent and a cancelled
+// row are not drawn at all (they are done — the list used to keep them, and
+// each had to be deleted by hand), nor a failed row already retried (its retry
+// row is drawn in its place); and the queued rows draw no Delete.
+func TestTheListDrawsDeleteOnAnUnhandledFailureOnly(t *testing.T) {
 	f := newSQFixture(t)
 	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now().UnixMilli()}
 	failed := f.expired(t, "a failed one")
+	retried := f.expired(t, "a failed one retried")
+	again, err := f.queue.Retry(asQueueUser(1, time.Now()), retried.ID, time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cancelled := f.enqueue(t, "a cancelled one", time.Hour, 0)
 	if _, err := f.queue.Cancel(asQueueUser(1, time.Now()), cancelled.ID, time.Now()); err != nil {
 		t.Fatal(err)
@@ -165,16 +172,25 @@ func TestTheListDrawsDeleteOnFinishedRowsOnly(t *testing.T) {
 	sent := f.sent(t, "a sent one")
 	queued := f.enqueue(t, "a queued one", time.Hour, 0)
 	_, page := mirrorGet(t, f.srv, f.ts, ui.SendQueuePath+"?host=ws&session=main&window=%401")
-	for _, id := range []int64{failed.ID, cancelled.ID, sent.ID} {
-		if !strings.Contains(page, `action="`+ui.SendQueueDeletePath(id)+`"`) {
-			t.Fatalf("finished row %d draws no Delete: %s", id, page)
+	if !strings.Contains(page, `action="`+ui.SendQueueDeletePath(failed.ID)+`"`) {
+		t.Fatalf("the failed row draws no Delete: %s", page)
+	}
+	for _, id := range []int64{retried.ID, cancelled.ID, sent.ID} {
+		if strings.Contains(page, `data-queue-id="`+strconv.FormatInt(id, 10)+`"`) {
+			t.Fatalf("handled row %d is drawn: %s", id, page)
 		}
 	}
-	if strings.Contains(page, ui.SendQueueDeletePath(queued.ID)) {
-		t.Fatalf("the queued row draws a Delete: %s", page)
+	// CONTROL: the open rows are drawn — the retry's and the queued one.
+	for _, id := range []int64{again.ID, queued.ID} {
+		if !strings.Contains(page, `data-queue-id="`+strconv.FormatInt(id, 10)+`"`) {
+			t.Fatalf("open row %d is not drawn: %s", id, page)
+		}
+		if strings.Contains(page, ui.SendQueueDeletePath(id)) {
+			t.Fatalf("open row %d draws a Delete: %s", id, page)
+		}
 	}
-	if got := strings.Count(page, `aria-label="`+ui.SendQueueDeleteLabel+`"`); got != 3 {
-		t.Fatalf("%d Delete buttons; want 3 (one per finished row): %s", got, page)
+	if got := strings.Count(page, `aria-label="`+ui.SendQueueDeleteLabel+`"`); got != 1 {
+		t.Fatalf("%d Delete buttons; want 1 (the unhandled failure's): %s", got, page)
 	}
 }
 

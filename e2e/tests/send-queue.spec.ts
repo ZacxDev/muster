@@ -214,11 +214,12 @@ test.describe('phone 390×844 touch', () => {
     busy(false);
     await expect.poll(pasted, { message: `the first message is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} first queued`]);
 
-    // Another device sees the queue: the first sent, the second waiting.
+    // Another device sees the queue: the first sent (so no longer listed: only
+    // what is still pending is), the second waiting.
     const other = await otherDevice(browser);
     await openView(other.page, newHost);
-    await expect(row(other.page, 'first queued')).toHaveAttribute('data-queue-state', 'sent');
     await expect(row(other.page, 'second queued')).toHaveAttribute('data-queue-state', 'queued');
+    await expect(row(other.page, 'first queued'), 'a sent message is not listed').toHaveCount(0);
     // Still idle — since BEFORE the first was sent: its turn has not ended,
     // so the second waits. The server says so, then holds it for as long as a
     // wrong send would take.
@@ -235,7 +236,10 @@ test.describe('phone 390×844 touch', () => {
       `${pane} first queued`,
       `${pane} second queued`,
     ]);
-    await expect(row(other.page, 'second queued'), 'the list updates live').toHaveAttribute('data-queue-state', 'sent', { timeout: 20_000 });
+    // The list updates live: the sent message leaves it, and with nothing
+    // pending the list is empty — the old rows do not linger.
+    await expect(row(other.page, 'second queued'), 'the list updates live').toHaveCount(0, { timeout: 20_000 });
+    await expect(rows(other.page), 'nothing pending: an empty list').toHaveCount(0);
     await other.ctx.close();
   });
 
@@ -250,9 +254,9 @@ test.describe('phone 390×844 touch', () => {
     const r = row(other.page, 'cancel me please');
     await expect(r).toHaveAttribute('data-queue-state', 'queued');
     await cancelRow(r, true);
-    await expect(r).toHaveAttribute('data-queue-state', 'cancelled');
+    await expect(r, 'a cancelled message leaves the list').toHaveCount(0);
     // The first device's list follows (it polls while anything is open).
-    await expect(row(page, 'cancel me please'), 'the first device sees the cancel').toHaveAttribute('data-queue-state', 'cancelled', { timeout: 20_000 });
+    await expect(row(page, 'cancel me please'), 'the first device sees the cancel').toHaveCount(0, { timeout: 20_000 });
 
     // Idle: had the cancel not held, the cancelled message would be the head and
     // go first. A message queued after it is the observable — it is sent, and
@@ -309,7 +313,7 @@ test.describe('desktop 1280×800', () => {
     await expect.poll(pasted, { message: 'Send pastes at once, busy or not' }).toEqual([`${pane} desktop sent now`]);
     // Tidy: the queued one is cancelled, so no later run sees it sent.
     await cancelRow(row(page, 'desktop queued'));
-    await expect(row(page, 'desktop queued')).toHaveAttribute('data-queue-state', 'cancelled');
+    await expect(row(page, 'desktop queued'), 'cancelled: no longer listed').toHaveCount(0);
     busy(false);
   });
 
@@ -415,10 +419,12 @@ test.describe('desktop 1280×800', () => {
     await busyAndSeen();
     await failed.getByRole('button', { name: 'Queue this failed message again' }).click();
     await expect(rowIn(page, text, 'queued'), 'Retry queues it again').toHaveCount(1, { timeout: 20_000 });
-    await expect(failed.getByRole('button', { name: /Queue this/ }), 'a retried message offers no second Retry').toHaveCount(0);
+    // A retried failure leaves the list (its retry row carries it), so it
+    // offers no second Retry.
+    await expect(failed, 'a retried message is no longer listed as failed').toHaveCount(0);
     busy(false);
     await expect.poll(pasted, { message: `the retried message is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
-    await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, text), 'sent: it leaves the list').toHaveCount(0, { timeout: 20_000 });
   });
 
   // 🔴 A MESSAGE PAST ITS 7 DAYS EXPIRES EVEN WHILE ITS WINDOW NEVER GOES IDLE:
@@ -595,8 +601,9 @@ test.describe('desktop 1280×800', () => {
     await expect(rowIn(page, text, 'queued'), 'an accepted Retry queues it again').toHaveCount(1, { timeout: 20_000 });
     expect(posts, 'CONTROL: the accepted Retry posted once, saying it was confirmed').toEqual(['confirm=1']);
     // Tidy: cancel the copy, so no later run sees it sent.
+    await expect(rowIn(page, text, 'failed'), 'the retried failure leaves the list').toHaveCount(0);
     await cancelRow(rowIn(page, text, 'queued'));
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
     busy(false);
   });
 
@@ -615,7 +622,7 @@ test.describe('desktop 1280×800', () => {
     await expect(row(page, 'queued without a submitter')).toHaveAttribute('data-queue-state', 'queued');
     expect(pasted(), 'nothing was sent now').toEqual([]);
     await cancelRow(row(page, 'queued without a submitter'));
-    await expect(row(page, 'queued without a submitter')).toHaveAttribute('data-queue-state', 'cancelled');
+    await expect(row(page, 'queued without a submitter'), 'cancelled: it leaves the list').toHaveCount(0);
     busy(false);
   });
 });
@@ -639,7 +646,7 @@ test.describe('statuses', () => {
     // The turn ends with a background shell still running: "shell", a newer time.
     setStatus('shell');
     await expect.poll(pasted, { message: `sent once Claude Code reports "shell" (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
-    await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, text), 'sent: it leaves the list').toHaveCount(0, { timeout: 20_000 });
     await busyAndSeen();
   });
 });
@@ -666,7 +673,7 @@ test.describe('queued row menu, phone 390×844 touch', () => {
       `${pane} ${second}`,
     ]);
     await expect(page.locator('#mv-note')).toHaveText('Sent.');
-    await expect(rowIn(page, second, 'sent'), 'the row shows it sent').toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, second), 'sent: it leaves the list').toHaveCount(0, { timeout: 20_000 });
     await expect(rowIn(page, first, 'queued'), 'the other stays queued').toHaveCount(1);
     await holdWindow();
     expect(pasted(), 'the other is not sent while busy').toEqual([`${pane} ${second}`]);
@@ -691,8 +698,71 @@ test.describe('queued row menu, phone 390×844 touch', () => {
     expect(await page.evaluate(() => navigator.clipboard.readText()), 'the clipboard holds the whole message').toBe(text);
     await expect(moreOf(r), 'the menu closed').toHaveAttribute('aria-expanded', 'false');
     await cancelRow(r, true);
-    await expect(rowIn(page, 'copy me ' + stamp, 'cancelled')).toHaveCount(1);
+    await expect(row(page, 'copy me ' + stamp), 'cancelled: it leaves the list').toHaveCount(0);
     expect(pasted().some((l) => l.includes('copy me ' + stamp)), 'a copy sends nothing').toBe(false);
+  });
+
+  // 🔴 THE WHOLE MESSAGE: a queued row's preview is cut (200 bytes) and clamped
+  // (two lines); a tap on it shows the whole text in a popover — the tail the
+  // preview cannot show included — moving nothing on the page, and the list's
+  // poll does not redraw it away while it is open. On origin/main the preview
+  // is plain text with nothing to tap, so this fails at the button.
+  test('a tap on a long queued message shows the whole of it, moves nothing, and stays open across the poll', async ({ page }) => {
+    await busyAndSeen();
+    await openView(page, newHost);
+    const tail = 'and the tail end ' + stamp;
+    const text = 'whole message ' + stamp + ' ' + 'consectetur adipiscing elit '.repeat(10) + tail;
+    await queue(page, text, true);
+    const r = rowIn(page, 'whole message ' + stamp, 'queued');
+    await expect(r).toBeVisible();
+    await expect(r.locator('[data-queue-full-open]'), 'the preview does not show the tail').not.toContainText(tail);
+    // As the menu test: the row drawn and painted before shifts are counted.
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    await page.evaluate(() => {
+      const w = window as unknown as { __shift: number; __shifts: string[] };
+      w.__shift = 0;
+      w.__shifts = [];
+      new PerformanceObserver((l) => {
+        for (const e of l.getEntries() as unknown as { value: number; sources: { node?: Node | null }[] }[]) {
+          const nodes = (e.sources || []).map((x) => x.node).filter((n): n is Node => !!n);
+          const ours = nodes.some((n) => {
+            const el = n instanceof Element ? n : n.parentElement;
+            return !!el && !!el.closest('#mv-compose, [data-queue-full]');
+          });
+          if (ours) w.__shift += e.value;
+          w.__shifts.push(`${e.value.toFixed(4)} ours=${ours} ` + nodes.map((n) => (n instanceof Element ? n.id || n.tagName : n.nodeName)).join(','));
+        }
+      }).observe({ type: 'layout-shift', buffered: false });
+    });
+    const before = await r.boundingBox();
+    const open = r.getByRole('button', { name: /^Show the whole message/ });
+    const ob = await open.boundingBox();
+    expect(ob && ob.height >= 44, `the preview is a 44px target: ${JSON.stringify(ob)}`).toBe(true);
+    await open.tap();
+    const full = r.getByRole('dialog', { name: 'The whole message' });
+    await expect(full).toBeVisible();
+    await expect(full, 'the whole text, its tail included').toContainText(tail);
+    const fb = await full.boundingBox();
+    const vw = page.viewportSize()!.width;
+    expect(fb && fb.x >= 0 && fb.x + fb.width <= vw, `the popover is on screen: ${JSON.stringify(fb)}`).toBe(true);
+    // Open across more than one poll (3 s while anything is queued): not
+    // redrawn away.
+    await page.waitForTimeout(4_000);
+    await expect(full, 'still open after a poll').toBeVisible();
+    await full.getByRole('button', { name: 'Close' }).tap();
+    await expect(full).toBeHidden();
+    expect(await r.boundingBox(), 'the row did not move').toEqual(before);
+    // Enter on the focused preview opens it too; Escape closes it.
+    await open.focus();
+    await page.keyboard.press('Enter');
+    await expect(full).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(full).toBeHidden();
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'no layout shift opening or closing it: ' +
+      JSON.stringify(await page.evaluate(() => (window as unknown as { __shifts: string[] }).__shifts))).toBeLessThan(0.001);
+    await cancelRow(r, true);
+    await expect(row(page, 'whole message ' + stamp), 'cancelled: it leaves the list').toHaveCount(0);
   });
 
   test('the menu fits the phone, moves nothing, and closes on a tap outside', async ({ page }) => {
@@ -755,7 +825,7 @@ test.describe('queued row menu, phone 390×844 touch', () => {
     expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'no layout shift opening or closing it: ' +
       JSON.stringify(await page.evaluate(() => (window as unknown as { __shifts: string[] }).__shifts))).toBeLessThan(0.001);
     await cancelRow(r, true);
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
   });
 });
 
@@ -793,7 +863,7 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
     await page.keyboard.press('End');
     await expect(itemOf(r, 'Cancel this queued message')).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1, { timeout: 20_000 });
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0, { timeout: 20_000 });
     expect(pasted().some((l) => l.includes(text)), 'a cancelled message is not sent').toBe(false);
   });
 
@@ -827,7 +897,7 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
     await moreOf(c).click();
     await itemOf(c, 'Cancel this queued message').click();
     await expect(page.locator('#mv-note')).toContainText('Cancelled');
-    await expect(rowIn(page, cancelText, 'cancelled')).toHaveCount(1);
+    await expect(row(page, cancelText), 'cancelled: it leaves the list').toHaveCount(0);
     await ctx.close();
   });
 });
@@ -893,7 +963,7 @@ for (const vp of [
       // The second waits for the edited one's turn, then follows it.
       setStatus('idle');
       await expect.poll(pasted, { message: 'then the one behind it', timeout: 30_000 }).toEqual([`${pane} ${edited}`, `${pane} ${second}`]);
-      await expect(rowIn(page, edited, 'sent'), 'the list shows the edited text sent').toHaveCount(1, { timeout: 20_000 });
+      await expect(row(page, edited), 'sent: the edited message leaves the list').toHaveCount(0, { timeout: 20_000 });
       await busyAndSeen();
     });
 
@@ -1049,7 +1119,7 @@ for (const vp of [
         await page.goto(origin + viewPath(newHost));
         await expect(page.locator('#mv-input'), 'a queued draft is not restored').toHaveValue('');
         await cancelRow(rowIn(page, queued, 'queued'), vp.touch);
-        await expect(rowIn(page, queued, 'cancelled')).toHaveCount(1);
+        await expect(row(page, queued), 'cancelled: it leaves the list').toHaveCount(0);
       } finally {
         writeFileAtomic(windowsFile, before);
       }
@@ -1258,7 +1328,7 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     await expect(clock).toContainText(month);
     expect(pasted(), 'held: nothing is sent').toEqual([]);
     await cancelRow(rowIn(page, text, 'queued'), true);
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
     answered('the limit has lifted');
     await busyAndSeen();
   });
@@ -1376,7 +1446,7 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     // Tidy: cancel it, and leave the session answered for the specs after.
     await cancelRow(rowIn(page, text, 'queued'), true);
-    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    await expect(row(page, text), 'cancelled: it leaves the list').toHaveCount(0);
     answered('the limit has lifted');
     await busyAndSeen();
   });
