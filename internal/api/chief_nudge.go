@@ -567,24 +567,19 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 			}
 		}
 		if why != "" {
-			q, opts := prop.Question, chiefnudge.CleanOptions(prop.Options)
-			if strings.TrimSpace(q) == "" {
-				// No question from the chief: it is asked ONCE more, for the
-				// question alone (reaskNudge), and the reason records how that
-				// went — ahead of the chief's own reason, which Clean may cut.
-				var note string
-				q, opts, note = s.reaskNudge(octx, o, chief, c, last, hint)
-				why += "; " + note
-			}
+			q, opts, read := prop.Question, chiefnudge.CleanOptions(prop.Options), ""
 			if strings.TrimSpace(q) == "" {
 				// 🔴 NO SESSION TEXT: the generic ask (jev.go), never an excerpt
-				// of the session's last message under the chief's label.
-				q, opts = chiefnudge.GenericAskQuestion(c.Title), append([]string(nil), chiefnudge.GenericAskOptions...)
+				// of the session's last message under the chief's label — with
+				// the chief's OWN reason (prop.Reason, never d.Reason's
+				// muster-built prefix) as its read of the session.
+				read = prop.Reason
+				q, opts = chiefnudge.GenericAskQuestion(c.Title, read), append([]string(nil), chiefnudge.GenericAskOptions...)
 			}
 			d.Decision, d.Question, d.Options = chiefnudge.DecisionAsk, q, opts
 			d.Reason = fmt.Sprintf("classifier: %s, ask score %.2f — the default is an ask (%s); %s",
 				jev.Label, jev.AskScore, why, prop.Reason)
-			return s.actAsk(octx, c, d), false, ""
+			return s.actAsk(octx, c, d, read), false, ""
 		}
 	}
 	switch prop.Decision {
@@ -593,7 +588,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return s.recordNudge(octx, d, "chief_nudge.left"), false, ""
 	case chiefnudge.DecisionAsk:
 		d.Question, d.Options = prop.Question, chiefnudge.CleanOptions(prop.Options)
-		return s.actAsk(octx, c, d), false, ""
+		return s.actAsk(octx, c, d, ""), false, ""
 	}
 	// A nudge.
 	if read.Partial {
@@ -603,7 +598,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision = chiefnudge.DecisionAsk
 		d.Question, d.Options = chiefnudge.EscalationPartial(c.Title), chiefnudge.CleanOptions(nil)
 		d.Reason = chiefnudge.GuardPartial + ": the transcript read was incomplete, so no owner message can authorise a nudge; " + d.Reason
-		return s.actAsk(octx, c, d), false, ""
+		return s.actAsk(octx, c, d, ""), false, ""
 	}
 	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
 	quoted, qerr := chiefnudge.CheckQuote(prop, owner)
@@ -614,7 +609,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision = chiefnudge.DecisionAsk
 		d.Question, d.Options = chiefnudge.EscalationNoTimes(c.Title), chiefnudge.CleanOptions(nil)
 		d.Detail = strconv.Itoa(untimed) + " message(s) of the owner's arrived with no time (an older muster-mirror): none can authorise a nudge"
-		return s.actAsk(octx, c, d), false, ""
+		return s.actAsk(octx, c, d, ""), false, ""
 	}
 	if qerr != nil {
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardQuote), qerr.Error()
@@ -632,7 +627,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision = chiefnudge.DecisionAsk
 		d.Question, d.Options = chiefnudge.EscalationQuestion(c.Title), chiefnudge.CleanOptions(nil)
 		d.Reason = "escalated: " + strconv.Itoa(n) + " nudges since the owner's last message; " + d.Reason
-		return s.actAsk(octx, c, d), false, ""
+		return s.actAsk(octx, c, d, ""), false, ""
 	}
 	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
 	// unsuppressed (operator decision), and is not counted.
@@ -848,50 +843,6 @@ func nudgeMirrorComplete(evs []cctranscript.Event, idx mirrorIndex, now time.Tim
 func nudgeSessionName(agentName string, owner int64, c chiefnudge.Session) string {
 	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + c.Kind + "\x00" + c.Key + "\x00" + c.StreakKey))
 	return "agent:" + agentName + ":webchat:nudge:" + hex.EncodeToString(sum[:8])
-}
-
-// nudgeReaskSessionName is the session key of a decision's ONE re-ask
-// (reaskNudge): nudgeSessionName's shape, from the same decision plus a marker,
-// so the re-ask is a lane of its own — a fresh, empty context, not a resume of
-// the stall check's transcript.
-func nudgeReaskSessionName(agentName string, owner int64, c chiefnudge.Session) string {
-	c.StreakKey += "\x00reask"
-	return nudgeSessionName(agentName, owner, c)
-}
-
-// reaskNudge is the ONE extra chief call an ask-stall gets when the chief's
-// answer gave no question (decideNudge): ReaskPrompt in a fresh tool-less
-// ephemeral lane (askChiefForNudge, nudgeRoute), read by ParseProposal. q is
-// the chief's question and opts its cleaned options when it answered an ask
-// with one; otherwise q is "" and the caller raises the generic ask. note is
-// what the decision's reason records either way.
-//
-// 🔴 NEVER RETRIED HERE: a busy chief, a refusal, an error or a timeout is a
-// "no question" like any other, so a stall decision costs at most two calls.
-func (s *Server) reaskNudge(octx context.Context, o chiefnudge.Owner, chief agents.Agent, c nudgeCandidate, last chiefnudge.Msg, hint chiefnudge.Hint) (q string, opts []string, note string) {
-	raw, err := s.askChiefForNudge(octx, chief, nudgeReaskSessionName(chief.Name, o.ID, c.Session),
-		chiefnudge.ReaskPrompt(c.Session, last, hint, fence.NewNonce()))
-	why := ""
-	switch {
-	case errors.Is(err, errNudgeChiefBusy):
-		why = "the chief could not take the call"
-	case err != nil:
-		why = "the chief's call failed" + failureKind(err)
-	}
-	if why == "" {
-		prop, perr := chiefnudge.ParseProposal(raw)
-		switch {
-		case perr != nil:
-			why = "its answer was not a decision"
-		case prop.Decision != chiefnudge.DecisionAsk:
-			why = "it said " + prop.Decision
-		case strings.TrimSpace(prop.Question) == "":
-			why = "its ask had no question"
-		default:
-			return prop.Question, chiefnudge.CleanOptions(prop.Options), "re-ask: gave a question"
-		}
-	}
-	return "", nil, "re-ask: no question (" + why + ") — generic ask"
 }
 
 // nudgeRoute is ctx carrying the route of a stall check under key: for a
@@ -1203,8 +1154,9 @@ func (s *Server) failNudge(ctx context.Context, d chiefnudge.Decision, state, wh
 
 // actAsk is an ask decision: shadow records it; live raises an attention ask on
 // the owner's queue (muster's own asker, labelled as the chief), whose answer
-// relayNudgeAnswer relays.
-func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision) bool {
+// relayNudgeAnswer relays. read is the chief's own reason a generic ask shows
+// (chiefnudge.GenericAskRead), "" for any other ask.
+func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision, read string) bool {
 	if strings.TrimSpace(d.Question) == "" {
 		d.Outcome = chiefnudge.Suppressed(chiefnudge.GuardNoQuestion)
 		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
@@ -1229,7 +1181,7 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 	}
 	ask, err := s.ext.Attention.Create(ctx, attention.New{
 		Asker:    attention.Asker{System: true, Label: chiefNudgeAskLabel},
-		Question: nudgeAskQuestion(c.Session, d.Question, chiefnudge.IsGenericAsk(d.Options)),
+		Question: nudgeAskQuestion(c.Session, d.Question, read, chiefnudge.IsGenericAsk(d.Options)),
 		Options:  d.Options,
 	})
 	switch {
@@ -1257,8 +1209,9 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 // The session's words reach the owner only through the chief's own question.
 //
 // generic: the generic ask (chiefnudge.GenericAskQuestion) — muster's own
-// sentence, whose options send nothing.
-func nudgeAskQuestion(c chiefnudge.Session, q string, generic bool) string {
+// sentence and the chief's read (chiefnudge.GenericAskRead), whose options
+// send nothing.
+func nudgeAskQuestion(c chiefnudge.Session, q, read string, generic bool) string {
 	where := c.Title
 	if where == "" {
 		where = "A session"
@@ -1275,7 +1228,7 @@ func nudgeAskQuestion(c chiefnudge.Session, q string, generic bool) string {
 	text := where + " stopped and is waiting on you:\n\n" + strings.TrimSpace(q) +
 		"\n\nYour answer is sent into that session word for word."
 	if generic {
-		text = where + " is waiting on you. Its last turn looks like it asked you something.\n\n" +
+		text = where + " is waiting on you. Its last turn looks like it asked you something." + chiefnudge.GenericAskRead(read) + "\n\n" +
 			"Choosing an option sends nothing into the session; an answer you type is sent into it word for word."
 	}
 	return fence.Cut(text, attention.MaxQuestionRunes)

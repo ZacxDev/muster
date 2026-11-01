@@ -301,20 +301,42 @@ func AskStall(r Result, threshold float64) bool {
 // The GENERIC ASK: raised for an ask-stall when the chief gave no question
 // (it said leave, or proposed a nudge the rule refuses). It carries NO session
 // text — only the focus title (the summarizer's, which the Asks page already
-// shows) and muster's own sentence — and its two options are not an answer:
-// choosing one relays nothing (IsGenericChoice).
+// shows), muster's own sentence and the chief's own reason (GenericAskRead) —
+// and its two options are not an answer: choosing one relays nothing
+// (IsGenericChoice).
 const genericAskBody = "Its last turn looks like it asked you something."
 
 // GenericAskOptions are the generic ask's options.
 var GenericAskOptions = []string{"Open session", "Dismiss"}
 
-// GenericAskQuestion is the generic ask's text for a session titled title.
-func GenericAskQuestion(title string) string {
+// MaxGenericReadRunes caps the chief's reason on the generic ask: a sentence
+// or two.
+const MaxGenericReadRunes = 300
+
+// GenericAskQuestion is the generic ask's text for a session titled title,
+// with GenericAskRead(read).
+func GenericAskQuestion(title, read string) string {
 	t := strings.TrimSpace(oneLine(title))
 	if t == "" {
 		t = "A session"
 	}
-	return t + " is waiting on you. " + genericAskBody
+	return t + " is waiting on you. " + genericAskBody + GenericAskRead(read)
+}
+
+// GenericAskRead is the generic ask's line for the chief's read of the
+// session — read is the chief's OWN reason from its answer (Proposal.Reason),
+// never the reason muster builds around it — on one line, cut to
+// MaxGenericReadRunes; "" for none.
+//
+// It is the chief's words, held as the normal ask path holds the chief's
+// question: ParseProposal's one-line cut, no check for session text. The
+// generic ask's own sentence and options still carry none.
+func GenericAskRead(read string) string {
+	r := strings.TrimSpace(oneLine(read))
+	if r == "" {
+		return ""
+	}
+	return "\n\nThe chief's read: " + cut(r, MaxGenericReadRunes)
 }
 
 // IsGenericAsk reports whether options are the generic ask's.

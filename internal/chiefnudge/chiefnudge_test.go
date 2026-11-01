@@ -263,7 +263,7 @@ func TestTheGenericAskIsRecognisedAndRelaysNoOption(t *testing.T) {
 		IsGenericChoice([]string{"Dismiss", "Open session"}, "Dismiss") {
 		t.Fatal("IsGenericChoice")
 	}
-	if q := GenericAskQuestion("Fix CI"); q != "Fix CI is waiting on you. Its last turn looks like it asked you something." {
+	if q := GenericAskQuestion("Fix CI", ""); q != "Fix CI is waiting on you. Its last turn looks like it asked you something." {
 		t.Fatalf("%q", q)
 	}
 }
