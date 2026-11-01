@@ -67,6 +67,10 @@ type Item struct {
 	ClaimedBy      string     `json:"claimed_by"`
 	LeaseExpiresAt *time.Time `json:"lease_expires_at"`
 	UpdatedAt      *time.Time `json:"updated_at"`
+	// Blocked is HQ's task ordering: the item's task waits on unfinished
+	// tasks, so HQ refuses to claim it (409 blocked). Absent — an unblocked
+	// item, or an HQ without ordering — is false: the item is claimable.
+	Blocked bool `json:"blocked"`
 }
 
 // LeaseLive reports whether the item's lease is unexpired at now. An item with
