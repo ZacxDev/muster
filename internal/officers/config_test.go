@@ -167,3 +167,31 @@ func TestParseReadsTheRepo(t *testing.T) {
 		}
 	}
 }
+
+// TestParseReadsTheTranscriptSwitch: transcript forwarding is OFF unless an
+// officer says `"transcript": {"enabled": true}`; the block is strict (an
+// unknown key is a boot refusal, as everywhere in MUSTER_OFFICERS).
+func TestParseReadsTheTranscriptSwitch(t *testing.T) {
+	tok := env(map[string]string{"MUSTER_OFFICER_TOKEN_A_B": "x"})
+	for raw, want := range map[string]bool{
+		`[{"id":"a:b","hq_url":"http://h/api/v1"}]`:                                false,
+		`[{"id":"a:b","hq_url":"http://h/api/v1","transcript":null}]`:              false,
+		`[{"id":"a:b","hq_url":"http://h/api/v1","transcript":{}}]`:                false,
+		`[{"id":"a:b","hq_url":"http://h/api/v1","transcript":{"enabled":false}}]`: false,
+		`[{"id":"a:b","hq_url":"http://h/api/v1","transcript":{"enabled":true}}]`:  true,
+	} {
+		list, err := officers.Parse(raw, tok, "muster-agent-")
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if got := list[0].TranscriptEnabled(); got != want {
+			t.Fatalf("%s: TranscriptEnabled = %v, want %v", raw, got, want)
+		}
+	}
+	for _, bad := range []string{`{"enabled":true,"url":"x"}`, `{"enabled":"yes"}`, `true`} {
+		raw := `[{"id":"a:b","hq_url":"http://h/api/v1","transcript":` + bad + `}]`
+		if _, err := officers.Parse(raw, tok, "muster-agent-"); err == nil || !strings.Contains(err.Error(), "transcript") {
+			t.Errorf("transcript %s: err = %v, want a refusal naming transcript", bad, err)
+		}
+	}
+}

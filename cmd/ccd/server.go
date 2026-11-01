@@ -209,6 +209,8 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 func (s *server) gatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
+	// The primary's transcript, incrementally (transcript_route.go).
+	mux.HandleFunc("GET /v1/transcript", s.handleTranscript)
 	// `/` is the same check: muster's default agent health path is "/"
 	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
 	// startup and liveness probes. A per-kind health path for this image is muster

@@ -43,6 +43,7 @@ import (
 var wantMetrics = map[string][]string{
 	"muster_officer_error_slots":              nil,
 	"muster_officer_hq_faults":                nil,
+	"muster_officer_transcript_events_total":  {"result"},
 	"muster_build_info":                       {"version"},
 	"muster_http_requests_total":              {"code", "method", "route"},
 	"muster_http_request_duration_seconds":    {"method", "route"},
@@ -94,6 +95,7 @@ func gather(t *testing.T) map[string][]string {
 	MemoRelayAgentChecks.WithLabelValues("eligible")
 	MemoRelayUpstream.WithLabelValues("ok")
 	MemoRelayDeliveries.WithLabelValues("delivered")
+	OfficerTranscriptEvents.WithLabelValues("posted")
 	ObserveHTTP("GET /api/tasks/{id}", "GET", 200, 0)
 
 	families, err := prometheus.DefaultGatherer.Gather()

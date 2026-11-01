@@ -16,8 +16,10 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/transcript"
 	"github.com/ZacxDev/muster/internal/officership"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -60,6 +62,9 @@ type officerRuntime struct {
 	// ships are the shipping officers' runtimes, by officer id
 	// (officer_ship.go).
 	ships map[string]*shipRuntime
+	// fwd forwards instances' transcripts to HQ (internal/officers/transcript);
+	// nil when no declared officer enables `transcript`.
+	fwd *transcript.Forwarder
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -87,6 +92,70 @@ type OfficersConfig struct {
 	ShipCI func(officers.Officer) officership.CIReader
 	// NoShipResume skips resuming rollout watches at boot (tests).
 	NoShipResume bool
+	// TranscriptSource replaces where a transcript-enabled officer's
+	// instances' transcripts are read (tests); nil is each instance's ccd,
+	// through the agent gateway (agentgateway.Gateway.Transcript).
+	TranscriptSource transcript.Source
+	// TranscriptInterval replaces the forwarder's cadence (tests); 0 is
+	// transcript.DefaultInterval. NoTranscriptRun skips running its loop
+	// (tests drive Tick).
+	TranscriptInterval time.Duration
+	NoTranscriptRun    bool
+}
+
+// transcriptReader is the agent gateway's transcript read
+// (agentgateway.Gateway.Transcript), asserted rather than added to Gateway:
+// it is the officer transcript forwarder's alone.
+type transcriptReader interface {
+	Transcript(ctx context.Context, a agents.Agent, session string, after int64, backfill int) (cctranscript.Page, error)
+}
+
+var _ transcriptReader = (*agentgateway.Gateway)(nil)
+
+// gatewayTranscripts is transcript.Source over the agent gateway: the
+// instance agent by name (as its officer's owner), then its ccd's
+// GET /v1/transcript.
+type gatewayTranscripts struct {
+	s *Server
+	r transcriptReader
+}
+
+func (g gatewayTranscripts) Read(ctx context.Context, o officers.Officer, instance string, q transcript.Query) (cctranscript.Page, error) {
+	octx := g.s.officerPrincipal(ctx, o.Owner)
+	a, err := g.s.ext.Agents.GetByName(octx, instance)
+	if err != nil {
+		return cctranscript.Page{}, fmt.Errorf("officers: instance %s: %w", instance, err)
+	}
+	return g.r.Transcript(octx, a, q.Session, q.After, q.Backfill)
+}
+
+// newTranscriptForwarder builds the forwarder when a declared officer enables
+// `transcript`, and nil otherwise. An enabled officer with no way to read a
+// transcript is a boot refusal, not a silent no-op.
+func (s *Server) newTranscriptForwarder(cfg OfficersConfig, hq *officers.ClientHQ) (*transcript.Forwarder, error) {
+	var on []string
+	for _, o := range cfg.Officers {
+		if o.TranscriptEnabled() {
+			on = append(on, o.ID)
+		}
+	}
+	if len(on) == 0 {
+		return nil, nil
+	}
+	src := cfg.TranscriptSource
+	if src == nil {
+		r, ok := s.ext.Gateway.(transcriptReader)
+		if !ok {
+			return nil, fmt.Errorf("officers: %s enable transcript forwarding, but the agent gateway cannot read an instance's transcript", strings.Join(on, ", "))
+		}
+		src = gatewayTranscripts{s: s, r: r}
+	}
+	f, err := transcript.New(transcript.Config{Source: src, Poster: transcript.NewClientPoster(hq), Logger: s.logger, Now: cfg.Now, Interval: cfg.TranscriptInterval})
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Printf("officers: forwarding instance transcripts to HQ for %s while an instance holds a claimed item", strings.Join(on, ", "))
+	return f, nil
 }
 
 // EnableOfficers turns the officer runtime on and returns its wake loop for the
@@ -108,17 +177,30 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	reg := officers.NewRegistry(cfg.Officers)
 	hc := cfg.HTTPClient
 	hq := officers.NewClientHQ(func(o officers.Officer) *officers.Client { return officers.NewClient(o, hc) })
-	rec, err := officers.NewReconciler(officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: cfg.Now})
+	fwd, err := s.newTranscriptForwarder(cfg, hq)
+	if err != nil {
+		return nil, err
+	}
+	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: cfg.Now}
+	if fwd != nil {
+		rcfg.Observed = fwd.Sync
+	}
+	rec, err := officers.NewReconciler(rcfg)
 	if err != nil {
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
 	}
 	cfg.InstallSession(s.OfficerClaudeCodeSession)
+	if fwd != nil && !cfg.NoTranscriptRun {
+		// Ends with the server's streams (EndStreams, at shutdown).
+		ctx := s.streams.context()
+		safeGo(s.logger, "officer transcript forwarder", func() { fwd.Run(ctx) })
+	}
 	for _, o := range reg.All() {
 		repo := "none"
 		if o.Repo != "" {
@@ -709,6 +791,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return bad, true
 		}
 		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds)
+		if err == nil && s.officerRT.fwd != nil {
+			s.officerRT.fwd.Claimed(o, instance, in.ItemID)
+		}
 	case officers.ToolHeartbeat:
 		if bad := needItem(); bad != "" {
 			return bad, true
@@ -732,11 +817,17 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
 		body, err = c.Complete(ctx, in.ItemID, instance, officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links})
+		if err == nil && s.officerRT.fwd != nil {
+			s.officerRT.fwd.Ended(o, instance, in.ItemID)
+		}
 	case officers.ToolRelease:
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
 		body, err = c.Release(ctx, in.ItemID, instance)
+		if err == nil && s.officerRT.fwd != nil {
+			s.officerRT.fwd.Ended(o, instance, in.ItemID)
+		}
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
 		if perr != nil {

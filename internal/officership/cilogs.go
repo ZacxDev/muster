@@ -340,13 +340,18 @@ var (
 const withheld = "[line withheld: it looks like it carries a credential]"
 
 // tokenRE are lines carrying a credential by its SHAPE or its framing: a
-// GitHub, AWS, Slack, OpenAI-style or JWT token, a PEM header, an
+// GitHub, GitLab, AWS (AKIA/ASIA, aws_secret_access_key), Slack, Stripe
+// (sk_/rk_ live/test), Google (AIza…), Hugging Face (hf_), npm (npm_), PyPI
+// (pypi-), OpenAI/Anthropic-style (sk-, sk-proj-, sk-ant-) or JWT token, a
+// kubeconfig's client-key-data / client-certificate-data, a PEM header, an
 // Authorization header or a Bearer token, a Cookie / Set-Cookie header, a
 // signed URL's sig= / signature= / token= query parameter, a CLI flag
 // --password/--token/--secret/--api-key with a value, a registry or database
 // login's -p VALUE / -pVALUE, and `basic auth: <base64>`.
 var tokenRE = regexp.MustCompile(`(?i)` +
-	`\bgh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bsk-[A-Za-z0-9_-]{20,}|` +
+	`\bgh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bsk-[A-Za-z0-9_-]{20,}|` +
+	`\b[sr]k_(live|test)_[A-Za-z0-9]{10,}|\bAIza[0-9A-Za-z_-]{35}|\bglpat-[A-Za-z0-9_-]{20,}|\bhf_[A-Za-z0-9]{30,}|\bnpm_[A-Za-z0-9]{36}\b|` +
+	`\bpypi-[A-Za-z0-9_-]{50,}|\baws_secret_access_key\b|\b(client-key-data|client-certificate-data)\s*:\s*\S|` +
 	`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|-----BEGIN [A-Z ]*(PRIVATE KEY|CERTIFICATE)|\bauthorization:\s*\S|\bbearer\s+[A-Za-z0-9._~+/=-]{12,}|` +
 	`\b(set-)?cookie:\s*\S|[?&](sig|signature|x-amz-signature|x-goog-signature|token|access_token)=[^&\s]{6,}|` +
 	`--(password|passwd|token|secret|api[-_]?key|access[-_]?token|client[-_]?secret)(=|\s+)\S{4,}|` +
@@ -419,6 +424,73 @@ func RedactLines(lines []string) []string {
 // as Excerpt splits a log: at \n and at a lone \r.
 func redactText(s string) string {
 	return strings.Join(RedactLines(splitLines(s)), "\n")
+}
+
+// RedactText is THE CI-log secret filter (RedactLines, unchanged) over any
+// multi-line text — an officer's session transcript forwarded to HQ
+// (internal/officers/transcript) — split at the same separators as a log
+// (\n, \r\n, a lone \r) but KEEPING empty lines, so prose keeps its
+// paragraphs. Every line is joined back with \n.
+func RedactText(s string) string {
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n"), "\n")
+	return strings.Join(RedactLines(lines), "\n")
+}
+
+// cutPrefixRE is a word that STARTS like a credential the shapes above know:
+// what is left of one when a cap cut it short of the length its full pattern
+// needs.
+var cutPrefixRE = regexp.MustCompile(`(?i)^(gh[pousr]_|github_pat_|sk[-_]|rk_(live|test)_|xox[abprs]-|akia|asia|aiza|glpat-|hf_|npm_|pypi-|eyj)`)
+
+// cutMark is the cap mark a cut field ends in (cctranscript.Cap and every
+// capped field it feeds).
+const cutMark = "…"
+
+// RedactCutTail withholds every line in which a word cut by a cap — the word
+// right before a cutMark — could be a credential's prefix: it starts like a
+// known token shape (cutPrefixRE), or it ends in the first 4 or more bytes of
+// one of known (a credential the caller holds and can name). A shape pattern
+// needs the whole token; a cap can leave only its start, and that start is
+// still the credential's.
+func RedactCutTail(s string, known []string) string {
+	if !strings.Contains(s, cutMark) {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		for rest := l; ; {
+			j := strings.Index(rest, cutMark)
+			if j < 0 {
+				break
+			}
+			before := rest[:j]
+			rest = rest[j+len(cutMark):]
+			f := strings.Fields(before)
+			if len(f) == 0 || strings.HasSuffix(before, " ") {
+				continue
+			}
+			if w := f[len(f)-1]; cutPrefixRE.MatchString(w) || endsInPrefixOf(w, known) {
+				lines[i] = withheld
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// endsInPrefixOf reports whether w ends in the first 4 or more bytes of one
+// of known.
+func endsInPrefixOf(w string, known []string) bool {
+	for _, k := range known {
+		if len(k) < 8 {
+			continue
+		}
+		for i := 0; len(w)-i >= 4; i++ {
+			if strings.HasPrefix(k, w[i:]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // splitLines splits a log at \n, \r\n and a lone \r (a progress line
