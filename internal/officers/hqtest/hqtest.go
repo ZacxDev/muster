@@ -62,6 +62,39 @@ type Server struct {
 	NoticeStatus int
 	// Preflight is POST /officers/{id}/preflight's answer (404 when nil).
 	Preflight map[string]any
+	// transcripts are the transcript events stored per item, in seq order
+	// (POST /officers/{id}/items/{item}/transcript); transcriptStatus, when
+	// non-zero, is answered instead (e.g. 503).
+	transcripts      map[string][]TranscriptEvent
+	transcriptStatus int
+}
+
+// TranscriptEvent is one stored transcript event.
+type TranscriptEvent struct {
+	Seq      int64
+	At       string
+	Kind     string
+	Text     string
+	Instance string
+}
+
+// Transcript returns the events stored for item, in seq order.
+func (s *Server) Transcript(item string) []TranscriptEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]TranscriptEvent(nil), s.transcripts[item]...)
+}
+
+// SetTranscriptStatus makes the transcript route answer code (0: serve).
+func (s *Server) SetTranscriptStatus(code int) { s.mu.Lock(); s.transcriptStatus = code; s.mu.Unlock() }
+
+// Complete marks item done (as an instance's officer_complete would), so a
+// later transcript post for it answers 409 not_claimed.
+func (s *Server) Complete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it := s.items[id]
+	it.Status, it.ClaimedBy, it.LeaseExpiresAt = "done", "", nil
 }
 
 // Notice is one accepted sensitive-path notice.
@@ -334,6 +367,8 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		}
 		it.Status, it.Outcome, it.Summary, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = st, outcome, summary, "", nil, now
 		s.write(w, http.StatusOK, map[string]any{"item": *it})
+	case "transcript":
+		s.transcript(w, officer, it, instance, live, body)
 	case "release":
 		if it.Status != "claimed" || it.ClaimedBy != instance {
 			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
@@ -344,4 +379,93 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 	default:
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such verb"})
 	}
+}
+
+// Transcript route limits, as HQ states them.
+const (
+	maxTranscriptEvents = 100
+	maxTranscriptText   = 8 << 10
+)
+
+// transcript is POST /officers/{id}/items/{item}/transcript, to the contract:
+// {instance, events: [{seq, at, kind, text}]}; ≤100 events, text ≤ 8 KiB, seq
+// strictly increasing within the call; idempotent on seq (a seq ≤ the highest
+// stored is skipped); 409 officer_disabled, 409 not_claimed (the item is not
+// claimed by this instance under a live lease), 400 on a limit. Answers
+// {stored, last_seq}.
+func (s *Server) transcript(w http.ResponseWriter, officer string, it *Item, instance string, live bool, body map[string]any) {
+	if s.transcriptStatus != 0 {
+		s.write(w, s.transcriptStatus, map[string]any{"error": "transcript refused by the fake"})
+		return
+	}
+	for k := range body {
+		if k != "instance" && k != "events" {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown field " + k, "code": "bad_request"})
+			return
+		}
+	}
+	if s.Disabled[officer] {
+		s.write(w, http.StatusConflict, map[string]any{"error": "officer disabled", "code": "officer_disabled"})
+		return
+	}
+	if !live || it.ClaimedBy != instance || instance == "" {
+		s.write(w, http.StatusConflict, map[string]any{"error": "item not claimed by this instance", "code": "not_claimed"})
+		return
+	}
+	raw, ok := body["events"].([]any)
+	if !ok || len(raw) > maxTranscriptEvents {
+		s.write(w, http.StatusBadRequest, map[string]any{"error": "events must be an array of at most 100", "code": "limits"})
+		return
+	}
+	if s.transcripts == nil {
+		s.transcripts = map[string][]TranscriptEvent{}
+	}
+	var last int64
+	if have := s.transcripts[it.ID]; len(have) > 0 {
+		last = have[len(have)-1].Seq
+	}
+	var batch []TranscriptEvent
+	prev := int64(-1 << 62)
+	for _, e := range raw {
+		m, ok := e.(map[string]any)
+		if !ok {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "an event is not an object", "code": "limits"})
+			return
+		}
+		seqF, _ := m["seq"].(float64)
+		seq := int64(seqF)
+		at, _ := m["at"].(string)
+		kind, _ := m["kind"].(string)
+		text, _ := m["text"].(string)
+		if _, err := time.Parse(time.RFC3339, at); err != nil {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "at is not RFC3339", "code": "limits"})
+			return
+		}
+		switch kind {
+		case "user", "assistant", "tool_use", "tool_result", "system":
+		default:
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown kind " + kind, "code": "limits"})
+			return
+		}
+		if len(text) > maxTranscriptText {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "text over 8 KiB", "code": "limits"})
+			return
+		}
+		if seq <= prev {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "seq not strictly increasing", "code": "limits"})
+			return
+		}
+		prev = seq
+		batch = append(batch, TranscriptEvent{Seq: seq, At: at, Kind: kind, Text: text, Instance: instance})
+	}
+	stored := 0
+	for _, e := range batch {
+		if e.Seq <= last {
+			continue
+		}
+		s.transcripts[it.ID] = append(s.transcripts[it.ID], e)
+		last = e.Seq
+		stored++
+	}
+	s.write(w, http.StatusOK, map[string]any{"stored": stored, "last_seq": last})
 }
