@@ -162,6 +162,11 @@ type attentionItem struct {
 	// Source names who is waiting: the asking agent or session, the window,
 	// the plugin.
 	Source string `json:"source"`
+	// target is the part of Source that names a mirrored window's tmux target
+	// (mirror.WhereTarget), "" for none: every display plains Source with
+	// textplain.TitleKeeping(Source, target), so the target reaches the
+	// reader verbatim and only the label around it is plained.
+	target string
 	// Text is the item's SUBSTANCE in one line or a few: the question; what a
 	// waiting session waits on (its pending action, mirror.Pending.Summary —
 	// sessionWaitingText when its host says nothing); a held AskUserQuestion's
@@ -281,19 +286,34 @@ func askerLabel(a attention.Ask) string {
 // target it cannot vouch for.
 const askNotShown = " (not shown in any mirrored window now)"
 
+// whereHostOffline follows a where whose host has dropped: the hub still
+// lists its windows for a grace period, so the target is the last one known.
+const whereHostOffline = " (host offline)"
+
 // askSource is what an ask names as its source: for a mirrored session, the
 // window running its Claude session NOW, by its exact tmux target
 // (mirror.Where, resolved through claudeSessionEntry over hosts) — or its
 // stored name and askNotShown when no window does; for every other asker (an
 // agent, muster itself) askerLabel.
 func askSource(a attention.Ask, hosts []mirror.HostView) string {
+	src, _ := askSourceParts(a, hosts)
+	return src
+}
+
+// askSourceParts is askSource and, when it names a window, that window's
+// target (mirror.WhereTarget) — the part a display keeps verbatim
+// (textplain.TitleKeeping); "" otherwise.
+func askSourceParts(a attention.Ask, hosts []mirror.HostView) (src, target string) {
 	if a.Asker.MirrorSession == "" || a.Asker.AgentID > 0 || a.Asker.System {
-		return askerLabel(a)
+		return askerLabel(a), ""
 	}
 	if e, ok := claudeSessionEntry(hosts, a.Asker.MirrorHost, a.Asker.MirrorSession); ok {
-		return e.Where()
+		if !e.Online {
+			return e.Where() + whereHostOffline, e.WhereTarget()
+		}
+		return e.Where(), e.WhereTarget()
 	}
-	return askerLabel(a) + askNotShown
+	return askerLabel(a) + askNotShown, ""
 }
 
 // askNeedsHosts reports whether askItem needs the owner's windows for a
@@ -321,7 +341,8 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 // a mirrored session's ask names its source from (askSource) — none given, it
 // is named as no window showing it.
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askSource(a, hosts), Text: a.Question,
+	src, target := askSourceParts(a, hosts)
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
 	if a.Asker.System {
 		it.systemAsk = true
@@ -446,7 +467,7 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 			continue
 		}
 		ref := ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
-		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), Text: sessionWaitingText, host: e.Host,
+		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), Text: sessionWaitingText, host: e.Host,
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
@@ -711,7 +732,7 @@ func (s *Server) attentionNotify(owner int64, it attentionItem) {
 // without alerting again.
 func attentionNotification(it attentionItem, update bool) RouterNotification {
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update}
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: it.target}
 	if it.Kind == attentionKindAsk && it.AskID > 0 {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
 		// The signed ask actions are routed wherever the asks are
@@ -787,9 +808,9 @@ func attentionPushBody(it attentionItem) string {
 		}
 		return DraftPushBody
 	case attentionKindSession:
-		body := "Waiting: " + textplain.Title(it.Source)
+		body := "Waiting: " + textplain.TitleKeeping(it.Source, it.target)
 		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
-			body = "Waiting: " + tool + " · " + textplain.Title(it.Source)
+			body = "Waiting: " + tool + " · " + textplain.TitleKeeping(it.Source, it.target)
 		}
 		return push.CutClusters(mirror.OneLine(body, 1<<20), attentionPushBodyMax)
 	}
@@ -1191,7 +1212,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			offline = ` · <span data-attention-offline>host offline</span>`
 		}
 		b.WriteString(`<li id="` + esc(it.Key) + `" class="` + flowsCardClass + `" data-attention-item data-kind="` + esc(it.Kind) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · <span data-attention-source>` + esc(textplain.Title(it.Source)) + `</span>` + age + offline + `</span>
+<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · <span data-attention-source>` + esc(textplain.TitleKeeping(it.Source, it.target)) + `</span>` + age + offline + `</span>
 `)
 		// Source (an agent's or window's name) and Focus (an LLM summary) are
 		// titles, so they read as their plain text (textplain).
@@ -1502,7 +1523,7 @@ func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Ti
 	b.WriteString(`<li class="pt-2 text-xs font-semibold uppercase tracking-wide text-fg2" data-attention-answered-heading>Answered</li>` + "\n")
 	for _, a := range asks {
 		id := strconv.FormatInt(a.ID, 10)
-		who := askSource(a, hosts)
+		who := textplain.TitleKeeping(askSourceParts(a, hosts))
 		text, retry := answerDeliveryText(a, who)
 		age := ""
 		if !a.ResolvedAt.IsZero() {

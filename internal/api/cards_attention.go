@@ -121,7 +121,7 @@ func claudeSessionEntry(hosts []mirror.HostView, host, sid string) (mirror.Sessi
 		}
 		for _, w := range h.Windows {
 			if (w.Claude && w.ClaudeSession == sid) || slices.Contains(w.OtherClaude, sid) {
-				return mirror.SessionView{Host: h.Host, Session: w.Session, Window: w.ID, Index: w.Index, Label: w.Label}, true
+				return mirror.SessionView{Host: h.Host, Session: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Online: h.Online}, true
 			}
 		}
 	}

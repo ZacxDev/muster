@@ -363,6 +363,9 @@ func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until t
 		case focus.KindMirror:
 			if e, ok := byKey[w.Subject.Key]; ok {
 				f.Name, f.Title, f.Host, f.Repo, f.Where = e.DisplayTitle(), e.Title(), e.Host, e.Repo, e.Where()
+				if !e.Online {
+					f.Where += whereHostOffline // its last-known window
+				}
 				if e.Online {
 					f.State = "active"
 				}

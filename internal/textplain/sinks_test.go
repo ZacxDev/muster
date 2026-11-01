@@ -53,12 +53,22 @@ var titleNames = map[string]bool{
 	"Description": true,
 }
 
-// bareAccessors are the title accessors package ui calls unqualified.
-var bareAccessors = map[string]bool{"TaskTitle": true}
+// bareAccessors are the title accessors called unqualified: package ui's
+// TaskTitle, and package api's askSource / askSourceParts (an ask's source,
+// which names a mirrored window — see apiTitleNames).
+var bareAccessors = map[string]bool{"TaskTitle": true, "askSource": true, "askSourceParts": true}
 
 // apiTitleNames adds the attention item's fields, which are titles in api's
 // hand-written attention HTML.
-var apiTitleNames = map[string]bool{"Source": true, "Focus": true}
+//
+// 🔴 A MIRRORED WINDOW'S where (mirror.Where, its SessionView method) is a
+// title too: a label plus a tmux target. It is plained by
+// textplain.TitleKeeping, which keeps the target (mirror.WhereTarget)
+// VERBATIM — the ONE exemption from the stripper, recorded here: a tmux
+// session named "_scratch_" is typed "_scratch_", so plaining it would send
+// the operator to a session that does not exist. Every display of an
+// attention Source and of a where passes the target as keep.
+var apiTitleNames = map[string]bool{"Source": true, "Focus": true, "Where": true}
 
 // plainingHelpers are ui functions that apply Title to their name arguments at
 // emit. An argument read passed straight to one counts as covered; each is
@@ -140,7 +150,7 @@ var apiExempt = map[string]exemption{
 // service or the router, and why each is safe.
 var pushEmitters = map[string]string{
 	"push_routes.go Server.sendPush":        "the wrapper goNotify and handlePushTest call",
-	"server.go Server.goNotify":             "applies Title to the notification's title (bodies: see checkPushEmitters)",
+	"server.go Server.goNotify":             "applies Title (TitleKeeping, keeping TitleKeep: a window's tmux target) to the notification's title (bodies: see checkPushEmitters)",
 	"push_routes.go Server.handlePushTest":  "a fixed test title and body",
 	"devices.go Server.handleDevicePushPut": "a fixed probe payload (devicePushProbe)",
 }
@@ -182,6 +192,67 @@ func TestTheTitleSinkLedger(t *testing.T) {
 		}
 	})
 	t.Run("push emitters", checkPushEmitters)
+	t.Run("where kept verbatim", checkWhereKept)
+}
+
+// checkWhereKept: in package api, a value that can name a mirrored window
+// (an attention item's Source, a where, an ask's source) is plained ONLY by
+// textplain.TitleKeeping — a plain textplain.Title over it would strip the
+// tmux target's own characters ("_scratch_" → "scratch"). See apiTitleNames.
+func checkWhereKept(t *testing.T) {
+	fset, files := parseDir(t, "../api")
+	kept := 0
+	for name, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok || len(c.Args) == 0 {
+				return true
+			}
+			sel, ok := c.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "textplain" {
+				return true
+			}
+			if !namesAWindow(c.Args[0]) {
+				return true
+			}
+			switch sel.Sel.Name {
+			case "TitleKeeping":
+				kept++
+			case "Title":
+				var b strings.Builder
+				_ = printer.Fprint(&b, fset, c)
+				t.Errorf("%s: %s plains a value that can name a mirrored window with Title; use textplain.TitleKeeping with its target", name, b.String())
+			}
+			return true
+		})
+	}
+	// 🔴 POSITIVE CONTROL: the sites this exists for are found.
+	if kept < 6 {
+		t.Fatalf("positive control FAILED: only %d TitleKeeping calls over a window-naming value in ../api; the walk is not measuring", kept)
+	}
+}
+
+// namesAWindow reports whether e reads an attention Source, a where, or an
+// ask's source (askSource / askSourceParts).
+func namesAWindow(e ast.Expr) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.SelectorExpr:
+			if x.Sel.Name == "Source" || x.Sel.Name == "Where" {
+				found = true
+			}
+		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok && (id.Name == "askSource" || id.Name == "askSourceParts") {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 type read struct {
@@ -409,7 +480,8 @@ func coveredBy(stack []ast.Node) bool {
 	return false
 }
 
-// isTitleCall reports whether c applies the title rule: textplain.Title, or
+// isTitleCall reports whether c applies the title rule: textplain.Title,
+// textplain.TitleKeeping (Title with a verbatim part: see apiTitleNames), or
 // package ui's plainOr (Title with a raw fallback).
 func isTitleCall(c *ast.CallExpr) bool { return appliedArg(c) != nil }
 
@@ -420,7 +492,7 @@ func appliedArg(c *ast.CallExpr) ast.Expr {
 	}
 	switch f := c.Fun.(type) {
 	case *ast.SelectorExpr:
-		if id, ok := f.X.(*ast.Ident); ok && id.Name == "textplain" && f.Sel.Name == "Title" {
+		if id, ok := f.X.(*ast.Ident); ok && id.Name == "textplain" && (f.Sel.Name == "Title" || f.Sel.Name == "TitleKeeping") {
 			return c.Args[0]
 		}
 	case *ast.Ident:
@@ -678,7 +750,9 @@ func checkPushEmitters(t *testing.T) {
 				// is not) — applying the rule to it again is a double.
 				fields := map[string]int{}
 				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					if c, ok := n.(*ast.CallExpr); ok && isTitleCall(c) && len(c.Args) == 1 {
+					// len(c.Args) >= 1: TitleKeeping's second argument is the
+					// verbatim part, not a second plained value.
+					if c, ok := n.(*ast.CallExpr); ok && isTitleCall(c) && len(c.Args) >= 1 {
 						if s, ok := c.Args[0].(*ast.SelectorExpr); ok {
 							fields[s.Sel.Name]++
 						}

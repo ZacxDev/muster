@@ -116,7 +116,11 @@ func (s *Server) askerAsks(ctx context.Context, r askerRef) []attentionItem {
 	}
 	var out []attentionItem
 	for _, a := range asks {
-		it := askItem(a, hostViews()...)
+		var hs []mirror.HostView
+		if askNeedsHosts(a) {
+			hs = hostViews()
+		}
+		it := askItem(a, hs...)
 		switch {
 		case agentID > 0:
 			if it.card.agentID != agentID {

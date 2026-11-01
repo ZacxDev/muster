@@ -134,11 +134,24 @@ func (s SessionView) Where() string {
 // Claude session id when followed and stay the source of truth.
 func Where(host, session, window string, index int, label string) string {
 	addr := tmuxAddress(session, window, index)
-	out := "tmux " + addr + " @ " + host
+	out := WhereTarget(host, session, window, index)
 	if label != "" && label != addr {
 		out = label + QualifierSep + out
 	}
 	return out
+}
+
+// WhereTarget is Where's machine part, "tmux <session>:<index> @ <host>",
+// without the label: what a surface that plains a title for display must
+// keep VERBATIM (textplain.TitleKeeping) — a tmux session named "_scratch_"
+// is typed as "_scratch_", never as the "scratch" a markdown stripper reads.
+func WhereTarget(host, session, window string, index int) string {
+	return "tmux " + tmuxAddress(session, window, index) + " @ " + host
+}
+
+// WhereTarget is the entry's WhereTarget.
+func (s SessionView) WhereTarget() string {
+	return WhereTarget(s.Host, s.Session, s.Window, s.Index)
 }
 
 // qualify sets every entry's Qualifier over list — the WHOLE list, across

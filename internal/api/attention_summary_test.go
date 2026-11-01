@@ -36,7 +36,7 @@ func TestTheSummaryItemSaysWhatItsPushSays(t *testing.T) {
 	sessKey := sessionKey("host-b", "main", "@3")
 	// The window running the asking session (its codename's index is NOT its
 	// tmux index): the title names it as askSource does, mirror.Where.
-	mirrorHosts := []mirror.HostView{{Host: "ws", Windows: []mirror.Window{
+	mirrorHosts := []mirror.HostView{{Host: "ws", Online: true, Windows: []mirror.Window{
 		{Session: "main", ID: "@7", Index: 4, Label: "Gold:1", Claude: true, ClaudeSession: focusSID}}}}
 	mirrorAsk := askItem(attention.Ask{ID: 41, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID, Label: "Gold:1"},
 		Question: "Use ghp_0123abcd9 for the mirror?\n\nIt is the only key.", Options: []string{"yes", "no"}, CreatedAt: summaryNow.Add(-90 * time.Second)},

@@ -139,7 +139,13 @@ in session** link finds the window by its Claude session id when you follow
 it, and is the source of truth. A mirrored session's ask whose Claude session
 no window shows now reads as its stored name and host followed by
 `(not shown in any mirrored window now)` — muster names no target it cannot
-see. An agent's ask is named by the agent.
+see; one whose host has just dropped (the hub keeps listing it briefly) is
+followed by `(host offline)`. An agent's ask is named by the agent.
+
+The target is shown **verbatim**: a page or notification plains a title's
+markdown, but only the codename around the target, never the
+`tmux <session>:<index> @ <host>` part — a session named `_scratch_` is shown
+as `_scratch_`, not `scratch`.
 
 Each line is folded to one line, anything shaped like a secret is redacted, and
 the body is cut to 200 characters on a character boundary with a visible `…`
@@ -673,7 +679,7 @@ you, your mirror hosts' busy and idle Claude windows, and your
 | `items[].key` | The item's id (`ask-<id>`, `session-<hash>`, `draft-<id>`, `task-<id>`). A held question has its window's `session-…` key. |
 | `items[].kind` | `ask`, `session`, `question`, `plugin` (a reply draft) or `task`. |
 | `items[].host` | The mirror host it is on; `""` for an agent's ask, muster's own, a reply draft and a task. |
-| `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body. Secrets are redacted, a waiting session is `Waiting: <tool> · <window> @ <host>`, a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
+| `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body. Secrets are redacted, a waiting session is `Waiting: <tool> · <where>` (its exact tmux target, [How a window is named](#how-a-window-is-named), kept verbatim), a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
 | `items[].since`, `items[].age_secs` | When it started waiting (Unix seconds) and `ts` minus that; `0` and `0` when unknown. |
 | `items[].offline` | A session item whose host dropped within the last 5 minutes, shown as last seen. |
 | `items[].url` | Where to act on it, on `MUSTER_PUBLIC_URL`: the [tap route](push.md) `/attention/open/<key>` for an ask or a session (resolved when opened), the item's own page for a draft or a task. **`""` when `MUSTER_PUBLIC_URL` is not set**: the summary names no origin it was not told. |
