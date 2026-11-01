@@ -155,7 +155,13 @@ func TestAWindowsPagesSocketAndComposerAllNameThatWindow(t *testing.T) {
 	if !strings.Contains(term, `id="view-rendered" href="`+amp(nine.ViewPath())+`"`) {
 		t.Error("the terminal page's Rendered switch does not lead to window @9's view")
 	}
-	if !strings.Contains(term, "Gold:11") || strings.Contains(term, "Gold:8") {
+	// Its <title> and header — not the whole page: the session switcher at the
+	// page's foot lists the session's other windows (Gold:8 among them).
+	head := term
+	if i := strings.Index(term, "</header>"); i >= 0 {
+		head = term[:i]
+	}
+	if !strings.Contains(head, "Gold:11") || strings.Contains(head, "Gold:8") {
 		t.Error("the terminal page is not titled by its own window's label")
 	}
 

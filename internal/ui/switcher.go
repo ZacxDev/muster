@@ -13,10 +13,14 @@ import (
 )
 
 // THE SESSION SWITCHER: a bar BELOW the message input of a session's page — a
-// mirrored window's Rendered view and a dispatched agent's chat page — that
-// hot-swaps to another session in one tap (operator ask: "add another bar
-// component below the message input bar where I can hot swap between active
-// sessions").
+// mirrored window's Rendered view, a dispatched agent's chat page, and the
+// Terminal view of either (AgentTerminalPage) — that hot-swaps to another
+// session in one tap (operator asks: "add another bar component below the
+// message input bar where I can hot swap between active sessions"; "include
+// the bottom bar in the agent terminal view as well … so that I can easily
+// switch agents from the terminal view"). A Terminal view draws it whether or
+// not its composer can send, or is drawn at all: switching sessions does not
+// depend on sending.
 //
 // FOUR VIEWS, picked from a menu the button on the bar's left opens (it
 // animates open UPWARD, the bar being at the screen's bottom — switcherViewMenu):
@@ -77,8 +81,9 @@ import (
 // 🔴 IT SCROLLS SIDEWAYS INSIDE ITSELF (each row is overflow-x-auto, min-w-0),
 // so thirty long names never widen the page.
 //
-// ONLY SESSION PAGES DRAW IT. The retired Agents list page also drew it, docked
-// to the bottom of the viewport with no page session, and refreshed its rows
+// ONLY SESSION PAGES DRAW IT (the four above). The retired Agents list page
+// also drew it, docked to the bottom of the viewport with no page session, and
+// refreshed its rows
 // out of band on every list render; out of band they now arrive only with the
 // pin toggle's answer (switcherRefresh, RenderSwitcherPin).
 
@@ -117,6 +122,11 @@ const switcherRecentMax = 8
 type SwitcherCurrent struct {
 	AgentID int64
 	Mirror  MirrorRef
+	// Back is the page itself, where the bar's pin toggle sends the browser
+	// back to after a post without script: a Terminal view names its own
+	// address, so a pin there does not land on the session's other view. ""
+	// is the session's own page (its sidebar row's link, newSwitcherPin).
+	Back string
 }
 
 // is reports whether e is the page's own session.
@@ -249,6 +259,9 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 		}
 		if pin == nil && cur.is(e) {
 			pin = newSwitcherPin(e)
+			if cur.Back != "" {
+				pin.back = cur.Back
+			}
 		}
 	}
 	var recent []listEntry
@@ -352,11 +365,12 @@ func (s *Switcher) view(key string) []SwitcherItem {
 
 // switcherBar is the bar: the view button, one row per view (Recent shown, the
 // others hidden until the script picks them), and the search button — then
-// the view menu and the search palette, both popovers. pinned: the bar is
-// the last row of a pinned composer that spans the screen (the Rendered
-// view's) — it is inset like that composer's rows and padded by the safe-area
-// inset, being the last thing above the screen's edge; otherwise (the agent
-// page, inside its already-inset pane) it lines up with the form above it.
+// the view menu and the search palette, both popovers. pinned: the bar spans
+// the screen and is the last thing above its edge — the last row of the
+// Rendered view's pinned composer, or of a Terminal view's column (in flow, at
+// the column's foot) — so it is inset like a composer's rows and padded by the
+// safe-area inset; otherwise (the agent page, inside its already-inset pane)
+// it lines up with the form above it.
 // Nothing when s is nil.
 func switcherBar(s *Switcher, pinned bool) g.Node {
 	if s == nil {
@@ -503,6 +517,48 @@ func switcherRoom(pinned bool) string {
 	return "pb-[2.8125rem]"
 }
 
+// THE BAR STEPS ASIDE FOR THE KEYBOARD AND ON A VERY SHORT SCREEN (operator
+// decision). The bar at a screen's foot — a Terminal view's, the Rendered
+// view's — is hidden and its room given back:
+//
+//   - while a soft keyboard is up: <html data-keyboard>, set by
+//     switcherKeyboardJS when a text field has focus AND the visual viewport
+//     is at least switcherKeyboardDrop px shorter than the tallest it has been
+//     at this width. The bar comes back when the keyboard goes (or the field
+//     loses focus). Hiding it answers the reader's own input — focusing the
+//     box — never a page load;
+//   - on a screen at most switcherShortMax tall (a landscape phone): by a CSS
+//     media query (web/css/input.css), so it is decided before the first
+//     paint and moves nothing. Only an IN-FLOW room ("flow": a Terminal
+//     view's) — the Rendered view's pinned composer reserves its height in a
+//     measured custom property whose first-paint fallback counts the bar, so
+//     collapsing it there by a query would shift the transcript on load.
+//
+// The thresholds: 150px is less than any phone's soft keyboard (≈250–350px
+// portrait, ≈200px landscape) and more than a browser toolbar collapsing as
+// the page is used (≈50–100px), which must not flicker the bar. 30rem (480px)
+// is taller than every landscape phone (≈320–430px) and shorter than the
+// smallest portrait phone's page (≈550px on a 667px-tall phone, its browser
+// chrome taken), so no phone held upright loses the bar without a keyboard.
+//
+// The agent chat page's bar (pinned false, inside its pane) is not affected:
+// it carries no room mark.
+const (
+	switcherRoomAttr     = "data-switcher-room"
+	switcherKeyboardDrop = 150
+	switcherShortMax     = "30rem"
+)
+
+// switcherRoomMark marks the element whose bottom padding is the bar's room
+// (switcherRoom(true)): "pinned" for the Rendered view's pinned composer,
+// "flow" for a Terminal view's in-flow room.
+func switcherRoomMark(pinned bool) g.Node {
+	if pinned {
+		return g.Attr(switcherRoomAttr, "pinned")
+	}
+	return g.Attr(switcherRoomAttr, "flow")
+}
+
 // classIf is s when ok, "" otherwise: an optional class suffix.
 func classIf(ok bool, s string) string {
 	if ok {
@@ -642,8 +698,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 // palette. Storage that throws (a private window, blocked site data) leaves
 // Recent, and the menu still works for the page.
 //
-// INLINE on a session's page (the agent page, the Rendered view) — the only
-// pages that draw the bar now — as it was measured there. (The app shell, whose
+// INLINE on a session's page (the agent page, the Rendered view, a Terminal
+// view) — the only pages that draw the bar now — as it was measured there. (The app shell, whose
 // retired Agents panel docked the bar, carried it as a static file instead.)
 // One text, switcherJS.
 func switcherScript() g.Node { return Script(g.Raw(switcherJS)) }
@@ -695,6 +751,46 @@ var switcherOOBJS = `if (!window.__musterSwitcherOOB || window.__musterSwitcherO
     if (window.__musterSwitcherOOB) document.removeEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn);
     window.__musterSwitcherOOB = { v: '` + switcherOOBVersion() + `', fn: ` + switcherOOBHandler + ` };
     document.addEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn);
+  }`
+
+// switcherKeyboardJS sets <html data-keyboard> while a soft keyboard is up
+// (see switcherRoomMark): a text field has focus and the visual viewport is
+// switcherKeyboardDrop px or more shorter than the tallest it has been at this
+// width (a new width — a rotation — starts afresh). Bound once per window. In
+// the view switch's frame (view_swap.go) the viewport measured is the TOP
+// window's, as composerPinScript's is: a keyboard that only overlays the page
+// shrinks the top window's visual viewport, never the frame's. A pinch (a
+// scale other than 1) is not a keyboard.
+var switcherKeyboardJS = `if (!window.__musterSwitcherKb) {
+    window.__musterSwitcherKb = true;
+    var root = document.documentElement, vw = window;
+    try { if (window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) vw = window.parent; } catch (e) {}
+    var kbWidth = -1, tallest = 0;
+    function typing() {
+      var a = document.activeElement;
+      if (!a || a.disabled || a.readOnly) return false;
+      if (a.isContentEditable || a.tagName === 'TEXTAREA') return true;
+      return a.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(a.type);
+    }
+    function kbCheck() {
+      var v = vw.visualViewport;
+      if (v && Math.abs(v.scale - 1) > 0.001) return;
+      var w = vw.innerWidth, h = v ? v.height : vw.innerHeight;
+      if (w !== kbWidth) { kbWidth = w; tallest = h; }
+      if (h > tallest) tallest = h;
+      var up = typing() && tallest - h >= ` + strconv.Itoa(switcherKeyboardDrop) + `;
+      if (up !== root.hasAttribute('data-keyboard')) root.toggleAttribute('data-keyboard', up);
+    }
+    kbCheck();
+    vw.addEventListener('resize', kbCheck);
+    if (vw.visualViewport) vw.visualViewport.addEventListener('resize', kbCheck);
+    document.addEventListener('focusin', kbCheck);
+    // On focusout the field still has focus; the next task sees where it went.
+    document.addEventListener('focusout', function () { setTimeout(kbCheck, 0); });
+    if (vw !== window) window.addEventListener('pagehide', function () {
+      vw.removeEventListener('resize', kbCheck);
+      if (vw.visualViewport) vw.visualViewport.removeEventListener('resize', kbCheck);
+    });
   }`
 
 // switcherJS is the bar's script (switcherScript).
@@ -812,6 +908,7 @@ var switcherJS = func() string {
   // older build's switcher would have that flag set, and never bind this.
   ` + switcherOOBJS + `
 
+  ` + switcherKeyboardJS + `
 })();
 `
 }()

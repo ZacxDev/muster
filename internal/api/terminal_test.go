@@ -41,6 +41,11 @@ func (termAgents) GetByName(_ context.Context, name string) (agents.Agent, error
 	return agents.Agent{}, errors.New("no rows")
 }
 
+// List is the agents a Terminal view's session switcher lists (ui.Switcher):
+// none, so the page builds an empty bar rather than reaching the embedded
+// nil store.
+func (termAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil }
+
 // termCall is one AttachTerminal the fake received.
 type termCall struct {
 	agent    string

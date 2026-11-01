@@ -245,6 +245,67 @@ test('the terminal follows the viewport: keyboard-height and rotation', async ({
   await noHorizontalScroll(page);
 });
 
+// THE SESSION SWITCHER ON AN AGENT'S TERMINAL VIEW (operator ask: "Include the
+// bottom bar in the agent terminal view as well … so that I can easily switch
+// agents from the terminal view"), at 390×844: the bar is drawn at the page's
+// foot with the agent marked current, it moves nothing (CLS < 0.01), the far
+// side heard exactly one size (the fake prints `size=CxR` per resize) — the
+// bar's presence and a view switch in it send no resize — and a tap on
+// another agent's entry opens that agent.
+test.describe('the switcher at 390×844', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("an agent's Terminal view draws the session switcher; a tap switches agents", async ({ page }) => {
+    test.setTimeout(90_000);
+    await login(page);
+    const other = await saveAgent(page, 'claude-code', 'e2e terminal: switcher, the other agent');
+    const name = await saveAgent(page, 'claude-code', 'e2e terminal: switcher');
+    await page.addInitScript(clsInit);
+    await page.addInitScript(() => { try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    const bar = page.locator('#session-switcher');
+    await expect(bar).toBeVisible();
+    await settle(page);
+    await page.waitForTimeout(500);
+
+    const all = bar.locator('[data-switcher-list="all"]');
+    await expect(all).toBeVisible();
+    await expect(all.locator('[data-switcher-current]'), 'the page\'s own agent, current').toHaveAttribute('data-switcher-code', name);
+    await expect(bar.locator('[data-switcher-list="recent"] [data-switcher-code="' + name + '"]'), 'not in Recent').toHaveCount(0);
+    await expect(bar.locator('#switcher-pin'), 'the bar\'s pin').toHaveCount(1);
+
+    const cls = await readCls(page);
+    expect(cls.total, `layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
+    await noHorizontalScroll(page);
+    const b = (await bar.boundingBox())!, t = (await page.locator('#term-scroll').boundingBox())!, input = (await page.locator('#mv-input').boundingBox())!;
+    expect(Math.round(b.y + b.height), 'the bar is the bottom of the screen').toBe(844);
+    expect(input.y + input.height, 'the input is above the bar').toBeLessThanOrEqual(b.y + 0.5);
+    expect(t.y + t.height, 'the terminal is above the bar').toBeLessThanOrEqual(b.y + 0.5);
+
+    // One size reached the far side, and a view switch sends none.
+    // Rows read joined: a line wider than the terminal wraps.
+    const sizes = async () => [...(await screen(page).innerText()).replace(/\n/g, '').matchAll(/size=(\d+x\d+)/g)].map((m) => m[1]);
+    await expect.poll(async () => (await sizes()).length).toBeGreaterThan(0);
+    const heard = await sizes();
+    expect(new Set(heard).size, `one size, no churn: ${heard}`).toBe(1);
+    const [cols, rows] = heard[0].split('x').map(Number);
+    expect(cols, 'columns at 390px').toBeGreaterThanOrEqual(30);
+    expect(rows, 'rows at 844px, with the bar').toBeGreaterThanOrEqual(20);
+    await page.locator('#switcher-toggle').click();
+    await page.locator('#switcher-views [data-switcher-pick="recent"]').click();
+    await expect(bar.locator('[data-switcher-list="recent"]')).toBeVisible();
+    await page.waitForTimeout(1000);
+    expect(await sizes(), 'a view switch sent no resize').toEqual(heard);
+
+    // A tap on the other agent's entry opens it.
+    await page.locator('#switcher-toggle').click();
+    await page.locator('#switcher-views [data-switcher-pick="all"]').click();
+    const entry = all.locator('a[data-switcher-entry="agent"][data-switcher-code="' + other + '"]');
+    await Promise.all([page.waitForURL((u) => u.pathname === '/agents/' + other), entry.click()]);
+  });
+});
+
 // RECORDED EXCLUSION (the operator's decision): drag-to-scroll is for mirrored
 // windows only. An agent pod's Terminal page wires no scroll gesture — the
 // page's own instrument (data-scroll-on, set when the handlers are wired; see
