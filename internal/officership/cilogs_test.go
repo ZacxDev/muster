@@ -501,3 +501,50 @@ func TestCILogsWithholdsAWholePEMBlock(t *testing.T) {
 		})
 	}
 }
+
+// TestCILogsWithholdsEnvStyleSecrets: the shapes a round-1 audit measured
+// leaking verbatim — a keyword after an underscore (AWS_SECRET_ACCESS_KEY,
+// API_TOKEN, OAUTH_CLIENT_SECRET), the JSON "KEY":"value" form, a `set -x`
+// trace (`+ `, `++ export`), an assignment after a lone \r (a progress line),
+// a lowercase npm config key, and a URL with an empty username, plus env
+// assignments with no credential keyword in those positions — each placed
+// last in the log, so it lands in the excerpt's tail if nothing withholds it.
+// Positive control: ordinary failure lines that merely NAME a password, a
+// token or a secret pass through unredacted.
+func TestCILogsWithholdsEnvStyleSecrets(t *testing.T) {
+	for _, c := range []struct{ line, secret string }{
+		{"ERROR AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYFAKEKEY0", "wJalrXUtnFEMIK7MDENGbPxRfiCYFAKEKEY0"},
+		{"Error: login failed with API_TOKEN=abcdef123456", "abcdef123456"},
+		{"Error: bad OAUTH_CLIENT_SECRET: zzzzzzzzzzzzzzzzzzzz", "zzzzzzzzzzzzzzzzzzzz"},
+		{`Error: {"DATABASE_PASSWORD":"hunter2hunter2"}`, "hunter2hunter2"},
+		{"+ DB_PASSWORD=Sup3rS3cretDbPass9", "Sup3rS3cretDbPass9"},
+		{"++ export STRIPE_SECRET=stripeFakeValue000111", "stripeFakeValue000111"},
+		{"progress 45%\rGITHUB_PAT_X=patFake0000value1111", "patFake0000value1111"},
+		{"npm_config__authToken=npmFakeToken0000000000", "npmFakeToken0000000000"},
+		{"Error: dial postgres://:pgEmptyUserPass9@db.example.test:5432/app", "pgEmptyUserPass9"},
+		// No credential keyword: only the env-assignment rule catches these
+		// (a trace, a lowercase name, an assignment after a lone \r).
+		{"+ CONN_DSN=hostuserDsnValue001", "hostuserDsnValue001"},
+		{"deploy_conn_url=lowerDsnValue0002", "lowerDsnValue0002"},
+		{"progress 80%\rCONN_DSN=crDsnValue0003", "crDsnValue0003"},
+	} {
+		t.Run(strings.ReplaceAll(c.secret, "\r", ""), func(t *testing.T) {
+			ex, _ := Excerpt(goLog+c.line+"\n", 64<<10)
+			if strings.Contains(ex, c.secret) {
+				t.Fatalf("the secret of %q reached the excerpt:\n%s", c.line, ex)
+			}
+		})
+	}
+	controls := []string{
+		"--- FAIL: TestTokenRefresh (0.12s)",
+		`ERROR: password authentication failed for user "app" (SQLSTATE 28P01)`,
+		"FAIL example.test/app/internal/secrets TestSecretRotation",
+		"    token_test.go:31: want token_id=7, got 8",
+	}
+	ex, _ := Excerpt(goLog+strings.Join(controls, "\n")+"\n", 64<<10)
+	for _, l := range controls {
+		if !strings.Contains(ex, l) {
+			t.Errorf("an ordinary failure line was withheld or changed: %q\n%s", l, ex)
+		}
+	}
+}
