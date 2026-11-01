@@ -89,6 +89,10 @@ type Officer struct {
 	// write filtered or performed by muster (ship.go). nil for every other
 	// officer, whose GitHub access stays read-only.
 	Ship *Ship `json:"-"`
+	// CILogs, when set (a shipping officer only), offers officer_ci_logs: the
+	// failing tests and error lines of the officer's own pull request's CI,
+	// read by muster-server from a Tekton namespace (cilogs.go).
+	CILogs *CILogs `json:"-"`
 	// Connectors are the connectors, besides `github`, the officer's instances
 	// may REQUEST (internal/api officerConnectorRefusal), by name — e.g. a
 	// postgres connector for read-only SQL. Declaring one grants nothing: each
@@ -132,6 +136,8 @@ type declared struct {
 	Connectors   []string `json:"connectors"`
 	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
 	Ship json.RawMessage `json:"ship"`
+	// CILogs is parsed by parseCILogs (cilogs.go); it needs Ship.
+	CILogs json.RawMessage `json:"ci_logs"`
 }
 
 // idPart is one half of an officer id: lowercase alphanumerics and single
@@ -312,6 +318,13 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.Ship = ship
+	}
+	if len(d.CILogs) > 0 && string(d.CILogs) != "null" {
+		ci, err := parseCILogs(o.Ship, d.CILogs)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.CILogs = ci
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {

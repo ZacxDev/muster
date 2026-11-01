@@ -135,6 +135,10 @@ const (
 	// its own pull request (GitHub's GraphQL mutation; REST PATCH pulls takes
 	// no `draft`, and the push gate refuses that field).
 	ToolMarkReady = "officer_mark_ready"
+	// ToolCILogs reads why the officer's OWN pull request's CI failed (the
+	// failed Tekton TaskRuns' failing tests and error lines). Offered to a
+	// shipping officer with a `ci_logs` block only; read-only.
+	ToolCILogs = "officer_ci_logs"
 )
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
@@ -157,6 +161,8 @@ func ToolOffered(o Officer, tool string) bool {
 		return o.Type() == ReleaseOfficerType
 	case ToolMergePR, ToolTagRelease, ToolRolloutStatus, ToolMarkReady:
 		return o.Ship != nil
+	case ToolCILogs:
+		return o.Ship != nil && o.CILogs != nil
 	}
 	return false
 }
@@ -176,5 +182,16 @@ Ready for review: %[10]s{pr}. A draft pull request is not reviewed, so the %[6]q
 
 Merging: %[5]s{pr}. It merges ONLY your own %[3]s* pull request, and only when every gate passes at call time (CI checks, the %[6]q review, up to date with %[4]s, mergeable, no /hold from a human, no destructive DDL). A refusal names the gate: fix that and call again; never look for another way.
 Releasing: %[7]s{item_id?}. It tags the next minor version on %[4]s's head when the release gates pass, and muster then watches the rollout; %[8]s{} reports it.`,
-		o.Repo, GitHubConnector, s.BranchPrefix, s.Base, ToolMergePR, s.ReviewCheck, ToolTagRelease, ToolRolloutStatus, onlyConnector(o), ToolMarkReady)
+		o.Repo, GitHubConnector, s.BranchPrefix, s.Base, ToolMergePR, s.ReviewCheck, ToolTagRelease, ToolRolloutStatus, onlyConnector(o), ToolMarkReady) + ciLogsNote(o)
+}
+
+// ciLogsNote tells an officer with a `ci_logs` block how to learn why its CI
+// failed — before it escalates a red check.
+func ciLogsNote(o Officer) string {
+	if !ToolOffered(o, ToolCILogs) {
+		return ""
+	}
+	return "\nRed CI: when a required check on your pull request fails, call " + ToolCILogs + "{pr} BEFORE you escalate. " +
+		"It returns, for each failed CI task on the pull request's current head, the failing test names and the error lines from its logs. " +
+		"Fix what it shows and push; escalate only when it shows nothing you can act on (say so, with its answer, in the summary)."
 }

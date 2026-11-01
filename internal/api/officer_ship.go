@@ -28,6 +28,9 @@ import (
 //   - four MCP tools — officer_merge_pr, officer_tag_release,
 //     officer_rollout_status, officer_mark_ready — whose gates run HERE, with
 //     muster's own token;
+//   - with a `ci_logs` block, a fifth, officer_ci_logs: read-only, the failed
+//     CI tasks' excerpts of its OWN pull request, read here with a dedicated
+//     namespace-scoped ServiceAccount token (officership.CILogsReader);
 //   - the rollout watch, resumed at boot for a release still inside its window.
 //
 // 🔴 WHY THE INSTANCE CANNOT GO AROUND IT. The instance's pod holds no GitHub
@@ -45,6 +48,10 @@ type shipRuntime struct {
 	gate  *officership.PushGate
 	gates *officership.Gates
 	watch *officership.Watcher
+	// ci answers officer_ci_logs (nil without a ci_logs block); ciErr is why
+	// it could not be built, said on every call rather than failing the boot.
+	ci    *officership.CILogsReader
+	ciErr error
 }
 
 // officerHQ adapts officers.Client to officership.HQ.
@@ -103,6 +110,20 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 	} else {
 		rt.gates.LiveVersion = func(context.Context) (string, error) {
 			return "", fmt.Errorf("officer %s has no rollout block", o.ID)
+		}
+	}
+	if o.CILogs != nil {
+		rt.ci = &officership.CILogsReader{Repo: o.Repo, Ship: sp, Config: o.CILogs, GH: gh}
+		if cfg.ShipCI != nil {
+			rt.ci.CI = cfg.ShipCI(o)
+		} else {
+			// 🔴 A CI-LOG SOURCE THAT CANNOT BE BUILT DOES NOT STOP THE SERVER:
+			// it is a read-only aid, and a boot refusal here would stop every
+			// officer's merges too. Logged now, and said on every call.
+			rt.ci.CI, rt.ciErr = officership.NewKubeCIReader(o.CILogs.Namespace, o.CILogs.TokenFile)
+			if rt.ciErr != nil {
+				s.logger.Printf("officers: %s: officer_ci_logs is unavailable: %v", o.ID, rt.ciErr)
+			}
 		}
 	}
 	return rt, nil
@@ -201,11 +222,17 @@ func shipToolDefs() []agents.ToolDef {
 		{Type: "function", Name: officers.ToolRolloutStatus,
 			Description: "Read muster's rollout watch of your latest release: phase, verdict (watching, healthy, not_live, unhealthy, superseded), the revert pull request and rollback tag if one was made, and its events. Put the verdict in your item's officer_complete summary.",
 			Parameters:  objSchema(map[string]any{})},
+		{Type: "function", Name: officers.ToolCILogs,
+			Description: "Read WHY CI failed on YOUR OWN pull request (head branch under your branch prefix, authored by your App): muster finds the CI run for the pull request's CURRENT head " +
+				"and returns, for each failed task, its failed steps and an excerpt of their logs — failing test names (--- FAIL / FAIL / ✘ lines), error lines (ERROR, SQLSTATE, panic, file:line messages) " +
+				"and the last lines — capped in size, with lines that look like credentials withheld. Read-only. Call it whenever a required check is red, BEFORE escalating; " +
+				"its note says when there is no run yet, the run is still going, or nothing failed.",
+			Parameters: objSchema(map[string]any{"pr": intProp("The pull request number.", 1, 999999999)}, "pr")},
 	}
 }
 
 func isShipTool(name string) bool {
-	return name == officers.ToolMergePR || name == officers.ToolTagRelease || name == officers.ToolRolloutStatus || name == officers.ToolMarkReady
+	return name == officers.ToolMergePR || name == officers.ToolTagRelease || name == officers.ToolRolloutStatus || name == officers.ToolMarkReady || name == officers.ToolCILogs
 }
 
 // dispatchShipTool runs a shipping officer's tool for instance a of o.
@@ -274,6 +301,22 @@ func (s *Server) dispatchShipTool(ctx context.Context, a agents.Agent, o officer
 		}
 		cur, hist := rt.watch.Status()
 		return toolJSON(map[string]any{"current": cur, "earlier": hist})
+	case officers.ToolCILogs:
+		if rt.ci == nil {
+			return toolErr("officer %s has no ci_logs source configured", o.ID)
+		}
+		if rt.ciErr != nil {
+			return toolErr("officer_ci_logs is unavailable on this muster: %v — escalate with the red check's name; a human reads the logs", rt.ciErr)
+		}
+		if in.PR <= 0 {
+			return toolErr("pr is required (the pull request number)")
+		}
+		res, err := rt.ci.Read(ctx, in.PR)
+		s.logShip(o, a, name, fmt.Sprintf("pr #%d head %s run %s state %s failed %d", in.PR, res.HeadSHA, res.PipelineRun, res.State, len(res.Failed)), nil, err)
+		if err != nil {
+			return shipRefusal(name, err, nil)
+		}
+		return toolJSON(res)
 	}
 	return toolErr("unknown tool %s", name)
 }

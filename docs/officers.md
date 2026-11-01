@@ -464,6 +464,7 @@ listing and again at dispatch):
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
+| `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
@@ -774,6 +775,74 @@ old commit (which would leave `base` ahead of production for the next tag to
 re-ship). Schema is never reverted. A rollback release is never itself rolled
 back (a failure escalates), and a release holding an automatic revert is
 never reverted automatically.
+
+### `officer_ci_logs {pr}`
+
+Why CI failed on the officer's own pull request, for a CI that runs as
+**Tekton PipelineRuns in a Kubernetes namespace** and posts commit statuses
+with no link (the instance has no cluster access and no toolchain, so
+otherwise it sees only "red" and escalates). Read-only; muster-server answers
+it, with a dedicated ServiceAccount token. Declared per officer, beside `ship`
+(which it needs):
+
+```json
+{"id": "engineering:example-web", "repo": "example-org/example-web", "ship": {…},
+ "ci_logs": {"namespace": "example-ci", "pipeline": "example-pr-check",
+             "token_file": "/var/run/secrets/muster-ci-logs/token"}}
+```
+
+| field | default | |
+|---|---|---|
+| `namespace` | **required** | The one namespace the PipelineRuns live in. |
+| `pipeline` | **required** | The PipelineRuns' `tekton.dev/pipeline` label. |
+| `token_file` | **required** | An absolute path to a ServiceAccount token muster-server reads the cluster with (re-read as it rotates). 🔴 There is no default: muster's own ServiceAccount is never used for this, since its grant is far wider than log reading. |
+| `commit_label` | `pipeline.jquad.rocks/pr.branch.commit` | The PipelineRun label whose value is the pull request's head sha (the pipeline-trigger-operator sets it). |
+| `pr_param` | `PR_NUMBER` | The PipelineRun param whose value is the pull request number. |
+| `max_bytes` | `16384` | The excerpt text one call returns, at most (2048–65536). |
+
+A `ci_logs` block that cannot be read at boot (no token file, not in a
+cluster) does not stop the server: the tool answers that it is unavailable,
+and muster-server logs why.
+
+What it does, read fresh on every call:
+
+1. **Ownership** — the same rule as `officer_merge_pr`: the head is a
+   `<prefix>…` branch of `repo` itself and the author is the officer App's
+   bot. Anything else is refused (`head_branch` / `author`) before any
+   cluster read.
+2. **The run** — it lists PipelineRuns in `namespace` with the selector
+   `tekton.dev/pipeline=<pipeline>,<commit_label>=<head sha>` (the head GitHub
+   reports NOW, so a push moves the answer to the new run) and keeps those
+   whose labels say so and whose `pr_param` is this pull request; the newest
+   wins and older retries are counted (`other_runs_for_this_head`).
+3. **The failures** — every TaskRun of that run whose `Succeeded` condition is
+   `False`; for each, the logs of its failed steps' `step-<name>` containers
+   only (every step when none is marked failed, as on a timeout; never a
+   sidecar), each read as its last 8 MiB.
+4. **The excerpt** — the failing-test lines (`--- FAIL`, `FAIL …`, `✘`, `N
+   failed`) and error lines (`ERROR`, `SQLSTATE`, `panic:`, `Error:`,
+   `x_test.go:N:` and `file.go:N:M:` messages, `timed out`, …), deduplicated
+   with repeats counted, then the step's last 15 lines; ANSI colour removed,
+   each line cut at 400 bytes, all excerpts together at most `max_bytes`
+   (split evenly between the failed tasks; `truncated` says a cap cut
+   something).
+
+**Secret safety.** A line that looks like it carries a credential — a GitHub,
+AWS, Slack or `sk-` key, a JWT, a PEM block, an `Authorization`/`Bearer`
+header, a `password=`/`token: …`-style assignment — or is an environment
+assignment (`NAME=value`, an env dump) is withheld whole, and a URL's
+`user:password@` is masked. That is a pattern filter, not a proof: what CI
+prints is the CI's to keep clean, and the byte cap bounds what any miss can
+carry.
+
+It never answers empty: `state` is `no_run` (no run for this head yet, or
+pruned), `running`, `succeeded` (with "no failure found") or `failed`, and
+`note` says what was found. The officer's first message tells it to call this
+before escalating a red check.
+
+**The ServiceAccount** needs, in `namespace` only: `get`/`list` on
+`pipelineruns` and `taskruns` (`tekton.dev`) and `pods`, and `get` on
+`pods/log` — nothing else (no `watch`, no Secrets, no `exec`).
 
 ### Kill switches
 

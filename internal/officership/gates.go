@@ -300,10 +300,16 @@ func (o owner) headAndAuthor(ctx context.Context, pr PR, pass func(string)) erro
 	return nil
 }
 
-// ownPR is [owner.ownPR] for the gated tools: an identity read failure is
-// refused by the author gate (the tools fail closed).
+// ownPR is [owner.ownPR] for the gated tools (failClosed).
 func (g *Gates) ownPR(ctx context.Context, pr PR, pass func(string)) error {
-	err := owner{repo: g.Repo, ship: g.Ship, gh: g.GH}.ownPR(ctx, pr, pass)
+	return failClosed(owner{repo: g.Repo, ship: g.Ship, gh: g.GH}.ownPR(ctx, pr, pass))
+}
+
+// failClosed is how a gated tool takes the owner rule's answer: an identity
+// read failure (a plain error) is refused by the author gate. Gates.ownPR and
+// officer_ci_logs (CILogsReader.Read, which asks owner.headAndAuthor) both
+// use it.
+func failClosed(err error) error {
 	if _, ok := AsRefusal(err); err != nil && !ok {
 		return refuse(GateAuthor, "%v", err)
 	}
