@@ -35,6 +35,7 @@ import (
 // PR is the part of a pull request the gates read.
 type PR struct {
 	Number         int
+	NodeID         string // the GraphQL id (officer_mark_ready's mutation names it)
 	State          string
 	Draft          bool
 	Merged         bool
@@ -137,6 +138,11 @@ type GitHub interface {
 	CreateCommit(ctx context.Context, message, tree string, parents []string) (string, error)
 	MergeInto(ctx context.Context, base, head, message string) (string, error)
 	OpenPR(ctx context.Context, title, head, base, body string) (int, error)
+	// MarkReady converts draft pull request n (GraphQL node nodeID) to ready
+	// for review. 🔴 REST cannot: PATCH pulls takes no `draft` field (only
+	// POST pulls does), so this is the GraphQL markPullRequestReadyForReview
+	// mutation, and it errs unless GitHub answers pull request n, not a draft.
+	MarkReady(ctx context.Context, n int, nodeID string) error
 }
 
 // REST is [GitHub] over GitHub's REST API for Repo, authenticated by Token
@@ -187,6 +193,11 @@ func (g *REST) repoPath() string {
 }
 
 func (g *REST) do(ctx context.Context, method, path string, accept string, in, out any, op string) error {
+	return g.doURL(ctx, method, g.Base+path, accept, in, out, op)
+}
+
+// doURL is do on a full URL (the GraphQL endpoint is not under Base).
+func (g *REST) doURL(ctx context.Context, method, u string, accept string, in, out any, op string) error {
 	tok, err := g.Token(ctx)
 	if err != nil {
 		return fmt.Errorf("no GitHub token while %s: %w", op, err)
@@ -199,7 +210,7 @@ func (g *REST) do(ctx context.Context, method, path string, accept string, in, o
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, g.Base+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, u, rd)
 	if err != nil {
 		return err
 	}
@@ -248,6 +259,7 @@ func scrub(err error) string {
 
 type restPR struct {
 	Number    int    `json:"number"`
+	NodeID    string `json:"node_id"`
 	State     string `json:"state"`
 	Draft     bool   `json:"draft"`
 	Merged    bool   `json:"merged"`
@@ -274,7 +286,7 @@ type restPR struct {
 }
 
 func (r restPR) pr() PR {
-	p := PR{Number: r.Number, State: r.State, Draft: r.Draft, Merged: r.Merged, Mergeable: r.Mergeable, Title: r.Title,
+	p := PR{Number: r.Number, NodeID: r.NodeID, State: r.State, Draft: r.Draft, Merged: r.Merged, Mergeable: r.Mergeable, Title: r.Title,
 		Author: r.User.Login, AuthorType: r.User.Type, HeadRef: r.Head.Ref, HeadSHA: r.Head.SHA, BaseRef: r.Base.Ref,
 		MergeCommitSHA: r.MergeCommitSHA}
 	if r.Head.Repo != nil {
@@ -633,4 +645,47 @@ func (g *REST) OpenPR(ctx context.Context, title, head, base, body string) (int,
 	err := g.do(ctx, http.MethodPost, g.repoPath()+"/pulls", "", map[string]string{"title": title, "head": head, "base": base, "body": body},
 		&r, "opening a pull request")
 	return r.Number, err
+}
+
+// graphqlURL is the GraphQL endpoint beside Base (api.github.com/graphql; a
+// test's or the e2eterm fixture's loopback base gets <base>/graphql).
+func (g *REST) graphqlURL() string { return g.Base + "/graphql" }
+
+const markReadyMutation = `mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { number isDraft } } }`
+
+// MarkReady implements GitHub.
+func (g *REST) MarkReady(ctx context.Context, n int, nodeID string) error {
+	op := "marking pull request #" + strconv.Itoa(n) + " ready for review"
+	var r struct {
+		Data struct {
+			Mark *struct {
+				PullRequest *struct {
+					Number  int  `json:"number"`
+					IsDraft bool `json:"isDraft"`
+				} `json:"pullRequest"`
+			} `json:"markPullRequestReadyForReview"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := g.doURL(ctx, http.MethodPost, g.graphqlURL(), "", map[string]any{"query": markReadyMutation,
+		"variables": map[string]string{"id": nodeID}}, &r, op); err != nil {
+		return err
+	}
+	// GraphQL answers 200 with an errors array.
+	if len(r.Errors) > 0 {
+		msgs := make([]string, 0, len(r.Errors))
+		for _, e := range r.Errors {
+			msgs = append(msgs, e.Message)
+		}
+		return fmt.Errorf("GitHub refused %s: %s", op, truncate(strings.Join(msgs, "; "), 300))
+	}
+	if r.Data.Mark == nil || r.Data.Mark.PullRequest == nil {
+		return fmt.Errorf("GitHub answered no pull request while %s", op)
+	}
+	if pr := r.Data.Mark.PullRequest; pr.Number != n || pr.IsDraft {
+		return fmt.Errorf("GitHub answered pull request #%d (draft %v) while %s", pr.Number, pr.IsDraft, op)
+	}
+	return nil
 }

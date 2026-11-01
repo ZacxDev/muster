@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -33,12 +34,18 @@ type apiFakeGH struct {
 	mu     sync.Mutex
 	files  []officership.File
 	merged []int
+	// draft makes PR answer a draft; readied is every MarkReady call.
+	draft   bool
+	readied []int
 }
 
 func (f *apiFakeGH) AppSlug(context.Context) (string, error) { return "gamma-officer", nil }
 func (f *apiFakeGH) PR(_ context.Context, n int) (officership.PR, error) {
 	ok := true
-	return officership.PR{Number: n, State: "open", Mergeable: &ok, Author: "gamma-officer[bot]", AuthorType: "Bot",
+	f.mu.Lock()
+	draft := f.draft
+	f.mu.Unlock()
+	return officership.PR{Number: n, State: "open", Draft: draft, NodeID: "PR_gamma_node", Mergeable: &ok, Author: "gamma-officer[bot]", AuthorType: "Bot",
 		HeadRef: "officer/3-fix", HeadSHA: shipHead, HeadRepo: shipRepo, BaseRef: "main", BaseRepo: shipRepo, Title: "fix"}, nil
 }
 func (f *apiFakeGH) Compare(context.Context, string, string) (officership.Compare, error) {
@@ -65,6 +72,21 @@ func (f *apiFakeGH) Merge(_ context.Context, n int, _ string) (string, error) {
 func (f *apiFakeGH) BranchSHA(context.Context, string) (string, error) { return "base-sha", nil }
 func (f *apiFakeGH) Commit(context.Context, string) (string, []string, error) {
 	return "tree", []string{"base-sha"}, nil
+}
+func (f *apiFakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if nodeID != "PR_gamma_node" {
+		return errors.New("fake: wrong node id " + nodeID)
+	}
+	f.readied = append(f.readied, n)
+	f.draft = false
+	return nil
+}
+func (f *apiFakeGH) readiedPRs() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.readied...)
 }
 func (f *apiFakeGH) mergedPRs() []int {
 	f.mu.Lock()
@@ -124,7 +146,7 @@ func newShipRig(t *testing.T) *shipRig {
 func TestOnlyAShippingOfficerIsOfferedTheGatedTools(t *testing.T) {
 	r := newShipRig(t)
 	ctx := context.Background()
-	gated := []string{officers.ToolMergePR, officers.ToolTagRelease, officers.ToolRolloutStatus}
+	gated := []string{officers.ToolMergePR, officers.ToolTagRelease, officers.ToolRolloutStatus, officers.ToolMarkReady}
 	got := officerToolNameSet(r.s.MCPToolDefsFor(ctx, r.inst))
 	sess, _ := r.s.OfficerClaudeCodeSession(r.inst)
 	for _, n := range gated {
@@ -145,6 +167,35 @@ func TestOnlyAShippingOfficerIsOfferedTheGatedTools(t *testing.T) {
 	}
 	if n := len(r.gh.mergedPRs()); n != 0 {
 		t.Fatalf("a refused caller merged %d pull request(s)", n)
+	}
+	if n := len(r.gh.readiedPRs()); n != 0 {
+		t.Fatalf("a refused caller marked %d pull request(s) ready", n)
+	}
+}
+
+// TestTheShippingOfficerMarksItsOwnDraftReadyThroughTheTool: the MCP tool
+// end to end — a draft is converted, a pull request that is already ready is
+// refused by its gate with nothing sent.
+func TestTheShippingOfficerMarksItsOwnDraftReadyThroughTheTool(t *testing.T) {
+	r := newShipRig(t)
+	ctx := context.Background()
+	r.gh.draft = true
+	out := r.s.dispatchAgentTool(ctx, r.inst, officers.ToolMarkReady, `{"pr":7}`)
+	if isToolErr(out) || !strings.Contains(out, `"ready":true`) {
+		t.Fatalf("own draft: %s", out)
+	}
+	if got := r.gh.readiedPRs(); len(got) != 1 || got[0] != 7 {
+		t.Fatalf("marked ready %v, want [7]", got)
+	}
+	out = r.s.dispatchAgentTool(ctx, r.inst, officers.ToolMarkReady, `{"pr":7}`)
+	if !strings.Contains(out, `"gate":"pull_request"`) {
+		t.Fatalf("an already-ready pull request: %s, want a pull_request refusal", out)
+	}
+	if out := r.s.dispatchAgentTool(ctx, r.inst, officers.ToolMarkReady, `{}`); !isToolErr(out) {
+		t.Fatalf("no pr: %s", out)
+	}
+	if got := r.gh.readiedPRs(); len(got) != 1 {
+		t.Fatalf("refusals still sent %v", got)
 	}
 }
 
@@ -242,7 +293,7 @@ func TestAMergeIsRefusedWhenHQDisablesTheOfficer(t *testing.T) {
 func TestAShippingOfficersKickoffTeachesTheGatesNotTheReadOnlyRecipe(t *testing.T) {
 	r := newShipRig(t)
 	text := officers.KickoffText(r.ship, 1)
-	for _, want := range []string{officers.ToolMergePR, officers.ToolTagRelease, "refs/heads/officer/*", "git push origin officer/"} {
+	for _, want := range []string{officers.ToolMergePR, officers.ToolTagRelease, officers.ToolMarkReady, "refs/heads/officer/*", "git push origin officer/"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the kickoff does not say %q", want)
 		}

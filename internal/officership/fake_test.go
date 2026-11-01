@@ -36,6 +36,9 @@ type fakeGH struct {
 	mergedSHA   []string
 	createdTags []string
 	createdRefs []string
+	// readied is every node id MarkReady was called with; readyErr fails it.
+	readied  []string
+	readyErr error
 }
 
 type commitInfo struct {
@@ -157,6 +160,19 @@ func (f *fakeGH) MergeInto(_ context.Context, base, head, _ string) (string, err
 	return "merged-" + head, nil
 }
 func (f *fakeGH) OpenPR(_ context.Context, _, head, base, _ string) (int, error) { return 900, nil }
+func (f *fakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readyErr != nil {
+		return f.readyErr
+	}
+	f.readied = append(f.readied, nodeID)
+	if p, ok := f.prs[n]; ok && p.NodeID == nodeID {
+		p.Draft = false
+		f.prs[n] = p
+	}
+	return nil
+}
 
 // fakeHQ is the HQ side of the gates.
 type fakeHQ struct {

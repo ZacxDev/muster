@@ -41,6 +41,9 @@ const (
 	GateMigrations = "migrations"
 	GateNotice     = "notice"
 	GateMerge      = "merge"
+	// GateReady is officer_mark_ready's write: GitHub's draft -> ready
+	// conversion.
+	GateReady      = "ready"
 	GateTags       = "tags"
 	GateAncestor   = "ancestor"
 	GateInFlight   = "in_flight"
@@ -166,22 +169,9 @@ func (g *Gates) MergePR(ctx context.Context, n int) (MergeOutcome, error) {
 	if pr.State != "open" || pr.Merged || pr.Draft {
 		return out, refuse(GatePR, "pull request #%d is %s (merged %v, draft %v); only an open, ready pull request merges", n, pr.State, pr.Merged, pr.Draft)
 	}
-	if pr.BaseRef != g.Ship.Base || !connectors.SameRepo(pr.BaseRepo, g.Repo) {
-		return out, refuse(GateBase, "pull request #%d targets %s:%s; the base must be %s:%s", n, pr.BaseRepo, pr.BaseRef, g.Repo, g.Ship.Base)
+	if err := g.ownPR(ctx, pr, pass); err != nil {
+		return out, err
 	}
-	pass(GateBase)
-	if !strings.HasPrefix(pr.HeadRef, g.Ship.BranchPrefix) || !connectors.SameRepo(pr.HeadRepo, g.Repo) {
-		return out, refuse(GateHeadBranch, "pull request #%d comes from %s:%s; only a %s* branch of %s merges", n, pr.HeadRepo, pr.HeadRef, g.Ship.BranchPrefix, g.Repo)
-	}
-	pass(GateHeadBranch)
-	slug, err := g.GH.AppSlug(ctx)
-	if err != nil {
-		return out, refuse(GateAuthor, "could not read the officer App's identity: %v", err)
-	}
-	if !strings.EqualFold(pr.Author, BotLogin(slug)) || pr.AuthorType != "Bot" {
-		return out, refuse(GateAuthor, "pull request #%d is authored by %s (%s); the officer merges only its own (%s)", n, pr.Author, pr.AuthorType, BotLogin(slug))
-	}
-	pass(GateAuthor)
 	if pr.Mergeable == nil {
 		return out, refuse(GateMergeable, "GitHub has not finished computing whether #%d is mergeable; call again in a minute", n)
 	}
@@ -261,6 +251,116 @@ func (g *Gates) MergePR(ctx context.Context, n int) (MergeOutcome, error) {
 		}
 		g.setUntested(sha)
 	}
+	return out, nil
+}
+
+// owner is whose pull request is "the officer's own": the officer's
+// repository, its ship policy (base, branch prefix) and the GitHub its App's
+// identity is read from. 🔴 IT IS THE ONE OWN-PULL-REQUEST RULE: the gated
+// tools (Gates.ownPR: officer_merge_pr, officer_mark_ready) and the push gate
+// (PushGate.ownPR: PATCH pulls/<n>, POST issues/<n>/comments) both ask it.
+type owner struct {
+	repo string
+	ship *officers.Ship
+	gh   GitHub
+}
+
+// ownPR refuses (a *Refusal) unless pr is the officer's own, reporting each
+// gate it passes:
+//
+//   - base — into the base branch of the officer's repository;
+//   - head_branch / author — [owner.headAndAuthor].
+//
+// A failure to read the App's identity is a plain error, not a refusal.
+func (o owner) ownPR(ctx context.Context, pr PR, pass func(string)) error {
+	if pr.BaseRef != o.ship.Base || !connectors.SameRepo(pr.BaseRepo, o.repo) {
+		return refuse(GateBase, "pull request #%d targets %s:%s; the base must be %s:%s", pr.Number, pr.BaseRepo, pr.BaseRef, o.repo, o.ship.Base)
+	}
+	pass(GateBase)
+	return o.headAndAuthor(ctx, pr, pass)
+}
+
+// headAndAuthor is ownPR without the base: the pull request comes from a
+// <prefix>… branch of the officer's repository (not a fork) — head_branch —
+// and is authored by the officer App's bot, login and type Bot — author.
+func (o owner) headAndAuthor(ctx context.Context, pr PR, pass func(string)) error {
+	n := pr.Number
+	if !strings.HasPrefix(pr.HeadRef, o.ship.BranchPrefix) || !connectors.SameRepo(pr.HeadRepo, o.repo) {
+		return refuse(GateHeadBranch, "pull request #%d comes from %s:%s; only a %s* branch of %s is the officer's", n, pr.HeadRepo, pr.HeadRef, o.ship.BranchPrefix, o.repo)
+	}
+	pass(GateHeadBranch)
+	slug, err := o.gh.AppSlug(ctx)
+	if err != nil {
+		return fmt.Errorf("could not read the officer App's identity: %v", err)
+	}
+	if !strings.EqualFold(pr.Author, BotLogin(slug)) || pr.AuthorType != "Bot" {
+		return refuse(GateAuthor, "pull request #%d is authored by %s (%s); the officer acts only on its own (%s)", n, pr.Author, pr.AuthorType, BotLogin(slug))
+	}
+	pass(GateAuthor)
+	return nil
+}
+
+// ownPR is [owner.ownPR] for the gated tools: an identity read failure is
+// refused by the author gate (the tools fail closed).
+func (g *Gates) ownPR(ctx context.Context, pr PR, pass func(string)) error {
+	err := owner{repo: g.Repo, ship: g.Ship, gh: g.GH}.ownPR(ctx, pr, pass)
+	if _, ok := AsRefusal(err); err != nil && !ok {
+		return refuse(GateAuthor, "%v", err)
+	}
+	return err
+}
+
+// ReadyOutcome is what officer_mark_ready did.
+type ReadyOutcome struct {
+	PR     int      `json:"pr"`
+	Ready  bool     `json:"ready"`
+	Passed []string `json:"gates_passed"`
+}
+
+// MarkReady converts the officer's own DRAFT pull request n to ready for
+// review — the one draft transition an officer may make. A shipping officer
+// opens test-first pull requests as drafts (the red-before commit must not
+// look reviewable); once CI is green it marks the pull request ready so the
+// review check runs, which officer_merge_pr then requires.
+//
+// The gates, in order, read fresh:
+//
+//  1. pull_request — open, not merged, and a draft (an already-ready one is
+//     refused: there is no ready -> draft here, and no no-op write);
+//  2. base / head_branch / author — the officer's own ([Gates.ownPR]);
+//  3. ready — GitHub's GraphQL markPullRequestReadyForReview on the node id
+//     read in 1.
+//
+// No stage gate (a shadow officer's pull requests are reviewed too) and no
+// HQ gate: this is an edit of the officer's own pull request, which the push
+// gate already forwards (title, body, state) without either. GitHub's REST
+// PATCH pulls takes no `draft` field, which is why this is a tool and not a
+// push-gate rule.
+func (g *Gates) MarkReady(ctx context.Context, n int) (ReadyOutcome, error) {
+	out := ReadyOutcome{PR: n}
+	pass := func(name string) { out.Passed = append(out.Passed, name) }
+	pr, err := g.GH.PR(ctx, n)
+	if err != nil {
+		return out, refuse(GatePR, "could not read pull request #%d: %v", n, err)
+	}
+	if pr.State != "open" || pr.Merged || !pr.Draft {
+		return out, refuse(GatePR, "pull request #%d is %s (merged %v, draft %v); only an open draft is marked ready", n, pr.State, pr.Merged, pr.Draft)
+	}
+	if pr.NodeID == "" {
+		return out, refuse(GatePR, "GitHub gave pull request #%d no node id; call again", n)
+	}
+	pass(GatePR)
+	if err := g.ownPR(ctx, pr, pass); err != nil {
+		return out, err
+	}
+	if err := g.GH.MarkReady(ctx, n, pr.NodeID); err != nil {
+		// GitHub may still have converted it (a lost reply, or 200 with data
+		// and errors): say so, so the officer re-reads before retrying.
+		return out, refuse(GateReady, "GitHub did not confirm #%d ready for review (%v); it may still have been converted — "+
+			"re-read the pull request (GET pulls/%d, \"draft\") before calling again", n, err, n)
+	}
+	out.Ready = true
+	pass(GateReady)
 	return out, nil
 }
 

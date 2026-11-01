@@ -31,7 +31,9 @@ import (
 //   - git fetch (POST …/git-upload-pack), which writes nothing;
 //   - POST /repos/{repo}/pulls with head <prefix>… and base = the base branch;
 //   - PATCH /repos/{repo}/pulls/{n} of the officer's OWN pull request (its
-//     App's bot authored it, its head is <prefix>…), title/body/state only;
+//     App's bot authored it, its head is <prefix>…), title/body/state only —
+//     never `draft`, which REST PATCH does not take: draft -> ready is the
+//     officer_mark_ready tool (GraphQL, after the same own-PR gates);
 //   - POST /repos/{repo}/issues/{n}/comments on its OWN pull request.
 //
 // Every other method, path and host shape is refused — the merge endpoint, the
@@ -80,7 +82,7 @@ func (g *PushGate) Rejected(caller connectors.Caller) {
 }
 
 func refused(format string, args ...any) error {
-	return fmt.Errorf("%w: %s (merging and tagging go through the %s and %s tools; nothing else writes)",
+	return fmt.Errorf("%w: %s (merging and tagging go through the %s and %s tools; nothing else merges or tags)",
 		connectors.ErrGateRefused, fmt.Sprintf(format, args...), officers.ToolMergePR, officers.ToolTagRelease)
 }
 
@@ -316,7 +318,13 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 		})
 	case r.Method == http.MethodPatch && len(tail) == 2 && tail[0] == "pulls" && isNumber(tail[1]):
 		n, _ := strconv.Atoi(tail[1])
-		return g.admitJSON(r, map[string]bool{"title": true, "body": true, "state": true}, func(map[string]json.RawMessage) error {
+		return g.admitJSON(r, map[string]bool{"title": true, "body": true, "state": true, "draft": true}, func(m map[string]json.RawMessage) error {
+			if _, ok := m["draft"]; ok {
+				// Before the own-PR read: refused whatever the PR, value or
+				// other fields, and the refusal says how to do it instead.
+				return refused("the field \"draft\": GitHub's REST PATCH pulls does not convert a draft; mark your own draft ready "+
+					"for review with the %s{pr} tool (there is no ready -> draft)", officers.ToolMarkReady)
+			}
 			return g.ownPR(r.Context(), n)
 		})
 	case r.Method == http.MethodPost && len(tail) == 3 && tail[0] == "issues" && isNumber(tail[1]) && tail[2] == "comments":
@@ -348,22 +356,21 @@ func jsonString(raw json.RawMessage) string {
 	return s
 }
 
-// ownPR refuses unless pull request n is the officer's own: authored by its
-// App's bot and from a branch under the prefix in its own repository.
+// ownPR refuses unless pull request n is the officer's own — THE rule the
+// gated tools use ([owner.ownPR]: into the base, from a prefix branch of the
+// repository, authored by the App's bot typed Bot). A read failure is not a
+// refusal (the proxy answers 502: the policy could not decide). Pushes never
+// come here: a branch is pushed before any pull request exists.
 func (g *PushGate) ownPR(ctx context.Context, n int) error {
-	slug, err := g.GH.AppSlug(ctx)
-	if err != nil {
-		return fmt.Errorf("could not read the officer App's identity: %v", err)
-	}
 	pr, err := g.GH.PR(ctx, n)
 	if err != nil {
 		return fmt.Errorf("could not read pull request #%d: %v", n, err)
 	}
-	if !strings.EqualFold(pr.Author, BotLogin(slug)) || !strings.HasPrefix(pr.HeadRef, g.Ship.BranchPrefix) ||
-		!connectors.SameRepo(pr.HeadRepo, g.Repo) {
-		return refused("editing pull request #%d, which is not this officer's own (%s from %s)", n, pr.Author, pr.HeadRef)
+	err = owner{repo: g.Repo, ship: g.Ship, gh: g.GH}.ownPR(ctx, pr, func(string) {})
+	if r, ok := AsRefusal(err); ok {
+		return refused("editing pull request #%d, which is not this officer's own: %s", n, r.Reason)
 	}
-	return nil
+	return err
 }
 
 // admitJSON reads a bounded JSON object body with no duplicate key and only
