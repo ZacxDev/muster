@@ -647,14 +647,9 @@ func (g *REST) OpenPR(ctx context.Context, title, head, base, body string) (int,
 	return r.Number, err
 }
 
-// graphqlURL is the GraphQL endpoint beside Base: api.github.com/graphql, or
-// <host>/api/graphql for an Enterprise Server base of <host>/api/v3.
-func (g *REST) graphqlURL() string {
-	if b, ok := strings.CutSuffix(g.Base, "/api/v3"); ok {
-		return b + "/api/graphql"
-	}
-	return g.Base + "/graphql"
-}
+// graphqlURL is the GraphQL endpoint beside Base (api.github.com/graphql; a
+// test's or the e2eterm fixture's loopback base gets <base>/graphql).
+func (g *REST) graphqlURL() string { return g.Base + "/graphql" }
 
 const markReadyMutation = `mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { number isDraft } } }`
 

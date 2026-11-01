@@ -132,9 +132,8 @@ func TestThePushGateRefusesEveryDraftEditAndNamesTheTool(t *testing.T) {
 
 // TestRESTMarkReadyRunsTheGraphQLMutation: the conversion GitHub documents —
 // markPullRequestReadyForReview on the pull request's node id — sent to the
-// GraphQL endpoint beside the REST base (github.com's and an Enterprise
-// /api/v3 base), and every answer short of "pull request N, not a draft" is an
-// error, including GraphQL's 200-with-errors.
+// GraphQL endpoint beside the REST base, and every answer short of "pull
+// request N, not a draft" is an error, including GraphQL's 200-with-errors.
 func TestRESTMarkReadyRunsTheGraphQLMutation(t *testing.T) {
 	type seen struct {
 		path, auth, query, id string
@@ -158,7 +157,6 @@ func TestRESTMarkReadyRunsTheGraphQLMutation(t *testing.T) {
 	ok := `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"number":42,"isDraft":false}}}}`
 	for _, c := range []struct{ name, prefix, wantPath string }{
 		{"github.com", "", "/graphql"},
-		{"enterprise", "/api/v3", "/api/graphql"},
 	} {
 		srv, s := serve(ok)
 		g := &REST{Base: srv.URL + c.prefix, Repo: fxRepo, Token: tok, HTTP: srv.Client()}
