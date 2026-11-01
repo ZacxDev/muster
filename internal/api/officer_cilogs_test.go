@@ -56,7 +56,7 @@ func TestOfficerCILogsIsOfferedWithACILogsBlockAndAnswersOverDispatch(t *testing
 	withCI := base(offCI, offCITok)
 	withCI.Ship = shipOf()
 	withCI.CILogs = &officers.CILogs{Namespace: "gamma-ci", Pipeline: "gamma-pr-check", CommitLabel: officers.DefaultCICommitLabel,
-		PRParam: officers.DefaultCIPRParam, TokenFile: "/var/run/secrets/gamma-ci/token", MaxBytes: 4096}
+		PRParam: officers.DefaultCIPRParam, ServiceAccount: "gamma-ci-reader", MaxBytes: 4096}
 	noCI := base(offShip, offShipTok)
 	noCI.Ship = shipOf()
 	tri := base(offB, offBTok)

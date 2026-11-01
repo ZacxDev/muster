@@ -19,7 +19,7 @@ func parseCI(t *testing.T, ship map[string]any, ci map[string]any) ([]officers.O
 }
 
 func validCI() map[string]any {
-	return map[string]any{"namespace": "example-ci", "pipeline": "example-pr-check", "token_file": "/var/run/secrets/example-ci/token"}
+	return map[string]any{"namespace": "example-ci", "pipeline": "example-pr-check", "service_account": "example-ci-reader"}
 }
 
 // TestParseReadsACILogsBlockWithItsDefaults, and offers officer_ci_logs only
@@ -31,7 +31,7 @@ func TestParseReadsACILogsBlockWithItsDefaults(t *testing.T) {
 	}
 	c := list[0].CILogs
 	if c == nil || c.Namespace != "example-ci" || c.Pipeline != "example-pr-check" || c.CommitLabel != "pipeline.jquad.rocks/pr.branch.commit" ||
-		c.PRParam != "PR_NUMBER" || c.TokenFile != "/var/run/secrets/example-ci/token" || c.MaxBytes != 16384 {
+		c.PRParam != "PR_NUMBER" || c.ServiceAccount != "example-ci-reader" || c.MaxBytes != 16384 {
 		t.Fatalf("parsed %+v", c)
 	}
 	if !officers.ToolOffered(list[0], officers.ToolCILogs) {
@@ -62,9 +62,9 @@ func TestParseRefusesABadCILogsBlock(t *testing.T) {
 		{"no namespace", func(m map[string]any) { delete(m, "namespace") }, true, "namespace"},
 		{"bad namespace", func(m map[string]any) { m["namespace"] = "Not_A_NS" }, true, "namespace"},
 		{"no pipeline", func(m map[string]any) { delete(m, "pipeline") }, true, "pipeline"},
-		{"no token file", func(m map[string]any) { delete(m, "token_file") }, true, "token_file"},
-		{"relative token file", func(m map[string]any) { m["token_file"] = "token" }, true, "token_file"},
-		{"unclean token file", func(m map[string]any) { m["token_file"] = "/var/run/../token" }, true, "token_file"},
+		{"no service account", func(m map[string]any) { delete(m, "service_account") }, true, "service_account"},
+		{"bad service account", func(m map[string]any) { m["service_account"] = "Not/AnSA" }, true, "service_account"},
+		{"the retired token_file", func(m map[string]any) { m["token_file"] = "/var/run/secrets/x/token" }, true, "unknown field"},
 		{"max_bytes too big", func(m map[string]any) { m["max_bytes"] = 1 << 20 }, true, "max_bytes"},
 		{"max_bytes too small", func(m map[string]any) { m["max_bytes"] = 100 }, true, "max_bytes"},
 		{"bad commit label", func(m map[string]any) { m["commit_label"] = "a b" }, true, "commit_label"},

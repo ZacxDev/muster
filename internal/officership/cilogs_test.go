@@ -32,6 +32,7 @@ type fakeCI struct {
 	reads     []string             // every pod/container read
 	listErr   error
 	calls     int
+	opens     int // reader opens (one token mint each in production)
 }
 
 func newFakeCI() *fakeCI {
@@ -86,7 +87,7 @@ const (
 
 func ciConfig() *officers.CILogs {
 	return &officers.CILogs{Namespace: ciNS, Pipeline: ciPipe, CommitLabel: officers.DefaultCICommitLabel, PRParam: officers.DefaultCIPRParam,
-		TokenFile: "/var/run/secrets/example-ci/token", MaxBytes: 4096}
+		ServiceAccount: "example-ci-reader", MaxBytes: 4096}
 }
 
 func ciRun(name, sha string, pr int, succeeded string, created time.Time) PipelineRun {
@@ -152,7 +153,8 @@ func greenCIFixture() (*CILogsReader, *fakeGH, *fakeCI) {
 	ci.logs["run-current-go-pod/step-test"] = goLog
 	ci.logs["run-current-go-pod/sidecar-postgres"] = "ERROR: sidecar noise\n"
 	ci.logs["run-current-e2e-pod/step-test"] = e2eLog
-	r := &CILogsReader{Repo: fxRepo, Ship: fxShip(), Config: ciConfig(), GH: gh, CI: ci}
+	r := &CILogsReader{Repo: fxRepo, Ship: fxShip(), Config: ciConfig(), GH: gh,
+		Open: func(context.Context) (CIReader, error) { ci.mu.Lock(); ci.opens++; ci.mu.Unlock(); return ci, nil }}
 	return r, gh, ci
 }
 
@@ -180,8 +182,8 @@ func TestCILogsRefusesAPullRequestThatIsNotTheOfficersOwn(t *testing.T) {
 			if !ok || ref.Gate != c.gate {
 				t.Fatalf("got %v (outcome %+v), want a refusal by gate %s", err, out, c.gate)
 			}
-			if ci.calls != 0 || len(out.Failed) != 0 {
-				t.Fatalf("a refused call read the cluster %d time(s) / returned %d failure(s)", ci.calls, len(out.Failed))
+			if ci.opens != 0 || ci.calls != 0 || len(out.Failed) != 0 {
+				t.Fatalf("a refused call minted %d token(s), read the cluster %d time(s), returned %d failure(s)", ci.opens, ci.calls, len(out.Failed))
 			}
 		})
 	}
@@ -390,6 +392,15 @@ func TestCILogsReportsClusterErrors(t *testing.T) {
 	} else if ref, ok := AsRefusal(err); !ok || ref.Gate != GateCIRuns {
 		t.Fatalf("got %v, want gate %s", err, GateCIRuns)
 	}
+	r, _, _ = greenCIFixture()
+	r.Open = func(context.Context) (CIReader, error) {
+		return nil, errors.New("serviceaccounts \"example-ci-reader\" is forbidden")
+	}
+	if _, err := r.Read(context.Background(), ciPR); err == nil {
+		t.Fatal("a failed token mint was not reported")
+	} else if ref, ok := AsRefusal(err); !ok || ref.Gate != GateCIRuns || !strings.Contains(ref.Reason, "read token") {
+		t.Fatalf("got %v, want gate %s naming the read token", err, GateCIRuns)
+	}
 	r, _, ci = greenCIFixture()
 	ci.logErr["run-current-go-pod/step-test"] = errors.New(`pods "run-current-go-pod" not found`)
 	out, err := r.Read(context.Background(), ciPR)
@@ -398,6 +409,9 @@ func TestCILogsReportsClusterErrors(t *testing.T) {
 	}
 	if len(out.Failed) != 2 || len(out.Failed[1].LogErrors) != 1 || !strings.Contains(out.Failed[1].LogErrors[0], "not found") {
 		t.Fatalf("a pruned pod is not reported as a log error: %+v", out.Failed)
+	}
+	if ci.opens != 1 {
+		t.Fatalf("one call opened the reader %d times, want once (one token per call)", ci.opens)
 	}
 }
 
