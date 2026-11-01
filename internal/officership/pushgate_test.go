@@ -133,7 +133,7 @@ func TestThePushFilterReadsAGzippedPushAndRefusesWhatItCannotRead(t *testing.T) 
 // that could merge, tag or commit to main — is refused.
 func TestThePushFilterIsAnAllowlistOfWrites(t *testing.T) {
 	g, gh := testGate()
-	gh.prs[5] = PR{Number: 5, Author: BotLogin(gh.slug), HeadRef: "officer/5-x", HeadRepo: fxRepo}
+	gh.prs[5] = PR{Number: 5, Author: BotLogin(gh.slug), AuthorType: "Bot", HeadRef: "officer/5-x", HeadRepo: fxRepo, BaseRef: "main", BaseRepo: fxRepo}
 	gh.prs[6] = PR{Number: 6, Author: "a-human", HeadRef: "feature/y", HeadRepo: fxRepo}
 	type req struct {
 		method, host, rest, body string
@@ -192,5 +192,49 @@ func TestThePushFilterIsAnAllowlistOfWrites(t *testing.T) {
 	r = httptest.NewRequest(http.MethodPost, "/x?_method=PUT", strings.NewReader(`{"body":"x"}`))
 	if _, err := g.Admit(r, "api.github.com", "repos/example-org/example-web/issues/6/comments"); !isGateRefusal(err) {
 		t.Errorf("a write with a query: err = %v", err)
+	}
+}
+
+// TestThePushGateUsesTheGatesOwnPRRule: the push gate's "own pull request"
+// (PATCH pulls/<n>, POST issues/<n>/comments) is the gated tools' rule, not a
+// weaker copy — the bot's login typed User, a pull request into another base,
+// and one from a fork are not the officer's, on an officer-prefix branch. The
+// control (the officer's own pull request) is still forwarded, and pushes —
+// which need no pull request to exist — are not affected
+// (TestThePushFilterRefusesMainAndTagsAndAllowsAnOfficerBranch).
+func TestThePushGateUsesTheGatesOwnPRRule(t *testing.T) {
+	g, gh := testGate()
+	own := PR{Author: BotLogin(gh.slug), AuthorType: "Bot", HeadRef: "officer/7-x", HeadRepo: fxRepo, BaseRef: "main", BaseRepo: fxRepo}
+	cases := []struct {
+		name string
+		edit func(p *PR)
+		ok   bool
+	}{
+		{"the officer's own (control)", func(*PR) {}, true},
+		{"the bot's login, typed User", func(p *PR) { p.AuthorType = "User" }, false},
+		{"into another base", func(p *PR) { p.BaseRef = "release" }, false},
+		{"into another repository's base", func(p *PR) { p.BaseRepo = "someone/example-web" }, false},
+		{"from a fork", func(p *PR) { p.HeadRepo = "someone/example-web" }, false},
+		{"another bot", func(p *PR) { p.Author = "other-app[bot]" }, false},
+	}
+	for i, c := range cases {
+		n := 70 + i
+		p := own
+		p.Number = n
+		c.edit(&p)
+		gh.prs[n] = p
+		for _, w := range []struct{ method, rest, body string }{
+			{http.MethodPatch, fmt.Sprintf("repos/example-org/example-web/pulls/%d", n), `{"title":"t"}`},
+			{http.MethodPost, fmt.Sprintf("repos/example-org/example-web/issues/%d/comments", n), `{"body":"b"}`},
+		} {
+			r := httptest.NewRequest(w.method, "/x", strings.NewReader(w.body))
+			_, err := g.Admit(r, "api.github.com", w.rest)
+			if c.ok && err != nil {
+				t.Errorf("%s, %s %s: refused: %v", c.name, w.method, w.rest, err)
+			}
+			if !c.ok && !isGateRefusal(err) {
+				t.Errorf("%s, %s %s: err = %v, want a gate refusal", c.name, w.method, w.rest, err)
+			}
+		}
 	}
 }

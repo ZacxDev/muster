@@ -356,22 +356,21 @@ func jsonString(raw json.RawMessage) string {
 	return s
 }
 
-// ownPR refuses unless pull request n is the officer's own: authored by its
-// App's bot and from a branch under the prefix in its own repository.
+// ownPR refuses unless pull request n is the officer's own — THE rule the
+// gated tools use ([owner.ownPR]: into the base, from a prefix branch of the
+// repository, authored by the App's bot typed Bot). A read failure is not a
+// refusal (the proxy answers 502: the policy could not decide). Pushes never
+// come here: a branch is pushed before any pull request exists.
 func (g *PushGate) ownPR(ctx context.Context, n int) error {
-	slug, err := g.GH.AppSlug(ctx)
-	if err != nil {
-		return fmt.Errorf("could not read the officer App's identity: %v", err)
-	}
 	pr, err := g.GH.PR(ctx, n)
 	if err != nil {
 		return fmt.Errorf("could not read pull request #%d: %v", n, err)
 	}
-	if !strings.EqualFold(pr.Author, BotLogin(slug)) || !strings.HasPrefix(pr.HeadRef, g.Ship.BranchPrefix) ||
-		!connectors.SameRepo(pr.HeadRepo, g.Repo) {
-		return refused("editing pull request #%d, which is not this officer's own (%s from %s)", n, pr.Author, pr.HeadRef)
+	err = owner{repo: g.Repo, ship: g.Ship, gh: g.GH}.ownPR(ctx, pr, func(string) {})
+	if r, ok := AsRefusal(err); ok {
+		return refused("editing pull request #%d, which is not this officer's own: %s", n, r.Reason)
 	}
-	return nil
+	return err
 }
 
 // admitJSON reads a bounded JSON object body with no duplicate key and only

@@ -195,7 +195,8 @@ func shipToolDefs() []agents.ToolDef {
 				"a draft is not reviewed, and " + officers.ToolMergePR + " needs that review. Call it once CI is green on the draft's head. " +
 				"muster checks at call time that the pull request is open, still a draft, into the base branch, from your prefix in your repository and authored by your App, " +
 				"then converts it with GitHub's GraphQL mutation (REST PATCH cannot, and the push gate refuses a `draft` field). There is no way back to draft. " +
-				"A refusal names the gate that failed; nothing is changed on a refusal.",
+				"A refusal names the gate that failed. Before the ready gate nothing is changed; a ready-gate refusal means GitHub did not CONFIRM the conversion, " +
+				"which may still have happened — re-read the pull request (its draft field) before calling again.",
 			Parameters: objSchema(map[string]any{"pr": intProp("The pull request number.", 1, 999999999)}, "pr")},
 		{Type: "function", Name: officers.ToolRolloutStatus,
 			Description: "Read muster's rollout watch of your latest release: phase, verdict (watching, healthy, not_live, unhealthy, superseded), the revert pull request and rollback tag if one was made, and its events. Put the verdict in your item's officer_complete summary.",

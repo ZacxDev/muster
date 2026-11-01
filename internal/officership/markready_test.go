@@ -105,7 +105,7 @@ func TestMarkReadyRefusesEverythingButOwnDraftToReady(t *testing.T) {
 // officer at officer_mark_ready.
 func TestThePushGateRefusesEveryDraftEditAndNamesTheTool(t *testing.T) {
 	g, gh := testGate()
-	gh.prs[5] = PR{Number: 5, Author: BotLogin(gh.slug), HeadRef: "officer/5-x", HeadRepo: fxRepo}
+	gh.prs[5] = PR{Number: 5, Author: BotLogin(gh.slug), AuthorType: "Bot", HeadRef: "officer/5-x", HeadRepo: fxRepo, BaseRef: "main", BaseRepo: fxRepo}
 	gh.prs[6] = PR{Number: 6, Author: "a-human", HeadRef: "feature/y", HeadRepo: fxRepo}
 	for _, c := range []struct{ name, pr, body string }{
 		{"own pr, draft->ready", "5", `{"draft":false}`},

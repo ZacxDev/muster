@@ -688,11 +688,16 @@ officer calls this tool. Read fresh, ALL of these must hold:
    is refused: there is no ready → draft, and no no-op write);
 2. it is into `base` of `repo`, from a `<prefix>` branch of `repo`, authored
    by the officer App's bot — the same own-pull-request gates as
-   `officer_merge_pr` (one function, `Gates.ownPR`).
+   `officer_merge_pr` and the push gate's own-pull-request writes (one
+   rule, `owner.ownPR` in `internal/officership/gates.go`).
 
 Then muster runs GitHub's GraphQL `markPullRequestReadyForReview` mutation on
 the node id it read in 1, with the officer App's token, and fails unless
-GitHub answers that pull request with `isDraft: false`. No stage gate (a
+GitHub answers that pull request with `isDraft: false`. A refusal by the
+`ready` gate means GitHub did not *confirm* the conversion — a lost reply, or
+a 200 carrying both data and errors, can follow one that happened — so the
+officer re-reads the pull request's `draft` before calling again; a refusal
+by any earlier gate changed nothing. No stage gate (a
 `shadow` officer's pull requests are reviewed too) and no HQ gate — it is an
 edit of the officer's own pull request, as the push gate's `PATCH` is.
 
