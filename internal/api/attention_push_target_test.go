@@ -108,7 +108,7 @@ func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
 	ctx := s.attentionPrincipal(context.Background(), 1)
 	now := time.Now()
 	ask := func(id int64, asker attention.Asker) attentionItem {
-		return askItem(attention.Ask{ID: id, Owner: 1, Asker: asker, Question: "q", CreatedAt: now}, nil)
+		return askItem(attention.Ask{ID: id, Owner: 1, Asker: asker, Question: "q", CreatedAt: now})
 	}
 	session, question, hermes, hermesNoKey := waitingItem(t, s, "@1"), waitingItem(t, s, "@2"), waitingItem(t, s, "@3"), waitingItem(t, s, "@4")
 	if question.Kind != attentionKindQuestion || session.Kind != attentionKindSession || hermes.hermes == nil || hermesNoKey.hermes == nil {
@@ -163,7 +163,7 @@ func TestAnAgentReadFailureOpensTheQueue(t *testing.T) {
 	var logs strings.Builder
 	s.logger = log.New(&syncWriter{w: &logs}, "", 0)
 	s.ext.Agents = pushTargetAgents{err: errors.New("connection reset")}
-	it := askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"}, nil)
+	it := askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"})
 	if got := s.attentionSessionPath(s.attentionPrincipal(context.Background(), 1), 1, it); got != "" {
 		t.Fatalf("its context link is %q, want none", got)
 	}
@@ -221,9 +221,9 @@ func TestEveryAttentionPushCarriesItsTapURLToBothDevices(t *testing.T) {
 		want string
 	}{
 		{session, "/attention/open/" + session.Key},
-		{askItem(attention.Ask{ID: 71, Owner: 1, Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "q"}, nil), "/attention/open/ask-71"},
-		{askItem(attention.Ask{ID: 72, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "w"}, Question: "q"}, nil), "/attention/open/ask-72"},
-		{askItem(attention.Ask{ID: 73, Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID, Label: "s"}, Question: "q"}, nil), "/attention/open/ask-73"},
+		{askItem(attention.Ask{ID: 71, Owner: 1, Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "q"}), "/attention/open/ask-71"},
+		{askItem(attention.Ask{ID: 72, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "w"}, Question: "q"}), "/attention/open/ask-72"},
+		{askItem(attention.Ask{ID: 73, Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID, Label: "s"}, Question: "q"}), "/attention/open/ask-73"},
 	} {
 		pusher.mu.Lock()
 		pusher.got = nil

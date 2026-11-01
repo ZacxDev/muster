@@ -61,8 +61,11 @@ func whereSessionItem(t *testing.T, s *Server, session, window string) attention
 }
 
 // TestANudgeAskNamesItsWindowsExactTmuxTarget: a chief nudge's ask, built from
-// the sweep's own candidate (stallInputs carries the window), names the tmux
-// session and index — with the codename first when the host gave one.
+// the sweep's own candidate (stallInputs carries the window), opens with the
+// tmux session and index — the codename first when the host gave one.
+// nudgeAskWhere is the whole of what nudgeAskQuestion says of the session
+// (the rest of its text is the chief's question and muster's fixed sentences),
+// pinned here whole.
 func TestANudgeAskNamesItsWindowsExactTmuxTarget(t *testing.T) {
 	s := whereServer(t)
 	byKey := map[string]chiefnudge.Session{}
@@ -75,14 +78,14 @@ func TestANudgeAskNamesItsWindowsExactTmuxTarget(t *testing.T) {
 	for _, c := range []struct {
 		name, sid, want string
 	}{
-		{"a window with a codename", whereLabelledSID, "Fix CI (mango:1 · tmux scratch3:5 @ ws) stopped and is waiting on you:\n\nMerge now?\n\nYour answer is sent into that session word for word."},
-		{"a window without a codename", whereUnlabelledSID, "Fix CI (tmux build:7 @ ws) stopped and is waiting on you:\n\nMerge now?\n\nYour answer is sent into that session word for word."},
+		{"a window with a codename", whereLabelledSID, "Fix CI (mango:1 · tmux scratch3:5 @ ws)"},
+		{"a window without a codename", whereUnlabelledSID, "Fix CI (tmux build:7 @ ws)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sess := byKey[c.sid]
 			sess.Title = "Fix CI"
-			if got := nudgeAskQuestion(sess, "Merge now?", false); got != c.want {
-				t.Fatalf("ask text:\n%q\nwant:\n%q", got, c.want)
+			if got := nudgeAskWhere(sess); got != c.want {
+				t.Fatalf("ask where:\n%q\nwant:\n%q", got, c.want)
 			}
 		})
 	}
@@ -92,9 +95,8 @@ func TestANudgeAskNamesItsWindowsExactTmuxTarget(t *testing.T) {
 // still names it "(agent <name>)". An INVARIANT guard (it held before too).
 func TestAnAgentNudgeAskKeepsItsAgentName(t *testing.T) {
 	c := chiefnudge.Session{Kind: chiefnudge.KindAgent, Label: "Worker Seven", Title: "Fix CI"}
-	const want = "Fix CI (agent Worker Seven) stopped and is waiting on you:\n\nMerge now?\n\nYour answer is sent into that session word for word."
-	if got := nudgeAskQuestion(c, "Merge now?", false); got != want {
-		t.Fatalf("ask text:\n%q\nwant:\n%q", got, want)
+	if got, want := nudgeAskWhere(c), "Fix CI (agent Worker Seven)"; got != want {
+		t.Fatalf("ask where %q, want %q", got, want)
 	}
 }
 

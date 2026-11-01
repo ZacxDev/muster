@@ -76,7 +76,7 @@ func boxServer(t *testing.T, dictate bool) *Server {
 }
 
 func systemAsk(id int64) attentionItem {
-	return askItem(attention.Ask{ID: id, Owner: 1, Asker: attention.Asker{System: true, Label: chiefNudgeAskLabel}, Question: "q", CreatedAt: time.Now()}, nil)
+	return askItem(attention.Ask{ID: id, Owner: 1, Asker: attention.Asker{System: true, Label: chiefNudgeAskLabel}, Question: "q", CreatedAt: time.Now()})
 }
 
 // TestAChiefNudgesAskLinksTheSessionItIsAbout: a nudge's ask is muster's own
@@ -148,8 +148,8 @@ var dictateTag = regexp.MustCompile(`<button id="([^"]+)" type="button" data-dic
 func boxListItems(t *testing.T, s *Server) []attentionItem {
 	now := time.Now()
 	return []attentionItem{
-		askItem(attention.Ask{ID: 81, Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: ptOtherSID, Label: "s"}, Question: "mirror?", CreatedAt: now}, nil),
-		askItem(attention.Ask{ID: 82, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "agent?", CreatedAt: now}, nil),
+		askItem(attention.Ask{ID: 81, Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: ptOtherSID, Label: "s"}, Question: "mirror?", CreatedAt: now}),
+		askItem(attention.Ask{ID: 82, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "Worker Seven"}, Question: "agent?", CreatedAt: now}),
 		systemAsk(boxNudgeMirror),
 		systemAsk(boxNudgeAgent),
 		systemAsk(boxSystemNoDecision),

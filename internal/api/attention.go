@@ -308,12 +308,13 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 	if askNeedsHosts(a) && s.ext.Mirror != nil {
 		hosts = s.ext.Mirror.Hosts(ctx)
 	}
-	return askItem(a, hosts)
+	return askItem(a, hosts...)
 }
 
 // askItem is ask a as an attention item; hosts is its owner's windows, which
-// a mirrored session's ask names its source from (askSource).
-func askItem(a attention.Ask, hosts []mirror.HostView) attentionItem {
+// a mirrored session's ask names its source from (askSource) — none given, it
+// is named as no window showing it.
+func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askSource(a, hosts), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
 	if a.Asker.System {
@@ -581,7 +582,7 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 			if askNeedsHosts(a) && !listed && s.ext.Mirror != nil {
 				hosts, listed = s.ext.Mirror.Hosts(ctx), true
 			}
-			out = append(out, askItem(a, hosts))
+			out = append(out, askItem(a, hosts...))
 		}
 	}
 	out = append(out, s.waitingSessions(ctx)...)
