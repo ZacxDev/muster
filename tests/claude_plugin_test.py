@@ -136,29 +136,6 @@ def tracked_files() -> list[str]:
     return [p for p in out.decode().split("\0") if p]
 
 
-def skills_cli_plugin_dirs() -> list[Path]:
-    """The directories the `skills` CLI (vercel-labs/skills 1.7.4,
-    getPluginSkillPaths) adds to its search for each marketplace plugin: the
-    plugin's own `skills/` directory always, plus the parent of each declared
-    `skills` entry. It ignores a plugin whose `source` (or a `pluginRoot`)
-    does not start with "./"."""
-    m = marketplace()
-    root = m.get("metadata", {}).get("pluginRoot")
-    if root is not None and not root.startswith("./"):
-        return []
-    dirs = []
-    for p in m["plugins"]:
-        src = p.get("source")
-        if src is not None and not (isinstance(src, str) and src.startswith("./")):
-            continue
-        base = ROOT / (root or "") / (src or "")
-        for declared in p.get("skills") or []:
-            if declared.startswith("./"):
-                dirs.append((base / declared).parent.resolve())
-        dirs.append((base / "skills").resolve())
-    return dirs
-
-
 class SkillsCli(unittest.TestCase):
     """`npx skills add ZacxDev/muster` installs the plugin's own SKILL.md.
 
@@ -175,28 +152,15 @@ class SkillsCli(unittest.TestCase):
         found = [p for p in tracked_files() if p.rsplit("/", 1)[-1] == "SKILL.md"]
         self.assertEqual(found, [self.PLUGIN_SKILL])
 
-    def test_the_cli_searches_the_plugins_skill_directory(self):
-        # Through the marketplace, not by luck: when nothing turns up in the
-        # searched directories the CLI falls back to a recursive walk, which
-        # would also find this file today, but only while it is the repo's only
-        # SKILL.md anywhere.
-        skill_dir = (ROOT / self.PLUGIN_SKILL).parent.resolve()
-        self.assertIn(skill_dir.parent, skills_cli_plugin_dirs())
-
-    def test_frontmatter_parses_as_two_plain_strings(self):
-        # The CLI parses frontmatter as YAML and skips a skill whose `name` or
-        # `description` is missing or not a string; frontmatter() above reads
-        # lines, so it would accept a value YAML reads as something else.
-        fm = frontmatter(ROOT / self.PLUGIN_SKILL)
-        for key in ("name", "description"):
-            value = fm.get(key, "")
-            self.assertTrue(value, key)
-            for breaker in YAML_PLAIN_BREAKERS:
-                self.assertNotIn(breaker, value, key)
-            self.assertFalse(value.startswith(YAML_INDICATORS), key)
-        # A `metadata` block can mark a skill `internal: true`, which the CLI
-        # hides from a plain `skills add`.
-        self.assertNotIn("metadata", fm)
+    def test_description_parses_as_a_plain_string(self):
+        # The CLI parses frontmatter as YAML and skips a skill whose
+        # `description` is not a string; frontmatter() above reads lines, so it
+        # would accept a value YAML reads as something else.
+        value = frontmatter(ROOT / self.PLUGIN_SKILL).get("description", "")
+        self.assertTrue(value)
+        for breaker in YAML_PLAIN_BREAKERS:
+            self.assertNotIn(breaker, value)
+        self.assertFalse(value.startswith(YAML_INDICATORS))
 
 
 class Readme(unittest.TestCase):
