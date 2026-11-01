@@ -270,12 +270,11 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	// What the retired list's card said: "offline", and the host's note —
 	// unless TerminalOnly already is that note.
 	v.Offline = !h.Online
-	// A window with no rendered view has only this page, and no session
-	// switcher: its pin is in the header (ui.AgentTerminalView.Pin).
-	if !e.HasRenderedView() && s.ext.Pins != nil {
-		ref := mirrorRef(e)
-		v.Pin = &ui.TerminalPin{Ref: ref, Pinned: s.pinSet(r.Context()).Mirror(pins.MirrorKey{Host: ref.Host, Session: ref.Session, Window: ref.Window})}
-	}
+	// The session switcher at the page's foot (ui/switcher.go), as the
+	// Rendered view draws it for the same window — its pin, the window's only
+	// one where it has no rendered view, posting back to THIS view.
+	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window},
+		Back: mirrorRef(e).TerminalPath()})
 	if e.AgentNote != v.TerminalOnly {
 		v.Note = e.AgentNote
 	}

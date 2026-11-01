@@ -122,7 +122,9 @@ type ComposerView struct {
 	// draft. A disabled composer keeps none either way.
 	DraftKey string
 	// Switcher, when set, draws the session switcher below the input row
-	// (switcher.go); nil draws none. Only the Rendered view sets it.
+	// (switcher.go), spanning the screen as the composer's last row; nil draws
+	// none. The Rendered view sets it, and a Terminal view (AgentTerminalPage)
+	// on the composer it draws, where the composer is in flow, not Pinned.
 	Switcher *Switcher
 	// Suggest, when set, is the window's suggested-replies URL
 	// (SuggestPath with its address) and draws the chip row above the
@@ -236,6 +238,13 @@ func mirrorComposer(v ComposerView) g.Node {
 		formPad = "pb-2"
 		// The switcher's room, reserved before the bar is parsed (switcherRoom).
 		place += " " + switcherRoom(true)
+		// 🔴 THE BAR IS ABSOLUTE (switcherBar), so the composer must be its
+		// containing block. A Pinned one is (fixed); an in-flow one — a
+		// Terminal view's — is not unless it says so, and the bar would then
+		// be placed against the page instead of in the room reserved here.
+		if !v.Pinned && menu == "" && suggest == "" {
+			place += " relative"
+		}
 	}
 	return Div(
 		ID("mv-compose"),

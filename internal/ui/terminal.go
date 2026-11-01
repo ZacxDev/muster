@@ -118,14 +118,14 @@ type AgentTerminalView struct {
 	// already say it.
 	Offline bool
 	Note    string
-	// Pin is the mirrored window's pin toggle (SwitcherPinToggle), drawn in
-	// the header only when the window has NO rendered view: such a window's
-	// only page is this one, and it draws no session switcher, whose pin every
-	// other session page has — without this it could not be pinned at all
-	// (the retired Agents list's card toggle was its only way). It takes the
-	// header slot the view switch holds on a window with two views, so the
-	// header holds no more controls than that one. nil: none.
-	Pin *TerminalPin
+	// Switcher is the session switcher (switcher.go), the page's last row:
+	// below the composer — or below the key bar where there is no composer —
+	// spanning the screen, so the operator switches sessions without going
+	// back to the Rendered view. Its pin toggle is the page's pin: a window
+	// with no rendered view, whose only page this is, is pinned here too. It
+	// is drawn whether or not the composer can send. nil: none (no agent
+	// store, or the list could not be read).
+	Switcher *Switcher
 	// StepUp, when set, puts live keys behind a FRESH sign-in
 	// (internal/stepup): a mirrored session. The page attaches with live keys
 	// when the sign-in is fresh, and otherwise asks "Confirm it's you" at the
@@ -219,8 +219,15 @@ func AgentSendPath(name string) string { return "/agents/" + url.PathEscape(name
 const AgentSendFromTerminal = "terminal"
 
 // AgentTerminalPage is a full-height document: a header, the terminal, the
-// quick-key bar and — for a mirrored session that can be sent to — the message
-// composer.
+// quick-key bar, the message composer (when there is one) and the session
+// switcher.
+//
+// 🔴 THE SWITCHER IS SERVER-RENDERED AT A FIXED HEIGHT, BEFORE THE TERMINAL'S
+// SCRIPT, so the terminal's first measure of its box (agentTerminalScript's
+// proposed()) is already the box with the bar's room taken: its arrival, its
+// pending-until-whole visibility and a view switch in it change no layout,
+// and so send no resize. (And no size the page could send shrinks the far
+// side's window anyway: internal/termsize.)
 //
 // 🔴 LIVE KEYS ARE ALWAYS ON; THERE IS NO SWITCH (operator ask: "make live
 // terminal keys always enabled and hide the button for it"). Keystrokes and the
@@ -332,7 +339,6 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Text("Fit width"),
 					),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
-					terminalPinToggle(v.RenderedHref, v.Pin),
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				liveCopyBanner("term-live-copy", v.LiveCopy),
@@ -390,7 +396,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Text(ScrollGaveUpNote),
 					)),
 				),
-				quickKeyBar(v.Composer == nil, displayOr(v.InteractiveNote, liveKeysTitle)),
+				quickKeyBar(v.Composer == nil && v.Switcher == nil, displayOr(v.InteractiveNote, liveKeysTitle)),
 				// 🔴 NO SCRIPT TAG BEFORE THE COMPOSER. The key bar sits above
 				// the composer in a column whose terminal takes the rest, so
 				// the composer's arrival moves the bar up by its height. A
@@ -400,7 +406,10 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				// pushes it up — measured as a 0.01259 shift of #term-keys
 				// opening the terminal in its frame at 390px (cls.spec).
 				// TestTheViewPagesPaintWholeBeforeAnyScript pins the order.
-				terminalComposer(v.Composer),
+				terminalComposer(v.Composer, v.Switcher),
+				// No composer (an offline host): the bar is the column's foot on
+				// its own.
+				g.If(v.Composer == nil, terminalSwitcher(v.Switcher)),
 				floatingMenuScript(),
 				confirmDialog(v.StepUp),
 				g.If(v.StepUp != nil, stepUpScript()),
@@ -430,12 +439,27 @@ func terminalOnlyLine(reason string) g.Node {
 	)
 }
 
-// terminalComposer is the page's composer, nothing for nil.
-func terminalComposer(c *MirrorComposerView) g.Node {
+// terminalComposer is the page's composer with the session switcher as its
+// last row (s may be nil: none), as the Rendered view's composer draws it —
+// in flow here, not Pinned; nothing for nil.
+func terminalComposer(c *MirrorComposerView, s *Switcher) g.Node {
 	if c == nil {
 		return nil
 	}
-	return mirrorComposer(*c)
+	v := *c
+	v.Switcher = s
+	return mirrorComposer(v)
+}
+
+// terminalSwitcher is the session switcher at the foot of a Terminal view that
+// draws no composer: a box of exactly the bar's room (switcherRoom), in the
+// column from its first byte, holding the absolutely placed bar. Nothing for
+// nil.
+func terminalSwitcher(s *Switcher) g.Node {
+	if s == nil {
+		return nil
+	}
+	return Div(Class("relative flex-none "+switcherRoom(true)), switcherBar(s, true))
 }
 
 // quickKeysPrimaryOrder is THE ONE LIST of the bar's large keys, by QuickKey
@@ -489,7 +513,8 @@ const quickKeysMenuID = "term-keys-menu"
 // changes what a tap does to the terminal's focus or a soft keyboard.
 //
 // last says the bar is the bottom of the page, and so carries the safe-area
-// inset; when a composer follows, the composer carries it instead.
+// inset; when a composer or the session switcher follows, the last of them
+// carries it instead.
 func quickKeyBar(last bool, title string) g.Node {
 	pad := "pb-2"
 	if last {

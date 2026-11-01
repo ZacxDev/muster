@@ -13,10 +13,14 @@ import (
 )
 
 // THE SESSION SWITCHER: a bar BELOW the message input of a session's page — a
-// mirrored window's Rendered view and a dispatched agent's chat page — that
-// hot-swaps to another session in one tap (operator ask: "add another bar
-// component below the message input bar where I can hot swap between active
-// sessions").
+// mirrored window's Rendered view, a dispatched agent's chat page, and the
+// Terminal view of either (AgentTerminalPage) — that hot-swaps to another
+// session in one tap (operator asks: "add another bar component below the
+// message input bar where I can hot swap between active sessions"; "include
+// the bottom bar in the agent terminal view as well … so that I can easily
+// switch agents from the terminal view"). A Terminal view draws it whether or
+// not its composer can send, or is drawn at all: switching sessions does not
+// depend on sending.
 //
 // FOUR VIEWS, picked from a menu the button on the bar's left opens (it
 // animates open UPWARD, the bar being at the screen's bottom — switcherViewMenu):
@@ -77,8 +81,9 @@ import (
 // 🔴 IT SCROLLS SIDEWAYS INSIDE ITSELF (each row is overflow-x-auto, min-w-0),
 // so thirty long names never widen the page.
 //
-// ONLY SESSION PAGES DRAW IT. The retired Agents list page also drew it, docked
-// to the bottom of the viewport with no page session, and refreshed its rows
+// ONLY SESSION PAGES DRAW IT (the four above). The retired Agents list page
+// also drew it, docked to the bottom of the viewport with no page session, and
+// refreshed its rows
 // out of band on every list render; out of band they now arrive only with the
 // pin toggle's answer (switcherRefresh, RenderSwitcherPin).
 
@@ -117,6 +122,11 @@ const switcherRecentMax = 8
 type SwitcherCurrent struct {
 	AgentID int64
 	Mirror  MirrorRef
+	// Back is the page itself, where the bar's pin toggle sends the browser
+	// back to after a post without script: a Terminal view names its own
+	// address, so a pin there does not land on the session's other view. ""
+	// is the session's own page (its sidebar row's link, newSwitcherPin).
+	Back string
 }
 
 // is reports whether e is the page's own session.
@@ -249,6 +259,9 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 		}
 		if pin == nil && cur.is(e) {
 			pin = newSwitcherPin(e)
+			if cur.Back != "" {
+				pin.back = cur.Back
+			}
 		}
 	}
 	var recent []listEntry
@@ -352,11 +365,12 @@ func (s *Switcher) view(key string) []SwitcherItem {
 
 // switcherBar is the bar: the view button, one row per view (Recent shown, the
 // others hidden until the script picks them), and the search button — then
-// the view menu and the search palette, both popovers. pinned: the bar is
-// the last row of a pinned composer that spans the screen (the Rendered
-// view's) — it is inset like that composer's rows and padded by the safe-area
-// inset, being the last thing above the screen's edge; otherwise (the agent
-// page, inside its already-inset pane) it lines up with the form above it.
+// the view menu and the search palette, both popovers. pinned: the bar spans
+// the screen and is the last thing above its edge — the last row of the
+// Rendered view's pinned composer, or of a Terminal view's column (in flow, at
+// the column's foot) — so it is inset like a composer's rows and padded by the
+// safe-area inset; otherwise (the agent page, inside its already-inset pane)
+// it lines up with the form above it.
 // Nothing when s is nil.
 func switcherBar(s *Switcher, pinned bool) g.Node {
 	if s == nil {
@@ -642,8 +656,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 // palette. Storage that throws (a private window, blocked site data) leaves
 // Recent, and the menu still works for the page.
 //
-// INLINE on a session's page (the agent page, the Rendered view) — the only
-// pages that draw the bar now — as it was measured there. (The app shell, whose
+// INLINE on a session's page (the agent page, the Rendered view, a Terminal
+// view) — the only pages that draw the bar now — as it was measured there. (The app shell, whose
 // retired Agents panel docked the bar, carried it as a static file instead.)
 // One text, switcherJS.
 func switcherScript() g.Node { return Script(g.Raw(switcherJS)) }

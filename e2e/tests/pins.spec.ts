@@ -260,28 +260,33 @@ for (const vp of [
     // 🔴 A SHELL WINDOW CAN STILL BE PINNED. Its card's toggle pinned it while
     // the Agents list lived; with the list retired the one way to pin is the
     // toggle on the session's own page ("open it, then pin"). A plain shell
-    // window's only page is its terminal, which draws no session switcher —
-    // so its pin toggle is in the terminal's header, in the slot the view
-    // switch holds on a window with a Rendered view (the control: that page's
-    // toggle is the bar's). It pins and unpins, and the Pins view follows.
-    test("a shell window's terminal page carries the pin toggle, as a Rendered view's bar does", async ({ page }) => {
+    // window's only page is its terminal, which draws the session switcher at
+    // its foot as every Terminal view does — so its pin toggle is the bar's,
+    // as on a Rendered view (the control), and the header has none. It pins
+    // and unpins, and the Pins view follows: on this page at once (the
+    // answer's out-of-band rows), and on another session's page.
+    test("a shell window's terminal page carries the pin toggle in its bar, as a Rendered view does", async ({ page }) => {
       await open(page, sableHref);
       await expect(page.locator('#session-switcher #switcher-pin'), "control: the Rendered view's bar has the toggle").toBeVisible();
       await page.goto(origin + shellHref);
       await expect(page.locator('#term-host-note, [aria-label="Terminal input"]').first(), 'the terminal page is drawn').toBeAttached();
-      const pin = page.locator('header #switcher-pin');
-      await expect(pin, "the terminal header's pin toggle").toBeVisible();
+      const pin = page.locator('#session-switcher #switcher-pin');
+      await expect(pin, "the terminal bar's pin toggle").toBeVisible();
+      await expect(page.locator('header #switcher-pin'), 'the header has no pin of its own').toHaveCount(0);
+      await expect(page.locator('#switcher-pin'), 'one pin toggle on the page').toHaveCount(1);
       await expect(page.locator('#view-rendered, #view-terminal'), 'a terminal-only window has no view switch').toHaveCount(0);
       await expect(pin).toHaveAttribute('aria-pressed', 'false');
       await pin.click();
-      await expect(page.locator('header #switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('#session-switcher #switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+      // The answer's rows, out of band: this page's own Pins row holds it now.
+      await expect(page.locator('#session-switcher [data-switcher-list="pins"] [data-switcher-current]'), "this page's Pins row follows").toHaveCount(1);
       try {
         await open(page, sableHref);
         await expect(viewRow(page, 'pins').locator(`a[href="${shellHref.replace(/&/g, '&amp;')}"], a[href="${shellHref}"]`).first(), 'the Pins view holds the shell window').toBeAttached();
       } finally {
         await page.goto(origin + shellHref);
-        await page.locator('header #switcher-pin').click();
-        await expect(page.locator('header #switcher-pin')).toHaveAttribute('aria-pressed', 'false');
+        await page.locator('#session-switcher #switcher-pin').click();
+        await expect(page.locator('#session-switcher #switcher-pin')).toHaveAttribute('aria-pressed', 'false');
       }
     });
 

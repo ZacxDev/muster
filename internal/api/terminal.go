@@ -96,6 +96,14 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 		c.Disabled = AgentNotRunningNotice
 	}
 	v.Composer = &c
+	// The viewer opened this agent (best-effort), as its chat page records it
+	// and as a mirrored window's Terminal view records the window: a reload or
+	// a shared link of this view is a visit too. Before the switcher, so its
+	// Recent view leaves this page out (ui.NewSwitcher).
+	s.recordAgentVisit(r.Context(), a.ID)
+	// The session switcher at the page's foot (ui/switcher.go), as the chat
+	// page draws it — its pin posting back to THIS view.
+	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{AgentID: a.ID, Back: ui.AgentTerminalPath(a.Name)})
 	// The Terminal half of the switch, which the agent's chat opens in a frame
 	// (ui/view_swap.go).
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}

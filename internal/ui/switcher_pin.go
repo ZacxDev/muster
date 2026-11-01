@@ -109,22 +109,3 @@ func RenderSwitcherPin(w io.Writer, pinned bool, fields [][2]string, back string
 	}
 	return switcherRefresh(s).Render(w)
 }
-
-// TerminalPin is a mirrored window's pin on its terminal page
-// (AgentTerminalView.Pin): whether it is pinned, and the window's address.
-type TerminalPin struct {
-	Pinned bool
-	Ref    MirrorRef
-}
-
-// terminalPinToggle is the bar's pin toggle (SwitcherPinToggle) for the
-// window p names, posting back to its terminal page — nothing when there is
-// no pin to draw or the window has a rendered view (renderedHref), whose page
-// carries the switcher and its pin.
-func terminalPinToggle(renderedHref string, p *TerminalPin) g.Node {
-	if p == nil || renderedHref != "" {
-		return nil
-	}
-	fields := [][2]string{{"kind", "mirror"}, {"host", p.Ref.Host}, {"session", p.Ref.Session}, {"window", p.Ref.Window}}
-	return SwitcherPinToggle(p.Pinned, fields, p.Ref.TerminalPath())
-}
