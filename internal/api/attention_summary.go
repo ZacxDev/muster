@@ -156,7 +156,7 @@ func attentionSummaryHostOf(h mirror.HostView) attentionSummaryHost {
 // attentionSummaryItemOf is it as the summary lists it. base is the public
 // origin without a trailing slash, "" for none.
 func attentionSummaryItemOf(it attentionItem, base string, now time.Time) attentionSummaryItem {
-	out := attentionSummaryItem{Key: it.Key, Kind: it.Kind, Host: it.host, Title: textplain.Title(it.Source),
+	out := attentionSummaryItem{Key: it.Key, Kind: it.Kind, Host: it.host, Title: textplain.TitleKeeping(it.Source, it.target),
 		Why: firstLine(attentionPushBody(it)), Offline: it.Offline}
 	if out.Host == "" {
 		out.Host = it.card.ref.Host // an ask from a mirrored session

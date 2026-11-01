@@ -275,6 +275,11 @@ const chiefLiveReads = `This costs you less than it sounds. Everything you need 
 every time you fetch it — so you do not need to remember the state of the work, you
 need to go and look at it. Answer from the read, every time.
 
+When you point your owner at a mirrored session — in a question you ask them or
+anywhere else — give its ` + "`where`" + ` exactly as your read of the fleet shows it: the
+terminal session and window index on its host. A window's codename or title alone is
+not a place they can find.
+
 `
 
 // chiefCairnSection is concatenated ONLY when the store credential is configured.

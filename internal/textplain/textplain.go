@@ -32,6 +32,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // sentinel delimits a stashed span (code, escaped char, URL) so later rewrites
@@ -97,6 +98,41 @@ var (
 // whitespace (or <one in angle brackets>), an optional "title" / 'title' /
 // (title), then ")".
 const linkDest = `\(\s*(?:<[^<>\n]*>|[^\s()<>]*(?:\([^\s()]*\)[^\s()<>]*)*)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)`
+
+// TitleKeeping is Title over s except every occurrence of keep, which is kept
+// VERBATIM: a machine identifier inside a human title — a mirrored window's
+// tmux target (mirror.WhereTarget), whose session name may be "_scratch_",
+// "*dev*" or "a`b`c" and must reach the reader exactly, since they type it.
+// The text around it is plained piece by piece (a piece's edge whitespace
+// kept as one space, so "mango:1 · " still joins its target), and the whole
+// is trimmed. keep "" is Title.
+//
+// It is the title rule (TestTheTitleSinkLedger counts it as one); the caller
+// still escapes for its surface (HTML on a page, one line on a push).
+func TitleKeeping(s, keep string) string {
+	if keep == "" || !strings.Contains(s, keep) {
+		return Title(s)
+	}
+	parts := strings.Split(s, keep)
+	for i, p := range parts {
+		t := Title(p)
+		lead := p != "" && unicode.IsSpace(rune(p[0]))
+		trail := p != "" && unicode.IsSpace(rune(p[len(p)-1]))
+		switch {
+		case t == "" && (lead || trail):
+			t = " "
+		default:
+			if lead {
+				t = " " + t
+			}
+			if trail && t != "" {
+				t += " "
+			}
+		}
+		parts[i] = t
+	}
+	return strings.TrimSpace(strings.Join(parts, keep))
+}
 
 // Title returns s as the one-line plain text a reader of its rendered markdown
 // would see: links become their text, images their alt text, emphasis, strike

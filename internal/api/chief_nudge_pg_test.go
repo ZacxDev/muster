@@ -632,7 +632,7 @@ func TestChiefNudgeLiveAskIsAnsweredAndRelayedVerbatim(t *testing.T) {
 	}
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
 	if err != nil || !a.Asker.System || a.Asker.Label != chiefNudgeAskLabel ||
-		!strings.Contains(a.Question, "Merge into main or into release?") || !strings.Contains(a.Question, "(Gold:1 @ ws)") ||
+		!strings.Contains(a.Question, "Merge into main or into release?") || a.Question != "A session (Gold:1 · tmux main:1 @ ws) stopped and is waiting on you:\n\nMerge into main or into release?\n\nYour answer is sent into that session word for word." ||
 		strings.Join(a.Options, "|") != "main|release" {
 		t.Fatalf("the ask %+v %v", a, err)
 	}

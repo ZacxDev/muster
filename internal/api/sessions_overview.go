@@ -100,8 +100,10 @@ func sessionsOverviewToolDef() agents.ToolDef {
 type liveSession struct {
 	sub              focus.Subject
 	kind, name, host string
-	status           string
-	activeAt         time.Time
+	// where is a mirrored session's window (mirror.Where), "" for an agent.
+	where    string
+	status   string
+	activeAt time.Time
 }
 
 // liveSessions is ctx's principal's live sessions, newest-active first, minus
@@ -145,7 +147,7 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 			status = "unknown"
 		}
 		out = append(out, liveSession{sub: focus.MirrorSubject(e.ClaudeSession), kind: "mirror", name: e.DisplayTitle(),
-			host: e.Host, status: status, activeAt: at})
+			host: e.Host, where: e.Where(), status: status, activeAt: at})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].activeAt.After(out[j].activeAt) })
 	return out
@@ -194,7 +196,7 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 		if !ok {
 			continue // the store filtered on liveness already; belt and braces
 		}
-		sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host}
+		sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host, Where: ls.where}
 		for _, t := range mt.Titles {
 			sh.Titles = append(sh.Titles, plugins.HintTitle{Title: t.Title, At: t.At})
 		}
@@ -235,6 +237,7 @@ type overviewSession struct {
 	Kind        string             `json:"kind"`
 	Name        string             `json:"name"`
 	Host        string             `json:"host,omitempty"`
+	Where       string             `json:"where,omitempty"` // fleetListRow.Where
 	Status      string             `json:"status"`
 	ActiveAt    string             `json:"active_at,omitempty"`
 	Focus       string             `json:"focus,omitempty"`
@@ -276,7 +279,7 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 	size := len(toolJSON(res)) + len(`,"sessions":[]`)
 	out := []overviewSession{}
 	for i, ls := range live {
-		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Name: ls.name, Host: ls.host, Status: ls.status,
+		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Name: ls.name, Host: ls.host, Where: ls.where, Status: ls.status,
 			Focus: fi[ls.sub].Title, Attention: pending[ls.sub], Transcript: tails[i]}
 		if !ls.activeAt.IsZero() {
 			row.ActiveAt = ls.activeAt.UTC().Format(time.RFC3339)

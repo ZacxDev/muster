@@ -95,7 +95,7 @@ func (s *Server) openTarget(ctx context.Context, key string) string {
 		a, err := s.ext.Attention.Get(ctx, id)
 		switch {
 		case err == nil && a.Owner == owner && a.Status == attention.Open:
-			it, found = askItem(a), true
+			it, found = s.askItemNow(ctx, a), true
 		case err != nil && !errors.Is(err, attention.ErrNotFound):
 			s.logger.Printf("attention: the tap target of %s: %v (opening the queue instead)", key, err)
 		}

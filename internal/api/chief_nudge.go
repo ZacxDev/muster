@@ -341,7 +341,7 @@ func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []n
 				seen[w.ClaudeSession] = true
 				st := s.ext.Mirror.AgentState(octx, h.Host, w.Session, w.ID)
 				c := chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: w.ClaudeSession, Host: h.Host,
-					TmuxSession: w.Session, Window: w.ID, Label: w.Label, Status: st.Status,
+					TmuxSession: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Status: st.Status,
 					Shell:     !h.Work[w.ID].IsZero(),
 					TurnError: st.TurnError != nil || st.HostLimit != nil || st.GuardHeld != "",
 					OpenAsk:   asked["mirror:"+w.ClaudeSession] || inFlight[chiefnudge.KindMirror+":"+w.ClaudeSession]}
@@ -424,6 +424,16 @@ func (s *Server) nudgeOpenAskers(octx context.Context) map[string]bool {
 		}
 	}
 	return out
+}
+
+// nudgeAskPlace is where a nudge's ask says its session is, after its focus
+// title (nudgeAskQuestion): " (<a mirrored window's exact tmux target as the
+// sweep saw it>)" (mirror.Where), or " (agent <name>)".
+func nudgeAskPlace(c chiefnudge.Session) string {
+	if c.Kind == chiefnudge.KindMirror {
+		return " (" + mirror.Where(c.Host, c.TmuxSession, c.Window, c.Index, c.Label) + ")"
+	}
+	return " (agent " + c.Label + ")"
 }
 
 // nudgeTitle is c's focus title, "" for none.
@@ -1217,15 +1227,7 @@ func nudgeAskQuestion(c chiefnudge.Session, q, read string, generic bool) string
 	if where == "" {
 		where = "A session"
 	}
-	if c.Kind == chiefnudge.KindMirror {
-		label := c.Label
-		if label == "" {
-			label = c.TmuxSession
-		}
-		where += " (" + label + " @ " + c.Host + ")"
-	} else {
-		where += " (agent " + c.Label + ")"
-	}
+	where += nudgeAskPlace(c)
 	text := where + " stopped and is waiting on you:\n\n" + strings.TrimSpace(q) +
 		"\n\nYour answer is sent into that session word for word."
 	if generic {

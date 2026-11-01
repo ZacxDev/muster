@@ -94,10 +94,64 @@ func (s SessionView) DisplayTitle() string {
 // session per name and one window per index in a session — which is what
 // makes it the tie-break for two entries of one host that share a Title.
 func (s SessionView) Address() string {
-	if s.Window != "" {
-		return s.Session + ":" + strconv.Itoa(s.Index)
+	return tmuxAddress(s.Session, s.Window, s.Index)
+}
+
+// tmuxAddress is Address's rule, for a caller that holds the window's fields
+// rather than a SessionView (Where).
+func tmuxAddress(session, window string, index int) string {
+	if window != "" {
+		return session + ":" + strconv.Itoa(index)
 	}
-	return s.Session
+	return session
+}
+
+// Where is the entry's exact place, for every text that sends the operator to
+// it (an ask, a waiting session, a notification): see the function Where.
+func (s SessionView) Where() string {
+	return Where(s.Host, s.Session, s.Window, s.Index, s.Label)
+}
+
+// Where names a mirrored window so the operator can go to it in a terminal:
+// "tmux <session>:<window index> @ <host>" — the tmux session name and window
+// index, exactly as tmux's own target syntax takes them (Address) — led by the
+// host's label for it when it has one that is not that same address:
+//
+//	tmux build:4 @ laptop
+//	mango:1 · tmux scratch3:5 @ laptop
+//
+// A per-session host's entry (window "") is "tmux <session> @ <host>".
+//
+// 🔴 ONE RULE, ONE PLACE. Every attention surface that names a mirrored window
+// (a chief nudge's ask, a waiting session or held question, the session asker
+// of an ask, their notifications and the ask page's header) takes its words
+// from here. The label is a host's codename and is NOT a tmux name — on its
+// own it named a window nobody could find — so it is never the only name, and
+// the session name alone (no index) is not a target either.
+//
+// The index is a SNAPSHOT: tmux renumbers windows, so text built from it says
+// where the window was when the text was made. Links resolve the window by its
+// Claude session id when followed and stay the source of truth.
+func Where(host, session, window string, index int, label string) string {
+	addr := tmuxAddress(session, window, index)
+	out := WhereTarget(host, session, window, index)
+	if label != "" && label != addr {
+		out = label + QualifierSep + out
+	}
+	return out
+}
+
+// WhereTarget is Where's machine part, "tmux <session>:<index> @ <host>",
+// without the label: what a surface that plains a title for display must
+// keep VERBATIM (textplain.TitleKeeping) — a tmux session named "_scratch_"
+// is typed as "_scratch_", never as the "scratch" a markdown stripper reads.
+func WhereTarget(host, session, window string, index int) string {
+	return "tmux " + tmuxAddress(session, window, index) + " @ " + host
+}
+
+// WhereTarget is the entry's WhereTarget.
+func (s SessionView) WhereTarget() string {
+	return WhereTarget(s.Host, s.Session, s.Window, s.Index)
 }
 
 // qualify sets every entry's Qualifier over list — the WHOLE list, across
@@ -170,10 +224,8 @@ func (s SessionView) Title() string {
 	switch {
 	case s.Label != "":
 		return s.Label
-	case s.Window != "":
-		return s.Session + ":" + strconv.Itoa(s.Index)
 	}
-	return s.Session
+	return s.Address()
 }
 
 // HasRenderedView reports whether the entry has a rendered view: a connected

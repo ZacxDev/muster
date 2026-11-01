@@ -387,6 +387,9 @@ type RouterNotification struct {
 	Update bool
 	// AskActions: payload v2 offers Ask's signed actions (device_actions.go).
 	AskActions bool
+	// TitleKeep is a part of Title the title rule keeps verbatim
+	// (textplain.TitleKeeping): a mirrored window's tmux target. "" for none.
+	TitleKeep string
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -1284,7 +1287,7 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	// not titles and are sent as written. TestTheTitleSinkLedger
 	// (internal/textplain) pins both halves and that sendPush and router.Notify
 	// are reached from nowhere else.
-	n.Title = textplain.Title(n.Title)
+	n.Title = textplain.TitleKeeping(n.Title, n.TitleKeep)
 	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
 	// AND safeGo DOES NOT DISTURB EITHER. safeGo's recover is registered OUTSIDE
 	// fn, so on a panic fn's own defers unwind first — Done runs, then the

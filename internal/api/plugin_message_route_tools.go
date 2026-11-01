@@ -262,6 +262,8 @@ func (s *Server) toolPluginMessageRoute(ctx context.Context, c toolCaller, argum
 type routeCandidate struct {
 	Subject string `json:"subject"`
 	Session string `json:"session"`
+	// Where is the session's window (mirror.Where).
+	Where string `json:"where"`
 }
 
 // routeSubjectFor is the subject raw names, which must be route_to_session's
@@ -287,7 +289,7 @@ func (s *Server) routeSubjectFor(ctx context.Context, raw string) (focus.Subject
 			continue // the most recently active window holding it (mirrorEntryForSession's)
 		}
 		seen[e.ClaudeSession] = true
-		cands = append(cands, routeCandidate{Subject: string(focus.KindMirror) + ":" + e.ClaudeSession, Session: e.DisplayTitle() + " @ " + e.Host})
+		cands = append(cands, routeCandidate{Subject: string(focus.KindMirror) + ":" + e.ClaudeSession, Session: e.DisplayTitle() + " @ " + e.Host, Where: e.Where()})
 	}
 	return focus.Subject{}, subjectRefusal(RefusedSubjectNotFound, "subject "+strconv.Quote(raw)+
 		" is not \"mirror:<claude session id>\" of a session an online mirrored window shows; name one of the candidates by its subject", cands)

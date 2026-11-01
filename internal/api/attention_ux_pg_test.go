@@ -166,7 +166,7 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 	}
 	page := f.page(t, "/attention/items")
 	for _, want := range []string{"Bash: npm publish --tag next", `data-attention-detail>Tests pass. Publishing [31mnow [0m.</p>`,
-		`data-attention-focus>Publish the CLI release</span>`, `data-attention-source>main:1 @ ws</span>`} {
+		`data-attention-focus>Publish the CLI release</span>`, `data-attention-source>tmux main:1 @ ws</span>`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("the page lacks %q: %s", want, page)
 		}
@@ -180,7 +180,7 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 	// The notification says who and where, and the tool's NAME — never the
 	// command or Claude's words (operator decision: a waiting session stays
 	// summary only; the page has them).
-	if body != "Waiting: Bash · main:1 @ ws" {
+	if body != "Waiting: Bash · tmux main:1 @ ws" {
 		t.Fatalf("the push body: %q", body)
 	}
 }

@@ -58,7 +58,12 @@ type fleetListRow struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
 	// Host is a mirrored session's host ("" for a dispatched agent).
-	Host   string `json:"host,omitempty"`
+	Host string `json:"host,omitempty"`
+	// Where is a mirrored session's window as the owner finds it in a
+	// terminal (mirror.Where: "tmux <session>:<index> @ <host>", its codename
+	// first when it has one); "" for an agent. What the chief gives its owner
+	// when it points them at the session.
+	Where  string `json:"where,omitempty"`
 	Status string `json:"status"`
 	Focus  string `json:"focus,omitempty"`
 	// FocusProblem is why the session has no focus, or a stale one: the
@@ -95,7 +100,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 			status = "unknown"
 		}
 		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host, Host: e.Host,
-			Status: status, Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
+			Where: e.Where(), Status: status, Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
 }

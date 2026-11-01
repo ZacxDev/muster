@@ -78,7 +78,7 @@ func (s *Server) askShowsSuggestions(ctx context.Context, a attention.Ask) bool 
 
 // renderAskPage writes ask a's page (or, for ?part=live, its live region).
 func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attention.Ask) {
-	it := askItem(a)
+	it := s.askItemNow(r.Context(), a)
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil
 	}
@@ -91,7 +91,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		return
 	}
 	esc := html.EscapeString
-	source := textplain.Title(it.Source)
+	source := textplain.TitleKeeping(it.Source, it.target)
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
@@ -169,7 +169,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 `)
 		}
 		if a.Status == attention.Answered {
-			text, _ := answerDeliveryText(a)
+			text, _ := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target))
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery>` + esc(text) + `</p>
 `)
 		}

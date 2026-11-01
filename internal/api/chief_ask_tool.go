@@ -184,7 +184,7 @@ const (
 // is busy, nothing is sent: the question stays due (chief_turn_at NULL) and
 // the attention sweep retries it (putDueQuestions). It says which.
 func (s *Server) putQuestionToChief(ctx context.Context, chief agents.Agent, q attention.Ask, about *routedAbout) string {
-	text := renderChiefQuestion(q, about, fence.NewNonce())
+	text := renderChiefQuestion(q, askSource(q, s.askHosts(ctx, q)), about, fence.NewNonce())
 	sess, err := s.defaultSession(ctx, chief)
 	if err != nil {
 		s.logger.Printf("chief_ask: question %d: open the chief's session: %v", q.ID, err)
@@ -302,12 +302,14 @@ func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent,
 // question's id, the asking session's host and Claude session id (each in the
 // mirror wire's shape: the binding checked the session, the token names the
 // host), the deadline and how to answer — then, fenced, the window's
-// title, the question and options and, with a route, the routed message.
+// title, where the window is (askSource: its exact tmux target, or that no
+// window shows it — what the chief gives the owner when it asks them), the
+// question and options and, with a route, the routed message.
 //
 // 🔴 EVERY WORD OF THE SESSION'S OR THE SENDER'S IS INSIDE THE FENCE: the
 // window title (it can come from the conversation), the question, the options,
 // and the routed message's sender, subject and body.
-func renderChiefQuestion(q attention.Ask, about *routedAbout, nonce string) string {
+func renderChiefQuestion(q attention.Ask, where string, about *routedAbout, nonce string) string {
 	id := strconv.FormatInt(q.ID, 10)
 	pre := "muster: one of your owner's mirrored Claude Code sessions — host " + q.Asker.MirrorHost + ", Claude session " +
 		q.Asker.MirrorSession + " (subject mirror:" + q.Asker.MirrorSession + ") — asks you a question, session question #" + id + "."
@@ -319,7 +321,7 @@ func renderChiefQuestion(q attention.Ask, about *routedAbout, nonce string) stri
 		"thread, what sessions_overview shows of the session or what you know of the fleet — call answer_session_question{id: " + id +
 		", answer}. If only your owner can, ask them with attention_ask and pass their answer on with answer_session_question. " +
 		"Unanswered by " + q.ExpiresAt.UTC().Format(time.RFC3339) + ", it expires."
-	lines := []string{"session: " + fence.Sanitize(q.Asker.Label), "question:"}
+	lines := []string{"session: " + fence.Sanitize(q.Asker.Label), "where: " + fence.Sanitize(where), "question:"}
 	for _, l := range strings.Split(q.Question, "\n") {
 		lines = append(lines, "  "+fence.Sanitize(l))
 	}

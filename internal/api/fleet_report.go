@@ -129,10 +129,13 @@ type fleetFocus struct {
 }
 
 type fleetSession struct {
-	ID        string       `json:"id"`
-	Kind      string       `json:"kind"`
-	Name      string       `json:"name"`
-	Host      string       `json:"host"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Host string `json:"host"`
+	// Where is a listed window's exact tmux target (mirror.Where) — the
+	// chief's door only: it names a host, so the mail door never carries it.
+	Where     string       `json:"where,omitempty"`
 	Repo      *string      `json:"repo"`
 	State     string       `json:"state"`
 	FirstSeen string       `json:"first_seen"`
@@ -210,6 +213,7 @@ type fleetFact struct {
 	// the session.
 	Name, Title string
 	Host        string // a mirrored window's host; "" for an agent or an unknown window
+	Where       string // a listed window's mirror.Where; "" otherwise
 	Repo        string // the agent's Repo or the window's repo chip; "" none
 	State       string // "waiting", "active" or "ended"
 	FirstAt     time.Time
@@ -358,7 +362,10 @@ func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until t
 			}
 		case focus.KindMirror:
 			if e, ok := byKey[w.Subject.Key]; ok {
-				f.Name, f.Title, f.Host, f.Repo = e.DisplayTitle(), e.Title(), e.Host, e.Repo
+				f.Name, f.Title, f.Host, f.Repo, f.Where = e.DisplayTitle(), e.Title(), e.Host, e.Repo, e.Where()
+				if !e.Online {
+					f.Where += whereHostOffline // its last-known window
+				}
 				if e.Online {
 					f.State = "active"
 				}
@@ -472,12 +479,12 @@ func encodeFleetReport(c fleetCollected, window fleetWindow, requestID *string, 
 		}
 		row := fleetSession{ID: f.Subject.String(), Kind: string(f.Subject.Kind), State: f.State,
 			FirstSeen: f.FirstAt.UTC().Format(time.RFC3339), LastSeen: f.LastAt.UTC().Format(time.RFC3339),
-			Name: f.Name, Host: f.Host, Focus: []fleetFocus{}, PRs: []string{}}
+			Name: f.Name, Host: f.Host, Where: f.Where, Focus: []fleetFocus{}, PRs: []string{}}
 		if mail != nil {
 			// 🔴 THE MAIL DOOR NAMES A SESSION BY ITS UNQUALIFIED TITLE.
 			// DisplayTitle appends " · <host>" when two listed entries share
 			// a title (mirror's qualify) — a host label inside the name.
-			row.Name, row.Host = f.Title, ""
+			row.Name, row.Host, row.Where = f.Title, "", ""
 		}
 		if f.PRs != nil {
 			row.PRs = f.PRs
@@ -487,6 +494,7 @@ func encodeFleetReport(c fleetCollected, window fleetWindow, requestID *string, 
 			}
 		}
 		row.Name = field(row.Name)
+		row.Where = field(row.Where)
 		if repo := field(f.Repo); repo != "" {
 			row.Repo = &repo
 		}

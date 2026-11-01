@@ -105,17 +105,27 @@ func (s *Server) cardAttention(ctx context.Context) cardAttentionIndex {
 // claudeSessionWindow is the address of host's window running Claude session
 // sid, in its active pane or a split (the MCP door's rule, mirrorSessionOf).
 func claudeSessionWindow(hosts []mirror.HostView, host, sid string) (ui.MirrorRef, bool) {
+	e, ok := claudeSessionEntry(hosts, host, sid)
+	if !ok {
+		return ui.MirrorRef{}, false
+	}
+	return ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}, true
+}
+
+// claudeSessionEntry is claudeSessionWindow's window with what names it
+// (Index, Label: mirror.Where), by the same rule.
+func claudeSessionEntry(hosts []mirror.HostView, host, sid string) (mirror.SessionView, bool) {
 	for _, h := range hosts {
 		if h.Host != host {
 			continue
 		}
 		for _, w := range h.Windows {
 			if (w.Claude && w.ClaudeSession == sid) || slices.Contains(w.OtherClaude, sid) {
-				return ui.MirrorRef{Host: h.Host, Session: w.Session, Window: w.ID}, true
+				return mirror.SessionView{Host: h.Host, Session: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Online: h.Online}, true
 			}
 		}
 	}
-	return ui.MirrorRef{}, false
+	return mirror.SessionView{}, false
 }
 
 // withCardAttention sets every entry's count (in place).

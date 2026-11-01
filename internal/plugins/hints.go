@@ -42,6 +42,8 @@ const (
 	// maxHintTitleRunes / maxHintNameRunes cut one title / session name.
 	maxHintTitleRunes = 120
 	maxHintNameRunes  = 80
+	// maxHintWhereRunes cuts one session's where (codename, tmux target, host).
+	maxHintWhereRunes = 200
 	// MaxHintBytes bounds the whole block: sessions past it are dropped, and
 	// the block says how many.
 	MaxHintBytes = 2048
@@ -86,6 +88,8 @@ type AuthorHint struct {
 	LastSeen time.Time
 	// Online: an online mirrored window shows the session now.
 	Online bool
+	// Where is that window (mirror.Where), "" when none shows it.
+	Where string
 }
 
 // SessionHint is one session that may already be on the message's subject.
@@ -94,7 +98,9 @@ type SessionHint struct {
 	ID   string
 	Name string
 	// Host is a mirrored session's host ("" for an agent).
-	Host   string
+	Host string
+	// Where is a mirrored session's window (mirror.Where), "" for an agent.
+	Where  string
 	Titles []HintTitle
 }
 
@@ -159,6 +165,9 @@ func renderHints(h Hints, nonce string, routing bool) string {
 		if s.Host != "" {
 			head += " @ " + fence.Sanitize(fence.Cut(s.Host, maxHintNameRunes))
 		}
+		if s.Where != "" {
+			head += " — where: " + fence.Sanitize(fence.Cut(s.Where, maxHintWhereRunes))
+		}
 		lines := []string{head}
 		for i, t := range s.Titles {
 			if i == MaxHintTitles {
@@ -212,6 +221,9 @@ func renderAuthor(a *AuthorHint, nonce string) string {
 	status, window := "No online mirrored window shows that session now, so muster could not hand it this message.", "offline"
 	if a.Online {
 		status, window = "An online mirrored window shows that session, but muster's route to it did not go through.", "online"
+		if a.Where != "" {
+			window = "online, where: " + fence.Sanitize(fence.Cut(a.Where, maxHintWhereRunes))
+		}
 	}
 	preface := AuthorHeader + " — muster's own record, NOT part of the message: the host's hook (POST /api/pr-sessions) " +
 		"reported that the session below " + action + " (" + tool + "), most recently at " + a.LastSeen.UTC().Format(time.RFC3339) + ". " + status +

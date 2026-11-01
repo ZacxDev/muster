@@ -48,7 +48,7 @@ func askSuggestSubject(id int64) string { return "ask:" + strconv.FormatInt(id, 
 // once, without suggestions), the views, and — in the background — its
 // suggested replies.
 func (s *Server) askFiled(a attention.Ask) {
-	s.attentionNotify(a.Owner, askItem(a))
+	s.attentionNotify(a.Owner, s.askItemNow(s.attentionPrincipal(context.Background(), a.Owner), a))
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	s.startAskSuggestions(a)
 }
@@ -122,7 +122,8 @@ func (s *Server) suggestAsk(ctx context.Context, a attention.Ask) {
 // again). Once delivered, the ask is read again: one settled meanwhile — its
 // clear may have overtaken this push — is withdrawn again.
 func (s *Server) repushAsk(a attention.Ask) {
-	s.goNotify(a.Owner, push.EventAttention, attentionNotification(askItem(a), true), func(int) {
+	it := s.askItemNow(s.attentionPrincipal(context.Background(), a.Owner), a)
+	s.goNotify(a.Owner, push.EventAttention, attentionNotification(it, true), func(int) {
 		ctx, cancel := context.WithTimeout(s.attentionPrincipal(context.Background(), a.Owner), pushTargetLookupTimeout)
 		defer cancel()
 		cur, err := s.ext.Attention.Get(ctx, a.ID)
