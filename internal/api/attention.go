@@ -207,6 +207,16 @@ type attentionItem struct {
 	// choices are a held question's choice labels, listed in its push only
 	// (never in attention_list's options).
 	choices []string
+	// dictate is the microphone path an ask's answer box carries
+	// (Server.dictatePath), "" for no mic; sessionLink the ask card's "View in
+	// session" target (attentionSessionPath), "" for no link. Both are set by
+	// withAskBoxes for the pages that draw them, never by askItem: the item is
+	// built where no server is in reach (a push, attention_list).
+	dictate, sessionLink string
+	// systemAsk: an ask muster raised itself (attention.Asker.System) — a task
+	// ask, an unrouted message, a chief nudge. It names no session; a chief
+	// nudge's is found through its decision (nudgeSessionPath).
+	systemAsk bool
 }
 
 // hermesAsk is a waiting Hermes window's ask as an attention item shows it.
@@ -266,6 +276,7 @@ func askItem(a attention.Ask) attentionItem {
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
 	if a.Asker.System {
+		it.systemAsk = true
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
 		if t, ok := unroutedPushText(a.Question); ok {
 			it.pushText = t
@@ -573,6 +584,32 @@ func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 		}
 	}
 }
+
+// withAskBoxes sets what each ask's answer card draws besides its form (in
+// place): the microphone (every ask, when dictation is on) and, with links,
+// its "View in session" link (attentionSessionPath — the ask page's own rule,
+// so the card and the page cannot disagree). ctx is the owner's principal.
+//
+// links is false on a session page's asks block (attention_asker.go): those
+// asks are that very session's, and a link to the page already open is noise.
+func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links bool) {
+	owner := requestOwner(ctx)
+	dict := s.dictatePath()
+	for i := range items {
+		if items[i].Kind != attentionKindAsk {
+			continue
+		}
+		items[i].dictate = dict
+		if links && owner > 0 {
+			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
+		}
+	}
+}
+
+// askViewInSession is the label of an ask's link to the session it is about:
+// the operator's own words, the same on the ask page and the Asks list, for a
+// mirrored session and an agent alike.
+const askViewInSession = "View in session"
 
 // --- changes: SSE, push, waiters ---------------------------------------------
 
@@ -952,6 +989,7 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string, focus int64) {
 	items, err := s.attentionItems(r.Context())
 	s.withFocus(r.Context(), items)
+	s.withAskBoxes(r.Context(), items, true)
 	if err != nil {
 		s.logger.Printf("attention: page: %v", err)
 		if problem == "" {
@@ -989,6 +1027,9 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	b.WriteString(attentionPageScript)
+	// The answer boxes' mic (once, after the list it reveals; the live
+	// refresh's new boxes are shown by ui.DictateRevealEvent).
+	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	if s.ext.Plugins != nil || s.chiefNudgesOn() {
 		b.WriteString(asksPageScript)
 	}
@@ -1011,6 +1052,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("attention: items: %v", err)
 	}
 	s.withFocus(r.Context(), items)
+	s.withAskBoxes(r.Context(), items, true)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := time.Now()
@@ -1100,12 +1142,23 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 				}
 				b.WriteString("</div>\n")
 			}
-			b.WriteString(`<label for="answer-` + id + `" class="text-xs text-fg2">Your answer</label>
-<textarea id="answer-` + id + `" name="answer" rows="2" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + flowsInputClass + `"></textarea>
-<button type="submit" class="` + flowsButtonClass + `">Answer</button>
+			// 🔴 EVERY ID IS THE ASK'S OWN: the list draws one box per ask, and the
+			// mic finds its box and note by id (ui.DictateControlHTML). The mic
+			// FILLS the box at the caret; Answer is still the only send.
+			input := "answer-" + id
+			// The mic sits on the box's row, at its bottom edge, as on every other
+			// message box; its note is under the row.
+			b.WriteString(`<label for="` + input + `" class="text-xs text-fg2">Your answer</label>
+<div class="flex items-end gap-2"><textarea id="` + input + `" name="answer" rows="2" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + flowsInputClass + ` min-w-0 flex-1"></textarea>` +
+				ui.DictateControlHTML(it.dictate, input, input+"-dictate-note", input+"-dictate") + `</div>
+` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "") + `<button type="submit" class="` + flowsButtonClass + `">Answer</button>
 </form>
 <form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"` + formAttrs + `>` + back + `<button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>
 `)
+			if it.sessionLink != "" {
+				b.WriteString(`<a href="` + esc(it.sessionLink) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-attention-session>` + askViewInSession + `</a>
+`)
+			}
 		case attentionKindSession:
 			b.WriteString(hermesAskHTML(it))
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>

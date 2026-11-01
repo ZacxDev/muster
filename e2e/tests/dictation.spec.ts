@@ -571,3 +571,162 @@ test('a server with no speech-to-text service draws no microphone', async ({ bro
     await ctx.close();
   }
 });
+
+// THE ASKS' ANSWER BOXES (internal/api attention_ask_page.go, attention.go):
+// the ask page's pinned box and every ask card on the Asks list carry the same
+// mic. It FILLS the box at the caret and sends nothing; Answer is the send.
+// The asker is a seeded agent (e2e/pluginfix), so each card also links the
+// asking agent's page as "View in session".
+//
+// The list is refreshed by its own script (ui.AttentionLiveScript's innerHTML,
+// no htmx), so the two things only a browser can show are driven here: a
+// refresh's NEW card has its mic shown (ui.DictateRevealEvent), and a refresh
+// that lands while a mic records (the box empty and never focused) is held
+// back, so the recording's text still has its box (askBusyFunc).
+//
+// 🔴 /transcribe IS ANSWERED IN THE PAGE (page.route), for the rate-limit
+// reason the view-switch tests give: the route allows twelve recordings per
+// user per minute and this file already spends ten. The real route and the
+// fake service behind it are what the message-box tests above drive.
+test.describe('an ask’s answer boxes', () => {
+  const stamp = Date.now().toString(36);
+  const asker = 'e2e-dict-asker-' + stamp;
+  const fix = (...args: string[]) =>
+    execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
+  let made = false;
+  test.beforeAll(() => {
+    fix('agent', '1', asker, 'e2e-dict-asker-token-not-a-real-one-' + stamp);
+    made = true;
+  });
+  // The agent's asks go with it.
+  test.afterAll(() => {
+    if (made) fix('cleanup', '1', asker);
+  });
+  const ask = (q: string) => Number(fix('ask', '1', asker, q));
+
+  async function routeTranscribe(page: Page): Promise<() => number> {
+    let n = 0;
+    await page.route('**/transcribe', async (r) => {
+      if (r.request().method() !== 'POST') return r.continue();
+      n++;
+      await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${FAKE_TEXT} ` });
+    });
+    return () => n;
+  }
+
+  // answers counts the answer POSTs the page makes for ask id.
+  function answers(page: Page, id: number): () => number {
+    let n = 0;
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && new URL(r.url()).pathname === `/attention/asks/${id}/answer`) n++;
+    });
+    return () => n;
+  }
+
+  // fill is dictate() above for a routed /transcribe: the mic on the box's
+  // row, a 44px target, no sideways scroll; `please |now` → the text at the
+  // caret, the box focused, and nothing posted but the recording.
+  async function fill(page: Page, box: Box, width: number, posted: () => number, sent: () => number) {
+    const input = page.locator(box.input);
+    const mic = page.locator(box.mic);
+    await expect(mic, 'the script revealed the mic').toBeVisible();
+    const mb = (await mic.boundingBox())!;
+    const ib = (await input.boundingBox())!;
+    expect(mb.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+    expect(mb.width, 'a 44px target').toBeGreaterThanOrEqual(44);
+    expect(mb.x + mb.width, 'the mic fits the viewport').toBeLessThanOrEqual(width);
+    expect(Math.abs(mb.y + mb.height - (ib.y + ib.height)), 'the mic sits on the box’s row').toBeLessThanOrEqual(2);
+    await noHorizontalScroll(page);
+    await input.fill('please now');
+    await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));
+    const p0 = posted();
+    await mic.click();
+    await expect(mic).toHaveAttribute('data-state', 'recording');
+    await expect(input).toBeFocused();
+    await expect(page.locator(box.note)).toContainText('Recording 0:0');
+    await page.waitForTimeout(1300);
+    await mic.click();
+    await expect(input).toHaveValue(`please ${FAKE_TEXT} now`);
+    await expect(mic).toHaveAttribute('data-state', 'idle');
+    await expect(page.locator(box.note)).toBeHidden();
+    expect(posted() - p0, 'one recording posted').toBe(1);
+    expect(sent(), 'dictation answered nothing by itself').toBe(0);
+  }
+
+  for (const vp of [
+    { name: 'phone 390×844 touch', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+    { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+  ]) {
+    test.describe(vp.name, () => {
+      test.use(vp.use);
+
+      test('the ask page: the mic fills the answer box, Answer sends it', async ({ page }) => {
+        const id = ask('Which branch, ask page? ' + vp.name);
+        const posted = await routeTranscribe(page);
+        const sent = answers(page, id);
+        await signIn(page, origin);
+        await page.goto(`${origin}/attention/asks/${id}`);
+        await expect(page.locator('[data-ask-context]'), 'the ask links its asker’s session').toHaveText('View in session');
+        await expect(page.locator('[data-ask-context]')).toHaveAttribute('href', `/agents/${asker}`);
+        await fill(page, { input: '#ask-input', mic: '#ask-dictate', note: '#ask-dictate-note', send: '[data-ask-send]' }, vp.use.viewport.width, posted, sent);
+        await page.locator('[data-ask-send]').click();
+        await expect(page.locator('[data-ask-answer]')).toContainText(`please ${FAKE_TEXT} now`);
+        expect(sent(), 'answered once').toBe(1);
+      });
+
+      test('the Asks list: each card’s own mic, revealed again by a live refresh; Answer sends it', async ({ page }) => {
+        const mine = ask('Which branch, list? ' + vp.name);
+        const other = ask('Dismissed elsewhere? ' + vp.name);
+        const posted = await routeTranscribe(page);
+        const sent = answers(page, mine);
+        await signIn(page, origin);
+        await page.goto(origin + '/attention');
+        const card = page.locator(`#ask-${mine}`);
+        await expect(card.locator('[data-attention-session]')).toHaveText('View in session');
+        await expect(card.locator('[data-attention-session]')).toHaveAttribute('href', `/agents/${asker}`);
+        const mic = page.locator(`#answer-${mine}-dictate`);
+        await expect(mic).toBeVisible();
+        // Another card's mic is its own control, addressing its own box.
+        await expect(page.locator(`#answer-${other}-dictate`)).toHaveAttribute('data-dictate-input', `answer-${other}`);
+        // A live refresh (the other ask dismissed elsewhere) REPLACES the list;
+        // the new card's mic must be shown, not left hidden.
+        await mic.evaluate((el) => ((el as unknown as { __old: boolean }).__old = true));
+        const r = await page.request.post(`${origin}/attention/asks/${other}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
+        expect(r.status(), await r.text()).toBeLessThan(400);
+        await expect(page.locator(`#ask-${other}`), 'the refresh ran').toHaveCount(0);
+        expect(await mic.evaluate((el) => !!(el as unknown as { __old?: boolean }).__old), 'the card was redrawn').toBe(false);
+        await expect(mic, 'the redrawn card’s mic is shown').toBeVisible();
+        await fill(page, { input: `#answer-${mine}`, mic: `#answer-${mine}-dictate`, note: `#answer-${mine}-dictate-note`, send: '' }, vp.use.viewport.width, posted, sent);
+        await card.getByRole('button', { name: 'Answer', exact: true }).click();
+        await expect.poll(sent, { message: 'answered' }).toBe(1);
+        await expect
+          .poll(async () => (await page.request.get(`${origin}/attention/asks/${mine}`)).text())
+          .toContain(`please ${FAKE_TEXT} now`);
+      });
+    });
+  }
+
+  test('a refresh waits while a card’s mic records into its empty box', async ({ page }) => {
+    const mine = ask('Held while recording?');
+    const other = ask('Dismissed mid-recording?');
+    await routeTranscribe(page);
+    await signIn(page, origin);
+    await page.goto(origin + '/attention');
+    const mic = page.locator(`#answer-${mine}-dictate`);
+    const input = page.locator(`#answer-${mine}`);
+    await expect(mic).toBeVisible();
+    await expect(input).not.toBeFocused();
+    await mic.click();
+    await expect(mic).toHaveAttribute('data-state', 'recording');
+    // The queue changes while recording: the page hears it (asks:changed is
+    // dispatched before the busy check) but must not swap the list.
+    const heard = page.evaluate(() => new Promise<void>((res) => document.addEventListener('asks:changed', () => res(), { once: true })));
+    const r = await page.request.post(`${origin}/attention/asks/${other}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
+    expect(r.status(), await r.text()).toBeLessThan(400);
+    await heard;
+    await page.waitForTimeout(500);
+    await expect(page.locator(`#ask-${other}`), 'the list was not swapped mid-recording').toHaveCount(1);
+    await mic.click();
+    await expect(input, 'the recording landed in its box').toHaveValue(FAKE_TEXT);
+  });
+});

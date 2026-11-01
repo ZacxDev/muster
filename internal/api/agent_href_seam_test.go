@@ -290,8 +290,10 @@ var agentHrefCallLedger = map[string]int{
 	"AgentPath ← internal/ui/agent_href.go:AgentSessionHref": 2,
 	// Push-tap targets stay BARE on purpose (#237): a notification is resolved
 	// when TAPPED, and the bare URL picks the latest session at that moment.
-	"AgentPath ← internal/api/attention_push_target.go:Server.askingAgentPath": 1,
-	"AgentPath ← internal/api/push_task.go:Server.notifyAgentRunning":          1,
+	// askingAgentHref passes session 0 for an agent's own ask (bare, as
+	// before) and the conversation a chief nudge's ask is about for that one.
+	"AgentSessionHref ← internal/api/attention_push_target.go:Server.askingAgentHref": 1,
+	"AgentPath ← internal/api/push_task.go:Server.notifyAgentRunning":                 1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the

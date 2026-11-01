@@ -82,13 +82,21 @@ const AskerAsksID = "asker-asks"
 const askerAsksTrigger = "sse:attention_queue.changed from:body delay:50ms, every 60s"
 
 // askBusyFunc is THE "the owner is typing an answer" rule, in JavaScript:
-// focus in a field of the list, or any non-blank answer box in it. Every live
+// focus in a field of the list, any non-blank answer box in it, or a mic of
+// the list recording or transcribing (dictate.go's data-state). Every live
 // refresh of an answer form asks it first, so a refresh never eats a
 // half-typed answer (AttentionLiveScript; the agent page's htmx refresh,
 // askerAsksBusy).
+//
+// 🔴 THE MIC IS PART OF "TYPING". A mic can be tapped without the box ever
+// taking focus, and the recording is then for a box nothing else marks busy: a
+// refresh that replaced it mid-recording left the recorder addressing a box no
+// longer on the page, and the transcript was dropped (dictate.go inserts only
+// into a box still connected).
 const askBusyFunc = `function (list) {
     var a = document.activeElement;
     if (a && list.contains(a) && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) return true;
+    if (list.querySelector('[data-dictate][data-state="recording"], [data-dictate][data-state="busy"]')) return true;
     var fields = list.querySelectorAll('textarea');
     for (var i = 0; i < fields.length; i++) if (fields[i].value.trim() !== '') return true;
     return false;
@@ -119,7 +127,12 @@ func AttentionLiveScript(listID, src, event string) string {
     fetch(src, { credentials: 'same-origin' }).then(function (r) {
       return r.ok ? r.text() : null;
     }).then(function (html) {
-      if (html !== null && !busy(list)) list.innerHTML = html; else if (html !== null) pending = true;
+      if (html !== null && !busy(list)) {
+        list.innerHTML = html;
+        // No htmx swap, so no htmx:load: the mics the new content draws are
+        // shown by this event (dictate.go's DictateRevealEvent).
+        try { list.dispatchEvent(new Event(` + strconv.Quote(DictateRevealEvent) + `, { bubbles: true })); } catch (e) {}
+      } else if (html !== null) pending = true;
     }).catch(function () {});
   }
   list.addEventListener('focusout', function () { if (pending) setTimeout(refresh, 0); });

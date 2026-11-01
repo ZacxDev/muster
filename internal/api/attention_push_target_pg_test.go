@@ -62,8 +62,10 @@ func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 			continue
 		}
 		w := f.call(t, http.MethodGet, loc, nil, f.operator())
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `href="`+c.context+`" class=`) {
-			t.Errorf("%s's ask page (%d) does not link its context %q:\n%s", c.key, w.Code, c.context, w.Body.String())
+		// "View in session" for a mirrored session and an agent alike (the
+		// operator's words; it read "Open the session/agent for context").
+		if w.Code != http.StatusOK || askPageLink(w.Body.String()) != c.context {
+			t.Errorf("%s's ask page (%d) does not link its context %q as %q:\n%s", c.key, w.Code, c.context, askViewInSession, w.Body.String())
 		}
 	}
 	// ws's @1 starts waiting at a prompt after the host's first observation

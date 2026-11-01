@@ -23,9 +23,10 @@ import (
 // to Asks and who is asking; the question, large; the asker's options as
 // full-width buttons that answer at once; the suggested replies
 // (attention_suggest.go) as chips that FILL the answer box — as the rendered
-// view's chips do, nothing is sent until Answer; a link to the session or
-// agent for context; and the answer box pinned to the bottom, above the
-// keyboard and inside the safe-area insets.
+// view's chips do, nothing is sent until Answer; a "View in session" link to
+// the asking session or agent (for a chief nudge's ask, the session the nudge
+// is about); and the answer box pinned to the bottom, above the keyboard and
+// inside the safe-area insets, with the microphone (dictate.go) beside Answer.
 //
 // 🔴 THE QUEUE'S OWN ROUTES. Its forms post to the queue's answer and dismiss
 // routes (handleAttentionAnswerForm, handleAttentionCancelForm) with `return`
@@ -123,7 +124,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 
 	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: source + " is asking"}
 	if a.Status == attention.Open {
-		app.Composer = askComposerHTML(r, a)
+		app.Composer = askComposerHTML(r, a, s.dictatePath())
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
 }
@@ -136,11 +137,9 @@ func (s *Server) askContextLinks(ctx context.Context, a attention.Ask, it attent
 	const cls = `inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-accent underline`
 	var links []string
 	if p := s.attentionSessionPath(ctx, a.Owner, it); p != "" {
-		label := "Open the session for context"
-		if it.card.agentID > 0 {
-			label = "Open the agent for context"
-		}
-		links = append(links, `<a href="`+esc(p)+`" class="`+cls+`" data-ask-context>`+label+`</a>`)
+		// "View in session" for a mirrored session and an agent alike (the
+		// operator's words); the Asks list's cards say the same (withAskBoxes).
+		links = append(links, `<a href="`+esc(p)+`" class="`+cls+`" data-ask-context>`+askViewInSession+`</a>`)
 	}
 	if a.TaskID > 0 {
 		links = append(links, `<a href="/tasks/`+strconv.FormatInt(a.TaskID, 10)+`" class="`+cls+`" data-ask-task>Open task #`+strconv.FormatInt(a.TaskID, 10)+`</a>`)
@@ -203,8 +202,12 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 }
 
 // askComposerHTML is an open ask's answer box, pinned to the bottom of its
-// page: free text, posted to the queue's answer route, back to this page.
-func askComposerHTML(r *http.Request, a attention.Ask) string {
+// page: free text, posted to the queue's answer route, back to this page —
+// with the microphone (ui.DictateControlHTML) beside Answer when dictate is
+// not "". The mic FILLS the box at the caret; only Answer sends. Its script is
+// the composer's LAST child: the composer is drawn after the page's content,
+// and the script's first run reveals only the mics already parsed.
+func askComposerHTML(r *http.Request, a attention.Ask, dictate string) string {
 	esc := html.EscapeString
 	id := strconv.FormatInt(a.ID, 10)
 	note, ok := composerNotice(r)
@@ -216,13 +219,13 @@ func askComposerHTML(r *http.Request, a attention.Ask) string {
 		}
 	}
 	return `<p id="ask-note" role="status" aria-live="polite" class="px-1 pb-2 text-sm text-fg"` + noteAttrs + `>` + esc(note) + `</p>
-<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer>
+` + ui.DictateNoteHTML(dictate, "ask-dictate-note", "px-1 pb-2") + `<form id="ask-answer" method="POST" action="` + attentionPath + `/asks/` + id + `/answer" hx-boost="false" class="flex items-end gap-2" data-attention-answer>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
 <label for="ask-input" class="sr-only">Your answer</label>
 <textarea id="ask-input" name="answer" rows="1" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" enterkeyhint="send" placeholder="` +
 		"Your answer…" + `" class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl bg-s1 px-4 py-2.5 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-fg2 focus:outline-none focus:ring-2 focus:ring-focus"></textarea>
-<button type="submit" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90" data-ask-send>Answer</button>
-</form>`
+` + ui.DictateControlHTML(dictate, "ask-input", "ask-dictate-note", "ask-dictate") + `<button type="submit" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90" data-ask-send>Answer</button>
+</form>` + ui.DictateScriptHTML(dictate)
 }
 
 // askPageScript: a suggestion chip fills the answer box (and grows it to its

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -17,7 +18,8 @@ import (
 //
 // 🔴 ONE CONTROL AND ONE SCRIPT, on every message box: the shared composer
 // (mirrorComposer — a mirrored session's Rendered and Terminal views and an
-// agent's Terminal view) and the agent chat form (agentChatPane). Each draws
+// agent's Terminal view), the agent chat form (agentChatPane), and the Asks
+// queue's answer boxes (through DictateControlHTML, below). Each draws
 // dictateControl beside its own textarea; dictateScript is document-wide and
 // finds the box through the button's data-dictate-input, so there is no second
 // copy to drift.
@@ -38,6 +40,54 @@ const TranscribePath = "/transcribe"
 // DictateMaxSeconds is how long one recording may run; the page stops it there
 // and transcribes what it has.
 const DictateMaxSeconds = 120
+
+// DictateRevealEvent is the event a page dispatches (bubbling) on content it
+// put on the page by itself — innerHTML, not an htmx swap, so no htmx:load —
+// for dictateScript to show the mics in it. The Asks list's and a mirrored
+// view's asks block's live refresh (AttentionLiveScript) is that case: without
+// it every mic a refresh drew stayed hidden.
+const DictateRevealEvent = "muster:dictate-reveal"
+
+// THE ANSWER BOXES' MICROPHONE (operator ask: "integrate the stt input option
+// for replying to asks"). The Asks queue's answer boxes — the ask page's
+// pinned composer, every ask card on /attention, and the same cards in a
+// session page's asks block — are built as raw HTML strings in internal/api,
+// so they cannot hold a g.Node. These three render THE SAME control, note and
+// script to strings: one control, never a second copy of its markup or of the
+// recorder. Each is "" when path is "" (no speech-to-text service), exactly
+// as the gomponents are nothing.
+//
+// The ids are the caller's: every box on a page needs its own input, note and
+// button ids (the Asks list draws one box per ask), and the script finds the
+// box and note through the button's data-dictate-input / data-dictate-note.
+
+// DictateControlHTML is dictateControl rendered to a string.
+func DictateControlHTML(path, inputID, noteID, buttonID string) string {
+	return nodeString(dictateControl(path, inputID, noteID, buttonID))
+}
+
+// DictateNoteHTML is dictateNote rendered to a string.
+func DictateNoteHTML(path, noteID, class string) string {
+	return nodeString(dictateNote(path, noteID, class))
+}
+
+// DictateScriptHTML is dictateScript rendered to a string: once per page,
+// AFTER every mic the page draws at load (its first run reveals the mics then
+// on the page; a later one is shown by htmx:load or DictateRevealEvent).
+func DictateScriptHTML(path string) string {
+	return nodeString(dictateScript(path))
+}
+
+// nodeString renders n ("" for nil). A gomponents render into a strings.Builder
+// cannot fail.
+func nodeString(n g.Node) string {
+	if n == nil {
+		return ""
+	}
+	var b strings.Builder
+	_ = n.Render(&b)
+	return b.String()
+}
 
 // dictateIdleLabel and friends are the button's accessible names per state.
 const (
@@ -312,6 +362,8 @@ func dictateScript(path string) g.Node {
     if (active && e.detail && e.detail.target && e.detail.target.contains(active.p.btn)) abandon();
   });
   document.addEventListener('htmx:load', function (e) { reveal(e.target); });
+  // Content a page's own script put in place (DictateRevealEvent).
+  document.addEventListener(` + strconv.Quote(DictateRevealEvent) + `, function (e) { reveal(e.target); });
   window.addEventListener('pagehide', abandon);
   // The Rendered|Terminal switch (view_swap.go) does not unload the view it
   // takes off screen: it tells that view's window 'muster:view-hidden' — the
