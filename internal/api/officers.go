@@ -82,6 +82,9 @@ type OfficersConfig struct {
 	ShipGitHub func(officers.Officer) officership.GitHub
 	ShipHosts  [2]string
 	ShipHTTP   *http.Client
+	// ShipCI replaces a ci_logs officer's cluster reader (tests); nil is the
+	// in-cluster API with a token minted per call for its service_account.
+	ShipCI func(officers.Officer) officership.CIReader
 	// NoShipResume skips resuming rollout watches at boot (tests).
 	NoShipResume bool
 }

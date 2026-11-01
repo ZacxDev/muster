@@ -464,6 +464,7 @@ listing and again at dispatch):
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
+| `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
@@ -774,6 +775,125 @@ old commit (which would leave `base` ahead of production for the next tag to
 re-ship). Schema is never reverted. A rollback release is never itself rolled
 back (a failure escalates), and a release holding an automatic revert is
 never reverted automatically.
+
+### `officer_ci_logs {pr}`
+
+Why CI failed on the officer's own pull request, for a CI that runs as
+**Tekton PipelineRuns in a Kubernetes namespace** and posts commit statuses
+with no link (the instance has no cluster access and no toolchain, so
+otherwise it sees only "red" and escalates). Read-only; muster-server answers
+it, with a short-lived token of a dedicated ServiceAccount, minted per call. Declared per officer, beside `ship`
+(which it needs):
+
+```json
+{"id": "engineering:example-web", "repo": "example-org/example-web", "ship": {…},
+ "ci_logs": {"namespace": "example-ci", "pipeline": "example-pr-check",
+             "service_account": "muster-ci-logs"}}
+```
+
+| field | default | |
+|---|---|---|
+| `namespace` | **required** | The one namespace the PipelineRuns live in. |
+| `pipeline` | **required** | The PipelineRuns' `tekton.dev/pipeline` label. |
+| `service_account` | **required** | The dedicated read-only ServiceAccount, in muster-server's OWN namespace, that the reads run as. For each call muster mints it a token with a TokenRequest (`expirationSeconds` 600, the API server's default audience) and builds the reading client from that token alone. 🔴 There is no default, and muster's own token is never used for the reads (its grant is far wider): it only mints. |
+| `commit_label` | `pipeline.jquad.rocks/pr.branch.commit` | The PipelineRun label whose value is the pull request's head sha (the pipeline-trigger-operator sets it). |
+| `pr_param` | `PR_NUMBER` | The PipelineRun param whose value is the pull request number. |
+| `max_bytes` | `16384` | The excerpt text one call returns, at most (2048–65536). |
+
+A `ci_logs` source that cannot be built at boot (not in a cluster) does not
+stop the server: the tool answers that it is unavailable,
+and muster-server logs why.
+
+What it does, read fresh on every call:
+
+1. **Ownership** — the same rule as `officer_merge_pr`: the head is a
+   `<prefix>…` branch of `repo` itself and the author is the officer App's
+   bot. Anything else is refused (`head_branch` / `author`) before any
+   cluster read.
+2. **The run** — it lists PipelineRuns in `namespace` with the selector
+   `tekton.dev/pipeline=<pipeline>,<commit_label>=<head sha>` (the head GitHub
+   reports NOW, so a push moves the answer to the new run) and keeps those
+   whose labels say so and whose `pr_param` is this pull request; the newest
+   wins and older retries are counted (`other_runs_for_this_head`).
+3. **The failures**: every TaskRun of that run whose `tekton.dev/pipelineRun`
+   label names it and whose `Succeeded` condition is `False`. For each, it reads
+   the logs of the failed steps' `step-<name>` containers only. When no step is
+   marked failed, as on a timeout, it reads every step. It never reads a sidecar.
+   Each log is read from its END: the API is asked for the last 20,000 lines,
+   and the last 8 MiB of those are kept, starting at a line boundary.
+4. **The excerpt**:
+   - the failing-test lines (`--- FAIL`, `FAIL …`, `✘`, `N failed`) and the
+     error lines (`ERROR`, `SQLSTATE`, `panic:`, `Error:`, `x_test.go:N:` and
+     `file.go:N:M:` messages, `timed out`, …), deduplicated with repeats
+     counted;
+   - then the step's last 15 lines.
+
+   ANSI colour is removed, each line is clipped at 400 bytes, and all excerpts
+   together stay within `max_bytes`, split evenly between the failed tasks. A
+   task's `truncated` is true when anything was cut: the log read dropped the
+   log's start (over 8 MiB, or 20,000 lines), the byte cap dropped lines, or an
+   emitted line was clipped.
+
+**Secret safety.** The log is split into lines at `\n` and at a lone `\r` (a
+progress line overwritten in place). These lines are withheld whole:
+
+- a token shape: GitHub (`ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`,
+  `github_pat_…`), AWS (`AKIA…`), Slack (`xox…-`), `sk-…`, a JWT (`eyJ….….`);
+- framing that carries a credential:
+  - an `Authorization:` header, or `Bearer` followed by 12+ token characters;
+  - a `Cookie:` or `Set-Cookie:` header;
+  - a URL query `sig=`, `signature=`, `x-amz-signature=`, `x-goog-signature=`,
+    `token=` or `access_token=`;
+  - a `--password`, `--token`, `--secret`, `--api-key`, `--access-token` or
+    `--client-secret` flag with a value;
+  - `-p VALUE` / `-pVALUE` on a `docker`, `podman`, `helm`, `oras`, `skopeo`
+    or `buildah` `login`, or on `mysql`, `mysqladmin`, `mysqldump` or
+    `mariadb`;
+  - `basic auth: <base64>`;
+- every `set -x` trace line (`+ …`, `++ …`). A trace is never the failure's
+  message, and it is where the shell prints expanded secrets;
+- a credential-named key given a value of 6+ characters that is not a path.
+  The credential word has to END the key.
+  - The long words are `password`, `passwd`, `secret`, `token`, `api_key`,
+    `access_key` and `private_key`. They may follow any prefix:
+    `AWS_SECRET_ACCESS_KEY=`, `API_TOKEN=`, `OAUTH_CLIENT_SECRET:`,
+    `npm_config__authToken=`.
+  - The short words are `pat`, `pass`, `pw`, `auth` and `credential(s)`. They
+    must be a whole segment of the key: `GITHUB_PAT=`, `DB_PASS:`,
+    `{"auth":"…"}`, `credentials:`.
+  - The separator is `=` or `:`, with optional quotes (`"KEY":"value"`).
+  - So `file_path:`, `output_path:`, `tokenizer:` and `compat=` are not
+    credential keys. Neither is a value that is a path: `Secret:
+    default/my-secret` names a Kubernetes Secret, it doesn't hold one;
+- an environment assignment at the start of a line: an UPPER-case
+  `NAME=value`, or any name after `export`. A lowercase `key=value` on its own
+  is a logfmt/slog field and passes (`level=error msg=…`, `exit_code=1`). A
+  credential key inside such a line is still withheld, as in `level=error
+  password=…`;
+- a line that is nothing but 40+ characters of base64;
+- every line of a PEM block, from `-----BEGIN …-----` through
+  `-----END …-----` (headers included), and to the end of the log when the
+  END never came.
+
+A URL's `user:password@`, with or without a user, is masked to `***@`.
+
+This is a pattern filter, not a proof. A secret in a shape not listed here,
+such as a bare value on a line of its own that isn't base64, passes. Keeping
+secrets out of the CI output is the CI's job, and the byte cap bounds what
+any miss can carry.
+
+It never answers empty: `state` is `no_run` (no run for this head yet, or
+pruned), `running`, `succeeded` (with "no failure found") or `failed`, and
+`note` says what was found. The officer's first message tells it to call this
+before escalating a red check.
+
+**RBAC.** The ServiceAccount needs, in `namespace` only, exactly what the
+tool calls: `list` on `pipelineruns` and `taskruns` (`tekton.dev`) and `get`
+on `pods/log` — nothing else (no `watch`, no Secrets, no `exec`). muster's
+own ServiceAccount needs `create` on `serviceaccounts/token` with
+`resourceNames: [<service_account>]` in its own namespace, and nothing more
+for this. A mint that fails (that grant missing) is a `ci_runs` refusal. No
+long-lived token Secret is involved.
 
 ### Kill switches
 
