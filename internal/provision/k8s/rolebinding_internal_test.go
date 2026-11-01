@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -413,7 +414,14 @@ func TestMusterNeverBindsItselfIntoANamespaceItDidNotCreate(t *testing.T) {
 		Labels: map[string]string{"app.kubernetes.io/managed-by": "Helm"}}}
 	otherInstall := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "elsewhere-beta",
 		Labels: instanceLabels("beta")}}
-	f := newRBACFake(t, foreign, otherInstall)
+	// An installation whose prefix NESTS under this one's ("muster-agent-staging-"
+	// under "muster-agent-"), for its instance "beta": a prefix match admits it.
+	nested := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "muster-agent-staging-beta",
+		Labels: instanceLabels("beta")}}
+	// Muster-labelled, under the prefix, but with no instance label.
+	unlabelled := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "muster-agent-gamma",
+		Labels: map[string]string{labelManagedBy: managedBy, labelName: nameValue}}}
+	f := newRBACFake(t, foreign, otherInstall, nested, unlabelled)
 	d := bindingDriver(t, f.cs)
 	ctx := context.Background()
 
@@ -496,6 +504,77 @@ func TestTheRoleBindingIsOwnershipCheckedAndCorrected(t *testing.T) {
 				if a.GetVerb() == "create" {
 					t.Errorf("%s created despite the refusal", a.GetResource().Resource)
 				}
+			}
+		})
+	}
+}
+
+// One agent namespace whose binding muster refuses to use must not blind List
+// for the fleet: the healthy instance is listed as usual, the refused one is
+// REPORTED (PhaseUnknown, the refusal as its Reason) rather than skipped — an
+// observed list without it would read as "not running", which the
+// stopped-agent reaper acts on — and List returns no error.
+func TestOneRefusedRoleBindingDoesNotBlindListForTheFleet(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rb   *rbacv1.RoleBinding
+		want error
+	}{
+		{"divergent", &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: NamespaceRoleBindingName,
+			Namespace: "muster-agent-beta", Labels: instanceLabels("beta")},
+			RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "an-older-role"},
+			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: testSAName, Namespace: testSANamespace}}},
+			provision.ErrDivergentSpec},
+		{"foreign", &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: NamespaceRoleBindingName,
+			Namespace: "muster-agent-beta"},
+			RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "view"}},
+			provision.ErrNotManaged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortPropagation(t, time.Second)
+			legacy, plain := perInstanceDriver(t)
+			for _, n := range []string{"alpha", "beta"} {
+				if err := legacy.Create(context.Background(), isolatedSpec(n)); err != nil {
+					t.Fatalf("legacy Create %s: %v", n, err)
+				}
+			}
+			if _, err := plain.RbacV1().RoleBindings("muster-agent-beta").Create(context.Background(), tc.rb,
+				metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			f := enforceRBAC(plain)
+			d := bindingDriver(t, f.cs)
+
+			got, err := d.List(context.Background())
+			if err != nil {
+				t.Fatalf("List = %v, want no error: one refused namespace must not fail the fleet's list", err)
+			}
+			byName := map[string]provision.Instance{}
+			for _, inst := range got {
+				byName[inst.Ref.Name] = inst
+			}
+			if len(got) != 2 {
+				t.Fatalf("List = %+v, want exactly alpha and beta", got)
+			}
+			if a, ok := byName["alpha"]; !ok || a.Phase == provision.PhaseUnknown {
+				t.Errorf("alpha = %+v, want listed from its Deployment", a)
+			}
+			b, ok := byName["beta"]
+			if !ok || b.Phase != provision.PhaseUnknown || b.Group != "muster-agent-beta" ||
+				!strings.Contains(b.Reason, "RoleBindingRefused") {
+				t.Errorf("beta = %+v, want reported as PhaseUnknown in muster-agent-beta with the refusal as its Reason", b)
+			}
+			// The seam the reaper reads: a stored-stopped agent over this entry
+			// must NOT compute as stopped (it would be due for destruction).
+			if st := agents.ComputeStatus(agents.Agent{Name: "beta", Status: agents.StatusStopped}, &b); st == agents.StatusStopped {
+				t.Errorf("ComputeStatus over the refused entry = %q: the reaper would treat a live agent as stopped", st)
+			}
+			// Get of THAT agent still returns the refusal itself.
+			if _, err := d.Get(context.Background(), provision.Ref{Name: "beta"}); !errors.Is(err, tc.want) {
+				t.Errorf("Get beta = %v, want %v", err, tc.want)
+			}
+			if denied := f.deniedList(); len(denied) != 0 {
+				t.Errorf("requests outside the narrow grant: %v", denied)
 			}
 		})
 	}

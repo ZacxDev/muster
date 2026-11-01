@@ -153,10 +153,19 @@ How it behaves:
   error naming the mismatch: a roleRef is immutable and muster holds no `delete`
   on RoleBindings, so delete it by hand
   (`kubectl -n <namespace> delete rolebinding muster-provisioner`) and muster
-  writes the configured one at the agent's next operation.
+  writes the configured one at the agent's next operation. **Renaming the
+  ClusterRole (or muster's ServiceAccount) therefore means deleting every
+  agent's `muster-provisioner` binding by hand.** Until you do, each such agent
+  appears in the agent list with an unknown state (its card reads
+  provisioning, and the stopped-agent reaper leaves it alone), the server log
+  names its namespace once per list, and actions on that agent fail with the
+  mismatch. Every other agent is unaffected.
 - **Delete** removes the namespace, and the RoleBinding with it.
-- **The agent list** reads each agent namespace on its own (muster-labelled,
-  under the prefix) instead of listing Deployments and Pods cluster-wide.
+- **The agent list** reads each agent namespace on its own instead of listing
+  Deployments and Pods cluster-wide. A namespace counts only when it is
+  muster-labelled and named exactly `<prefix><its agent label>`, so another
+  installation's namespaces are never read (or bound into), even when its prefix
+  starts with yours.
 - **Refused at boot** with any driver but `kubernetes`, and with
   `MUSTER_AGENT_NAMESPACE_SHARED` (there is no namespace to bind in: grant muster
   a Role in the shared namespace instead). A ClusterRole name that does not

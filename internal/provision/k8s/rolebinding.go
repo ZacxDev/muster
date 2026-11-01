@@ -268,22 +268,27 @@ func (d *Driver) waitForAccess(ctx context.Context, instance, ns string) error {
 }
 
 // instanceNamespaces lists the per-instance namespaces List reads in binding
-// mode: muster-owned (managedSelector), under this driver's prefix, and not
-// terminating.
+// mode: muster-owned (managedSelector), not terminating, and named EXACTLY what
+// this driver would name the instance its label records
+// (ns.Name == namespaceFor(instance label)).
 //
-// 🔴 THE PREFIX FILTER IS A SAFETY PROPERTY, NOT TIDINESS. A second muster
+// 🔴 THE NAME CHECK IS A SAFETY PROPERTY, NOT TIDINESS. A second muster
 // installation on the same cluster labels its namespaces the same way, and
-// namespaceAccess writes a RoleBinding into every namespace List reads — so an
-// unfiltered list would bind THIS installation into the other's namespaces.
+// List writes a RoleBinding into every namespace it reads — so a looser filter
+// binds THIS installation into the other's namespaces. A prefix match is that
+// looser filter: with prefix `muster-agent-` it admits `muster-agent-staging-beta`,
+// which an installation with prefix `muster-agent-staging-` created for its
+// instance `beta`. Requiring the round trip from the instance label rejects
+// it, and a namespace with no instance label at all.
 func (d *Driver) instanceNamespaces(ctx context.Context) ([]corev1.Namespace, error) {
 	list, err := d.cfg.Client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 	if err != nil {
 		return nil, blind("list namespaces", err)
 	}
-	prefix := d.namespacePrefix()
 	out := make([]corev1.Namespace, 0, len(list.Items))
 	for _, ns := range list.Items {
-		if !strings.HasPrefix(ns.Name, prefix) || !owned(ns.Labels) || terminating(&ns) {
+		instance := ns.Labels[labelInstance]
+		if instance == "" || ns.Name != d.namespaceFor(instance) || !owned(ns.Labels) || terminating(&ns) {
 			continue
 		}
 		out = append(out, ns)

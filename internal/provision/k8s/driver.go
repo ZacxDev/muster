@@ -1312,9 +1312,23 @@ func (d *Driver) List(ctx context.Context) ([]provision.Instance, error) {
 // each per-instance namespace (instanceNamespaces) is read on its own, through
 // its RoleBinding, which namespaceAccess writes if it is missing.
 //
-// ⚠ ONE UNREADABLE NAMESPACE FAILS THE WHOLE LIST, as ErrBlind: a partial
-// answer would report the unreadable instances as not running, which is the
-// "empty when blind" failure List's contract forbids.
+// ⚠ TWO KINDS OF PER-NAMESPACE FAILURE, AND THEY ARE HANDLED DIFFERENTLY:
+//
+//   - A namespace that cannot be READ (an API failure: a list, or a RoleBinding
+//     request that errors) fails the whole List, as ErrBlind. A partial answer
+//     would report the unreadable instances as not running, which is the
+//     "empty when blind" failure List's contract forbids.
+//   - A namespace whose RoleBinding muster REFUSES to use — a stale one of
+//     muster's (ErrDivergentSpec, e.g. after the ClusterRole was renamed) or a
+//     stranger's (ErrNotManaged) — does NOT fail the List. That state is
+//     permanent until an operator deletes the binding, and failing the List on
+//     it would blind live status and the stopped-agent reaper for the WHOLE
+//     fleet over one agent. The instance is REPORTED, not skipped, as
+//     PhaseUnknown with the refusal as its Reason (and logged, naming the
+//     namespace and the remedy). 🔴 Skipping it would be worse than failing:
+//     an observed list without the instance reads as "not running", and the
+//     reaper destroys a stored-stopped agent it does not see live. Get and
+//     Destroy of that agent still return the refusal itself.
 func (d *Driver) listPerNamespace(ctx context.Context) ([]provision.Instance, error) {
 	namespaces, err := d.instanceNamespaces(ctx)
 	if err != nil {
@@ -1323,12 +1337,20 @@ func (d *Driver) listPerNamespace(ctx context.Context) ([]provision.Instance, er
 	out := []provision.Instance{}
 	for _, nsObj := range namespaces {
 		ns := nsObj.Name
-		instance := nsObj.Labels[labelInstance]
-		if instance == "" {
-			instance = strings.TrimPrefix(ns, d.namespacePrefix())
-		}
+		instance := nsObj.Labels[labelInstance] // non-empty: instanceNamespaces requires it
 		if err := d.ensureRoleBinding(ctx, instance, ns); err != nil {
-			return nil, err
+			if !errors.Is(err, provision.ErrDivergentSpec) && !errors.Is(err, provision.ErrNotManaged) {
+				return nil, err
+			}
+			d.log.Printf("k8s: list: cannot read namespace %q, reporting instance %q as unknown: %v", ns, instance, err)
+			out = append(out, provision.Instance{
+				Ref:    provision.Ref{Name: instance},
+				Driver: d.Driver(),
+				Group:  ns,
+				Phase:  provision.PhaseUnknown,
+				Reason: "RoleBindingRefused: " + err.Error(),
+			})
+			continue
 		}
 		deps, err := d.cfg.Client.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 		if err != nil {
