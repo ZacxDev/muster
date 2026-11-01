@@ -229,6 +229,33 @@ func TestThePromptFencesTheSessionAndShowsTheIDs(t *testing.T) {
 	}
 }
 
+// TestOnlyAnAskStallsPromptCarriesTheSeveralItemsGuidance: the to-do-list
+// sentence is in an ask-stall's prompt, after the classifier's verdict, and in
+// no other; every prompt tells the chief its reason may reach the owner.
+func TestOnlyAnAskStallsPromptCarriesTheSeveralItemsGuidance(t *testing.T) {
+	const several = "When the message ends with several things waiting on the owner, write ONE question"
+	const reason = "- reason: one short line in your own words. It may be shown to the owner, so, like the question, it never pastes the session's text."
+	plain := Prompt(Session{Title: "Fix CI"}, Msg{Text: "done; next steps for you: a, b"}, nil, 12*time.Minute, Hint{}, "0123456789abcdef")
+	stall := Prompt(Session{Title: "Fix CI"}, Msg{Text: "done; next steps for you: a, b"}, nil, 12*time.Minute,
+		Hint{AskStall: true, Label: LabelNeedsInput, AskScore: 0.95}, "0123456789abcdef")
+	if strings.Contains(plain, several) {
+		t.Errorf("a prompt under the threshold carries the several-items guidance:\n%s", plain)
+	}
+	verdict := strings.Index(stall, "A classifier judged")
+	if i := strings.Index(stall, several); i < 0 || verdict < 0 || i < verdict {
+		t.Errorf("the ask-stall's prompt lacks the guidance after the verdict (%d, %d):\n%s", i, verdict, stall)
+	}
+	fence := strings.Index(stall, "<<<stall-check")
+	if i := strings.Index(stall, several); i > fence {
+		t.Errorf("the guidance is inside the fence")
+	}
+	for _, p := range []string{plain, stall} {
+		if !strings.Contains(p, reason) {
+			t.Errorf("no reason guidance:\n%s", p)
+		}
+	}
+}
+
 // TestPhraseBoundariesAreUnicodeAware: both sides are NFC-normalised, and
 // combining marks and apostrophes are word characters — so a quote cut inside
 // a decomposed accented word, inside a Devanagari word (before its virama), or
@@ -263,7 +290,7 @@ func TestTheGenericAskIsRecognisedAndRelaysNoOption(t *testing.T) {
 		IsGenericChoice([]string{"Dismiss", "Open session"}, "Dismiss") {
 		t.Fatal("IsGenericChoice")
 	}
-	if q := GenericAskQuestion("Fix CI"); q != "Fix CI is waiting on you. Its last turn looks like it asked you something." {
+	if q := GenericAskQuestion("Fix CI", ""); q != "Fix CI is waiting on you. Its last turn looks like it asked you something." {
 		t.Fatalf("%q", q)
 	}
 }

@@ -1119,7 +1119,7 @@ func TestChiefNudgeAnAskStallKeepsANudgeOnlyForPermissionWithAGoodQuote(t *testi
 	f.state(func(s *mirror.AgentState) { s.Since = nudgeSince + 60_000 })
 	f.pass(t)
 	if d := f.decisions(t)[0]; d.Decision != chiefnudge.DecisionAsk || d.Outcome != chiefnudge.OutcomeWouldAsk ||
-		d.Question != chiefnudge.GenericAskQuestion("") || !chiefnudge.IsGenericAsk(d.Options) || !strings.Contains(d.Reason, "the chief said leave it") {
+		d.Question != chiefnudge.GenericAskQuestion("", "it is done") || !chiefnudge.IsGenericAsk(d.Options) || !strings.Contains(d.Reason, "the chief said leave it") {
 		t.Fatalf("an ask-stall the chief would leave: %+v", d)
 	}
 }
@@ -1174,14 +1174,16 @@ func TestChiefNudgeAWindowRelayIsTiedToItsStall(t *testing.T) {
 	}
 }
 
-// TestChiefNudgeTheGenericAskCarriesNoSessionText: an ask-stall the chief
-// would leave raises the GENERIC ask — muster's sentence and the focus title,
-// not a word of the session's — and choosing one of its options relays nothing.
-func TestChiefNudgeTheGenericAskCarriesNoSessionText(t *testing.T) {
+// TestChiefNudgeMusterPutsNoSessionTextInTheGenericAsk: an ask-stall the
+// chief would leave, with NO reason, raises the GENERIC ask — muster's sentence
+// and the focus title, not a word of the session's — and choosing one of its
+// options relays nothing. (With a reason, the chief's own words are added:
+// chief_nudge_generic_read_pg_test.go.)
+func TestChiefNudgeMusterPutsNoSessionTextInTheGenericAsk(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	j := withJev(t, f)
 	j.set(200, 0.90, 0.05, 0.05)
-	f.gw.set(`{"decision":"leave","reason":"done"}`)
+	f.gw.set(`{"decision":"leave"}`)
 	f.pass(t)
 	d := f.one(t)
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
