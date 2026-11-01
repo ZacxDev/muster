@@ -12,6 +12,8 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // NamespaceRoleBindingConfig turns on the least-privilege RBAC layout: instead
@@ -71,16 +73,15 @@ const NamespaceRoleBindingName = "muster-provisioner"
 //
 //   - namespaces: get, list, create, delete — ensureNamespace, Destroy, and
 //     List's enumeration of the per-instance namespaces;
-//   - rolebindings.rbac.authorization.k8s.io: get, create, delete — the binding
-//     itself (delete only to replace one whose roleRef or subject is no longer
-//     the configured one; see ensureRoleBinding);
+//   - rolebindings.rbac.authorization.k8s.io: get, create — the binding itself
+//     (no delete: a stale one is refused, not replaced; see ensureRoleBinding);
 //   - clusterroles.rbac.authorization.k8s.io: bind, resourceNames [ClusterRole].
 //
 // TestTheNarrowClusterGrantCoversAnInstancesWholeLife measures it off an
 // instance's whole life against an RBAC-enforcing fake.
 var NamespaceRoleBindingClusterRBAC = map[string][]string{
 	"namespaces":   {"get", "list", "create", "delete"},
-	"rolebindings": {"get", "create", "delete"},
+	"rolebindings": {"get", "create"},
 	"clusterroles": {"bind"},
 }
 
@@ -173,10 +174,11 @@ func terminating(ns *corev1.Namespace) bool {
 // 🔴 IT REFUSES A CO-NAMED BINDING MUSTER DID NOT WRITE, with ErrNotManaged,
 // for upsertOwned's reason: its subject and roleRef are somebody else's choice.
 //
-// ⚠ A BINDING WHOSE roleRef OR SUBJECT IS NOT THE CONFIGURED ONE (the
-// ClusterRole renamed, muster's ServiceAccount renamed) IS DELETED AND CREATED
-// AGAIN: roleRef is immutable, and doing the subject the same way keeps
-// `update` out of the cluster-wide grant.
+// ⚠ A BINDING OF MUSTER'S WHOSE roleRef OR SUBJECT IS NOT THE CONFIGURED ONE
+// (the ClusterRole renamed, muster's ServiceAccount renamed) IS REFUSED, with
+// provision.ErrDivergentSpec naming the mismatch. roleRef is immutable, and
+// replacing it would need `delete` on rolebindings cluster-wide — a right this
+// layout deliberately does not grant — so an operator deletes it by hand.
 func (d *Driver) ensureRoleBinding(ctx context.Context, instance, ns string) error {
 	want := d.renderRoleBinding(instance, ns)
 	rbs := d.cfg.Client.RbacV1().RoleBindings(ns)
@@ -204,19 +206,15 @@ func (d *Driver) ensureRoleBinding(ctx context.Context, instance, ns string) err
 		return fmt.Errorf("apply rolebinding %s: %w", want.Name,
 			notManagedAction("rolebinding", want.Name, ns, cur.Labels))
 	}
-	if cur.RoleRef == want.RoleRef && reflect.DeepEqual(cur.Subjects, want.Subjects) {
-		return nil
+	if cur.RoleRef != want.RoleRef || !reflect.DeepEqual(cur.Subjects, want.Subjects) {
+		return fmt.Errorf("%w: rolebinding %q in namespace %q binds %s %q to %v, but muster is configured to bind "+
+			"ClusterRole %q to %v. roleRef is immutable and muster holds no delete on rolebindings, so it will not "+
+			"replace it: delete the binding by hand (kubectl -n %s delete rolebinding %s) and muster writes the "+
+			"configured one on the agent's next operation",
+			provision.ErrDivergentSpec, want.Name, ns, cur.RoleRef.Kind, cur.RoleRef.Name, cur.Subjects,
+			want.RoleRef.Name, want.Subjects, ns, want.Name)
 	}
-	uid := cur.UID
-	if err := rbs.Delete(ctx, want.Name, metav1.DeleteOptions{
-		Preconditions: &metav1.Preconditions{UID: &uid},
-	}); err != nil && !apierrors.IsNotFound(err) {
-		return roleBindingFailed("delete", ns, err)
-	}
-	if _, err := rbs.Create(ctx, want, metav1.CreateOptions{}); err != nil {
-		return roleBindingFailed("create", ns, err)
-	}
-	return d.waitForAccess(ctx, instance, ns)
+	return nil
 }
 
 // roleBindingFailed attributes a failed RoleBinding request. A 403 names the

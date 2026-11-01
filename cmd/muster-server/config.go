@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/api/validation/path"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
@@ -2214,9 +2213,9 @@ func (c config) validateProvisioner() error {
 
 // validateNamespaceClusterRole refuses MUSTER_AGENT_NAMESPACE_CLUSTERROLE where
 // nothing would act on it — any driver but kubernetes, or the shared layout,
-// where muster creates no namespace to bind itself in — and a value that cannot
-// be a ClusterRole name. Each refusal is an armed switch that would otherwise
-// boot and do nothing.
+// where muster creates no namespace to bind itself in. Each refusal is an armed
+// switch that would otherwise boot and do nothing. (A name that is not a
+// ClusterRole's surfaces at the first dispatch, from waitForAccess, naming it.)
 func (c config) validateNamespaceClusterRole() error {
 	role := c.AgentNamespaceClusterRole
 	if role == "" {
@@ -2230,10 +2229,6 @@ func (c config) validateNamespaceClusterRole() error {
 		return fmt.Errorf("%s is set with %s=1: in the shared layout muster creates no namespace to bind itself "+
 			"in; grant muster a Role in %s instead, and unset %s",
 			envAgentNSClusterRole, envAgentNSShared, envAgentNamespace, envAgentNSClusterRole)
-	}
-	if msgs := path.IsValidPathSegmentName(role); len(msgs) > 0 || strings.ContainsAny(role, " \t") {
-		return fmt.Errorf("invalid %s %q: not a ClusterRole name (%s)", envAgentNSClusterRole, role,
-			strings.Join(msgs, "; "))
 	}
 	return nil
 }

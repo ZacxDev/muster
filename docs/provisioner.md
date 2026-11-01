@@ -112,7 +112,7 @@ rules:
     verbs: [get, list, create, delete]
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [rolebindings]
-    verbs: [get, create, delete]
+    verbs: [get, create]
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [clusterroles]
     verbs: [bind]
@@ -149,13 +149,19 @@ How it behaves:
   restart muster, and only then remove the old cluster-wide ClusterRoleBinding.
 - **A binding muster did not write**, under the name `muster-provisioner`, is
   refused, never adopted. One of muster's with another ClusterRole or subject
-  (you renamed the role) is deleted and written again.
+  (you renamed the role, or muster's ServiceAccount) is refused too, with an
+  error naming the mismatch: a roleRef is immutable and muster holds no `delete`
+  on RoleBindings, so delete it by hand
+  (`kubectl -n <namespace> delete rolebinding muster-provisioner`) and muster
+  writes the configured one at the agent's next operation.
 - **Delete** removes the namespace, and the RoleBinding with it.
 - **The agent list** reads each agent namespace on its own (muster-labelled,
   under the prefix) instead of listing Deployments and Pods cluster-wide.
 - **Refused at boot** with any driver but `kubernetes`, and with
   `MUSTER_AGENT_NAMESPACE_SHARED` (there is no namespace to bind in: grant muster
-  a Role in the shared namespace instead).
+  a Role in the shared namespace instead). A ClusterRole name that does not
+  exist is not caught at boot: the first dispatch fails after the propagation
+  wait, naming it.
 - **Outside agent namespaces:** a deploy-key pool's source Secret is read from
   muster's own namespace (`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`). Under this
   layout, grant `get` on `secrets` there with a Role and RoleBinding of its own.
@@ -164,8 +170,10 @@ How it behaves:
 cluster-wide, because agent namespaces are created at dispatch. So muster can
 still bind **itself** to that one ClusterRole in **any** namespace, and reach
 that namespace's Secrets that way: two deliberate, audited writes rather than a
-standing right, but not a boundary. Kubernetes RBAC cannot restrict a grant by
-namespace name. To close it, add an admission policy, for example:
+standing right, but not a boundary. (It holds no `delete` or `update` on
+RoleBindings, so it cannot remove or rewrite anyone else's.) Kubernetes RBAC
+cannot restrict a grant by namespace name. To close it, add an admission
+policy, for example:
 
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -178,14 +186,14 @@ spec:
     resourceRules:
       - apiGroups: [rbac.authorization.k8s.io]
         apiVersions: ["*"]
-        operations: [CREATE, UPDATE]
+        operations: [CREATE, UPDATE, DELETE]
         resources: [rolebindings]
   matchConditions:
     - name: is-muster
       expression: request.userInfo.username == "system:serviceaccount:<muster's namespace>:<muster's ServiceAccount>"
   validations:
     - expression: request.namespace.startsWith("devpod-")   # = MUSTER_AGENT_NAMESPACE_PREFIX
-      message: muster may only write RoleBindings in its agent namespaces
+      message: muster may only write or delete RoleBindings in its agent namespaces
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

@@ -23,7 +23,6 @@ func TestTheNamespaceClusterRoleIsRefusedWhereNothingWouldActOnIt(t *testing.T) 
 	}{
 		{"noop driver", func(c *config) { c.AgentProvisioner = provisionerNoop }, "only the kubernetes driver"},
 		{"shared layout", func(c *config) { c.AgentNamespaceShared, c.AgentNamespace = true, "agents" }, envAgentNSShared},
-		{"not a name", func(c *config) { c.AgentNamespaceClusterRole = "a/b" }, "not a ClusterRole name"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := ok

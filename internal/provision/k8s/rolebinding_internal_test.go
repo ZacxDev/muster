@@ -437,7 +437,8 @@ func TestMusterNeverBindsItselfIntoANamespaceItDidNotCreate(t *testing.T) {
 }
 
 // A co-named RoleBinding muster did not write is refused, never adopted; one
-// of muster's with a stale roleRef is replaced.
+// of muster's with a stale roleRef or subject is refused too, never replaced
+// (the narrow grant holds no delete on rolebindings).
 func TestTheRoleBindingIsOwnershipCheckedAndCorrected(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "muster-agent-alpha", Labels: instanceLabels("alpha")}}
 	t.Run("foreign", func(t *testing.T) {
@@ -454,25 +455,50 @@ func TestTheRoleBindingIsOwnershipCheckedAndCorrected(t *testing.T) {
 			t.Errorf("the foreign binding was changed: %+v", got.RoleRef)
 		}
 	})
-	t.Run("stale roleRef", func(t *testing.T) {
-		shortPropagation(t, time.Second)
-		rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: NamespaceRoleBindingName, Namespace: ns.Name,
-			Labels: instanceLabels("alpha")},
-			RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "an-older-role"},
-			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: testSAName, Namespace: testSANamespace}}}
-		f := newRBACFake(t, ns.DeepCopy(), rb)
-		d := bindingDriver(t, f.cs)
-		if _, err := d.Get(context.Background(), provision.Ref{Name: "alpha"}); !errors.Is(err, provision.ErrNotFound) {
-			t.Fatalf("Get = %v, want ErrNotFound (no deployment) — after the binding was corrected", err)
-		}
-		got, err := f.cs.RbacV1().RoleBindings(ns.Name).Get(context.Background(), NamespaceRoleBindingName, metav1.GetOptions{})
-		if err != nil || got.RoleRef.Name != testClusterRole {
-			t.Fatalf("binding = %+v, %v; want roleRef %s", got, err, testClusterRole)
-		}
-		if denied := f.deniedList(); len(denied) != 0 {
-			t.Errorf("requests outside the narrow grant: %v", denied)
-		}
-	})
+	for _, tc := range []struct {
+		name     string
+		roleRef  string
+		subjects []rbacv1.Subject
+	}{
+		{"stale roleRef", "an-older-role",
+			[]rbacv1.Subject{{Kind: "ServiceAccount", Name: testSAName, Namespace: testSANamespace}}},
+		{"stale subject", testClusterRole,
+			[]rbacv1.Subject{{Kind: "ServiceAccount", Name: "an-older-sa", Namespace: testSANamespace}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: NamespaceRoleBindingName, Namespace: ns.Name,
+				Labels: instanceLabels("alpha")},
+				RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: tc.roleRef},
+				Subjects: tc.subjects}
+			f := newRBACFake(t, ns.DeepCopy(), rb)
+			d := bindingDriver(t, f.cs)
+			for _, op := range []struct {
+				name string
+				do   func() error
+			}{
+				{"Get", func() error { _, err := d.Get(context.Background(), provision.Ref{Name: "alpha"}); return err }},
+				{"Create", func() error { return d.Create(context.Background(), isolatedSpec("alpha")) }},
+			} {
+				err := op.do()
+				if !errors.Is(err, provision.ErrDivergentSpec) || errors.Is(err, provision.ErrBlind) ||
+					!strings.Contains(err.Error(), "delete the binding by hand") {
+					t.Fatalf("%s = %v, want ErrDivergentSpec (not ErrBlind) naming the by-hand fix", op.name, err)
+				}
+			}
+			got, err := f.cs.RbacV1().RoleBindings(ns.Name).Get(context.Background(), NamespaceRoleBindingName, metav1.GetOptions{})
+			if err != nil || got.RoleRef.Name != tc.roleRef || got.Subjects[0].Name != tc.subjects[0].Name {
+				t.Fatalf("binding = %+v, %v; want it left exactly as it was", got, err)
+			}
+			for _, a := range f.cs.Actions() {
+				if a.GetResource().Resource == "rolebindings" && a.GetVerb() != "get" {
+					t.Errorf("unexpected %s on rolebindings: a stale binding is refused, not replaced", a.GetVerb())
+				}
+				if a.GetVerb() == "create" {
+					t.Errorf("%s created despite the refusal", a.GetResource().Resource)
+				}
+			}
+		})
+	}
 }
 
 func TestTheLayoutIsRefusedWithTheSharedNamespace(t *testing.T) {
