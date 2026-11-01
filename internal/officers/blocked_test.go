@@ -17,8 +17,8 @@ func TestABlockedOnlyQueueWakesNobody(t *testing.T) {
 	r := newRig(t, 2, 30*time.Minute)
 	a := r.hq.AddItem(relID, "engineering.task", "task:a")
 	b := r.hq.AddItem(relID, "engineering.task", "task:b")
-	r.hq.SetBlocked(a, "T1")
-	r.hq.SetBlocked(b, "T1", "T2")
+	r.hq.SetBlocked(a, "officers_ui_v2_xpf4")
+	r.hq.SetBlocked(b, "officers_ui_v2_xpf4", "billing_split_k2m9")
 	res := r.check(t)
 	if res.Err != nil {
 		t.Fatal(res.Err)
@@ -37,7 +37,7 @@ func TestABlockedOnlyQueueDoesNotKeepAnInstanceUp(t *testing.T) {
 	r := newRig(t, 1, 30*time.Minute)
 	r.fleet.up[1], r.fleet.exists[1] = true, true
 	id := r.hq.AddItem(relID, "engineering.task", "task:a")
-	r.hq.SetBlocked(id, "T1")
+	r.hq.SetBlocked(id, "officers_ui_v2_xpf4")
 	if res := r.check(t); !res.Decision.Idle || len(res.Decision.Reprompt) != 0 {
 		t.Fatalf("an up instance, only a blocked item: idle %v, reprompt %v; want idle, no prompt", res.Decision.Idle, res.Decision.Reprompt)
 	}
@@ -51,7 +51,7 @@ func TestABlockedItemBesideAnUnblockedOneWakesOne(t *testing.T) {
 	r := newRig(t, 3, 30*time.Minute)
 	blocked := r.hq.AddItem(relID, "engineering.task", "task:a")
 	r.hq.AddItem(relID, "engineering.task", "task:b")
-	r.hq.SetBlocked(blocked, "T1")
+	r.hq.SetBlocked(blocked, "officers_ui_v2_xpf4")
 	res := r.check(t)
 	if res.Decision.Claimable != 1 || r.fleet.upCount() != 1 {
 		t.Fatalf("one blocked + one claimable, max 3: claimable %d, up %d; want 1, 1", res.Decision.Claimable, r.fleet.upCount())
@@ -62,7 +62,7 @@ func TestAnExpiredLeaseOnABlockedItemIsNotWork(t *testing.T) {
 	r := newRig(t, 1, 30*time.Minute)
 	id := r.hq.AddItem(relID, "engineering.task", "task:a")
 	r.hq.SetClaim(id, "gone-session", r.clk.Now().Add(-time.Minute))
-	r.hq.SetBlocked(id, "T1")
+	r.hq.SetBlocked(id, "officers_ui_v2_xpf4")
 	if res := r.check(t); res.Decision.Claimable != 0 || r.fleet.upCount() != 0 {
 		t.Fatalf("expired lease on a blocked item: claimable %d, up %d; want 0, 0", res.Decision.Claimable, r.fleet.upCount())
 	}
