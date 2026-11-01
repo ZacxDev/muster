@@ -463,7 +463,7 @@ listing and again at dispatch):
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
-| `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge or a release tag made by muster — see [Shipping officers](#shipping-officers) |
+| `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
@@ -529,7 +529,8 @@ open pull requests, merge its own pull requests and tag releases. It holds no
 GitHub credential for any of it. muster holds the officer's **own** GitHub App
 key, filters every write the instance sends through the connector proxy, and
 makes merges and tags itself, in two tools that check every gate at call
-time. Nothing the officer can merge changes those gates: they are muster's
+time (a third, `officer_mark_ready`, converts its own draft pull request to
+ready for review). Nothing the officer can merge changes those gates: they are muster's
 code and muster-server's environment, and the officer's App is installed on
 its one repository only.
 
@@ -614,8 +615,8 @@ connector's. It is an allowlist:
 | every read (`GET`, `HEAD`) | everything not on the left, including: |
 | `git fetch` (`git-upload-pack`) | a push updating **any** ref outside `refs/heads/<prefix>…`, so the base branch and **every tag** (one bad ref refuses the whole push) |
 | `git push` (`git-receive-pack`) to the officer's repo whose every command updates `refs/heads/<prefix>…` (create, update, force or delete) | `PUT …/pulls/{n}/merge`, `…/git/refs`, `…/git/tags`, `…/releases`, the contents API, the merges API, GraphQL, every `DELETE` |
-| `POST /repos/{repo}/pulls` with head `<prefix>…` and base `base` | a signed push, an unreadable push body, a body naming a key twice |
-| `PATCH /repos/{repo}/pulls/{n}` of its **own** pull request (`title`, `body`, `state`) | a method-override header, a query string on a write, a path with an empty, `.`, `..` or doubly encoded segment |
+| `POST /repos/{repo}/pulls` with head `<prefix>…` and base `base` (`draft: true` allowed) | a signed push, an unreadable push body, a body naming a key twice |
+| `PATCH /repos/{repo}/pulls/{n}` of its **own** pull request (`title`, `body`, `state`) | a method-override header, a query string on a write, a path with an empty, `.`, `..` or doubly encoded segment; a `PATCH …/pulls/{n}` body naming `draft` (either value, alone or with other fields, on any pull request — the refusal names [`officer_mark_ready`](#officer_mark_ready-pr)) |
 | `POST /repos/{repo}/issues/{n}/comments` on its **own** pull request | any write to another repository |
 
 A refusal is a 403 naming the rule, and the upstream sees nothing.
@@ -673,6 +674,33 @@ statement only `DROP INDEX` passes. It also refuses any `DROP … CASCADE`; `REN
 scanner that knows quoting; string literals and dollar-quoted bodies are
 scanned, so dynamic SQL in a `DO` block is seen. A destructive migration is
 a human's to write and ship.
+
+### `officer_mark_ready {pr}`
+
+Converts the officer's **own draft** pull request to ready for review — the
+one draft transition an officer may make. A shipping officer opens test-first
+pull requests as drafts (the red-before commit should not look reviewable);
+a draft is not reviewed, so `review_check` never runs on it and
+`officer_merge_pr` cannot pass. Once CI is green on the draft's head, the
+officer calls this tool. Read fresh, ALL of these must hold:
+
+1. the pull request is open, not merged, and **a draft** (an already-ready one
+   is refused: there is no ready → draft, and no no-op write);
+2. it is into `base` of `repo`, from a `<prefix>` branch of `repo`, authored
+   by the officer App's bot — the same own-pull-request gates as
+   `officer_merge_pr` (one function, `Gates.ownPR`).
+
+Then muster runs GitHub's GraphQL `markPullRequestReadyForReview` mutation on
+the node id it read in 1, with the officer App's token, and fails unless
+GitHub answers that pull request with `isDraft: false`. No stage gate (a
+`shadow` officer's pull requests are reviewed too) and no HQ gate — it is an
+edit of the officer's own pull request, as the push gate's `PATCH` is.
+
+**Why a tool and not a push-gate rule:** GitHub's REST `PATCH …/pulls/{n}`
+takes no `draft` field (only `POST …/pulls` does), so forwarding
+`{"draft": false}` would not convert anything; GraphQL is the documented way,
+and the push gate refuses all of GraphQL. The App's existing Pull requests
+write permission covers the mutation.
 
 ### `officer_tag_release {item_id?}`
 

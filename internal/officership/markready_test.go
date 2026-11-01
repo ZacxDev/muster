@@ -172,16 +172,19 @@ func TestRESTMarkReadyRunsTheGraphQLMutation(t *testing.T) {
 			t.Fatalf("%s: sent %+v", c.name, *s)
 		}
 	}
-	for _, c := range []struct{ name, answer string }{
-		{"GraphQL errors", `{"errors":[{"message":"Resource not accessible by integration"}]}`},
-		{"still a draft", `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"number":42,"isDraft":true}}}}`},
-		{"another pull request", `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"number":43,"isDraft":false}}}}`},
-		{"no pull request", `{"data":{"markPullRequestReadyForReview":null}}`},
+	for _, c := range []struct{ name, answer, says string }{
+		// GitHub's shape for a refused mutation: 200, data null, errors. The
+		// error must carry GitHub's reason, so the officer sees why.
+		{"GraphQL errors", `{"data":{"markPullRequestReadyForReview":null},"errors":[{"message":"Resource not accessible by integration"}]}`,
+			"Resource not accessible by integration"},
+		{"still a draft", `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"number":42,"isDraft":true}}}}`, "draft true"},
+		{"another pull request", `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"number":43,"isDraft":false}}}}`, "#43"},
+		{"no pull request", `{"data":{"markPullRequestReadyForReview":null}}`, "no pull request"},
 	} {
 		srv, _ := serve(c.answer)
 		g := &REST{Base: srv.URL, Repo: fxRepo, Token: tok, HTTP: srv.Client()}
-		if err := g.MarkReady(context.Background(), 42, fxNode); err == nil {
-			t.Errorf("%s: no error", c.name)
+		if err := g.MarkReady(context.Background(), 42, fxNode); err == nil || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: err = %v, want one saying %q", c.name, err, c.says)
 		}
 		srv.Close()
 	}

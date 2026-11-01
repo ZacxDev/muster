@@ -31,7 +31,9 @@ import (
 //   - git fetch (POST …/git-upload-pack), which writes nothing;
 //   - POST /repos/{repo}/pulls with head <prefix>… and base = the base branch;
 //   - PATCH /repos/{repo}/pulls/{n} of the officer's OWN pull request (its
-//     App's bot authored it, its head is <prefix>…), title/body/state only;
+//     App's bot authored it, its head is <prefix>…), title/body/state only —
+//     never `draft`, which REST PATCH does not take: draft -> ready is the
+//     officer_mark_ready tool (GraphQL, after the same own-PR gates);
 //   - POST /repos/{repo}/issues/{n}/comments on its OWN pull request.
 //
 // Every other method, path and host shape is refused — the merge endpoint, the
@@ -80,7 +82,7 @@ func (g *PushGate) Rejected(caller connectors.Caller) {
 }
 
 func refused(format string, args ...any) error {
-	return fmt.Errorf("%w: %s (merging and tagging go through the %s and %s tools; nothing else writes)",
+	return fmt.Errorf("%w: %s (merging and tagging go through the %s and %s tools; nothing else merges or tags)",
 		connectors.ErrGateRefused, fmt.Sprintf(format, args...), officers.ToolMergePR, officers.ToolTagRelease)
 }
 
@@ -316,7 +318,13 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 		})
 	case r.Method == http.MethodPatch && len(tail) == 2 && tail[0] == "pulls" && isNumber(tail[1]):
 		n, _ := strconv.Atoi(tail[1])
-		return g.admitJSON(r, map[string]bool{"title": true, "body": true, "state": true}, func(map[string]json.RawMessage) error {
+		return g.admitJSON(r, map[string]bool{"title": true, "body": true, "state": true, "draft": true}, func(m map[string]json.RawMessage) error {
+			if _, ok := m["draft"]; ok {
+				// Before the own-PR read: refused whatever the PR, value or
+				// other fields, and the refusal says how to do it instead.
+				return refused("the field \"draft\": GitHub's REST PATCH pulls does not convert a draft; mark your own draft ready "+
+					"for review with the %s{pr} tool (there is no ready -> draft)", officers.ToolMarkReady)
+			}
 			return g.ownPR(r.Context(), n)
 		})
 	case r.Method == http.MethodPost && len(tail) == 3 && tail[0] == "issues" && isNumber(tail[1]) && tail[2] == "comments":
