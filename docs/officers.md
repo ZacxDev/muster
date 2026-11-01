@@ -353,7 +353,10 @@ One loop runs every officer. Each pass, for one officer:
 The decision (`officers.Decide`, a pure function):
 
 - **Claimable** is the open items plus claimed items whose lease has expired
-  (the contract makes those claimable by anyone). **Held** is claimed items
+  (the contract makes those claimable by anyone), less any item HQ marks
+  `blocked: true` (its task waits on unfinished tasks, so HQ refuses the
+  claim): a queue of only blocked items wakes nothing and keeps nothing up. An
+  HQ that does not send the field counts every item. **Held** is claimed items
   with a live lease held by one of this officer's instances.
 - **Busy** (anything claimable or held): want *held-by-up-instances +
   claimable* instances up, at most `max_instances`, and start the
@@ -475,7 +478,11 @@ item would hit that. When HQ's 409 names the calling instance as `held_by`,
 `officer_claim` heartbeats with the requested lease instead and answers with
 the item, `already_yours: true` and the note "already yours — lease renewed"
 (if the lease ran out between the two calls, the claim is retried once). A 409
-naming another instance is returned as a refusal. At most 10 `links`. `outcome` is `done`,
+naming another instance is returned as a refusal. **Claiming a blocked item**
+(HQ's 409 `code: "blocked"`, `blocked_by`) is not a refusal either: nothing
+was claimed, and the instance gets a plain result — `claimed: false`,
+`blocked: true`, `blocked_by` and the note "not claimed: item N is blocked by
+…; claim another open item". At most 10 `links`. `outcome` is `done`,
 `escalated` or `no_action`; `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
 returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
 409 on a claim names the holder), and an outage as "try again in a minute".

@@ -153,7 +153,9 @@ type Decision struct {
 // Decide is the loop's whole policy, as a pure function.
 //
 //   - Claimable = open items, plus claimed items whose lease has expired (the
-//     contract makes those claimable by anyone).
+//     contract makes those claimable by anyone) — less any item HQ marks
+//     Blocked: its claim is refused, so it is not work, and an instance woken
+//     or kept up for it would claim nothing.
 //   - Held = claimed items with a live lease whose holder is one of this
 //     officer's instances.
 //   - Busy (Claimable > 0 or Held > 0): want min(MaxInstances, held-by-up +
@@ -180,11 +182,17 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		return InstanceState{}, false
 	}
 	var d Decision
-	d.Claimable = len(obs.Open)
+	for _, it := range obs.Open {
+		if !it.Blocked {
+			d.Claimable++
+		}
+	}
 	heldByUp := map[string]bool{}
 	for _, it := range obs.Claimed {
 		if !it.LeaseLive(now) {
-			d.Claimable++
+			if !it.Blocked {
+				d.Claimable++
+			}
 			continue
 		}
 		in, mine := ours(it.ClaimedBy)

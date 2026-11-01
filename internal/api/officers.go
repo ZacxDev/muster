@@ -860,6 +860,9 @@ func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item offi
 	if err == nil || !errors.As(err, &hqErr) || hqErr.Status != http.StatusConflict {
 		return body, err
 	}
+	if b := asClaimBlocked(item, err); b != nil {
+		return nil, b
+	}
 	var held struct {
 		HeldBy string `json:"held_by"`
 	}
@@ -869,7 +872,11 @@ func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item offi
 	hb, hbErr := c.Heartbeat(ctx, item, instance, lease)
 	var hbHQ *officers.HQError
 	if errors.As(hbErr, &hbHQ) && hbHQ.Status == http.StatusConflict {
-		return c.Claim(ctx, item, instance, lease)
+		body, err := c.Claim(ctx, item, instance, lease)
+		if b := asClaimBlocked(item, err); b != nil {
+			return nil, b
+		}
+		return body, err
 	}
 	if hbErr != nil {
 		return nil, hbErr
@@ -888,13 +895,74 @@ func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item offi
 	return b, nil
 }
 
+// claimBlockedError is HQ refusing a claim with 409 {code: blocked,
+// blocked_by}: the item's task waits on unfinished tasks (HQ's task ordering).
+//
+// It stays an error to the code (the claim did not happen: nothing that runs
+// on a successful claim may run), but officerToolResult turns it into a
+// NON-error result for the instance. It is not a failed call and not "another
+// instance holds it": the queue is ordered, and the instance's next step is
+// simply another item.
+type claimBlockedError struct {
+	item officers.ItemID
+	by   []officers.ItemID
+}
+
+// asClaimBlocked is err as a *claimBlockedError when it is HQ's 409
+// `code: "blocked"` on a claim of item, and nil otherwise.
+func asClaimBlocked(item officers.ItemID, err error) *claimBlockedError {
+	var hqErr *officers.HQError
+	if !errors.As(err, &hqErr) || hqErr.Status != http.StatusConflict {
+		return nil
+	}
+	var refusal struct {
+		Code      string            `json:"code"`
+		BlockedBy []officers.ItemID `json:"blocked_by"`
+	}
+	if json.Unmarshal(hqErr.Body, &refusal) != nil || refusal.Code != "blocked" {
+		return nil
+	}
+	return &claimBlockedError{item: item, by: refusal.BlockedBy}
+}
+
+func (e *claimBlockedError) Error() string {
+	return fmt.Sprintf("officers: item %s is blocked by %s", e.item, e.blockers())
+}
+
+func (e *claimBlockedError) blockers() string {
+	if len(e.by) == 0 {
+		return "unfinished tasks"
+	}
+	ids := make([]string, len(e.by))
+	for i, id := range e.by {
+		ids[i] = string(id)
+	}
+	return strings.Join(ids, ", ")
+}
+
+// result is the instance-facing answer.
+func (e *claimBlockedError) result() string {
+	by := e.by
+	if by == nil {
+		by = []officers.ItemID{}
+	}
+	return toolJSON(map[string]any{
+		"claimed": false, "blocked": true, "item_id": e.item, "blocked_by": by,
+		"note": fmt.Sprintf("not claimed: item %s is blocked by %s; claim another open item (%s lists them; an item marked blocked cannot be claimed until its blockers finish)", e.item, e.blockers(), officers.ToolItems),
+	})
+}
+
 // officerToolResult is HQ's answer as a tool result: HQ's JSON on success; a
 // structured refusal carrying HQ's status and body on a 4xx (a 409 on a claim
 // names the holder, which is what the instance needs); a plain retry-later on
-// an outage.
+// an outage. A claim on a blocked item is the one 4xx that is not a refusal
+// (claimBlockedError).
 func officerToolResult(name string, body []byte, err error) string {
 	var hqErr *officers.HQError
+	var blocked *claimBlockedError
 	switch {
+	case errors.As(err, &blocked):
+		return blocked.result()
 	case err == nil:
 		if !json.Valid(body) {
 			return toolErr("HQ answered %s with something that is not JSON", name)
