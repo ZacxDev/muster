@@ -604,12 +604,12 @@ test.describe('an ask’s answer boxes', () => {
   });
   const ask = (q: string) => Number(fix('ask', '1', asker, q));
 
-  async function routeTranscribe(page: Page): Promise<() => number> {
+  async function routeTranscribe(page: Page, body = ` ${FAKE_TEXT} `): Promise<() => number> {
     let n = 0;
     await page.route('**/transcribe', async (r) => {
       if (r.request().method() !== 'POST') return r.continue();
       n++;
-      await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${FAKE_TEXT} ` });
+      await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body });
     });
     return () => n;
   }
@@ -705,6 +705,67 @@ test.describe('an ask’s answer boxes', () => {
       });
     });
   }
+
+  // dismissElsewhere dismisses ask id from outside the page and resolves once
+  // the page has HEARD the change (asks:changed is dispatched before the
+  // refresh's busy check), so what follows is the refresh's decision.
+  async function dismissElsewhere(page: Page, id: number) {
+    const heard = page.evaluate(() => new Promise<void>((res) => document.addEventListener('asks:changed', () => res(), { once: true })));
+    const r = await page.request.post(`${origin}/attention/asks/${id}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
+    expect(r.status(), await r.text()).toBeLessThan(400);
+    await heard;
+    await page.waitForTimeout(500);
+  }
+
+  // 🔴 THE PERMISSION PROMPT IS PART OF THE RECORDING. While the browser asks
+  // for the microphone (held here: getUserMedia answers only when the test
+  // says), a refresh must hold back too; otherwise it swapped the card, the
+  // grant then started a recording for a button no longer on the page, and
+  // its text was thrown away.
+  test('a refresh waits while a card’s mic is still asking for the microphone', async ({ page }) => {
+    await page.addInitScript(() => {
+      const w = window as unknown as { __gumGate: Promise<void>; __gumOpen: () => void };
+      const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      w.__gumGate = new Promise<void>((r) => (w.__gumOpen = r));
+      navigator.mediaDevices.getUserMedia = (cs) => w.__gumGate.then(() => gum(cs));
+    });
+    const mine = ask('Held while the mic opens?');
+    const other = ask('Dismissed while the mic opens?');
+    await routeTranscribe(page);
+    await signIn(page, origin);
+    await page.goto(origin + '/attention');
+    const mic = page.locator(`#answer-${mine}-dictate`);
+    const input = page.locator(`#answer-${mine}`);
+    await expect(mic).toBeVisible();
+    await mic.click();
+    await dismissElsewhere(page, other);
+    await expect(page.locator(`#ask-${other}`), 'the list was not swapped while the microphone was being opened').toHaveCount(1);
+    await page.evaluate(() => (window as unknown as { __gumOpen: () => void }).__gumOpen());
+    await expect(mic).toHaveAttribute('data-state', 'recording');
+    await page.waitForTimeout(1300);
+    await mic.click();
+    await expect(input, 'the recording landed in its box').toHaveValue(FAKE_TEXT);
+  });
+
+  // A refresh a recording held back runs when the mic is idle again — here a
+  // recording that heard nothing, so no box holds it and nothing moves focus
+  // (the refresh used to wait for a focusout that never came).
+  test('a refresh a recording held back runs once the mic is idle, nothing heard', async ({ page }) => {
+    const mine = ask('Nothing heard?');
+    const other = ask('Dismissed during the silent recording?');
+    await routeTranscribe(page, ' ');
+    await signIn(page, origin);
+    await page.goto(origin + '/attention');
+    const mic = page.locator(`#answer-${mine}-dictate`);
+    await expect(mic).toBeVisible();
+    await mic.click();
+    await expect(mic).toHaveAttribute('data-state', 'recording');
+    await dismissElsewhere(page, other);
+    await expect(page.locator(`#ask-${other}`), 'held back while recording').toHaveCount(1);
+    await mic.click();
+    await expect(page.locator(`#ask-${other}`), 'the held-back refresh ran once the mic was idle').toHaveCount(0, { timeout: 5000 });
+    await expect(page.locator(`#answer-${mine}`)).toHaveValue('');
+  });
 
   test('a refresh waits while a card’s mic records into its empty box', async ({ page }) => {
     const mine = ask('Held while recording?');

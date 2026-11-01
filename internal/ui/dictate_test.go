@@ -194,12 +194,24 @@ func TestALiveRefreshRevealsTheMicsItDraws(t *testing.T) {
 	if swap < 0 || reveal < swap {
 		t.Errorf("the refresh does not dispatch %s after its swap:\n%s", DictateRevealEvent, live)
 	}
-	if !strings.Contains(DictateScriptHTML(TranscribePath), `document.addEventListener("`+DictateRevealEvent+`", function (e) { reveal(e.target); });`) {
-		t.Errorf("the mic's script does not reveal on %s", DictateRevealEvent)
+	script := DictateScriptHTML(TranscribePath)
+	if !strings.Contains(script, `document.addEventListener("`+DictateRevealEvent+`", function (e) {
+    if (active && !active.p.btn.isConnected) abandon();
+    reveal(e.target);
+  });`) {
+		t.Errorf("the mic's script does not reveal on %s, letting go of a replaced button's recording", DictateRevealEvent)
 	}
 	for _, s := range []string{live, askerAsksBusy} {
-		if !strings.Contains(s, `[data-dictate][data-state="recording"], [data-dictate][data-state="busy"]`) {
-			t.Errorf("a refresh does not wait for a recording mic:\n%s", s)
+		if !strings.Contains(s, `[data-dictate][data-state="opening"], [data-dictate][data-state="recording"], [data-dictate][data-state="busy"]`) {
+			t.Errorf("a refresh does not wait for an opening or recording mic:\n%s", s)
 		}
+	}
+	// The mic says when it is opening, and when it is idle again; the refresh
+	// it held back listens for the second.
+	if !strings.Contains(script, "state(p, 'opening');") || !strings.Contains(script, `if (s === 'idle') { try { p.btn.dispatchEvent(new Event("`+DictateIdleEvent+`", { bubbles: true })); } catch (e) {} }`) {
+		t.Error("the mic's script does not mark opening, or does not announce idle")
+	}
+	if !strings.Contains(live, `list.addEventListener("`+DictateIdleEvent+`", function () { if (pending) setTimeout(refresh, 0); });`) {
+		t.Error("a held-back refresh does not run when the mic is idle again")
 	}
 }

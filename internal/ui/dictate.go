@@ -48,6 +48,13 @@ const DictateMaxSeconds = 120
 // it every mic a refresh drew stayed hidden.
 const DictateRevealEvent = "muster:dictate-reveal"
 
+// DictateIdleEvent is dispatched (bubbling) on a mic when it returns to idle —
+// recorded and transcribed, refused, or nothing heard. A live refresh the mic
+// held back (askBusyFunc) runs then (AttentionLiveScript): without it, a
+// recording that inserted nothing left the refresh pending until the next
+// focusout, which a mic tap never causes.
+const DictateIdleEvent = "muster:dictate-idle"
+
 // THE ANSWER BOXES' MICROPHONE (operator ask: "integrate the stt input option
 // for replying to asks"). The Asks queue's answer boxes — the ask page's
 // pinned composer, every ask card on /attention, and the same cards in a
@@ -222,6 +229,7 @@ func dictateScript(path string) g.Node {
     p.btn.setAttribute('aria-label', s === 'recording' ? M.stop : s === 'busy' ? M.busy : M.idle);
     p.btn.setAttribute('aria-pressed', s === 'recording' ? 'true' : 'false');
     p.btn.disabled = s === 'busy';
+    if (s === 'idle') { try { p.btn.dispatchEvent(new Event(` + strconv.Quote(DictateIdleEvent) + `, { bubbles: true })); } catch (e) {} }
   }
   function clock(s) { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + (s % 60 < 10 ? '0' : '') + (s % 60); }
 
@@ -294,6 +302,11 @@ func dictateScript(path string) g.Node {
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function' || type === null) { say(p, M.unsupported); return; }
     var s = { p: p, chunks: [], abandoned: false, opening: true };
     active = s;
+    // 'opening' while the browser asks for the microphone (its permission
+    // prompt can stay up for as long as the person takes): a state on the
+    // button, so a live refresh holds back for it as for a recording
+    // (askBusyFunc) and does not swap the box out from under the request.
+    state(p, 'opening');
     say(p, '');
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
       s.stream = stream;
@@ -303,7 +316,7 @@ func dictateScript(path string) g.Node {
       if (type) opts.mimeType = type;
       var rec;
       try { rec = new MediaRecorder(stream, opts); } catch (e) {
-        try { rec = new MediaRecorder(stream); } catch (e2) { active = null; release(s); say(p, M.unsupported); return; }
+        try { rec = new MediaRecorder(stream); } catch (e2) { active = null; release(s); state(p, 'idle'); say(p, M.unsupported); return; }
       }
       s.rec = rec;
       rec.addEventListener('dataavailable', function (e) { if (e.data && e.data.size > 0) s.chunks.push(e.data); });
@@ -363,7 +376,12 @@ func dictateScript(path string) g.Node {
   });
   document.addEventListener('htmx:load', function (e) { reveal(e.target); });
   // Content a page's own script put in place (DictateRevealEvent).
-  document.addEventListener(` + strconv.Quote(DictateRevealEvent) + `, function (e) { reveal(e.target); });
+  // A recording or request whose button that content replaced is let go, as
+  // an htmx swap's is: nothing may record for a box no longer on the page.
+  document.addEventListener(` + strconv.Quote(DictateRevealEvent) + `, function (e) {
+    if (active && !active.p.btn.isConnected) abandon();
+    reveal(e.target);
+  });
   window.addEventListener('pagehide', abandon);
   // The Rendered|Terminal switch (view_swap.go) does not unload the view it
   // takes off screen: it tells that view's window 'muster:view-hidden' — the

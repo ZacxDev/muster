@@ -83,7 +83,8 @@ const askerAsksTrigger = "sse:attention_queue.changed from:body delay:50ms, ever
 
 // askBusyFunc is THE "the owner is typing an answer" rule, in JavaScript:
 // focus in a field of the list, any non-blank answer box in it, or a mic of
-// the list recording or transcribing (dictate.go's data-state). Every live
+// the list opening the microphone, recording or transcribing (dictate.go's
+// data-state). Every live
 // refresh of an answer form asks it first, so a refresh never eats a
 // half-typed answer (AttentionLiveScript; the agent page's htmx refresh,
 // askerAsksBusy).
@@ -96,7 +97,7 @@ const askerAsksTrigger = "sse:attention_queue.changed from:body delay:50ms, ever
 const askBusyFunc = `function (list) {
     var a = document.activeElement;
     if (a && list.contains(a) && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) return true;
-    if (list.querySelector('[data-dictate][data-state="recording"], [data-dictate][data-state="busy"]')) return true;
+    if (list.querySelector('[data-dictate][data-state="opening"], [data-dictate][data-state="recording"], [data-dictate][data-state="busy"]')) return true;
     var fields = list.querySelectorAll('textarea');
     for (var i = 0; i < fields.length; i++) if (fields[i].value.trim() !== '') return true;
     return false;
@@ -136,6 +137,10 @@ func AttentionLiveScript(listID, src, event string) string {
     }).catch(function () {});
   }
   list.addEventListener('focusout', function () { if (pending) setTimeout(refresh, 0); });
+  // A refresh a mic held back runs once the mic is idle again (dictate.go's
+  // DictateIdleEvent); refresh asks busy() again, so a box the recording
+  // filled still holds it.
+  list.addEventListener(` + strconv.Quote(DictateIdleEvent) + `, function () { if (pending) setTimeout(refresh, 0); });
   // The stream, reconnected by the page's wake (restore.go, live.go): a
   // closed one at once, an open one silent past its heartbeat bound too. A
   // reconnect catches up with one refresh — what changed meanwhile was not
