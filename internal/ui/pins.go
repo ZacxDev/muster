@@ -5,8 +5,8 @@ import (
 )
 
 // The pin routes (internal/api pins.go). The one toggle that posts here is the
-// session switcher's (SwitcherPinToggle): a form with hx-post, answered with
-// the toggle in its new state and the bar's rows out of band. It also carries
+// session switcher's (SwitcherPinToggle, the item of the bar's ⋯ menu): a
+// form with hx-post, answered with the item in its new state and the bar's rows out of band. It also carries
 // method/action, and without JavaScript the server sends the browser back to
 // the session's page.
 const (
@@ -30,5 +30,5 @@ func mirrorPinFields(m MirrorCardView) [][2]string {
 // ⚠ A PIN IS SET AND CLEARED FROM THE SESSION SWITCHER ONLY. The retired Agents
 // list drew pinned entries first and its cards carried a pin toggle; that page
 // is gone. A pinned entry is still ordered first in the switcher (orderList)
-// and shown in its Pins view, and the bar's toggle (switcher_pin.go) pins or
+// and shown in its Pins view, and the bar's ⋯ menu (switcher_pin.go) pins or
 // unpins the page's own session.

@@ -198,7 +198,7 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 	if !strings.HasPrefix(nav, `<nav id="`+SwitcherID+`" aria-label="Switch session" data-switcher-view="recent" data-own-swipe=""`) {
 		t.Errorf("the bar's head:\n%s", nav)
 	}
-	if !strings.Contains(nav, " px-3 pb-[env(safe-area-inset-bottom)]") {
+	if !strings.Contains(nav, " pl-[max(0.25rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pb-[env(safe-area-inset-bottom)]") {
 		t.Error("the pinned composer's last row is not inset, or does not pad for the safe area")
 	}
 	toggle := strings.Index(nav, `id="switcher-toggle"`)
@@ -206,11 +206,11 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 	if toggle < 0 || first < 0 || toggle > first {
 		t.Fatalf("the toggle is not the bar's first control (toggle at %d, first row at %d)", toggle, first)
 	}
-	if !strings.Contains(nav, `<div class="flex h-11 min-w-0 items-center gap-2">`) {
+	if !strings.Contains(nav, `<div class="flex h-11 min-w-0 items-center gap-1">`) {
 		t.Error("the bar's row is not a fixed h-11")
 	}
 	for _, v := range switcherViews {
-		row := regexp.MustCompile(`<div id="` + switcherRowID(v.key) + `" data-switcher-list="` + v.key + `" data-restore-refresh="switcher-` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
+		row := regexp.MustCompile(`<div id="` + switcherRowID(v.key) + `" data-switcher-list="` + v.key + `" data-restore-refresh="switcher-` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
 		if row == nil {
 			t.Errorf("%s: no empty row saying %q in:\n%s", v.key, v.empty, nav)
 			continue
@@ -272,7 +272,7 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	// composer (measured 61→106px, a 0.0047–0.012 shift at 1280×800).
 	composeTag := view[compose:]
 	composeTag = composeTag[:strings.Index(composeTag, ">")]
-	if !strings.Contains(composeTag, switcherRoom(true)) || !strings.Contains(view, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg h-[calc(2.8125rem+env(safe-area-inset-bottom))] px-3 pb-[env(safe-area-inset-bottom)] [&amp;[data-switcher-pending]]:invisible"`) {
+	if !strings.Contains(composeTag, switcherRoom(true)) || !strings.Contains(view, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg h-[calc(2.8125rem+env(safe-area-inset-bottom))] pl-[max(0.25rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pb-[env(safe-area-inset-bottom)] [&amp;[data-switcher-pending]]:invisible"`) {
 		t.Errorf("the composer does not reserve the bar's room, or the bar is not absolute in it: %s", composeTag)
 	}
 	if !strings.Contains(view, `<body class="`+pinnedShellSwitcherClass) {

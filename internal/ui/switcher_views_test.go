@@ -100,71 +100,9 @@ func TestTheWaitingViewDrawsThePageAsCurrentAndSaysWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestThePinToggleIsOnASessionsBarOnly: a session's page — an agent's chat, a
-// mirrored window's view — draws a pin toggle for ITS session in the bar,
-// before the search: posting that subject's fields to pin (unpressed) or unpin
-// (pressed), with view=switcher and the page to come back to. A bar with no
-// page session draws none. Red at the commit
-// before: no toggle anywhere on the bar.
-func TestThePinToggleIsOnASessionsBarOnly(t *testing.T) {
-	list, mirrors := switcherFixture() // ag-two and mango:2 (@2) pinned
-	field := func(form, name string) string {
-		m := regexp.MustCompile(`<input type="hidden" name="` + name + `" value="([^"]*)">`).FindStringSubmatch(form)
-		if m == nil {
-			return "<none>"
-		}
-		return m[1]
-	}
-	toggle := func(page string) string {
-		m := regexp.MustCompile(`<form method="post" action="[^"]*" data-switcher-pin=""[^>]*>.*?</form>`).FindString(page)
-		if m == "" {
-			t.Fatalf("no pin toggle in:\n%s", page)
-		}
-		return m
-	}
-	for _, c := range []struct {
-		name    string
-		cur     SwitcherCurrent
-		action  string
-		pressed string
-		fields  map[string]string
-	}{
-		{"an unpinned agent", SwitcherCurrent{AgentID: 1}, PinPath, "false",
-			map[string]string{"kind": "agent", "agent_id": "1", "view": SwitcherPinView, "back": "/agents/ag-one"}},
-		{"a pinned agent", SwitcherCurrent{AgentID: 2}, UnpinPath, "true",
-			map[string]string{"kind": "agent", "agent_id": "2", "back": "/agents/ag-two"}},
-		{"a pinned window", SwitcherCurrent{Mirror: MirrorRef{Host: "tower", Session: "w", Window: "@2"}}, UnpinPath, "true",
-			map[string]string{"kind": "mirror", "host": "tower", "session": "w", "window": "@2"}},
-		{"an unpinned window", SwitcherCurrent{Mirror: MirrorRef{Host: "tower", Session: "w", Window: "@1"}}, PinPath, "false",
-			map[string]string{"kind": "mirror", "window": "@1"}},
-	} {
-		page := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, c.cur), true))
-		form := toggle(page)
-		if !strings.Contains(form, `action="`+c.action+`"`) || !strings.Contains(form, `hx-post="`+c.action+`"`) {
-			t.Errorf("%s: the toggle does not post to %s:\n%s", c.name, c.action, form)
-		}
-		if !strings.Contains(form, `id="`+SwitcherPinID+`" type="submit" aria-pressed="`+c.pressed+`"`) {
-			t.Errorf("%s: the toggle is not aria-pressed=%s:\n%s", c.name, c.pressed, form)
-		}
-		for k, v := range c.fields {
-			if got := field(form, k); got != v {
-				t.Errorf("%s: field %s = %q, want %q", c.name, k, got, v)
-			}
-		}
-		if strings.Index(page, `data-switcher-pin=""`) > strings.Index(page, `id="`+switcherSearchOpenID+`"`) {
-			t.Errorf("%s: the toggle is not before the search button", c.name)
-		}
-	}
-	none := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
-	if strings.Contains(none, "data-switcher-pin") || strings.Contains(none, `id="`+SwitcherPinID+`"`) {
-		t.Error("a bar with no page session draws a pin toggle")
-	}
-	// A page whose session is not among the entries draws none either.
-	gone := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{AgentID: 99}), false))
-	if strings.Contains(gone, "data-switcher-pin") {
-		t.Error("a page whose session is not listed draws a pin toggle")
-	}
-}
+// The pin's place — in the bar's ⋯ menu, never the bar itself, and none on a
+// bar with no page session — is switcher_compact_test.go's
+// (TestThePinIsInTheMoreMenu, TestNoStandalonePinInTheBar).
 
 // TestTheSidebarSearchOpensTheOnePalette: every page with the sidebar draws
 // ONE command palette (in the sidebar's root, outside the sliding panel) and a

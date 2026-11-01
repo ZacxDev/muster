@@ -23,7 +23,11 @@ import (
 // depend on sending.
 //
 // FOUR VIEWS, picked from a menu the button on the bar's left opens (it
-// animates open UPWARD, the bar being at the screen's bottom — switcherViewMenu):
+// animates open UPWARD, the bar being at the screen's bottom — switcherViewMenu).
+// The button draws only the shown view's ICON (operator ask: "we simply need
+// icons instead of showing the full text") — a clock, a bell, a pin, a grid —
+// named for a screen reader and on hover by its aria-label and title; the menu
+// lists each view's icon beside its words:
 //
 //   - Recent: the sessions the viewer last OPENED — the server-side,
 //     cross-device list internal/recents keeps (recents.go), newest first.
@@ -59,14 +63,21 @@ import (
 // text field) opens the command palette (palette.go): the same box from either
 // button, finding any session the All view holds.
 //
-// ON A SESSION'S PAGE THE BAR ALSO HAS A PIN (switcherPinToggle), beside the
-// search: it pins or unpins the page's own session — an agent, or the mirrored
-// window — in the viewer's pins (internal/pins), the set the Pins view shows.
+// ON A SESSION'S PAGE THE BAR ALSO HAS A ⋯ MENU (switcherMoreButton, at its
+// right end, after the search) holding Pin / Unpin (SwitcherPinToggle): it
+// pins or unpins the page's own session — an agent, or the mirrored window —
+// in the viewer's pins (internal/pins), the set the Pins view shows. A bar
+// with no page session draws no ⋯ (the pin is all it holds).
+//
+// 🔴 THE BAR IS TIGHT (switcherIconButtonClass, switcherPinnedPad,
+// switcherPillClass): icon buttons 40px wide (44px tall), a 4px inset, small
+// gaps and pill padding — so the row of pills, what the bar is for, gets the
+// width.
 //
 // The bar draws no "+": the task-less dispatch sheet's "+", which the retired
 // Agents list's docked bar carried, is the sidebar's (navDeployButton).
 //
-// 🔴 THE MENU AND THE PALETTE ARE POPOVERS (the top layer), so opening either
+// 🔴 THE MENUS AND THE PALETTE ARE POPOVERS (the top layer), so opening any
 // moves nothing on the page: no layout shift, and no clipping by the
 // composer's box.
 //
@@ -75,8 +86,9 @@ import (
 // filled), its row is h-11 whatever it holds (an entry, an empty-state line),
 // and a view switch only toggles which row is shown. The viewer's choice of
 // view is a per-device convenience kept in localStorage; the inline script
-// right after the bar applies it before the bar is painted, so a page that
-// loads in "All" never shows "Recent" first.
+// right after the bar applies it — the row, and the view button's icon —
+// before the bar is painted, so a page that loads in "All" never shows
+// "Recent" (or its clock) first.
 //
 // 🔴 IT SCROLLS SIDEWAYS INSIDE ITSELF (each row is overflow-x-auto, min-w-0),
 // so thirty long names never widen the page.
@@ -102,15 +114,27 @@ const (
 	SwitcherAll     = "all"
 )
 
-// switcherViews is the menu's views, in order: each view's key, its button
-// label (short: the button is a fixed 4.5rem), its menu item's words, and what
-// its row says when it holds nothing.
-var switcherViews = []struct{ key, label, menu, empty string }{
-	{SwitcherRecent, "Recent", "Recent", "No other recent sessions"},
-	{SwitcherWaiting, "Waiting", "Waiting on you", "Nothing is waiting on you"},
-	{SwitcherPins, "Pins", "Pins", "Nothing pinned"},
-	{SwitcherAll, "All", "All", "No other sessions"},
+// switcherViews is the menu's views, in order: each view's key, its short name
+// (what the view button's accessible name and title say, and its icon's
+// label — the button draws only the icon), its icon (switcherIcon*), its
+// menu item's words, and what its row says when it holds nothing.
+var switcherViews = []struct{ key, name, icon, menu, empty string }{
+	{SwitcherRecent, "Recent", switcherIconClock, "Recent", "No other recent sessions"},
+	{SwitcherWaiting, "Waiting", switcherIconBell, "Waiting on you", "Nothing is waiting on you"},
+	{SwitcherPins, "Pins", switcherIconPin, "Pins", "Nothing pinned"},
+	{SwitcherAll, "All", switcherIconGrid, "All", "No other sessions"},
 }
+
+// The views' icons, each a whole 16px inline SVG, decorative (aria-hidden):
+// what names the view is the element around it (switcherBar's icon span, the
+// menu item's words). A clock for Recent, a bell for Waiting, the pin the
+// pins use for Pins (pins.go), a grid of four for All.
+const (
+	switcherIconClock = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd"/></svg>`
+	switcherIconBell  = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 2a6 6 0 00-6 6c0 1.887-.454 3.665-1.257 5.234a.75.75 0 00.515 1.076 32.91 32.91 0 003.256.508 3.5 3.5 0 006.972 0 32.903 32.903 0 003.256-.508.75.75 0 00.515-1.076A11.448 11.448 0 0116 8a6 6 0 00-6-6zM8.05 14.943a33.54 33.54 0 003.9 0 2 2 0 01-3.9 0z" clip-rule="evenodd"/></svg>`
+	switcherIconPin   = pinIcon
+	switcherIconGrid  = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4.25 2A2.25 2.25 0 002 4.25v2.5A2.25 2.25 0 004.25 9h2.5A2.25 2.25 0 009 6.75v-2.5A2.25 2.25 0 006.75 2h-2.5zm0 9A2.25 2.25 0 002 13.25v2.5A2.25 2.25 0 004.25 18h2.5A2.25 2.25 0 009 15.75v-2.5A2.25 2.25 0 006.75 11h-2.5zm9-9A2.25 2.25 0 0011 4.25v2.5A2.25 2.25 0 0013.25 9h2.5A2.25 2.25 0 0018 6.75v-2.5A2.25 2.25 0 0015.75 2h-2.5zm0 9A2.25 2.25 0 0011 13.25v2.5A2.25 2.25 0 0013.25 18h2.5A2.25 2.25 0 0018 15.75v-2.5A2.25 2.25 0 0015.75 11h-2.5z" clip-rule="evenodd"/></svg>`
+)
 
 // switcherRecentMax is how many entries Recent shows.
 const switcherRecentMax = 8
@@ -364,13 +388,13 @@ func (s *Switcher) view(key string) []SwitcherItem {
 }
 
 // switcherBar is the bar: the view button, one row per view (Recent shown, the
-// others hidden until the script picks them), and the search button — then
-// the view menu and the search palette, both popovers. pinned: the bar spans
-// the screen and is the last thing above its edge — the last row of the
-// Rendered view's pinned composer, or of a Terminal view's column (in flow, at
-// the column's foot) — so it is inset like a composer's rows and padded by the
-// safe-area inset; otherwise (the agent page, inside its already-inset pane)
-// it lines up with the form above it.
+// others hidden until the script picks them), the search button and, on a
+// session's page, the ⋯ — then the view menu and the ⋯ menu, both popovers.
+// pinned: the bar spans the screen and is the last thing above its edge — the
+// last row of the Rendered view's pinned composer, or of a Terminal view's
+// column (in flow, at the column's foot) — so it is inset (switcherPinnedPad)
+// and padded by the safe-area insets; otherwise (the agent page, inside its
+// already-inset pane) it lines up with the form above it.
 // Nothing when s is nil.
 func switcherBar(s *Switcher, pinned bool) g.Node {
 	if s == nil {
@@ -400,16 +424,16 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 			// also land with the <nav> parsed and its row not yet, a 1px bar at
 			// the bottom that then grew to 45px and moved up by 44 (measured on a
 			// 200-message agent page under a parser stall inside the bar).
-			Class("absolute inset-x-0 bottom-0 border-t border-line bg-bg "+switcherHeight(pinned)+classIf(pinned, " px-3 pb-[env(safe-area-inset-bottom)]")+" [&[data-switcher-pending]]:invisible"),
+			Class("absolute inset-x-0 bottom-0 border-t border-line bg-bg "+switcherHeight(pinned)+classIf(pinned, " "+switcherPinnedPad)+" [&[data-switcher-pending]]:invisible"),
 			// 🔴 AND INVISIBLE UNTIL ITS SCRIPT (straight after it) HAS RUN: a
-			// frame can land mid-bar too, with the toggle's icon parsed and its
-			// label not, and the icon then moved aside for the label (0.00059 at
-			// 390px, with the title, under a parser stall there). The bar's room
-			// is reserved, so its appearing moves nothing; a <noscript> rule
-			// shows it without script.
+			// frame can land mid-bar too, with the button's Recent icon parsed and
+			// the stored view's not yet swapped in (0.00059 at 390px, with the
+			// title, under a parser stall there, when the button still had a
+			// text label). The bar's room is reserved, so its appearing moves
+			// nothing; a <noscript> rule shows it without script.
 			g.Attr("data-switcher-pending", ""),
 			Div(
-				Class("flex h-11 min-w-0 items-center gap-2"),
+				Class("flex h-11 min-w-0 items-center gap-1"),
 				Button(
 					ID("switcher-toggle"),
 					Type("button"),
@@ -421,17 +445,29 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 					g.Attr("aria-controls", switcherMenuID),
 					g.Attr("aria-label", switcherToggleLabel(SwitcherRecent)),
 					g.Attr("title", switcherToggleLabel(SwitcherRecent)),
-					// A fixed width: the label changes on a pick, the row beside it
-					// must not move. 44px tall (the row's height), its face 32px.
-					Class("press group inline-flex h-11 w-[4.5rem] shrink-0 items-center"),
+					// ICON ONLY (operator ask: "we simply need icons instead of
+					// showing the full text"): every view's icon is drawn, the
+					// shown view's visible and the others hidden, so a pick (and
+					// the stored view, before paint) only toggles `hidden` inside
+					// a fixed 32px face — nothing beside it moves. 44px tall (the
+					// row's height), 40px wide.
+					Class(switcherIconButtonClass),
 					Span(
-						Class("inline-flex h-8 w-full items-center justify-center gap-1 rounded-lg bg-s2 text-xs font-semibold text-fg2 ring-1 ring-inset ring-line transition group-hover:bg-s3 group-aria-expanded:bg-s3 group-aria-expanded:text-fg"),
-						g.Raw(`<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M2 5.75A.75.75 0 012.75 5h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 5.75zm0 4.25a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10zm0 4.25a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75z" clip-rule="evenodd"/></svg>`),
-						Span(g.Attr("data-switcher-label", ""), g.Text(switcherViews[0].label)),
+						Class(switcherIconFaceClass+" group-aria-expanded:bg-s3 group-aria-expanded:text-fg"),
+						g.Group(g.Map(switcherViews, func(v struct{ key, name, icon, menu, empty string }) g.Node {
+							return Span(
+								g.Attr("data-switcher-icon", v.key),
+								g.Attr("role", "img"),
+								g.Attr("aria-label", v.name),
+								g.Attr("title", v.name),
+								g.If(v.key != SwitcherRecent, g.Attr("hidden", "")),
+								Class("inline-flex"),
+								g.Raw(v.icon),
+							)
+						})),
 					),
 				),
 				g.Group(rows),
-				switcherPinToggle(s),
 				Button(
 					ID(switcherSearchOpenID),
 					Type("button"),
@@ -444,14 +480,16 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 					g.Attr("aria-keyshortcuts", "/"),
 					g.Attr("aria-label", "Search sessions"),
 					g.Attr("title", "Search sessions (/)"),
-					Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
+					Class(switcherIconButtonClass),
 					Span(
-						Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-s2 text-fg2 ring-1 ring-inset ring-line transition group-hover:bg-s3"),
+						Class(switcherIconFaceClass),
 						g.Raw(searchIconSVG),
 					),
 				),
+				switcherMoreButton(s),
 			),
 			switcherViewMenu(s),
+			switcherMoreMenu(s),
 		),
 		switcherScript(),
 		NoScript(StyleEl(g.Raw(`#` + SwitcherID + ` { visibility: visible !important; }`))),
@@ -459,10 +497,26 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 }
 
 // The ids of the view menu and the bar's search button (the palette's own are
-// palette.go's).
+// palette.go's; the ⋯ menu's are switcher_pin.go's).
 const (
 	switcherMenuID       = "switcher-views"
 	switcherSearchOpenID = "switcher-search-open"
+)
+
+// 🔴 THE BAR IS TIGHT SO THE PILLS GET THE ROOM (operator ask: "reduce
+// padding … so there's more space to view the actual agent items"). Each icon
+// button — the view button, the search, the ⋯ — is a 44px-TALL target (the
+// row's h-11) but only 40px wide around its 32px face, and the pinned bar is
+// inset 4px a side (or the safe-area inset, when that is more). Measured at
+// 390px wide, the shown row's clientWidth: 182px → 250px on a Terminal view's
+// screen-wide bar (e2e/tests/pins.spec.ts), 174px → 226px on an agent's chat
+// page, inside its pane (e2e/tests/composer-switcher.spec.ts).
+const (
+	switcherIconButtonClass = "press group inline-flex h-11 w-10 shrink-0 items-center justify-center"
+	switcherIconFaceClass   = "inline-flex h-8 w-8 items-center justify-center rounded-lg bg-s2 text-fg2 ring-1 ring-inset ring-line transition group-hover:bg-s3"
+	// switcherPinnedPad is the pinned bar's inset: 4px at each side, at least
+	// the safe-area inset there, and the safe-area inset at its foot.
+	switcherPinnedPad = "pl-[max(0.25rem,env(safe-area-inset-left))] pr-[max(0.25rem,env(safe-area-inset-right))] pb-[env(safe-area-inset-bottom)]"
 )
 
 // switcherViewMenu is the menu the view button opens: one radio item per view,
@@ -481,6 +535,9 @@ func switcherViewMenu(s *Switcher) g.Node {
 			g.Attr("data-switcher-pick", v.key),
 			Class("group flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium text-fg outline-none transition hover:bg-s2 focus-visible:bg-s2 aria-checked:text-accent"),
 			g.Raw(`<svg class="h-4 w-4 shrink-0 invisible group-aria-checked:visible" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>`),
+			// The view's icon, the one the bar's button shows for it — so the
+			// menu teaches what each icon means. Decorative: the words name it.
+			Span(g.Attr("data-switcher-menu-icon", v.key), Class("inline-flex text-fg2 group-aria-checked:text-accent"), g.Raw(v.icon)),
 			Span(Class("flex-1"), g.Text(v.menu)),
 			// The count is redrawn with the rows on a back/forward-cache restore
 			// (restore.go), from the same fresh copy, so it never disagrees with
@@ -571,7 +628,7 @@ func classIf(ok bool, s string) string {
 func switcherToggleLabel(key string) string {
 	for _, v := range switcherViews {
 		if v.key == key {
-			return "Showing " + v.label + " sessions; choose a view"
+			return "Showing " + v.name + " sessions; choose a view"
 		}
 	}
 	return ""
@@ -609,7 +666,7 @@ func switcherRow(s *Switcher, key, empty string, hidden bool) g.Node {
 		// and every entry still links the session it names now.
 		g.Attr(RestoreRefreshAttr, "switcher-"+key),
 		g.If(hidden, g.Attr("hidden", "")),
-		Class("flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"),
+		Class("flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"),
 		body,
 	)
 }
@@ -637,6 +694,10 @@ func switcherRefresh(s *Switcher) g.Node {
 // its min-w-0 box), never the page.
 const switcherEntryBoxClass = "inline-flex h-11 shrink-0 items-center"
 
+// switcherPillClass is an entry's drawn 32px pill (the colours follow it):
+// px-2 and gap-1, tight so more pills fit the row.
+const switcherPillClass = "inline-flex h-8 items-center gap-1 rounded-full px-2 text-xs font-semibold ring-1 ring-inset "
+
 // switcherLabelClass is an entry's label: one line, never truncated.
 const switcherLabelClass = "whitespace-nowrap"
 
@@ -646,7 +707,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 	// 🔴 A 44px TAP TARGET AROUND A 32px PILL: the entry fills the bar's h-11
 	// row (every control in the app is a 44px target; e2e/tests/layout.spec.ts
 	// measures it), and only the pill inside it is drawn.
-	const pill = "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold ring-1 ring-inset "
+	// Padded px-2 (was px-3: the bar was tightened so more pills show).
+	const pill = switcherPillClass
 	const box = switcherEntryBoxClass
 	// The host's icon (#252): hostMark's fixed
 	// 16px box, server-rendered, so it moves nothing; decorative when the
@@ -795,13 +857,12 @@ var switcherKeyboardJS = `if (!window.__musterSwitcherKb) {
 
 // switcherJS is the bar's script (switcherScript).
 var switcherJS = func() string {
-	views, labels, names := "[", "{", "{"
+	views, names := "[", "{"
 	for i, v := range switcherViews {
 		if i > 0 {
-			views, labels, names = views+",", labels+",", names+","
+			views, names = views+",", names+","
 		}
 		views += strconv.Quote(v.key)
-		labels += strconv.Quote(v.key) + ":" + strconv.Quote(v.label)
 		names += strconv.Quote(v.key) + ":" + strconv.Quote(switcherToggleLabel(v.key))
 	}
 	return `
@@ -812,7 +873,7 @@ var switcherJS = func() string {
   // and after Back an attribute guard left the restored toggle unbound.
   if (!bar || bar.__musterSwitcherBound) return;
   bar.__musterSwitcherBound = true;
-  var VIEWS = ` + views + `], LABELS = ` + labels + `}, NAMES = ` + names + `};
+  var VIEWS = ` + views + `], NAMES = ` + names + `};
   var KEY = '` + switcherViewKey + `';
   var btn = document.getElementById('switcher-toggle');
   var menu = document.getElementById('` + switcherMenuID + `');
@@ -822,7 +883,9 @@ var switcherJS = func() string {
     bar.setAttribute('data-switcher-view', v);
     var rows = bar.querySelectorAll('[data-switcher-list]');
     for (var i = 0; i < rows.length; i++) rows[i].hidden = rows[i].getAttribute('data-switcher-list') !== v;
-    btn.querySelector('[data-switcher-label]').textContent = LABELS[v];
+    // The button's icon: every view's is drawn, the shown one's not hidden.
+    var icons = btn.querySelectorAll('[data-switcher-icon]');
+    for (var j = 0; j < icons.length; j++) icons[j].hidden = icons[j].getAttribute('data-switcher-icon') !== v;
     btn.setAttribute('aria-label', NAMES[v]);
     btn.setAttribute('title', NAMES[v]);
     picks().forEach(function (p) { p.setAttribute('aria-checked', p.getAttribute('data-switcher-pick') === v ? 'true' : 'false'); });
@@ -843,15 +906,19 @@ var switcherJS = func() string {
     var vv = window.visualViewport;
     return vv ? vv.height + vv.offsetTop : window.innerHeight;
   }
-  function placeMenu() {
-    var r = btn.getBoundingClientRect();
-    menu.style.position = 'fixed';
-    menu.style.inset = 'auto';
-    menu.style.margin = '0';
+  // place puts popover m above its button b: left-aligned to it, or — the ⋯
+  // menu, at the bar's right end — right-aligned (right).
+  function place(m, b, right) {
+    var r = b.getBoundingClientRect();
+    m.style.position = 'fixed';
+    m.style.inset = 'auto';
+    m.style.margin = '0';
     var vw = document.documentElement.clientWidth;
-    menu.style.left = Math.max(8, Math.min(Math.round(r.left), vw - 8 - (menu.offsetWidth || 176))) + 'px';
-    menu.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 4 - (window.innerHeight - bottomOf()))) + 'px';
+    if (right) m.style.right = Math.max(8, Math.round(vw - r.right)) + 'px';
+    else m.style.left = Math.max(8, Math.min(Math.round(r.left), vw - 8 - (m.offsetWidth || 176))) + 'px';
+    m.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 4 - (window.innerHeight - bottomOf()))) + 'px';
   }
+  function placeMenu() { place(menu, btn, false); }
   var focusPick = false;
   // Placed BEFORE it is shown (beforetoggle): placed on toggle, it would be
   // painted once at the popover's default place and then jump.
@@ -901,7 +968,59 @@ var switcherJS = func() string {
     btn.focus();
   });
 
-  window.addEventListener('resize', function () { if (isOpen(menu)) placeMenu(); });
+  // --- the ⋯ menu (switcherMoreMenu; absent on a bar with no page session):
+  // opens UPWARD from its button, right-aligned to it, with the menu-button
+  // keys, and closes once an item is used (the pin's form posts on).
+  var more = document.getElementById('` + switcherMoreID + `');
+  var moreBtn = document.getElementById('` + switcherMoreBtnID + `');
+  var focusMore = false;
+  function moreItems() { return Array.prototype.slice.call(more.querySelectorAll('[role=menuitem]')).filter(function (b) { return !b.hidden; }); }
+  if (more && moreBtn) {
+    more.addEventListener('beforetoggle', function (e) { if (e.newState === 'open') place(more, moreBtn, true); });
+    more.addEventListener('toggle', function (e) {
+      var open = e.newState ? e.newState === 'open' : isOpen(more);
+      moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        place(more, moreBtn, true);
+        var pal = document.getElementById('` + paletteID + `');
+        if (pal) hide(pal);
+        if (focusMore) { var it0 = moreItems()[0]; if (it0) it0.focus(); }
+        focusMore = false;
+      } else if (more.contains(document.activeElement)) {
+        moreBtn.focus();
+      }
+    });
+    moreBtn.addEventListener('click', function () { focusMore = true; });
+    moreBtn.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        focusMore = true;
+        if (!isOpen(more)) more.showPopover();
+      }
+    });
+    more.addEventListener('keydown', function (e) {
+      var it = moreItems(), i = it.indexOf(document.activeElement);
+      function to(n) { if (it.length) it[(n + it.length) % it.length].focus(); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); to(i + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); to(i - 1); }
+      else if (e.key === 'Home') { e.preventDefault(); to(0); }
+      else if (e.key === 'End') { e.preventDefault(); to(-1); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hide(more); moreBtn.focus(); }
+      else if (e.key === 'Tab') { hide(more); }
+    });
+    // An item's form is submitted (htmx posts it — its listener is the
+    // form's, so it has run): the menu closes, and focus that was in it goes
+    // back to the ⋯ (focus elsewhere — a pill — is left where it is).
+    more.addEventListener('submit', function () {
+      if (more.contains(document.activeElement)) moreBtn.focus();
+      hide(more);
+    });
+  }
+
+  window.addEventListener('resize', function () {
+    if (isOpen(menu)) placeMenu();
+    if (more && moreBtn && isOpen(more)) place(more, moreBtn, true);
+  });
 
   // The out-of-band refresh rows (switcherOOBJS): bound per window AND
   // VERSION, not under a once-per-window flag — a window still running an

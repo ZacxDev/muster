@@ -165,8 +165,8 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   listed as `offline` for a day. The database holds `mirror_tokens`, as sha256
   hashes, and your pins (below), both under row-level security.
 - **Pins.** On a session's own page (a window's Rendered view, an agent's chat
-  page, or the Terminal view of either) the session switcher has a pin button
-  beside its search that pins or unpins that session — a window with no
+  page, or the Terminal view of either) the session switcher's **⋯** menu, at
+  its right end, has **Pin this session** / **Unpin this session** — a window with no
   Rendered view is pinned from its Terminal view. Your pins are the session switcher's **Pins** view (below),
   on every device you sign in on, and come first in its **All** view.
   A mirrored pin is the window's address — host, session and tmux window id —
@@ -177,8 +177,9 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
 - **The session switcher.** The bar under the message box of a window's
   Rendered view and an agent's chat page, and at the bottom of the Terminal
   view of either (whether or not that view can send), so you switch sessions
-  without going back to the Rendered view. Its left button opens a menu of four
-  views: **Recent** (the entries you last opened, on any device), **Waiting**
+  without going back to the Rendered view. Its left button shows the current
+  view's icon — a clock, a bell, a pin, a grid — and opens a menu of four
+  views, each named beside its icon: **Recent** (the entries you last opened, on any device), **Waiting**
   (the entries waiting on you: an agent or a Claude Code session called
   `attention_ask`, a mirrored Claude Code session stopped at a prompt or
   holding an `AskUserQuestion` picker — the [attention queue](attention.md)'s

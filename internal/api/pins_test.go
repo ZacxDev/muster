@@ -377,9 +377,9 @@ func TestTheSwitcherPinToggleAnswersWithItselfAndTheBar(t *testing.T) {
 		t.Fatal("agent 7 was not pinned")
 	}
 	if !strings.HasPrefix(body, `<form method="post" action="/agents/pins/delete" data-switcher-pin=""`) ||
-		!strings.Contains(body, `id="switcher-pin" type="submit" aria-pressed="true" aria-label="Unpin this session"`) ||
+		!strings.Contains(body, `id="switcher-pin" type="submit" role="menuitem" data-pinned="true"`) || !strings.Contains(body, `<span>Unpin this session</span>`) ||
 		!strings.Contains(body, `name="back" value="/agents/idle-newest"`) || !strings.Contains(body, `name="agent_id" value="7"`) {
-		t.Errorf("the answer is not the toggle, pressed, posting Unpin for agent 7:\n%s", body)
+		t.Errorf("the answer is not the ⋯ menu's pin item, pinned, posting Unpin for agent 7:\n%s", body)
 	}
 	pinsRow := regexp.MustCompile(`<div id="switcher-list-pins" hx-swap-oob="innerHTML">(.*?)</div><span id="switcher-count-pins" hx-swap-oob="innerHTML">(\d+)</span>`).FindStringSubmatch(body)
 	if pinsRow == nil || !strings.Contains(pinsRow[1], `aria-current="page"`) || pinsRow[2] != "1" {
@@ -388,7 +388,7 @@ func TestTheSwitcherPinToggleAnswersWithItselfAndTheBar(t *testing.T) {
 
 	rec = pinPost(t, s, h, "/agents/pins/delete", agent7, true)
 	body = rec.Body.String()
-	if mp.pinFor(authz.OperatorUserID).Agents[7] || !strings.Contains(body, `aria-pressed="false" aria-label="Pin this session"`) ||
+	if mp.pinFor(authz.OperatorUserID).Agents[7] || !strings.Contains(body, `role="menuitem" data-pinned="false"`) || !strings.Contains(body, `<span>Pin this session</span>`) ||
 		!strings.Contains(body, `<span id="switcher-count-pins" hx-swap-oob="innerHTML">0</span>`) {
 		t.Errorf("unpin did not answer the unpressed toggle and an empty Pins count:\n%s", body)
 	}
@@ -441,7 +441,7 @@ func TestAPinFromATerminalViewAnswersWithTheBarsRows(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			rec := pinPost(t, s, h, "/agents/pins", c.form, true)
 			body := rec.Body.String()
-			if rec.Code != http.StatusOK || !strings.Contains(body, `id="switcher-pin" type="submit" aria-pressed="true"`) {
+			if rec.Code != http.StatusOK || !strings.Contains(body, `id="switcher-pin" type="submit" role="menuitem" data-pinned="true"`) {
 				t.Fatalf("the pin = %d, not the pressed toggle:\n%s", rec.Code, body)
 			}
 			if !strings.Contains(body, `name="back" value="`+strings.ReplaceAll(c.form.Get("back"), "&", "&amp;")+`"`) {

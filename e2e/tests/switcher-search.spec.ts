@@ -126,7 +126,7 @@ for (const vp of [
       await ready(page);
       await page.addInitScript(() => { try { if (!sessionStorage.getItem('sws-cleared')) { localStorage.removeItem('muster.switcher.view'); sessionStorage.setItem('sws-cleared', '1'); } } catch (e) {} });
       await openView(page);
-      await expect(toggle(page)).toHaveText('Recent');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
       await expect(toggle(page)).toHaveAttribute('aria-haspopup', 'menu');
       await expect(toggle(page)).toHaveAttribute('aria-expanded', 'false');
       await expect(menu(page)).toBeHidden();
@@ -162,12 +162,12 @@ for (const vp of [
       // A pick: the view is shown, the menu closes, and it is kept.
       await (vp.w === 390 ? menu(page).locator('[data-switcher-pick="all"]').tap() : menu(page).locator('[data-switcher-pick="all"]').click());
       await expect(menu(page)).toBeHidden();
-      await expect(toggle(page)).toHaveText('All');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
       await expect(page.locator('[data-switcher-list="all"]')).toBeVisible();
       await expect(page.locator('[data-switcher-list="recent"]')).toBeHidden();
       expect(await page.evaluate(() => localStorage.getItem('muster.switcher.view'))).toBe('all');
       await page.reload();
-      await expect(toggle(page)).toHaveText('All');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
       await expect(page.locator('[data-switcher-list="all"]')).toBeVisible();
 
       // The keyboard: ArrowUp on the button opens with the shown view focused;
@@ -184,7 +184,7 @@ for (const vp of [
       await expect(menu(page).locator('[data-switcher-pick="pins"]')).toBeFocused();
       await page.keyboard.press('Enter');
       await expect(menu(page)).toBeHidden();
-      await expect(toggle(page)).toHaveText('Pins');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'pins');
       await expect(toggle(page)).toBeFocused();
       await page.keyboard.press('ArrowDown');
       await expect(menu(page)).toBeVisible();
@@ -192,7 +192,7 @@ for (const vp of [
       await expect(menu(page)).toBeHidden();
       await expect(toggle(page)).toHaveAttribute('aria-expanded', 'false');
       await expect(toggle(page)).toBeFocused();
-      await expect(toggle(page)).toHaveText('Pins');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'pins');
 
       // A tap outside closes it, and picks nothing.
       await toggle(page).click();
@@ -200,7 +200,7 @@ for (const vp of [
       const log = (await page.locator('#mv-log').boundingBox())!;
       await page.mouse.click(log.x + log.width / 2, log.y + Math.min(60, log.height / 2));
       await expect(menu(page)).toBeHidden();
-      await expect(toggle(page)).toHaveText('Pins');
+      await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'pins');
 
       // Reduced motion: it opens at once, no transition.
       await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -297,7 +297,8 @@ for (const vp of [
       await openView(page);
       const open = page.locator('#switcher-search-open');
       expect((await open.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
-      expect((await open.boundingBox())!.width, 'a 44px target').toBeGreaterThanOrEqual(44);
+      // 40px wide: the bar's icon buttons are tight, so the pills get the room.
+      expect((await open.boundingBox())!.width, 'at least 40px wide').toBeGreaterThanOrEqual(40);
 
       // The magnifier; Escape closes and gives focus back to it.
       await (vp.w === 390 ? open.tap() : open.click());

@@ -16,7 +16,8 @@ import { clsInit, readCls, settle } from '../lib/cls';
 // The operator asked "Add 'pinned' agents so they appear first in list". The
 // Agents list page — whose cards carried a pin toggle and drew the pinned ones
 // first — is retired: a session is pinned from its own page, by the session
-// switcher's pin toggle (#switcher-pin: "open it, then pin"), and the pinned
+// switcher's ⋯ menu (#switcher-more-btn, its item #switcher-pin: "open it,
+// then pin"), and the pinned
 // entries are the bar's Pins view and lead its All view. The host gives two
 // sessions SYNTHETIC codenames (quince, sable) through its labels file. The
 // entries pinned are the LEAST recently active (the two older windows, a
@@ -94,7 +95,10 @@ async function login(page: Page) {
   signedIn = await page.context().cookies(origin);
 }
 
+// pinToggle is the ⋯ menu's Pin / Unpin item (hidden until the ⋯ opens);
+// moreBtn the ⋯ that opens it.
 const pinToggle = (page: Page) => page.locator('#switcher-pin');
+const moreBtn = (page: Page) => page.locator('#session-switcher #switcher-more-btn');
 const viewRow = (page: Page, key: string) => page.locator(`#session-switcher [data-switcher-list="${key}"]`);
 // rowHrefs is a bar view's entries as their links ("current" for the page's
 // own, which is not one), each agent link without its ?session= query.
@@ -121,15 +125,22 @@ async function open(page: Page, url: string) {
   await rig.waitListed(page, 'pinq');
   await page.addInitScript(() => { try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
   await page.goto(origin + url);
-  await expect(pinToggle(page)).toBeVisible({ timeout: 20_000 });
+  await expect(moreBtn(page)).toBeVisible({ timeout: 20_000 });
+  await expect(pinToggle(page)).toBeAttached();
 }
 
-// pinHere taps the page's own pin toggle and waits until it says pinned (or not).
+// pinHere opens the bar's ⋯ menu, taps the page's own Pin (or Unpin) in it and
+// waits until it says pinned (or not) and the menu has closed.
 async function pinHere(page: Page, on: boolean, touch: boolean) {
   const t = pinToggle(page);
-  await expect(t).toHaveAttribute('aria-pressed', on ? 'false' : 'true');
+  await expect(t).toHaveAttribute('data-pinned', on ? 'false' : 'true');
+  await expect(t, 'the pin is in the ⋯ menu, not the bar').toBeHidden();
+  await (touch ? moreBtn(page).tap() : moreBtn(page).click());
+  await expect(t).toBeVisible();
+  await expect(t).toHaveAccessibleName(on ? 'Pin this session' : 'Unpin this session');
   await (touch ? t.tap() : t.click());
-  await expect(t).toHaveAttribute('aria-pressed', on ? 'true' : 'false');
+  await expect(t).toHaveAttribute('data-pinned', on ? 'true' : 'false');
+  await expect(page.locator('#switcher-more'), 'the menu closes once used').toBeHidden();
 }
 
 // noOverflow: the page never scrolls sideways.
@@ -161,7 +172,9 @@ for (const vp of [
       // Pin through the real control, on each one's own page: open it, then pin.
       for (const h of [agentPath, sableHref, quinceHref]) {
         await open(page, h);
-        expect((await pinToggle(page).boundingBox())!.width, 'the toggle is a 44px target').toBeGreaterThanOrEqual(44);
+        const mb = (await moreBtn(page).boundingBox())!;
+        expect(mb.width, 'the ⋯ is at least 40px wide').toBeGreaterThanOrEqual(40);
+        expect(mb.height, 'the ⋯ is a 44px-tall target').toBeGreaterThanOrEqual(44);
         await pinHere(page, true, touch);
       }
       // On another session's page: Pins holds the three, and All leads with
@@ -184,8 +197,8 @@ for (const vp of [
       await Promise.all([page.waitForURL((u) => u.pathname + u.search === quinceHref), touch ? quince.tap() : quince.click()]);
       expect(new URL(page.url()).searchParams.get('session')).toBe('pinq');
 
-      // UNPIN from the same toggle, on each page.
-      await expect(pinToggle(page)).toHaveAttribute('aria-pressed', 'true');
+      // UNPIN from the same menu, on each page.
+      await expect(pinToggle(page)).toHaveAttribute('data-pinned', 'true');
       await pinHere(page, false, touch);
       for (const h of [sableHref, agentPath]) {
         await open(page, h);
@@ -227,7 +240,7 @@ for (const vp of [
         await page.keyboard.press('Escape');
         // Still pinned: its toggle, and the Pins view.
         await page.reload();
-        await expect(pinToggle(page), 'still pinned').toHaveAttribute('aria-pressed', 'true');
+        await expect(pinToggle(page), 'still pinned').toHaveAttribute('data-pinned', 'true');
         await expect(viewRow(page, 'pins').locator('[data-switcher-current]')).toHaveCount(1);
       } finally {
         if (id) await pinVia(page, false, { kind: 'agent', agent_id: id });
@@ -259,25 +272,32 @@ for (const vp of [
 
     // 🔴 A SHELL WINDOW CAN STILL BE PINNED. Its card's toggle pinned it while
     // the Agents list lived; with the list retired the one way to pin is the
-    // toggle on the session's own page ("open it, then pin"). A plain shell
-    // window's only page is its terminal, which draws the session switcher at
-    // its foot as every Terminal view does — so its pin toggle is the bar's,
-    // as on a Rendered view (the control), and the header has none. It pins
+    // bar's ⋯ menu on the session's own page ("open it, then pin"). A plain
+    // shell window's only page is its terminal, which draws the session
+    // switcher at its foot as every Terminal view does — so its pin is in the
+    // bar's ⋯ menu, as on a Rendered view (the control), and the header has
+    // none. It pins
     // and unpins, and the Pins view follows: on this page at once (the
     // answer's out-of-band rows), and on another session's page.
-    test("a shell window's terminal page carries the pin toggle in its bar, as a Rendered view does", async ({ page }) => {
+    test("a shell window's terminal page carries the pin in its bar's ⋯ menu, as a Rendered view does", async ({ page }) => {
       await open(page, sableHref);
-      await expect(page.locator('#session-switcher #switcher-pin'), "control: the Rendered view's bar has the toggle").toBeVisible();
+      await expect(page.locator('#session-switcher #switcher-more #switcher-pin'), "control: the Rendered view's ⋯ menu has the pin").toBeAttached();
       await page.goto(origin + shellHref);
       await expect(page.locator('#term-host-note, [aria-label="Terminal input"]').first(), 'the terminal page is drawn').toBeAttached();
-      const pin = page.locator('#session-switcher #switcher-pin');
-      await expect(pin, "the terminal bar's pin toggle").toBeVisible();
+      const pin = page.locator('#session-switcher #switcher-more #switcher-pin');
+      await expect(moreBtn(page), "the terminal bar's ⋯").toBeVisible();
       await expect(page.locator('header #switcher-pin'), 'the header has no pin of its own').toHaveCount(0);
-      await expect(page.locator('#switcher-pin'), 'one pin toggle on the page').toHaveCount(1);
+      await expect(page.locator('#switcher-pin'), 'one pin on the page').toHaveCount(1);
       await expect(page.locator('#view-rendered, #view-terminal'), 'a terminal-only window has no view switch').toHaveCount(0);
-      await expect(pin).toHaveAttribute('aria-pressed', 'false');
+      await expect(pin).toHaveAttribute('data-pinned', 'false');
+      // The bar spans the screen here (pinned at the column's foot): its
+      // shown row's width, all of what the compact bar gives the pills.
+      const rowW = await page.locator('#session-switcher [data-switcher-list]:not([hidden])').evaluate((el) => el.clientWidth);
+      console.log(`PINNED-ROW-${vp.use.viewport.width} ${rowW}`);
+      if (vp.use.viewport.width === 390) expect(rowW, 'the pills\' row on a 390px Terminal view (182px on the base)').toBeGreaterThanOrEqual(240);
+      await moreBtn(page).click();
       await pin.click();
-      await expect(page.locator('#session-switcher #switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('#session-switcher #switcher-pin')).toHaveAttribute('data-pinned', 'true');
       // The answer's rows, out of band: this page's own Pins row holds it now.
       await expect(page.locator('#session-switcher [data-switcher-list="pins"] [data-switcher-current]'), "this page's Pins row follows").toHaveCount(1);
       try {
@@ -285,8 +305,9 @@ for (const vp of [
         await expect(viewRow(page, 'pins').locator(`a[href="${shellHref.replace(/&/g, '&amp;')}"], a[href="${shellHref}"]`).first(), 'the Pins view holds the shell window').toBeAttached();
       } finally {
         await page.goto(origin + shellHref);
+        await moreBtn(page).click();
         await page.locator('#session-switcher #switcher-pin').click();
-        await expect(page.locator('#session-switcher #switcher-pin')).toHaveAttribute('aria-pressed', 'false');
+        await expect(page.locator('#session-switcher #switcher-pin')).toHaveAttribute('data-pinned', 'false');
       }
     });
 

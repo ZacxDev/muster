@@ -128,7 +128,7 @@ against a throwaway database.
   (on a Linux host; on a macOS host there is no Terminal view yet, see
   Requirements). Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
 - **Session switcher, sidebar and search.** A bottom bar with Recent, Waiting,
-  Pins and All (and a pin button for the session you are on), and a sidebar
+  Pins and All, picked by an icon (and a ⋯ menu to pin the session you are on), and a sidebar
   that lists every session like channels in a chat app: the chief first (if
   you turned one on), then the sessions waiting on you, then the rest by
   recency, the long-idle ones folded under **Idle**. The search opens with the

@@ -566,15 +566,17 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
 }
 
 /*
- * The session switcher's view menu and search palette (internal/ui/
- * switcher.go). Both are popovers (top layer, out of flow), so their opening
- * moves nothing on the page. They ANIMATE open and closed: the menu grows up
- * out of the view button (the bar is at the screen's bottom), the palette
+ * The session switcher's view menu, its ⋯ menu and the search palette
+ * (internal/ui/switcher.go, switcher_pin.go). All are popovers (top layer,
+ * out of flow), so their opening moves nothing on the page. They ANIMATE open
+ * and closed: the view menu grows up out of the view button at the bar's left
+ * (the bar is at the screen's bottom), the ⋯ menu out of the ⋯ at its right, the palette
  * drops in from above. display and overlay transition discretely, so the
  * close plays before the box leaves the top layer; @starting-style is where an
  * opening starts. Reduced motion: at once, both ways.
  */
 #switcher-views,
+#switcher-more,
 #switcher-search {
   opacity: 0;
   transition:
@@ -583,21 +585,27 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
     overlay 160ms allow-discrete,
     display 160ms allow-discrete;
 }
-#switcher-views {
+#switcher-views,
+#switcher-more {
   transform: translateY(8px) scale(0.96);
   transform-origin: bottom left;
+}
+#switcher-more {
+  transform-origin: bottom right;
 }
 #switcher-search {
   transform: translateY(-8px) scale(0.98);
   transform-origin: top center;
 }
 #switcher-views:popover-open,
+#switcher-more:popover-open,
 #switcher-search:popover-open {
   opacity: 1;
   transform: none;
 }
 @starting-style {
-  #switcher-views:popover-open {
+  #switcher-views:popover-open,
+  #switcher-more:popover-open {
     opacity: 0;
     transform: translateY(8px) scale(0.96);
   }
@@ -608,6 +616,7 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
 }
 @media (prefers-reduced-motion: reduce) {
   #switcher-views,
+  #switcher-more,
   #switcher-search {
     transition: none;
   }
