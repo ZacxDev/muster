@@ -828,10 +828,12 @@ What it does, read fresh on every call:
    something).
 
 **Secret safety.** A line that looks like it carries a credential — a GitHub,
-AWS, Slack or `sk-` key, a JWT, a PEM block, an `Authorization`/`Bearer`
-header, a `password=`/`token: …`-style assignment — or is an environment
-assignment (`NAME=value`, an env dump) is withheld whole, and a URL's
-`user:password@` is masked. That is a pattern filter, not a proof: what CI
+AWS, Slack or `sk-` key, a JWT, an `Authorization`/`Bearer` header, a
+`password=`/`token: …`-style assignment — or is an environment assignment
+(`NAME=value`, an env dump), or is nothing but 40+ characters of base64, is
+withheld whole, and a URL's `user:password@` is masked. A PEM block is
+withheld whole, every line from `-----BEGIN …-----` through `-----END …-----`
+(headers included), and to the end of the log when the END never came. That is a pattern filter, not a proof: what CI
 prints is the CI's to keep clean, and the byte cap bounds what any miss can
 carry.
 

@@ -332,9 +332,44 @@ var envLineRE = regexp.MustCompile(`^\s*(export\s+)?[A-Z][A-Z0-9_]{2,}=\S`)
 // urlUserRE is the userinfo of a URL (`scheme://user:pass@`).
 var urlUserRE = regexp.MustCompile(`://[^/\s:@]+:[^/\s@]+@`)
 
-// Redact is THE secret filter of a CI-log line: a line that looks like it
-// carries a credential, or is an environment assignment, is withheld whole;
-// a URL's userinfo is masked.
+// pemBeginRE / pemEndRE bound a PEM block (any type). base64LineRE is a line
+// that is nothing but a long run of base64 — a PEM body line (64 wide) whose
+// BEGIN fell outside the log read, or a key printed bare.
+var (
+	pemBeginRE   = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]+-----`)
+	pemEndRE     = regexp.MustCompile(`-----END [A-Z0-9 ]+-----`)
+	base64LineRE = regexp.MustCompile(`^\s*[A-Za-z0-9+/]{40,}={0,2}\s*$`)
+)
+
+// RedactLines is THE secret filter of a CI log, line by line WITH STATE: a PEM
+// block is withheld whole, from its BEGIN line through its END line (to the
+// end of the log when END never came — a step that died mid-print); every
+// other line goes through Redact, and a bare long base64 line is withheld.
+func RedactLines(lines []string) []string {
+	out := make([]string, len(lines))
+	inPEM := false
+	for i, l := range lines {
+		switch {
+		case inPEM:
+			out[i] = withheld
+			if pemEndRE.MatchString(l) {
+				inPEM = false
+			}
+		case pemBeginRE.MatchString(l):
+			out[i] = withheld
+			inPEM = !pemEndRE.MatchString(l[pemBeginRE.FindStringIndex(l)[1]:])
+		case base64LineRE.MatchString(l):
+			out[i] = withheld
+		default:
+			out[i] = Redact(l)
+		}
+	}
+	return out
+}
+
+// Redact is the one-line filter (RedactLines applies it to every line outside
+// a PEM block): a line that looks like it carries a credential, or is an
+// environment assignment, is withheld whole; a URL's userinfo is masked.
 func Redact(line string) string {
 	if secretRE.MatchString(line) || envLineRE.MatchString(line) {
 		return withheld
@@ -350,7 +385,7 @@ const (
 
 // Excerpt reduces a CI log to what explains its failure — the failing-test
 // and error lines (deduplicated, in order, repeats counted), then the log's
-// last lines — every line passed through Redact and cut at maxExcerptLine
+// last lines — every line passed through RedactLines and cut at maxExcerptLine
 // bytes, the whole at most maxBytes bytes (never splitting a character). cut
 // reports that the cap dropped something.
 func Excerpt(log string, maxBytes int) (string, bool) {
@@ -358,9 +393,12 @@ func Excerpt(log string, maxBytes int) (string, bool) {
 		return "", log != ""
 	}
 	lines := strings.Split(strings.ReplaceAll(log, "\r\n", "\n"), "\n")
-	clean := make([]string, len(lines))
 	for i, l := range lines {
-		clean[i] = clip(Redact(strings.TrimRight(ansiRE.ReplaceAllString(l, ""), " \t\r")), maxExcerptLine)
+		lines[i] = strings.TrimRight(ansiRE.ReplaceAllString(l, ""), " \t\r")
+	}
+	clean := RedactLines(lines)
+	for i := range clean {
+		clean[i] = clip(clean[i], maxExcerptLine)
 	}
 	type entry struct {
 		text  string
