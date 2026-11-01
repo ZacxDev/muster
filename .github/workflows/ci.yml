@@ -212,10 +212,15 @@ jobs:
       # refuses the run unless each named test is IN it and PASSED, so the gate
       # cannot stop running quietly — a rename, a deletion or a build tag that
       # filters it out fails this step the same way a red walk does.
+      #
+      # ⚠ `-timeout 20m`, NOT go test's default 10m, which is PER PACKAGE: under
+      # -race -cover internal/api took 460-575 s on main's runs and passed 600 s
+      # on a runner that was slower across every package (agentprovision 123 s vs
+      # 91 s), panicking mid-suite with nothing hung. A real hang still fails here.
       - name: go test, and assert nothing skipped (one run)
         run: |
           set -o pipefail
-          go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
+          go test -race -cover -timeout 20m -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
 
       # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
       # too: its choice and its refusals, each on a synthetic artifact tree.
