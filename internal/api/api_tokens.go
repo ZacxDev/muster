@@ -43,11 +43,14 @@ import (
 // gotrue session tier's DisableSweepInterval, which bounds how long an already
 // OPEN stream survives a disable. No route a token can open streams.
 //
-// 🔴 A READ-ONLY TOKEN (migration 0068) IS REFUSED AT THE SAME DOOR, BY METHOD.
-// admitAPIToken lets it through only on readOnlyTokenMethods (GET, HEAD) and
-// answers anything else 403 ReadOnlyTokenRefusal before the handler runs. It is
-// an allowlist of METHODS, not of routes: a route added later is covered the
-// day it is registered, and a write route is a write whatever its path.
+// 🔴 A NARROWER-SCOPED TOKEN (migration 0068) IS REFUSED AT THE SAME DOOR, BY
+// ROUTE. Every wrapper that takes a token goes through admitAPIToken, and it
+// admits a token whose scope is not apitokens.ScopeFull only on the mux
+// patterns tokenScopeRoutes lists for that scope — ONE table, here — and
+// answers anything else 403 ScopedTokenRefusal before the handler runs. It is
+// an ALLOWLIST: a route added later is refused to a narrower token the day it
+// is registered, until someone writes it into the table. A scope the table
+// does not name reaches nothing.
 
 // apiTokensPath is the token-management API (list, revoke; requireAPIToken).
 const apiTokensPath = "/api/tokens"
@@ -138,18 +141,33 @@ func (s *Server) requireAPIToken(next http.HandlerFunc) http.HandlerFunc {
 // nothing about which.
 const APITokenRefusal = "invalid or revoked API token"
 
-// ReadOnlyTokenRefusal is the 403 body a read-only token gets on any method but
-// readOnlyTokenMethods.
-const ReadOnlyTokenRefusal = "this API token is read-only: it may only make GET and HEAD requests (mint a full-access token at " + accountTokensPath + " to change anything)"
+// ScopedTokenRefusal is the 403 body a narrower-scoped token gets on a route
+// its scope does not reach.
+const ScopedTokenRefusal = "this API token's scope does not reach this route: a bar-summary token can only read GET " +
+	attentionSummaryPath + " (mint a full-access token at " + accountTokensPath + " for anything else)"
 
-// readOnlyTokenMethods is every method a read-only token may use. An
-// allowlist: a method not named here (POST, PUT, PATCH, DELETE, and any other)
-// is refused.
-var readOnlyTokenMethods = map[string]bool{http.MethodGet: true, http.MethodHead: true}
+// tokenScopeRoutes is every mux pattern each narrower token scope may reach:
+// THE one allowlist (see the file header). The key is the pattern the route
+// is registered with (http.Request.Pattern), so a GET pattern also admits
+// HEAD — net/http serves HEAD through it — and nothing else. ScopeFull is not
+// in it: a full token is not limited.
+//
+// ⚠ GET /api/whoami IS DELIBERATELY ABSENT. A bar token does not need to know
+// who it is; the summary's own 200, 401 or 403 says whether the token works.
+var tokenScopeRoutes = map[string]map[string]bool{
+	apitokens.ScopeSummary: {"GET " + attentionSummaryPath: true},
+}
+
+// tokenScopeAdmits reports whether scope reaches the route r was matched to.
+// An unknown scope reaches nothing, and a request with no matched pattern (a
+// handler called directly) is refused to every scope but ScopeFull.
+func tokenScopeAdmits(scope string, r *http.Request) bool {
+	return scope == apitokens.ScopeFull || tokenScopeRoutes[scope][r.Pattern]
+}
 
 // admitAPIToken authenticates a personal token and admits the request as its
-// owner, or refuses it 401 — or 403 for a read-only token on a method it may
-// not use. See the file header.
+// owner, or refuses it 401 — or 403 for a narrower-scoped token on a route its
+// scope does not reach. See the file header.
 //
 // ⚠ NO FAILURE LIMITER, ON PURPOSE: a 256-bit token cannot be guessed, so a
 // limiter would only turn 401 into 429. The one gate before the lookup is
@@ -176,8 +194,8 @@ func (s *Server) admitAPIToken(w http.ResponseWriter, r *http.Request, next http
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the API token"})
 		return
 	}
-	if t.ReadOnly && !readOnlyTokenMethods[r.Method] {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": ReadOnlyTokenRefusal})
+	if !tokenScopeAdmits(t.Scope, r) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": ScopedTokenRefusal})
 		return
 	}
 	ctx := context.WithValue(r.Context(), apiTokenCtxKey{}, t)
@@ -201,7 +219,7 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	p := authz.MustFrom(r.Context())
 	out := map[string]any{"userId": p.UserID, "role": p.Role, "via": p.Via}
 	if t, ok := apiTokenFromContext(r.Context()); ok {
-		out["token"] = map[string]any{"id": t.ID, "name": t.Name, "createdAt": t.CreatedAt, "readOnly": t.ReadOnly}
+		out["token"] = map[string]any{"id": t.ID, "name": t.Name, "createdAt": t.CreatedAt, "scope": t.Scope}
 	}
 	if actor, ok := serviceActorFromContext(r.Context()); ok {
 		out["actor"] = actor
@@ -256,10 +274,9 @@ func (s *Server) handleAccountTokenCreate(w http.ResponseWriter, r *http.Request
 		s.renderAccountTokens(w, r, http.StatusInternalServerError, "", "The token could not be created.")
 		return
 	}
-	// The checkbox: absent (unchecked) is a full-access token, as before 0068.
-	readOnly := r.PostFormValue("read_only") != ""
-	tok, _, err := s.ext.APITokens.Create(r.Context(), r.PostFormValue("name"), iat, readOnly)
-	if errors.Is(err, apitokens.ErrNameTooLong) {
+	// The scope choice: absent is a full-access token, as before 0068.
+	tok, _, err := s.ext.APITokens.Create(r.Context(), r.PostFormValue("name"), iat, r.PostFormValue("scope"))
+	if errors.Is(err, apitokens.ErrNameTooLong) || errors.Is(err, apitokens.ErrBadScope) {
 		s.renderAccountTokens(w, r, http.StatusBadRequest, "", err.Error())
 		return
 	}
@@ -299,6 +316,12 @@ func (s *Server) handleAccountTokenRevoke(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, accountTokensPath, http.StatusSeeOther)
 }
 
+// The scopes as the token page names them.
+const (
+	scopeLabelFull    = "Full access"
+	scopeLabelSummary = "Bar summary only"
+)
+
 // renderAccountTokens writes the token page. minted, when set, is the token
 // just created — the only time it is ever rendered.
 func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, code int, minted, problem string) {
@@ -329,8 +352,13 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 <label for="token-name" class="text-sm font-medium text-fg">Name</label>
 <input id="token-name" name="name" maxlength="` + strconv.Itoa(apitokens.MaxNameLen) + `" placeholder="laptop CLI"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
-<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" id="token-read-only" name="read_only" value="1" class="h-5 w-5">
-Read-only: it can only read (GET), never change anything</label>
+<fieldset class="flex flex-col gap-1" data-testid="token-scope">
+<legend class="text-sm font-medium text-fg">Access</legend>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeFull + `" checked class="h-5 w-5">
+` + scopeLabelFull + `</label>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeSummary + `" class="h-5 w-5">
+` + scopeLabelSummary + ` (can read the Attention summary and nothing else)</label>
+</fieldset>
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Create token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="token-list">
@@ -343,9 +371,9 @@ Read-only: it can only read (GET), never change anything</label>
 		if name == "" {
 			name = "(unnamed)"
 		}
-		scope := "full access"
-		if t.ReadOnly {
-			scope = "read-only"
+		scope := scopeLabelFull
+		if t.Scope != apitokens.ScopeFull {
+			scope = scopeLabelSummary
 		}
 		used := "never used"
 		if t.LastUsedAt != nil {
@@ -353,7 +381,7 @@ Read-only: it can only read (GET), never change anything</label>
 		}
 		b.WriteString(`<li class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-token-id="` + strconv.FormatInt(t.ID, 10) + `">
 <span class="break-all text-sm font-semibold text-fg">` + html.EscapeString(name) + `</span>
-<span class="text-xs text-fg2" data-token-scope="` + scope + `">` + scope + ` · created ` + t.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + used + `</span>
+<span class="text-xs text-fg2" data-token-scope="` + html.EscapeString(t.Scope) + `">` + scope + ` · created ` + t.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + used + `</span>
 `)
 		if t.Revoked() {
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)

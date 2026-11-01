@@ -605,13 +605,12 @@ reply draft decided outside muster is not cleared by this (it is not an ask).
 
 `GET /api/attention/summary` is what a status bar polls: everything waiting on
 you, your mirror hosts' busy and idle Claude windows, and your
-[chief nudge](chief-nudges.md) mode, in one JSON document. From the CLI it is
-`muster attention summary` ([cli.md](cli.md)), which prints the same document.
+[chief nudge](chief-nudges.md) mode, in one JSON document, over HTTPS.
 
 - **Credential:** a [personal API token](auth.md) only (the hook token and a
   browser session are refused with 401). It reads as the token's owner, and
-  nothing of another user's is ever in it. A **read-only** token is enough, and
-  is the one to give a poller.
+  nothing of another user's is ever in it. Give a poller a **bar summary
+  only** token ([auth.md](auth.md)): it reaches this route and nothing else.
 - **No stream, no ETag.** Poll it; the body is small. It is never cached
   (`Cache-Control: no-store`).
 - **What "waiting" means:** exactly the items of the Asks page above — the
@@ -629,7 +628,7 @@ you, your mirror hosts' busy and idle Claude windows, and your
   "items": [
     {"key": "ask-5", "kind": "ask", "host": "", "title": "chief", "why": "Ship it?",
      "since": 1799999940, "age_secs": 60, "offline": false,
-     "path": "/attention/open/ask-5", "url": "https://muster.example.test/attention/open/ask-5"}
+     "url": "https://muster.example.test/attention/open/ask-5"}
   ]
 }
 ```
@@ -647,6 +646,6 @@ you, your mirror hosts' busy and idle Claude windows, and your
 | `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body. Secrets are redacted, a waiting session is `Waiting: <tool> · <window> @ <host>`, a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
 | `items[].since`, `items[].age_secs` | When it started waiting (Unix seconds) and `ts` minus that; `0` and `0` when unknown. |
 | `items[].offline` | A session item whose host dropped within the last 5 minutes, shown as last seen. |
-| `items[].path`, `items[].url` | Where to act on it: the [tap route](push.md) `/attention/open/<key>` for an ask or a session (resolved when opened), the item's own page for a draft or a task. `url` is `path` on `MUSTER_PUBLIC_URL`, `""` when that is not set. |
+| `items[].url` | Where to act on it, on `MUSTER_PUBLIC_URL`: the [tap route](push.md) `/attention/open/<key>` for an ask or a session (resolved when opened), the item's own page for a draft or a task. **`""` when `MUSTER_PUBLIC_URL` is not set**: the summary names no origin it was not told. |
 
 Fields may be added; none is renamed or removed.

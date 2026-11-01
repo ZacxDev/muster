@@ -85,10 +85,9 @@ type attentionSummaryItem struct {
 	Since   int64 `json:"since"`
 	AgeSecs int64 `json:"age_secs"`
 	Offline bool  `json:"offline"`
-	// Path is where the owner acts on it, on muster's origin; URL is it made
-	// absolute with MUSTER_PUBLIC_URL, "" when that is not set.
-	Path string `json:"path"`
-	URL  string `json:"url"`
+	// URL is where the owner acts on it, absolute on MUSTER_PUBLIC_URL; ""
+	// when that is not set (the summary names no origin it was not told).
+	URL string `json:"url"`
 }
 
 func (s *Server) handleAttentionSummary(w http.ResponseWriter, r *http.Request) {
@@ -155,12 +154,13 @@ func attentionSummaryHostOf(h mirror.HostView) attentionSummaryHost {
 // origin without a trailing slash, "" for none.
 func attentionSummaryItemOf(it attentionItem, base string, now time.Time) attentionSummaryItem {
 	out := attentionSummaryItem{Key: it.Key, Kind: it.Kind, Host: it.host, Title: textplain.Title(it.Source),
-		Why: firstLine(attentionPushBody(it)), Offline: it.Offline, Path: it.Link}
+		Why: firstLine(attentionPushBody(it)), Offline: it.Offline}
 	if out.Host == "" {
 		out.Host = it.card.ref.Host // an ask from a mirrored session
 	}
+	path := it.Link
 	if attentionOpenKey.MatchString(it.Key) {
-		out.Path = attentionOpenURL(it.Key)
+		path = attentionOpenURL(it.Key)
 	}
 	if !it.Since.IsZero() {
 		out.Since = it.Since.Unix()
@@ -168,8 +168,8 @@ func attentionSummaryItemOf(it attentionItem, base string, now time.Time) attent
 			out.AgeSecs = age
 		}
 	}
-	if base != "" && out.Path != "" {
-		out.URL = base + out.Path
+	if base != "" && path != "" {
+		out.URL = base + path
 	}
 	return out
 }

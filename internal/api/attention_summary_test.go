@@ -27,8 +27,9 @@ var summaryNow = time.Unix(1_800_000_000, 0)
 // TestTheSummaryItemSaysWhatItsPushSays pins every field of one item of each
 // kind, WHOLE, as literals: its host, its title (the title rule), its why (the
 // first line of its push body — a secret redacted, a waiting session summary
-// only, a draft who-and-where only), its age, and its link (the tap route for
-// an ask's and a session's key, the item's own link otherwise). Every fixture
+// only, a draft who-and-where only), its age, and its url (the tap route for
+// an ask's and a session's key, the item's own link otherwise, on the public
+// origin). Every fixture
 // carries a Detail, options or a message body that must NOT appear: the
 // summary says what the lock screen says and no more.
 func TestTheSummaryItemSaysWhatItsPushSays(t *testing.T) {
@@ -48,35 +49,36 @@ func TestTheSummaryItemSaysWhatItsPushSays(t *testing.T) {
 	}{
 		{"an ask from a mirrored session: its host, the question redacted, never its options", mirrorAsk, attentionSummaryItem{
 			Key: "ask-41", Kind: "ask", Host: "ws", Title: "Gold:1", Why: "Use «redacted» for the mirror? It is the only key.",
-			Since: 1_799_999_910, AgeSecs: 90, Path: "/attention/open/ask-41", URL: "https://muster.example.test/attention/open/ask-41"}},
+			Since: 1_799_999_910, AgeSecs: 90, URL: "https://muster.example.test/attention/open/ask-41"}},
 		{"an agent's ask: no host, never its options or suggestions", agentAsk, attentionSummaryItem{
 			Key: "ask-42", Kind: "ask", Title: "deploy-bot", Why: "Deploy the importer?",
-			Since: 1_799_992_800, AgeSecs: 7200, Path: "/attention/open/ask-42", URL: "https://muster.example.test/attention/open/ask-42"}},
+			Since: 1_799_992_800, AgeSecs: 7200, URL: "https://muster.example.test/attention/open/ask-42"}},
 		{"a session waiting at a prompt: summary only, never Claude's last words", attentionItem{Key: sessKey, Kind: attentionKindSession,
 			Source: "**Fix** [auth](https://example.com/a) for C# @ host-b", Text: "Bash: curl -H 'Authorization: x' https://x.test", tool: "Bash",
 			Detail: "Tests pass.\nPublishing now.", host: "host-b", Offline: true, Since: summaryNow.Add(-30 * time.Second),
 			Link: "/mirror/view?host=host-b&session=main&window=%403", card: attentionCard{ref: ui.MirrorRef{Host: "host-b", Session: "main", Window: "@3"}}},
 			attentionSummaryItem{Key: sessKey, Kind: "session", Host: "host-b", Title: "Fix auth for C# @ host-b", Why: "Waiting: Bash · Fix auth for C# @ host-b",
-				Since: 1_799_999_970, AgeSecs: 30, Offline: true, Path: "/attention/open/" + sessKey, URL: "https://muster.example.test/attention/open/" + sessKey}},
+				Since: 1_799_999_970, AgeSecs: 30, Offline: true, URL: "https://muster.example.test/attention/open/" + sessKey}},
 		{"a held question: its first question, never its choices", attentionItem{Key: sessKey, Kind: attentionKindQuestion, Source: "main:3 @ host-b",
 			Text: "1. Which branch?\n2. Push it?", choices: []string{"main", "dev"}, host: "host-b", Since: summaryNow.Add(-5 * time.Second),
 			Link: "/mirror/view?host=host-b&session=main&window=%403"},
 			attentionSummaryItem{Key: sessKey, Kind: "question", Host: "host-b", Title: "main:3 @ host-b", Why: "1. Which branch?",
-				Since: 1_799_999_995, AgeSecs: 5, Path: "/attention/open/" + sessKey, URL: "https://muster.example.test/attention/open/" + sessKey}},
+				Since: 1_799_999_995, AgeSecs: 5, URL: "https://muster.example.test/attention/open/" + sessKey}},
 		{"a reply draft: who and where only, never the message or the reply", draft, attentionSummaryItem{
 			Key: "draft-3", Kind: "plugin", Title: "Discord DMs", Why: "Reply draft: Dana (Discord DMs)",
-			Since: 1_799_999_400, AgeSecs: 600, Path: "/attention?tab=drafts#draft-3", URL: "https://muster.example.test/attention?tab=drafts#draft-3"}},
+			Since: 1_799_999_400, AgeSecs: 600, URL: "https://muster.example.test/attention?tab=drafts#draft-3"}},
 		{"a task nobody routed: its own link", attentionItem{Key: unroutedTaskKey(55), Kind: attentionKindTask, Source: "your chief has not routed it",
 			Text: "Task #9: Rotate the build key", Since: summaryNow.Add(-24 * time.Hour), Link: canonicalTaskPath(9)},
 			attentionSummaryItem{Key: "task-55", Kind: "task", Title: "your chief has not routed it", Why: "Task #9: Rotate the build key",
-				Since: 1_799_913_600, AgeSecs: 86400, Path: "/tasks/9", URL: "https://muster.example.test/tasks/9"}},
+				Since: 1_799_913_600, AgeSecs: 86400, URL: "https://muster.example.test/tasks/9"}},
 	} {
 		if got := attentionSummaryItemOf(c.it, "https://muster.example.test", summaryNow); got != c.want {
 			t.Errorf("%s:\n got %+v\nwant %+v", c.name, got, c.want)
 		}
 	}
-	// No public URL: the path alone, and no since is no age.
-	if got := attentionSummaryItemOf(attentionItem{Key: "ask-1", Kind: attentionKindAsk, Source: "x", Text: "q"}, "", summaryNow); got.URL != "" || got.Path != "/attention/open/ask-1" || got.Since != 0 || got.AgeSecs != 0 {
+	// No public URL: no url (the summary names no origin it was not told),
+	// and no since is no age.
+	if got := attentionSummaryItemOf(attentionItem{Key: "ask-1", Kind: attentionKindAsk, Source: "x", Text: "q"}, "", summaryNow); got.URL != "" || got.Since != 0 || got.AgeSecs != 0 {
 		t.Errorf("no public URL, no since: %+v", got)
 	}
 }
@@ -160,7 +162,7 @@ func TestTheSummaryDocumentIsTheDocumentedShape(t *testing.T) {
 	const want = `{"ts":1800000000,"nudge_mode":"off","partial":false,` +
 		`"hosts":[{"host":"host-a","online":true,"status_report":true,"busy":1,"idle":0}],` +
 		`"items":[{"key":"ask-5","kind":"ask","host":"","title":"chief","why":"Ship it?","since":1799999940,"age_secs":60,"offline":false,` +
-		`"path":"/attention/open/ask-5","url":"https://muster.example.test/attention/open/ask-5"}]}`
+		`"url":"https://muster.example.test/attention/open/ask-5"}]}`
 	if string(got) != want {
 		t.Fatalf("a summary:\n got %s\nwant %s", got, want)
 	}

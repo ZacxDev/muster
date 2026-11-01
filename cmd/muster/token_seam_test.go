@@ -53,11 +53,11 @@ func TestSeamPersonalTokensThroughTheRealServer(t *testing.T) {
 	// is no CLI or API mint — so this test mints its two through the store,
 	// as that page does.
 	asUser := authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
-	first, _, err := apitokens.NewPG(pool).Create(asUser, "browser-minted", 0, false)
+	first, _, err := apitokens.NewPG(pool).Create(asUser, "browser-minted", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondTok, secondRec, err := apitokens.NewPG(pool).Create(asUser, "laptop", 0, false)
+	secondTok, secondRec, err := apitokens.NewPG(pool).Create(asUser, "laptop", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -47,7 +47,7 @@ func (f *fakeAPITokens) add(t *testing.T, uid int64) string {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.byTok[tok] = apitokens.Token{ID: int64(len(f.byTok) + 1), UserID: uid, Name: "t"}
+	f.byTok[tok] = apitokens.Token{ID: int64(len(f.byTok) + 1), UserID: uid, Name: "t", Scope: apitokens.ScopeFull}
 	return tok
 }
 
@@ -200,7 +200,7 @@ type mintCountingTokens struct {
 	mints int
 }
 
-func (m *mintCountingTokens) Create(context.Context, string, int64, bool) (string, apitokens.Token, error) {
+func (m *mintCountingTokens) Create(context.Context, string, int64, string) (string, apitokens.Token, error) {
 	m.mints++
 	tok, _ := apitokens.New()
 	return tok, apitokens.Token{ID: 99, UserID: 7}, nil
@@ -351,7 +351,7 @@ func TestPersonalTokenLifecycleOverHTTP(t *testing.T) {
 	if !strings.Contains(list, aTask.Title) || strings.Contains(list, bTask.Title) {
 		t.Fatalf("A's token's task list: %s", truncate(list, 400))
 	}
-	bTok, _, err := apitokens.NewPG(pool).Create(asUser(b), "b", 0, false)
+	bTok, _, err := apitokens.NewPG(pool).Create(asUser(b), "b", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +491,7 @@ func TestAPasswordResetRevokesTheUsersAPITokens(t *testing.T) {
 	})
 	ts := apitokens.NewPG(w.pool)
 	asUser := authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
-	secret, _, err := ts.Create(asUser, "before-reset", 0, false)
+	secret, _, err := ts.Create(asUser, "before-reset", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func TestSignOutEverywhereSaysItKeepsAPITokens(t *testing.T) {
 		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = 1`)
 	})
 	ts := apitokens.NewPG(w.pool)
-	secret, _, err := ts.Create(authz.Operator(context.Background()), "kept", 0, false)
+	secret, _, err := ts.Create(authz.Operator(context.Background()), "kept", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +557,7 @@ type refusingTokens struct {
 	err error
 }
 
-func (r refusingTokens) Create(context.Context, string, int64, bool) (string, apitokens.Token, error) {
+func (r refusingTokens) Create(context.Context, string, int64, string) (string, apitokens.Token, error) {
 	return "", apitokens.Token{}, r.err
 }
 func (refusingTokens) List(context.Context) ([]apitokens.Token, error) { return nil, nil }
@@ -604,7 +604,7 @@ func TestAResetWhoseSignInFailsStillSaysTheTokensWereRevoked(t *testing.T) {
 	})
 	ts := apitokens.NewPG(w.pool)
 	secret, _, err := ts.Create(authz.WithPrincipal(context.Background(),
-		authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession}), "before", 0, false)
+		authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession}), "before", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ type iatCapturingTokens struct {
 	got *[]int64
 }
 
-func (c iatCapturingTokens) Create(_ context.Context, _ string, iat int64, _ bool) (string, apitokens.Token, error) {
+func (c iatCapturingTokens) Create(_ context.Context, _ string, iat int64, _ string) (string, apitokens.Token, error) {
 	*c.got = append(*c.got, iat)
 	tok, _ := apitokens.New()
 	return tok, apitokens.Token{ID: 1}, nil

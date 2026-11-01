@@ -972,7 +972,8 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+askPagePrefix+"{id}", s.requireSession(s.handleAskPage))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
 	// What a status bar polls (attention_summary.go): a PERSONAL token only, so
-	// it reads as that token's owner; a read-only token is enough.
+	// it reads as that token's owner. It is the one route a bar-summary token
+	// (apitokens.ScopeSummary) reaches (tokenScopeRoutes).
 	mux.HandleFunc("GET "+attentionSummaryPath, s.requireAPIToken(s.handleAttentionSummary))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))

@@ -64,7 +64,6 @@ agent resolve
 agent task comment
 agent task get
 agent task status
-attention summary
 chief ask
 chief replace
 doctor
@@ -88,7 +87,7 @@ whoami"
 # still fails until someone moves this literal deliberately. (tree_test.go pins
 # the identical number for the in-process tree; they are two reads of one
 # decision.)
-WANT_COUNT=24
+WANT_COUNT=23
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

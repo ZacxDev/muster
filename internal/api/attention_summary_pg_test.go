@@ -75,12 +75,14 @@ func itemKeys(items []attentionItem) []string {
 // none of the operator's items or hosts.
 func TestTheSummaryIsTheOwnersQueueAndHosts(t *testing.T) {
 	f := newSummaryFixture(t)
+	f.srv.auth.PublicURL = "https://muster.example.test/"
+	const base = "https://muster.example.test"
 	op := asUser(1)
-	opTok, _, err := apitokens.NewPG(f.pool).Create(op, "bar", 0, false)
+	opTok, _, err := apitokens.NewPG(f.pool).Create(op, "bar", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	memberTok, _, err := apitokens.NewPG(f.pool).Create(asUser(f.member), "member-bar", 0, false)
+	memberTok, _, err := apitokens.NewPG(f.pool).Create(asUser(f.member), "member-bar", 0, apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,18 +157,18 @@ func TestTheSummaryIsTheOwnersQueueAndHosts(t *testing.T) {
 		byKey[it.Key] = it
 	}
 	sess := sessionKey("ws", "main", "@1")
-	for key, want := range map[string]struct{ kind, host, title, why, path string }{
-		attentionAskKey(mirrored.ID): {"ask", "ws", "Gold:1", "Use «redacted» for the mirror?", attentionOpenPath + attentionAskKey(mirrored.ID)},
-		attentionAskKey(agentAsk):    {"ask", "", f.op.Name, "Which bucket?", attentionOpenPath + attentionAskKey(agentAsk)},
-		sess:                         {"session", "ws", "main:1 @ ws", "Waiting: main:1 @ ws", attentionOpenPath + sess},
-		draftKey(d.ID):               {"plugin", "", "Attention inbox", "Reply draft: Dana (Attention inbox)", draftLink(d.ID)},
+	for key, want := range map[string]struct{ kind, host, title, why, url string }{
+		attentionAskKey(mirrored.ID): {"ask", "ws", "Gold:1", "Use «redacted» for the mirror?", base + attentionOpenPath + attentionAskKey(mirrored.ID)},
+		attentionAskKey(agentAsk):    {"ask", "", f.op.Name, "Which bucket?", base + attentionOpenPath + attentionAskKey(agentAsk)},
+		sess:                         {"session", "ws", "main:1 @ ws", "Waiting: main:1 @ ws", base + attentionOpenPath + sess},
+		draftKey(d.ID):               {"plugin", "", "Attention inbox", "Reply draft: Dana (Attention inbox)", base + draftLink(d.ID)},
 	} {
 		it, ok := byKey[key]
 		if !ok {
 			t.Errorf("%s is not in the summary: %s", key, raw)
 			continue
 		}
-		if it.Kind != want.kind || it.Host != want.host || it.Title != want.title || it.Why != want.why || it.Path != want.path {
+		if it.Kind != want.kind || it.Host != want.host || it.Title != want.title || it.Why != want.why || it.URL != want.url {
 			t.Errorf("%s: %+v; want %+v", key, it, want)
 		}
 	}
@@ -210,38 +212,58 @@ func TestTheSummaryIsTheOwnersQueueAndHosts(t *testing.T) {
 	}
 }
 
-// TestAReadOnlyTokenMintedOnThePageReadsAndCannotWrite drives the whole loop
-// over the real stores: mint with the box ticked (the list says read-only),
-// read the summary with it, and be refused 403 revoking a token — its own
-// included — which stays live.
-func TestAReadOnlyTokenMintedOnThePageReadsAndCannotWrite(t *testing.T) {
+// TestABarSummaryTokenMintedOnThePageReadsTheSummaryAndNothingElse drives the
+// whole loop over the real stores: mint with "Bar summary only" chosen (stored
+// as scope summary, listed as such), read the summary with it, and be refused
+// 403 on a hook-tier read (the task list), on whoami, and revoking itself —
+// after which it is still live. The control: a full token minted on the same
+// page reads the task list.
+func TestABarSummaryTokenMintedOnThePageReadsTheSummaryAndNothingElse(t *testing.T) {
 	f := newSummaryFixture(t)
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = 1 AND name = 'bar-ro'`)
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = 1 AND name IN ('bar-sum', 'cli-full')`)
 	})
-	body, hdr := form(url.Values{"name": {"bar-ro"}, "read_only": {"1"}})
-	rec := f.call(t, http.MethodPost, accountTokensPath, body, merge(f.operator(), hdr))
-	m := mintedRE.FindStringSubmatch(rec.Body.String())
-	if rec.Code != http.StatusOK || m == nil {
-		t.Fatalf("minting a read-only token: %d %s", rec.Code, truncate(rec.Body.String(), 400))
+	mint := func(name, scope string) string {
+		t.Helper()
+		v := url.Values{"name": {name}}
+		if scope != "" {
+			v.Set("scope", scope)
+		}
+		body, hdr := form(v)
+		rec := f.call(t, http.MethodPost, accountTokensPath, body, merge(f.operator(), hdr))
+		m := mintedRE.FindStringSubmatch(rec.Body.String())
+		if rec.Code != http.StatusOK || m == nil {
+			t.Fatalf("minting %s: %d %s", name, rec.Code, truncate(rec.Body.String(), 400))
+		}
+		return m[1]
 	}
-	tok := m[1]
-	if page := f.page(t, accountTokensPath); !strings.Contains(page, `data-token-scope="read-only"`) {
-		t.Fatalf("the token page does not list the token as read-only")
+	tok := mint("bar-sum", "summary")
+	full := mint("cli-full", "")
+	if page := f.page(t, accountTokensPath); !strings.Contains(page, `data-token-scope="summary">Bar summary only`) {
+		t.Fatalf("the token page does not list the token as bar summary only")
 	}
 	var id int64
-	if err := f.pool.QueryRow(authz.System(f.ctx), `SELECT id FROM api_tokens WHERE token_hash = $1 AND read_only`, apitokens.Hash(tok)).Scan(&id); err != nil {
-		t.Fatalf("the minted token is not stored read-only: %v", err)
+	if err := f.pool.QueryRow(authz.System(f.ctx), `SELECT id FROM api_tokens WHERE token_hash = $1 AND scope = 'summary'`, apitokens.Hash(tok)).Scan(&id); err != nil {
+		t.Fatalf("the minted token is not stored with scope summary: %v", err)
+	}
+	var fullScope string
+	if err := f.pool.QueryRow(authz.System(f.ctx), `SELECT scope FROM api_tokens WHERE token_hash = $1`, apitokens.Hash(full)).Scan(&fullScope); err != nil || fullScope != "full" {
+		t.Fatalf("a mint naming no scope stored %q (%v); want full", fullScope, err)
 	}
 	if code, _, raw := summaryAs(t, f, tok); code != http.StatusOK {
-		t.Fatalf("the summary with a read-only token: %d %s", code, raw)
+		t.Fatalf("the summary with a summary token: %d %s", code, raw)
 	}
 	auth := map[string]string{"Authorization": "Bearer " + tok}
-	if w := f.call(t, http.MethodDelete, apiTokensPath+"/"+strconv.FormatInt(id, 10), nil, auth); w.Code != http.StatusForbidden ||
-		!strings.Contains(w.Body.String(), "read-only") {
-		t.Fatalf("a read-only token revoking itself: %d %s; want 403", w.Code, w.Body)
+	for _, c := range []struct{ method, path string }{{http.MethodGet, "/api/tasks"}, {http.MethodGet, "/api/whoami"},
+		{http.MethodDelete, apiTokensPath + "/" + strconv.FormatInt(id, 10)}} {
+		if w := f.call(t, c.method, c.path, nil, auth); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "scope does not reach") {
+			t.Errorf("%s %s with a summary token: %d %s; want 403", c.method, c.path, w.Code, truncate(w.Body.String(), 200))
+		}
 	}
-	if w := f.call(t, http.MethodGet, "/api/whoami", nil, auth); w.Code != http.StatusOK {
-		t.Fatalf("the read-only token after its refused revoke: %d; it must still be live", w.Code)
+	if code, _, _ := summaryAs(t, f, tok); code != http.StatusOK {
+		t.Fatalf("the summary token after its refused revoke: %d; it must still be live", code)
+	}
+	if w := f.call(t, http.MethodGet, "/api/tasks", nil, map[string]string{"Authorization": "Bearer " + full}); w.Code != http.StatusOK {
+		t.Fatalf("CONTROL: the full token on the task list: %d", w.Code)
 	}
 }

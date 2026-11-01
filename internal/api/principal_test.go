@@ -483,7 +483,7 @@ type principalAPITokens struct{ apitokens.Store }
 
 func (principalAPITokens) Authenticate(_ context.Context, tok string) (apitokens.Token, error) {
 	if tok == pAPIToken {
-		return apitokens.Token{ID: 3, UserID: authz.OperatorUserID, Name: "principal-test"}, nil
+		return apitokens.Token{ID: 3, UserID: authz.OperatorUserID, Name: "principal-test", Scope: apitokens.ScopeFull}, nil
 	}
 	return apitokens.Token{}, apitokens.ErrBadToken
 }

@@ -44,7 +44,7 @@ import (
 // status/comment, agent ls/resolve/messages, agent task get/comment/status, and
 // chief ask. If a thirteenth is genuinely wanted, change this number, add its
 // ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 24
+const wantVerbCount = 23
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -101,8 +101,6 @@ var wiring = []struct {
 	// serves plain http, so `server` would FAIL; it is skipped here, as are the
 	// checks that need a sign-in. What this row pins is the route.
 	{"doctor", []string{"doctor", "--skip", "server,manifest,sign-in,push,dictation"}, "GET /api/doctor"},
-	// The 24th verb: the attention summary a status bar polls (attention.go).
-	{"attention summary", []string{"attention", "summary"}, "GET /api/attention/summary"},
 }
 
 // runnableCommands walks the tree and returns the full path of every command
@@ -212,7 +210,6 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/doctor", http.StatusOK, `{"auth_mode":"password","hook_token_armed":true,`+
 				`"push":true,"dictation":true,"mirror":{"enabled":true,"hosts":[{"host":"alpha","token":true,"online":true}]}}`)
-			h.json("GET /api/attention/summary", http.StatusOK, `{"ts":1,"nudge_mode":"off","partial":false,"hosts":[],"items":[]}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

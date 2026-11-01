@@ -136,7 +136,7 @@ func newRouteFixture(t *testing.T) *routeFixture {
 	g.chiefTok, g.workerTok = "route-chief-token-"+suffix, "route-worker-token-"+suffix
 	g.chief = g.newAgent(t, g.owner, "rtchief-"+suffix, "chief", g.chiefTok)
 	g.worker = g.newAgent(t, g.owner, "rtworker-"+suffix, "", g.workerTok)
-	tok, _, err := apitokens.NewPG(g.pool).Create(g.asOwner, "route-reply", time.Now().Unix(), false)
+	tok, _, err := apitokens.NewPG(g.pool).Create(g.asOwner, "route-reply", time.Now().Unix(), apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestTheAnswerIsRelayedPerTheAllowlist(t *testing.T) {
 
 	// Another user's credential: the route is not theirs, so it is not found.
 	stranger := f.newMember(t)
-	tok, _, err := apitokens.NewPG(f.pool).Create(f.as(stranger), "stranger", time.Now().Unix(), false)
+	tok, _, err := apitokens.NewPG(f.pool).Create(f.as(stranger), "stranger", time.Now().Unix(), apitokens.ScopeFull)
 	if err != nil {
 		t.Fatal(err)
 	}
