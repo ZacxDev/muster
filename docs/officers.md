@@ -481,8 +481,9 @@ the item, `already_yours: true` and the note "already yours — lease renewed"
 naming another instance is returned as a refusal. **Claiming a blocked item**
 (HQ's 409 `code: "blocked"`, `blocked_by`) is not a refusal either: nothing
 was claimed, and the instance gets a plain result — `claimed: false`,
-`blocked: true`, `blocked_by` and the note "not claimed: item N is blocked by
-…; claim another open item". At most 10 `links`. `outcome` is `done`,
+`blocked: true`, `blocked_by` (HQ **task** ids, as strings — not items to
+claim) and the note "not claimed: item N waits on tasks A, B (not done yet);
+claim another open item". At most 10 `links`. `outcome` is `done`,
 `escalated` or `no_action`; `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
 returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
 409 on a claim names the holder), and an outage as "try again in a minute".

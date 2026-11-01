@@ -897,6 +897,9 @@ func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item offi
 
 // claimBlockedError is HQ refusing a claim with 409 {code: blocked,
 // blocked_by}: the item's task waits on unfinished tasks (HQ's task ordering).
+// blocked_by holds HQ TASK ids, never officer item ids, so they are kept as
+// plain strings and the note calls them tasks: an instance must not read them
+// as items it could claim.
 //
 // It stays an error to the code (the claim did not happen: nothing that runs
 // on a successful claim may run), but officerToolResult turns it into a
@@ -905,7 +908,8 @@ func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item offi
 // simply another item.
 type claimBlockedError struct {
 	item officers.ItemID
-	by   []officers.ItemID
+	// tasks are the HQ task ids the item's task waits on.
+	tasks []string
 }
 
 // asClaimBlocked is err as a *claimBlockedError when it is HQ's 409
@@ -916,39 +920,35 @@ func asClaimBlocked(item officers.ItemID, err error) *claimBlockedError {
 		return nil
 	}
 	var refusal struct {
-		Code      string            `json:"code"`
-		BlockedBy []officers.ItemID `json:"blocked_by"`
+		Code      string   `json:"code"`
+		BlockedBy []string `json:"blocked_by"`
 	}
 	if json.Unmarshal(hqErr.Body, &refusal) != nil || refusal.Code != "blocked" {
 		return nil
 	}
-	return &claimBlockedError{item: item, by: refusal.BlockedBy}
+	return &claimBlockedError{item: item, tasks: refusal.BlockedBy}
 }
 
 func (e *claimBlockedError) Error() string {
-	return fmt.Sprintf("officers: item %s is blocked by %s", e.item, e.blockers())
+	return fmt.Sprintf("officers: item %s waits on %s", e.item, e.waitsOn())
 }
 
-func (e *claimBlockedError) blockers() string {
-	if len(e.by) == 0 {
+func (e *claimBlockedError) waitsOn() string {
+	if len(e.tasks) == 0 {
 		return "unfinished tasks"
 	}
-	ids := make([]string, len(e.by))
-	for i, id := range e.by {
-		ids[i] = string(id)
-	}
-	return strings.Join(ids, ", ")
+	return "tasks " + strings.Join(e.tasks, ", ")
 }
 
 // result is the instance-facing answer.
 func (e *claimBlockedError) result() string {
-	by := e.by
-	if by == nil {
-		by = []officers.ItemID{}
+	tasks := e.tasks
+	if tasks == nil {
+		tasks = []string{}
 	}
 	return toolJSON(map[string]any{
-		"claimed": false, "blocked": true, "item_id": e.item, "blocked_by": by,
-		"note": fmt.Sprintf("not claimed: item %s is blocked by %s; claim another open item (%s lists them; an item marked blocked cannot be claimed until its blockers finish)", e.item, e.blockers(), officers.ToolItems),
+		"claimed": false, "blocked": true, "item_id": e.item, "blocked_by": tasks,
+		"note": fmt.Sprintf("not claimed: item %s waits on %s (not done yet); claim another open item (%s lists them; an item marked blocked cannot be claimed until the tasks it waits on are done)", e.item, e.waitsOn(), officers.ToolItems),
 	})
 }
 
