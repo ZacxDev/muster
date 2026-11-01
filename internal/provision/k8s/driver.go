@@ -102,6 +102,14 @@ type Config struct {
 	// Empty: the operator places them in the instance's namespace, unchanged.
 	SecretSourceNamespace string
 
+	// NamespaceRoleBinding, when set, is the least-privilege RBAC layout: muster
+	// binds its own ServiceAccount to a named ClusterRole inside each
+	// per-instance namespace, right after creating it, so the cluster-wide grant
+	// shrinks to namespaces and RoleBindings (NamespaceRoleBindingClusterRBAC).
+	// nil: no RoleBinding is written and the driver needs its namespaced rights
+	// cluster-wide, as before. Requires NamespacePerInstance. See rolebinding.go.
+	NamespaceRoleBinding *NamespaceRoleBindingConfig
+
 	// Logger is optional.
 	Logger *log.Logger
 }
@@ -140,6 +148,16 @@ func New(cfg Config) (*Driver, error) {
 	}
 	if cfg.NetworkPolicy != nil {
 		if err := cfg.NetworkPolicy.validate(); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.NamespaceRoleBinding != nil {
+		if !cfg.NamespacePerInstance {
+			return nil, errors.New("k8s: Config.NamespaceRoleBinding requires NamespacePerInstance " +
+				"(in the shared layout muster creates no namespace to bind itself in; grant a Role in the shared " +
+				"namespace instead)")
+		}
+		if err := cfg.NamespaceRoleBinding.validate(); err != nil {
 			return nil, err
 		}
 	}
@@ -203,11 +221,15 @@ func (d *Driver) namespaceFor(name string) string {
 	if !d.cfg.NamespacePerInstance {
 		return d.cfg.Namespace
 	}
-	prefix := d.cfg.NamespacePrefix
-	if prefix == "" {
-		prefix = "muster-"
+	return d.namespacePrefix() + name
+}
+
+// namespacePrefix is the per-instance namespace prefix in force.
+func (d *Driver) namespacePrefix() string {
+	if d.cfg.NamespacePrefix == "" {
+		return "muster-"
 	}
-	return prefix + name
+	return d.cfg.NamespacePrefix
 }
 
 // blind wraps an API error as provision.ErrBlind.
@@ -416,6 +438,13 @@ func labelsOf(o metav1.Object, err error) (map[string]string, error) {
 // site is the same bug waiting to be fixed four times. List needs no equivalent:
 // it filters server-side with managedSelector().
 func (d *Driver) getOwnedDeployment(ctx context.Context, ns, name string) (*appsv1.Deployment, error) {
+	// In binding mode, first make sure muster may read in ns at all — and an
+	// absent namespace is an absent instance (see namespaceAccess).
+	if present, err := d.namespaceAccess(ctx, name, ns); err != nil {
+		return nil, err
+	} else if !present {
+		return nil, notFound(name)
+	}
 	dep, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, notFound(name)
@@ -542,6 +571,18 @@ func (d *Driver) Create(ctx context.Context, spec provision.Spec) error {
 	}
 	ns := d.namespaceFor(spec.Ref.Name)
 
+	// In binding mode an absent (or terminating, or foreign) namespace holds no
+	// instance of ours, and a Deployment read there would be 403 rather than
+	// NotFound: go straight to apply, which creates the namespace and its
+	// RoleBinding first (or refuses / waits, exactly as before).
+	present, err := d.namespaceAccess(ctx, spec.Ref.Name, ns)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return d.apply(ctx, spec, ns)
+	}
+
 	existing, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, spec.Ref.Name, metav1.GetOptions{})
 	switch {
 	case err == nil:
@@ -640,6 +681,14 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 
 	if d.cfg.NamespacePerInstance {
 		if err := d.ensureNamespace(ctx, name, ns); err != nil {
+			return err
+		}
+	}
+	// 🔴 THE ROLEBINDING IS THE FIRST OBJECT IN THE NAMESPACE, in binding mode:
+	// every request below is authorised through it. Create-if-missing, so an
+	// instance whose namespace predates the layout gets one on its next apply.
+	if d.bindingMode() {
+		if err := d.ensureRoleBinding(ctx, name, ns); err != nil {
 			return err
 		}
 	}
@@ -1061,6 +1110,20 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 			return fmt.Errorf("refusing to destroy %q: %w", name, err)
 		}
 	}
+	// In binding mode: an absent or terminating namespace has nothing left to
+	// remove by name (and every namespaced read there would be 403, not
+	// NotFound); otherwise this is where a namespace that predates the layout
+	// gets its RoleBinding, before the teardown needs it. (A foreign namespace
+	// was refused just above.)
+	if d.bindingMode() {
+		present, err := d.namespaceAccess(ctx, name, ns)
+		if err != nil {
+			return err
+		}
+		if !present {
+			return nil
+		}
+	}
 
 	var foreignDep *notManagedError
 	switch dep, err := d.getOwnedDeployment(ctx, ns, name); {
@@ -1191,6 +1254,15 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 	switch {
 	case apierrors.IsNotFound(err):
 		return nil
+	case apierrors.IsForbidden(err) && d.bindingMode():
+		// The namespace's deletion can take muster's RoleBinding before this
+		// read: then a 403 is what "gone" looks like, PROVIDED the namespace
+		// itself is gone or terminating. Otherwise it is a real refusal.
+		cur, nerr := c.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+		if apierrors.IsNotFound(nerr) || (nerr == nil && terminating(cur)) {
+			return nil
+		}
+		return blind("verify destroy of "+ref.Name, err)
 	case err != nil:
 		return blind("verify destroy of "+ref.Name, err)
 	default:
@@ -1205,6 +1277,9 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 // Both reads below go through blind(). The caller's fallback to stored status
 // depends on being able to tell "nothing is running" from "I cannot see".
 func (d *Driver) List(ctx context.Context) ([]provision.Instance, error) {
+	if d.bindingMode() {
+		return d.listPerNamespace(ctx)
+	}
 	ns := d.listNamespace()
 	deps, err := d.cfg.Client.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
 	if err != nil {
@@ -1225,6 +1300,75 @@ func (d *Driver) List(ctx context.Context) ([]provision.Instance, error) {
 	for i := range deps.Items {
 		dep := &deps.Items[i]
 		out = append(out, d.instanceFrom(dep, byInstance[dep.Labels[labelInstance]]))
+	}
+	return out, nil
+}
+
+// listPerNamespace is List in binding mode.
+//
+// 🔴 IT MAKES NO CROSS-NAMESPACE READ BUT THE NAMESPACE LIST. The other layout
+// lists Deployments and Pods across metav1.NamespaceAll, which needs those
+// rights cluster-wide — exactly the grant binding mode exists to remove. Here
+// each per-instance namespace (instanceNamespaces) is read on its own, through
+// its RoleBinding, which namespaceAccess writes if it is missing.
+//
+// ⚠ TWO KINDS OF PER-NAMESPACE FAILURE, AND THEY ARE HANDLED DIFFERENTLY:
+//
+//   - A namespace that cannot be READ (an API failure: a list, or a RoleBinding
+//     request that errors) fails the whole List, as ErrBlind. A partial answer
+//     would report the unreadable instances as not running, which is the
+//     "empty when blind" failure List's contract forbids.
+//   - A namespace whose RoleBinding muster REFUSES to use — a stale one of
+//     muster's (ErrDivergentSpec, e.g. after the ClusterRole was renamed) or a
+//     stranger's (ErrNotManaged) — does NOT fail the List. That state is
+//     permanent until an operator deletes the binding, and failing the List on
+//     it would blind live status and the stopped-agent reaper for the WHOLE
+//     fleet over one agent. The instance is REPORTED, not skipped, as
+//     PhaseUnknown with the refusal as its Reason (and logged, naming the
+//     namespace and the remedy). 🔴 Skipping it would be worse than failing:
+//     an observed list without the instance reads as "not running", and the
+//     reaper destroys a stored-stopped agent it does not see live. Get and
+//     Destroy of that agent still return the refusal itself.
+func (d *Driver) listPerNamespace(ctx context.Context) ([]provision.Instance, error) {
+	namespaces, err := d.instanceNamespaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []provision.Instance{}
+	for _, nsObj := range namespaces {
+		ns := nsObj.Name
+		instance := nsObj.Labels[labelInstance] // non-empty: instanceNamespaces requires it
+		if err := d.ensureRoleBinding(ctx, instance, ns); err != nil {
+			if !errors.Is(err, provision.ErrDivergentSpec) && !errors.Is(err, provision.ErrNotManaged) {
+				return nil, err
+			}
+			d.log.Printf("k8s: list: cannot read namespace %q, reporting instance %q as unknown: %v", ns, instance, err)
+			out = append(out, provision.Instance{
+				Ref:    provision.Ref{Name: instance},
+				Driver: d.Driver(),
+				Group:  ns,
+				Phase:  provision.PhaseUnknown,
+				Reason: "RoleBindingRefused: " + err.Error(),
+			})
+			continue
+		}
+		deps, err := d.cfg.Client.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
+		if err != nil {
+			return nil, blind("list deployments in "+ns, err)
+		}
+		pods, err := d.cfg.Client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: managedSelector()})
+		if err != nil {
+			return nil, blind("list pods in "+ns, err)
+		}
+		byInstance := map[string][]corev1.Pod{}
+		for i := range pods.Items {
+			p := &pods.Items[i]
+			byInstance[p.Labels[labelInstance]] = append(byInstance[p.Labels[labelInstance]], *p)
+		}
+		for i := range deps.Items {
+			dep := &deps.Items[i]
+			out = append(out, d.instanceFrom(dep, byInstance[dep.Labels[labelInstance]]))
+		}
 	}
 	return out, nil
 }
