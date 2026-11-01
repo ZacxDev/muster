@@ -287,6 +287,16 @@ Two endpoints help with personal tokens:
 - `GET /api/tokens` and `DELETE /api/tokens/{id}` manage personal tokens. They
   accept a personal token only.
 
+**Read-only tokens.** Tick **Read-only** when you mint a token and it may only
+read: a `GET` or `HEAD` request is admitted as usual, and any other method
+(`POST`, `PUT`, `PATCH`, `DELETE`) on any route a personal token reaches is
+refused **403** before it runs. The check is by method, so it covers routes
+added later. The token page and `muster token ls` (`"readOnly": true`) show
+each token's scope, and `muster whoami` shows the presented token's. A token
+minted before read-only tokens existed is full access, as is one minted with
+the box left unticked. Give a poller (a status bar reading
+[the attention summary](attention.md#the-summary-api)) a read-only token.
+
 From the CLI these are `muster whoami`, `muster token ls` and
 `muster token revoke <id>` ([cli.md](cli.md)).
 

@@ -218,11 +218,11 @@ func TestFlowLifecycleOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	ts := apitokens.NewPG(pool)
-	aTok, _, err := ts.Create(asUser(a), "a", 0)
+	aTok, _, err := ts.Create(asUser(a), "a", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bTok, _, err := ts.Create(asUser(b), "b", 0)
+	bTok, _, err := ts.Create(asUser(b), "b", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,11 +428,11 @@ func TestFlowCancelOverTheAPI(t *testing.T) {
 		return authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
 	}
 	ts := apitokens.NewPG(pool)
-	aTok, _, err := ts.Create(asUser(a), "a", 0)
+	aTok, _, err := ts.Create(asUser(a), "a", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bTok, _, err := ts.Create(asUser(b), "b", 0)
+	bTok, _, err := ts.Create(asUser(b), "b", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -88,6 +88,11 @@ type Token struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt"`
 	RevokedAt  *time.Time `json:"revokedAt"`
+	// ReadOnly: the token may only READ (migration 0068). Its scope is chosen
+	// when it is minted and never changes; a token minted before 0068 is full
+	// access. What "read" admits is decided at the door
+	// (internal/api.admitAPIToken), not here.
+	ReadOnly bool `json:"readOnly"`
 }
 
 // Revoked reports whether the token is revoked.
@@ -133,13 +138,13 @@ type Store interface {
 	// ErrUserDisabled when the owner is disabled. ctx must be able to read any
 	// user's row (authz.System): the owner is what it learns.
 	Authenticate(ctx context.Context, token string) (Token, error)
-	// Create mints a token named name for ctx's user, records it in
-	// audit_log, and returns the token ONCE with its record.
+	// Create mints a token named name for ctx's user, read-only when readOnly,
+	// records it in audit_log, and returns the token ONCE with its record.
 	// sessionIssuedAt is the minting browser session's iat (unix seconds): a
 	// session issued at or before the user's session cutoff is refused
 	// ErrSessionEnded. Zero means the caller is not a GoTrue session (password
 	// mode, a fixture) and there is no cutoff to compare.
-	Create(ctx context.Context, name string, sessionIssuedAt int64) (string, Token, error)
+	Create(ctx context.Context, name string, sessionIssuedAt int64, readOnly bool) (string, Token, error)
 	// List returns ctx's user's tokens, newest first, revoked included.
 	List(ctx context.Context) ([]Token, error)
 	// Revoke revokes ctx's user's token id. found is false when the user has
@@ -159,11 +164,11 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool, now: time.
 
 var _ Store = (*PGStore)(nil)
 
-const cols = `id, user_id, name, created_at, last_used_at, revoked_at`
+const cols = `id, user_id, name, created_at, last_used_at, revoked_at, read_only`
 
 func scan(row pgx.Row) (Token, error) {
 	var t Token
-	err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt)
+	err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.ReadOnly)
 	return t, err
 }
 
@@ -185,11 +190,11 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 	}
 	var t Token
 	var disabled bool
-	err := s.pool.QueryRow(ctx, `SELECT t.id, t.user_id, t.name, t.created_at, t.last_used_at, t.revoked_at,
+	err := s.pool.QueryRow(ctx, `SELECT t.id, t.user_id, t.name, t.created_at, t.last_used_at, t.revoked_at, t.read_only,
 			u.disabled_at IS NOT NULL
 		FROM api_tokens t JOIN users u ON u.id = t.user_id
 		WHERE t.token_hash = $1`, Hash(token)).
-		Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &disabled)
+		Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.ReadOnly, &disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Token{}, ErrBadToken
 	}
@@ -251,7 +256,7 @@ func CleanName(name string) (string, error) {
 // with users.sessions_not_before by the session tier's own rule (at or before
 // the cutoff's second is refused): a session the reset ended cannot mint, and
 // the session the reset signs in can (TestAMintQueuedBehindAResetIsRefused).
-func (s *PGStore) Create(ctx context.Context, name string, sessionIssuedAt int64) (string, Token, error) {
+func (s *PGStore) Create(ctx context.Context, name string, sessionIssuedAt int64, readOnly bool) (string, Token, error) {
 	p, err := user(ctx)
 	if err != nil {
 		return "", Token{}, err
@@ -282,12 +287,12 @@ func (s *PGStore) Create(ctx context.Context, name string, sessionIssuedAt int64
 			return ErrSessionEnded
 		}
 		var err error
-		t, err = scan(tx.QueryRow(ctx, `INSERT INTO api_tokens (user_id, name, token_hash)
-			VALUES ($1, $2, $3) RETURNING `+cols, p.UserID, name, Hash(tok)))
+		t, err = scan(tx.QueryRow(ctx, `INSERT INTO api_tokens (user_id, name, token_hash, read_only)
+			VALUES ($1, $2, $3, $4) RETURNING `+cols, p.UserID, name, Hash(tok), readOnly))
 		if err != nil {
 			return err
 		}
-		return audit(ctx, tx, p, "api_token.create", t.ID, map[string]any{"name": t.Name})
+		return audit(ctx, tx, p, "api_token.create", t.ID, map[string]any{"name": t.Name, "readOnly": t.ReadOnly})
 	})
 	if err != nil {
 		return "", Token{}, err

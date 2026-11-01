@@ -185,6 +185,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/doctor":         classAdmin,
 	"GET /api/tokens":         classAPIToken,
 	"DELETE /api/tokens/{id}": classAPIToken,
+	// The attention summary: the token owner's own queue and hosts.
+	"GET /api/attention/summary": classAPIToken,
 	// muster-native Web Push (migration 0013). The key and the subscribe /
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device
@@ -540,6 +542,9 @@ var wantCanaryForA = []string{
 	// A's canary-carrying question. (The tap on A's ask opens that page, by
 	// its id — controlMarkers has its own control.)
 	"GET /attention/asker", "GET /attention/asks/{id}",
+	// The attention summary through A's personal token: A's canary-carrying
+	// ask is on it (its why is the question).
+	"GET /api/attention/summary",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -809,11 +814,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ts := apitokens.NewPG(pool)
 	w.apiTokens = map[int64]string{}
 	for _, u := range []isoUser{w.a, w.b} {
-		tok, _, err := ts.Create(as2(u), u.name+" cli", 0)
+		tok, _, err := ts.Create(as2(u), u.name+" cli", 0, false)
 		must(err, u.name+" api token")
 		w.apiTokens[u.uid] = tok
 	}
-	_, w.aToken2, err = ts.Create(ua, w.canary+" token", 0)
+	_, w.aToken2, err = ts.Create(ua, w.canary+" token", 0, false)
 	must(err, "a second api token")
 	w.aTokTask, err = ns.Create(ua, notes.Note{Title: w.canary + " token-control", Status: notes.StatusOpen})
 	must(err, "a token-control task")

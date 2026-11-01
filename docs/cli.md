@@ -18,6 +18,7 @@ The verb set is pinned in two places:
 | agents | `agent ls`, `agent messages`, `agent resolve`, `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
 | browser flows | `flow enqueue`, `flow ls`, `flow status`, `flow cancel` |
 | credentials | `token ls`, `token revoke`, `whoami` |
+| attention | `attention summary` (what is waiting on you, for a status bar: [the summary API](attention.md#the-summary-api)) |
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)) |
 | setup | `doctor` ([below](#muster-doctor)) |

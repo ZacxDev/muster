@@ -42,6 +42,12 @@ import (
 // disabling its owner takes effect on the very next request — tighter than the
 // gotrue session tier's DisableSweepInterval, which bounds how long an already
 // OPEN stream survives a disable. No route a token can open streams.
+//
+// 🔴 A READ-ONLY TOKEN (migration 0068) IS REFUSED AT THE SAME DOOR, BY METHOD.
+// admitAPIToken lets it through only on readOnlyTokenMethods (GET, HEAD) and
+// answers anything else 403 ReadOnlyTokenRefusal before the handler runs. It is
+// an allowlist of METHODS, not of routes: a route added later is covered the
+// day it is registered, and a write route is a write whatever its path.
 
 // apiTokensPath is the token-management API (list, revoke; requireAPIToken).
 const apiTokensPath = "/api/tokens"
@@ -132,8 +138,18 @@ func (s *Server) requireAPIToken(next http.HandlerFunc) http.HandlerFunc {
 // nothing about which.
 const APITokenRefusal = "invalid or revoked API token"
 
+// ReadOnlyTokenRefusal is the 403 body a read-only token gets on any method but
+// readOnlyTokenMethods.
+const ReadOnlyTokenRefusal = "this API token is read-only: it may only make GET and HEAD requests (mint a full-access token at " + accountTokensPath + " to change anything)"
+
+// readOnlyTokenMethods is every method a read-only token may use. An
+// allowlist: a method not named here (POST, PUT, PATCH, DELETE, and any other)
+// is refused.
+var readOnlyTokenMethods = map[string]bool{http.MethodGet: true, http.MethodHead: true}
+
 // admitAPIToken authenticates a personal token and admits the request as its
-// owner, or refuses it 401. See the file header.
+// owner, or refuses it 401 — or 403 for a read-only token on a method it may
+// not use. See the file header.
 //
 // ⚠ NO FAILURE LIMITER, ON PURPOSE: a 256-bit token cannot be guessed, so a
 // limiter would only turn 401 into 429. The one gate before the lookup is
@@ -160,6 +176,10 @@ func (s *Server) admitAPIToken(w http.ResponseWriter, r *http.Request, next http
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the API token"})
 		return
 	}
+	if t.ReadOnly && !readOnlyTokenMethods[r.Method] {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": ReadOnlyTokenRefusal})
+		return
+	}
 	ctx := context.WithValue(r.Context(), apiTokenCtxKey{}, t)
 	s.admit(w, r.WithContext(ctx), next, s.principalFor(r.Context(), t.UserID, authz.ViaToken))
 }
@@ -181,7 +201,7 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	p := authz.MustFrom(r.Context())
 	out := map[string]any{"userId": p.UserID, "role": p.Role, "via": p.Via}
 	if t, ok := apiTokenFromContext(r.Context()); ok {
-		out["token"] = map[string]any{"id": t.ID, "name": t.Name, "createdAt": t.CreatedAt}
+		out["token"] = map[string]any{"id": t.ID, "name": t.Name, "createdAt": t.CreatedAt, "readOnly": t.ReadOnly}
 	}
 	if actor, ok := serviceActorFromContext(r.Context()); ok {
 		out["actor"] = actor
@@ -236,7 +256,9 @@ func (s *Server) handleAccountTokenCreate(w http.ResponseWriter, r *http.Request
 		s.renderAccountTokens(w, r, http.StatusInternalServerError, "", "The token could not be created.")
 		return
 	}
-	tok, _, err := s.ext.APITokens.Create(r.Context(), r.PostFormValue("name"), iat)
+	// The checkbox: absent (unchecked) is a full-access token, as before 0068.
+	readOnly := r.PostFormValue("read_only") != ""
+	tok, _, err := s.ext.APITokens.Create(r.Context(), r.PostFormValue("name"), iat, readOnly)
 	if errors.Is(err, apitokens.ErrNameTooLong) {
 		s.renderAccountTokens(w, r, http.StatusBadRequest, "", err.Error())
 		return
@@ -307,6 +329,8 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 <label for="token-name" class="text-sm font-medium text-fg">Name</label>
 <input id="token-name" name="name" maxlength="` + strconv.Itoa(apitokens.MaxNameLen) + `" placeholder="laptop CLI"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" id="token-read-only" name="read_only" value="1" class="h-5 w-5">
+Read-only: it can only read (GET), never change anything</label>
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Create token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="token-list">
@@ -319,13 +343,17 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 		if name == "" {
 			name = "(unnamed)"
 		}
+		scope := "full access"
+		if t.ReadOnly {
+			scope = "read-only"
+		}
 		used := "never used"
 		if t.LastUsedAt != nil {
 			used = "last used " + t.LastUsedAt.UTC().Format("2006-01-02 15:04") + " UTC"
 		}
 		b.WriteString(`<li class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-token-id="` + strconv.FormatInt(t.ID, 10) + `">
 <span class="break-all text-sm font-semibold text-fg">` + html.EscapeString(name) + `</span>
-<span class="text-xs text-fg2">created ` + t.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + used + `</span>
+<span class="text-xs text-fg2" data-token-scope="` + scope + `">` + scope + ` · created ` + t.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + used + `</span>
 `)
 		if t.Revoked() {
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)

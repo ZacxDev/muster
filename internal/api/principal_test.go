@@ -369,6 +369,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/flows/jobs/{id}",
 		"POST /api/flows/jobs",
 		"POST /api/flows/jobs/{id}/cancel",
+		// The attention summary (attention_summary.go): a personal token ONLY.
+		"GET /api/attention/summary",
 	},
 	// A browser-flow RUNNER token (0012) opens exactly the runner door.
 	authz.ViaRunner: {

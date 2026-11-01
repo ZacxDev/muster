@@ -163,6 +163,6 @@ func newRootCmd(a *app) *cobra.Command {
 	root.PersistentFlags().StringVar(&a.flagEnvFile, "env-file", defaultEnvFile, "KEY=VALUE config file")
 	root.PersistentFlags().DurationVar(&a.flagTimeout, "timeout", rootDefaultTimeout, "per-request timeout")
 
-	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a), newDoctorCmd(a))
+	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a), newDoctorCmd(a), newAttentionCmd(a))
 	return root
 }

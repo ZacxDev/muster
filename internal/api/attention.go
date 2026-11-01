@@ -202,7 +202,8 @@ type attentionItem struct {
 	// chips. Not in the item's JSON (attention_list), which predates them.
 	suggestions []string
 	// pushText, when set, replaces Text in the notification body (muster's
-	// own unrouted-message ask: unroutedPushText); the page shows Text.
+	// own unrouted-message ask: unroutedPushText; a reply draft's
+	// draftPushBody); the page shows Text.
 	pushText string
 	// choices are a held question's choice labels, listed in its push only
 	// (never in attention_list's options).
@@ -506,7 +507,7 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 		}
 		it := attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
 			Text: draftInboundText(c.Message), Detail: "Draft reply: " + mirror.OneLine(c.Draft.Body, draftReplyMax),
-			Since: c.Draft.CreatedAt, Link: draftLink(c.Draft.ID)}
+			Since: c.Draft.CreatedAt, Link: draftLink(c.Draft.ID), pushText: draftPushBody(c.Message, c.PluginLabel)}
 		// The agent that drafted it (none once that agent is deleted).
 		if c.Draft.AgentID != nil {
 			it.card.agentID = *c.Draft.AgentID
@@ -704,10 +705,18 @@ func attentionPushTitle(it attentionItem) string {
 // command a question asks about is exactly what must not vanish from it.
 //
 // Other notifications are unchanged: a reply draft's (draftPushBody) still
-// says who and where only.
+// says who and where only — and so does its body here, so this is every
+// item's lock-screen text (the attention summary reads it,
+// attention_summary.go): a draft item carries its draftPushBody in pushText,
+// and one without (built elsewhere) says DraftPushBody, never its message.
 func attentionPushBody(it attentionItem) string {
 	var lines []string
 	switch it.Kind {
+	case attentionKindPlugin:
+		if it.pushText != "" {
+			return it.pushText
+		}
+		return DraftPushBody
 	case attentionKindSession:
 		body := "Waiting: " + textplain.Title(it.Source)
 		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
@@ -962,6 +971,9 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+attentionOpenPath+"{key}", s.requireSession(s.handleAttentionOpen))
 	mux.HandleFunc("GET "+askPagePrefix+"{id}", s.requireSession(s.handleAskPage))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
+	// What a status bar polls (attention_summary.go): a PERSONAL token only, so
+	// it reads as that token's owner; a read-only token is enough.
+	mux.HandleFunc("GET "+attentionSummaryPath, s.requireAPIToken(s.handleAttentionSummary))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))
