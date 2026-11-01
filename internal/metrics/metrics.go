@@ -314,6 +314,17 @@ var (
 		Name: "muster_officer_hq_faults",
 		Help: "Officers whose HQ refuses them permanently (401/403/404); their instances are scaled to zero.",
 	})
+	// OfficerTranscriptEvents counts officer transcript events by what became
+	// of them (internal/officers/transcript): posted (HQ answered 2xx),
+	// dropped_buffer (an instance's buffer was full: the oldest went),
+	// dropped_retries (HQ kept failing past the retry cap), dropped_refused
+	// (HQ answered 400), dropped_superseded (the instance claimed another
+	// item before they were sent), dropped_unsequenced (no valid seq could be
+	// derived from the transcript position).
+	OfficerTranscriptEvents = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_transcript_events_total",
+		Help: "Officer transcript events forwarded to HQ, by result (posted or a drop reason).",
+	}, []string{"result"})
 )
 
 // ObserveHTTP records one HTTP request's matched route pattern, method, status,

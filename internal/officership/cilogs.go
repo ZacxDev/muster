@@ -421,6 +421,16 @@ func redactText(s string) string {
 	return strings.Join(RedactLines(splitLines(s)), "\n")
 }
 
+// RedactText is THE CI-log secret filter (RedactLines, unchanged) over any
+// multi-line text — an officer's session transcript forwarded to HQ
+// (internal/officers/transcript) — split at the same separators as a log
+// (\n, \r\n, a lone \r) but KEEPING empty lines, so prose keeps its
+// paragraphs. Every line is joined back with \n.
+func RedactText(s string) string {
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n"), "\n")
+	return strings.Join(RedactLines(lines), "\n")
+}
+
 // splitLines splits a log at \n, \r\n and a lone \r (a progress line
 // overwritten in place).
 func splitLines(s string) []string {

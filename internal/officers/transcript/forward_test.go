@@ -37,14 +37,13 @@ var instance = officers.InstanceName(officerID, 1)
 type fakeSource struct {
 	mu      sync.Mutex
 	session string
-	base    int64
 	lines   []cctranscript.Line
 	end     int64
 	reads   int
 }
 
 func newSource() *fakeSource {
-	return &fakeSource{session: "11111111-2222-3333-4444-555555555555", base: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC).Unix()}
+	return &fakeSource{session: "11111111-2222-3333-4444-555555555555"}
 }
 
 // add appends one line carrying evs, 137 bytes long (an odd width, so no
@@ -56,10 +55,10 @@ func (s *fakeSource) add(at time.Time, evs ...cctranscript.Event) {
 	s.lines = append(s.lines, cctranscript.Line{Events: evs, End: s.end, At: at.UnixMilli()})
 }
 
-func (s *fakeSource) newSession(id string, base int64) {
+func (s *fakeSource) newSession(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.session, s.base, s.lines, s.end = id, base, nil, 0
+	s.session, s.lines, s.end = id, nil, 0
 }
 
 func (s *fakeSource) Read(_ context.Context, o officers.Officer, inst string, q transcript.Query) (cctranscript.Page, error) {
@@ -79,7 +78,7 @@ func (s *fakeSource) Read(_ context.Context, o officers.Officer, inst string, q 
 			from = 0
 		}
 	}
-	p := cctranscript.Page{Session: s.session, Base: s.base, Next: s.end}
+	p := cctranscript.Page{Session: s.session, Next: s.end}
 	for _, l := range s.lines {
 		if l.End > from {
 			p.Lines = append(p.Lines, l)
@@ -151,7 +150,7 @@ func (r *rig) restart() {
 // claim makes HQ hold item for the instance under a live lease.
 func (r *rig) claim() string {
 	id := r.hq.AddItem(officerID, "release", "subject-1")
-	r.hq.SetClaim(id, instance, r.now.Add(10*time.Minute))
+	r.hq.SetClaim(id, instance, r.now.Add(24*time.Hour)) // outlives every test clock
 	return id
 }
 
@@ -186,7 +185,7 @@ func at(min int) time.Time { return time.Date(2026, 11, 1, 12, min, 0, 0, time.U
 func TestForwardsNewEventsMappedToKindsInStrictSeqOrder(t *testing.T) {
 	r := newRig(t, true, nil)
 	// Before the claim: the officer's earlier work, which is NOT this item's.
-	r.src.add(at(0), cctranscript.Event{Kind: cctranscript.KindText, Text: "before the claim"})
+	r.src.add(r.now.Add(-time.Minute), cctranscript.Event{Kind: cctranscript.KindText, Text: "before the claim"})
 	item := r.claim()
 	r.fwd.Claimed(r.o, instance, officers.ItemID(item))
 
@@ -209,7 +208,7 @@ func TestForwardsNewEventsMappedToKindsInStrictSeqOrder(t *testing.T) {
 		{"system", "background task finished"},
 	}
 	if len(got) != len(want) {
-		t.Fatalf("stored %d events, want %d: %+v", len(got), len(want), got)
+		t.Fatalf("stored %d events, want %d: %+v (log: %s)", len(got), len(want), got, r.log)
 	}
 	for i, w := range want {
 		if got[i].Kind != w.kind || !strings.Contains(got[i].Text, w.text) {
@@ -307,9 +306,10 @@ func TestRedactsASecretInAToolResultBeforePosting(t *testing.T) {
 	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 	r.src.add(at(1), cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: "t1", OK: true,
 		Output: "fetched the release notes\nGITHUB_TOKEN=" + secret + "\nall 12 checks passed"})
-	// The officer's own token, echoed by a tool, is never sent either.
+	// The officer's own token, echoed by a tool, is never sent either — even
+	// in a line no secret SHAPE matches (only the scrub can know it).
 	r.src.add(at(2), cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: "t2", OK: true,
-		Output: "header was Bearer " + officerToken})
+		Output: "the value was " + officerToken + " today"})
 	r.tick()
 
 	got := r.hq.Transcript(item)
@@ -375,7 +375,7 @@ func TestStopsForAnItemOnNotClaimed(t *testing.T) {
 	// The next claim starts again.
 	next := r.claim()
 	r.fwd.Claimed(r.o, instance, officers.ItemID(next))
-	r.src.add(at(4), cctranscript.Event{Kind: cctranscript.KindText, Text: "the next item"})
+	r.src.add(r.now.Add(time.Second), cctranscript.Event{Kind: cctranscript.KindText, Text: "the next item"})
 	r.advance(3 * time.Second)
 	if got := r.hq.Transcript(next); len(got) != 1 || got[0].Text != "the next item" {
 		t.Fatalf("the next claim's transcript = %+v", got)
@@ -448,7 +448,7 @@ func TestANewSessionKeepsSeqIncreasing(t *testing.T) {
 	}
 	r.tick()
 	// The CLI starts a new conversation: a new file, offsets from zero.
-	r.src.newSession("99999999-2222-3333-4444-555555555555", r.src.base+3600)
+	r.src.newSession("99999999-2222-3333-4444-555555555555")
 	r.src.add(at(2), cctranscript.Event{Kind: cctranscript.KindText, Text: "new session"})
 	r.advance(3 * time.Second)
 	got := r.hq.Transcript(item)
@@ -555,7 +555,7 @@ func TestRetriesAreCappedThenTheBatchIsDropped(t *testing.T) {
 	r.src.add(at(2), cctranscript.Event{Kind: cctranscript.KindText, Text: "kept"})
 	r.advance(5 * time.Minute)
 	if got := r.hq.Transcript(item); len(got) != 1 || got[0].Text != "kept" {
-		t.Fatalf("stored %+v, want only the event after the dropped batch", got)
+		t.Fatalf("stored %+v, want only the event after the dropped batch (log: %s)", got, r.log)
 	}
 }
 
@@ -586,5 +586,49 @@ func TestAPassStartsAHeldItemAndStopsOneNoLongerHeld(t *testing.T) {
 	r.fwd.Sync(r.o, nil, r.now.Add(-time.Second))
 	if len(r.fwd.Active()) != 1 {
 		t.Fatalf("a stale pass stopped a fresh claim")
+	}
+}
+
+// TestARestartIntoANewConversationHeals: the one case the file position
+// cannot order. A new conversation mid-item is shifted above the old one's
+// seqs by the forwarder that saw it; a forwarder restarted INTO that
+// conversation has lost the shift, so HQ skips its live events as old — and
+// the forwarder re-sequences them above HQ's last_seq instead of losing every
+// event until the new file outgrows the old.
+func TestARestartIntoANewConversationHeals(t *testing.T) {
+	r := newRig(t, true, nil)
+	item := r.claim()
+	r.fwd.Claimed(r.o, instance, officers.ItemID(item))
+	for i := 0; i < 20; i++ {
+		r.src.add(at(1), cctranscript.Event{Kind: cctranscript.KindText, Text: "old conversation"})
+	}
+	r.tick()
+	r.src.newSession("99999999-2222-3333-4444-555555555555")
+	r.src.add(at(2), cctranscript.Event{Kind: cctranscript.KindText, Text: "new conversation"})
+	r.advance(3 * time.Second)
+	if n := len(r.hq.Transcript(item)); n != 21 {
+		t.Fatalf("stored %d before the restart, want 21", n)
+	}
+
+	r.restart()
+	r.fwd.Sync(r.o, []officers.Item{{ID: officers.ItemID(item), Status: officers.StatusClaimed, ClaimedBy: instance, LeaseExpiresAt: ptr(r.now.Add(time.Hour))}}, r.now)
+	r.tick() // the resume's re-read: all already stored (HQ skips it)
+	r.src.add(at(3), cctranscript.Event{Kind: cctranscript.KindText, Text: "after the restart"})
+	r.advance(3 * time.Second)
+	r.src.add(at(4), cctranscript.Event{Kind: cctranscript.KindText, Text: "and after that"})
+	r.advance(3 * time.Second)
+
+	got := r.hq.Transcript(item)
+	if len(got) != 23 || got[21].Text != "after the restart" || got[22].Text != "and after that" {
+		var texts []string
+		for _, e := range got {
+			texts = append(texts, e.Text)
+		}
+		t.Fatalf("stored %d: %q (log: %s)", len(got), texts, r.log)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Seq <= got[i-1].Seq {
+			t.Fatalf("seq not increasing at %d", i)
+		}
 	}
 }

@@ -88,7 +88,7 @@ const (
 // 🔴 IT IS THE ONLY CODE THAT READS Officer.Token(). The token goes in the
 // Authorization header of requests to the officer's own HQ base URL, and
 // nowhere else: not in an error, not in a log line (HQError carries HQ's body,
-// never the request).
+// never the request). (Scrub reads it too, only to REMOVE it from text.)
 type Client struct {
 	officer Officer
 	http    *http.Client
@@ -312,6 +312,74 @@ func (c *Client) Complete(ctx context.Context, item ItemID, instance string, don
 // Release is POST …/items/{item}/release.
 func (c *Client) Release(ctx context.Context, item ItemID, instance string) ([]byte, error) {
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "release"), map[string]any{"instance": instance})
+}
+
+// --- the transcript route (POST …/items/{item}/transcript) -------------------
+//
+// HQ's contract: {"instance", "events": [{"seq", "at", "kind", "text"}]}, at
+// most MaxTranscriptEvents events, each text at most MaxTranscriptText bytes,
+// seq strictly increasing per item and idempotent (HQ skips a seq at or below
+// its highest stored). It answers {"stored", "last_seq"}; 409 officer_disabled,
+// 404 (not this officer's item), 409 not_claimed (not claimed by this
+// instance), 400 on a limit.
+
+// Transcript route bounds, as HQ enforces them.
+const (
+	MaxTranscriptEvents = 100
+	MaxTranscriptText   = 8 << 10 // bytes
+)
+
+// Transcript event kinds, as the contract names them.
+const (
+	TranscriptUser       = "user"
+	TranscriptAssistant  = "assistant"
+	TranscriptToolUse    = "tool_use"
+	TranscriptToolResult = "tool_result"
+	TranscriptSystem     = "system"
+)
+
+// TranscriptEvent is one transcript event posted to HQ.
+type TranscriptEvent struct {
+	Seq  int64  `json:"seq"`
+	At   string `json:"at"`
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+}
+
+// TranscriptAck is HQ's answer to a transcript post.
+type TranscriptAck struct {
+	Stored  int   `json:"stored"`
+	LastSeq int64 `json:"last_seq"`
+}
+
+// PostTranscript is POST …/items/{item}/transcript.
+func (c *Client) PostTranscript(ctx context.Context, item ItemID, instance string, events []TranscriptEvent) (TranscriptAck, error) {
+	raw, err := c.Do(ctx, http.MethodPost, c.itemPath(item, "transcript"), struct {
+		Instance string            `json:"instance"`
+		Events   []TranscriptEvent `json:"events"`
+	}{instance, events})
+	if err != nil {
+		return TranscriptAck{}, err
+	}
+	var ack TranscriptAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		return TranscriptAck{}, fmt.Errorf("%w: transcript: HQ's answer is not {stored, last_seq}: %v", ErrHQUnavailable, err)
+	}
+	return ack, nil
+}
+
+// tokenWithheld is what Scrub writes in place of the officer token.
+const tokenWithheld = "[officer token withheld]"
+
+// Scrub is s with every occurrence of the officer's own token replaced. It is
+// how text built from an instance's session (which could echo anything) is
+// cleared of the one credential this client holds, without the token leaving
+// the client: a shape-based secret filter cannot know an opaque token's shape.
+func (c *Client) Scrub(s string) string {
+	if t := c.officer.Token(); t != "" && strings.Contains(s, t) {
+		return strings.ReplaceAll(s, t, tokenWithheld)
+	}
+	return s
 }
 
 // --- the release captain route (POST /releases/captain) ---------------------

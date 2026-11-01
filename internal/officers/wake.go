@@ -330,6 +330,8 @@ type Reconciler struct {
 	fleet Fleet
 	log   *log.Logger
 	now   func() time.Time
+	// observed is Config.Observed (nil: none).
+	observed func(o Officer, claimed []Item, at time.Time)
 
 	mu    sync.Mutex
 	state map[string]*officerState
@@ -344,6 +346,11 @@ type Config struct {
 	Logger   *log.Logger
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// Observed, when set, is told every pass's claimed items for o, read no
+	// earlier than at (the transcript forwarder's Sync). It runs only after
+	// a SUCCESSFUL read — a pass that saw nothing tells it nothing, so an HQ
+	// outage never reads as "no item is held". It must not block.
+	Observed func(o Officer, claimed []Item, at time.Time)
 }
 
 // NewReconciler returns a loop over cfg's officers.
@@ -357,7 +364,7 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now,
+	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
 		state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
@@ -444,6 +451,9 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		return r.scaleDownForFault(ctx, o, err, refusal)
 	}
 	r.noteErrors(o, obs.Instances)
+	if r.observed != nil {
+		r.observed(o, obs.Claimed, now)
+	}
 	r.mu.Lock()
 	prompted := make(map[int]time.Time, len(s.promptedAt))
 	for n, at := range s.promptedAt {

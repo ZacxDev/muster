@@ -703,9 +703,11 @@ func moduleRoot(t *testing.T) string {
 //     internal/agentgateway; /hook/{event} is served only on ccd's hook socket (a
 //     unix socket, each hook authenticated with a credential only ccd's CLIs hold);
 //     GET /{$} is the same health check as /healthz, at muster's default agent
-//     health path ("/").
+//     health path ("/"); GET /v1/transcript is the primary CLI's transcript,
+//     read incrementally by muster-server's officer transcript forwarder
+//     (internal/officers/transcript), bearer-authenticated like /v1/responses.
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd": {"GET /healthz", "GET /{$}", "POST /hook/{event}", "POST /v1/responses"},
+	"cmd/ccd": {"GET /healthz", "GET /{$}", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

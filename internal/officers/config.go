@@ -93,6 +93,10 @@ type Officer struct {
 	// failing tests and error lines of the officer's own pull request's CI,
 	// read by muster-server from a Tekton namespace (cilogs.go).
 	CILogs *CILogs `json:"-"`
+	// Transcript, when set and enabled, forwards each instance's live session
+	// transcript to HQ while it holds a claimed item
+	// (internal/officers/transcript). nil (the default) forwards nothing.
+	Transcript *Transcript `json:"-"`
 	// Connectors are the connectors, besides `github`, the officer's instances
 	// may REQUEST (internal/api officerConnectorRefusal), by name — e.g. a
 	// postgres connector for read-only SQL. Declaring one grants nothing: each
@@ -138,6 +142,31 @@ type declared struct {
 	Ship json.RawMessage `json:"ship"`
 	// CILogs is parsed by parseCILogs (cilogs.go); it needs Ship.
 	CILogs json.RawMessage `json:"ci_logs"`
+	// Transcript is parsed by parseTranscript.
+	Transcript json.RawMessage `json:"transcript"`
+}
+
+// Transcript is an officer's `transcript` block: whether its instances' live
+// session transcripts are forwarded to HQ (POST …/items/{item}/transcript)
+// while they hold a claimed item.
+type Transcript struct {
+	Enabled bool `json:"enabled"`
+}
+
+// TranscriptEnabled reports whether o's instances' transcripts are forwarded
+// to HQ. THE one switch: the forwarder asks it before every read and post.
+func (o Officer) TranscriptEnabled() bool { return o.Transcript != nil && o.Transcript.Enabled }
+
+// parseTranscript reads a `transcript` block strictly: an unknown key is a
+// refusal, as everywhere in MUSTER_OFFICERS.
+func parseTranscript(raw json.RawMessage) (*Transcript, error) {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	var t Transcript
+	if err := dec.Decode(&t); err != nil {
+		return nil, fmt.Errorf("transcript must be {\"enabled\": true|false}: %v", err)
+	}
+	return &t, nil
 }
 
 // idPart is one half of an officer id: lowercase alphanumerics and single
@@ -325,6 +354,13 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.CILogs = ci
+	}
+	if len(d.Transcript) > 0 && string(d.Transcript) != "null" {
+		tr, err := parseTranscript(d.Transcript)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Transcript = tr
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {

@@ -15,10 +15,12 @@ import (
 // point: every byte before it was a complete line, decoded exactly once.
 
 // Line is the events of one complete transcript line, and the offset just past
-// its newline: a resume point that comes AFTER every one of its events.
+// its newline: a resume point that comes AFTER every one of its events. At is
+// the record's own timestamp (Unix ms; 0 when it has none).
 type Line struct {
-	Events []Event
-	End    int64
+	Events []Event `json:"events"`
+	End    int64   `json:"end"`
+	At     int64   `json:"at,omitempty"`
 }
 
 // ReadLines decodes the complete lines in r between off and size, reading at
@@ -66,7 +68,7 @@ func ReadLines(r io.ReaderAt, off, size int64, maxBytes int) ([]Line, int64, err
 						evs[i].Line = pos // what Prompts names it by
 					}
 				}
-				out = append(out, Line{Events: evs, End: pos})
+				out = append(out, Line{Events: evs, End: pos, At: rec.Time()})
 			}
 		}
 	}
@@ -191,12 +193,12 @@ func Backfill(r io.ReaderAt, size int64, window, maxEvents int) ([]Line, int64, 
 				}
 				if n+len(evs) > maxEvents {
 					if keep := maxEvents - n; keep > 0 {
-						out = append(out, Line{Events: evs[len(evs)-keep:], End: end})
+						out = append(out, Line{Events: evs[len(evs)-keep:], End: end, At: rec.Time()})
 					}
 					break
 				}
 				n += len(evs)
-				out = append(out, Line{Events: evs, End: end})
+				out = append(out, Line{Events: evs, End: end, At: rec.Time()})
 			}
 		}
 		end = start + int64(j) + 1

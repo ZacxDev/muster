@@ -63,12 +63,6 @@ func TestTheTranscriptRouteServesThePrimarysTranscriptIncrementally(t *testing.T
 	if p.Session != fixtureSession || p.Next != st.Size() || len(p.Lines) == 0 {
 		t.Fatalf("page session %q next %d (size %d) lines %d", p.Session, p.Next, st.Size(), len(p.Lines))
 	}
-	// Base is the transcript's FIRST record's time (the fixture's first line,
-	// 2026-10-01T12:00:00Z), never the CLI process's start (5 s later): a
-	// resumed CLI writing on into the same file keeps the same base.
-	if want := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).Unix(); p.Base != want {
-		t.Fatalf("base %d, want %d", p.Base, want)
-	}
 	if p.Lines[0].At != time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).UnixMilli() || p.Lines[0].Events[0].Text != "fan the work out" {
 		t.Fatalf("first line %+v", p.Lines[0])
 	}
@@ -102,7 +96,7 @@ func TestTheTranscriptRouteServesThePrimarysTranscriptIncrementally(t *testing.T
 		t.Fatalf("live tail: %+v (want next %d)", tail, more.Next)
 	}
 	// The tail with a backfill window: only the lines inside it.
-	if _, tail := getTranscript(t, s, "?after=-1&backfill=200", true); len(tail.Lines) == 0 || len(tail.Lines) >= len(p.Lines) {
+	if _, tail := getTranscript(t, s, "?after=-1&backfill=1000", true); len(tail.Lines) == 0 || len(tail.Lines) >= len(p.Lines) {
 		t.Fatalf("backfill window served %d lines", len(tail.Lines))
 	}
 	// A caller holding another session's offset reads THIS session from 0.

@@ -60,6 +60,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
+| `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -935,6 +936,99 @@ In order of reach. The first two do not depend on HQ.
 None of these undoes a tag already pushed. If a bad release is live, a human
 releases the fix.
 
+## Transcript to HQ
+
+An officer declared with `"transcript": {"enabled": true}` has its instances'
+live session transcripts forwarded to HQ — the FULL transcript, for HQ's
+officer pages — while an instance holds a claimed item. It is off unless an
+officer enables it.
+
+```json
+{"id": "release:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "transcript": {"enabled": true}}
+```
+
+**The source** is the instance's own Claude Code transcript (the JSONL the CLI
+writes), never the screen. The instance pod's `ccd` serves it incrementally on
+`GET /v1/transcript?after=<offset>&session=<id>` (`after=-1&backfill=<bytes>`
+for the tail), decoded by `internal/cctranscript` exactly as the rendered view
+decodes a mirrored session: complete lines only, a line still being written is
+left for the next read. It is the PRIMARY CLI's transcript — the one an
+officer's turns run in. muster-server reads it through the agent gateway with
+the instance's own turn bearer (`agentgateway.Gateway.Transcript`).
+
+**The sink** is `POST {hq_url}/officers/{id}/items/{item_id}/transcript` with
+the officer's token:
+
+```json
+{"instance": "officer-release-example-web-1",
+ "events": [{"seq": 2192, "at": "2026-11-01T12:01:00Z", "kind": "tool_use", "text": "Bash: go test ./..."}]}
+```
+
+HQ answers `{"stored": n, "last_seq": s}`; it skips a `seq` at or below its
+highest stored (idempotent). At most 100 events a call and 8 KiB a text.
+
+| transcript entry | `kind` | `text` |
+|---|---|---|
+| the prompt an instance is given | `user` | the prompt |
+| assistant text | `assistant` | the text (thinking is never sent) |
+| a tool call | `tool_use` | `ToolName: <target>` — the file, the command, the pattern; a compact argument summary when there is none |
+| a tool result | `tool_result` | its output (as `ccd` caps it, 4 KiB), `[error] ` first when the tool failed |
+| an API error, a harness notice | `system` | the message |
+
+**When.** `officer_claim` succeeding starts forwarding for that item, from the
+claim on (the first read takes the tail and keeps the lines written since the
+claim, less a 5 s clock slack). `officer_complete` or `officer_release`
+succeeding stops it. Every wake-loop pass also reconciles: an item one of the
+officer's instances holds under a live lease that muster is not forwarding
+(after a muster restart) is RESUMED from a 256 KiB backfill window, and
+forwarding stops for an item no instance holds any more. HQ answering a
+decision — 409 `not_claimed` (the item is not this instance's), 409
+`officer_disabled`, 404, 401/403 — stops forwarding for that item; a pass does
+not restart it until a new claim (or until the item leaves the held list). An
+instance that claims another item while forwarding one switches to it.
+
+**Redaction.** Every text goes through, in order: the officer's own token
+replaced (`officers.Client.Scrub` — a shape filter cannot know an opaque
+token); the CI-log secret filter (`officership.RedactText`, the same
+`RedactLines` `officer_ci_logs` uses: a line that looks like it carries a
+credential is withheld whole, a PEM block is withheld from BEGIN to END, a URL's
+userinfo is masked); the 8 KiB cut, marked `… [truncated N bytes]`. Transcript
+text is never logged.
+
+**`seq`** is the event's position in the transcript FILE: the end offset of
+its line × 16 + its index within the line. It strictly increases along the
+file, so a restarted muster derives the same `seq` for the same event, and its
+resume — which re-reads the backfill window — is deduplicated by HQ's rule
+rather than by memory. It stays below 2^53 (a JSON-safe integer) for any file
+under 512 TiB. A new conversation mid-item (a new file, offsets from zero: an
+operator's `/clear`; `ccd` resumes the primary's own conversation by id on a
+restart) is shifted above the seqs before it; a muster that restarts INTO such
+a conversation has lost that shift, sees HQ answer `stored: 0` with a
+`last_seq` above a batch it read live, and re-sequences that batch and the ones
+after it above `last_seq`. What that double edge can lose is the part of the
+resume's window HQ skipped as old.
+
+**Cadence and back-pressure.** Each forwarding instance is read and posted
+every 2 s, in batches of at most 100. An HQ outage (5xx, 429, no answer) backs
+off — 2 s doubling to 1 min — and a batch is dropped after 5 failed re-sends.
+A 400 drops the batch. The forwarder never blocks the officer: the officer
+tools and the wake loop only record state; reads and posts run on the
+forwarder's own loop. Each instance's buffer holds at most 1000 events
+waiting for HQ; past that the OLDEST are dropped. Every drop is logged and
+counted on `muster_officer_transcript_events_total{result}` (`posted`,
+`dropped_buffer`, `dropped_retries`, `dropped_refused`, `dropped_superseded`,
+`dropped_unsequenced`).
+
+**Deploy order.** `MUSTER_OFFICERS` refuses an unknown field, so the
+`transcript` key must reach a deployment only with (or after) a muster image
+that knows it — the other way round, muster-server refuses to boot. The
+instance pods need a `ccd` that serves `GET /v1/transcript`: an older pod
+answers 404, the forwarder logs that the transcript cannot be read and retries
+every tick, and nothing is sent until the pod runs the new image. An officer
+that enables `transcript` on a server whose agent gateway cannot read
+transcripts is a boot refusal.
+
 ## Security model
 
 - **The token never leaves muster-server.** It is read from the server's
@@ -988,7 +1082,9 @@ From the officers contract, v1 (base `/api/v1`, bearer token of scope
 shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 /officers/{id}/notices` (or its configured `notice.path`) and `POST
 /officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
-"failed_count"}, "last_backup_time"}`). Where the contract leaves a shape open, muster accepts:
+"failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
+uses `POST /officers/{id}/items/{item}/transcript`
+([Transcript to HQ](#transcript-to-hq)). Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;
@@ -998,7 +1094,8 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 implements the claim/lease rules as HQ does (409 to ANY claim while the lease
 is live — the holder's own included, which `officer_claim` turns into a
 heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
-across officers) and the captain route's body rules.
+across officers), the captain route's body rules, and the transcript route's
+(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`).
 
 ## Deploying
 
