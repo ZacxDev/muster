@@ -40,6 +40,8 @@ type fakeSource struct {
 	lines   []cctranscript.Line
 	end     int64
 	reads   int
+	// others are other instances' transcripts (each its own file).
+	others map[string]*fakeSource
 }
 
 func newSource() *fakeSource {
@@ -63,6 +65,10 @@ func (s *fakeSource) newSession(id string) {
 
 func (s *fakeSource) Read(_ context.Context, o officers.Officer, inst string, q transcript.Query) (cctranscript.Page, error) {
 	s.mu.Lock()
+	if other := s.others[inst]; other != nil && inst != instance {
+		s.mu.Unlock()
+		return other.Read(context.Background(), o, instance, q)
+	}
 	defer s.mu.Unlock()
 	s.reads++
 	if o.ID != officerID || inst != instance {
@@ -104,7 +110,7 @@ func officer(t *testing.T, hq *hqtest.Server, enabled bool) officers.Officer {
 	if enabled {
 		tr = `,"transcript":{"enabled":true}`
 	}
-	list, err := officers.Parse(`[{"id":"`+officerID+`","hq_url":"`+hq.BaseURL()+`"`+tr+`}]`,
+	list, err := officers.Parse(`[{"id":"`+officerID+`","hq_url":"`+hq.BaseURL()+`","max_instances":2`+tr+`}]`,
 		func(k string) string {
 			if k == officers.TokenEnvPrefix+officers.TokenEnvSuffix(officerID) {
 				return officerToken
@@ -164,11 +170,23 @@ func (r *rig) advance(d time.Duration) {
 	r.tick()
 }
 
-// posts is every request to the transcript route, decoded.
+// posts is every request to the transcript route that carried events.
 func (r *rig) posts() []hqtest.Request {
 	var out []hqtest.Request
 	for _, q := range r.hq.Requests() {
-		if strings.HasSuffix(q.Path, "/transcript") {
+		if strings.HasSuffix(q.Path, "/transcript") && len(eventsOf(q)) > 0 {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+// probes is every transcript post with NO events: the forwarder learning
+// HQ's last_seq for an item before it sends any.
+func (r *rig) probes() []hqtest.Request {
+	var out []hqtest.Request
+	for _, q := range r.hq.Requests() {
+		if strings.HasSuffix(q.Path, "/transcript") && len(eventsOf(q)) == 0 {
 			out = append(out, q)
 		}
 	}
@@ -423,20 +441,21 @@ func TestResumesAfterARestartWithoutDuplicates(t *testing.T) {
 	if strings.Join(texts, "|") != want {
 		t.Fatalf("stored %q, want %q", strings.Join(texts, "|"), want)
 	}
-	// The restarted forwarder DID re-send the already-stored events (a resume
-	// re-reads the backfill window), and HQ's seq rule dropped them: the
-	// no-duplicate result above is the seq design, not a forwarder that never
-	// re-sent.
-	resent := 0
+	// The restarted forwarder learned HQ's last_seq (an empty post) and
+	// sent only what HQ did not hold: nothing stored is re-sent.
+	if len(r.probes()) < 2 {
+		t.Fatalf("%d probes, want one per forwarder start", len(r.probes()))
+	}
+	sent := 0
 	for _, q := range r.posts() {
 		for _, e := range eventsOf(q) {
 			if m, _ := e.(map[string]any); m["text"] == "before restart 0" {
-				resent++
+				sent++
 			}
 		}
 	}
-	if resent < 2 {
-		t.Fatalf("the restart re-sent the stored events %d times; the test no longer exercises HQ's idempotency", resent-1)
+	if sent != 1 {
+		t.Fatalf("an event HQ held was sent %d times", sent)
 	}
 }
 
@@ -487,7 +506,10 @@ func TestADisabledOfficerSendsNothing(t *testing.T) {
 }
 
 // droppedBuffer is muster_officer_transcript_events_total{result="dropped_buffer"}.
-func droppedBuffer(t *testing.T) float64 {
+func droppedBuffer(t *testing.T) float64 { t.Helper(); return counter(t, "dropped_buffer") }
+
+// counter is muster_officer_transcript_events_total{result=result}.
+func counter(t *testing.T, result string) float64 {
 	t.Helper()
 	fams, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -499,7 +521,7 @@ func droppedBuffer(t *testing.T) float64 {
 		}
 		for _, m := range f.GetMetric() {
 			for _, l := range m.GetLabel() {
-				if l.GetName() == "result" && l.GetValue() == "dropped_buffer" {
+				if l.GetName() == "result" && l.GetValue() == result {
 					return m.GetCounter().GetValue()
 				}
 			}
@@ -525,11 +547,14 @@ func TestTheBufferIsCappedAndADropIsCounted(t *testing.T) {
 		t.Fatalf("a drop was not logged: %q", r.log.String())
 	}
 	// Backing off: an immediate tick does not post again.
-	failed := len(r.posts())
+	failed := len(r.posts()) + len(r.probes())
+	if failed == 0 {
+		t.Fatal("nothing reached HQ: the backoff below would be vacuous")
+	}
 	r.now = r.now.Add(10 * time.Millisecond)
 	r.tick()
-	if len(r.posts()) != failed {
-		t.Fatalf("posted again inside the backoff (%d -> %d)", failed, len(r.posts()))
+	if n := len(r.posts()) + len(r.probes()); n != failed {
+		t.Fatalf("posted again inside the backoff (%d -> %d)", failed, n)
 	}
 	r.hq.SetTranscriptStatus(0)
 	r.advance(5 * time.Minute)
@@ -543,6 +568,7 @@ func TestRetriesAreCappedThenTheBatchIsDropped(t *testing.T) {
 	r := newRig(t, true, func(c *transcript.Config) { c.MaxRetries = 2 })
 	item := r.claim()
 	r.fwd.Claimed(r.o, instance, officers.ItemID(item))
+	r.tick() // the probe, while HQ answers
 	r.hq.SetTranscriptStatus(http.StatusServiceUnavailable)
 	r.src.add(at(1), cctranscript.Event{Kind: cctranscript.KindText, Text: "lost"})
 	r.tick()

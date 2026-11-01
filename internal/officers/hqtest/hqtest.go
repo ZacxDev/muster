@@ -67,6 +67,19 @@ type Server struct {
 	// non-zero, is answered instead (e.g. 503).
 	transcripts      map[string][]TranscriptEvent
 	transcriptStatus int
+	// failNext answers the next failN transcript posts with failCode, after
+	// STORING them when failCommit (an HQ that commits and then fails to
+	// answer: a lost acknowledgement).
+	failN, failCode int
+	failCommit      bool
+}
+
+// FailTranscript makes the next n transcript posts answer code; commit stores
+// each one first (the acknowledgement is lost, the write is not).
+func (s *Server) FailTranscript(code, n int, commit bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failCode, s.failN, s.failCommit = code, n, commit
 }
 
 // TranscriptEvent is one stored transcript event.
@@ -398,6 +411,11 @@ func (s *Server) transcript(w http.ResponseWriter, officer string, it *Item, ins
 		s.write(w, s.transcriptStatus, map[string]any{"error": "transcript refused by the fake"})
 		return
 	}
+	if s.failN > 0 && !s.failCommit {
+		s.failN--
+		s.write(w, s.failCode, map[string]any{"error": "transcript failed by the fake"})
+		return
+	}
 	for k := range body {
 		if k != "instance" && k != "events" {
 			s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown field " + k, "code": "bad_request"})
@@ -466,6 +484,11 @@ func (s *Server) transcript(w http.ResponseWriter, officer string, it *Item, ins
 		s.transcripts[it.ID] = append(s.transcripts[it.ID], e)
 		last = e.Seq
 		stored++
+	}
+	if s.failN > 0 && s.failCommit {
+		s.failN--
+		s.write(w, s.failCode, map[string]any{"error": "committed, then failed to answer"})
+		return
 	}
 	s.write(w, http.StatusOK, map[string]any{"stored": stored, "last_seq": last})
 }
