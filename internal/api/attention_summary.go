@@ -97,13 +97,16 @@ func (s *Server) handleAttentionSummary(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "the attention summary is a user's own; this credential names none"})
 		return
 	}
-	items, err := s.attentionItems(ctx)
-	if err != nil {
-		s.logger.Printf("attention: summary: %v", err)
-	}
+	// ONE read of the hub, for the items' waiting sessions and the hosts both:
+	// a host that flaps between two reads would otherwise be offline in one
+	// and online in the other.
 	var hosts []mirror.HostView
 	if s.ext.Mirror != nil {
 		hosts = s.ext.Mirror.Hosts(ctx)
+	}
+	items, err := s.attentionItemsIn(ctx, hosts)
+	if err != nil {
+		s.logger.Printf("attention: summary: %v", err)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, s.attentionSummaryOf(owner, items, err != nil, hosts, s.now()))

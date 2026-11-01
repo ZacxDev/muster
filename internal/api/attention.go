@@ -330,6 +330,17 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 	if s.ext.Mirror == nil {
 		return nil
 	}
+	return s.waitingSessionsIn(ctx, s.ext.Mirror.Hosts(ctx))
+}
+
+// waitingSessionsIn is waitingSessions over hs, ctx's principal's hosts as
+// one read of the hub: a caller that also shows the hosts (the attention
+// summary) passes the SAME snapshot, so a host flapping between two reads
+// cannot be online in one and offline in the other.
+func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []attentionItem {
+	if s.ext.Mirror == nil {
+		return nil
+	}
 	// The open questions of a session's AskUserQuestion (internal/askq,
 	// registered by the muster-mirror ask hook), by host and Claude session:
 	// such a window is ONE item — the question, with its text — never a
@@ -343,7 +354,6 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			}
 		}
 	}
-	hs := s.ext.Mirror.Hosts(ctx)
 	type wait struct {
 		since   int64
 		q       *askq.Entry
@@ -522,6 +532,16 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 // A source that cannot be read is left out and named in the error; the rest
 // are still returned.
 func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
+	var hs []mirror.HostView
+	if s.ext.Mirror != nil {
+		hs = s.ext.Mirror.Hosts(ctx)
+	}
+	return s.attentionItemsIn(ctx, hs)
+}
+
+// attentionItemsIn is attentionItems with its waiting sessions taken from hs,
+// one read of ctx's principal's hosts (waitingSessionsIn).
+func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]attentionItem, error) {
 	var out []attentionItem
 	var errs []error
 	if s.ext.Attention != nil {
@@ -538,7 +558,7 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 			out = append(out, askItem(a))
 		}
 	}
-	out = append(out, s.waitingSessions(ctx)...)
+	out = append(out, s.waitingSessionsIn(ctx, hs)...)
 	drafts, err := s.pendingDraftItems(ctx)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))

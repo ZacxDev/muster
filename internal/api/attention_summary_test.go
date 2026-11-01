@@ -240,3 +240,39 @@ func TestASummaryThatCouldNotReadTheQueueSaysSo(t *testing.T) {
 		}
 	}
 }
+
+// hostReadCounter is fakeMirror counting its Hosts reads.
+type hostReadCounter struct {
+	*fakeMirror
+	reads int
+}
+
+func (c *hostReadCounter) Hosts(ctx context.Context) []mirror.HostView {
+	c.reads++
+	return c.fakeMirror.Hosts(ctx)
+}
+
+// TestTheSummaryReadsTheHubOnce: the items' waiting sessions and the hosts
+// come from ONE Hosts read, so a host flapping between two reads cannot be
+// online in hosts[] while its item says offline. The control: the summary is
+// served, with the fake host and its waiting window both on it.
+func TestTheSummaryReadsTheHubOnce(t *testing.T) {
+	f := newFakeAPITokens()
+	tok := f.add(t, 1)
+	m := &hostReadCounter{fakeMirror: &fakeMirror{online: true, statusReport: true, windows: attnWindows(mirror.StatusWaiting)}}
+	s := New(nil, AuthConfig{HookToken: tokTestHook}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{APITokens: f, Users: stubUsers{}, Mirror: m})
+	mux := http.NewServeMux()
+	s.registerAll(mux)
+	r := httptest.NewRequest(http.MethodGet, attentionSummaryPath, nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	var body attentionSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); rec.Code != 200 || err != nil || len(body.Hosts) != 1 || len(body.Items) != 1 {
+		t.Fatalf("CONTROL: the summary %d %s (%v); want one host and its waiting window", rec.Code, rec.Body, err)
+	}
+	if m.reads != 1 {
+		t.Fatalf("one summary read the hub %d times; want 1", m.reads)
+	}
+}
