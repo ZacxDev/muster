@@ -57,6 +57,11 @@ func TestATerminalViewsSwitcherIsTheColumnsFootAndInPlaceBeforeTheTerminalMeasur
 			if cls := classOf(box); !strings.Contains(" "+cls+" ", " relative ") || !strings.Contains(" "+cls+" ", " "+switcherRoom(true)+" ") {
 				t.Errorf("the bar's container does not hold it in its reserved room: class=%q", cls)
 			}
+			// The room steps aside for the keyboard and on a short screen
+			// (switcherRoomMark): an in-flow one, so the height query applies.
+			if m, _ := pinAttr(box, switcherRoomAttr); m != "flow" {
+				t.Errorf("the bar's room is marked %q, want flow", m)
+			}
 			if c.composer != nil {
 				if id, _ := pinAttr(box, "id"); id != "mv-compose" {
 					t.Errorf("the bar is not the composer's last row: its container is #%s", id)

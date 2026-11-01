@@ -68,9 +68,10 @@ func (m *memRecents) labels() []string {
 }
 
 // TestOpeningAnEntryRecordsAVisit: the agent detail page, a window's rendered
-// view and its terminal page each record the entry they RENDERED — by the
-// address the card links by — and a redirect records nothing (the page it lands
-// on does). Red before: no page recorded anything.
+// view and its terminal page, and an agent's Terminal view, each record the
+// entry they RENDERED — by the address the card links by — and a redirect
+// records nothing (the page it lands on does). Red before: no page recorded
+// anything.
 func TestOpeningAnEntryRecordsAVisit(t *testing.T) {
 	mem := &memRecents{}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
@@ -99,6 +100,12 @@ func TestOpeningAnEntryRecordsAVisit(t *testing.T) {
 		// An entry the viewer cannot open (404) records nothing.
 		{"/agents/no-such-agent?session=1", []string{"a7", "scratch2@7", "scratch2@4", "scratch2@9"}},
 		{ui.MirrorRef{Host: "not-mine", Session: "x"}.TerminalPath(), []string{"a7", "scratch2@7", "scratch2@4", "scratch2@9"}},
+		// An agent's TERMINAL view is a visit too, as its chat page is: a
+		// window opened since puts it second, and the Terminal view brings it
+		// back to the front. (Red before this branch: the agent's Terminal
+		// view recorded nothing.)
+		{ref("scratch2", "@9").ViewPath(), []string{"scratch2@9", "a7", "scratch2@7", "scratch2@4"}},
+		{ui.AgentTerminalPath("keen-wren"), []string{"a7", "scratch2@9", "scratch2@7", "scratch2@4"}},
 	}
 	for _, st := range steps {
 		mirrorGet(t, s, ts, st.path)

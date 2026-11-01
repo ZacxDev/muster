@@ -73,7 +73,11 @@ func theTerminalDrawsTheSwitcher(t *testing.T, what, page, kind, code, back stri
 	}
 	// The bar is the column's foot: after the key bar, and inside the
 	// composer when there is one.
-	if strings.Index(page, `id="`+ui.SwitcherID+`"`) < strings.Index(page, `id="term-keys"`) {
+	keys := strings.Index(page, `id="term-keys"`)
+	if keys < 0 {
+		t.Fatalf("%s: fixture: no #term-keys to place the bar against", what)
+	}
+	if strings.Index(page, `id="`+ui.SwitcherID+`"`) < keys {
 		t.Errorf("%s: the bar is drawn above the key bar", what)
 	}
 }

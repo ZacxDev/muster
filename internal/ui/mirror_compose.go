@@ -249,6 +249,8 @@ func mirrorComposer(v ComposerView) g.Node {
 	return Div(
 		ID("mv-compose"),
 		Class(place+" border-t border-line bg-bg"),
+		// The bar's room, which steps aside with the bar (switcherRoomAttr).
+		g.If(v.Switcher != nil, switcherRoomMark(v.Pinned)),
 		// 🔴 A PINNED COMPOSER IS NOT SHOWN HALF-PARSED. It is fixed to the
 		// bottom, so whatever of it a frame paints mid-parse is moved UP by
 		// every row parsed after — and the parser yields anywhere under load,

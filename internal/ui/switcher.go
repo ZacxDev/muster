@@ -517,6 +517,48 @@ func switcherRoom(pinned bool) string {
 	return "pb-[2.8125rem]"
 }
 
+// THE BAR STEPS ASIDE FOR THE KEYBOARD AND ON A VERY SHORT SCREEN (operator
+// decision). The bar at a screen's foot — a Terminal view's, the Rendered
+// view's — is hidden and its room given back:
+//
+//   - while a soft keyboard is up: <html data-keyboard>, set by
+//     switcherKeyboardJS when a text field has focus AND the visual viewport
+//     is at least switcherKeyboardDrop px shorter than the tallest it has been
+//     at this width. The bar comes back when the keyboard goes (or the field
+//     loses focus). Hiding it answers the reader's own input — focusing the
+//     box — never a page load;
+//   - on a screen at most switcherShortMax tall (a landscape phone): by a CSS
+//     media query (web/css/input.css), so it is decided before the first
+//     paint and moves nothing. Only an IN-FLOW room ("flow": a Terminal
+//     view's) — the Rendered view's pinned composer reserves its height in a
+//     measured custom property whose first-paint fallback counts the bar, so
+//     collapsing it there by a query would shift the transcript on load.
+//
+// The thresholds: 150px is less than any phone's soft keyboard (≈250–350px
+// portrait, ≈200px landscape) and more than a browser toolbar collapsing as
+// the page is used (≈50–100px), which must not flicker the bar. 30rem (480px)
+// is taller than every landscape phone (≈320–430px) and shorter than the
+// smallest portrait phone's page (≈550px on a 667px-tall phone, its browser
+// chrome taken), so no phone held upright loses the bar without a keyboard.
+//
+// The agent chat page's bar (pinned false, inside its pane) is not affected:
+// it carries no room mark.
+const (
+	switcherRoomAttr     = "data-switcher-room"
+	switcherKeyboardDrop = 150
+	switcherShortMax     = "30rem"
+)
+
+// switcherRoomMark marks the element whose bottom padding is the bar's room
+// (switcherRoom(true)): "pinned" for the Rendered view's pinned composer,
+// "flow" for a Terminal view's in-flow room.
+func switcherRoomMark(pinned bool) g.Node {
+	if pinned {
+		return g.Attr(switcherRoomAttr, "pinned")
+	}
+	return g.Attr(switcherRoomAttr, "flow")
+}
+
 // classIf is s when ok, "" otherwise: an optional class suffix.
 func classIf(ok bool, s string) string {
 	if ok {
@@ -711,6 +753,46 @@ var switcherOOBJS = `if (!window.__musterSwitcherOOB || window.__musterSwitcherO
     document.addEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn);
   }`
 
+// switcherKeyboardJS sets <html data-keyboard> while a soft keyboard is up
+// (see switcherRoomMark): a text field has focus and the visual viewport is
+// switcherKeyboardDrop px or more shorter than the tallest it has been at this
+// width (a new width — a rotation — starts afresh). Bound once per window. In
+// the view switch's frame (view_swap.go) the viewport measured is the TOP
+// window's, as composerPinScript's is: a keyboard that only overlays the page
+// shrinks the top window's visual viewport, never the frame's. A pinch (a
+// scale other than 1) is not a keyboard.
+var switcherKeyboardJS = `if (!window.__musterSwitcherKb) {
+    window.__musterSwitcherKb = true;
+    var root = document.documentElement, vw = window;
+    try { if (window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) vw = window.parent; } catch (e) {}
+    var kbWidth = -1, tallest = 0;
+    function typing() {
+      var a = document.activeElement;
+      if (!a || a.disabled || a.readOnly) return false;
+      if (a.isContentEditable || a.tagName === 'TEXTAREA') return true;
+      return a.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(a.type);
+    }
+    function kbCheck() {
+      var v = vw.visualViewport;
+      if (v && Math.abs(v.scale - 1) > 0.001) return;
+      var w = vw.innerWidth, h = v ? v.height : vw.innerHeight;
+      if (w !== kbWidth) { kbWidth = w; tallest = h; }
+      if (h > tallest) tallest = h;
+      var up = typing() && tallest - h >= ` + strconv.Itoa(switcherKeyboardDrop) + `;
+      if (up !== root.hasAttribute('data-keyboard')) root.toggleAttribute('data-keyboard', up);
+    }
+    kbCheck();
+    vw.addEventListener('resize', kbCheck);
+    if (vw.visualViewport) vw.visualViewport.addEventListener('resize', kbCheck);
+    document.addEventListener('focusin', kbCheck);
+    // On focusout the field still has focus; the next task sees where it went.
+    document.addEventListener('focusout', function () { setTimeout(kbCheck, 0); });
+    if (vw !== window) window.addEventListener('pagehide', function () {
+      vw.removeEventListener('resize', kbCheck);
+      if (vw.visualViewport) vw.visualViewport.removeEventListener('resize', kbCheck);
+    });
+  }`
+
 // switcherJS is the bar's script (switcherScript).
 var switcherJS = func() string {
 	views, labels, names := "[", "{", "{"
@@ -826,6 +908,7 @@ var switcherJS = func() string {
   // older build's switcher would have that flag set, and never bind this.
   ` + switcherOOBJS + `
 
+  ` + switcherKeyboardJS + `
 })();
 `
 }()

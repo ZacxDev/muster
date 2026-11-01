@@ -1,7 +1,7 @@
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { agentsSwitcherPort, hookToken } from '../lib/env';
-import { clsInit, readCls, settle } from '../lib/cls';
+import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { openDispatchSheet } from '../lib/dispatch';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
@@ -534,13 +534,36 @@ test.describe('the Terminal view at 390×844', () => {
     await page.waitForTimeout(1000);
     expect(await sizes(), 'a view switch sent no resize').toEqual(heard);
 
-    // A soft keyboard (interactive-widget=resizes-content shrinks the layout
-    // viewport): the bar stays at the foot, the input above it.
+    // A shorter viewport with NO field focused (a browser toolbar, a split
+    // screen — not a keyboard, and not 30rem short): the bar stays at the
+    // foot, the input above it.
     await page.setViewportSize({ width: 390, height: 500 });
     await expect.poll(async () => Math.round((await box('#session-switcher')).y + 45)).toBe(500);
     await order(500);
     await page.setViewportSize({ width: 390, height: 844 });
     await expect.poll(async () => Math.round((await box('#session-switcher')).y + 45)).toBe(844);
+
+    // THE KEYBOARD (operator decision): with the box focused and the viewport
+    // shrunk as a soft keyboard shrinks it, the bar steps aside and the input
+    // stays on screen; the keyboard gone, the bar is back.
+    await expect(page.locator('html')).not.toHaveAttribute('data-keyboard', /.*/);
+    await page.locator('#mv-input').tap();
+    await expect(page.locator('#mv-input')).toBeFocused();
+    await expect(bar(page), 'focus alone (no keyboard yet) keeps the bar').toBeVisible();
+    await resetCls(page);
+    await page.setViewportSize({ width: 390, height: 500 });
+    await expect(page.locator('html')).toHaveAttribute('data-keyboard', '');
+    await expect(bar(page)).toBeHidden();
+    const kbInput = await box('#mv-input');
+    expect(kbInput.y + kbInput.height, 'the input is on screen above the keyboard').toBeLessThanOrEqual(500);
+    expect(kbInput.y, 'the input is on screen').toBeGreaterThanOrEqual(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(bar(page)).toBeVisible();
+    await expect(page.locator('html')).not.toHaveAttribute('data-keyboard', /.*/);
+    await order(844);
+    const kbCls = await readCls(page);
+    console.log(`[asw terminal] keyboard open+close layout shift ${kbCls.total} ${JSON.stringify(kbCls.shifts)}`);
+    await page.locator('#mv-input').blur();
 
     // A tap on an entry opens that session (its Rendered view: wheat is a
     // Claude pane), with a real load.
@@ -549,5 +572,25 @@ test.describe('the Terminal view at 390×844', () => {
       page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'wheat'),
       wheat.tap(),
     ]);
+  });
+
+  // The same rule on the Rendered view (its pinned composer's bar, the one
+  // room mark the keyboard rule covers there): the keyboard up, the bar steps
+  // aside and the box stays on screen; gone, the bar is back.
+  test("the Rendered view's bar steps aside for the keyboard and comes back", async ({ page }) => {
+    test.setTimeout(60_000);
+    await ready(page);
+    await page.goto(MANGO);
+    await expect(bar(page)).toBeVisible();
+    await page.locator('#mv-input').tap();
+    await page.setViewportSize({ width: 390, height: 500 });
+    await expect(page.locator('html')).toHaveAttribute('data-keyboard', '');
+    await expect(bar(page)).toBeHidden();
+    const b = (await page.locator('#mv-input').boundingBox())!;
+    expect(b.y >= 0 && b.y + b.height <= 500, `the input is on screen: ${JSON.stringify(b)}`).toBe(true);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(bar(page)).toBeVisible();
+    const bb = (await bar(page).boundingBox())!;
+    expect(Math.round(bb.y + bb.height), 'back at the bottom of the screen').toBe(844);
   });
 });

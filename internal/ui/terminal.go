@@ -459,7 +459,7 @@ func terminalSwitcher(s *Switcher) g.Node {
 	if s == nil {
 		return nil
 	}
-	return Div(Class("relative flex-none "+switcherRoom(true)), switcherBar(s, true))
+	return Div(Class("relative flex-none "+switcherRoom(true)), switcherRoomMark(false), switcherBar(s, true))
 }
 
 // quickKeysPrimaryOrder is THE ONE LIST of the bar's large keys, by QuickKey
@@ -701,7 +701,10 @@ func agentTerminalScript() g.Node {
 
   function proposed() {
     // Measured with #term back at the container's size: the fit is a property
-    // of the page, not of what the terminal currently draws.
+    // of the page, not of what the terminal currently draws. (Collapsing the
+    // sizer clamps the scroll area's scrollTop: the page's own scroll.)
+    ownScroll();
+    keepTop = scrollEl.scrollTop;
     sizer.style.width = ''; sizer.style.height = '';
     host.style.width = ''; host.style.height = ''; host.style.transform = '';
     var p = null;
@@ -714,7 +717,35 @@ func agentTerminalScript() g.Node {
     lastSent = k;
     ws.send(JSON.stringify({ type: 'resize', cols: cols, rows: rows }));
   }
+  // 🔴 AN OVERFLOW VIEW IS HELD AT ITS BOTTOM (atBottom). A far side taller
+  // than the page has its prompt and status line — a TUI's live rows — at
+  // the bottom; drawn from the top they are off screen on every load (a pod's
+  // window, grown once to a full desktop height, stays that tall: termsize
+  // never shrinks it). So the view starts at its bottom and goes back there
+  // on every redraw — a relayout (the keyboard, the session switcher coming
+  // back), Fit width — UNLESS THE PERSON SCROLLED IT AWAY themselves (a pan, a
+  // wheel, drag-to-scroll's panArea): then it stays where they left it, until
+  // they scroll back to the bottom. Every scroll the page makes itself
+  // (proposed() collapsing the sizer, the pin below) lands inside ownScrollUntil
+  // and is not taken for the person's.
+  var atBottom = true, ownScrollUntil = 0, keepTop = 0;
+  function ownScroll() { ownScrollUntil = Date.now() + 150; }
+  scrollEl.addEventListener('scroll', function () {
+    if (!overflowing || Date.now() < ownScrollUntil) return;
+    atBottom = scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 2;
+    host.setAttribute('data-at-bottom', atBottom ? '1' : '0');
+  }, { passive: true });
+  // pinBottom puts a redrawn overflow view back: at its bottom, or where the
+  // person left it (keepTop, read before proposed() collapsed the sizer).
+  function pinBottom() {
+    ownScroll();
+    scrollEl.scrollTop = atBottom ? scrollEl.scrollHeight : keepTop;
+  }
   function showOverflow(on) {
+    // Entering overflow (the first layout, or a page that stopped covering the
+    // far side): from its bottom, whatever an earlier overflow was scrolled to.
+    if (on && !overflowing) atBottom = true;
+    host.setAttribute('data-at-bottom', atBottom ? '1' : '0');
     overflowing = on;
     fitwBtn.hidden = !on;
     fitwBtn.classList.toggle('inline-flex', on);
@@ -741,6 +772,7 @@ func agentTerminalScript() g.Node {
     sizer.style.height = Math.ceil(h * k) + 'px';
     fitwBtn.setAttribute('aria-pressed', fitWidth ? 'true' : 'false');
     fitwBtn.textContent = fitWidth ? 'Actual size' : 'Fit width';
+    pinBottom();
   }
   var layouts = 0;
   function layout() {
@@ -1065,6 +1097,7 @@ func agentTerminalScript() g.Node {
   });
   fitwBtn.addEventListener('click', function () {
     fitWidth = !fitWidth;
+    keepTop = scrollEl.scrollTop;
     if (overflowing) drawOverflow();
   });
 

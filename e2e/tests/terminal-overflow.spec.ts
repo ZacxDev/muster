@@ -257,3 +257,107 @@ test.describe('at a desktop width (1280px)', () => {
     expect(resizes.length, 'Fit width sends nothing').toBe(sentBefore);
   });
 });
+
+// 🔴 A SESSION TALLER THAN THE PAGE SHOWS ITS BOTTOM (ui/terminal.go,
+// atBottom). The far side's prompt and status line are its LAST rows; drawn
+// from the top they were off screen on every load — a pod's window, once grown
+// to a full desktop height, stays that tall (termsize never shrinks it), so the
+// page drew it in overflow at scrollTop 0 for good. Now the overflow view
+// starts at its bottom and goes back there on every redraw, unless the person
+// scrolled it away themselves; and the session switcher stepping aside on a
+// very short screen and coming back (a relayout each way) leaves it there.
+// The 120x30 window is taller than a 1280px-wide page 470–580px tall, and
+// narrower than it, so the overflow here is vertical only.
+async function lastRow(page: Page) {
+  return page.evaluate(() => {
+    const sc = document.getElementById('term-scroll')!;
+    const rows = document.querySelector('#term .xterm-rows')!;
+    const a = sc.getBoundingClientRect(), b = (rows.lastElementChild as HTMLElement).getBoundingClientRect();
+    return { shown: b.top >= a.top - 1 && b.bottom <= a.bottom + 1, rows: rows.children.length, top: sc.scrollTop, max: sc.scrollHeight - sc.clientHeight };
+  });
+}
+
+test.describe('a session taller than the page (1280×560)', () => {
+  test.use({ viewport: { width: 1280, height: 560 } });
+
+  test('it loads showing its last row, and stays at the bottom through a relayout unless the person scrolled away', async ({ page }) => {
+    await login(page);
+    const name = await newAgent(page, 'e2e overflow: taller');
+    const resizes = recordResizes(page);
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    await expect(page.locator('#term')).toHaveAttribute('data-remote', `${WIN.cols}x${WIN.rows}`);
+    await expect(page.locator('#term')).toHaveAttribute('data-overflow', '1');
+    await expect(page.locator('#session-switcher')).toBeVisible();
+    // The view really overflows downward (or "at its bottom" proves nothing),
+    // and it is at its bottom: the session's last row is on screen.
+    await expect.poll(async () => (await lastRow(page)).max, { message: 'the view scrolls vertically' }).toBeGreaterThan(50);
+    await expect.poll(async () => (await lastRow(page)).shown, { message: 'the last row is on screen on load' }).toBe(true);
+    const r0 = await lastRow(page);
+    expect(r0.rows, 'the session is drawn at its own height').toBe(WIN.rows);
+    expect(r0.top, 'scrolled to the bottom').toBeGreaterThanOrEqual(r0.max - 1);
+
+    // The person scrolls up: a relayout keeps their place. (A scroll the page
+    // did not make itself — set on the element here: xterm takes a desktop
+    // wheel over its own rows, and a phone's pan is a touch scroll of the same
+    // element, which the page sees as the same scroll event.)
+    const scrollTo = (y: number) => page.locator('#term-scroll').evaluate((el, v) => { el.scrollTop = v; }, y);
+    await page.waitForTimeout(300);
+    await scrollTo(0);
+    await expect(page.locator('#term')).toHaveAttribute('data-at-bottom', '0');
+    const layouts = await page.locator('#term').getAttribute('data-layouts');
+    await page.setViewportSize({ width: 1280, height: 580 });
+    await expect.poll(() => page.locator('#term').getAttribute('data-layouts'), { message: 'the viewport change re-laid out' }).not.toBe(layouts);
+    await page.waitForTimeout(500);
+    const kept = await lastRow(page);
+    expect(kept.top, 'a relayout did not take the person back down').toBeLessThan(5);
+    expect(kept.shown).toBe(false);
+
+    // Scrolled back to the bottom: held there again through the next relayout.
+    await page.waitForTimeout(300);
+    await scrollTo(100_000);
+    await expect(page.locator('#term')).toHaveAttribute('data-at-bottom', '1');
+    await page.setViewportSize({ width: 1280, height: 560 });
+    await page.waitForTimeout(500);
+    expect((await lastRow(page)).shown, 'the last row after a relayout at the bottom').toBe(true);
+    expect(resizes, 'a session taller than the page is never resized').toEqual([]);
+  });
+
+  test('the session switcher stepping aside on a very short screen and coming back leaves the view at its bottom', async ({ page }) => {
+    await login(page);
+    const name = await newAgent(page, 'e2e overflow: switcher');
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    await expect(page.locator('#term')).toHaveAttribute('data-overflow', '1');
+    const bar = page.locator('#session-switcher');
+    await expect(bar).toBeVisible();
+    await expect.poll(async () => (await lastRow(page)).shown).toBe(true);
+    // 470px tall, a short screen (≤ 30rem): the bar steps aside, its room given back.
+    await page.setViewportSize({ width: 1280, height: 470 });
+    await expect(bar).toBeHidden();
+    await expect.poll(async () => (await lastRow(page)).shown, { message: 'the last row with the bar hidden' }).toBe(true);
+    // 520px: the bar is back, the terminal's box 45px shorter — still at the bottom.
+    await page.setViewportSize({ width: 1280, height: 520 });
+    await expect(bar).toBeVisible();
+    await expect(page.locator('#term')).toHaveAttribute('data-overflow', '1');
+    await expect.poll(async () => (await lastRow(page)).shown, { message: 'the last row once the bar is back' }).toBe(true);
+  });
+
+  test('a page that stops covering the session it grew enters overflow at the bottom', async ({ page }) => {
+    await login(page);
+    const name = await newAgent(page, 'e2e overflow: grew');
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    // Tall enough to cover 120x30: it fits and grows the session to its size.
+    await expect(page.locator('#term')).toHaveAttribute('data-overflow', '0');
+    await expect.poll(async () => Number(((await page.locator('#term').getAttribute('data-remote')) ?? '0x0').split('x')[1])).toBeGreaterThan(WIN.rows);
+    const grown = Number((await page.locator('#term').getAttribute('data-remote'))!.split('x')[1]);
+    // Shorter again: the session is not shrunk, the page draws it in
+    // overflow — from its bottom.
+    await page.setViewportSize({ width: 1280, height: 700 });
+    await expect(page.locator('#term')).toHaveAttribute('data-overflow', '1');
+    await expect.poll(async () => (await lastRow(page)).shown, { message: 'the last row once in overflow' }).toBe(true);
+    expect((await lastRow(page)).rows).toBe(grown);
+  });
+});

@@ -417,3 +417,48 @@ func TestTheSwitcherPinToggleAnswersWithItselfAndTheBar(t *testing.T) {
 		}
 	}
 }
+
+// TestAPinFromATerminalViewAnswersWithTheBarsRows: every Terminal view draws
+// the session switcher now, so a pin posted from one (view=switcher, `back` a
+// /mirror/terminal… or /agents/<name>/terminal path) is answered like any
+// other session page's — the toggle AND the bar's rows and counts out of band,
+// the Pins row holding the page's own session. Red with the old exclusion
+// (pins.go skipped the rows for a back under /mirror/terminal, when that page
+// drew no bar): the answer was the toggle alone.
+func TestAPinFromATerminalViewAnswersWithTheBarsRows(t *testing.T) {
+	fm := &fakeMirror{online: true, windows: pinWindows()}
+	mp := &memPins{agents: map[int64]bool{5: true, 6: true, 7: true}}
+	s, h := pinServer(t, fm, mp)
+	oob := regexp.MustCompile(`<div id="switcher-list-pins" hx-swap-oob="innerHTML">(.*?)</div><span id="switcher-count-pins" hx-swap-oob="innerHTML">(\d+)</span>`)
+	for _, c := range []struct {
+		name string
+		form url.Values
+	}{
+		{"a mirrored Terminal view", url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"chief"}, "window": {"@2"}, "view": {"switcher"},
+			"back": {ui.MirrorRef{Host: "ws", Session: "chief", Window: "@2"}.TerminalPath()}}},
+		{"an agent's Terminal view", url.Values{"kind": {"agent"}, "agent_id": {"7"}, "view": {"switcher"}, "back": {ui.AgentTerminalPath("idle-newest")}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rec := pinPost(t, s, h, "/agents/pins", c.form, true)
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK || !strings.Contains(body, `id="switcher-pin" type="submit" aria-pressed="true"`) {
+				t.Fatalf("the pin = %d, not the pressed toggle:\n%s", rec.Code, body)
+			}
+			if !strings.Contains(body, `name="back" value="`+strings.ReplaceAll(c.form.Get("back"), "&", "&amp;")+`"`) {
+				t.Errorf("the toggle does not post back to the Terminal view %q:\n%s", c.form.Get("back"), body)
+			}
+			m := oob.FindStringSubmatch(body)
+			if m == nil || !strings.Contains(m[1], `aria-current="page"`) || m[2] != "1" {
+				t.Errorf("the bar's Pins row is not sent out of band holding the page's own session (count 1):\n%s", body)
+			}
+			for _, key := range []string{"recent", "waiting", "all"} {
+				if !strings.Contains(body, `<div id="switcher-list-`+key+`" hx-swap-oob="innerHTML">`) {
+					t.Errorf("no out-of-band %s row", key)
+				}
+			}
+			if rec := pinPost(t, s, h, "/agents/pins/delete", c.form, true); rec.Code != http.StatusOK {
+				t.Fatalf("unpin = %d", rec.Code)
+			}
+		})
+	}
+}
