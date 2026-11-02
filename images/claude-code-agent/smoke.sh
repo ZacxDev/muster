@@ -38,7 +38,9 @@
 #   9. with muster's connector store offered (FAKE url and token), seed registers
 #      muster's MCP server and `seed --check` agrees; `ccd connect-git` against
 #      an unreachable muster fails fast and writes no git routing; curl and ssh
-#      are present;
+#      are present; the optional hq CLI runs when the image carries it
+#      (CC_SMOKE_REQUIRE_HQ=1: must carry it), and CCD_HQ_MCP=1 against an
+#      unreachable muster registers no hq server but allows its tools;
 #  10. the seeded settings pin default permission mode and the approval hooks,
 #      and `ccd approve` with muster unreachable makes no decision (prints nothing).
 #  11. (runs FIRST, as part of step 0) with CCD_REPO (a local bare repository
@@ -327,6 +329,28 @@ if git config --global --get-regexp '^url\.' >/dev/null 2>&1; then fail "connect
 curl --version >/dev/null || fail "curl is missing"
 # A private-repository pool's deploy key is used through ssh (podagent deploykey.go).
 ssh -V >/dev/null 2>&1 || fail "ssh (openssh-client) is missing"
+# The HQ CLI is OPTIONAL (the Dockerfile's `hq` build context). When the image
+# carries it, it must run from PATH; CC_SMOKE_REQUIRE_HQ=1 makes its absence a
+# failure (a build that passed the context and still lacks it is broken).
+if [[ -e /opt/hq/hq || -n "${CC_SMOKE_REQUIRE_HQ:-}" ]]; then
+  [[ "$(command -v hq || true)" == /usr/local/bin/hq ]] || fail "the image should carry hq on PATH, but command -v hq is '$(command -v hq || true)'"
+  hq --help >/tmp/hq.out 2>&1 || fail "hq --help failed: $(cat /tmp/hq.out)"
+  echo "cc-smoke: hq on PATH and runs"
+else
+  command -v hq >/dev/null && fail "hq is on PATH but /opt/hq/hq is not: it did not come from the build context"
+  echo "cc-smoke: no hq in this image (built without the hq context)"
+fi
+# The chief's HQ server flag with muster unreachable: seed still succeeds,
+# registers no hq server (it cannot read the connector), allows the HQ tools,
+# and seed --check agrees. Re-seeded without it afterwards.
+CCD_HQ_MCP=1 ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json 2>/tmp/seed.err || fail "seed with CCD_HQ_MCP=1: $(cat /tmp/seed.err)"
+grep -q '"hq": {' "$CLAUDE_CONFIG_DIR/.claude.json" && fail "seed registered an hq server without reading the connector"
+grep -qF '"mcp__hq__*"' "$CLAUDE_CONFIG_DIR/settings.json" || fail "CCD_HQ_MCP=1 did not allow the HQ tools: $(cat "$CLAUDE_CONFIG_DIR/settings.json")"
+CCD_HQ_MCP=1 ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json || fail "seed --check disagrees with CCD_HQ_MCP=1"
+ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json 2>/tmp/seed.err || fail "re-seed without CCD_HQ_MCP: $(cat /tmp/seed.err)"
 echo "cc-smoke: connector store wiring ok"
 
 # 10. Approvals: the seeded settings pin default permission mode (never auto,

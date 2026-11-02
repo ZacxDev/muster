@@ -12,6 +12,18 @@
 # (cmd/ccd), which is the point — its /v1/responses wire is tested against
 # muster's own client in the same module, so the two cannot drift.
 
+# The OPTIONAL named build context `hq`: a directory holding a statically
+# linked `hq` CLI, the program ccd runs as the chief's HQ MCP server
+# (cmd/ccd/hqmcp.go). A build that wants it passes
+#
+#   docker build --build-context hq=<dir holding only the hq binary> …
+#
+# and a build that does not (CI's smoke build, any plain `docker build`) gets
+# this EMPTY stage instead: a named build context replaces the stage of the
+# same name, and copying the root of an empty stage copies nothing. ccd then
+# finds no `hq` on PATH and registers no HQ server.
+FROM scratch AS hq
+
 FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -53,6 +65,11 @@ RUN apt-get update \
  && npm cache clean --force \
  && claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 
+# The `hq` context (above) lands in its own directory, and ONLY a file named
+# `hq` is linked onto PATH: anything else a context carries stays inert, and
+# nothing in it can replace ccd or the entrypoint. Absent, /opt/hq is empty.
+COPY --from=hq / /opt/hq/
+RUN if [ -e /opt/hq/hq ]; then chmod 0755 /opt/hq/hq && ln -s /opt/hq/hq /usr/local/bin/hq; fi
 COPY --from=build /ccd /usr/local/bin/ccd
 COPY images/claude-code-agent/settings.json /etc/ccd/settings.json
 COPY --chmod=0755 images/claude-code-agent/entrypoint.sh /usr/local/bin/cc-entrypoint
