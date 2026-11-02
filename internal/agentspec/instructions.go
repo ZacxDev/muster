@@ -597,6 +597,35 @@ only — the scope named on the line above the message — and never to any othe
 scope.
 `
 
+// chiefHQSectionClaudeCode tells the claude-code chief that an owner's request
+// for HQ is answered with the HQ MCP server's tools, never with a task on
+// muster's own board. Only the claude-code chief has that server (ccd
+// registers it, internal/podagent/hqmcp.go), so the gateway prose has no
+// counterpart. It is phrased for the server's ABSENCE too: ccd registers it only
+// when the `hq` connector exists and the image carries the hq CLI.
+const chiefHQSectionClaudeCode = `## HQ requests from your owner — the ` + "`hq`" + ` MCP server, never muster's board
+When your owner asks you in this chat for something in HQ — create an HQ task,
+assign it, comment on one, change its status, look one up — do it with the tools of
+the MCP server named ` + "`hq`" + `, which this session sees as ` + "`mcp__hq__<tool>`" + ` (for a task:
+` + "`mcp__hq__task_create`" + `, ` + "`mcp__hq__task_update`" + `, ` + "`mcp__hq__task_comment`" + `,
+` + "`mcp__hq__task_set_status`" + `, ` + "`mcp__hq__tasks_list`" + `). Assign it as they asked. The HQ
+token behind those tools is your owner's own, so "me" in HQ is your owner. An HQ
+request is never a task on muster's board: do not file one with muster's task tools
+in its place.
+
+muster reaches HQ for you through its connector proxy; the HQ credential stays in
+muster. If no ` + "`mcp__hq__`" + ` tool is in your tool list, say exactly that — you have no HQ
+tools in this session — and tell your owner to create the ` + "`hq`" + ` connector in muster
+(and approve your request for it when muster asks), then restart you. Do not
+substitute a task on muster's board or any other route. If an HQ tool answers that
+your request for the connector is pending, tell your owner it is waiting for their
+approval in muster.
+
+HQ is your owner's system: change anything in it only because your owner asked you
+to in this chat.
+
+`
+
 // ChiefInstructionsClaudeCode is [ChiefInstructions] for a supervisor running on
 // the claude-code kind: the instance's managed CLAUDE.md
 // ([ClaudeCodeInstructionsPath]).
@@ -608,7 +637,7 @@ scope.
 // [Config.ClaudeCodeMCPOffered]: every tool this prose names is an MCP tool.
 func ChiefInstructionsClaudeCode(plugins bool) string {
 	if plugins {
-		return chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefPluginSectionClaudeCode
+		return chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode
 	}
-	return chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads
+	return chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode
 }

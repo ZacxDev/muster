@@ -1230,7 +1230,10 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 		a.log.Printf("agentprovision: chief %q is kind %s: the subsystem store (cairn) is configured but is SKIPPED "+
 			"for this kind — the client is not in its image and its network policy cannot reach the store", ag.Name, agents.KindClaudeCode)
 	}
-	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins)})
+	// HQMCP: the chief, and no other agent, is offered the HQ MCP server with
+	// every tool allowed (internal/podagent/hqmcp.go).
+	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins),
+		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: true}})
 }
 
 // specFor is the deployment-wide spec config with the model-provider

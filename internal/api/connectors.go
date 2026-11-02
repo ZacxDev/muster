@@ -249,6 +249,12 @@ func (s *Server) handleConnectProxy(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
 		return
 	}
+	// A chief-only connector (connector_chief_only.go): refused BEFORE the
+	// proxy, which would otherwise file a request a standing grant approves.
+	if why := s.chiefOnlyConnectorRefusal(r.Context(), a, connector); why != "" {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why, "connector": connector})
+		return
+	}
 	s.connectProxy.Serve(w, r, s.callerOf(a), connector, host, parts[2])
 }
 

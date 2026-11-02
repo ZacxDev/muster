@@ -495,6 +495,9 @@ type ClaudeCodeSession struct {
 	// allowed (podagent.EnvPermissionMode=bypassPermissions): no permission
 	// prompt at all. Set for an officer instance only.
 	BypassPermissions bool
+	// HQMCP offers the HQ MCP server and allows every one of its tools
+	// (podagent.EnvHQMCP, internal/podagent/hqmcp.go). Set for the chief only.
+	HQMCP bool
 }
 
 // EgressLocked reports whether the pod's network policy drops the public-443
