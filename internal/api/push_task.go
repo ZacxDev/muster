@@ -443,29 +443,51 @@ func commentNotificationText(body string) string {
 	return ""
 }
 
-// taskTitle derives a short human title for a task NOTIFICATION: the first
-// non-empty line of its body, falling back to its directory, truncated. Mirrors
-// the notification-body truncation used by the permission pushes.
+// taskNameRaw is THE rule for what a task is called, as written (markdown
+// intact): its trimmed title when that says anything once flattened, else the
+// first body line that says anything once flattened, else "". A line that is all
+// markup (a fence, a rule) flattens to nothing and is skipped, as
+// commentNotificationText skips it.
 //
-// NOT the same thing as ui.TaskTitle, despite the name — that one is the DISPLAY
-// label (explicit `title`, falling back to `directory`). A push deliberately
-// leads with the body because the heading is usually just `<host> · <date>`.
-// Do not "consolidate" these two; they answer different questions.
-func taskTitle(n notes.Note) string {
+// Every "name this task" site goes through here (taskName for plain text,
+// taskLabel for the stored form). There used to be two open-coded copies that
+// disagreed: the push read only the body and ignored a producer's `title`, so a
+// body opening with a routing header put that header on the phone.
+//
+// ui.TaskTitle is deliberately NOT this rule: it is the card HEADING (title,
+// else directory), and the card shows the body snippet directly beneath it, so
+// leading with the body there would print the same line twice.
+func taskNameRaw(n notes.Note) string {
+	if t := strings.TrimSpace(n.Title); textplain.Title(t) != "" {
+		return t
+	}
 	for _, line := range strings.Split(n.Body, "\n") {
-		// A line that is all markup (a fence, a rule) flattens to nothing and is
-		// skipped, as commentNotificationText skips it.
-		if s := textplain.Title(line); s != "" {
-			// Task bodies are markdown (the drafter/repo-cos post `**Goal:** …`,
-			// backticked paths, `[text](url)` links). A Web Push body is PLAIN TEXT on
-			// every platform — the OS never parses markdown — so flatten it here or the
-			// phone shows literal `**`/backticks. Flatten BEFORE truncate so stripped
-			// markers don't eat the length budget.
-			return truncate(s, taskBodyMax)
+		if textplain.Title(line) != "" {
+			return strings.TrimSpace(line)
 		}
 	}
-	if d := strings.TrimSpace(n.Directory); d != "" {
-		return truncate(d, taskBodyMax)
+	return ""
+}
+
+// taskName is taskNameRaw as plain text, falling back to the directory, uncut.
+// Task titles and bodies are markdown (`**Goal:** …`, backticked paths,
+// `[text](url)` links); every sink this feeds (a Web Push body, a queue label)
+// is PLAIN TEXT — the OS never parses markdown — so flatten here or the phone
+// shows literal `**`/backticks. Callers cut AFTER this so stripped markers don't
+// eat the length budget. The directory is a path, not markdown, and is not
+// flattened (`_x_` in a path is not emphasis).
+func taskName(n notes.Note) string {
+	if s := textplain.Title(taskNameRaw(n)); s != "" {
+		return s
+	}
+	return strings.TrimSpace(n.Directory)
+}
+
+// taskTitle is a task's name for a NOTIFICATION body: taskName, truncated the
+// way the permission pushes truncate, or "New task" when there is nothing to say.
+func taskTitle(n notes.Note) string {
+	if s := taskName(n); s != "" {
+		return truncate(s, taskBodyMax)
 	}
 	return "New task"
 }
