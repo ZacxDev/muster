@@ -532,7 +532,11 @@ func (s *Server) UseExtensions(ext Extensions) {
 	// (TestATaskForwardWithoutAGatewayStoresTheMessageAndStartsNoTurn).
 	s.taskForwardTurn = nil
 	if ext.Gateway != nil && ext.Agents != nil {
-		s.taskForwardTurn = s.startAgentTurn
+		// notTyped: a forward is the chief's note or an upstream notice, never
+		// a line the owner typed (chief_owner_release.go trusts that column).
+		s.taskForwardTurn = func(ctx context.Context, a agents.Agent, session agents.ChatSession, text string) {
+			s.startAgentTurn(ctx, a, session, text, notTyped)
+		}
 	}
 	// The answer delivery's turn (attention_delivery.go), set here for the same
 	// reason: on a gateway-less deployment it is nil, and an answer stays

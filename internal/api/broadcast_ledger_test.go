@@ -55,6 +55,9 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// the route's owner (route_reply's mirror principal, or the sweep's
 		// routePrincipal), who owns the task.
 		"(*Server).relayTaskRoute → broadcast(ctx)",
+		// The gate released on the owner's typed word (chief_owner_release.go):
+		// ctx is task_dispatch's, the chief's owner, who owns the task.
+		"(*Server).releaseGateOnOwnerWord → broadcast(ctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its

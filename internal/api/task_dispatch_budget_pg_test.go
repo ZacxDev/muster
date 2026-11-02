@@ -30,7 +30,10 @@ import (
 // description (normalised whitespace, exact equality — a reworded description
 // fails here, on purpose), and that nothing in it reads "at most <digit>".
 func TestTaskDispatchDescriptionCarriesNoCapNumbers(t *testing.T) {
-	const want = "Start a new agent on one of your owner's open, ungated tasks. Only with your owner's opt-in. " +
+	const want = "Start a new agent on one of your owner's open tasks. Only with your owner's opt-in. " +
+		"A GATED task (gate:<reason>, e.g. one you filed with task_create_gated) starts only when you pass owner_asked: true " +
+		"because your owner, typing in your chat, told you to do the work: muster then checks that their message is the newest " +
+		"one in your chat and recent, releases the gate, and notes it on the task. " +
 		"Limits apply to how many of the agents you start may be live at once and to how many you may start in a day: every result " +
 		"and every refusal of this tool carries your current budget (live, live_cap, today, daily_cap, live_agents), and so does " +
 		"task_route_attention's result — read the limits from the latest budget, never from memory. " +

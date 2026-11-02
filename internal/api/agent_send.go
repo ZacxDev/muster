@@ -160,7 +160,7 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 	finish(true)
 	// The operator wrote to the agent: its open asks are answered here.
 	s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, text)
-	s.startAgentTurn(ctx, a, session, text)
+	s.startAgentTurn(ctx, a, session, text, ownerTypedBy(ctx))
 	s.logger.Printf("agents: sent a message to %s (session %d)", a.Name, session.ID)
 	sent()
 }
@@ -178,13 +178,14 @@ func agentCanBeSent(status string) bool { return status == agents.StatusRunning 
 // logged.
 //
 // The caller has entered a's turn gate (s.turns.enter); this leaves it when the
-// turn ends.
-func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string) {
+// turn ends. typedBy is runEnteredTurn's: ownerTypedBy(ctx) from the owner's
+// composer (handleAgentSend), notTyped from every other caller.
+func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64) {
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
 	safeGo(s.logger, "agent turn (send)", func() {
 		defer cancel()
 		defer s.turns.leave(a.ID)
-		parts, err := s.runEnteredTurn(tctx, a, session, text, nil)
+		parts, err := s.runEnteredTurn(tctx, a, session, text, typedBy, nil)
 		if err != nil {
 			s.logger.Printf("agents: a turn sent to %s failed: %v", a.Name, err)
 			parts = []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}

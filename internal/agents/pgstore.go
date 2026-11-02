@@ -965,10 +965,10 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 		m.Kind = "text"
 	}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok)
-		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by)
+		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, NULLIF($9::bigint, 0))
 		RETURNING id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at`,
-		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK).
+		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, m.TypedBy).
 		Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)
 	if err != nil {
 		return m, err
@@ -1059,6 +1059,54 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 		return nil, err
 	}
 	reverseChatChronological(out)
+	return out, nil
+}
+
+// UserTurns is what LatestUserTurns read of one agent's chat: its newest
+// user-role message from ANY source (Latest), and the newest one typed by the
+// given user (Typed). A zero ID means there is none.
+type UserTurns struct {
+	Latest ChatMessage
+	Typed  ChatMessage
+}
+
+// LatestUserTurns reads agentID's newest user-role message across ALL its
+// sessions, and its newest user-role message typed by user typedBy
+// (chat_messages.typed_by, migration 0069). Both carry TypedBy as stored.
+//
+// 🔴 ACROSS EVERY SESSION, BY id. A plugin delivery goes to the chief's default
+// session (or a plugin's own); the owner may type in another. "Is the owner's
+// message the newest thing the chief was handed?" must see all of them, or a
+// delivery in one session could ride an owner's line in another.
+func (s *PGStore) LatestUserTurns(ctx context.Context, agentID, typedBy int64) (UserTurns, error) {
+	var out UserTurns
+	read := func(dst *ChatMessage, extra string, args ...any) error {
+		var sess, by *int64
+		err := s.pool.QueryRow(ctx, `
+			SELECT id, agent_id, session_id, role, content, kind, created_at, typed_by FROM chat_messages
+			WHERE agent_id = $1 AND role = 'user'`+extra+` ORDER BY id DESC LIMIT 1`, args...).
+			Scan(&dst.ID, &dst.AgentID, &sess, &dst.Role, &dst.Content, &dst.Kind, &dst.CreatedAt, &by)
+		if errors.Is(err, pgx.ErrNoRows) {
+			*dst = ChatMessage{}
+			return nil
+		}
+		if sess != nil {
+			dst.SessionID = *sess
+		}
+		if by != nil {
+			dst.TypedBy = *by
+		}
+		return err
+	}
+	if err := read(&out.Latest, "", agentID); err != nil {
+		return UserTurns{}, err
+	}
+	if typedBy <= 0 {
+		return out, nil
+	}
+	if err := read(&out.Typed, " AND typed_by = $2", agentID, typedBy); err != nil {
+		return UserTurns{}, err
+	}
 	return out, nil
 }
 

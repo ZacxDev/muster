@@ -228,6 +228,14 @@ type ChatMessage struct {
 	ToolID   string `json:"toolId,omitempty"`   // links a tool_call to its tool_result
 	ToolName string `json:"toolName,omitempty"` // function name (tool_call/tool_result)
 	ToolOK   bool   `json:"toolOk,omitempty"`   // tool_result: dispatch success
+
+	// TypedBy is the user who TYPED this message into muster's own signed-in
+	// chat (migration 0069), or 0. 🔴 ONLY the owner's chat doors set it
+	// (internal/api runEnteredTurn, for handleAgentWS and handleAgentSend): every
+	// injected user-role turn — a plugin delivery, a relayed attention answer, a
+	// route note, a kickoff, a nudge, a forward — leaves it 0, and 0 is what
+	// task_dispatch's gate release refuses on. A writer that forgets it is safe.
+	TypedBy int64 `json:"typedBy,omitempty"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each

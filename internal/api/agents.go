@@ -1963,7 +1963,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		}
 		// The operator wrote to the agent: its open asks are answered here.
 		s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, in.Text)
-		parts, err := s.runEnteredTurn(ctx, a, session, in.Text, wsStreamEmit(ctx, c, s, a.Name))
+		parts, err := s.runEnteredTurn(ctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name))
 		s.turns.leave(a.ID)
 		if err != nil {
 			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": err.Error()})
@@ -1997,14 +1997,22 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 		return nil, ErrAgentBeingReplaced
 	}
 	defer s.turns.leave(a.ID)
-	return s.runEnteredTurn(ctx, a, session, text, emit)
+	// 🔴 notTyped: this door's one caller is the route hand-back
+	// (startClaimedChiefTurn), muster's words, never a line the owner typed.
+	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit)
 }
 
 // runEnteredTurn is runUserTurn for a caller that has ALREADY entered a's turn
 // gate (s.turns.enter) and leaves it afterwards: the operator's two doors, which
 // must know the turn is admitted before they answer the agent's asks.
-func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
-	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})
+//
+// typedBy is who TYPED text (agents.ChatMessage.TypedBy): ownerTypedBy(ctx) from
+// the owner's two chat doors (handleAgentWS, handleAgentSend) and notTyped from
+// every other caller. It is the provenance task_dispatch's gate release trusts
+// (chief_owner_release.go); TestOnlyTheOwnersChatDoorsStampTypedBy pins who
+// passes what.
+func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit) ([]agents.TurnPart, error) {
+	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text, TypedBy: typedBy})
 
 	// Mark active immediately (a turn always starts thinking) so the agent
 	// shows in the notification panel's ACTIVE section before its first stream
