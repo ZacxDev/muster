@@ -211,7 +211,7 @@ func taskToolDefs() []agents.ToolDef {
 	id := intProp("The task's id.", 1, 1<<53)
 	return []agents.ToolDef{
 		{Type: "function", Name: tasksListTool,
-			Description: "List your tasks — a dispatched agent: the one it was dispatched for; a mirrored Claude Code session: the ones it created with `muster task create`; the chief: the whole board — newest activity first, at most 50: id, title, status.",
+			Description: "List your tasks — a dispatched agent: the one it was dispatched for; a mirrored Claude Code session: the ones it created with `muster task create`; the chief: the whole board — newest activity first, at most 50: id, title, status, gate (the gate reason, only on a gated task).",
 			Parameters: objSchema(map[string]any{
 				"status": map[string]any{"type": "string", "enum": taskstatus.All(), "description": "Only tasks in this status."},
 			})},
@@ -705,15 +705,19 @@ func (s *Server) toolTasksList(ctx context.Context, c toolCaller, arguments stri
 		return toolErr("could not list tasks")
 	}
 	type row struct {
-		ID      int64  `json:"id"`
-		Title   string `json:"title"`
-		Status  string `json:"status"`
+		ID     int64  `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+		// Gate is the task's `gate:` reason — present only on a gated task, so the
+		// chief can tell a task waiting on its owner from one free to work.
+		Gate    string `json:"gate,omitempty"`
 		Updated string `json:"updated"`
 	}
 	out := []row{}
 	add := func(n notes.Note) {
 		if in.Status == "" || n.Status == in.Status {
-			out = append(out, row{ID: n.ID, Title: taskTitle(n), Status: n.Status, Updated: n.UpdatedAt.UTC().Format(time.RFC3339)})
+			gate, _ := notes.GateReason(n.Tags)
+			out = append(out, row{ID: n.ID, Title: taskTitle(n), Status: n.Status, Gate: gate, Updated: n.UpdatedAt.UTC().Format(time.RFC3339)})
 		}
 	}
 	if sc.all {

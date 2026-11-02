@@ -386,7 +386,7 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 // ListSummaries returns every LIVE note's own columns (newest-updated first) in a
 // SINGLE query, with NO attachment/comment/session fan-out. List does four
 // queries and hydrates every attachment, EVERY COMMENT OF EVERY NOTE and every
-// session link, which is what the Tasks page needs and what its two other callers
+// session link, which is what the Tasks page needs and what its other callers
 // do not:
 //
 //   - the dispatch-modal note picker renders only an id + a label (directory,
@@ -394,6 +394,13 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 //   - the idle-task reaper (api.reapIdleTasks) reads only id + updated_at, and
 //     since 0.8.x runs every 30 minutes rather than daily, so the fan-out it does
 //     not use would be paid ~48× a day over a set that only grows.
+//   - the chief's tasks_list tool (api.toolTasksList) reads id, title, status,
+//     tags (for the gate) and updated_at over the whole board.
+//
+// 🔴 status IS IN THE PROJECTION and must stay. It was missing until tasks_list
+// reported `"status": ""` for every task on the chief's board and its status
+// filter matched nothing (api.TestTheChiefsTasksListCarriesEachTasksStatusAndGate,
+// TestListSummariesCarriesStatus).
 //
 // 🔴 updated_at IS IN THE PROJECTION and must stay. It is the reaper's entire
 // selection predicate, and a Note scanned without it carries the ZERO time, which
@@ -416,7 +423,7 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 // that grew three joins are separate regressions, each earned once already.
 func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, directory, title, body, model, repo, repo_branch, tags, updated_at, owner_id
+		SELECT id, directory, title, body, status, model, repo, repo_branch, tags, updated_at, owner_id
 		FROM notes WHERE `+liveOnly+` ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -425,7 +432,7 @@ func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	out := make([]Note, 0)
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt, &n.OwnerID); err != nil {
+		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt, &n.OwnerID); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

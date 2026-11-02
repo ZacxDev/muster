@@ -315,13 +315,16 @@ type Store interface {
 	Get(ctx context.Context, id int64) (Note, error)
 	List(ctx context.Context) ([]Note, error)
 	// ListSummaries returns every live note's OWN columns — no attachments, no
-	// comments, no session links — in ONE query. It backs the two readers that do
+	// comments, no session links — in ONE query. It backs the readers that do
 	// not need List's batched child fan-out: the dispatch-modal note picker (an id
-	// + a label) and the idle-task reaper (id + UpdatedAt, every 30 minutes).
+	// + a label), the idle-task reaper (id + UpdatedAt, every 30 minutes) and the
+	// chief's tasks_list (id, title, status, gate tag, UpdatedAt).
 	//
 	// 🔴 UpdatedAt IS POPULATED and must stay so: it is the reaper's selection
 	// predicate, and the zero time is BEFORE every cutoff, so a projection that
 	// dropped it would make the reaper treat the whole board as idle.
+	//
+	// 🔴 Status IS POPULATED too: the chief's tasks_list reports and filters on it.
 	ListSummaries(ctx context.Context) ([]Note, error)
 	// Delete PERMANENTLY destroys a note and — via the note_comments /
 	// note_attachments `ON DELETE CASCADE` FKs — its entire comment thread and every
