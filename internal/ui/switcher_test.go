@@ -340,23 +340,28 @@ func TestThePaperclipIsSmallAndInsideTheInput(t *testing.T) {
 	}
 }
 
-// TestSendHasLessPadding: EVERY Send — the plain one (the agent chat page's,
-// the no-Queue fallback of sendSplit) and the split one beside the Queue caret
-// — is px-2.5, not the px-4 it was; each is still a 44px-tall target. And the
-// pages draw them: the agent chat's Send and a queue-less composer's.
-func TestSendHasLessPadding(t *testing.T) {
-	for name, cls := range map[string]string{"composerSendClass": composerSendClass, "composerSendSplitClass": composerSendSplitClass} {
-		if !strings.Contains(cls, " px-2.5 ") || strings.Contains(cls, "px-4") || !strings.Contains(cls, "min-h-[44px]") {
+// TestSendIsASquareAndWordsKeepTheirPadding: EVERY Send — the plain one (the
+// agent chat page's, the no-Queue fallback of sendSplit) and the split one
+// beside the Queue caret — is a padless 44×44 icon square; the worded accent
+// button (composerSendClass: the ask card's Submit) keeps px-2.5, not the px-4
+// it was, and is still a 44px-tall target. And the pages draw them: the agent
+// chat's Send and a queue-less composer's.
+func TestSendIsASquareAndWordsKeepTheirPadding(t *testing.T) {
+	if cls := composerSendClass; !strings.Contains(cls, " px-2.5 ") || strings.Contains(cls, "px-4") || !strings.Contains(cls, "min-h-[44px]") {
+		t.Errorf("composerSendClass = %q", cls)
+	}
+	for name, cls := range map[string]string{"composerSendIconClass": composerSendIconClass, "composerSendSplitClass": composerSendSplitClass} {
+		if strings.Contains(cls, "px-") || !strings.Contains(cls, "min-h-[44px]") || !strings.Contains(cls, "min-w-[44px]") || !strings.Contains(cls, "justify-center") {
 			t.Errorf("%s = %q", name, cls)
 		}
 	}
 	pane := renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1}))
-	if !strings.Contains(pane, `id="chat-send" class="`+composerSendClass+`"`) {
-		t.Error("the agent chat page's Send does not wear composerSendClass")
+	if !strings.Contains(pane, `id="chat-send" aria-label="Send" title="Send" class="`+composerSendIconClass+`"`) {
+		t.Error("the agent chat page's Send does not wear composerSendIconClass")
 	}
 	plain := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true}))
-	if !strings.Contains(plain, `aria-label="Send" class="`+composerSendClass+`">Send</button>`) {
-		t.Error("a queue-less composer's Send does not wear composerSendClass")
+	if !strings.Contains(plain, `aria-label="Send" title="Send" class="`+composerSendIconClass+`">`) {
+		t.Error("a queue-less composer's Send does not wear composerSendIconClass")
 	}
 }
 

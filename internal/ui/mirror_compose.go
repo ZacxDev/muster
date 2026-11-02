@@ -18,7 +18,7 @@ import (
 //     active pane whatever runs there — the shell or TUI on screen above it.
 //   - A dispatched agent's Terminal view: posts to AgentSendPath, which hands
 //     the text to the agent as a chat turn (the agent's own chat page keeps its
-//     streaming form, in the same clothes: composerInputClass / composerSendClass).
+//     streaming form, in the same clothes: composerInputClass / composerSendIconClass).
 //
 // 🔴 ONE FORM AND ONE SCRIPT (mirrorComposer, mirrorComposerScript). The views
 // differ in a route, the hidden fields that address what is sent to, and a
@@ -183,16 +183,30 @@ const (
 	mirrorComposeDown  = "Not sent: you are offline."
 )
 
-// composerInputClass and composerSendClass are the composer's look: a 16px
-// input (iOS zooms the page on focusing anything smaller) and 44px targets.
-// Send's side padding is px-2.5 (operator ask: "reduce the padding on the send
-// button") — every Send, the split one's included (composerSendSplitClass).
-// The agent chat's own form wears the same two, so every message box in the
-// app is one design — and grows the same way (composerFitClass, composer_fit.go).
+// composerInputClass and composerSendIconClass are the composer's look: a 16px
+// input (iOS zooms the page on focusing anything smaller) and a 44×44 Send.
+// Send is an icon button, a paper plane (sendIcon) named "Send" by aria-label
+// and title — every Send: the Rendered view's plain one, its split one beside
+// the Queue caret (composerSendSplitClass) and the agent chat's. The agent
+// chat's own form wears the same two, so every message box in the app is one
+// design — and grows the same way (composerFitClass, composer_fit.go).
+//
+// composerSendClass is the WORDED accent button in the same clothes, px-2.5
+// side padding: the ask card's Submit and Try again (mirror_ask.go) and the
+// script's "Send again". It is not Send's class: an icon button's padless
+// square would crush a word.
 const (
-	composerInputClass = "composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"
-	composerSendClass  = "press min-h-[44px] shrink-0 rounded-xl bg-accent px-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
+	composerInputClass    = "composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"
+	composerSendIconClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-accent text-on-accent transition disabled:opacity-40"
+	composerSendClass     = "press min-h-[44px] shrink-0 rounded-xl bg-accent px-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
 )
+
+// sendIcon is Send's face: a paper plane, inline, in currentColor (so it is
+// text-on-accent on bg-accent in either theme), hidden from assistive tech —
+// the button's aria-label names it.
+func sendIcon() g.Node {
+	return g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3.105 2.288a.75.75 0 0 0-.826.95l1.414 4.926A1.5 1.5 0 0 0 5.135 9.25h6.115a.75.75 0 0 1 0 1.5H5.135a1.5 1.5 0 0 0-1.442 1.086l-1.414 4.926a.75.75 0 0 0 .826.95 28.897 28.897 0 0 0 15.293-7.155.75.75 0 0 0 0-1.114A28.897 28.897 0 0 0 3.105 2.288Z"/></svg>`)
+}
 
 // mirrorComposer is the composer's markup: a status line, then the input row.
 func mirrorComposer(v ComposerView) g.Node {
@@ -514,7 +528,7 @@ func mirrorComposerScript() g.Node {
       againBtn = document.createElement('button');
       againBtn.type = 'button';
       againBtn.id = 'mv-send-again';
-      againBtn.className = send.className;
+      againBtn.className = '` + composerSendClass + `';
       againBtn.textContent = 'Send again';
       note.parentNode.insertBefore(againBtn, note.nextSibling);
     }

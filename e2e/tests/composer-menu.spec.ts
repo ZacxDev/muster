@@ -183,7 +183,9 @@ test.describe('desktop 1280×800', () => {
   test('Send is the face: a click, Enter and Ctrl+Enter each send now, and nothing is queued', async ({ page }) => {
     await openView(page);
     const before = pasted().length;
-    await expect(page.locator('#mv-send')).toHaveText('Send');
+    // Send is the paper-plane icon button: named Send, no visible text.
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveAttribute('id', 'mv-send');
+    await expect(page.locator('#mv-send')).toHaveText('');
     await input(page).fill('one by click');
     await page.locator('#mv-send').click();
     await expect.poll(pasted).toEqual(expect.arrayContaining([`${pane} one by click`]));
