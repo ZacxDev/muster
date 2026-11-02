@@ -1068,17 +1068,20 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 type OwnerTurn struct {
 	By        int64
 	MessageID int64
+	// Lane is the ccd lane (chat session key) the turn runs in; "" = ccd's
+	// primary CLI.
+	Lane      string
 	ExpiresAt time.Time
 }
 
-// SetOwnerTurn marks agentID as running a turn user by typed (chat row
-// messageID), until ttl from now by Postgres's clock. It overwrites any earlier
-// marker: one owner turn in flight per agent.
-func (s *PGStore) SetOwnerTurn(ctx context.Context, agentID, by, messageID int64, ttl time.Duration) error {
+// SetOwnerTurn marks agentID as running, in ccd lane lane, a turn user by
+// typed (chat row messageID), until ttl from now by Postgres's clock. It
+// overwrites any earlier marker: one owner turn in flight per agent.
+func (s *PGStore) SetOwnerTurn(ctx context.Context, agentID, by, messageID int64, lane string, ttl time.Duration) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE agents SET owner_turn_message_id = $2, owner_turn_by = $3,
+		UPDATE agents SET owner_turn_message_id = $2, owner_turn_by = $3, owner_turn_lane = $5,
 		       owner_turn_expires_at = now() + make_interval(secs => $4)
-		 WHERE id = $1`, agentID, messageID, by, ttl.Seconds())
+		 WHERE id = $1`, agentID, messageID, by, ttl.Seconds(), lane)
 	return err
 }
 
@@ -1086,7 +1089,7 @@ func (s *PGStore) SetOwnerTurn(ctx context.Context, agentID, by, messageID int64
 // messageID: a turn ending never clears a later turn's marker.
 func (s *PGStore) ClearOwnerTurn(ctx context.Context, agentID, messageID int64) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE agents SET owner_turn_message_id = NULL, owner_turn_by = NULL, owner_turn_expires_at = NULL
+		UPDATE agents SET owner_turn_message_id = NULL, owner_turn_by = NULL, owner_turn_expires_at = NULL, owner_turn_lane = NULL
 		 WHERE id = $1 AND owner_turn_message_id = $2`, agentID, messageID)
 	return err
 }
@@ -1096,9 +1099,9 @@ func (s *PGStore) ClearOwnerTurn(ctx context.Context, agentID, messageID int64) 
 func (s *PGStore) OwnerTurnInFlight(ctx context.Context, agentID int64) (OwnerTurn, error) {
 	var t OwnerTurn
 	err := s.pool.QueryRow(ctx, `
-		SELECT owner_turn_by, owner_turn_message_id, owner_turn_expires_at FROM agents
+		SELECT owner_turn_by, owner_turn_message_id, COALESCE(owner_turn_lane, ''), owner_turn_expires_at FROM agents
 		 WHERE id = $1 AND owner_turn_message_id IS NOT NULL AND owner_turn_by IS NOT NULL
-		   AND owner_turn_expires_at > now()`, agentID).Scan(&t.By, &t.MessageID, &t.ExpiresAt)
+		   AND owner_turn_expires_at > now()`, agentID).Scan(&t.By, &t.MessageID, &t.Lane, &t.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OwnerTurn{}, nil
 	}

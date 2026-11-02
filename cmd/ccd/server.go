@@ -211,6 +211,8 @@ func (s *server) gatewayHandler() http.Handler {
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	// The primary's transcript, incrementally (transcript_route.go).
 	mux.HandleFunc("GET /v1/transcript", s.handleTranscript)
+	// Which CLIs in the pod are working, by their own sessions files (clis.go).
+	mux.HandleFunc("GET /v1/clis", s.handleCLIs)
 	// `/` is the same check: muster's default agent health path is "/"
 	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
 	// startup and liveness probes. A per-kind health path for this image is muster

@@ -8,27 +8,28 @@ import (
 	"sync"
 )
 
-// THE RUNTIME ACCEPTED THE TURN'S TEXT — a signal a caller can hang work on.
+// THE RUNTIME ACCEPTED THE TURN'S TEXT — and IN WHICH LANE.
 //
 // A turn's caller cannot tell from its own side when the runtime TOOK the text:
-// ccd answers /v1/responses only when the turn is over, so the final status
-// comes after every tool call the turn made. muster needs the earlier moment for
-// one thing — the owner's turn marker (internal/api chief_owner_release.go),
-// which must exist while the turn runs and never for text the runtime refused.
+// ccd answers /v1/responses only when the turn is over, after every tool call
+// the turn made. muster needs the earlier moment for one thing — the owner's
+// turn marker (internal/api chief_owner_release.go), which must exist while the
+// turn runs, must never exist for text the runtime refused, and must name the
+// ccd LANE (the CLI) the turn runs in.
 //
-// Two signals mark it, whichever comes first, at most once per turn:
+// The one signal: ccd's informational 103 carrying HeaderCCPromptAccepted: "1",
+// written the moment the CLI reported a UserPromptSubmit for the very text ccd
+// pasted, and only when the request asked for it (the same header, "1", on the
+// request — wantsTurnAccepted). Before that ccd can still refuse (409 busy, 503
+// not_ready) and the text never reached the model. The lane is the request's
+// own HeaderCCSession ("" = ccd's primary CLI). A runtime that is not ccd, or a
+// ccd that predates the header, never sends it, so its turns never mark — fail
+// closed.
 //
-//   - ccd's informational 103 carrying HeaderCCPromptAccepted: "1", written the
-//     moment the CLI reported a UserPromptSubmit for the very text ccd pasted.
-//     Before that ccd can still refuse (409 busy, 503 not_ready) and the text
-//     never reached the model. A ccd that predates the header never sends it,
-//     so its turns never mark — fail closed.
-//   - a 200 on the turn's first request: a streaming runtime (the gateway kind)
-//     answers 200 only once it is running the turn. On ccd the 200 is the end
-//     of the turn, so marking there is harmless — the caller clears its marker
-//     as soon as the call returns.
-//
-// A refusal (any non-200, non-103 answer) never marks.
+// ⚠ NON-FATAL BY CONSTRUCTION. The trace hook always returns nil, so a 103 —
+// expected or not, well-formed or not — can never fail the turn: Go's client
+// reads past any 1xx to the final answer either way. A proxy that dropped the
+// 103 would cost only the marker (owner_asked refuses), never the chat.
 
 // HeaderCCPromptAccepted, "1" on ccd's 103 informational response, says the
 // CLI has accepted the pasted prompt (its UserPromptSubmit matched it). "1" on
@@ -37,45 +38,53 @@ import (
 // TestThePromptAcceptedHeaderIsMusters pins the two.
 const HeaderCCPromptAccepted = "X-Muster-CC-Prompt-Accepted"
 
-type turnAcceptedKey struct{}
-
-// WithTurnAccepted returns ctx carrying fn, run AT MOST ONCE when the runtime
-// accepts the turn's text (MarkTurnAccepted). fn may run on a transport
-// goroutine.
-func WithTurnAccepted(ctx context.Context, fn func()) context.Context {
-	var once sync.Once
-	return context.WithValue(ctx, turnAcceptedKey{}, func() { once.Do(fn) })
+// TurnAcceptance is what MarkTurnAccepted reports: the ccd lane the accepted
+// text runs in — the request's HeaderCCSession, "" for ccd's primary CLI.
+type TurnAcceptance struct {
+	Lane string
 }
 
-// MarkTurnAccepted runs ctx's WithTurnAccepted callback, if any. The runtime
-// transports call it on the signals above; a test's fake runtime calls it to
-// play a runtime that took the text.
-func MarkTurnAccepted(ctx context.Context) {
-	if fn, ok := ctx.Value(turnAcceptedKey{}).(func()); ok {
-		fn()
+type turnAcceptedKey struct{}
+
+// WithTurnAccepted returns ctx carrying fn, run AT MOST ONCE when ccd accepts
+// the turn's text (MarkTurnAccepted). fn may run on a transport goroutine.
+func WithTurnAccepted(ctx context.Context, fn func(TurnAcceptance)) context.Context {
+	var once sync.Once
+	return context.WithValue(ctx, turnAcceptedKey{}, func(a TurnAcceptance) { once.Do(func() { fn(a) }) })
+}
+
+// MarkTurnAccepted runs ctx's WithTurnAccepted callback, if any. The transport
+// calls it on ccd's 103; a test's fake runtime calls it to play a ccd that took
+// the text in lane a.Lane.
+func MarkTurnAccepted(ctx context.Context, a TurnAcceptance) {
+	if fn, ok := ctx.Value(turnAcceptedKey{}).(func(TurnAcceptance)); ok {
+		fn(a)
 	}
 }
 
 // wantsTurnAccepted reports whether ctx carries a WithTurnAccepted callback:
-// then the request asks ccd for its 103 (HeaderCCPromptAccepted: "1" on the
-// request), which ccd sends only when asked.
+// then the request asks ccd for its 103.
 func wantsTurnAccepted(ctx context.Context) bool {
-	_, ok := ctx.Value(turnAcceptedKey{}).(func())
+	_, ok := ctx.Value(turnAcceptedKey{}).(func(TurnAcceptance))
 	return ok
 }
 
-// traceTurnAccepted returns ctx with a client trace that marks the turn
-// accepted on ccd's 103, when ctx carries a callback; else ctx unchanged.
-func traceTurnAccepted(ctx context.Context) context.Context {
+// traceTurnAccepted returns req carrying a client trace that marks the turn
+// accepted, in req's own lane, on ccd's 103 — when req's context carries a
+// callback; else req unchanged. Call it after every header is set.
+func traceTurnAccepted(req *http.Request) *http.Request {
+	ctx := req.Context()
 	if !wantsTurnAccepted(ctx) {
-		return ctx
+		return req
 	}
-	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+	req.Header.Set(HeaderCCPromptAccepted, "1")
+	lane := req.Header.Get(HeaderCCSession)
+	return req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
 			if code == http.StatusEarlyHints && h.Get(HeaderCCPromptAccepted) == "1" {
-				MarkTurnAccepted(ctx)
+				MarkTurnAccepted(ctx, TurnAcceptance{Lane: lane})
 			}
 			return nil
 		},
-	})
+	}))
 }

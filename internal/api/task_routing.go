@@ -848,9 +848,10 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	if err := s.ext.ChiefDispatch.RecordChiefDispatchAgent(ctx, taskID, rec.ID); err != nil {
 		s.logger.Printf("task routing: record agent %d for task %d: %v", rec.ID, taskID, err)
 	}
+	gateStuck := false
 	if rel != nil {
 		// The agent exists: NOW the gate goes, recorded and pushed.
-		s.applyGateRelease(ctx, a, taskID, rec.Name, rel)
+		gateStuck = s.applyGateRelease(ctx, a, taskID, rec.Name, rel) != nil
 	}
 	s.advanceTaskToInProgress(ctx, taskID)
 	s.attentionChanged(owner, "task-routed-"+strconv.FormatInt(taskID, 10))
@@ -859,6 +860,11 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	if rel != nil {
 		// The gate went on the owner's message: said so, with which one.
 		out["gate_released_by_owner_message"] = rel.msg.ID
+		if gateStuck {
+			// Started, but the tag is still on the task: said so, as it is on
+			// the task and in the owner's push (applyGateRelease).
+			out["gate_not_removed"] = true
+		}
 	}
 	// Read after the agent is recorded, so the budget names it.
 	if b := s.chiefBudgetNow(ctx); b != nil {

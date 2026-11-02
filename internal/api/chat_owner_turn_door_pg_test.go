@@ -19,24 +19,39 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// markerGateway plays an agent runtime that either ACCEPTS a turn's text
-// (agents.MarkTurnAccepted, as ccd's 103 does) or refuses it (409 busy, as ccd
-// answers while its CLI is still running a turn it gave up on), and records,
-// DURING the turn, the owner-turn marker the agent carried.
+// The ways a fake runtime ends a turn.
+const (
+	runtimeAccepts  = "accepts"  // ccd's 103, then a reply
+	runtimeRefuses  = "refuses"  // 409 busy: the text never reached the CLI
+	runtimeCancels  = "cancels"  // 103, then the turn's context is cancelled
+	runtimeTimesOut = "timesout" // 103, then the turn's deadline passes
+	runtimeLate103  = "late103"  // the turn returns first; the 103 lands after
+)
+
+// markerGateway plays ccd for an agent's turns as mode says, in lane
+// markerLane, and records, DURING each turn, the owner-turn marker the agent
+// carried.
 type markerGateway struct {
-	pool   *pgxpool.Pool
-	accept bool
-	mu     sync.Mutex
-	during map[string]agents.OwnerTurn // text → marker seen mid-turn
+	pool *pgxpool.Pool
+	mu   sync.Mutex
+	mode string
+	// during: text → the marker seen mid-turn.
+	during map[string]agents.OwnerTurn
+	late   chan struct{}
 }
+
+const markerLane = "agent:test:webchat:lane-a"
 
 func (g *markerGateway) Chat(context.Context, agents.Agent, string, string, func(string)) (string, error) {
 	return "", errors.New("markerGateway: the tool-less path is not expected here")
 }
 
 func (g *markerGateway) ChatWithTools(ctx context.Context, a agents.Agent, _, _, text string, _ []agents.ToolDef, _ agents.ToolDispatch, _ agents.StreamEmit) (string, error) {
-	if g.accept {
-		agents.MarkTurnAccepted(ctx)
+	g.mu.Lock()
+	mode := g.mode
+	g.mu.Unlock()
+	if mode != runtimeRefuses && mode != runtimeLate103 {
+		agents.MarkTurnAccepted(ctx, agents.TurnAcceptance{Lane: markerLane})
 	}
 	turn, _ := agents.NewPG(g.pool).OwnerTurnInFlight(authz.System(context.Background()), a.ID)
 	g.mu.Lock()
@@ -45,10 +60,28 @@ func (g *markerGateway) ChatWithTools(ctx context.Context, a agents.Agent, _, _,
 	}
 	g.during[text] = turn
 	g.mu.Unlock()
-	if !g.accept {
+	switch mode {
+	case runtimeRefuses:
 		return "", &agents.RuntimeError{Status: http.StatusConflict, Type: "busy", Message: "the session is mid-turn"}
+	case runtimeCancels:
+		return "", context.Canceled
+	case runtimeTimesOut:
+		return "", context.DeadlineExceeded
+	case runtimeLate103:
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			agents.MarkTurnAccepted(ctx, agents.TurnAcceptance{Lane: markerLane})
+			close(g.late)
+		}()
+		return "", context.DeadlineExceeded
 	}
 	return "ok", nil
+}
+
+func (g *markerGateway) set(mode string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.mode = mode
 }
 
 func (g *markerGateway) seen(t *testing.T, text string) agents.OwnerTurn {
@@ -87,13 +120,13 @@ func markerAfter(t *testing.T, pool *pgxpool.Pool, a agents.Agent) agents.OwnerT
 
 // TestTheOwnersChatDoorsMarkOnlyAnAcceptedOwnerTurn: a line the signed-in
 // owner (user 1, who owns the agent) sends through the composer POST and
-// through the chat socket marks the owner's turn in flight WHILE the runtime
-// runs it — naming that line's own row — and the mark is gone once the turn
-// returns. A line the runtime REFUSED (409 busy) is stored but never marks.
+// through the chat socket marks the owner's turn in flight WHILE ccd runs it —
+// naming that line's own row and ccd's lane — and the mark is gone once the
+// turn returns. A line ccd REFUSED (409 busy) is stored but never marks.
 // Control: a forward through the same turn function, under the same signed-in
 // principal, never marks.
 func TestTheOwnersChatDoorsMarkOnlyAnAcceptedOwnerTurn(t *testing.T) {
-	gw := &markerGateway{accept: true}
+	gw := &markerGateway{mode: runtimeAccepts}
 	f := newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) { gw.pool = pool; ext.Gateway = gw })
 	rowOf := func(text string) int64 {
 		var id int64
@@ -111,8 +144,8 @@ func TestTheOwnersChatDoorsMarkOnlyAnAcceptedOwnerTurn(t *testing.T) {
 	if w := f.call(t, http.MethodPost, "/agents/"+f.op.Name+"/send", rd, merge(f.operator(), hdr)); w.Code != http.StatusNoContent {
 		t.Fatalf("the send: %d %s", w.Code, w.Body)
 	}
-	if got := gw.seen(t, posted); got.By != 1 || got.MessageID != rowOf(posted) {
-		t.Fatalf("during the composer's turn the marker is %+v; want the owner (1) and that line's row", got)
+	if got := gw.seen(t, posted); got.By != 1 || got.MessageID != rowOf(posted) || got.Lane != markerLane {
+		t.Fatalf("during the composer's turn the marker is %+v; want the owner (1), that line's row and lane %q", got, markerLane)
 	}
 	if got := markerAfter(t, f.pool, f.op); got.MessageID != 0 {
 		t.Fatalf("the marker outlived the composer's turn: %+v", got)
@@ -157,15 +190,15 @@ func TestTheOwnersChatDoorsMarkOnlyAnAcceptedOwnerTurn(t *testing.T) {
 		t.Fatalf("the marker outlived the socket's turn: %+v", got)
 	}
 
-	// Refused by the runtime (finding 1): the line is stored, nothing marks.
-	gw.accept = false
+	// Refused by ccd (finding 1): the line is stored, nothing marks.
+	gw.set(runtimeRefuses)
 	const refused = "typed while the CLI was busy"
 	send(refused)
 	_ = rowOf(refused) // stored
 	if got := gw.seen(t, refused); got.MessageID != 0 {
 		t.Fatalf("a refused line marked the owner's turn: %+v", got)
 	}
-	gw.accept = true
+	gw.set(runtimeAccepts)
 
 	// Control: muster's own hand-in through the same turn function.
 	const forwarded = "muster: your task changed outside muster"
@@ -179,5 +212,41 @@ func TestTheOwnersChatDoorsMarkOnlyAnAcceptedOwnerTurn(t *testing.T) {
 	f.srv.taskForwardTurn(asUser(1), f.op, sess, forwarded)
 	if got := gw.seen(t, forwarded); got.MessageID != 0 {
 		t.Fatalf("a forward marked an owner turn: %+v", got)
+	}
+}
+
+// TestNoMarkerOutlivesItsTurn: an accepted owner turn that ends CANCELLED or
+// TIMED OUT leaves no marker; and a 103 that lands only AFTER the turn
+// returned (the set racing the clear) writes none. Each is checked during the
+// turn too, where it applies, so a test that never marked cannot pass.
+func TestNoMarkerOutlivesItsTurn(t *testing.T) {
+	gw := &markerGateway{}
+	f := newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) { gw.pool = pool; ext.Gateway = gw })
+	sess, err := agents.NewPG(f.pool).LatestOrCreateSession(asUser(1), f.op.ID, f.op.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{runtimeCancels, runtimeTimesOut} {
+		gw.set(mode)
+		text := "an owner turn that " + mode
+		if _, err := f.srv.runEnteredTurn(asUser(1), f.op, sess, text, 1, nil); err == nil {
+			t.Fatalf("%s: the turn reported success", mode)
+		}
+		if got := gw.seen(t, text); got.MessageID == 0 {
+			t.Fatalf("%s: control: the turn never marked", mode)
+		}
+		if got := markerAfter(t, f.pool, f.op); got.MessageID != 0 {
+			t.Fatalf("%s: the marker outlived the turn: %+v", mode, got)
+		}
+	}
+
+	gw.late = make(chan struct{})
+	gw.set(runtimeLate103)
+	if _, err := f.srv.runEnteredTurn(asUser(1), f.op, sess, "a turn whose 103 comes late", 1, nil); err == nil {
+		t.Fatal("late: the turn reported success")
+	}
+	<-gw.late
+	if got := markerAfter(t, f.pool, f.op); got.MessageID != 0 {
+		t.Fatalf("a 103 after the turn returned left a marker: %+v", got)
 	}
 }

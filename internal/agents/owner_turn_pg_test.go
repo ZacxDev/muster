@@ -54,10 +54,10 @@ func TestTheOwnerTurnMarkerIsPerAgentAndClearedOnlyByItsOwnTurn(t *testing.T) {
 	if got := read(chief); got.MessageID != 0 {
 		t.Fatalf("a fresh agent has a marker: %+v", got)
 	}
-	if err := store.SetOwnerTurn(ctx, chief.ID, 9001, 7001, time.Minute); err != nil {
+	if err := store.SetOwnerTurn(ctx, chief.ID, 9001, 7001, "lane-one", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(chief); got.By != 9001 || got.MessageID != 7001 {
+	if got := read(chief); got.By != 9001 || got.MessageID != 7001 || got.Lane != "lane-one" {
 		t.Fatalf("marker %+v; want by 9001, message 7001", got)
 	}
 	if got := read(other); got.MessageID != 0 {
@@ -69,13 +69,13 @@ func TestTheOwnerTurnMarkerIsPerAgentAndClearedOnlyByItsOwnTurn(t *testing.T) {
 	if got := read(chief); got.MessageID != 7001 {
 		t.Fatalf("another turn's clear removed the marker: %+v", got)
 	}
-	if err := store.SetOwnerTurn(ctx, chief.ID, 9001, 7002, time.Minute); err != nil {
+	if err := store.SetOwnerTurn(ctx, chief.ID, 9001, 7002, "lane-two", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ClearOwnerTurn(ctx, chief.ID, 7001); err != nil { // the first turn ends late
 		t.Fatal(err)
 	}
-	if got := read(chief); got.MessageID != 7002 {
+	if got := read(chief); got.MessageID != 7002 || got.Lane != "lane-two" {
 		t.Fatalf("the first turn's late clear removed the second's marker: %+v", got)
 	}
 	if err := store.ClearOwnerTurn(ctx, chief.ID, 7002); err != nil {
@@ -84,7 +84,7 @@ func TestTheOwnerTurnMarkerIsPerAgentAndClearedOnlyByItsOwnTurn(t *testing.T) {
 	if got := read(chief); got.MessageID != 0 {
 		t.Fatalf("its own clear left the marker: %+v", got)
 	}
-	if err := store.SetOwnerTurn(ctx, chief.ID, 9001, 7003, -time.Second); err != nil {
+	if err := store.SetOwnerTurn(ctx, chief.ID, 9001, 7003, "lane-three", -time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(chief); got.MessageID != 0 {

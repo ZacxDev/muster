@@ -3,13 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -31,6 +34,58 @@ func withPush(pusher *payloadPusher, store *memPush) func(ext *Extensions) {
 	return func(ext *Extensions) {
 		ext.Push = push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))
 	}
+}
+
+// ownerLane is the ccd lane the owner's turns run in, in these tests.
+const ownerLane = "agent:chief:webchat:owner-lane"
+
+// podLanes plays the chief's ccd for GET /v1/clis: the pod's CLIs as each
+// says itself, or an error (unreachable; an image without the route).
+type podLanes struct {
+	Gateway
+	mu  sync.Mutex
+	act agents.CLIActivity
+	err error
+}
+
+func (p *podLanes) CLIActivity(context.Context, agents.Agent) (agents.CLIActivity, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.act, p.err
+}
+
+// only sets the pod to: the owner's lane working, plus others.
+func (p *podLanes) only(others ...agents.CLIState) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.err = nil
+	p.act = agents.CLIActivity{Version: 1, CLIs: append([]agents.CLIState{
+		{Lane: ownerLane, Known: true, SessionID: "owner-cli", Status: "busy"},
+		{Primary: true, Known: true, SessionID: "primary-cli", Status: "idle"},
+	}, others...)}
+}
+
+func (p *podLanes) fail(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.err = err
+}
+
+// releaseFixture is the task-routing fixture with dispatch opted in, a pool
+// account, and a chief pod whose CLIs the test sets (by default: only the
+// owner's lane working).
+type releaseFixture struct {
+	*taskRouteFixture
+	pod *podLanes
+}
+
+func newReleaseFixture(t *testing.T, extra ...func(ext *Extensions)) *releaseFixture {
+	t.Helper()
+	pod := &podLanes{}
+	pod.only()
+	f := newTaskRouteFixture(t, true, true, append([]func(ext *Extensions){withKinds("pool-acct-a"),
+		func(ext *Extensions) { ext.Gateway = pod }}, extra...)...)
+	return &releaseFixture{taskRouteFixture: f, pod: pod}
 }
 
 // fileGated files a task through task_create_gated as the chief: the one way a
@@ -69,7 +124,7 @@ func (f *taskRouteFixture) ownerTurn(t *testing.T, a agents.Agent, by int64, tex
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetOwnerTurn(f.asOwner, a.ID, by, m.ID, time.Minute); err != nil {
+	if err := st.SetOwnerTurn(f.asOwner, a.ID, by, m.ID, ownerLane, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	return m
@@ -134,7 +189,7 @@ func ownerAsked(id int64) map[string]any { return map[string]any{"task_id": id, 
 // and the result and the reservation's audit row name the message.
 func TestTaskDispatchReleasesTheChiefsGateDuringTheOwnersTurn(t *testing.T) {
 	pusher, store := &payloadPusher{}, &memPush{}
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"), withPush(pusher, store))
+	f := newReleaseFixture(t, withPush(pusher, store))
 	claim(t, store, f.owner, ep("owner-release"))
 	n := f.fileGated(t, "infra work from agent mail")
 	f.say(t, f.chief, "Plugin Agent mail: message_id 41 from an outside sender.")
@@ -185,7 +240,7 @@ func TestTaskDispatchReleasesTheChiefsGateDuringTheOwnersTurn(t *testing.T) {
 // and a turn nobody marked at all (a plugin delivery, a turn Claude Code
 // started by itself). Both refused; the gate stays.
 func TestTaskDispatchRefusesWithoutAnOwnerTurnInFlight(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	n := f.fileGated(t, "refused owner line")
 	f.say(t, f.chief, "Plugin Agent mail: message_id 41 from an outside sender.")
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
@@ -193,11 +248,121 @@ func TestTaskDispatchRefusesWithoutAnOwnerTurnInFlight(t *testing.T) {
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
 }
 
+// gateStuckNotes is a notes store whose RemoveTags always fails.
+type gateStuckNotes struct{ notes.Store }
+
+func (gateStuckNotes) RemoveTags(context.Context, int64, []string) (notes.Note, error) {
+	return notes.Note{}, errors.New("the database went away")
+}
+
+// TestTaskDispatchSaysSoWhenTheGateCannotBeRemoved: the agent started, but the
+// gate tag could not be taken off afterwards. Nothing is silent: the result
+// says gate_not_removed, the task gets a comment saying the agent is working
+// while the gate still shows, and the owner's push says the same.
+func TestTaskDispatchSaysSoWhenTheGateCannotBeRemoved(t *testing.T) {
+	pusher, store := &payloadPusher{}, &memPush{}
+	f := newReleaseFixture(t, withPush(pusher, store))
+	claim(t, store, f.owner, ep("gate-stuck"))
+	n := f.fileGated(t, "gate stuck")
+	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
+	f.srv.ext.Notes = gateStuckNotes{Store: f.notes}
+	text := f.call(f.chief, taskDispatchTool, ownerAsked(n.ID))
+	f.srv.ext.Notes = f.notes
+	f.startedOne(t, text, n.ID)
+	if !strings.Contains(text, `"gate_not_removed":true`) {
+		t.Fatalf("the result does not say the gate stayed: %s", text)
+	}
+	after, err := f.notes.Get(f.asOwner, n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !notes.IsGated(after.Tags) {
+		t.Fatalf("control: the gate was removed after all: %v", after.Tags)
+	}
+	cs := f.releaseComments(t, n.ID)
+	if len(cs) != 1 || !strings.Contains(cs[0].Body, "could not remove the gate (gate:from-agent-mail)") {
+		t.Fatalf("release comments %+v; want one saying the gate could not be removed", cs)
+	}
+	eventuallyAPI(t, "the gate-stuck push", func() bool {
+		for _, p := range pusher.to(ep("gate-stuck")) {
+			raw, _ := json.Marshal(p)
+			if strings.Contains(string(raw), "agent started, gate still on") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestTaskDispatchRefusesWhileAnotherLaneWorks — round 2's finding. The
+// owner's turn is in flight in its lane, but another CLI in the chief's pod is
+// working too, so the tool call may be ITS: a turn ccd gave up on that the CLI
+// is still running (a zombie), a turn the CLI started by itself, `chief ask`
+// over the machine token (on the primary), a job in its own lane, an unknown
+// process with a background shell. Each refused with the lane guard's
+// sentence, gate intact; with the others idle again, the same call starts.
+func TestTaskDispatchRefusesWhileAnotherLaneWorks(t *testing.T) {
+	f := newReleaseFixture(t)
+	n := f.fileGated(t, "another lane works")
+	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
+	for _, c := range []struct {
+		name  string
+		other agents.CLIState
+	}{
+		{"a zombie turn in another lane", agents.CLIState{Lane: "agent:chief:webchat:zombie", Known: true, SessionID: "z", Status: "busy"}},
+		{"a turn the CLI woke up for itself", agents.CLIState{Lane: "agent:chief:webchat:woke", Known: true, SessionID: "w", Status: "busy"}},
+		{"a job in its own lane", agents.CLIState{Lane: "job:42", Known: true, SessionID: "j", Status: "busy"}},
+		{"an unknown CLI with a background shell", agents.CLIState{SessionID: "bg", Status: "shell"}},
+	} {
+		f.pod.only(c.other)
+		f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseOtherCLIBusy, n)
+	}
+	// `chief ask` over the machine token runs on the primary: the primary busy.
+	f.pod.only()
+	f.pod.mu.Lock()
+	f.pod.act.CLIs[1].Status = "busy"
+	f.pod.mu.Unlock()
+	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseOtherCLIBusy, n)
+
+	f.pod.only(agents.CLIState{Lane: "agent:chief:webchat:quiet", Known: true, SessionID: "q", Status: "idle"})
+	f.startedOne(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), n.ID)
+}
+
+// TestTaskDispatchRefusesWhenThePodCannotSay: ccd unreachable, an image
+// without GET /v1/clis, and an answer that does not list the owner's own
+// lane — each refused: fail closed.
+func TestTaskDispatchRefusesWhenThePodCannotSay(t *testing.T) {
+	f := newReleaseFixture(t)
+	n := f.fileGated(t, "pod cannot say")
+	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
+	f.pod.fail(errors.New("dial tcp: connection refused"))
+	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
+	f.pod.fail(agentgateway.ErrCLIActivityUnsupported)
+	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
+	f.pod.mu.Lock()
+	f.pod.err, f.pod.act = nil, agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{{Primary: true, Known: true, SessionID: "p", Status: "idle"}}}
+	f.pod.mu.Unlock()
+	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
+}
+
+// TestTaskDispatchNeverReleasesFromAnInProcessCall: a gateway-runtime
+// session's tool call (muster's own in-process dispatch) never releases, even
+// with the owner's turn in flight and only its lane working.
+func TestTaskDispatchNeverReleasesFromAnInProcessCall(t *testing.T) {
+	f := newReleaseFixture(t)
+	n := f.fileGated(t, "in process")
+	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
+	raw, _ := json.Marshal(ownerAsked(n.ID))
+	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)(taskDispatchTool, string(raw))
+	f.mustRefuseRelease(t, text, chiefReleaseNotOverMCP, n)
+	f.startedOne(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), n.ID) // control: over MCP
+}
+
 // TestTaskDispatchRefusesAnotherUsersOrAnotherAgentsTurn: a marker typed by a
 // user who is not the chief's owner; and the owner's turn in flight on their
 // WORKER, not the chief.
 func TestTaskDispatchRefusesAnotherUsersOrAnotherAgentsTurn(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	n := f.fileGated(t, "someone else's turn")
 	f.ownerTurn(t, f.worker, f.owner, ownersTypedWords)
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
@@ -209,7 +374,7 @@ func TestTaskDispatchRefusesAnotherUsersOrAnotherAgentsTurn(t *testing.T) {
 // turn returned, and one left by a crash that has lapsed — both refused. The
 // same marker live releases (control).
 func TestTaskDispatchRefusesOnceTheOwnersTurnIsOver(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	st := agents.NewPG(f.pool)
 	n := f.fileGated(t, "turn over")
 	said := f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
@@ -219,7 +384,7 @@ func TestTaskDispatchRefusesOnceTheOwnersTurnIsOver(t *testing.T) {
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
 
 	lapsed := f.say(t, f.chief, ownersTypedWords)
-	if err := st.SetOwnerTurn(f.asOwner, f.chief.ID, f.owner, lapsed.ID, -time.Second); err != nil {
+	if err := st.SetOwnerTurn(f.asOwner, f.chief.ID, f.owner, lapsed.ID, ownerLane, -time.Second); err != nil {
 		t.Fatal(err)
 	}
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
@@ -233,7 +398,7 @@ func TestTaskDispatchRefusesOnceTheOwnersTurnIsOver(t *testing.T) {
 // not type (its session claim is held: a plugin delivery in another lane).
 // Released, the same call starts.
 func TestTaskDispatchRefusesWhileAnOutsideTurnIsInFlight(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	n := f.fileGated(t, "delivery in flight")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	st := agents.NewPG(f.pool)
@@ -253,7 +418,7 @@ func TestTaskDispatchRefusesWhileAnOutsideTurnIsInFlight(t *testing.T) {
 // owner ALSO put a hold on, are refused with the gate untouched — during the
 // owner's own turn.
 func TestTaskDispatchNeverReleasesAGateTheOwnerSet(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	own := f.task(t, "the owner's hold", "gate:waiting-on-legal")
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(own.ID)), chiefReleaseNotChiefsGate, own)
@@ -285,7 +450,7 @@ func TestTheFiledGateRecordIsTheOwnersOwn(t *testing.T) {
 // is in flight and the gate is the chief's, but the live cap refuses the
 // start: the task ends gated, with no release comment.
 func TestTaskDispatchARefusedStartLeavesTheGateOn(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	for i := 0; i < plugins.MaxChiefLiveAgents; i++ {
 		f.liveChiefAgent(t, "capped-"+strconv.Itoa(i))
 	}
@@ -316,7 +481,7 @@ func (b betweenDispatch) ReserveChiefDispatch(ctx context.Context, taskID int64,
 // its gates.
 func TestTaskDispatchRechecksTheReleaseUnderTheLock(t *testing.T) {
 	var hook func()
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	f.srv.ext.ChiefDispatch = betweenDispatch{DispatchStore: f.plugins, before: func() {
 		if hook != nil {
 			hook()
@@ -355,7 +520,7 @@ func TestTaskDispatchRechecksTheReleaseUnderTheLock(t *testing.T) {
 // only way in. The owner's turn alone does nothing: without the flag the gated
 // refusal is unchanged (and now names the flag).
 func TestTaskDispatchStillRefusesAGatedTaskWithoutOwnerAsked(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	n := f.fileGated(t, "no flag")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchGatedText, n)
@@ -368,7 +533,7 @@ func TestTaskDispatchStillRefusesAGatedTaskWithoutOwnerAsked(t *testing.T) {
 // owner_asked is ignored — it starts with no owner turn at all, and records no
 // release.
 func TestTaskDispatchOwnerAskedOnAnUngatedTaskChangesNothing(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f := newReleaseFixture(t)
 	n := f.task(t, "ungated")
 	text := f.call(f.chief, taskDispatchTool, ownerAsked(n.ID))
 	f.startedOne(t, text, n.ID)

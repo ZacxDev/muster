@@ -416,18 +416,29 @@ Each refusal has its own sentence, in this order:
    - **your turn is running on the chief right now**: you typed a message in
      its muster chat (its page's chat or composer, signed in as the chief's
      owner), the chief's runtime **accepted** it, and muster's turn call has not
-     returned yet. A claude-code chief's ccd says so the moment the CLI submits
-     the very text it pasted; a text the runtime refused (the CLI busy with
+     returned yet. The chief's ccd says so (an informational `103`, which muster
+     asks for) the moment the CLI submits the very text it pasted, naming the
+     session it runs in; a text the runtime refused (the CLI busy with
      another turn, not ready) never counts, even though it is stored in the
      chat. The mark is kept on the agent's row (so every replica sees it),
      cleared when the turn returns and lapses after the turn budget. A plugin
      message, a relayed attention answer, a route note, a nudge, a forward,
      `muster chief ask`, a turn Claude Code started by itself and anything typed
      straight into the chief's terminal never mark one;
-   - no turn muster started is running for the chief at the same time (a
-     plugin delivery, a relayed answer, a nudge, a hand-back: each holds the
-     chief's session claim for its whole turn). A chief's sessions can run side
-     by side, and a tool call does not say which one made it.
+   - **your turn is the only thing working in the chief's pod.** A chief's
+     sessions run side by side (one Claude Code CLI each, ccd's lanes), and a
+     tool call does not say which one made it. So muster asks the chief's ccd
+     (`GET /v1/clis`) which CLIs are working, by each CLI's own account (the
+     status Claude Code writes in its sessions file), and requires every CLI
+     but the one running your turn to be idle. That refuses a turn ccd gave up
+     on that the CLI is still running, a turn the CLI started by itself (a
+     background task finishing), `muster chief ask`, a job, and another
+     session's delivery. A ccd that cannot answer — unreachable, or an image
+     without the route — refuses. Also refused while muster holds the chief's
+     session claim for a turn it started;
+   - the call came over MCP, from a Claude Code session. A chief session on
+     the gateway runtime runs its tools inside muster and is no CLI, so it
+     never releases a gate.
 
    The chief names no message: muster takes the one your running turn stored.
    The checks run after guards 4–7 and again under the lock below; the gate is
@@ -439,7 +450,9 @@ Each refusal has its own sentence, in this order:
    tell whether your message was **about** this task: the chief decides that,
    and the push shows you at once if it misread you. Without `owner_asked`, or
    on an ungated task, nothing here runs. A gated task filed before this
-   release has no record of its gate, so only the board releases it.
+   release has no record of its gate, so only the board releases it. If the
+   agent starts but the gate tag cannot be removed, the comment, the push and
+   the result (`gate_not_removed`) say so.
 8. Under a per-owner lock: **one start per task** — until you destroy the
    agent it made. A task the chief already started an agent for answers with
    that start (`already_dispatched`) and starts nothing, whatever became of the

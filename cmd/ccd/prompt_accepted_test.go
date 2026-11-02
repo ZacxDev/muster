@@ -29,7 +29,11 @@ func TestThePromptAcceptedHeaderIsMusters(t *testing.T) {
 func acceptedCount(t *testing.T, srv *server) (int32, error) {
 	t.Helper()
 	var n atomic.Int32
-	ctx := agents.WithTurnAccepted(context.Background(), func() { n.Add(1) })
+	ctx := agents.WithTurnAccepted(context.Background(), func(a agents.TurnAcceptance) {
+		if a.Lane == "" { // the primary: Chat names no lane
+			n.Add(1)
+		}
+	})
 	_, err := mustersGateway(t, gatewayServer(t, srv).URL).Chat(ctx, contractAgent, "s", "dispatch it", nil)
 	return n.Load(), err
 }
