@@ -350,7 +350,7 @@ it. The flow:
 |---|---|---|
 | `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `task_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
-| `task_dispatch {task_id, repo?, kind?, instructions?}` | Starts a new agent on the task. `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
+| `task_dispatch {task_id, repo?, kind?, instructions?, owner_asked?}` | Starts a new agent on the task. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 8a](#task_dispatch-the-guards)). `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
 
 All three are chief-only, on the agent gateway and over `/mcp`. Handing a task
 to the chief never starts anything by itself: only `task_dispatch` does.
@@ -406,6 +406,60 @@ Each refusal has its own sentence, in this order:
    by an agent (`task_create_gated`), so either may only be one of your own.
    The task is re-read under the lock below, and a repository changed in
    between is refused.
+8a. `owner_asked: true` on an open **gated** task: muster starts the agent and
+   releases the gate on **a turn you typed** — and only on one — when all of
+   these hold, each refused with its own sentence otherwise (the gate stays on
+   and nothing starts):
+   - the gate is the one the chief set with `task_create_gated` (muster records
+     it when the task is filed). A gate you put on a task yourself — even on a
+     task the chief filed — is never released here; only the board removes it;
+   - **your turn is running on the chief right now**: you typed a message in
+     its muster chat (its page's chat or composer, signed in as the chief's
+     owner), the chief's runtime **accepted** it, and muster's turn call has not
+     returned yet. The chief's ccd says so (an informational `103`, which muster
+     asks for) the moment the CLI submits the very text it pasted, naming the
+     session it runs in; a text the runtime refused (the CLI busy with
+     another turn, not ready) never counts, even though it is stored in the
+     chat. The mark is kept on the agent's row (so every replica sees it),
+     cleared when the turn returns and lapses after the turn budget. A plugin
+     message, a relayed attention answer, a route note, a nudge, a forward,
+     `muster chief ask`, a turn Claude Code started by itself and anything typed
+     straight into the chief's terminal never mark one;
+   - **your turn is the only Claude Code CLI working in the chief's pod.** A
+     chief's sessions run side by side (one Claude Code CLI each, ccd's
+     lanes), and a tool call does not say which one made it. So muster asks
+     the chief's ccd (`GET /v1/clis`) which CLIs are working, by each CLI's
+     own account (the status Claude Code writes in its sessions file), and
+     requires every CLI but the one running your turn to be idle. A live
+     `claude` process with no sessions file to say what it is doing counts as
+     working (its own refusal). That refuses a turn ccd gave up on that the
+     CLI is still running, a turn the CLI started by itself (a background task
+     finishing), `muster chief ask`, a job, and another session's delivery. A
+     ccd that cannot answer — unreachable, or an image without the route —
+     refuses. Also refused while muster holds the chief's session claim for a
+     turn it started. ⚠ This holds against Claude Code CLIs, **not against
+     any process** running as the pod's user: one a tool call left behind (a
+     detached loop a Bash call started; a job's session runs with
+     `bypassPermissions`) holds the agent's muster token and can call muster's
+     MCP door directly. ccd already treats such processes as out of its
+     reach;
+   - the call came over MCP, from a Claude Code session. A chief session on
+     the gateway runtime runs its tools inside muster and is no CLI, so it
+     never releases a gate.
+
+   The chief names no message: muster takes the one your running turn stored.
+   The checks run after guards 4–7 and again under the lock below; the gate is
+   removed only **after** the agent was created, so a refusal from guard 8 on
+   (a cap, say) leaves the task gated. On a release the task gets a comment by
+   `muster` naming your message and quoting it verbatim, you get a push ("your
+   chief released the gate on task #N on your message: …"), and the start's
+   audit row and result carry `gate_released_by_owner_message`. Muster cannot
+   tell whether your message was **about** this task: the chief decides that,
+   and the push shows you at once if it misread you. Without `owner_asked`, or
+   on an ungated task, nothing here runs. A gated task filed before this
+   release has no record of its gate, so only the board releases it. If the
+   agent starts but the gate tag cannot be removed, the comment, the push and
+   the result (`gate_not_removed`) say so.
 8. Under a per-owner lock: **one start per task** — until you destroy the
    agent it made. A task the chief already started an agent for answers with
    that start (`already_dispatched`) and starts nothing, whatever became of the
@@ -633,7 +687,10 @@ descriptions and the preface on each message.
 
 - The task is created **gated**. The server adds `gate:<reason>`, a slug of
   `gate_reason` (`gate:awaiting-approval` when it is empty). Nothing dispatches
-  it until you remove the gate.
+  it until you release the gate: remove it on the board, or tell your chief in
+  its chat to do the work — its instructions say to call `task_dispatch` with
+  `owner_asked: true` in its answer, and muster checks that the turn is yours before it
+  releases the gate ([guard 8a](#task_dispatch-the-guards)).
 - A caller tag in the `gate:` or `auto:` namespace is **refused**, in any
   spelling the tag grammar folds together.
 - You get the usual "New task" push. The tool creates through the same path as

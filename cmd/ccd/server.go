@@ -211,6 +211,8 @@ func (s *server) gatewayHandler() http.Handler {
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	// The primary's transcript, incrementally (transcript_route.go).
 	mux.HandleFunc("GET /v1/transcript", s.handleTranscript)
+	// Which CLIs in the pod are working, by their own sessions files (clis.go).
+	mux.HandleFunc("GET /v1/clis", s.handleCLIs)
 	// `/` is the same check: muster's default agent health path is "/"
 	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
 	// startup and liveness probes. A per-kind health path for this image is muster
@@ -707,7 +709,23 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// the lane's CLI works.
 		w.Header().Set(headerCCWorkdirUsed, s.lanes.dir(ln))
 	}
-	res, f := target.runTurn(r.Context(), prompt)
+	// 🔴 THE CLI TOOK THE PROMPT: a 103 carrying headerCCPromptAccepted, sent
+	// the moment its UserPromptSubmit matched the pasted text and before the turn
+	// runs (runTurn's onSubmitted). muster marks an owner's turn in flight on it
+	// (internal/agents turnaccepted.go); a turn refused before that (busy,
+	// not_ready, a paste that never submitted) sends none. Informational only:
+	// the final status still says how the turn ended. ONLY when the request asks
+	// for it (the same header, "1", on the request): a caller that never asked
+	// gets exactly the one answer it always got.
+	ctx := r.Context()
+	if r.Header.Get(headerCCPromptAccepted) == "1" {
+		ctx = withPromptSubmitted(ctx, func() {
+			w.Header().Set(headerCCPromptAccepted, "1")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Del(headerCCPromptAccepted)
+		})
+	}
+	res, f := target.runTurn(ctx, prompt)
 	if f != nil {
 		log.Printf("ccd: turn failed: %s (code=%q upstream=%d)", f.Error(), f.Code, f.Upstream)
 		writeFailure(w, f)
@@ -720,6 +738,15 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 type turnOutcome struct {
 	turnResult
 	promptID string
+}
+
+// promptSubmittedKey carries runTurn's onSubmitted callback (withPromptSubmitted).
+type promptSubmittedKey struct{}
+
+// withPromptSubmitted returns ctx carrying fn, which runTurn calls once, the
+// moment the CLI reports a UserPromptSubmit for the prompt ccd pasted.
+func withPromptSubmitted(ctx context.Context, fn func()) context.Context {
+	return context.WithValue(ctx, promptSubmittedKey{}, fn)
 }
 
 // runTurn drives one prompt through the session and returns its reply or a
@@ -835,6 +862,10 @@ waitSubmit:
 			return turnOutcome{}, &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
 				Message: "caller went away before the prompt was submitted"}
 		}
+	}
+	// The CLI accepted THIS prompt: say so before the turn runs (handleResponses).
+	if fn, ok := ctx.Value(promptSubmittedKey{}).(func()); ok && fn != nil {
+		fn()
 	}
 
 	var stop hookEvent

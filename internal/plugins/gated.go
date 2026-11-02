@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // THE GATED-TASK BUDGET: how many tasks one agent may file through
@@ -95,4 +97,42 @@ func (s *PGStore) ReserveGatedTask(ctx context.Context, agentID int64, messageID
 		}
 		return audit(ctx, tx, ActionGatedTask, AgentObject(agentID), detail)
 	})
+}
+
+// ActionGatedTaskFiled records WHICH task task_create_gated filed and the exact
+// gate tag the server set on it (object NoteObject(task), detail {gate,
+// agent_id}). It is what lets task_dispatch's owner_asked release ONLY the gate
+// the chief filed (internal/api chief_owner_release.go) and never a hold the
+// owner put on a task themselves, which is spelled in the same tag namespace.
+const ActionGatedTaskFiled = "plugin.task_gated_filed"
+
+// RecordGatedTaskFiled appends ActionGatedTaskFiled for taskID, filed by
+// agentID with gate (the full `gate:<slug>` tag), as ctx's principal.
+func (s *PGStore) RecordGatedTaskFiled(ctx context.Context, taskID, agentID int64, gate string) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		return audit(ctx, tx, ActionGatedTaskFiled, NoteObject(taskID), map[string]any{"gate": gate, "agent_id": agentID})
+	})
+}
+
+// GatedTaskFiled is the gate tag task_create_gated set on taskID, as recorded
+// by ctx's principal (RecordGatedTaskFiled); ok is false when there is none.
+//
+// 🔴 THE OWNER IS NAMED IN THE QUERY (user_id), not left to row-level security
+// alone: with RLS rolled back another owner's row for the same task id would
+// otherwise read as this owner's.
+func (s *PGStore) GatedTaskFiled(ctx context.Context, taskID int64) (gate string, ok bool, err error) {
+	p, has := authz.From(ctx)
+	if !has || p.UserID <= 0 {
+		return "", false, errors.New("plugins: reading a filed gate needs a user principal")
+	}
+	err = s.pool.QueryRow(ctx, `SELECT COALESCE(detail->>'gate', '') FROM audit_log
+		WHERE action = $1 AND object = $2 AND user_id = $3 ORDER BY id DESC LIMIT 1`,
+		ActionGatedTaskFiled, NoteObject(taskID), p.UserID).Scan(&gate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return gate, gate != "", nil
 }

@@ -305,6 +305,9 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		req.Header.Set(sessionKeyHeader, sessionKey)
 	}
 	applyTurnRoute(req)
+	// LAST, with every header set: ask ccd for its 103 and mark the turn
+	// accepted, in this request's lane, when it comes (turnaccepted.go).
+	req = traceTurnAccepted(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)

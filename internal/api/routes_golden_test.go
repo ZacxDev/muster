@@ -705,9 +705,12 @@ func moduleRoot(t *testing.T) string {
 //     GET /{$} is the same health check as /healthz, at muster's default agent
 //     health path ("/"); GET /v1/transcript is the primary CLI's transcript,
 //     read incrementally by muster-server's officer transcript forwarder
-//     (internal/officers/transcript), bearer-authenticated like /v1/responses.
+//     (internal/officers/transcript), bearer-authenticated like /v1/responses;
+//     GET /v1/clis is which CLIs in the pod are working by their own sessions
+//     files, read by task_dispatch's owner_asked (internal/api
+//     chief_owner_release.go), bearer-authenticated the same way.
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd": {"GET /healthz", "GET /{$}", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
+	"cmd/ccd": {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

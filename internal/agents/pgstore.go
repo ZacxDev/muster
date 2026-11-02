@@ -1062,6 +1062,66 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	return out, nil
 }
 
+// OwnerTurn is the marker of an owner-typed turn in flight on an agent
+// (migration 0069): the user who typed it, the chat row it stored, and when the
+// marker lapses. The zero value is "no owner turn in flight".
+type OwnerTurn struct {
+	By        int64
+	MessageID int64
+	// Lane is the ccd lane (chat session key) the turn runs in; "" = ccd's
+	// primary CLI.
+	Lane      string
+	ExpiresAt time.Time
+}
+
+// SetOwnerTurn marks agentID as running, in ccd lane lane, a turn user by
+// typed (chat row messageID), until ttl from now by Postgres's clock. It
+// overwrites any earlier marker: one owner turn in flight per agent.
+func (s *PGStore) SetOwnerTurn(ctx context.Context, agentID, by, messageID int64, lane string, ttl time.Duration) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agents SET owner_turn_message_id = $2, owner_turn_by = $3, owner_turn_lane = $5,
+		       owner_turn_expires_at = now() + make_interval(secs => $4)
+		 WHERE id = $1`, agentID, messageID, by, ttl.Seconds(), lane)
+	return err
+}
+
+// ClearOwnerTurn removes agentID's marker IF it is still the one for
+// messageID: a turn ending never clears a later turn's marker.
+func (s *PGStore) ClearOwnerTurn(ctx context.Context, agentID, messageID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agents SET owner_turn_message_id = NULL, owner_turn_by = NULL, owner_turn_expires_at = NULL, owner_turn_lane = NULL
+		 WHERE id = $1 AND owner_turn_message_id = $2`, agentID, messageID)
+	return err
+}
+
+// OwnerTurnInFlight reads agentID's marker; the zero OwnerTurn when there is
+// none, it has lapsed (by Postgres's clock), or the agent does not exist.
+func (s *PGStore) OwnerTurnInFlight(ctx context.Context, agentID int64) (OwnerTurn, error) {
+	var t OwnerTurn
+	err := s.pool.QueryRow(ctx, `
+		SELECT owner_turn_by, owner_turn_message_id, COALESCE(owner_turn_lane, ''), owner_turn_expires_at FROM agents
+		 WHERE id = $1 AND owner_turn_message_id IS NOT NULL AND owner_turn_by IS NOT NULL
+		   AND owner_turn_expires_at > now()`, agentID).Scan(&t.By, &t.MessageID, &t.Lane, &t.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OwnerTurn{}, nil
+	}
+	return t, err
+}
+
+// ChatMessage reads one chat row by id (pgx.ErrNoRows when there is none
+// visible to ctx's principal).
+func (s *PGStore) ChatMessage(ctx context.Context, id int64) (ChatMessage, error) {
+	var m ChatMessage
+	var sess *int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at FROM chat_messages
+		 WHERE id = $1`, id).Scan(&m.ID, &m.AgentID, &sess, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)
+	if sess != nil {
+		m.SessionID = *sess
+	}
+	return m, err
+}
+
 // DeleteChatMessagesOlderThan removes chat messages created before cutoff.
 func (s *PGStore) DeleteChatMessagesOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM chat_messages WHERE created_at < $1`, cutoff)

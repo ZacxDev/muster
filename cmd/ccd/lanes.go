@@ -128,6 +128,11 @@ const (
 	// LANE HAS NO TOOLS" above). Read only on a turn that names a session; any
 	// other value is a lane with the CLI's usual tools.
 	headerCCToolless = "X-Muster-CC-Toolless"
+	// headerCCPromptAccepted: "1" on the 103 informational answer ccd writes
+	// the moment the CLI accepted the pasted prompt (its UserPromptSubmit
+	// matched it) — muster's agents.HeaderCCPromptAccepted, which marks an
+	// owner's turn in flight from then until the turn's answer.
+	headerCCPromptAccepted = "X-Muster-CC-Prompt-Accepted"
 )
 
 // toollessArgs are the flags a tool-less lane's CLI starts with: no built-in
