@@ -27,9 +27,10 @@ import (
 //   - muster's GET /agent/connectors/hq says the connector exists and this
 //     agent's grant on it is not denied or revoked (podagent.HQServes).
 //
-// When muster cannot be read (the GET fails or times out) the entry is LEFT AS
-// IT WAS: with muster unreachable the proxy is too, and the next pod start
-// decides again. The registration is a convenience, not the gate — the proxy
+// When muster cannot be read (the GET fails or times out) the DECISION is left
+// as it was — an absent entry stays absent, a registered one stays registered,
+// rewritten with this pod's current URL and token — and the next pod start
+// decides again: with muster unreachable the proxy is too. The registration is a convenience, not the gate — the proxy
 // checks the grant on every call.
 //
 // ⚠ IT IS DECIDED AT POD START (the entrypoint's `ccd seed`). A connector
@@ -87,6 +88,19 @@ func ownHQEntry(v any) bool {
 	return m["command"] == podagent.HQCommand && strings.Contains(u, "/connect/"+podagent.HQConnector+"/")
 }
 
+// hqEntryHost is the connector host an entry seed wrote points at: what follows
+// "/connect/hq/" in its HQ_URL, or "" when that is not one path segment.
+func hqEntryHost(v any) string {
+	m, _ := v.(map[string]any)
+	env, _ := m["env"].(map[string]any)
+	u, _ := env["HQ_URL"].(string)
+	_, host, ok := strings.Cut(u, "/connect/"+podagent.HQConnector+"/")
+	if !ok || strings.Contains(host, "/") {
+		return ""
+	}
+	return host
+}
+
 // seedHQMCP adds or removes the HQ entry in st (.claude.json) by the rules
 // above. on is podagent.EnvHQMCP as parsed.
 func seedHQMCP(st map[string]any, on bool, connectURL, token string, stderr io.Writer) {
@@ -119,6 +133,14 @@ func seedHQMCP(st map[string]any, on bool, connectURL, token string, stderr io.W
 	defer cancel()
 	c, err := hqConnectorStatus(ctx, connectURL, token)
 	if err != nil {
+		// Only the DECISION is kept: an entry registered earlier stays, with
+		// this pod's URL and token (they may have changed since), so it neither
+		// runs on a stale token nor fails checkSeed.
+		if e := servers[podagent.HQMCPServerName]; ownHQEntry(e) {
+			if host := hqEntryHost(e); host != "" {
+				servers[podagent.HQMCPServerName] = hqMCPEntry(connectURL, host, token)
+			}
+		}
 		fmt.Fprintf(stderr, "ccd seed: could not read the %q connector (%v); the HQ MCP server is left as it was\n",
 			podagent.HQConnector, err)
 		return

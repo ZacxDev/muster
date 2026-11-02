@@ -22,7 +22,15 @@
 # this EMPTY stage instead: a named build context replaces the stage of the
 # same name, and copying the root of an empty stage copies nothing. ccd then
 # finds no `hq` on PATH and registers no HQ server.
+#
+# 🔴 THE DEFAULT STAGE IS NOT EMPTY, AND THAT IS LOAD-BEARING. With an EMPTY
+# scratch stage, BuildKit served a plain build the cached `COPY --from=hq` layer
+# of an earlier build that HAD the context (measured, docker 29.8): the "plain"
+# image carried hq; `--no-cache` did not. The marker file gives the default
+# stage content of its own, so its COPY can never share a cache key with a
+# context's. It lands in /opt/hq inert (only a file named `hq` is linked).
 FROM scratch AS hq
+COPY images/claude-code-agent/hq-absent /hq-absent
 
 FROM golang:1.25-alpine AS build
 WORKDIR /src

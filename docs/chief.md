@@ -150,6 +150,42 @@ What the agent was told is also its first message, on its transcript. Guards: [p
 tasks. That scope, like the chief-only filter, is decided by the chief
 predicate, never by the kind.
 
+### HQ from the chief
+
+A claude-code chief can also work in HQ, your task system: when you ask it in
+chat for an HQ task (create, assign, comment, change status, look one up) it
+uses the tools of the MCP server named `hq` (`mcp__hq__<tool>`), never a task
+on muster's board. Every HQ tool is pre-allowed, so **the scope of the HQ token
+you store is the only limit** on what it can do in HQ — and the chief also
+reads untrusted plugin messages.
+
+The server is the `hq` CLI's `hq mcp`, run in the chief's pod with `HQ_URL` set
+to the `hq` connector's prefix on muster's proxy and `HQ_TOKEN` set to the
+chief's own muster token. muster's proxy swaps that for the stored HQ token, so
+**the HQ token never enters the pod**. The `hq` connector serves the chief and
+no other agent, whatever grants exist (`internal/api/connector_chief_only.go`).
+
+To turn it on:
+
+1. **Put `hq` in the agent image.** The image's Dockerfile takes an optional
+   build context named `hq`: build it with
+   `docker build --build-context hq=<a directory holding only the statically
+   linked hq binary> -f images/claude-code-agent/Dockerfile .`. A build without
+   the context has no `hq`, and the chief then registers no HQ server.
+2. **Create the `hq` connector** on the Connectors tab: name `hq`, scheme
+   **bearer**, host = your HQ host, secret = an HQ token with scope **`ack`**
+   (the lowest scope that creates, assigns, updates, comments on and sets the
+   status of tasks; listing and reading need only `read`). `ack` also allows
+   paging, overrides and data writes — there is no task-only scope.
+3. **Restart the chief** (`chief_restart`, or Stop then Start). Whether the
+   server is registered is decided when the pod starts.
+4. **Approve the chief's request** for `hq` when it appears: the chief's first
+   HQ call files it, and that call answers that the request is pending until
+   you approve.
+
+If the chief has no `mcp__hq__` tools it says so; check the four steps above
+(`ccd seed` logs which one is missing when the pod starts).
+
 ## Restarting the chief
 
 The chief keeps running the image and tool set it was started on. After a muster

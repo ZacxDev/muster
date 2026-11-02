@@ -1,0 +1,2 @@
+This image was built without the optional `hq` build context, so it carries no
+hq CLI and the chief's HQ MCP server is not registered (see the Dockerfile).

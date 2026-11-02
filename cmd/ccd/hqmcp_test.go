@@ -261,19 +261,31 @@ func TestSeedLeavesTheHQServerAsItWasWhenMusterCannotBeRead(t *testing.T) {
 	if err := seed(o, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	registered := mustJSON(t, readServers(t, o)["hq"])
+	if _, ok := readServers(t, o)["hq"]; !ok {
+		t.Fatal("control: not registered with the connector readable")
+	}
 
-	t.Setenv(envAgentToken, "a-token-muster-refuses-401")
-	t.Setenv(envConnectURL, m.srv.URL) // same proxy prefix, so the entry stays this pod's
+	// The pod restarts with a NEW token and connect URL, and muster cannot be
+	// read: the entry is kept (the decision) but carries THIS pod's URL and
+	// token, so checkSeed agrees with it.
+	const newToken = "a-rotated-agent-token-55e0"
+	down := "http://127.0.0.1:9"
+	t.Setenv(envAgentToken, newToken)
+	t.Setenv(envConnectURL, down)
 	var stderr bytes.Buffer
 	if err := seed(o, &stderr); err != nil {
 		t.Fatalf("an unreadable connector failed the start: %v", err)
 	}
-	if got := mustJSON(t, readServers(t, o)["hq"]); got != registered {
-		t.Fatalf("the entry changed on a failed read:\n got %s\nwant %s", got, registered)
+	want := `{"args":["mcp"],"command":"hq","env":{"HQ_TOKEN":"` + newToken + `","HQ_URL":"` +
+		down + `/connect/hq/` + fakeHQHost + `"},"type":"stdio"}`
+	if got := mustJSON(t, readServers(t, o)["hq"]); got != want {
+		t.Fatalf("the kept entry on a failed read:\n got %s\nwant %s", got, want)
 	}
 	if !strings.Contains(stderr.String(), "left as it was") {
 		t.Errorf("seed did not say why it left the entry: %s", stderr.String())
+	}
+	if err := checkSeed(o); err != nil {
+		t.Fatalf("checkSeed after a failed read: %v", err)
 	}
 
 	// And an ABSENT entry stays absent.
