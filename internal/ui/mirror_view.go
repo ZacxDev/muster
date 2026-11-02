@@ -249,6 +249,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					g.Attr("aria-label", "Conversation"),
 					Class("flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3"),
 				),
+				// What Claude Code has queued itself (cc_queued.go): OUTSIDE the
+				// conversation, so it never moves what is being read there.
+				CCQueued(nil),
 				// The questions the window's ask hook is holding (mirror_ask.go).
 				mirrorAsksRegion(ref),
 				// The window's sessions' attention asks (attention_ask), answered here.
@@ -532,6 +535,10 @@ type MirrorTranscript struct {
 	// (forget).
 	ledger cctranscript.ToolContext
 	costs  map[string]cctranscript.ToolCost
+	// queued is the Claude Code queued messages drawn last (cc_queued.go),
+	// and queuedDrawn whether any list has been drawn by this socket.
+	queued      []string
+	queuedDrawn bool
 }
 
 const maxDrawnCalls = 2048
@@ -572,6 +579,7 @@ func (t *MirrorTranscript) Reset() {
 	t.Resumed = false
 	t.usage, t.fresh = nil, false
 	t.ledger, t.costs = cctranscript.ToolContext{}, nil
+	t.queued, t.queuedDrawn = nil, false
 }
 
 // endRun records that something other than a tool row was drawn: the next

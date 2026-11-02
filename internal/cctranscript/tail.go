@@ -21,6 +21,11 @@ type Line struct {
 	Events []Event `json:"events"`
 	End    int64   `json:"end"`
 	At     int64   `json:"at,omitempty"`
+	// Queue is a queue-operation record's change to Claude Code's input queue
+	// (queue.go), on a Line with no Events. 🔴 NEVER ON THE WIRE (json:"-"):
+	// muster-mirror folds it into a Queue and sends the queue's list on its
+	// own; a reader that wants only what draws drops such lines (Drawn).
+	Queue *QueueOp `json:"-"`
 }
 
 // ReadLines decodes the complete lines in r between off and size, reading at
@@ -69,6 +74,8 @@ func ReadLines(r io.ReaderAt, off, size int64, maxBytes int) ([]Line, int64, err
 					}
 				}
 				out = append(out, Line{Events: evs, End: pos, At: rec.Time()})
+			} else if q := queueOpOf(rec); q != nil {
+				out = append(out, Line{End: pos, At: rec.Time(), Queue: q})
 			}
 		}
 	}
@@ -199,6 +206,9 @@ func Backfill(r io.ReaderAt, size int64, window, maxEvents int) ([]Line, int64, 
 				}
 				n += len(evs)
 				out = append(out, Line{Events: evs, End: end, At: rec.Time()})
+			} else if q := queueOpOf(rec); q != nil {
+				// No events, so it costs none of maxEvents.
+				out = append(out, Line{End: end, At: rec.Time(), Queue: q})
 			}
 		}
 		end = start + int64(j) + 1

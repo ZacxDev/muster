@@ -772,3 +772,75 @@ test('an older host draws an Agent call as the plain tool row, with no card', as
   await expect(log.locator('[data-tool-row]')).toContainText('Agent');
   await expect(log.locator('[data-subagent-card]')).toHaveCount(0);
 });
+
+// CLAUDE CODE'S OWN QUEUE: a message sent while Claude is busy waits in the
+// CLI's input queue, and reaches the transcript as a prompt only when Claude
+// takes it. The CLI records each change as a queue-operation record (shapes
+// measured from CLI 2.1.289; internal/cctranscript/queue.go), and the view
+// shows what is waiting UNDER the conversation, labelled — redacted, gone the
+// moment Claude takes it, and without moving what the reader is looking at.
+const queueOp = (operation: string, content?: string) =>
+  rec({ type: 'queue-operation', operation, timestamp: '2000-01-01T00:00:00.000Z', sessionId: 's', ...(content === undefined ? {} : { content }) });
+
+test('a message Claude Code queued is shown under the conversation until Claude takes it', async ({ page }) => {
+  const tr = newTranscript(prompt('start the long job') + reply(lines(60, 'Earlier reply')));
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  const region = page.locator('#mv-ccq');
+  await expect(region).toBeHidden();
+
+  // The reader scrolls up to read: what is at the top must not move.
+  await log.evaluate((l) => (l.scrollTop = 200));
+  const anchor = log.locator('[data-bubble="assistant"]').first();
+  const before = (await anchor.boundingBox())!.y;
+
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E then ship it with TOKEN=ghp_E2EQueuedToken01'));
+  await expect(region).toBeVisible({ timeout: 15_000 });
+  await expect(region).toContainText('Queued in Claude Code');
+  const item = region.locator('[data-cc-queued-item]');
+  await expect(item).toHaveCount(1);
+  await expect(item).toContainText('QUEUED-E2E then ship it with');
+  // Not a sent message: no bubble for it in the conversation yet.
+  await expect(log).not.toContainText('QUEUED-E2E');
+  expect((await page.content()).includes('ghp_E2EQueuedToken01'), 'the token is not in the page').toBe(false);
+  expect((await anchor.boundingBox())!.y, 'the text being read did not move').toBe(before);
+  // A harness envelope queued beside it is not listed.
+  fs.appendFileSync(tr, queueOp('enqueue', '<task-notification>\n<task-id>t2</task-id>\n</task-notification>'));
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E second'));
+  await expect(item).toHaveCount(2);
+  await expect(region).toContainText('Queued in Claude Code · 2');
+
+  // Claude takes the first: it becomes the prompt bubble and leaves the list.
+  fs.appendFileSync(tr, queueOp('dequeue') + prompt('QUEUED-E2E then ship it with TOKEN=ghp_E2EQueuedToken01'));
+  await expect(log.locator('[data-bubble="user"]').last()).toContainText('QUEUED-E2E then ship it with');
+  await expect(item).toHaveCount(1);
+  await expect(item).toContainText('QUEUED-E2E second');
+  // The second is absorbed into the running turn: the list empties.
+  fs.appendFileSync(tr, queueOp('remove', 'QUEUED-E2E second'));
+  await expect(region).toBeHidden();
+
+  // Up pulled a newly queued one back into the input box (popAll): gone too.
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E third'));
+  await expect(region).toBeVisible();
+  fs.appendFileSync(tr, queueOp('popAll', 'QUEUED-E2E third'));
+  await expect(region).toBeHidden();
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw).toBeLessThanOrEqual(cw);
+});
+
+// A RELOAD while a message is queued shows it from the start (the host sends
+// the list on every open), and one taken meanwhile is not resurrected from the
+// page's snapshot.
+test('a reload shows what is queued now, never what a snapshot drew', async ({ page }) => {
+  const tr = newTranscript(prompt('start') + reply('working') + queueOp('enqueue', 'QUEUED-E2E waiting'));
+  await openView(page, tr);
+  const region = page.locator('#mv-ccq');
+  await expect(region.locator('[data-cc-queued-item]')).toContainText('QUEUED-E2E waiting');
+  // Taken while the page is away.
+  await page.goto('about:blank');
+  fs.appendFileSync(tr, queueOp('dequeue') + prompt('QUEUED-E2E waiting') + reply('done'));
+  await page.goto(origin + viewPath);
+  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+  await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText('QUEUED-E2E waiting');
+  await expect(region).toBeHidden();
+});

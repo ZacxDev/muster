@@ -415,6 +415,16 @@ type Msg struct {
 	// Tail (subagent-tailed) is the answer; nil with Error set when refused.
 	Tail *SubagentTail `json:"tail,omitempty"`
 
+	// ---- Claude Code's own input queue (ccqueue.go) ----
+
+	// QueuedList (events) marks a message carrying the messages Claude Code
+	// has queued itself: Queued is the WHOLE list, oldest first (empty is a
+	// list too). Set on every backfill's Reset batch and resume marker by a
+	// host that reads the queue. Backward-compatible both ways, like
+	// SubagentList.
+	QueuedList bool     `json:"queuedList,omitempty"`
+	Queued     []string `json:"queued,omitempty"`
+
 	// ---- per-window registration ----
 
 	// Windows (hello, sessions) is EVERY WINDOW of every session on the host,

@@ -275,6 +275,11 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.SubagentList && len(m.Subagents) > 0 {
 			b.Ops = append(b.Ops, drawn.SubagentOps(m.Subagents)...)
 		}
+		// What Claude Code has queued itself (ui/cc_queued.go): the whole list,
+		// redrawn when it changed.
+		if m.QueuedList {
+			b.Ops = append(b.Ops, drawn.QueuedOps(m.Queued)...)
+		}
 		// After Ops: Ops is what records the usage TakeContext reports.
 		b.Context = drawn.TakeContext()
 		if m.Gen != "" {
