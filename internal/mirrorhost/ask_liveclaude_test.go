@@ -53,6 +53,13 @@ func TestLiveClaudePicker(t *testing.T) {
 	// edge) and an answer in its own words over two rows (the CLI wraps the
 	// text row): the two live failures this case pins.
 	where := askq.Question{Question: "The shared widget package renders every tool call the same way regardless of its status, so the spinner on a half-finished call never stops. Should we fix it upstream, or patch our copy for now and file the upstream change separately?", Header: "Where", Options: []askq.Option{{Label: "Upstream"}, {Label: "Patch"}}}
+	// Questions just over the CLI's 80-character boxing rule: boxed whatever
+	// the pane's width, so in a pane over ~92 columns each is ONE line, "│ "
+	// and no right edge (the live refusals; askdrive.gutterOver). In the
+	// make target's 80-column pane they wrap inside the box instead — run
+	// this case by hand in a wider pane too.
+	report := askq.Question{Question: "Should the nightly report also be sent to the shared channel as a longer summary?", Header: "Report", Options: []askq.Option{{Label: "Yes"}, {Label: "No"}}}
+	notes := askq.Question{Question: "Should the release notes for the widget package also list every fixed issue by its number?", Header: "Notes", Options: []askq.Option{{Label: "List them"}, {Label: "Summary"}}}
 	own := "The build agent needs to support running nightly batch-jobs, alongside the interactive sessions, where we are using models via a proxy."
 	describe := func(qs []askq.Question) string {
 		var parts []string
@@ -106,6 +113,7 @@ func TestLiveClaudePicker(t *testing.T) {
 		{"four questions", []askq.Question{color, pets, name, size}, []askdrive.Choice{{Picks: []int{0}}, {Picks: []int{0, 1, 2}}, {Other: "Delta"}, {Picks: []int{1}}}, 0, "", false},
 		{"a long boxed question", []askq.Question{where}, []askdrive.Choice{{Picks: []int{1}}}, 0, "", false},
 		{"a long answer of its own to question 2", []askq.Question{color, where}, []askdrive.Choice{{Picks: []int{0}}, {Other: own}}, 0, "", false},
+		{"two questions boxed by length", []askq.Question{report, notes}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{1}}}, 0, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

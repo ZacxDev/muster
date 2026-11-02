@@ -26,11 +26,16 @@ type FakePicker struct {
 	cancelled bool
 	answers   map[string]string
 	pending   string // an incomplete escape sequence
+	width     int    // the pane's width in columns: its rule, and where text wraps
 }
 
-// NewFakePicker shows qs, untouched.
-func NewFakePicker(qs []askq.Question) *FakePicker {
-	f := &FakePicker{qs: qs, cursor: 1, checked: make([]map[int]bool, len(qs)), text: make([]string, len(qs))}
+// NewFakePicker shows qs, untouched, in an 80-column pane.
+func NewFakePicker(qs []askq.Question) *FakePicker { return newFakePickerWidth(qs, fakeWidth) }
+
+// newFakePickerWidth is NewFakePicker in a pane width columns wide: a wide
+// pane draws a boxed question (boxed) on one line, as the CLI does.
+func newFakePickerWidth(qs []askq.Question, width int) *FakePicker {
+	f := &FakePicker{qs: qs, cursor: 1, checked: make([]map[int]bool, len(qs)), text: make([]string, len(qs)), width: width}
 	for i := range f.checked {
 		f.checked[i] = map[int]bool{}
 	}
@@ -218,8 +223,6 @@ func (f *FakePicker) key(r rune) {
 	}
 }
 
-const fakeRule = "────────────────────────────────────────────────────────────────────────────────"
-
 // Screen is the picker as a pane would show it ("" once it is closed: the
 // session's prompt box instead).
 func (f *FakePicker) Screen() string {
@@ -227,14 +230,15 @@ func (f *FakePicker) Screen() string {
 	defer f.mu.Unlock()
 	var b strings.Builder
 	line := func(s string) { b.WriteString(s + "\n") }
+	rule := strings.Repeat("─", f.width)
 	if f.done {
-		line(fakeRule)
+		line(rule)
 		line("❯ ")
-		line(fakeRule)
+		line(rule)
 		line("  ⏸ manual mode on · ? for shortcuts")
 		return b.String()
 	}
-	line(fakeRule)
+	line(rule)
 	// The header.
 	var tabs []string
 	for i, q := range f.qs {
@@ -257,7 +261,7 @@ func (f *FakePicker) Screen() string {
 			if boxed(q.Question) {
 				lead, more = " │ ● ", " │   "
 			}
-			for j, l := range fakeWrap(q.Question, fakeWidth-len([]rune(lead))) {
+			for j, l := range fakeWrap(q.Question, f.width-len([]rune(lead))) {
 				if j == 0 {
 					line(lead + l)
 				} else {
@@ -267,7 +271,7 @@ func (f *FakePicker) Screen() string {
 			// "   → " then "   ": the answer's further lines start two
 			// columns left of its first, and run to the pane's edge as the
 			// CLI's do (long-review-80).
-			for j, l := range fakeWrapIndent(f.answerOf(i), fakeWidth-5, fakeWidth-3) {
+			for j, l := range fakeWrapIndent(f.answerOf(i), f.width-5, f.width-3) {
 				if j == 0 {
 					line("   → " + l)
 				} else {
@@ -287,7 +291,7 @@ func (f *FakePicker) Screen() string {
 		return b.String()
 	}
 	if boxed(q.Question) {
-		for _, l := range fakeWrap(q.Question, fakeWidth-2) {
+		for _, l := range fakeWrap(q.Question, f.width-2) {
 			line("│ " + l)
 		}
 	} else {
@@ -313,7 +317,7 @@ func (f *FakePicker) Screen() string {
 	row := func(n int, label string) {
 		lead := cur(n) + " " + itoa(n) + ". " + box(n)
 		indent := strings.Repeat(" ", len([]rune(lead)))
-		for j, l := range fakeWrap(label, fakeWidth-len(indent)) {
+		for j, l := range fakeWrap(label, f.width-len(indent)) {
 			if j == 0 {
 				line(lead + l)
 			} else {
@@ -342,7 +346,7 @@ func (f *FakePicker) Screen() string {
 		}
 		line(cur(0) + "    " + nav)
 	}
-	line(fakeRule)
+	line(rule)
 	line("  " + itoa(k+2) + ". Chat about this")
 	line("")
 	line("Enter to select · ↑/↓ to navigate · Esc to cancel")
@@ -362,7 +366,7 @@ const (
 // a column, the preview of the one under the cursor boxed beside them.
 func (f *FakePicker) previewScreen(line func(string), q askq.Question) {
 	if boxed(q.Question) {
-		for _, l := range fakeWrap(q.Question, fakeWidth-2) {
+		for _, l := range fakeWrap(q.Question, f.width-2) {
 			line("│ " + l)
 		}
 	} else {
@@ -409,7 +413,7 @@ func (f *FakePicker) previewScreen(line func(string), q askq.Question) {
 		}
 		line(l + strings.Repeat(" ", max(0, fakePreviewCol-len([]rune(l)))) + r)
 	}
-	line(fakeRule)
+	line(strings.Repeat("─", f.width))
 	line("  Chat about this")
 	line("")
 	if f.multiTabs() {
@@ -420,12 +424,13 @@ func (f *FakePicker) previewScreen(line func(string), q askq.Question) {
 	}
 }
 
-// fakeWidth is the fake's pane width: the 80 columns its rule is.
+// fakeWidth is NewFakePicker's pane width: the 80 columns its rule is.
 const fakeWidth = 80
 
-// boxed reports whether the CLI draws question q in a box: one too long for
-// a line (measured 2.1.289: "│ " down its left edge, wrapped inside).
-func boxed(q string) bool { return len([]rune(q)) > fakeWidth-2 }
+// boxed reports whether the CLI draws question q in a box ("│ " down its
+// left edge, wrapped inside): by its own length rule (gutters), whatever the
+// pane's width — so in a wide pane a boxed question can be one line.
+func boxed(q string) bool { return gutters(q) }
 
 // fakeWrap is s word-wrapped to width columns, a word longer than a line
 // broken mid-word — as the CLI wraps (its exact break points differ; Parse
