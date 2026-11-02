@@ -178,15 +178,14 @@ func TestSendIsAPaperPlane(t *testing.T) {
 	}
 }
 
-// TestBothSendsKeepTheBoxFocused: both composers' scripts wire their Send
-// through sendKeepsFocusJS (one function, so the two cannot drift), and the
-// function prevents the mousedown's default. What it DOES in a browser — the
-// first tap sends with the keyboard up — is e2e (composer-menu.spec.ts,
-// agent-composer.spec.ts).
-func TestBothSendsKeepTheBoxFocused(t *testing.T) {
-	if !strings.Contains(sendKeepsFocusJS, "'mousedown'") || !strings.Contains(sendKeepsFocusJS, "e.preventDefault()") {
-		t.Fatalf("sendKeepsFocusJS = %s", sendKeepsFocusJS)
-	}
+// TestBothSendsAreWiredThroughSendKeepsFocusJS: ⚠ A WIRING CHECK ONLY. Both
+// composers' scripts hand their Send to sendKeepsFocusJS exactly once (one
+// function, so the two cannot drift), and the Queue caret's script does not.
+// It says nothing about what the function DOES — it stays green with the
+// preventDefault removed or the listener on another event. The behaviour (a
+// press leaves the box focused; the first tap sends with the keyboard up) is
+// guarded by e2e: composer-menu.spec.ts and agent-composer.spec.ts.
+func TestBothSendsAreWiredThroughSendKeepsFocusJS(t *testing.T) {
 	for name, c := range map[string][2]string{
 		"rendered view": {renderedView(t, &ComposerQueue{Src: SendQueuePath}, true), "(" + sendKeepsFocusJS + ")(send);"},
 		"agent chat":    {renderString(t, agentChatScript("a")), "(" + sendKeepsFocusJS + ")(sendBtn);"},

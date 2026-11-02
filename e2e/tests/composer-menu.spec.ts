@@ -199,6 +199,29 @@ test.describe('desktop 1280×800', () => {
     await expect(page.locator('#mv-send-menu')).toBeHidden();
   });
 
+  // 🔴 A SEND CLOSES AN OPEN `/` OR `:` MENU. Send keeps the box focused
+  // (sendKeepsFocusJS), so the menu's close-on-blur never runs, and the box is
+  // emptied without an input event: the menu would stay open over the empty
+  // box, and the next Enter would put the command back in it.
+  for (const [typed, name] of [['/hand', 'handoff'], [':ki', ':kickoff']] as const) {
+    test(`a click on Send with the ${typed[0]} menu open sends, closes the menu, and the next Enter does nothing`, async ({ page }) => {
+      await openView(page);
+      const before = pasted().length;
+      await input(page).click();
+      await page.keyboard.type(typed);
+      await expect(menu(page)).toBeVisible();
+      await expect.poll(() => optionNames(page)).toContain(name);
+      await page.locator('#mv-send').click();
+      await expect.poll(() => pasted().slice(before)).toEqual([`${pane} ${typed}`]);
+      await expect(input(page)).toHaveValue('');
+      await expect(menu(page), 'the menu closed with the send').toBeHidden();
+      await input(page).press('Enter');
+      await expect(input(page), 'Enter put nothing back in the box').toHaveValue('');
+      await page.waitForTimeout(500);
+      expect(pasted().slice(before), 'and sent nothing more').toEqual([`${pane} ${typed}`]);
+    });
+  }
+
   test('Queue is behind the caret, by pointer and by keyboard; it queues and never sends', async ({ page }) => {
     await openView(page);
     const before = pasted();

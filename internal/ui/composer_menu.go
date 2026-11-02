@@ -416,6 +416,12 @@ func composerMenuScript(src string) g.Node {
   input.addEventListener('click', refresh);
   input.addEventListener('focus', function () { load(); });
   input.addEventListener('blur', function () { setTimeout(function () { if (document.activeElement !== input) close(); }, 150); });
+  // 🔴 A SEND (or a queue) CLOSES THE MENU. Send keeps the box focused
+  // (sendKeepsFocusJS), so the blur above never runs, and the composer empties
+  // the box without an input event: the menu is re-read against what the box
+  // now holds (closed on an empty box), or it stays open over it and the next
+  // Enter puts the command back.
+  document.addEventListener('mv-sent', refresh);
   document.addEventListener('selectionchange', function () { if (document.activeElement === input && token) refresh(); });
   form.addEventListener('keydown', function (e) {
     if (e.target !== input || box.hidden || !token || e.isComposing) return;
