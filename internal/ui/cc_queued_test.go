@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE QUEUED REGION IS REDRAWN WHOLE, AND ONLY WHEN THE LIST MOVED — but
@@ -65,5 +67,22 @@ func TestTheQueuedRegionIsOutsideTheConversation(t *testing.T) {
 	}
 	if strings.Count(page, `id="`+ccQueuedID+`"`) != 1 {
 		t.Fatal("the page draws the region more than once")
+	}
+}
+
+// THE SERVER BOUNDS WHAT IT DRAWS, whatever a host sent: at most
+// mirror.MaxQueued messages, each at most mirror.MaxQueuedText runes.
+func TestQueuedOpsBoundTheList(t *testing.T) {
+	in := []string{strings.Repeat("y", mirror.MaxQueuedText+100)}
+	for i := range mirror.MaxQueued + 5 {
+		in = append(in, "m"+strings.Repeat("z", i))
+	}
+	var tr MirrorTranscript
+	html := tr.QueuedOps(in)[0].HTML
+	if n := strings.Count(html, "data-cc-queued-item"); n != mirror.MaxQueued {
+		t.Fatalf("%d messages drawn, want %d", n, mirror.MaxQueued)
+	}
+	if strings.Contains(html, strings.Repeat("y", mirror.MaxQueuedText+1)) || !strings.Contains(html, strings.Repeat("y", mirror.MaxQueuedText-1)) {
+		t.Fatalf("the long message is not cut to %d runes", mirror.MaxQueuedText)
 	}
 }

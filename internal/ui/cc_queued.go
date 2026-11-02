@@ -19,7 +19,10 @@ import (
 //
 // 🔴 ONE REGION, REDRAWN WHOLE from the host's whole list (a "patch" op), so a
 // message leaves the moment Claude takes it and nothing drawn earlier can
-// linger; the host sends the list on every view start and reconnect.
+// linger; the host sends the list on every view start and reconnect, drops
+// what a CLI process that has since exited queued (cctranscript's
+// Queue.DropBefore), and the page empties the region when the view ends or a
+// snapshot is taken back (mirrorViewScript's clearQueued).
 //
 // 🔴 OUTSIDE THE CONVERSATION (#mv-log), so it never pushes the reading
 // position: its appearing shrinks the log's box from below — a reader at the

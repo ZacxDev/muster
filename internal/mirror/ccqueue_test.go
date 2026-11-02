@@ -146,3 +146,104 @@ func TestNormalizeQueued(t *testing.T) {
 		t.Fatal("an empty list is not nil")
 	}
 }
+
+// rec is one transcript record as a line.
+func rec(m map[string]any) string {
+	b, _ := json.Marshal(m)
+	return string(b) + "\n"
+}
+
+// exitedWithAQueuedMessage is the tail a CLI leaves when it exits (SIGTERM)
+// with a message queued — MEASURED, claude 2.1.289: the enqueue, then
+// last-prompt and cost-state, and nothing that resolves the enqueue. Its keys
+// are the CLI's; ids, times and text are replaced. The enqueue is at 00:00:10.
+func exitedWithAQueuedMessage(text string) string {
+	return rec(map[string]any{"type": "queue-operation", "operation": "enqueue", "timestamp": "2000-01-01T00:00:10.000Z", "sessionId": "s", "content": text}) +
+		rec(map[string]any{"type": "last-prompt", "lastPrompt": "start the long job", "leafUuid": "l", "sessionId": "s"}) +
+		rec(map[string]any{"type": "cost-state", "sessionId": "s", "totalCostUSD": 0.01, "startTime": 946684800000})
+}
+
+// ms is 2000-01-01T00:00:<sec>Z in Unix ms.
+func ms(sec int64) int64 { return time.Date(2000, 1, 1, 0, 0, int(sec), 0, time.UTC).UnixMilli() }
+
+// 🔴 A MESSAGE QUEUED BY A CLI THAT HAS SINCE EXITED IS NOT LISTED. The CLI's
+// queue is in its process's memory; `claude --continue` / `--resume` append to
+// the SAME transcript under the same session id (measured), and nothing in the
+// file resolves the dead process's enqueue. The pane's StartedAt — the CLI
+// process now writing the file — is what drops it: at a view's open, and when
+// the process changes under an open view.
+func TestAMessageQueuedByAnExitedCLIIsNotListed(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	tr := newTranscript(t, promptLine("start the long job"), exitedWithAQueuedMessage("QUEUED by the old process"))
+	b := newClaudeBackend("main")
+	// Resumed at 00:00:20, after the enqueue; the resumed CLI has already
+	// written a prompt of its own.
+	tr.write(promptLine("a prompt in the resumed session") + textLine("ok"))
+	b.setPane("main", mirrorhost.ClaudePane{Pane: "%3", PID: 43, Transcript: tr.path, Gen: "gen-x", StartedAt: ms(20)})
+	r.connect(t, "ws", tok, b, true)
+	r.online(t, 1, "ws", "main")
+	eventually(t, "main is a Claude pane", func() bool { h := r.svc.Hosts(asUser(1)); return len(h) == 1 && h[0].Rendered })
+
+	rec1, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
+	eventually(t, "the open's list", func() bool { _, ok := latestQueued(rec1); return ok })
+	time.Sleep(150 * time.Millisecond)
+	if l, _ := latestQueued(rec1); len(l) != 0 {
+		t.Fatalf("a view of the resumed session lists %q, queued by the CLI that exited", l)
+	}
+}
+
+// The same, with the view OPEN while the CLI is replaced in its pane: the
+// list held the message while the old process lived, and drops it when the
+// new one is seen.
+func TestAMessageQueuedByAReplacedCLILeavesAnOpenView(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	tr := newTranscript(t, promptLine("start the long job"))
+	b := newClaudeBackend("main")
+	b.setPane("main", mirrorhost.ClaudePane{Pane: "%3", PID: 42, Transcript: tr.path, Gen: "gen-y", StartedAt: ms(1)})
+	r.connect(t, "ws", tok, b, true)
+	r.online(t, 1, "ws", "main")
+	eventually(t, "main is a Claude pane", func() bool { h := r.svc.Hosts(asUser(1)); return len(h) == 1 && h[0].Rendered })
+	rec1, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
+	eventually(t, "the open's list", func() bool { _, ok := latestQueued(rec1); return ok })
+
+	tr.write(exitedWithAQueuedMessage("QUEUED then the CLI exited"))
+	eventually(t, "the queued message", func() bool { l, _ := latestQueued(rec1); return len(l) == 1 })
+	// `claude --continue` in the same pane: a new process, the same file.
+	b.setPane("main", mirrorhost.ClaudePane{Pane: "%3", PID: 43, Transcript: tr.path, Gen: "gen-y", StartedAt: ms(20)})
+	eventually(t, "the dead process's message leaves", func() bool { l, _ := latestQueued(rec1); return len(l) == 0 })
+	// And what the NEW process queues is listed.
+	tr.write(rec(map[string]any{"type": "queue-operation", "operation": "enqueue", "timestamp": "2000-01-01T00:00:30.000Z", "sessionId": "s", "content": "QUEUED by the new process"}))
+	eventually(t, "the new process's message", func() bool {
+		l, _ := latestQueued(rec1)
+		return len(l) == 1 && l[0] == "QUEUED by the new process"
+	})
+}
+
+// THE HOST BOUNDS THE LIST IT SENDS: at most MaxQueued messages, each at most
+// MaxQueuedText runes — whatever the transcript queued.
+func TestTheHostBoundsTheQueuedList(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	body := promptLine("busy")
+	body += queueLine(cctranscript.QueueEnqueue, strings.Repeat("y", mirror.MaxQueuedText+100))
+	for i := range mirror.MaxQueued + 5 {
+		body += queueLine(cctranscript.QueueEnqueue, "message "+strings.Repeat("z", i+1))
+	}
+	tr := newTranscript(t, body)
+	b := newClaudeBackend("main")
+	b.setPane("main", mirrorhost.ClaudePane{Pane: "%3", PID: 42, Transcript: tr.path, Gen: "gen-b"})
+	r.connect(t, "ws", tok, b, true)
+	r.online(t, 1, "ws", "main")
+	eventually(t, "main is a Claude pane", func() bool { h := r.svc.Hosts(asUser(1)); return len(h) == 1 && h[0].Rendered })
+	rec1, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
+	eventually(t, "the list", func() bool { l, _ := latestQueued(rec1); return len(l) > 0 })
+	l, _ := latestQueued(rec1)
+	if len(l) != mirror.MaxQueued {
+		t.Fatalf("the host sent %d queued messages, want %d", len(l), mirror.MaxQueued)
+	}
+	if n := len([]rune(l[0])); n != mirror.MaxQueuedText {
+		t.Fatalf("the long message is %d runes on the wire, want %d", n, mirror.MaxQueuedText)
+	}
+}

@@ -232,3 +232,58 @@ func TestIsQueueEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// A CLI THAT EXITS WITH A MESSAGE QUEUED leaves its enqueue unresolved, and a
+// resumed CLI appends to the same file (measured, claude 2.1.289): DropBefore
+// with the new process's start forgets it, and keeps what came after.
+func TestDropBeforeForgetsWhatAnExitedCLIQueued(t *testing.T) {
+	at := func(op, content, ts string) string {
+		m := map[string]any{"type": "queue-operation", "operation": op, "timestamp": ts, "sessionId": qSession}
+		if op != QueueDequeue {
+			m["content"] = content
+		}
+		b, _ := json.Marshal(m)
+		return string(b) + "\n"
+	}
+	exit := `{"type":"last-prompt","lastPrompt":"x","leafUuid":"l","sessionId":"` + qSession + `"}` + "\n" +
+		`{"type":"cost-state","sessionId":"` + qSession + `","totalCostUSD":0.01}` + "\n"
+	file := at(QueueEnqueue, "old", "2000-01-01T00:00:10.000Z") + at(QueueDequeue, "", "2000-01-01T00:00:11.000Z") + exit +
+		qPrompt("in the resumed session") + at(QueueEnqueue, "new", "2000-01-01T00:00:30.000Z")
+	lines, _, err := ReadLines(strings.NewReader(file), 0, int64(len(file)), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q Queue
+	q.Observe(lines)
+	// Without the process's start the dead process's message is still listed —
+	// and its unresolved dequeue took the resumed session's prompt for it.
+	if q.DropBefore(0) {
+		t.Fatal("DropBefore(0) changed the list")
+	}
+	started := int64(946684820000) // 2000-01-01T00:00:20Z
+	q = Queue{}
+	q.Observe(lines[:3])
+	q.DropBefore(started)
+	q.Observe(lines[3:])
+	if got := q.List(); !slices.Equal(got, []string{"new"}) {
+		t.Fatalf("after the resume the list is %q, want only the new process's", got)
+	}
+	// The floor set BEFORE folding (a view opened on the resumed session):
+	// the dead process's dequeue does not take the resumed prompt for "old",
+	// and nothing of the dead process is listed.
+	q = Queue{}
+	q.DropBefore(started)
+	if q.Observe(lines[:2]); q.List() != nil {
+		t.Fatalf("with the floor set first, the dead process's records list %q", q.List())
+	}
+	q.Observe(lines[2:])
+	if got := q.List(); !slices.Equal(got, []string{"new"}) {
+		t.Fatalf("with the floor set first: %q, want only the new process's", got)
+	}
+	// Set while the dead process's message is listed, it reports the change.
+	q = Queue{}
+	q.Observe(lines[:1])
+	if !q.DropBefore(started) || q.List() != nil {
+		t.Fatalf("DropBefore did not drop and report the dead message: %q", q.List())
+	}
+}

@@ -828,6 +828,24 @@ test('a message Claude Code queued is shown under the conversation until Claude 
   expect(sw).toBeLessThanOrEqual(cw);
 });
 
+// 🔴 THE CLI EXITS WITH A MESSAGE QUEUED: its queue died with it, so the
+// region empties when the view ends (the window is no longer Claude Code) —
+// never left listing a message nothing will ever send.
+test('a queued message leaves the view when the window stops running Claude Code', async ({ page }) => {
+  const tr = newTranscript(prompt('start the long job') + reply('working'));
+  await openView(page, tr);
+  const region = page.locator('#mv-ccq');
+  fs.appendFileSync(tr, queueOp('enqueue', 'QUEUED-E2E then the CLI exits'));
+  await expect(region.locator('[data-cc-queued-item]')).toContainText('QUEUED-E2E then the CLI exits', { timeout: 15_000 });
+  // The CLI exits (what it writes then: last-prompt, cost-state — nothing
+  // that resolves the enqueue), and the pane stops being Claude Code.
+  fs.appendFileSync(tr, rec({ type: 'last-prompt', lastPrompt: 'start the long job', leafUuid: 'l', sessionId: 's' }) + rec({ type: 'cost-state', sessionId: 's' }));
+  fs.writeFileSync(tr + '.gone', '');
+  await expect(page.locator('#mv-error')).toBeVisible({ timeout: 15_000 });
+  await expect(region).toBeHidden();
+  await expect(region.locator('[data-cc-queued-item]')).toHaveCount(0);
+});
+
 // A RELOAD while a message is queued shows it from the start (the host sends
 // the list on every open), and one taken meanwhile is not resurrected from the
 // page's snapshot.

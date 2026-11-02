@@ -937,6 +937,17 @@ func mirrorViewScript() g.Node {
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
   var ctxEl = document.getElementById('mv-context');
+  // clearQueued empties the region of what Claude Code has queued
+  // (cc_queued.go) — looked up each time: a patch replaces the element. A
+  // view that ended (the window stopped being Claude, the CLI exited) or a
+  // snapshot taken back is no claim that anything is still queued.
+  function clearQueued() {
+    var q = document.getElementById('` + ccQueuedID + `');
+    if (!q) return;
+    q.hidden = true;
+    q.innerHTML = '';
+    q.setAttribute('data-cc-queued', '0');
+  }
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
   // Liveness (live.go): when the socket last heard anything, whether it has
   // heard a heartbeat (only then can it be judged stale), when it was made,
@@ -1020,6 +1031,7 @@ func mirrorViewScript() g.Node {
   function discard() {
     settled();
     log.innerHTML = '';
+    clearQueued();
     window.muMirrorIndex = null;
     ctxEl.hidden = true; ctxEl.textContent = '';
     document.dispatchEvent(new CustomEvent('muster:chat-index'));
@@ -1265,6 +1277,7 @@ func mirrorViewScript() g.Node {
         });
       }
       else if (m.type === 'error') {
+        clearQueued();
         endReason = m.reason || 'error';
         if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp();
       }

@@ -361,6 +361,12 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 	// a queued message is matched by its text — and sendQueue sends the
 	// queue's list when it changed since the last one sent (or none was): a
 	// message of its own, at the offset the view already has, redacted.
+	//
+	// 🔴 WHAT AN EARLIER CLI PROCESS QUEUED IS DROPPED (Queue.DropBefore): the
+	// queue dies with its process, nothing in the file says so, and a
+	// `--continue` / `--resume` appends to this same file under the same Gen —
+	// so the pane's StartedAt is what tells a message still waiting from one
+	// that died with the CLI before it.
 	observeQueue := func(lines []cctranscript.Line) {
 		if queue.Observe(lines) {
 			queueSent = false
@@ -417,6 +423,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// before its offset: the poll reads the rest, and folding a line
 		// twice would queue its message twice.
 		queue, queueSent = cctranscript.Queue{}, false
+		queue.DropBefore(p.StartedAt) // before folding: see observeQueue
 		if !resume {
 			observeQueue(lines)
 		} else {
@@ -542,6 +549,17 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 				// /clear, a restart, a resumed session: a different transcript.
 				p, busy, since = np, np.Busy, np.StatusSince
 				return true, start("", 0)
+			}
+			if np.StartedAt != p.StartedAt {
+				// The same transcript, written by a NEW CLI process (`--continue`
+				// in the same pane): what the last one queued is gone.
+				p.StartedAt = np.StartedAt
+				if queue.DropBefore(p.StartedAt) {
+					queueSent = false
+				}
+				if err := sendQueue(); err != nil {
+					return false, err
+				}
 			}
 			if !np.Busy && (np.Busy != busy || np.StatusSince != since) {
 				// 🔴 THE LINES BEFORE THE STATUS: whatever the transcript holds now
