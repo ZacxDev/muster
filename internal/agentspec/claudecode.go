@@ -504,6 +504,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if opts.ClaudeCodeSession.BypassPermissions {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvPermissionMode, Value: podagent.PermissionModeBypass})
 	}
+	if opts.ClaudeCodeSession.HQMCP {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvHQMCP, Value: "1"})
+	}
 	if opts.ClaudeCodeSession.EgressLocked() || poolLocked {
 		// An egress-locked pool's worker too: the CLI's optional hosts
 		// (telemetry, error reporting, auto-update, release notes) are not

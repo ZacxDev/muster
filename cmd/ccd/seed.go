@@ -49,6 +49,9 @@ type seedOpts struct {
 	// posture, "bypassPermissions" every session starts with every tool
 	// allowed (sessionBypassSettings), anything else refused.
 	permissionMode string
+	// hqMCP is podagent.EnvHQMCP as read: "1" offers the HQ MCP server
+	// (hqmcp.go) and allows its tools (podagent.HQAllowEntry).
+	hqMCP string
 }
 
 func runSeed(args []string, stdout, stderr io.Writer) int {
@@ -62,6 +65,7 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	o.jobPermissionMode = os.Getenv(envJobPermissionMode)
 	o.allowMCPTools, o.model = os.Getenv(podagent.EnvAllowMCPTools), os.Getenv(podagent.EnvModel)
 	o.permissionMode = os.Getenv(podagent.EnvPermissionMode)
+	o.hqMCP = os.Getenv(podagent.EnvHQMCP)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -103,6 +107,9 @@ func (o seedOpts) validate() error {
 	if _, err := podagent.ParsePermissionMode(o.permissionMode); err != nil {
 		return err
 	}
+	if _, err := podagent.ParseHQMCP(o.hqMCP); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -115,7 +122,11 @@ func (o seedOpts) validate() error {
 //     which replaces the file's wholesale on every POD start (this seed; an
 //     in-pod CLI restart by the supervisor does not re-seed), so an allow list
 //     a session wrote for itself does not survive the next pod start, and the
-//     only entries seed ever writes are muster's own MCP tools.
+//     only entries seed ever writes are muster's own MCP tools — and, below,
+//     the one fixed HQ entry.
+//   - podagent.EnvHQMCP=1 (the chief only) → podagent.HQAllowEntry,
+//     "mcp__hq__*", appended to permissions.allow: every tool of the HQ MCP
+//     server (hqmcp.go). A fixed constant, never read from the variable.
 //   - podagent.EnvModel → "model". Unset removes a model seed itself wrote
 //     earlier (seededModelKey) and otherwise leaves the file's model alone
 //     (an operator's own choice in the pod).
@@ -144,6 +155,25 @@ func seedSettings(tmpl map[string]any, o seedOpts) (map[string]any, error) {
 			entries[i] = e
 		}
 		with["allow"] = entries
+		want["permissions"] = with
+	}
+	hq, err := podagent.ParseHQMCP(o.hqMCP)
+	if err != nil {
+		return nil, err
+	}
+	if hq {
+		// Every HQ tool (podagent.HQAllowEntry), after any muster entries above.
+		// Inert while the server is not registered (hqmcp.go): no tool has the name.
+		perms, ok := want["permissions"].(map[string]any)
+		if !ok {
+			return nil, errors.New("settings template has no `permissions` object to add the HQ tools to")
+		}
+		with := make(map[string]any, len(perms)+1)
+		for k, v := range perms {
+			with[k] = v
+		}
+		prev, _ := perms["allow"].([]any)
+		with["allow"] = append(append([]any{}, prev...), podagent.HQAllowEntry)
 		want["permissions"] = with
 	}
 	model, err := podagent.ParseModel(o.model)
@@ -275,6 +305,8 @@ func seed(o seedOpts, stderr io.Writer) error {
 	// connector store, removed when it is not — so a pod restarted without it
 	// does not keep a server entry that can only fail.
 	seedMCP(st, os.Getenv(envConnectURL), os.Getenv(envAgentToken))
+	hq, _ := podagent.ParseHQMCP(o.hqMCP) // validated above
+	seedHQMCP(st, hq, os.Getenv(envConnectURL), os.Getenv(envAgentToken), stderr)
 	if err := writeJSONAtomic(stPath, st); err != nil {
 		return err
 	}
@@ -501,6 +533,10 @@ func checkSeed(o seedOpts) error {
 	if offered := os.Getenv(envConnectURL) != "" && os.Getenv(envAgentToken) != ""; offered != registered {
 		return fmt.Errorf(".claude.json: muster's MCP server registered=%v but the connector store offered=%v (%s)",
 			registered, offered, envConnectURL)
+	}
+	hq, _ := podagent.ParseHQMCP(o.hqMCP) // validated above
+	if err := checkHQMCP(st, hq, os.Getenv(envConnectURL), os.Getenv(envAgentToken)); err != nil {
+		return err
 	}
 	tmpl, err := os.ReadFile(o.settingsTemplate)
 	if err != nil {

@@ -373,6 +373,12 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			want: "e92e6cc5f08b31b0f1fafef8f597eec524f5e26515f129ce6dd8a42b980a7c6a",
 			min:  1000,
 		},
+		{
+			name: "chiefHQSectionClaudeCode",
+			text: chiefHQSectionClaudeCode,
+			want: "8505d4d483224d83c2b2cf180c352f4272c9b180354b48bb9d1de876a2f8a379",
+			min:  1000,
+		},
 	} {
 		normalised := norm(p.text)
 		// Control: refuse a digest over a string too short to be the part it names.
@@ -429,12 +435,12 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "claude-code",
 			got:  ChiefInstructionsClaudeCode(false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins on",
 			got:  ChiefInstructionsClaudeCode(true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefPluginSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {
@@ -761,6 +767,49 @@ func TestThePluginSectionHasNoAskFallback(t *testing.T) {
 		}
 		if strings.Contains(c.section, "attention_ask") || strings.Contains(got, "If no session is clearly on the subject") {
 			t.Errorf("%s: the plugin section still carries the prose fallback (an attention_ask for an unrouted message)", c.name)
+		}
+	}
+}
+
+// TestTheClaudeCodeChiefIsToldHQRequestsGoToTheHQServer pins the HQ section
+// WHOLE against an independently typed literal (a guard on keywords is walkable
+// by rewording), and that it is in both claude-code renderings and in no
+// gateway one: only the claude-code chief has the `hq` MCP server
+// (internal/podagent/hqmcp.go).
+//
+// 🔴 THE INCIDENT IT ANSWERS: asked for an HQ task, a chief with no HQ tools
+// filed a gated task on muster's board instead. The section routes the request
+// to mcp__hq__*, forbids the substitution, and says what to tell the owner when
+// the tools are absent.
+func TestTheClaudeCodeChiefIsToldHQRequestsGoToTheHQServer(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	const want = "## HQ requests from your owner — the `hq` MCP server, never muster's board " +
+		"When your owner asks you in this chat for something in HQ — create an HQ task, assign it, " +
+		"comment on one, change its status, look one up — do it with the tools of the MCP server named " +
+		"`hq`, which this session sees as `mcp__hq__<tool>` (for a task: `mcp__hq__task_create`, " +
+		"`mcp__hq__task_update`, `mcp__hq__task_comment`, `mcp__hq__task_set_status`, " +
+		"`mcp__hq__tasks_list`). Assign it as they asked. The HQ token behind those tools is your " +
+		"owner's own, so \"me\" in HQ is your owner. An HQ request is never a task on muster's board: " +
+		"do not file one with muster's task tools in its place. " +
+		"muster reaches HQ for you through its connector proxy; the HQ credential stays in muster. " +
+		"If no `mcp__hq__` tool is in your tool list, say exactly that — you have no HQ tools in this " +
+		"session — and tell your owner to create the `hq` connector in muster (and approve your request " +
+		"for it when muster asks), then restart you. Do not substitute a task on muster's board or any " +
+		"other route. If an HQ tool answers that your request for the connector is pending, tell your " +
+		"owner it is waiting for their approval in muster. " +
+		"HQ is your owner's system: change anything in it only because your owner asked you to in this chat."
+	if got := norm(chiefHQSectionClaudeCode); got != want {
+		t.Errorf("the HQ section has changed.\ngot:  %q\nwant: %q\nThis is a whole-string pin: "+
+			"if the reword is intended, retype the literal here and read the diff.", got, want)
+	}
+	for _, plugins := range []bool{true, false} {
+		if !strings.Contains(ChiefInstructionsClaudeCode(plugins), chiefHQSectionClaudeCode) {
+			t.Errorf("plugins=%v: the claude-code chief prompt does not carry the HQ section", plugins)
+		}
+		for _, cairn := range []bool{true, false} {
+			if strings.Contains(ChiefInstructions(cairn, plugins), "mcp__hq__") {
+				t.Errorf("cairn=%v plugins=%v: the GATEWAY chief prompt names mcp__hq__ tools it is never given", cairn, plugins)
+			}
 		}
 	}
 }

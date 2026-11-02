@@ -135,3 +135,36 @@ func TestAClaudeCodeChiefWithNoMCPServerIsRefused(t *testing.T) {
 		t.Fatalf("control: a claude-code worker without the MCP server: %v", err)
 	}
 }
+
+// TestOnlyTheClaudeCodeChiefIsOfferedTheHQServer: the built spec of the chief,
+// and of no worker, carries podagent.EnvHQMCP=1 — the pod's `ccd seed` then
+// registers the HQ MCP server and allows EVERY one of its tools
+// (internal/podagent/hqmcp.go). A worker must never carry it: a standing grant
+// would hand it the same unprompted reach into HQ.
+func TestOnlyTheClaudeCodeChiefIsOfferedTheHQServer(t *testing.T) {
+	for _, name := range []string{agents.ChiefName, "plain-worker"} {
+		row := ccRow(name)
+		spec, err := adapterWith(t, ccSpecConfig(), row).buildSpec(context.Background(), row)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var got []string
+		for _, e := range spec.Env {
+			if e.Name == "CCD_HQ_MCP" {
+				got = append(got, e.Value)
+			}
+		}
+		want := []string(nil)
+		if name == agents.ChiefName {
+			want = []string{"1"}
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") || len(got) != len(want) {
+			t.Errorf("%s: CCD_HQ_MCP values %q, want %q", name, got, want)
+		}
+		for _, s := range spec.Secrets {
+			if s.Name == "CCD_HQ_MCP" {
+				t.Errorf("%s: CCD_HQ_MCP is a secret; it is a flag", name)
+			}
+		}
+	}
+}
