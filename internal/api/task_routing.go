@@ -22,7 +22,6 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
-	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // ---------------------------------------------------------------------------
@@ -308,21 +307,13 @@ func (s *Server) ownersTask(ctx context.Context, a agents.Agent, id int64) (note
 // the raw title. The one display sink that reads it, the attention queue,
 // applies the title rule itself (taskLabelPlain).
 func taskLabel(n notes.Note) string {
-	return mirror.OneLine(taskTitleText(n), 120)
+	return mirror.OneLine(taskNameRaw(n), 120)
 }
 
-// taskLabelPlain is taskLabel for a display: the title rule (textplain) applied
-// BEFORE the cut, so stripped markers do not spend the length budget.
+// taskLabelPlain is taskLabel for a display: the task-naming rule as plain text
+// (taskName) BEFORE the cut, so stripped markers do not spend the length budget.
 func taskLabelPlain(n notes.Note) string {
-	return mirror.OneLine(textplain.Title(taskTitleText(n)), 120)
-}
-
-// taskTitleText is a task's title, or its body's first line when it has none.
-func taskTitleText(n notes.Note) string {
-	if t := strings.TrimSpace(n.Title); t != "" {
-		return t
-	}
-	return firstNonEmptyLine(n.Body)
+	return mirror.OneLine(taskName(n), 120)
 }
 
 // cleanNote is the chief's note as stored: trimmed, cut.
