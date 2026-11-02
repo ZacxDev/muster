@@ -292,12 +292,18 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyJSON))
+	// traceTurnAccepted: ccd's 103 after the CLI took the prompt marks the turn
+	// accepted (turnaccepted.go) — the moment an owner's turn marker is set.
+	req, err := http.NewRequestWithContext(traceTurnAccepted(ctx), http.MethodPost, url, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if wantsTurnAccepted(ctx) {
+		// Ask ccd for its 103 (it sends one only when asked).
+		req.Header.Set(HeaderCCPromptAccepted, "1")
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -324,6 +330,8 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		}
 		return nil, newRuntimeError(resp.StatusCode, respBody, snippet)
 	}
+	// A 200: the runtime is running (or, ccd, has run) the turn (turnaccepted.go).
+	MarkTurnAccepted(ctx)
 	return parseResponsesSSE(resp.Body, emit)
 }
 

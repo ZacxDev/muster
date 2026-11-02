@@ -965,10 +965,10 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 		m.Kind = "text"
 	}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by)
-		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, NULLIF($9::bigint, 0))
+		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok)
+		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at`,
-		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, m.TypedBy).
+		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK).
 		Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)
 	if err != nil {
 		return m, err
@@ -1062,52 +1062,61 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	return out, nil
 }
 
-// UserTurns is what LatestUserTurns read of one agent's chat: its newest
-// user-role message from ANY source (Latest), and the newest one typed by the
-// given user (Typed). A zero ID means there is none.
-type UserTurns struct {
-	Latest ChatMessage
-	Typed  ChatMessage
+// OwnerTurn is the marker of an owner-typed turn in flight on an agent
+// (migration 0069): the user who typed it, the chat row it stored, and when the
+// marker lapses. The zero value is "no owner turn in flight".
+type OwnerTurn struct {
+	By        int64
+	MessageID int64
+	ExpiresAt time.Time
 }
 
-// LatestUserTurns reads agentID's newest user-role message across ALL its
-// sessions, and its newest user-role message typed by user typedBy
-// (chat_messages.typed_by, migration 0069). Both carry TypedBy as stored.
-//
-// 🔴 ACROSS EVERY SESSION, BY id. A plugin delivery goes to the chief's default
-// session (or a plugin's own); the owner may type in another. "Is the owner's
-// message the newest thing the chief was handed?" must see all of them, or a
-// delivery in one session could ride an owner's line in another.
-func (s *PGStore) LatestUserTurns(ctx context.Context, agentID, typedBy int64) (UserTurns, error) {
-	var out UserTurns
-	read := func(dst *ChatMessage, extra string, args ...any) error {
-		var sess, by *int64
-		err := s.pool.QueryRow(ctx, `
-			SELECT id, agent_id, session_id, role, content, kind, created_at, typed_by FROM chat_messages
-			WHERE agent_id = $1 AND role = 'user'`+extra+` ORDER BY id DESC LIMIT 1`, args...).
-			Scan(&dst.ID, &dst.AgentID, &sess, &dst.Role, &dst.Content, &dst.Kind, &dst.CreatedAt, &by)
-		if errors.Is(err, pgx.ErrNoRows) {
-			*dst = ChatMessage{}
-			return nil
-		}
-		if sess != nil {
-			dst.SessionID = *sess
-		}
-		if by != nil {
-			dst.TypedBy = *by
-		}
-		return err
+// SetOwnerTurn marks agentID as running a turn user by typed (chat row
+// messageID), until ttl from now by Postgres's clock. It overwrites any earlier
+// marker: one owner turn in flight per agent.
+func (s *PGStore) SetOwnerTurn(ctx context.Context, agentID, by, messageID int64, ttl time.Duration) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agents SET owner_turn_message_id = $2, owner_turn_by = $3,
+		       owner_turn_expires_at = now() + make_interval(secs => $4)
+		 WHERE id = $1`, agentID, messageID, by, ttl.Seconds())
+	return err
+}
+
+// ClearOwnerTurn removes agentID's marker IF it is still the one for
+// messageID: a turn ending never clears a later turn's marker.
+func (s *PGStore) ClearOwnerTurn(ctx context.Context, agentID, messageID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE agents SET owner_turn_message_id = NULL, owner_turn_by = NULL, owner_turn_expires_at = NULL
+		 WHERE id = $1 AND owner_turn_message_id = $2`, agentID, messageID)
+	return err
+}
+
+// OwnerTurnInFlight reads agentID's marker; the zero OwnerTurn when there is
+// none, it has lapsed (by Postgres's clock), or the agent does not exist.
+func (s *PGStore) OwnerTurnInFlight(ctx context.Context, agentID int64) (OwnerTurn, error) {
+	var t OwnerTurn
+	err := s.pool.QueryRow(ctx, `
+		SELECT owner_turn_by, owner_turn_message_id, owner_turn_expires_at FROM agents
+		 WHERE id = $1 AND owner_turn_message_id IS NOT NULL AND owner_turn_by IS NOT NULL
+		   AND owner_turn_expires_at > now()`, agentID).Scan(&t.By, &t.MessageID, &t.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OwnerTurn{}, nil
 	}
-	if err := read(&out.Latest, "", agentID); err != nil {
-		return UserTurns{}, err
+	return t, err
+}
+
+// ChatMessage reads one chat row by id (pgx.ErrNoRows when there is none
+// visible to ctx's principal).
+func (s *PGStore) ChatMessage(ctx context.Context, id int64) (ChatMessage, error) {
+	var m ChatMessage
+	var sess *int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at FROM chat_messages
+		 WHERE id = $1`, id).Scan(&m.ID, &m.AgentID, &sess, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)
+	if sess != nil {
+		m.SessionID = *sess
 	}
-	if typedBy <= 0 {
-		return out, nil
-	}
-	if err := read(&out.Typed, " AND typed_by = $2", agentID, typedBy); err != nil {
-		return UserTurns{}, err
-	}
-	return out, nil
+	return m, err
 }
 
 // DeleteChatMessagesOlderThan removes chat messages created before cutoff.

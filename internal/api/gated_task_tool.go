@@ -176,6 +176,17 @@ func (s *Server) toolTaskCreateGated(ctx context.Context, a agents.Agent, argume
 		s.logger.Printf("plugins: agent %d gated task: create: %v", a.ID, err)
 		return toolErr("the task could not be filed")
 	}
+	// 🔴 WHICH GATE THIS TOOL SET, ON WHICH TASK: the record task_dispatch's
+	// owner_asked releases against (chief_owner_release.go chiefsGate), so it
+	// never releases a gate the owner set. Not recorded: the task stays gated
+	// and only the board releases it (the safe direction).
+	if led, ok := s.ext.Plugins.(gatedTaskLedger); ok {
+		if g := gateTags(note.Tags); len(g) == 1 {
+			if err := led.RecordGatedTaskFiled(ctx, note.ID, a.ID, g[0]); err != nil {
+				s.logger.Printf("plugins: agent %d gated task %d: record its gate: %v", a.ID, note.ID, err)
+			}
+		}
+	}
 	return toolJSON(map[string]any{
 		"id": note.ID, "tags": note.Tags,
 		"next": "Filed gated. Your owner has been notified; nothing runs until they release it. If your owner told you, " +

@@ -2006,13 +2006,19 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 // gate (s.turns.enter) and leaves it afterwards: the operator's two doors, which
 // must know the turn is admitted before they answer the agent's asks.
 //
-// typedBy is who TYPED text (agents.ChatMessage.TypedBy): ownerTypedBy(ctx) from
-// the owner's two chat doors (handleAgentWS, handleAgentSend) and notTyped from
-// every other caller. It is the provenance task_dispatch's gate release trusts
-// (chief_owner_release.go); TestOnlyTheOwnersChatDoorsStampTypedBy pins who
-// passes what.
+// typedBy is who TYPED text: ownerTypedBy(ctx) from the owner's two chat doors
+// (handleAgentWS, handleAgentSend) and notTyped from every other caller. When it
+// is a's owner, the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
+// the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
+// thing task_dispatch's owner_asked releases a gate on (chief_owner_release.go).
+// TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn pins who passes what.
 func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit) ([]agents.TurnPart, error) {
-	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text, TypedBy: typedBy})
+	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})
+	if err != nil {
+		msg = agents.ChatMessage{} // no row to point at: nothing is marked
+	}
+	ctx, clearOwnerTurn := s.markOwnerTurn(ctx, a, msg, typedBy)
+	defer clearOwnerTurn()
 
 	// Mark active immediately (a turn always starts thinking) so the agent
 	// shows in the notification panel's ACTIVE section before its first stream
