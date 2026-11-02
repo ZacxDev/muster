@@ -120,7 +120,25 @@ func (s *preflightStore) Create(_ context.Context, a agents.Agent) (agents.Agent
 	return a, nil
 }
 
-func (s *preflightStore) NameExists(context.Context, string) (bool, error) { return false, nil }
+// NameExists answers from the rows this fixture has created, as PGStore's does
+// from live rows, so BuildUniqueAgentName redraws on a taken name here too.
+//
+// It used to answer false unconditionally. The name pool is 16x16 = 256, so two
+// dispatches in one test drew the SAME name about once in 256 runs, and a test
+// that then looked a row up by name (pageablePreflight.GetByName, behind
+// GET /agents/<name>) got the first of the two. That is how
+// TestAPoolWorkerIsVisibleWhereAgentsAreListed failed in CI: its pool-less
+// control page rendered the pooled agent's chip.
+func (s *preflightStore) NameExists(_ context.Context, name string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.created {
+		if a.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 func (s *preflightStore) List(context.Context) ([]agents.Agent, error) {
 	s.mu.Lock()
