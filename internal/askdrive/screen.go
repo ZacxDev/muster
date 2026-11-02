@@ -57,8 +57,11 @@
 //     screen listing every "question → answer"; "1" submits it;
 //
 //   - LONG TEXT (measured 2.1.289, synthetic text at 80, 100 and 120
-//     columns: testdata/long-*): a question too long for a line is wrapped
-//     inside a box, "│ " down its left edge (on the review screen " │ ● …");
+//     columns: testdata/long-*): a question over 80 characters is drawn
+//     inside a box, "│ " down its left edge (on the review screen " │ ● …"),
+//     wrapped inside it when it does not fit the line — and on ONE line, the
+//     bar and no right edge, when it does (a wide pane; gutterOver,
+//     testdata/boxrule-*, oneline-*);
 //     a long label, and a long answer typed into the "Type something" row,
 //     wrap onto the row's further lines at its label's column — the answer
 //     is never truncated or scrolled within the row (650+ characters drawn in
@@ -146,9 +149,10 @@ type Screen struct {
 	// index of the one shown (Question), -1 when no tab is marked current.
 	Tabs []Tab
 	// Question is the shown question's text: its screen lines, the box border
-	// and its padding stripped, joined by "\n" — the CLI wraps a long question
-	// and draws it inside a box ("│ " down its left edge, measured 2.1.289),
-	// and where it wrapped is kept so Match can tell a wrap from the text
+	// and its padding stripped, joined by "\n" — the CLI draws a question over
+	// 80 characters inside a box ("│ " down its left edge, measured 2.1.289:
+	// gutterOver) and wraps one too long for the line, and where it wrapped is
+	// kept so Match can tell a wrap from the text
 	// (wrapEq).
 	Question string
 	// QuestionEnds is, per line of Question, the screen column its text ends
@@ -418,14 +422,33 @@ const vbars = "│┃║╎╏┆┇┊┋"
 // hborderRE is a box's top or bottom edge.
 var hborderRE = regexp.MustCompile(`^\s*[╭┌┏╔╰└┗╚][─━═]*[╮┐┓╗╯┘┛╝]\s*$`)
 
+// gutterOver is the CLI's own rule for boxing a question: a text longer than
+// this many columns (or holding a line break) gets the "│ " gutter, whatever
+// the pane's width (Claude Code 2.1.289's bundle: needsGutter is
+// `text.includes("\n") || width(text) > 80`). MEASURED on 2.1.289 in 100- and
+// 160-column panes (testdata/boxrule-*, oneline-*): an 80-character question
+// is drawn bare on one line at both widths; 81, 90 and 114 characters are
+// drawn "│ " + text on ONE line, no right edge, where the line has room —
+// and wrapped inside the gutter where it has not (testdata/long-*).
+const gutterOver = 80
+
+// gutters reports whether the CLI draws text (a question) in its gutter box
+// (gutterOver). Its width is counted as cols does, one column a rune: a wide
+// character makes the text read shorter than the CLI counts it, never longer.
+func gutters(text string) bool {
+	return strings.Contains(text, "\n") || cols(text) > gutterOver
+}
+
 // unbox is lines (a question's screen lines, right-trimmed) with the box the
 // CLI draws round a long one taken off: a top or bottom edge, and a left
 // (right) edge glyph with the padding beside it when EVERY line has one and
-// the frame is really there — a left edge down two or more lines, or a left
-// and a right edge (one line). A text whose own first character happens to
-// be "│" is drawn inside the box and keeps it, and so does a one-line question
-// that merely starts or ends with one. Each line comes back trimmed, with the
-// screen column its text ends in (inside a right edge, when one is taken off).
+// the frame is really there — a left edge down two or more lines; a left and
+// a right edge; or ONE line with only a left edge whose text, the edge off,
+// is long enough that the CLI boxes it (gutters). A text whose own first
+// character happens to be "│" is drawn inside the box and keeps it, and so
+// does a one-line question that merely starts or ends with one and is too
+// short to be boxed. Each line comes back trimmed, with the screen column its
+// text ends in (inside a right edge, when one is taken off).
 func unbox(lines []string) ([]string, []int) {
 	var ls []string
 	var ends []int
@@ -447,10 +470,20 @@ func unbox(lines []string) ([]string, []int) {
 	left := all(func(l string) bool { r, _ := utf8.DecodeRuneInString(l); return isBar(r) })
 	right := all(func(l string) bool { r, _ := utf8.DecodeLastRuneInString(l); return isBar(r) })
 	// 🔴 ONLY A FRAME THAT IS REALLY THERE: a left edge down two or more
-	// lines (the CLI's box, measured), or both edges. One line with a bar at
-	// one end — a short question's own text, which the CLI does not box — is
-	// text, and so is a right edge with no left one.
-	if !left || (len(ls) < 2 && !right) {
+	// lines (the CLI's box, measured), or both edges, or one line with a left
+	// edge that the CLI's own rule says is its box. ONE line with only a left
+	// "│ " is either a boxed question (the CLI boxes by LENGTH, not by whether
+	// it wraps: a long question in a wide pane is one line, "│ " and no right
+	// edge — the live refusals) or a short question whose own text starts so.
+	// The rule tells them apart, both ways: the text after the bar is boxed
+	// only if it is over gutterOver (a text that short would be drawn bare),
+	// and a bare text that long would have been boxed in turn. A right edge
+	// with no left one is text.
+	oneBoxed := func() bool {
+		r, n := utf8.DecodeRuneInString(ls[0])
+		return r == '│' && gutters(strings.TrimSpace(ls[0][n:]))
+	}
+	if !left || (len(ls) < 2 && !right && !oneBoxed()) {
 		return ls, ends
 	}
 	for i, l := range ls {

@@ -1,0 +1,17 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Short  ☒ Longer  ☒ Digest  ✔ Submit  →
+
+Review your answers
+
+ ● Should the nightly report also be sent to the shared channel as a short summary?
+   → No
+ │ ● Should the nightly report also be sent to the shared channel as a longer summary?
+   → No
+ │ ● Should the weekly digest of the widget package changes go out on Monday mornings, or on Friday afternoons instead?
+   → Friday
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
