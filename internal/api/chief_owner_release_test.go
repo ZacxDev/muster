@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +26,8 @@ type turnsStore struct {
 	mu      sync.Mutex
 	log     []string // "set <id> <lane>" / "clear <id>"
 	setGate chan struct{}
+	// failClears: the next this-many ClearOwnerTurn calls fail.
+	failClears int
 }
 
 func (s *turnsStore) SetOwnerTurn(_ context.Context, _, _, messageID int64, lane string, _ time.Duration) error {
@@ -38,6 +43,10 @@ func (s *turnsStore) ClearOwnerTurn(_ context.Context, _, messageID int64) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log = append(s.log, "clear "+strconv.FormatInt(messageID, 10))
+	if s.failClears > 0 {
+		s.failClears--
+		return errors.New("the database blinked")
+	}
 	return nil
 }
 func (s *turnsStore) OwnerTurnInFlight(context.Context, int64) (agents.OwnerTurn, error) {
@@ -111,6 +120,7 @@ func TestOwnerTurnForChecksEveryCondition(t *testing.T) {
 		{"another lane busy (a zombie or self-woken turn)", own, "", clis("lane-owner", busy(idle("lane-zombie"))), nil, false, false, chiefReleaseOtherCLIBusy},
 		{"the primary busy (a machine ask)", own, "", clis("lane-owner", agents.CLIState{Known: true, Primary: true, SessionID: "p", Status: "busy"}), nil, false, false, chiefReleaseOtherCLIBusy},
 		{"an unknown CLI with a background shell", own, "", clis("lane-owner", agents.CLIState{SessionID: "bg", Status: "shell"}), nil, false, false, chiefReleaseOtherCLIBusy},
+		{"a live CLI with no session record", own, "", clis("lane-owner", agents.CLIState{PID: 77, Status: "unaccounted", Unaccounted: true}), nil, false, false, chiefReleaseUnaccountedCLI},
 		{"an unknown CLI waiting on a prompt", own, "", clis("lane-owner", agents.CLIState{SessionID: "bg2", Status: "waiting"}), nil, false, false, chiefReleaseOtherCLIBusy},
 		{"the owner's lane not listed", own, "", agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{idle("lane-other")}}, nil, false, false, chiefReleaseCLIsUnknown},
 		{"the owner's lane named, but by a CLI ccd does not know", own, "", agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{{Lane: "lane-owner", SessionID: "x", Status: "busy"}}}, nil, false, false, chiefReleaseOtherCLIBusy},
@@ -224,5 +234,37 @@ func TestTheClearAlwaysWinsTheSet(t *testing.T) {
 	agents.MarkTurnAccepted(ctx, agents.TurnAcceptance{Lane: "l"}) // ...and then the 103 arrives
 	if got := late.entries(); len(got) != 1 || got[0] != "clear 501" {
 		t.Fatalf("a late 103: %v; want only the clear", got)
+	}
+}
+
+// TestAFailedClearIsRetriedOnceThenSaidLoudly: a clear that fails is retried
+// once, on a fresh context; one that fails twice is logged as a marker left
+// live. A clear that works the first time is not retried (control).
+func TestAFailedClearIsRetriedOnceThenSaidLoudly(t *testing.T) {
+	a := agents.Agent{ID: 31, Name: "chief", OwnerID: 7}
+	msg := agents.ChatMessage{ID: 501, AgentID: 31, Role: "user"}
+	for _, c := range []struct {
+		name       string
+		fail       int
+		wantClears int
+		wantLog    bool
+	}{
+		{"works first time", 0, 1, false},
+		{"fails once", 1, 2, false},
+		{"fails twice", 2, 2, true},
+	} {
+		s := everyExtensionOn(t)
+		var buf bytes.Buffer
+		s.logger = log.New(&buf, "", 0)
+		st := &turnsStore{failClears: c.fail}
+		s.ext.Agents = st
+		_, clear := s.markOwnerTurn(context.Background(), a, msg, 7)
+		clear()
+		if got := len(st.entries()); got != c.wantClears {
+			t.Errorf("%s: %d clear attempt(s), want %d", c.name, got, c.wantClears)
+		}
+		if logged := strings.Contains(buf.String(), "could NOT clear chief's owner-turn marker (message 501) after a retry"); logged != c.wantLog {
+			t.Errorf("%s: logged the stuck marker = %v, want %v (log %q)", c.name, logged, c.wantLog, buf.String())
+		}
 	}
 }

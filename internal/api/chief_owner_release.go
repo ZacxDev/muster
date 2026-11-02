@@ -44,12 +44,20 @@ import (
 //     /v1/clis: the status each live Claude Code process writes in its sessions
 //     file), and the owner's lane is among them. The pod's CLIs share one
 //     muster credential, so a tool call does not say which CLI made it; but a
-//     tool call only comes from a CLI that is working, so when the owner's lane
-//     is the ONLY one working, the caller is the owner's lane. This is what
-//     refuses a turn ccd gave up on that the CLI is still running (a zombie), a
-//     turn the CLI started by itself, `chief ask` over the machine token, a job
-//     in a lane, and a muster-started turn in another lane. A ccd that cannot
-//     answer (unreachable, an image without the route) refuses: fail closed.
+//     CLI makes a tool call only while it is working, so when the owner's lane
+//     is the ONLY CLI working, a call from a CLI is the owner's lane's. The
+//     claim is about Claude Code CLIs and nothing else. This is what refuses a turn ccd gave up on that the CLI is
+//     still running (a zombie), a turn the CLI started by itself, `chief ask`
+//     over the machine token, a job in a lane, and a muster-started turn in
+//     another lane. A live CLI process with no sessions file to say what it is
+//     doing counts as working (its own refusal). A ccd that cannot answer
+//     (unreachable, an image without the route) refuses: fail closed.
+//     ⚠ NOT AGAINST ARBITRARY SAME-USER PROCESSES: a process a tool call left
+//     running in the pod (a detached loop a Bash call started; a job lane runs
+//     with bypassPermissions) is no CLI, holds the agent's muster token, and
+//     can call the MCP door directly while the owner's turn runs. ccd already
+//     treats such processes as out of its reach (server.go's hook-listener
+//     note); this guard does not change that.
 //  3. NO MUSTER-STARTED TURN HOLDS THE CHIEF'S SESSION CLAIM. Mostly implied by
 //     2 now; kept because the claim is taken before a delivery's CLI turn
 //     starts, so it also covers the instant before that CLI reports busy.
@@ -143,11 +151,19 @@ func (s *Server) markOwnerTurn(ctx context.Context, a agents.Agent, msg agents.C
 		mu.Lock()
 		defer mu.Unlock()
 		done = true
-		wctx, cancel := context.WithTimeout(bctx, ownerTurnWriteTimeout)
-		defer cancel()
-		if err := st.ClearOwnerTurn(wctx, a.ID, msg.ID); err != nil {
-			s.logger.Printf("agents: clear %s's owner turn (message %d): %v", a.Name, msg.ID, err)
+		// One retry, on a fresh context: a marker left set stays live — and so
+		// able to release a gate — until the turn budget runs out.
+		var err error
+		for attempt := 0; attempt < 2; attempt++ {
+			wctx, cancel := context.WithTimeout(bctx, ownerTurnWriteTimeout)
+			err = st.ClearOwnerTurn(wctx, a.ID, msg.ID)
+			cancel()
+			if err == nil {
+				return
+			}
 		}
+		s.logger.Printf("🔴 agents: could NOT clear %s's owner-turn marker (message %d) after a retry: it stays live until "+
+			"the turn budget (%s) runs out, so owner_asked can still release a gate on it until then: %v", a.Name, msg.ID, ttl, err)
 	}
 }
 
@@ -187,6 +203,9 @@ const (
 	chiefReleaseOtherCLIBusy = "owner_asked: another of your sessions is working at the same time as your owner's turn (a " +
 		"turn still running, one you started yourself, a job or a question from outside), so muster cannot tell that this " +
 		"call comes from your owner's; ask your owner again in the chat once only their turn is running, or use task_route_attention"
+	chiefReleaseUnaccountedCLI = "owner_asked: a Claude Code process in your pod is running without a session record, so " +
+		"muster cannot tell whether it is working at the same time as your owner's turn; ask your owner again in the chat, " +
+		"or use task_route_attention"
 	chiefReleaseCLIsUnknown = "owner_asked: muster could not read which of your sessions are working (your pod did not answer, " +
 		"or its image is too old to say), so the gate was not released; ask your owner to release it on the board, or use " +
 		"task_route_attention"
@@ -266,6 +285,9 @@ func onlyTheOwnersLaneWorks(act agents.CLIActivity, lane string) string {
 		if own {
 			found = true
 			continue
+		}
+		if c.Unaccounted {
+			return chiefReleaseUnaccountedCLI
 		}
 		if c.Status != agents.CLIStatusIdle {
 			return chiefReleaseOtherCLIBusy

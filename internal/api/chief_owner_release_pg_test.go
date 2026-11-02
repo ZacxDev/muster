@@ -324,6 +324,10 @@ func TestTaskDispatchRefusesWhileAnotherLaneWorks(t *testing.T) {
 	f.pod.mu.Unlock()
 	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseOtherCLIBusy, n)
 
+	// A live CLI process with no session record (round 3): its own sentence.
+	f.pod.only(agents.CLIState{PID: 4321, Status: "unaccounted", Unaccounted: true})
+	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseUnaccountedCLI, n)
+
 	f.pod.only(agents.CLIState{Lane: "agent:chief:webchat:quiet", Known: true, SessionID: "q", Status: "idle"})
 	f.startedOne(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), n.ID)
 }

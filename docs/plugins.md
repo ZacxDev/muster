@@ -425,17 +425,24 @@ Each refusal has its own sentence, in this order:
      message, a relayed attention answer, a route note, a nudge, a forward,
      `muster chief ask`, a turn Claude Code started by itself and anything typed
      straight into the chief's terminal never mark one;
-   - **your turn is the only thing working in the chief's pod.** A chief's
-     sessions run side by side (one Claude Code CLI each, ccd's lanes), and a
-     tool call does not say which one made it. So muster asks the chief's ccd
-     (`GET /v1/clis`) which CLIs are working, by each CLI's own account (the
-     status Claude Code writes in its sessions file), and requires every CLI
-     but the one running your turn to be idle. That refuses a turn ccd gave up
-     on that the CLI is still running, a turn the CLI started by itself (a
-     background task finishing), `muster chief ask`, a job, and another
-     session's delivery. A ccd that cannot answer — unreachable, or an image
-     without the route — refuses. Also refused while muster holds the chief's
-     session claim for a turn it started;
+   - **your turn is the only Claude Code CLI working in the chief's pod.** A
+     chief's sessions run side by side (one Claude Code CLI each, ccd's
+     lanes), and a tool call does not say which one made it. So muster asks
+     the chief's ccd (`GET /v1/clis`) which CLIs are working, by each CLI's
+     own account (the status Claude Code writes in its sessions file), and
+     requires every CLI but the one running your turn to be idle. A live
+     `claude` process with no sessions file to say what it is doing counts as
+     working (its own refusal). That refuses a turn ccd gave up on that the
+     CLI is still running, a turn the CLI started by itself (a background task
+     finishing), `muster chief ask`, a job, and another session's delivery. A
+     ccd that cannot answer — unreachable, or an image without the route —
+     refuses. Also refused while muster holds the chief's session claim for a
+     turn it started. ⚠ This holds against Claude Code CLIs, **not against
+     any process** running as the pod's user: one a tool call left behind (a
+     detached loop a Bash call started; a job's session runs with
+     `bypassPermissions`) holds the agent's muster token and can call muster's
+     MCP door directly. ccd already treats such processes as out of its
+     reach;
    - the call came over MCP, from a Claude Code session. A chief session on
      the gateway runtime runs its tools inside muster and is no CLI, so it
      never releases a gate.
