@@ -542,6 +542,34 @@ test.describe('phone 390×844 touch', () => {
     expect(pasted()).toEqual([...before, `${pane} tapped send`]);
     await cancelQueued(page);
   });
+
+  // THE FIRST TAP ON SEND SENDS WITH THE KEYBOARD UP. The keyboard is
+  // simulated the way the switcher spec does it: the box focused, the
+  // viewport shrunk, so the bar steps aside (<html data-keyboard>). Send is
+  // then pressed as a finger presses: down, a held moment, up at the same
+  // spot. Were the press to take focus from the box, the bar would come back
+  // between down and up (focusout, then switcherKeyboardJS), the composer
+  // would grow under the finger, and the up would land off Send: no click,
+  // nothing sent — the second tap is the one that sends. Send keeps the box
+  // focused instead, so the keyboard stays up and nothing moves.
+  test('with the keyboard up, the first tap on Send sends and the box keeps focus', async ({ page }) => {
+    await openView(page);
+    const before = pasted();
+    await input(page).tap();
+    await page.setViewportSize({ width: 390, height: 500 });
+    await expect(page.locator('html'), 'the simulated keyboard is up').toHaveAttribute('data-keyboard', '');
+    await input(page).fill('first tap');
+    const b = (await page.locator('#mv-send').boundingBox())!;
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(150);
+    await expect(input(page), 'pressing Send leaves the box focused').toBeFocused();
+    await page.mouse.up();
+    await expect.poll(pasted, { message: 'ONE press sent the message' }).toEqual([...before, `${pane} first tap`]);
+    await expect(input(page)).toBeFocused();
+    await expect(page.locator('html'), 'the keyboard stays up').toHaveAttribute('data-keyboard', '');
+    await page.setViewportSize({ width: 390, height: 844 });
+  });
 });
 
 // CLS on the mirrored view: the page load, then opening both menus, at both

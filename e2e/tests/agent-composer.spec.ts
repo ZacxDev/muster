@@ -167,6 +167,19 @@ for (const vp of [
       expect(await chatInput.evaluate((e) => parseFloat(getComputedStyle(e).fontSize)), 'a 16px input').toBeGreaterThanOrEqual(16);
       expect((await chatInput.boundingBox())!.height).toBeGreaterThanOrEqual(44);
       expect((await page.locator('#chat-send').boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      // ⚠ AN INVARIANT GUARD, not the symptom: pressing Send does not take
+      // focus from the box, so a phone's keyboard stays up and the first tap
+      // sends (sendKeepsFocusJS; the symptom itself — a press that moves the
+      // composer under the finger — is reproduced on the Rendered view's
+      // Send in composer-menu.spec.ts, where the session bar returns). The
+      // press is released OFF Send, so nothing is sent.
+      await chatInput.focus();
+      const cs = (await page.locator('#chat-send').boundingBox())!;
+      await page.mouse.move(cs.x + cs.width / 2, cs.y + cs.height / 2);
+      await page.mouse.down();
+      await expect(chatInput, 'pressing Send leaves the box focused').toBeFocused();
+      await page.mouse.move(cs.x + cs.width / 2, cs.y - 200);
+      await page.mouse.up();
       await noHorizontalScroll(page);
 
       // The Terminal: the same switch, the other way round — and a message box.

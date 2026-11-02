@@ -178,6 +178,29 @@ func TestSendIsAPaperPlane(t *testing.T) {
 	}
 }
 
+// TestBothSendsKeepTheBoxFocused: both composers' scripts wire their Send
+// through sendKeepsFocusJS (one function, so the two cannot drift), and the
+// function prevents the mousedown's default. What it DOES in a browser — the
+// first tap sends with the keyboard up — is e2e (composer-menu.spec.ts,
+// agent-composer.spec.ts).
+func TestBothSendsKeepTheBoxFocused(t *testing.T) {
+	if !strings.Contains(sendKeepsFocusJS, "'mousedown'") || !strings.Contains(sendKeepsFocusJS, "e.preventDefault()") {
+		t.Fatalf("sendKeepsFocusJS = %s", sendKeepsFocusJS)
+	}
+	for name, c := range map[string][2]string{
+		"rendered view": {renderedView(t, &ComposerQueue{Src: SendQueuePath}, true), "(" + sendKeepsFocusJS + ")(send);"},
+		"agent chat":    {renderString(t, agentChatScript("a")), "(" + sendKeepsFocusJS + ")(sendBtn);"},
+	} {
+		if strings.Count(c[0], c[1]) != 1 {
+			t.Errorf("%s: Send is wired through sendKeepsFocusJS %d times, want 1", name, strings.Count(c[0], c[1]))
+		}
+	}
+	// The caret's menu takes focus by design: it is not given the rule.
+	if strings.Contains(renderString(t, sendMenuScript()), sendKeepsFocusJS) {
+		t.Error("the Queue caret keeps focus off its menu")
+	}
+}
+
 // TestBothDocumentsRankWithOneFunction: 🔴 a SEAM guard. The Rendered view is
 // its own document, and its `/` menu embeds the ranker ITSELF — it must not
 // depend on another script (appScript, which the view also carries for its

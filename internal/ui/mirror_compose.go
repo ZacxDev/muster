@@ -208,6 +208,23 @@ func sendIcon() g.Node {
 	return g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3.105 2.288a.75.75 0 0 0-.826.95l1.414 4.926A1.5 1.5 0 0 0 5.135 9.25h6.115a.75.75 0 0 1 0 1.5H5.135a1.5 1.5 0 0 0-1.442 1.086l-1.414 4.926a.75.75 0 0 0 .826.95 28.897 28.897 0 0 0 15.293-7.155.75.75 0 0 0 0-1.114A28.897 28.897 0 0 0 3.105 2.288Z"/></svg>`)
 }
 
+// sendKeepsFocusJS is a JS function expression that takes a Send button
+// (#mv-send, #chat-send) and keeps a press on it from taking focus from the
+// message box: the mousedown's default (moving focus) is prevented, as the
+// mic's and the `/` menu's are. 🔴 THE FIRST TAP ON SEND MUST SEND WITH THE
+// KEYBOARD UP. A press that blurs the box closes a phone's keyboard and, on
+// the Rendered view, brings the session switcher's bar back
+// (switcherKeyboardJS): the composer moves between the finger going down and
+// coming up, the release lands off Send, and nothing is sent — measured in
+// e2e/tests/composer-menu.spec.ts, where Send moved 44px under a held press.
+// The click itself is untouched (it still submits, and a disabled Send still
+// does nothing), and so is the box after a send: cleared, still focused, the
+// keyboard still up for the next message. The Queue caret is NOT given this:
+// its menu takes focus by design (sendMenuScript).
+const sendKeepsFocusJS = `function (b) {
+    if (b) b.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
+  }`
+
 // mirrorComposer is the composer's markup: a status line, then the input row.
 func mirrorComposer(v ComposerView) g.Node {
 	off := v.Disabled != ""
@@ -489,6 +506,7 @@ func mirrorComposerScript() g.Node {
   if (!form) return;
   var input = document.getElementById('mv-input');
   var send = document.getElementById('mv-send');
+  (` + sendKeepsFocusJS + `)(send);
   var note = document.getElementById('mv-note');
   var nonce = document.getElementById('mv-nonce');
   function say(msg) { note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }

@@ -1873,6 +1873,7 @@ func agentChatScript(name string) g.Node {
   var form = document.getElementById('chat-form');
   var input = document.getElementById('chat-input');
   var sendBtn = document.getElementById('chat-send');
+  (` + sendKeepsFocusJS + `)(sendBtn);
   var logEl = document.getElementById('chat-log');
   // Re-resolve #chat-working on each use: the sse:chat.reply refresh swaps
   // #chat-log's innerHTML, replacing this node — a captured reference would go
