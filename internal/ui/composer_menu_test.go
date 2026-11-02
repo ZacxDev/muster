@@ -36,7 +36,7 @@ func renderedView(t *testing.T, queue *ComposerQueue, interactive bool) string {
 func TestSendIsTheFaceAndQueueIsBehindTheCaret(t *testing.T) {
 	page := renderedView(t, &ComposerQueue{Src: SendQueuePath + "?host=host-a"}, true)
 	send, more, menu, queue := elem(t, page, "mv-send"), elem(t, page, "mv-send-more"), elem(t, page, "mv-send-menu"), elem(t, page, "mv-queue-send")
-	if !strings.Contains(send, `type="submit"`) || strings.Contains(send, "formaction") || !strings.Contains(page, `aria-label="Send" class="`+composerSendSplitClass+`">Send</button>`) {
+	if !strings.Contains(send, `type="submit"`) || strings.Contains(send, "formaction") || !strings.Contains(send, `aria-label="Send" title="Send" class="`+composerSendSplitClass+`">`) {
 		t.Fatalf("Send: %s", send)
 	}
 	for _, a := range []string{`type="button"`, `popovertarget="mv-send-menu"`, `aria-haspopup="menu"`, `aria-expanded="false"`, `aria-controls="mv-send-menu"`, "min-h-[44px]", "min-w-[44px]"} {
@@ -78,7 +78,7 @@ func TestNoQueueNoCaret(t *testing.T) {
 				t.Errorf("%s: carries %s", name, id)
 			}
 		}
-		if !strings.Contains(elem(t, page, "mv-send"), composerSendClass) {
+		if !strings.Contains(elem(t, page, "mv-send"), `class="`+composerSendIconClass+`"`) {
 			t.Errorf("%s: Send is not the plain one: %s", name, elem(t, page, "mv-send"))
 		}
 	}
@@ -114,6 +114,89 @@ func TestTheMenuIsTheRenderedViewsAlone(t *testing.T) {
 		if strings.Contains(p, "mv-complete") || strings.Contains(p, "input.setAttribute('aria-autocomplete', 'list')") {
 			t.Errorf("%s: carries the menu", name)
 		}
+	}
+}
+
+// buttonByID is the whole <button>…</button> with id in page.
+func buttonByID(t *testing.T, page, id string) string {
+	t.Helper()
+	open := elem(t, page, id)
+	i := strings.Index(page, open)
+	end := strings.Index(page[i:], "</button>")
+	if !strings.HasPrefix(open, "<button") || end < 0 {
+		t.Fatalf("%q is not a button: %s", id, open)
+	}
+	return page[i : i+end+len("</button>")]
+}
+
+// TestSendIsAPaperPlane: every composer's Send — the Rendered view's plain
+// one, its split one beside the Queue caret, and the agent chat's (page and
+// chief panel) — is an icon button: an inline aria-hidden svg drawn in
+// currentColor, no visible text, named "Send" by aria-label and title, a
+// 44×44 target. The ask card's Submit, which wears composerSendClass, keeps
+// its words; and the script's "Send again" takes that worded look rather than
+// copying the icon button's padless square.
+func TestSendIsAPaperPlane(t *testing.T) {
+	agent := AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1}
+	panel := agent
+	panel.Surface = ChatSurfaceChiefPanel
+	pages := map[string][2]string{
+		"plain (no queue)":  {renderedView(t, nil, true), "mv-send"},
+		"split (queue)":     {renderedView(t, &ComposerQueue{Src: SendQueuePath + "?host=host-a"}, true), "mv-send"},
+		"read-only":         {renderedView(t, &ComposerQueue{Src: SendQueuePath}, false), "mv-send"},
+		"agent chat page":   {renderString(t, agentChatPane(agent)), "chat-send"},
+		"agent chief panel": {renderString(t, agentChatPane(panel)), "chat-send"},
+	}
+	for name, p := range pages {
+		b := buttonByID(t, p[0], p[1])
+		if got := strings.TrimSpace(visibleText(t, b)); got != "" {
+			t.Errorf("%s: Send shows text %q, want an icon only: %s", name, got, b)
+		}
+		for _, want := range []string{`type="submit"`, `aria-label="Send"`, `title="Send"`, "min-h-[44px]", "min-w-[44px]", "<svg ", `aria-hidden="true"`, "currentColor"} {
+			if !strings.Contains(b, want) {
+				t.Errorf("%s: Send lacks %s: %s", name, want, b)
+			}
+		}
+		if strings.Contains(b, "<img") || strings.Contains(b, " src=") || strings.Contains(b, "<use") {
+			t.Errorf("%s: the icon is not inline: %s", name, b)
+		}
+	}
+	// The split half is rounded on the left only (the caret takes the right):
+	// one control.
+	if split := buttonByID(t, pages["split (queue)"][0], "mv-send"); !strings.Contains(split, "rounded-l-xl") || !strings.Contains(split, "rounded-r-none") {
+		t.Errorf("the split Send is not the left half: %s", split)
+	}
+	// CONTROL: the ask card's Submit keeps its words and its look.
+	ask := renderString(t, MirrorAskLive(MirrorAskLiveView{Ref: MirrorRef{Host: "lap", Session: "work", Window: "@3"}, ToolID: "toolu_Q", State: AskStatePending, Questions: askQs}))
+	sub := regexp.MustCompile(`<button type="submit" data-ask-submit=""[^>]*>([^<]*)</button>`).FindStringSubmatch(ask)
+	if sub == nil || sub[1] != "Submit answers" || !strings.Contains(sub[0], `class="`+composerSendClass+`"`) {
+		t.Errorf("the ask card's Submit lost its words or its look: %v", sub)
+	}
+	// "Send again" is built by the script: the worded look, not whatever Send wears.
+	if !strings.Contains(pages["plain (no queue)"][0], `againBtn.className = '`+composerSendClass+`';`) {
+		t.Error("the script's Send again does not take composerSendClass")
+	}
+}
+
+// TestBothSendsAreWiredThroughSendKeepsFocusJS: ⚠ A WIRING CHECK ONLY. Both
+// composers' scripts hand their Send to sendKeepsFocusJS exactly once (one
+// function, so the two cannot drift), and the Queue caret's script does not.
+// It says nothing about what the function DOES — it stays green with the
+// preventDefault removed or the listener on another event. The behaviour (a
+// press leaves the box focused; the first tap sends with the keyboard up) is
+// guarded by e2e: composer-menu.spec.ts and agent-composer.spec.ts.
+func TestBothSendsAreWiredThroughSendKeepsFocusJS(t *testing.T) {
+	for name, c := range map[string][2]string{
+		"rendered view": {renderedView(t, &ComposerQueue{Src: SendQueuePath}, true), "(" + sendKeepsFocusJS + ")(send);"},
+		"agent chat":    {renderString(t, agentChatScript("a")), "(" + sendKeepsFocusJS + ")(sendBtn);"},
+	} {
+		if strings.Count(c[0], c[1]) != 1 {
+			t.Errorf("%s: Send is wired through sendKeepsFocusJS %d times, want 1", name, strings.Count(c[0], c[1]))
+		}
+	}
+	// The caret's menu takes focus by design: it is not given the rule.
+	if strings.Contains(renderString(t, sendMenuScript()), sendKeepsFocusJS) {
+		t.Error("the Queue caret keeps focus off its menu")
 	}
 }
 

@@ -183,7 +183,9 @@ test.describe('desktop 1280×800', () => {
   test('Send is the face: a click, Enter and Ctrl+Enter each send now, and nothing is queued', async ({ page }) => {
     await openView(page);
     const before = pasted().length;
-    await expect(page.locator('#mv-send')).toHaveText('Send');
+    // Send is the paper-plane icon button: named Send, no visible text.
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toHaveAttribute('id', 'mv-send');
+    await expect(page.locator('#mv-send')).toHaveText('');
     await input(page).fill('one by click');
     await page.locator('#mv-send').click();
     await expect.poll(pasted).toEqual(expect.arrayContaining([`${pane} one by click`]));
@@ -196,6 +198,29 @@ test.describe('desktop 1280×800', () => {
     await expect(queued(page)).toHaveCount(0);
     await expect(page.locator('#mv-send-menu')).toBeHidden();
   });
+
+  // 🔴 A SEND CLOSES AN OPEN `/` OR `:` MENU. Send keeps the box focused
+  // (sendKeepsFocusJS), so the menu's close-on-blur never runs, and the box is
+  // emptied without an input event: the menu would stay open over the empty
+  // box, and the next Enter would put the command back in it.
+  for (const [typed, name] of [['/hand', 'handoff'], [':ki', ':kickoff']] as const) {
+    test(`a click on Send with the ${typed[0]} menu open sends, closes the menu, and the next Enter does nothing`, async ({ page }) => {
+      await openView(page);
+      const before = pasted().length;
+      await input(page).click();
+      await page.keyboard.type(typed);
+      await expect(menu(page)).toBeVisible();
+      await expect.poll(() => optionNames(page)).toContain(name);
+      await page.locator('#mv-send').click();
+      await expect.poll(() => pasted().slice(before)).toEqual([`${pane} ${typed}`]);
+      await expect(input(page)).toHaveValue('');
+      await expect(menu(page), 'the menu closed with the send').toBeHidden();
+      await input(page).press('Enter');
+      await expect(input(page), 'Enter put nothing back in the box').toHaveValue('');
+      await page.waitForTimeout(500);
+      expect(pasted().slice(before), 'and sent nothing more').toEqual([`${pane} ${typed}`]);
+    });
+  }
 
   test('Queue is behind the caret, by pointer and by keyboard; it queues and never sends', async ({ page }) => {
     await openView(page);
@@ -539,6 +564,34 @@ test.describe('phone 390×844 touch', () => {
     await expect(queued(page)).toHaveCount(1);
     expect(pasted()).toEqual([...before, `${pane} tapped send`]);
     await cancelQueued(page);
+  });
+
+  // THE FIRST TAP ON SEND SENDS WITH THE KEYBOARD UP. The keyboard is
+  // simulated the way the switcher spec does it: the box focused, the
+  // viewport shrunk, so the bar steps aside (<html data-keyboard>). Send is
+  // then pressed as a finger presses: down, a held moment, up at the same
+  // spot. Were the press to take focus from the box, the bar would come back
+  // between down and up (focusout, then switcherKeyboardJS), the composer
+  // would grow under the finger, and the up would land off Send: no click,
+  // nothing sent — the second tap is the one that sends. Send keeps the box
+  // focused instead, so the keyboard stays up and nothing moves.
+  test('with the keyboard up, the first tap on Send sends and the box keeps focus', async ({ page }) => {
+    await openView(page);
+    const before = pasted();
+    await input(page).tap();
+    await page.setViewportSize({ width: 390, height: 500 });
+    await expect(page.locator('html'), 'the simulated keyboard is up').toHaveAttribute('data-keyboard', '');
+    await input(page).fill('first tap');
+    const b = (await page.locator('#mv-send').boundingBox())!;
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(150);
+    await expect(input(page), 'pressing Send leaves the box focused').toBeFocused();
+    await page.mouse.up();
+    await expect.poll(pasted, { message: 'ONE press sent the message' }).toEqual([...before, `${pane} first tap`]);
+    await expect(input(page)).toBeFocused();
+    await expect(page.locator('html'), 'the keyboard stays up').toHaveAttribute('data-keyboard', '');
+    await page.setViewportSize({ width: 390, height: 844 });
   });
 });
 

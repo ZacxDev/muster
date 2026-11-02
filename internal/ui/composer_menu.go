@@ -51,19 +51,18 @@ import (
 //     trigger, and is owner-scoped on the server. Every string from it is
 //     drawn with textContent: a host's skill description is host file content.
 
-// composerSendSplitClass is Send's look as the left half of the split button.
-// Its side padding is px-2.5 (operator ask: "reduce the padding on the send
-// button"), the same as the plain Send's (composerSendClass): the room goes
-// to the input. It is still 44px tall, and
-// the caret keeps its 44px square (it has no padding to cut: it is the glyph
-// centred in its tap target).
-const composerSendSplitClass = "press min-h-[44px] shrink-0 rounded-l-xl rounded-r-none bg-accent px-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
+// composerSendSplitClass is Send's look as the left half of the split button:
+// the plain Send's (composerSendIconClass) — the paper plane centred in a
+// 44×44 square — rounded on the left only, so with the caret's 44px square
+// (rounded on the right) the two read as one control of one height.
+const composerSendSplitClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-l-xl rounded-r-none bg-accent text-on-accent transition disabled:opacity-40"
 
 // sendMoreClass is the caret: the right half, 44px square.
 const sendMoreClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-l-none rounded-r-xl border-l border-on-accent/30 bg-accent text-on-accent transition disabled:opacity-40"
 
 // sendSplit is the composer's Send control: Send alone, or — with a queue —
-// Send with the caret and its menu.
+// Send with the caret and its menu. Send is an icon button (sendIcon), named
+// by its aria-label and title.
 func sendSplit(q *ComposerQueue, off bool) g.Node {
 	send := func(cls string) g.Node {
 		return Button(
@@ -71,12 +70,13 @@ func sendSplit(q *ComposerQueue, off bool) g.Node {
 			Type("submit"),
 			g.If(off, g.Attr("disabled", "")),
 			g.Attr("aria-label", "Send"),
+			g.Attr("title", "Send"),
 			Class(cls),
-			g.Text("Send"),
+			sendIcon(),
 		)
 	}
 	if q == nil || off {
-		return send(composerSendClass)
+		return send(composerSendIconClass)
 	}
 	return Div(
 		ID("mv-send-group"),
@@ -416,6 +416,12 @@ func composerMenuScript(src string) g.Node {
   input.addEventListener('click', refresh);
   input.addEventListener('focus', function () { load(); });
   input.addEventListener('blur', function () { setTimeout(function () { if (document.activeElement !== input) close(); }, 150); });
+  // 🔴 A SEND (or a queue) CLOSES THE MENU. Send keeps the box focused
+  // (sendKeepsFocusJS), so the blur above never runs, and the composer empties
+  // the box without an input event: the menu is re-read against what the box
+  // now holds (closed on an empty box), or it stays open over it and the next
+  // Enter puts the command back.
+  document.addEventListener('mv-sent', refresh);
   document.addEventListener('selectionchange', function () { if (document.activeElement === input && token) refresh(); });
   form.addEventListener('keydown', function (e) {
     if (e.target !== input || box.hidden || !token || e.isComposing) return;

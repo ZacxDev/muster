@@ -964,8 +964,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 			Div(
 				Class("flex w-full items-end gap-2"),
 				// The SAME look as every other message box (composerInputClass,
-				// composerSendClass): a 16px input — iOS zooms the page on focusing a
-				// smaller one, and this one was 14px — and 44px targets.
+				// composerSendIconClass): a 16px input — iOS zooms the page on focusing
+				// a smaller one, and this one was 14px — and 44px targets; Send is
+				// the paper-plane icon button, named by aria-label and title.
 				Textarea(
 					ID("chat-input"),
 					Name("text"),
@@ -981,8 +982,10 @@ func agentChatPane(v AgentDetailView) g.Node {
 				Button(
 					Type("submit"),
 					ID("chat-send"),
-					Class(composerSendClass),
-					g.Text("Send"),
+					g.Attr("aria-label", "Send"),
+					g.Attr("title", "Send"),
+					Class(composerSendIconClass),
+					sendIcon(),
 				),
 			),
 			// The transcript's layout, applied before it can be painted (see
@@ -1870,6 +1873,7 @@ func agentChatScript(name string) g.Node {
   var form = document.getElementById('chat-form');
   var input = document.getElementById('chat-input');
   var sendBtn = document.getElementById('chat-send');
+  (` + sendKeepsFocusJS + `)(sendBtn);
   var logEl = document.getElementById('chat-log');
   // Re-resolve #chat-working on each use: the sse:chat.reply refresh swaps
   // #chat-log's innerHTML, replacing this node — a captured reference would go
