@@ -81,6 +81,12 @@ type Record struct {
 	QuotaLimits *struct {
 		ResetsAt int64 `json:"resetsAt"`
 	} `json:"quotaLimits"`
+	// Operation and QueueContent are a queue-operation record's (queue.go):
+	// what happened to Claude Code's input queue, and the message it names
+	// ("" on a dequeue, which names none).
+	Operation    string          `json:"operation"`
+	QueueContent json.RawMessage `json:"content"`
+
 	Message struct {
 		Content json.RawMessage `json:"content"`
 		// Model and Usage are an assistant record's (usage.go): its model id

@@ -333,6 +333,10 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// does not report them.
 		subs     *subagentTracker
 		withSubs = h.subagentReport()
+		// queue is Claude Code's own input queue (ccqueue.go), and queueSent
+		// whether its list has been sent since the view (re)started.
+		queue     cctranscript.Queue
+		queueSent bool
 	)
 	defer func() {
 		if f != nil {
@@ -352,6 +356,28 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			return nil
 		}
 		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, SubagentList: true, Subagents: list}})
+	}
+	// observeQueue folds lines into the queue — BEFORE they are redacted:
+	// a queued message is matched by its text — and sendQueue sends the
+	// queue's list when it changed since the last one sent (or none was): a
+	// message of its own, at the offset the view already has, redacted.
+	//
+	// 🔴 WHAT AN EARLIER CLI PROCESS QUEUED IS DROPPED (Queue.DropBefore): the
+	// queue dies with its process, nothing in the file says so, and a
+	// `--continue` / `--resume` appends to this same file under the same Gen —
+	// so the pane's StartedAt is what tells a message still waiting from one
+	// that died with the CLI before it.
+	observeQueue := func(lines []cctranscript.Line) {
+		if queue.Observe(lines) {
+			queueSent = false
+		}
+	}
+	sendQueue := func() error {
+		if queueSent {
+			return nil
+		}
+		queueSent = true
+		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, QueuedList: true, Queued: redactQueued(queue.List())}})
 	}
 	// start (re)opens p's transcript and sends a Reset backfill — or, when the
 	// resume names this very transcript at an offset it still has, nothing but
@@ -379,12 +405,13 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			lines []cctranscript.Line
 			next  int64
 		)
-		if !resume || withSubs {
-			if lines, next, err = cctranscript.Backfill(f, st.Size(), mirror.BackfillWindow, mirror.MaxBackfillEvents); err != nil {
-				return err
-			}
-			o.mark("backfill", attribute.Int("mirror.lines", len(lines)), attribute.Int64("mirror.backfill_bytes", min(st.Size(), int64(mirror.BackfillWindow))))
+		// 🔴 THE WINDOW IS READ ON A RESUME TOO: the queue's list is sent on
+		// every start (ccqueue.go), so a page that drew one from an earlier
+		// socket is told the current one, and the queue is folded from here.
+		if lines, next, err = cctranscript.Backfill(f, st.Size(), mirror.BackfillWindow, mirror.MaxBackfillEvents); err != nil {
+			return err
 		}
+		o.mark("backfill", attribute.Int("mirror.lines", len(lines)), attribute.Int64("mirror.backfill_bytes", min(st.Size(), int64(mirror.BackfillWindow))))
 		if withSubs {
 			// The subagents' parent signals come from the same window the
 			// backfill draws — read on a resume too, which draws none of it,
@@ -392,12 +419,23 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			subs = newSubagentTracker(p.Transcript)
 			subs.observe(cctranscript.Flatten(lines))
 		}
-		if resume {
+		// The queue starts over with the view. A resume folds only the lines
+		// before its offset: the poll reads the rest, and folding a line
+		// twice would queue its message twice.
+		queue, queueSent = cctranscript.Queue{}, false
+		queue.DropBefore(p.StartedAt) // before folding: see observeQueue
+		if !resume {
+			observeQueue(lines)
+		} else {
+			observeQueue(linesBefore(lines, resumeOff))
 			off = resumeOff
 			if err := send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, SubagentList: withSubs}}); err != nil {
 				return err
 			}
-			return sendSubs()
+			if err := sendSubs(); err != nil {
+				return err
+			}
+			return sendQueue()
 		}
 		off = next
 		// 🔴 Redacted before it is framed (redact_stream.go).
@@ -420,7 +458,10 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		if err := send(batches); err != nil {
 			return err
 		}
-		if err := sendSubs(); err != nil || h.c.cfg.NoPromptIndex {
+		if err := sendSubs(); err != nil {
+			return err
+		}
+		if err := sendQueue(); err != nil || h.c.cfg.NoPromptIndex {
 			return err
 		}
 		// Then the prompt index: every prompt in the file up to where the
@@ -467,12 +508,18 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			if subs != nil {
 				subs.observe(cctranscript.Flatten(lines))
 			}
+			observeQueue(lines)
 			// 🔴 Redacted before it is framed (redact_stream.go).
 			redactLines(lines)
 			batches := mirror.BatchLines(lines, off)
 			off = next
 			if len(batches) == 0 {
-				continue // lines with nothing to draw (attachments, hook records)
+				// Lines with nothing to draw (attachments, hook records, a
+				// queue operation): the queue's list, if it moved, still goes.
+				if err := sendQueue(); err != nil {
+					return err
+				}
+				continue
 			}
 			// The last batch's resume point is past every consumed line,
 			// including trailing ones that drew nothing.
@@ -481,6 +528,11 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 				batches[i].Busy, batches[i].StatusSince = busy, since
 			}
 			if err := send(batches); err != nil {
+				return err
+			}
+			// After the batch: a queued message Claude took is drawn as its
+			// prompt before it leaves the queued list.
+			if err := sendQueue(); err != nil {
 				return err
 			}
 		}
@@ -497,6 +549,17 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 				// /clear, a restart, a resumed session: a different transcript.
 				p, busy, since = np, np.Busy, np.StatusSince
 				return true, start("", 0)
+			}
+			if np.StartedAt != p.StartedAt {
+				// The same transcript, written by a NEW CLI process (`--continue`
+				// in the same pane): what the last one queued is gone.
+				p.StartedAt = np.StartedAt
+				if queue.DropBefore(p.StartedAt) {
+					queueSent = false
+				}
+				if err := sendQueue(); err != nil {
+					return false, err
+				}
 			}
 			if !np.Busy && (np.Busy != busy || np.StatusSince != since) {
 				// 🔴 THE LINES BEFORE THE STATUS: whatever the transcript holds now
@@ -532,6 +595,27 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		},
 		poll: poll,
 	})
+}
+
+// linesBefore is the lines that end at or before off.
+func linesBefore(lines []cctranscript.Line, off int64) []cctranscript.Line {
+	for i, l := range lines {
+		if l.End > off {
+			return lines[:i]
+		}
+	}
+	return lines
+}
+
+// redactQueued is Claude Code's queued messages as the wire carries them:
+// each redacted as a prompt's text is (redact_stream.go), then bounded
+// (mirror.NormalizeQueued).
+func redactQueued(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		out = append(out, redactText(s))
+	}
+	return mirror.NormalizeQueued(out)
 }
 
 // paneBackend is the backend's PaneBackend, when it has one AND this

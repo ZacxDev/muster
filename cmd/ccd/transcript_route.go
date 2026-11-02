@@ -100,11 +100,11 @@ func (s *server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	case after < 0:
 		var lines []cctranscript.Line
 		lines, page.Next, err = cctranscript.Backfill(f, size, backfill, transcriptBackfillEvents)
-		page.Lines = append(page.Lines, lines...)
+		page.Lines = append(page.Lines, cctranscript.Drawn(lines)...)
 	default:
 		var lines []cctranscript.Line
 		lines, page.Next, err = cctranscript.ReadLines(f, after, size, transcriptReadMax)
-		page.Lines = append(page.Lines, lines...)
+		page.Lines = append(page.Lines, cctranscript.Drawn(lines)...)
 	}
 	if err != nil {
 		writeFailure(w, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady, Message: "the session's transcript cannot be read"})

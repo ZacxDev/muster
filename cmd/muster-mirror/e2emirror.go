@@ -34,7 +34,8 @@ import (
 // that session's "pane" runs Claude Code writing the transcript at <path> — a
 // real JSONL file the spec appends records to while a turn "runs", read by the
 // real tailer. Its session id is the file's basename; it is busy while
-// <path>.busy exists. A paste is appended to the transcript as a prompt record
+// <path>.busy exists, and is NOT a Claude pane at all while <path>.gone
+// exists (the CLI exited: the view ends). A paste is appended to the transcript as a prompt record
 // (what the CLI would write on receiving it) and to <path>.pasted, so the spec
 // sees both. Unset, no session is a Claude pane — the v1-era behaviour the
 // terminal tests above rely on.
@@ -153,6 +154,9 @@ func (c claudeFake) ClaudePanes(_ context.Context, sessions []string) map[string
 	out := map[string]mirrorhost.ClaudePane{}
 	for _, s := range sessions {
 		if s == c.session {
+			if _, err := os.Stat(c.path + ".gone"); err == nil {
+				continue // the CLI exited: no Claude pane
+			}
 			_, err := os.Stat(c.path + ".busy")
 			out[s] = mirrorhost.ClaudePane{Pane: claudeFakePane, PID: 1, Transcript: c.path,
 				Gen: strings.TrimSuffix(filepath.Base(c.path), ".jsonl"), Busy: err == nil}

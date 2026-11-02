@@ -249,6 +249,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					g.Attr("aria-label", "Conversation"),
 					Class("flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3"),
 				),
+				// What Claude Code has queued itself (cc_queued.go): OUTSIDE the
+				// conversation, so it never moves what is being read there.
+				CCQueued(nil),
 				// The questions the window's ask hook is holding (mirror_ask.go).
 				mirrorAsksRegion(ref),
 				// The window's sessions' attention asks (attention_ask), answered here.
@@ -532,6 +535,10 @@ type MirrorTranscript struct {
 	// (forget).
 	ledger cctranscript.ToolContext
 	costs  map[string]cctranscript.ToolCost
+	// queued is the Claude Code queued messages drawn last (cc_queued.go),
+	// and queuedDrawn whether any list has been drawn by this socket.
+	queued      []string
+	queuedDrawn bool
 }
 
 const maxDrawnCalls = 2048
@@ -572,6 +579,7 @@ func (t *MirrorTranscript) Reset() {
 	t.Resumed = false
 	t.usage, t.fresh = nil, false
 	t.ledger, t.costs = cctranscript.ToolContext{}, nil
+	t.queued, t.queuedDrawn = nil, false
 }
 
 // endRun records that something other than a tool row was drawn: the next
@@ -929,6 +937,17 @@ func mirrorViewScript() g.Node {
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
   var ctxEl = document.getElementById('mv-context');
+  // clearQueued empties the region of what Claude Code has queued
+  // (cc_queued.go) — looked up each time: a patch replaces the element. A
+  // view that ended (the window stopped being Claude, the CLI exited) or a
+  // snapshot taken back is no claim that anything is still queued.
+  function clearQueued() {
+    var q = document.getElementById('` + ccQueuedID + `');
+    if (!q) return;
+    q.hidden = true;
+    q.innerHTML = '';
+    q.setAttribute('data-cc-queued', '0');
+  }
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
   // Liveness (live.go): when the socket last heard anything, whether it has
   // heard a heartbeat (only then can it be judged stale), when it was made,
@@ -1012,6 +1031,7 @@ func mirrorViewScript() g.Node {
   function discard() {
     settled();
     log.innerHTML = '';
+    clearQueued();
     window.muMirrorIndex = null;
     ctxEl.hidden = true; ctxEl.textContent = '';
     document.dispatchEvent(new CustomEvent('muster:chat-index'));
@@ -1257,6 +1277,7 @@ func mirrorViewScript() g.Node {
         });
       }
       else if (m.type === 'error') {
+        clearQueued();
         endReason = m.reason || 'error';
         if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp();
       }
