@@ -23,14 +23,18 @@ import (
 // the sidebar's (sidebarSearchButton). "/" outside a text field opens it as
 // well, wherever one of those buttons is on screen.
 //
-// WHAT IT SEARCHES is read from the page, with no request: the session
+// WHAT IT SEARCHES is read from the page first, with no request: the session
 // switcher's All row when the page has the bar (its entries' data-switcher-
 // code, -title, -prev and -words), otherwise the sidebar's agent rows, which
 // carry the same four attributes (navAgentRow, from the same switcherItems).
-// The previous titles reach the page with it, from one history read for every
-// entry (internal/api's withPreviousTitles), so typing costs no request. The
-// values are attributes the server escapes, read with getAttribute and drawn
-// with textContent. The page's own session is left out either way.
+// The RECENT previous titles reach the page with it, from one history read
+// for every entry (internal/api's withPreviousTitles). Then, once typing
+// pauses on a long enough query, the server is asked for every title in the
+// retention (PaletteHistoryRoute), and its hits are merged into entries on
+// the page (owner answer: "Recent in-page + full on typing"). The values are
+// attributes the server escapes, read with getAttribute, and a hit is JSON;
+// all are drawn with textContent. The page's own session is left out either
+// way.
 //
 // 🔴 A POPOVER (the top layer), so opening it moves nothing on the page. It
 // sits in #sidebar-root, OUTSIDE the sliding #sidebar panel: the panel is
@@ -42,6 +46,23 @@ const (
 	paletteInputID   = "switcher-search-input"
 	paletteResultsID = "switcher-search-results"
 	paletteOpenAttr  = "data-palette-open"
+)
+
+// PaletteHistoryRoute is the palette's server search (internal/api's
+// handlePaletteHistory): every focus title in the retention, asked for once
+// typing pauses on a query of PaletteServerMinRunes or more.
+const PaletteHistoryRoute = "/ui/palette/history"
+
+// The palette's server search waits for typing to pause this long, and asks
+// only for a query this long (focus.MinTitleQueryRunes, the server's own floor).
+// PaletteServerMinRunes must equal focus.MinTitleQueryRunes
+// (internal/api's TestThePaletteAsksOnlyWhatTheServerAnswers), and
+// paletteServerMinRunesJS spell it (TestThePaletteSpellsItsServerFloor): the
+// script is a constant, so it holds the number as text.
+const (
+	paletteServerDebounceMS = "275"
+	PaletteServerMinRunes   = 3
+	paletteServerMinRunesJS = "3"
 )
 
 // SidebarSearchID is the sidebar's magnifier (sidebarSearchButton).
@@ -120,36 +141,31 @@ func sidebarSearchButton() g.Node {
 // or null for no match. Pure (no DOM), so e2e/tests/focus.spec.ts runs it over
 // a table as well as through the real palette.
 //
-// 🔴 THE RULE. Fields in this order, every match in a field before any in the
-// next — so an exact name always wins and a CURRENT focus title always
-// outranks a PREVIOUS one, whatever the tiers inside them:
+// 🔴 THE RULE — the palette's original substring ranks, with ONE rank added
+// for a previous focus title, between the title and the words (so a name
+// always beats a focus title, and a CURRENT focus title a PREVIOUS one):
 //
-//	0      the codename IS the query (folded: window.musterFold)
-//	1..3   the codename, by searchrank tier 0..2 (starts with it, a word in it
-//	       does, anywhere else in it)
-//	4..6   the title — display name and CURRENT focus title — by tier 0..2
-//	7..9   the best of its PREVIOUS focus titles, by tier 0..2
-//	10     the words (repository, kind, tmux session, host) contain it
+//	0  the codename starts with the query
+//	1  the codename contains it
+//	2  the title — display name and CURRENT focus title — contains it
+//	3  a PREVIOUS focus title contains it (in-page, or the server search's)
+//	4  the words (repository, kind, tmux session, host) contain it
 //
-// Ties keep the source's order (refresh sorts by r, then by position).
-// searchrank's tier 3 (letters in order) is NOT a match here: the palette has
-// always matched substrings, and over long focus titles letters-in-order
-// matches nearly everything. An empty query matches everything at 0.
+// Case-folded (lower case), the query trimmed; ties keep the source's order
+// (refresh sorts by r, then by position). An empty query matches everything
+// at 0. hit is the NEWEST previous title that contains the query (prev is
+// newest first).
 const paletteMatchJS = `  window.musterPaletteMatch = function (e, q) {
-    if (!window.musterFold(q)) return { r: 0, why: '' };
-    function tier(label) { var t = window.musterRank(label || '', q); return t >= 0 && t < 3 ? t : -1; }
-    if (window.musterFold(e.code) === window.musterFold(q)) return { r: 0, why: 'code' };
-    var t = tier(e.code);
-    if (t >= 0) return { r: 1 + t, why: 'code' };
-    t = tier(e.title);
-    if (t >= 0) return { r: 4 + t, why: 'title' };
-    var best = -1, hit = '', prev = e.prev || [];
-    for (var i = 0; i < prev.length; i++) {
-      var p = tier(prev[i]);
-      if (p >= 0 && (best < 0 || p < best)) { best = p; hit = prev[i]; }
-    }
-    if (best >= 0) return { r: 7 + best, why: 'previous', hit: hit };
-    if (String(e.words || '').toLowerCase().indexOf(String(q).toLowerCase().trim()) >= 0) return { r: 10, why: 'words' };
+    function low(s) { return String(s || '').toLowerCase(); }
+    q = low(q).trim();
+    if (!q) return { r: 0, why: '' };
+    var c = low(e.code);
+    if (c.indexOf(q) === 0) return { r: 0, why: 'code' };
+    if (c.indexOf(q) > 0) return { r: 1, why: 'code' };
+    if (low(e.title).indexOf(q) >= 0) return { r: 2, why: 'title' };
+    var prev = e.prev || [];
+    for (var i = 0; i < prev.length; i++) if (low(prev[i]).indexOf(q) >= 0) return { r: 3, why: 'previous', hit: prev[i] };
+    if (low(e.words).indexOf(q) >= 0) return { r: 4, why: 'words' };
     return null;
   };
 `
@@ -202,12 +218,72 @@ const paletteJS = `
       opts[active].scrollIntoView({ block: 'nearest' });
     } else input.removeAttribute('aria-activedescendant');
   }
+  // THE SERVER SEARCH (internal/api's handlePaletteHistory): once typing
+  // pauses for DEBOUNCE ms on a query of MIN or more characters, the server
+  // is asked for every focus title in the retention; its hits are merged as
+  // previous-title matches (rank 3) of entries ALREADY on the page — an entry
+  // the page already matched is not listed twice, and a hit whose entry is not
+  // on the page (the page's own session) is dropped. srv is the query the
+  // hits answer and the hits.
+  //
+  // 🔴 ONLY THE ANSWER TO THE CURRENT QUERY LANDS. Each new query cancels the
+  // pending timer and aborts the request in flight, AND an answer is applied
+  // only if its sequence number is the latest and the input still holds its
+  // query — so an out-of-order response can never overwrite newer results.
+  var ROUTE = '` + PaletteHistoryRoute + `', DEBOUNCE = ` + paletteServerDebounceMS + `, MIN = ` + paletteServerMinRunesJS + `;
+  var srv = { q: '', hits: [] }, seq = 0, timer = 0, ctl = null;
+  function ask(q) {
+    clearTimeout(timer);
+    seq++;
+    if (ctl) { try { ctl.abort(); } catch (e) {} ctl = null; }
+    if (Array.from(q).length < MIN) return;
+    var mine = seq;
+    timer = setTimeout(function () {
+      if (mine !== seq) return;
+      var c = typeof AbortController === 'function' ? new AbortController() : null;
+      ctl = c;
+      fetch(ROUTE + '?q=' + encodeURIComponent(q), { credentials: 'same-origin', headers: { Accept: 'application/json' }, signal: c ? c.signal : undefined })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          var input = byId(INPUT);
+          if (mine !== seq || !d || !d.hits || !input || input.value.trim() !== q) return;
+          srv = { q: q, hits: d.hits };
+          render(true);
+        })['catch'](function () {});
+    }, DEBOUNCE);
+  }
+  // refresh is the input's handler: a changed query drops the old query's
+  // server hits and asks again; the list is redrawn from the page at once.
   function refresh() {
+    var input = byId(INPUT);
+    if (!input) return;
+    var q = input.value.trim();
+    if (q !== srv.q) { srv = { q: q, hits: [] }; ask(q); }
+    render(false);
+  }
+  // render draws the list: the page's matches, then the server's hits for the
+  // same query merged in; keep holds the highlighted entry (a server answer
+  // landing must not move the operator's selection).
+  function render(keep) {
     var pal = byId(PAL), input = byId(INPUT), list = byId(RESULTS);
     if (!pal || !input || !list) return;
     var q = input.value;
-    var found = [];
-    entries().forEach(function (e) { var m = match(e, q); if (m) { e.r = m.r; e.why = m.why; e.hit = m.hit; found.push(e); } });
+    var was = keep && active >= 0 && shown[active] ? shown[active].href : null;
+    var found = [], at = {}, byHref = {};
+    entries().forEach(function (e) {
+      byHref[e.href] = e;
+      var m = match(e, q);
+      if (m) { e.r = m.r; e.why = m.why; e.hit = m.hit; found.push(e); at[e.href] = true; }
+    });
+    if (srv.q && srv.q === q.trim()) {
+      srv.hits.forEach(function (h) {
+        var e = h && byHref[h.href];
+        if (!e || at[h.href]) return;
+        at[h.href] = true;
+        e.r = 3; e.why = 'previous'; e.hit = String(h.title || '');
+        found.push(e);
+      });
+    }
     found.sort(function (a, b) { return a.r - b.r || a.n - b.n; });
     shown = found.slice(0, 50);
     list.textContent = '';
@@ -238,6 +314,7 @@ const paletteJS = `
       list.appendChild(li);
     });
     active = shown.length ? 0 : -1;
+    if (was) for (var k = 0; k < shown.length; k++) if (shown[k].href === was) { active = k; break; }
     pal.querySelector('[data-switcher-search-empty]').hidden = shown.length > 0;
     mark();
   }
@@ -259,6 +336,8 @@ const paletteJS = `
     pal.addEventListener('toggle', function (e) {
       var open = e.newState ? e.newState === 'open' : isOpen(pal);
       expanded(open);
+      // A closed palette asks nothing more: its pending search is cancelled.
+      if (!open) { srv = { q: '', hits: [] }; ask(''); }
       if (!open && pal.contains(document.activeElement)) {
         var back = opener && opener.isConnected && opener !== document.body ? opener : null;
         try { if (back) back.focus(); } catch (err) {}

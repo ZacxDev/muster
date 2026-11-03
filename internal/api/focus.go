@@ -408,8 +408,10 @@ func focusEntryOf(ev cctranscript.Event) (focus.Entry, bool) {
 
 // withPreviousTitles sets each entry's previous focus titles (PrevFocus) — what
 // the command palette finds a session by after its current title — from ONE
-// read for every entry (focus.Store.PreviousTitles: each session's newest
-// focus.TitleHistoryRows history rows). The live set is exactly the entries
+// read for every entry (focus.Store.RecentTitles over the whole retention,
+// bounded to each session's newest focus.PaletteTitleRows rows, at most
+// focus.MaxRecentTitles titles). Older titles are the palette's server search's
+// (handlePaletteHistory). The live set is exactly the entries
 // being drawn: the viewer's own agents and mirrored sessions. The read runs
 // under the request's principal, so row-level security keeps another owner's
 // history out even when a session key is shared. No store, nothing to read or
@@ -431,7 +433,7 @@ func (s *Server) withPreviousTitles(ctx context.Context, cards []ui.AgentCardVie
 	if len(live.Agents) == 0 && len(live.Mirrors) == 0 {
 		return
 	}
-	got, err := s.ext.Focus.PreviousTitles(ctx, live)
+	got, err := s.ext.Focus.RecentTitles(ctx, live, s.now().Add(-focus.DefaultHistoryRetention), focus.PaletteTitleRows)
 	if err != nil {
 		s.logger.Printf("focus: previous titles for the palette: %v", err)
 		return

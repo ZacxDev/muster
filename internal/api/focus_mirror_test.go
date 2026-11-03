@@ -82,10 +82,10 @@ func (m *memFocus) SearchHistory(context.Context, string, focus.Live, time.Time,
 func (m *memFocus) MatchHistory(context.Context, string, focus.Live, time.Time, int, int) ([]focus.Match, error) {
 	return nil, nil
 }
-func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time) (map[focus.Subject][]focus.TitleAt, error) {
+func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time, int) (map[focus.Subject][]focus.TitleAt, error) {
 	return nil, nil
 }
-func (m *memFocus) PreviousTitles(context.Context, focus.Live) (map[focus.Subject][]focus.TitleAt, error) {
+func (m *memFocus) SearchTitles(context.Context, string, focus.Live, time.Time, int) ([]focus.HistoryHit, error) {
 	return nil, nil
 }
 func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time, int) (focus.WindowReport, error) {

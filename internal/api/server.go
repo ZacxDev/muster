@@ -624,6 +624,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerSendQueueRoutes(mux)
 	// Focus history (internal/focus): one page of a session's past focus; 404 without a store.
 	s.registerFocusHistoryRoutes(mux)
+	s.registerPaletteRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
 	s.registerCredentialRoutes(mux)

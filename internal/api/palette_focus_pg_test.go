@@ -2,7 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"html"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -141,5 +148,95 @@ func TestNoViewerIsHandedAnotherOwnersFocusTitles(t *testing.T) {
 		if strings.Contains(all, leak) {
 			t.Errorf("the member's entries carry %q — another owner's focus title:\n%s", leak, all)
 		}
+	}
+}
+
+// TestThePaletteAsksOnlyWhatTheServerAnswers: the palette's script asks the
+// server from the same query length the server answers from.
+func TestThePaletteAsksOnlyWhatTheServerAnswers(t *testing.T) {
+	if ui.PaletteServerMinRunes != focus.MinTitleQueryRunes {
+		t.Fatalf("the palette asks from %d runes, the server answers from %d", ui.PaletteServerMinRunes, focus.MinTitleQueryRunes)
+	}
+}
+
+// paletteSearch is GET ui.PaletteHistoryRoute?q= as uid, straight to the
+// handler under that principal: the hits as "href=title".
+func paletteSearch(t *testing.T, f *attnFixture, uid int64, q string) []string {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, ui.PaletteHistoryRoute+"?q="+url.QueryEscape(q), nil).WithContext(asUser(uid))
+	w := httptest.NewRecorder()
+	f.srv.handlePaletteHistory(w, r)
+	return paletteHits(t, w)
+}
+
+func paletteHits(t *testing.T, w *httptest.ResponseRecorder) []string {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("palette search: %d %s", w.Code, w.Body)
+	}
+	var out struct {
+		Hits []paletteHit `json:"hits"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Hits == nil {
+		t.Fatalf("palette search answered %s (%v)", w.Body, err)
+	}
+	got := []string{}
+	for _, h := range out.Hits {
+		got = append(got, h.Href+"="+h.Title)
+	}
+	return got
+}
+
+// TestThePaletteServerSearchFindsATitleOlderThanThePage: a title older than
+// the in-page row bound (focus.PaletteTitleRows newer rows) is not on
+// the page — the CONTROL, its row carries no such data-switcher-prev — and the
+// server search finds it by a fragment, answered as the href the agent's
+// sidebar row links to, over the real route with the operator's session. A
+// two-rune query answers nothing. Red at origin/main: no route (404).
+func TestThePaletteServerSearchFindsATitleOlderThanThePage(t *testing.T) {
+	f := paletteFixture(t)
+	suffix := strconv.FormatInt(f.op.ID, 10)
+	old := f.agentFor(t, 1, "palette-old-"+suffix, "", "palette-old-token-"+suffix)
+	store := focus.NewPG(f.pool)
+	// Older than the page by the ROW bound (focus.PaletteTitleRows newer rows),
+	// not the title cap: the newer rows hold two titles only.
+	titles := []string{"Ancient quokka census plan"}
+	for i := 0; i < focus.PaletteTitleRows; i++ {
+		titles = append(titles, fmt.Sprintf("Sorting batch %02d", i%2))
+	}
+	for _, ti := range titles {
+		if _, err := store.Upsert(asUser(1), focus.AgentSubject(old.ID), focus.Write{Title: ti, Description: "d", Source: focus.SourceSummarizer}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := navRowTags(f.page(t, ui.NavAgentsPath))
+	tag := rows[agentNavID(old.ID)]
+	if tag == "" || strings.Contains(tag, "quokka") || !strings.Contains(tag, "Sorting batch 01") {
+		t.Fatalf("CONTROL: the agent's row must carry recent titles but not the ancient one: %s", tag)
+	}
+	href := regexp.MustCompile(`href="([^"]*)"`).FindStringSubmatch(tag)[1]
+	w := f.call(t, http.MethodGet, ui.PaletteHistoryRoute+"?q="+url.QueryEscape("Quokka cen"), nil, f.operator())
+	if got := paletteHits(t, w); fmt.Sprint(got) != fmt.Sprint([]string{html.UnescapeString(href) + "=Ancient quokka census plan"}) {
+		t.Fatalf("hits %q, want the agent's row href with the ancient title", got)
+	}
+	if got := paletteSearch(t, f, 1, "qu"); len(got) != 0 {
+		t.Fatalf("a two-rune query answered %q", got)
+	}
+}
+
+// 🔴 TestThePaletteServerSearchIsOwnerScoped: the member searching for the
+// operator's titles finds nothing — not the agent's, not the mirrored
+// session's — while finding its own. CONTROL: the operator finds the same
+// operator titles through the same handler.
+func TestThePaletteServerSearchIsOwnerScoped(t *testing.T) {
+	f := paletteFixture(t)
+	if got := paletteSearch(t, f, 1, "operator"); len(got) < 2 {
+		t.Fatalf("CONTROL: the operator finds %q, want its agent's and its window's titles", got)
+	}
+	if got := paletteSearch(t, f, f.member, "operator"); len(got) != 0 {
+		t.Fatalf("the member found the operator's titles: %q", got)
+	}
+	if got := paletteSearch(t, f, f.member, "member invoices"); len(got) != 1 || !strings.HasSuffix(got[0], "=Auditing the member invoices") {
+		t.Fatalf("the member's own search: %q", got)
 	}
 }

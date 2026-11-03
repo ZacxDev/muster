@@ -76,10 +76,10 @@ func (m *memStore) SearchHistory(context.Context, string, Live, time.Time, int) 
 func (m *memStore) MatchHistory(context.Context, string, Live, time.Time, int, int) ([]Match, error) {
 	return nil, nil
 }
-func (m *memStore) RecentTitles(context.Context, Live, time.Time) (map[Subject][]TitleAt, error) {
+func (m *memStore) RecentTitles(context.Context, Live, time.Time, int) (map[Subject][]TitleAt, error) {
 	return nil, nil
 }
-func (m *memStore) PreviousTitles(context.Context, Live) (map[Subject][]TitleAt, error) {
+func (m *memStore) SearchTitles(context.Context, string, Live, time.Time, int) ([]HistoryHit, error) {
 	return nil, nil
 }
 func (m *memStore) WindowHistory(context.Context, time.Time, time.Time, int) (WindowReport, error) {

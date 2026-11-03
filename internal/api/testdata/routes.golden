@@ -136,6 +136,7 @@ GET /ui/connectors/{name}/rotate
 GET /ui/focus/history
 GET /ui/nav/agents
 GET /ui/notifications
+GET /ui/palette/history
 GET /ui/tags
 GET /ui/tasks
 GET /ui/tasks/new

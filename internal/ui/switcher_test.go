@@ -2,6 +2,7 @@ package ui
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -502,8 +503,8 @@ func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
 	}
 	for _, want := range []string{
 		"words: a.getAttribute('data-switcher-words') || ''",
-		"t = tier(e.title);\n    if (t >= 0) return { r: 4 + t, why: 'title' };",
-		"if (String(e.words || '').toLowerCase().indexOf(String(q).toLowerCase().trim()) >= 0) return { r: 10, why: 'words' };\n    return null;",
+		"if (low(e.title).indexOf(q) >= 0) return { r: 2, why: 'title' };",
+		"if (low(e.words).indexOf(q) >= 0) return { r: 4, why: 'words' };\n    return null;",
 	} {
 		if !strings.Contains(paletteJS, want) {
 			t.Errorf("the palette's script lacks %q", want)
@@ -552,12 +553,19 @@ func TestTheSwitcherSearchFindsByPreviousFocusTitles(t *testing.T) {
 	// carries the previous-title tier and says why it matched.
 	for _, frag := range []string{
 		"prev: (a.getAttribute('data-switcher-prev') || '').split('\\n').filter(Boolean),",
-		"if (best >= 0) return { r: 7 + best, why: 'previous', hit: hit };",
+		"if (low(prev[i]).indexOf(q) >= 0) return { r: 3, why: 'previous', hit: prev[i] };",
 		"p.setAttribute('data-match-previous', '');",
 	} {
 		if !strings.Contains(paletteJS, frag) {
 			t.Errorf("the palette's script lacks %q", frag)
 		}
+	}
+}
+
+// TestThePaletteSpellsItsServerFloor: the script's MIN is PaletteServerMinRunes.
+func TestThePaletteSpellsItsServerFloor(t *testing.T) {
+	if paletteServerMinRunesJS != strconv.Itoa(PaletteServerMinRunes) {
+		t.Fatalf("the script asks from %s characters, PaletteServerMinRunes is %d", paletteServerMinRunesJS, PaletteServerMinRunes)
 	}
 }
 

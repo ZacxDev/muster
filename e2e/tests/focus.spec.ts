@@ -47,6 +47,11 @@ const transcript2 = path.join(dir, sid2 + '.jsonl');
 const sid3 = '0b2c3d4e-5f60-4718-8a9d-' + stamp.padStart(12, '0').slice(-12);
 const transcript3 = path.join(dir, sid3 + '.jsonl');
 const PREVIOUS_TITLE = 'Reconciling the payout zephyr';
+// A title @5 had LONG ago: older than the page's recent previous titles (it
+// is followed by more than the in-page bound of newer distinct titles), so
+// only the palette's server search can find it.
+const OLD_TITLE = 'Quokka census migration';
+const FILLERS = Array.from({ length: 14 }, (_, i) => `Sorting batch ${String(i + 1).padStart(2, '0')}`);
 // `history`: that many earlier focuses are written first (e2e/mkchat), so the
 // mirrored session's history is 46 rows — three pages of 20 — and the agent's 4.
 const MIRROR_HISTORY = 45;
@@ -55,7 +60,7 @@ const focusEnv = JSON.stringify([
   { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY },
   { subject: 'mirror:' + sid, title: 'Bisecting the flaky tunnel test', description: 'The backoff resets too early.', history: MIRROR_HISTORY },
   { subject: 'mirror:' + sid2, error: 'no OpenRouter key' },
-  { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [PREVIOUS_TITLE] },
+  { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [OLD_TITLE, ...FILLERS, PREVIOUS_TITLE] },
 ]);
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
@@ -212,6 +217,12 @@ for (const vp of [
       expect(current, `the current-title match is listed: ${rows}`).toBeGreaterThan(name);
       expect(previous, `the previous-title match is listed last of the three: ${rows}`).toBeGreaterThan(current);
       await expect(w5).toHaveCount(1);
+      // The server search answers "reconciling" too — with the agent (its
+      // current title is in its history) and @5 — and neither is listed twice.
+      await page.waitForResponse((r) => r.url().includes('/ui/palette/history') && r.url().includes('q=reconciling'));
+      await page.waitForTimeout(100);
+      await expect(w5).toHaveCount(1);
+      await expect(options.filter({ hasText: agentName })).toHaveCount(1);
 
       // Enter on it opens that window.
       await input.fill('payout zephyr');
@@ -219,33 +230,122 @@ for (const vp of [
       await expect(page).toHaveURL(/window=%405/);
     });
 
+    // 🔴 THE WHOLE RETENTION, ON TYPING (owner answer: "Recent in-page + full
+    // on typing"). @5's OLD title is not on the page — its row's previous
+    // titles stop at the in-page bound (the CONTROL) — and once typing pauses
+    // the server search finds it, shown as a previous title. Red at
+    // origin/main: no server search, no option.
+    test('a title older than the page is found once typing pauses', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      const row5 = page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:5"]');
+      await expect(row5).toHaveAttribute('data-switcher-prev', /Sorting batch 14/);
+      expect(await row5.getAttribute('data-switcher-prev'), 'the old title is not on the page').not.toContain('Quokka');
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      const answered = page.waitForResponse((r) => r.url().includes('/ui/palette/history') && r.url().includes('q=quokka%20cen'));
+      await input.fill('quokka cen');
+      await answered;
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toHaveAttribute('data-match', 'previous');
+      await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + OLD_TITLE);
+      await expect(options.first().locator('span').first()).toHaveText('focuswin:5');
+    });
+
+    // 🔴 ONLY THE LATEST ANSWER LANDS. The server search is intercepted: a
+    // two-character query is never asked; typing a key at a time asks once,
+    // after the pause; the answer to an earlier query is
+    // held until a later one has been answered and drawn, then released — and
+    // it changes nothing. The later answer is merged once (a hit for an entry
+    // the page already matched is dropped) and ranked as a previous title,
+    // after the page's current-title match.
+    test('the server search: a stale answer never overwrites a newer one; hits merge once, as previous titles', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      const agentHref = await page.locator(`#sidebar-agents-list a[data-switcher-code="${agentName}"]`).getAttribute('href');
+      const w5Href = await page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:5"]').getAttribute('href');
+      expect(agentHref && w5Href, 'both rows are on the page').toBeTruthy();
+      const asked: string[] = [];
+      let release = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      await page.route('**/ui/palette/history?**', async (route) => {
+        const q = new URL(route.request().url()).searchParams.get('q') ?? '';
+        asked.push(q);
+        if (q === 'zzstale') {
+          await held;
+          await route.fulfill({ json: { hits: [{ href: agentHref, title: 'Stale zzstale answer' }, { href: w5Href, title: 'Stale zzstale answer' }] } }).catch(() => {});
+          return;
+        }
+        if (q === 'quarterly') {
+          await route.fulfill({ json: { hits: [{ href: agentHref, title: 'a duplicate of the page match' }, { href: w5Href, title: 'Old quarterly audit' }] } });
+          return;
+        }
+        await route.fulfill({ json: { hits: [] } });
+      });
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+
+      await input.fill('zz');
+      await page.waitForTimeout(700);
+      expect(asked, 'a two-character query is not sent').toEqual([]);
+      // Typed a key at a time, faster than the debounce: ONE request, for the
+      // whole word, not one per key.
+      await input.fill('');
+      await input.pressSequentially('zzdebounce', { delay: 60 });
+      await expect.poll(() => asked.length).toBe(1);
+      await page.waitForTimeout(700);
+      expect(asked, 'one request after typing pauses').toEqual(['zzdebounce']);
+      asked.length = 0;
+
+      await input.fill('zzstale');
+      await expect.poll(() => asked).toContain('zzstale');
+      await input.fill('quarterly');
+      const ofHref = (h: string) => page.locator(`#switcher-search-results [role="option"][data-href="${h}"]`);
+      await expect(ofHref(w5Href!)).toHaveCount(1);
+      const order = async () => options.evaluateAll((els) => els.map((e) => `${e.getAttribute('data-match')}:${e.getAttribute('data-href')}`));
+      const want = [`title:${agentHref}`, `previous:${w5Href}`];
+      const pick = (rows: string[]) => rows.filter((r) => want.includes(r));
+      expect(pick(await order()), 'the page match first, the server-only hit after it, each once').toEqual(want);
+      await expect(ofHref(w5Href!).locator('[data-match-previous]')).toHaveText('Previously: Old quarterly audit');
+      await expect(ofHref(agentHref!)).toHaveCount(1);
+
+      release();
+      await page.waitForTimeout(700);
+      expect(pick(await order()), 'the stale answer changed nothing').toEqual(want);
+      await expect(page.locator('#switcher-search-results')).not.toContainText('Stale zzstale answer');
+      await page.unroute('**/ui/palette/history?**');
+    });
+
     // The palette's rank as a table (window.musterPaletteMatch, the rule the
-    // palette above runs): exact name, then name tiers, then the current
-    // title, then the best previous title, then the words; searchrank's
-    // letters-in-order tier is no match. Values pairwise distinct.
+    // palette above runs): the original substring ranks — codename prefix,
+    // codename substring, title — then ONE rank for a previous title (its
+    // newest match), then the words. Values pairwise distinct.
     test('the palette rank: name before current title before previous title before words', async ({ page }) => {
       await signIn(page, origin);
       await page.goto(origin + '/tasks');
       const got = await page.evaluate(() => {
         const m = (window as unknown as { musterPaletteMatch: (e: object, q: string) => { r: number; why: string; hit?: string } | null }).musterPaletteMatch;
-        const e = { code: 'mango:1', title: 'Porting the importer', prev: ['Bisecting the tunnel', 'Unbisecting nothing', 'Tunnel bisecting'], words: 'acme-repo claude code' };
-        return ['mango:1', 'mango', 'go:1', 'porting', 'importer', 'tunnel', 'bisecting', 'acme', 'mg1', 'zzz', ''].map((q) => {
+        const e = { code: 'mango:1', title: 'Porting the importer', prev: ['Bisecting the tunnel', 'Tunnel bisecting'], words: 'acme-repo claude code' };
+        return ['MANGO', 'go:1', 'porting', 'importer', 'tunnel', 'bisecting', 'acme', 'mg1', 'zzz', '  '].map((q) => {
           const r = m(e, q);
           return r ? `${q}=${r.r}/${r.why}${r.hit ? '/' + r.hit : ''}` : `${q}=none`;
         });
       });
       expect(got).toEqual([
-        'mango:1=0/code',
-        'mango=1/code',
-        'go:1=3/code',
-        'porting=4/title',
-        'importer=5/title',
-        'tunnel=7/previous/Tunnel bisecting',
-        'bisecting=7/previous/Bisecting the tunnel',
-        'acme=10/words',
+        'MANGO=0/code',
+        'go:1=1/code',
+        'porting=2/title',
+        'importer=2/title',
+        'tunnel=3/previous/Bisecting the tunnel',
+        'bisecting=3/previous/Bisecting the tunnel',
+        'acme=4/words',
         'mg1=none',
         'zzz=none',
-        '=0/',
+        '  =0/',
       ]);
     });
 
