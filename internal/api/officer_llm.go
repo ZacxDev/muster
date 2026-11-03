@@ -36,7 +36,7 @@ const LLMMessagesRoute = "POST /llm/v1/messages"
 
 func (s *Server) registerLLMRoutes(mux Mux) {
 	mux.HandleFunc(LLMMessagesRoute, s.requireConnectorAgent(s.serveLLMMessages))
-	_ = llmPathPrefix /* MUTANT M6 */
+	mux.HandleFunc(llmPathPrefix, s.handleLLMOtherPath)
 }
 
 // handleLLMOtherPath refuses every /llm/ request but POST /llm/v1/messages.

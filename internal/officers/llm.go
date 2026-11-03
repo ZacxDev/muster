@@ -94,7 +94,12 @@ func RoutineAgent(o Officer, name string) bool {
 	if o.LLM == nil {
 		return false
 	}
-	return true /* MUTANT M5 */
+	for _, a := range o.LLM.RoutineAgents {
+		if a == name {
+			return true
+		}
+	}
+	return false
 }
 
 // llmModelRE is an OpenRouter model id: `<vendor>/<model>`, optionally with a
