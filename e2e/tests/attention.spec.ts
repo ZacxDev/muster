@@ -242,10 +242,13 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   expect((fs.statSync(mcpSecretFile).mode & 0o777).toString(8), 'the secret file is private').toBe('600');
   const pane = '%e2e-work-@1';
   const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': pane, 'X-Muster-Tmux': fakeTMUX };
-  // Without the secret the endpoint refuses, and nothing is asked; nor from a
-  // pane of another tmux server.
+  // Without the secret the endpoint refuses, and nothing is asked. A pane of
+  // another tmux server sees a healthy server with no tools (multi-tenant
+  // phase 2): its call is a JSON-RPC error, HTTP 200, and nothing is asked.
   expect((await localCall('attention_ask', { question: 'no secret?' }, { 'X-Muster-Pane': pane, 'X-Muster-Tmux': fakeTMUX })).status).toBe(401);
-  expect((await localCall('attention_ask', { question: 'other server?' }, { ...auth, 'X-Muster-Tmux': '/tmp/tmux-1/other,9,0' })).status).toBe(400);
+  const outsider = await localCall('attention_ask', { question: 'other server?' }, { ...auth, 'X-Muster-Tmux': '/tmp/tmux-1/other,9,0' });
+  expect(outsider.status).toBe(200);
+  expect(((await outsider.json()) as { error?: { code: number } }).error?.code).toBe(-32602);
   // A chief tool is not on this surface.
   const chief = (await (await localCall('attention_list', {}, auth)).json()) as { error?: { code: number } };
   expect(chief.error?.code).toBe(-32602);
@@ -277,6 +280,8 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Merge the schema change?');
   await expect(item.locator('[data-attention-source]')).toContainText('@ ' + host);
+  // The other tmux server's call was never forwarded: no item carries its text.
+  await expect(page.locator('[data-attention-text]', { hasText: 'other server?' })).toHaveCount(0);
   const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
   await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'hold' }).click()]);
   const got = (await waited) as { result: { content: { text: string }[] } };

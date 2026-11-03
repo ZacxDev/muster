@@ -68,19 +68,39 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 	// (-token-file, MUSTER_MIRROR_TOKEN_FILE or MUSTER_MIRROR_TOKEN), or it
 	// fails open — it never sends this host's credential to a URL nobody
 	// recorded for it.
+	//
+	// 🔴 WHICH RECORD: the one whose tmux server is this session's $TMUX
+	// (chooseHookConfig) — one per tenant's daemon on a host with several
+	// muster servers. No match, or several, fails open. A PER-TENANT record's
+	// URL is sent only with that record's token file, whatever token the hook's
+	// environment or flags name; the legacy record's, with the environment's
+	// token when there is one, as before.
 	recordedURL := false
-	var rec hookConfig
+	var rec chosenHook
 	if *base == "" {
 		var err error
-		if rec, err = readHookConfig(hookConfigPath(getenv)); err == nil && rec.URL != "" {
+		if rec, err = chooseHookConfig(getenv, os.Getuid(), logf); err == nil {
 			*base, *allowHTTP, recordedURL = rec.URL, *allowHTTP || rec.AllowHTTP, true
 		} else {
-			logf("no -url, no %s, and no URL recorded by muster-mirror (%v)", envURL, err)
+			logf("no -url, no %s, and no URL recorded by muster-mirror for this session: %v; the question is the terminal's only", envURL, err)
+			return 0
 		}
 	}
 	token := strings.TrimSpace(getenv(envToken))
 	tokenPath := *tokenFile
-	if tokenPath == "" && token == "" && recordedURL {
+	switch {
+	case recordedURL && rec.PerTenant:
+		// 🔴 A PER-TENANT RECORD'S URL GETS ONLY THAT RECORD'S TOKEN FILE:
+		// never MUSTER_MIRROR_TOKEN, MUSTER_MIRROR_TOKEN_FILE or -token-file
+		// (one hook serves every tenant, so whatever it was given is at most
+		// one tenant's credential), and never DefaultTokenFile (tenant
+		// default's).
+		token, tokenPath = "", rec.TokenFile
+		if tokenPath == "" {
+			logf("the record %s names no token file, and a per-tenant record never uses %s; the question is the terminal's only", rec.Path, DefaultTokenFile)
+			return 0
+		}
+	case tokenPath == "" && token == "" && recordedURL:
 		tokenPath = rec.TokenFile
 		if tokenPath == "" {
 			tokenPath = DefaultTokenFile

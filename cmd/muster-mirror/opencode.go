@@ -24,6 +24,10 @@ const (
 	// envOpenCodeTokenFile names the token file (default
 	// ~/.muster/opencode-token).
 	envOpenCodeTokenFile = "MUSTER_MIRROR_OPENCODE_TOKEN_FILE"
+	// envOpenCodeReadOnly makes the daemon a READER of the token file: it
+	// re-reads it and never renews it (-opencode-read-only). With one
+	// muster-mirror per muster server on a host, exactly one renews.
+	envOpenCodeReadOnly = "MUSTER_MIRROR_OPENCODE_READ_ONLY"
 )
 
 // openCodeTokenFileDefault is the token file's default: ~/.muster/opencode-token,
@@ -107,6 +111,19 @@ func openCodeCredentials(path string) (*opencodehost.Credentials, string) {
 	return c, ""
 }
 
+// openCodePending is a READ-ONLY daemon's credential when its token file
+// could not be read at the start (openCodeCredentials gave none): a
+// PendingCredentials that KeepReloaded fills once a usable file is there — the
+// host paired, or the file fixed, after this daemon started. nil when there is
+// no path (HOME unset and no -opencode-token-file). Never for a renewing
+// daemon: what it cannot read at its start it could not renew either.
+func openCodePending(path string) *opencodehost.Credentials {
+	if path == "" {
+		return nil
+	}
+	return opencodehost.PendingCredentials(expandHome(path))
+}
+
 // withOpenCode is b with its opencode windows resolved from src, when b is the
 // tmux backend.
 func withOpenCode(b mirrorhost.Backend, src *mirrorhost.OpenCodeSource) mirrorhost.Backend {
@@ -117,12 +134,33 @@ func withOpenCode(b mirrorhost.Backend, src *mirrorhost.OpenCodeSource) mirrorho
 	return b
 }
 
+// openCodeReloadEvery is how often a read-only daemon re-reads the token
+// file (a test shortens it).
+var openCodeReloadEvery = opencodehost.ReloadEvery
+
 // startOpenCode logs the daemon's opencode credential c (nil: why there is
-// none) and keeps it renewed until ctx ends.
-func startOpenCode(ctx context.Context, c *opencodehost.Credentials, why string, logger *log.Logger) *opencodehost.Credentials {
+// none) and keeps it renewed until ctx ends — or, readOnly, keeps it re-read
+// from its file and never renews it: another daemon on this host renews it. A
+// reader whose file was not there at its start (c not Loaded: why says why)
+// keeps re-reading it too, and uses it once it appears.
+// Whether two renewers can invalidate each other's token is unmeasured, so
+// with several daemons exactly one renews (docs/design/multi-tenant.md).
+func startOpenCode(ctx context.Context, c *opencodehost.Credentials, why string, readOnly bool, logger *log.Logger) *opencodehost.Credentials {
 	if c == nil {
 		logger.Printf("muster-mirror: opencode: %s", why)
 		return nil
+	}
+	if readOnly && !c.Loaded() {
+		logger.Printf("muster-mirror: opencode: %s; READ-ONLY (-opencode-read-only): re-reading %s every %s, and using it once it holds a token",
+			why, c.Path, openCodeReloadEvery)
+		go opencodehost.KeepReloaded(ctx, c, logger, openCodeReloadEvery)
+		return c
+	}
+	if readOnly {
+		logger.Printf("muster-mirror: opencode: token %s for %s, expires %s; READ-ONLY (-opencode-read-only): re-read from %s every %s, renewed by another muster-mirror",
+			c.Fingerprint(), c.URL(), c.Expires().UTC().Format(time.RFC3339), c.Path, openCodeReloadEvery)
+		go opencodehost.KeepReloaded(ctx, c, logger, openCodeReloadEvery)
+		return c
 	}
 	logger.Printf("muster-mirror: opencode: token %s for %s, expires %s", c.Fingerprint(), c.URL(), c.Expires().UTC().Format(time.RFC3339))
 	go opencodehost.KeepRenewed(ctx, c, logger, opencodehost.RenewEvery, time.Now)

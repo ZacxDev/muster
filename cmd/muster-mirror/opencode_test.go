@@ -79,7 +79,7 @@ func TestOpenCodePairPrintsWhatItDidNeverTheTokenOrThePassword(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	cr, why := openCodeCredentials(tokFile)
-	c := startOpenCode(ctx, cr, why, logger)
+	c := startOpenCode(ctx, cr, why, false, logger)
 	if c == nil || !strings.Contains(logb.String(), opencodehost.Fingerprint(tf.Token)) || strings.Contains(logb.String(), sig) {
 		t.Fatalf("daemon log %q", logb.String())
 	}
@@ -132,7 +132,7 @@ func TestTheDaemonSaysWhyItHasNoOpenCodeToken(t *testing.T) {
 	// read it as a fault.
 	var logb bytes.Buffer
 	cr, why := openCodeCredentials(p)
-	if c := startOpenCode(context.Background(), cr, why, log.New(&logb, "", 0)); c != nil {
+	if c := startOpenCode(context.Background(), cr, why, false, log.New(&logb, "", 0)); c != nil {
 		t.Fatal("credentials from a missing file")
 	}
 	wantLog := "muster-mirror: opencode: not paired on this host (no token at " + p +
