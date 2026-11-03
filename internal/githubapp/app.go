@@ -386,7 +386,7 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 		}
 		// One of the caller's read repositories (an officer's read_repos): a
 		// token for THAT repository, READ ONLY whatever the App's mode.
-		repo, access = read, AccessRead
+		repo, access = read, a.accessFor(caller)
 	}
 	tok, err := a.repoToken(ctx, caller.AgentID, repo, access)
 	a.mu.Lock()
