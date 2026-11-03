@@ -130,3 +130,52 @@ func TestTheHostAnswersOnlyAnApprovalItHolds(t *testing.T) {
 		}
 	})
 }
+
+// TestAHermesApprovalAttachedBeforeTheRefreshLoopStartsIsStillSent
+// (REGRESSION; the Hermes twin of
+// TestAnAskRaisedBeforeTheRefreshLoopStartsIsStillSent): the gateway viewer
+// attaches — and nudges for a listing carrying the approval's prompt id —
+// AFTER the hello's listing was read and BEFORE the refresh goroutine runs.
+// The old nudge dropped that signal, so the answerable approval reached muster
+// only at the next Refresh (an hour here). Forced deterministically: the hook
+// holds the refresh goroutine back until the viewer is attached AND its nudge
+// was raised (hostSide.nudged).
+func TestAHermesApprovalAttachedBeforeTheRefreshLoopStartsIsStillSent(t *testing.T) {
+	d := newDrivenMuster(t)
+	a := &fakeAttacher{prompts: []hermeshost.ApprovalPrompt{prompt("p1", "rm -r ./build")}}
+	ws := hermesWindow(mirror.StatusWaiting, "approval")
+	ws[0].Index, ws[0].Active = 0, true
+	b := hermesAnswerBackend{windowsBackend: &windowsBackend{windows: ws}, src: NewHermesSource(t.TempDir(), t.TempDir()), a: a}
+	beforeRefreshHook = func(h *hostSide) {
+		waitUntil(t, "the viewer attached and its nudge raised", func() bool {
+			h.hermes.mu.Lock()
+			s := h.hermes.sessions[askSID]
+			attached := s != nil && s.viewer != nil
+			h.hermes.mu.Unlock()
+			return attached && h.nudged.Load() > 0
+		})
+	}
+	t.Cleanup(func() { beforeRefreshHook = nil })
+	c, err := New(Config{URL: d.srv.URL, Token: mirror.TokenPrefix + "t", Host: "laptop", Backend: b, Interactive: true, HermesAnswer: true,
+		AllowHTTP: true, Refresh: time.Hour, Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = c.RunOnce(ctx) }()
+	waitUntil(t, "the hello", func() bool { return len(d.of(mirror.TypeHello)) == 1 })
+	if ws := d.of(mirror.TypeHello)[0].Windows; len(ws) != 1 || ws[0].Pending == nil || ws[0].Pending.PromptID != "" {
+		t.Fatalf("instrument check: the hello already named the approval (or no window), so the gap under test was never reached: %+v", ws)
+	}
+	waitUntil(t, "the answerable approval on the wire", func() bool {
+		for _, m := range d.of(mirror.TypeSessions) {
+			for _, w := range m.Windows {
+				if w.ID == "@1" && w.Pending != nil && w.Pending.PromptID == "p1" {
+					return true
+				}
+			}
+		}
+		return false
+	})
+}
