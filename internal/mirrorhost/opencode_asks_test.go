@@ -169,6 +169,32 @@ func TestARaisedAskIsSentAtOnceAndSoIsItsSettling(t *testing.T) {
 	waitUntil(t, "the settling on the wire", func() bool { return lastPending(d) == nil })
 }
 
+// TestAnAskRaisedBeforeTheRefreshLoopStartsIsStillSent (REGRESSION, main's
+// macOS CI flake): an ask raised AFTER the hello's listing was read but
+// BEFORE the connection's refresh goroutine runs — the window a slow
+// scheduler stretches — used to be signalled with nudge(), which drops the
+// signal when nobody receives it; the ask then reached muster only at the
+// next Refresh (an hour here). Forced deterministically by raising it in that
+// very window (beforeRefreshHook).
+func TestAnAskRaisedBeforeTheRefreshLoopStartsIsStillSent(t *testing.T) {
+	srv, src, _ := askSource(t, "OC | Ask session")
+	beforeRefreshHook = func() {
+		srv.EmitFrame(opencodetest.FixtureFrame("permission.asked", 0))
+		waitUntil(t, "the source to hold the ask", func() bool {
+			src.mu.Lock()
+			defer src.mu.Unlock()
+			_, ok := src.asks[opencodetest.FixtureBashRequest]
+			return ok
+		})
+	}
+	t.Cleanup(func() { beforeRefreshHook = nil })
+	d := runOCHost(t, src, "OC | Ask session", false)
+	if p := d.of(mirror.TypeHello)[0]; len(p.Windows) == 0 || p.Windows[0].Pending != nil {
+		t.Fatalf("instrument check: the hello already carried the ask, so the window under test was never reached: %+v", p.Windows)
+	}
+	waitUntil(t, "the request on the wire", func() bool { p := lastPending(d); return p != nil && p.Kind == mirror.PendingPermission })
+}
+
 // 🔴 The host's own half of an answer, whatever muster sends: a read-only
 // host (not -interactive: a non-default tenant's, say) relays nothing to
 // opencode and advertises no answer — it still LISTS the ask (muster

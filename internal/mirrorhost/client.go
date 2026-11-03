@@ -203,6 +203,11 @@ type Client struct {
 	cur   *hostSide
 }
 
+// beforeRefreshHook, when set (tests), runs on a connection after its hello
+// and welcome and before its refresh goroutine starts: the window in which a
+// change signal finds no one receiving.
+var beforeRefreshHook func()
+
 // RefreshNow re-reads this host's windows and, if they changed, sends them to
 // muster NOW rather than at the next Refresh — returning once that is done
 // (or ctx ends). The MCP endpoint calls it before forwarding a tool call, so
@@ -357,6 +362,14 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	defer conn.hermes.close()
 	// An opencode ask raised or settled sends the listing at once, so muster
 	// notifies (and withdraws) without waiting for the next refresh.
+	//
+	// 🔴 A BLOCKING KICK, NOT nudge(): nudge drops its signal when the refresh
+	// goroutine is not receiving — and it is not until after the hello and
+	// welcome below. An ask raised between this subscription and that point
+	// (after the hello's listing was read) was dropped, and reached muster
+	// only at the next Refresh (5 s by default; never, in a test with an hour).
+	// Changes' one-slot buffer coalesces any number of changes into one kick
+	// that waits for the refresh goroutine.
 	if src, ok := conn.openCodeSource(); ok {
 		changes, stop := src.Changes()
 		defer stop()
@@ -366,7 +379,11 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 				case <-ctx.Done():
 					return
 				case <-changes:
-					conn.nudge()
+				}
+				select {
+				case conn.kick <- make(chan struct{}):
+				case <-ctx.Done():
+					return
 				}
 			}
 		}()
@@ -435,6 +452,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		if err := conn.send(mirror.Msg{Type: mirror.TypeColors, Colors: first.colors}); err != nil {
 			return err
 		}
+	}
+	if beforeRefreshHook != nil {
+		beforeRefreshHook()
 	}
 	go conn.refresh(first)
 	go conn.keepalive(cancel)
