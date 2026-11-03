@@ -62,6 +62,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
+| `tiers` | none | Two pools of instances, routine and judgement, each with its own `model` and `max_instances`: [Tiers](#tiers). Absent: one pool, as above. |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -482,6 +483,56 @@ and is waited for before the process exits.
 in muster is; see `cmd/muster-server`'s `startBackgroundLoops`). Two pods
 starting the same instance is one agent create winning on the unique name and
 one logged failure; two stopping one is idempotent.
+
+### Tiers
+
+An officer may split its instances into two **pools**, one per HQ item tier
+(HQ's item `tier`, `routine` or `judgement`):
+
+```json
+{"id": "gpu-health:fleet", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "haiku", "max_instances": 3},
+           "judgement": {"model": "opus",  "max_instances": 1}}}
+```
+
+- **Names.** The judgement pool's instances are `officer-<slug>-<n>`, the names
+  an untiered officer's have always had. The routine pool's are
+  `officer-<slug>-r<n>` (shown as `#r<n>`). Both pools are the officer's
+  instances for every rule the name decides: the officer tools, delete
+  protection, the session's model, and the transcript forwarder. A name past
+  its pool's `max_instances` is an ordinary agent, as for an untiered officer.
+- **Waking.** One pass reads HQ once and runs `Decide` per pool. A pool counts
+  only the claimable items of its own tier as HQ reads them. An item with no
+  `tier`, or one muster does not know, counts as **judgement**, so it fails
+  toward the stronger model, as HQ's default does. A routine item HQ promoted
+  after two lapsed leases reads `judgement`, so the judgement pool wakes for it.
+  A live claim belongs to the pool of the instance holding it, whatever the
+  item's tier. Each pool has its **own idle clock**: the routine pool scales to
+  zero while the judgement pool keeps working, and the other way round.
+- **Claims.** Each instance's `officer_claim` sends its pool's `tier`. HQ then
+  refuses another tier's item with `409 wrong_tier`, and the instance gets that
+  refusal as it is. `officer_items` lists only the instance's own tier
+  (`?tier=`). The first message says which tier the instance works.
+- **No `tiers`: exactly as before.** There is one pool and the same names. The
+  claim sends no `tier` key and the items list has no tier filter.
+
+Refused at boot, each naming the problem:
+- a tier key other than `routine` and `judgement`;
+- a missing pool;
+- a pool without a `model`, or with a model that is not a model name;
+- an unknown key inside a pool;
+- a pool `max_instances` outside 1–8 (the default is 1);
+- a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
+  values are `tiers.judgement`'s, and two sources for one value are refused
+  rather than ranked);
+- `tiers` on a [shipping officer](#shipping-officers), because every pool
+  would hold its merge and release tools;
+- a routine name (`-r<max>`, one character longer) over the namespace bound.
+
+⚠ A pool's `model` is the instance session's Claude Code model, checked by the
+same rule as `model`. An OpenRouter-style `vendor/model` id is refused today.
+Routing a routine pool to a non-Anthropic model is the LLM proxy's and the
+pod's job, and that model is pinned there, not here.
 
 ### A claim held by a stopped instance
 

@@ -205,6 +205,9 @@ func (q ItemsQuery) encode() string {
 	if q.Cursor != "" {
 		v.Set("cursor", q.Cursor)
 	}
+	if q.Tier != "" {
+		v.Set("tier", q.Tier)
+	}
 	if len(v) == 0 {
 		return ""
 	}
@@ -282,9 +285,15 @@ func ClampLease(seconds int) int {
 	return seconds
 }
 
-// Claim is POST …/items/{item}/claim.
+// Claim is POST …/items/{item}/claim. tier, when set, is sent as the claim's
+// `tier` (HQ then takes only an item of that tier: 409 wrong_tier otherwise);
+// "" sends no tier key at all — an untiered officer's claim, as before tiers.
 func (c *Client) Claim(ctx context.Context, item ItemID, instance string, leaseSeconds int, tier string) ([]byte, error) {
-	return c.Do(ctx, http.MethodPost, c.itemPath(item, "claim"), map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)})
+	body := map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)}
+	if tier != "" {
+		body["tier"] = tier
+	}
+	return c.Do(ctx, http.MethodPost, c.itemPath(item, "claim"), body)
 }
 
 // Heartbeat is POST …/items/{item}/heartbeat.

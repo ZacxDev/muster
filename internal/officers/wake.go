@@ -150,14 +150,20 @@ type Decision struct {
 	Held int
 }
 
-// Decide is the loop's whole policy, as a pure function.
+// Decide is the loop's whole policy, as a pure function, for ONE POOL of
+// instances: o is an untiered officer, or one pool of a tiered one
+// (Officer.Pools), and obs.Instances that pool's instances.
 //
 //   - Claimable = open items, plus claimed items whose lease has expired (the
 //     contract makes those claimable by anyone) — less any item HQ marks
 //     Blocked: its claim is refused, so it is not work, and an instance woken
-//     or kept up for it would claim nothing.
+//     or kept up for it would claim nothing. A tiered pool counts only the
+//     items of its own tier as HQ reads them (ItemTier): its instances' claims
+//     name the tier, so another tier's item is not work for them either (HQ
+//     answers 409 wrong_tier).
 //   - Held = claimed items with a live lease whose holder is one of this
-//     officer's instances.
+//     pool's instances — whatever the item's tier: a claim belongs to the pool
+//     that holds it.
 //   - Busy (Claimable > 0 or Held > 0): want min(MaxInstances, held-by-up +
 //     Claimable) instances up; start the lowest-numbered down instances to
 //     reach it. Never stop anything while busy.
@@ -173,7 +179,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		byName[in.Name] = in
 	}
 	ours := func(holder string) (InstanceState, bool) {
-		if _, n, ok := (&Registry{list: []Officer{o}}).ForAgentName(holder); ok {
+		if p, n, ok := (&Registry{list: []Officer{o}}).ForAgentName(holder); ok && p.Tier == o.Tier {
 			if in, ok := byName[holder]; ok {
 				return in, true
 			}
@@ -183,14 +189,14 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	}
 	var d Decision
 	for _, it := range obs.Open {
-		if !it.Blocked {
+		if !it.Blocked && o.worksItem(it) {
 			d.Claimable++
 		}
 	}
 	heldByUp := map[string]bool{}
 	for _, it := range obs.Claimed {
 		if !it.LeaseLive(now) {
-			if !it.Blocked {
+			if !it.Blocked && o.worksItem(it) {
 				d.Claimable++
 			}
 			continue
@@ -314,13 +320,17 @@ func Backoff(o Officer, failures int) time.Duration {
 
 // officerState is the little the loop remembers per officer.
 type officerState struct {
-	idleSince time.Time
+	// idleSince is when each pool was first seen idle, by Officer.Tier ("" for
+	// an untiered officer's one pool).
+	idleSince map[string]time.Time
 	failures  int
 	nextAt    time.Time
-	// promptedAt is when each instance was last started or re-prompted.
-	promptedAt map[int]time.Time
-	// errored is the instances last seen in error (logged on change).
-	errored map[int]bool
+	// promptedAt is when each instance was last started or re-prompted, by
+	// instance agent name (the two pools' numbers overlap).
+	promptedAt map[string]time.Time
+	// errored is the instances last seen in error (logged on change), by
+	// instance agent name.
+	errored map[string]erroredSlot
 	// fault is the CONFIRMED permanent HQ refusal (the status, e.g. "404"; ""
 	// = none). It is set once a refusal has been seen on FaultStrikes
 	// consecutive passes and cleared ONLY by a successful answer — a 5xx in
@@ -376,10 +386,13 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
+// erroredSlot is how an instance in error is named in the log.
+type erroredSlot struct{ officer, instance string }
+
 func (r *Reconciler) st(id string) *officerState {
 	s, ok := r.state[id]
 	if !ok {
-		s = &officerState{promptedAt: map[int]time.Time{}, errored: map[int]bool{}}
+		s = &officerState{idleSince: map[string]time.Time{}, promptedAt: map[string]time.Time{}, errored: map[string]erroredSlot{}}
 		r.state[id] = s
 	}
 	return s
@@ -415,10 +428,14 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		r.mu.Unlock()
 		return PassResult{Skipped: true}
 	}
-	idleSince := s.idleSince
+	idleSince := make(map[string]time.Time, len(s.idleSince))
+	for k, v := range s.idleSince {
+		idleSince[k] = v
+	}
 	r.mu.Unlock()
 
-	obs, err := r.observe(ctx, o)
+	pools := o.Pools()
+	obs, err := r.observe(ctx, pools)
 	if err != nil {
 		r.mu.Lock()
 		s.failures++
@@ -462,18 +479,21 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		}
 		return r.scaleDownForFault(ctx, o, err, refusal)
 	}
-	r.noteErrors(o, obs.Instances)
+	r.noteErrors(o, pools, obs)
 	if r.observed != nil {
-		r.observed(o, obs.Claimed, now)
+		r.observed(o, obs[0].Claimed, now)
 	}
 	r.mu.Lock()
-	prompted := make(map[int]time.Time, len(s.promptedAt))
-	for n, at := range s.promptedAt {
-		prompted[n] = at
+	ds := make([]Decision, len(pools))
+	for i, p := range pools {
+		prompted := map[int]time.Time{}
+		for n := 1; n <= p.MaxInstances; n++ {
+			if at, ok := s.promptedAt[p.InstanceName(n)]; ok {
+				prompted[n] = at
+			}
+		}
+		ds[i] = Decide(p, obs[i], idleSince[p.Tier], now, prompted)
 	}
-	r.mu.Unlock()
-	d := Decide(o, obs, idleSince, now, prompted)
-	r.mu.Lock()
 	if s.fault != "" {
 		r.log.Printf("officers: %s: HQ answers again (was a configuration fault: HQ answered %s)", o.ID, s.fault)
 		s.fault = ""
@@ -481,67 +501,97 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	s.strikes = 0
 	s.failures = 0
 	s.nextAt = now.Add(o.PollInterval)
-	switch {
-	case !d.Idle:
-		s.idleSince = time.Time{}
-	case s.idleSince.IsZero():
-		s.idleSince = now
-	}
-	if len(d.Stop) > 0 {
-		// The officer is going to zero; a later wake starts a fresh window.
-		s.idleSince = time.Time{}
+	for i, p := range pools {
+		d := ds[i]
+		switch {
+		case !d.Idle:
+			delete(s.idleSince, p.Tier)
+		case s.idleSince[p.Tier].IsZero():
+			s.idleSince[p.Tier] = now
+		}
+		if len(d.Stop) > 0 {
+			// The pool is going to zero; a later wake starts a fresh window.
+			delete(s.idleSince, p.Tier)
+		}
 	}
 	r.mu.Unlock()
 	r.publish()
-	return PassResult{Decision: d, ActErrs: r.act(ctx, o, d)}
+	return r.actAll(ctx, pools, ds, nil)
+}
+
+// actAll acts on each pool's decision, in Pools order, and gathers them into
+// one PassResult: Decision is the first pool's (the untiered officer's, or the
+// judgement pool's), Routine the routine pool's.
+func (r *Reconciler) actAll(ctx context.Context, pools []Officer, ds []Decision, cause error) PassResult {
+	res := PassResult{Err: cause}
+	for i, p := range pools {
+		res.ActErrs = append(res.ActErrs, r.act(ctx, p, ds[i])...)
+	}
+	res.Decision = ds[0]
+	if len(ds) > 1 {
+		d := ds[1]
+		res.Routine = &d
+	}
+	return res
 }
 
 // scaleDownForFault stops every up instance of o (HQ refuses it permanently).
 // A fleet that cannot be seen changes nothing, as everywhere else.
 func (r *Reconciler) scaleDownForFault(ctx context.Context, o Officer, cause error, status string) PassResult {
-	insts, err := r.fleet.Instances(ctx, o)
-	if err != nil {
-		return PassResult{Err: cause}
-	}
-	d := Decision{StopReason: "HQ configuration fault: " + status}
-	for _, in := range insts {
-		if in.Up {
-			d.Stop = append(d.Stop, in.N)
+	pools := o.Pools()
+	ds := make([]Decision, len(pools))
+	for i, p := range pools {
+		insts, err := r.fleet.Instances(ctx, p)
+		if err != nil {
+			return PassResult{Err: cause}
 		}
+		ds[i] = Decision{StopReason: "HQ configuration fault: " + status}
+		for _, in := range insts {
+			if in.Up {
+				ds[i].Stop = append(ds[i].Stop, in.N)
+			}
+		}
+		sort.Ints(ds[i].Stop)
 	}
-	sort.Ints(d.Stop)
-	return PassResult{Err: cause, Decision: d, ActErrs: r.act(ctx, o, d)}
+	return r.actAll(ctx, pools, ds, cause)
 }
 
-// noteErrors logs each instance entering or leaving error, once per change.
-func (r *Reconciler) noteErrors(o Officer, insts []InstanceState) {
+// noteErrors logs each instance entering or leaving error, once per change,
+// across all of o's pools (obs is parallel to pools).
+func (r *Reconciler) noteErrors(o Officer, pools []Officer, obs []Observation) {
 	r.mu.Lock()
 	s := r.st(o.ID)
-	var entered, left []int
-	now := map[int]bool{}
-	for _, in := range insts {
-		if in.Error {
-			now[in.N] = true
-			if !s.errored[in.N] {
-				entered = append(entered, in.N)
+	var entered, left []string
+	now := map[string]erroredSlot{}
+	for i, p := range pools {
+		for _, in := range obs[i].Instances {
+			if in.Error {
+				now[in.Name] = erroredSlot{officer: p.label(), instance: p.InstanceLabel(in.N)}
+				if _, was := s.errored[in.Name]; !was {
+					entered = append(entered, in.Name)
+				}
 			}
 		}
 	}
-	for n := range s.errored {
-		if !now[n] {
-			left = append(left, n)
+	gone := map[string]erroredSlot{}
+	for name, slot := range s.errored {
+		if _, still := now[name]; !still {
+			left = append(left, name)
+			gone[name] = slot
 		}
 	}
 	s.errored = now
 	r.mu.Unlock()
-	sort.Ints(entered)
-	sort.Ints(left)
-	for _, n := range entered {
-		r.log.Printf("officers: %s: instance %d is in error — it holds its slot and is NOT restarted, so the officer runs below target "+
-			"until it recovers or an operator acts (agent %s)", o.ID, n, InstanceName(o.ID, n))
+	sort.Strings(entered)
+	sort.Strings(left)
+	for _, name := range entered {
+		e := now[name]
+		r.log.Printf("officers: %s: instance %s is in error — it holds its slot and is NOT restarted, so the officer runs below target "+
+			"until it recovers or an operator acts (agent %s)", e.officer, e.instance, name)
 	}
-	for _, n := range left {
-		r.log.Printf("officers: %s: instance %d left error", o.ID, n)
+	for _, name := range left {
+		e := gone[name]
+		r.log.Printf("officers: %s: instance %s left error", e.officer, e.instance)
 	}
 	r.publish()
 }
@@ -564,40 +614,50 @@ func (r *Reconciler) publish() {
 	published.Unlock()
 }
 
-func (r *Reconciler) observe(ctx context.Context, o Officer) (Observation, error) {
+// observe reads HQ ONCE for the officer — every tier's items — and the fleet
+// once per pool, returning one Observation per pool (parallel to pools), each
+// with all the items and that pool's instances: Decide does the tier split.
+// Any failed read fails the whole pass, as for an untiered officer.
+func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observation, error) {
+	o := pools[0]
 	open, err := r.hq.AllItems(ctx, o, StatusOpen)
 	if err != nil {
-		return Observation{}, err
+		return nil, err
 	}
 	claimed, err := r.hq.AllItems(ctx, o, StatusClaimed)
 	if err != nil {
-		return Observation{}, err
+		return nil, err
 	}
-	insts, err := r.fleet.Instances(ctx, o)
-	if err != nil {
-		return Observation{}, err
+	out := make([]Observation, len(pools))
+	for i, p := range pools {
+		insts, err := r.fleet.Instances(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts}
 	}
-	return Observation{Open: open, Claimed: claimed, Instances: insts}, nil
+	return out, nil
 }
 
+// act moves pool o's instances as d says.
 func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 	var errs []error
 	for _, it := range d.Release {
 		if err := r.hq.Release(ctx, o, it.ID, it.ClaimedBy); err != nil {
 			errs = append(errs, err)
-			r.log.Printf("officers: %s: release item %s held by stopped instance %s: %v", o.ID, it.ID, it.ClaimedBy, err)
+			r.log.Printf("officers: %s: release item %s held by stopped instance %s: %v", o.label(), it.ID, it.ClaimedBy, err)
 			continue
 		}
-		r.log.Printf("officers: %s: released item %s: its holder %s is not running", o.ID, it.ID, it.ClaimedBy)
+		r.log.Printf("officers: %s: released item %s: its holder %s is not running", o.label(), it.ID, it.ClaimedBy)
 	}
 	for _, n := range d.Start {
 		if err := r.fleet.Start(ctx, o, n, KickoffText(o, n)); err != nil {
 			errs = append(errs, err)
-			r.log.Printf("officers: %s: start instance %d: %v", o.ID, n, err)
+			r.log.Printf("officers: %s: start instance %s: %v", o.label(), o.InstanceLabel(n), err)
 			continue
 		}
 		r.prompted(o, n)
-		r.log.Printf("officers: %s: started instance %d (%d claimable, %d held)", o.ID, n, d.Claimable, d.Held)
+		r.log.Printf("officers: %s: started instance %s (%d claimable, %d held)", o.label(), o.InstanceLabel(n), d.Claimable, d.Held)
 	}
 	for _, n := range d.Reprompt {
 		err := r.fleet.Reprompt(ctx, o, n, RepromptText(o, n))
@@ -608,30 +668,30 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 		}
 		if err != nil {
 			errs = append(errs, err)
-			r.log.Printf("officers: %s: re-prompt instance %d: %v", o.ID, n, err)
+			r.log.Printf("officers: %s: re-prompt instance %s: %v", o.label(), o.InstanceLabel(n), err)
 			continue
 		}
 		r.prompted(o, n)
-		r.log.Printf("officers: %s: re-prompted idle instance %d for new work (%d claimable)", o.ID, n, d.Claimable)
+		r.log.Printf("officers: %s: re-prompted idle instance %s for new work (%d claimable)", o.label(), o.InstanceLabel(n), d.Claimable)
 	}
 	for _, n := range d.Stop {
 		if err := r.fleet.Stop(ctx, o, n); err != nil {
 			errs = append(errs, err)
-			r.log.Printf("officers: %s: scale instance %d to zero: %v", o.ID, n, err)
+			r.log.Printf("officers: %s: scale instance %s to zero: %v", o.label(), o.InstanceLabel(n), err)
 			continue
 		}
 		reason := d.StopReason
 		if reason == "" {
 			reason = "idle " + o.IdleAfter.String()
 		}
-		r.log.Printf("officers: %s: scaled instance %d to zero (%s)", o.ID, n, reason)
+		r.log.Printf("officers: %s: scaled instance %s to zero (%s)", o.label(), o.InstanceLabel(n), reason)
 	}
 	return errs
 }
 
 func (r *Reconciler) prompted(o Officer, n int) {
 	r.mu.Lock()
-	r.st(o.ID).promptedAt[n] = r.now()
+	r.st(o.ID).promptedAt[o.InstanceName(n)] = r.now()
 	r.mu.Unlock()
 }
 
@@ -708,8 +768,8 @@ func HQFaults() float64 { published.Lock(); defer published.Unlock(); return pub
 // RepromptText is the turn an up, idle instance is given when its officer has
 // claimable work. Like KickoffText it carries no credential.
 func RepromptText(o Officer, n int) string {
-	return fmt.Sprintf("New work for officer %s (you are instance %d, %s): call %s and work the queue as before — %s, %s while you work, %s when done. "+
-		"Call %s again only if you need your charter.", o.ID, n, InstanceName(o.ID, n), ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolBrief)
+	return fmt.Sprintf("New work for officer %s (you are instance %s, %s): call %s and work the queue as before — %s, %s while you work, %s when done. "+
+		"Call %s again only if you need your charter.", o.ID, o.InstanceLabel(n), o.InstanceName(n), ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolBrief)
 }
 
 // permanentRefusal names an HQ answer that is a configuration fault rather
