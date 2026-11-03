@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -724,6 +725,26 @@ func queueToolDefs() []agents.ToolDef {
 		{Type: "function", Name: officers.ToolRelease,
 			Description: "Give an item back before its lease ends, so another instance can take it.",
 			Parameters:  objSchema(map[string]any{"item_id": item}, "item_id")},
+		{Type: "function", Name: officers.ToolAskPerson,
+			Description: "Ask a named HQ member a question about an item you hold, when you need a human's decision to finish it (for example a design review with screenshots). " +
+				"HQ notifies them. 🔴 Asking ENDS your lease on the item: HQ sets it to waiting with no holder, so stop working it — " +
+				"do not heartbeat, complete or release it. HQ re-opens it (claimable) with the answers on it once every open ask on it is answered or withdrawn, " +
+				"and muster wakes an instance for it; if the deadline passes unanswered, HQ escalates the item to its owner. " +
+				"A second ask on a waiting item is allowed (the same item_id).",
+			Parameters: objSchema(map[string]any{
+				"item_id":  item,
+				"to":       strProp("The HQ member's GitHub login."),
+				"question": strProp(fmt.Sprintf("The question, 1-%d characters. Say what you need decided and why.", officers.MaxAskQuestion)),
+				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskOptions,
+					"description": fmt.Sprintf("Optional answers to pick from: at most %d short, unique labels of 1-%d characters.", officers.MaxAskOptions, officers.MaxAskOptionChars)},
+				"images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskImages,
+					"description": fmt.Sprintf("Optional, at most %d PNG, JPEG or WebP images of at most %d MiB each: each an http(s) URL muster fetches, or a data:image/<type>;base64,<data> URI. "+
+						"muster runs outside your pod and cannot read files in your workspace; a whole tool call is capped at 64 KiB, so a data: URI suits only a small image.", officers.MaxAskImages, officers.MaxAskImageBytes>>20)},
+				"context_url": strProp("Optional http(s) URL with the context (a pull request, a preview, a dashboard)."),
+				// A string in the schema (one type, as every other tool's); a JSON
+				// integer of seconds is accepted at dispatch too.
+				"deadline": strProp("Optional: how long they have to answer, as a duration (\"4h\", \"90m\") or a number of seconds (\"3600\"), 5m to 72h. Default HQ's, 24h."),
+			}, "item_id", "to", "question")},
 		{Type: "function", Name: officers.ToolReleaseEvaluation,
 			Description: "Post to HQ's release captain route (POST /releases/captain): your risk evaluation of a release and/or your post-release report. " +
 				"service and tag come from the item's payload. Give evaluation (level low|medium|high|severe, summary, optional monitors) for a release.evaluate item, " +
@@ -802,6 +823,13 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		Outcome      string          `json:"outcome"`
 		Summary      string          `json:"summary"`
 		Links        []string        `json:"links"`
+		// officer_ask_person's.
+		To         string          `json:"to"`
+		Question   string          `json:"question"`
+		Options    []string        `json:"options"`
+		Images     []string        `json:"images"`
+		ContextURL string          `json:"context_url"`
+		Deadline   json.RawMessage `json:"deadline"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("invalid arguments for %s: %v", name, err), true
@@ -867,6 +895,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
 		}
+	case officers.ToolAskPerson:
+		if bad := needItem(); bad != "" {
+			return bad, true
+		}
+		ask := officers.Ask{To: in.To, Question: in.Question, Options: in.Options, Images: in.Images, ContextURL: in.ContextURL}
+		return s.officerAskPerson(ctx, c, o, instance, in.ItemID, ask, in.Deadline), true
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
@@ -875,6 +909,105 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body, err = c.ReleaseCaptain(ctx, instance, post)
 	}
 	return officerToolResult(name, body, err), true
+}
+
+// askedNote is what a successful officer_ask_person adds to HQ's answer.
+const askedNote = "asked. Your lease on this item has ENDED: HQ set it to waiting with no holder. Stop working it now — do not heartbeat, complete or release it. " +
+	"HQ re-opens it (open, claimable) with the answer on it (asks[] in officer_items, the claim response and officer_brief's open_items) once every open ask on it is answered or withdrawn, " +
+	"and muster wakes an instance for it: claim it then and carry on with the answer. If the deadline passes unanswered, HQ escalates the item to its owner. " +
+	"To ask another question on it meanwhile, call officer_ask_person again with the same item_id."
+
+// asksUnsupportedErr is officer_ask_person's answer from an HQ without the
+// asks routes (officers.AsksUnsupported).
+const asksUnsupportedErr = "this HQ does not support officer_ask_person yet (the asks route is not deployed): escalate the item instead " +
+	"(officer_complete outcome escalated) and say in the summary who you needed to ask and what"
+
+// officerAskPerson is officer_ask_person: check the ask, load every image
+// (all of them, before any upload: a bad fourth image uploads nothing), upload
+// each to HQ, then create the ask with the upload ids, in order.
+//
+// 🔴 A SUCCESS ENDS THE INSTANCE'S LEASE (HQ's contract), so the transcript
+// forwarder stops for the item as on complete/release, and the result says so
+// in words (askedNote) — the instance's next move is to stop working the item.
+func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask, deadline json.RawMessage) string {
+	secs, err := officers.ParseAskDeadline(deadline)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	ask.DeadlineSeconds = secs
+	if err := officers.ValidateAsk(ask); err != nil {
+		return toolErr("%v", err)
+	}
+	imgs := make([]officers.ImageData, 0, len(ask.Images))
+	for i, src := range ask.Images {
+		d, err := officers.LoadAskImage(ctx, s.officerRT.askHTTP, src, i+1)
+		if errors.Is(err, officers.ErrNotAnImageSource) {
+			return toolErr("images[%d] is %s. muster runs outside your pod and cannot read files in your workspace: give an http(s) URL muster can fetch, "+
+				"or a small image as a data:image/<type>;base64,<data> URI (a whole tool call is capped at 64 KiB)", i, err)
+		}
+		if err != nil {
+			return toolErr("images[%d]: %v", i, err)
+		}
+		imgs = append(imgs, d)
+	}
+	ask.Images = nil
+	for _, d := range imgs {
+		up, err := c.UploadAskImage(ctx, d.Filename, d.ContentType, d.Data)
+		if err != nil {
+			return askToolResult(nil, err)
+		}
+		ask.Images = append(ask.Images, up.ID)
+	}
+	body, err := c.CreateAsk(ctx, item, instance, ask)
+	if err == nil && s.officerRT.fwd != nil {
+		s.officerRT.fwd.Ended(o, instance, item)
+	}
+	return askToolResult(body, err)
+}
+
+// askToolResult is officer_ask_person's answer: HQ's JSON with askedNote on
+// success; the not-supported error for an HQ without the routes; HQ's status,
+// code and message on any other 4xx (refused.code beside HQ's body, so an
+// instance can branch on lease_lost / unknown_recipient / rate_limited without
+// parsing it); officerToolResult's shapes otherwise.
+func askToolResult(body []byte, err error) string {
+	var hqErr *officers.HQError
+	switch {
+	case err == nil:
+		var out map[string]json.RawMessage
+		if json.Unmarshal(body, &out) != nil || out == nil {
+			return officerToolResult(officers.ToolAskPerson, body, nil)
+		}
+		note, _ := json.Marshal(askedNote)
+		out["note"] = note
+		return toolJSON(out)
+	case officers.AsksUnsupported(err):
+		return toolErr(asksUnsupportedErr)
+	case errors.As(err, &hqErr):
+		var hq struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		_ = json.Unmarshal(hqErr.Body, &hq)
+		head := strconv.Itoa(hqErr.Status)
+		if hq.Code != "" {
+			head += " " + hq.Code
+		}
+		msg := fmt.Sprintf("HQ refused %s (%s)", officers.ToolAskPerson, head)
+		if hq.Error != "" {
+			msg += ": " + hq.Error
+		}
+		refused := map[string]any{"status": hqErr.Status}
+		if hq.Code != "" {
+			refused["code"] = hq.Code
+		}
+		if json.Valid(hqErr.Body) {
+			refused["hq"] = json.RawMessage(hqErr.Body)
+		}
+		return toolJSON(map[string]any{"error": msg, "refused": refused})
+	default:
+		return officerToolResult(officers.ToolAskPerson, nil, err)
+	}
 }
 
 // alreadyYoursNote is what a claim on an item the caller already holds says.

@@ -23,11 +23,12 @@ Start now:
 1. Call %[6]s. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
 2. Work the queue one item at a time: %[7]s to see open items, %[8]s{item_id} to take one (a 409 means another instance has it — move on), %[9]s{item_id} at least every few minutes while you work it, and %[10]s{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, %[11]s{item_id} so another instance can.
 3. Anything that needs a human: follow your charter. By default, finish the item with %[10]s{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
+   If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with %[13]s{item_id, to: their GitHub login, question, options?, images?}. Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer and muster wakes an instance for it.
 4. When %[7]s shows nothing open and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
 
 %[12]s`,
 		o.ID, n, o.MaxInstances, InstanceName(o.ID, n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o)) + repoNote(o) + connectorsNote(o) + releaseNote(o)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + repoNote(o) + connectorsNote(o) + releaseNote(o)
 }
 
 // closingLine is the kickoff's last paragraph: what the officer may never do.
@@ -167,11 +168,12 @@ func (o Officer) Type() string {
 }
 
 // ToolOffered is THE rule for which officer tools officer o's instances get:
-// the six queue tools for every officer, and the captain route's tool for a
-// release officer only. internal/api's listing and dispatch both ask it.
+// the six queue tools and officer_ask_person for every officer, and the
+// captain route's tool for a release officer only. internal/api's listing and
+// dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
 	switch tool {
-	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease:
+	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolAskPerson:
 		return true
 	case ToolReleaseEvaluation:
 		return o.Type() == ReleaseOfficerType

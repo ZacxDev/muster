@@ -154,8 +154,9 @@ three things in that session's `settings.json` at provision time (the pod's
   variable, and the officer would keep prompting.
 - **`permissions.allow`: exactly the officer's own tools, then the connector
   tools** — `mcp__muster__officer_brief`, `…officer_items`, `…officer_claim`,
-  `…officer_heartbeat`, `…officer_complete`, `…officer_release`, and for a
-  `release:*` officer `…officer_release_evaluation`; then, when the connector
+  `…officer_heartbeat`, `…officer_complete`, `…officer_release`,
+  `…officer_ask_person`, and for a `release:*` officer
+  `…officer_release_evaluation`; then, when the connector
   store is configured (`MUSTER_CONNECTOR_ENCRYPTION_KEY`, so the instance is
   offered them), `…connectors_list`, `…connector_request` and
   `…connector_status` — and `…postgres_query` when the officer declares
@@ -508,6 +509,7 @@ listing and again at dispatch):
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
+| `officer_ask_person` `{item_id, to, question, options?, images?, context_url?, deadline?}` | `POST /officers/{id}/ask-images` per image, then `POST …/items/{item}/asks` — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
@@ -540,6 +542,58 @@ ask there reaches nobody. Its MCP instructions and system prompt say the same,
 in place of the generic attention paragraph every other agent gets
 ([attention.md](attention.md#what-agents-are-told)).
 
+### Asking an HQ member (`officer_ask_person`)
+
+When an instance needs one named HQ member's decision to finish an item (a
+design review with screenshots, a judgement call its charter leaves to a
+person), it asks them with `officer_ask_person`. HQ notifies them, and:
+
+- 🔴 **asking ENDS the instance's lease.** HQ sets the item to `waiting` with no
+  holder. The instance must stop working it, and must not heartbeat, complete or
+  release it. The tool's result says so in a `note` beside HQ's answer
+  (`ask`, `item`, `delivery`), and transcript forwarding stops for the item;
+- HQ **re-opens** the item (`open`, claimable) once every open ask on it is
+  answered or withdrawn, with the answers on it (`asks[]` in the items list,
+  the claim response and the brief's `open_items`). muster's wake loop then
+  wakes an instance for it like any other open item;
+- if the deadline passes unanswered, HQ escalates the item to its owner;
+- a second ask on a waiting item is allowed (the same `item_id`).
+
+The arguments, checked by muster before anything is sent:
+
+| argument | |
+|---|---|
+| `to` | the member's GitHub login |
+| `question` | 1–2000 characters |
+| `options` | optional, at most 6 unique labels of 1–40 characters |
+| `images` | optional, at most 4: each an **http(s) URL** or a **`data:image/<type>;base64,…` URI** |
+| `context_url` | optional http(s) URL |
+| `deadline` | optional: a Go duration (`"4h"`, `"90m"`) or a number of seconds, 5m–72h, sent as `deadline_seconds` (HQ's default is 24h) |
+
+**Images.** muster-server runs outside the instance's pod and cannot read its
+workspace, so an image is a URL muster fetches or a data: URI. A workspace path
+is refused with that explanation. A whole MCP call is capped at 64 KiB, so a
+data: URI only suits a small image. Every image is loaded before the first
+upload, so one bad image uploads nothing. Each is at most 5 MiB (muster reads at
+most 5 MiB + 1 byte), and its type is taken from its **bytes**: PNG, JPEG or
+WebP only. A URL is refused when its server names a non-image `Content-Type`.
+A URL fetch is bounded by a 30 s timeout and follows at most 5 redirects, to
+http(s) only. 🔴 **The fetch dials public addresses only.** It uses the
+connector proxy's dialer, so a URL or a redirect that resolves to a loopback,
+private or link-local address is refused. muster-server can reach internal
+services the instance cannot, and the instance chooses the URL. Each image is
+uploaded as its raw bytes, with its sniffed `Content-Type` and a sanitised base
+filename. The ask is then created with the upload ids, in order.
+
+**Refusals** come back with HQ's status and `code`, in the error text and in
+`refused.code`: 409 `lease_lost` (no live lease and not already waiting),
+`officer_disabled` or `too_many_open`; 410 on a finished item; 422
+`unknown_recipient` or `recipient_muted`; 429 `rate_limited`. **An HQ without
+the feature** answers 404 `{"error": "no such route"}`, and the instance is told
+that this HQ does not support `officer_ask_person` yet. It should escalate the
+item instead (`officer_complete` outcome `escalated`) and say what it needed to
+ask. Any other 404, such as an unknown item, is HQ's own message.
+
 ### The first message
 
 ```
@@ -551,6 +605,9 @@ You are officer <id>, instance <n> of <max> (<agent name>). …
    item with officer_complete{item_id, outcome: "escalated", summary} … — HQ
    notifies the officer's owner — rather than attention_ask … Use attention_ask
    only if your charter explicitly says to.
+   If what you need is one named HQ member's decision on the item …, you may
+   instead ask them with officer_ask_person{…}. Asking ENDS your lease on the
+   item … HQ re-opens it with the answer and muster wakes an instance for it.
 4. When nothing is open and you hold no claim, stop and wait …
 ```
 
@@ -1042,7 +1099,7 @@ resume and re-claim handling below.
 **When.** `officer_claim` succeeding starts forwarding for that item, from the
 claim on (the first read takes the tail and keeps the lines written since the
 claim, less a 5 s clock slack; a line with no timestamp there is not sent).
-`officer_complete` or `officer_release` succeeding stops it. Every wake-loop
+`officer_complete`, `officer_release` or `officer_ask_person` succeeding stops it. Every wake-loop
 pass also reconciles: an item one of the officer's instances holds under a
 live lease that muster is not forwarding is RESUMED, and forwarding stops for
 an item no instance holds any more. A resume after a muster restart re-reads a
@@ -1178,7 +1235,9 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 /officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
 "failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
 uses `POST /officers/{id}/items/{item}/transcript`
-([Transcript to HQ](#transcript-to-hq)). Where the contract leaves a shape open, muster accepts:
+([Transcript to HQ](#transcript-to-hq)). `officer_ask_person` uses `POST
+/officers/{id}/ask-images?filename=…` (raw image bytes) and `POST
+/officers/{id}/items/{item}/asks`. Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;
@@ -1189,7 +1248,9 @@ implements the claim/lease rules as HQ does (409 to ANY claim while the lease
 is live — the holder's own included, which `officer_claim` turns into a
 heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
 across officers), the captain route's body rules, and the transcript route's
-(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`).
+(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), and
+the asks routes' (the upload's type and size checks, 409 `lease_lost`, 410,
+422 `unknown_recipient`, the item left `waiting`, and an HQ without them).
 
 ## Deploying
 
