@@ -94,10 +94,18 @@ func TestAnOfficersReadReposAreReadOnlyThroughOneApproval(t *testing.T) {
 		}
 	}
 	card := requestCard(t, serveCall(t, h, http.MethodGet, "/ui/connectors", nil, op).Body.String(), "github")
-	if !strings.Contains(card, "data-request-grants") {
+	// The grants paragraph alone: requestCard runs to the end of the page for
+	// the last card, and the page's connector list states the write-mode App's
+	// own scope ("read and write") for task agents.
+	i := strings.Index(card, "data-request-grants")
+	if i < 0 {
 		t.Fatalf("the approve card has no grants line:\n%s", card)
 	}
-	listsAll("the approve card", card)
+	grantsLine := card[i:]
+	if j := strings.Index(grantsLine, "</p>"); j >= 0 {
+		grantsLine = grantsLine[:j]
+	}
+	listsAll("the approve card", grantsLine)
 
 	mirrored := toolCaller{asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID, Label: "operator"}}
 	var listed struct {
