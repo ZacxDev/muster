@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // THE LOCAL MCP ENDPOINT: how a Claude Code session in one of this host's tmux
@@ -287,13 +288,16 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	client := p.Client
-	if client == nil {
-		client = &http.Client{}
-	}
-	resp, err := client.Do(req)
+	// 🔴 NO REDIRECTS, whatever client was configured: the request carries
+	// this host's mirror token (internal/noredirect).
+	resp, err := noredirect.Client(p.Client).Do(req)
 	if err != nil {
 		p.logf("muster-mirror: mcp: forward: %v", err)
+		var refused *noredirect.Error
+		if errors.As(err, &refused) {
+			mcpRefuse(w, http.StatusBadGateway, "muster answered with a redirect to "+refused.Host+", which is not followed")
+			return
+		}
 		mcpRefuse(w, http.StatusBadGateway, "muster could not be reached")
 		return
 	}
