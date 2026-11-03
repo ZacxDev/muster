@@ -116,6 +116,11 @@ type Officer struct {
 	// instance's request is still decided explicitly by the owner, and is never
 	// approved from a shared approval. Sorted and deduplicated.
 	Connectors []string `json:"connectors,omitempty"`
+	// LLM, when set, lets the officer's routine instances reach a model
+	// through muster's LLM proxy (llm.go, internal/llmproxy): the model pin,
+	// the daily USD budget, the per-item token cap and the allowed agents.
+	// nil (the default) refuses every proxy request for the officer.
+	LLM *LLM `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -158,6 +163,8 @@ type declared struct {
 	CILogs json.RawMessage `json:"ci_logs"`
 	// Transcript is parsed by parseTranscript.
 	Transcript json.RawMessage `json:"transcript"`
+	// LLM is parsed by parseLLM (llm.go), which reads its own key.
+	LLM json.RawMessage `json:"llm"`
 }
 
 // Transcript is an officer's `transcript` block: whether its instances' live
@@ -435,6 +442,13 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.Transcript = tr
+	}
+	if len(d.LLM) > 0 && string(d.LLM) != "null" {
+		l, err := parseLLM(o, d.LLM, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.LLM = l
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {

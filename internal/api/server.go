@@ -626,6 +626,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerFocusHistoryRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
+	s.registerLLMRoutes(mux)
 	s.registerCredentialRoutes(mux)
 	s.registerApprovalRoutes(mux)
 	s.registerAgentWorkRoutes(mux)

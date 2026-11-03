@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/transcript"
 	"github.com/ZacxDev/muster/internal/officership"
@@ -65,6 +66,9 @@ type officerRuntime struct {
 	// fwd forwards instances' transcripts to HQ (internal/officers/transcript);
 	// nil when no declared officer enables `transcript`.
 	fwd *transcript.Forwarder
+	// llm is the officer LLM proxy (officer_llm.go, internal/llmproxy); nil
+	// when no declared officer has an `llm` block.
+	llm *llmproxy.Proxy
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -101,6 +105,12 @@ type OfficersConfig struct {
 	// (tests drive Tick).
 	TranscriptInterval time.Duration
 	NoTranscriptRun    bool
+	// LLMStore keeps the LLM proxy's per-day usage (the budget); REQUIRED
+	// when an officer declares `llm`. LLMUpstream replaces the provider's API
+	// base and LLMHTTP its transport (tests); ""/nil is production.
+	LLMStore    llmproxy.Store
+	LLMUpstream string
+	LLMHTTP     *http.Client
 }
 
 // transcriptReader is the agent gateway's transcript read
@@ -181,16 +191,29 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
+	px, err := s.newLLMProxy(cfg)
+	if err != nil {
+		return nil, err
+	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: cfg.Now}
-	if fwd != nil {
+	switch {
+	case fwd != nil && px != nil:
+		sync := llmSync(px, reg)
+		rcfg.Observed = func(o officers.Officer, claimed []officers.Item, at time.Time) {
+			fwd.Sync(o, claimed, at)
+			sync(o, claimed, at)
+		}
+	case fwd != nil:
 		rcfg.Observed = fwd.Sync
+	case px != nil:
+		rcfg.Observed = llmSync(px, reg)
 	}
 	rec, err := officers.NewReconciler(rcfg)
 	if err != nil {
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
@@ -812,6 +835,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Claimed(o, instance, in.ItemID)
 		}
+		if err == nil {
+			s.llmClaimed(o, instance, in.ItemID)
+		}
 	case officers.ToolHeartbeat:
 		if bad := needItem(); bad != "" {
 			return bad, true
@@ -838,6 +864,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
 		}
+		if err == nil {
+			s.llmEnded(o, instance, in.ItemID)
+		}
 	case officers.ToolRelease:
 		if bad := needItem(); bad != "" {
 			return bad, true
@@ -845,6 +874,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body, err = c.Release(ctx, in.ItemID, instance)
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
+		}
+		if err == nil {
+			s.llmEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
