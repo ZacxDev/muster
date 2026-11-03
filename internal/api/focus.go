@@ -406,6 +406,63 @@ func focusEntryOf(ev cctranscript.Event) (focus.Entry, bool) {
 	return focus.Entry{}, false
 }
 
+// withPreviousTitles sets each entry's previous focus titles (PrevFocus) — what
+// the command palette finds a session by after its current title — from ONE
+// read for every entry (focus.Store.PreviousTitles: each session's newest
+// focus.TitleHistoryRows history rows). The live set is exactly the entries
+// being drawn: the viewer's own agents and mirrored sessions. The read runs
+// under the request's principal, so row-level security keeps another owner's
+// history out even when a session key is shared. No store, nothing to read or
+// a failed read (logged) leaves every PrevFocus empty: the palette still finds
+// the entry by its name and current title.
+func (s *Server) withPreviousTitles(ctx context.Context, cards []ui.AgentCardView, mirrors []ui.MirrorCardView) {
+	if s.ext.Focus == nil {
+		return
+	}
+	var live focus.Live
+	for _, c := range cards {
+		live.Agents = append(live.Agents, c.ID)
+	}
+	for _, m := range mirrors {
+		if m.FocusKey != "" {
+			live.Mirrors = append(live.Mirrors, m.FocusKey)
+		}
+	}
+	if len(live.Agents) == 0 && len(live.Mirrors) == 0 {
+		return
+	}
+	got, err := s.ext.Focus.PreviousTitles(ctx, live)
+	if err != nil {
+		s.logger.Printf("focus: previous titles for the palette: %v", err)
+		return
+	}
+	for i := range cards {
+		cards[i].PrevFocus = previousTitles(got[focus.AgentSubject(cards[i].ID)], cards[i].Focus)
+	}
+	for i := range mirrors {
+		if mirrors[i].FocusKey != "" {
+			mirrors[i].PrevFocus = previousTitles(got[focus.MirrorSubject(mirrors[i].FocusKey)], mirrors[i].Focus)
+		}
+	}
+}
+
+// previousTitles is ts's titles with the current focus's title left out: the
+// newest history row IS the current focus, and a title the session has now is
+// not a previous one.
+func previousTitles(ts []focus.TitleAt, cur *ui.FocusView) []string {
+	now := ""
+	if cur != nil {
+		now = cur.Title
+	}
+	var out []string
+	for _, t := range ts {
+		if t.Title != "" && t.Title != now {
+			out = append(out, t.Title)
+		}
+	}
+	return out
+}
+
 // focusIndex is the viewer's focus by subject, read once per render; empty
 // with no focus store or on a read error (a card then shows no focus).
 type focusIndex map[focus.Subject]focus.Focus

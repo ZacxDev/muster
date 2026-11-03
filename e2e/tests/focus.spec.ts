@@ -40,6 +40,13 @@ const transcript = path.join(dir, sid + '.jsonl');
 // problem): the palette must not find it by the other window's focus.
 const sid2 = '0b2c3d4e-5f60-4718-8a9c-' + stamp.padStart(12, '0').slice(-12);
 const transcript2 = path.join(dir, sid2 + '.jsonl');
+// A third Claude window (@5) whose CURRENT focus is about something else and
+// whose PREVIOUS one names the reconciliation: the palette finds it by that
+// previous title, ranked after the window whose codename is the word
+// ("reconciling:1") and the agent whose CURRENT focus starts with it.
+const sid3 = '0b2c3d4e-5f60-4718-8a9d-' + stamp.padStart(12, '0').slice(-12);
+const transcript3 = path.join(dir, sid3 + '.jsonl');
+const PREVIOUS_TITLE = 'Reconciling the payout zephyr';
 // `history`: that many earlier focuses are written first (e2e/mkchat), so the
 // mirrored session's history is 46 rows — three pages of 20 — and the agent's 4.
 const MIRROR_HISTORY = 45;
@@ -48,6 +55,7 @@ const focusEnv = JSON.stringify([
   { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY },
   { subject: 'mirror:' + sid, title: 'Bisecting the flaky tunnel test', description: 'The backoff resets too early.', history: MIRROR_HISTORY },
   { subject: 'mirror:' + sid2, error: 'no OpenRouter key' },
+  { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [PREVIOUS_TITLE] },
 ]);
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
@@ -79,9 +87,10 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(transcript, '');
   fs.writeFileSync(transcript2, '');
+  fs.writeFileSync(transcript3, '');
   const now = Math.floor(Date.now() / 1000);
   // session|id|index|active|command|activity|claude-transcript
-  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\n`);
+  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\nfocuswin|@5|5|0|claude|${now - 300}|${transcript3}\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -169,6 +178,75 @@ for (const vp of [
       await expect(options).toHaveCount(1);
       await expect(options.first()).toContainText('Bisecting the flaky tunnel test');
       await page.keyboard.press('Escape');
+    });
+
+    // 🔴 PREVIOUS FOCUS TITLES (operator ask: "find agents by their focus
+    // titles, either current or previous"). Typed into the real palette, a
+    // fragment of a title the window @5 HAD finds it, saying why on its second
+    // line ("Previously: …"); and "reconciling" lists, in this order, the
+    // window whose codename starts with it, the agent whose CURRENT focus does,
+    // and @5 by its PREVIOUS one. Red at origin/main: @5 is not found at all.
+    test('the palette finds a session by a previous focus title, ranked after its name and a current title', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      await expect(page.locator(`#sidebar-agents-list a[href^="/agents/${agentName}"]`)).toHaveCount(1);
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      const w5 = options.filter({ has: page.locator('[data-match-previous]') });
+
+      await input.fill('payout zeph');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toHaveAttribute('data-match', 'previous');
+      await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + PREVIOUS_TITLE);
+      await expect(options.first().locator('span').first()).toHaveText('focuswin:5');
+
+      // The ranking: name, then current title, then previous title.
+      await input.fill('reconciling');
+      const rows = await options.evaluateAll((els) =>
+        els.map((e) => `${e.getAttribute('data-match')}:${(e.firstElementChild as HTMLElement).textContent}`));
+      const at = (re: RegExp) => rows.findIndex((r) => re.test(r));
+      const name = at(/^code:reconciling:1/), current = at(/^title:/), previous = at(/^previous:focuswin:5$/);
+      expect(name, `the codename match is listed: ${rows}`).toBeGreaterThanOrEqual(0);
+      expect(current, `the current-title match is listed: ${rows}`).toBeGreaterThan(name);
+      expect(previous, `the previous-title match is listed last of the three: ${rows}`).toBeGreaterThan(current);
+      await expect(w5).toHaveCount(1);
+
+      // Enter on it opens that window.
+      await input.fill('payout zephyr');
+      await page.keyboard.press('Enter');
+      await expect(page).toHaveURL(/window=%405/);
+    });
+
+    // The palette's rank as a table (window.musterPaletteMatch, the rule the
+    // palette above runs): exact name, then name tiers, then the current
+    // title, then the best previous title, then the words; searchrank's
+    // letters-in-order tier is no match. Values pairwise distinct.
+    test('the palette rank: name before current title before previous title before words', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/tasks');
+      const got = await page.evaluate(() => {
+        const m = (window as unknown as { musterPaletteMatch: (e: object, q: string) => { r: number; why: string; hit?: string } | null }).musterPaletteMatch;
+        const e = { code: 'mango:1', title: 'Porting the importer', prev: ['Bisecting the tunnel', 'Unbisecting nothing', 'Tunnel bisecting'], words: 'acme-repo claude code' };
+        return ['mango:1', 'mango', 'go:1', 'porting', 'importer', 'tunnel', 'bisecting', 'acme', 'mg1', 'zzz', ''].map((q) => {
+          const r = m(e, q);
+          return r ? `${q}=${r.r}/${r.why}${r.hit ? '/' + r.hit : ''}` : `${q}=none`;
+        });
+      });
+      expect(got).toEqual([
+        'mango:1=0/code',
+        'mango=1/code',
+        'go:1=3/code',
+        'porting=4/title',
+        'importer=5/title',
+        'tunnel=7/previous/Tunnel bisecting',
+        'bisecting=7/previous/Bisecting the tunnel',
+        'acme=10/words',
+        'mg1=none',
+        'zzz=none',
+        '=0/',
+      ]);
     });
 
     test('the rendered view\'s sheet tabs "Your messages" with "Focus history", by arrow keys, and keeps the choice', async ({ page }) => {

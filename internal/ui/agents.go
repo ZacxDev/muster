@@ -117,6 +117,10 @@ type AgentCardView struct {
 	// Composed in cardViewIndexed; the palette finds the entry by its title
 	// (switcherItems' Title).
 	Focus *FocusView
+	// PrevFocus is the agent's previous focus titles, newest first, its
+	// current one left out (internal/api's withPreviousTitles); the palette
+	// finds the entry by them after its current title (palette.go).
+	PrevFocus []string
 	// Attention is the entry's attention count (cards_attention.go), drawn on
 	// its sidebar row (navAttentionPill), nil for none. Composed in internal/api
 	// from the attention queue's own read.
