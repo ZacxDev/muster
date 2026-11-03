@@ -258,8 +258,8 @@ func TestOneWriterPerStateDir(t *testing.T) {
 	}
 }
 
-// The running plugin end to end: /health, the admin socket (show, requests,
-// send with --bind), the loops delivering and replying on their own.
+// The running plugin end to end: /health, the admin socket (show), the loops
+// delivering and replying on their own.
 func TestRunServesHealthAndTheAdminSocket(t *testing.T) {
 	e := newEnv(t)
 	cfg := e.config()
@@ -272,40 +272,24 @@ func TestRunServesHealthAndTheAdminSocket(t *testing.T) {
 	defer func() { cancel(); <-done }()
 
 	waitFor(t, "the peer verified", func() bool { _, s, _ := p.peerFor(KeyIDOf(e.peer.chief)); return s == peerOK })
-	b, err := AdminCall(bg, e.stateDir, http.MethodPost, "/send",
-		SendRequest{To: "alice/chief", Subject: "hi", Body: "a new thread", Bind: "0b5e9a64-1111-4222-8333-444455556666"})
-	e.must(err)
-	var sent map[string]any
-	_ = json.Unmarshal(b, &sent)
-	if sent["state"] != ledSent || sent["bound"] != true {
-		t.Fatalf("send: %s", b)
-	}
-	got := e.peerInbox()
-	// An interim send is a NEW message to a peer that has not allowed us: it
-	// lands in the peer's requests queue (their human decides), not inbox.
-	reqs := e.queue(e.peer.chief, "requests")
-	if len(got) != 0 || len(reqs) != 1 || reqs[0].ID != sent["id"] {
-		t.Fatalf("the send did not reach the peer's requests queue: inbox %d requests %d", len(got), len(reqs))
-	}
-	var bind map[string]string
-	for _, h := range e.muster.allHits() {
-		if h.Path == "/api/plugin-threads" {
-			_ = json.Unmarshal(h.Raw, &bind)
-		}
-	}
-	if bind["thread"] != sent["id"] || bind["claude_session"] != "0b5e9a64-1111-4222-8333-444455556666" {
-		t.Fatalf("bind %v, want the sent id and the session", bind)
-	}
-	// The peer answers our message: delivered on its own, threaded to it.
-	ans := e.send(e.peer.chief, []string{KeyIDOf(e.us.chief)}, "", "got it", sent["id"].(string))
-	waitFor(t, "the answer delivered", func() bool { return len(e.muster.messagePosts()) == 1 })
+	waitFor(t, "the peer allowed at the hub", func() bool {
+		var ok bool
+		p.st.view(func(s *State) { _, ok = s.Allowed[KeyIDOf(e.peer.chief)] })
+		return ok
+	})
+	// The peer writes to us: delivered on its own, threaded to itself (a root).
+	in := e.send(e.peer.chief, []string{KeyIDOf(e.us.chief)}, "hi", "a new thread", "")
+	waitFor(t, "the message delivered", func() bool { return len(e.muster.messagePosts()) == 1 })
 	m := decodeMsg(t, e.muster.messagePosts()[0])
-	if m["external_id"] != ans || m["thread"] != sent["id"] {
-		t.Fatalf("the answer: %v thread %v, want thread %v", m["external_id"], m["thread"], sent["id"])
+	if m["external_id"] != in || m["thread"] != in {
+		t.Fatalf("the message: %v thread %v, want %s thread %s", m["external_id"], m["thread"], in, in)
 	}
 	// A reply to it, approved in muster, goes out on its own.
-	e.muster.queueDraft(41, ans, "great")
+	e.muster.queueDraft(41, in, "great")
 	waitFor(t, "the reply's result", func() bool { return len(e.muster.resultsFor("41")) == 1 })
+	if r := e.muster.resultsFor("41")[0]; r["ok"] != true {
+		t.Fatalf("the reply's result: %v", r)
+	}
 
 	addr := p.healthAddr()
 	resp, err := http.Get("http://" + addr + "/health")
@@ -321,8 +305,9 @@ func TestRunServesHealthAndTheAdminSocket(t *testing.T) {
 	if strings.Contains(string(show), "great") || strings.Contains(string(show), "a new thread") {
 		t.Fatal("show printed message text")
 	}
-	if _, err := AdminCall(bg, e.stateDir, http.MethodPost, "/send", SendRequest{To: "nobody/chief", Body: "x"}); err == nil {
-		t.Fatal("a send to an unconfigured peer was accepted")
+	// The admin socket cannot send: there is no door to start a conversation.
+	if _, err := AdminCall(bg, e.stateDir, http.MethodPost, "/send", map[string]string{"to": "alice/chief", "body": "x"}); err == nil {
+		t.Fatal("the admin socket accepted POST /send")
 	}
 }
 

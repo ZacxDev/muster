@@ -40,7 +40,7 @@ func TestIdentityCeremonyMakesAChainAPeerVerifies(t *testing.T) {
 		{"identity", "claim", "--key", pk, "--name", "acme"},
 		{"identity", "grant", "--key", pk},
 	} {
-		if rc := run(args, e, nil, &out, &errb); rc != 0 {
+		if rc := run(args, e, &out, &errb); rc != 0 {
 			t.Fatalf("%v: rc %d: %s", args, rc, errb.String())
 		}
 	}
@@ -63,7 +63,7 @@ func TestIdentityCeremonyMakesAChainAPeerVerifies(t *testing.T) {
 		t.Fatalf("the ceremony's chain does not verify: %v %v", res, err)
 	}
 	// keygen never overwrites.
-	if rc := run([]string{"keygen", "--out", ck}, e, nil, &out, &errb); rc == 0 {
+	if rc := run([]string{"keygen", "--out", ck}, e, &out, &errb); rc == 0 {
 		t.Fatal("keygen overwrote a key file")
 	}
 }
@@ -91,7 +91,7 @@ func TestServeRefusesABadConfiguration(t *testing.T) {
 		}
 		bad[k] = v
 		var errb bytes.Buffer
-		if rc := run(nil, env(bad), nil, &bytes.Buffer{}, &errb); rc != 2 {
+		if rc := run(nil, env(bad), &bytes.Buffer{}, &errb); rc != 2 {
 			t.Errorf("%s=%q: rc %d, want 2 (refused at boot): %s", k, v, rc, errb.String())
 		}
 	}

@@ -282,7 +282,7 @@ func (p *Plugin) Summary() map[string]any {
 	outcomes := map[string]int{}
 	peers := []map[string]any{}
 	ledger := map[string]int{}
-	var requests, rejected, allowed int
+	var requests, rejected, allowed, misthreaded int
 	p.st.view(func(s *State) {
 		for _, m := range s.Messages {
 			outcomes[m.Outcome]++
@@ -299,6 +299,7 @@ func (p *Plugin) Summary() map[string]any {
 			}
 		}
 		requests, rejected, allowed = len(s.Requests), s.Rejected, len(s.Allowed)
+		misthreaded = s.HubThreadMismatches
 	})
 	p.health.mu.Lock()
 	out["last_poll_ok"], out["poll_error"] = p.health.lastPoll, p.health.pollErr
@@ -308,6 +309,9 @@ func (p *Plugin) Summary() map[string]any {
 	p.health.mu.Unlock()
 	out["messages"], out["peers"], out["ledger"] = outcomes, peers, ledger
 	out["requests"], out["rejected"], out["allowed_keys"] = requests, rejected, allowed
+	// Delivered messages the hub mis-threaded (its unsigned thread named another
+	// root than the signed re chain): a hub that is lying or broken.
+	out["hub_thread_mismatches"] = misthreaded
 	return out
 }
 

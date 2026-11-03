@@ -1,7 +1,9 @@
 package clankmailplugin
 
 // replier.go — outbound: an approved reply draft → a signed msg at the hub →
-// the draft's result; and the interim human-only send (admin.go).
+// the draft's result. The plugin only REPLIES; it has no way to start a new
+// conversation (that will come from muster, as compose drafts the owner
+// approves).
 //
 // AT MOST ONCE, BY CONTENT. A ClankMail id is the hash of the signed bytes, and
 // the hub answers a submission of bytes it already stores with 200 and the
@@ -123,7 +125,7 @@ func (p *Plugin) handleDraft(ctx context.Context, d draft) error {
 }
 
 // finish drives one ledger entry to its end: submit (the same bytes) while
-// pending, then report (a reply) or bind (a send).
+// pending, then report the result.
 func (p *Plugin) finish(ctx context.Context, key string) error {
 	var e LedgerEntry
 	var ok bool
@@ -141,15 +143,8 @@ func (p *Plugin) finish(ctx context.Context, key string) error {
 		}
 		p.st.view(func(s *State) { e = *s.Ledger[key] })
 	}
-	switch e.Kind {
-	case "reply":
-		if !e.Reported {
-			return p.report(ctx, key, e)
-		}
-	case "send":
-		if e.State == ledSent && e.Bind != "" && !e.BindDone {
-			return p.bind(ctx, key, e)
-		}
+	if e.Kind == "reply" && !e.Reported {
+		return p.report(ctx, key, e)
 	}
 	return nil
 }
@@ -177,23 +172,15 @@ func (p *Plugin) submitEntry(ctx context.Context, key string, e LedgerEntry) err
 		}
 		var root string
 		p.st.view(func(s *State) {
-			if e.Kind == "reply" {
-				if m := s.Messages[e.Message]; m != nil {
-					root = m.Root
-				}
-			} else {
-				root = id
+			if m := s.Messages[e.Message]; m != nil {
+				root = m.Root
 			}
 		})
 		p.log.Info("sent", "kind", e.Kind, "draft_id", e.DraftID, "id", id, "peer", e.Peer)
 		return p.st.update(func(s *State) error {
 			x := s.Ledger[key]
 			x.State, x.ID = ledSent, id
-			re := ""
-			if e.Kind == "reply" {
-				re = e.Message
-			}
-			s.Messages[id] = &MsgRecord{Dir: "out", From: p.self, Peer: e.Peer, Re: re, Root: root,
+			s.Messages[id] = &MsgRecord{Dir: "out", From: p.self, Peer: e.Peer, Re: e.Message, Root: root,
 				Outcome: outSent, TS: p.now().UnixMilli(), At: p.now().Unix()}
 			return nil
 		})
@@ -261,8 +248,7 @@ func (p *Plugin) ResumePending(ctx context.Context) error {
 	cut := p.now().Add(-ledgerTokenRetention).Unix()
 	p.st.view(func(s *State) {
 		for k, e := range s.Ledger {
-			if e.State == ledPending || (e.Kind == "reply" && !e.Reported) ||
-				(e.Kind == "send" && e.State == ledSent && e.Bind != "" && !e.BindDone) {
+			if e.State == ledPending || (e.Kind == "reply" && !e.Reported) {
 				todo = append(todo, kv{k, e.At})
 			}
 		}
@@ -284,8 +270,7 @@ func (p *Plugin) ResumePending(ctx context.Context) error {
 	// The bytes of a finished entry are kept while a new draft could repeat its
 	// text (muster's drafts live 7 days); then only the id and outcome stay.
 	prunable := func(e *LedgerEntry) bool {
-		return e.Token != "" && e.State != ledPending && e.At < cut && (e.Kind != "reply" || e.Reported) &&
-			(e.Kind != "send" || e.Bind == "" || e.BindDone)
+		return e.Token != "" && e.State != ledPending && e.At < cut && (e.Kind != "reply" || e.Reported)
 	}
 	any := false
 	p.st.view(func(s *State) {

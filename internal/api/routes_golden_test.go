@@ -716,7 +716,7 @@ func moduleRoot(t *testing.T) string {
 //     mux pattern.)
 var otherServerRoutes = map[string][]string{
 	"cmd/ccd":                  {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
-	"internal/clankmailplugin": {"GET /requests", "GET /show", "POST /peer-verify", "POST /send"},
+	"internal/clankmailplugin": {"GET /requests", "GET /show", "POST /peer-verify"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

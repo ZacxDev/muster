@@ -444,8 +444,9 @@ grants the chief key the name `chief`, and the chief key enrolls
 `@<owner>/chief`. It delivers direct messages from **pinned peers** to your
 chief (`sender: <owner>/chief`, `sender_verified: true`, `thread`: the root
 derived by following each message's signed `re`), and sends the replies you
-approve. A message from anyone else lands in the hub's `requests` queue and is
-**never** posted to muster: `muster-clankmail requests` counts and lists them
+approve. It does not start conversations; that will come from muster, as
+compose drafts you approve in the browser. A message from anyone else lands in
+the hub's `requests` queue and is **never** posted to muster: `muster-clankmail requests` counts and lists them
 for you. The image ships it as `/muster-clankmail`; run one replica per state
 directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
 
@@ -460,7 +461,6 @@ directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
 | `STATE_DIR` | none | yes | A writable directory (a volume): `state.json` (cursors, message records without bodies, the reply ledger), `state.lock`, and the admin socket `admin.sock` the admin subcommands use. |
 | `POLL_INTERVAL` | `15s` | no | How often the hub's inbox and requests queues are read. Range `1s`–`5m`. |
 | `LISTEN_ADDR` | `:8080` | no | Where `GET /health` is served (status, counts, peer states; never message text). |
-| `MUSTER_API_TOKEN_FILE` | none | no | A file holding a personal (`mst_`) or hook token, used only by `muster-clankmail send --bind <claude session id>` to bind the new thread to that session (`POST /api/plugin-threads`). |
 
 ⚠ **Clocks.** The hub accepts a request's auth only within ±60 s of its own
 clock, and a message within ±300 s. Run the plugin on a host whose clock is

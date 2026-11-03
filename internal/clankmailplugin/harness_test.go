@@ -31,7 +31,6 @@ import (
 const (
 	testHub     = "hub.example"
 	pluginToken = "mpl_test-plugin-token"
-	apiToken    = "mst_test-api-token"
 )
 
 // t0: a fixture instant in the year 2000 (the leak gate's allowed year).
@@ -89,8 +88,6 @@ type fakeMuster struct {
 	results map[string][]map[string]any
 	// messageStatus, when set, overrides the answer to POST /plugin/v1/messages.
 	messageStatus int
-	// bindStatus overrides POST /api/plugin-threads (0: 201).
-	bindStatus int
 }
 
 func newFakeMuster(t *testing.T) *fakeMuster {
@@ -105,20 +102,6 @@ func (m *fakeMuster) serve(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.hits = append(m.hits, musterHit{r.Method, r.URL.Path, r.Header.Get("Authorization"), raw})
 	m.mu.Unlock()
-	if r.URL.Path == "/api/plugin-threads" {
-		if r.Header.Get("Authorization") != "Bearer "+apiToken {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		m.mu.Lock()
-		st := m.bindStatus
-		m.mu.Unlock()
-		if st == 0 {
-			st = http.StatusCreated
-		}
-		w.WriteHeader(st)
-		return
-	}
 	if r.Header.Get("Authorization") != "Bearer "+pluginToken {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -346,7 +329,7 @@ func (e *env) config(peers ...PeerConf) Config {
 		peers = []PeerConf{e.peerConf(e.peer)}
 	}
 	return Config{
-		MusterURL: e.muster.srv.URL, PluginToken: pluginToken, MusterAPIToken: apiToken,
+		MusterURL: e.muster.srv.URL, PluginToken: pluginToken,
 		HubURL: e.front.URL, HubName: testHub, Key: e.us.chief, Peers: peers,
 		PollInterval: 50 * time.Millisecond, StateDir: e.stateDir, ListenAddr: "127.0.0.1:0",
 	}

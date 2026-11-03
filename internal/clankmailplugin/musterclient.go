@@ -1,8 +1,7 @@
 package clankmailplugin
 
 // musterclient.go — muster's plugin door (docs/plugins.md, "The plugin
-// author's contract") and the one non-plugin route this plugin may call,
-// POST /api/plugin-threads, with a separate credential.
+// author's contract"). The plugin calls nothing else on muster.
 
 import (
 	"bytes"
@@ -158,24 +157,6 @@ func (m *MusterClient) result(ctx context.Context, id string, r draftResult) (fi
 	}
 	if st == http.StatusConflict {
 		return true, &MusterError{st}
-	}
-	return false, &MusterError{st}
-}
-
-// bindThread is POST /api/plugin-threads {thread, claude_session} with a
-// PERSONAL or hook token (not the plugin token: muster refuses mpl_ off
-// /plugin/v1/*). created=false on 200 (already bound: the first bind wins).
-func (m *MusterClient) bindThread(ctx context.Context, apiToken, thread, session string) (created bool, err error) {
-	st, _, err := m.do(ctx, http.MethodPost, "/api/plugin-threads", apiToken,
-		map[string]string{"thread": thread, "claude_session": session})
-	if err != nil {
-		return false, err
-	}
-	switch st {
-	case http.StatusCreated:
-		return true, nil
-	case http.StatusOK:
-		return false, nil
 	}
 	return false, &MusterError{st}
 }

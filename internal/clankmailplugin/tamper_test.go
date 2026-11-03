@@ -1,8 +1,10 @@
 package clankmailplugin
 
 // tamper_test.go — a hostile hub. The plugin talks to the hub through a
-// reverse proxy that rewrites what the hub serves. Every case here must
-// deliver NOTHING to muster, and each says which guard stopped it.
+// reverse proxy that rewrites what the hub serves. Every forged case here must
+// deliver NOTHING to muster, and each says which guard stopped it. The one
+// exception is an authentic message the hub merely mis-threads (its unsigned
+// `thread`): that is delivered on the derived root, and the lie is counted.
 
 import (
 	"bytes"
@@ -137,10 +139,11 @@ func TestTamperNonPeerKeyInInboxIsNotDelivered(t *testing.T) {
 	}
 }
 
-// The hub's UNSIGNED thread swapped to another root: the derived root
-// disagrees, so this hub is lying about this message — not delivered, and the
-// swapped value never reaches muster.
-func TestTamperSwappedUnsignedThreadIsNotDelivered(t *testing.T) {
+// The hub's UNSIGNED thread swapped to another root. The message is authentic,
+// so it IS delivered — threaded on the root DERIVED from its signed `re`
+// chain, never on the hub's value — and the disagreement is counted, so `show`
+// and /health report how many messages this hub mis-threaded.
+func TestTamperSwappedUnsignedThreadIsDeliveredOnTheDerivedRootAndCounted(t *testing.T) {
 	e := newEnv(t)
 	p := e.ready("")
 	us := KeyIDOf(e.us.chief)
@@ -160,29 +163,60 @@ func TestTamperSwappedUnsignedThreadIsNotDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 	posts := e.muster.messagePosts()
-	if len(posts) != 1 {
-		t.Fatalf("muster received %d messages, want only the honest decoy", len(posts))
+	if len(posts) != 3 {
+		t.Fatalf("muster received %d messages, want 3: the decoy and both mis-threaded messages", len(posts))
 	}
-	for _, id := range []string{root, reply} {
-		if got := outcomeOf(p, id); got != outHubThread {
-			t.Errorf("%s: outcome %q, want %q", id, got, outHubThread)
+	for i, id := range []string{root, reply} {
+		m := decodeMsg(t, posts[1+i])
+		if m["external_id"] != id {
+			t.Fatalf("post %d is %v, want %s", 1+i, m["external_id"], id)
+		}
+		if m["thread"] == decoy {
+			t.Fatalf("%s: muster was sent the hub's unsigned thread %s", id, decoy)
+		}
+		if m["thread"] != root {
+			t.Fatalf("%s: thread %v, want the derived root %s", id, m["thread"], root)
+		}
+		if got := outcomeOf(p, id); got != outDelivered {
+			t.Errorf("%s: outcome %q, want %q", id, got, outDelivered)
 		}
 	}
-	// Control: with the tamper off, the hub's own thread agrees and a new reply
-	// is delivered, threaded to the DERIVED root.
+	if got := hubThreadMismatches(t, p); got != 2 {
+		t.Fatalf("hub_thread_mismatches %d, want 2 (root and reply)", got)
+	}
+	// Control: with the tamper off, the hub's own thread agrees: the new reply
+	// is delivered on the derived root and NOT counted.
 	e.setTamper(nil)
 	again := e.send(e.peer.chief, []string{us}, "", "reply 2", root)
 	if err := p.PollInbox(bg); err != nil {
 		t.Fatal(err)
 	}
 	posts = e.muster.messagePosts()
-	if len(posts) != 2 {
+	if len(posts) != 4 {
 		t.Fatalf("control: want the honest reply delivered, muster has %d", len(posts))
 	}
-	m := decodeMsg(t, posts[1])
+	m := decodeMsg(t, posts[3])
 	if m["external_id"] != again || m["thread"] != root {
 		t.Fatalf("control: %v thread %v, want %s thread %s", m["external_id"], m["thread"], again, root)
 	}
+	if got := hubThreadMismatches(t, p); got != 2 {
+		t.Fatalf("control: hub_thread_mismatches %d, want still 2 (an honest hub is not counted)", got)
+	}
+}
+
+// hubThreadMismatches is the count `show` and /health report, read through
+// Summary (what an operator sees), not the state field.
+func hubThreadMismatches(t *testing.T, p *Plugin) int {
+	t.Helper()
+	b, err := json.Marshal(p.Summary()["hub_thread_mismatches"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if json.Unmarshal(b, &n) != nil {
+		t.Fatalf("Summary has no numeric hub_thread_mismatches (got %s)", b)
+	}
+	return n
 }
 
 // The handle record served under a different principal key: the chain no

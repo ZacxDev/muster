@@ -29,14 +29,13 @@ import (
 
 // Outcomes recorded for an inbox item.
 const (
-	outDelivered     = "delivered"           // muster answered 2xx
-	outMusterRefused = "muster_refused"      // body over 16 KiB, or muster refused the content (400/413/422)
-	outNotMine       = "not_mine"            // authentic, but our key is not in `to` (misdelivered)
-	outNotPeer       = "not_peer"            // authentic and ours, from a key no peer pins
-	outPeerDisabled  = "peer_disabled"       // from a pinned peer whose chain did not verify
-	outNotMsg        = "not_msg"             // authentic, but not a `msg`
-	outHubThread     = "hub_thread_mismatch" // the hub's unsigned thread named another root
-	outSent          = "sent"                // a message WE sent (reply or interim send)
+	outDelivered     = "delivered"      // muster answered 2xx
+	outMusterRefused = "muster_refused" // body over 16 KiB, or muster refused the content (400/413/422)
+	outNotMine       = "not_mine"       // authentic, but our key is not in `to` (misdelivered)
+	outNotPeer       = "not_peer"       // authentic and ours, from a key no peer pins
+	outPeerDisabled  = "peer_disabled"  // from a pinned peer whose chain did not verify
+	outNotMsg        = "not_msg"        // authentic, but not a `msg`
+	outSent          = "sent"           // a reply WE sent
 )
 
 // MsgRecord is what the plugin keeps about one m_ id. No body.
@@ -86,9 +85,9 @@ const (
 	ledRefused = "refused" // refused locally; never signed or never sent
 )
 
-// LedgerEntry is one outbound message: a reply to a draft, or an interim send.
+// LedgerEntry is one outbound message: a reply to an approved draft.
 type LedgerEntry struct {
-	Kind     string `json:"kind"` // "reply" | "send"
+	Kind     string `json:"kind"` // "reply"
 	DraftID  string `json:"draft_id,omitempty"`
 	Message  string `json:"message,omitempty"` // reply: the m_ id answered
 	BodySHA  string `json:"body_sha,omitempty"`
@@ -97,9 +96,7 @@ type LedgerEntry struct {
 	ID       string `json:"id,omitempty"`    // m_ id of Token
 	State    string `json:"state"`
 	Detail   string `json:"detail,omitempty"`
-	Reported bool   `json:"reported,omitempty"` // reply: muster accepted the result
-	Bind     string `json:"bind,omitempty"`     // send: the claude session to bind the thread to
-	BindDone bool   `json:"bind_done,omitempty"`
+	Reported bool   `json:"reported,omitempty"` // muster accepted the result
 	At       int64  `json:"at"`
 }
 
@@ -112,9 +109,14 @@ type State struct {
 	Ancestors      map[string]string         `json:"ancestors,omitempty"` // fetched m_ id → its re ("" = a root)
 	Requests       map[string]*RequestRecord `json:"requests"`
 	Rejected       int                       `json:"rejected"` // inbox/requests items that failed §4
-	Peers          map[string]*PeerState     `json:"peers"`    // by key
-	Allowed        map[string]int64          `json:"allowed"`  // keys WE put on the hub allow list (unix s)
-	Ledger         map[string]*LedgerEntry   `json:"ledger"`   // "draft:<id>" or "send:<m_ id>"
+	// HubThreadMismatches counts authentic inbox messages whose hub-supplied
+	// (unsigned) thread named a different root than the one derived from the
+	// signed re chain. They are delivered on the derived root; this is the
+	// record that the hub mis-threaded them.
+	HubThreadMismatches int                     `json:"hub_thread_mismatches,omitempty"`
+	Peers               map[string]*PeerState   `json:"peers"`   // by key
+	Allowed             map[string]int64        `json:"allowed"` // keys WE put on the hub allow list (unix s)
+	Ledger              map[string]*LedgerEntry `json:"ledger"`  // "draft:<id>"
 }
 
 func newState() State {

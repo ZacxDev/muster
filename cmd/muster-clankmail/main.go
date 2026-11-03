@@ -11,10 +11,11 @@
 //	muster-clankmail peer verify [--accept-principal] OWNER/NAME
 //	muster-clankmail requests [--bodies]
 //	muster-clankmail show
-//	muster-clankmail send --to OWNER/NAME [--subject S] [--body-file F|-] [--bind SESSION]
 //
-// The admin subcommands (peer verify, requests, show, send) talk to the running
+// The admin subcommands (peer verify, requests, show) talk to the running
 // plugin over $STATE_DIR/admin.sock; run them inside the plugin's container.
+// None of them sends a message: the plugin only sends replies the owner
+// approved in muster.
 package main
 
 import (
@@ -38,10 +39,10 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
 
-func run(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "serve" {
 		return serve(getenv, stderr)
 	}
@@ -57,8 +58,6 @@ func run(args []string, getenv func(string) string, stdin io.Reader, stdout, std
 		err = requests(args[1:], getenv, stdout)
 	case "show":
 		err = admin(getenv, stdout, http.MethodGet, "/show", nil)
-	case "send":
-		err = send(args[1:], getenv, stdin, stdout)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "muster-clankmail", clankmailplugin.Version)
 	case "help", "-h", "--help":
@@ -81,7 +80,6 @@ const usage = `usage:
   muster-clankmail peer verify [--accept-principal] OWNER/NAME
   muster-clankmail requests [--bodies]
   muster-clankmail show
-  muster-clankmail send --to OWNER/NAME [--subject S] [--body-file FILE|-] [--bind CLAUDE_SESSION_ID]
 `
 
 func serve(getenv func(string) string, stderr io.Writer) int {
@@ -329,30 +327,4 @@ func requests(args []string, getenv func(string) string, stdout io.Writer) error
 		fmt.Fprintf(stdout, "    UNTRUSTED subject: %s\n    UNTRUSTED body: %s\n", strconv.Quote(subject), strconv.Quote(body))
 	}
 	return nil
-}
-
-func send(args []string, getenv func(string) string, stdin io.Reader, stdout io.Writer) error {
-	fs := flag.NewFlagSet("send", flag.ContinueOnError)
-	to := fs.String("to", "", "the configured peer OWNER/NAME")
-	subject := fs.String("subject", "", "an optional subject")
-	bodyFile := fs.String("body-file", "-", "the body: a file, or - for stdin")
-	bind := fs.String("bind", "", "a Claude session id: a reply on this new thread is routed to that session")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *to == "" {
-		return errors.New("send needs --to OWNER/NAME")
-	}
-	var body []byte
-	var err error
-	if *bodyFile == "-" {
-		body, err = io.ReadAll(io.LimitReader(stdin, 64<<10))
-	} else {
-		body, err = os.ReadFile(*bodyFile)
-	}
-	if err != nil {
-		return err
-	}
-	return admin(getenv, stdout, http.MethodPost, "/send",
-		clankmailplugin.SendRequest{To: *to, Subject: *subject, Body: string(body), Bind: *bind})
 }

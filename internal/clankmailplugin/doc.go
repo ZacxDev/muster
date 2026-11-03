@@ -35,7 +35,9 @@
 //     the pinned `<owner>/<name>` label, never anything the message says.
 //   - The thread sent to muster is DERIVED: `re` followed through verified
 //     records to a message with no `re` (SPEC §7.2). The hub's `thread` field is
-//     unsigned and is never read.
+//     unsigned and is never sent: it is only compared with the derived root,
+//     and a message it disagrees with is still delivered (on the derived root)
+//     and counted as mis-threaded by the hub.
 //   - The inbox cursor moves only after muster answered 2xx (or the item was
 //     judged and recorded), in one atomic state write.
 //   - A reply's signed bytes are written to the ledger (state.json, fsync'd)

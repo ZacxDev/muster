@@ -15,16 +15,15 @@ import (
 
 // Config is the plugin's configuration.
 type Config struct {
-	MusterURL      string
-	PluginToken    string
-	MusterAPIToken string // optional: only `send --bind` needs it
-	HubURL         string
-	HubName        string
-	Key            ed25519.PrivateKey // the chief key
-	Peers          []PeerConf
-	PollInterval   time.Duration
-	StateDir       string
-	ListenAddr     string
+	MusterURL    string
+	PluginToken  string
+	HubURL       string
+	HubName      string
+	Key          ed25519.PrivateKey // the chief key
+	Peers        []PeerConf
+	PollInterval time.Duration
+	StateDir     string
+	ListenAddr   string
 }
 
 // Poll interval bounds: under a second hammers the hub for nothing; past five
@@ -98,11 +97,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if c.PluginToken, err = readSecretFile("PLUGIN_TOKEN_FILE", getenv("PLUGIN_TOKEN_FILE")); err != nil {
 		return c, err
-	}
-	if f := getenv("MUSTER_API_TOKEN_FILE"); f != "" {
-		if c.MusterAPIToken, err = readSecretFile("MUSTER_API_TOKEN_FILE", f); err != nil {
-			return c, err
-		}
 	}
 	kf := getenv("CHIEF_KEY_FILE")
 	if kf == "" {

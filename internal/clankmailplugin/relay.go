@@ -32,7 +32,9 @@ package clankmailplugin
 // messages whose signatures this plugin verified — records in its own state,
 // or fetched from the hub with GET /v1/objects/{id} and verified, their id
 // recomputed from their bytes — to one with no `re`. The hub's `thread` field
-// is an unsigned claim and is never read. When the chain cannot be followed
+// is an unsigned claim and is never sent: it is only compared with the derived
+// root, and a disagreement is logged and counted (the message is still
+// delivered, on the derived root). When the chain cannot be followed
 // (an ancestor the hub will not show us, or one that does not verify) no
 // thread is sent: the message goes to the chief as any other, never to a
 // session on a guess.
@@ -150,14 +152,16 @@ func (p *Plugin) handleInboxItem(ctx context.Context, it InboxItem) error {
 		}
 		rec.Root = root
 	}
-	if v.outcome == "" && it.Thread != "" && rec.Root != "" && it.Thread != rec.Root {
-		// Both are the same function of the same content-addressed re chain, so
-		// a hub that names a DIFFERENT non-empty root is lying or broken. The
-		// message is authentic, but this hub is not trustworthy for it: not
-		// delivered, recorded (the hub can drop a message anyway; this one it
-		// tried to mis-thread). The hub's value is never sent either way.
-		p.log.Warn("the hub's unsigned thread disagrees with the derived root: not delivered", "message", obj.ID)
-		rec.Outcome, rec.Detail = outHubThread, "hub said "+truncRunes(it.Thread, 60)
+	// Both are the same function of the same content-addressed re chain, so a
+	// hub that names a DIFFERENT non-empty root is lying or broken. The message
+	// is authentic and the plugin never threads by the hub's value anyway, so it
+	// is delivered on the derived root as any other; the disagreement is only
+	// logged and counted (State.HubThreadMismatches, reported by show and
+	// /health). The hub's value is never sent to muster.
+	misthreaded := v.outcome == "" && it.Thread != "" && rec.Root != "" && it.Thread != rec.Root
+	if misthreaded {
+		p.log.Warn("the hub's unsigned thread disagrees with the derived root: delivered on the derived root", "message", obj.ID)
+		rec.Detail = "the hub's unsigned thread named another root"
 	}
 	if rec.Outcome == "" {
 		msg := musterMessage{
@@ -186,6 +190,9 @@ func (p *Plugin) handleInboxItem(ctx context.Context, it InboxItem) error {
 	if err := p.st.update(func(s *State) error {
 		s.Messages[obj.ID] = rec
 		s.InboxCursor = it.Cursor
+		if misthreaded { // in the same write as the record: a re-read item is never counted twice
+			s.HubThreadMismatches++
+		}
 		return nil
 	}); err != nil {
 		return errTransient{err}
