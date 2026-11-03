@@ -175,10 +175,11 @@ func TestARaisedAskIsSentAtOnceAndSoIsItsSettling(t *testing.T) {
 // scheduler stretches — used to be signalled with nudge(), which drops the
 // signal when nobody receives it; the ask then reached muster only at the
 // next Refresh (an hour here). Forced deterministically by raising it in that
-// very window (beforeRefreshHook).
+// very window (beforeRefreshHook). Its Hermes twin is
+// TestAHermesApprovalAttachedBeforeTheRefreshLoopStartsIsStillSent.
 func TestAnAskRaisedBeforeTheRefreshLoopStartsIsStillSent(t *testing.T) {
 	srv, src, _ := askSource(t, "OC | Ask session")
-	beforeRefreshHook = func() {
+	beforeRefreshHook = func(*hostSide) {
 		srv.EmitFrame(opencodetest.FixtureFrame("permission.asked", 0))
 		waitUntil(t, "the source to hold the ask", func() bool {
 			src.mu.Lock()

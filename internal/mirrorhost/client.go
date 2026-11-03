@@ -206,7 +206,7 @@ type Client struct {
 // beforeRefreshHook, when set (tests), runs on a connection after its hello
 // and welcome and before its refresh goroutine starts: the window in which a
 // change signal finds no one receiving.
-var beforeRefreshHook func()
+var beforeRefreshHook func(*hostSide)
 
 // RefreshNow re-reads this host's windows and, if they changed, sends them to
 // muster NOW rather than at the next Refresh — returning once that is done
@@ -353,7 +353,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	defer cancel()
 	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, wire: wire, streams: map[uint32]*hostStream{},
 		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{},
-		kick: make(chan chan struct{})}
+		kick: make(chan chan struct{}), want: make(chan struct{}, 1)}
 	conn.hermes = newHermesAsks(ctx, conn.hermesAttacher(), conn.nudge, c.log.Printf)
 	if src, ok := conn.hermesSource(); ok {
 		conn.hermes.terminal = src.State().PendingTerminalCommands
@@ -361,15 +361,8 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	}
 	defer conn.hermes.close()
 	// An opencode ask raised or settled sends the listing at once, so muster
-	// notifies (and withdraws) without waiting for the next refresh.
-	//
-	// 🔴 A BLOCKING KICK, NOT nudge(): nudge drops its signal when the refresh
-	// goroutine is not receiving — and it is not until after the hello and
-	// welcome below. An ask raised between this subscription and that point
-	// (after the hello's listing was read) was dropped, and reached muster
-	// only at the next Refresh (5 s by default; never, in a test with an hour).
-	// Changes' one-slot buffer coalesces any number of changes into one kick
-	// that waits for the refresh goroutine.
+	// notifies (and withdraws) without waiting for the next refresh — through
+	// nudge, which holds the signal until the refresh goroutine takes it.
 	if src, ok := conn.openCodeSource(); ok {
 		changes, stop := src.Changes()
 		defer stop()
@@ -379,11 +372,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 				case <-ctx.Done():
 					return
 				case <-changes:
-				}
-				select {
-				case conn.kick <- make(chan struct{}):
-				case <-ctx.Done():
-					return
+					conn.nudge()
 				}
 			}
 		}()
@@ -454,7 +443,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		}
 	}
 	if beforeRefreshHook != nil {
-		beforeRefreshHook()
+		beforeRefreshHook(conn)
 	}
 	go conn.refresh(first)
 	go conn.keepalive(cancel)
@@ -596,6 +585,11 @@ type hostSide struct {
 	// kick asks the refresh goroutine for a read-and-send now
 	// (Client.RefreshNow); it closes the channel it receives when done.
 	kick chan chan struct{}
+	// want is the ONE-SLOT "a listing is owed" flag nudge sets (hostSide.nudge):
+	// held until the refresh goroutine takes it, or the connection ends.
+	want chan struct{}
+	// nudged counts nudge calls (tests observe a signal was raised).
+	nudged atomic.Int64
 	// opens is each stream's open until its first reply (trace.go), by
 	// stream id: *openTrace.
 	opens sync.Map
@@ -1025,6 +1019,10 @@ func (h *hostSide) refresh(last listing) {
 			ok := h.refreshOnce(&last)
 			close(done)
 			if !ok {
+				return
+			}
+		case <-h.want:
+			if !h.refreshOnce(&last) {
 				return
 			}
 		}
