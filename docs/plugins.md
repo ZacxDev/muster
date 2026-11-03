@@ -290,6 +290,141 @@ The task is filed the way `POST /api/tasks` files one, and you get the usual
 "New task" push. It has no `gate:` or `auto:` tag, so nothing dispatches it
 until you do. The comment's author is `plugin:<plugin name>`.
 
+### Task references
+
+A task filed with `create` is a **copy**: from then on it and the upstream
+record drift apart, because a status or comment written on one never reaches
+the other. A **reference** is the alternative. The upstream stays canonical,
+and muster keeps the key, a read-only **snapshot** of the record that it
+renders, and its own links to the task (routes, agents, attention, sessions).
+A status or comment that you or an agent write on a reference is not stored.
+It is **queued** for the plugin, which applies it upstream and then pushes a
+fresh snapshot. muster never calls the plugin: the plugin claims the queue.
+
+```json
+{"key": "tracker:4711",
+ "reference": {
+   "title": "Rotate the build key", "url": "https://tracker.example.invalid/t/4711",
+   "status": "in_progress", "status_label": "in progress", "rev": "5",
+   "updated_at": "2026-11-03T10:00:00Z", "body": "…",
+   "comments": [{"id": "c1", "author": "A. Person", "body": "…", "created_at": "2026-11-02T09:00:00Z"}],
+   "detach": false},
+ "route_to_chief": true, "notice": "assigned", "event_id": "upstream-msg-123"}
+```
+
+| field | rule |
+|---|---|
+| `reference.status` | One of muster's four: `open`, `in_progress`, `ready_for_review`, `complete`. Anything else is a `400`. Mapping the upstream's own statuses onto these is the plugin's job. |
+| `reference.status_label` | Shown verbatim on the card and the task page: one line of plain text, cut at 100 characters. |
+| `reference.updated_at` | Required (RFC 3339). It decides staleness (below). |
+| `reference.title`, `body` | The task's title and body follow them. `body` is cut at 16 KiB. An empty title shows the key. |
+| `reference.url` | Linked from the task page. A link that is not `http(s)`, or is over 2 KiB, is dropped. |
+| `reference.comments` | The upstream's thread, shown read-only. At most 50 are kept: the newest, by `created_at`. Each body is cut at 16 KiB. |
+| `reference.detach` | `true` dismisses the reference (the soft dismissal an owner's dismiss is; an agent on it is left running). A later upsert for the key files a new row. |
+| `event_id` | 1 to 200 bytes, no spaces or control characters. It names the upstream event for routing, as `comment` does for a copy, and it is required with `route_to_chief`. Resending the same `event_id` never routes twice. |
+
+With `reference`, `create` and `comment` are refused (`400`): a reference has
+no relay comment. Text is cut, never refused.
+
+**One row per key.** The upsert works on the live reference for the key (there
+is at most one per owner). If there is none, it **converts** the copy row your
+plugin filed for the key, in place: the same id, so routes, agents and links
+survive. The copy row is the oldest open one, or else the newest complete one.
+Your plugin's own relay comments on it (author `plugin:<name>`) are retracted,
+and every other comment stays on the task as muster-only history. With no row
+at all, a new one is filed, with the usual "New task" push.
+
+**Stale snapshots apply nothing.** An upsert whose `updated_at` is older than
+the stored snapshot's is accepted (`200`, `"applied": false`) but changes
+nothing. An equal one applies again, so a resend is harmless.
+
+The status follows the snapshot through the task-status writer
+`plugin_reference`: it is logged like any status write and sends the usual
+pushes. But an upstream close does **not** stop the agent your chief started
+on the task ([below](#completing-a-task-stops-the-chiefs-agent)): an upstream
+close is not you stopping an agent.
+
+| answer | meaning |
+|---|---|
+| `201 {"id", "created": true, "reference": true, "applied": true, …}` | A reference was filed. |
+| `200 {"id", "created": false, "reference": true, "applied", "converted", "detached"}` | The reference (or the copy row it converted) was updated, left alone as stale, or detached. |
+| `200 {"id": null, …}` | A detach found nothing to detach. |
+| `409 {"error"}` | Another of your plugins holds the live reference for this key. |
+
+With `route_to_chief` the answer carries `"routed"`, and the routing answers
+(`503`, `429`, `409`) are the copy route's. The chief's task event quotes the
+snapshot's status label and its newest comment.
+
+#### Writes on a reference are queued
+
+Every status write (the card, `PATCH /api/tasks/{id}/status`, `muster task
+status`, the `task_set_status` tool, an agent's own route and tool, the
+dispatch advance) and every comment from a person or agent (the card,
+`POST /api/tasks/{id}/comments`, the `task_comment` tool, an agent's own
+route and tool, a task route's answer) on a reference:
+
+- does not change the task's status and stores no comment;
+- queues a write for the plugin that owns the reference, with the author the
+  local write would have carried, and the agent and session when known;
+- answers success with `"queued": true` (`202` on HTTP; a tool says the write
+  was sent to the upstream and will show once the plugin confirms).
+
+The usual rules still apply first: an agent may not set `complete`, and may
+not move a task out of it. muster's own comments (the idle reaper's `stale`
+note, a merge record, a gate release) stay on the task as muster-only
+history and are never queued. A reference cannot be the loser of a merge
+(`409`): retiring the loser would close the upstream task.
+
+The task page shows queued writes in the thread as "sending…" or "failed:
+\<error\>", when the snapshot was last applied, and a **stale** badge after 15
+minutes. Opening the page of a reference whose snapshot is older than 5
+minutes (and `GET /api/tasks/{id}`) queues one `refresh` for the plugin,
+which answers it by pushing a snapshot. At most one refresh is pending per
+task.
+
+#### `POST /plugin/v1/task-writes/claim`
+
+`{"wait_s": 0-25, "limit": 1-20}` long-polls for your plugin's queued writes
+(out-of-range values are clamped). The answer is always
+`200 {"writes": [...]}`, empty when nothing arrived within `wait_s`. Each
+write is now leased to you for 2 minutes:
+
+```json
+{"id": 7, "task_id": 42, "key": "tracker:4711", "kind": "status",
+ "status": "complete", "author": "user", "agent": "", "session": "",
+ "state": "claimed", "attempts": 1, "lease_until": "…", "created_at": "…"}
+```
+
+`kind` is `status` (with `status`), `comment` (with `body`) or `refresh`. Only
+writes on references your plugin owns are handed to you. A write whose lease
+lapses goes back to pending and is handed out again, with `attempts` one
+higher, so keep your own ledger by write `id`: a crash between applying the
+write upstream and reporting it must not apply it twice. A write whose task
+is no longer your live reference (it was dismissed, say) is failed with a
+reason and not handed out.
+
+#### `POST /plugin/v1/task-writes/{id}/result`
+
+`{"ok": true|false, "error": "…", "conflict": false, "reference": {…}}`
+records the result of a write you claimed: `done`, or `failed` with `error`
+(`conflict: true` marks a failure because the upstream moved under the
+write). Include a fresh `reference` snapshot whenever you have one. It is
+applied exactly like an upsert, except that it never files a new row.
+`200 {"id", "state", "applied"}`. The first result wins: sending it again,
+either way, answers the stored state. A write your plugin was never leased is
+`404`, and a bad snapshot is `400` and records nothing. Your own `complete`,
+once reported done, stops the agent your chief started on the task, just as a
+`complete` stored locally does.
+
+#### `GET /plugin/v1/tasks?namespace=<ns>&live=true`
+
+Your live tasks (not dismissed, not merged away) that carry a key in `ns`,
+oldest first, at most 500 (`"truncated": true` when there are more), copies
+and references alike:
+`200 {"tasks": [{"id", "key", "status", "is_reference", "updated_at",
+"comments": [{"id", "author", "body", "created_at", "retracted"}]}]}`. Use it
+to convert your copy rows and to reconcile. `live=true` is required.
+
 ## Routing a task to the chief
 
 With `MUSTER_TASK_ROUTING=1`, a plugin that files a task with

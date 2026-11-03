@@ -423,7 +423,7 @@ func (s *Server) applyGateRelease(ctx context.Context, chief agents.Agent, taskI
 		pushBody = "Your chief started an agent on task #" + id + " on your message, but its gate tag could not be removed: " +
 			mirror.OneLine(rel.msg.Content, ownerReleasePushBodyMax)
 	}
-	if _, err := s.ext.Notes.AddComment(ctx, notes.Comment{NoteID: taskID, Author: ownerReleaseAuthor, Body: body}); err != nil {
+	if _, _, err := s.addTaskComment(ctx, commentByMuster, notes.Comment{NoteID: taskID, Author: ownerReleaseAuthor, Body: body}); err != nil {
 		s.logger.Printf("task routing: record task %d's gate release: %v", taskID, err)
 	}
 	s.logger.Printf("task routing: task %d's gate %v released on owner message %d in %s's chat (removed: %v)", taskID, rel.gates, rel.msg.ID, chief.Name, failed == nil)

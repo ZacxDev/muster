@@ -862,7 +862,11 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 		return
 	}
 	if _, err := s.setNoteStatus(ctx, writerDispatchAdvance, noteID, notes.StatusInProgress); err != nil {
-		s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		// A reference's advance is queued for its upstream (task_ref_queue.go),
+		// which broadcast already: the row moves when the plugin confirms.
+		if !errors.Is(err, errQueuedUpstream) {
+			s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		}
 		return
 	}
 	// 🔴 BROADCAST AFTER THE COMMIT, AND THIS IS THE ONLY POST-COMMIT EVENT THE

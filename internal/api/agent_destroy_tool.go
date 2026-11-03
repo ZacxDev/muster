@@ -210,6 +210,9 @@ func (s *Server) reopenTaskAfterDestroy(ctx context.Context, a agents.Agent) {
 	if hooks != nil && hooks.afterWrite != nil {
 		hooks.afterWrite(n.ID, err)
 	}
+	if errors.Is(err, errQueuedUpstream) {
+		return // a reference: queued for its upstream, which broadcast already
+	}
 	if err != nil {
 		s.logger.Printf("agent_destroy: reopen task %d: %v", n.ID, err)
 		return

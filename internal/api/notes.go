@@ -144,6 +144,13 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 // lookup (nil on miss/failure ⇒ the card falls back to the Dispatch button).
 func (s *Server) taskCardView(ctx context.Context, n notes.Note) ui.TaskCardView {
 	v := ui.TaskCardView{Note: n, Dispatch: s.dispatchServed()}
+	if n.IsReference() {
+		if ws, err := s.ext.Notes.RefWrites(ctx, n.ID); err == nil {
+			v.RefWrites = ws
+		} else {
+			s.logger.Printf("notes: queued writes of reference %d: %v", n.ID, err)
+		}
+	}
 	if s.ext.Agents != nil {
 		if m, err := s.ext.Agents.AgentsByNoteIDs(ctx, []int64{n.ID}); err == nil {
 			if a, ok := m[n.ID]; ok {
@@ -590,6 +597,17 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 	if !created {
 		return note, false, commented, nil
 	}
+	s.taskCreatedEffects(ctx, note, in.Source, linked)
+	return note, true, commented, nil
+}
+
+// taskCreatedEffects is every side effect a machine-created task has, in the
+// order createTaskOnce always ran them: the thread link (linked, nil for none),
+// the task-changed broadcast, the created-tasks and routing-tag metrics, the
+// auto-dispatch log line and the coalesced `created` push. It is shared with a
+// plugin task REFERENCE filed new (applyReference), so the second door cannot
+// forget one.
+func (s *Server) taskCreatedEffects(ctx context.Context, note notes.Note, source string, linked func(id int64)) {
 	if linked != nil {
 		linked(note.ID)
 	}
@@ -599,7 +617,7 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 	// Bounded label — taskSource only emits allowlisted values. Note this uses the
 	// full derived source (incl. "api"), so the metric label behavior is UNCHANGED
 	// from pre-0017 even though "api" is stored as a NULL source_type.
-	metrics.TasksCreated.WithLabelValues(in.Source).Inc()
+	metrics.TasksCreated.WithLabelValues(source).Inc()
 	// Routing-tag telemetry (namespace only — never a tag value; see metrics.RoutingTags)
 	// + the auto:dispatch plumbing log line.
 	observeRoutingTags(note.Tags)
@@ -609,7 +627,6 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 	// only — the FAB create (handleNoteCreate) intentionally does NOT notify, the
 	// user just made that task themselves. Best-effort + nil-push-safe.
 	s.notifyTaskCreated(note)
-	return note, true, commented, nil
 }
 
 // --- machine task reads: the agent join + server-side filtering ---
@@ -942,6 +959,7 @@ func (s *Server) handleAPITaskGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.broadcastTaskLink(r.Context(), changed, id)
+	s.refreshIfStale(r.Context(), note)
 	s.writeJSON(w, http.StatusOK, s.apiTaskOne(r.Context(), note))
 }
 
@@ -1471,6 +1489,11 @@ func (s *Server) applyTaskStatus(ctx context.Context, writer statusWriter, id in
 		return notes.Note{}, errInvalidStatus
 	}
 	note, err := s.setNoteStatus(ctx, writer, id, status)
+	if errors.Is(err, errQueuedUpstream) {
+		// A reference: queued for its plugin, nothing changed here (the queue
+		// broadcast the new pending write). The task comes back as it stands.
+		return note, err
+	}
 	if err != nil {
 		return notes.Note{}, err
 	}
@@ -1520,7 +1543,14 @@ func (s *Server) handleNoteStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	note, err := s.applyTaskStatus(r.Context(), writerHumanUI, id, r.FormValue("status"))
+	note, err := s.applyTaskStatus(withRefOrigin(r.Context(), refOrigin{Author: "user"}), writerHumanUI, id, r.FormValue("status"))
+	if errors.Is(err, errQueuedUpstream) {
+		// A reference: the status went to the upstream's queue. 202 with the card
+		// as it stands; the task page shows the write as "sending…".
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		err = nil
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, errInvalidStatus):
@@ -1547,7 +1577,7 @@ func (s *Server) handleNoteComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if _, err := s.applyTaskStatus(r.Context(), writerHumanUI, id, notes.StatusComplete); err != nil {
+	if _, err := s.applyTaskStatus(withRefOrigin(r.Context(), refOrigin{Author: "user"}), writerHumanUI, id, notes.StatusComplete); err != nil && !errors.Is(err, errQueuedUpstream) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -1611,7 +1641,12 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx = notes.ForAgent(ctx)
 	}
-	note, err := s.applyTaskStatus(ctx, writerMachineAPI, id, status)
+	note, err := s.applyTaskStatus(withRefOrigin(ctx, s.machineRefOrigin(r)), writerMachineAPI, id, status)
+	if errors.Is(err, errQueuedUpstream) {
+		// A reference: queued for the upstream. 202, the task as it stands.
+		s.writeJSON(w, http.StatusAccepted, queuedTask{apiTask: s.apiTaskOne(ctx, note), Queued: true})
+		return
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, notes.ErrCompleteLocked):
@@ -1904,11 +1939,18 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not load task"})
 		return
 	}
-	c, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
+	c, queued, err := s.addTaskComment(withRefOrigin(r.Context(), s.machineRefOrigin(r)), commentByActor, notes.Comment{
 		NoteID: id,
 		Author: taskCommentAuthor(r, s.ext.LegacyProvenanceHeaderPrefix),
 		Body:   text,
 	})
+	if err == nil && queued != nil {
+		// A reference: queued for its upstream (task_ref_queue.go). The session
+		// still worked the task; nothing local to push about.
+		s.noteTaskSession(r, id, notes.RoleWorked)
+		s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "write": queued, "message": refQueuedText})
+		return
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
@@ -1979,7 +2021,9 @@ func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "comment body required", http.StatusBadRequest)
 		return
 	}
-	if _, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{NoteID: id, Author: "user", Body: body}); err != nil {
+	_, queued, err := s.addTaskComment(withRefOrigin(r.Context(), refOrigin{Author: "user"}), commentByActor,
+		notes.Comment{NoteID: id, Author: "user", Body: body})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -1993,6 +2037,12 @@ func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("notes: get %d after comment: %v", id, err)
 		http.Error(w, "could not load task", http.StatusInternalServerError)
 		return
+	}
+	if queued != nil {
+		// A reference: the comment went to the upstream's queue; the card shows
+		// it as "sending…" until the plugin confirms.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
 	}
 	s.renderNoteCard(w, r, note)
 }
@@ -2071,6 +2121,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load task", http.StatusInternalServerError)
 		return
 	}
+	s.refreshIfStale(r.Context(), note)
 	view := s.taskCardView(r.Context(), note)
 	view.Detail = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

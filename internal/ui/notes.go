@@ -63,6 +63,11 @@ type TaskCardView struct {
 	// defect this field exists to close (a "Dispatch" over a 503 on every card
 	// of a docker compose install).
 	Dispatch bool
+
+	// RefWrites are a plugin task REFERENCE's writes still on their way to the
+	// upstream (pending, claimed, failed), for the detail shape's thread. Nil
+	// for an ordinary task, and on the board, which does not read them.
+	RefWrites []notes.RefWrite
 }
 
 // NotesPanel is the static shell for the Tasks tab. The + FAB (body-level, in
@@ -978,6 +983,8 @@ func noteCard(v TaskCardView) g.Node {
 				// · session abc12345…" when the task carries a source_type, else
 				// nothing (pre-0017 / header-less tasks). Nil-safe internally.
 				taskProvenanceChip(n),
+				// A plugin task REFERENCE (task_refs.go): its upstream's label.
+				taskRefChip(n),
 				// Task-thread COUNT only (migration 0023) — one chip, beside the
 				// provenance chip and reusing its classes. The per-session detail is
 				// one tap away on the detail page.
@@ -1003,6 +1010,8 @@ func noteCard(v TaskCardView) g.Node {
 			),
 			g.If(len(n.Attachments) > 0, noteAttachments(n.Attachments)),
 			taskSessionsSection(n),
+			taskRefSection(n, v.RefWrites),
+			taskLocalCommentsLabel(n),
 			taskComments(n.ID, n.Comments),
 			taskCommentForm(n.ID),
 		)),

@@ -14,6 +14,11 @@ scripts write them through the JSON API and the [CLI](cli.md).
 - **Comments:** comments can be added from the browser, the machine API
   (`POST /api/tasks/{id}/comments`), or an agent's own route
   (`POST /agent/task/comment`). A deleted comment leaves a tombstone.
+- **References:** a task a plugin files as a
+  [reference](plugins.md#task-references) follows its upstream. Its status and
+  comments written here are queued for the plugin and appear once it confirms
+  (`202`, `"queued": true`); its upstream thread is shown read-only, and its
+  own comments are muster-only history.
 - **Attachments:** up to 10 MiB each, stored in Postgres.
 - **Tags:** up to 20 per task. Four namespaces route work:
   - `project:` — at most one per task;

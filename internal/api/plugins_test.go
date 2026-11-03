@@ -175,7 +175,7 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 	for _, door := range pluginDoorRoutes {
 		for name, c := range foreign {
 			f.reset()
-			rec := pServe(h, "POST", door.path, door.body, c)
+			rec := pServe(h, door.verb(), door.path, door.body, c)
 			if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "this route takes a plugin token") {
 				t.Errorf("%s %s: %d %q; want 401 with the plugin-token refusal", door.path, name, rec.Code, rec.Body.String())
 			}
@@ -199,7 +199,7 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 	// because this server wires no task store.
 	for _, door := range pluginDoorRoutes[1:] {
 		f.reset()
-		rec := pServe(h, "POST", door.path, door.body, pBearer(pgnTok))
+		rec := pServe(h, door.verb(), door.path, door.body, pBearer(pgnTok))
 		if door.reaches == "" {
 			if got := f.snapshot(); rec.Code != door.ownCode || len(got) != 1 || got[0] != "Authenticate as system" {
 				t.Errorf("CONTROL %s: %d, store calls %v; want %d after only the token lookup", door.path, rec.Code, got, door.ownCode)
@@ -214,15 +214,31 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 
 // pluginDoorRoutes is every /plugin/v1/* route with a body, the store method the
 // plugin's own token reaches, and what the countingPlugins fake makes it answer.
-var pluginDoorRoutes = []struct {
+var pluginDoorRoutes = []pluginDoorRoute{
+	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted, ""},
+	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent, ""},
+	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound, ""},
+	{"/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`, "", http.StatusServiceUnavailable, ""},
+	{"/plugin/v1/messages/5/owner-answered", `{}`, "", http.StatusNotFound, ""},
+	// Plugin task references (plugin_task_refs.go). They reach the task store,
+	// which this fixture does not wire: a 503 is still past the door.
+	{"/plugin/v1/tasks?namespace=tracker&live=true", "", "", http.StatusServiceUnavailable, http.MethodGet},
+	{"/plugin/v1/task-writes/claim", `{"wait_s":0}`, "", http.StatusServiceUnavailable, ""},
+	{"/plugin/v1/task-writes/5/result", `{"ok":true}`, "", http.StatusServiceUnavailable, ""},
+}
+
+// pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.
+type pluginDoorRoute struct {
 	path, body, reaches string
 	ownCode             int
-}{
-	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted},
-	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent},
-	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound},
-	{"/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`, "", http.StatusServiceUnavailable},
-	{"/plugin/v1/messages/5/owner-answered", `{}`, "", http.StatusNotFound},
+	method              string
+}
+
+func (d pluginDoorRoute) verb() string {
+	if d.method == "" {
+		return http.MethodPost
+	}
+	return d.method
 }
 
 // TestPluginDoorRoutesListsEveryPluginRoute: pluginDoorRoutes is a hand list that
@@ -231,7 +247,8 @@ var pluginDoorRoutes = []struct {
 func TestPluginDoorRoutesListsEveryPluginRoute(t *testing.T) {
 	listed := map[string]bool{}
 	for _, d := range pluginDoorRoutes {
-		listed["POST "+strings.Replace(d.path, "/5/", "/{id}/", 1)] = true
+		path, _, _ := strings.Cut(d.path, "?")
+		listed[d.verb()+" "+strings.Replace(path, "/5/", "/{id}/", 1)] = true
 	}
 	want := map[string]bool{}
 	for _, pattern := range routeVias[authz.ViaPlugin] {

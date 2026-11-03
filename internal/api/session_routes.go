@@ -752,8 +752,15 @@ func (s *Server) relayTaskRoute(ctx context.Context, r plugins.Route) (plugins.R
 	if s.ext.Notes == nil {
 		return r, errors.New("no task store")
 	}
+	relayedAs := "its answer was added to the task as a comment."
 	if r.State == plugins.RouteAnswered {
-		wrote, err := s.ext.Notes.AddCommentOnce(ctx, notes.Comment{NoteID: r.TaskID, Author: routeCommentAuthor(r), Body: r.ReplyBody})
+		// On a reference the answer is queued for the upstream instead, once per
+		// route (the dedupe key), so a retried relay queues it once.
+		wrote, queued, err := s.addTaskCommentOnce(withRefOrigin(ctx, refOrigin{Session: r.TargetKey}), commentByActor,
+			notes.Comment{NoteID: r.TaskID, Author: routeCommentAuthor(r), Body: r.ReplyBody}, "route:"+r.RouteID)
+		if queued {
+			relayedAs = "its answer was sent to the task's upstream as a comment."
+		}
 		if wrote {
 			s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(r.TaskID, 10))
 		}
@@ -777,7 +784,7 @@ func (s *Server) relayTaskRoute(ctx context.Context, r plugins.Route) (plugins.R
 	}
 	if r.State == plugins.RouteAnswered {
 		s.logger.Printf("routes: %s: relayed as a comment on task %d", r.RouteID, r.TaskID)
-		s.noteToChief(ctx, got, "its answer was added to the task as a comment.")
+		s.noteToChief(ctx, got, relayedAs)
 	}
 	return got, nil
 }
