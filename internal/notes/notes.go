@@ -580,8 +580,8 @@ type Store interface {
 	// the first result wins, and the stored row is returned). A write this
 	// plugin never held → ErrRefWriteNotLeased.
 	FinishRefWrite(ctx context.Context, pluginID, id int64, ok bool, errText string) (RefWrite, bool, error)
-	// RefWrites returns task noteID's status and comment writes that are not
-	// done (pending, claimed, failed), oldest first: the task page's
+	// RefWrites returns task noteID's writes that are not done (pending,
+	// claimed, failed), oldest first: the task page's
 	// "sending…" / "failed" lines.
 	RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error)
 	// ListLiveInNamespace returns up to limit live tasks (not dismissed, not a

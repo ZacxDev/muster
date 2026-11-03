@@ -63,7 +63,7 @@ func taskRefSection(n notes.Note, writes []notes.RefWrite) g.Node {
 			Span(g.Attr("data-ref-synced", ""), g.Text("synced "), cardTime(ref.SyncedAt)),
 			g.If(stale, Span(
 				g.Attr("data-ref-stale", ""),
-				g.Attr("title", "The upstream has not been read for a while; opening this page asked the plugin for a fresh copy"),
+				g.Attr("title", "The plugin has not pushed a snapshot of this task for over 15 minutes, so the upstream may have moved on"),
 				Class("rounded-md bg-st-warning-bg px-1.5 py-0.5 text-xs text-st-warning-fg"),
 				g.Text("stale"),
 			)),

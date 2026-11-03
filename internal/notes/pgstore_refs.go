@@ -196,9 +196,6 @@ func (s *PGStore) EnqueueRefWrite(ctx context.Context, w RefWrite) (RefWrite, bo
 		case dedupe != nil:
 			q += `w.dedupe_key = $2`
 			args = []any{w.NoteID, *dedupe}
-		case w.Kind == RefWriteRefresh:
-			q += `w.kind = 'refresh' AND w.state IN ('pending', 'claimed')`
-			args = []any{w.NoteID}
 		default:
 			return RefWrite{}, false, ErrNotReference
 		}
@@ -335,7 +332,7 @@ func (s *PGStore) FinishRefWrite(ctx context.Context, pluginID, id int64, ok boo
 
 // RefWrites: see the Store interface.
 func (s *PGStore) RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error) {
-	return s.refWritesWhere(ctx, `w.note_id = $1 AND w.kind <> 'refresh' AND w.state <> 'done' ORDER BY w.id`, noteID)
+	return s.refWritesWhere(ctx, `w.note_id = $1 AND w.state <> 'done' ORDER BY w.id`, noteID)
 }
 
 // ListLiveInNamespace: see the Store interface.

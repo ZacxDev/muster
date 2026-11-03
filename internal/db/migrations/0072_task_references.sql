@@ -20,10 +20,13 @@
 --   notes.ext_synced_at  when muster last APPLIED a snapshot.
 --
 --   task_ref_writes      one write a person or agent made on a reference, for
---                        the plugin to apply upstream: kind status|comment|
---                        refresh, state pending → claimed (leased) → done|failed.
+--                        the plugin to apply upstream: kind status|comment,
+--                        state pending → claimed (leased) → done|failed.
 --                        dedupe_key makes a retried producer (a route relay) one
---                        row; at most one refresh is pending or claimed per task.
+--                        row.
+--
+-- Freshness is the PLUGIN's: its periodic reconcile pushes snapshots. muster
+-- queues no refresh of its own; the page only shows ext_synced_at's age.
 --
 -- 🔴 AT MOST ONE LIVE REFERENCE PER (owner, key) (notes_one_live_ref): the
 -- partial unique index is the structural form of "one reference row".
@@ -97,7 +100,7 @@ CREATE TABLE IF NOT EXISTS public.task_ref_writes (
                 REFERENCES public.users (id),
     note_id     BIGINT      NOT NULL REFERENCES public.notes (id) ON DELETE CASCADE,
     plugin_id   BIGINT      NOT NULL,
-    kind        TEXT        NOT NULL CHECK (kind IN ('status', 'comment', 'refresh')),
+    kind        TEXT        NOT NULL CHECK (kind IN ('status', 'comment')),
     status      TEXT        NOT NULL DEFAULT '' CHECK (status IN ('', 'open', 'in_progress', 'ready_for_review', 'complete')),
     body        TEXT        NOT NULL DEFAULT '' CHECK (length(body) <= 200000),
     author      TEXT        NOT NULL DEFAULT '' CHECK (char_length(author) <= 300),
@@ -113,11 +116,10 @@ CREATE TABLE IF NOT EXISTS public.task_ref_writes (
     finished_at TIMESTAMPTZ,
     CONSTRAINT task_ref_writes_plugin_owner_fkey FOREIGN KEY (plugin_id, owner_id)
         REFERENCES public.plugins (id, owner_id) ON DELETE CASCADE,
-    -- A status write names a status; a comment carries a body; a refresh neither.
+    -- A status write names a status; a comment carries a body.
     CONSTRAINT task_ref_writes_shape CHECK (
         (kind = 'status' AND status <> '') OR
-        (kind = 'comment' AND status = '' AND body <> '') OR
-        (kind = 'refresh' AND status = '' AND body = '')),
+        (kind = 'comment' AND status = '' AND body <> '')),
     CONSTRAINT task_ref_writes_leased CHECK (state <> 'claimed' OR lease_until IS NOT NULL)
 );
 
@@ -144,9 +146,6 @@ CREATE TRIGGER task_ref_writes_task_is_owners BEFORE INSERT OR UPDATE OF owner_i
 -- A retried producer's write is one row.
 CREATE UNIQUE INDEX IF NOT EXISTS task_ref_writes_dedupe
     ON public.task_ref_writes (note_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
--- At most one refresh in flight per task.
-CREATE UNIQUE INDEX IF NOT EXISTS task_ref_writes_one_refresh
-    ON public.task_ref_writes (note_id) WHERE kind = 'refresh' AND state IN ('pending', 'claimed');
 -- The claim: a plugin's writes not yet done.
 CREATE INDEX IF NOT EXISTS idx_task_ref_writes_claim
     ON public.task_ref_writes (plugin_id, id) WHERE state IN ('pending', 'claimed');

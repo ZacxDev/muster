@@ -71,9 +71,6 @@ const (
 
 	// refWriteClaimMax bounds one claim's batch.
 	refWriteClaimMax = 20
-	// refRefreshAfter: a reference whose snapshot is older than this, opened
-	// on its task page, queues one refresh for the plugin.
-	refRefreshAfter = 5 * time.Minute
 	// refListMax bounds the reconcile listing.
 	refListMax = 500
 )
@@ -546,18 +543,4 @@ func (s *Server) handlePluginTaskList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"tasks": out, "truncated": truncated})
-}
-
-// refreshIfStale queues one `refresh` write for n's plugin when n is a
-// reference whose snapshot is older than refRefreshAfter — the task page
-// being opened is the signal that someone wants it current. At most one is
-// pending per task (the store's unique index), so reloading the page queues
-// nothing more. Best effort: a failure is logged and the page renders.
-func (s *Server) refreshIfStale(ctx context.Context, n notes.Note) {
-	if n.Ref == nil || time.Since(n.Ref.SyncedAt) < refRefreshAfter {
-		return
-	}
-	if _, _, err := s.queueIfReference(ctx, notes.RefWrite{NoteID: n.ID, Kind: notes.RefWriteRefresh}); err != nil {
-		s.logger.Printf("tasks: queue a refresh of reference %d: %v", n.ID, err)
-	}
 }

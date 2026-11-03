@@ -519,41 +519,6 @@ func TestReferenceRequestsThatAreRefused(t *testing.T) {
 	}
 }
 
-// TestOpeningAStaleReferenceQueuesOneRefresh: GET /api/tasks/{id} on a
-// reference whose snapshot is older than 5 minutes queues ONE refresh, however
-// often it is opened; a fresh one queues none.
-func TestOpeningAStaleReferenceQueuesOneRefresh(t *testing.T) {
-	f := newRefFixture(t)
-	id := f.mustUpsert(t, f.key(t), refSnap("open", "to do", time.Now(), nil))
-	get := func() {
-		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+strconv.FormatInt(id, 10), nil)
-		if rec := f.serve(f.srv.handleAPITaskGet, req, pv(id)); rec.Code != http.StatusOK {
-			t.Fatalf("GET /api/tasks/%d: HTTP %d", id, rec.Code)
-		}
-	}
-	refreshes := func() int {
-		t.Helper()
-		var n int
-		if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM task_ref_writes WHERE note_id = $1 AND kind = 'refresh'`, id).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	get()
-	if n := refreshes(); n != 0 {
-		t.Fatalf("a fresh reference opened queued %d refresh(es), want 0", n)
-	}
-	if _, err := f.pool.Exec(f.asOwner, `UPDATE notes SET ext_synced_at = now() - interval '6 minutes' WHERE id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
-	get()
-	get()
-	if n := refreshes(); n != 1 {
-		t.Fatalf("a stale reference opened twice queued %d refresh(es), want exactly 1", n)
-	}
-}
-
 // TestAReferenceIsNeverMergedAway: retiring a merge loser is a status write,
 // which on a reference would close the upstream task; the merge is refused.
 func TestAReferenceIsNeverMergedAway(t *testing.T) {

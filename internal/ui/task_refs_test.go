@@ -53,6 +53,21 @@ func TestAReferenceCardShowsItsUpstream(t *testing.T) {
 	if strings.Contains(render(TaskCardView{Note: fresh, Detail: true}), "data-ref-stale") {
 		t.Error("a reference synced just now shows the stale badge")
 	}
+	// The badge is ext_synced_at's age alone, at 15 minutes: either side of the
+	// boundary, with the snapshot's own updated_at deliberately OLD both times
+	// (the upstream's clock must not decide it).
+	for _, c := range []struct {
+		age   time.Duration
+		stale bool
+	}{{14 * time.Minute, false}, {16 * time.Minute, true}, {3 * time.Hour, true}} {
+		r := n
+		snap := n.Ref.Snapshot
+		snap.UpdatedAt = now.Add(-48 * time.Hour)
+		r.Ref = &notes.Reference{Key: n.Ref.Key, SyncedAt: now.Add(-c.age), Snapshot: snap}
+		if got := strings.Contains(render(TaskCardView{Note: r, Detail: true}), "data-ref-stale"); got != c.stale {
+			t.Errorf("synced %s ago: stale badge %v, want %v", c.age, got, c.stale)
+		}
+	}
 	// An ordinary task: none of it.
 	plain := n
 	plain.Ref = nil

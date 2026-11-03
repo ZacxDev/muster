@@ -163,7 +163,7 @@ func TestEveryCommentWriterGoesThroughTheReferenceQueue(t *testing.T) {
 		return out
 	}
 	if got, want := strings.Join(callers("queueIfReference"), ","),
-		"addTaskComment,addTaskCommentOnce,queueStatusIfReference,refreshIfStale"; got != want {
+		"addTaskComment,addTaskCommentOnce,queueStatusIfReference"; got != want {
 		t.Errorf("queueIfReference is called from %s, want exactly %s", got, want)
 	}
 	if got, want := strings.Join(callers("EnqueueRefWrite"), ","), "queueIfReference"; got != want {

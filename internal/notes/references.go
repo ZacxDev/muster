@@ -69,7 +69,6 @@ type RefComment struct {
 const (
 	RefWriteStatus  = "status"
 	RefWriteComment = "comment"
-	RefWriteRefresh = "refresh"
 
 	RefWritePending = "pending"
 	RefWriteClaimed = "claimed"

@@ -959,7 +959,6 @@ func (s *Server) handleAPITaskGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.broadcastTaskLink(r.Context(), changed, id)
-	s.refreshIfStale(r.Context(), note)
 	s.writeJSON(w, http.StatusOK, s.apiTaskOne(r.Context(), note))
 }
 
@@ -2121,7 +2120,6 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load task", http.StatusInternalServerError)
 		return
 	}
-	s.refreshIfStale(r.Context(), note)
 	view := s.taskCardView(r.Context(), note)
 	view.Detail = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

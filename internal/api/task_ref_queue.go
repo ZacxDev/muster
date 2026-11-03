@@ -107,11 +107,7 @@ func (s *Server) queueIfReference(ctx context.Context, w notes.RefWrite) (notes.
 		s.logger.Printf("tasks: task %d is a reference: %s write %d queued for plugin %d (author %q)",
 			w.NoteID, w.Kind, got.ID, got.PluginID, got.Author)
 		s.refWriteWake.signal()
-		// A refresh is not on the page (only status and comment writes are), so
-		// it moves nothing to re-render.
-		if w.Kind != notes.RefWriteRefresh {
-			s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(w.NoteID, 10))
-		}
+		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(w.NoteID, 10))
 	}
 	return got, true, nil
 }

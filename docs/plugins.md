@@ -376,11 +376,11 @@ history and are never queued. A reference cannot be the loser of a merge
 (`409`): retiring the loser would close the upstream task.
 
 The task page shows queued writes in the thread as "sending…" or "failed:
-\<error\>", when the snapshot was last applied, and a **stale** badge after 15
-minutes. Opening the page of a reference whose snapshot is older than 5
-minutes (and `GET /api/tasks/{id}`) queues one `refresh` for the plugin,
-which answers it by pushing a snapshot. At most one refresh is pending per
-task.
+\<error\>", when the snapshot was last applied, and a **stale** badge once
+that was more than 15 minutes ago. Keeping snapshots fresh is the plugin's
+job: muster never asks for one, so a plugin should push a snapshot for each
+of its live references on a schedule (a reconcile), as well as on each
+upstream notice.
 
 #### `POST /plugin/v1/task-writes/claim`
 
@@ -395,7 +395,7 @@ write is now leased to you for 2 minutes:
  "state": "claimed", "attempts": 1, "lease_until": "…", "created_at": "…"}
 ```
 
-`kind` is `status` (with `status`), `comment` (with `body`) or `refresh`. Only
+`kind` is `status` (with `status`) or `comment` (with `body`). Only
 writes on references your plugin owns are handed to you. A write whose lease
 lapses goes back to pending and is handed out again, with `attempts` one
 higher, so keep your own ledger by write `id`: a crash between applying the
