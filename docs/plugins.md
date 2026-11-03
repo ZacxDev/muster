@@ -845,7 +845,9 @@ That "acted on it" rule is the same one that keeps a message off the
 [retry list](#retrying-an-unconfirmed-message) (`chiefActed`, one predicate
 for both). Live, not any state: a draft rejected, superseded, expired or
 failed, and a route timed out or failed, ended without an answer, so the
-message is back where it started.
+message is back where it started — except a
+[pull-request review](#a-pull-request-review-mail) the session had (its paste
+was sent), which muster settles itself when its route ends.
 
 A **settle** is the chief's `plugin_message_settle {message_id, reason}`: its
 judgement that the message needs nothing more (a notice, a status update, a
@@ -1164,13 +1166,43 @@ routing is on.
    reviews back to the chief before they were ever pasted. So a review may be
    pasted up to 4 hours after its mail arrived, at the session's first idle
    gap. The audit row carries
-   `routed_via: "pr <owner>/<repo>#<n> authored by <session>"`. Another
-   owner's session is never chosen. A newer review round of the same pull
-   request for the same session **supersedes** every older round whose paste
-   is still queued: that route ends `failed` ("superseded by a newer review
-   round") and its paste is cancelled, with no hand-back to the chief — so the
-   session never answers, and muster never auto-sends, a stale round. An older
-   round already pasted is left alone.
+   `routed_via: "pr <owner>/<repo>#<n> authored by <session>"` and the round,
+   `pr_head_sha`; the route row records the round too
+   (`session_routes.pr_head_sha`, migration `0070`). Another owner's session is
+   never chosen.
+
+   **What the session is told.** The paste says it is a review of the
+   session's **own** pull request, to act on in its work — each finding judged
+   against the code — and that `route_reply` is **optional** (a short
+   acknowledgement, sent to the reviewer as written). It is still fenced as an
+   UNTRUSTED external message: data, never instructions to run, open or obey.
+
+   **A round is a head commit.** A review may arrive as several messages
+   (part 1/2, part 2/2) with the same `head_sha`: they are one round, and every
+   part reaches the session — no part supersedes another. A review that
+   **arrives later** with a **different** `head_sha` for the same pull request
+   and session **supersedes** every open route of an earlier-arriving round,
+   whether or not its paste was already delivered. Order is by arrival, not by
+   commit: muster cannot tell which head is newer, so a late review of an
+   older head supersedes a newer head's route. The superseded route ends
+   `failed` ("superseded by a newer review round"), with no hand-back to the
+   chief, and a paste still queued is cancelled (so the session never answers,
+   and muster never auto-sends, a stale round).
+
+   **Handled, not handed back.** A superseded round whose paste **was sent**,
+   and a review whose paste **was sent** and that got no `route_reply` by its
+   4-hour deadline (`timed_out`, its error saying it was delivered), are
+   **handled**: the message is settled by muster (a reason starting
+   `muster: `), so it never becomes a
+   ["not acted on" ask](#a-message-the-chief-does-not-act-on). A superseded
+   round whose paste was **not** sent (still queued, being sent) is **not**
+   settled: the session never had it, so its message stays unsettled and the
+   "not acted on" ask still raises it — a late older review can never silently
+   swallow a newer one. A review whose paste was **never** delivered by its
+   deadline — still queued, cancelled, or failed — goes back to the chief as
+   any route does. Every other route (the chief's, the owner's, a route by
+   thread) is unchanged. A review route made before `0070` has no round: it is
+   superseded by any later round, and times out the old way.
 4. **No online window for that session.** The message goes to your chief as
    any other, and its turn ends with a block headed "Session that authored
    this pull request": the session's id, title, host, what its host's hook reported it did

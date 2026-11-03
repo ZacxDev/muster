@@ -17,7 +17,8 @@ import (
 // WHEN A ROUTED PASTE CAN NO LONGER REACH ITS SESSION, the route ends now
 // rather than at its deadline (4h for a pull-request review):
 //   - a newer review round of the same pull request for the same session
-//     supersedes an older round still queued (supersedePRRoutes): no hand-back;
+//     supersedes an older round, queued or pasted (supersedePRRoutes): no
+//     hand-back, and a queued paste is cancelled;
 //   - a cancelled routed row — the owner's Cancel, or a disable / sign-out
 //     everywhere (CancelOwner) — fails its route, owing the chief a hand-back;
 //   - a target session no online window has shown for RouteWindowGrace fails
@@ -131,21 +132,11 @@ func (f *routeFixture) dispatchRow(t *testing.T, id int64) sendqueue.Outcome {
 	return out
 }
 
-func TestAnOlderReviewRoundAlreadyPastedIsLeftAlone(t *testing.T) {
-	f := newPRFixture(t)
-	f.authored(t, f.asOwner, routeSID, prCreated())
-	old := f.oneRoute(t, f.review(t, "sup-old-2", prSender, true, round(prNumber, shaRound1)))
-	if out := f.dispatchRow(t, *old.SendQueueID); !out.Sent || f.queueRow(t, *old.SendQueueID).State != sendqueue.Sent {
-		t.Fatalf("fixture: the older round's paste was not delivered: %+v", out)
-	}
-	cur := f.oneRoute(t, f.review(t, "sup-new-2", prSender, true, round(prNumber, shaRound2)))
-	if o := f.routeState(t, old.RouteID); o.State != plugins.RouteRouted {
-		t.Fatalf("the pasted older round's route is %s %q; want routed (the session may be answering it)", o.State, o.Error)
-	}
-	if c := f.routeState(t, cur.RouteID); c.State != plugins.RouteRouted {
-		t.Fatalf("the newer round's route is %s; want routed", c.State)
-	}
-}
+// An older round already pasted is superseded too, now: see
+// TestANewerRoundSupersedesAnAlreadyDeliveredRoundWithNoAsk
+// (pr_route_round_pg_test.go), which replaced the test that pinned it "left
+// alone" — the behaviour that left every pasted round waiting out its 4-hour
+// deadline and then asking the owner about it.
 
 func TestAReviewOfAnotherPRDoesNotSupersede(t *testing.T) {
 	f := newPRFixture(t)
