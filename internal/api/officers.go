@@ -864,7 +864,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
 		}
-		/* MUTANT M10 */
+		if err == nil {
+			s.llmEnded(o, instance, in.ItemID)
+		}
 	case officers.ToolRelease:
 		if bad := needItem(); bad != "" {
 			return bad, true
@@ -873,7 +875,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
 		}
-		/* MUTANT M11 */
+		if err == nil {
+			s.llmEnded(o, instance, in.ItemID)
+		}
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
