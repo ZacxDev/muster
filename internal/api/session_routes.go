@@ -1043,6 +1043,11 @@ func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
 	if !ok {
 		return
 	}
+	if r.IsPRReview() && s.settleClosedPRMessage(ctx, r.MessageID, closedPRViaHandBack) {
+		// Its pull request is merged or closed: settled, nothing handed back.
+		s.logger.Printf("routes: %s: not handed back (%s): its pull request is already closed", routeID, reason)
+		return
+	}
 	s.logger.Printf("routes: %s: handing it back to the chief (%s)", routeID, reason)
 	if r.IsTask() {
 		s.handBackRoute(ctx, r, reason+", so the task is back with you: "+routeTaskHandBackChoices)

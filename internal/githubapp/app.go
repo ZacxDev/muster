@@ -833,6 +833,41 @@ func (a *App) DefaultBranch(ctx context.Context, repo string) (string, error) {
 	return r.DefaultBranch, nil
 }
 
+// PRState is a pull request's state as GitHub reports it: State "open" or
+// "closed", and Merged when a closed one was merged.
+type PRState struct {
+	State  string
+	Merged bool
+}
+
+// PullRequestState reads pull request n of repo with the installation's
+// listing token, as DefaultBranch reads the repository: muster's own
+// server-side read, never handed to an agent. A repository whose owner has no
+// allowlisted installation is an error, which the caller reads as "unknown".
+func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRState, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || n <= 0 {
+		return PRState{}, fmt.Errorf("%q #%d is not owner/name and a pull request number", repo, n)
+	}
+	inst, err := a.installationFor(ctx, owner)
+	if err != nil {
+		return PRState{}, err
+	}
+	tok, err := a.listingToken(ctx, inst)
+	if err != nil {
+		return PRState{}, err
+	}
+	var r struct {
+		State  string `json:"state"`
+		Merged bool   `json:"merged"`
+	}
+	if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
+		strconv.FormatInt(n, 10), "token "+tok, nil, &r, "reading "+repo+" pull request #"+strconv.FormatInt(n, 10), owner); err != nil {
+		return PRState{}, err
+	}
+	return PRState{State: r.State, Merged: r.Merged}, nil
+}
+
 // ListPullRequests lists agentID's own repository's pull requests with that
 // agent's repository token (server-side; the worker tool returns only the list).
 func (a *App) ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error) {

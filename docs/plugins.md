@@ -1215,6 +1215,30 @@ routing is on.
 5. **No author recorded**, or not a review muster reads: the ordinary
    delivery, unchanged.
 
+#### A review of a pull request already merged or closed
+
+With the [GitHub App](configuration.md) configured, muster asks GitHub for the
+pull request's state (`GET /repos/<owner>/<repo>/pulls/<n>`, with the App's
+installation token: muster's own read, never handed to an agent) at each point
+a review would otherwise reach a person. When GitHub reports it **closed** —
+merged or not — the review needs nothing more, and muster settles its message
+itself, with the reason `muster: a review of pull request <owner>/<repo>#<n>,
+which GitHub reports already merged: …` (or `closed without being merged`):
+
+- **on arrival** — no route, no paste into the session, no chief turn (the
+  message is recorded as handed to the chief, already settled);
+- **when its route would be handed back** — a review timed out or superseded
+  before its paste was sent: settled instead of going back to the chief;
+- **when the ["not acted on" ask](#a-message-the-chief-does-not-act-on) is
+  due** — a review the chief holds, or a superseded round never pasted:
+  settled instead of asked about.
+
+**Only a closed answer settles.** An open pull request, a repository whose
+owner has no installation of the App, a GitHub error, or no answer within 5
+seconds is **unknown**, and an unknown review is handled exactly as above —
+a review of an open pull request is never dropped on a guess. Without the App
+the check is off. GitHub is asked once per such point, not polled.
+
 What is not reported: a pull request created or a branch pushed by anything
 but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a
 command behind a wrapper the hook does not read), and anything from a host

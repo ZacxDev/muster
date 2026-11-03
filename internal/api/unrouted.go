@@ -101,6 +101,9 @@ func (s *Server) sweepUnroutedMessages(ctx context.Context) {
 	}
 	capped := 0
 	for _, m := range due {
+		if s.settleClosedPRMessage(s.attentionPrincipal(ctx, m.OwnerID), m.ID, closedPRViaAsk) {
+			continue // a review of a pull request already merged or closed: settled, no ask
+		}
 		if errors.Is(s.raiseUnroutedAsk(ctx, m), attention.ErrTooMany) {
 			capped++
 		}
