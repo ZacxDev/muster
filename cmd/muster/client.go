@@ -177,6 +177,11 @@ type client struct {
 	// progName is the name this process was invoked as, so the skew note names
 	// the command the reader actually typed. Empty falls back in warnSkew.
 	progName string
+	// tenantNote names the tenant ("tenant: work (host)") when this host has
+	// more than one; "" otherwise, and then every message is exactly as it was
+	// before tenants. envFile is the selected file the auth error points at.
+	tenantNote string
+	envFile    string
 
 	skewOnce sync.Once
 }
@@ -294,12 +299,25 @@ func (c *client) do(ctx context.Context, req request) ([]byte, error) {
 	if err != nil {
 		return nil, wrapf(exitNetwork, err, "reading response body from %s %s", req.method, req.path)
 	}
-	return classify(req, resp, body)
+	envFile := defaultEnvFile
+	if c.tenantNote != "" {
+		envFile = c.envFile
+	}
+	out, err := classify(req, resp, body, envFile)
+	var ce *cliError
+	if err != nil && c.tenantNote != "" && errors.As(err, &ce) && (ce.code == exitAuth || ce.code == exitRouteAbsent) {
+		// "401 from which server?" is the first question with several.
+		ce.msg += " [" + c.tenantNote + "]"
+	}
+	return out, err
 }
 
 // classify turns an HTTP response into either a JSON body or a cliError with
 // the right exit code.
-func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
+//
+// envFile is the file the auth error tells the operator to check: today's
+// default, or the selected tenant's file when the host has several.
+func classify(req request, resp *http.Response, body []byte, envFile string) ([]byte, error) {
 	ct := resp.Header.Get("Content-Type")
 	isJSON := strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json")
 
@@ -337,7 +355,7 @@ func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		return nil, failf(exitAuth,
 			"%s %s: %d %s — the server rejected the credential this request presented. Check %s in %s (the value is never printed).",
-			req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), envToken, defaultEnvFile)
+			req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), envToken, envFile)
 
 	case resp.StatusCode == http.StatusNotFound:
 		// A handler's 404 is JSON ({"error":"task not found"}); the router's own
@@ -495,6 +513,10 @@ func (c *client) warnSkew(ctx context.Context) {
 		name := c.progName
 		if name == "" {
 			name = defaultProgName
+		}
+		if c.tenantNote != "" {
+			fmt.Fprintf(c.stderr, "note: server %s, %s built for %s [%s]\n", h.Version, name, cliVersion(), c.tenantNote)
+			return
 		}
 		fmt.Fprintf(c.stderr, "note: server %s, %s built for %s\n", h.Version, name, cliVersion())
 	})

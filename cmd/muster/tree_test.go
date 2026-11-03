@@ -44,7 +44,10 @@ import (
 // status/comment, agent ls/resolve/messages, agent task get/comment/status, and
 // chief ask. If a thirteenth is genuinely wanted, change this number, add its
 // ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 23
+//
+// 23 → 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md),
+// ledgered in tenantWiring below because four of them reach no route at all.
+const wantVerbCount = 28
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -103,6 +106,49 @@ var wiring = []struct {
 	{"doctor", []string{"doctor", "--skip", "server,manifest,sign-in,push,dictation"}, "GET /api/doctor"},
 }
 
+// tenantWiring is the `tenant …` half of the ledger. These verbs manage files
+// under ~/.muster, so they cannot run through `wiring`'s runner (which passes
+// --token, which `tenant add` refuses): each row runs in its own temp HOME.
+// wantRoute "" means the verb is LOCAL and must send no request at all.
+var tenantWiring = []struct {
+	name      string
+	run       func(f *leakFixture) result
+	wantRoute string
+}{
+	{"tenant list", func(f *leakFixture) result { return f.run(nil, "tenant", "list") }, ""},
+	{"tenant current", func(f *leakFixture) result { return f.run(nil, "tenant", "current") }, ""},
+	{"tenant use", func(f *leakFixture) result { return f.run(nil, "tenant", "use", "default") }, ""},
+	{"tenant remove", func(f *leakFixture) result { f.addWork(); return f.run(nil, "tenant", "remove", "work") }, ""},
+	{"tenant add", func(f *leakFixture) result {
+		return f.runStdin(nil, workTok+"\n", "tenant", "add", "work", "--api-url", f.work.srv.URL)
+	}, "GET /api/whoami"},
+}
+
+func TestEveryTenantVerbReachesItsRouteOrNone(t *testing.T) {
+	for _, w := range tenantWiring {
+		t.Run(w.name, func(t *testing.T) {
+			f := newLeakFixture(t)
+			got := w.run(f)
+			if got.code != exitOK {
+				t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
+			}
+			var seen []string
+			for _, h := range []*harness{f.dflt, f.work, f.alien} {
+				for _, r := range h.requests() {
+					seen = append(seen, r.method+" "+strings.SplitN(r.uri, "?", 2)[0])
+				}
+			}
+			want := []string{}
+			if w.wantRoute != "" {
+				want = []string{w.wantRoute}
+			}
+			if strings.Join(seen, ",") != strings.Join(want, ",") {
+				t.Errorf("%s sent %v, want exactly %v", w.name, seen, want)
+			}
+		})
+	}
+}
+
 // runnableCommands walks the tree and returns the full path of every command
 // that actually does work. Our commands all use RunE; cobra's built-in `help`
 // uses Run, so this is a structural filter rather than a name blocklist.
@@ -125,7 +171,7 @@ func TestTheVerbLedgerIsExactlyTheSpecifiedSet(t *testing.T) {
 	for _, r := range runnableCommands(root, "") {
 		registered = append(registered, strings.TrimPrefix(r, a.progName+" "))
 	}
-	t.Logf("%d commands registered, %d ledger rows, %d specified", len(registered), len(wiring), wantVerbCount)
+	t.Logf("%d commands registered, %d+%d ledger rows, %d specified", len(registered), len(wiring), len(tenantWiring), wantVerbCount)
 
 	if len(registered) < minRunnableCommands {
 		t.Fatalf("only %d runnable commands registered (%v), want at least %d — the tree is wired to nothing",
@@ -137,9 +183,9 @@ func TestTheVerbLedgerIsExactlyTheSpecifiedSet(t *testing.T) {
 			"Adding or removing a verb is a design decision: change wantVerbCount, add or drop the "+
 			"ledger row, and say so in the commit.", len(registered), registered, wantVerbCount)
 	}
-	if len(wiring) != wantVerbCount {
-		t.Fatalf("🔴 the wiring ledger has %d rows and this binary is specified to have %d verbs",
-			len(wiring), wantVerbCount)
+	if len(wiring)+len(tenantWiring) != wantVerbCount {
+		t.Fatalf("🔴 the wiring ledgers have %d+%d rows and this binary is specified to have %d verbs",
+			len(wiring), len(tenantWiring), wantVerbCount)
 	}
 
 	// (3) the two NAME SETS are equal, with a duplicate check so two rows naming
@@ -152,11 +198,18 @@ func TestTheVerbLedgerIsExactlyTheSpecifiedSet(t *testing.T) {
 		have[r] = true
 	}
 	want := map[string]bool{}
+	names := []string{}
 	for _, w := range wiring {
-		if want[w.name] {
-			t.Fatalf("the wiring ledger names %q twice — two rows for one verb would hide a missing row", w.name)
+		names = append(names, w.name)
+	}
+	for _, w := range tenantWiring {
+		names = append(names, w.name)
+	}
+	for _, n := range names {
+		if want[n] {
+			t.Fatalf("the wiring ledger names %q twice — two rows for one verb would hide a missing row", n)
 		}
-		want[w.name] = true
+		want[n] = true
 	}
 	for name := range want {
 		if !have[name] {

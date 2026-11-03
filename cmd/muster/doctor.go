@@ -282,10 +282,11 @@ func (d *doctorRun) resolve(deployEnv string) error {
 		d.password = vals["MUSTER_UI_PASSWORD"]
 		d.passwordURL = strings.TrimSuffix(strings.TrimSpace(vals["MUSTER_PUBLIC_URL"]), "/")
 	}
-	envFile := expandHome(a.flagEnvFile, a.homeDir)
-	vals, err := parseEnvFile(envFile)
+	// The selected tenant's file (tenant.go); on the zero-touch path that is
+	// the --env-file file, exactly as before tenants.
+	sel, vals, err := a.loadSelected()
 	if err != nil {
-		return wrapf(exitUsage, err, "reading %s", envFile)
+		return err
 	}
 	for k, v := range vals {
 		if v != "" {
@@ -300,6 +301,18 @@ func (d *doctorRun) resolve(deployEnv string) error {
 		// MUSTER_PUBLIC_URL must not send its hook token to whatever URL the
 		// CLI config names (round-2 audit, G1).
 		if u := deploy["MUSTER_PUBLIC_URL"]; u != "" {
+			// 🔴 OFF THE ZERO-TOUCH PATH THE DEPLOY URL NEEDS THE DEPLOY TOKEN.
+			// Without one, the URL lands in the file values and pairs with the
+			// selected tenant's own token, sending it to a server that tenant
+			// file never named (round-1 audit, Y1). The zero-touch path keeps
+			// today's behaviour.
+			if !sel.zeroTouch && deploy["MUSTER_HOOK_TOKEN"] == "" {
+				return failf(exitUsage,
+					"--deploy-env %s sets MUSTER_PUBLIC_URL but no MUSTER_HOOK_TOKEN: with more than one tenant "+
+						"configured its URL would be paired with %s's token, and no request was sent. "+
+						"Add MUSTER_HOOK_TOKEN to it, or drop --deploy-env.",
+					deployEnv, sel.where())
+			}
 			merged[envAPIURL] = u
 			if t := deploy["MUSTER_HOOK_TOKEN"]; t != "" {
 				delete(merged, envToken)
@@ -315,7 +328,7 @@ func (d *doctorRun) resolve(deployEnv string) error {
 			}
 		}
 	}
-	cfg, err := resolveConfig(a.flagEnvFile, merged, getenv, a.flagAPIURL, a.flagToken)
+	cfg, err := resolveSelected(sel, merged, getenv, a.flagAPIURL, a.flagToken)
 	if err != nil {
 		return err
 	}
