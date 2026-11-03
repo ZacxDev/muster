@@ -116,6 +116,14 @@ type Officer struct {
 	// instance's request is still decided explicitly by the owner, and is never
 	// approved from a shared approval. Sorted and deduplicated.
 	Connectors []string `json:"connectors,omitempty"`
+	// Tiers, when set, splits the officer's instances into two pools — routine
+	// and judgement — each with its own model and max instances (tiers.go).
+	// nil (no `tiers` block) is one untiered pool: today's behaviour.
+	Tiers *Tiers `json:"-"`
+	// Tier is the pool this value describes: "" for an untiered officer, else
+	// TierJudgement or TierRoutine (Officer.Pool). Parse returns a tiered
+	// officer as its judgement pool.
+	Tier string `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.

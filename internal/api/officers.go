@@ -873,7 +873,7 @@ const alreadyYoursNote = "already yours — lease renewed (you held this item un
 // is claimable again and the claim is retried once. A 409 naming anyone else
 // is returned unchanged.
 func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item officers.ItemID, instance string, lease int) ([]byte, error) {
-	body, err := c.Claim(ctx, item, instance, lease)
+	body, err := c.Claim(ctx, item, instance, lease, "")
 	var hqErr *officers.HQError
 	if err == nil || !errors.As(err, &hqErr) || hqErr.Status != http.StatusConflict {
 		return body, err
@@ -890,7 +890,7 @@ func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item offi
 	hb, hbErr := c.Heartbeat(ctx, item, instance, lease)
 	var hbHQ *officers.HQError
 	if errors.As(hbErr, &hbHQ) && hbHQ.Status == http.StatusConflict {
-		body, err := c.Claim(ctx, item, instance, lease)
+		body, err := c.Claim(ctx, item, instance, lease, "")
 		if b := asClaimBlocked(item, err); b != nil {
 			return nil, b
 		}

@@ -387,7 +387,11 @@ func (r *Reconciler) st(id string) *officerState {
 
 // PassResult is one pass's outcome, for logs and tests.
 type PassResult struct {
+	// Decision is the pass's decision for an untiered officer, or for a
+	// tiered officer's judgement pool.
 	Decision Decision
+	// Routine is a tiered officer's routine pool's decision (nil: untiered).
+	Routine *Decision
 	// Skipped is set when the pass read nothing because the officer is in
 	// backoff.
 	Skipped bool

@@ -71,6 +71,9 @@ type Item struct {
 	// tasks, so HQ refuses to claim it (409 blocked). Absent — an unblocked
 	// item, or an HQ without ordering — is false: the item is claimable.
 	Blocked bool `json:"blocked"`
+	// Tier is HQ's `tier` as the item reads now: routine or judgement. Absent
+	// (an HQ without tiers) reads as judgement (ItemTier).
+	Tier string `json:"tier"`
 }
 
 // LeaseLive reports whether the item's lease is unexpired at now. An item with
@@ -187,6 +190,8 @@ type ItemsQuery struct {
 	Status string
 	Limit  int
 	Cursor string
+	// Tier filters by the item's tier (`?tier=`); "" lists every tier.
+	Tier string
 }
 
 func (q ItemsQuery) encode() string {
@@ -278,7 +283,7 @@ func ClampLease(seconds int) int {
 }
 
 // Claim is POST …/items/{item}/claim.
-func (c *Client) Claim(ctx context.Context, item ItemID, instance string, leaseSeconds int) ([]byte, error) {
+func (c *Client) Claim(ctx context.Context, item ItemID, instance string, leaseSeconds int, tier string) ([]byte, error) {
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "claim"), map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)})
 }
 
