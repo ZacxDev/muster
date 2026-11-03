@@ -60,13 +60,12 @@ func whereSessionItem(t *testing.T, s *Server, session, window string) attention
 	return attentionItem{}
 }
 
-// TestANudgeAskNamesItsWindowsExactTmuxTarget: a chief nudge's ask, built from
-// the sweep's own candidate (stallInputs carries the window), opens with the
-// tmux session and index — the codename first when the host gave one.
-// nudgeAskPlace is the whole of what nudgeAskQuestion says of where the
-// session is (after its focus title), pinned here whole; the live-ask PG test
-// (TestChiefNudgeLiveAskIsAnsweredAndRelayedVerbatim) pins the whole question.
-func TestANudgeAskNamesItsWindowsExactTmuxTarget(t *testing.T) {
+// TestANudgeNoticeNamesItsWindowsExactTmuxTarget: a chief nudge's notice,
+// built from the sweep's own candidate (stallInputs carries the window), is
+// labelled with its host and exact tmux target, "<host> · <session>:<index>"
+// (noticeLabel) — never the codename, which a tmux key cannot switch to.
+// (Before notices the ask said " (mango:1 · tmux scratch3:5 @ ws)" here.)
+func TestANudgeNoticeNamesItsWindowsExactTmuxTarget(t *testing.T) {
 	s := whereServer(t)
 	byKey := map[string]chiefnudge.Session{}
 	for _, c := range s.stallInputs(s.attentionPrincipal(context.Background(), 1), nil) {
@@ -78,23 +77,23 @@ func TestANudgeAskNamesItsWindowsExactTmuxTarget(t *testing.T) {
 	for _, c := range []struct {
 		name, sid, want string
 	}{
-		{"a window with a codename", whereLabelledSID, " (mango:1 · tmux scratch3:5 @ ws)"},
-		{"a window without a codename", whereUnlabelledSID, " (tmux build:7 @ ws)"},
+		{"a window with a codename", whereLabelledSID, "ws · scratch3:5"},
+		{"a window without a codename", whereUnlabelledSID, "ws · build:7"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := nudgeAskPlace(byKey[c.sid]); got != c.want {
-				t.Fatalf("ask place:\n%q\nwant:\n%q", got, c.want)
+			if got := noticeLabel(byKey[c.sid]); got != c.want {
+				t.Fatalf("notice label:\n%q\nwant:\n%q", got, c.want)
 			}
 		})
 	}
 }
 
-// TestAnAgentNudgeAskKeepsItsAgentName: an agent has no tmux window; its ask
-// still names it "(agent <name>)". An INVARIANT guard (it held before too).
-func TestAnAgentNudgeAskKeepsItsAgentName(t *testing.T) {
+// TestAnAgentNudgeNoticeKeepsItsAgentName: an agent has no tmux window; its
+// notice names it "agent <name>".
+func TestAnAgentNudgeNoticeKeepsItsAgentName(t *testing.T) {
 	c := chiefnudge.Session{Kind: chiefnudge.KindAgent, Label: "Worker Seven", Title: "Fix CI"}
-	if got, want := nudgeAskPlace(c), " (agent Worker Seven)"; got != want {
-		t.Fatalf("ask place %q, want %q", got, want)
+	if got, want := noticeLabel(c), "agent Worker Seven"; got != want {
+		t.Fatalf("notice label %q, want %q", got, want)
 	}
 }
 

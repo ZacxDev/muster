@@ -48,6 +48,11 @@ const (
 	// leave this process and its outcome is unknown here, so a blind retry can
 	// repeat a write that already landed. The remedy is a longer --timeout.
 	exitAborted = 10 // this CLIENT's own deadline or context ended the wait
+	// exitNoneWaiting is its own code because "there is nothing to do" is not a
+	// failure: `nudge next` (nudge.go) found no chief-nudge notice to jump to.
+	// A key binding branches on it to stay quiet instead of reporting an error.
+	// It is new in this binary; the upstream table has no 11.
+	exitNoneWaiting = 11 // nothing is waiting (`nudge next`): not an error
 )
 
 // cliError carries the exit code alongside the message. Every failure path in
@@ -120,6 +125,8 @@ const exitCodeHelp = `Exit codes:
  10  THIS CLIENT gave up waiting (its --timeout, or a cancelled context) — the request
      DID leave this process, so its outcome is unknown here. Raise --timeout rather than
      retrying blindly, because a write that already landed would be repeated
+ 11  nothing is waiting — ` + "`nudge next`" + ` found no chief-nudge notice to jump to on that
+     host. Not a failure: stdout is empty
 
 Output discipline: JSON goes to stdout and NOTHING else ever goes to stdout.
 Diagnostics, warnings and version-skew notices go to stderr, so piping stdout

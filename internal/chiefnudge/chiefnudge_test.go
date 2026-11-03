@@ -189,15 +189,6 @@ func TestParseProposal(t *testing.T) {
 	}
 }
 
-func TestCleanOptions(t *testing.T) {
-	if got := CleanOptions([]string{" a ", "A", "b", "c", "d", "e"}); strings.Join(got, "|") != "a|b|c|d" {
-		t.Fatalf("%q", got)
-	}
-	if got := CleanOptions([]string{"only"}); len(got) != 2 || got[0] != "only" {
-		t.Fatalf("one option was not filled: %q", got)
-	}
-}
-
 // TestTheNudgeIsLabelledAndQuotesTheOwner pins the nudge's whole text
 // (operator decision: a labelled message quoting the owner, never the owner's
 // voice) — a reword fails here on purpose.
@@ -282,14 +273,18 @@ func TestPhraseBoundariesAreUnicodeAware(t *testing.T) {
 	}
 }
 
-func TestTheGenericAskIsRecognisedAndRelaysNoOption(t *testing.T) {
-	if !IsGenericAsk(GenericAskOptions) || IsGenericAsk([]string{"Open session"}) || IsGenericAsk([]string{"main", "release"}) {
-		t.Fatal("IsGenericAsk")
+// TestTheChiefIsAskedForNoOptions: a notice has nothing to choose, so the
+// stall check's prompt names no options, below the ask-stall line or over it.
+func TestTheChiefIsAskedForNoOptions(t *testing.T) {
+	for _, h := range []Hint{{}, {AskStall: true, Label: LabelNeedsInput, AskScore: 0.95}} {
+		p := Prompt(Session{Title: "t"}, Msg{Role: "assistant", Text: "done?"}, nil, 15*time.Minute, h, "0123456789abcdef")
+		if strings.Contains(p, "options") || strings.Contains(p, "2 to 4") {
+			t.Fatalf("the prompt asks for options (hint %+v):\n%s", h, p)
+		}
 	}
-	if !IsGenericChoice(GenericAskOptions, " Dismiss ") || IsGenericChoice(GenericAskOptions, "merge into main") ||
-		IsGenericChoice([]string{"Dismiss", "Open session"}, "Dismiss") {
-		t.Fatal("IsGenericChoice")
-	}
+}
+
+func TestTheGenericAskQuestion(t *testing.T) {
 	if q := GenericAskQuestion("Fix CI", ""); q != "Fix CI is waiting on you. Its last turn looks like it asked you something." {
 		t.Fatalf("%q", q)
 	}

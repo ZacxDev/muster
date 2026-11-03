@@ -121,6 +121,14 @@ func (s *Server) pushTargetFor(ctx context.Context, owner int64, it attentionIte
 	if it.Kind == attentionKindAsk && it.AskID > 0 {
 		return askPagePath(it.AskID)
 	}
+	if it.Kind == attentionKindNotice && it.AskID > 0 {
+		// A notice points at a session: that session's page, else the
+		// notice's own page (no answer box there either).
+		if p := s.attentionSessionPath(ctx, owner, it); p != "" {
+			return p
+		}
+		return askPagePath(it.AskID)
+	}
 	if p := s.attentionSessionPath(ctx, owner, it); p != "" {
 		return p
 	}
@@ -140,6 +148,10 @@ func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it atten
 			return ""
 		}
 		return c.ref.ViewPath()
+	case attentionKindNotice:
+		if it.AskID > 0 {
+			return s.nudgeSessionPath(ctx, owner, it.AskID)
+		}
 	case attentionKindAsk:
 		switch {
 		case c.agentID > 0:
@@ -196,15 +208,16 @@ func (s *Server) nudgeSessionPath(ctx context.Context, owner, askID int64) strin
 	case chiefnudge.KindAgent:
 		if d.AgentID > 0 {
 			// The conversation the nudge is about, not the agent's newest: its
-			// answer is relayed into that one (relayNudgeAnswer).
+			// notice is about that one.
 			return s.askingAgentHref(ctx, owner, d.AgentID, d.ChatSessionID)
 		}
 	case chiefnudge.KindMirror:
 		if s.ext.Mirror == nil || d.Host == "" || d.Key == "" {
 			return ""
 		}
-		if ref, ok := claudeSessionWindow(s.ext.Mirror.Hosts(ctx), d.Host, d.Key); ok {
-			return ref.ViewPath()
+		// By session key: a Claude session, or an opencode one ("opencode:<id>").
+		if e, ok := sessionKeyEntry(s.ext.Mirror.Hosts(ctx), d.Host, d.Key); ok {
+			return ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()
 		}
 	}
 	return ""

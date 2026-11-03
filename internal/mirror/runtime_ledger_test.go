@@ -180,6 +180,9 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"cmd/muster-mirror/main.go tmuxBackend ×1",
 		"cmd/muster-mirror/opencode_list.go printOpenCode ×1",
 		"internal/api/attention_hermes.go attentionNotice ×1",
+		// The chief's stall nudges judge opencode panes — and only those of the
+		// non-Claude runtimes — by the owner's choice (chief_nudge.go).
+		"internal/api/chief_nudge.go nudgeWindowKey ×1",
 		"internal/api/composer.go (declarations) ×5",
 		"internal/api/mirror_view.go Server.handleMirrorViewPage ×4",
 		"internal/api/send_queue.go (declarations) ×2",

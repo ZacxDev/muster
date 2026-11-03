@@ -298,6 +298,8 @@ func (s *Server) toolAttentionAnswer(ctx context.Context, c toolCaller, argument
 		return toolErr("no such ask: %d", id)
 	case errors.Is(err, attention.ErrSameHost):
 		return toolErr("ask %d was raised by a mirrored session on this host (%s): no session answers an ask raised on its own host; your owner answers it on the Attention view or from another host", id, src.Host)
+	case errors.Is(err, attention.ErrNotice):
+		return toolErr("ask %d is a notice, not a question: it has no answer (your owner opens its session or dismisses it)", id)
 	case errors.Is(err, attention.ErrNotOpen):
 		return toolErr("ask %d is no longer open (it is %s)", id, a.Status)
 	case errors.Is(err, attention.ErrInvalid):

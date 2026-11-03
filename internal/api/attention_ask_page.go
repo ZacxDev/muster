@@ -92,10 +92,17 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	}
 	esc := html.EscapeString
 	source := textplain.TitleKeeping(it.Source, it.target)
+	// A notice (attention.KindNotice) is drawn as one: no options, no answer
+	// box, only its session and Dismiss.
+	notice := a.Kind == attention.KindNotice
+	verb, heading, dismiss := "asks", source+" is asking", "Dismiss without answering"
+	if notice {
+		verb, heading, dismiss = "notice", source+noticePushTitleSuffix, "Dismiss"
+	}
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
-<p class="text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> asks · <time datetime="` +
+<p class="text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · <time datetime="` +
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>
 <p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
 `)
@@ -114,7 +121,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if a.Status == attention.Open {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + strconv.FormatInt(a.ID, 10) + `/cancel" hx-boost="false" class="pt-2" data-ask-dismiss-form>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
-<button type="submit" class="` + flowsQuietButton + ` w-full" data-ask-dismiss>Dismiss without answering</button></form>
+<button type="submit" class="` + flowsQuietButton + ` w-full" data-ask-dismiss>` + dismiss + `</button></form>
 `)
 	}
 	b.WriteString(`</section>
@@ -122,8 +129,8 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	b.WriteString(ui.AttentionLiveScript("ask-live", askPagePath(a.ID)+"?part=live", EventAttentionChanged))
 	b.WriteString(askPageScript)
 
-	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: source + " is asking"}
-	if a.Status == attention.Open {
+	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: heading}
+	if a.Status == attention.Open && !notice {
 		app.Composer = askComposerHTML(r, a, s.dictatePath())
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)

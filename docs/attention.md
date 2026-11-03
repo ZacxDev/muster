@@ -13,6 +13,7 @@ creation), ties broken by the item's key:
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
+| Notice | A pointer at one of your sessions that looks like it is waiting on you, raised by a live [chief nudge](chief-nudges.md#live-mode) ([below](#notices)). Shown as `<host> · <tmux session>:<window index>` (resolved when drawn), its focus title, the chief's short message, and the tmux target on its own line. | `attention_asks` rows of kind `notice` (migration 0071), joined to the chief's decision for the session. | **View in session**, or **Dismiss**. It has **no answer box**: there is nothing to answer. It leaves the list when the session moves on. |
 | Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail or ClankMail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
 | Session waiting | A mirrored Claude Code **or Hermes** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password). Shown with **what it waits on** (below), its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway ([mirroring.md](mirroring.md)). It leaves the list when the session stops waiting. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once. | The open question (`internal/askq`), live; it leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
@@ -24,10 +25,42 @@ creation), ties broken by the item's key:
 With [stall nudges](chief-nudges.md) on (`MUSTER_CHIEF_NUDGES=1`), the page
 has a **Chief nudges** tab (`/attention?tab=nudges`, with or without plugins):
 every decision your chief took about one of your stalled sessions, newest
-first. A
-live ask the chief raises about a stalled session is an ordinary question on
-the **Ask** tab, asked by *your chief*; your answer there is sent into that
-session word for word ([how](chief-nudges.md#live-mode)).
+first. A live decision to point you at a stalled session is a
+[notice](#notices) on the **Ask** tab ([how](chief-nudges.md#live-mode)).
+
+### Notices
+
+A **notice** is an item that points at a session and asks nothing. Today only a
+live [chief nudge](chief-nudges.md#live-mode) raises one. It is stored as an
+`attention_asks` row of kind `notice` (migration 0071), and it differs from a
+question in four ways:
+
+- **No answer.** It has no options and no answer box, on the Asks list or on
+  its own page. An answer posted to it anyway, from the page, a paired phone's
+  signed action or a mirrored session's `attention_answer`, is refused (409,
+  *That is a notice, not a question*). The database refuses an answer on a
+  notice row too (`attention_asks_kind_check`). Nothing is ever relayed from
+  one.
+- **Not counted toward the cap.** The per-owner cap of 50 open questions
+  counts questions only, and a notice is never refused at it, so notices can
+  neither fill the cap nor be suppressed by it.
+- **Where, resolved when drawn.** Its place is the session its chief decision
+  is about. A mirrored window is found by its session key over your windows
+  when the item is drawn, so a renumbered window shows its new index. A
+  session that no window shows now reads as the place it had when raised,
+  followed by `(not shown in any mirrored window now)`, and has no tmux target. When
+  muster cannot read the notices' sessions at all, each notice shows its label
+  with no target and the queue reads as partial (the summary's `partial`), so
+  `muster nudge next` exits 1 rather than claim nothing is waiting.
+- **Withdrawn when the session moves on**, as a nudge ask was. **Dismiss**
+  withdraws it at once. Otherwise it expires after 24 hours.
+
+Its notification's title is `<host> · <session>:<index> may be waiting on you`.
+Its body is the session's focus title and the chief's message. It carries no
+`ask` payload, so a paired phone draws no buttons for it; an Android app that
+predates notices does the same, because it draws buttons only from `ask`
+([push.md](push.md)). A tap opens the session's page, or the notice's own page
+when no window shows the session now.
 
 ### The Reply drafts tab
 
@@ -110,6 +143,7 @@ command, path or URL, never what Claude said.
 | a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any — except muster's own ask about a [plugin message nobody acted on](plugins.md#a-message-the-chief-does-not-act-on), whose long fixed sentence would fill the body: its body is `From: <sender> · Subject: <subject>`, then the option (the page shows the whole question) |
 | a held question (a session's `AskUserQuestion`) | `<where> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
 | a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <where>`, or `Waiting: <where>` when its host names no tool |
+| a [notice](#notices) | `<host> · <session>:<index> may be waiting on you` | the session's focus title, then the chief's message; no options and no `ask` payload |
 
 `<where>` is the window's exact tmux target — see [How a window is named](#how-a-window-is-named).
 
@@ -689,11 +723,12 @@ you, your mirror hosts' busy and idle Claude windows, and your
 | `hosts[]` | Each of your mirror hosts, by the name it reports (`MUSTER_MIRROR_HOST`), in the hub's order. `online`; `status_report` (it reports its windows' Claude status, so its zeros are measurements); `busy` and `idle`, its Claude (and other agent runtime) windows by status. An offline host counts `0` and `0`: a count is a claim about now. |
 | `items[]` | Everything waiting on you, newest first. |
 | `items[].key` | The item's id (`ask-<id>`, `session-<hash>`, `draft-<id>`, `task-<id>`). A held question has its window's `session-…` key. |
-| `items[].kind` | `ask`, `session`, `question`, `plugin` (a reply draft) or `task`. |
+| `items[].kind` | `ask`, `session`, `question`, `plugin` (a reply draft), `task` or `notice` (a [notice](#notices)). |
 | `items[].host` | The mirror host it is on; `""` for an agent's ask, muster's own, a reply draft and a task. |
 | `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body. Secrets are redacted, a waiting session is `Waiting: <tool> · <where>` (its exact tmux target, [How a window is named](#how-a-window-is-named), kept verbatim), a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
 | `items[].since`, `items[].age_secs` | When it started waiting (Unix seconds) and `ts` minus that; `0` and `0` when unknown. |
 | `items[].offline` | A session item whose host dropped within the last 5 minutes, shown as last seen. |
+| `items[].target` | A `notice`'s window as tmux takes it, `<session>:<window index>`, resolved when the summary is built. Absent for every other kind, and for a notice whose session no window shows now. With `host`, it is what [`muster nudge next`](cli.md#jumping-to-a-chief-nudge) switches to. |
 | `items[].url` | Where to act on it, on `MUSTER_PUBLIC_URL`: the [tap route](push.md) `/attention/open/<key>` for an ask or a session (resolved when opened), the item's own page for a draft or a task. **`""` when `MUSTER_PUBLIC_URL` is not set**: the summary names no origin it was not told. |
 
 Fields may be added; none is renamed or removed.

@@ -71,6 +71,7 @@ flow cancel
 flow enqueue
 flow ls
 flow status
+nudge next
 plugins retry
 route reply
 task comment
@@ -93,7 +94,8 @@ whoami"
 # the identical number for the in-process tree; they are two reads of one
 # decision.)
 # 23 -> 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md).
-WANT_COUNT=28
+# 28 -> 29: `nudge next` (a host's oldest chief-nudge notice).
+WANT_COUNT=29
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

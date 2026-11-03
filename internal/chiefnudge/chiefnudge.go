@@ -33,8 +33,11 @@ import (
 
 // Session kinds.
 const (
-	KindMirror = "mirror" // a mirrored Claude Code window; Key is its Claude session id
-	KindAgent  = "agent"  // one of the owner's dispatched agents; Key is its id
+	// KindMirror is a mirrored window: Key is its Claude session id, or for an
+	// opencode window its runtime-qualified key ("opencode:<id>",
+	// mirror.Window.SessionKey) — Session.Runtime says which.
+	KindMirror = "mirror"
+	KindAgent  = "agent" // one of the owner's dispatched agents; Key is its id
 )
 
 // Decisions the chief may return, plus Invalid for an answer muster could not
@@ -55,16 +58,19 @@ const (
 // Outcomes: what became of a decision. A suppressed one is
 // SuppressedPrefix + the guard's name.
 const (
-	OutcomeWouldSend   = "would_send"   // shadow: a nudge that passed every guard
-	OutcomeWouldAsk    = "would_ask"    // shadow: an ask muster would have raised
-	OutcomeLeft        = "left"         // the chief said leave it
-	OutcomeQueued      = "queued"       // live: a mirrored nudge waits in the send queue
-	OutcomeSent        = "sent"         // live: the nudge reached the session
-	OutcomeAsked       = "asked"        // live: an attention ask is open
-	OutcomeRelayQueued = "relay_queued" // live: the owner's answer waits in the send queue
-	OutcomeRelayed     = "relayed"      // live: the owner's answer reached the session
-	OutcomeFailed      = "failed"       // live: the send or relay did not happen (Detail says why)
-	OutcomeAskClosed   = "ask_closed"   // live: the ask ended with nothing to relay (Detail says how)
+	OutcomeWouldSend = "would_send" // shadow: a nudge that passed every guard
+	OutcomeWouldAsk  = "would_ask"  // shadow: an ask muster would have raised
+	OutcomeLeft      = "left"       // the chief said leave it
+	OutcomeQueued    = "queued"     // live: a mirrored nudge waits in the send queue
+	OutcomeSent      = "sent"       // live: the nudge reached the session
+	OutcomeAsked     = "asked"      // live: an attention ask is open
+	// OutcomeRelayQueued and OutcomeRelayed are a nudge ask's relay, retired
+	// with nudge asks (migration 0071): no decision moves to either now. Older
+	// rows keep them; the Chief nudges tab names them.
+	OutcomeRelayQueued = "relay_queued"
+	OutcomeRelayed     = "relayed"
+	OutcomeFailed      = "failed"     // live: the send did not happen (Detail says why)
+	OutcomeAskClosed   = "ask_closed" // live: the notice (or an older ask) ended (Detail says how)
 	SuppressedPrefix   = "suppressed:"
 )
 
@@ -78,7 +84,7 @@ const (
 	GuardMovedOn    = "moved_on"         // the session left its idle streak before muster acted
 	GuardAskCap     = "ask_cap"          // the owner's open asks are at attention's cap
 	GuardChiefError = "chief_error"      // the chief's call failed (Detail says how); the next streak is judged again
-	GuardSuperseded = "superseded"       // a queued nudge or relay was refused at its paste: the session had moved on
+	GuardSuperseded = "superseded"       // a queued nudge was refused at its paste: the session had moved on
 	GuardPartial    = "partial_read"     // reason text only: the transcript read was incomplete, so no owner message authorises a nudge
 	// GuardLanesFull: the chief's ccd refused every check for this streak with
 	// 503 capacity (every lane held by the owner's own sessions) for longer than
@@ -119,12 +125,6 @@ const (
 	MinQuoteWords = 3
 	// MaxQuoteRunes bounds a quote (the nudge carries it).
 	MaxQuoteRunes = 500
-	// MinOptions/MaxOptions bound an ask's options.
-	MinOptions = 2
-	MaxOptions = 4
-	// RelayMaxAge bounds how long a claimed relay is retried (an agent that
-	// stays busy): past it the relay is dropped and recorded failed.
-	RelayMaxAge = 2 * time.Hour
 	// QueueRepairAfter: a live nudge recorded queued whose send_queue row was
 	// never written (a crash between the two) is failed after this.
 	QueueRepairAfter = 10 * time.Minute
@@ -137,7 +137,6 @@ const (
 	maxQuestionRunes = 4000
 	maxReasonRunes   = 1000
 	maxActionRunes   = 300
-	maxOptionRunes   = 200
 	maxDetailRunes   = 1000
 )
 
@@ -145,7 +144,12 @@ const (
 // transcript is read: everything candidate selection decides on.
 type Session struct {
 	Kind string
-	Key  string // Claude session id (mirror) or agent id (agent)
+	Key  string // Claude session id or "opencode:<id>" (mirror), or agent id (agent)
+	// Runtime is a mirrored window's agent runtime when it is not Claude Code
+	// (mirror.RuntimeOpenCode), "" for Claude Code and for an agent. A
+	// runtime window is VIEW ONLY: it is never nudged (the sweep raises the
+	// notice instead).
+	Runtime string
 	// Mirror address (KindMirror).
 	Host, TmuxSession, Window, Label string
 	// Index is the window's tmux index when the sweep saw it (mirror
@@ -351,13 +355,12 @@ func Anchor(owner []Msg) string {
 
 // Proposal is the chief's answer, as parsed.
 type Proposal struct {
-	Decision      string   `json:"decision"`
-	Reason        string   `json:"reason"`
-	QuoteID       string   `json:"quote_id"`
-	Quote         string   `json:"quote"`
-	CoveredAction string   `json:"covered_action"`
-	Question      string   `json:"question"`
-	Options       []string `json:"options"`
+	Decision      string `json:"decision"`
+	Reason        string `json:"reason"`
+	QuoteID       string `json:"quote_id"`
+	Quote         string `json:"quote"`
+	CoveredAction string `json:"covered_action"`
+	Question      string `json:"question"`
 }
 
 // ErrUnparseable: the chief's answer holds no JSON object with a known
@@ -510,32 +513,14 @@ func EscalationNoTimes(title string) string {
 		"instruction of yours that covers the next step. Should it continue?"
 }
 
-// CleanOptions is an ask's options: trimmed, one line, deduplicated, cut, at
-// most MaxOptions; when fewer than MinOptions remain, the defaults fill in.
-func CleanOptions(in []string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, o := range in {
-		o = cut(oneLine(o), maxOptionRunes)
-		k := strings.ToLower(o)
-		if o == "" || seen[k] {
-			continue
-		}
-		seen[k] = true
-		out = append(out, o)
-		if len(out) == MaxOptions {
-			break
-		}
+// EscalationViewOnly is the ask raised in place of a nudge for a session muster
+// cannot type into (an opencode pane: view only).
+func EscalationViewOnly(title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		t = "This session"
 	}
-	if len(out) < MinOptions {
-		for _, d := range []string{"Continue", "Leave it for now"} {
-			if !seen[strings.ToLower(d)] && len(out) < MinOptions {
-				out = append(out, d)
-				seen[strings.ToLower(d)] = true
-			}
-		}
-	}
-	return out
+	return t + " stopped, and muster cannot type into this kind of session. Is it waiting on you?"
 }
 
 // NudgeLabel opens every nudge: the session reads a labelled message from the
@@ -581,7 +566,7 @@ type Decision struct {
 	Window      string
 	AgentID     int64
 	// ChatSessionID is the agent's conversation the decision is about (0 for a
-	// mirrored session): where its nudge or relay goes.
+	// mirrored session): where its nudge goes.
 	ChatSessionID int64
 	Title         string
 	StreakKey     string
