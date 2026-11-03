@@ -105,7 +105,9 @@ func (s *Server) prRoute(ctx context.Context, p plugins.Plugin, m plugins.Messag
 		s.logger.Printf("prroute: message %d: no session of the owner authored %s; to the chief", m.ID, prName(ref))
 		return musterRoute{}, false
 	}
-	return musterRoute{origin: plugins.RouteOrigin{Via: plugins.RouteViaPR, Session: hit.ClaudeSession, PR: prName(ref)}, host: hit.Host,
+	// The round (ref.HeadSHA) goes on the route row: the supersede keys on it
+	// (supersedePRRoutes), and it marks the route as a review's (Route.IsPRReview).
+	return musterRoute{origin: plugins.RouteOrigin{Via: plugins.RouteViaPR, Session: hit.ClaudeSession, PR: prName(ref), HeadSHA: ref.HeadSHA}, host: hit.Host,
 		target: "the session that authored pull request " + prName(ref), what: "a review of pull request " + prName(ref)}, true
 }
 

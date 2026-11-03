@@ -81,9 +81,15 @@ type RouteStore interface {
 	// owner (the sweep's second read; see there).
 	RoutedPastes(ctx context.Context) ([]RoutedPaste, error)
 	// OlderOpenPRRoutes is the principal's routes still routed that origin (a
-	// RouteViaPR one) made before route routeID: the earlier review rounds of
-	// the same pull request waiting in the same session.
+	// RouteViaPR one) made before route routeID for an OLDER round — another
+	// head commit than origin.HeadSHA — of the same pull request in the same
+	// session. Parts of origin's own round are never among them.
 	OlderOpenPRRoutes(ctx context.Context, routeID string, origin RouteOrigin) ([]Route, error)
+	// SupersedeRoute ends routeID, while it is still routed, as failed with
+	// why, owing the chief NO hand-back, and settles its message with settle
+	// (SettledByMuster): the route is handled, not lost. superseded is false —
+	// and nothing changes — for a route no longer routed.
+	SupersedeRoute(ctx context.Context, routeID, why, settle string) (r Route, superseded bool, err error)
 	// BindThread and BoundThread are the threads sessions started (threads.go).
 	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
 	BoundThread(ctx context.Context, thread string) (string, error)
@@ -139,7 +145,15 @@ type Route struct {
 	// OwnerRepliedAt is when muster took the plugin's stamp that the reply
 	// went out directly: set exactly on an owner_answered route (0062's check).
 	OwnerRepliedAt *time.Time
+	// PRHeadSHA is the review round a route muster made for a pull-request
+	// review carries (RouteOrigin.HeadSHA; migration 0070): "" on every other
+	// route, and on a review route made before 0070.
+	PRHeadSHA string
 }
+
+// IsPRReview reports whether muster made r for a pull-request review: the one
+// structured mark, the round it carries (PRHeadSHA).
+func (r Route) IsPRReview() bool { return r.PRHeadSHA != "" }
 
 // RouteTarget names the session a route goes to: a kind ("agent", "mirror"),
 // its key (the agent id, the Claude session id) and what it is called.
@@ -187,9 +201,12 @@ const RouteViaMCP = "mcp"
 // caller's pane names: a claim), RouteViaThread muster itself, because the
 // message is a reply on Thread, which Session started (threads.go), and
 // RouteViaPR muster itself, because the message is a review of pull request
-// PR ("<owner>/<repo>#<n>"), which Session authored (pr_sessions.go).
+// PR ("<owner>/<repo>#<n>"), which Session authored (pr_sessions.go), at
+// head commit HeadSHA — the review ROUND, which the route row records
+// (Route.PRHeadSHA). String never spells HeadSHA: routed_via names the pull
+// request and session, the round is its own field.
 type RouteOrigin struct {
-	Via, Host, Session, Thread, PR string
+	Via, Host, Session, Thread, PR, HeadSHA string
 }
 
 // ByMuster reports whether muster itself made the route (RouteViaThread,
@@ -238,13 +255,15 @@ func NewRouteID() string {
 func RouteObject(routeID string) string { return "session_route:" + routeID }
 
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
-	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at`
+	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
+	coalesce(pr_head_sha, '')`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
-		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt)
+		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
+		&r.PRHeadSHA)
 	r.State = RouteState(st)
 	return r, err
 }
@@ -339,11 +358,18 @@ func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, tas
 // insertRouteTx writes one route carrying id in column col (plugin_message_id
 // or task_id) and its session_route.routed audit row (the id under key), the
 // ONE writer of a route row for both kinds.
+//
+// Only a RouteViaPR origin records its round (pr_head_sha): every other route
+// has none, whatever its origin carries.
 func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
+	round := ""
+	if origin.Via == RouteViaPR {
+		round = origin.HeadSHA
+	}
 	r, err := scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, `+col+`, agent_id,
-			target_kind, target_key, target_label, timeout_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8)) RETURNING `+routeCols,
-		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds()))
+			target_kind, target_key, target_label, timeout_at, pr_head_sha)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, '')) RETURNING `+routeCols,
+		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" || pg.ConstraintName == "session_routes_one_open_task") {
 		return Route{}, ErrAlreadyRouted
@@ -356,6 +382,9 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 		"timeout_at": r.TimeoutAt.UTC().Format(time.RFC3339)}
 	if origin.Via != "" {
 		detail["routed_via"] = origin.String()
+	}
+	if r.PRHeadSHA != "" {
+		detail["pr_head_sha"] = r.PRHeadSHA
 	}
 	return r, audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), detail)
 }
@@ -657,6 +686,17 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 // otherwise. The hand-back it owes says no answer came by the deadline;
 // TimedOutUndelivered re-words it once the message is known never to have
 // reached the session.
+//
+// 🔴 EXCEPT A PULL-REQUEST REVIEW THE SESSION HAS (Route.IsPRReview, its paste
+// SENT): that route is HANDLED, not lost. The review is of the session's own
+// pull request, which it acts on in its work; route_reply is optional for it
+// (renderRoutedMessageBy says so), so no answer by the deadline is the normal
+// end, not a failure. It owes the chief NO hand-back, its error says it was
+// delivered (RoutePRDeliveredError), and its message is settled by muster in
+// this transaction, so the unrouted sweep raises no "not acted on" ask. A
+// review whose paste was NOT sent — still queued, being sent, cancelled,
+// failed — times out as every other route does: the session may never have
+// had it. Every non-review route is unchanged.
 func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, timedOut bool, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockRoute(ctx, tx, routeID)
@@ -671,6 +711,22 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 		if cur.State != RouteRouted || !due {
 			return nil
 		}
+		delivered, err := prReviewPasteSent(ctx, tx, cur)
+		if err != nil {
+			return err
+		}
+		if delivered {
+			if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'timed_out', finished_at = now(),
+				error = $2, handback = NULL WHERE route_id = $1 RETURNING `+routeCols, routeID, RoutePRDeliveredError)); err != nil {
+				return err
+			}
+			timedOut = true
+			if err := audit(ctx, tx, "session_route.timed_out", RouteObject(routeID), map[string]any{
+				"timeout_at": cur.TimeoutAt.UTC().Format(time.RFC3339), "handled": "pr review delivered"}); err != nil {
+				return err
+			}
+			return settleByMusterTx(ctx, tx, cur.MessageID, prReviewDeliveredSettle(cur), map[string]any{"route_id": routeID})
+		}
 		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'timed_out', finished_at = now(),
 			error = 'no answer before the deadline', handback = $2 WHERE route_id = $1 RETURNING `+routeCols,
 			routeID, "no answer came by "+cur.TimeoutAt.UTC().Format(time.RFC3339))); err != nil {
@@ -681,6 +737,36 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 			"timeout_at": cur.TimeoutAt.UTC().Format(time.RFC3339)})
 	})
 	return r, timedOut, err
+}
+
+// RoutePRDeliveredError is the error of a pull-request review route that timed
+// out after its paste was sent (TimeOutRoute): handled, owing no hand-back.
+const RoutePRDeliveredError = "delivered to the session that authored the pull request; no route_reply by the deadline, which a review of its own pull request does not need"
+
+// prReviewDeliveredSettle is the settle reason of r's message once r timed out
+// handled (TimeOutRoute).
+func prReviewDeliveredSettle(r Route) string {
+	return SettledByMuster + "a review of a pull request, delivered to the session that authored it (route " + r.RouteID +
+		"), which acts on it in its work; a route_reply was optional"
+}
+
+// prReviewPasteSent reports whether cur is a pull-request review route
+// (IsPRReview) whose paste the send queue SENT: the one case TimeOutRoute
+// treats as handled. "sent" is sendqueue.Sent's value, spelled in SQL here as
+// every other cross-table read in this package spells its states; the
+// time-out tests in internal/api deliver through the real send queue, so a
+// drift fails them.
+func prReviewPasteSent(ctx context.Context, tx pgx.Tx, cur Route) (bool, error) {
+	if !cur.IsPRReview() || cur.SendQueueID == nil {
+		return false, nil
+	}
+	var sent bool
+	err := tx.QueryRow(ctx, `SELECT state = 'sent' FROM send_queue WHERE id = $1`, *cur.SendQueueID).Scan(&sent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Its owner deleted the finished row: not proof it was sent.
+		return false, nil
+	}
+	return sent, err
 }
 
 // RouteNeverDeliveredError is a timed-out route's error once its message is
@@ -794,27 +880,58 @@ func (s *PGStore) RoutedPastes(ctx context.Context) ([]RoutedPaste, error) {
 	})
 }
 
-// OlderOpenPRRoutes: see RouteStore. A route is origin's when its
-// session_route.routed audit row — written in the transaction that made it
+// OlderOpenPRRoutes: see RouteStore. A route is origin's pull request's when
+// its session_route.routed audit row — written in the transaction that made it
 // (insertRouteTx) — records origin's routed_via, which names both the pull
-// request and the session ("pr <owner>/<repo>#<n> authored by <session>"); the
-// route row itself does not record who made it. Only a RouteViaPR origin has
-// any: every other is nil. Row-level security scopes both tables to the
+// request and the session ("pr <owner>/<repo>#<n> authored by <session>"). Its
+// ROUND is the route row's own pr_head_sha (migration 0070).
+//
+// 🔴 THE ROUND IS THE KEY, NOT THE PULL REQUEST. One round can arrive as several
+// messages (a long review split into parts), each its own route with the SAME
+// head commit: those must all reach the session, so a route of origin's own
+// head is never older. A review route made before 0070 has no round (NULL) and
+// IS DISTINCT FROM any: an older round. Only a RouteViaPR origin with a round
+// has any: every other is nil. Row-level security scopes both tables to the
 // principal.
 func (s *PGStore) OlderOpenPRRoutes(ctx context.Context, routeID string, origin RouteOrigin) ([]Route, error) {
-	if origin.Via != RouteViaPR || !ValidRouteID(routeID) {
+	if origin.Via != RouteViaPR || origin.HeadSHA == "" || !ValidRouteID(routeID) {
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+routeCols+` FROM session_routes r
 		WHERE r.state = 'routed' AND r.target_kind = $1 AND r.target_key = $2
 		  AND r.id < (SELECT n.id FROM session_routes n WHERE n.route_id = $3)
+		  AND r.pr_head_sha IS DISTINCT FROM $5
 		  AND EXISTS (SELECT 1 FROM audit_log a WHERE a.action = 'session_route.routed'
 		              AND a.object = 'session_route:' || r.route_id AND a.detail->>'routed_via' = $4)
-		ORDER BY r.id`, RouteTargetMirror, origin.Session, routeID, origin.String())
+		ORDER BY r.id`, RouteTargetMirror, origin.Session, routeID, origin.String(), origin.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Route, error) { return scanRoute(row) })
+}
+
+// SupersedeRoute: see RouteStore. The caller (internal/api's
+// supersedePRRoutes) cancels the route's paste when it is still queued, AFTER
+// this: a delivery that claims the row in between finds the route closed and
+// pastes nothing (sendQueueRoutedGate). A route already answered is left to its
+// relay.
+func (s *PGStore) SupersedeRoute(ctx context.Context, routeID, why, settle string) (r Route, superseded bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := lockRoute(ctx, tx, routeID)
+		if err != nil {
+			return err
+		}
+		r = cur
+		if cur.State != RouteRouted {
+			return nil
+		}
+		if r, err = failRouteTx(ctx, tx, cur, why, ""); err != nil {
+			return err
+		}
+		superseded = true
+		return settleByMusterTx(ctx, tx, cur.MessageID, settle, map[string]any{"route_id": routeID})
+	})
+	return r, superseded, err
 }
 
 // MaxHandBack bounds a recorded hand-back reason (0021's cap).
