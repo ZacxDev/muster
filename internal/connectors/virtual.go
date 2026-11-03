@@ -200,7 +200,7 @@ func RepoScope(repo string, readRepos []string) string {
 	seen := map[string]bool{}
 	set := make([]string, 0, len(readRepos))
 	for _, r := range readRepos {
-		r = strings.TrimSpace(r)
+		r = strings.ToLower(strings.TrimSpace(r))
 		if r == "" || seen[r] {
 			continue
 		}
@@ -210,6 +210,7 @@ func RepoScope(repo string, readRepos []string) string {
 	if len(set) == 0 {
 		return repo
 	}
+	sort.Strings(set)
 	return repo + " (+ read: " + strings.Join(set, ", ") + ")"
 }
 
