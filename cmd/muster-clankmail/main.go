@@ -9,6 +9,7 @@
 //	muster-clankmail identity claim --key PRINCIPAL --name OWNER
 //	muster-clankmail identity grant --key PRINCIPAL [--chief-key CHIEF] [--name chief]
 //	muster-clankmail peer verify [--accept-principal] OWNER/NAME
+//	                                      (also names the held messages it releases)
 //	muster-clankmail requests [--bodies]
 //	muster-clankmail show
 //
@@ -253,8 +254,45 @@ func peer(args []string, getenv func(string) string, stdout io.Writer) error {
 	if fs.NArg() != 1 {
 		return errors.New("peer verify takes one OWNER/NAME")
 	}
-	return admin(getenv, stdout, http.MethodPost, "/peer-verify",
+	d, err := stateDir(getenv)
+	if err != nil {
+		return err
+	}
+	b, err := clankmailplugin.AdminCall(context.Background(), d, http.MethodPost, "/peer-verify",
 		clankmailplugin.PeerVerifyRequest{Peer: fs.Arg(0), AcceptPrincipal: *accept})
+	if err != nil {
+		return err
+	}
+	var res struct {
+		Peer      string `json:"peer"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+		Held      int    `json:"held"`
+		Releasing int    `json:"releasing"`
+		Messages  []struct {
+			ID    string `json:"id"`
+			Queue string `json:"queue"`
+		} `json:"held_messages"`
+	}
+	if err := json.Unmarshal(b, &res); err != nil {
+		return err
+	}
+	// The held list keeps ids only (never text): this names what muster is
+	// about to receive from this peer, before it does.
+	if res.Releasing > 0 {
+		fmt.Fprintf(stdout, "%s is %s: releasing %d held message(s) to muster, in this order, on the next inbox poll\n",
+			res.Peer, res.Status, res.Releasing)
+	} else {
+		fmt.Fprintf(stdout, "%s is %s: releasing 0 held message(s) to muster; %d stay held\n", res.Peer, res.Status, res.Held)
+	}
+	for _, m := range res.Messages {
+		fmt.Fprintf(stdout, "  %s  (%s queue)\n", m.ID, m.Queue)
+	}
+	var v any
+	_ = json.Unmarshal(b, &v)
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 // requests lists the requests queue as the plugin recorded it. --bodies

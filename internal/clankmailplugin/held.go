@@ -8,9 +8,12 @@ package clankmailplugin
 // reaching our `inbox` queue meanwhile, and the inbox poll runs concurrently
 // with the peer check. "Not checked yet" says nothing about the message:
 // judging it then (peer_disabled) and moving the cursor past it lost it for
-// good. And a pinned peer's message that the hub put in `requests` (it was
-// submitted before our allow call reached the hub, or while the peer was
-// disabled and so off the allow list) is that peer's authentic mail too.
+// good. `disabled` is no verdict on a message either: a hub that serves a
+// forged handle disables the peer, and the peer's authentic mail must survive
+// that until a human re-checks the chain. And a pinned peer's message that the
+// hub put in `requests` (it was submitted before our allow call reached the
+// hub, or while the peer was disabled and so off the allow list) is that
+// peer's authentic mail too.
 //
 // WHAT. Such a message is HELD: its id, signer, queue and the hub's unsigned
 // thread (compared, never sent) are appended to state.held in the same write
@@ -24,12 +27,14 @@ package clankmailplugin
 // crash between muster's 2xx and that write re-posts, and muster dedupes on
 // external_id.
 //
-// HELD WHILE:
-//   - inbox:    the peer is `unverified`. `disabled` is final there
-//     (peer_disabled), as for any inbox item.
-//   - requests: the peer is `unverified` or `disabled`. A requests item from a
-//     pinned key is delivered once a check (or a human's `peer verify`) makes
-//     the peer ok, never before.
+// HELD WHILE the peer is `unverified` or `disabled`, ONE rule for both queues:
+// a pinned peer's message is never judged finally on its peer's status.
+// `unverified` is released by the first chain check; `disabled` is sticky
+// (peersync.go) and released only by a human's `peer verify`. Before this
+// rule an inbox message from a disabled peer was final while a later requests
+// message from it was held, so `peer verify` delivered the second and never
+// the first: a thread with a hole. A disabled peer's held entries are reported
+// per peer by `show`, /health and `peer verify` (Summary, VerifyPeer).
 //
 // ORDER is per peer: while a peer has a held entry, its later messages are
 // held behind it, so they reach muster in the order they were read. Other
@@ -52,22 +57,20 @@ type HeldItem struct {
 	At     int64  `json:"at"`
 }
 
-// stillHeld: a message from key, read from queue, cannot be judged finally now.
-func (p *Plugin) stillHeld(key, queue string) bool {
+// stillHeld: a message from key cannot be judged finally now.
+func (p *Plugin) stillHeld(key string) bool {
 	_, status, ok := p.peerFor(key)
 	if !ok {
 		return false // no longer pinned: judged (not_peer, or listed as a stranger's request)
 	}
-	return status == peerUnverified || queue == queueRequests && status == peerDisabled
+	return status == peerUnverified || status == peerDisabled
 }
 
-// mustHold: v (an authentic item from queue) is held rather than settled.
-func (p *Plugin) mustHold(v verdict, queue string) bool {
+// mustHold: v (an authentic item, from either queue) is held rather than settled.
+func (p *Plugin) mustHold(v verdict) bool {
 	switch v.outcome {
-	case outUnverified:
+	case outUnverified, outPeerDisabled:
 		return true
-	case outPeerDisabled:
-		return queue == queueRequests
 	case "", outMusterRefused: // the peer is ok: held only behind its own earlier held mail
 		return p.heldFrom(v.obj.From)
 	}
@@ -117,7 +120,7 @@ func (p *Plugin) hold(v verdict, queue, hubThread string, move func(*State)) err
 	}); err != nil {
 		return errTransient{err}
 	}
-	p.log.Info("held: a pinned peer's message waits for the peer's chain to verify", "message", v.obj.ID,
+	p.log.Info("held: a pinned peer's message waits for the peer's chain to verify (a disabled peer: for `peer verify`)", "message", v.obj.ID,
 		"peer", v.peer.Label, "queue", queue, "why", v.outcome)
 	return nil
 }
@@ -137,7 +140,7 @@ func (p *Plugin) retryHeld(ctx context.Context) error {
 		if blocked[h.From] {
 			continue
 		}
-		if p.stillHeld(h.From, h.Queue) {
+		if p.stillHeld(h.From) {
 			blocked[h.From] = true
 			continue
 		}
@@ -178,7 +181,7 @@ func (p *Plugin) retryHeld(ctx context.Context) error {
 				return err
 			}
 			continue
-		case v.outcome == outUnverified || h.Queue == queueRequests && v.outcome == outPeerDisabled:
+		case v.outcome == outUnverified || v.outcome == outPeerDisabled:
 			blocked[h.From] = true // the status changed back meanwhile
 			continue
 		}
@@ -213,4 +216,17 @@ func adoptPinnedRequests(s *State, pinned map[string]PeerConf, now int64) {
 		}
 		delete(s.Requests, id)
 	}
+}
+
+// heldFor is key's held entries, in order (what `peer verify` releases).
+func (p *Plugin) heldFor(key string) []HeldItem {
+	var out []HeldItem
+	p.st.view(func(s *State) {
+		for _, h := range s.Held {
+			if h.From == key {
+				out = append(out, *h)
+			}
+		}
+	})
+	return out
 }

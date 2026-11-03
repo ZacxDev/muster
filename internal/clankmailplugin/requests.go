@@ -18,8 +18,9 @@ package clankmailplugin
 // is a key CLANKMAIL_PEERS pins goes through exactly the inbox pipeline
 // (relay.go: the same §4 verification, the pinned-key and peer-status checks,
 // the derived thread, the same exactly-once record): delivered once that peer
-// is `ok`, held (held.go) while it is `unverified` or `disabled`. It is not
-// listed as a request.
+// is `ok`, held (held.go) while it is `unverified` or `disabled` — the same
+// rule as an inbox message from that peer, so the two queues never split one
+// peer's thread. It is not listed as a request.
 
 import (
 	"context"

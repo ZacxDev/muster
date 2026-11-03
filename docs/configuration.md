@@ -461,11 +461,15 @@ relabelled peer, a boot while the hub's handle route fails) is **held**, not
 dropped: the plugin keeps its id (never its text), checks its peers once
 before the first poll, and delivers the held message once the peer verifies.
 A held peer holds back only its own later messages (so they keep their
-order), never another peer's; `/health` reports the count as `held`. An
-inbox message from a peer that is **disabled** is final: it is recorded
-`peer_disabled` and not delivered, even after `peer verify`. A pinned peer's
-`requests` message waits while the peer is disabled and is delivered if
-`peer verify` re-enables it. A request listed as a stranger's whose key you
+order), never another peer's. A peer that is **disabled** (its chain did not
+verify, for example a hub serving a forged handle) is held the same way, in
+both queues: its messages are never recorded as final while it is merely
+disabled, a periodic check does not release them, and `peer verify`, when it
+re-enables the peer, releases them to muster in the order they were read, each
+exactly once. `show` and `/health` report the total as `held` and the count per
+peer label as `held_by_peer` (and on each `peers` row), and `peer verify` says
+how many held messages it is releasing and lists their ids and queues (the held
+list keeps no text). A request listed as a stranger's whose key you
 later add to `CLANKMAIL_PEERS` is held from the next start, and delivered once
 that peer verifies; removing a peer turns its held requests back into listed
 ones.

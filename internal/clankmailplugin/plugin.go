@@ -316,14 +316,24 @@ func (p *Plugin) Summary() map[string]any {
 	peers := []map[string]any{}
 	ledger := map[string]int{}
 	var requests, rejected, allowed, misthreaded, held int
+	heldBy := map[string]int{} // by pinned label; a key no longer pinned as "unpinned " + its short id
 	p.st.view(func(s *State) {
 		for _, m := range s.Messages {
 			outcomes[m.Outcome]++
 		}
+		heldKey := map[string]int{}
+		for _, h := range s.Held {
+			heldKey[h.From]++
+			if pc, ok := p.peers[h.From]; ok {
+				heldBy[pc.Label]++
+			} else {
+				heldBy["unpinned "+short(h.From)]++
+			}
+		}
 		for k, ps := range s.Peers {
 			_, allow := s.Allowed[k]
 			peers = append(peers, map[string]any{"label": ps.Label, "key": k, "status": ps.Status,
-				"reason": ps.Reason, "allowed": allow, "principal": ps.Principal})
+				"reason": ps.Reason, "allowed": allow, "principal": ps.Principal, "held": heldKey[k]})
 		}
 		for _, e := range s.Ledger {
 			ledger[e.Kind+":"+e.State]++
@@ -346,8 +356,10 @@ func (p *Plugin) Summary() map[string]any {
 	// Delivered messages the hub mis-threaded (its unsigned thread named another
 	// root than the signed re chain): a hub that is lying or broken.
 	out["hub_thread_mismatches"] = misthreaded
-	// A pinned peer's messages waiting for that peer to verify (held.go).
-	out["held"] = held
+	// A pinned peer's messages waiting for that peer to verify (held.go): the
+	// total, and per peer label (also on each peers row), so an operator sees
+	// whose mail a `peer verify` would release before running it.
+	out["held"], out["held_by_peer"] = held, heldBy
 	return out
 }
 

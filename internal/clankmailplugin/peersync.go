@@ -140,7 +140,9 @@ func (p *Plugin) reconcileAllow(ctx context.Context) error {
 }
 
 // VerifyPeer is the human's re-check (`peer verify`): it re-runs the chain for
-// a disabled peer too, and re-enables it when the chain verifies.
+// a disabled peer too, and re-enables it when the chain verifies. It reports
+// the peer's held messages and how many it releases to muster (all of them
+// when the peer is now ok, none otherwise).
 func (p *Plugin) VerifyPeer(ctx context.Context, label string, acceptPrincipal bool) (map[string]any, error) {
 	pc, ok := p.byLabel[label]
 	if !ok {
@@ -164,5 +166,24 @@ func (p *Plugin) VerifyPeer(ctx context.Context, label string, acceptPrincipal b
 	} else {
 		out["verified"] = true
 	}
+	// What this re-check releases: the peer's held messages (held.go), by id
+	// and queue only (state.held keeps no text). When the peer is now ok they
+	// go to muster, in this order, on the next inbox poll; otherwise they stay
+	// held.
+	held := p.heldFor(pc.Key)
+	type heldRow struct {
+		ID    string `json:"id"`
+		Queue string `json:"queue"`
+		At    int64  `json:"at"`
+	}
+	rows := make([]heldRow, 0, len(held))
+	for _, h := range held {
+		rows = append(rows, heldRow{h.ID, h.Queue, h.At})
+	}
+	release := 0
+	if out["status"] == peerOK {
+		release = len(held)
+	}
+	out["held"], out["releasing"], out["held_messages"] = len(held), release, rows
 	return out, nil
 }

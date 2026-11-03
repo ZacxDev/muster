@@ -2,9 +2,11 @@ package clankmailplugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,9 +146,12 @@ func TestStuckUnverifiedPeerDoesNotBlockOtherPeers(t *testing.T) {
 	}
 }
 
-// F1 through the real Run, repeated: a fresh state whose peer is already on
-// the hub allow list, a message waiting in the inbox at boot. Every run
-// delivers it, exactly once.
+// No loss through the real Run on fresh state, repeated: a fresh state whose
+// peer is already on the hub allow list, a message waiting in the inbox at
+// boot. Every run delivers it, exactly once. This does NOT guard the hold rule
+// itself: Run's pre-poll peer sync means the message is usually never held, so
+// this stays green with the hold rule reverted. The hold rule is guarded by
+// TestUnverifiedPeerMessageIsHeldThenDeliveredOnceAfterVerify.
 func TestRunOnFreshStateNeverLosesAPinnedPeersMessage(t *testing.T) {
 	const runs = 20
 	lost := 0
@@ -216,30 +221,94 @@ func TestRunSyncsPeersBeforeTheFirstPoll(t *testing.T) {
 	}
 }
 
-// Only `disabled` is final: a disabled peer's inbox message is recorded
-// peer_disabled, and re-enabling the peer later does not deliver it.
-func TestDisabledPeerInboxMessageIsFinal(t *testing.T) {
+// Y2, ONE rule for a disabled peer in both queues. A hub-caused disable (a
+// forged handle) catches M1 already in our `inbox` queue; the DELETE from the
+// allow list sends the later M2 to `requests`. Both are HELD while the peer is
+// disabled (never recorded peer_disabled), a periodic sync does not release
+// them, `show` and `peer verify` name them per peer, and after `peer verify`
+// muster gets M1 then M2, each exactly once: no hole in the thread.
+func TestDisabledPeerMessagesAreHeldInBothQueuesUntilPeerVerify(t *testing.T) {
 	e := newEnv(t)
 	p := e.ready("")
-	m := e.send(e.peer.chief, []string{KeyIDOf(e.us.chief)}, "", "while disabled", "")
-	e.must(p.st.update(func(s *State) error { s.Peers[KeyIDOf(e.peer.chief)].Status = peerDisabled; return nil }))
-	if err := p.PollInbox(bg); err != nil {
-		t.Fatal(err)
+	us := KeyIDOf(e.us.chief)
+	m1 := e.send(e.peer.chief, []string{us}, "", "before the disable", "")
+	if got := e.queue(e.us.chief, "inbox"); len(got) != 1 || got[0].ID != m1 {
+		t.Fatalf("precondition: M1 should be in our inbox queue, got %d", len(got))
 	}
-	if got := outcomeOf(p, m); got != outPeerDisabled {
-		t.Fatalf("recorded %q, want %q", got, outPeerDisabled)
-	}
-	if _, err := p.VerifyPeer(bg, "alice/chief", false); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		if err := p.PollInbox(bg); err != nil {
-			t.Fatal(err)
+	impostor := newKey(t)
+	forged, _, err := SignObject(impostor, "handle", e.clk.Now().UnixMilli(), map[string]any{"name": "alice", "hub": testHub})
+	e.must(err)
+	e.setTamper(func(r *http.Request, body []byte) []byte {
+		if r.URL.Path != "/v1/handles/alice" {
+			return body
 		}
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		v["handle"] = forged
+		b, _ := json.Marshal(v)
+		return b
+	})
+	e.must(p.SyncPeers(bg))
+	if _, status, _ := p.peerFor(KeyIDOf(e.peer.chief)); status != peerDisabled {
+		t.Fatalf("setup: the peer is %q, want disabled", status)
 	}
-	if n := len(e.muster.messagePosts()); n != 0 {
-		t.Fatalf("a message judged peer_disabled was delivered after the peer was re-enabled (%d posts)", n)
+	e.setTamper(nil)
+	m2 := e.send(e.peer.chief, []string{us}, "", "after the disable", m1)
+	if got := e.queue(e.us.chief, "requests"); len(got) != 1 || got[0].ID != m2 {
+		t.Fatalf("precondition: M2 should be in our requests queue, got %d", len(got))
 	}
+	e.must(p.PollInbox(bg))
+	e.must(p.PollRequests(bg))
+	if !p.isHeld(m1) {
+		t.Fatalf("the disabled peer's inbox message is not held: recorded %q", outcomeOf(p, m1))
+	}
+	if !p.isHeld(m2) {
+		t.Fatalf("the disabled peer's requests message is not held: recorded %q", outcomeOf(p, m2))
+	}
+	if got := outcomeOf(p, m1); got != "" {
+		t.Fatalf("the disabled peer's inbox message was judged finally: recorded %q", got)
+	}
+	// A periodic sync (honest hub again) does not re-enable or release.
+	e.must(p.SyncPeers(bg))
+	for i := 0; i < 2; i++ {
+		e.must(p.PollInbox(bg))
+		e.must(p.PollRequests(bg))
+	}
+	assertNothingDelivered(t, e)
+	// Visible before release: `show` names the count per peer label.
+	if got := heldByPeer(t, p.Show()); fmt.Sprint(got) != "map[alice/chief:2]" {
+		t.Fatalf("show held_by_peer = %v, want map[alice/chief:2]", got)
+	}
+	out, err := p.VerifyPeer(bg, "alice/chief", false)
+	e.must(err)
+	if out["status"] != peerOK || out["releasing"] != 2 || out["held"] != 2 {
+		t.Fatalf("peer verify: status %v releasing %v held %v, want ok 2 2", out["status"], out["releasing"], out["held"])
+	}
+	b, _ := json.Marshal(out["held_messages"])
+	if want := fmt.Sprintf(`[{"id":%q,"queue":"inbox"`, m1); !strings.HasPrefix(string(b), want) || !strings.Contains(string(b), m2) {
+		t.Fatalf("peer verify held_messages %s, want M1 (inbox) first, then M2", b)
+	}
+	for i := 0; i < 3; i++ {
+		e.must(p.PollInbox(bg))
+		e.must(p.PollRequests(bg))
+	}
+	if got := e.postedIDs(); fmt.Sprint(got) != fmt.Sprint([]string{m1, m2}) {
+		t.Fatalf("after peer verify muster got %v, want [M1 M2] = %v, each once", got, []string{m1, m2})
+	}
+	if got := heldByPeer(t, p.Show()); len(got) != 0 {
+		t.Fatalf("after release show held_by_peer = %v, want empty", got)
+	}
+}
+
+// heldByPeer is `show`'s held_by_peer, read through JSON as the CLI sees it.
+func heldByPeer(t *testing.T, show map[string]any) map[string]int {
+	t.Helper()
+	b, err := json.Marshal(show["held_by_peer"])
+	e := map[string]int{}
+	if err != nil || json.Unmarshal(b, &e) != nil {
+		t.Fatalf("show has no held_by_peer map (got %s)", b)
+	}
+	return e
 }
 
 // F2: the peer's message reached the hub's `requests` queue before our allow

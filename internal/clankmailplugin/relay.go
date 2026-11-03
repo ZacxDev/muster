@@ -22,12 +22,13 @@ package clankmailplugin
 //     verified (status ok, peers.go);
 //  4. its body fits muster's 16 KiB (larger: recorded muster_refused).
 //
-// A pinned peer that is still `unverified` (never checked yet) is NOT a
-// verdict: its message is HELD (held.go) — the cursor moves past it, nothing
-// final is recorded, and it is judged again once the peer's chain has been
-// checked. Anything else is recorded (no body) and the cursor moves past it:
-// those judgements cannot change by reading the item again. `disabled` (a
-// chain that did not verify) is one of them: recorded peer_disabled, final.
+// A pinned peer that is `unverified` (never checked yet) or `disabled` (a
+// chain that did not verify) is NOT a verdict on its message: the message is
+// HELD (held.go) — the cursor moves past it, nothing final is recorded, and it
+// is judged again once the peer is ok (the first check for `unverified`, a
+// human's `peer verify` for `disabled`). Anything else is recorded (no body)
+// and the cursor moves past it: those judgements cannot change by reading the
+// item again.
 //
 // The same pipeline (judge, settle) handles a pinned peer's message the hub
 // put in the `requests` queue (requests.go).
@@ -183,7 +184,7 @@ func (p *Plugin) handleItem(ctx context.Context, queue string, it InboxItem) err
 			return p.st.update(func(s *State) error { move(s); return nil })
 		}
 	}
-	if p.mustHold(v, queue) {
+	if p.mustHold(v) {
 		return p.hold(v, queue, it.Thread, move)
 	}
 	return p.settle(ctx, v, it.Thread, move)

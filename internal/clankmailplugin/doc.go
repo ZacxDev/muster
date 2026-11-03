@@ -26,8 +26,10 @@
 // human only: nothing of it is ever posted to muster, logged with its text, or
 // stored with its text (SPEC §7.2 secure default). A pinned peer's message
 // there goes through the inbound pipeline like an inbox one. A pinned peer's
-// message read before that peer's chain was checked is HELD (held.go), never
-// judged on "not checked yet".
+// message read while that peer is `unverified` (not checked yet) or `disabled`
+// (its chain did not verify) is HELD (held.go), from either queue, never
+// judged on the peer's status; a disabled peer's held mail is released, in
+// order, only by a human's `peer verify`.
 //
 // THE RULES THIS PACKAGE EXISTS TO KEEP, each with its own test:
 //

@@ -306,7 +306,8 @@ func TestTamperHandleServedWithADifferentKeyDisablesThePeer(t *testing.T) {
 }
 
 // A peer delivered while ok, then disabled: its message already in the inbox
-// queue is not delivered (peer_disabled), and a draft answering it is refused.
+// queue is not delivered (held, never recorded: held.go), and a draft
+// answering it is refused.
 func TestDisabledPeerMessagesAndRepliesStop(t *testing.T) {
 	e := newEnv(t)
 	p := e.ready("")
@@ -319,8 +320,11 @@ func TestDisabledPeerMessagesAndRepliesStop(t *testing.T) {
 	if err := p.PollInbox(bg); err != nil {
 		t.Fatal(err)
 	}
-	if got := outcomeOf(p, later); got != outPeerDisabled {
-		t.Fatalf("outcome %q, want %q", got, outPeerDisabled)
+	if got := outcomeOf(p, later); got != "" || !p.isHeld(later) {
+		t.Fatalf("the disabled peer's inbox message: recorded %q held %v, want not recorded and held", got, p.isHeld(later))
+	}
+	if n := len(e.muster.messagePosts()); n != 1 {
+		t.Fatalf("%d posts, want only the first message (delivered while ok)", n)
 	}
 	e.muster.queueDraft(3, a, "reply")
 	if _, err := p.ClaimOnce(bg); err != nil {

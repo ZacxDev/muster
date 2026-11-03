@@ -33,7 +33,7 @@ const (
 	outMusterRefused = "muster_refused" // body over 16 KiB, or muster refused the content (400/413/422)
 	outNotMine       = "not_mine"       // authentic, but our key is not in `to` (misdelivered)
 	outNotPeer       = "not_peer"       // authentic and ours, from a key no peer pins
-	outPeerDisabled  = "peer_disabled"  // from a pinned peer whose chain did not verify
+	outPeerDisabled  = "peer_disabled"  // judge's answer for a disabled peer: never recorded now, the message is held (held.go); a record from an earlier version may carry it
 	outNotMsg        = "not_msg"        // authentic, but not a `msg`
 	outGone          = "gone"           // held, and then the hub no longer served it (held.go)
 	outSent          = "sent"           // a reply WE sent

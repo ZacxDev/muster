@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -94,5 +96,36 @@ func TestServeRefusesABadConfiguration(t *testing.T) {
 		if rc := run(nil, env(bad), &bytes.Buffer{}, &errb); rc != 2 {
 			t.Errorf("%s=%q: rc %d, want 2 (refused at boot): %s", k, v, rc, errb.String())
 		}
+	}
+}
+
+// `peer verify` says how many held messages it releases to muster, and which,
+// before printing the raw answer. The admin socket is faked with the shape
+// VerifyPeer returns (its own test, held_test.go, pins that shape).
+func TestPeerVerifyNamesTheHeldMessagesItReleases(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := net.Listen("unix", clankmailplugin.AdminSocket(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := `{"peer":"alice/chief","status":"ok","verified":true,"held":3,"releasing":3,` +
+		`"held_messages":[{"id":"m_one","queue":"inbox","at":1},{"id":"m_two","queue":"requests","at":2},{"id":"m_three","queue":"inbox","at":3}]}`
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/peer-verify" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(answer))
+	})}
+	go srv.Serve(ln)
+	defer srv.Close()
+	var out, errb bytes.Buffer
+	if rc := run([]string{"peer", "verify", "alice/chief"}, env(map[string]string{"STATE_DIR": dir}), &out, &errb); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errb.String())
+	}
+	want := "alice/chief is ok: releasing 3 held message(s) to muster, in this order, on the next inbox poll\n" +
+		"  m_one  (inbox queue)\n  m_two  (requests queue)\n  m_three  (inbox queue)\n"
+	if !strings.HasPrefix(out.String(), want) {
+		t.Fatalf("peer verify printed:\n%s\nwant it to start with:\n%s", out.String(), want)
 	}
 }
