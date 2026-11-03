@@ -38,6 +38,7 @@ func TestPRMailSendersAllowOnlyAVerifiedAgentMailSenderOnTheList(t *testing.T) {
 	}{
 		{"unverified", AgentMailPlugin, "review-gate/pr-check", false},
 		{"another plugin", "discord-dm", "review-gate/pr-check", true},
+		{"clankmail, a thread plugin but not agent mail", "clankmail", "review-gate/pr-check", true},
 		{"another handle of the same owner", AgentMailPlugin, "review-gate/lint-bot", true},
 		{"an unlisted owner", AgentMailPlugin, "elsewhere/pr-check", true},
 		{"a look-alike in a display name", AgentMailPlugin, "review-gate/pr-check <x@example.invalid>", true},

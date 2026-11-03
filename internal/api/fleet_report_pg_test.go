@@ -353,6 +353,32 @@ func TestAnythingButAVerifiedListedRequestIsHandedOnAsBefore(t *testing.T) {
 	}
 }
 
+// TestAFleetRequestThroughClankMailIsHandedOnAsBefore is an INVARIANT GUARD:
+// fleet-report requests are agent mail only. A clankmail message from the
+// listed sender, verified, with a well-formed request, gets no draft and goes
+// to the chief; the same request through agent mail is answered (the positive
+// control).
+func TestAFleetRequestThroughClankMailIsHandedOnAsBefore(t *testing.T) {
+	f := newFleetReportFixture(t)
+	_, clank := f.newPlugin(t, "clankmail")
+	m, created, err := f.plugins.Submit(f.asOwner, clank.ID, plugins.MessageIn{ExternalID: "fr-clank-1", Sender: frSender,
+		Subject: "fleet-report-request", Body: requestBody("example-member", "req-clank"), SenderVerified: true})
+	if err != nil || !created {
+		t.Fatalf("submit: %v %v", created, err)
+	}
+	before := f.turns.count()
+	f.dispatch(t, m)
+	if ds := f.drafts(t, m); len(ds) != 0 {
+		t.Fatalf("clankmail: drafts %+v; want none", ds)
+	}
+	if f.turns.count() != before+1 {
+		t.Fatalf("clankmail: the chief took %d turn(s); want 1 (the ordinary delivery)", f.turns.count()-before)
+	}
+	if ds := f.drafts(t, f.ask(t, "fr-clank-control", frSender, true, requestBody("example-member", "req-clank-c"))); len(ds) != 1 {
+		t.Fatalf("control (agent mail): %d drafts; want 1", len(ds))
+	}
+}
+
 // D1 (operator decision): the request's member is not checked — any member
 // gets the owner's report, which row-level security already scopes.
 func TestTheMemberIsNotChecked(t *testing.T) {

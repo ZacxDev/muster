@@ -23,10 +23,10 @@ import (
 // chief's alone, for its own messages.
 
 // newUnroutedFixture is newGatedFixture whose owner's plugin is the agent-mail
-// one, the only plugin the sweep judges, so deliveredMessage files through it.
-// Its name is spelled here, not read from plugins.UnroutedAskPlugin: the live
-// plugin is named "agent-mail", and a constant that drifted from it would
-// otherwise pass with it.
+// one, one of the plugins the sweep judges (plugins.ThreadPlugins), so
+// deliveredMessage files through it. Its name is spelled here, not read from
+// plugins.AgentMailPlugin: the live plugin is named "agent-mail", and a
+// constant that drifted from it would otherwise pass with it.
 func newUnroutedFixture(t *testing.T) *gatedFixture {
 	t.Helper()
 	g := newGatedFixture(t)
@@ -353,6 +353,41 @@ func TestOnlyAgentMailRaisesAnAsk(t *testing.T) {
 	}
 	if asks := unroutedAsks(t, g, mail.ID); len(asks) != 1 {
 		t.Fatalf("an agent-mail message raised %d ask(s); want 1", len(asks))
+	}
+}
+
+// TestAClankMailMessageRaisesAnAsk: a delivered, repliable message from the
+// plugin named "clankmail" that nobody dispositioned raises an unrouted ask,
+// like agent mail; one from a plugin named "foo", in the same sweep, raises
+// none. The names are spelled, not read from constants.
+func TestAClankMailMessageRaisesAnAsk(t *testing.T) {
+	g := newGatedFixture(t)
+	submit := func(name, external string) plugins.Message {
+		t.Helper()
+		_, p, err := g.plugins.Create(g.asOwner, name, "Example "+name, name+"-data")
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _, err := g.plugins.Submit(g.asOwner, p.ID, plugins.MessageIn{ExternalID: external, Sender: "ada/chief", Body: "are you around?"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := g.plugins.BeginDelivery(g.asOwner, m.ID, g.chief.ID); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		if ok, err := g.plugins.RecordDelivery(g.asOwner, m.ID, g.chief.ID, plugins.StatusDelivered); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		return m
+	}
+	clank := submit("clankmail", "scope-clank")
+	foo := submit("foo", "scope-foo")
+	unroutedSweep(t, g, 10*plugins.UnroutedAskAfter)
+	if asks := unroutedAsks(t, g, clank.ID); len(asks) != 1 {
+		t.Fatalf("a clankmail message raised %d ask(s); want 1", len(asks))
+	}
+	if asks := unroutedAsks(t, g, foo.ID); len(asks) != 0 {
+		t.Fatalf("a foo message raised %d unrouted ask(s); want none", len(asks))
 	}
 }
 
