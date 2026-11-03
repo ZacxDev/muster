@@ -38,10 +38,10 @@ type Store interface {
 	// never holds shadow mode back (system scope).
 	NudgesSince(ctx context.Context, since time.Time) (int, error)
 	// Injected is what the sweep pasted into the caller's session (kind, key):
-	// every live nudge and relay text.
+	// every live nudge, and any relay text a row from before notices holds.
 	Injected(ctx context.Context, kind, key string) ([]string, error)
 	// Pending is every owner's live decision still in flight (queued, asked,
-	// relay_queued), system scope.
+	// a notice still open), system scope.
 	Pending(ctx context.Context, limit int) ([]Decision, error)
 	// Get is the caller's decision id.
 	Get(ctx context.Context, id int64) (Decision, error)
@@ -52,7 +52,7 @@ type Store interface {
 	// raised is absent). What the attention queue joins its notices to.
 	ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, error)
 	// Move sets the caller's decision id from one of from to outcome, with its
-	// detail and (when non-zero/non-empty) its ask, queued row and relay text,
+	// detail and (when non-zero) its ask and queued row,
 	// writing action's audit row when action is not ""; moved false when the
 	// row was not in one of from.
 	Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error)
@@ -66,7 +66,6 @@ type Move struct {
 	Detail      string
 	AskID       int64
 	SendQueueID int64
-	RelayText   string
 }
 
 // ErrNotFound: no such decision among the caller's.
@@ -287,7 +286,7 @@ func (p *PG) Injected(ctx context.Context, kind, key string) ([]string, error) {
 // Pending implements Store.
 func (p *PG) Pending(ctx context.Context, limit int) ([]Decision, error) {
 	return collect(p.pool.Query(sys(ctx), `SELECT `+cols+` FROM chief_nudges
-		WHERE outcome IN ('queued', 'asked', 'relay_queued') ORDER BY id LIMIT $1`, limit))
+		WHERE outcome IN ('queued', 'asked') ORDER BY id LIMIT $1`, limit))
 }
 
 // Get implements Store.
@@ -326,14 +325,14 @@ func (p *PG) ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, er
 
 // Move implements Store.
 func (p *PG) Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error) {
-	clean := Clean(Decision{Detail: m.Detail, RelayText: m.RelayText})
+	clean := Clean(Decision{Detail: m.Detail})
 	moved := false
 	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
 		d, err := scan(tx.QueryRow(ctx, `UPDATE chief_nudges SET outcome = $3, detail = $4,
 				ask_id = coalesce($5, ask_id), send_queue_id = coalesce($6, send_queue_id),
-				relay_text = CASE WHEN $7 = '' THEN relay_text ELSE $7 END, updated_at = now()
+				updated_at = now()
 			WHERE id = $1 AND outcome = ANY($2) RETURNING `+cols,
-			id, from, m.Outcome, clean.Detail, nullID(m.AskID), nullID(m.SendQueueID), clean.RelayText))
+			id, from, m.Outcome, clean.Detail, nullID(m.AskID), nullID(m.SendQueueID)))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}

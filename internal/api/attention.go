@@ -1382,9 +1382,8 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 		// An ask raised for a plugin message the chief did not act on
 		// (unrouted.go): the answer settles that message.
 		s.settleAnsweredMessage(ctx, a)
-		// An ask a chief nudge raised (chief_nudge.go): the answer is relayed
-		// into the stalled session, verbatim.
-		s.relayNudgeAnswer(ctx, a)
+		// A chief nudge raises a notice, which has no answer (attention_notice.go):
+		// nothing of a nudge's is relayed from here.
 	}
 	return a, err
 }

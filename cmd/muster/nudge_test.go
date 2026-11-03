@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// `nudge next|ls` (nudge.go): a host's chief-nudge notices from the attention
+// `nudge next` (nudge.go): a host's chief-nudge notices from the attention
 // summary, oldest first, as tmux targets — and the exit codes a jump key
 // branches on.
 
@@ -86,28 +86,5 @@ func TestNudgeNextDoesNotCallAPartialQueueEmpty(t *testing.T) {
 	got := nudgeHarness(t, `{"partial":true,"items":[]}`).runCLI("nudge", "next", "--host", "alpha")
 	if got.code != exitServerError || got.stdout != "" {
 		t.Fatalf("exit %d stdout %q, want %d", got.code, got.stdout, exitServerError)
-	}
-}
-
-// TestNudgeLsListsThisHostsNoticesOldestFirst: every notice on the host, the
-// untargeted one included, oldest first; nothing of another host or kind.
-func TestNudgeLsListsThisHostsNoticesOldestFirst(t *testing.T) {
-	got := nudgeHarness(t, nudgeSummary).runCLI("nudge", "ls", "--host", "alpha")
-	if got.code != exitOK {
-		t.Fatalf("exit %d stderr %q", got.code, got.stderr)
-	}
-	var doc struct {
-		Host    string        `json:"host"`
-		Notices []nudgeNotice `json:"notices"`
-	}
-	if err := json.Unmarshal([]byte(got.stdout), &doc); err != nil {
-		t.Fatal(err)
-	}
-	var keys []string
-	for _, n := range doc.Notices {
-		keys = append(keys, n.Key)
-	}
-	if doc.Host != "alpha" || strings.Join(keys, ",") != "ask-7,ask-5,ask-9" {
-		t.Fatalf("ls = %s %v, want alpha ask-7,ask-5,ask-9", doc.Host, keys)
 	}
 }

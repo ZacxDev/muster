@@ -65,11 +65,11 @@ import (
 // withdrawn when the session moves on. It does not count toward the open-ask
 // cap.
 //
-// 🔴 NOTHING A NOTICE RAISES IS RELAYED. A notice cannot be answered (the
-// store refuses it, attention.ErrNotice, and 0071's CHECK refuses it again),
-// so relayNudgeAnswer is reached only by a nudge ASK raised before notices
-// existed — still open, still promising its relay — and drains with them
-// (each ask's own expiry, then RelayMaxAge).
+// 🔴 NOTHING IS RELAYED. A notice cannot be answered (the store refuses it,
+// attention.ErrNotice, and 0071's CHECK refuses it again), and the relay of an
+// answer into a session is gone: 0071 withdrew every nudge ask raised before
+// notices and failed every relay still queued. No path types an owner's answer
+// to a nudge into a session.
 // ---------------------------------------------------------------------------
 
 // ChiefNudges is the stall nudges' configuration (cmd/muster-server).
@@ -168,30 +168,11 @@ func (s *Server) RunChiefNudgeSweep(ctx context.Context, interval time.Duration)
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.nudgeKickChan():
-			// An answer was claimed for a relay (relayNudgeAnswer): settle the
-			// decisions in flight now, without waiting for the tick.
-			s.reconcileNudges(ctx)
-			continue
 		case <-t.C:
 		}
 		if _, err := s.ChiefNudgePass(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logger.Printf("chief nudges: %v", err)
 		}
-	}
-}
-
-// nudgeKickChan is the sweep's wake-up (one pending kick is enough).
-func (s *Server) nudgeKickChan() chan struct{} {
-	s.nudgeKickOnce.Do(func() { s.nudgeKick = make(chan struct{}, 1) })
-	return s.nudgeKick
-}
-
-// kickNudges asks the sweep to settle the decisions in flight now.
-func (s *Server) kickNudges() {
-	select {
-	case s.nudgeKickChan() <- struct{}{}:
-	default:
 	}
 }
 
@@ -295,7 +276,7 @@ func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFl
 // nudgeCandidates is octx's owner's sessions that pass chiefnudge.Exclude and
 // have no decision recorded for their current streak: stallInputs, filtered.
 // inFlight names the sessions with a live decision still in flight (an open
-// nudge ask, a queued nudge or relay).
+// notice, a queued nudge).
 func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool) []nudgeCandidate {
 	idle := s.chiefNudgeIdle()
 	var out []nudgeCandidate
@@ -391,7 +372,7 @@ func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []n
 				continue
 			}
 			// 🔴 EACH CONVERSATION ON ITS OWN: an agent can hold several, and
-			// the one that stalled is the one decided, nudged and relayed to.
+			// the one that stalled is the one decided and nudged.
 			for _, sess := range sessions {
 				if now.Sub(sess.UpdatedAt) > chiefNudgeAgentSessionAge {
 					break // most recently active first: the rest are older still
@@ -605,7 +586,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 			}
 		}
 		if why != "" {
-			q, opts, read := prop.Question, chiefnudge.CleanOptions(prop.Options), ""
+			q, read, generic := prop.Question, "", false
 			if strings.TrimSpace(q) == "" {
 				// 🔴 NO SESSION TEXT FROM MUSTER: the generic ask (jev.go), never
 				// an excerpt of the session's last message under the chief's
@@ -613,12 +594,12 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 				// its reason (prop.Reason, never d.Reason's muster-built prefix)
 				// as its read of the session.
 				read = prop.Reason
-				q, opts = chiefnudge.GenericAskQuestion(c.Title, read), append([]string(nil), chiefnudge.GenericAskOptions...)
+				q, generic = chiefnudge.GenericAskQuestion(c.Title, read), true
 			}
-			d.Decision, d.Question, d.Options = chiefnudge.DecisionAsk, q, opts
+			d.Decision, d.Question = chiefnudge.DecisionAsk, q
 			d.Reason = fmt.Sprintf("classifier: %s, ask score %.2f — the default is an ask (%s); %s",
 				jev.Label, jev.AskScore, why, prop.Reason)
-			return s.actAsk(octx, c, d, read), false, ""
+			return s.actAsk(octx, c, d, read, generic), false, ""
 		}
 	}
 	switch prop.Decision {
@@ -626,8 +607,8 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Outcome = chiefnudge.OutcomeLeft
 		return s.recordNudge(octx, d, "chief_nudge.left"), false, ""
 	case chiefnudge.DecisionAsk:
-		d.Question, d.Options = prop.Question, chiefnudge.CleanOptions(prop.Options)
-		return s.actAsk(octx, c, d, ""), false, ""
+		d.Question = prop.Question
+		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	// A nudge.
 	if c.Kind == chiefnudge.KindMirror && c.Runtime != "" {
@@ -635,18 +616,18 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		// opencode pane (mirror.RuntimeSpec Caps: no Send), so a queued nudge
 		// could only fail at its paste. It becomes the notice.
 		d.Decision = chiefnudge.DecisionAsk
-		d.Question, d.Options = chiefnudge.EscalationViewOnly(c.Title), chiefnudge.CleanOptions(nil)
+		d.Question = chiefnudge.EscalationViewOnly(c.Title)
 		d.Reason = "view_only: muster cannot type into a " + c.Runtime + " session, so no nudge is sent; " + d.Reason
-		return s.actAsk(octx, c, d, ""), false, ""
+		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	if read.Partial {
 		// The read cannot vouch for the owner's last six hours (it ended
 		// early, has a gap, or a cap cut the window): its owner messages
 		// authorise nothing, so the nudge is an ask, and the row says why.
 		d.Decision = chiefnudge.DecisionAsk
-		d.Question, d.Options = chiefnudge.EscalationPartial(c.Title), chiefnudge.CleanOptions(nil)
+		d.Question = chiefnudge.EscalationPartial(c.Title)
 		d.Reason = chiefnudge.GuardPartial + ": the transcript read was incomplete, so no owner message can authorise a nudge; " + d.Reason
-		return s.actAsk(octx, c, d, ""), false, ""
+		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
 	quoted, qerr := chiefnudge.CheckQuote(prop, owner)
@@ -655,9 +636,9 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		// muster-mirror): none can authorise a nudge, so it is an ask — and
 		// the decision says why.
 		d.Decision = chiefnudge.DecisionAsk
-		d.Question, d.Options = chiefnudge.EscalationNoTimes(c.Title), chiefnudge.CleanOptions(nil)
+		d.Question = chiefnudge.EscalationNoTimes(c.Title)
 		d.Detail = strconv.Itoa(untimed) + " message(s) of the owner's arrived with no time (an older muster-mirror): none can authorise a nudge"
-		return s.actAsk(octx, c, d, ""), false, ""
+		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	if qerr != nil {
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardQuote), qerr.Error()
@@ -673,9 +654,9 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		// 🔴 THE THIRD NUDGE IS AN ASK: the session has been told twice on the
 		// strength of the same owner message and stopped again.
 		d.Decision = chiefnudge.DecisionAsk
-		d.Question, d.Options = chiefnudge.EscalationQuestion(c.Title), chiefnudge.CleanOptions(nil)
+		d.Question = chiefnudge.EscalationQuestion(c.Title)
 		d.Reason = "escalated: " + strconv.Itoa(n) + " nudges since the owner's last message; " + d.Reason
-		return s.actAsk(octx, c, d, ""), false, ""
+		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
 	// unsuppressed (operator decision), and is not counted.
@@ -1009,8 +990,7 @@ const (
 	// time, or a read failed. 🔴 UNKNOWN IS NOT MOVED ON: whatever was about to
 	// happen (a send, an ask, a withdrawal, a paste) is HELD for a later pass,
 	// never suppressed, withdrawn or marked stale on it. Existing bounds still
-	// end a hold: an ask's own expiry, the send queue's AuthorizedFor,
-	// RelayMaxAge.
+	// end a hold: a notice's own expiry, the send queue's AuthorizedFor.
 	nudgeUnknown nudgeState = iota
 	// nudgeStalled: read, and still in the idle streak the decision was taken
 	// on.
@@ -1164,7 +1144,7 @@ func (s *Server) queueNudgeText(ctx context.Context, d chiefnudge.Decision, text
 		s.failNudge(ctx, d, state, "it could not be queued: "+err.Error())
 		return
 	}
-	if _, err := s.ext.ChiefNudges.Move(ctx, d.ID, []string{state}, chiefnudge.Move{Outcome: state, SendQueueID: it.ID, RelayText: d.RelayText}, ""); err != nil {
+	if _, err := s.ext.ChiefNudges.Move(ctx, d.ID, []string{state}, chiefnudge.Move{Outcome: state, SendQueueID: it.ID}, ""); err != nil {
 		s.logger.Printf("chief nudges: decision %d: record queued message %d: %v", d.ID, it.ID, err)
 	}
 	s.kickSendQueue()
@@ -1175,7 +1155,7 @@ func (s *Server) queueNudgeText(ctx context.Context, d chiefnudge.Decision, text
 // suppressed:moved_on when the conversation was read and has moved on. A
 // conversation that could not be read leaves d in state for the next pass.
 func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, text, state, done, action string) {
-	// 🔴 THE KILL SWITCH REACHES AN AGENT'S NUDGE AND RELAY TOO, read at the
+	// 🔴 THE KILL SWITCH REACHES AN AGENT'S NUDGE TOO, read at the
 	// moment of sending (the send queue's gate does it for a window).
 	if !s.chiefNudgeLive(d.Owner) {
 		s.failNudge(ctx, d, state, SendQueueNudgeOff)
@@ -1202,11 +1182,8 @@ func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, text,
 	}
 	switch st := s.nudgeStateNow(ctx, d); {
 	case st == nudgeUnknown:
-		return // held: the next pass's reconcile tries again (a relay up to RelayMaxAge)
+		return // held: the next pass's reconcile tries again
 	case st.movedOn():
-		if done == chiefnudge.OutcomeRelayed && s.turns.busy(a.ID) {
-			return // busy for now: the next pass retries it, up to RelayMaxAge
-		}
 		why := "the conversation moved on before muster sent it"
 		if _, err := s.ext.ChiefNudges.Move(ctx, d.ID, []string{state}, chiefnudge.Move{Outcome: chiefnudge.Suppressed(chiefnudge.GuardMovedOn),
 			Detail: why}, "chief_nudge.suppressed"); err != nil {
@@ -1236,10 +1213,11 @@ func (s *Server) failNudge(ctx context.Context, d chiefnudge.Decision, state, wh
 // owner's queue (attention.KindNotice: muster's own, labelled with where the
 // session is — noticeLabel), which points at the session and asks nothing:
 // no options, no answer, no relay, and not counted toward the open-ask cap.
-// The decision keeps the chief's question and options (the Chief nudges tab
-// shows them). read is the chief's own reason a generic ask shows
-// (chiefnudge.GenericAskRead), "" for any other ask.
-func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision, read string) bool {
+// The decision keeps the chief's question (the Chief nudges tab shows it); no
+// option is asked for or kept — a notice has nothing to choose. generic: the
+// chief wrote no question (the generic ask), and read is its own reason the
+// notice shows (chiefnudge.GenericAskRead), "" for none.
+func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision, read string, generic bool) bool {
 	if strings.TrimSpace(d.Question) == "" {
 		d.Outcome = chiefnudge.Suppressed(chiefnudge.GuardNoQuestion)
 		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
@@ -1267,7 +1245,7 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 	// is refused at) can no longer suppress a nudge or hold a real ask back.
 	ask, err := s.ext.Attention.Create(ctx, attention.New{
 		Asker:    attention.Asker{System: true, Label: noticeLabel(c.Session)},
-		Question: nudgeNoticeText(d.Question, read, chiefnudge.IsGenericAsk(d.Options)),
+		Question: nudgeNoticeText(d.Question, read, generic),
 		Notice:   true,
 	})
 	if err != nil {
@@ -1304,93 +1282,16 @@ func nudgeNoticeText(q, read string, generic bool) string {
 	return fence.Cut(text, nudgeNoticeMaxRunes)
 }
 
-// relayNudgeAnswer relays the owner's answer to a nudge's ask into its session,
-// VERBATIM — the owner's own words and nothing else.
-//
-// 🔴 LEGACY ONLY: the sweep raises NOTICES now (actAsk), and a notice is never
-// Answered (attention.ErrNotice; 0071's CHECK), so the only asks that reach
-// this are nudge asks raised before notices, still open, whose text promised
-// the relay. It drains with them; nothing new enters relay_queued. Called on every answer
-// (answerAskFrom) and by the sweep's reconcile (an answer this process did not
-// see). Only an answer given on the Attention view is relayed: one given
-// through a mirrored session's attention_answer (which a session fed outside
-// text could write) is recorded and not relayed.
-func (s *Server) relayNudgeAnswer(ctx context.Context, a attention.Ask) {
-	if s.ext.ChiefNudges == nil || a.Status != attention.Answered {
-		return
-	}
-	d, err := s.ext.ChiefNudges.ByAsk(ctx, a.ID)
-	if err != nil || d.Outcome != chiefnudge.OutcomeAsked {
-		return
-	}
-	closeAsk := func(why string) {
-		if _, err := s.ext.ChiefNudges.Move(ctx, d.ID, []string{chiefnudge.OutcomeAsked},
-			chiefnudge.Move{Outcome: chiefnudge.OutcomeAskClosed, Detail: why}, "chief_nudge.ask_closed"); err != nil {
-			s.logger.Printf("chief nudges: decision %d: %v", d.ID, err)
-		}
-	}
-	switch {
-	case a.AnsweredVia.ViaSession():
-		closeAsk("answered through a mirrored session (" + a.AnsweredVia.String() + "), not on the Attention view: not relayed")
-		return
-	case !s.chiefNudgeLive(d.Owner):
-		closeAsk("chief nudges are off or in shadow mode for this owner now: not relayed")
-		return
-	case chiefnudge.IsGenericChoice(d.Options, a.Answer):
-		// The generic ask's options are not an answer to forward.
-		closeAsk("the owner chose \u201c" + strings.TrimSpace(a.Answer) + "\u201d: nothing to relay")
-		return
-	case d.Kind == chiefnudge.KindAgent && s.ext.Gateway == nil:
-		// An agent's relay is a turn, and with no gateway there is none to run
-		// (cmd/muster-server leaves it nil on purpose: doc_seams.go).
-		closeAsk("the agent gateway is off on this server: not relayed")
-		return
-	}
-	// 🔴 CLAIM FIRST: asked → relay_queued, with the text, in one conditional
-	// update. A second caller (the sweep racing the answer) finds it moved and
-	// relays nothing, so the answer reaches the session at most once.
-	moved, err := s.ext.ChiefNudges.Move(ctx, d.ID, []string{chiefnudge.OutcomeAsked},
-		chiefnudge.Move{Outcome: chiefnudge.OutcomeRelayQueued, RelayText: a.Answer}, "")
-	if err != nil || !moved {
-		return
-	}
-	// 🔴 THE SEND IS THE SWEEP'S, NOT THIS REQUEST'S: the claim above is all an
-	// answer does here; the sweep's reconcile (woken now) queues the text or
-	// starts the agent's turn, on its own goroutine — so no answer route ever
-	// reaches the agent gateway (provisioner_seam_test.go holds that).
-	s.kickNudges()
-}
-
-// deliverRelay sends d's relay text: queued for a mirrored window, a turn for
-// an agent.
-//
-// The kill switch is read where each send happens — sendNudgeTurn for an
-// agent, sendQueueNudgeGate at the paste for a window — never only here.
-func (s *Server) deliverRelay(ctx context.Context, d chiefnudge.Decision) {
-	if d.Kind == chiefnudge.KindAgent {
-		s.sendNudgeTurn(ctx, d, d.RelayText, chiefnudge.OutcomeRelayQueued, chiefnudge.OutcomeRelayed, "chief_nudge.relayed")
-		return
-	}
-	s.queueNudgeText(ctx, d, d.RelayText, chiefnudge.OutcomeRelayQueued)
-}
-
 // reconcileNudge settles one live decision in flight, as its owner: a queued
-// row that was sent (or failed), an ask that was answered (relay), closed or
+// nudge that was sent (or failed), a notice that was dismissed, expired or
 // outlived its session's stall. done reports that it is no longer in flight.
 func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (done bool) {
 	octx := s.attentionPrincipal(ctx, d.Owner)
 	switch d.Outcome {
-	case chiefnudge.OutcomeQueued, chiefnudge.OutcomeRelayQueued:
+	case chiefnudge.OutcomeQueued:
 		if d.SendQueueID == 0 {
 			age := s.now().Sub(d.UpdatedAt)
 			switch {
-			case d.Outcome == chiefnudge.OutcomeRelayQueued && age > chiefnudge.RelayMaxAge:
-				s.failNudge(octx, d, d.Outcome, "the relay was not delivered within "+chiefnudge.RelayMaxAge.String()+"; dropped")
-				return true
-			case d.Outcome == chiefnudge.OutcomeRelayQueued:
-				// Claimed by the answer, not yet sent (or the agent was busy):
-				// send it now.
-				s.deliverRelay(octx, d)
 			case d.Kind == chiefnudge.KindAgent:
 				// An agent's nudge whose turn could not start (a turn began
 				// that instant): tried again, which records it moved on if
@@ -1411,16 +1312,12 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 		if err != nil {
 			return false
 		}
-		sent, action := chiefnudge.OutcomeSent, "chief_nudge.sent"
-		if d.Outcome == chiefnudge.OutcomeRelayQueued {
-			sent, action = chiefnudge.OutcomeRelayed, "chief_nudge.relayed"
-		}
 		switch it.State {
 		case sendqueue.Sent:
-			_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{d.Outcome}, chiefnudge.Move{Outcome: sent, Detail: it.Detail}, action)
+			_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{d.Outcome}, chiefnudge.Move{Outcome: chiefnudge.OutcomeSent, Detail: it.Detail}, "chief_nudge.sent")
 			return true
 		case sendqueue.Failed, sendqueue.Cancelled:
-			if it.Detail == SendQueueRelayStale || it.Detail == SendQueueNudgeStale {
+			if it.Detail == SendQueueNudgeStale {
 				// Superseded by a newer turn: not a failure to retry.
 				_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{d.Outcome}, chiefnudge.Move{
 					Outcome: chiefnudge.Suppressed(chiefnudge.GuardSuperseded), Detail: it.Detail}, "chief_nudge.suppressed")
@@ -1446,7 +1343,7 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 			// for the next pass; the ask's own expiry still ends it.
 			if s.nudgeStateNow(octx, d).movedOn() {
 				// The owner (or anything) moved the session on: the question is
-				// stale. Withdraw it rather than relay an answer later.
+				// stale. Withdraw it.
 				if _, err := s.cancelAsk(octx, a.ID); err == nil {
 					_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{chiefnudge.OutcomeAsked},
 						chiefnudge.Move{Outcome: chiefnudge.OutcomeAskClosed, Detail: "the session moved on; the ask was withdrawn"}, "chief_nudge.ask_closed")
@@ -1454,9 +1351,6 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 				}
 			}
 			return false
-		case attention.Answered:
-			s.relayNudgeAnswer(octx, a)
-			return true
 		}
 		_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{chiefnudge.OutcomeAsked},
 			chiefnudge.Move{Outcome: chiefnudge.OutcomeAskClosed, Detail: "the ask ended " + string(a.Status) + "; nothing to relay"}, "chief_nudge.ask_closed")
@@ -1472,7 +1366,6 @@ const (
 	SendQueueNudgeClosed  = "Not sent: its chief nudge is no longer waiting to be sent"
 	SendQueueNudgeMoved   = "Not sent: the window no longer holds the conversation the chief nudged."
 	SendQueueNudgeStale   = "Not sent: the session moved on after the chief decided to nudge it."
-	SendQueueRelayStale   = "Not sent: the session moved on after the ask was raised, so your answer is not pasted into its newer turn."
 	// SendQueueNudgeWait is the one gate answer that is NOT final: the
 	// session's state could not be read (nudgeUnknown), so the row goes back to
 	// queued (sendQueueDeliver hands it on as sendqueue.Outcome.Superseded:
@@ -1486,8 +1379,7 @@ const (
 // it may: the feature on and the owner live (the kill switch reaches a row
 // already queued), its decision still waiting on THIS row, and the session
 // still in the idle streak the chief judged (which includes the window still
-// holding the conversation the decision was about). A relay of the owner's own
-// answer is tied to that streak too. A state that cannot be read is
+// holding the conversation the decision was about). A state that cannot be read is
 // SendQueueNudgeWait — held, never stale or moved. ctx is the row's owner.
 func (s *Server) sendQueueNudgeGate(ctx context.Context, it sendqueue.Item) string {
 	if !s.chiefNudgeLive(requestOwner(ctx)) {
@@ -1497,7 +1389,7 @@ func (s *Server) sendQueueNudgeGate(ctx context.Context, it sendqueue.Item) stri
 	if err != nil {
 		return SendQueueNudgeUnknown
 	}
-	if (d.Outcome != chiefnudge.OutcomeQueued && d.Outcome != chiefnudge.OutcomeRelayQueued) ||
+	if d.Outcome != chiefnudge.OutcomeQueued ||
 		(d.SendQueueID != 0 && d.SendQueueID != it.ID) {
 		return SendQueueNudgeClosed + " (" + d.Outcome + ")."
 	}
@@ -1511,12 +1403,6 @@ func (s *Server) sendQueueNudgeGate(ctx context.Context, it sendqueue.Item) stri
 		// so a disconnect between two reads cannot mislabel the row.
 		return SendQueueNudgeMoved
 	case nudgeMovedOn:
-		// 🔴 A RELAY IS TIED TO THE STALL IT ANSWERS, like an agent's
-		// (sendNudgeTurn): an owner who typed into the window after answering
-		// started a newer turn, and the answer is not pasted into it.
-		if d.Outcome == chiefnudge.OutcomeRelayQueued {
-			return SendQueueRelayStale
-		}
 		return SendQueueNudgeStale
 	}
 	return ""

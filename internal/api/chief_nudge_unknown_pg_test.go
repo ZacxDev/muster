@@ -379,34 +379,3 @@ func TestChiefNudgeAnAgentsOpenAskSurvivesAFailedConversationRead(t *testing.T) 
 		t.Fatalf("readable again, unmoved: %+v", got)
 	}
 }
-
-// TestChiefNudgeAnAgentRelayWaitsOutAFailedConversationRead: the owner
-// answered an agent's ask; the read of the conversation fails when the relay
-// is due. sendNudgeTurn holds it (relay_queued, no turn) instead of recording
-// it moved on, and relays it once the read works.
-func TestChiefNudgeAnAgentRelayWaitsOutAFailedConversationRead(t *testing.T) {
-	f := newNudgeFixture(t, true)
-	d, stalled, _, answer := liveAgentAsk(t, f)
-	if d.Outcome != chiefnudge.OutcomeRelayQueued {
-		t.Fatalf("claimed: %+v", d)
-	}
-	r := f.failRecent(stalled.ID)
-	f.pass(t)
-	f.pass(t)
-	if _, turns := f.gw.seen(); len(turns) != 0 {
-		t.Fatalf("relayed while unreadable: %v", turns)
-	}
-	if got := f.one(t); got.Outcome != chiefnudge.OutcomeRelayQueued {
-		t.Fatalf("with the conversation unreadable: outcome %q detail %q, want relay_queued", got.Outcome, got.Detail)
-	}
-	r.set(false)
-	f.pass(t)
-	waitFor(t, func() bool { _, turns := f.gw.seen(); return len(turns) == 1 })
-	if got := f.one(t); got.Outcome != chiefnudge.OutcomeRelayed {
-		t.Fatalf("after the read works: %+v", got)
-	}
-	waitFor(t, func() bool {
-		got := f.sessionMessages(t, stalled.ID, "user")
-		return len(got) > 0 && got[len(got)-1] == answer
-	})
-}

@@ -10,17 +10,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// `nudge ls|next` — a HOST's chief-nudge notices, as tmux targets
+// `nudge next` — a HOST's oldest chief-nudge notice, as a tmux target
 // (docs/chief-nudges.md#jumping-to-a-notice).
 //
 // A live chief nudge is a NOTICE on the owner's Asks page: a pointer at a
-// session that looks like it is waiting on them, with no answer to give. These
-// two verbs are the host side of it — what a tmux key binding runs to jump to
-// the oldest one waiting on THIS host:
+// session that looks like it is waiting on them, with no answer to give. This
+// verb is the host side of it — what a tmux key binding runs to jump to the
+// oldest one waiting on THIS host:
 //
 //	tmux switch-client -t "$(muster nudge next --host "$MUSTER_MIRROR_HOST" | jq -r .target)"
 //
-// Both read GET /api/attention/summary — the same document a status bar polls,
+// It reads GET /api/attention/summary — the same document a status bar polls,
 // whose items are exactly the Asks page's — with the host's ordinary muster
 // credential, a PERSONAL token (mst_…) or a bar-summary token: the summary
 // is a user's own, so the shared hook token is refused (exit 3). No new route,
@@ -31,8 +31,8 @@ import (
 // OUTPUT DISCIPLINE HOLDS: stdout is JSON and nothing else. `next` prints one
 // notice object (its `target` is "<session>:<window index>"); when NONE is
 // waiting it prints nothing on stdout and exits exitNoneWaiting (11), so a key
-// binding can tell "nothing to jump to" from a failure. A notice whose window
-// no mirrored window holds now has no target: `ls` lists it, `next` skips it.
+// binding can tell "nothing to jump to" from a failure. A notice whose session
+// no mirrored window holds now has no target, and is skipped.
 
 const (
 	attentionSummaryRoute = "/api/attention/summary"
@@ -44,7 +44,7 @@ const (
 	envMirrorHost = "MUSTER_MIRROR_HOST"
 )
 
-// nudgeNotice is one notice as these verbs print it: the summary item's fields
+// nudgeNotice is one notice as `next` prints it: the summary item's fields
 // a jump needs.
 type nudgeNotice struct {
 	Key     string `json:"key"`
@@ -69,9 +69,9 @@ type summaryDoc struct {
 func newNudgeCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "nudge",
-		Short: "This host's chief-nudge notices, as tmux targets (for a jump key)",
+		Short: "This host's oldest chief-nudge notice, as a tmux target (for a jump key)",
 	}
-	cmd.AddCommand(newNudgeLsCmd(a), newNudgeNextCmd(a))
+	cmd.AddCommand(newNudgeNextCmd(a))
 	return cmd
 }
 
@@ -115,32 +115,6 @@ func (a *app) hostNotices(cmd *cobra.Command, host string) ([]nudgeNotice, bool,
 		return out[i].Key < out[j].Key
 	})
 	return out, doc.Partial, nil
-}
-
-func newNudgeLsCmd(a *app) *cobra.Command {
-	var host string
-	cmd := &cobra.Command{
-		Use:   "ls",
-		Short: "GET /api/attention/summary — this host's open chief-nudge notices, oldest first",
-		Long: `List the chief-nudge notices waiting on you whose session is on this host,
-oldest first, as one JSON document: {"host", "partial", "notices": [...]}. Each
-notice's "target" is "<tmux session>:<window index>", or "" when no mirrored
-window holds its session now.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			h, err := a.resolveHost(host)
-			if err != nil {
-				return err
-			}
-			list, partial, err := a.hostNotices(cmd, h)
-			if err != nil {
-				return err
-			}
-			return a.emitValue(map[string]any{"host": h, "partial": partial, "notices": list})
-		},
-	}
-	hostFlag(cmd, &host)
-	return cmd
 }
 
 func newNudgeNextCmd(a *app) *cobra.Command {

@@ -48,9 +48,9 @@ import (
 // 23 → 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md),
 // ledgered in tenantWiring below because four of them reach no route at all.
 //
-// 28 → 30: `nudge ls` and `nudge next` (nudge.go), a host's chief-nudge
-// notices as tmux targets for a jump key — read from the attention summary.
-const wantVerbCount = 30
+// 28 → 29: `nudge next` (nudge.go), a host's oldest chief-nudge notice as a
+// tmux target for a jump key — read from the attention summary.
+const wantVerbCount = 29
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -108,7 +108,6 @@ var wiring = []struct {
 	// checks that need a sign-in. What this row pins is the route.
 	{"doctor", []string{"doctor", "--skip", "server,manifest,sign-in,push,dictation"}, "GET /api/doctor"},
 	// A host's chief-nudge notices (nudge.go), read from the attention summary.
-	{"nudge ls", []string{"nudge", "ls", "--host", "alpha"}, "GET /api/attention/summary"},
 	{"nudge next", []string{"nudge", "next", "--host", "alpha"}, "GET /api/attention/summary"},
 }
 

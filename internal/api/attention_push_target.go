@@ -208,7 +208,7 @@ func (s *Server) nudgeSessionPath(ctx context.Context, owner, askID int64) strin
 	case chiefnudge.KindAgent:
 		if d.AgentID > 0 {
 			// The conversation the nudge is about, not the agent's newest: its
-			// answer is relayed into that one (relayNudgeAnswer).
+			// notice is about that one.
 			return s.askingAgentHref(ctx, owner, d.AgentID, d.ChatSessionID)
 		}
 	case chiefnudge.KindMirror:

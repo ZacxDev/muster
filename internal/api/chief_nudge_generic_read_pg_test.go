@@ -23,8 +23,7 @@ import (
 const genericAskHead = "Its last turn looks like it asked you something."
 
 // genericAsk runs one live pass on an ask-stall the chief leaves with reply,
-// and returns the decision and the notice it raised (the decision keeps the
-// generic ask's options; the notice has none).
+// and returns the decision and the notice it raised (neither holds options).
 func genericAsk(t *testing.T, reply string) (*nudgeFixture, chiefnudge.Decision, attention.Ask) {
 	t.Helper()
 	f := newNudgeFixture(t, true)
@@ -36,7 +35,7 @@ func genericAsk(t *testing.T, reply string) (*nudgeFixture, chiefnudge.Decision,
 	}
 	d := f.one(t)
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
-	if err != nil || d.Outcome != chiefnudge.OutcomeAsked || strings.Join(d.Options, "|") != "Open session|Dismiss" ||
+	if err != nil || d.Outcome != chiefnudge.OutcomeAsked || len(d.Options) != 0 ||
 		a.Kind != attention.KindNotice || len(a.Options) != 0 {
 		t.Fatalf("not the generic ask: %+v %+v %v", d, a, err)
 	}
