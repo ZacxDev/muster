@@ -335,49 +335,87 @@ func TestTheLLMBudgetIsPersistedAndSurvivesARestart(t *testing.T) {
 	}
 }
 
-// TestAnOfficerToolClaimStartsTheItemMeter is the claim seam: the item an
-// instance holds is the one its officer_claim / officer_complete calls name
-// (dispatchAgentTool → llmClaimed / llmEnded), so the per-item cap ends a
-// runaway turn on one item and the next claimed item starts at zero.
-func TestAnOfficerToolClaimStartsTheItemMeter(t *testing.T) {
+// llmItemsRig is an instance of an officer with a 2000-token item cap (each
+// stub request is 1000 + 300 + 7 = 1307 tokens, so the cap admits two), its
+// HQ, and a way to call its officer tools.
+type llmItemsRig struct {
+	h    http.Handler
+	hq   *hqtest.Server
+	up   *llmProvider
+	tok  string
+	call func(tool, args string)
+}
+
+func newLLMItemsRig(t *testing.T, id, tok string) *llmItemsRig {
+	t.Helper()
 	f := newConnFixture(t)
 	up := newLLMProvider(t, 0.0001)
-	const id = "routine:llm-items"
 	llmCleanup(t, f, id)
 	hq := hqtest.New(map[string]string{"hq-token-" + officers.TokenEnvPrefix + officers.TokenEnvSuffix(id): id})
 	t.Cleanup(hq.Close)
-	// Each request is 1000 + 300 + 7 = 1307 tokens; the cap admits two.
 	raw := `[{"id":"` + id + `","hq_url":"` + hq.BaseURL() + `",
-	          "llm":{"model":"vendor/pinned-model","daily_budget_usd":5,"max_tokens_per_item":2000,"routine_agents":["officer-routine-llm-items-1"]}}]`
+	          "llm":{"model":"vendor/pinned-model","daily_budget_usd":5,"max_tokens_per_item":2000,"routine_agents":["` +
+		officers.InstanceName(id, 1) + `"]}}]`
 	srv, h := llmOfficerServer(t, f, raw, up.URL, io.Discard)
-	const tok = "llm-items-agent-token-0123456789abc"
 	a := startOfficerInstance(t, f, srv, id, 1, tok)
-	ctx := context.Background()
-	call := func(tool, args string) {
+	return &llmItemsRig{h: h, hq: hq, up: up, tok: tok, call: func(tool, args string) {
 		t.Helper()
-		if out := srv.dispatchAgentTool(ctx, a, tool, args); isToolErr(out) {
+		if out := srv.dispatchAgentTool(context.Background(), a, tool, args); isToolErr(out) {
 			t.Fatalf("%s %s: %s", tool, args, out)
 		}
-	}
-	itemA := hq.AddItem(id, "routine.check", "a")
-	itemB := hq.AddItem(id, "routine.check", "b")
+	}}
+}
 
-	call(officers.ToolClaim, `{"item_id":"`+itemA+`"}`)
-	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusBadRequest} {
-		w := llmPost(t, h, "/llm/v1/messages", bearer(tok))
-		if w.Code != want {
-			t.Fatalf("request %d on item %s: %d %s, want %d", i+1, itemA, w.Code, w.Body, want)
-		}
-		if want == http.StatusBadRequest && !strings.Contains(w.Body.String(), "item "+itemA) {
-			t.Fatalf("the cap refusal does not name item %s: %s", itemA, w.Body)
+// expect sends one proxied request per wanted status, in order.
+func (r *llmItemsRig) expect(t *testing.T, what string, want ...int) {
+	t.Helper()
+	for i, code := range want {
+		if w := llmPost(t, r.h, "/llm/v1/messages", bearer(r.tok)); w.Code != code {
+			t.Fatalf("%s, request %d: %d %s, want %d", what, i+1, w.Code, w.Body, code)
 		}
 	}
-	call(officers.ToolComplete, `{"item_id":"`+itemA+`","outcome":"done","summary":"checked"}`)
-	call(officers.ToolClaim, `{"item_id":"`+itemB+`"}`)
-	if w := llmPost(t, h, "/llm/v1/messages", bearer(tok)); w.Code != http.StatusOK {
-		t.Fatalf("the first request on the next item %s: %d %s", itemB, w.Code, w.Body)
+}
+
+// TestAnOfficerToolClaimStartsTheItemMeter is the claim seam: the item an
+// instance holds is the one its officer_claim names (dispatchAgentTool →
+// llmClaimed), so once the cap ends a runaway turn on one item, claiming the
+// NEXT item — with the first still held, so no complete or release resets
+// anything — starts the count at zero.
+func TestAnOfficerToolClaimStartsTheItemMeter(t *testing.T) {
+	const id = "routine:llm-claims"
+	r := newLLMItemsRig(t, id, "llm-claims-agent-token-0123456789a")
+	itemA := r.hq.AddItem(id, "routine.check", "a")
+	itemB := r.hq.AddItem(id, "routine.check", "b")
+
+	r.call(officers.ToolClaim, `{"item_id":"`+itemA+`"}`)
+	r.expect(t, "on item "+itemA, http.StatusOK, http.StatusOK, http.StatusBadRequest)
+	r.call(officers.ToolClaim, `{"item_id":"`+itemB+`"}`)
+	r.expect(t, "on item "+itemB+", claimed while "+itemA+" is still held", http.StatusOK, http.StatusOK, http.StatusBadRequest)
+	if n := r.up.calls(); n != 4 {
+		t.Fatalf("the provider got %d, want 4", n)
 	}
-	if n := up.calls(); n != 3 {
-		t.Fatalf("the provider got %d, want 3", n)
-	}
+}
+
+// TestAnOfficerToolCompleteEndsTheItemMeter and
+// TestAnOfficerToolReleaseEndsTheItemMeter are the end seams: officer_complete
+// and officer_release (dispatchAgentTool → llmEnded) end the held item, so the
+// instance's next request — holding nothing — starts at zero. One test each,
+// so a broken hook on either fails by its own name.
+func TestAnOfficerToolCompleteEndsTheItemMeter(t *testing.T) {
+	llmEndSeam(t, "routine:llm-completes", "llm-completes-agent-token-012345", officers.ToolComplete,
+		`,"outcome":"done","summary":"checked"`)
+}
+
+func TestAnOfficerToolReleaseEndsTheItemMeter(t *testing.T) {
+	llmEndSeam(t, "routine:llm-releases", "llm-releases-agent-token-0123456", officers.ToolRelease, ``)
+}
+
+func llmEndSeam(t *testing.T, id, tok, tool, extra string) {
+	t.Helper()
+	r := newLLMItemsRig(t, id, tok)
+	item := r.hq.AddItem(id, "routine.check", "a")
+	r.call(officers.ToolClaim, `{"item_id":"`+item+`"}`)
+	r.expect(t, "on item "+item, http.StatusOK, http.StatusOK, http.StatusBadRequest)
+	r.call(tool, `{"item_id":"`+item+`"`+extra+`}`)
+	r.expect(t, "after "+tool+" of "+item, http.StatusOK)
 }
