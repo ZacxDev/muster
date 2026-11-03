@@ -160,6 +160,29 @@ func (s *PGStore) UnroutedAsksToClose(ctx context.Context, limit int) ([]Unroute
 	})
 }
 
+// SettledByMuster opens every settle reason muster writes itself, rather than
+// the chief (SettleMessage) or the owner (SettleByAsk): a pull-request review
+// route that ended handled (TimeOutRoute, SupersedeRoute).
+const SettledByMuster = "muster: "
+
+// settleByMusterTx settles message messageID with reason (cut to
+// MaxSettleReasonRunes), in tx, when it is not settled yet — the first reason
+// is kept, as every settle keeps it — auditing plugin.message.settled "by"
+// muster with detail. A route carrying a task (messageID 0) has no message to
+// settle.
+func settleByMusterTx(ctx context.Context, tx pgx.Tx, messageID int64, reason string, detail map[string]any) error {
+	if messageID == 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `UPDATE plugin_messages SET settle_reason = $2 WHERE id = $1 AND settle_reason IS NULL`,
+		messageID, cutRunes(reason, MaxSettleReasonRunes))
+	if err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	detail["by"] = "muster"
+	return audit(ctx, tx, "plugin.message.settled", MessageObject(messageID), detail)
+}
+
 // SettleByAsk settles the message ask askID was raised for, with reason (cut
 // to MaxSettleReasonRunes): the owner's answer to that ask. It reports whether
 // it settled one — false for an ask raised for no message, or a message
