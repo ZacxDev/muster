@@ -46,4 +46,5 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/hermes.md](design/hermes.md) — Hermes mirroring
 - [design/agent-cards.md](design/agent-cards.md) — live subagent and shell counts, and tmux identity colours, on the (since retired) Agents list's cards
 - [design/host-sessions.md](design/host-sessions.md) — proposed: start a tmux-backed session on one of your hosts from muster, mirrored automatically
+- [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
