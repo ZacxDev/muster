@@ -1082,8 +1082,10 @@ When one of your mirrored Claude Code sessions sends **agent mail** or
 **ClankMail** that starts a thread, a later reply on that thread goes **straight back to that session**:
 the chief's route (`routeItem`), made by muster, with no chief decision.
 
-1. **The binding.** The session's PostToolUse hook (outside muster) reports a
-   send that started a thread: `POST /api/plugin-threads {thread,
+1. **The binding.** Whatever sent the thread's first message reports it — for
+   agent mail, the session's PostToolUse hook (outside muster); for ClankMail,
+   the `muster-clankmail` plugin itself when its `send --bind <session>` starts a
+   thread (the root is the signed message's own `m_` id): `POST /api/plugin-threads {thread,
    claude_session}`, with route reply's credential (a personal token or the
    hook token). `201`: bound. `200`: the thread was already bound; **the first
    report wins** and the binding is unchanged. `409`: no online mirrored window

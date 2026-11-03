@@ -58,7 +58,7 @@ const dispositioned = `(m.settle_reason IS NOT NULL OR ` + chiefActed + `)`
 // unroutedDue is whether message m is due an ask as of the cutoff $1: it came
 // through one of ThreadPlugins, awaits a disposition, was delivered at or before
 // $1, has none, and no ask was raised for it yet (whatever that ask's state now).
-var unroutedDue = fromThreadPlugin +` AND ` + awaitsDisposition + ` AND m.delivered_at <= $1 AND NOT ` + dispositioned + `
+var unroutedDue = fromThreadPlugin + ` AND ` + awaitsDisposition + ` AND m.delivered_at <= $1 AND NOT ` + dispositioned + `
 	AND NOT EXISTS (SELECT 1 FROM attention_asks a WHERE a.plugin_message_id = m.id)`
 
 // UnroutedAsk is an open ask raised for a message that has since been
