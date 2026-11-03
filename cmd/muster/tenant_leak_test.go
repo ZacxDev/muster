@@ -211,6 +211,75 @@ func TestALoneOverrideOffTheZeroTouchPathSendsNothing(t *testing.T) {
 	}
 }
 
+// leakMixedPairs are both halves of a pair, taken from DIFFERENT kinds of
+// source: one from a flag, the other from the environment. The environment
+// half is the "ambient" one — exported in the shell for some other server —
+// and the flag half is what the operator typed; together they name no file's
+// pair, so they must not count as one (round-1 audit, R1).
+var leakMixedPairs = []struct {
+	name  string
+	apply func(f *leakFixture, args []string, env map[string]string) []string
+}{
+	{"MUSTER_API_URL + --token", func(f *leakFixture, a []string, e map[string]string) []string {
+		e["MUSTER_API_URL"] = f.alien.srv.URL
+		return append(a, "--token", foreignTok)
+	}},
+	{"--api-url + MUSTER_TOKEN", func(f *leakFixture, a []string, e map[string]string) []string {
+		e["MUSTER_TOKEN"] = foreignTok
+		return append(a, "--api-url", f.alien.srv.URL)
+	}},
+	{"--api-url + MUSTER_HOOK_TOKEN", func(f *leakFixture, a []string, e map[string]string) []string {
+		e["MUSTER_HOOK_TOKEN"] = foreignTok
+		return append(a, "--api-url", f.alien.srv.URL)
+	}},
+	{"MUSTER_API_URL + MUSTER_HOOK_TOKEN + --api-url", func(f *leakFixture, a []string, e map[string]string) []string {
+		// A full environment pair for one server, and a lone flag URL on top:
+		// the flag URL would be paired with the environment's token.
+		e["MUSTER_API_URL"] = f.dflt.srv.URL
+		e["MUSTER_HOOK_TOKEN"] = foreignTok
+		return append(a, "--api-url", f.alien.srv.URL)
+	}},
+	{"MUSTER_API_URL + MUSTER_TOKEN + --token", func(f *leakFixture, a []string, e map[string]string) []string {
+		e["MUSTER_API_URL"] = f.alien.srv.URL
+		e["MUSTER_TOKEN"] = defaultTok
+		return append(a, "--token", foreignTok)
+	}},
+}
+
+// TestAMixedSourcePairOffTheZeroTouchPathSendsNothing: every selection × every
+// flag/environment mix. Each case sends NO request anywhere and exits 2 with
+// the pair rule's own refusal.
+func TestAMixedSourcePairOffTheZeroTouchPathSendsNothing(t *testing.T) {
+	for _, sel := range leakSelections {
+		for _, mx := range leakMixedPairs {
+			t.Run(sel.name+"/"+mx.name, func(t *testing.T) {
+				f := newLeakFixture(t)
+				args, env := sel.setup(f)
+				args = mx.apply(f, args, env)
+				got := f.run(env, append(args, "whoami")...)
+				if n := f.total(); n != 0 {
+					t.Errorf("🔴 %d request(s) were sent (default %v, work %v, foreign %v); a mixed-source pair must send none",
+						n, authsTo(f.dflt), authsTo(f.work), authsTo(f.alien))
+				}
+				if got.code != exitUsage {
+					t.Errorf("exit = %d, want %d (usage)", got.code, exitUsage)
+				}
+				if !strings.Contains(got.stderr, pairRefusalText) {
+					t.Errorf("stderr does not carry the pair refusal %q:\n%s", pairRefusalText, got.stderr)
+				}
+				if got.stdout != "" {
+					t.Errorf("stdout = %q, want nothing", got.stdout)
+				}
+				for _, secret := range []string{defaultTok, workTok, foreignTok} {
+					if strings.Contains(got.stderr, secret) {
+						t.Errorf("stderr echoes a token")
+					}
+				}
+			})
+		}
+	}
+}
+
 // TestTheLeakMatrixPositiveControls: the same selections DO send, so the zero
 // above is the refusal, not a fixture wired to nothing. (a) No override: one
 // whoami to the selection's own server with its own token. (b) The full pair:
@@ -247,6 +316,43 @@ func TestTheLeakMatrixPositiveControls(t *testing.T) {
 			}
 			if n := len(f.dflt.requests()) + len(f.work.requests()); n != 0 {
 				t.Errorf("%d request(s) reached a tenant's server under a full override pair", n)
+			}
+		})
+		// (c) The pod-style pair: MUSTER_API_URL + MUSTER_HOOK_TOKEN, both from
+		// the environment, is a same-source pair and still works.
+		t.Run(sel.name+"/full pair, MUSTER_HOOK_TOKEN", func(t *testing.T) {
+			f := newLeakFixture(t)
+			args, env := sel.setup(f)
+			env["MUSTER_API_URL"] = f.alien.srv.URL
+			env["MUSTER_HOOK_TOKEN"] = foreignTok
+			got := f.run(env, append(args, "whoami")...)
+			if got.code != exitOK {
+				t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
+			}
+			if a := authsTo(f.alien); len(a) != 1 || a[0] != "Bearer "+foreignTok {
+				t.Errorf("the pair's server received %v, want the pair's token once", a)
+			}
+			if n := len(f.dflt.requests()) + len(f.work.requests()); n != 0 {
+				t.Errorf("%d request(s) reached a tenant's server under a full override pair", n)
+			}
+		})
+		// (d) Both flags are a same-source pair, and they replace an ambient
+		// environment pair whole: the environment's server gets nothing.
+		t.Run(sel.name+"/full flag pair over an environment pair", func(t *testing.T) {
+			f := newLeakFixture(t)
+			args, env := sel.setup(f)
+			env["MUSTER_API_URL"] = f.dflt.srv.URL
+			env["MUSTER_TOKEN"] = defaultTok
+			args = append(args, "--api-url", f.alien.srv.URL, "--token", foreignTok)
+			got := f.run(env, append(args, "whoami")...)
+			if got.code != exitOK {
+				t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
+			}
+			if a := authsTo(f.alien); len(a) != 1 || a[0] != "Bearer "+foreignTok {
+				t.Errorf("the flag pair's server received %v, want the flag token once", a)
+			}
+			if n := len(f.dflt.requests()) + len(f.work.requests()); n != 0 {
+				t.Errorf("%d request(s) reached a tenant's server under a full flag pair", n)
 			}
 		})
 	}

@@ -171,6 +171,18 @@ func resolveConfig(envFilePath string, fileVals map[string]string, getenv func(s
 // operator would recognise it by (a flag or a variable).
 type pairOverride struct{ name, value string }
 
+// fromFlag: this override came from a flag (--api-url, --token), not the
+// environment.
+func (o pairOverride) fromFlag() bool { return strings.HasPrefix(o.name, "--") }
+
+// sourceKind names where an override came from, for a refusal.
+func (o pairOverride) sourceKind() string {
+	if o.fromFlag() {
+		return "a flag"
+	}
+	return "the environment"
+}
+
 // firstOverride is the highest-precedence non-empty override, or the zero value.
 func firstOverride(cands ...pairOverride) pairOverride {
 	for _, c := range cands {
@@ -192,8 +204,13 @@ const pairRefusal = "refused: a URL and a token override are accepted only as a 
 // 🔴 THIS IS WHAT STOPS ONE TENANT'S TOKEN REACHING ANOTHER TENANT'S ORIGIN.
 // resolveConfig mixes sources field by field, so an exported MUSTER_API_URL
 // for tenant A plus tenant B's file sends B's token to A. Here an override
-// replaces the file only when BOTH halves are overridden (from any mix of flag
-// and environment); one half alone is refused, exit 2, before any request.
+// replaces the file only when BOTH halves are overridden FROM THE SAME KIND OF
+// SOURCE: both flags (--api-url + --token) or both environment variables. One
+// half alone is refused, exit 2, before any request — and so is a pair whose
+// halves come from different kinds of source: a URL (or token) already
+// exported in the shell for some other server plus a typed flag for the other
+// half names no server's pair, and accepting it sends the typed token to the
+// exported URL, or the exported token to the typed URL (round-1 audit, R1).
 // MUSTER_HOOK_TOKEN is an override like MUSTER_TOKEN: it is the name agent
 // pods and hook hosts carry, and on today's resolver it beats a file's
 // MUSTER_TOKEN.
@@ -204,6 +221,11 @@ func resolvePaired(where string, fileVals map[string]string, getenv func(string)
 
 	var c config
 	switch {
+	case u.value != "" && t.value != "" && u.fromFlag() != t.fromFlag():
+		return config{}, failf(exitUsage,
+			"%s comes from %s but %s comes from %s, for %s: %s from one source (both flags, or both "+
+				"environment variables) when more than one tenant is configured, and no request was sent.",
+			u.name, u.sourceKind(), t.name, t.sourceKind(), where, pairRefusal)
 	case u.value != "" && t.value != "":
 		c = config{apiURL: u.value, token: t.value}
 	case u.value != "" || t.value != "":

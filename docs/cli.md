@@ -83,10 +83,21 @@ muster tenant remove work
 `--tenant` resolves exactly as before, field by field ([configuration](#configuration)).
 Everywhere else the selected file supplies the URL and the token **as a pair**.
 A URL override (`MUSTER_API_URL`, `--api-url`) and a token override
-(`MUSTER_TOKEN`, `MUSTER_HOOK_TOKEN`, `--token`) are accepted only together; one
-without the other exits 2 and sends nothing. This is what stops one server's
+(`MUSTER_TOKEN`, `MUSTER_HOOK_TOKEN`, `--token`) are accepted only together, and
+only from one kind of source: `--api-url` with `--token`, or `MUSTER_API_URL` with
+`MUSTER_TOKEN`/`MUSTER_HOOK_TOKEN`. One without the other, or a flag paired with
+an exported variable, exits 2 and sends nothing. This is what stops one server's
 token reaching another server. `tenant use --clear` alone does not lift it while
-tenant files remain.
+tenant files remain. `doctor --deploy-env` follows it too: a deploy file that
+sets `MUSTER_PUBLIC_URL` without `MUSTER_HOOK_TOKEN` is refused rather than
+paired with the selected tenant's token.
+
+`tenant add` writes the file atomically (a temporary file, then a link that
+never replaces an existing tenant), refuses a symlinked `~/.muster/tenants/`,
+tightens a group- or world-accessible one to 0700, and warns on stderr when the
+origin is `http://` (the token then travels in cleartext). A file under
+`~/.muster/tenants/` named with `--env-file` gets the same 0600 and
+not-a-symlink checks as `--tenant`.
 
 **What is printed.** stdout stays JSON. With more than one tenant, a tenant
 chosen by `~/.muster/current` is named on stderr (`tenant: work (muster.example.com)`);

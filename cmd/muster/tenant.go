@@ -209,6 +209,9 @@ func (a *app) selectTenant() (tenantSel, error) {
 		sel.path = expandHome(a.flagEnvFile, a.homeDir)
 		if envFileSet {
 			sel.source = "env-file"
+			// A file under ~/.muster/tenants/ named by --env-file is still a
+			// tenant file: it gets the same 0600 and not-a-symlink checks.
+			sel.inTenantsDir = a.underTenantsDir(sel.path)
 		} else {
 			sel.name, sel.source = defaultTenant, "default"
 		}
@@ -234,11 +237,52 @@ func (a *app) selectTenant() (tenantSel, error) {
 	return sel, nil
 }
 
+// underTenantsDir reports whether path (as given, or with symlinks resolved)
+// is inside ~/.muster/tenants/.
+func (a *app) underTenantsDir(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	inside := func(dir, root string) bool {
+		rel, err := filepath.Rel(root, dir)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+	}
+	td := a.tenantsDir()
+	if inside(filepath.Dir(abs), td) {
+		return true
+	}
+	rd, err1 := filepath.EvalSymlinks(filepath.Dir(abs))
+	rt, err2 := filepath.EvalSymlinks(td)
+	return err1 == nil && err2 == nil && inside(rd, rt)
+}
+
+// checkTenantsDir refuses a tenants directory that is a symlink or not a
+// directory. An absent one is fine (nothing is in it). display names it.
+func checkTenantsDir(dir, display string) error {
+	fi, err := os.Lstat(dir)
+	switch {
+	case absent(err):
+		return nil
+	case err != nil:
+		return wrapf(exitUsage, err, "reading %s", display)
+	case fi.Mode()&fs.ModeSymlink != 0:
+		return failf(exitUsage, "%s is a symlink; it must be a real directory (mode 0700)", display)
+	case !fi.IsDir():
+		return failf(exitUsage, "%s is not a directory", display)
+	}
+	return nil
+}
+
 // readTenantFile opens a tenant file and refuses a symlink, a non-regular
-// file, or one readable by group or others. The checks are on the OPENED
-// descriptor (O_NOFOLLOW), so what is checked is what is read — the same shape
-// as internal/mirrorhost's EnsureMCPSecret.
+// file, one readable by group or others, or one whose directory is a symlink.
+// The file checks are on the OPENED descriptor (O_NOFOLLOW), so what is
+// checked is what is read — the same shape as internal/mirrorhost's
+// EnsureMCPSecret.
 func readTenantFile(path, display string) (map[string]string, error) {
+	if err := checkTenantsDir(filepath.Dir(path), filepath.Dir(display)); err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, syscall.ELOOP) {
 		return nil, failf(exitUsage, "%s is a symlink; a tenant file must be a regular file", display)
@@ -346,8 +390,9 @@ Selection, highest first: --tenant, ` + envTenant + `, ~/.muster/current, defaul
 
 With any tenant configured (a tenant file, a current file, ` + envTenant + ` or
 --tenant), a URL override (` + envAPIURL + `, --api-url) and a token override
-(` + envToken + `, ` + envTokenAlias + `, --token) are accepted only as a pair: one
-without the other is refused (exit 2) and nothing is sent.`,
+(` + envToken + `, ` + envTokenAlias + `, --token) are accepted only as a pair from
+one source (both flags, or both environment variables): one without the other,
+or a flag paired with a variable, is refused (exit 2) and nothing is sent.`,
 	}
 	cmd.AddCommand(newTenantListCmd(a), newTenantCurrentCmd(a), newTenantUseCmd(a), newTenantAddCmd(a), newTenantRemoveCmd(a))
 	return cmd
@@ -561,6 +606,9 @@ anything is written; the output names the origin and the principal pinned.`,
 				return err
 			}
 			dir := a.tenantsDir()
+			if err := checkTenantsDir(dir, tenantsDirPath); err != nil {
+				return err
+			}
 			path := filepath.Join(dir, name+".env")
 			if _, err := os.Lstat(path); err == nil {
 				return failf(exitUsage, "tenant add: tenant %q already exists (%s/%s.env)", name, tenantsDirPath, name)
@@ -589,24 +637,79 @@ anything is written; the output names the origin and the principal pinned.`,
 				return err
 			}
 
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				return wrapf(exitUsage, err, "creating %s", tenantsDirPath)
+			if err := prepareTenantsDir(dir); err != nil {
+				return wrapf(exitUsage, err, "preparing %s", tenantsDirPath)
 			}
-			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-			if err != nil {
-				return wrapf(exitUsage, err, "creating %s/%s.env", tenantsDirPath, name)
+			data := fmt.Sprintf("%s=%s\n%s=%s\n", envAPIURL, cfg.apiURL, envToken, token)
+			if err := writeNewFileAtomic(dir, path, []byte(data)); err != nil {
+				if errors.Is(err, fs.ErrExist) {
+					return failf(exitUsage, "tenant add: tenant %q already exists (%s/%s.env)", name, tenantsDirPath, name)
+				}
+				return wrapf(exitUsage, err, "writing %s/%s.env", tenantsDirPath, name)
 			}
-			_, werr := fmt.Fprintf(f, "%s=%s\n%s=%s\n", envAPIURL, cfg.apiURL, envToken, token)
-			if cerr := f.Close(); werr == nil {
-				werr = cerr
-			}
-			if werr != nil {
-				os.Remove(path)
-				return wrapf(exitUsage, werr, "writing %s/%s.env", tenantsDirPath, name)
+			if strings.HasPrefix(origin, "http://") {
+				fmt.Fprintf(a.stderr, "warning: tenant %q uses %s: its token travels in cleartext on every request; prefer https\n",
+					name, origin)
 			}
 			return a.emitValue(map[string]any{"name": name, "origin": origin, "whoami": json.RawMessage(who)})
 		},
 	}
+}
+
+// prepareTenantsDir creates tenants/ 0700, refuses it as a symlink (re-checked
+// here, just before the write), and tightens an existing one that group or
+// others can reach to 0700.
+func prepareTenantsDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("%s is a symlink or not a directory", tenantsDirPath)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return os.Chmod(dir, 0o700)
+	}
+	return nil
+}
+
+// writeNewFileAtomic writes data to a temporary file in dir (0600), fsyncs it,
+// and LINKS it to path, so path appears whole or not at all. A link never
+// replaces an existing name: if path exists (another `tenant add` won the
+// race), it fails with fs.ErrExist and the existing file is untouched.
+func writeNewFileAtomic(dir, path string, data []byte) error {
+	f, err := os.CreateTemp(dir, ".add-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmp, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
 }
 
 // tenantOrigin is a tenant's origin for the duplicate check, or "". A file

@@ -431,6 +431,202 @@ func TestDoctorFollowsTheTenant(t *testing.T) {
 	}
 }
 
+// TestDoctorDeployEnvURLWithoutItsTokenIsRefusedOffTheZeroTouchPath: a
+// --deploy-env file that sets MUSTER_PUBLIC_URL but no MUSTER_HOOK_TOKEN would
+// pair that URL with the selected tenant's token. Off the zero-touch path that
+// is refused before any request (round-1 audit, Y1). The control is the same
+// run with the deploy file's own token: its server is asked, with that token.
+func TestDoctorDeployEnvURLWithoutItsTokenIsRefusedOffTheZeroTouchPath(t *testing.T) {
+	doc := `{"auth_mode":"password","hook_token_armed":true,"push":true,"dictation":true,"mirror":{"enabled":false,"hosts":[]}}`
+	skip := []string{"--skip", "server,manifest,sign-in,push,dictation"}
+	for _, sel := range []struct {
+		name string
+		args []string
+		cur  string
+	}{
+		{"--tenant work", []string{"--tenant", "work"}, ""},
+		{"current names work", nil, "work"},
+		{"tenants/work.env present, default selected", nil, ""},
+	} {
+		t.Run(sel.name, func(t *testing.T) {
+			f := newLeakFixture(t)
+			f.addWork()
+			if sel.cur != "" {
+				f.write(".muster/current", sel.cur+"\n", 0o600)
+			}
+			deploy := filepath.Join(t.TempDir(), "deploy.env")
+			if err := os.WriteFile(deploy, []byte("MUSTER_PUBLIC_URL="+f.alien.srv.URL+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := append(append(append([]string{}, sel.args...), "doctor", "--deploy-env", deploy), skip...)
+			got := f.run(map[string]string{}, args...)
+			if n := f.total(); n != 0 {
+				t.Errorf("🔴 %d request(s) sent (alien %v, work %v, default %v)", n, f.alien.requests(), f.work.requests(), f.dflt.requests())
+			}
+			if got.code != exitUsage || !strings.Contains(got.stderr, "sets MUSTER_PUBLIC_URL but no MUSTER_HOOK_TOKEN") {
+				t.Errorf("exit %d stderr=%q, want 2 and the deploy-env refusal", got.code, got.stderr)
+			}
+			for _, secret := range []string{defaultTok, workTok} {
+				if strings.Contains(got.stderr+got.stdout, secret) {
+					t.Errorf("output echoes a token")
+				}
+			}
+
+			// Control: the deploy file's own token makes it a pair.
+			g := newLeakFixture(t)
+			g.addWork()
+			if sel.cur != "" {
+				g.write(".muster/current", sel.cur+"\n", 0o600)
+			}
+			g.alien.json("GET /api/doctor", http.StatusOK, doc)
+			deploy2 := filepath.Join(t.TempDir(), "deploy.env")
+			if err := os.WriteFile(deploy2, []byte("MUSTER_PUBLIC_URL="+g.alien.srv.URL+"\nMUSTER_HOOK_TOKEN="+foreignTok+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			g.run(map[string]string{}, append(append(append([]string{}, sel.args...), "doctor", "--deploy-env", deploy2), skip...)...)
+			var hit bool
+			for _, r := range g.alien.requests() {
+				if r.uri == "/api/doctor" && r.auth == "Bearer "+foreignTok {
+					hit = true
+				}
+			}
+			if !hit || len(g.dflt.requests())+len(g.work.requests()) != 0 {
+				t.Errorf("control: alien got %v, default %d, work %d request(s)", g.alien.requests(), len(g.dflt.requests()), len(g.work.requests()))
+			}
+		})
+	}
+}
+
+// TestTenantAddWritesAtomically: the file appears whole or not at all — no
+// temporary file is left in tenants/, after a success or after a refusal.
+// ⚠ An INVARIANT GUARD: the in-place write it replaced also left nothing
+// behind on these paths; a crash mid-write is what the temp file + link fixes,
+// and a test cannot crash the process between the two.
+func TestTenantAddWritesAtomically(t *testing.T) {
+	f := newLeakFixture(t)
+	if got := f.runStdin(map[string]string{}, workTok+"\n", "tenant", "add", "work", "--api-url", f.work.srv.URL); got.code != exitOK {
+		t.Fatalf("exit %d stderr=%q", got.code, got.stderr)
+	}
+	f.alien.json("GET /api/whoami", http.StatusUnauthorized, `{"error":"unauthorized"}`)
+	if got := f.runStdin(map[string]string{}, "bad\n", "tenant", "add", "team", "--api-url", f.alien.srv.URL); got.code != exitAuth {
+		t.Fatalf("rejected add: exit %d stderr=%q", got.code, got.stderr)
+	}
+	ents, err := os.ReadDir(f.path(".muster/tenants"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != "work.env" {
+		t.Errorf("tenants/ holds %v, want exactly [work.env]", names)
+	}
+}
+
+// TestTenantAddHardensTheTenantsDir: a symlinked tenants/ is refused before any
+// request and nothing is written through it; a group/world-accessible one is
+// tightened to 0700.
+func TestTenantAddHardensTheTenantsDir(t *testing.T) {
+	t.Run("symlinked tenants/ is refused", func(t *testing.T) {
+		f := newLeakFixture(t)
+		target := filepath.Join(t.TempDir(), "elsewhere")
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, f.path(".muster/tenants")); err != nil {
+			t.Fatal(err)
+		}
+		got := f.runStdin(map[string]string{}, workTok+"\n", "tenant", "add", "work", "--api-url", f.work.srv.URL)
+		if got.code != exitUsage || !strings.Contains(got.stderr, "is a symlink") {
+			t.Errorf("exit %d stderr=%q", got.code, got.stderr)
+		}
+		if f.total() != 0 {
+			t.Errorf("%d request(s) sent", f.total())
+		}
+		if ents, _ := os.ReadDir(target); len(ents) != 0 {
+			t.Errorf("%d file(s) written through the symlink", len(ents))
+		}
+		// Reading a tenant through it is refused too.
+		if err := os.WriteFile(filepath.Join(target, "work.env"), []byte("MUSTER_API_URL="+f.work.srv.URL+"\nMUSTER_TOKEN="+workTok+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got = f.run(map[string]string{}, "--tenant", "work", "whoami")
+		if got.code != exitUsage || !strings.Contains(got.stderr, "is a symlink") || f.total() != 0 {
+			t.Errorf("--tenant work through a symlinked tenants/: exit %d, %d request(s), stderr=%q", got.code, f.total(), got.stderr)
+		}
+	})
+	t.Run("a 0755 tenants/ is tightened to 0700", func(t *testing.T) {
+		f := newLeakFixture(t)
+		if err := os.Mkdir(f.path(".muster/tenants"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(f.path(".muster/tenants"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.runStdin(map[string]string{}, workTok+"\n", "tenant", "add", "work", "--api-url", f.work.srv.URL); got.code != exitOK {
+			t.Fatalf("exit %d stderr=%q", got.code, got.stderr)
+		}
+		if di, _ := os.Stat(f.path(".muster/tenants")); di.Mode().Perm() != 0o700 {
+			t.Errorf("tenants/ mode %04o, want 0700", di.Mode().Perm())
+		}
+	})
+}
+
+// TestTenantAddWarnsAboutCleartext: an http:// origin is stored, with a stderr
+// warning that the token will travel in cleartext.
+func TestTenantAddWarnsAboutCleartext(t *testing.T) {
+	f := newLeakFixture(t)
+	got := f.runStdin(map[string]string{}, workTok+"\n", "tenant", "add", "work", "--api-url", f.work.srv.URL)
+	if got.code != exitOK || !strings.Contains(got.stderr, "cleartext") {
+		t.Errorf("exit %d stderr=%q, want 0 and a cleartext warning", got.code, got.stderr)
+	}
+	if strings.Contains(got.stderr, workTok) {
+		t.Errorf("the warning echoes the token")
+	}
+}
+
+// TestAnEnvFileUnderTenantsGetsTheTenantFileChecks: --env-file naming a file
+// under ~/.muster/tenants/ is held to the same 0600 and not-a-symlink checks as
+// --tenant. A file elsewhere is not (it is today's --env-file).
+func TestAnEnvFileUnderTenantsGetsTheTenantFileChecks(t *testing.T) {
+	t.Run("0644", func(t *testing.T) {
+		f := newLeakFixture(t)
+		f.write(".muster/tenants/work.env", "MUSTER_API_URL="+f.work.srv.URL+"\nMUSTER_TOKEN="+workTok+"\n", 0o644)
+		for _, p := range []string{f.path(".muster/tenants/work.env"), f.path(".muster/tenants/../tenants/work.env")} {
+			got := f.run(map[string]string{}, "--env-file", p, "whoami")
+			if got.code != exitUsage || !strings.Contains(got.stderr, "readable by group or others") || f.total() != 0 {
+				t.Errorf("--env-file %s: exit %d, %d request(s), stderr=%q", p, got.code, f.total(), got.stderr)
+			}
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		f := newLeakFixture(t)
+		f.write("elsewhere.env", "MUSTER_API_URL="+f.work.srv.URL+"\nMUSTER_TOKEN="+workTok+"\n", 0o600)
+		if err := os.MkdirAll(f.path(".muster/tenants"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(f.path("elsewhere.env"), f.path(".muster/tenants/work.env")); err != nil {
+			t.Fatal(err)
+		}
+		got := f.run(map[string]string{}, "--env-file", f.path(".muster/tenants/work.env"), "whoami")
+		if got.code != exitUsage || !strings.Contains(got.stderr, "is a symlink") || f.total() != 0 {
+			t.Errorf("exit %d, %d request(s), stderr=%q", got.code, f.total(), got.stderr)
+		}
+	})
+	t.Run("control: 0644 elsewhere is today's --env-file", func(t *testing.T) {
+		f := newLeakFixture(t)
+		f.addWork()
+		other := filepath.Join(t.TempDir(), "other.env")
+		if err := os.WriteFile(other, []byte("MUSTER_API_URL="+f.work.srv.URL+"\nMUSTER_TOKEN="+workTok+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.run(map[string]string{}, "--env-file", other, "whoami"); got.code != exitOK || len(authsTo(f.work)) != 1 {
+			t.Errorf("exit %d stderr=%q work=%v", got.code, got.stderr, authsTo(f.work))
+		}
+	})
+}
+
 // TestAMusterPathThatIsAFileStaysZeroTouch: ~/.muster as a regular file means
 // no tenants and no current file, not an error: with --env-file elsewhere
 // such a host resolved fine before tenants and must keep doing so.
