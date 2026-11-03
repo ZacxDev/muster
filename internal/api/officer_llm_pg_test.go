@@ -277,12 +277,6 @@ func TestTheLLMBudgetIsPersistedAndSurvivesARestart(t *testing.T) {
 			t.Fatalf("request %d under the budget: %d %s", i, w.Code, w.Body)
 		}
 	}
-	if w := llmPost(t, h, "/llm/v1/messages", bearer(tok)); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "daily LLM budget") {
-		t.Fatalf("at the cap: %d %s, want 400", w.Code, w.Body)
-	}
-	if n := up.calls(); n != 2 {
-		t.Fatalf("the provider got %d, want 2", n)
-	}
 	var reqs, in, out, cacheRead int64
 	var usd float64
 	if err := f.pool.QueryRow(dbtest.AsOperator(context.Background()), `SELECT requests, input_tokens, output_tokens, cache_read_tokens,
@@ -292,6 +286,13 @@ func TestTheLLMBudgetIsPersistedAndSurvivesARestart(t *testing.T) {
 	}
 	if reqs != 2 || in != 2000 || out != 14 || cacheRead != 600 || usd < 0.01199 || usd > 0.01201 {
 		t.Fatalf("usage row: requests %d in %d out %d cache_read %d usd %v; want 2, 2000, 14, 600, 0.012", reqs, in, out, cacheRead, usd)
+	}
+	// The row is what the budget is checked against: the next request is over.
+	if w := llmPost(t, h, "/llm/v1/messages", bearer(tok)); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "daily LLM budget") {
+		t.Fatalf("at the cap: %d %s, want 400", w.Code, w.Body)
+	}
+	if n := up.calls(); n != 2 {
+		t.Fatalf("the provider got %d, want 2", n)
 	}
 
 	// A restart: a new server, a new proxy, nothing in memory.
