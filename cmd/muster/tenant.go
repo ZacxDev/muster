@@ -84,6 +84,8 @@ type tenantSel struct {
 	// tenants is how many tenants this host has: default plus every
 	// well-named tenant file.
 	tenants int
+	// stray: entries under tenants/ that are not tenants (see tenantScan).
+	stray []string
 }
 
 // where names the selection in an error.
@@ -100,6 +102,12 @@ type tenantScan struct {
 	hasEntries bool
 	// names: the well-named <name>.env entries, sorted.
 	names []string
+	// stray: every other entry under tenants/ (a leftover .add-* temp file
+	// from an interrupted add, default.env, a badly named file), sorted. Each
+	// still counts in hasEntries — that fails closed — and is named by
+	// `tenant list` and the pair refusal so the operator can see why the host
+	// is off the zero-touch path.
+	stray []string
 	// current: the current file's trimmed first line, and whether it exists.
 	current       string
 	currentExists bool
@@ -130,9 +138,12 @@ func (a *app) scanTenants() (tenantScan, error) {
 			n, ok := strings.CutSuffix(e.Name(), ".env")
 			if ok && tenantNameRE.MatchString(n) && n != defaultTenant {
 				s.names = append(s.names, n)
+			} else {
+				s.stray = append(s.stray, e.Name())
 			}
 		}
 		sort.Strings(s.names)
+		sort.Strings(s.stray)
 	}
 
 	cur := a.currentFile()
@@ -202,6 +213,7 @@ func (a *app) selectTenant() (tenantSel, error) {
 	sel := tenantSel{
 		zeroTouch: a.flagTenant == "" && tenantFromEnv(a.getenv) == "" && !s.currentExists && !s.hasEntries,
 		tenants:   1 + len(s.names),
+		stray:     s.stray,
 	}
 	if sel.zeroTouch || envFileSet {
 		// The file the flag names (or its default), exactly as before.
@@ -237,8 +249,10 @@ func (a *app) selectTenant() (tenantSel, error) {
 	return sel, nil
 }
 
-// underTenantsDir reports whether path (as given, or with symlinks resolved)
-// is inside ~/.muster/tenants/.
+// underTenantsDir reports whether path is inside ~/.muster/tenants/: as given,
+// with its directory's symlinks resolved, or with the WHOLE path resolved — so
+// a symlink elsewhere that points at a tenant file counts, and readTenantFile
+// then refuses it as a symlinked tenant file.
 func (a *app) underTenantsDir(path string) bool {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -252,9 +266,24 @@ func (a *app) underTenantsDir(path string) bool {
 	if inside(filepath.Dir(abs), td) {
 		return true
 	}
-	rd, err1 := filepath.EvalSymlinks(filepath.Dir(abs))
-	rt, err2 := filepath.EvalSymlinks(td)
-	return err1 == nil && err2 == nil && inside(rd, rt)
+	rt, err := filepath.EvalSymlinks(td)
+	if err != nil {
+		return false
+	}
+	if rd, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil && inside(rd, rt) {
+		return true
+	}
+	rp, err := filepath.EvalSymlinks(abs)
+	return err == nil && inside(filepath.Dir(rp), rt)
+}
+
+// strayNote names the entries under tenants/ that are not tenants, or "".
+func strayNote(stray []string) string {
+	if len(stray) == 0 {
+		return ""
+	}
+	return tenantsDirPath + "/ holds entries that are not tenants: " + strings.Join(stray, ", ") +
+		" (each keeps this host off the zero-touch path; remove what you do not need)"
 }
 
 // checkTenantsDir refuses a tenants directory that is a symlink or not a
@@ -335,7 +364,12 @@ func resolveSelected(sel tenantSel, vals map[string]string, getenv func(string) 
 	if sel.zeroTouch {
 		return resolveConfig(sel.envFile, vals, getenv, flagURL, flagToken)
 	}
-	return resolvePaired(sel.where(), vals, getenv, flagURL, flagToken)
+	cfg, err := resolvePaired(sel.where(), vals, getenv, flagURL, flagToken)
+	var ce *cliError
+	if err != nil && len(sel.stray) > 0 && errors.As(err, &ce) && ce.err == nil {
+		ce.msg += " Note: " + strayNote(sel.stray) + "."
+	}
+	return cfg, err
 }
 
 // tenantNote is the stderr label for a resolved selection, or "" when this
@@ -463,6 +497,9 @@ func newTenantListCmd(a *app) *cobra.Command {
 				r := a.tenantRowFor(n)
 				r.Current = n == current
 				rows = append(rows, r)
+			}
+			if note := strayNote(s.stray); note != "" {
+				fmt.Fprintf(a.stderr, "warning: %s\n", note)
 			}
 			return a.emitValue(rows)
 		},

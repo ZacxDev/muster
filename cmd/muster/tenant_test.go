@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -497,12 +500,12 @@ func TestDoctorDeployEnvURLWithoutItsTokenIsRefusedOffTheZeroTouchPath(t *testin
 	}
 }
 
-// TestTenantAddWritesAtomically: the file appears whole or not at all — no
-// temporary file is left in tenants/, after a success or after a refusal.
-// ⚠ An INVARIANT GUARD: the in-place write it replaced also left nothing
-// behind on these paths; a crash mid-write is what the temp file + link fixes,
-// and a test cannot crash the process between the two.
-func TestTenantAddWritesAtomically(t *testing.T) {
+// TestARejectedTenantAddWritesNothing: a successful add leaves exactly its
+// file, and an add whose token the server rejects writes nothing — no temp
+// file, no tenant file. ⚠ An INVARIANT GUARD: the rejected add fails before
+// prepareTenantsDir, so it never reaches writeNewFileAtomic; the no-clobber
+// link is pinned by TestWriteNewFileAtomicNeverReplacesAnExistingFile.
+func TestARejectedTenantAddWritesNothing(t *testing.T) {
 	f := newLeakFixture(t)
 	if got := f.runStdin(map[string]string{}, workTok+"\n", "tenant", "add", "work", "--api-url", f.work.srv.URL); got.code != exitOK {
 		t.Fatalf("exit %d stderr=%q", got.code, got.stderr)
@@ -642,5 +645,87 @@ func TestAMusterPathThatIsAFileStaysZeroTouch(t *testing.T) {
 		"--env-file", filepath.Join(t.TempDir(), "absent.env"), "--token", foreignTok, "whoami")
 	if got.code != exitOK || got.stderr != "" || len(authsTo(f.alien)) != 1 {
 		t.Errorf("exit %d stderr=%q alien=%v", got.code, got.stderr, authsTo(f.alien))
+	}
+}
+
+// TestWriteNewFileAtomicNeverReplacesAnExistingFile: when the destination
+// already exists (another `tenant add` won the race), writeNewFileAtomic fails
+// with fs.ErrExist, the existing file keeps its bytes, and no temp file is
+// left. Red if the link becomes a rename (a rename replaces the name).
+func TestWriteNewFileAtomicNeverReplacesAnExistingFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tenants")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "work.env")
+	orig := []byte("MUSTER_API_URL=http://first.invalid\nMUSTER_TOKEN=first\n")
+	if err := os.WriteFile(path, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := writeNewFileAtomic(dir, path, []byte("MUSTER_API_URL=http://second.invalid\nMUSTER_TOKEN=second\n"))
+	if !errors.Is(err, fs.ErrExist) {
+		t.Errorf("err = %v, want one satisfying errors.Is(err, fs.ErrExist)", err)
+	}
+	if b, _ := os.ReadFile(path); !bytes.Equal(b, orig) {
+		t.Errorf("existing file was clobbered: now %q, want %q", b, orig)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != "work.env" {
+		t.Errorf("tenants/ holds %v, want exactly [work.env] (no temp file left)", names)
+	}
+}
+
+// TestAFileSymlinkIntoTenantsIsRefused: --env-file naming a symlink OUTSIDE
+// tenants/ that points at a tenant file is a tenant file reached through a
+// symlink: refused, nothing sent — even though the target is 0644 and the
+// link's own directory is not tenants/.
+func TestAFileSymlinkIntoTenantsIsRefused(t *testing.T) {
+	f := newLeakFixture(t)
+	f.write(".muster/tenants/work.env", "MUSTER_API_URL="+f.work.srv.URL+"\nMUSTER_TOKEN="+workTok+"\n", 0o644)
+	if err := os.Symlink(f.path(".muster/tenants/work.env"), f.path("link.env")); err != nil {
+		t.Fatal(err)
+	}
+	got := f.run(map[string]string{}, "--env-file", f.path("link.env"), "whoami")
+	if got.code != exitUsage || !strings.Contains(got.stderr, "is a symlink; a tenant file must be a regular file") || f.total() != 0 {
+		t.Errorf("exit %d, %d request(s), stderr=%q", got.code, f.total(), got.stderr)
+	}
+}
+
+// TestStrayTenantsEntriesAreNamed: a leftover .add-* temp file (an
+// interrupted add) still counts as an entry — the host stays off the
+// zero-touch path, failing closed — and `tenant list` and the pair refusal
+// name it, so the operator can see why.
+func TestStrayTenantsEntriesAreNamed(t *testing.T) {
+	f := newLeakFixture(t)
+	f.write(".muster/tenants/.add-123456", "partial", 0o600)
+	f.write(".muster/tenants/notes.txt", "x", 0o600)
+	want := "~/.muster/tenants/ holds entries that are not tenants: .add-123456, notes.txt"
+
+	got := f.run(map[string]string{}, "tenant", "list")
+	var rows []tenantRow
+	if got.code != exitOK || json.Unmarshal([]byte(got.stdout), &rows) != nil || len(rows) != 1 || rows[0].Name != "default" {
+		t.Fatalf("exit %d stdout=%q stderr=%q", got.code, got.stdout, got.stderr)
+	}
+	if !strings.HasPrefix(got.stderr, "warning: "+want) {
+		t.Errorf("tenant list stderr = %q, want it to start with %q", got.stderr, "warning: "+want)
+	}
+
+	got = f.run(map[string]string{"MUSTER_API_URL": f.alien.srv.URL}, "whoami")
+	if got.code != exitUsage || !strings.Contains(got.stderr, pairRefusalText) || !strings.Contains(got.stderr, want) || f.total() != 0 {
+		t.Errorf("pair refusal: exit %d, %d request(s), stderr=%q", got.code, f.total(), got.stderr)
+	}
+
+	// Control: with no stray entries, tenant list prints nothing on stderr.
+	g := newLeakFixture(t)
+	g.addWork()
+	if got := g.run(map[string]string{}, "tenant", "list"); got.code != exitOK || got.stderr != "" {
+		t.Errorf("control: exit %d stderr=%q", got.code, got.stderr)
 	}
 }

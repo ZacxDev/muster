@@ -97,7 +97,15 @@ never replaces an existing tenant), refuses a symlinked `~/.muster/tenants/`,
 tightens a group- or world-accessible one to 0700, and warns on stderr when the
 origin is `http://` (the token then travels in cleartext). A file under
 `~/.muster/tenants/` named with `--env-file` gets the same 0600 and
-not-a-symlink checks as `--tenant`.
+not-a-symlink checks as `--tenant`, and so does a symlink elsewhere that points
+at one (it is refused as a symlinked tenant file).
+
+Any entry under `~/.muster/tenants/` keeps the host off the zero-touch path,
+including one that is not a tenant (a `.add-*` file left by an interrupted
+`tenant add`, say). `tenant list` names such entries on stderr, and so does a
+pair-rule refusal, so you can see why; remove what you do not need.
+
+The design behind tenants is in [docs/design/multi-tenant.md](design/multi-tenant.md).
 
 **What is printed.** stdout stays JSON. With more than one tenant, a tenant
 chosen by `~/.muster/current` is named on stderr (`tenant: work (muster.example.com)`);
