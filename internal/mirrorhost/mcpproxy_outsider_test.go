@@ -2,7 +2,9 @@ package mirrorhost
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -132,7 +134,14 @@ func TestAnOutsiderSeesAHealthyServerWithNoToolsAndNothingIsForwarded(t *testing
 	if r.Error == nil || r.Error.Code != -32602 || r.Result != nil || string(r.ID) != "7" {
 		t.Fatalf("tools/call: %+v", r)
 	}
-	for _, body := range []string{`{"jsonrpc":"2.0","id":3,"method":"ping"}`, `{"jsonrpc":"2.0","id":4,"method":"resources/list"}`} {
+	// ping: answered with an empty result, as muster's own server answers it
+	// (internal/api's serveMCP) — MCP requires an answer, and an error would
+	// read as an unhealthy server.
+	r = decodeReply(t, "ping", postBody(t, p, hdr, `{"jsonrpc":"2.0","id":3,"method":"ping"}`))
+	if r.Error != nil || string(r.Result) != `{}` || string(r.ID) != "3" {
+		t.Fatalf("ping: %+v %s", r, r.Result)
+	}
+	for _, body := range []string{`{"jsonrpc":"2.0","id":4,"method":"resources/list"}`} {
 		if r := decodeReply(t, body, postBody(t, p, hdr, body)); r.Error == nil || r.Error.Code != -32601 {
 			t.Fatalf("%s: %+v", body, r)
 		}
@@ -198,5 +207,49 @@ func TestAnOutsiderIsStillRefusedWithoutTheSecret(t *testing.T) {
 	}
 	if up.n() != 0 {
 		t.Fatalf("upstream got %d", up.n())
+	}
+}
+
+// brokenSocket is a ServerSocketer that cannot read this host's tmux server.
+type brokenSocket struct{}
+
+func (brokenSocket) ServerSocket(context.Context) (string, error) {
+	return "", errors.New("tmux display-message: no server running")
+}
+
+// TestWhenThisHostsTmuxServerCannotBeReadNothingIsForwarded: with this host's
+// own tmux server unreadable, no caller can be shown to be in it — not even
+// one naming the very socket this host would mirror — so every caller is
+// answered as an outsider: initialize and tools/list get the empty-tools
+// answer, tools/call is refused, and upstream receives ZERO requests.
+func TestWhenThisHostsTmuxServerCannotBeReadNothingIsForwarded(t *testing.T) {
+	up, srv := newUpstream(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"attention_ask"}]}}`)
+	})
+	var logs bytes.Buffer
+	p := proxyFor(srv.URL)
+	p.Socket = brokenSocket{}
+	p.Logger = log.New(&logs, "", 0)
+	for _, tmux := range []string{proxyTMUX, outsiderTMUX, ""} {
+		hdr := map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%7", MCPTmuxHeader: tmux}
+		r := decodeReply(t, "initialize", postBody(t, p, hdr, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`))
+		if r.Error != nil || !strings.Contains(string(r.Result), `"capabilities":{"tools":{}}`) || strings.Contains(string(r.Result), "instructions") {
+			t.Fatalf("$TMUX %q: initialize: %+v %s", tmux, r, r.Result)
+		}
+		r = decodeReply(t, "tools/list", postBody(t, p, hdr, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+		if r.Error != nil || string(r.Result) != `{"tools":[]}` {
+			t.Fatalf("$TMUX %q: tools/list: %+v %s", tmux, r, r.Result)
+		}
+		r = decodeReply(t, "tools/call", postBody(t, p, hdr, proxyCall))
+		if r.Error == nil || r.Error.Code != -32602 || r.Result != nil {
+			t.Fatalf("$TMUX %q: tools/call: %+v", tmux, r)
+		}
+	}
+	if n := up.n(); n != 0 {
+		t.Fatalf("upstream received %d request(s) while this host's tmux server could not be read, want 0", n)
+	}
+	if !strings.Contains(logs.String(), "read this host's tmux server") {
+		t.Fatalf("the reason was not logged: %q", logs.String())
 	}
 }

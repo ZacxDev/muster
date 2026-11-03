@@ -22,7 +22,7 @@ import (
 // and prints no secret: the token by fingerprint only.
 func printOpenCode(ctx context.Context, backend mirrorhost.Backend, creds *opencodehost.Credentials, why string, stdout, stderr io.Writer) int {
 	switch {
-	case creds == nil:
+	case creds == nil || !creds.Loaded():
 		fmt.Fprintf(stdout, "token\tnone\t%s\n", why)
 	default:
 		left := time.Until(creds.Expires()).Round(time.Hour)

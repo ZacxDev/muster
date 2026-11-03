@@ -404,11 +404,11 @@ INSTALL.md's "second server" section writes a **fresh** env file, never a copy,
 with `MUSTER_MIRROR_INTERACTIVE=0` unless the tenant is trusted as much as the
 host ([decision 9](#9-decisions-taken)).
 
-Today's `muster-mirror.service` stays as it is and **is** tenant `default`. On
-macOS the same thing is one launchd agent per tenant, label
-`io.github.zacxdev.muster-mirror.<tenant>`, with the same three variables in
-its plist. INSTALL.md's "second server" section refuses the tenant name
-`default` on both.
+Today's `muster-mirror.service` stays as it is and **is** tenant `default`.
+INSTALL.md's "second server" section refuses the tenant name `default`. On
+macOS one launchd agent per tenant would be the equivalent, but it has **not
+been measured** on a Mac, so INSTALL.md documents only the systemd template
+and says so.
 
 **Measured on systemd 261** (its man pages, plus throwaway template units in
 the user manager):
@@ -509,8 +509,9 @@ answers the session itself as a healthy server with **no tools**
 | `initialize` | a valid result: the protocol revision negotiated as muster does, the `tools` capability, `serverInfo`, and **no** `instructions` |
 | a notification (`notifications/initialized`) | `202`, no body |
 | `tools/list` | `{"tools": []}` |
+| `ping` | `{}`, as muster's own server answers it (`internal/api/mcp.go`); MCP requires an answer |
 | `tools/call` | refused: JSON-RPC `-32602` |
-| anything else (`ping` included) | refused: JSON-RPC `-32601` |
+| anything else | refused: JSON-RPC `-32601` |
 | not one JSON-RPC request (a batch, garbage) | JSON-RPC `-32600`, as muster |
 | `GET` (Claude Code's fallback after a failure) | `405`, before the tmux check, for every caller: the transport's "no server-initiated stream", the same healthy answer the right server's sessions get |
 
@@ -560,13 +561,24 @@ tool list is quiet, with one registration per tenant.
     `/tmp/tmux-<uid>/`). Both forms equal the first field of `$TMUX`. No daemon
     writes a record without a socket (stronger than "no template instance"):
     if the path cannot be derived, it records nothing and logs why.
-  - A daemon refuses to overwrite a legacy record that records a **different**
-    socket, and logs why. This catches an env file that overrides the unit's
-    path, once the `default` daemon has written its socket into the legacy
-    record. So INSTALL.md upgrades and restarts today's unit before it enables
-    any template instance. A legacy record with no socket (written by an older
-    daemon) is overwritten as today, which keeps a single-daemon host on
-    `-tmux-socket` or `-tmux-socket-path` working after the upgrade.
+  - A daemon that is **not** tenant `default`'s own refuses to overwrite a
+    legacy record that records a **different** socket, and logs why. "Not
+    tenant `default`'s own" means it has `-tmux-socket`/`-tmux-socket-path`,
+    or `MUSTER_MIRROR_HOOK_CONFIG` names the legacy path explicitly. This
+    catches an env file that overrides the unit's path, once the `default`
+    daemon has written its socket into the legacy record. So INSTALL.md
+    upgrades and restarts today's unit before it enables any template
+    instance. **As built (audit round 1):** tenant `default`'s own daemon (the
+    default tmux server, no `MUSTER_MIRROR_HOOK_CONFIG`) **always** overwrites
+    the legacy record. Its socket derivation changes when `TMUX_TMPDIR` is
+    edited, when its unit moves off `-tmux-socket`, or when `TMUX_TMPDIR`
+    stops resolving and tmux's `/tmp` is used; refusing it then locked it out
+    of its own record at every later start, and every question failed open.
+    A single daemon that moves **onto** `-tmux-socket` is indistinguishable
+    from a misconfigured template instance and is refused; its fix is to
+    delete the legacy record once. A legacy record with no socket (written by
+    an older daemon) is overwritten as today, which keeps a single-daemon host
+    on `-tmux-socket` or `-tmux-socket-path` working after the upgrade.
   - A daemon refuses to write a record under `mirror-hook.d/` without a token
     file (its token came from `MUSTER_MIRROR_TOKEN`), and logs why: such a
     record would make the hook fall back to the default token file, which is
@@ -596,7 +608,12 @@ tool list is quiet, with one registration per tenant.
   - A per-tenant record must name its `tokenFile`. The hook never applies
     `DefaultTokenFile` to one (today it does for a record without one,
     `cmd/muster-mirror/ask.go:83-86`); a per-tenant record without a token file
-    fails open.
+    fails open. **As built (audit round 1):** a per-tenant record's URL is sent
+    only that record's token file: `MUSTER_MIRROR_TOKEN`,
+    `MUSTER_MIRROR_TOKEN_FILE` and `-token-file` given to the hook are
+    ignored, since one hook serves every tenant and whatever it was given is
+    at most one tenant's credential. The legacy record keeps today's rule (the
+    environment's token, when there is one).
   - Today's rule stays: a recorded token goes only to its recorded URL
     (`cmd/muster-mirror/ask.go:63-100`).
   - **As built:** when the hook itself is given `MUSTER_MIRROR_HOOK_CONFIG`,
@@ -612,7 +629,10 @@ tool list is quiet, with one registration per tenant.
   today's unit, tenant `default`. Every template instance runs with a new
   reader-only flag (`-opencode-read-only`, `MUSTER_MIRROR_OPENCODE_READ_ONLY`,
   set by the unit): it reads the token file, re-reads it when it changes, and
-  never renews it. Whether two renewers can invalidate each other's token is
+  never renews it. **As built (audit round 1):** a reader whose token file
+  does not exist (or cannot be read) at its start keeps re-reading it and uses
+  it once it holds a token, so a tenant started before the host was paired
+  needs no restart. Whether two renewers can invalidate each other's token is
   **UNVERIFIED**, so the design avoids the question.
 
 #### Port collisions
@@ -633,8 +653,9 @@ None to design: each tenant's server pushes its pastes down its own tunnel
 1. The daemon's hook record: record the tmux socket path (derived from the
    daemon's configuration, never queried from `#{socket_path}`: see
    [the hook](#hook-secrets-and-the-askuserquestion-hook)) in every record,
-   the legacy one included; refuse to
-   overwrite a legacy record that records a different socket; refuse a
+   the legacy one included; refuse to let a daemon that is not tenant
+   `default`'s own overwrite a legacy record that records a different socket
+   (tenant `default`'s own daemon always may); refuse a
    per-tenant record without a token file
    ([the hook](#hook-secrets-and-the-askuserquestion-hook)).
 2. `ask`: choose the hook record whose recorded socket matches `$TMUX`; an old

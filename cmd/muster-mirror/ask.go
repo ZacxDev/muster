@@ -71,7 +71,10 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 	//
 	// 🔴 WHICH RECORD: the one whose tmux server is this session's $TMUX
 	// (chooseHookConfig) — one per tenant's daemon on a host with several
-	// muster servers. No match, or several, fails open.
+	// muster servers. No match, or several, fails open. A PER-TENANT record's
+	// URL is sent only with that record's token file, whatever token the hook's
+	// environment or flags name; the legacy record's, with the environment's
+	// token when there is one, as before.
 	recordedURL := false
 	var rec chosenHook
 	if *base == "" {
@@ -85,16 +88,21 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 	}
 	token := strings.TrimSpace(getenv(envToken))
 	tokenPath := *tokenFile
-	if tokenPath == "" && token == "" && recordedURL {
+	switch {
+	case recordedURL && rec.PerTenant:
+		// 🔴 A PER-TENANT RECORD'S URL GETS ONLY THAT RECORD'S TOKEN FILE:
+		// never MUSTER_MIRROR_TOKEN, MUSTER_MIRROR_TOKEN_FILE or -token-file
+		// (one hook serves every tenant, so whatever it was given is at most
+		// one tenant's credential), and never DefaultTokenFile (tenant
+		// default's).
+		token, tokenPath = "", rec.TokenFile
+		if tokenPath == "" {
+			logf("the record %s names no token file, and a per-tenant record never uses %s; the question is the terminal's only", rec.Path, DefaultTokenFile)
+			return 0
+		}
+	case tokenPath == "" && token == "" && recordedURL:
 		tokenPath = rec.TokenFile
 		if tokenPath == "" {
-			// 🔴 NEVER FOR A PER-TENANT RECORD: the default token file is
-			// tenant default's credential, and this record's URL is another
-			// server's.
-			if rec.PerTenant {
-				logf("the record %s names no token file, and a per-tenant record never uses %s; the question is the terminal's only", rec.Path, DefaultTokenFile)
-				return 0
-			}
 			tokenPath = DefaultTokenFile
 		}
 	}

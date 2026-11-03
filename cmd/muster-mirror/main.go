@@ -220,6 +220,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	ocCreds, ocWhy := (*opencodehost.Credentials)(nil), "this is a browser-test build"
 	if e2eBackend == nil {
 		ocCreds, ocWhy = openCodeCredentials(*openCodeTokenFile)
+		if ocCreds == nil && *openCodeReadOnly {
+			// A reader keeps watching for the file (opencode.go).
+			ocCreds = openCodePending(*openCodeTokenFile)
+		}
 	}
 	backend := withOpenCode(newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir)),
 		mirrorhost.NewOpenCodeSource(ctx, ocCreds, ocWhy, logger))
@@ -386,8 +390,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// Each record names the tmux server this daemon mirrors, DERIVED from its
 	// flags (tmuxsocket.go) — the server may not exist yet — so that, with one
 	// daemon per muster server, the hook picks the record of the caller's
-	// tmux server (hookconfig.go). recordHookConfig refuses to overwrite
-	// another daemon's legacy record and to write a per-tenant record
+	// tmux server (hookconfig.go). recordHookConfig refuses to let a daemon
+	// that is not tenant default's own overwrite the legacy record when it
+	// names another tmux server, and to write a per-tenant record
 	// without a token file; each refusal is logged and never fatal.
 	if *writeHook && e2eBackend == nil {
 		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
@@ -403,7 +408,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		sock, err := tmuxSocketPath(*socket, *socketPath, getenv, os.Getuid())
 		if err == nil {
 			hc.TmuxSocket = sock
-			err = recordHookConfig(p, hc)
+			err = recordHookConfig(p, hc, isDefaultDaemon(*socket, *socketPath, getenv))
 		}
 		if err != nil {
 			logger.Printf("muster-mirror: could not record %s for `muster-mirror ask` (the hook then fails open for this daemon's sessions): %v", p, err)

@@ -158,14 +158,29 @@ func isLegacyHookPath(path string) bool {
 	return aerr == nil && berr == nil && a == b
 }
 
+// isDefaultDaemon reports whether a daemon is tenant default's own: it
+// mirrors the DEFAULT tmux server (no -tmux-socket, no -tmux-socket-path) and
+// writes the legacy record at its default path (no MUSTER_MIRROR_HOOK_CONFIG).
+// Such a daemon may always rewrite the legacy record (recordHookConfig).
+func isDefaultDaemon(socket, socketPath string, getenv func(string) string) bool {
+	return socket == "" && socketPath == "" && getenv(envHookConfig) == ""
+}
+
 // recordHookConfig is how the daemon writes its record at path, with the
 // three refusals that keep one daemon from taking another's questions:
 //
 //   - no record without a tmux socket: the hook could not tell whose it is;
-//   - the LEGACY record is not overwritten when it records ANOTHER tmux
-//     server's socket: it belongs to the default tenant's daemon, and this is
-//     a per-tenant daemon whose env file pointed it there. A legacy record
-//     with no socket (an older daemon's) is overwritten, as before;
+//   - the LEGACY record is not overwritten, when it records ANOTHER tmux
+//     server's socket, by a daemon that is NOT tenant default's own
+//     (defaultDaemon false: it was given -tmux-socket or -tmux-socket-path,
+//     or MUSTER_MIRROR_HOOK_CONFIG names the legacy path explicitly) — a
+//     per-tenant daemon whose env file pointed it there. Tenant default's own
+//     daemon (isDefaultDaemon) ALWAYS overwrites it: its socket derivation
+//     changes when TMUX_TMPDIR is edited, when its unit moves off
+//     -tmux-socket, or when TMUX_TMPDIR stops resolving and tmux's /tmp is
+//     used, and refusing it then would lock it out of its own record at every
+//     later start (every question failing open). A legacy record with no
+//     socket (an older daemon's) is overwritten by anyone, as before;
 //   - a PER-TENANT record (any other path) is not written without a token
 //     file: the hook would then fall back to the default token file, which is
 //     another tenant's credential.
@@ -173,14 +188,17 @@ func isLegacyHookPath(path string) bool {
 // The legacy check is read-then-write, not atomic: two daemons starting at
 // the same instant could both pass it. It backstops a misconfigured env file,
 // which the unit's own path setting already avoids; it is not a lock.
-func recordHookConfig(path string, c hookConfig) error {
+func recordHookConfig(path string, c hookConfig, defaultDaemon bool) error {
 	if c.TmuxSocket == "" {
 		return fmt.Errorf("not recording %s: this daemon's tmux socket path is unknown, and a record without one cannot be told apart from another tenant's", path)
 	}
 	if isLegacyHookPath(path) {
+		if defaultDaemon {
+			return writeHookConfig(path, c)
+		}
 		if old, err := readHookConfig(path); err == nil && old.TmuxSocket != "" && old.TmuxSocket != c.TmuxSocket {
-			return fmt.Errorf("not overwriting %s: it records tmux server %s, and this daemon mirrors %s. It is another muster-mirror's record (tenant default's); a per-tenant daemon records to %s/<tenant>.json (%s), which its env file must not override",
-				path, old.TmuxSocket, c.TmuxSocket, hookConfigDir, envHookConfig)
+			return fmt.Errorf("not overwriting %s: it records tmux server %s, and this daemon mirrors %s. It is another muster-mirror's record (tenant default's), and this daemon is not tenant default's own (it has -tmux-socket/-tmux-socket-path, or %s names the legacy path). A per-tenant daemon records to %s/<tenant>.json (%s), which its env file must not override; a single daemon that moved onto -tmux-socket removes the legacy record once",
+				path, old.TmuxSocket, c.TmuxSocket, envHookConfig, hookConfigDir, envHookConfig)
 		}
 	} else if c.TokenFile == "" {
 		return fmt.Errorf("not recording %s: this daemon's token came from %s, not a token file, and a per-tenant record must name its own token file (else the hook would use %s, another tenant's). Set %s",

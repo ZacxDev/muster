@@ -239,12 +239,17 @@ func NewOpenCodeSource(ctx context.Context, creds *opencodehost.Credentials, why
 		changes: map[string]uint64{}, now: time.Now}
 }
 
+// paired reports whether the source has a token to read with: a credential
+// that has LOADED one. A read-only daemon's PendingCredentials (no token file
+// at its start) counts as none until its file appears.
+func (s *OpenCodeSource) paired() bool { return s.creds != nil && s.creds.Loaded() }
+
 // errNoOpenCodeCredential is a source without a token's refusal.
 var errNoOpenCodeCredential = errors.New("muster-mirror has no opencode token on this host (pair it with `muster-mirror opencode-pair`)")
 
 // start opens the event stream, once.
 func (s *OpenCodeSource) start() {
-	if s.creds == nil {
+	if !s.paired() {
 		return
 	}
 	s.once.Do(func() { go s.run() })
@@ -345,7 +350,7 @@ func (s *OpenCodeSource) event(e opencodehost.Event) {
 
 // state is why the server cannot be read now, "" when it can.
 func (s *OpenCodeSource) state() string {
-	if s.creds == nil {
+	if !s.paired() {
 		if s.why != "" {
 			return s.why
 		}
@@ -434,7 +439,7 @@ func (s *OpenCodeSource) changed(id string) uint64 {
 
 // client is a client of the server with the current token.
 func (s *OpenCodeSource) client() (*opencodehost.Client, error) {
-	if s.creds == nil {
+	if !s.paired() {
 		return nil, errNoOpenCodeCredential
 	}
 	return s.creds.Client()
@@ -461,7 +466,7 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) 
 	// A server that refuses the token, or no token at all, is no view. A
 	// stream that is merely down is a view with an UNKNOWN status (status()):
 	// the REST reads still work, and the view re-reads on its own cadence.
-	if oc.Server = s.state(); s.creds == nil {
+	if oc.Server = s.state(); !s.paired() {
 		oc.NoView = notPairedWhy
 		return
 	}
@@ -500,7 +505,7 @@ const notPairedWhy = "opencode is not paired on this host: run muster-mirror ope
 // tokenHealth is what the token needs the person to know now
 // (Credentials.Health), "" for nothing or no token.
 func (s *OpenCodeSource) tokenHealth() string {
-	if s.creds == nil {
+	if !s.paired() {
 		return ""
 	}
 	return s.creds.Health(s.now())
@@ -509,7 +514,7 @@ func (s *OpenCodeSource) tokenHealth() string {
 // tokenHealthState is tokenHealth's state without its countdown
 // (Credentials.HealthState): what a view redraws on.
 func (s *OpenCodeSource) tokenHealthState() string {
-	if s.creds == nil {
+	if !s.paired() {
 		return ""
 	}
 	return s.creds.HealthState(s.now())

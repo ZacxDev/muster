@@ -223,6 +223,7 @@ func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
 //   - `initialize`: a valid result (protocol negotiated as muster does, the
 //     tools capability, no instructions);
 //   - a notification (no id): 202 and no body;
+//   - `ping`: an empty result, as muster answers it (MCP requires an answer);
 //   - `tools/list`: an EMPTY list;
 //   - `tools/call`: refused (a JSON-RPC error: there is no such tool here);
 //   - anything else — `server/discover`, which Claude Code sends first,
@@ -272,6 +273,9 @@ func (p *MCPProxy) answerOutsider(w http.ResponseWriter, r *http.Request, why er
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "muster", "version": p.serverVersion()},
 		}, 0, "")
+	case "ping":
+		// MCP requires an answer; muster's own server answers {} (serveMCP).
+		mcpRPC(w, req.ID, map[string]any{}, 0, "")
 	case "tools/list":
 		mcpRPC(w, req.ID, map[string]any{"tools": []any{}}, 0, "")
 	case "tools/call":

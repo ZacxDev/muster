@@ -328,6 +328,24 @@ func TestTheLegacyRecordIsUntouchedByAMisconfiguredTenant(t *testing.T) {
 	if !strings.Contains(logs[0], "not overwriting "+h.legacy()) || !strings.Contains(logs[0], h.socket("default")) {
 		t.Fatalf("the refusal was not logged: %s", logs[0])
 	}
+	// Each of the three things that make a daemon NOT tenant default's own,
+	// ALONE (the env file above sets both -tmux-socket and the path): its
+	// legacy write is refused. Each mirrors a server other than the one
+	// recorded, so the refusal is reached.
+	other := t.TempDir()
+	for name, e := range map[string]map[string]string{
+		"-tmux-socket alone":      overlay(h.defaultEnv(b), map[string]string{envSocket: "work"}),
+		"-tmux-socket-path alone": overlay(h.defaultEnv(b), map[string]string{envSocketPath: filepath.Join(other, "s.sock")}),
+		envHookConfig + " alone":  overlay(h.defaultEnv(b), map[string]string{envHookConfig: h.legacy(), "TMUX_TMPDIR": other}),
+	} {
+		logs := runDaemons(t, e)
+		if !bytes.Equal(mustRead(t, h.legacy()), before) {
+			t.Fatalf("%s: overwrote the legacy record:\n%s\nwas\n%s", name, mustRead(t, h.legacy()), before)
+		}
+		if !strings.Contains(logs[0], "not overwriting "+h.legacy()) {
+			t.Fatalf("%s: the refusal was not logged: %s", name, logs[0])
+		}
+	}
 	// The copied instance wrote work.json naming the DEFAULT server (it
 	// mirrors it), so the default server now has two records and fails open:
 	// remove it, and default's questions reach default.
@@ -461,6 +479,40 @@ func TestAPerTenantRecordWithoutATokenFileNeverUsesTheDefaultOne(t *testing.T) {
 	}
 }
 
+// TestAPerTenantRecordIgnoresTheEnvironmentsToken: a hook whose URL comes from
+// a PER-TENANT record sends only that record's token file — never a
+// MUSTER_MIRROR_TOKEN or MUSTER_MIRROR_TOKEN_FILE from the hook's environment
+// (another tenant's credential, say, exported in the shell). The control: with
+// the LEGACY record, the environment's token is used, as before.
+func TestAPerTenantRecordIgnoresTheEnvironmentsToken(t *testing.T) {
+	h := newTenantHost(t)
+	a, b := newTenantServer(t), newTenantServer(t)
+	if err := writeHookConfig(h.tenantRec("work"), hookConfig{URL: b.URL, AllowHTTP: true, TmuxSocket: h.socket("work"), TokenFile: h.token("work")}); err != nil {
+		t.Fatal(err)
+	}
+	other := h.token("other")
+	for name, extra := range map[string]map[string]string{
+		envToken:                    {envToken: mirrorToken("other")},
+		envTokenFile:                {envTokenFile: other},
+		"both":                      {envToken: mirrorToken("other"), envTokenFile: other},
+		envTokenFile + " (missing)": {envTokenFile: filepath.Join(h.homeDir, "nope")},
+	} {
+		before := b.asks.Load()
+		errs := h.ask(t, h.socket("work"), extra)
+		if b.asks.Load() != before+1 || b.lastToken() != "Bearer "+mirrorToken("work") {
+			t.Fatalf("%s: server B has %d new question(s), last token %q; want 1 with work's token; hook said %q", name, b.asks.Load()-before, b.lastToken(), errs)
+		}
+	}
+	// The control: the legacy record with the environment's token.
+	if err := writeHookConfig(h.legacy(), hookConfig{URL: a.URL, AllowHTTP: true, TmuxSocket: h.socket("default"), TokenFile: h.token("default")}); err != nil {
+		t.Fatal(err)
+	}
+	h.ask(t, h.socket("default"), map[string]string{envToken: mirrorToken("other")})
+	if a.asks.Load() != 1 || a.lastToken() != "Bearer "+mirrorToken("other") {
+		t.Fatalf("the control: server A has %d, last token %q", a.asks.Load(), a.lastToken())
+	}
+}
+
 // TestAPerTenantRecordWithoutASocketNeverMatches: only the LEGACY record gets
 // the old-record fallback to the default tmux server. A per-tenant record with
 // no socket (no daemon writes one) matches nothing, even from the default
@@ -501,6 +553,85 @@ func TestASymlinkedSpellingOfTheLegacyRecordIsStillRefused(t *testing.T) {
 	runDaemons(t, overlay(h.tenantEnv("work", b), map[string]string{envHookConfig: filepath.Join(alias, "mirror-hook.d", "work.json")}))
 	if rec, err := readHookConfig(h.tenantRec("work")); err != nil || rec.URL != b.URL {
 		t.Fatalf("the control: the per-tenant record through the symlink: %+v %v", rec, err)
+	}
+}
+
+// TestTheDefaultDaemonAlwaysRewritesItsOwnLegacyRecord: tenant default's own
+// daemon (the default tmux server, the default record path) whose socket
+// derivation CHANGED since it last recorded — TMUX_TMPDIR edited, the unit
+// moved off -tmux-socket, or TMUX_TMPDIR stopped resolving so tmux's /tmp is
+// used — rewrites the legacy record, and its sessions' questions reach it.
+// Refusing it would lock it out of its own record at every later start, with
+// every question then failing open. (The template-instance refusals are
+// TestTheLegacyRecordIsUntouchedByAMisconfiguredTenant and
+// TestASymlinkedSpellingOfTheLegacyRecordIsStillRefused.)
+func TestTheDefaultDaemonAlwaysRewritesItsOwnLegacyRecord(t *testing.T) {
+	tmp, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		before map[string]string // overlaid on defaultEnv for the first start
+		after  func(h *tenantHost) map[string]string
+		// want is the socket the second start records, given h.
+		want func(h *tenantHost) string
+	}{
+		"TMUX_TMPDIR edited": {
+			after: func(h *tenantHost) map[string]string {
+				moved := t.TempDir()
+				real, _ := filepath.EvalSymlinks(moved)
+				h.real, h.tmpdir = real, moved
+				return map[string]string{"TMUX_TMPDIR": moved}
+			},
+			want: func(h *tenantHost) string { return h.socket("default") },
+		},
+		"moved off -tmux-socket": {
+			before: map[string]string{envSocket: "solo"},
+			after:  func(h *tenantHost) map[string]string { return nil },
+			want:   func(h *tenantHost) string { return h.socket("default") },
+		},
+		"TMUX_TMPDIR stopped resolving (/tmp)": {
+			after: func(h *tenantHost) map[string]string {
+				return map[string]string{"TMUX_TMPDIR": filepath.Join(h.homeDir, "gone")}
+			},
+			want: func(h *tenantHost) string {
+				return filepath.Join(tmp, fmt.Sprintf("tmux-%d", os.Getuid()), "default")
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newTenantHost(t)
+			a, b := newTenantServer(t), newTenantServer(t)
+			first := overlay(h.defaultEnv(a), c.before)
+			runDaemons(t, first)
+			old, err := readHookConfig(h.legacy())
+			if err != nil || old.TmuxSocket == "" {
+				t.Fatalf("the first start recorded %+v (%v)", old, err)
+			}
+			second := h.defaultEnv(a)
+			for k, v := range c.after(h) {
+				second[k] = v
+			}
+			want := c.want(h)
+			if want == old.TmuxSocket {
+				t.Fatalf("the fixture did not change the derivation: both %s", want)
+			}
+			logs := runDaemons(t, second)
+			rec, err := readHookConfig(h.legacy())
+			if err != nil || rec.TmuxSocket != want || rec.URL != a.URL {
+				t.Fatalf("tenant default's daemon did not rewrite its own record: %+v (%v), want tmux server %s; log %s", rec, err, want, logs[0])
+			}
+			if strings.Contains(logs[0], "not overwriting") {
+				t.Fatalf("refused: %s", logs[0])
+			}
+			// The hook from a pane of the server the daemon now mirrors.
+			hookEnv := map[string]string{"TMUX_TMPDIR": second["TMUX_TMPDIR"]}
+			errs := h.ask(t, want, hookEnv)
+			counts(t, a, b, 1, 0, "a question from the default daemon's new tmux server")
+			if a.lastToken() != "Bearer "+mirrorToken("default") {
+				t.Fatalf("server A got token %q; hook said %q", a.lastToken(), errs)
+			}
+		})
 	}
 }
 
@@ -590,6 +721,73 @@ func TestOnlyTenantDefaultRenewsTheOpenCodeToken(t *testing.T) {
 	}
 	if strings.Contains(logs[0], "renewed the opencode token") {
 		t.Fatalf("the read-only daemon renewed: %s", logs[0])
+	}
+}
+
+// TestAReadOnlyDaemonPicksUpATokenFileCreatedAfterItStarted: a template
+// instance (read-only) started before the host was paired — no opencode token
+// file yet — picks the file up once tenant default's `opencode-pair` writes
+// it, and then follows a rotated one, never minting a token itself.
+func TestAReadOnlyDaemonPicksUpATokenFileCreatedAfterItStarted(t *testing.T) {
+	h := newTenantHost(t)
+	b := newTenantServer(t)
+	oc := opencodetest.New("fixture-opencode-password-0123456789")
+	defer oc.Close()
+	tokFile := filepath.Join(h.homeDir, ".muster", "opencode-token")
+	prevR := openCodeReloadEvery
+	openCodeReloadEvery = 10 * time.Millisecond
+	defer func() { openCodeReloadEvery = prevR }()
+
+	prevB, prevC := newTmuxBackend, runContext
+	ctx, cancel := context.WithCancel(context.Background())
+	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait(); newTmuxBackend, runContext = prevB, prevC }()
+	logs := &lockedBuf{}
+	e := overlay(h.tenantEnv("work", b), map[string]string{envOpenCodeTokenFile: tokFile})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		run(nil, func(k string) string { return e[k] }, &bytes.Buffer{}, logs)
+	}()
+	waitLog := func(s string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !strings.Contains(logs.String(), s) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the daemon never logged %q: %s", s, logs.String())
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitLog("not paired")
+	time.Sleep(50 * time.Millisecond) // several re-reads of a missing file
+
+	first := oc.IssueAt(time.Now().Add(20 * 24 * time.Hour))
+	if err := opencodehost.WriteTokenFile(tokFile, opencodehost.TokenFile{URL: oc.URL, Token: first}); err != nil {
+		t.Fatal(err)
+	}
+	waitLog(tokFile + " appeared: token " + opencodehost.Fingerprint(first))
+
+	rotated := oc.IssueAt(time.Now().Add(29 * 24 * time.Hour))
+	if err := opencodehost.WriteTokenFile(tokFile, opencodehost.TokenFile{URL: oc.URL, Token: rotated}); err != nil {
+		t.Fatal(err)
+	}
+	waitLog("token " + opencodehost.Fingerprint(first) + " → " + opencodehost.Fingerprint(rotated))
+
+	out := logs.String()
+	for _, r := range oc.Requests() {
+		if r.Path == "/api/pair" {
+			t.Fatalf("the read-only daemon made an /api/pair request; log %s", out)
+		}
+	}
+	if strings.Contains(out, first) || strings.Contains(out, rotated) {
+		t.Fatalf("a token reached the log: %s", out)
+	}
+	// A missing file is the expected state before pairing: logged once at most.
+	if n := strings.Count(out, "no such file"); n > 1 {
+		t.Fatalf("the missing file was logged %d times: %s", n, out)
 	}
 }
 

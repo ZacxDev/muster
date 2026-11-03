@@ -826,8 +826,15 @@ much as this machine itself; an interactive terminal is a shell here. Where a
 tenant is not trusted that far, the real isolation is one Unix user per tenant.
 
 **1. Upgrade and restart today's service first.** Its hook record must name its
-tmux server before any tenant starts (a tenant's daemon refuses to overwrite a
-record that names another tmux server, and that refusal needs the name there).
+tmux server before any tenant starts (a daemon that is not tenant `default`'s
+own, meaning it has `MUSTER_MIRROR_TMUX_SOCKET`/`MUSTER_MIRROR_TMUX_SOCKET_PATH`
+or a `MUSTER_MIRROR_HOOK_CONFIG` naming `~/.muster/mirror-hook.json`, refuses
+to overwrite that record when it names another tmux server, and the refusal
+needs the name there). Today's service itself, on the default tmux server with
+no `MUSTER_MIRROR_HOOK_CONFIG`, always rewrites its own record, so editing its
+`TMUX_TMPDIR` never locks it out. A single service that later moves ONTO
+`MUSTER_MIRROR_TMUX_SOCKET` is refused like a tenant: delete
+`~/.muster/mirror-hook.json` once and restart it.
 Install the new binary as in Step 6, then:
 
 ```sh
@@ -918,13 +925,10 @@ journalctl --user -u "muster-mirror@$TENANT.service" -n 15 --no-pager
 ```
 
 `ExecCondition=` needs systemd 243 or later; an older systemd ignores it, so
-the name check in step 2 is the guard there. On macOS the same thing is one
-launchd agent per tenant: copy the Step 7 block with the label
-`io.github.zacxdev.muster-mirror.$TENANT`, `$tcfg/env` as the environment, its
-own log file, and these three keys added to `EnvironmentVariables`:
-`MUSTER_MIRROR_HOOK_CONFIG` = `$HOME/.muster/mirror-hook.d/$TENANT.json`,
-`MUSTER_MIRROR_WRITE_HOOK_CONFIG` = `1`, `MUSTER_MIRROR_OPENCODE_READ_ONLY` =
-`1`.
+the name check in step 2 is the guard there.
+
+On macOS, per-tenant daemons have not been measured. Tell the person this and
+stop here on a Mac; the single-tenant service above is unchanged.
 
 The log must show `recorded …/mirror-hook.d/<tenant>.json for muster-mirror
 ask: tmux server …/tmux-<uid>/<tenant>`. A line saying `could not record`
@@ -952,12 +956,16 @@ tenant's endpoint answers it as a connected server with no tools ("⚠ no tools"
 in `/mcp`), never as an error.
 
 What else changes: only tenant `default`'s service renews the opencode token;
-each tenant reads it. `AskUserQuestion` cards go to the server of the session's
+each tenant reads it, and a tenant started before the host was paired picks
+the token file up once `muster-mirror opencode-pair` writes it. The hook sends a
+tenant's server only the token file its record names, never a
+`MUSTER_MIRROR_TOKEN` or `MUSTER_MIRROR_TOKEN_FILE` from the hook's
+environment. `AskUserQuestion` cards go to the server of the session's
 tmux server; a session in a tmux server no daemon mirrors, or in one that two
 daemons mirror, keeps its question in the terminal.
 
-**To remove a tenant:** `systemctl --user disable --now muster-mirror@<tenant>`
-(on macOS, `launchctl bootout` its label), then delete
+**To remove a tenant:** `systemctl --user disable --now muster-mirror@<tenant>`,
+then delete
 `~/.muster/mirror-hook.d/<tenant>.json` and `~/.config/muster-mirror/<tenant>/`.
 Today's service never changed, so nothing else needs undoing.
 
