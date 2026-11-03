@@ -226,7 +226,7 @@ func parseReadRepos(repo string, in []string) ([]string, error) {
 		return nil, errors.New("read_repos needs `repo`: the officer's own repository is what a request that names " +
 			"no repository is served for, and the GitHub App refuses an agent without one")
 	}
-	if len(in) > MaxReadRepos+1 {
+	if len(in) > MaxReadRepos {
 		return nil, fmt.Errorf("read_repos lists %d repositories, over the cap of %d", len(in), MaxReadRepos)
 	}
 	seen := map[string]bool{}
