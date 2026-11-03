@@ -190,6 +190,59 @@ func KeepRenewed(ctx context.Context, c *Credentials, logger *log.Logger, every 
 	}
 }
 
+// ReloadEvery is how often KeepReloaded re-reads the token file.
+const ReloadEvery = time.Minute
+
+// Reload re-reads the token file and, when it holds a different token, uses
+// that one from now on. It never mints: it is how a READER of the file (a
+// muster-mirror run with -opencode-read-only) follows the renewals another
+// daemon writes. changed is false, with no error, when the file is unchanged.
+// A file that cannot be read leaves the current token in use.
+func (c *Credentials) Reload() (changed bool, err error) {
+	if c.Path == "" {
+		return false, ErrNotRenewable
+	}
+	tf, err := ReadTokenFile(c.Path)
+	if err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if tf == c.tf {
+		return false, nil
+	}
+	c.tf = tf
+	return true, nil
+}
+
+// KeepReloaded re-reads c's file (Reload) every `every` until ctx ends,
+// logging each change and each failure by fingerprint only. It never renews
+// the token.
+func KeepReloaded(ctx context.Context, c *Credentials, logger *log.Logger, every time.Duration) {
+	if c.Path == "" {
+		logger.Printf("muster-mirror: %v", ErrNotRenewable)
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		old := c.token()
+		changed, err := c.Reload()
+		switch {
+		case err != nil:
+			logger.Printf("muster-mirror: opencode: re-read %s (keeping token %s): %v", c.Path, Fingerprint(old), err)
+		case changed:
+			logger.Printf("muster-mirror: opencode: %s changed: token %s → %s, expires %s (renewed by another muster-mirror)",
+				c.Path, Fingerprint(old), Fingerprint(c.token()), c.Expires().UTC().Format(time.RFC3339))
+		}
+	}
+}
+
 // WarnBefore is how close to its expiry a token is reported to the person
 // (Health) even while no renewal has failed: renewal starts at RenewBefore,
 // so a token this close has not been renewed for a week.

@@ -1013,6 +1013,24 @@ development `muster-mirror` never repoints the hook. The hook reads the file
 when it has no `-url` and no `MUSTER_MIRROR_URL`. It then uses the recorded
 token file, or `~/.muster/mirror-token` when none is recorded.
 
+The record also names the **tmux server** the daemon mirrors (its socket path,
+worked out from `-tmux-socket` / `-tmux-socket-path` and `TMUX_TMPDIR`, so it
+is right even when the daemon starts before tmux does). The hook uses the
+record only for a session in that tmux server: it compares the socket path at
+the start of the session's `$TMUX`. A session outside tmux, or in another tmux
+server, keeps its question in the terminal. A record written by an older
+`muster-mirror` names no socket and matches only the default tmux server.
+
+With [a second muster server on this machine](../INSTALL.md#a-second-muster-server-on-this-machine-optional),
+each server's `muster-mirror@<tenant>` writes its own record to
+`~/.muster/mirror-hook.d/<tenant>.json`, and the hook picks the one record whose
+tmux server is the session's. If none matches, or two daemons mirror the same
+tmux server, the question stays in the terminal. A per-tenant record must name
+its token file: such a daemon given its token in `MUSTER_MIRROR_TOKEN` writes no
+record, and the hook never uses `~/.muster/mirror-token` (tenant `default`'s)
+for one. The tmux server decides where a question goes; it is not a security
+boundary, since anything running as your user can read every tenant's files.
+
 🔴 **The recorded token goes only to the recorded URL.** A hook given a URL by
 `-url` or `MUSTER_MIRROR_URL` must also be given its own token (`-token-file`,
 `MUSTER_MIRROR_TOKEN_FILE` or `MUSTER_MIRROR_TOKEN`); otherwise the question

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -73,7 +74,8 @@ type MCPProxy struct {
 	// Windows lists this host's windows: how a pane is resolved to its Claude
 	// session. nil resolves none.
 	Windows WindowLister
-	// Socket is this host's tmux server: a caller's $TMUX must name it. nil
+	// Socket is this host's tmux server: a caller's $TMUX must name it to be
+	// forwarded (any other is answered as a server with no tools). nil
 	// (a backend that is not tmux) skips the check.
 	Socket ServerSocketer
 	// Refresh sends muster this host's listing NOW (Client.RefreshNow), so a
@@ -84,6 +86,14 @@ type MCPProxy struct {
 	// timeout (attention_wait long-polls for up to ten minutes).
 	Client *http.Client
 	Logger *log.Logger
+	// Version is what an `initialize` this endpoint answers itself names as
+	// the server's version (answerOutsider); "" reads "dev".
+	Version string
+
+	// outsiderLogged: the first caller from another tmux server is logged,
+	// the rest are not (every Claude Code session on another tenant's server
+	// connects here).
+	outsiderLogged atomic.Bool
 }
 
 // MCPTarget is muster's /mirror/mcp URL for base.
@@ -175,9 +185,11 @@ func describePane(pane string) string {
 	return q
 }
 
-// checkServer refuses a caller whose $TMUX names another tmux server than the
-// one this host mirrors (pane ids are per server: %3 there is another pane).
-// It needs no session, so it applies to every request.
+// checkServer says whether a caller's $TMUX names another tmux server than
+// the one this host mirrors (pane ids are per server: %3 there is another
+// pane), or none, or this host's server cannot be read. It needs no session,
+// so it applies to every request; such a caller is never forwarded upstream,
+// and is answered locally as a server with no tools (answerOutsider).
 func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
 	if p.Socket == nil {
 		return nil
@@ -192,6 +204,105 @@ func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
 		return fmt.Errorf("the caller is not in the tmux server this host mirrors (send %s: ${TMUX:-})", MCPTmuxHeader)
 	}
 	return nil
+}
+
+// A CALLER FROM ANOTHER TMUX SERVER SEES A HEALTHY SERVER WITH NO TOOLS.
+//
+// On a host with one muster-mirror per muster server (one tmux server each),
+// Claude Code registers every tenant's endpoint, and a session reaches all of
+// them; only its own tmux server's should give it tools. Refusing the others
+// with an HTTP error is what this endpoint did first, and it is loud: measured
+// on Claude Code 2.1.289, a 400 on `initialize` (or straight after it) puts
+// the error text into the model's system prompt in EVERY session, telling it
+// to report the failure, and /mcp shows ✘. An empty tool list leaves nothing
+// in the model's context: `claude mcp list` shows "✔ Connected" and /mcp only
+// "⚠ no tools". So answerOutsider answers such a caller ITSELF, as muster's
+// own MCP server answers (internal/api's serveMCP), and FORWARDS NOTHING
+// upstream — no request of an outsider ever carries this host's mirror token:
+//
+//   - `initialize`: a valid result (protocol negotiated as muster does, the
+//     tools capability, no instructions);
+//   - a notification (no id): 202 and no body;
+//   - `tools/list`: an EMPTY list;
+//   - `tools/call`: refused (a JSON-RPC error: there is no such tool here);
+//   - anything else — `server/discover`, which Claude Code sends first,
+//     included — muster's "method not found", which is what muster itself
+//     answers to it, so Claude Code goes on to `initialize` exactly as it does
+//     against the right server;
+//   - what does not parse as one request: muster's "not a JSON-RPC request".
+//
+// A GET (Claude Code's fallback after a failure) is answered 405 before this,
+// for every caller: the transport's "no server-initiated stream", the same
+// healthy answer the right tmux server's callers get.
+//
+// 🔴 ROUTING, NOT ENFORCEMENT: X-Muster-Tmux is a header the caller supplies,
+// so anything running as this Unix user can name any tmux server (and read
+// any tenant's secret). This keeps honest sessions on their own tenant.
+func (p *MCPProxy) answerOutsider(w http.ResponseWriter, r *http.Request, why error) {
+	if p.outsiderLogged.CompareAndSwap(false, true) {
+		p.logf("muster-mirror: mcp: a caller outside this host's tmux server gets no tools (logged once): %v", why)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpMaxBody))
+	if err != nil {
+		mcpRefuse(w, http.StatusRequestEntityTooLarge, "the request is too large")
+		return
+	}
+	var req struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.JSONRPC != "2.0" || req.Method == "" {
+		mcpRPC(w, nil, nil, -32600, "not a JSON-RPC 2.0 request (batches are not supported)")
+		return
+	}
+	if len(req.ID) == 0 || string(req.ID) == "null" {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	switch req.Method {
+	case "initialize":
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &params)
+		mcpRPC(w, req.ID, map[string]any{
+			"protocolVersion": mirror.NegotiateMCPVersion(params.ProtocolVersion),
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "muster", "version": p.serverVersion()},
+		}, 0, "")
+	case "tools/list":
+		mcpRPC(w, req.ID, map[string]any{"tools": []any{}}, 0, "")
+	case "tools/call":
+		mcpRPC(w, req.ID, nil, -32602, "this muster-mirror serves no tools to a session outside the tmux server it mirrors")
+	default:
+		mcpRPC(w, req.ID, nil, -32601, "method not found: "+req.Method)
+	}
+}
+
+func (p *MCPProxy) serverVersion() string {
+	if p.Version != "" {
+		return p.Version
+	}
+	return "dev"
+}
+
+// mcpRPC writes one JSON-RPC response, HTTP 200: result, or (code != 0) an
+// error — the shape muster's own MCP server writes.
+func mcpRPC(w http.ResponseWriter, id json.RawMessage, result any, code int, msg string) {
+	body := map[string]any{"jsonrpc": "2.0", "id": id}
+	if len(id) == 0 {
+		body["id"] = nil
+	}
+	if code != 0 {
+		body["error"] = map[string]any{"code": code, "message": msg}
+	} else {
+		body["result"] = result
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // mcpRefreshWait bounds the listing push before a forwarded call.
@@ -238,7 +349,7 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := p.checkServer(r.Context(), r); err != nil {
-		mcpRefuse(w, http.StatusBadRequest, err.Error())
+		p.answerOutsider(w, r, err)
 		return
 	}
 	target, err := MCPTarget(p.URL, p.AllowHTTP)

@@ -194,6 +194,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
 	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
+	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -339,7 +340,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// host mirrors without it — mirroring is the job this process exists for.
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
-		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow}
+		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision}
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)
@@ -381,6 +382,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// Record where muster is for `muster-mirror ask` (hookconfig.go), whose
 	// Claude Code hook does not inherit this service's environment — only when
 	// told to (the managed service), and never in a browser-test build.
+	//
+	// Each record names the tmux server this daemon mirrors, DERIVED from its
+	// flags (tmuxsocket.go) — the server may not exist yet — so that, with one
+	// daemon per muster server, the hook picks the record of the caller's
+	// tmux server (hookconfig.go). recordHookConfig refuses to overwrite
+	// another daemon's legacy record and to write a per-tenant record
+	// without a token file; each refusal is logged and never fatal.
 	if *writeHook && e2eBackend == nil {
 		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
 		if abs, err := filepath.Abs(*hermesStatusDir); err == nil {
@@ -391,8 +399,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 				hc.TokenFile = abs
 			}
 		}
-		if p := hookConfigPath(getenv); writeHookConfig(p, hc) != nil {
-			logger.Printf("muster-mirror: could not record %s for `muster-mirror ask` (the hook then needs -url)", p)
+		p := hookConfigPath(getenv)
+		sock, err := tmuxSocketPath(*socket, *socketPath, getenv, os.Getuid())
+		if err == nil {
+			hc.TmuxSocket = sock
+			err = recordHookConfig(p, hc)
+		}
+		if err != nil {
+			logger.Printf("muster-mirror: could not record %s for `muster-mirror ask` (the hook then fails open for this daemon's sessions): %v", p, err)
+		} else {
+			logger.Printf("muster-mirror: recorded %s for `muster-mirror ask`: tmux server %s", p, sock)
 		}
 	}
 	// A muster-mirror that was killed between creating a viewer session and
@@ -411,7 +427,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// The opencode token is renewed whether or not a window uses it, so a
 	// paired host stays paired (opencode.go). Never in a browser-test build.
 	if e2eBackend == nil {
-		startOpenCode(ctx, ocCreds, ocWhy, logger)
+		startOpenCode(ctx, ocCreds, ocWhy, *openCodeReadOnly, logger)
 	}
 	// Tracing (internal/telemetry): on only when an OTLP endpoint is set, as
 	// service muster-mirror with this host's name, so a view's open can be

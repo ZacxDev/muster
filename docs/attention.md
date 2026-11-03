@@ -349,9 +349,21 @@ too, through its host's `muster-mirror`:
    others), the host logs `the MCP endpoint is OFF … <reason>` — in its log
    only — and mirrors without it.
 2. The session names itself with its tmux pane and tmux server:
-   `X-Muster-Pane: ${TMUX_PANE:-}` and `X-Muster-Tmux: ${TMUX:-}`. The host
-   refuses any request from a server that is not the one it mirrors (pane ids
-   are per server).
+   `X-Muster-Pane: ${TMUX_PANE:-}` and `X-Muster-Tmux: ${TMUX:-}`. A request
+   from a tmux server that is not the one the host mirrors (pane ids are per
+   server), or from outside tmux, is **never forwarded**. The host answers it
+   itself as a working server with **no tools**: a valid `initialize`, 202 for
+   a notification, an empty `tools/list`, muster's own "method not found" for
+   anything else (Claude Code's first `server/discover` included), and a
+   refused `tools/call`. On a machine with [one `muster-mirror` per muster
+   server](../INSTALL.md#a-second-muster-server-on-this-machine-optional), each
+   session then gets tools from its own tmux server's server only, and the
+   others show as connected with no tools rather than as errors. (Measured on
+   Claude Code 2.1.289: an HTTP 400 there put the error into the model's
+   system prompt in every session and showed ✘ in `/mcp`; an empty tool list
+   shows "✔ Connected" in `claude mcp list` and only "⚠ no tools" in `/mcp`.)
+   This routes honest sessions; it is not a security boundary, since the
+   header is the caller's to set.
 3. **The session is bound at each tool CALL, not when Claude Code connects.**
    Claude Code connects as it starts, before its new session has written its
    first message — so before anything can say which session runs in the pane —

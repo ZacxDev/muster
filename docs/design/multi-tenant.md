@@ -1,12 +1,14 @@
 # Design: one client, several muster servers
 
-**Status: proposed. Nothing here is implemented.** The operator decisions
-below are **decided**, and the operator took the design's recommendation on
-every question it raised ([decisions taken](#9-decisions-taken)), except
-decision 9, which was reversed after review because its recommendation rested
-on a false claim, and decision 7, where the operator dropped the optional
-server instance identity, so no server change remains. One thing is still to
-be measured before phase 2.
+**Status: phases 1 (CLI) and 2 (mirror) are implemented; phase 3 (Android) is
+not.** The operator decisions below are **decided**, and the operator took the
+design's recommendation on every question it raised
+([decisions taken](#9-decisions-taken)), except decision 9, which was reversed
+after review because its recommendation rested on a false claim, decision 7,
+where the operator dropped the optional server instance identity, so no server
+change remains, and decision 5, which the measurement before phase 2 changed:
+a host's MCP endpoint answers a session from another tmux server as a server
+with **no tools** instead of refusing it.
 
 This page proposes letting each muster **client** (the `muster` CLI, the
 `muster-mirror` host agent, and the Android app) talk to **more than one
@@ -451,7 +453,9 @@ Why the tmux server and not rules:
   scrolls are refused for a session or window the host did not list
   (`internal/mirrorhost/client.go:741-758`).
 - **The MCP endpoint already routes by it.** Every request whose `$TMUX` names
-  another server is refused before forwarding (`internal/mirrorhost/mcpproxy.go:180-196`).
+  another server is refused before forwarding (`internal/mirrorhost/mcpproxy.go:180-196`);
+  as built in phase 2 it is still never forwarded, and is answered as a server
+  with no tools ([the local MCP endpoint](#the-local-mcp-endpoint)).
 - **It is visible to the person.** Starting work for a tenant means opening a
   terminal on that server; a session's tenant cannot change because its working
   directory moved.
@@ -493,17 +497,41 @@ stays in the terminal ([the hook](#hook-secrets-and-the-askuserquestion-hook)).
 Each tenant's daemon serves MCP on **its own loopback port** with **its own
 secret file**, and forwards with **its own token**. Claude Code registers one
 MCP server per tenant (`muster-work`, `muster-team`, …), each with its URL and
-a headers helper reading that tenant's secret. In a session on tenant `work`'s
-tmux server, only `muster-work` answers; the others refuse `initialize` because
-`$TMUX` names the wrong server. So the tools a session sees are its own
-tenant's. That is routing, not enforcement: a process in the session can read
-another tenant's secret and send that tenant's `$TMUX` value
-([above](#which-tenant-gets-a-hosts-sessions)).
+its own secret in its headers. In a session on tenant `work`'s tmux server,
+only `muster-work` offers tools. Every other tenant's endpoint sees `$TMUX`
+name a tmux server it does not mirror, forwards **nothing** upstream, and
+answers the session itself as a healthy server with **no tools**
+([decision 5](#9-decisions-taken)):
 
-**UNVERIFIED:** how Claude Code shows an MCP server that refuses `initialize`
-(a quiet "failed" entry, or something noisier). If it is noisy, the fallback is
-a small local router: one port that dispatches by `X-Muster-Tmux` to the right
-tenant's endpoint. This is [to be measured before phase 2](#to-measure-before-phase-2).
+| request | answer from an endpoint whose tmux server is not the session's |
+|---|---|
+| `server/discover` (Claude Code's first POST) | JSON-RPC `-32601` "method not found", what muster's own MCP server answers to it, so Claude Code goes on to `initialize` as it does against the right server |
+| `initialize` | a valid result: the protocol revision negotiated as muster does, the `tools` capability, `serverInfo`, and **no** `instructions` |
+| a notification (`notifications/initialized`) | `202`, no body |
+| `tools/list` | `{"tools": []}` |
+| `tools/call` | refused: JSON-RPC `-32602` |
+| anything else (`ping` included) | refused: JSON-RPC `-32601` |
+| not one JSON-RPC request (a batch, garbage) | JSON-RPC `-32600`, as muster |
+| `GET` (Claude Code's fallback after a failure) | `405`, before the tmux check, for every caller: the transport's "no server-initiated stream", the same healthy answer the right server's sessions get |
+
+The secret and `Origin` checks still come first, unchanged. The same answers
+apply to a session outside tmux and to an endpoint that cannot read its own
+tmux server. The first such caller is logged once per daemon.
+
+So the tools a session sees are its own tenant's. That is routing, not
+enforcement: a process in the session can read another tenant's secret and
+send that tenant's `$TMUX` value ([above](#which-tenant-gets-a-hosts-sessions)).
+
+**Measured before phase 2, on Claude Code 2.1.289** (which decided this): a
+`400` on `initialize`, or straight after it, puts the full error text into the
+model's system prompt in **every** session, telling the model to report the
+failure, and `/mcp` shows ✘. An empty tool list leaves nothing in the model's
+context: `claude mcp list` shows "✔ Connected" and `/mcp` shows only "⚠ no
+tools". Claude Code's requests were, in order: `POST server/discover`, `POST
+initialize`, `POST notifications/initialized`, `POST tools/list`, and, after a
+failure, a `GET`. So the refusal the design first proposed was the noisy case,
+and the local router it named as the fallback is not needed either: the empty
+tool list is quiet, with one registration per tenant.
 
 #### Hook secrets and the `AskUserQuestion` hook
 
@@ -522,10 +550,16 @@ tenant's endpoint. This is [to be measured before phase 2](#to-measure-before-ph
     than querying tmux, because the record is written once at start, often
     before the tmux server exists (`main.go:388-403`; with no server,
     `display-message -p '#{socket_path}'` fails): `-S <path>` is used exactly
-    as given (tmux does not resolve symlinks for `-S`), and `-L <name>` or the
-    default server is `realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>/<name>`
-    (tmux resolves the directory there). Both forms equal the first field of
-    `$TMUX`. A template instance never writes a record without a socket.
+    as given (tmux does not resolve symlinks for `-S`; measured on tmux 3.7c,
+    a relative `-S rel.sock` is reported, and put in `$TMUX`, as `rel.sock`),
+    and `-L <name>` or the default server is
+    `realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>/<name>` (tmux resolves the
+    directory there). **As built:** a `TMUX_TMPDIR` that does not resolve
+    falls back to `realpath(/tmp)`, which is what tmux does (measured on tmux
+    3.7c: `TMUX_TMPDIR` naming a missing directory put the socket in
+    `/tmp/tmux-<uid>/`). Both forms equal the first field of `$TMUX`. No daemon
+    writes a record without a socket (stronger than "no template instance"):
+    if the path cannot be derived, it records nothing and logs why.
   - A daemon refuses to overwrite a legacy record that records a **different**
     socket, and logs why. This catches an env file that overrides the unit's
     path, once the `default` daemon has written its socket into the legacy
@@ -548,7 +582,8 @@ tenant's endpoint. This is [to be measured before phase 2](#to-measure-before-ph
   - Only an **old** legacy record, with no socket path, falls back to the
     default-server rule: it matches when `filepath.EvalSymlinks` of the path in
     `$TMUX` equals `filepath.EvalSymlinks` of
-    `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default`. Comparing the literal path
+    `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default` (as built, the derived default
+    socket above, so with the same `/tmp` fallback). Comparing the literal path
     would not work: with `TMUX_TMPDIR` pointing at a symlink, `$TMUX` and
     `#{socket_path}` both showed the **resolved** directory (measured, tmux
     3.7c on Linux). On macOS `/tmp` is a symlink to `/private/tmp`, so `$TMUX`
@@ -564,6 +599,11 @@ tenant's endpoint. This is [to be measured before phase 2](#to-measure-before-ph
     fails open.
   - Today's rule stays: a recorded token goes only to its recorded URL
     (`cmd/muster-mirror/ask.go:63-100`).
+  - **As built:** when the hook itself is given `MUSTER_MIRROR_HOOK_CONFIG`,
+    it reads that one record only, still matched by socket. With no `$TMUX`
+    the hook now fails open where it used to send the question to the legacy
+    record's server; muster never showed such a question anyway, since it
+    shows one only in a window the calling host lists.
 - The **Hermes status dir** can stay shared: each daemon reads only the windows
   in its own tmux server.
 - The **opencode token** is a credential for the host's opencode, not for muster.
@@ -590,8 +630,10 @@ None to design: each tenant's server pushes its pastes down its own tunnel
 
 #### Mirror changes, in full
 
-1. The daemon's hook record: record the tmux socket path (from
-   `#{socket_path}`) in every record, the legacy one included; refuse to
+1. The daemon's hook record: record the tmux socket path (derived from the
+   daemon's configuration, never queried from `#{socket_path}`: see
+   [the hook](#hook-secrets-and-the-askuserquestion-hook)) in every record,
+   the legacy one included; refuse to
    overwrite a legacy record that records a different socket; refuse a
    per-tenant record without a token file
    ([the hook](#hook-secrets-and-the-askuserquestion-hook)).
@@ -606,6 +648,9 @@ None to design: each tenant's server pushes its pastes down its own tunnel
    unit and a fresh env file per tenant (never a copy of today's), refuses the
    tenant name `default`, and states the `-interactive` rule
    ([decision 9](#9-decisions-taken)).
+5. The MCP proxy: a caller from another tmux server gets a healthy server with
+   no tools and nothing forwarded ([the local MCP endpoint](#the-local-mcp-endpoint),
+   [decision 5](#9-decisions-taken)).
 
 Refusing redirects on the tunnel and the MCP proxy is **not** in this list: it
 is independent of tenants and is fixed separately (branch
@@ -871,15 +916,16 @@ changes.
   never reads them.
 
 **Phase 2: mirror.**
-- Before building: [measure](#to-measure-before-phase-2) how Claude Code shows
-  a refused MCP server; it decides per-tenant registrations versus a local
-  router.
+- Before building: [measured](#to-measure-before-phase-2) how Claude Code
+  shows a refused MCP server; the answer changed decision 5 (no tools instead
+  of a refusal) and kept per-tenant registrations.
 - Prerequisite: the separate redirect fix (branch
   `fix/mirror-refuse-redirects`) has landed. It is not part of this phase and
   carries its own 302 test.
-- Build: the four [mirror changes](#mirror-changes-in-full): per-tenant hook
+- Build: the five [mirror changes](#mirror-changes-in-full): per-tenant hook
   records with their socket path, the hook choosing by `$TMUX`, the opencode
-  reader-only flag, and INSTALL.md's template unit. `muster doctor --tenant`
+  reader-only flag, INSTALL.md's template unit, and the MCP proxy's empty tool
+  list for another tmux server's sessions. `muster doctor --tenant`
   and the trace attribute are later and optional.
 - Test plan: two daemons against two test servers on two tmux servers; a
   question from each tenant's session lands on its own server and not the other
@@ -901,9 +947,12 @@ changes.
   hook fail open; a
   per-tenant daemon given only `MUSTER_MIRROR_TOKEN` writing
   no record; a per-tenant record without a token file never reading the default
-  token file; only tenant `default` renewing the opencode token; an MCP
-  `initialize` from the wrong tmux server refused; one server killed while the
-  other keeps mirroring.
+  token file; only tenant `default` renewing the opencode token; from the wrong tmux
+  server, MCP `server/discover`, `initialize`, a notification and `tools/list`
+  answered as a healthy server with zero tools, `tools/call` refused, and
+  **upstream counting zero requests** (positive control: the right tmux
+  server's same requests are forwarded); one server killed while the other
+  keeps mirroring.
 - Rollback: `systemctl --user disable --now muster-mirror@<tenant>` and delete
   its record in `~/.muster/mirror-hook.d/`; the default unit's configuration
   never changed. The hook then uses the legacy record for the socket it
@@ -954,9 +1003,22 @@ optional item the operator dropped, and decision 9, which changed after review
    chosen implicitly and more than one exists; `--tenant` is not required for
    writes.
 4. **Mirror routing:** one tmux server per tenant, not session-name filters.
-5. **MCP with several tenants:** one registration per tenant, relying on the
-   tmux-server refusal to route each session to its own tenant (routing, not
-   enforcement); a local router only if the measurement below says so.
+5. **MCP with several tenants:** one registration per tenant. Each session
+   gets tools only from its own tmux server's endpoint (routing, not
+   enforcement).
+
+   **Changed by the measurement before phase 2 (operator decision).** This
+   first read "relying on the tmux-server refusal": an endpoint refused
+   `initialize` (HTTP 400) from another tmux server. Measured on Claude Code
+   2.1.289, that 400 puts the full error text into the model's system prompt
+   in every session, telling it to report the failure, and `/mcp` shows ✘. So
+   the endpoint now answers such a session **itself**, with a valid
+   `initialize`, `202` for notifications, an empty `tools/list` and muster's
+   "method not found" for `server/discover`, refuses `tools/call` and anything
+   else, and forwards nothing upstream ([the local MCP endpoint](#the-local-mcp-endpoint)).
+   An empty tool list leaves nothing in the model's context: `claude mcp list`
+   shows "✔ Connected" and `/mcp` only "⚠ no tools". No local router is
+   needed.
 6. **Phase order:** CLI, mirror, Android.
 7. **Server instance identity: dropped by the operator.** The design offered
    an optional server-served instance id, to tell a different deployment
@@ -989,9 +1051,14 @@ and the lock screen gets a tenant label with no hide switch
 #### To measure before phase 2
 
 - **How Claude Code displays an MCP server that refuses `initialize`.**
-  **UNVERIFIED.** A quiet "failed" entry keeps decision 5 as it is: one
-  registration per tenant. Anything noisier means building the local router
-  ([the local MCP endpoint](#the-local-mcp-endpoint)) instead.
+  **Measured on Claude Code 2.1.289: noisy.** A 400 on `initialize`, or
+  straight after it, puts the error text into the model's system prompt in
+  every session and shows ✘ in `/mcp`; an empty tool list shows "✔ Connected"
+  in `claude mcp list` and "⚠ no tools" in `/mcp`, with nothing in the model's
+  context. Claude Code sends `server/discover`, then `initialize`, then
+  `notifications/initialized`, then `tools/list`, and on a failure falls back
+  to a `GET`. Decision 5 changed accordingly: no tools rather than a refusal,
+  still one registration per tenant, no router.
 
 ## Sources
 

@@ -68,14 +68,19 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 	// (-token-file, MUSTER_MIRROR_TOKEN_FILE or MUSTER_MIRROR_TOKEN), or it
 	// fails open — it never sends this host's credential to a URL nobody
 	// recorded for it.
+	//
+	// 🔴 WHICH RECORD: the one whose tmux server is this session's $TMUX
+	// (chooseHookConfig) — one per tenant's daemon on a host with several
+	// muster servers. No match, or several, fails open.
 	recordedURL := false
-	var rec hookConfig
+	var rec chosenHook
 	if *base == "" {
 		var err error
-		if rec, err = readHookConfig(hookConfigPath(getenv)); err == nil && rec.URL != "" {
+		if rec, err = chooseHookConfig(getenv, os.Getuid(), logf); err == nil {
 			*base, *allowHTTP, recordedURL = rec.URL, *allowHTTP || rec.AllowHTTP, true
 		} else {
-			logf("no -url, no %s, and no URL recorded by muster-mirror (%v)", envURL, err)
+			logf("no -url, no %s, and no URL recorded by muster-mirror for this session: %v; the question is the terminal's only", envURL, err)
+			return 0
 		}
 	}
 	token := strings.TrimSpace(getenv(envToken))
@@ -83,6 +88,13 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 	if tokenPath == "" && token == "" && recordedURL {
 		tokenPath = rec.TokenFile
 		if tokenPath == "" {
+			// 🔴 NEVER FOR A PER-TENANT RECORD: the default token file is
+			// tenant default's credential, and this record's URL is another
+			// server's.
+			if rec.PerTenant {
+				logf("the record %s names no token file, and a per-tenant record never uses %s; the question is the terminal's only", rec.Path, DefaultTokenFile)
+				return 0
+			}
 			tokenPath = DefaultTokenFile
 		}
 	}
