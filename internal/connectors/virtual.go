@@ -194,13 +194,13 @@ func reopenedRepoChanged(was, now string) string {
 // would re-open every officer grant on its first use.
 func RepoScope(repo string, readRepos []string) string {
 	repo = strings.TrimSpace(repo)
-	if _ = readRepos; true {
+	if len(readRepos) == 0 {
 		return repo
 	}
 	seen := map[string]bool{}
 	set := make([]string, 0, len(readRepos))
 	for _, r := range readRepos {
-		r = strings.ToLower(strings.TrimSpace(r))
+		r = strings.TrimSpace(r)
 		if r == "" || seen[r] {
 			continue
 		}
@@ -210,7 +210,6 @@ func RepoScope(repo string, readRepos []string) string {
 	if len(set) == 0 {
 		return repo
 	}
-	sort.Strings(set)
 	return repo + " (+ read: " + strings.Join(set, ", ") + ")"
 }
 
