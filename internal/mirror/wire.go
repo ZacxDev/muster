@@ -395,7 +395,7 @@ type Msg struct {
 	// OpenCodeAnswer (hello) is the host ADVERTISING that it relays an answer
 	// to an opencode ask — a permission request, a question-tool form —
 	// through the opencode server's API (opencode_answer.go): an -interactive
-	// v2 host that runs with -opencode-answer and holds an opencode token.
+	// v2 host that holds an opencode token — the same gate as AskAnswer.
 	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like HermesAnswer: an
 	// older muster ignores it; an older host never sets it, so muster never
 	// sends it an answer, and the ask says to answer it in the terminal.

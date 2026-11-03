@@ -112,8 +112,8 @@ type HostView struct {
 	// -hermes-answer and is -interactive, v2): a Hermes approval muster shows
 	// for one of its windows can be answered here (Hermes Phase 4).
 	HermesAnswer bool
-	// OpenCodeAnswer: the host advertised Msg.OpenCodeAnswer (it runs with
-	// -opencode-answer and is -interactive, v2): an opencode ask muster shows
+	// OpenCodeAnswer: the host advertised Msg.OpenCodeAnswer (it is
+	// -interactive, v2, and holds an opencode token): an opencode ask muster shows
 	// for one of its windows can be answered here.
 	OpenCodeAnswer bool
 	// PanePaste: the host advertised that a paste may target a session's active

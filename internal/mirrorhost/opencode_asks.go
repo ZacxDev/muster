@@ -320,10 +320,12 @@ func isDialError(err error) bool {
 }
 
 // openCodeAnswer is what this host advertises as Msg.OpenCodeAnswer: it
-// relays answers to opencode — an -interactive v2 host started with
-// -opencode-answer, whose backend reads an opencode server with a token.
+// relays answers to opencode — an -interactive v2 host (the same gate as an
+// answer typed into Claude Code's picker) whose backend reads an opencode
+// server with a token. A read-only host still lists every ask; muster then
+// says to answer it in the terminal.
 func (h *hostSide) openCodeAnswer() bool {
-	if h.version < 2 || !h.c.cfg.Interactive || !h.c.cfg.OpenCodeAnswer {
+	if h.version < 2 || !h.c.cfg.Interactive {
 		return false
 	}
 	src, ok := h.openCodeSource()
@@ -333,7 +335,7 @@ func (h *hostSide) openCodeAnswer() bool {
 // answerOpenCode answers an opencode ask (m.Runtime "opencode",
 // m.OpenCodeReply) through the opencode server's API, and answers answered.
 //
-// 🔴 REFUSED UNLESS THIS HOST OPTED IN (-interactive and -opencode-answer),
+// 🔴 REFUSED UNLESS THIS HOST IS -interactive (and holds an opencode token),
 // whatever muster asks — muster refuses it too — and only for a listed
 // window whose pane runs opencode NOW, waiting on exactly this ask and
 // offering this answer: the window is re-resolved here. Never a key into the
@@ -360,7 +362,7 @@ func (h *hostSide) answerOpenCode(m mirror.Msg) {
 		_ = h.send(ans)
 	}
 	if !h.openCodeAnswer() {
-		reply(fmt.Errorf("%w: this host does not relay answers to opencode (muster-mirror needs -interactive and -opencode-answer, and an opencode token)", errCannotAnswer))
+		reply(fmt.Errorf("%w: this host does not relay answers to opencode (muster-mirror needs -interactive, and an opencode token)", errCannotAnswer))
 		return
 	}
 	if err := h.allowed(m); err != nil {

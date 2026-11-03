@@ -134,11 +134,11 @@ func (b liveOCBackend) Windows(context.Context) ([]WindowInfo, error) {
 }
 
 // runOCHost runs a host over d listing one opencode window titled title.
-func runOCHost(t *testing.T, src *OpenCodeSource, title string, interactive, answer bool) *drivenMuster {
+func runOCHost(t *testing.T, src *OpenCodeSource, title string, interactive bool) *drivenMuster {
 	t.Helper()
 	d := newDrivenMuster(t)
 	b := liveOCBackend{windowsBackend: &windowsBackend{}, src: src, title: title}
-	c, err := New(Config{URL: d.srv.URL, Token: mirror.TokenPrefix + "t", Host: "laptop", Backend: b, Interactive: interactive, OpenCodeAnswer: answer,
+	c, err := New(Config{URL: d.srv.URL, Token: mirror.TokenPrefix + "t", Host: "laptop", Backend: b, Interactive: interactive,
 		AllowHTTP: true, Refresh: time.Hour, Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
@@ -176,28 +176,26 @@ func lastPending(d *drivenMuster) *mirror.Pending {
 // here), and so does its settling in the terminal.
 func TestARaisedAskIsSentAtOnceAndSoIsItsSettling(t *testing.T) {
 	srv, src, _ := askSource(t, "OC | Ask session")
-	d := runOCHost(t, src, "OC | Ask session", true, false)
+	d := runOCHost(t, src, "OC | Ask session", false)
 	srv.EmitFrame(opencodetest.FixtureFrame("permission.asked", 0))
 	waitUntil(t, "the request on the wire", func() bool { p := lastPending(d); return p != nil && p.Kind == mirror.PendingPermission })
 	srv.EmitFrame(opencodetest.FixtureFrame("permission.replied", 0))
 	waitUntil(t, "the settling on the wire", func() bool { return lastPending(d) == nil })
 }
 
-// 🔴 The host's own half of an answer, whatever muster sends: without
-// -opencode-answer, or without -interactive, nothing reaches opencode; with
-// both, only the ask the window waits on NOW, with an answer it offers —
+// 🔴 The host's own half of an answer, whatever muster sends: a read-only
+// host (not -interactive: a non-default tenant's, say) relays nothing to
+// opencode and advertises no answer — it still LISTS the ask (muster
+// notifies); an -interactive one relays only the ask the window waits on NOW, with an answer it offers —
 // sent as the reply the real server takes — and "always", another ask's id
 // or an option the question does not have are refused without a request.
 func TestTheHostRelaysOnlyAnAnswerTheWindowOffersNow(t *testing.T) {
-	for _, c := range []struct {
-		name                string
-		interactive, answer bool
-	}{{"read-only host", false, true}, {"without -opencode-answer", true, false}} {
+	for _, c := range []struct{ name string }{{"read-only host"}} {
 		t.Run(c.name, func(t *testing.T) {
 			srv, src, _ := askSource(t, "OC | Ask session")
 			srv.EmitFrame(opencodetest.FixtureFrame("permission.asked", 0))
-			d := runOCHost(t, src, "OC | Ask session", c.interactive, c.answer)
-			waitUntil(t, "the request on the wire", func() bool { return lastPending(d) != nil })
+			d := runOCHost(t, src, "OC | Ask session", false)
+			waitUntil(t, "the request on the wire", func() bool { p := lastPending(d); return p != nil && p.Kind == mirror.PendingPermission })
 			d.send(t, ocAnswer(1, opencodetest.FixtureBashRequest, "once"))
 			if m := answeredOf(t, d, 1); m.Refusal != mirror.AskRefusalUnsupported || m.Error == "" {
 				t.Fatalf("%+v", m)
@@ -215,9 +213,9 @@ func TestTheHostRelaysOnlyAnAnswerTheWindowOffersNow(t *testing.T) {
 	t.Run("a permission", func(t *testing.T) {
 		srv, src, _ := askSource(t, "OC | Ask session")
 		srv.EmitFrame(opencodetest.FixtureFrame("permission.asked", 0))
-		d := runOCHost(t, src, "OC | Ask session", true, true)
+		d := runOCHost(t, src, "OC | Ask session", true)
 		if !helloAnswers(d) {
-			t.Fatal("hello.OpenCodeAnswer is off on an -interactive -opencode-answer host")
+			t.Fatal("hello.OpenCodeAnswer is off on an -interactive host with a token")
 		}
 		waitUntil(t, "the request on the wire", func() bool { return lastPending(d) != nil })
 		// Another session's question, pending on the same server: this window
@@ -261,7 +259,7 @@ func TestTheHostRelaysOnlyAnAnswerTheWindowOffersNow(t *testing.T) {
 	t.Run("a question", func(t *testing.T) {
 		srv, src, _ := askSource(t, "OC | Fixture session")
 		srv.EmitFrame(opencodetest.FixtureFrame("form.created", 1))
-		d := runOCHost(t, src, "OC | Fixture session", true, true)
+		d := runOCHost(t, src, "OC | Fixture session", true)
 		waitUntil(t, "the question on the wire", func() bool { p := lastPending(d); return p != nil && p.Options == "Yes\nNo" })
 		d.send(t, ocAnswer(1, opencodetest.FixtureProceedForm, "Maybe"))
 		if m := answeredOf(t, d, 1); m.Refusal != mirror.AskRefusalOpenCodeGone {
@@ -278,7 +276,7 @@ func TestTheHostRelaysOnlyAnAnswerTheWindowOffersNow(t *testing.T) {
 	t.Run("answered in the terminal first", func(t *testing.T) {
 		srv, src, _ := askSource(t, "OC | Ask session")
 		srv.EmitFrame(opencodetest.FixtureFrame("permission.asked", 0))
-		d := runOCHost(t, src, "OC | Ask session", true, true)
+		d := runOCHost(t, src, "OC | Ask session", true)
 		waitUntil(t, "the request on the wire", func() bool { return lastPending(d) != nil })
 		// The server settles it, but the event is lost: the host's own set
 		// still holds it, and opencode's 404 is what says it is gone.

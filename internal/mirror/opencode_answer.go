@@ -26,7 +26,7 @@ import (
 //
 // 🔴 THE GATES COPY THE HERMES APPROVAL PATH (hermes_answer.go), which copies
 // the Claude ask-answer path: an -interactive v2 host that advertised the
-// capability (Msg.OpenCodeAnswer, -opencode-answer), and a fresh sign-in
+// capability (Msg.OpenCodeAnswer: -interactive, as for Claude Code), and a fresh sign-in
 // (internal/stepup); the owner and same-origin gates are the caller's
 // (internal/api's handleAttentionOpenCodeAnswer).
 
@@ -54,9 +54,8 @@ const (
 
 var (
 	// ErrOpenCodeAnswerUnsupported: the host does not relay answers to opencode
-	// (an older or read-only muster-mirror, one without -opencode-answer, or
-	// one with no opencode token).
-	ErrOpenCodeAnswerUnsupported = errors.New("mirror: this host's muster-mirror does not relay answers to opencode (it needs -interactive and -opencode-answer); answer it in the terminal")
+	// (an older or read-only muster-mirror, or one with no opencode token).
+	ErrOpenCodeAnswerUnsupported = errors.New("mirror: this host's muster-mirror does not relay answers to opencode (it needs -interactive); answer it in the terminal")
 	// ErrOpenCodeAskGone: the window is no longer waiting on that ask, or not
 	// offering that answer. Nothing was answered.
 	ErrOpenCodeAskGone = errors.New("mirror: opencode is no longer waiting on that")

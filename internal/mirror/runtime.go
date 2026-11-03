@@ -87,7 +87,7 @@ type RuntimeSpec struct {
 // or a question-tool form of its session (or of a subagent's child session)
 // makes the window waiting, its Pending naming the ask (PendingPermission,
 // PendingQuestion) — and a host that advertised it (Msg.OpenCodeAnswer:
-// -interactive and -opencode-answer) relays an answer through opencode's API
+// an -interactive host with an opencode token) relays an answer through opencode's API
 // (Hub.AnswerOpenCodeAsk), never keys.
 const RuntimeOpenCode = "opencode"
 

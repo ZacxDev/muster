@@ -170,8 +170,9 @@ below are what it sent, saved as `internal/opencodehost/opencodetest/testdata/as
 - **Server**: the attention queue draws a question as a *question* item and
   a permission request as a *session* item, so the push is the one a Claude
   Code window gets (`internal/api/attention_opencode.go`).
-- **Answer**: `-interactive -opencode-answer` hosts advertise
-  `Msg.OpenCodeAnswer`. The hub re-checks the listed ask and the offered
+- **Answer**: `-interactive` hosts with an opencode token advertise
+  `Msg.OpenCodeAnswer` — the same gate as an answer typed into Claude Code's
+  picker (owner decision; an opt-in flag was considered and dropped). The hub re-checks the listed ask and the offered
   answer (`Hub.AnswerOpenCodeAsk`), the host re-checks the window and sends
   `ReplyPermission` (once or reject — "always" is refused before a byte is
   sent) or `ReplyForm` (the option's value, found by its label).

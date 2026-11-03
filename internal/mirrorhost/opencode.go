@@ -22,7 +22,7 @@ import (
 // is its rendered view, read from the host's opencode v2 server with the
 // host's pair token. No message is ever sent to opencode, and the paste guard
 // refuses its panes; what its session waits on (a permission request, a
-// question) is the window's Pending, and an -opencode-answer host relays an
+// question) is the window's Pending, and an -interactive host relays an
 // answer to it through the API (opencode_asks.go).
 
 // SourceTitle: an opencode pane whose session was matched by its pane title,

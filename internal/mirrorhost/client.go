@@ -116,14 +116,6 @@ type Config struct {
 	// on an approval, lists its command, and advertises Msg.HermesAnswer. OFF
 	// by default: an answer of "once" lets the command run.
 	HermesAnswer bool
-	// OpenCodeAnswer lets muster relay an answer to an opencode ask — a
-	// permission request, a question-tool form — through the opencode server's
-	// API (muster-mirror's -opencode-answer, MUSTER_MIRROR_OPENCODE_ANSWER;
-	// opencode_asks.go): with -interactive and an opencode token, the host
-	// advertises Msg.OpenCodeAnswer. OFF by default: an answer of "once" lets
-	// the tool call run. Without it the asks still reach muster's attention
-	// queue (and notify); they are answered in the terminal.
-	OpenCodeAnswer bool
 	// NoSubagents makes this host behave as one that predates the subagent
 	// cards (mirror.Msg.SubagentReport): no summaries on a view's stream, none
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY

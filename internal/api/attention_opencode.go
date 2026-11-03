@@ -30,7 +30,7 @@ import (
 //
 // An answer is RELAYED through the host to opencode's API — Allow once /
 // Reject for a permission (never "always"), one of the question's own options
-// — only when the host relays (-interactive and -opencode-answer) and the ask
+// — only when the host relays (-interactive, as for Claude Code) and the ask
 // is one muster can answer (a single single-select question of at most
 // mirror.MaxPendingOptions options). Otherwise the item still notifies, and
 // says why it cannot be answered from here.
@@ -59,7 +59,7 @@ type openCodeAsk struct {
 // The words an opencode ask shows when it cannot be answered here.
 const (
 	// openCodeNoRelayText: the host does not relay answers to opencode.
-	openCodeNoRelayText = "This host's muster-mirror does not relay answers to opencode (it needs -interactive and -opencode-answer), so this can't be answered from here: answer it in the terminal."
+	openCodeNoRelayText = "This host's muster-mirror is read-only (not -interactive), so this can't be answered from here: answer it in the terminal."
 	// openCodeTerminalText: the ask is not one muster answers (several
 	// questions, a multi-select, a free-text form, too many options).
 	openCodeTerminalText = "muster can't answer this one from here: answer it in the terminal."

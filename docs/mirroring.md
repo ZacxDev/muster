@@ -715,7 +715,7 @@ The composer is disabled, saying sending to opencode isn't supported yet:
 muster sends no message to opencode, and the paste guard above still refuses
 its panes. What the session **waits on** does reach muster (below).
 
-#### opencode's permission requests and questions (`-opencode-answer`)
+#### opencode's permission requests and questions
 
 When the session a window shows — or a subagent's child session under it —
 asks the person something, the host reads it from the opencode server's event
@@ -738,9 +738,9 @@ is first matched. A subagent's ask is shown on its root's window only when the
 stream saw the subagent's session created; one started while the stream was
 down is the terminal's.
 
-**Answering from muster** is off by default. A host started with
-`-interactive` **and** `-opencode-answer` (`MUSTER_MIRROR_OPENCODE_ANSWER`)
-relays an answer through opencode's API with its own token, never keys:
+**Answering from muster** follows the same gate as answering Claude Code's
+questions: an `-interactive` host (with an opencode token) relays an answer
+through opencode's API with its own token, never keys:
 
 - a permission request: **Allow once** or **Reject**. muster never sends
   "always", which widens the session's rules past the one call;
@@ -752,11 +752,11 @@ relays an answer through opencode's API with its own token, never keys:
 The answer needs a sign-in from the last few minutes. muster re-checks, at the
 moment it sends, that the window still waits on exactly that ask and offers
 that answer, and the host checks again against what opencode holds now. On a
-host without the flag, or a read-only one (`-interactive` off), the ask still
-reaches the queue and notifies; its card says the answer can't be relayed
-from there. `-opencode-read-only` (set on every `muster-mirror@<tenant>`) is
-about **renewing the token** only: it does not stop a tenant's daemon from
-relaying answers, which `-interactive` and `-opencode-answer` decide.
+read-only host (`-interactive` off), the ask still reaches the queue and
+notifies; its card says the answer can't be relayed from there. A non-default
+tenant's daemon follows its own `-interactive`: `-opencode-read-only` (set on
+every `muster-mirror@<tenant>`) is about **renewing the token** only, and
+decides nothing about answers.
 
 A window has no view, and an unknown status, when the host has no token, the
 server refuses the token (it expired, or the server's password was rotated),
@@ -783,7 +783,7 @@ detail:
 🔴 **A token is not scoped and cannot be revoked on its own** (upstream at
 `6ec5682`, docs/design/opencode.md). It reaches the whole opencode API. muster
 only ever reads with it, except the renewal's `POST /api/pair` and — on a
-host started with `-interactive -opencode-answer` — the answer to a permission
+`-interactive` host — the answer to a permission
 request or question you gave in muster (`POST …/permission/<id>/reply`,
 `POST …/form/<id>/reply`). To take muster's access away, rotate the opencode service
 password. That revokes every token, muster's and every other paired client's.

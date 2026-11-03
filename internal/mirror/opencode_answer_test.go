@@ -220,7 +220,7 @@ func (b *ocE2EBackend) OpenCodeSource() *mirrorhost.OpenCodeSource { return b.sr
 // The whole path with a REAL muster-mirror client and the fake opencode
 // server driven by the REAL frames: the request raised in opencode is on the
 // hub's window list at once, muster answers it, the server gets the reply —
-// and the window stops waiting. A host without -opencode-answer lists the ask
+// and the window stops waiting. A read-only host (not -interactive) lists the ask
 // all the same (muster notifies) and advertises no answer.
 func TestAnOpenCodeAskAnsweredEndToEnd(t *testing.T) {
 	for _, on := range []bool{true, false} {
@@ -236,7 +236,7 @@ func TestAnOpenCodeAskAnsweredEndToEnd(t *testing.T) {
 		rctx, stop := context.WithCancel(context.Background())
 		src := mirrorhost.NewOpenCodeSource(rctx, creds, "", log.New(io.Discard, "", 0))
 		b := &ocE2EBackend{fakeBackend: &fakeBackend{}, src: src}
-		c, err := mirrorhost.New(mirrorhost.Config{URL: r.srv.URL, Token: tok, Host: "on", Backend: b, Interactive: true, OpenCodeAnswer: on,
+		c, err := mirrorhost.New(mirrorhost.Config{URL: r.srv.URL, Token: tok, Host: "on", Backend: b, Interactive: on,
 			AllowHTTP: true, Refresh: time.Hour, Logger: log.New(io.Discard, "", 0)})
 		if err != nil {
 			t.Fatal(err)
@@ -277,7 +277,7 @@ func TestAnOpenCodeAskAnsweredEndToEnd(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			}
 			if rs := srv.Replies(); len(rs) != 0 {
-				t.Fatalf("a host without -opencode-answer replied: %+v", rs)
+				t.Fatalf("a read-only host replied: %+v", rs)
 			}
 			// Settled in the terminal: the window stops waiting all the same.
 			srv.EmitFrame(opencodetest.FixtureFrame("permission.replied", 0))
