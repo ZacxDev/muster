@@ -15,7 +15,7 @@ import (
 // in a scratch home with no credentials) sent on GET /api/event while a
 // session was given a question-tool form and a ruleset that asks, and each was
 // answered, rejected or cancelled through the API — its location directory
-// replaced with /home/user/proj, nothing else changed. Frames (FixtureFrames)
+// replaced with /srv/fixture, nothing else changed. Frames (FixtureFrames)
 // hands those frames to a test, which may substitute the ids; EmitFrame sends
 // one verbatim and keeps the pending lists in step with it, so the list and
 // reply routes agree with the stream as the real server's do:
