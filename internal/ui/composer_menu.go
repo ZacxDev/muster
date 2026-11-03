@@ -20,17 +20,16 @@ import (
 //     Without a database (Queue nil) or on a disabled composer there is no
 //     caret: Send is the whole control, as it always was.
 //
-//  2. THE `/` AND `:` MENU (composerMenuBox, composerMenuScript). Typing `/` at
-//     the start of the message, or after white space, lists the window's
-//     commands and skills — Claude Code's built-ins and what its host reports
-//     (user, plugin and the window's PROJECT .claude) — and `:` the operator's
-//     snippets, filtered by window.musterRank (internal/searchrank's browser
-//     copy, rankJS). Arrow keys move, Enter or Tab insert, Escape closes, a tap
-//     inserts. A command inserts "/name " for the rest to be typed; a snippet
-//     inserts its text, which stays editable before it is sent, and Ctrl+Z
+//  2. THE `/` MENU (composerMenuBox, composerMenuScript). Typing `/` at the
+//     start of the message, or after white space, lists the window's commands
+//     and skills — Claude Code's built-ins and what its host reports (user,
+//     plugin and the window's PROJECT .claude) — filtered by window.musterRank
+//     (internal/searchrank's browser copy, rankJS). Arrow keys move, Enter or
+//     Tab insert, Escape closes, a tap inserts. A command inserts "/name " for
+//     the rest to be typed, which stays editable before it is sent, and Ctrl+Z
 //     undoes the insertion. ENTER INSERTS ONLY WHAT IS PLAINLY BEING COMPLETED
 //     (an item moved to with the arrows, or one the typed word is a prefix of);
-//     any other Enter closes the menu and sends, so "thanks :D" is a message.
+//     any other Enter closes the menu and sends, so "see /etc" is a message.
 //
 //     🔴 THE RULE FOR WHEN IT OPENS IS CLAUDE CODE'S OWN, MEASURED, NOT GUESSED.
 //     In Claude Code 2.1.289 (a real pane, 2026-10-17): "/co" at the start of
@@ -188,7 +187,7 @@ func composerMenuSrc(v ComposerView) string {
 	return MirrorCompletePath + "?" + q.Encode()
 }
 
-// composerMenuBox is the `/` and `:` menu's place: a listbox over the
+// composerMenuBox is the `/` menu's place: a listbox over the
 // composer, hidden until a trigger is typed, and its note line.
 func composerMenuBox(src string) g.Node {
 	if src == "" {
@@ -202,14 +201,14 @@ func composerMenuBox(src string) g.Node {
 		Ul(
 			ID("mv-complete"),
 			g.Attr("role", "listbox"),
-			g.Attr("aria-label", "Commands, skills and snippets"),
+			g.Attr("aria-label", "Commands and skills"),
 			Class("min-h-0 flex-1 overflow-y-auto overscroll-contain py-1"),
 		),
 		P(ID("mv-complete-note"), g.Attr("hidden", ""), Class("border-t border-line px-3 py-1.5 text-[11px] text-muted")),
 	)
 }
 
-// composerMenuScript wires the `/` and `:` menu to #mv-input (see the file's
+// composerMenuScript wires the `/` menu to #mv-input (see the file's
 // comment for the rule and the layout). Its keys are taken in the CAPTURE phase
 // on the form, so an Enter or Tab that picks an item never reaches the
 // composer's own Enter-sends handler; Ctrl/Cmd+Enter is never taken — it sends,
@@ -247,14 +246,14 @@ func composerMenuScript(src string) g.Node {
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         loading = false;
-        data = d && d.commands ? d : { commands: [], snippets: [], note: 'The menu could not be loaded.' };
+        data = d && d.commands ? d : { commands: [], note: 'The menu could not be loaded.' };
         refresh();
-      }, function () { loading = false; data = { commands: [], snippets: [], note: 'The menu could not be loaded.' }; refresh(); });
+      }, function () { loading = false; data = { commands: [], note: 'The menu could not be loaded.' }; refresh(); });
   }
 
-  // tokenAt is the trigger word the caret ends, or null: '/' or ':' as the
-  // first character of the message or after white space, the caret at the end
-  // of the word, and (for '/') no second '/' in it.
+  // tokenAt is the trigger word the caret ends, or null: '/' as the first
+  // character of the message or after white space, the caret at the end of the
+  // word, and no second '/' in it.
   function tokenAt() {
     if (input.selectionStart !== input.selectionEnd) return null;
     var v = input.value, c = input.selectionStart;
@@ -262,7 +261,7 @@ func composerMenuScript(src string) g.Node {
     var i = c;
     while (i > 0 && !/\s/.test(v.charAt(i - 1))) i--;
     var k = v.charAt(i);
-    if (c - i < 1 || (k !== '/' && k !== ':')) return null;
+    if (c - i < 1 || k !== '/') return null;
     var q = v.slice(i + 1, c);
     if (k === '/' && q.indexOf('/') >= 0) return null;
     return { kind: k, start: i, end: c, q: q };
@@ -274,35 +273,24 @@ func composerMenuScript(src string) g.Node {
   var PATHY = /^(etc|tmp|usr|var|home|opt|bin|sbin|dev|proc|sys|nix|run|srv|mnt|root|lib|boot|media|private|users)$/i;
   function pathLike(q) { return PATHY.test(q) || q.indexOf('/') >= 0 || q.indexOf('.') >= 0; }
 
-  // prefixOf: q is a non-empty prefix of what item m is typed as — its name
-  // (folded, as musterRank compares) or its trigger after the ':' (exactly:
-  // espanso's triggers are case-sensitive, and ":D" is not ":dacq").
+  // prefixOf: q is a non-empty prefix of the command's name (folded, as
+  // musterRank compares).
   function prefixOf(m, q) {
-    if (!q) return false;
-    if (m.e) return window.musterRank(m.e.name, q) === 0;
-    return m.s.trigger.slice(1).indexOf(q) === 0;
+    if (!q || !m.e) return false;
+    return window.musterRank(m.e.name, q) === 0;
   }
 
   function matches(t) {
     var out = [];
-    if (t.kind === '/') {
-      var strict = pathLike(t.q);
-      (data.commands || []).forEach(function (e, n) {
-        var r = window.musterRank(e.name, t.q);
-        if (r >= 0 && (!strict || r === 0)) out.push({ e: e, r: r, n: n });
-      });
-      out.sort(function (a, b) {
-        return a.r - b.r || (t.q ? a.e.name.length - b.e.name.length : 0) ||
-          (SOURCE[a.e.source] - SOURCE[b.e.source]) || (a.e.name < b.e.name ? -1 : a.e.name > b.e.name ? 1 : 0);
-      });
-    } else {
-      // A snippet by its TRIGGER'S PREFIX alone, case and all (":e" ->
-      // ":eos"). Never by letters in order or by its label: ":D" and ":P" end
-      // ordinary sentences, and must not turn into somebody's prompt.
-      (data.snippets || []).forEach(function (s, n) {
-        if (s.trigger.slice(1).indexOf(t.q) === 0) out.push({ s: s, r: 0, n: n });
-      });
-    }
+    var strict = pathLike(t.q);
+    (data.commands || []).forEach(function (e, n) {
+      var r = window.musterRank(e.name, t.q);
+      if (r >= 0 && (!strict || r === 0)) out.push({ e: e, r: r, n: n });
+    });
+    out.sort(function (a, b) {
+      return a.r - b.r || (t.q ? a.e.name.length - b.e.name.length : 0) ||
+        (SOURCE[a.e.source] - SOURCE[b.e.source]) || (a.e.name < b.e.name ? -1 : a.e.name > b.e.name ? 1 : 0);
+    });
     return out.slice(0, MAX);
   }
 
@@ -354,12 +342,6 @@ func composerMenuScript(src string) g.Node {
         if (m.e.source !== 'builtin') row.appendChild(el('span', 'shrink-0 rounded bg-s2 px-1.5 text-[10px] text-muted', m.e.source));
         li.appendChild(row);
         if (m.e.description) li.appendChild(el('span', 'truncate text-xs text-muted', m.e.description));
-      } else {
-        li.setAttribute('data-trigger', m.s.trigger);
-        row.appendChild(el('span', 'shrink-0 font-mono text-sm text-fg', m.s.trigger));
-        if (m.s.label) row.appendChild(el('span', 'truncate text-xs text-fg2', m.s.label));
-        li.appendChild(row);
-        li.appendChild(el('span', 'truncate text-xs text-muted', m.s.body));
       }
       list.appendChild(li);
     });
@@ -379,7 +361,7 @@ func composerMenuScript(src string) g.Node {
       shown = found; active = 0; chosen = false;
       render(t, found);
     }
-    var msg = t.kind === '/' ? (data.note || '') : '';
+    var msg = data.note || '';
     note.textContent = msg; note.hidden = !msg;
     box.hidden = false;
     fit();
@@ -389,7 +371,7 @@ func composerMenuScript(src string) g.Node {
   function insert(i) {
     var m = shown[i], t = token;
     if (!m || !t) return;
-    var text = m.e ? '/' + m.e.name + ' ' : m.s.body;
+    var text = '/' + m.e.name + ' ';
     // As an EDIT, not an assignment: insertText goes on the textarea's undo
     // stack, so Ctrl+Z gives back what was typed. (setRangeText where the
     // browser has no insertText — undoable there only as far as it is.)
@@ -403,8 +385,7 @@ func composerMenuScript(src string) g.Node {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
     inserting = false;
-    // What was inserted is not typed: it must not reopen the menu (a snippet
-    // whose text ends in a ':word').
+    // What was inserted is not typed: it must not reopen the menu.
     var nt = tokenAt();
     dismissed = nt ? nt.start : -1;
     close();
@@ -432,13 +413,11 @@ func composerMenuScript(src string) g.Node {
     else if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); insert(active); }
     else if (e.key === 'Enter' && !e.shiftKey) {
       // 🔴 ENTER SENDS UNLESS THE PERSON IS PLAINLY COMPLETING: the highlighted
-      // item was moved to, or what is typed is a non-empty prefix of it (for a
-      // snippet, two characters at least — ":p" and ":o" are faces, not
-      // ":par"). Otherwise the menu closes and the message is SENT as typed:
-      // "thanks :D", "ok :P", "see /etc" are messages, not completions. Tab
-      // and a tap always insert.
+      // item was moved to, or what is typed is a non-empty prefix of it.
+      // Otherwise the menu closes and the message is SENT as typed: "see /etc"
+      // is a message, not a completion. Tab and a tap always insert.
       var m = shown[active];
-      if (m && (chosen || (prefixOf(m, token.q) && (m.e || token.q.length >= 2)))) {
+      if (m && (chosen || prefixOf(m, token.q))) {
         e.preventDefault(); e.stopPropagation(); insert(active);
       } else close();
     }

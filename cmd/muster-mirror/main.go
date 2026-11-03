@@ -107,7 +107,6 @@ const (
 	envAllowHTTP     = "MUSTER_MIRROR_ALLOW_HTTP"
 	envLabelsFile    = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir    = "MUSTER_MIRROR_PANE_MAP_DIR"
-	envSnippets      = "MUSTER_MIRROR_SNIPPETS_FILE"
 	envMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
 	envMCPSecret     = "MUSTER_MIRROR_MCP_SECRET_FILE"
 	// envWriteHookConfig: record this daemon's URL and token file for
@@ -179,7 +178,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
 	writeHook := fs.Bool("write-hook-config", envBool(envWriteHookConfig), "record this daemon's URL and token file (never the token) for `muster-mirror ask`, in "+defaultHookConfig+" ("+envHookConfig+"); for the host's managed service only — an ad-hoc daemon must not repoint the hook ("+envWriteHookConfig+")")
-	snippetsFile := fs.String("snippets-file", getenv(envSnippets), "JSON array of {\"trigger\", \"label\", \"body\"}: the prewritten messages muster's message bar offers after `:`; re-read when it changes; missing or invalid = none, never fatal (default "+mirrorhost.DefaultSnippetsFile()+"; "+envSnippets+")")
 	mcpListen := fs.String("mcp-listen", getenv(envMCPListen), "serve muster's attention and task tools to this host's Claude Code sessions as an MCP endpoint at http://<addr>/mcp — a LOOPBACK address only, e.g. 127.0.0.1:47823; each call needs the secret in -mcp-secret-file (Authorization: Bearer ${MUSTER_MIRROR_MCP_SECRET:-}) and names its pane and tmux server with X-Muster-Pane: ${TMUX_PANE:-} and X-Muster-Tmux: ${TMUX:-}; empty = off ("+envMCPListen+")")
 	mcpSecretFile := fs.String("mcp-secret-file", or(getenv(envMCPSecret), mirrorhost.DefaultMCPSecretFile()), "the local MCP endpoint's secret, created (0600) when missing ("+envMCPSecret+")")
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
@@ -238,12 +236,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	if *catalog {
 		cwd, _ := os.Getwd()
-		c := (&mirrorhost.CatalogScanner{SnippetsFile: *snippetsFile}).Scan(cwd)
+		c := (&mirrorhost.CatalogScanner{}).Scan(cwd)
 		for _, e := range c.Commands {
 			fmt.Fprintf(stdout, "%s\t%s\t/%s\t%s\n", e.Source, e.Kind, e.Name, e.Description)
-		}
-		for _, sn := range c.Snippets {
-			fmt.Fprintf(stdout, "snippet\t%s\t%s\n", sn.Trigger, sn.Label)
 		}
 		if c.Truncated {
 			fmt.Fprintln(stdout, "# truncated to the wire's bounds")
@@ -331,7 +326,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
 		NoWork:        e2eNoWork != nil && e2eNoWork(),
-		SnippetsFile:  *snippetsFile,
 		Refresh:       refreshOverride(),
 	})
 	if err != nil {

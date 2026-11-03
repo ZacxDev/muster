@@ -398,8 +398,7 @@ func (s *Service) ScrollWindow(ctx context.Context, host, session, window string
 
 // CatalogWindow is the composer menu's catalog of one window of one of the
 // viewing principal's host sessions (window == "" is the session's active
-// window): its commands, skills and the host's snippets, as the host reports
-// them. See Hub.CatalogWindow. No step-up: it reads names and descriptions,
+// window): its commands and skills, as the host reports them. See Hub.CatalogWindow. No step-up: it reads names and descriptions,
 // and types nothing.
 func (s *Service) CatalogWindow(ctx context.Context, host, session, window string) (Catalog, error) {
 	o, err := owner(ctx)

@@ -20,7 +20,7 @@ import (
 
 // THE COMPOSER MENU'S CATALOG, read on this host (the wire half is
 // internal/mirror/catalog.go): for one window, the Claude Code commands and
-// skills its pane can run, and the operator's agent-prompt snippets.
+// skills its pane can run.
 //
 // WHERE EACH COMES FROM — the places Claude Code itself reads them:
 //
@@ -36,8 +36,6 @@ import (
 //     an enabledPlugins setting turns on (<config>/settings.json, or the
 //     project's .claude/settings.json, or its settings(.local).json): its commands/*.md
 //     and skills/*/SKILL.md, named "<plugin>:<name>" as Claude Code names them;
-//   - SNIPPETS: SnippetsFile, a JSON array of {trigger, label, body} the
-//     operator's dotfiles write (DefaultSnippetsFile says where and why).
 //
 // A name and a description come from the file's YAML front matter (`name:`,
 // `description:`); a command with no description is described by its first
@@ -50,8 +48,8 @@ import (
 // the operator edits is picked up on the next request — no restart, no watch.
 //
 // 🔴 NOTHING HERE FAILS THE REQUEST. A directory that does not exist or cannot
-// be read, a file that does not parse, a snippets file that is missing: each
-// contributes nothing, and the rest is still answered. Every count and size is
+// be read, a file that does not parse: each contributes nothing, and the rest
+// is still answered. Every count and size is
 // bounded — per directory here, and for the whole answer by
 // mirror.NormalizeCatalog.
 
@@ -61,34 +59,12 @@ import (
 const (
 	maxCatalogFiles = 512
 	maxCatalogHead  = 64 << 10
-	// maxSnippetsFile bounds the snippets file.
-	maxSnippetsFile = 512 << 10
+	// maxConfigFile bounds one auxiliary config file (a plugin manifest, an
+	// enabledPlugins setting).
+	maxConfigFile = 512 << 10
 	// maxProjectDepth bounds the walk up from a window's working directory.
 	maxProjectDepth = 16
 )
-
-// DefaultSnippetsFile is where muster-mirror reads the operator's snippets when
-// MUSTER_MIRROR_SNIPPETS_FILE is unset: $XDG_CONFIG_HOME/muster-mirror/
-// snippets.json, else ~/.config/muster-mirror/snippets.json.
-//
-// WHY THERE: it is muster-mirror's own config namespace, so nothing else reads
-// it (an espanso match directory would be parsed by espanso; Claude Code's
-// config directory moves with $CLAUDE_CONFIG_DIR); it is where a home-manager
-// `xdg.configFile` writes, so the dotfiles that own the snippets place it
-// without touching this service's unit; and because it is re-read by
-// modification time, a dotfiles switch that changes it is picked up by the
-// running agent with no restart.
-func DefaultSnippetsFile() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(h, ".config")
-	}
-	return filepath.Join(base, "muster-mirror", "snippets.json")
-}
 
 // CatalogScanner reads catalogs. Its zero value reads the real locations; a
 // test points each at a fixture. Safe for concurrent use.
@@ -98,13 +74,9 @@ type CatalogScanner struct {
 	Config string
 	// Home is the user's home directory, where the project walk stops ("" =
 	// os.UserHomeDir).
-	Home string
-	// SnippetsFile is the snippets JSON ("" = DefaultSnippetsFile; "-" = none).
-	SnippetsFile string
-
+	Home  string
 	mu    sync.Mutex
 	files map[string]cachedEntry
-	snip  cachedSnippets
 }
 
 // cachedEntry is one parsed command or skill file, valid while the file's
@@ -113,13 +85,6 @@ type cachedEntry struct {
 	mod  time.Time
 	size int64
 	head entryHead
-}
-
-type cachedSnippets struct {
-	path string
-	mod  time.Time
-	size int64
-	list []mirror.Snippet
 }
 
 // entryHead is what a command or skill file says about itself.
@@ -148,18 +113,8 @@ func (s *CatalogScanner) homeDir() string {
 	return h
 }
 
-func (s *CatalogScanner) snippetsFile() string {
-	switch s.SnippetsFile {
-	case "":
-		return DefaultSnippetsFile()
-	case "-":
-		return ""
-	}
-	return s.SnippetsFile
-}
-
 // Scan is the catalog for a window whose pane runs in cwd ("" = unknown: the
-// user's, the plugins' and the snippets alone), normalised for the wire.
+// user's and the plugins' alone), normalised for the wire.
 func (s *CatalogScanner) Scan(cwd string) mirror.Catalog {
 	var cmds []mirror.CatalogEntry
 	projects := s.projectDirs(cwd)
@@ -178,7 +133,7 @@ func (s *CatalogScanner) Scan(cwd string) mirror.Catalog {
 		cmds = append(cmds, s.commands(filepath.Join(pl.path, "commands"), pl.name, mirror.SourcePlugin, allow)...)
 		cmds = append(cmds, s.skills(filepath.Join(pl.path, "skills"), pl.name, mirror.SourcePlugin, allow)...)
 	}
-	return mirror.NormalizeCatalog(mirror.Catalog{Commands: cmds, Snippets: s.snippets()})
+	return mirror.NormalizeCatalog(mirror.Catalog{Commands: cmds})
 }
 
 // projectDirs is cwd and the directories above it whose .claude is a
@@ -501,7 +456,7 @@ type installedPlugins struct {
 // plugins is every plugin installed for the user (or for one of projects) and
 // turned on by an enabledPlugins setting, sorted by name.
 func (s *CatalogScanner) plugins(cfg string, projects []string) []plugin {
-	b, err := readBounded(filepath.Join(cfg, "plugins", "installed_plugins.json"), maxSnippetsFile)
+	b, err := readBounded(filepath.Join(cfg, "plugins", "installed_plugins.json"), maxConfigFile)
 	if err != nil {
 		return nil
 	}
@@ -515,7 +470,7 @@ func (s *CatalogScanner) plugins(cfg string, projects []string) []plugin {
 		settings = append(settings, filepath.Join(p, ".claude", "settings.json"), filepath.Join(p, ".claude", "settings"+".local.json"))
 	}
 	for _, f := range settings {
-		b, err := readBounded(f, maxSnippetsFile)
+		b, err := readBounded(f, maxConfigFile)
 		if err != nil {
 			continue
 		}
@@ -587,46 +542,9 @@ func readBounded(path string, max int64) ([]byte, error) {
 	return b, nil
 }
 
-// snippets is the snippets file's entries, from the cache when it has not
-// changed; none when it is missing, too large or not a JSON array of
-// {trigger, label, body}.
-func (s *CatalogScanner) snippets() []mirror.Snippet {
-	path := s.snippetsFile()
-	if path == "" {
-		return nil
-	}
-	// Keyed on where the file RESOLVES, for head's reason: home-manager links
-	// it into /nix/store, where mtime is always 1970.
-	if r, err := filepath.EvalSymlinks(path); err == nil {
-		path = r
-	}
-	st, err := os.Stat(path)
-	if err != nil || !st.Mode().IsRegular() {
-		return nil
-	}
-	s.mu.Lock()
-	c := s.snip
-	s.mu.Unlock()
-	if c.path == path && c.mod.Equal(st.ModTime()) && c.size == st.Size() {
-		return c.list
-	}
-	b, err := readBounded(path, maxSnippetsFile)
-	if err != nil {
-		return nil
-	}
-	var list []mirror.Snippet
-	if json.Unmarshal(b, &list) != nil {
-		list = nil
-	}
-	s.mu.Lock()
-	s.snip = cachedSnippets{path: path, mod: st.ModTime(), size: st.Size(), list: list}
-	s.mu.Unlock()
-	return list
-}
-
 // CwdResolver is a Backend that can say where a window's pane runs: what the
 // catalog's PROJECT commands and skills are found from. Tmux is one; a backend
-// that is not gets the user's, the plugins' and the snippets alone.
+// that is not gets the user's and the plugins' alone.
 type CwdResolver interface {
 	// WindowCwd is the working directory of window's active pane in session —
 	// of its Claude Code process when the pane runs one — or an error.
