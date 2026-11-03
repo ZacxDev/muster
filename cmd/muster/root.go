@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // rootDefaultTimeout is --timeout's default.
@@ -52,6 +54,12 @@ type app struct {
 	flagToken   string
 	flagEnvFile string
 	flagTimeout time.Duration
+	// flagTenant is --tenant (tenant.go).
+	flagTenant string
+	// envFileFlag is --env-file's flag, so selection can tell "given" from
+	// "defaulted" (--env-file means "this file, not a tenant"). Nil in apps
+	// built without newRootCmd; envFileChanged falls back then.
+	envFileFlag *pflag.Flag
 
 	client *client
 
@@ -78,17 +86,29 @@ func (a *app) api() (*client, error) {
 	if a.client != nil {
 		return a.client, nil
 	}
-	envFile := expandHome(a.flagEnvFile, a.homeDir)
-	vals, err := parseEnvFile(envFile)
+	// 🔴 On the zero-touch path (tenant.go) this is exactly the resolution the
+	// CLI had before tenants: the --env-file file, then resolveConfig.
+	sel, vals, err := a.loadSelected()
 	if err != nil {
-		return nil, wrapf(exitUsage, err, "reading %s", envFile)
+		return nil, err
 	}
-	cfg, err := resolveConfig(a.flagEnvFile, vals, a.getenv, a.flagAPIURL, a.flagToken)
+	cfg, err := resolveSelected(sel, vals, a.getenv, a.flagAPIURL, a.flagToken)
 	if err != nil {
 		return nil, err
 	}
 	c := newClient(cfg, a.newHTTP(a.flagTimeout), a.stderr)
 	c.progName = a.progName
+	if note := tenantNote(sel, cfg.apiURL); note != "" {
+		// With more than one tenant, errors and the skew note name it, and an
+		// IMPLICIT choice (the current file) is announced: stderr only, so
+		// stdout stays JSON. An explicit --tenant / MUSTER_TENANT is not
+		// echoed back; the caller already said which.
+		c.tenantNote = note
+		c.envFile = sel.envFile
+		if sel.source == "file" {
+			fmt.Fprintln(a.stderr, note)
+		}
+	}
 	a.client = c
 	return a.client, nil
 }
@@ -121,6 +141,9 @@ Config, lowest to highest precedence:
 The token is read from ` + envToken + ` (or its older name ` + envTokenAlias + `, which
 ` + envToken + ` beats within one source). It is never accepted as a positional
 argument (argv is world-readable via /proc) and is never printed.
+
+Several servers: see ` + "`tenant --help`" + `. With any tenant configured, a URL
+override and a token override are accepted only as a pair.
 
 TWO COMMAND FAMILIES REACH TASKS, AND THEY ARE NOT ALIASES.
   ` + "`task …`" + `        takes an explicit task id and attributes writes from the
@@ -162,7 +185,9 @@ func newRootCmd(a *app) *cobra.Command {
 		"personal API token or hook token (default from "+envToken+"; prefer the env file — flags are visible in ps)")
 	root.PersistentFlags().StringVar(&a.flagEnvFile, "env-file", defaultEnvFile, "KEY=VALUE config file")
 	root.PersistentFlags().DurationVar(&a.flagTimeout, "timeout", rootDefaultTimeout, "per-request timeout")
+	root.PersistentFlags().StringVar(&a.flagTenant, "tenant", "", "tenant to use (default from "+envTenant+", then ~/.muster/current; see `tenant`)")
+	a.envFileFlag = root.PersistentFlags().Lookup("env-file")
 
-	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a), newDoctorCmd(a))
+	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a), newDoctorCmd(a), newTenantCmd(a))
 	return root
 }

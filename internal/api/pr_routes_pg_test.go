@@ -257,6 +257,32 @@ func TestAReviewMusterDoesNotRouteGoesToTheChiefUnchanged(t *testing.T) {
 	}
 }
 
+// TestAReviewThroughClankMailIsNeverPRMail is an INVARIANT GUARD: PR-review
+// mail is agent mail only. A clankmail message from the listed sender,
+// verified, with a matching body, for a recorded author, is NOT routed as a
+// review and its turn names no author; the same mail through agent mail, in
+// the same fixture, is routed (the positive control).
+func TestAReviewThroughClankMailIsNeverPRMail(t *testing.T) {
+	f := newPRFixture(t)
+	f.authored(t, f.asOwner, routeSID, prCreated())
+	_, clank := f.newPlugin(t, "clankmail")
+	m, created, err := f.plugins.Submit(f.asOwner, clank.ID, plugins.MessageIn{ExternalID: "pr-clank-1", Sender: prSender,
+		Subject: "review: Gizmo route", Body: reviewBody(fullFields()), SenderVerified: true})
+	if err != nil || !created {
+		t.Fatalf("submit: %v %v", created, err)
+	}
+	f.dispatch(t, m)
+	if rs := f.routesOf(t, m); len(rs) != 0 || f.turns.count() != 1 {
+		t.Fatalf("clankmail: %d routes, %d chief turns; want 0 and 1", len(rs), f.turns.count())
+	}
+	if turn := f.lastTurn(); strings.Contains(turn, plugins.AuthorHeader) {
+		t.Fatalf("a clankmail review's turn names an author:\n%s", turn)
+	}
+	if rs := f.routesOf(t, f.review(t, "pr-clank-control", prSender, true, reviewBody(fullFields()))); len(rs) != 1 {
+		t.Fatalf("control (agent mail): %d routes", len(rs))
+	}
+}
+
 // --- the hook's report (POST /api/pr-sessions) ---------------------------------
 
 // report POSTs body to the report route with token tok (the owner's personal

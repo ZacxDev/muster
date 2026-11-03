@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // muster's MCP server: the connector store's tools for agents, over MCP's
@@ -30,9 +31,9 @@ import (
 // with a refusal's current_definition (mcp_help.go): those are about the
 // served definitions, so they live with the transport.
 
-// mcpProtocolVersions are the protocol revisions this server answers. A client
-// asking for one gets it back; any other gets the newest.
-var mcpProtocolVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
+// The protocol revisions this server answers are mirror.MCPProtocolVersions,
+// shared with a host's local MCP endpoint, which answers `initialize` itself
+// for a caller outside its tmux server.
 
 type mcpRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -177,12 +178,7 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 			ProtocolVersion string `json:"protocolVersion"`
 		}
 		_ = json.Unmarshal(req.Params, &p)
-		version := mcpProtocolVersions[0]
-		for _, v := range mcpProtocolVersions {
-			if v == p.ProtocolVersion {
-				version = v
-			}
-		}
+		version := mirror.NegotiateMCPVersion(p.ProtocolVersion)
 		s.writeMCP(w, req.ID, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},

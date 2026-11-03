@@ -11,7 +11,8 @@ func TestTheFleetReportSendersAreThePRListsGrammar(t *testing.T) {
 	if err != nil || len(s) != 1 || !s.Allows(AgentMailPlugin, "standup-desk/report-ask", true) {
 		t.Fatalf("got %v, %v", s, err)
 	}
-	if s.Allows(AgentMailPlugin, "standup-desk/report-ask", false) || s.Allows("discord-dm", "standup-desk/report-ask", true) {
+	if s.Allows(AgentMailPlugin, "standup-desk/report-ask", false) || s.Allows("discord-dm", "standup-desk/report-ask", true) ||
+		s.Allows("clankmail", "standup-desk/report-ask", true) {
 		t.Fatal("an unverified sender, or another plugin's, is allowed")
 	}
 	for _, bad := range []string{"standup-desk", "standup-desk/*", "Standup-Desk/report-ask", "1:agent-mail:standup-desk/report-ask"} {

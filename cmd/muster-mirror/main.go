@@ -186,7 +186,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes|opencode <pane> <state> <session id or -> <source> for a Hermes or opencode one, then label=<label>)")
 	hermesSend := fs.Bool("hermes-send", envBool(envHermesSend), "with -interactive: let muster SEND to Hermes windows, through the gated send (screen check, Escapes, a database-confirmed submit; docs/design/hermes.md). OFF by default. Enable it on a host only after `make test-livehermes` is green against its Hermes. The host reads display.vim_mode from the Hermes home's config.yaml and sends nothing while it is on, or unreadable ("+envHermesSend+")")
 	hermesAnswer := fs.Bool("hermes-answer", envBool(envHermesAns), "with -interactive: let muster ANSWER a Hermes approval (once or deny) through Hermes's gateway viewer, which the host attaches only to a session waiting on an approval (docs/design/hermes.md, Phase 4). OFF by default: answering \"once\" lets the command run. Never a key into the pane; a sudo prompt and a clarify are answered in the terminal ("+envHermesAns+")")
-	resumeSpawn := fs.Bool("resume-spawn", envBool(envResumeSpawn), "with -interactive: let muster RESUME an ended Claude Code session on this host — a new detached tmux window running `<-resume-claude> --resume <session id>` in the working directory its transcript records, when agent mail arrives for it (muster's MUSTER_MAIL_RESUME_ALLOW decides whose mail may). OFF by default: it starts a process here. Refused for a session running here already, a transcript this host does not hold, or a directory that is gone; at most one resume per session per 10 minutes and 6 an hour ("+envResumeSpawn+")")
+	resumeSpawn := fs.Bool("resume-spawn", envBool(envResumeSpawn), "with -interactive: let muster RESUME an ended Claude Code session on this host — a new detached tmux window running `<-resume-claude> --resume <session id>` in the working directory its transcript records, when agent mail or ClankMail arrives for it (muster's MUSTER_MAIL_RESUME_ALLOW decides whose mail may). OFF by default: it starts a process here. Refused for a session running here already, a transcript this host does not hold, or a directory that is gone; at most one resume per session per 10 minutes and 6 an hour ("+envResumeSpawn+")")
 	resumeSession := fs.String("resume-session", or(getenv(envResumeSession), mirrorhost.DefaultResumeSession), "the tmux session resumed windows start in, created when absent ("+envResumeSession+")")
 	resumeClaude := fs.String("resume-claude", or(getenv(envResumeClaude), mirrorhost.DefaultResumeClaude), "the Claude Code binary a resume runs; a bare name is looked up on the tmux SERVER's PATH, so an absolute path is safer ("+envResumeClaude+")")
 	listOpenCode := fs.Bool("opencode", false, "with -list: diagnose this host's opencode windows — the opencode token (by fingerprint) and whether the server accepts it, and per window its TUI, pane title, the session the title matched and why it has no rendered view")
@@ -194,6 +194,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
 	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
+	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -219,6 +220,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	ocCreds, ocWhy := (*opencodehost.Credentials)(nil), "this is a browser-test build"
 	if e2eBackend == nil {
 		ocCreds, ocWhy = openCodeCredentials(*openCodeTokenFile)
+		if ocCreds == nil && *openCodeReadOnly {
+			// A reader keeps watching for the file (opencode.go).
+			ocCreds = openCodePending(*openCodeTokenFile)
+		}
 	}
 	backend := withOpenCode(newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir)),
 		mirrorhost.NewOpenCodeSource(ctx, ocCreds, ocWhy, logger))
@@ -339,7 +344,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// host mirrors without it — mirroring is the job this process exists for.
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
-		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow}
+		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision}
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)
@@ -381,6 +386,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// Record where muster is for `muster-mirror ask` (hookconfig.go), whose
 	// Claude Code hook does not inherit this service's environment — only when
 	// told to (the managed service), and never in a browser-test build.
+	//
+	// Each record names the tmux server this daemon mirrors, DERIVED from its
+	// flags (tmuxsocket.go) — the server may not exist yet — so that, with one
+	// daemon per muster server, the hook picks the record of the caller's
+	// tmux server (hookconfig.go). recordHookConfig refuses to let a daemon
+	// that is not tenant default's own overwrite the legacy record when it
+	// names another tmux server, and to write a per-tenant record
+	// without a token file; each refusal is logged and never fatal.
 	if *writeHook && e2eBackend == nil {
 		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
 		if abs, err := filepath.Abs(*hermesStatusDir); err == nil {
@@ -391,8 +404,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 				hc.TokenFile = abs
 			}
 		}
-		if p := hookConfigPath(getenv); writeHookConfig(p, hc) != nil {
-			logger.Printf("muster-mirror: could not record %s for `muster-mirror ask` (the hook then needs -url)", p)
+		p := hookConfigPath(getenv)
+		sock, err := tmuxSocketPath(*socket, *socketPath, getenv, os.Getuid())
+		if err == nil {
+			hc.TmuxSocket = sock
+			err = recordHookConfig(p, hc, isDefaultDaemon(*socket, *socketPath, getenv))
+		}
+		if err != nil {
+			logger.Printf("muster-mirror: could not record %s for `muster-mirror ask` (the hook then fails open for this daemon's sessions): %v", p, err)
+		} else {
+			logger.Printf("muster-mirror: recorded %s for `muster-mirror ask`: tmux server %s", p, sock)
 		}
 	}
 	// A muster-mirror that was killed between creating a viewer session and
@@ -411,7 +432,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// The opencode token is renewed whether or not a window uses it, so a
 	// paired host stays paired (opencode.go). Never in a browser-test build.
 	if e2eBackend == nil {
-		startOpenCode(ctx, ocCreds, ocWhy, logger)
+		startOpenCode(ctx, ocCreds, ocWhy, *openCodeReadOnly, logger)
 	}
 	// Tracing (internal/telemetry): on only when an OTLP endpoint is set, as
 	// service muster-mirror with this host's name, so a view's open can be

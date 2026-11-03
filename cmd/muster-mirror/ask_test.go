@@ -144,7 +144,7 @@ func TestAskNeedsNoFlagsOnAHostWhoseMirrorRecordedItsConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	runAsk(nil, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
+	runAsk(nil, env(inDefaultTmux(t)), bytes.NewReader(askPayload(t)), &out, &errb)
 	registered(t, seen, "mmt_recorded", &out)
 }
 
@@ -167,7 +167,7 @@ func TestAskDefaultsToTheHostsTokenPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	runAsk(nil, env(nil), bytes.NewReader(askPayload(t)), &out, &bytes.Buffer{})
+	runAsk(nil, env(inDefaultTmux(t)), bytes.NewReader(askPayload(t)), &out, &bytes.Buffer{})
 	if len(seen) != 1 || seen[0] != "Bearer mmt_default" {
 		t.Fatalf("tokens sent %q, want the default path's", seen)
 	}
@@ -182,7 +182,7 @@ func TestAskSaysWhichTokenFileItCannotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	code := runAsk(nil, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
+	code := runAsk(nil, env(inDefaultTmux(t)), bytes.NewReader(askPayload(t)), &out, &errb)
 	want := filepath.Join(home, ".muster", "mirror-token")
 	if code != 0 || out.Len() != 0 || !strings.Contains(errb.String(), "cannot read the mirror token file") || !strings.Contains(errb.String(), "mirror-token") {
 		t.Fatalf("exit %d stdout %q stderr %q (want a line naming %s)", code, out.String(), errb.String(), want)

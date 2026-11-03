@@ -35,7 +35,7 @@ const unroutedPreviewRunes = 600
 func pluginMessageSettleToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: pluginMessageSettleToolName,
 		Description: "Record that a plugin message delivered to you needs nothing more — a notice, a status update, a " +
-			"newsletter, or one dealt with some other way — and why. A repliable agent-mail message you neither route to a " +
+			"newsletter, or one dealt with some other way — and why. A repliable agent-mail or ClankMail message you neither route to a " +
 			"session, nor answer with reply_draft, nor cite in task_create_gated, nor settle here is put in front of your owner as an ask " +
 			strconv.Itoa(int(plugins.UnroutedAskAfter/time.Minute)) + " minutes after it reached you; settling it after " +
 			"that withdraws the ask. Settling sends nothing to anyone. Your reason is recorded with the message and shown " +

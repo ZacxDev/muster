@@ -36,6 +36,19 @@ func LoadCredentials(path string) (*Credentials, error) {
 	return &Credentials{Path: path, tf: tf}, nil
 }
 
+// PendingCredentials is a READER's credential for a token file that cannot
+// be read yet (not paired, say): it holds no token (Loaded is false) until
+// Reload finds a usable file at path. Only for a muster-mirror that never
+// renews (-opencode-read-only): KeepReloaded then picks up the file tenant
+// default's daemon or `muster-mirror opencode-pair` writes later.
+func PendingCredentials(path string) *Credentials {
+	return &Credentials{Path: path}
+}
+
+// Loaded reports whether c holds a token: false only for a PendingCredentials
+// whose file has not yet been read.
+func (c *Credentials) Loaded() bool { return c.token() != "" }
+
 // EnvCredentials is a fixed token for the server at base (CheckLocal), never
 // renewed. 🔴 FOR TESTS AND THE BROWSER SUITE'S FAKE HOST (cmd/muster-mirror's
 // e2emirror build) ONLY: the daemon
@@ -187,6 +200,75 @@ func KeepRenewed(ctx context.Context, c *Credentials, logger *log.Logger, every 
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// ReloadEvery is how often KeepReloaded re-reads the token file.
+const ReloadEvery = time.Minute
+
+// Reload re-reads the token file and, when it holds a different token, uses
+// that one from now on. It never mints: it is how a READER of the file (a
+// muster-mirror run with -opencode-read-only) follows the renewals another
+// daemon writes. changed is false, with no error, when the file is unchanged.
+// A file that cannot be read leaves the current token in use.
+func (c *Credentials) Reload() (changed bool, err error) {
+	if c.Path == "" {
+		return false, ErrNotRenewable
+	}
+	tf, err := ReadTokenFile(c.Path)
+	if err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if tf == c.tf {
+		return false, nil
+	}
+	c.tf = tf
+	return true, nil
+}
+
+// KeepReloaded re-reads c's file (Reload) every `every` until ctx ends,
+// logging each change by fingerprint only. It never renews the token. A file
+// that appears after the start (c a PendingCredentials: the host was paired
+// since) is picked up the same way as a renewed or re-paired one. A failure is
+// logged when it first happens and again only when it changes, so a file that
+// does not exist yet is not logged every `every`.
+func KeepReloaded(ctx context.Context, c *Credentials, logger *log.Logger, every time.Duration) {
+	if c.Path == "" {
+		logger.Printf("muster-mirror: %v", ErrNotRenewable)
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	lastErr := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		old := c.token()
+		changed, err := c.Reload()
+		switch {
+		case err != nil:
+			if err.Error() != lastErr {
+				lastErr = err.Error()
+				if old == "" {
+					logger.Printf("muster-mirror: opencode: re-read %s (no token yet): %v", c.Path, err)
+				} else {
+					logger.Printf("muster-mirror: opencode: re-read %s (keeping token %s): %v", c.Path, Fingerprint(old), err)
+				}
+			}
+			continue
+		case changed && old == "":
+			logger.Printf("muster-mirror: opencode: %s appeared: token %s for %s, expires %s",
+				c.Path, Fingerprint(c.token()), c.URL(), c.Expires().UTC().Format(time.RFC3339))
+		case changed:
+			logger.Printf("muster-mirror: opencode: %s changed: token %s → %s, expires %s (renewed by another muster-mirror)",
+				c.Path, Fingerprint(old), Fingerprint(c.token()), c.Expires().UTC().Format(time.RFC3339))
+		}
+		lastErr = ""
 	}
 }
 

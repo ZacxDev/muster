@@ -78,6 +78,11 @@ task create
 task get
 task ls
 task status
+tenant add
+tenant current
+tenant list
+tenant remove
+tenant use
 token ls
 token revoke
 whoami"
@@ -87,7 +92,8 @@ whoami"
 # still fails until someone moves this literal deliberately. (tree_test.go pins
 # the identical number for the in-process tree; they are two reads of one
 # decision.)
-WANT_COUNT=23
+# 23 -> 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md).
+WANT_COUNT=28
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

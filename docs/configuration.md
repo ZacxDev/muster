@@ -84,10 +84,10 @@ See [auth.md](auth.md).
 | `MUSTER_CHIEF_NUDGE_ASK_THRESHOLD` | `0.9` | no | The stall classifier's line for the stall nudges: when P(needs_input) + P(asks_permission) for a stalled session's last message is at least this, the stall defaults to an attention ask ([chief-nudges.md](chief-nudges.md#the-stall-classifier)). A number above 0 and at most 2; anything else refuses to boot. |
 | `MUSTER_CHIEF_SESSION_RUNTIMES` | none | no | The runtimes a [chief](chief.md#sessions-on-more-than-one-runtime) chat session may be started on, comma-separated. The one runtime is `claude-code` (a Claude Code CLI of its own, with the Claude model picked for it; needs `claude-code` in `MUSTER_AGENT_KINDS` and a claude-code chief). Unset, there is no picker and every session is on the chief's own runtime. It does not turn the [default session](chief.md#sessions-on-more-than-one-runtime) on or off: plugin deliveries and `chief ask` go to the chief's default session either way. `gateway`, a runtime that has been removed, is ignored with one warning at boot. Any other unknown or repeated entry, or `claude-code` without that kind, refuses to boot. |
 | `MUSTER_ROUTE_RELAY_ALLOW` | none | no | The senders whose routed answers are sent **without** the owner's approval, per user and per plugin: `<user id>:<plugin name>:<address>` or `<user id>:<plugin name>:*@<domain>`, or for agent mail `<user id>:<plugin name>:<owner>/<handle>` or `<user id>:<plugin name>:<owner>/*`, comma-separated, ASCII addresses only ([grammar](plugins.md#routing-a-message-to-a-session)). An entry matches only a message that plugin delivered **and** marked `sender_verified` ([plugins](plugins.md#sender_verified)). Everyone else's answer waits for approval like any reply draft. A value that does not parse (including the older `<user id>:<address>` form) refuses to boot. |
-| `MUSTER_PR_MAIL_SENDERS` | none | no | The agent-mail senders, `<owner>/<handle>` comma-separated, whose mail is read as a **pull-request review** and routed to the mirrored session that created or pushed that pull request ([plugins](plugins.md#a-pull-request-review-mail)). Only a sender the agent-mail plugin marked `sender_verified` matches. Such a route's deadline is 4 hours, not the 30 minutes of every other route (fixed, not a setting). Needs `MUSTER_SESSION_ROUTING=1`. Who authored what is reported by the host's PostToolUse hook to `POST /api/pr-sessions`. Unset: off, and that route answers 404. A value that does not parse refuses to boot. |
-| `MUSTER_FLEET_REPORT_SENDERS` | none | no | The agent-mail senders, `<owner>/<handle>` comma-separated (`MUSTER_PR_MAIL_SENDERS`'s grammar), whose **fleet-report request** muster answers itself: a report of the owner's sessions over the requested window, filed as an already-approved reply on the request's thread ([plugins](plugins.md#a-fleet-report-request)). Only a sender the agent-mail plugin marked `sender_verified` matches. Needs `MUSTER_PLUGINS=1`, `MUSTER_FLEET_REPORT_PATHS` and session focus, which records each session's working directory from its transcript ([focus](focus.md#the-working-directory)); no permission router is needed. The request's `member` is not checked. Unset: off, and such mail goes to the chief. A value that does not parse, or a value with `MUSTER_FLEET_REPORT_PATHS` unset, refuses to boot. |
+| `MUSTER_PR_MAIL_SENDERS` | none | no | The agent-mail senders, `<owner>/<handle>` comma-separated, whose mail is read as a **pull-request review** and routed to the mirrored session that created or pushed that pull request ([plugins](plugins.md#a-pull-request-review-mail)). Only a sender the agent-mail plugin marked `sender_verified` matches — never a ClankMail message. Such a route's deadline is 4 hours, not the 30 minutes of every other route (fixed, not a setting). Needs `MUSTER_SESSION_ROUTING=1`. Who authored what is reported by the host's PostToolUse hook to `POST /api/pr-sessions`. Unset: off, and that route answers 404. A value that does not parse refuses to boot. |
+| `MUSTER_FLEET_REPORT_SENDERS` | none | no | The agent-mail senders, `<owner>/<handle>` comma-separated (`MUSTER_PR_MAIL_SENDERS`'s grammar), whose **fleet-report request** muster answers itself: a report of the owner's sessions over the requested window, filed as an already-approved reply on the request's thread ([plugins](plugins.md#a-fleet-report-request)). Only a sender the agent-mail plugin marked `sender_verified` matches — never a ClankMail message. Needs `MUSTER_PLUGINS=1`, `MUSTER_FLEET_REPORT_PATHS` and session focus, which records each session's working directory from its transcript ([focus](focus.md#the-working-directory)); no permission router is needed. The request's `member` is not checked. Unset: off, and such mail goes to the chief. A value that does not parse, or a value with `MUSTER_FLEET_REPORT_PATHS` unset, refuses to boot. |
 | `MUSTER_FLEET_REPORT_PATHS` | none | with `MUSTER_FLEET_REPORT_SENDERS` | The working-directory prefixes, absolute and comma-separated, whose sessions a [fleet-report](plugins.md#a-fleet-report-request) **reply** may describe. A session is described only when the working directory its transcript last named ([focus](focus.md#the-working-directory)) is a prefix or inside one, on a path-component boundary (`/srv/example-work` covers `/srv/example-work/app`, never `/srv/example-work-x`); a session whose directory is unknown (a dispatched agent, a Hermes window, a host that predates it, a focus not written since the upgrade) is left out and counted, and one outside is never mentioned. Unset with `MUSTER_FLEET_REPORT_SENDERS` set refuses to boot (fail closed). A relative path, the root alone, or a `.`/`..` component refuses to boot. The chief's `fleet_report` tool ignores it. |
-| `MUSTER_MAIL_RESUME_ALLOW` | none | no | The senders whose agent mail may **resume an ended session**: mail muster would route itself (a reply on a thread, a pull-request review) to a session no window shows asks that session's host to start `claude --resume` in a new tmux window, then routes the message there ([plugins](plugins.md#resuming-an-ended-session)). `MUSTER_ROUTE_RELAY_ALLOW`'s grammar: `<user id>:<plugin name>:<owner>/<handle>` or `<user id>:<plugin name>:<owner>/*`, comma-separated; only a sender the plugin marked `sender_verified` matches. Needs `MUSTER_SESSION_ROUTING=1` and a host running `muster-mirror -resume-spawn`. Unset: off, and such mail goes to the chief. A value that does not parse refuses to boot. |
+| `MUSTER_MAIL_RESUME_ALLOW` | none | no | The senders whose agent mail or ClankMail may **resume an ended session**: mail muster would route itself (a reply on a thread, a pull-request review) to a session no window shows asks that session's host to start `claude --resume` in a new tmux window, then routes the message there ([plugins](plugins.md#resuming-an-ended-session)). `MUSTER_ROUTE_RELAY_ALLOW`'s grammar: `<user id>:<plugin name>:<owner>/<handle>` or `<user id>:<plugin name>:<owner>/*`, comma-separated; only a sender the plugin marked `sender_verified` matches. Needs `MUSTER_SESSION_ROUTING=1` and a host running `muster-mirror -resume-spawn`. Unset: off, and such mail goes to the chief. A value that does not parse refuses to boot. |
 | `MUSTER_MAIL_RESUME_OFF` | off | no | `1`: the mail resume's kill switch. Nothing is resumed whatever `MUSTER_MAIL_RESUME_ALLOW` lists; the banner says so. |
 | `MUSTER_STT_URL` | none | with the token | The base URL (`http(s)://host[:port]`) of the speech-to-text service used for [dictation](dictation.md). |
 | `MUSTER_STT_TOKEN` | none | no | The bearer token for that service. Setting it turns dictation on. A token without a URL refuses to boot. |
@@ -254,7 +254,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_INTERACTIVE` | off | no | Allows typing and sending messages. The default is read-only. |
 | `MUSTER_MIRROR_HERMES_SEND` | off | no | With `MUSTER_MIRROR_INTERACTIVE`: lets muster send to Hermes windows, through the gated send (screen check, Escapes, a database-confirmed submit; [hermes.md](design/hermes.md)). Turn it on per host only after `make test-livehermes` is green against that host's Hermes. The host reads `display.vim_mode` from the Hermes home's `config.yaml` (that section alone) and sends nothing while it is on or unreadable; `-list -hermes` shows it. |
 | `MUSTER_MIRROR_HERMES_ANSWER` | off | no | With `MUSTER_MIRROR_INTERACTIVE`: lets muster answer a Hermes **approval** (`once` or `deny`) through Hermes's gateway viewer, which the host attaches only to a session waiting on an approval and only to the pinned Hermes (`-list -hermes` names its gateway). Answering `once` lets the command run. Never a key into the pane; sudo prompts and clarify questions are answered in the terminal. |
-| `MUSTER_MIRROR_RESUME_SPAWN` | off | no | With `MUSTER_MIRROR_INTERACTIVE`: lets muster **resume an ended Claude Code session** on this host, in a new detached tmux window running `claude --resume <id>` in the working directory its transcript records, when agent mail arrives for it ([plugins](plugins.md#resuming-an-ended-session)). It starts a process on the host. Refused for a session running here already, a transcript this host does not hold, or a directory that is gone; at most one resume per session per 10 minutes and 6 an hour. |
+| `MUSTER_MIRROR_RESUME_SPAWN` | off | no | With `MUSTER_MIRROR_INTERACTIVE`: lets muster **resume an ended Claude Code session** on this host, in a new detached tmux window running `claude --resume <id>` in the working directory its transcript records, when agent mail or ClankMail arrives for it ([plugins](plugins.md#resuming-an-ended-session)). It starts a process on the host. Refused for a session running here already, a transcript this host does not hold, or a directory that is gone; at most one resume per session per 10 minutes and 6 an hour. |
 | `MUSTER_MIRROR_RESUME_SESSION` | `muster-resume` | no | The tmux session resumed windows start in; created when absent. |
 | `MUSTER_MIRROR_RESUME_CLAUDE` | `claude` | no | The Claude Code binary a resume runs. A bare name is looked up on the tmux **server's** `PATH`, so an absolute path is safer. |
 | `MUSTER_MIRROR_TMUX_SOCKET` | tmux's default | no | Uses a different tmux server: `tmux -L <name>`. |
@@ -265,11 +265,14 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_MCP_SECRET_FILE` | `$XDG_CONFIG_HOME/muster-mirror/mcp-secret` | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
 | `MUSTER_MIRROR_ALLOW_HTTP` | off | no | Allows a plain-`http` muster URL. Use it for tests only. |
 | `MUSTER_MIRROR_WRITE_HOOK_CONFIG` | off | no | Set it on the host's managed `muster-mirror` service only (or pass `-write-hook-config`). It makes the daemon record its URL and token file path for `muster-mirror ask` when it starts. |
-| `MUSTER_MIRROR_HOOK_CONFIG` | `~/.muster/mirror-hook.json` | no | Where `muster-mirror` records its URL and token file path (never the token) for `muster-mirror ask`, and where the hook reads them. |
+| `MUSTER_MIRROR_HOOK_CONFIG` | `~/.muster/mirror-hook.json` | no | Where `muster-mirror` records its URL, token file path (never the token) and tmux server's socket path for `muster-mirror ask`. A `muster-mirror@<tenant>` unit sets it to `~/.muster/mirror-hook.d/<tenant>.json`; the hook reads every file there plus the default one, and uses the one whose tmux server is the session's ([mirroring.md](mirroring.md)). A daemon given `MUSTER_MIRROR_TMUX_SOCKET`/`MUSTER_MIRROR_TMUX_SOCKET_PATH` or an explicit `MUSTER_MIRROR_HOOK_CONFIG` refuses to overwrite the default record when it names another tmux server (the default daemon itself always rewrites it), and every daemon refuses to write any other record without a token file (`MUSTER_MIRROR_TOKEN_FILE`). Given to the hook itself, it reads that one record only. |
 | `MUSTER_MIRROR_HERMES_HOME` | `$HERMES_HOME`, else `~/.hermes` | no | The Hermes home a Hermes window's session is resolved from, read-only: only `state.db`, `terminal-sessions/tty-*` and `shell-hooks-allowlist.json`. Also where `muster-mirror hermes-allowlist` writes. See [mirroring.md](mirroring.md#hermes-windows). |
 | `HERMES_HOME` | `~/.hermes` | no | Hermes's own home variable, the default of `MUSTER_MIRROR_HERMES_HOME`. |
 | `MUSTER_MIRROR_HERMES_STATUS_DIR` | `~/.muster/hermes-status` | no | Where `muster-mirror hermes-hook` writes one status file per Hermes session (0700 directory, 0600 files), and where the daemon reads them. Recorded for the hook with `-write-hook-config`. |
 | `MUSTER_MIRROR_OPENCODE_TOKEN_FILE` | `~/.muster/opencode-token` | no | The opencode pair token, `{url, token}`, mode 0600: written by `muster-mirror opencode-pair`, read and renewed by the daemon. A file others can read, a symlink or a non-loopback url is refused. Missing = opencode windows have no rendered view. See [mirroring.md](mirroring.md#opencodes-token-muster-mirror-opencode-pair). |
+| `MUSTER_MIRROR_OPENCODE_READ_ONLY` | off | no | The daemon reads the opencode token file, and re-reads it every minute, but **never renews** it (`-opencode-read-only`). Every `muster-mirror@<tenant>` unit sets it, so on a machine with several muster servers exactly one daemon (tenant `default`'s) renews the token. |
+| `TMUX` | set by tmux | no | tmux's own variable in a pane: `<socket path>,<pid>,<session>`. `muster-mirror ask` compares its socket path with each hook record's to pick the one for this session's tmux server; with none set the question stays in the terminal. |
+| `TMUX_TMPDIR` | `/tmp` | no | tmux's own variable: where it keeps `tmux-<uid>/`. `muster-mirror` reads it, with `-tmux-socket`, to work out the socket path it records for the hook (a `TMUX_TMPDIR` that does not exist falls back to `/tmp`, as in tmux). Set it the same for the service as for the person. |
 | `XDG_STATE_HOME` | `~/.local/state` | no | Where `muster-mirror opencode-pair` looks for the opencode service's registration file (`opencode/service-prod.json`, then `opencode/service.json`). Read by the pairing step only. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | no | Claude Code's config directory, where `sessions/` and `projects/` are read from, and the user's `skills/`, `commands/` and enabled plugins the composer's `/` menu lists. For a window's transcript, a Claude Code process's OWN absolute `CLAUDE_CONFIG_DIR` (from its environment) wins over this one ([mirroring.md](mirroring.md#why-a-window-opens-in-the-terminal)). `ccd` reads it too. |
 
@@ -283,12 +286,18 @@ flags.
 |---|---|---|---|
 | `MUSTER_API_URL` | none | yes | The muster base URL. It has no default. |
 | `MUSTER_TOKEN` | none | yes | A personal API token (`mst_…`), or a shared machine secret. |
+| `MUSTER_TENANT` | none | no | Which tenant (muster server) to use, by name: `~/.muster/tenants/<name>.env`, or `default` for `~/.muster/muster.env`. Below `--tenant`, above `~/.muster/current`. Setting it puts the call under the pair rule ([cli.md](cli.md#several-servers-tenants)). |
 | `HOME` | the system's | no | Used to find `~/.muster/muster.env`. |
 | `CLAUDE_CODE_SESSION_ID` | none | no | Sent with task writes as the session that made them. |
 | `CLAUDE_SESSION_ID` | none | no | A fallback spelling of the variable above. |
 
 `MUSTER_HOOK_TOKEN` is also accepted as an older name for `MUSTER_TOKEN`. If both
 are set in the same place, `MUSTER_TOKEN` wins.
+
+With more than one server configured (any tenant file, a `current` file,
+`MUSTER_TENANT` or `--tenant`), the selected file supplies the URL and the token
+as a pair, and an override of only one of them is refused. See
+[cli.md](cli.md#several-servers-tenants).
 
 ## ccd (inside the claude-code agent image)
 
@@ -443,6 +452,77 @@ Slash commands typed into the pane are not tools and are not removed (a turn's
 prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
 this flag ignores the header and starts the CLI with every tool, and muster
 does not detect it: see [chief nudges, Rolling out](chief-nudges.md#rolling-out).
+
+## muster-clankmail (the ClankMail plugin)
+
+`muster-clankmail` is a [plugin](plugins.md) for ClankMail, a signed-messaging
+protocol for agents (`github.com/ZacxDev/clankmail`, `SPEC.md`). It holds one
+key, your chief's: your offline principal key claims a handle (`@<owner>`),
+grants the chief key the name `chief`, and the chief key enrolls
+(`muster-clankmail identity claim` / `identity grant`), so the chief's address is
+`@<owner>/chief`. It delivers direct messages from **pinned peers** to your
+chief (`sender: <owner>/chief`, `sender_verified: true`, `thread`: the root
+derived by following each message's signed `re`), and sends the replies you
+approve. It does not start conversations; that will come from muster, as
+compose drafts you approve in the browser. A message from anyone else lands in
+the hub's `requests` queue and is **never** posted to muster: `muster-clankmail requests` counts and lists them
+for you. The image ships it as `/muster-clankmail`; run one replica per state
+directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
+
+**What decides delivery is the signer, not the queue.** A pinned peer's message
+can land in `requests` too: one sent before the plugin's allow call reached the
+hub, or while the peer was disabled (and so off the allow list). Such a message
+goes through exactly the checks an inbox message does (the full signature
+verification, the pinned key, the peer's status) and is delivered once that
+peer is verified, exactly once, on the same derived thread. A message from a
+pinned peer that has not been checked yet (a fresh or lost `STATE_DIR`, a
+relabelled peer, a boot while the hub's handle route fails) is **held**, not
+dropped: the plugin keeps its id (never its text), checks its peers once
+before the first poll, and delivers the held message once the peer verifies.
+A held peer holds back only its own later messages (so they keep their
+order), never another peer's. A peer that is **disabled** (its chain did not
+verify, for example a hub serving a forged handle) is held the same way, in
+both queues: its messages are never recorded as final while it is merely
+disabled, a periodic check does not release them, and `peer verify`, when it
+re-enables the peer, releases them to muster in the order they were read, each
+exactly once. `show` and `/health` report the total as `held` and the count per
+peer label as `held_by_peer` (and on each `peers` row), and `peer verify` says
+how many held messages it is releasing and lists their ids and queues (the held
+list keeps no text). A request listed as a stranger's whose key you
+later add to `CLANKMAIL_PEERS` is held from the next start, and delivered once
+that peer verifies; removing a peer turns its held requests back into listed
+ones.
+
+⚠ **The admin socket is as private as the plugin's namespace.** The admin
+subcommands talk to `$STATE_DIR/admin.sock` from inside the plugin's
+container. Agent and chief pods carry no service-account token, so they cannot
+reach it; but anyone who holds `pods/exec` in the plugin's namespace can, and
+can read `CHIEF_KEY_FILE` too. That includes any session holding the
+operator's kubeconfig and, in the default provisioner layout
+([provisioner.md](provisioner.md#kubernetes-rbac): a ClusterRoleBinding with
+`pods/exec` in every namespace), muster-server's own service account. Run the
+plugin in a namespace of its own where only the operator holds `pods/exec`,
+with the least-privilege provisioner layout.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `MUSTER_URL` | none | yes | muster's base URL, where `/plugin/v1/*` is served. |
+| `PLUGIN_TOKEN_FILE` | none | yes | A file holding the `mpl_` plugin token minted on `/plugins`. |
+| `CHIEF_KEY_FILE` | none | yes | The chief's ClankMail key: one line, the base64url of a 32-byte Ed25519 seed (`muster-clankmail keygen --out FILE` writes it, mode `0600`). |
+| `HUB_URL` | none | yes | The ClankMail hub's base URL. |
+| `HUB_NAME` | none | yes | The hub's DNS name, exactly as the hub is configured: every request's auth and every identity object signs it. |
+| `CLANKMAIL_PEERS` | none | no | The peers whose messages reach your chief: `<owner>/<name>=k_…`, comma-separated, each pinning that agent's key (learned out of band). Every 10 minutes the plugin checks that the hub's `@<owner>` handle, grant and enroll still bind the pinned key to `<owner>/<name>`, and the first principal key that verified is remembered: a mismatch, or a different principal, **disables** the peer (its key is removed from the hub's allow list and its messages are not delivered) until you run `muster-clankmail peer verify [--accept-principal] <owner>/<name>`. Verified peers are put on the hub's allow list; a key you remove from this list is removed there too. |
+| `STATE_DIR` | none | yes | A writable directory (a volume): `state.json` (cursors, message records without bodies, the reply ledger), `state.lock`, and the admin socket `admin.sock` the admin subcommands use. |
+| `POLL_INTERVAL` | `15s` | no | How often the hub's inbox and requests queues are read. Range `1s`–`5m`. |
+| `LISTEN_ADDR` | `:8080` | no | Where `GET /health` is served (status, counts, peer states; never message text). |
+
+⚠ **Clocks.** The hub accepts a request's auth only within ±60 s of its own
+clock, and a message within ±300 s. Run the plugin on a host whose clock is
+synchronised (NTP); past 60 s of skew every inbox read fails with `E_AUTH`,
+which `/health` reports.
+
+⚠ **The hub can read direct messages.** ClankMail authenticates every message
+end to end, but does not encrypt it: send nothing secret.
 
 ## Test and e2e harness
 

@@ -13,7 +13,7 @@ creation), ties broken by the item's key:
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
-| Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
+| Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail or ClankMail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
 | Session waiting | A mirrored Claude Code **or Hermes** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password). Shown with **what it waits on** (below), its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway ([mirroring.md](mirroring.md)). It leaves the list when the session stops waiting. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once. | The open question (`internal/askq`), live; it leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
 | Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open the task**. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
@@ -349,9 +349,21 @@ too, through its host's `muster-mirror`:
    others), the host logs `the MCP endpoint is OFF … <reason>` — in its log
    only — and mirrors without it.
 2. The session names itself with its tmux pane and tmux server:
-   `X-Muster-Pane: ${TMUX_PANE:-}` and `X-Muster-Tmux: ${TMUX:-}`. The host
-   refuses any request from a server that is not the one it mirrors (pane ids
-   are per server).
+   `X-Muster-Pane: ${TMUX_PANE:-}` and `X-Muster-Tmux: ${TMUX:-}`. A request
+   from a tmux server that is not the one the host mirrors (pane ids are per
+   server), or from outside tmux, is **never forwarded**. The host answers it
+   itself as a working server with **no tools**: a valid `initialize`, 202 for
+   a notification, an empty `tools/list`, muster's own "method not found" for
+   anything else (Claude Code's first `server/discover` included), and a
+   refused `tools/call`. On a machine with [one `muster-mirror` per muster
+   server](../INSTALL.md#a-second-muster-server-on-this-machine-optional), each
+   session then gets tools from its own tmux server's server only, and the
+   others show as connected with no tools rather than as errors. (Measured on
+   Claude Code 2.1.289: an HTTP 400 there put the error into the model's
+   system prompt in every session and showed ✘ in `/mcp`; an empty tool list
+   shows "✔ Connected" in `claude mcp list` and only "⚠ no tools" in `/mcp`.)
+   This routes honest sessions; it is not a security boundary, since the
+   header is the caller's to set.
 3. **The session is bound at each tool CALL, not when Claude Code connects.**
    Claude Code connects as it starts, before its new session has written its
    first message — so before anything can say which session runs in the pane —
