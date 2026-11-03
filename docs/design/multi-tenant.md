@@ -33,8 +33,9 @@ The design in one line each:
 - **URL and credential travel as a pair.** A tenant's token is only ever sent
   to that tenant's origin. Today's resolver mixes sources field by field, which
   is harmless with one server and a credential leak with two. Once anything
-  selects a tenant (a flag, `MUSTER_TENANT` or a `current` file), a lone URL or
-  token override is refused.
+  selects a tenant (a flag, `MUSTER_TENANT` or a `current` file) or any tenant
+  file exists under `~/.muster/tenants/`, a lone URL or token override is
+  refused.
 - **CLI:** `muster tenant list|add|use|remove|current`, a `--tenant` flag and
   `MUSTER_TENANT`, credentials in 0600 files (no keyring), and the active
   tenant named on **stderr** so stdout stays pure JSON.
@@ -46,9 +47,9 @@ The design in one line each:
   an agent included, can read every tenant's credentials. So `-interactive` is
   only for a tenant trusted as much as the host itself, and one Unix user per
   tenant is the real isolation option. Small daemon changes: each daemon
-  records its tmux socket in a per-tenant hook record, the `AskUserQuestion`
-  hook picks its record by `$TMUX`, and the daemon gains a reader-only opencode
-  mode.
+  records its tmux socket in its hook record (a per-tenant one, or today's
+  legacy one), the `AskUserQuestion` hook picks the record whose socket matches
+  `$TMUX`, and the daemon gains a reader-only opencode mode.
 - **Android: one pairing per tenant.** A device credential, step-up key,
   UnifiedPush registration (`instance` = tenant id), notification channel group
   and WebView profile per tenant. Today's pairing becomes tenant `default` and
@@ -191,7 +192,7 @@ design: there is none.
 | WebView | the one origin loads in the WebView, other origins in a Custom Tab; the bridge and document-start script are restricted to that exact origin | `android:feature/shell/.../OriginPolicy.kt:13-19`, `android:feature/shell/.../BridgeMessage.kt:66` |
 | cookies | the **default** `CookieManager`; changing server (only while unpaired) calls `removeAllCookies` | `android:app/.../MainActivity.kt:501-506`, `android:app/.../shell/ShellLocalState.kt:54-60` |
 | cached | one shell snapshot `shell-snapshot.jpg` whose meta records its origin | `android:app/.../shell/ShellSnapshot.kt:45-49`, `android:app/.../MainActivity.kt:132` |
-| notifications | six fixed channels; a notification's tag is the server's tag, or `muster:<type>:<id>` | `android:feature/notify/.../Channels.kt:17-22`, `android:feature/notify/.../AndroidNotifier.kt:64`, `:194` |
+| notifications | six fixed channel ids, of which two (`asks`, `tasks`) are created today, with no channel group; a notification's tag is the server's tag, or `muster:<type>:<id>` | `android:feature/notify/.../Channels.kt:17-22`, `:35-45`, `android:feature/notify/.../AndroidNotifier.kt:64`, `:194` |
 | taps | `PendingIntent` to `MainActivity` with the tag in the data URI and a `path` extra; no server in it | `android:app/.../MusterApp.kt:93-99` |
 | signed actions | the step-up activity reads **the** pairing and signs against its origin | `android:feature/stepup/.../StepUpActivity.kt:110`, `:128`, `android:app/.../MusterApp.kt:55-60` |
 
@@ -273,17 +274,27 @@ that is the zero-code baseline for the CLI.
 
 `--env-file` stays as it is and means "this file, not a tenant": combining it
 with `--tenant` is refused (exit 2). Next to `MUSTER_TENANT` or a `current`
-file, `--env-file` wins (both are ignored for that call), but the pair rule
-below applies to it, since either one means the host holds several tenants.
+file, `--env-file` wins (both are ignored for that call). The pair rule below
+applies to it whenever the call is off the zero-touch path: a `MUSTER_TENANT`,
+a `current` file or a tenant file each means the host holds several tenants.
 
 Inside the selected tenant the **file is authoritative for the pair**:
 
-- **The zero-touch path** is: no `--tenant`, no `MUSTER_TENANT`, and **no
-  `current` file**. Only there is resolution **exactly today's**, field by
-  field (`cmd/muster/config.go:146-153`). Agent pods take it: they carry only
-  environment, injected by `internal/agentspec`, and have no `current` file.
+- **The zero-touch path** is: no `--tenant`, no `MUSTER_TENANT`, **no
+  `current` file, and no tenant files under `~/.muster/tenants/`**. Only there
+  is resolution **exactly today's**, field by field
+  (`cmd/muster/config.go:146-153`). Agent pods take it: they carry only
+  environment, injected by `internal/agentspec`, and have neither a `current`
+  file nor tenant files. The tenant-files condition is what makes the path
+  safe: without it, a host where `muster tenant add work` ran but `muster
+  tenant use` never did would resolve a lone `MUSTER_API_URL` for `work`
+  against `default`'s token in `~/.muster/muster.env`, and send it to `work`.
+  The same goes for `--env-file ~/.muster/tenants/work.env` with a
+  `MUSTER_HOOK_TOKEN` in the environment, which today beats the file's
+  `MUSTER_TOKEN` (`cmd/muster/config.go:148`, `:150`).
 - **Every other resolution applies the pair rule**, including a tenant chosen
-  by `current`, and `current` naming `default` too. The rule covers every
+  by `current`, `current` naming `default`, and `default` reached on a host
+  that has any tenant file. The rule covers every
   override of the file: `MUSTER_API_URL`, `MUSTER_TOKEN`, its old name
   `MUSTER_HOOK_TOKEN` (still read, `cmd/muster/config.go:55-59`, and the name
   agent pods and hook hosts are given, `internal/agentspec/agentspec.go:173`),
@@ -294,11 +305,17 @@ Inside the selected tenant the **file is authoritative for the pair**:
 - `current` is per-user state, so `muster tenant use` also re-targets every
   script on that host that runs the CLI without naming a tenant, background
   hook scripts included. Such a script should set `MUSTER_TENANT`. Under the
-  pair rule, a script that exports only a token is refused; its token is never
-  sent to the newly current tenant.
+  pair rule, a script that exports only a token is refused on any host with a
+  `current` file or a tenant file; its token is never sent to the newly current
+  tenant.
+- **The way back.** `muster tenant use --clear` deletes `current`, so selection
+  falls back to `default`. The host is back on the zero-touch path once no
+  tenant files remain either (`muster tenant remove` each one); until then the
+  pair rule still applies, since the host still holds several tenants.
 
-**Zero-touch migration:** nothing moves. A host with no `tenants/` directory and
-no `current` file behaves byte for byte as today. `muster tenant list` on it
+**Zero-touch migration:** nothing moves. A host with no tenant files under
+`~/.muster/tenants/` and no `current` file, where nothing sets `--tenant` or
+`MUSTER_TENANT`, behaves byte for byte as today. `muster tenant list` on it
 prints one row, `default`, read from `~/.muster/muster.env`.
 
 ### 2. The CLI
@@ -310,6 +327,7 @@ Commands, in the kubectl-context style:
 | `muster tenant list` | one JSON row per tenant: name, label, origin, current, instance id if pinned. Never a token |
 | `muster tenant current` | the current tenant and where that choice came from (flag, env, file, default) |
 | `muster tenant use <name>` | writes `~/.muster/current` atomically |
+| `muster tenant use --clear` | deletes `~/.muster/current`, so selection falls back to `default` (the zero-touch path also needs no tenant files: [the tenant model](#1-the-tenant-model)) |
 | `muster tenant add <name> --api-url <url>` | refuses a name that is `default` or already exists, and an origin another tenant already has (two tenants on one origin would make "which tenant" ambiguous); creates the 0600 file; reads the token from **stdin** (never argv, as today: `cmd/muster/config.go:62-65`); then calls `/health` and `/api/whoami` and prints the origin and principal it is about to pin, plus the instance id if the server serves one (optional phase 3) |
 | `muster tenant remove <name>` | deletes the file; refuses `default`; clears `current` if it pointed there |
 
@@ -331,8 +349,8 @@ implicitly (by `current`). An explicit `--tenant` or `MUSTER_TENANT` prints
 nothing: the caller already said which. When more than one tenant exists, the
 skew note, the auth error and the route-absent error name the tenant too, since
 "401 from which server?" is the first question an operator asks. With one
-tenant they stay as they are today, so the zero-touch path stays byte for byte
-the same.
+tenant they stay as they are today. The zero-touch path has no tenant files, so
+`default` is its only tenant, and it stays byte for byte the same.
 
 **Identity check on connect (only with optional phase 3).** The origin pin
 needs no check at connect time: the tenant file is the pair, so the token only
@@ -380,14 +398,44 @@ Each `%i/env` names its own `MUSTER_MIRROR_URL`, `MUSTER_MIRROR_TOKEN_FILE`,
 `MUSTER_MIRROR_MCP_SECRET_FILE`. The token must come from
 `MUSTER_MIRROR_TOKEN_FILE`, not `MUSTER_MIRROR_TOKEN`, because the hook record
 names the token file (see [the hook](#hook-secrets-and-the-askuserquestion-hook)).
-The unit itself sets the hook record's path, `MUSTER_MIRROR_WRITE_HOOK_CONFIG`
-and the opencode reader-only mode, so an env file copied from today's (which
-INSTALL.md writes with `MUSTER_MIRROR_WRITE_HOOK_CONFIG=1`, `INSTALL.md:708`)
-cannot repoint the legacy record. Today's `muster-mirror.service` stays as it
-is and **is** tenant `default`. On macOS the same thing is one launchd agent per
-tenant, label `io.github.zacxdev.muster-mirror.<tenant>`, with the same three
-variables in its plist. INSTALL.md's "second server" section refuses the
-tenant name `default` on both.
+
+The unit sets the hook record's path, `MUSTER_MIRROR_WRITE_HOOK_CONFIG` and the
+opencode reader-only mode, but an env file overrides the unit's `Environment=`,
+so the unit alone does not stop an env file from repointing the record. What
+does: today's env file sets neither the record path nor the reader-only mode
+(it sets only `MUSTER_MIRROR_WRITE_HOOK_CONFIG=1`, the value the unit sets
+anyway, `INSTALL.md:703-708`); and if an env file does point the record at the
+legacy path, the daemon's refusal backstops it
+([the hook](#hook-secrets-and-the-askuserquestion-hook)). A copied env file
+would also carry today's `MUSTER_MIRROR_INTERACTIVE` and `default`'s
+`MUSTER_MIRROR_TOKEN_FILE`, which the unit cannot override either. So
+INSTALL.md's "second server" section writes a **fresh** env file, never a copy,
+with `MUSTER_MIRROR_INTERACTIVE=0` unless the tenant is trusted as much as the
+host ([decision 9](#9-decisions-taken)).
+
+Today's `muster-mirror.service` stays as it is and **is** tenant `default`. On
+macOS the same thing is one launchd agent per tenant, label
+`io.github.zacxdev.muster-mirror.<tenant>`, with the same three variables in
+its plist. INSTALL.md's "second server" section refuses the tenant name
+`default` on both.
+
+**Measured on systemd 261** (its man pages, plus throwaway template units in
+the user manager):
+
+- `EnvironmentFile=` overrides `Environment=`, as `systemd.exec` says
+  ("Settings from these files override settings made with Environment="): an
+  env file setting `MUSTER_MIRROR_HOOK_CONFIG` to the legacy path beat the
+  unit's `%h/.muster/mirror-hook.d/%i.json`.
+- Specifiers expand in `Environment=` but not inside the env file: the unit's
+  value came out as the user's home plus `/.muster/mirror-hook.d/work.json`,
+  while `%h/x/%i` in the env file stayed literal. A transient
+  `systemd-run -p Environment=` does not expand specifiers either, so a
+  transient unit cannot test this; the test needs a real template unit.
+- `ExecCondition=` skipped instance `default` with `Result=success`, and
+  `Restart=always` with `RestartSec=1` gave `NRestarts=0`: a skipped condition
+  does not loop. `ExecCondition=` needs systemd 243 or later ("Added in version
+  243", `systemd.service`); older systemd ignores the key, so the refusal in
+  INSTALL.md's "second server" section is the real guard there.
 
 | | one process per tenant | one multi-server process |
 |---|---|---|
@@ -446,7 +494,10 @@ session-name filter, would be acceptable only for **read-only** tenants.
 
 "Mirror all of them to every tenant" stays possible (two daemons on one tmux
 server), but then both servers can see, and if interactive, type into, every
-session, and only one of them should run MCP.
+session, and only one of them should run MCP. It also turns the
+`AskUserQuestion` hook off for that tmux server: both daemons' records name the
+same socket, two records match, and the hook fails open, so every question
+stays in the terminal ([the hook](#hook-secrets-and-the-askuserquestion-hook)).
 
 #### The local MCP endpoint
 
@@ -476,10 +527,17 @@ tenant's endpoint. This is [to be measured before phase 2](#to-measure-before-ph
   (`cmd/muster-mirror/hookconfig.go:34-38`, `:53-67`, `main.go:388-403`). So the
   template unit sets the path to `~/.muster/mirror-hook.d/<tenant>.json` (see
   the unit above). Daemon changes:
-  - The record gains the **tmux socket path** the daemon mirrors.
-  - A daemon whose tmux server is not the default one refuses to write the
-    legacy path `~/.muster/mirror-hook.json`, and logs why. This catches an env
-    file that overrides the unit's path.
+  - **Every** record the daemon writes, the legacy
+    `~/.muster/mirror-hook.json` included, gains the **tmux socket path** the
+    daemon mirrors, taken from tmux's own `#{socket_path}`, which the daemon
+    already queries (`internal/mirrorhost/tmux.go:242-250`).
+  - A daemon refuses to overwrite a legacy record that records a **different**
+    socket, and logs why. This catches an env file that overrides the unit's
+    path, once the `default` daemon has written its socket into the legacy
+    record. So INSTALL.md upgrades and restarts today's unit before it enables
+    any template instance. A legacy record with no socket (written by an older
+    daemon) is overwritten as today, which keeps a single-daemon host on
+    `-tmux-socket` or `-tmux-socket-path` working after the upgrade.
   - A daemon refuses to write a record under `mirror-hook.d/` without a token
     file (its token came from `MUSTER_MIRROR_TOKEN`), and logs why: such a
     record would make the hook fall back to the default token file, which is
@@ -488,9 +546,21 @@ tenant's endpoint. This is [to be measured before phase 2](#to-measure-before-ph
   daemon's environment, so it reads every `~/.muster/mirror-hook.d/*.json` plus
   the legacy record, and compares the socket path in `$TMUX` (the part before
   the first comma):
-  - A per-tenant record matches when its recorded socket path equals that path.
-  - The legacy record has no socket path. It matches **only** when `$TMUX` names
-    the default tmux server's socket (`${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default`).
+  - Any record that records a socket path, per-tenant or legacy, matches when
+    that path equals the one in `$TMUX`. Both come from tmux, and tmux resolves
+    symlinks in the socket directory before it reports either one (measured,
+    see the next point), so they compare equal as strings.
+  - Only an **old** legacy record, with no socket path, falls back to the
+    default-server rule: it matches when `filepath.EvalSymlinks` of the path in
+    `$TMUX` equals `filepath.EvalSymlinks` of
+    `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default`. Comparing the literal path
+    would not work: with `TMUX_TMPDIR` pointing at a symlink, `$TMUX` and
+    `#{socket_path}` both showed the **resolved** directory (measured, tmux
+    3.7c on Linux). On macOS `/tmp` is a symlink to `/private/tmp`, so `$TMUX`
+    reads `/private/tmp/tmux-<uid>/default` there and a literal comparison
+    would never match, silently stopping every question from reaching the
+    phone on every macOS host (`INSTALL.md:154` supports Darwin). The macOS
+    case is inferred from the Linux measurement, not run on a Mac.
   - Anything else fails open (the question stays in the terminal), as every
     other failure does today: no `$TMUX`, no match, or more than one match.
   - A per-tenant record must name its `tokenFile`. The hook never applies
@@ -525,16 +595,21 @@ None to design: each tenant's server pushes its pastes down its own tunnel
 
 #### Mirror changes, in full
 
-1. The daemon's hook record: record the tmux socket path; refuse the legacy
-   path when not on the default tmux server; refuse a per-tenant record
-   without a token file ([the hook](#hook-secrets-and-the-askuserquestion-hook)).
-2. `ask`: choose the hook record by `$TMUX`, the legacy record only on the
-   default tmux server, fail open otherwise; never apply the default token file
-   to a per-tenant record.
+1. The daemon's hook record: record the tmux socket path (from
+   `#{socket_path}`) in every record, the legacy one included; refuse to
+   overwrite a legacy record that records a different socket; refuse a
+   per-tenant record without a token file
+   ([the hook](#hook-secrets-and-the-askuserquestion-hook)).
+2. `ask`: choose the hook record whose recorded socket matches `$TMUX`; an old
+   legacy record with no socket matches only the default tmux server, compared
+   after `filepath.EvalSymlinks` on both sides; fail open otherwise; never apply
+   the default token file to a per-tenant record.
 3. opencode: the reader-only flag `-opencode-read-only`
    (`MUSTER_MIRROR_OPENCODE_READ_ONLY`), so exactly one daemon renews the token.
-4. INSTALL.md: a "second server" section that writes the template unit,
-   refuses the tenant name `default`, and states the `-interactive` rule
+4. INSTALL.md: a "second server" section that upgrades and restarts today's
+   unit first (so the legacy record records its socket), writes the template
+   unit and a fresh env file per tenant (never a copy of today's), refuses the
+   tenant name `default`, and states the `-interactive` rule
    ([decision 9](#9-decisions-taken)).
 
 Refusing redirects on the tunnel and the MCP proxy is **not** in this list: it
@@ -595,9 +670,26 @@ is downgraded. Instead:
 - `device.sealed` stays a valid **v1** `DeviceRecord`: a copy of tenant
   `default`, rewritten whenever that tenant changes, and empty (unpaired) if
   that tenant is removed. A downgraded app reads it as today and keeps working
-  for that tenant; it ignores `tenants.sealed`. After a downgrade and a second
-  upgrade, the new app takes tenant `default`'s fields from `device.sealed`
-  where the two files differ, since the old app may have changed them.
+  for that tenant; it ignores `tenants.sealed`.
+- **Telling the old app's change from a torn write.** `tenants.sealed` records
+  a digest (SHA-256) of the `device.sealed` bytes the new app last wrote. A
+  change to tenant `default` writes `device.sealed` first, then
+  `tenants.sealed` with the new digest. At start:
+  - `device.sealed` matching the recorded digest: `tenants.sealed` is
+    authoritative.
+  - `device.sealed` differing from it: only then does it count as a change the
+    old app made (after a downgrade and a second upgrade), and the new app
+    takes tenant `default`'s fields from it. A kill between the two writes
+    lands here too, and that is the right answer: `device.sealed` already holds
+    the change (a rotated credential, say), so taking it keeps the change
+    rather than reverting it. Writing `tenants.sealed` first would get this
+    backwards.
+  - If that `default` now names an origin another tenant already has (the old
+    app re-paired it to that server), the new app refuses it: tenant `default`
+    becomes unpaired and the app says the old version paired it to a server
+    another tenant already holds, so the user can remove that device in that
+    server's Account → Devices. Two tenants never share an origin, which
+    pairing selection relies on ([pairings](#pairings-and-step-up)).
 
 **Migration:** on first start, with no `tenants.sealed`, the existing record
 becomes the single tenant, current, labelled by its host, with the id
@@ -610,9 +702,11 @@ added later gets a random id.
   (`android:app/.../push/MusterPushService.kt:52-56`). Its existing
   registration at the distributor keeps delivering, with no re-registration
   and without the app being opened.
-- Its six channels keep their legacy ids (`asks`, `conversations`, …,
+- Its channels keep their legacy ids (`asks`, `conversations`, …,
   `android:feature/notify/.../Channels.kt:17-22`), so the user's channel
-  settings survive. New tenants use `<tenant>.asks` and so on.
+  settings survive, and they move into its channel group
+  ([notifications](#notifications-taps-and-deep-links)). New tenants use
+  `<tenant>.asks` and so on.
 
 #### Pairings and step-up
 
@@ -651,12 +745,17 @@ added later gets a random id.
 
 #### Notifications, taps and deep links
 
-- **A channel group per tenant**, holding the six channels
-  (`android:feature/notify/.../Channels.kt:17-22`), ids `<tenant>.asks` and so
-  on, except tenant `default`, which keeps the legacy ids (see
-  [the model](#the-model)). The user can mute one tenant in system settings.
-  **UNVERIFIED:** whether an existing channel can be moved into a group after
-  it was created; if not, tenant `default`'s channels stay ungrouped.
+- **A channel group per tenant**, holding that tenant's channels, ids
+  `<tenant>.asks` and so on, except tenant `default`, which keeps the legacy
+  ids (see [the model](#the-model)). The user can mute one tenant in system
+  settings. Tenant `default`'s existing channels move into its group:
+  `NotificationChannel.setGroup()` is "Only modifiable before the channel is
+  submitted to createNotificationChannel(), unless the channel is not
+  currently part of a group", and today's channels have no group. Today the
+  app declares six channel ids (`android:feature/notify/.../Channels.kt:17-22`)
+  but creates only `asks` and `tasks`, with no `setGroup` call and no channel
+  group anywhere in the app (`Channels.kt:35-45`); the other four are created
+  by the phases that post to them.
 - **Tags are namespaced:** `<tenant>:<server tag>`. This removes the
   `attention-ask-41`-on-both-servers collision. A server's "withdraw" push
   (`android:feature/push/.../PushHandler.kt:36`) clears the **namespaced** tag
@@ -719,7 +818,7 @@ also shows **which** server is asking, by label.
 
 | invariant | how it holds |
 |---|---|
-| A credential is only ever sent to the origin it was minted for | CLI: the tenant file is the pair; off the zero-touch path (any `--tenant`, `MUSTER_TENANT` or `current` file), a lone URL or token override, `MUSTER_HOOK_TOKEN` included, is refused. Mirror: one process, one URL, one token; the hook picks its record by tmux server (the legacy record only on the default server, otherwise fail open), a per-tenant record always names its own token file, and "recorded token to recorded URL" holds. Android: each tenant's `DeviceApi` is built from that tenant's origin; buttons and taps carry the tenant. |
+| A credential is only ever sent to the origin it was minted for | CLI: the tenant file is the pair; off the zero-touch path (any `--tenant`, `MUSTER_TENANT`, `current` file or tenant file under `~/.muster/tenants/`), a lone URL or token override, `MUSTER_HOOK_TOKEN` included, is refused. On the zero-touch path the host has only `default`, so there is no other tenant's origin to send to. Mirror: one process, one URL, one token; the hook picks the record whose recorded socket matches `$TMUX` (an old legacy record with no socket only on the default server, compared after resolving symlinks; otherwise fail open), a per-tenant record always names its own token file, and "recorded token to recorded URL" holds. Android: each tenant's `DeviceApi` is built from that tenant's origin; buttons and taps carry the tenant. |
 | Redirects across origins are refused | CLI and Android already refuse every redirect (`cmd/muster/client.go:185`, `android:core/net/.../DeviceApi.kt:34`). The mirror's tunnel and MCP proxy follow them today (Go forwards the bearer to same-host and subdomain targets); that is fixed separately, before this design (branch `fix/mirror-refuse-redirects`), and this invariant depends on it. |
 | The pinned identity is verified on connect | Origin: always, by construction; this alone keeps a credential on its own server. Instance id (optional, phase 3 only): checked against `/health` by the CLI, and against `/api/device/config` by the app, when served (the mirror pins the origin only); a mismatch stops that tenant and says so. Without phase 3, nothing detects a different deployment behind the same origin. |
 | Nothing leaks between tenants in caches or logs | Separate files, processes, WebView profiles, snapshots and notification namespaces. Logs and traces name the tenant label, never a token. `muster tenant list` never prints a token. **Not against the same Unix user:** every tenant's files on a host belong to one user, so an interactive terminal or an agent on any tenant can read them all; isolating that needs one Unix user per tenant ([the mirror](#which-tenant-gets-a-hosts-sessions)). |
@@ -784,10 +883,13 @@ without other changes. Phases 1, 2 and 4 each work with or without phase 3.
   **no** request (a counting test server, positive control: the same call with
   the pair sends one), run for each of: a lone `MUSTER_API_URL`, a lone
   `MUSTER_TOKEN`, a lone `MUSTER_HOOK_TOKEN`, and a tenant chosen only by the
-  `current` file (both `work` and `default`); `--env-file` next to a `current`
-  file applying the pair rule; the default path resolving byte-identically to
-  today on fixtures with no `tenants/` directory and no `current` file, its
-  errors and skew note included; a 0644 tenant file refused; stdout
+  `current` file (both `work` and `default`); a lone `MUSTER_API_URL` with
+  `tenants/work.env` present and no `current` file sending no request;
+  `--env-file ~/.muster/tenants/work.env` with only `MUSTER_HOOK_TOKEN` in the
+  environment sending no request; `--env-file` next to a `current` file
+  applying the pair rule; `muster tenant use --clear` deleting `current`; the
+  default path resolving byte-identically to today on fixtures with no tenant
+  files and no `current` file, its errors and skew note included; a 0644 tenant file refused; stdout
   still parsing as JSON with the label on stderr; the verb ledger
   (`tests/verb-ledger.sh`) extended for the new verbs.
 - Rollback: delete `~/.muster/tenants/` and `~/.muster/current`; an older binary
@@ -811,15 +913,25 @@ without other changes. Phases 1, 2 and 4 each work with or without phase 3.
   question from a recorded server reaches one); the legacy record left
   byte-identical by a template instance whose env file was copied from today's,
   and by one whose env file also points `MUSTER_MIRROR_HOOK_CONFIG` at the
-  legacy path; a per-tenant daemon given only `MUSTER_MIRROR_TOKEN` writing
+  legacy path (refused because the legacy record records the default
+  server's socket); with `TMUX_TMPDIR` a symlink to a real directory, a
+  question from the default server matched by a new legacy record (recorded
+  socket) and by an old one with no socket (the `EvalSymlinks` fallback), and
+  reaching that server (positive control for the macOS `/tmp` →
+  `/private/tmp` case, which this Linux test stands in for); a single daemon
+  on `-tmux-socket` whose legacy record, rewritten with its socket, matches its
+  own sessions; two daemons on one tmux server making the hook fail open; a
+  per-tenant daemon given only `MUSTER_MIRROR_TOKEN` writing
   no record; a per-tenant record without a token file never reading the default
   token file; only tenant `default` renewing the opencode token; an MCP
   `initialize` from the wrong tmux server refused; one server killed while the
   other keeps mirroring.
 - Rollback: `systemctl --user disable --now muster-mirror@<tenant>` and delete
-  its record in `~/.muster/mirror-hook.d/`; the default unit never changed. The
-  hook then uses the legacy record for the default tmux server only, and fails
-  open for any other.
+  its record in `~/.muster/mirror-hook.d/`; the default unit's configuration
+  never changed. The hook then uses the legacy record for the socket it
+  records (or, for an old record with none, the default tmux server), and fails
+  open for any other. An older hook binary ignores the recorded socket and
+  reads the legacy record as today.
 
 **Phase 3: server instance identity (optional; operator to confirm keep or drop).**
 - Serves only one scenario: a different deployment behind the same origin
@@ -842,9 +954,14 @@ without other changes. Phases 1, 2 and 4 each work with or without phase 3.
   migration, a push to the existing instance `"default"` still arriving and
   drawing, with no re-registration and the app not opened (negative control: a
   push to an unknown instance dropped); the legacy channel ids and their
-  settings kept; a withdraw clearing both the namespaced and a pre-upgrade bare
+  settings kept after they move into tenant `default`'s group; a withdraw clearing both the namespaced and a pre-upgrade bare
   tag; `device.sealed` still opening under AAD v1 after a change to tenant
-  `default`, and an old build of the app reading it as paired; a push for
+  `default`, and an old build of the app reading it as paired; the app killed
+  between writing `device.sealed` and `tenants.sealed` during a change to
+  tenant `default` (a rotated credential), then restarted, keeping the new
+  credential and no other tenant changed (controls: a `device.sealed` changed
+  by an old build is taken; one whose digest matches changes nothing); a re-pair on an old build to another tenant's origin
+  refused on the next upgrade, leaving no two tenants on one origin; a push for
   instance B decrypting only under B and drawing only in B's group; equal server
   tags from two tenants producing two notifications; a button from tenant B
   reaching only B's test server (and A's server counting zero); removing one
