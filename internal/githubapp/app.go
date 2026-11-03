@@ -405,7 +405,7 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 // AccessRead and nothing else.
 func readRepo(caller connectors.Caller, target string) (string, bool) {
 	for _, r := range caller.ReadRepos {
-		if r = strings.TrimSpace(r); r != "" && strings.HasPrefix(strings.ToLower(target), strings.ToLower(r)) {
+		if r = strings.TrimSpace(r); r != "" && strings.EqualFold(r, target) {
 			return r, true
 		}
 	}

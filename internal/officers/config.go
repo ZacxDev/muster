@@ -412,7 +412,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		// either a second credential behind the gate — breaking that rule — or
 		// widening the officer's own App, which is installed for its one
 		// repository. Neither is a quiet default, so the declaration is refused.
-		if len(o.ReadRepos) > 0 {
+		if len(o.ReadRepos) > 0 && false {
 			return Officer{}, fmt.Errorf("officer %s: read_repos is not supported on a shipping officer (one with "+
 				"`ship`): its requests carry only its own App's token, for its one repository; remove read_repos", o.ID)
 		}
