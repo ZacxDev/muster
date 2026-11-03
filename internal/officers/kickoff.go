@@ -152,6 +152,9 @@ const (
 	// failed Tekton TaskRuns' failing tests and error lines). Offered to a
 	// shipping officer with a `ci_logs` block only; read-only.
 	ToolCILogs = "officer_ci_logs"
+	// ToolAskPerson asks a named HQ member a question about an item (HQ's
+	// asks route); asking ends the instance's lease on it. Every officer's.
+	ToolAskPerson = "officer_ask_person"
 )
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.

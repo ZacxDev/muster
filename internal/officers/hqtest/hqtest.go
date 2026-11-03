@@ -6,7 +6,10 @@
 package hqtest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -37,10 +40,26 @@ type Item struct {
 	BlockedBy []string `json:"blocked_by,omitempty"`
 }
 
-// Request is one recorded request.
+// Request is one recorded request. Body is the body decoded as a JSON
+// object (nil when it is not one); Raw is the body's bytes, and ContentType
+// its Content-Type header.
 type Request struct {
 	Method, Path, Query, Auth string
 	Body                      map[string]any
+	Raw                       []byte
+	ContentType               string
+}
+
+// AskImage is one image accepted by POST /officers/{id}/ask-images.
+type AskImage struct {
+	ID, Officer, Filename, ContentType, SHA256 string
+	Data                                       []byte
+}
+
+// Ask is one ask accepted by POST /officers/{id}/items/{item}/asks.
+type Ask struct {
+	ID, Officer, Item string
+	Body              map[string]any
 }
 
 // Server is the fake.
@@ -82,6 +101,59 @@ type Server struct {
 	// answer: a lost acknowledgement).
 	failN, failCode int
 	failCommit      bool
+	// The asks feature (HQ's ask-images and items/{item}/asks routes):
+	// members are the GitHub logins an ask may go to; noAsks makes both
+	// routes answer as an HQ without the feature does (404 "no such route");
+	// askRefusal, when set, is answered by the asks route instead.
+	members    map[string]bool
+	noAsks     bool
+	askRefusal *refusal
+	askImages  []AskImage
+	asks       []Ask
+}
+
+type refusal struct {
+	status      int
+	code, error string
+}
+
+// AddMember makes login an HQ member an ask may be sent to.
+func (s *Server) AddMember(login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.members == nil {
+		s.members = map[string]bool{}
+	}
+	s.members[login] = true
+}
+
+// SetNoAsks makes the asks routes answer as an HQ without them (true).
+func (s *Server) SetNoAsks(off bool) { s.mu.Lock(); s.noAsks = off; s.mu.Unlock() }
+
+// RefuseAsks makes the asks route answer status {error, code} (status 0:
+// serve normally).
+func (s *Server) RefuseAsks(status int, code, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if status == 0 {
+		s.askRefusal = nil
+		return
+	}
+	s.askRefusal = &refusal{status: status, code: code, error: msg}
+}
+
+// AskImages returns the accepted ask images, in order.
+func (s *Server) AskImages() []AskImage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]AskImage(nil), s.askImages...)
+}
+
+// Asks returns the accepted asks, in order.
+func (s *Server) Asks() []Ask {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Ask(nil), s.asks...)
 }
 
 // FailTranscript makes the next n transcript posts answer code; commit stores
@@ -227,13 +299,15 @@ func (s *Server) write(w http.ResponseWriter, code int, v any) {
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	raw, _ := io.ReadAll(io.LimitReader(r.Body, maxAskImageBytes+1<<10))
+	_ = json.Unmarshal(raw, &body)
 	if s.Before != nil {
 		s.Before(r.Method, r.URL.Path)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.reqs = append(s.reqs, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"), Body: body})
+	s.reqs = append(s.reqs, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"), Body: body,
+		Raw: raw, ContentType: r.Header.Get("Content-Type")})
 	if s.down {
 		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "down"})
 		return
@@ -324,6 +398,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Notices = append(s.Notices, Notice{Officer: officer, Body: body})
 		s.write(w, http.StatusCreated, map[string]any{"posted": true})
+	case len(parts) == 2 && parts[1] == "ask-images" && r.Method == http.MethodPost:
+		s.askImage(w, officer, r, raw)
 	case len(parts) == 2 && parts[1] == "preflight" && r.Method == http.MethodPost:
 		if s.Preflight == nil {
 			s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
@@ -409,6 +485,8 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.write(w, http.StatusOK, map[string]any{"item": *it})
 	case "transcript":
 		s.transcript(w, officer, it, instance, live, body)
+	case "asks":
+		s.ask(w, officer, it, instance, live, body, now)
 	case "release":
 		if it.Status != "claimed" || it.ClaimedBy != instance {
 			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
@@ -518,4 +596,98 @@ func (s *Server) transcript(w http.ResponseWriter, officer string, it *Item, ins
 		return
 	}
 	s.write(w, http.StatusOK, map[string]any{"stored": stored, "last_seq": last})
+}
+
+// noSuchRoute is what an HQ without a route answers for it.
+var noSuchRoute = map[string]any{"error": "no such route", "code": "not_found"}
+
+// maxAskImageBytes is HQ's bound on one ask image.
+const maxAskImageBytes = 5 << 20
+
+// askImage is POST /officers/{id}/ask-images?filename=…: the raw image bytes,
+// Content-Type one of png/jpeg/webp and matching the bytes (415 otherwise),
+// at most 5 MiB (413). 201 {id, filename, content_type, size, sha256}.
+func (s *Server) askImage(w http.ResponseWriter, officer string, r *http.Request, raw []byte) {
+	if s.noAsks {
+		s.write(w, http.StatusNotFound, noSuchRoute)
+		return
+	}
+	ct := r.Header.Get("Content-Type")
+	switch ct {
+	case "image/png", "image/jpeg", "image/webp":
+	default:
+		s.write(w, http.StatusUnsupportedMediaType, map[string]any{"error": "content type " + ct + " is not an accepted image", "code": "unsupported_media_type"})
+		return
+	}
+	if len(raw) > maxAskImageBytes {
+		s.write(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "image over 5 MiB", "code": "too_large"})
+		return
+	}
+	if http.DetectContentType(raw) != ct {
+		s.write(w, http.StatusUnsupportedMediaType, map[string]any{"error": "the bytes are not " + ct, "code": "unsupported_media_type"})
+		return
+	}
+	name := r.URL.Query().Get("filename")
+	if name == "" {
+		s.write(w, http.StatusBadRequest, map[string]any{"error": "filename is required", "code": "invalid"})
+		return
+	}
+	sum := sha256.Sum256(raw)
+	img := AskImage{ID: "att-" + strconv.Itoa(len(s.askImages)+1), Officer: officer, Filename: name, ContentType: ct, SHA256: hex.EncodeToString(sum[:]), Data: append([]byte(nil), raw...)}
+	s.askImages = append(s.askImages, img)
+	s.write(w, http.StatusCreated, map[string]any{"id": img.ID, "filename": name, "content_type": ct, "size": len(raw), "sha256": img.SHA256})
+}
+
+// ask is POST /officers/{id}/items/{item}/asks: 410 on a finished item, 409
+// lease_lost unless the instance holds a live lease or the item is already
+// waiting, 422 unknown_recipient for a login that is not a member, 400 on an
+// unknown image id; then the item is WAITING with no holder, and 201
+// {ask, item, delivery}.
+func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance string, live bool, body map[string]any, now time.Time) {
+	if s.noAsks {
+		s.write(w, http.StatusNotFound, noSuchRoute)
+		return
+	}
+	if f := s.askRefusal; f != nil {
+		s.write(w, f.status, map[string]any{"error": f.error, "code": f.code})
+		return
+	}
+	if it.Status == "done" || it.Status == "escalated" {
+		s.write(w, http.StatusGone, map[string]any{"error": "item is " + it.Status, "code": "gone"})
+		return
+	}
+	if !(live && it.ClaimedBy == instance && instance != "") && it.Status != "waiting" {
+		s.write(w, http.StatusConflict, map[string]any{"error": "this instance does not hold a live lease on the item", "code": "lease_lost"})
+		return
+	}
+	to, _ := body["to"].(string)
+	if !s.members[to] {
+		s.write(w, http.StatusUnprocessableEntity, map[string]any{"error": "no HQ member " + to, "code": "unknown_recipient"})
+		return
+	}
+	if ids, ok := body["images"].([]any); ok {
+		for _, v := range ids {
+			id, _ := v.(string)
+			known := false
+			for _, img := range s.askImages {
+				known = known || (img.ID == id && img.Officer == officer)
+			}
+			if !known {
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown image " + id, "code": "invalid"})
+				return
+			}
+		}
+	}
+	a := Ask{ID: "ask-" + strconv.Itoa(len(s.asks)+1), Officer: officer, Item: it.ID, Body: body}
+	s.asks = append(s.asks, a)
+	it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = "waiting", "", nil, now
+	secs := 86400
+	if v, ok := body["deadline_seconds"].(float64); ok {
+		secs = int(v)
+	}
+	s.write(w, http.StatusCreated, map[string]any{
+		"ask":      map[string]any{"id": a.ID, "state": "open", "deadline": now.Add(time.Duration(secs) * time.Second), "to": to},
+		"item":     *it,
+		"delivery": map[string]any{"notice": "both", "inbox": true, "dm": "queued"},
+	})
 }

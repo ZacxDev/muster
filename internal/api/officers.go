@@ -65,6 +65,8 @@ type officerRuntime struct {
 	// fwd forwards instances' transcripts to HQ (internal/officers/transcript);
 	// nil when no declared officer enables `transcript`.
 	fwd *transcript.Forwarder
+	// askHTTP fetches officer_ask_person's image URLs (askImageClient).
+	askHTTP *http.Client
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -101,6 +103,25 @@ type OfficersConfig struct {
 	// (tests drive Tick).
 	TranscriptInterval time.Duration
 	NoTranscriptRun    bool
+	// AskImageHTTP replaces the client officer_ask_person fetches image URLs
+	// with (tests); nil is askImageClient's, which dials public addresses only.
+	AskImageHTTP *http.Client
+}
+
+// askImageClient is the client officer_ask_person fetches an image URL with.
+//
+// 🔴 IT DIALS PUBLIC ADDRESSES ONLY (connectors.Policy's zero value, the
+// proxy's own dialer: every resolved address checked, the checked address
+// dialled, no HTTPS_PROXY). muster-server reaches places an instance's pod
+// cannot — the cluster's services, a metadata endpoint — and the instance
+// chooses the URL, so without this an image URL is a way to have muster read
+// an internal address and hand the bytes to HQ. Redirects are re-dialled
+// through the same check.
+func askImageClient(cfg OfficersConfig) *http.Client {
+	if cfg.AskImageHTTP != nil {
+		return cfg.AskImageHTTP
+	}
+	return &http.Client{Timeout: officers.AskImageFetchTimeout, Transport: connectors.Policy{}.Transport()}
 }
 
 // transcriptReader is the agent gateway's transcript read
@@ -190,7 +211,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, askHTTP: askImageClient(cfg), claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err

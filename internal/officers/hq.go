@@ -126,13 +126,22 @@ func (c *Client) Officer() Officer { return c.officer }
 // '/'), with body JSON-encoded when non-nil, and returns HQ's body on a 2xx.
 // A 4xx is *HQError; a transport failure, a 3xx or a 5xx wraps ErrHQUnavailable.
 func (c *Client) Do(ctx context.Context, method, path string, body any) ([]byte, error) {
+	if body == nil {
+		return c.do(ctx, method, path, "", nil)
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("officers: encode request: %w", err)
+	}
+	return c.do(ctx, method, path, "application/json", b)
+}
+
+// do is Do with a body already encoded as contentType ("" and nil: no body),
+// e.g. an image's raw bytes (UploadAskImage).
+func (c *Client) do(ctx context.Context, method, path, contentType string, body []byte) ([]byte, error) {
 	var rd io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("officers: encode request: %w", err)
-		}
-		rd = bytes.NewReader(b)
+		rd = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.officer.HQURL+path, rd)
 	if err != nil {
@@ -141,7 +150,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body any) ([]byte,
 	req.Header.Set("Authorization", "Bearer "+c.officer.Token())
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
