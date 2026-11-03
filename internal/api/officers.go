@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -686,8 +688,9 @@ func queueToolDefs() []agents.ToolDef {
 				"cursor": strProp("The `next` value of the previous page (HQ returns it with each page; null on the last)."),
 			})},
 		{Type: "function", Name: officers.ToolClaim,
-			Description: "Claim one item so no other instance works it. If YOU already hold it (e.g. you were restarted mid-item), this succeeds, renews your lease and says \"already yours\" — carry on with it. A conflict answer (refused, status 409) means ANOTHER instance holds it: pick another item. Heartbeat before the lease runs out.",
-			Parameters:  objSchema(map[string]any{"item_id": item, "lease_seconds": lease}, "item_id")},
+			Description: "Claim one item so no other instance works it. With NO item_id, HQ picks the next item for you (highest priority first, then the earliest due, then the oldest; never a blocked one) and the answer is that item — or item null when nothing is claimable: stop and wait. " +
+				"Give an item_id only when your charter says to claim a particular item. If YOU already hold it (e.g. you were restarted mid-item), this succeeds, renews your lease and says \"already yours\" — carry on with it. A conflict answer (refused, status 409) means ANOTHER instance holds it: pick another item. Heartbeat before the lease runs out.",
+			Parameters: objSchema(map[string]any{"item_id": strProp("Optional: the item's id, as officer_items or officer_brief returned it. Omit it to take the next item."), "lease_seconds": lease})},
 		{Type: "function", Name: officers.ToolHeartbeat,
 			Description: "Extend your lease on an item you hold. A conflict answer means you lost the lease: stop working the item.",
 			Parameters:  objSchema(map[string]any{"item_id": item, "lease_seconds": lease}, "item_id")},
@@ -805,6 +808,15 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor})
 		body = page.Raw
 	case officers.ToolClaim:
+		if strings.TrimSpace(string(in.ItemID)) == "" {
+			// no item_id: HQ picks the next item (claim-next)
+			var claimed officers.ItemID
+			body, claimed, err = s.officerClaimNext(ctx, c, instance, in.LeaseSeconds, claimTier(o))
+			if err == nil && claimed != "" && s.officerRT.fwd != nil {
+				s.officerRT.fwd.Claimed(o, instance, claimed)
+			}
+			break
+		}
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
@@ -854,6 +866,99 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body, err = c.ReleaseCaptain(ctx, instance, post)
 	}
 	return officerToolResult(name, body, err), true
+}
+
+// claimTier is the tier an instance of o claims in (HQ's `tier` on a claim):
+// "" — no tier key, any tier — for an officer whose config names none, which
+// on this tree is every officer. 🔴 THE ONE PLACE the claim's tier is read:
+// officer tiers (the pool's Officer.Tier) fill it, and both officerClaim and
+// officerClaimNext send it.
+func claimTier(o officers.Officer) string { return "" }
+
+// nothingToClaimNote is officer_claim's answer when nothing is claimable.
+const nothingToClaimNote = "nothing to claim right now: every open item is held, blocked or not due. Stop and wait — muster wakes you when HQ has new work."
+
+// officerClaimNext is officer_claim with no item_id: HQ's claim-next (POST
+// /officers/{id}/claim-next). It answers HQ's {item, lease_expires_at} and
+// the claimed item's id; when nothing is claimable, {item: null, claimed:
+// false, note} and no id.
+//
+// 🔴 AN HQ WITHOUT CLAIM-NEXT ANSWERS 404, AND THAT IS NOT AN ERROR: muster
+// may run against an HQ from before the route. It then falls back to what an
+// instance did by hand before — list the open items and claim one by id
+// (officerClaimFallback) — so a 404 never strands an instance. Any other
+// answer is passed through.
+func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, instance string, lease int, tier string) ([]byte, officers.ItemID, error) {
+	body, err := c.ClaimNext(ctx, instance, lease, tier)
+	var hqErr *officers.HQError
+	if errors.As(err, &hqErr) && hqErr.Status == http.StatusNotFound {
+		return s.officerClaimFallback(ctx, c, instance, lease)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	var res struct {
+		Item *struct {
+			ID officers.ItemID `json:"id"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(body, &res) != nil {
+		return body, "", nil // officerToolResult reports what is not JSON
+	}
+	if res.Item == nil {
+		return nothingToClaim(), "", nil
+	}
+	return body, res.Item.ID, nil
+}
+
+// officerClaimFallback is claim-next on an HQ without it: the open items
+// (every page AllItems reads), not blocked, oldest first — the order the brief
+// lists them in — each claimed by id (officerClaim: a 409 held or blocked
+// moves on to the next) until one is claimed. None: nothingToClaim.
+func (s *Server) officerClaimFallback(ctx context.Context, c *officers.Client, instance string, lease int) ([]byte, officers.ItemID, error) {
+	open, err := c.AllItems(ctx, officers.StatusOpen)
+	if err != nil {
+		return nil, "", err
+	}
+	ids := make([]officers.ItemID, 0, len(open))
+	for _, it := range open {
+		if !it.Blocked {
+			ids = append(ids, it.ID)
+		}
+	}
+	// oldest first: numeric ids by value, anything else after them as text
+	sort.SliceStable(ids, func(i, j int) bool {
+		a, aerr := strconv.ParseInt(string(ids[i]), 10, 64)
+		b, berr := strconv.ParseInt(string(ids[j]), 10, 64)
+		switch {
+		case aerr == nil && berr == nil:
+			return a < b
+		case aerr == nil:
+			return true
+		case berr == nil:
+			return false
+		}
+		return ids[i] < ids[j]
+	})
+	for _, id := range ids {
+		body, err := s.officerClaim(ctx, c, id, instance, lease)
+		var hqErr *officers.HQError
+		var blocked *claimBlockedError
+		if errors.As(err, &blocked) || (errors.As(err, &hqErr) && (hqErr.Status == http.StatusConflict || hqErr.Status == http.StatusGone)) {
+			continue // another instance has it, it waits on a task, or it just finished
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		return body, id, nil
+	}
+	return nothingToClaim(), "", nil
+}
+
+// nothingToClaim is officer_claim's answer when nothing is claimable.
+func nothingToClaim() []byte {
+	b, _ := json.Marshal(map[string]any{"item": nil, "claimed": false, "note": nothingToClaimNote})
+	return b
 }
 
 // alreadyYoursNote is what a claim on an item the caller already holds says.
