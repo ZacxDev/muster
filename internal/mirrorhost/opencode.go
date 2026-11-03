@@ -310,12 +310,19 @@ func (s *OpenCodeSource) run() {
 	}
 }
 
-// connect is the stream's open: the running set seeds every status, and the
-// session list is re-read on next use.
+// connect is the stream's open: the running set seeds every status, the root
+// sessions' last-update times seed the status time of each session whose
+// status this source has never timed (an idle session would otherwise have
+// none until its next turn), and the session list is re-read on next use.
 func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	defer cancel()
 	running, err := cl.Running(ctx)
+	var roots []opencodehost.Session
+	if err == nil {
+		// A failure here only leaves those times unknown, as before.
+		roots, _ = cl.Sessions(ctx)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
@@ -331,6 +338,12 @@ func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 	for id := range running {
 		if !s.busy[id] {
 			s.busy[id], s.since[id] = true, now
+		}
+	}
+	for _, r := range roots {
+		if _, timed := s.since[r.ID]; !timed && r.Time.Updated > 0 && !running[r.ID] {
+			// Idle since its last update (Unix ms, the server's clock).
+			s.busy[r.ID], s.since[r.ID] = false, int64(r.Time.Updated)
 		}
 	}
 	if s.down != "" {
