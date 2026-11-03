@@ -31,6 +31,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -44,6 +46,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // The variables Setup reads by name. Everything else the OTLP exporter and
@@ -93,7 +97,9 @@ func Configured(getenv func(string) string) bool {
 // shutdown that does nothing.
 //
 // The exporter is OTLP over HTTP/protobuf; it reads the standard OTEL_EXPORTER_OTLP_*
-// variables itself (endpoint, headers, timeout). The sampler is muster's own
+// endpoint and headers variables itself. Its client refuses redirects
+// (exporterClient), which reads the timeout variables and refuses the
+// certificate ones. The sampler is muster's own
 // (Sampler): every open always, a sampled parent's children always, any other
 // root at MUSTER_TRACE_SAMPLE_RATIO. It replaces OTEL_TRACES_SAMPLER, which is
 // not read. A ratio that is not a number in [0, 1] keeps tracing off and says
@@ -107,7 +113,11 @@ func Setup(ctx context.Context, getenv func(string) string, o Options) (func(con
 	if err != nil {
 		return noop, err
 	}
-	exp, err := otlptracehttp.New(ctx)
+	client, err := exporterClient(getenv)
+	if err != nil {
+		return noop, err
+	}
+	exp, err := otlptracehttp.New(ctx, otlptracehttp.WithHTTPClient(client))
 	if err != nil {
 		return noop, fmt.Errorf("telemetry: the OTLP trace exporter: %w", err)
 	}
@@ -131,6 +141,47 @@ func Setup(ctx context.Context, getenv func(string) string, o Options) (func(con
 		defer cancel()
 		return tp.Shutdown(ctx)
 	}, nil
+}
+
+// exporterTimeoutVars are the exporter's own timeout variables (milliseconds),
+// most specific first; exporterCertVars are the certificate variables it would
+// read for a client it builds itself.
+var (
+	exporterTimeoutVars = []string{"OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "OTEL_EXPORTER_OTLP_TIMEOUT"}
+	exporterCertVars    = []string{
+		"OTEL_EXPORTER_OTLP_CERTIFICATE", "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE",
+		"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE",
+		"OTEL_EXPORTER_OTLP_CLIENT_KEY", "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY",
+	}
+)
+
+// exporterClient is the OTLP exporter's HTTP client, which REFUSES REDIRECTS
+// (internal/noredirect): the exporter sends OTEL_EXPORTER_OTLP_HEADERS (often
+// a collector's API key) on every export, and net/http would re-send them to
+// a redirect's Location. Handed a client, the exporter no longer applies its
+// own timeout or certificate settings, so the timeout it would have read is
+// read here (default 10s, as the exporter's), and a certificate variable is
+// refused — tracing stays off and says why — rather than silently ignored.
+// The transport is net/http's default (proxy from the environment), as the
+// exporter's own is.
+func exporterClient(getenv func(string) string) (*http.Client, error) {
+	for _, k := range exporterCertVars {
+		if strings.TrimSpace(getenv(k)) != "" {
+			return nil, fmt.Errorf("telemetry: %s is not supported: muster's OTLP client loads no certificates", k)
+		}
+	}
+	timeout := 10 * time.Second
+	for _, k := range exporterTimeoutVars {
+		if v := strings.TrimSpace(getenv(k)); v != "" {
+			ms, err := strconv.Atoi(v)
+			if err != nil || ms <= 0 {
+				return nil, fmt.Errorf("telemetry: %s=%q is not a positive number of milliseconds", k, v)
+			}
+			timeout = time.Duration(ms) * time.Millisecond
+			break
+		}
+	}
+	return noredirect.Client(&http.Client{Timeout: timeout}), nil
 }
 
 // install makes tp the process's provider and W3C trace context its

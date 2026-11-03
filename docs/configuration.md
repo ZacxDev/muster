@@ -213,8 +213,12 @@ provisioner, and the server refuses to boot without them.
 Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set,
 and do nothing at all when none is ([telemetry.md](telemetry.md)). These are the
 variables muster reads to decide that; the exporter and the SDK also read the
-standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
-`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT` themselves.
+standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` and
+`OTEL_EXPORTER_OTLP_HEADERS` themselves; muster reads `OTEL_EXPORTER_OTLP_TIMEOUT`
+(and `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT`) for the exporter's client, which
+refuses redirects — a redirect would re-send the headers to its Location. The
+`OTEL_EXPORTER_OTLP_*CERTIFICATE` and `*CLIENT_KEY` variables are not supported:
+setting one keeps tracing off and logs why.
 `OTEL_TRACES_SAMPLER` is not read: muster's own sampler always keeps opening a
 session (a mirrored view or terminal, an agent's page, and their sockets) and
 anything under a sampled parent in the same process (or muster's own, on a
