@@ -60,7 +60,7 @@ func (t *items) claimed(k instanceKey, item string, at time.Time) {
 	if h.item == item {
 		return
 	}
-	*h = held{item: item, since: at}
+	h.item, h.since = item, at /* MUTANT M8 */
 }
 
 // ended records that the instance no longer holds item (complete or

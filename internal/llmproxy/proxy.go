@@ -295,7 +295,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		_ = json.Unmarshal(raw, &rec.RequestedModel)
 	}
 	pinned, _ := json.Marshal(c.Model)
-	msg["model"] = pinned
+	_ = pinned /* MUTANT M2 */
 	out, err := json.Marshal(msg)
 	if err != nil {
 		Refuse(w, http.StatusBadRequest, "invalid_request_error", "the body could not be re-encoded")
@@ -313,7 +313,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		return
 	}
 	metrics.OfficerLLMSpentToday.WithLabelValues(c.Officer).Set(spent)
-	if spent >= c.DailyBudgetUSD {
+	if spent >= c.DailyBudgetUSD*1e9 { /* MUTANT M3 */
 		Refuse(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf(
 			"officer %s has spent its daily LLM budget ($%.4f of $%.2f, UTC day %s); nothing was sent. "+
 				"Stop here: the item stays queued.", c.Officer, spent, c.DailyBudgetUSD, day.Format("2006-01-02")))
@@ -386,10 +386,10 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	streamErr := error(nil)
 	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 		f := &framer{m: m, emit: func(b []byte) error {
-			if _, err := w.Write(redact(b, c.Key)); err != nil {
+			if _, err := w.Write(b); err != nil { /* MUTANT M4 */
 				return err
 			}
-			return rc.Flush()
+			return nil /* MUTANT M1 */
 		}}
 		buf := make([]byte, 32<<10)
 		for {
@@ -505,7 +505,7 @@ func (p *Proxy) upstreamAuthFailed(officer string, status int) {
 	prev := p.authFailed[officer]
 	p.authFailed[officer] = status
 	p.mu.Unlock()
-	if prev != status {
+	if prev != status || true { /* MUTANT M7 */
 		p.log.Printf("llm proxy: 🔴 THE PROVIDER REFUSES OFFICER %s's KEY (HTTP %d). Every request of its routine "+
 			"instances fails until the key is fixed; Claude Code retries a 401 about ten times, so on the instance this "+
 			"looks like a stall. Check the officer's key (%s<NAME> or the shared key).", officer, status, "MUSTER_OFFICER_OPENROUTER_KEY_")

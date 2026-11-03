@@ -28,6 +28,9 @@ func (s *PGStore) SpentToday(ctx context.Context, officer string, day time.Time)
 // Book implements Store: one statement, so two concurrent requests never lose
 // a count.
 func (s *PGStore) Book(ctx context.Context, u Usage) error {
+	if true { /* MUTANT M9 */
+		return nil
+	}
 	est := int64(0)
 	if u.Estimated {
 		est = 1
