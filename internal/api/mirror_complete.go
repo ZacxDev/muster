@@ -13,7 +13,7 @@ import (
 // THE COMPOSER MENU'S DATA (ui.MirrorCompletePath): what a mirrored window's
 // message bar offers after `/` (Claude Code's built-in commands, and the
 // commands and skills the window's host reports — user, plugin and the
-// window's PROJECT) and after `:` (the host's snippets).
+// window's PROJECT).
 //
 // 🔴 OWNER-SCOPED LIKE EVERY MIRROR ROUTE: the window is resolved through
 // mirrorEntry — the request principal's hosts only — so another user's host,
@@ -40,7 +40,6 @@ type mirrorCatalog interface {
 // composerMenu is the route's answer.
 type composerMenu struct {
 	Commands []mirror.CatalogEntry `json:"commands"`
-	Snippets []mirror.Snippet      `json:"snippets"`
 	// Host: the host's own catalog is in it (not the built-ins alone).
 	Host bool `json:"host"`
 	// Truncated: the host's catalog was cut to the wire's bounds.
@@ -51,9 +50,9 @@ type composerMenu struct {
 
 // The notes the menu shows under a built-ins-only list.
 const (
-	composerMenuNoteOld     = "Built-in commands only: this host's muster-mirror does not report its skills, commands or snippets — upgrade it."
+	composerMenuNoteOld     = "Built-in commands only: this host's muster-mirror does not report its skills or commands — upgrade it."
 	composerMenuNoteOffline = "Built-in commands only: the host is offline."
-	composerMenuNoteFailed  = "Built-in commands only: the host did not send its skills, commands or snippets."
+	composerMenuNoteFailed  = "Built-in commands only: the host did not send its skills or commands."
 )
 
 func (s *Server) registerMirrorCompleteRoutes(mux Mux) {
@@ -91,13 +90,10 @@ func (s *Server) handleMirrorComplete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	merged := mirror.MergeBuiltins(host)
-	out.Commands, out.Snippets = merged.Commands, merged.Snippets
+	out.Commands = merged.Commands
 	out.Truncated = out.Truncated || merged.Truncated
 	if out.Commands == nil {
 		out.Commands = []mirror.CatalogEntry{}
-	}
-	if out.Snippets == nil {
-		out.Snippets = []mirror.Snippet{}
 	}
 	// The owner's own host content: never kept by a shared cache.
 	w.Header().Set("Cache-Control", "private, no-store")

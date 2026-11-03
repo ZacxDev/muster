@@ -101,7 +101,7 @@ func TestTheHostAnswersOnlyForWhatItListed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfgDir, "skills", "listed-skill", "SKILL.md"), []byte("---\nname: listed-skill\ndescription: d\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Backend: listedBackend{[]string{"main"}}, Catalog: &CatalogScanner{Config: cfgDir, Home: t.TempDir(), SnippetsFile: "-"}}
+	cfg := Config{Backend: listedBackend{[]string{"main"}}, Catalog: &CatalogScanner{Config: cfgDir, Home: t.TempDir()}}
 	hello, got := rawMuster(t, cfg, []mirror.Msg{
 		{Type: mirror.TypeCatalog, ID: 1, Session: "main"},
 		{Type: mirror.TypeCatalog, ID: 2, Session: "secret"},
@@ -125,7 +125,7 @@ func TestTheHostAnswersOnlyForWhatItListed(t *testing.T) {
 // muster-mirror does (NoCatalog plays it): no CatalogReport in its hello, and a
 // request — which a muster that read the hello never sends — gets no answer.
 func TestAHostWithNoCatalogAdvertisesNoneAndAnswersNothing(t *testing.T) {
-	cfg := Config{Backend: listedBackend{[]string{"main"}}, Catalog: &CatalogScanner{Config: t.TempDir(), Home: t.TempDir(), SnippetsFile: "-"}, NoCatalog: true}
+	cfg := Config{Backend: listedBackend{[]string{"main"}}, Catalog: &CatalogScanner{Config: t.TempDir(), Home: t.TempDir()}, NoCatalog: true}
 	hello, got := rawMuster(t, cfg, []mirror.Msg{{Type: mirror.TypeCatalog, ID: 1, Session: "main"}}, 700*time.Millisecond)
 	if hello.CatalogReport {
 		t.Fatal("a NoCatalog host advertises a catalog")

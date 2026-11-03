@@ -238,8 +238,8 @@ type Msg struct {
 	// sent (Hub.AgentState says why).
 	StatusReport bool `json:"statusReport,omitempty"`
 	// CatalogReport (hello) is the host ADVERTISING that it answers a catalog
-	// request (TypeCatalog): a window's Claude Code commands, skills and the
-	// operator's snippets, for the composer's `/` and `:` menu (catalog.go).
+	// request (TypeCatalog): a window's Claude Code commands and skills, for the
+	// composer's `/` menu (catalog.go).
 	// Only a v2 host sets it.
 	//
 	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PaneScroll: an older

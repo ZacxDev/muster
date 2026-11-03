@@ -90,11 +90,8 @@ type Config struct {
 	// DefaultScrollIdle). A test shortens it.
 	ScrollIdle time.Duration
 	// Catalog reads the composer menu's catalog (catalog.go); nil = the real
-	// locations, with SnippetsFile as the snippets file ("" = the default).
+	// locations.
 	Catalog *CatalogScanner
-	// SnippetsFile is the operator's snippets JSON (MUSTER_MIRROR_SNIPPETS_FILE;
-	// "" = DefaultSnippetsFile). Used only when Catalog is nil.
-	SnippetsFile string
 	// NoCatalog makes this host behave as one that predates the catalog
 	// (mirror.Msg.CatalogReport): it advertises none and answers no request.
 	// FOR THE BROWSER SUITE'S OLDER-HOST CASE ONLY (cmd/muster-mirror's
@@ -262,7 +259,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	cat := cfg.Catalog
 	if cat == nil {
-		cat = &CatalogScanner{SnippetsFile: cfg.SnippetsFile}
+		cat = &CatalogScanner{}
 	}
 	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
 	c.tunnelTr = tunnelTransport(&c.wire)

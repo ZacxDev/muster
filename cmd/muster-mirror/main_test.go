@@ -193,8 +193,7 @@ func TestVersion(t *testing.T) {
 
 // TestCatalogPrintsWhatTheHostWouldReport: -catalog prints the composer menu's
 // catalog for a pane in the current directory — the user's skills (through
-// CLAUDE_CONFIG_DIR), and the snippets from -snippets-file / its variable —
-// without dialling anything.
+// CLAUDE_CONFIG_DIR) — without dialling anything.
 func TestCatalogPrintsWhatTheHostWouldReport(t *testing.T) {
 	cfg := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(cfg, "skills", "printed"), 0o755); err != nil {
@@ -203,23 +202,13 @@ func TestCatalogPrintsWhatTheHostWouldReport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg, "skills", "printed", "SKILL.md"), []byte("---\nname: printed\ndescription: shown by -catalog\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snip := filepath.Join(t.TempDir(), "s.json")
-	if err := os.WriteFile(snip, []byte(`[{"trigger":":pc","label":"Printed snippet","body":"b"}]`), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-	for _, args := range [][]string{{"-catalog", "-snippets-file", snip}, {"-catalog"}} {
-		env := map[string]string{}
-		if len(args) == 1 {
-			env[envSnippets] = snip
-		}
-		rc, out, errs := runWith(t, env, args...)
-		if rc != 0 {
-			t.Fatalf("%v: rc %d %s", args, rc, errs)
-		}
-		if !strings.Contains(out, "user\tskill\t/printed\tshown by -catalog\n") || !strings.Contains(out, "snippet\t:pc\tPrinted snippet\n") {
-			t.Fatalf("%v printed:\n%s", args, out)
-		}
+	rc, out, errs := runWith(t, map[string]string{}, "-catalog")
+	if rc != 0 {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+	if !strings.Contains(out, "user\tskill\t/printed\tshown by -catalog\n") {
+		t.Fatalf("printed:\n%s", out)
 	}
 }
 

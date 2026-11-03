@@ -18,7 +18,7 @@ import { writeFileAtomic } from '../lib/atomic';
 // CATALOG is read by the real scanner from fixture directories this spec
 // writes — CLAUDE_CONFIG_DIR (the user's skills and commands, an enabled
 // plugin), the window's PROJECT (MUSTER_MIRROR_E2E_CWD, a repository with its
-// own .claude) and MUSTER_MIRROR_SNIPPETS_FILE. The second host plays an older
+// own .claude). The second host plays an older
 // muster-mirror that reports no catalog (MUSTER_MIRROR_E2E_NO_CATALOG=1).
 //
 // The window's Claude Code reports BUSY the whole time, so a queued message is
@@ -42,7 +42,6 @@ const trOld = path.join(dir, 'ffffffff-0002.jsonl');
 const pane = '%e2e-work-@1';
 const cfg = path.join(dir, 'claude-config');
 const proj = path.join(dir, 'repo');
-const snippetsFile = path.join(dir, 'snippets.json');
 const EVIL = `<img src=x onerror="window.__pwned=1">`;
 let server: Running | undefined;
 const procs: ChildProcess[] = [];
@@ -69,15 +68,6 @@ function fixtures() {
   w(path.join(cfg, 'settings.json'), JSON.stringify({ enabledPlugins: { 'stripe@mkt': true } }));
   w(path.join(proj, '.git', 'HEAD'), 'ref: refs/heads/main\n');
   w(path.join(proj, '.claude', 'commands', 'proj-build.md'), '---\ndescription: Build this project\n---\n');
-  w(snippetsFile, JSON.stringify([
-    { trigger: ':eos', label: 'End of session ritual', body: 'reflect on work done, then write the handoff FIRST' },
-    { trigger: ':kickoff', label: 'Kickoff message for next session', body: 'give the kickoff message for next session' },
-    { trigger: ':mt', label: 'Meantime: tee up independent parallel work', body: 'tee up what we can do in the meantime' },
-    // Two the measured misfires reached through the old rules: ":D" (letters in
-    // order / label) and ":P" (":par").
-    { trigger: ':dacq', label: 'Process feedback: dispatch subagent + elicit scope', body: 'do light recon and ask clarifying questions' },
-    { trigger: ':par', label: 'Proceed as recommended', body: 'proceed as recommended' },
-  ]));
 }
 
 function startMirror(host: string, transcript: string, extra: Record<string, string>) {
@@ -99,7 +89,6 @@ function startMirror(host: string, transcript: string, extra: Record<string, str
       MUSTER_MIRROR_E2E_REFRESH: '250ms',
       MUSTER_MIRROR_E2E_CWD: proj,
       CLAUDE_CONFIG_DIR: cfg,
-      MUSTER_MIRROR_SNIPPETS_FILE: snippetsFile,
       ...extra,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -334,33 +323,7 @@ test.describe('desktop 1280×800', () => {
     await expect.poll(() => sends).toEqual([204]);
   });
 
-  test(': lists the snippets and inserts the text, editable before it is sent; a click inserts too', async ({ page }) => {
-    await openView(page);
-    await input(page).click();
-    await page.keyboard.type('please :');
-    await expect(menu(page)).toBeVisible();
-    await expect.poll(() => optionNames(page)).toEqual([':eos', ':kickoff', ':mt', ':dacq', ':par']);
-    // By the trigger's prefix alone — a label word ("meantime") is not a match.
-    await page.keyboard.type('meant');
-    await expect(menu(page), 'a label word opens nothing').toBeHidden();
-    for (let i = 0; i < 5; i++) await page.keyboard.press('Backspace');
-    await page.keyboard.type('mt');
-    await expect.poll(() => optionNames(page)).toEqual([':mt']);
-    await page.keyboard.press('Enter');
-    await expect(input(page)).toHaveValue('please tee up what we can do in the meantime');
-    await expect(menu(page)).toBeHidden();
-    // Editable: the text is the box's, typed onto like any other.
-    await page.keyboard.type(', then report');
-    await expect(input(page)).toHaveValue('please tee up what we can do in the meantime, then report');
-
-    await input(page).fill('');
-    await page.keyboard.type(':k');
-    await page.locator('#mv-complete [data-trigger=":kickoff"]').click();
-    await expect(input(page)).toHaveValue('give the kickoff message for next session');
-    await expect(input(page)).toBeFocused();
-  });
-
-  test('Enter sends ordinary text the menu could have rewritten — "thanks :D", "ok :P", "ok :p", "see /etc" — and completes only a typed prefix', async ({ page }) => {
+  test('Enter sends ordinary text the menu could have rewritten — "thanks :D", "ok :P", "see /etc" — and completes only a typed prefix', async ({ page }) => {
     await openView(page);
     const sends: number[] = [];
     page.on('response', (r) => {
@@ -368,13 +331,12 @@ test.describe('desktop 1280×800', () => {
     });
     const before = pasted();
     const sent: string[] = [];
-    for (const text of ['thanks :D', 'ok :P', 'ok :p', 'see /etc', 'see /tmp']) {
+    for (const text of ['thanks :D', 'ok :P', 'see /etc', 'see /tmp']) {
       await input(page).fill('');
       await input(page).click();
       await page.keyboard.type(text);
-      // Nothing is offered for a face or a path; ":p" may offer ":par", and
-      // Enter must still send it.
-      if (text !== 'ok :p') await expect(menu(page), `"${text}" offers nothing`).toBeHidden();
+      // Nothing is offered for a face or a path.
+      await expect(menu(page), `"${text}" offers nothing`).toBeHidden();
       await page.keyboard.press('Enter');
       sent.push(`${pane} ${text}`);
       await expect.poll(pasted, `"${text}" + Enter is sent as typed`).toEqual([...before, ...sent]);
@@ -384,11 +346,6 @@ test.describe('desktop 1280×800', () => {
     await page.keyboard.type('/hand');
     await page.keyboard.press('Enter');
     await expect(input(page)).toHaveValue('/handoff ');
-    await input(page).fill('');
-    await page.keyboard.type('note :ki');
-    await expect.poll(() => optionNames(page)).toEqual([':kickoff']);
-    await page.keyboard.press('Enter');
-    await expect(input(page)).toHaveValue('note give the kickoff message for next session');
     expect(pasted(), 'no completion was sent').toEqual([...before, ...sent]);
     // "/etc" offers no letters-in-order match at all.
     await input(page).fill('');
@@ -396,7 +353,7 @@ test.describe('desktop 1280×800', () => {
     await expect(menu(page)).toBeHidden();
   });
 
-  test('an inserted command or snippet is undone by Ctrl+Z', async ({ page }) => {
+  test('an inserted command is undone by Ctrl+Z', async ({ page }) => {
     await openView(page);
     await input(page).click();
     await page.keyboard.type('/hand');
@@ -405,12 +362,6 @@ test.describe('desktop 1280×800', () => {
     await expect(input(page)).toHaveValue('/handoff ');
     await page.keyboard.press('Control+z');
     await expect(input(page)).toHaveValue('/hand');
-    await input(page).fill('');
-    await page.keyboard.type('do :eo');
-    await page.keyboard.press('Enter');
-    await expect(input(page)).toHaveValue('do reflect on work done, then write the handoff FIRST');
-    await page.keyboard.press('Control+z');
-    await expect(input(page)).toHaveValue('do :eo');
   });
 
   test('/ in the middle of a word or a path does not open the menu; Escape closes it and it stays closed for that word', async ({ page }) => {
@@ -468,7 +419,7 @@ test.describe('desktop 1280×800', () => {
     expect(bad).toEqual([]);
   });
 
-  test('an older muster-mirror: the menu offers the built-in commands alone, says why, and has no snippets', async ({ page }) => {
+  test('an older muster-mirror: the menu offers the built-in commands alone and says why', async ({ page }) => {
     await openView(page, oldHost);
     await input(page).click();
     await page.keyboard.type('/');
@@ -478,9 +429,6 @@ test.describe('desktop 1280×800', () => {
     expect(names).not.toContain('handoff');
     expect(names).not.toContain('proj-build');
     await expect(page.locator('#mv-complete-note')).toHaveText(/^Built-in commands only: this host's muster-mirror does not report/);
-    await input(page).fill('');
-    await page.keyboard.type(':');
-    await expect(menu(page), 'no snippets: `:` opens nothing').toBeHidden();
   });
 
   test('a stale sign-in: Send and Queue each ask to confirm, then do what was asked — Send sends, Queue queues', async ({ page, context }) => {

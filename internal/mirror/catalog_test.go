@@ -24,11 +24,10 @@ import (
 // that shows exactly which frames muster sends, and an older host that is
 // never asked.
 
-// TestNormalizeCatalogKeepsWhatTheWireMayCarry: invalid names, sources, kinds
-// and triggers are dropped; a name two sources define is kept once, by
-// project > user > plugin > built-in; descriptions and labels lose control
-// and bidi characters; a snippet body keeps its newlines and tabs and loses
-// the rest; commands come out sorted, snippets in their own order.
+// TestNormalizeCatalogKeepsWhatTheWireMayCarry: invalid names, sources and
+// kinds are dropped; a name two sources define is kept once, by
+// project > user > plugin > built-in; descriptions lose control and bidi
+// characters; commands come out sorted.
 func TestNormalizeCatalogKeepsWhatTheWireMayCarry(t *testing.T) {
 	c := mirror.NormalizeCatalog(mirror.Catalog{
 		Commands: []mirror.CatalogEntry{
@@ -43,14 +42,6 @@ func TestNormalizeCatalogKeepsWhatTheWireMayCarry(t *testing.T) {
 			{Name: strings.Repeat("n", mirror.MaxCatalogName+1), Source: mirror.SourceUser, Kind: mirror.KindCommand},
 			{Name: "alpha", Description: `<img src=x onerror="alert(1)">`, Source: mirror.SourceUser, Kind: mirror.KindSkill},
 		},
-		Snippets: []mirror.Snippet{
-			{Trigger: ":second", Label: "B", Body: "line one\r\nline\ttwo\x07"},
-			{Trigger: ":first", Label: "A", Body: "a"},
-			{Trigger: ":second", Label: "dup", Body: "dup"},
-			{Trigger: "nocolon", Body: "x"},
-			{Trigger: ":blank", Body: " \n\t "},
-			{Trigger: ":too-long", Body: strings.Repeat("x", mirror.MaxSnippetBody+1)},
-		},
 	})
 	var got []string
 	for _, e := range c.Commands {
@@ -64,9 +55,6 @@ func TestNormalizeCatalogKeepsWhatTheWireMayCarry(t *testing.T) {
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("commands:\n got %q\nwant %q", got, want)
 	}
-	if len(c.Snippets) != 2 || c.Snippets[0] != (mirror.Snippet{Trigger: ":second", Label: "B", Body: "line one\nline\ttwo"}) || c.Snippets[1].Trigger != ":first" {
-		t.Fatalf("snippets = %+v", c.Snippets)
-	}
 	if c.Truncated {
 		t.Fatal("nothing was over a bound, yet Truncated is set")
 	}
@@ -79,19 +67,16 @@ func TestNormalizeCatalogKeepsWhatTheWireMayCarry(t *testing.T) {
 	}
 }
 
-// TestTheCatalogCountsAreCapped: past MaxCatalogCommands / MaxCatalogSnippets
-// the rest are dropped and Truncated says so.
+// TestTheCatalogCountsAreCapped: past MaxCatalogCommands the rest are dropped
+// and Truncated says so.
 func TestTheCatalogCountsAreCapped(t *testing.T) {
 	var in mirror.Catalog
 	for i := 0; i < mirror.MaxCatalogCommands+7; i++ {
 		in.Commands = append(in.Commands, mirror.CatalogEntry{Name: "c" + itoa(10000+i), Source: mirror.SourceUser, Kind: mirror.KindCommand})
 	}
-	for i := 0; i < mirror.MaxCatalogSnippets+3; i++ {
-		in.Snippets = append(in.Snippets, mirror.Snippet{Trigger: ":s" + itoa(i), Body: "b"})
-	}
 	c := mirror.NormalizeCatalog(in)
-	if len(c.Commands) != mirror.MaxCatalogCommands || len(c.Snippets) != mirror.MaxCatalogSnippets || !c.Truncated {
-		t.Fatalf("%d commands, %d snippets, truncated=%v; want %d, %d, true", len(c.Commands), len(c.Snippets), c.Truncated, mirror.MaxCatalogCommands, mirror.MaxCatalogSnippets)
+	if len(c.Commands) != mirror.MaxCatalogCommands || !c.Truncated {
+		t.Fatalf("%d commands, truncated=%v; want %d, true", len(c.Commands), c.Truncated, mirror.MaxCatalogCommands)
 	}
 }
 
@@ -109,20 +94,17 @@ func TestTheLargestCatalogFitsOneFrame(t *testing.T) {
 		name := "c" + strings.Repeat("x", mirror.MaxCatalogName-6) + itoa(10000+i)
 		in.Commands = append(in.Commands, mirror.CatalogEntry{Name: name, Description: worst, Source: mirror.SourcePlugin, Kind: mirror.KindSkill})
 	}
-	for i := 0; i < mirror.MaxCatalogSnippets; i++ {
-		in.Snippets = append(in.Snippets, mirror.Snippet{Trigger: ":" + strings.Repeat("t", mirror.MaxSnippetTrigger-6) + itoa(10000+i), Label: worst, Body: strings.Repeat("<", mirror.MaxSnippetBody)})
-	}
 	c := mirror.NormalizeCatalog(in)
 	if !c.Truncated {
 		t.Fatal("the worst case was not cut, so the byte budget is not what bounded it")
 	}
-	if len(c.Snippets) == 0 || len(c.Commands) == 0 {
-		t.Fatalf("the worst case kept %d snippets and %d commands: one kind pushed the other out entirely", len(c.Snippets), len(c.Commands))
+	if len(c.Commands) == 0 {
+		t.Fatal("the worst case kept no commands at all")
 	}
 	body, _ := json.Marshal(c)
 	msg, _ := json.Marshal(mirror.Msg{Type: mirror.TypeCataloged, ID: ^uint32(0), Catalog: &c, Error: strings.Repeat("e", 200)})
-	t.Logf("the largest catalog: %d commands, %d snippets, %d bytes encoded (budget %d); its message %d bytes = %.1f%% of MaxFrame (%d)",
-		len(c.Commands), len(c.Snippets), len(body), mirror.MaxCatalogBytes, len(msg), 100*float64(len(msg))/float64(mirror.MaxFrame), mirror.MaxFrame)
+	t.Logf("the largest catalog: %d commands, %d bytes encoded (budget %d); its message %d bytes = %.1f%% of MaxFrame (%d)",
+		len(c.Commands), len(body), mirror.MaxCatalogBytes, len(msg), 100*float64(len(msg))/float64(mirror.MaxFrame), mirror.MaxFrame)
 	if len(body) > mirror.MaxCatalogBytes {
 		t.Fatalf("the catalog encodes to %d bytes, over MaxCatalogBytes %d", len(body), mirror.MaxCatalogBytes)
 	}
@@ -135,8 +117,7 @@ func TestTheLargestCatalogFitsOneFrame(t *testing.T) {
 // encoding, and a message from a host that predates them decodes to neither.
 func TestACatalogMessageRoundTrips(t *testing.T) {
 	in := mirror.Msg{Type: mirror.TypeCataloged, ID: 7, Catalog: &mirror.Catalog{
-		Commands: []mirror.CatalogEntry{{Name: "a:b", Description: "d", Source: mirror.SourcePlugin, Kind: mirror.KindSkill}},
-		Snippets: []mirror.Snippet{{Trigger: ":x", Label: "l", Body: "b\nc"}}, Truncated: true}}
+		Commands: []mirror.CatalogEntry{{Name: "a:b", Description: "d", Source: mirror.SourcePlugin, Kind: mirror.KindSkill}}, Truncated: true}}
 	b, _ := json.Marshal(in)
 	var out mirror.Msg
 	if err := json.Unmarshal(b, &out); err != nil || out.Catalog == nil || out.ID != 7 {
@@ -165,8 +146,8 @@ type cwdBackend struct {
 
 func (b cwdBackend) WindowCwd(context.Context, string, string) (string, error) { return b.cwd, nil }
 
-// catalogFixture is a config dir with one user skill, a project with one
-// command, and a snippets file — all distinct names.
+// catalogFixture is a config dir with one user skill and a project with one
+// command — all distinct names.
 func catalogFixture(t *testing.T) (*mirrorhost.CatalogScanner, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -182,9 +163,7 @@ func catalogFixture(t *testing.T) (*mirrorhost.CatalogScanner, string) {
 	w(filepath.Join(cfg, "skills", "wire-skill", "SKILL.md"), "---\nname: wire-skill\ndescription: a user skill over the wire\n---\n")
 	w(filepath.Join(proj, ".git", "HEAD"), "x")
 	w(filepath.Join(proj, ".claude", "commands", "proj-cmd.md"), "---\ndescription: the window's project command\n---\n")
-	snip := filepath.Join(root, "snippets.json")
-	w(snip, `[{"trigger":":wire","label":"Over the wire","body":"a prewritten message"}]`)
-	return &mirrorhost.CatalogScanner{Config: cfg, Home: filepath.Join(root, "home"), SnippetsFile: snip}, proj
+	return &mirrorhost.CatalogScanner{Config: cfg, Home: filepath.Join(root, "home")}, proj
 }
 
 // connectCatalog runs a REAL muster-mirror client with scanner s.
@@ -201,8 +180,8 @@ func connectCatalog(t *testing.T, r *rig, host, token string, b mirrorhost.Backe
 }
 
 // TestARealHostAnswersItsWindowsCatalog is the feature end to end over the
-// tunnel: the user's skill, the WINDOW's project command (found from the cwd
-// the backend reports) and the snippets — and only the host's owner can ask.
+// tunnel: the user's skill and the WINDOW's project command (found from the
+// cwd the backend reports) — and only the host's owner can ask.
 func TestARealHostAnswersItsWindowsCatalog(t *testing.T) {
 	r := newRig(t)
 	s, proj := catalogFixture(t)
@@ -220,9 +199,6 @@ func TestARealHostAnswersItsWindowsCatalog(t *testing.T) {
 	}
 	if got["wire-skill"] != "user:a user skill over the wire" || got["proj-cmd"] != "project:the window's project command" {
 		t.Fatalf("commands = %v", got)
-	}
-	if len(c.Snippets) != 1 || c.Snippets[0].Trigger != ":wire" || c.Snippets[0].Body != "a prewritten message" {
-		t.Fatalf("snippets = %+v", c.Snippets)
 	}
 	// Another owner's view: the host is not there at all.
 	if _, err := r.svc.CatalogWindow(asUser(2), "cat", "main", ""); !errors.Is(err, mirror.ErrHostOffline) {

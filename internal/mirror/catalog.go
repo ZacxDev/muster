@@ -13,9 +13,8 @@ import (
 )
 
 // THE COMPOSER'S MENU CATALOG: what a mirrored window's message bar offers when
-// `/` or `:` is typed — the Claude Code commands and skills that window's pane
-// can run (the host's user-level, plugin and PROJECT `.claude/` sources), and
-// the operator's prewritten agent-prompt snippets.
+// `/` is typed — the Claude Code commands and skills that window's pane can run
+// (the host's user-level, plugin and PROJECT `.claude/` sources).
 //
 // 🔴 IT IS A REQUEST, NOT A FIELD OF THE WINDOW LIST. The window list travels in
 // ONE message whose worst case already measures 97% of MaxFrame
@@ -51,23 +50,17 @@ const (
 // The catalog's bounds. Each is a property of the wire, so both halves read
 // them here.
 const (
-	// MaxCatalogCommands and MaxCatalogSnippets bound the entry counts.
+	// MaxCatalogCommands bounds the entry count.
 	MaxCatalogCommands = 512
-	MaxCatalogSnippets = 128
 	// MaxCatalogName bounds a command's name (without its leading `/`), bytes.
 	MaxCatalogName = 96
-	// MaxCatalogDescription bounds a description and a snippet's label, in
-	// RUNES, cut on a rune boundary with an ellipsis.
+	// MaxCatalogDescription bounds a description, in RUNES, cut on a rune
+	// boundary with an ellipsis.
 	MaxCatalogDescription = 200
-	// MaxSnippetTrigger bounds a snippet's trigger (":eos"), bytes.
-	MaxSnippetTrigger = 32
-	// MaxSnippetBody bounds a snippet's text, bytes.
-	MaxSnippetBody = 4096
 	// MaxCatalogBytes bounds a whole catalog ENCODED. A count is not a size —
 	// JSON writes `<` as <, six bytes — so the bound that keeps one answer
-	// inside MaxFrame is this one: entries past it are dropped (Truncated) —
-	// the snippets kept within half of it, the commands within the rest, each
-	// in order. TestTheLargestCatalogFitsOneFrame measures it.
+	// inside MaxFrame is this one: entries past it are dropped (Truncated), in
+	// order. TestTheLargestCatalogFitsOneFrame measures it.
 	MaxCatalogBytes = 256 << 10
 )
 
@@ -99,18 +92,9 @@ type CatalogEntry struct {
 	Kind string `json:"kind"`
 }
 
-// Snippet is one prewritten message (the operator's agent-prompt snippets):
-// typed as its Trigger after `:`, inserted as Body.
-type Snippet struct {
-	Trigger string `json:"trigger"`
-	Label   string `json:"label,omitempty"`
-	Body    string `json:"body"`
-}
-
-// Catalog is one window's menu: its commands and the host's snippets.
+// Catalog is one window's menu: its commands.
 type Catalog struct {
 	Commands []CatalogEntry `json:"commands,omitempty"`
-	Snippets []Snippet      `json:"snippets,omitempty"`
 	// Truncated: something was dropped to stay within the bounds.
 	Truncated bool `json:"truncated,omitempty"`
 }
@@ -124,15 +108,6 @@ var catalogNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(:[A-Za-
 // ValidCatalogName reports whether name is a command name the wire carries.
 func ValidCatalogName(name string) bool {
 	return len(name) <= MaxCatalogName && catalogNamePattern.MatchString(name)
-}
-
-// snippetTriggerPattern is a snippet trigger: a `:` and a word — what espanso's
-// own triggers look like, and what the menu filters on after the `:`.
-var snippetTriggerPattern = regexp.MustCompile(`^:[A-Za-z0-9][A-Za-z0-9._-]*$`)
-
-// ValidSnippetTrigger reports whether trigger is one the wire carries.
-func ValidSnippetTrigger(trigger string) bool {
-	return len(trigger) <= MaxSnippetTrigger && snippetTriggerPattern.MatchString(trigger)
 }
 
 // CleanText is s as one line of display text: invalid UTF-8 replaced, every
@@ -168,28 +143,6 @@ func isBidiControl(r rune) bool {
 	return (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) || r == 0x200e || r == 0x200f || r == 0x061c
 }
 
-// cleanBody is a snippet's text as it is inserted: valid UTF-8, CRLF and CR
-// folded to LF, every other control character but tab and newline dropped —
-// what SanitizePaste would refuse once the message is sent — and at most
-// MaxSnippetBody bytes ("" when that leaves nothing).
-func cleanBody(s string) string {
-	s = strings.ToValidUTF8(s, "\uFFFD")
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
-	s = strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' {
-			return r
-		}
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || isBidiControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-	if strings.TrimSpace(s) == "" || len(s) > MaxSnippetBody {
-		return ""
-	}
-	return s
-}
-
 // sourceRank orders sources by who claims a name first.
 func sourceRank(s string) int {
 	switch s {
@@ -211,13 +164,9 @@ func sourceRank(s string) int {
 //   - a command with an invalid name, an unknown source or kind is dropped; a
 //     name defined twice is kept ONCE, by the first source in project, user,
 //     plugin, built-in order (and within one source the first as given);
-//   - a snippet with an invalid trigger, or a body that cleans to nothing, is
-//     dropped; a trigger defined twice is kept once (the first);
-//   - every description and label is CleanText'd to MaxCatalogDescription;
-//   - commands are sorted by name, snippets kept in the order given (the
-//     operator's own order), and both counts are capped;
-//   - finally the whole is cut to MaxCatalogBytes ENCODED: the snippets kept
-//     within half of it, the commands within what is left; entries past the
+//   - every description is CleanText'd to MaxCatalogDescription;
+//   - commands are sorted by name and the count is capped;
+//   - finally the whole is cut to MaxCatalogBytes ENCODED; entries past the
 //     budget are dropped.
 //
 // Truncated says anything was dropped for a bound (not for being invalid).
@@ -244,35 +193,8 @@ func NormalizeCatalog(c Catalog) Catalog {
 	if len(out.Commands) > MaxCatalogCommands {
 		out.Commands, out.Truncated = out.Commands[:MaxCatalogCommands], true
 	}
-	seenT := map[string]bool{}
-	for _, s := range c.Snippets {
-		if !ValidSnippetTrigger(s.Trigger) || seenT[s.Trigger] {
-			continue
-		}
-		if s.Body = cleanBody(s.Body); s.Body == "" {
-			continue
-		}
-		seenT[s.Trigger] = true
-		s.Label = CleanText(s.Label, MaxCatalogDescription)
-		out.Snippets = append(out.Snippets, s)
-	}
-	if len(out.Snippets) > MaxCatalogSnippets {
-		out.Snippets, out.Truncated = out.Snippets[:MaxCatalogSnippets], true
-	}
 	// The byte budget: the size of each entry as it is encoded, plus a comma.
-	// Snippets are counted FIRST, within half of it — they are the operator's
-	// own few, and a host with hundreds of plugin skills must not push them
-	// out — and commands get what is left.
 	size := 64
-	keepS := 0
-	for _, s := range out.Snippets {
-		b, _ := json.Marshal(s)
-		if size+len(b)+1 > MaxCatalogBytes/2 {
-			break
-		}
-		size += len(b) + 1
-		keepS++
-	}
 	keepC := 0
 	for _, e := range out.Commands {
 		b, _ := json.Marshal(e)
@@ -282,15 +204,12 @@ func NormalizeCatalog(c Catalog) Catalog {
 		size += len(b) + 1
 		keepC++
 	}
-	if keepC < len(out.Commands) || keepS < len(out.Snippets) {
+	if keepC < len(out.Commands) {
 		out.Truncated = true
-		out.Commands, out.Snippets = out.Commands[:keepC], out.Snippets[:keepS]
+		out.Commands = out.Commands[:keepC]
 	}
 	if len(out.Commands) == 0 {
 		out.Commands = nil
-	}
-	if len(out.Snippets) == 0 {
-		out.Snippets = nil
 	}
 	return out
 }
@@ -299,7 +218,7 @@ func NormalizeCatalog(c Catalog) Catalog {
 // Claude Code's built-in commands added (a host-defined name shadows a built-in,
 // as in Claude Code), normalised.
 func MergeBuiltins(c Catalog) Catalog {
-	all := Catalog{Commands: append(append([]CatalogEntry(nil), c.Commands...), BuiltinCommands...), Snippets: c.Snippets, Truncated: c.Truncated}
+	all := Catalog{Commands: append(append([]CatalogEntry(nil), c.Commands...), BuiltinCommands...), Truncated: c.Truncated}
 	return NormalizeCatalog(all)
 }
 
@@ -364,7 +283,7 @@ func builtin(name, desc string) CatalogEntry {
 var (
 	// ErrCatalogUnsupported: the host did not advertise a catalog (an older
 	// muster-mirror). The composer then offers the built-ins alone.
-	ErrCatalogUnsupported = errors.New("mirror: this host's muster-mirror does not report its commands, skills or snippets; upgrade it")
+	ErrCatalogUnsupported = errors.New("mirror: this host's muster-mirror does not report its commands or skills; upgrade it")
 	// ErrCatalogRefused wraps the host's own reason for not answering.
 	ErrCatalogRefused = errors.New("mirror: the host did not send its catalog")
 	// ErrCatalogTimeout: the host did not answer in time.
