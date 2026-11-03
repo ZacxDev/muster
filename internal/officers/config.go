@@ -226,7 +226,7 @@ func parseReadRepos(repo string, in []string) ([]string, error) {
 		return nil, errors.New("read_repos needs `repo`: the officer's own repository is what a request that names " +
 			"no repository is served for, and the GitHub App refuses an agent without one")
 	}
-	if len(in) > MaxReadRepos {
+	if len(in) > MaxReadRepos+1 {
 		return nil, fmt.Errorf("read_repos lists %d repositories, over the cap of %d", len(in), MaxReadRepos)
 	}
 	seen := map[string]bool{}
@@ -412,7 +412,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		// either a second credential behind the gate — breaking that rule — or
 		// widening the officer's own App, which is installed for its one
 		// repository. Neither is a quiet default, so the declaration is refused.
-		if len(o.ReadRepos) > 0 && false {
+		if len(o.ReadRepos) > 0 {
 			return Officer{}, fmt.Errorf("officer %s: read_repos is not supported on a shipping officer (one with "+
 				"`ship`): its requests carry only its own App's token, for its one repository; remove read_repos", o.ID)
 		}
