@@ -281,7 +281,8 @@ a `current` file or a tenant file each means the host holds several tenants.
 Inside the selected tenant the **file is authoritative for the pair**:
 
 - **The zero-touch path** is: no `--tenant`, no `MUSTER_TENANT`, **no
-  `current` file, and no tenant files under `~/.muster/tenants/`**. Only there
+  `current` file, and no entry at all under `~/.muster/tenants/`** (a refused or
+  malformed file counts as an entry). Only there
   is resolution **exactly today's**, field by field
   (`cmd/muster/config.go:146-153`). Agent pods take it: they carry only
   environment, injected by `internal/agentspec`, and have neither a `current`
@@ -529,8 +530,14 @@ tenant's endpoint. This is [to be measured before phase 2](#to-measure-before-ph
   the unit above). Daemon changes:
   - **Every** record the daemon writes, the legacy
     `~/.muster/mirror-hook.json` included, gains the **tmux socket path** the
-    daemon mirrors, taken from tmux's own `#{socket_path}`, which the daemon
-    already queries (`internal/mirrorhost/tmux.go:242-250`).
+    daemon mirrors. The daemon **derives** it from its configuration rather
+    than querying tmux, because the record is written once at start, often
+    before the tmux server exists (`main.go:388-403`; with no server,
+    `display-message -p '#{socket_path}'` fails): `-S <path>` is used exactly
+    as given (tmux does not resolve symlinks for `-S`), and `-L <name>` or the
+    default server is `realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>/<name>`
+    (tmux resolves the directory there). Both forms equal the first field of
+    `$TMUX`. A template instance never writes a record without a socket.
   - A daemon refuses to overwrite a legacy record that records a **different**
     socket, and logs why. This catches an env file that overrides the unit's
     path, once the `default` daemon has written its socket into the legacy
@@ -658,7 +665,7 @@ data class Tenants(val current: String?, val all: List<TenantRecord>)
 ```
 
 **Storage, and why it is two files.** Today's app opens `device.sealed` only
-with the AAD `dev.zacx.muster/device-record/v1`, and treats anything else as
+with the AAD `<app-id>/device-record/v1` (the real constant is the app's package id; see `DeviceStore.kt`), and treats anything else as
 corrupt, which unpairs the phone (`android:core/auth/.../DeviceStore.kt:155-162`,
 `:176`). So a version bump inside `device.sealed` would unpair any phone that
 is downgraded. Instead:
@@ -666,7 +673,7 @@ is downgraded. Instead:
 - The tenants live in a **new** sealed file, `tenants.sealed`, under the same
   Keystore record key and sealing scheme
   (`android:core/auth/.../DeviceStore.kt:96-179`) with its own AAD,
-  `dev.zacx.muster/tenants/v1`.
+  `<app-id>/tenants/v1`.
 - `device.sealed` stays a valid **v1** `DeviceRecord`: a copy of tenant
   `default`, rewritten whenever that tenant changes, and empty (unpaired) if
   that tenant is removed. A downgraded app reads it as today and keeps working
@@ -818,7 +825,7 @@ also shows **which** server is asking, by label.
 
 | invariant | how it holds |
 |---|---|
-| A credential is only ever sent to the origin it was minted for | CLI: the tenant file is the pair; off the zero-touch path (any `--tenant`, `MUSTER_TENANT`, `current` file or tenant file under `~/.muster/tenants/`), a lone URL or token override, `MUSTER_HOOK_TOKEN` included, is refused. On the zero-touch path the host has only `default`, so there is no other tenant's origin to send to. Mirror: one process, one URL, one token; the hook picks the record whose recorded socket matches `$TMUX` (an old legacy record with no socket only on the default server, compared after resolving symlinks; otherwise fail open), a per-tenant record always names its own token file, and "recorded token to recorded URL" holds. Android: each tenant's `DeviceApi` is built from that tenant's origin; buttons and taps carry the tenant. |
+| A credential is only ever sent to the origin it was minted for | CLI: the tenant file is the pair; off the zero-touch path (any `--tenant`, `MUSTER_TENANT`, `current` file or tenant file under `~/.muster/tenants/`), a lone URL or token override, `MUSTER_HOOK_TOKEN` included, is refused. On the zero-touch path resolution is today's, field by field, and a lone override or an `--env-file` mix can still send a token to another origin; that is kept for compatibility and is **not** covered by this invariant. Mirror: one process, one URL, one token; the hook picks the record whose recorded socket matches `$TMUX` (an old legacy record with no socket only on the default server, compared after resolving symlinks; otherwise fail open), a per-tenant record always names its own token file, and "recorded token to recorded URL" holds. Android: each tenant's `DeviceApi` is built from that tenant's origin; buttons and taps carry the tenant. |
 | Redirects across origins are refused | CLI and Android already refuse every redirect (`cmd/muster/client.go:185`, `android:core/net/.../DeviceApi.kt:34`). The mirror's tunnel and MCP proxy follow them today (Go forwards the bearer to same-host and subdomain targets); that is fixed separately, before this design (branch `fix/mirror-refuse-redirects`), and this invariant depends on it. |
 | The pinned identity is verified on connect | Origin: always, by construction; this alone keeps a credential on its own server. Instance id (optional, phase 3 only): checked against `/health` by the CLI, and against `/api/device/config` by the app, when served (the mirror pins the origin only); a mismatch stops that tenant and says so. Without phase 3, nothing detects a different deployment behind the same origin. |
 | Nothing leaks between tenants in caches or logs | Separate files, processes, WebView profiles, snapshots and notification namespaces. Logs and traces name the tenant label, never a token. `muster tenant list` never prints a token. **Not against the same Unix user:** every tenant's files on a host belong to one user, so an interactive terminal or an agent on any tenant can read them all; isolating that needs one Unix user per tenant ([the mirror](#which-tenant-gets-a-hosts-sessions)). |
@@ -920,7 +927,10 @@ without other changes. Phases 1, 2 and 4 each work with or without phase 3.
   reaching that server (positive control for the macOS `/tmp` →
   `/private/tmp` case, which this Linux test stands in for); a single daemon
   on `-tmux-socket` whose legacy record, rewritten with its socket, matches its
-  own sessions; two daemons on one tmux server making the hook fail open; a
+  own sessions; a daemon started before its tmux server exists, then the
+  server started: a question from it still reaches that tenant (the record's
+  socket was derived, not queried); two daemons on one tmux server making the
+  hook fail open; a
   per-tenant daemon given only `MUSTER_MIRROR_TOKEN` writing
   no record; a per-tenant record without a token file never reading the default
   token file; only tenant `default` renewing the opencode token; an MCP
