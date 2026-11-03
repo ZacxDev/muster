@@ -39,7 +39,14 @@
 // (agent, repository, mode) until refreshBefore of its expiry (GitHub issues them for
 // one hour), never written to the database, a log line or a response.
 //
-// 🔴 A REQUEST FOR ANOTHER REPOSITORY CARRIES NO CREDENTIAL AT ALL. It is
+// ONE EXCEPTION, READ ONLY: a caller's further read repositories
+// (connectors.Caller.ReadRepos — an officer's `read_repos`). A request that
+// targets one of them is served with a token minted for THAT one repository,
+// always in AccessRead (the four read levels; metadata read implicitly),
+// whatever Config.Access and the caller's ReadOnly say. Each is cached under
+// its own (agent, repository, mode) key like any other.
+//
+// 🔴 A REQUEST FOR ANY OTHER REPOSITORY CARRIES NO CREDENTIAL AT ALL. It is
 // forwarded anonymously (a public dependency or submodule clones as it would
 // for anyone; a private one fails as it would for anyone), and the App token is
 // never attached to it. A path whose repository cannot be decided — a `.`/`..`
@@ -354,8 +361,11 @@ func (a *App) Describe() connectors.Connector {
 }
 
 // Credential is the installation token for caller's own repository; a request
-// for ANOTHER repository is anonymous (no credential at all); a request whose
-// repository cannot be decided is refused (targetRepo).
+// for one of caller's read repositories (caller.ReadRepos) gets a READ-ONLY
+// token for that repository; a request for ANY OTHER repository is anonymous
+// (no credential at all); a request whose repository cannot be decided is
+// refused (targetRepo). A path that names no repository (/graphql) is served
+// with the own repository's token.
 func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error) {
 	repo := strings.TrimSpace(caller.Repo)
 	if repo == "" {
@@ -368,10 +378,17 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", connectors.ErrTargetRefused, err)
 	}
+	access := a.accessFor(caller)
 	if scoped && !strings.EqualFold(target, repo) {
-		return "", true, nil // another repository: anonymous, never the App token
+		read, ok := readRepo(caller, target)
+		if !ok {
+			return "", true, nil // another repository: anonymous, never the App token
+		}
+		// One of the caller's read repositories (an officer's read_repos): a
+		// token for THAT repository, READ ONLY whatever the App's mode.
+		repo, access = read, AccessRead
 	}
-	tok, err := a.repoToken(ctx, caller.AgentID, repo, a.accessFor(caller))
+	tok, err := a.repoToken(ctx, caller.AgentID, repo, access)
 	a.mu.Lock()
 	if err != nil {
 		a.problems[caller.AgentID] = err.Error()
@@ -380,6 +397,19 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	}
 	a.mu.Unlock()
 	return tok, false, err
+}
+
+// readRepo is the entry of caller.ReadRepos that target (as targetRepo decided
+// it) names, compared without case or surrounding space as GitHub names are;
+// ok false when it names none. 🔴 Its caller mints that entry's token in
+// AccessRead and nothing else.
+func readRepo(caller connectors.Caller, target string) (string, bool) {
+	for _, r := range caller.ReadRepos {
+		if r = strings.TrimSpace(r); r != "" && strings.EqualFold(r, target) {
+			return r, true
+		}
+	}
+	return "", false
 }
 
 // accessFor is the mode caller's token is minted in: AccessRead for a caller

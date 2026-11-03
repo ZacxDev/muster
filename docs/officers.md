@@ -58,6 +58,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `cc_failover` | `false` | With `cc_account`: let a pinned instance fail over to another account anyway ([account failover](#account-failover)). Without `cc_account` it changes nothing: an unpinned instance fails over by default. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
+| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or `read_repos` on a [shipping officer](#shipping-officers) is a boot refusal naming the officer. Kept lowercased and sorted, so reordering it changes nothing. |
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
@@ -263,11 +264,46 @@ configured `repo`, for every other agent its row's repository. Everything that
 asks "which repository is this agent's" for a connector reads it from there:
 
 - the proxy's caller (`connectors.Caller.Repo`), so the App mints a 1-hour token
-  for exactly that one repository; any other repository is reached anonymously,
+  for exactly that one repository; any other repository is reached anonymously
+  (except the officer's `read_repos`, below),
 - the approve card's and `connector_requests_list`'s description of what
   approving grants (and `connector_request_decide`'s no-repository warning),
 - the repository a grant is recorded as approved FOR (below),
 - the App's problem line on the agent's card.
+
+**Further repositories, read only (`read_repos`).** An officer that needs to
+read more than its own repository — a shared library, a state repository such
+as `owner/flags-state` — lists them:
+
+```json
+{"id": "triage:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "repo": "example-org/example-web", "read_repos": ["example-org/flags-state", "example-org/docs"]}
+```
+
+`Server.agentReadRepos` (next to `agentRepo`) hands them to the proxy's caller
+(`connectors.Caller.ReadRepos`). The App decides a request's repository from
+its path exactly as it does for `repo` (`githubapp.App.targetRepo`: git's
+`github.com/<owner>/<name>[.git]/…`, the API's `/repos/<owner>/<name>/…`, fully
+decoded, without case), and a request that targets one of `read_repos` is
+served with a 1-hour token minted for **that one repository** with Contents,
+Pull requests, Checks and Commit statuses **read** (plus GitHub's implicit
+metadata read) — READ ONLY whatever `MUSTER_GITHUB_APP_ACCESS` says. A request
+to any repository outside `repo` ∪ `read_repos` is still anonymous, and a path
+that names no repository (`/graphql`) still carries `repo`'s token. Each
+repository's token is minted and cached on its own. The App must be installed
+on each one's owner with access to it, or that repository's requests fail with
+the App's error (never anonymously).
+
+- **It needs `repo`.** A path that names no repository is served for `repo`,
+  and the App refuses an agent with none, so `read_repos` without `repo` is a
+  boot refusal.
+- **One approval covers the set.** The instance asks for `github` once; the
+  approve card, `connector_requests_list` (`repo`, `read_repos`,
+  `approving_grants`) and `connector_request_decide` (`read_repos`, `grants`)
+  list `repo` and every read repository, each marked READ ONLY.
+- **Not for a shipping officer.** Its requests carry only its own App's token,
+  behind its push gate, for its one repository; `read_repos` on one is a boot
+  refusal ([below](#shipping-officers)).
 
 **`github`, and the connectors it declares, only.** An officer instance may
 request and use the `github` connector and the connectors its officer lists in
@@ -304,9 +340,9 @@ fetches what it needs through muster's proxy instead, as its first message says:
 - **the REST API**: `curl -sS -H "Authorization: Bearer $MUSTER_HOOK_TOKEN"
   "$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/<path>"`.
 
-**A grant is approved FOR a repository** (migration 0061). Because the
-repository is read from the configuration and never stored on the row, changing
-or removing `repo` takes effect for existing instances at the next request
+**A grant is approved FOR a repository set** (migration 0061). Because the
+repositories are read from the configuration and never stored on the row, changing
+or removing `repo` or `read_repos` takes effect for existing instances at the next request
 (their first message is re-armed with the new text the next time the wake loop
 starts them) — and the grant does NOT follow it. The approval records the
 instance's repository at the time it was decided; when the officer's `repo` is
@@ -316,7 +352,12 @@ none — the grant is put back to **pending** at its next use (the proxy, or the
 agent's `connector_status` / `connector_request`), audited as "re-opened: the
 agent's repository changed (approved for …, now …)", and the owner is prompted
 again, as for a changed credential source (0033). Nothing is minted for the new
-repository until the owner approves it.
+repository until the owner approves it. With `read_repos` the recorded value is
+the whole set in one canonical form (`connectors.RepoScope`:
+`owner/repo (+ read: a/x, b/y)`, the read repositories lowercased and sorted),
+so adding, removing or changing a read repository re-opens the grant the same
+way, while declaring the same set in another order or case does not. An
+officer without `read_repos` records exactly `repo`, as before.
 
 **Approving the grant.** Nothing is pre-granted: there is no automatic grant
 for officers, and none for any other configured agent. The instance asks once
@@ -325,8 +366,9 @@ for officers, and none for any other configured agent. The instance asks once
 
 - the **Connectors** tab (`/connectors` on the officers muster, signed in as
   the owner): the request card names the instance agent
-  (`officer-<type>-<area>-<n>`) and its reason; the `github` connector's entry
-  states the token's scope. Press **Approve**. A pending request also sends a
+  (`officer-<type>-<area>-<n>`), its reason, and what approving grants — the
+  officer's `repo` and every one of its `read_repos`, each READ ONLY; the
+  `github` connector's entry states the token's scope. Press **Approve**. A pending request also sends a
   `connector` push notification when push is configured; or
 - `connector_requests_list` then `connector_request_decide {id, decision:
   "approve"}` from one of the owner's own mirrored Claude Code sessions
@@ -519,8 +561,10 @@ hand), then read through the proxy either with git (`ccd connect-git github`,
 then `git clone https://github.com/<owner>/<name>.git`) or with `curl` on
 `$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/…`
 carrying `Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster holds a read-only
-token, there is no checkout, and it never pushes or merges. Without a `repo` the
-text is unchanged.
+token, there is no checkout, and it never pushes or merges. An officer with
+`read_repos` is also told their names and that it reads each the same way, with
+a READ-ONLY token limited to that one repository. Without a `repo` the text is
+unchanged.
 
 An officer that declares `connectors` is also told their names, that each is
 requested once and decided by hand, and how to query a postgres one:
@@ -543,6 +587,13 @@ time (a third, `officer_mark_ready`, converts its own draft pull request to
 ready for review). Nothing the officer can merge changes those gates: they are muster's
 code and muster-server's environment, and the officer's App is installed on
 its one repository only.
+
+**No `read_repos`.** A shipping officer's every request is decided by its push
+gate and served with its own App's token — never the deployment App's, by any
+path through the proxy (`connectors.Gate`). Honouring `read_repos` would mean
+either a second, ungated credential behind the gate or widening the officer's
+own App beyond its one repository, so `read_repos` on a shipping officer is a
+boot refusal naming the officer.
 
 🔴 **Use it only where the repository enforces nothing else, and know that
 muster is then the branch protection.** On a private repository without

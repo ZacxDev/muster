@@ -175,6 +175,15 @@ type Caller struct {
 	// without one. A virtual connector that scopes its credential to the agent's
 	// repository (the GitHub App) reads it; a stored connector ignores it.
 	Repo string
+	// ReadRepos are further repositories (owner/name) the caller may READ
+	// through a virtual connector that scopes its credential per repository
+	// (the GitHub App): a request that targets one of them gets a READ-ONLY
+	// credential for that one repository, whatever ReadOnly and the
+	// connector's own mode say. Set for an officer instance from its
+	// officer's `read_repos` (api.Server.agentReadRepos); nil for every other
+	// caller. A stored connector ignores it. The grant is approved for
+	// RepoScope(Repo, ReadRepos).
+	ReadRepos []string
 	// ReadOnly asks a virtual connector that mints a credential (the GitHub
 	// App) for a READ-ONLY one for this caller, whatever its own mode. Set for
 	// an officer instance (api.Server.callerOf). A stored connector ignores
@@ -309,7 +318,7 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 		// An approval about another credential source than the connector now
 		// has (the GitHub App configured, or removed), or made for another
 		// repository than the caller's now (0061), is pending again.
-		g, reopened, rerr := ReconcileGrant(ctx, p.Store, g, caller.Repo)
+		g, reopened, rerr := ReconcileGrant(ctx, p.Store, g, RepoScope(caller.Repo, caller.ReadRepos))
 		if rerr != nil {
 			return Access{}, rerr
 		}

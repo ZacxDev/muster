@@ -43,6 +43,10 @@ const (
 	// MaxInstancesCap bounds max_instances. Each instance is a pod, a PVC and a
 	// Claude account for life, so a fat-fingered 100 is refused at boot.
 	MaxInstancesCap = 8
+	// MaxReadRepos bounds read_repos. Each entry is one more repository an
+	// approval of the officer's `github` grant reaches, so the list is kept
+	// short enough to read on the approve card.
+	MaxReadRepos = 5
 )
 
 // Officer is one declared officer: the HQ identity muster runs instances for.
@@ -84,6 +88,15 @@ type Officer struct {
 	// with MUSTER_GITHUB_APP_ACCESS=read. It is NOT checked out: the instance
 	// reads it through muster's connector proxy.
 	Repo string `json:"repo,omitempty"`
+	// ReadRepos are further GitHub repositories (owner/name) the officer's
+	// instances may READ through the same `github` connector: a proxied request
+	// that targets one of them is served with a READ-ONLY installation token
+	// minted for that one repository (internal/githubapp App.Credential),
+	// whatever MUSTER_GITHUB_APP_ACCESS says. Lowercased, sorted and unique —
+	// so a reordered or re-cased declaration is the same set and does not
+	// re-open an approved grant (connectors.RepoScope). Requires Repo, never
+	// holds it, at most MaxReadRepos, and is refused on a shipping officer.
+	ReadRepos []string `json:"read_repos,omitempty"`
 	// Ship, when set, lets the officer push branches, open pull requests, and
 	// (by stage) merge its own pull requests and tag releases in Repo — every
 	// write filtered or performed by muster (ship.go). nil for every other
@@ -137,6 +150,7 @@ type declared struct {
 	CCFailover   bool     `json:"cc_failover"`
 	Model        string   `json:"model"`
 	Repo         string   `json:"repo"`
+	ReadRepos    []string `json:"read_repos"`
 	Connectors   []string `json:"connectors"`
 	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
 	Ship json.RawMessage `json:"ship"`
@@ -193,6 +207,49 @@ func MayRequestConnector(o Officer, name string) bool {
 	return false
 }
 
+// parseReadRepos checks an officer's `read_repos` against its `repo` and
+// returns it canonical: trimmed, lowercased (GitHub names are
+// case-insensitive) and sorted. It refuses, naming the entry, a value that is
+// not a GitHub owner/name (github.ValidRepoName, `repo`'s own check), an entry
+// listed twice (in any case), an entry that is `repo` itself, more than
+// MaxReadRepos entries, and any entry when there is no `repo`.
+//
+// 🔴 read_repos NEEDS repo. The GitHub App refuses a caller with no repository
+// of its own (githubapp.App.Credential), and a request whose path names no
+// repository (/graphql, /rate_limit) is served with the token for `repo`; an
+// officer with read_repos alone would have neither.
+func parseReadRepos(repo string, in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	if repo == "" {
+		return nil, errors.New("read_repos needs `repo`: the officer's own repository is what a request that names " +
+			"no repository is served for, and the GitHub App refuses an agent without one")
+	}
+	if len(in) > MaxReadRepos {
+		return nil, fmt.Errorf("read_repos lists %d repositories, over the cap of %d", len(in), MaxReadRepos)
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		r = strings.TrimSpace(r)
+		if !github.ValidRepoName(r) {
+			return nil, fmt.Errorf("read_repos entry %q is not a GitHub owner/name", r)
+		}
+		lr := strings.ToLower(r)
+		if strings.EqualFold(r, repo) {
+			return nil, fmt.Errorf("read_repos entry %q is the officer's own `repo`; remove it", r)
+		}
+		if seen[lr] {
+			return nil, fmt.Errorf("read_repos lists %q twice", r)
+		}
+		seen[lr] = true
+		out = append(out, lr)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // TokenEnvPrefix is the prefix of the variable each officer's HQ token is read
 // from: MUSTER_OFFICER_TOKEN_<NAME>, where NAME is [TokenEnvSuffix] of its id.
 const TokenEnvPrefix = "MUSTER_OFFICER_TOKEN_"
@@ -218,7 +275,8 @@ func TokenEnvSuffix(id string) string {
 // It refuses (and names the reason) rather than guessing: an unknown field, an
 // id that is not `<type>:<area>`, two officers whose slugs collide,
 // a missing token, a base URL that is not http(s), a repo that is not a GitHub
-// owner/name (github.ValidRepoName, the task repositories' own check). Instances always run on the
+// owner/name (github.ValidRepoName, the task repositories' own check), a bad
+// read_repos (parseReadRepos). Instances always run on the
 // claude-code kind; there is no kind field.
 //
 // namespacePrefix is the deployment's resolved MUSTER_AGENT_NAMESPACE_PREFIX:
@@ -293,6 +351,11 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
 		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
 	}
+	readRepos, err := parseReadRepos(o.Repo, d.ReadRepos)
+	if err != nil {
+		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+	}
+	o.ReadRepos = readRepos
 	seenConn := map[string]bool{}
 	for _, c := range d.Connectors {
 		c = strings.TrimSpace(c)
@@ -342,6 +405,17 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			o.ID, n, len(n), maxName, MaxNamespaceLen)
 	}
 	if len(d.Ship) > 0 && string(d.Ship) != "null" {
+		// 🔴 read_repos IS REFUSED ON A SHIPPING OFFICER. Its every request is
+		// decided by its push gate and served with its OWN App's token, never
+		// the deployment App's (connectors.Gate: a gated caller cannot reach an
+		// ungated credential by any path). Honouring read_repos would mean
+		// either a second credential behind the gate — breaking that rule — or
+		// widening the officer's own App, which is installed for its one
+		// repository. Neither is a quiet default, so the declaration is refused.
+		if len(o.ReadRepos) > 0 {
+			return Officer{}, fmt.Errorf("officer %s: read_repos is not supported on a shipping officer (one with "+
+				"`ship`): its requests carry only its own App's token, for its one repository; remove read_repos", o.ID)
+		}
 		ship, err := parseShip(o.ID, o.Repo, d.Ship, getenv)
 		if err != nil {
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)

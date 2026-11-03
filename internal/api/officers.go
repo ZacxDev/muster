@@ -247,6 +247,24 @@ func (s *Server) agentRepo(a agents.Agent) string {
 	return a.Repo
 }
 
+// agentReadRepos are the further repositories agent a may READ through the
+// GitHub App connector (connectors.Caller.ReadRepos): an officer instance's
+// officer's `read_repos` (officers.Officer.ReadRepos, read from the registry
+// like agentRepo), nil for every other agent.
+func (s *Server) agentReadRepos(a agents.Agent) []string {
+	if o, _, ok := s.officerOf(a); ok {
+		return o.ReadRepos
+	}
+	return nil
+}
+
+// agentRepoScope is the repository set a's grant is approved for and
+// reconciled against: connectors.RepoScope of agentRepo and agentReadRepos —
+// exactly agentRepo for every agent without read repositories.
+func (s *Server) agentRepoScope(a agents.Agent) string {
+	return connectors.RepoScope(s.agentRepo(a), s.agentReadRepos(a))
+}
+
 // officerConnectorRefusal is why officer instance a may not use connector
 // name, or nil. 🔴 AN OFFICER USES THE `github` CONNECTOR, AND ONLY THE
 // CONNECTORS ITS OFFICER DECLARES (operator decision, PR #337 round 1, widened

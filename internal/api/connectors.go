@@ -220,7 +220,8 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 // limit, and stays set.
 func (s *Server) callerOf(a agents.Agent) connectors.Caller {
 	_, _, officer := s.officerOf(a)
-	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadOnly: officer, Gate: s.shipGate(a)}
+	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadRepos: s.agentReadRepos(a),
+		ReadOnly: officer, Gate: s.shipGate(a)}
 }
 
 // --- the proxy ------------------------------------------------------------------------
@@ -517,13 +518,13 @@ func (s *Server) handleAgentConnectorRequest(w http.ResponseWriter, r *http.Requ
 }
 
 // reconcileGrant is connectors.ReconcileGrant for agent a's routes (ctx is the
-// agent's owner), against a's effective repository (agentRepo): a grant
+// agent's owner), against a's effective repository set (agentRepoScope): a grant
 // re-opened because its credential source or a's repository changed is audited
 // and prompts the owner like a new request. It is deliberately NOT offered to a
 // standing grant: such a change asks the owner again (0033, 0061), and their
 // approval is then shared like any other (an officer's never is).
 func (s *Server) reconcileGrant(ctx context.Context, a agents.Agent, g connectors.Grant) (connectors.Grant, error) {
-	g, reopened, err := connectors.ReconcileGrant(ctx, s.ext.Connectors, g, s.agentRepo(a))
+	g, reopened, err := connectors.ReconcileGrant(ctx, s.ext.Connectors, g, s.agentRepoScope(a))
 	if err != nil || reopened == "" {
 		return g, err
 	}
@@ -606,9 +607,41 @@ func (s *Server) connectorRequestViews(ctx context.Context) ([]ui.ConnectorReque
 			v.Problem = vc.Problem(g.AgentID)
 		}
 		v.Shares = s.requestShares(ctx, g)
+		v.Grants = s.requestCardGrants(ctx, g)
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// requestCardGrants is what approving the GitHub App request g grants, for its
+// request card: connector_requests_list's own description (grantsDescription,
+// shipGrantsDescription for a shipping officer), so the card and the listing
+// name the same repositories — an officer's `repo` and every one of its
+// `read_repos`, each READ ONLY. "" for a stored connector (its card is
+// unchanged) and when the agent cannot be read.
+func (s *Server) requestCardGrants(ctx context.Context, g connectors.Grant) string {
+	if _, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); !ok || s.ext.Agents == nil {
+		return ""
+	}
+	a, err := s.ext.Agents.Get(ctx, g.AgentID)
+	if err != nil {
+		return ""
+	}
+	k, err := s.ext.Connectors.GetConnector(ctx, g.Connector)
+	if err != nil {
+		return ""
+	}
+	o, _, officer := s.officerOf(a)
+	desc := ""
+	if officer && o.Ship != nil {
+		desc = shipGrantsDescription(o)
+	} else {
+		desc, _ = s.grantsDescription(ctx, g, k, s.agentRepo(a), s.agentReadRepos(a), officer)
+	}
+	if strings.HasPrefix(desc, "approving grants ") {
+		return "A" + strings.TrimPrefix(desc, "a") + "."
+	}
+	return "Approving grants " + desc + "."
 }
 
 // githubAppScope is what the GitHub App's installation token may do in the
@@ -1040,8 +1073,9 @@ func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve boo
 		}
 		// The repository this approval is FOR (connectors.Grant.Repo): the
 		// agent's effective one now. A later change of an officer's `repo`
-		// re-opens the grant (connectors.ReconcileGrant).
-		repo = s.agentRepo(a)
+		// re-opens the grant (connectors.ReconcileGrant), as does a change of its
+		// `read_repos` (the set, connectors.RepoScope; a reordering does not).
+		repo = s.agentRepoScope(a)
 	}
 	g, err := s.ext.Connectors.DecideGrantFrom(ctx, id, approve, "operator", src, repo, via)
 	if err != nil {
