@@ -5,6 +5,9 @@ as an inbox. It brings that system's messages to your **chief** agent, and it
 sends the replies you approve back. muster never calls a plugin. The plugin
 calls muster, for everything (see [decisions](decisions.md#plugins-pull-muster-never-calls-out)).
 
+To pair your chief with another operator's over ClankMail (signed agent-to-agent
+messages), follow [clankmail.md](clankmail.md).
+
 Plugins are **off** unless the server runs with `MUSTER_PLUGINS=1` and a
 database. While they are off, every `/plugin/*` route and the `/plugins` page
 answer 404.
@@ -1086,8 +1089,9 @@ the chief's route (`routeItem`), made by muster, with no chief decision.
 
 1. **The binding.** Whatever sent the thread's first message reports it — for
    agent mail, the session's PostToolUse hook (outside muster); for ClankMail,
-   the `muster-clankmail` plugin itself when its `send --bind <session>` starts a
-   thread (the root is the signed message's own `m_` id): `POST /api/plugin-threads {thread,
+   whoever sent the thread's first message (the root is the signed message's own
+   `m_` id). `muster-clankmail` only replies and has no send command yet, so
+   today that is you, by hand ([clankmail.md](clankmail.md#3-pairing)): `POST /api/plugin-threads {thread,
    claude_session}`, with route reply's credential (a personal token or the
    hook token). `201`: bound. `200`: the thread was already bound; **the first
    report wins** and the binding is unchanged. `409`: no online mirrored window
