@@ -58,6 +58,11 @@ type Plugin struct {
 
 	addrMu   sync.Mutex
 	httpAddr string // the /health listener's address, once Run listens
+
+	// relayMu serialises the inbox and requests polls: both settle messages
+	// and walk state.held, and a peer's mail keeps its order only if one of
+	// them runs at a time.
+	relayMu sync.Mutex
 }
 
 // healthAddr is the address /health is served on (after Run started).
@@ -71,6 +76,8 @@ func (p *Plugin) healthAddr() string {
 // configured peers with it: a newly configured key starts `unverified`; a key
 // no longer configured is dropped from the peers, while its allow-list entry
 // stays tracked in `allowed` until the next peer sync DELETEs it at the hub.
+// A listed request whose signer is now a pinned key is held for delivery
+// (held.go adoptPinnedRequests).
 func New(cfg Config, o Options) (*Plugin, error) {
 	if o.Now == nil {
 		o.Now = time.Now
@@ -117,6 +124,7 @@ func New(cfg Config, o Options) (*Plugin, error) {
 				s.Peers[k] = &PeerState{Label: pc.Label, Status: peerUnverified}
 			}
 		}
+		adoptPinnedRequests(s, p.peers, o.Now().Unix())
 		return nil
 	})
 	if err != nil {
@@ -185,10 +193,35 @@ func (p *Plugin) Run(ctx context.Context) error {
 	p.log.Info("muster-clankmail starting", "version", Version, "key", p.self, "hub", p.cfg.HubName,
 		"peers", len(p.peers), "poll_interval", p.cfg.PollInterval.String())
 
+	// One peer-sync attempt BEFORE any poll. A peer is `unverified` until its
+	// first check, and its messages read before that are only held (held.go),
+	// so this is what lets the first poll after a boot deliver them. It must
+	// not block the loops: it is bounded, and when it fails the polls start
+	// anyway (holding that peer's mail) while the peer loop retries on backoff.
+	sctx, scancel := context.WithTimeout(ctx, 2*time.Minute)
+	firstSync := p.SyncPeers(sctx)
+	scancel()
+	p.health.setPeers(firstSync)
+	if firstSync != nil {
+		p.log.Warn("initial peer sync failed: a pinned peer's messages are held until it verifies", "err", firstSync.Error())
+	}
+
 	var wg sync.WaitGroup
-	loop := func(name string, every time.Duration, step func(context.Context) error, report func(error)) {
+	// loop runs step every `every`. primed: step already ran once, returning
+	// prior, so the loop waits (or backs off) before its first run.
+	loop := func(name string, every time.Duration, step func(context.Context) error, report func(error), primed bool, prior error) {
 		defer wg.Done()
 		fails := 0
+		if primed {
+			wait := every
+			if prior != nil {
+				fails = 1
+				wait = backoff(fails, every, 5*time.Minute)
+			}
+			if p.sleep(ctx, wait) != nil {
+				return
+			}
+		}
 		for ctx.Err() == nil {
 			err := step(ctx)
 			report(err)
@@ -206,9 +239,9 @@ func (p *Plugin) Run(ctx context.Context) error {
 		}
 	}
 	wg.Add(4)
-	go loop("peer sync", peerCheckInterval, p.SyncPeers, p.health.setPeers)
-	go loop("inbox poll", p.cfg.PollInterval, p.PollInbox, p.health.setPoll)
-	go loop("requests poll", p.cfg.PollInterval, p.PollRequests, p.health.setRequests)
+	go loop("peer sync", peerCheckInterval, p.SyncPeers, p.health.setPeers, true, firstSync)
+	go loop("inbox poll", p.cfg.PollInterval, p.PollInbox, p.health.setPoll, false, nil)
+	go loop("requests poll", p.cfg.PollInterval, p.PollRequests, p.health.setRequests, false, nil)
 	go loop("claim", 0, func(ctx context.Context) error {
 		// A pending entry the hub cannot take yet must not stop the claims:
 		// each claim is also what makes muster retry delivering queued
@@ -219,7 +252,7 @@ func (p *Plugin) Run(ctx context.Context) error {
 			err = rerr
 		}
 		return err
-	}, p.health.setClaim)
+	}, p.health.setClaim, false, nil)
 	wg.Wait()
 	return nil
 }
@@ -282,7 +315,7 @@ func (p *Plugin) Summary() map[string]any {
 	outcomes := map[string]int{}
 	peers := []map[string]any{}
 	ledger := map[string]int{}
-	var requests, rejected, allowed, misthreaded int
+	var requests, rejected, allowed, misthreaded, held int
 	p.st.view(func(s *State) {
 		for _, m := range s.Messages {
 			outcomes[m.Outcome]++
@@ -300,6 +333,7 @@ func (p *Plugin) Summary() map[string]any {
 		}
 		requests, rejected, allowed = len(s.Requests), s.Rejected, len(s.Allowed)
 		misthreaded = s.HubThreadMismatches
+		held = len(s.Held)
 	})
 	p.health.mu.Lock()
 	out["last_poll_ok"], out["poll_error"] = p.health.lastPoll, p.health.pollErr
@@ -312,6 +346,8 @@ func (p *Plugin) Summary() map[string]any {
 	// Delivered messages the hub mis-threaded (its unsigned thread named another
 	// root than the signed re chain): a hub that is lying or broken.
 	out["hub_thread_mismatches"] = misthreaded
+	// A pinned peer's messages waiting for that peer to verify (held.go).
+	out["held"] = held
 	return out
 }
 

@@ -35,6 +35,7 @@ const (
 	outNotPeer       = "not_peer"       // authentic and ours, from a key no peer pins
 	outPeerDisabled  = "peer_disabled"  // from a pinned peer whose chain did not verify
 	outNotMsg        = "not_msg"        // authentic, but not a `msg`
+	outGone          = "gone"           // held, and then the hub no longer served it (held.go)
 	outSent          = "sent"           // a reply WE sent
 )
 
@@ -52,11 +53,11 @@ type MsgRecord struct {
 	At      int64  `json:"at"` // when recorded (unix s)
 }
 
-// RequestRecord is one item seen in the requests queue: who and how big,
-// never what it says.
+// RequestRecord is one stranger's item seen in the requests queue: who and
+// how big, never what it says. (A pinned peer's requests item is never one:
+// it is held or delivered, requests.go.)
 type RequestRecord struct {
 	From    string `json:"from"`
-	Peer    string `json:"peer,omitempty"` // set when the sender is a configured peer
 	TS      int64  `json:"ts"`
 	BodyLen int    `json:"body_len"`
 	At      int64  `json:"at"`
@@ -113,10 +114,12 @@ type State struct {
 	// (unsigned) thread named a different root than the one derived from the
 	// signed re chain. They are delivered on the derived root; this is the
 	// record that the hub mis-threaded them.
-	HubThreadMismatches int                     `json:"hub_thread_mismatches,omitempty"`
-	Peers               map[string]*PeerState   `json:"peers"`   // by key
-	Allowed             map[string]int64        `json:"allowed"` // keys WE put on the hub allow list (unix s)
-	Ledger              map[string]*LedgerEntry `json:"ledger"`  // "draft:<id>"
+	HubThreadMismatches int `json:"hub_thread_mismatches,omitempty"`
+	// Held: a pinned peer's messages not judged yet, in the order read (held.go).
+	Held    []*HeldItem             `json:"held,omitempty"`
+	Peers   map[string]*PeerState   `json:"peers"`   // by key
+	Allowed map[string]int64        `json:"allowed"` // keys WE put on the hub allow list (unix s)
+	Ledger  map[string]*LedgerEntry `json:"ledger"`  // "draft:<id>"
 }
 
 func newState() State {

@@ -22,9 +22,12 @@
 //	                        → POST /v1/allow; DELETE keys no longer configured
 //
 // plus a requests watcher (requests.go): the hub's `requests` queue (senders
-// nobody allowed) is COUNTED and LISTED for the human only. Nothing from it is
-// ever posted to muster, logged with its text, or stored with its text
-// (SPEC §7.2 secure default).
+// nobody allowed). A stranger's message there is COUNTED and LISTED for the
+// human only: nothing of it is ever posted to muster, logged with its text, or
+// stored with its text (SPEC §7.2 secure default). A pinned peer's message
+// there goes through the inbound pipeline like an inbox one. A pinned peer's
+// message read before that peer's chain was checked is HELD (held.go), never
+// judged on "not checked yet".
 //
 // THE RULES THIS PACKAGE EXISTS TO KEEP, each with its own test:
 //
@@ -39,7 +42,7 @@
 //     and a message it disagrees with is still delivered (on the derived root)
 //     and counted as mis-threaded by the hub.
 //   - The inbox cursor moves only after muster answered 2xx (or the item was
-//     judged and recorded), in one atomic state write.
+//     judged and recorded, or held), in one atomic state write.
 //   - A reply's signed bytes are written to the ledger (state.json, fsync'd)
 //     BEFORE they are submitted, and every retry, after any crash, resends
 //     those same bytes. The hub answers a stored id with 200, so a resend that

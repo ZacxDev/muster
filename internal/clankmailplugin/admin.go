@@ -8,12 +8,25 @@ package clankmailplugin
 // It exists so the one process that owns state.json stays its only writer: an
 // admin command never opens the state itself, it asks this process.
 //
-// 🔴 HUMAN-ONLY. The socket is reachable only by someone who can exec into the
-// plugin's container as its user. No muster session, chief or agent can reach
-// it, and muster never calls the plugin. It can read state and re-verify a
-// peer; it cannot send anything. The plugin only sends replies muster's owner
-// approved (replier.go); starting a new conversation will come from muster
-// itself, as compose drafts the owner approves.
+// 🔴 WHO CAN REACH IT. The socket is not on the network: it is reachable by
+// whoever can run a process in the plugin's container as its user, which on
+// Kubernetes means whoever holds `pods/exec` in the plugin's namespace. muster
+// never calls the plugin, and agent and chief pods carry no service-account
+// token, so they cannot exec into it. But `pods/exec` there is wider than "the
+// human": it includes any session holding the operator's kubeconfig, and
+// muster-server's own service account in the default provisioner layout
+// (MUSTER_AGENT_NAMESPACE_CLUSTERROLE unset, docs/provisioner.md), whose
+// ClusterRoleBinding grants `pods/exec` in every namespace. Whoever can exec
+// in can also read the chief's key file (CHIEF_KEY_FILE), which is more than
+// this socket gives. So the deployment, not this socket, is the boundary: run
+// the plugin in a namespace of its own where only the operator holds
+// `pods/exec` — which, against muster-server, takes the least-privilege
+// provisioner layout.
+//
+// What the socket can do: read state and re-verify a peer. It cannot send
+// anything. The plugin only sends replies muster's owner approved
+// (replier.go); starting a new conversation will come from muster itself, as
+// compose drafts the owner approves.
 
 import (
 	"context"

@@ -450,6 +450,37 @@ the hub's `requests` queue and is **never** posted to muster: `muster-clankmail 
 for you. The image ships it as `/muster-clankmail`; run one replica per state
 directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
 
+**What decides delivery is the signer, not the queue.** A pinned peer's message
+can land in `requests` too: one sent before the plugin's allow call reached the
+hub, or while the peer was disabled (and so off the allow list). Such a message
+goes through exactly the checks an inbox message does (the full signature
+verification, the pinned key, the peer's status) and is delivered once that
+peer is verified, exactly once, on the same derived thread. A message from a
+pinned peer that has not been checked yet (a fresh or lost `STATE_DIR`, a
+relabelled peer, a boot while the hub's handle route fails) is **held**, not
+dropped: the plugin keeps its id (never its text), checks its peers once
+before the first poll, and delivers the held message once the peer verifies.
+A held peer holds back only its own later messages (so they keep their
+order), never another peer's; `/health` reports the count as `held`. An
+inbox message from a peer that is **disabled** is final: it is recorded
+`peer_disabled` and not delivered, even after `peer verify`. A pinned peer's
+`requests` message waits while the peer is disabled and is delivered if
+`peer verify` re-enables it. A request listed as a stranger's whose key you
+later add to `CLANKMAIL_PEERS` is held from the next start, and delivered once
+that peer verifies; removing a peer turns its held requests back into listed
+ones.
+
+⚠ **The admin socket is as private as the plugin's namespace.** The admin
+subcommands talk to `$STATE_DIR/admin.sock` from inside the plugin's
+container. Agent and chief pods carry no service-account token, so they cannot
+reach it; but anyone who holds `pods/exec` in the plugin's namespace can, and
+can read `CHIEF_KEY_FILE` too. That includes any session holding the
+operator's kubeconfig and, in the default provisioner layout
+([provisioner.md](provisioner.md#kubernetes-rbac): a ClusterRoleBinding with
+`pods/exec` in every namespace), muster-server's own service account. Run the
+plugin in a namespace of its own where only the operator holds `pods/exec`,
+with the least-privilege provisioner layout.
+
 | variable | default | required | what it does |
 |---|---|---|---|
 | `MUSTER_URL` | none | yes | muster's base URL, where `/plugin/v1/*` is served. |

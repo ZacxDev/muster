@@ -14,7 +14,11 @@ package clankmailplugin
 // state.allowed is this plugin's record of what it added. Every sync DELETEs
 // each recorded key that is no longer a configured, verified peer — a peer
 // removed from CLANKMAIL_PEERS, or disabled — and forgets it only after the
-// hub answered 2xx. A key the operator allowed by other means is never touched.
+// hub answered 2xx. Every key this plugin ever verified is in state.allowed, so
+// a configured peer's key is DELETEd when that peer is disabled or removed,
+// even if the operator had also allowed it at the hub by other means. A key
+// the plugin never recorded (allowed by other means and never a verified peer
+// here) is never touched.
 //
 // The hub also removes a key from every allow list by itself when that key's
 // binding ends (SPEC §6.3 rule 3). The next check then fails the chain and

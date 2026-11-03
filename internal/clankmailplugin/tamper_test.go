@@ -264,10 +264,17 @@ func TestTamperHandleServedWithADifferentKeyDisablesThePeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNothingDelivered(t, e)
-	if got := p.RequestsList()["count"]; got != 1 {
-		t.Fatalf("after the DELETE the peer's message should land in requests, count=%v", got)
+	if got := e.queue(e.us.chief, "requests"); len(got) != 1 || got[0].ID != m {
+		t.Fatalf("after the DELETE the peer's message should land in requests at the hub, got %d", len(got))
 	}
-	_ = m
+	// A pinned key's requests item is held while the peer is disabled, not
+	// listed as a stranger's.
+	if got := p.RequestsList()["count"]; got != 0 {
+		t.Fatalf("the disabled peer's message is listed as a stranger's request, count=%v", got)
+	}
+	if !p.isHeld(m) {
+		t.Fatal("the disabled peer's requests item is not held")
+	}
 	// Sticky: an honest hub again does not re-enable it by itself.
 	if err := p.SyncPeers(bg); err != nil {
 		t.Fatal(err)
@@ -275,11 +282,26 @@ func TestTamperHandleServedWithADifferentKeyDisablesThePeer(t *testing.T) {
 	if _, status, _ := p.peerFor(KeyIDOf(e.peer.chief)); status != peerDisabled {
 		t.Fatalf("a periodic sync re-enabled a disabled peer (%s)", status)
 	}
-	// Only the human's re-check does.
+	if err := p.PollInbox(bg); err != nil {
+		t.Fatal(err)
+	}
+	assertNothingDelivered(t, e)
+	// Only the human's re-check does — and then the held message is delivered, once.
 	out, err := p.VerifyPeer(bg, "alice/chief", false)
 	e.must(err)
 	if out["status"] != peerOK {
 		t.Fatalf("peer verify on an honest hub: %v", out)
+	}
+	for i := 0; i < 2; i++ {
+		if err := p.PollRequests(bg); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.PollInbox(bg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := e.postsByID(); len(got) != 1 || got[m] != 1 {
+		t.Fatalf("after peer verify: muster posts by id %v, want %s once", got, m)
 	}
 }
 

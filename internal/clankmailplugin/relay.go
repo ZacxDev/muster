@@ -22,8 +22,15 @@ package clankmailplugin
 //     verified (status ok, peers.go);
 //  4. its body fits muster's 16 KiB (larger: recorded muster_refused).
 //
-// Anything else is recorded (no body) and the cursor moves past it: those
-// judgements cannot change by reading the item again.
+// A pinned peer that is still `unverified` (never checked yet) is NOT a
+// verdict: its message is HELD (held.go) — the cursor moves past it, nothing
+// final is recorded, and it is judged again once the peer's chain has been
+// checked. Anything else is recorded (no body) and the cursor moves past it:
+// those judgements cannot change by reading the item again. `disabled` (a
+// chain that did not verify) is one of them: recorded peer_disabled, final.
+//
+// The same pipeline (judge, settle) handles a pinned peer's message the hub
+// put in the `requests` queue (requests.go).
 //
 // SENDER. muster is told the peer's pinned LABEL (`<owner>/<name>`) with
 // sender_verified=true. Nothing the message says names its sender.
@@ -63,18 +70,24 @@ type errTransient struct{ err error }
 func (e errTransient) Error() string { return "transient: " + e.err.Error() }
 func (e errTransient) Unwrap() error { return e.err }
 
-// PollInbox reads the inbox queue from the stored cursor until it is empty (at
-// most maxPagesPoll pages), handling each item in order.
+// PollInbox first retries the held messages (held.go), then reads the inbox
+// queue from the stored cursor until it is empty (at most maxPagesPoll pages),
+// handling each item in order.
 func (p *Plugin) PollInbox(ctx context.Context) error {
+	p.relayMu.Lock()
+	defer p.relayMu.Unlock()
+	if err := p.retryHeld(ctx); err != nil {
+		return err
+	}
 	for page := 0; page < maxPagesPoll; page++ {
 		var after string
 		p.st.view(func(s *State) { after = s.InboxCursor })
-		items, _, err := p.hub.Inbox(ctx, "inbox", after, inboxPage)
+		items, _, err := p.hub.Inbox(ctx, queueInbox, after, inboxPage)
 		if err != nil {
 			return errTransient{err}
 		}
 		for _, it := range items {
-			if err := p.handleInboxItem(ctx, it); err != nil {
+			if err := p.handleItem(ctx, queueInbox, it); err != nil {
 				return err
 			}
 		}
@@ -85,6 +98,11 @@ func (p *Plugin) PollInbox(ctx context.Context) error {
 	return nil
 }
 
+const (
+	queueInbox    = "inbox"
+	queueRequests = "requests"
+)
+
 // verdict is the judgement of one inbox item.
 type verdict struct {
 	obj     *clankmail.Object
@@ -93,9 +111,14 @@ type verdict struct {
 	detail  string
 }
 
+// outUnverified is judge's answer for a pinned peer whose chain has not been
+// checked yet. It is NOT an outcome: it is never recorded; the message is
+// held (held.go).
+const outUnverified = "unverified"
+
 // judge applies rules 1–4 above. It never touches the network.
-func (p *Plugin) judge(it InboxItem) verdict {
-	obj, err := clankmail.Verify(it.Token)
+func (p *Plugin) judge(token string) verdict {
+	obj, err := clankmail.Verify(token)
 	if err != nil {
 		return verdict{outcome: "rejected", detail: codeOf(err)}
 	}
@@ -114,6 +137,9 @@ func (p *Plugin) judge(it InboxItem) verdict {
 	case !ok:
 		v.outcome = outNotPeer
 		return v
+	case status == peerUnverified:
+		v.peer, v.outcome = pc, outUnverified
+		return v
 	case status != peerOK:
 		v.peer, v.outcome, v.detail = pc, outPeerDisabled, status
 		return v
@@ -125,20 +151,50 @@ func (p *Plugin) judge(it InboxItem) verdict {
 	return v
 }
 
-func (p *Plugin) handleInboxItem(ctx context.Context, it InboxItem) error {
-	v := p.judge(it)
+// handleItem judges one item of queue and settles it, holds it, or (requests
+// only) lists it — in every case writing the cursor past it in the same state
+// write as what it recorded.
+func (p *Plugin) handleItem(ctx context.Context, queue string, it InboxItem) error {
+	move := func(s *State) {
+		if queue == queueRequests {
+			s.RequestsCursor = it.Cursor
+		} else {
+			s.InboxCursor = it.Cursor
+		}
+	}
+	v := p.judge(it.Token)
 	if v.outcome == "rejected" {
-		p.log.Warn("inbox item failed SPEC §4 verification: not delivered", "cursor", it.Cursor, "code", v.detail)
+		p.log.Warn(queue+" item failed SPEC §4 verification: not delivered", "cursor", it.Cursor, "code", v.detail)
 		return p.st.update(func(s *State) error {
 			s.Rejected++
-			s.InboxCursor = it.Cursor
+			move(s)
 			return nil
 		})
 	}
 	obj := v.obj
-	if done := p.alreadyDone(obj.ID); done {
-		return p.st.update(func(s *State) error { s.InboxCursor = it.Cursor; return nil })
+	if p.alreadyDone(obj.ID) || p.isHeld(obj.ID) {
+		return p.st.update(func(s *State) error { move(s); return nil })
 	}
+	if queue == queueRequests {
+		switch v.outcome {
+		case outNotPeer: // a stranger: listed for the human, never delivered (requests.go)
+			return p.recordRequest(obj, move)
+		case outNotMsg, outNotMine:
+			return p.st.update(func(s *State) error { move(s); return nil })
+		}
+	}
+	if p.mustHold(v, queue) {
+		return p.hold(v, queue, it.Thread, move)
+	}
+	return p.settle(ctx, v, it.Thread, move)
+}
+
+// settle is the end of an authentic item's road: deliver it to muster (when
+// v says so) and write its record together with commit (the cursor move, or
+// the held entry's removal) in one atomic state write. hubThread is the hub's
+// unsigned thread claim, only ever compared.
+func (p *Plugin) settle(ctx context.Context, v verdict, hubThread string, commit func(*State)) error {
+	obj := v.obj
 	ts := obj.Fields["ts"].(int64)
 	re, _ := obj.Fields["re"].(string)
 	subject, _ := obj.Fields["subject"].(string)
@@ -158,7 +214,7 @@ func (p *Plugin) handleInboxItem(ctx context.Context, it InboxItem) error {
 	// is delivered on the derived root as any other; the disagreement is only
 	// logged and counted (State.HubThreadMismatches, reported by show and
 	// /health). The hub's value is never sent to muster.
-	misthreaded := v.outcome == "" && it.Thread != "" && rec.Root != "" && it.Thread != rec.Root
+	misthreaded := v.outcome == "" && hubThread != "" && rec.Root != "" && hubThread != rec.Root
 	if misthreaded {
 		p.log.Warn("the hub's unsigned thread disagrees with the derived root: delivered on the derived root", "message", obj.ID)
 		rec.Detail = "the hub's unsigned thread named another root"
@@ -189,7 +245,7 @@ func (p *Plugin) handleInboxItem(ctx context.Context, it InboxItem) error {
 	rec.At = p.now().Unix()
 	if err := p.st.update(func(s *State) error {
 		s.Messages[obj.ID] = rec
-		s.InboxCursor = it.Cursor
+		commit(s)
 		if misthreaded { // in the same write as the record: a re-read item is never counted twice
 			s.HubThreadMismatches++
 		}

@@ -280,7 +280,6 @@ func requests(args []string, getenv func(string) string, stdout io.Writer) error
 		Items []struct {
 			ID      string `json:"id"`
 			From    string `json:"from"`
-			Peer    string `json:"peer"`
 			TS      int64  `json:"ts"`
 			BodyLen int    `json:"body_len"`
 		} `json:"items"`
@@ -300,11 +299,7 @@ func requests(args []string, getenv func(string) string, stdout io.Writer) error
 		}
 	}
 	for _, it := range list.Items {
-		who := it.From
-		if it.Peer != "" {
-			who += " (configured peer " + it.Peer + ")"
-		}
-		fmt.Fprintf(stdout, "%s  from %s  at %s  %d bytes\n", it.ID, who, time.UnixMilli(it.TS).UTC().Format(time.RFC3339), it.BodyLen)
+		fmt.Fprintf(stdout, "%s  from %s  at %s  %d bytes\n", it.ID, it.From, time.UnixMilli(it.TS).UTC().Format(time.RFC3339), it.BodyLen)
 		if hc == nil {
 			continue
 		}
