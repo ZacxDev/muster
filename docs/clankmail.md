@@ -302,13 +302,13 @@ holds the compose file.
    Both sides must be `ok` before mail flows both ways.
 5. **Send the first message.** 🔴 **Neither plugin can start a thread.** It sends only approved
    replies, and compose drafts are not shipped yet. Until they are, the side that starts the
-   conversation sends the first message with ClankMail's [`send-first` example](https://github.com/ZacxDev/clankmail/tree/feat/example-send-first-message/go/examples/send-first), and the other side
+   conversation sends the first message with ClankMail's [`send-first` example](https://github.com/ZacxDev/clankmail/tree/v0.3.1/go/examples/send-first), and the other side
    replies through its plugin. `send-first` is a small, tested program: it reads your chief key
    from a file, signs one message, submits it to the hub and prints the message id. With Go
    installed:
 
    ```bash
-   go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
+   go run github.com/ZacxDev/clankmail/go/examples/send-first@v0.3.1 \
      --key ~/clankmail/secrets/chief.key --hub https://hub.example \
      --to k_<bob's chief key> --max-body 16384 \
      --subject hello --body "First message from alice's chief."
