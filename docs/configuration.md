@@ -434,6 +434,42 @@ prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
 this flag ignores the header and starts the CLI with every tool, and muster
 does not detect it: see [chief nudges, Rolling out](chief-nudges.md#rolling-out).
 
+## muster-clankmail (the ClankMail plugin)
+
+`muster-clankmail` is a [plugin](plugins.md) for ClankMail, a signed-messaging
+protocol for agents (`github.com/ZacxDev/clankmail`, `SPEC.md`). It holds one
+key, your chief's: your offline principal key claims a handle (`@<owner>`),
+grants the chief key the name `chief`, and the chief key enrolls
+(`muster-clankmail identity claim` / `identity grant`), so the chief's address is
+`@<owner>/chief`. It delivers direct messages from **pinned peers** to your
+chief (`sender: <owner>/chief`, `sender_verified: true`, `thread`: the root
+derived by following each message's signed `re`), and sends the replies you
+approve. A message from anyone else lands in the hub's `requests` queue and is
+**never** posted to muster: `muster-clankmail requests` counts and lists them
+for you. The image ships it as `/muster-clankmail`; run one replica per state
+directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `MUSTER_URL` | none | yes | muster's base URL, where `/plugin/v1/*` is served. |
+| `PLUGIN_TOKEN_FILE` | none | yes | A file holding the `mpl_` plugin token minted on `/plugins`. |
+| `CHIEF_KEY_FILE` | none | yes | The chief's ClankMail key: one line, the base64url of a 32-byte Ed25519 seed (`muster-clankmail keygen --out FILE` writes it, mode `0600`). |
+| `HUB_URL` | none | yes | The ClankMail hub's base URL. |
+| `HUB_NAME` | none | yes | The hub's DNS name, exactly as the hub is configured: every request's auth and every identity object signs it. |
+| `CLANKMAIL_PEERS` | none | no | The peers whose messages reach your chief: `<owner>/<name>=k_…`, comma-separated, each pinning that agent's key (learned out of band). Every 10 minutes the plugin checks that the hub's `@<owner>` handle, grant and enroll still bind the pinned key to `<owner>/<name>`, and the first principal key that verified is remembered: a mismatch, or a different principal, **disables** the peer (its key is removed from the hub's allow list and its messages are not delivered) until you run `muster-clankmail peer verify [--accept-principal] <owner>/<name>`. Verified peers are put on the hub's allow list; a key you remove from this list is removed there too. |
+| `STATE_DIR` | none | yes | A writable directory (a volume): `state.json` (cursors, message records without bodies, the reply ledger), `state.lock`, and the admin socket `admin.sock` the admin subcommands use. |
+| `POLL_INTERVAL` | `15s` | no | How often the hub's inbox and requests queues are read. Range `1s`–`5m`. |
+| `LISTEN_ADDR` | `:8080` | no | Where `GET /health` is served (status, counts, peer states; never message text). |
+| `MUSTER_API_TOKEN_FILE` | none | no | A file holding a personal (`mst_`) or hook token, used only by `muster-clankmail send --bind <claude session id>` to bind the new thread to that session (`POST /api/plugin-threads`). |
+
+⚠ **Clocks.** The hub accepts a request's auth only within ±60 s of its own
+clock, and a message within ±300 s. Run the plugin on a host whose clock is
+synchronised (NTP); past 60 s of skew every inbox read fails with `E_AUTH`,
+which `/health` reports.
+
+⚠ **The hub can read direct messages.** ClankMail authenticates every message
+end to end, but does not encrypt it: send nothing secret.
+
 ## Test and e2e harness
 
 These variables are read by non-test code that exists only for testing. That

@@ -709,8 +709,14 @@ func moduleRoot(t *testing.T) string {
 //     GET /v1/clis is which CLIs in the pod are working by their own sessions
 //     files, read by task_dispatch's owner_asked (internal/api
 //     chief_owner_release.go), bearer-authenticated the same way.
+//   - internal/clankmailplugin: the muster-clankmail plugin's ADMIN socket
+//     ($STATE_DIR/admin.sock, a 0600 unix socket inside the plugin's own
+//     container), used by its admin subcommands. muster-server never serves it,
+//     and muster never calls a plugin. (Its /health is a plain handler, not a
+//     mux pattern.)
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd": {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
+	"cmd/ccd":                  {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
+	"internal/clankmailplugin": {"GET /requests", "GET /show", "POST /peer-verify", "POST /send"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

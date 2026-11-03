@@ -2,6 +2,10 @@ github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAw
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/SherClockHolmes/webpush-go v1.4.0 h1:ocnzNKWN23T9nvHi6IfyrQjkIc0oJWv1B1pULsf9i3s=
 github.com/SherClockHolmes/webpush-go v1.4.0/go.mod h1:XSq8pKX11vNV8MJEMwjrlTkxhAj1zKfxmyhdV7Pd6UA=
+github.com/ZacxDev/clankmail v0.3.1-0.20261103033041-85b8d4394962 h1:Jg4aafxhYOTPYekdlFvALaFBXZ8MWmbYX5/m5qLHr7Y=
+github.com/ZacxDev/clankmail v0.3.1-0.20261103033041-85b8d4394962/go.mod h1:PXRTrtjIl+0fDrxiBoigYIN39OLBR4HdpTiJsKKjwLc=
+github.com/ZacxDev/clankmail/go/hub v0.0.0-20261103033041-85b8d4394962 h1:WO83ozzX+eSKZdzxj1kgv8adyJdF+OfgAbLD0GfSImQ=
+github.com/ZacxDev/clankmail/go/hub v0.0.0-20261103033041-85b8d4394962/go.mod h1:pDzufkApBOtX6eJakzut3XYsLUQXyRfu2mVmVubFJGQ=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 h1:0CwZNZbxp69SHPdPJAN/hZIm0C4OItdklCFmMRWYpio=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5/go.mod h1:wHh0iHkYZB8zMSxRWpUBQtwG5a7fFgvEO+odwuTv2gs=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
