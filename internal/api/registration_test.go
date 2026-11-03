@@ -111,6 +111,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		// NON-ZERO on purpose: an empty sender list is the feature off.
 		PRMail:     &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
 		PRSessions: stubPRSessions{},
+		ClosedPRs:  &ClosedPRs{},
 		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
 			Paths: plugins.FleetReportPaths{"/srv/example-work"}, Replies: stubMusterReplier{}},
 		// NON-ZERO on purpose: an empty allowlist is the feature off.

@@ -865,6 +865,7 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	ctx = withPRReadBudget(ctx, prReadsPerPass) // a hand-back's closed-PR check (settleClosedPRRoute), this pass
 	n := 0
 	for _, d := range due {
 		octx := s.routePrincipal(ctx, d.OwnerID)
@@ -1041,6 +1042,11 @@ func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
 		return
 	}
 	if !ok {
+		return
+	}
+	if s.settleClosedPRRoute(ctx, r) {
+		// Its pull request is merged or closed: settled, nothing handed back.
+		s.logger.Printf("routes: %s: not handed back (%s): its pull request is already closed", routeID, reason)
 		return
 	}
 	s.logger.Printf("routes: %s: handing it back to the chief (%s)", routeID, reason)

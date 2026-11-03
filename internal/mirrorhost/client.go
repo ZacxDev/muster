@@ -355,6 +355,22 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		conn.hermes.clarify = src.State().PendingClarify
 	}
 	defer conn.hermes.close()
+	// An opencode ask raised or settled sends the listing at once, so muster
+	// notifies (and withdraws) without waiting for the next refresh.
+	if src, ok := conn.openCodeSource(); ok {
+		changes, stop := src.Changes()
+		defer stop()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-changes:
+					conn.nudge()
+				}
+			}
+		}()
+	}
 	if sb, ok := ScrollOf(c.cfg.Backend); ok {
 		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)
 	}
@@ -376,6 +392,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.SubagentReport = conn.subagentReport()
 	hello.HermesSend = conn.hermesSend()
 	hello.HermesAnswer = conn.hermesAnswer()
+	hello.OpenCodeAnswer = conn.openCodeAnswer()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	if err := conn.send(hello); err != nil {
 		return err

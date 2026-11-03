@@ -575,6 +575,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			if len(cfg.PRMailSenders) > 0 {
 				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders}
 				ext.PRSessions = pluginStore
+				// A review of a pull request already merged or closed is settled
+				// by muster (api/pr_closed.go) — only with the GitHub App, its
+				// one source of a pull request's state.
+				if gapp, ok := ext.GitHubApp.(*githubapp.App); ok {
+					ext.ClosedPRs = &api.ClosedPRs{States: gapp, Store: pluginStore}
+				}
 			}
 			// Resuming an ended session for its mail (MUSTER_MAIL_RESUME_ALLOW):
 			// off unless senders are listed; the kill switch is read by the
@@ -680,7 +686,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if len(cfg.Officers) > 0 {
 		ocfg := api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}
 		if a.pool != nil {
-			// The LLM proxy's daily budget lives here (migration 0071); an
+			// The LLM proxy's daily budget lives here (migration 0072); an
 			// officer that declares `llm` with no database is refused.
 			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
 		}
@@ -1405,6 +1411,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("pull-request routing: ON (%s) — %d agent-mail sender(s) whose VERIFIED review mail goes to the mirrored "+
 			"session that created or pushed its pull request, as its host's hook reported it (POST /api/pr-sessions)",
 			envPRMailSenders, len(ext.PRMail.Senders))
+		if ext.ClosedPRs != nil {
+			l.Printf("pull-request routing: a review of a pull request the GitHub App reports already merged or closed is settled by " +
+				"muster (no paste, no hand-back, no ask); a pull request it cannot read is handled as open")
+		} else {
+			l.Printf("pull-request routing: no GitHub App (%s unset), so a review of a merged or closed pull request is handled as any other", envGitHubAppID)
+		}
 	case len(a.cfg.PRMailSenders) > 0:
 		l.Printf("pull-request routing: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so "+
 			"POST /api/pr-sessions answers 404 and nothing is routed", envPRMailSenders, envSessionRouting)

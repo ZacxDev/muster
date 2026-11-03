@@ -161,11 +161,11 @@ const chiefNudgesMigrationVersion = 64
 // … IF EXISTS, CREATE OR REPLACE), so re-applying it is safe.
 const ccAccountFailoversMigrationVersion = 66
 
-// officerLLMUsageMigrationVersion is 0071: officer_llm_usage (the officer LLM
+// officerLLMUsageMigrationVersion is 0072: officer_llm_usage (the officer LLM
 // proxy's per-day usage), owned and under the same row-level security; same
 // treatment again. Its body is idempotent, the connector_audit CHECK it
 // widens included.
-const officerLLMUsageMigrationVersion = 71
+const officerLLMUsageMigrationVersion = 72
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

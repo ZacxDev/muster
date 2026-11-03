@@ -201,8 +201,9 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 // dispatchPluginMessage hands a NEW message m on: answered by muster itself
 // when it is a fleet-report request from a listed, verified sender
 // (answerFleetReport), else to the session that started its thread
-// (routeByThread), else to the session that authored the pull
-// request it reviews (routeByPR), else — when that session's window is gone
+// (routeByThread), else — a review of a pull request already merged or
+// closed — settled by muster (settleClosedPRReview), else to the session that
+// authored the pull request it reviews (routeByPR), else — when that session's window is gone
 // and the gate allows it — to that session RESUMED (startMailResume, which
 // falls back to the chief itself), or else to the owner's chief. A route is
 // made detached from the request, as the chief's delivery is: a client that
@@ -211,7 +212,8 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 // chief's while the chief never sees it.
 func (s *Server) dispatchPluginMessage(r *http.Request, p plugins.Plugin, m plugins.Message) {
 	ctx := context.WithoutCancel(r.Context())
-	if s.answerFleetReport(ctx, p, m) || s.routeByThread(ctx, p, m) || s.routeByPR(ctx, p, m) || s.startMailResume(ctx, p, m) {
+	if s.answerFleetReport(ctx, p, m) || s.routeByThread(ctx, p, m) || s.settleClosedPRReview(ctx, p, m) ||
+		s.routeByPR(ctx, p, m) || s.startMailResume(ctx, p, m) {
 		return
 	}
 	s.deliverPluginMessage(r, p, m)

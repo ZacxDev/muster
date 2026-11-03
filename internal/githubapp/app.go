@@ -222,8 +222,9 @@ type Account struct {
 }
 
 // tokenKey names a cached token: an agent's repository token (agent > 0) in
-// one access mode, or an installation's listing token (agent == 0, repo ==
-// "installation:<id>", access ""). The mode is part of the key, so a write
+// one access mode, an installation's listing token (agent == 0, repo ==
+// "installation:<id>", access ""), or muster's pull-request read token for one
+// repository (agent == 0, repo == "pr-read:<owner>/<name>"). The mode is part of the key, so a write
 // token cached for an agent is never served to a read-only request of the same
 // agent (an agent that became an officer instance).
 type tokenKey struct {
@@ -831,6 +832,84 @@ func (a *App) DefaultBranch(ctx context.Context, repo string) (string, error) {
 		return "", err
 	}
 	return r.DefaultBranch, nil
+}
+
+// PRState is a pull request's state as GitHub reports it: State "open" or
+// "closed", and Merged when a closed one was merged.
+type PRState struct {
+	State  string
+	Merged bool
+}
+
+// prReadMintRequest is the body of the token muster itself uses to read one
+// repository's pull requests (PullRequestState): that repository only, metadata
+// and pull requests READ. A pull request of a PRIVATE repository is a 404 to a
+// metadata-only token (listingMintRequest), so the listing token cannot serve
+// this read. It is never injected into an agent's request.
+func prReadMintRequest(name string) map[string]any {
+	return map[string]any{"repositories": []string{name},
+		"permissions": map[string]string{"metadata": "read", "pull_requests": "read"}}
+}
+
+// ErrMintBusy is a pull-request read refused because another token is being
+// minted: PullRequestState never waits on the mint lock, so its caller's
+// deadline bounds the whole read (the caller reads it as "unknown").
+var ErrMintBusy = errors.New("githubapp: another token is being minted; not waiting for it")
+
+// prReadToken returns a cached or freshly minted prReadMintRequest token for
+// repo. Unlike repoToken and listingToken it does NOT wait for the mint lock:
+// a mint in progress (up to the HTTP client's timeout) would otherwise outlast
+// the caller's deadline, so a busy lock is ErrMintBusy at once.
+func (a *App) prReadToken(ctx context.Context, owner, name string) (string, error) {
+	key := tokenKey{repo: "pr-read:" + strings.ToLower(owner+"/"+name)}
+	if t, ok := a.cached(key); ok {
+		return t, nil
+	}
+	if !a.mintMu.TryLock() {
+		return "", ErrMintBusy
+	}
+	defer a.mintMu.Unlock()
+	if t, ok := a.cached(key); ok {
+		return t, nil
+	}
+	inst, err := a.installationFor(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	t, err := a.mint(ctx, inst, prReadMintRequest(name), "minting a pull-request read token for "+owner+"/"+name)
+	if err != nil {
+		return "", err
+	}
+	a.store(key, t)
+	return t.value, nil
+}
+
+// PullRequestState reads pull request n of repo with a token limited to that
+// repository and pull requests read (prReadToken): muster's own server-side
+// read, never handed to an agent. Every failure — a repository whose owner has
+// no allowlisted installation, a 404, a 5xx, ctx's deadline, a busy mint lock —
+// is an error, which the caller reads as "unknown".
+func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRState, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || n <= 0 {
+		return PRState{}, fmt.Errorf("%q #%d is not owner/name and a pull request number", repo, n)
+	}
+	tok, err := a.prReadToken(ctx, owner, name)
+	if err != nil {
+		return PRState{}, err
+	}
+	var r struct {
+		State  string `json:"state"`
+		Merged bool   `json:"merged"`
+	}
+	if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
+		strconv.FormatInt(n, 10), "token "+tok, nil, &r, "reading "+repo+" pull request #"+strconv.FormatInt(n, 10), owner); err != nil {
+		return PRState{}, err
+	}
+	if r.State != "open" && r.State != "closed" {
+		return PRState{}, fmt.Errorf("GitHub's answer for %s pull request #%d has state %q", repo, n, r.State)
+	}
+	return PRState{State: r.State, Merged: r.Merged}, nil
 }
 
 // ListPullRequests lists agentID's own repository's pull requests with that

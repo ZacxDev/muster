@@ -1,0 +1,18 @@
+data: {"id":"evt_1a31774a7001xBTwj4fw792F11","created":1793737585831,"type":"session.created","location":{"directory":"/srv/fixture"},"data":{"sessionID":"ses_e5ce88b59ffevd01THXy0Z6WjF","slug":"misty-knight","version":"2.0.32+6ec5682","projectID":"064f18c2b7f50d8f87da7f42b75ee989fb992c24","location":{"directory":"/srv/fixture"},"subpath":"","title":"Abort session","permissions":[{"action":"*","resource":"*","effect":"ask"}]},"durable":{"aggregateID":"ses_e5ce88b59ffevd01THXy0Z6WjF","seq":0,"version":1}}
+
+data: {"id":"evt_1a31774be001lxZkLL966PKGTP","created":1793737585854,"type":"session.execution.started","data":{"sessionID":"ses_e5ce88b59ffevd01THXy0Z6WjF"},"durable":{"aggregateID":"ses_e5ce88b59ffevd01THXy0Z6WjF","seq":2,"version":1}}
+
+data: {"id":"evt_1a3177902002mXmccNx2moRkEN","created":1793737586946,"type":"permission.asked","location":{"directory":"/srv/fixture"},"data":{"id":"per_1a31779020017W8wYt7c7UUj2m","sessionID":"ses_e5ce88b59ffevd01THXy0Z6WjF","action":"shell","resources":["ls -la ."],"save":["ls *"],"source":{"type":"tool","messageID":"msg_1a31774cf001utlihK7qhZorRV","id":"call_00_w7ovar3wb757qzi2fzesl13l"}}}
+
+data: {"id":"evt_1a3179d170021oNf1m2A4zwqM4","created":1793737596183,"type":"session.execution.interrupted","data":{"sessionID":"ses_e5ce88b59ffevd01THXy0Z6WjF","reason":"user"},"durable":{"aggregateID":"ses_e5ce88b59ffevd01THXy0Z6WjF","seq":12,"version":1}}
+
+data: {"id":"evt_1a317cc4b001ZePIIhMQ6w77yW","created":1793737608267,"type":"session.created","location":{"directory":"/srv/fixture"},"data":{"sessionID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc","slug":"calm-sailor","version":"2.0.32+6ec5682","projectID":"064f18c2b7f50d8f87da7f42b75ee989fb992c24","location":{"directory":"/srv/fixture"},"subpath":"","title":"Question session"},"durable":{"aggregateID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc","seq":0,"version":1}}
+
+data: {"id":"evt_1a317cc64001diZ0Ax4TbxArH5","created":1793737608292,"type":"session.execution.started","data":{"sessionID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc"},"durable":{"aggregateID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc","seq":2,"version":1}}
+
+data: {"id":"evt_1a317d1fb00225PRWzVGpeR8ze","created":1793737609723,"type":"form.created","location":{"directory":"/srv/fixture"},"data":{"form":{"id":"frm_1a317d1fb00121QVUp1IrY6yOD","sessionID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc","title":"Questions","metadata":{"kind":"question","tool":{"messageID":"msg_1a317cc6e001gDlYbNxF88ltcT","id":"call_00_ez7ptb5gg1rvdvcjns5mkm01"}},"fields":[{"key":"q0","title":"Proceed?","description":"Proceed?","type":"string","options":[{"value":"Yes","label":"Yes","description":"Continue with the task."},{"value":"No","label":"No","description":"Do not proceed."}],"custom":true}]}}}
+
+data: {"id":"evt_1a317f4c90016TuibcDfC78mof","created":1793737618633,"type":"form.cancelled","location":{"directory":"/srv/fixture"},"data":{"id":"frm_1a317d1fb00121QVUp1IrY6yOD","sessionID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc"}}
+
+data: {"id":"evt_1a317f4cc001v0n9clEZMDiOe6","created":1793737618636,"type":"session.execution.interrupted","data":{"sessionID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc","reason":"user"},"durable":{"aggregateID":"ses_e5ce833b5ffeGQb3gjbbeOOQWc","seq":12,"version":1}}
+

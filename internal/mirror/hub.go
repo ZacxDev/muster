@@ -112,6 +112,10 @@ type HostView struct {
 	// -hermes-answer and is -interactive, v2): a Hermes approval muster shows
 	// for one of its windows can be answered here (Hermes Phase 4).
 	HermesAnswer bool
+	// OpenCodeAnswer: the host advertised Msg.OpenCodeAnswer (it is
+	// -interactive, v2, and holds an opencode token): an opencode ask muster shows
+	// for one of its windows can be answered here.
+	OpenCodeAnswer bool
 	// PanePaste: the host advertised that a paste may target a session's active
 	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
 	// and for an offline host.
@@ -292,6 +296,9 @@ func waitingWindows(ws []Window) []string {
 			// arrives (or changes) after the status does still updates the queue.
 			if p := w.Pending; p != nil {
 				k += "\x00" + p.Summary + "\x00" + p.Tool + "\x00" + p.Last
+				// And which ask it is: a new opencode question or permission in the
+				// same window, or one that became answerable, moves the queue.
+				k += "\x00" + p.Kind + "\x00" + p.PromptID + "\x00" + p.Options
 			}
 			out = append(out, k)
 		}
@@ -438,7 +445,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, HermesSend: hc.gatedSends[RuntimeHermes], HermesAnswer: hc.gatedAnswers[RuntimeHermes]})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, HermesSend: hc.gatedSends[RuntimeHermes], HermesAnswer: hc.gatedAnswers[RuntimeHermes],
+			OpenCodeAnswer: hc.gatedAnswers[RuntimeOpenCode]})
 		hc.mu.Unlock()
 	}
 	now := h.now()

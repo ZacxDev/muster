@@ -21,6 +21,7 @@ The verb set is pinned in two places:
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)) |
 | setup | `doctor` ([below](#muster-doctor)) |
+| chief nudges | `nudge next` (a host's oldest chief-nudge notice as a tmux target: [below](#jumping-to-a-chief-nudge)) |
 | several servers | `tenant list`, `tenant current`, `tenant use`, `tenant add`, `tenant remove` ([below](#several-servers-tenants)) |
 
 Global flags: `--api-url`, `--token`, `--env-file` (default
@@ -187,6 +188,33 @@ INSTALL.md's Step 10 passes `--api-url` there.
 - `GET /api/doctor` is behind the armed hook token: a server with no
   `MUSTER_HOOK_TOKEN` answers 503 with `"unarmed": true`, which is what the
   `hook-token` check reports.
+
+## Jumping to a chief nudge
+
+A live [chief nudge](chief-nudges.md#live-mode) is a [notice](attention.md#notices)
+on your Asks list: a pointer at a session that looks like it is waiting on you.
+`nudge next` prints the oldest notice whose session is on one host, with its
+tmux target, for a key binding to jump to:
+
+```sh
+muster nudge next --host laptop   # the oldest notice that has a target, one JSON object
+tmux switch-client -t "$(muster nudge next --host laptop | jq -r .target)"
+```
+
+- **Host:** `--host`, or `MUSTER_MIRROR_HOST` when it is not given (the name
+  the host's muster-mirror reports). Neither is a usage error (exit 2).
+- **What a notice is:** `key`, `host`, `target` (`<tmux session>:<window
+  index>`, resolved by the server when asked, so a renumbered window resolves to
+  its new index; `""` when no mirrored window holds the session now), `title`,
+  `why`, `since` and `age_secs`, and `url` when the server knows its public URL.
+  A notice with no target is skipped.
+- **Exit status of `next`:** 0 with the notice on stdout; **11** with nothing on
+  stdout when no notice with a target is waiting on that host; 1 when the
+  queue could only be partly read and none was found (it does not claim none
+  is waiting); and the usual codes otherwise (3 for a refused credential).
+- **Credential:** a personal token or a bar-summary token. It reads the
+  [attention summary](attention.md#the-summary-api), which is a user's own, so
+  the shared hook token is refused (exit 3).
 
 ## Other binaries
 

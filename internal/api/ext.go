@@ -290,6 +290,11 @@ type Extensions struct {
 	// answers 404 and every message is handed on as before.
 	PRMail     *PRMail
 	PRSessions plugins.PRSessionStore
+	// ClosedPRs settles a review of a pull request already merged or closed
+	// instead of routing it, handing it back or asking about it (pr_closed.go).
+	// nil — no GitHub App, or PR routing off — is OFF: every review is
+	// handled as before.
+	ClosedPRs *ClosedPRs
 
 	// FleetReport is the fleet-report request's configuration
 	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS;

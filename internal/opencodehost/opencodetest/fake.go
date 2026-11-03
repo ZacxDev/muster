@@ -6,7 +6,8 @@
 // lifetime. Every request is recorded (Requests), which is how tests prove
 // muster-mirror never calls anything else.
 //
-// Everything it serves is synthetic: tests put sessions and messages in.
+// Sessions and messages are synthetic: tests put them in. Its asks are driven
+// by REAL frames a real server sent (asks.go).
 package opencodetest
 
 import (
@@ -54,6 +55,12 @@ type Server struct {
 	refuseRedeem bool
 	// failEvents makes /api/event answer 503.
 	failEvents bool
+	// perms and forms are each session's pending permission requests and
+	// forms (asks.go); replies every reply received; refuseReplies the status
+	// every reply answers (0: normally).
+	perms, forms  map[string][]json.RawMessage
+	replies       []Reply
+	refuseReplies int
 }
 
 // FailEvents makes the event stream answer 503 (on) — a server whose stream
@@ -259,6 +266,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"_tag":"UnauthorizedError","message":"Authentication required"}`))
 		return
 	}
+	if s.serveAsks(w, r, path) {
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && path == "/api/info":
 		writeJSON(w, map[string]any{"version": "2.0.0-fixture", "pid": 1, "urls": []string{s.URL}, "paths": map[string]any{}, "capabilities": map[string]any{}})
@@ -414,6 +424,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case f := <-ch:
+			if f == dropSentinel {
+				return // DropStreams: the connection ends as a network drop would
+			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", f)
 			fl.Flush()
 		case <-beat.C:
