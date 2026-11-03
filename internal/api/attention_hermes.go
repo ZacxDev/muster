@@ -152,9 +152,18 @@ func (s *Server) handleAttentionHermesApprove(w http.ResponseWriter, r *http.Req
 // attentionNotice is the page's notice for a query that names one (an
 // answer that went through), "" for none.
 func attentionNotice(r *http.Request) string {
-	if r.Method != http.MethodGet || r.URL.Query().Get("answered") != "hermes" {
+	if r.Method != http.MethodGet {
+		return ""
+	}
+	text := ""
+	switch r.URL.Query().Get("answered") {
+	case "hermes":
+		text = hermesAnsweredText
+	case "opencode":
+		text = openCodeAnsweredText
+	default:
 		return ""
 	}
 	return `<p role="status" class="rounded-lg bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="attention-notice">` +
-		html.EscapeString(hermesAnsweredText) + `</p>`
+		html.EscapeString(text) + `</p>`
 }

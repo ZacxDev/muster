@@ -12,7 +12,9 @@ import (
 // rendered view's own events, so the page draws an opencode session with the
 // Claude Code view's components.
 //
-//	user (text)                       → prompt (Line = its time.created)
+//	user (text)                       → prompt (Line and PromptAt = its
+//	                                    time.created, Unix ms: how recent a
+//	                                    message the person typed is)
 //	assistant text                    → text, once the item is FINAL
 //	assistant reasoning               → nothing: thinking is never drawn
 //	                                    (cctranscript's rule; it may be opaque)
@@ -50,7 +52,7 @@ func Render(m Message) []Keyed {
 			return nil
 		}
 		return []Keyed{{"u", cctranscript.Event{Kind: cctranscript.KindPrompt, Text: cctranscript.Cap(m.Text, cctranscript.MaxText),
-			Line: int64(m.Time.Created)}}}
+			Line: int64(m.Time.Created), PromptAt: int64(m.Time.Created)}}}
 	case "assistant":
 		return renderAssistant(m)
 	case "idle":

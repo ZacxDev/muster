@@ -160,7 +160,8 @@ func runtimeSites(t *testing.T, root string) ([]string, int) {
 //   - a runtime's implementation checking that a window is its own, or
 //     speaking its own wire (Hermes's send, asks, stream, answer, listing,
 //     its hello flags and refusal kinds; its e2e fake; opencode's locator,
-//     stream and listing);
+//     stream, listing, asks and answer — and the attention item a waiting
+//     window of each is drawn as, Server.waitingSessionsIn);
 //   - Claude Code's wire, which is Window.Claude and per-session hosts, never
 //     Window.Runtime;
 //   - per-runtime WORDS (the queue's, Send now's and the composer's copy, the
@@ -179,6 +180,7 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"cmd/muster-mirror/main.go run ×2",
 		"cmd/muster-mirror/main.go tmuxBackend ×1",
 		"cmd/muster-mirror/opencode_list.go printOpenCode ×1",
+		"internal/api/attention.go Server.waitingSessionsIn ×1",
 		"internal/api/attention_hermes.go attentionNotice ×1",
 		// The chief's stall nudges judge opencode panes — and only those of the
 		// non-Claude runtimes — by the owner's choice (chief_nudge.go).
@@ -192,9 +194,10 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/focus/focus.go HermesSubject ×1",
 		"internal/mirror/agentstate.go Hub.AgentState ×1",
 		"internal/mirror/hermes_answer.go Hub.AnswerHermesApproval ×3",
-		"internal/mirror/hub.go Hub.Hosts ×4",
+		"internal/mirror/hub.go Hub.Hosts ×5",
 		"internal/mirror/hub.go hostConn.target ×1",
 		"internal/mirror/hub.go hostConn.targetRuntime ×1",
+		"internal/mirror/opencode_answer.go Hub.AnswerOpenCodeAsk ×3",
 		"internal/mirror/order.go (declarations) ×1",
 		"internal/mirror/order.go SessionView.HermesView ×1",
 		"internal/mirror/runtime.go (declarations) ×10",
@@ -223,6 +226,7 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirrorhost/hermes_stream.go hostSide.hermesWindow ×1",
 		"internal/mirrorhost/opencode.go ResolveOpenCodePane ×1",
 		"internal/mirrorhost/opencode.go openCodeRuntime.LocatePanes ×1",
+		"internal/mirrorhost/opencode_asks.go hostSide.answerOpenCode ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeGone ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeWindow ×1",
 		"internal/mirrorhost/runtime.go Tmux.hermesRuntime ×1",

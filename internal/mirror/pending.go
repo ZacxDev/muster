@@ -62,12 +62,38 @@ type Pending struct {
 	// a subset of HermesApprovalChoices, in that order ("once deny"). Empty
 	// without a PromptID. (A string, not a slice, so a Pending stays
 	// comparable with ==.)
+	//
+	// An OPENCODE ask (PendingPermission, PendingQuestion) names its request
+	// or form the same way: PromptID is opencode's id for it ("per…",
+	// "frm_…"), and a permission's Choices a subset of
+	// OpenCodePermissionChoices.
 	Choices string `json:"choices,omitempty"`
+	// Options are an opencode QUESTION's option labels, one per line, when
+	// muster can answer it (one single-select question of 1..MaxPendingOptions
+	// options, each label within MaxPendingOption runes and unchanged by
+	// cleaning — an answer is the label itself, so a cut one could not be
+	// sent back). "" otherwise: the question is then the terminal's.
+	Options string `json:"options,omitempty"`
 }
 
-// Offers reports whether p offers choice as an answer (Choices).
+// Offers reports whether p offers choice as an answer: one of its Choices,
+// or — for an opencode question — one of its Options.
 func (p Pending) Offers(choice string) bool {
-	return choice != "" && slices.Contains(strings.Fields(p.Choices), choice)
+	if choice == "" {
+		return false
+	}
+	if p.Kind == PendingQuestion {
+		return slices.Contains(p.OptionList(), choice)
+	}
+	return slices.Contains(strings.Fields(p.Choices), choice)
+}
+
+// OptionList is p's Options, one label each; nil for none.
+func (p Pending) OptionList() []string {
+	if p.Options == "" {
+		return nil
+	}
+	return strings.Split(p.Options, "\n")
 }
 
 // The Hermes asks a Pending names (Pending.Kind), as Hermes's status hook
@@ -77,6 +103,30 @@ const (
 	PendingClarify  = "clarify"
 	PendingSudo     = "sudo"
 )
+
+// The opencode asks a Pending names (docs/design/opencode.md, "Asks"): a
+// permission request, and a form its question tool raised. Only an opencode
+// window's (RuntimeSpec.AskKinds).
+const (
+	PendingPermission = "permission"
+	PendingQuestion   = "question"
+)
+
+// OpenCodePermissionChoices are the answers muster ever sends an opencode
+// permission request: this one call, or no. `always` widens the session's
+// rules past this call, so muster never offers it (as HermesApprovalChoices
+// leaves out `session` and `always`).
+var OpenCodePermissionChoices = []string{"once", "reject"}
+
+// openCodeIDPattern is an opencode permission request or form id as muster
+// carries it: "per" or "frm_" and up to 125 more bytes of [0-9A-Za-z_-]
+// (internal/opencodehost's ValidRequestID and ValidFormID, which a test pins
+// to agree).
+var openCodeIDPattern = regexp.MustCompile(`^(per[0-9A-Za-z_-]{1,125}|frm_[0-9A-Za-z_-]{1,124})$`)
+
+// ValidOpenCodeAskID reports whether id is an opencode permission request or
+// form id.
+func ValidOpenCodeAskID(id string) bool { return openCodeIDPattern.MatchString(id) }
 
 // HermesApprovalChoices are the answers muster ever sends a Hermes approval:
 // the moment being approved, or no. `session` and `always` widen what the
@@ -104,6 +154,14 @@ const (
 	MaxPendingWindows = 8
 	// MaxPendingDetail bounds Pending.Detail, in runes.
 	MaxPendingDetail = 120
+	// MaxPendingOptions bounds how many options an opencode question offers
+	// in muster, and MaxPendingOption each one's runes. With Last and Detail
+	// left off a question, its Pending is never larger on the wire than a
+	// Claude window's at its bounds (TestAnOpenCodePendingIsNoLargerThanAClaudeOne),
+	// so the frame bound measured for those holds (internal/mirrorhost's
+	// TestTheLargestWindowListFitsOneFrame).
+	MaxPendingOptions = 4
+	MaxPendingOption  = 40
 )
 
 // CleanPending is p as the wire carries it: each field through cleanLine and
@@ -118,6 +176,31 @@ func CleanPending(p *Pending) *Pending {
 	case PendingApproval, PendingClarify, PendingSudo:
 		out.Kind = p.Kind
 		out.Detail = cleanLine(p.Detail, MaxPendingDetail)
+	case PendingPermission, PendingQuestion:
+		// An opencode ask has no "last words" (Last is Claude Code's), and a
+		// question no Detail: its bytes go to its options instead.
+		out.Kind, out.Last = p.Kind, ""
+		if p.Kind == PendingPermission {
+			out.Detail = cleanLine(p.Detail, MaxPendingDetail)
+		}
+		if ValidOpenCodeAskID(p.PromptID) {
+			switch {
+			case p.Kind == PendingPermission && strings.HasPrefix(p.PromptID, "per"):
+				var cs []string
+				for _, c := range OpenCodePermissionChoices {
+					if p.Offers(c) {
+						cs = append(cs, c)
+					}
+				}
+				if len(cs) > 0 {
+					out.PromptID, out.Choices = p.PromptID, strings.Join(cs, " ")
+				}
+			case p.Kind == PendingQuestion && strings.HasPrefix(p.PromptID, "frm_"):
+				if opts, ok := cleanOptions(p.OptionList()); ok {
+					out.PromptID, out.Options = p.PromptID, strings.Join(opts, "\n")
+				}
+			}
+		}
 	}
 	// An answer is offered only for an approval muster can name, and only
 	// with a choice muster ever sends.
@@ -136,6 +219,31 @@ func CleanPending(p *Pending) *Pending {
 		return nil
 	}
 	return &out
+}
+
+// cleanOptions is opts as an opencode question offers them in muster: all of
+// them or none — 1..MaxPendingOptions labels, each unchanged by cleanLine at
+// MaxPendingOption runes (an answer IS the label, so one cleaning changed
+// could not be sent back) and unique.
+func cleanOptions(opts []string) ([]string, bool) {
+	if len(opts) == 0 || len(opts) > MaxPendingOptions {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	for _, o := range opts {
+		if o == "" || cleanLine(o, MaxPendingOption) != o || seen[o] {
+			return nil, false
+		}
+		seen[o] = true
+	}
+	return opts, true
+}
+
+// CleanOption reports whether label is one an opencode question can offer
+// in muster as it is (cleanOptions' per-label rule): the host checks each
+// label with it before it offers any.
+func CleanOption(label string) bool {
+	return label != "" && cleanLine(label, MaxPendingOption) == label
 }
 
 // cleanLine is s as one phone-safe line: invalid UTF-8 dropped; every control

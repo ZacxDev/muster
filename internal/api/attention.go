@@ -209,6 +209,10 @@ type attentionItem struct {
 	// hermes is a waiting HERMES window's ask (Hermes Phase 4): what it waits
 	// on, and the approval muster can answer; nil for any other item.
 	hermes *hermesAsk
+	// openCode is a waiting OPENCODE window's ask (attention_opencode.go): a
+	// permission request or a question, and the answers muster can relay; nil
+	// for any other item.
+	openCode *openCodeAsk
 	// suggestions are an ask's stored suggested replies (attention.Ask's,
 	// migration 0057), "" none: what its notification and its page draw as
 	// chips. Not in the item's JSON (attention_list), which predates them.
@@ -436,8 +440,9 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		q       *askq.Entry
 		pending *mirror.Pending
 		offline bool
-		// hermes: a Hermes window; answers: its host answers approvals now.
-		hermes, answers bool
+		// hermes: a Hermes window; openCode an opencode window; answers: its
+		// host answers its asks now.
+		hermes, openCode, answers bool
 	}
 	now := s.now()
 	waiting := map[string]wait{}
@@ -448,13 +453,15 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		for _, w := range h.Windows {
 			k := sessionKey(h.Host, w.Session, w.ID)
 			if rt, ok := w.Spec(); ok && rt.PendingNamesAsk {
-				// A waiting window of a runtime that names its asks (Hermes):
-				// what its hook says it waits on (Hermes Phase 4). Its Pending
-				// names the ask; a host that names none (older) still lists it
-				// as waiting.
+				// A waiting window of a runtime that names its asks (Hermes,
+				// opencode): what its host says it waits on (Hermes Phase 4;
+				// opencode's asks, attention_opencode.go). Its Pending names
+				// the ask; a host that names none (older) still lists it as
+				// waiting.
 				if w.Status == mirror.StatusWaiting {
 					_, answers := h.GatedSendOn(rt)
-					waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online, hermes: true, answers: h.Online && answers}
+					oc := rt.Name == mirror.RuntimeOpenCode
+					waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online, hermes: !oc, openCode: oc, answers: h.Online && answers}
 				}
 				continue
 			}
@@ -480,6 +487,14 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
+		}
+		if wt.openCode {
+			s.openCodeItem(&it, e, wt.pending, wt.answers)
+			if wt.since > 0 {
+				it.Since = time.UnixMilli(wt.since)
+			}
+			out = append(out, it)
+			continue
 		}
 		if wt.hermes {
 			it.claudeSession = ""
@@ -1111,6 +1126,7 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))
 	mux.HandleFunc("POST "+attentionHermesPath, s.requireOperatorWrite(s.handleAttentionHermesApprove))
+	mux.HandleFunc("POST "+attentionOpenCodePath, s.requireOperatorWrite(s.handleAttentionOpenCodeAnswer))
 }
 
 // handleAttentionPage is GET /attention, the Asks page (asks_drafts.go):
@@ -1263,8 +1279,8 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 `)
 		}
 		text, detail := esc(it.Text), esc(it.Detail)
-		if it.hermes != nil {
-			// A Hermes ask quotes a command: drawn left to right and isolated
+		if it.hermes != nil || it.openCode != nil {
+			// A Hermes or opencode ask quotes a command: drawn left to right and isolated
 			// (<bdi>), so right-to-left text in it cannot reorder what the
 			// person reads around it.
 			text, detail = `<bdi dir="ltr">`+text+`</bdi>`, `<bdi dir="ltr">`+detail+`</bdi>`
@@ -1320,9 +1336,16 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			}
 		case attentionKindSession:
 			b.WriteString(hermesAskHTML(it))
+			b.WriteString(openCodeAskHTML(it))
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>
 `)
 		case attentionKindQuestion:
+			if it.openCode != nil {
+				b.WriteString(openCodeAskHTML(it))
+				b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>
+`)
+				break
+			}
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Answer in the session</a>
 `)
 		case attentionKindPlugin:

@@ -392,6 +392,19 @@ type Msg struct {
 	// HermesApprovalChoices. An older host, which never advertised
 	// HermesAnswer, is never sent one.
 	HermesApproval *HermesApprovalAnswer `json:"hermesApproval,omitempty"`
+	// OpenCodeAnswer (hello) is the host ADVERTISING that it relays an answer
+	// to an opencode ask — a permission request, a question-tool form —
+	// through the opencode server's API (opencode_answer.go): an -interactive
+	// v2 host that holds an opencode token — the same gate as AskAnswer.
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like HermesAnswer: an
+	// older muster ignores it; an older host never sets it, so muster never
+	// sends it an answer, and the ask says to answer it in the terminal.
+	OpenCodeAnswer bool `json:"openCodeAnswer,omitempty"`
+	// OpenCodeReply (answer, with Runtime "opencode") is the opencode ask to
+	// answer and how: the PromptID muster showed (Pending.PromptID) and one of
+	// its offered answers (Pending.Offers). An older host, which never
+	// advertised OpenCodeAnswer, is never sent one.
+	OpenCodeReply *OpenCodeReply `json:"openCodeReply,omitempty"`
 	// ResumeSpawn (hello) is the host ADVERTISING that it resumes an ended
 	// Claude Code session in a new window (TypeSpawnResume, resume.go): an
 	// -interactive v2 host started with -resume-spawn. 🔴 NO VERSION BUMP,
