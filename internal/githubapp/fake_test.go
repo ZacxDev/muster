@@ -60,6 +60,11 @@ type fakeGitHub struct {
 	mintStatus    int // non-zero: answer every mint with this status
 	listCalls     int
 	tokenTTL      time.Duration
+	// pulls is GET /repos/<owner>/<name>/pulls/<n>'s answer per
+	// "<owner>/<name>#<n>" (pull).
+	pulls map[string]pull
+	// pullReads counts GET .../pulls/<n> requests.
+	pullReads int
 	// rawInstallations, when set, is GET /app/installations' body VERBATIM —
 	// GitHub's own JSON, not the production struct re-encoded, so a wrong json
 	// tag on that struct cannot agree with itself and pass.
@@ -121,7 +126,83 @@ func (f *fakeGitHub) verifyJWT(auth string) error {
 	return nil
 }
 
+// pull is a scripted GET .../pulls/<n> answer: status (0 = 200) and body,
+// after delay. Every repository here is PRIVATE, as GitHub treats one: a
+// token not minted with pull_requests read for that repository gets a 404,
+// whatever is scripted.
+type pull struct {
+	status int
+	body   string
+	delay  time.Duration
+}
+
+func (f *fakeGitHub) setPull(fullName string, n int, p pull) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pulls == nil {
+		f.pulls = map[string]pull{}
+	}
+	f.pulls[fullName+"#"+strconv.Itoa(n)] = p
+}
+
+func (f *fakeGitHub) pullReadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pullReads
+}
+
+// servePull answers GET /repos/<owner>/<name>/pulls/<n>: 404 unless the token
+// was minted with pull_requests read (or write) for that repository, then the
+// scripted answer after its delay (unlocked, and cut short by the request's
+// context, as a client's deadline cuts a real one).
+func (f *fakeGitHub) servePull(w http.ResponseWriter, r *http.Request, rest string) {
+	full, num, _ := strings.Cut(rest, "/pulls/")
+	f.mu.Lock()
+	f.pullReads++
+	var granted bool
+	for _, m := range f.mints {
+		if "token "+m.token != r.Header.Get("Authorization") {
+			continue
+		}
+		var body struct {
+			Repositories []string          `json:"repositories"`
+			Permissions  map[string]string `json:"permissions"`
+		}
+		_ = json.Unmarshal([]byte(m.body), &body)
+		_, name, _ := strings.Cut(full, "/")
+		inScope := len(body.Repositories) == 0
+		for _, rn := range body.Repositories {
+			inScope = inScope || rn == name
+		}
+		pr := body.Permissions["pull_requests"]
+		granted = inScope && (pr == "read" || pr == "write")
+	}
+	p, scripted := f.pulls[full+"#"+num]
+	f.mu.Unlock()
+	if !granted || !scripted {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+		return
+	}
+	if p.delay > 0 {
+		select {
+		case <-time.After(p.delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if p.status != 0 {
+		w.WriteHeader(p.status)
+	}
+	_, _ = io.WriteString(w, p.body)
+}
+
 func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/repos/"); ok && r.Method == http.MethodGet && strings.Contains(rest, "/pulls/") {
+		w.Header().Set("Content-Type", "application/json")
+		f.servePull(w, r, rest)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p := r.URL.Path
