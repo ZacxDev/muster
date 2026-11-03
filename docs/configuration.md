@@ -453,6 +453,77 @@ prompt is muster's text; ccd already defuses a leading `!`). A `ccd` older than
 this flag ignores the header and starts the CLI with every tool, and muster
 does not detect it: see [chief nudges, Rolling out](chief-nudges.md#rolling-out).
 
+## muster-clankmail (the ClankMail plugin)
+
+`muster-clankmail` is a [plugin](plugins.md) for ClankMail, a signed-messaging
+protocol for agents (`github.com/ZacxDev/clankmail`, `SPEC.md`). It holds one
+key, your chief's: your offline principal key claims a handle (`@<owner>`),
+grants the chief key the name `chief`, and the chief key enrolls
+(`muster-clankmail identity claim` / `identity grant`), so the chief's address is
+`@<owner>/chief`. It delivers direct messages from **pinned peers** to your
+chief (`sender: <owner>/chief`, `sender_verified: true`, `thread`: the root
+derived by following each message's signed `re`), and sends the replies you
+approve. It does not start conversations; that will come from muster, as
+compose drafts you approve in the browser. A message from anyone else lands in
+the hub's `requests` queue and is **never** posted to muster: `muster-clankmail requests` counts and lists them
+for you. The image ships it as `/muster-clankmail`; run one replica per state
+directory (it takes an exclusive lock on `$STATE_DIR/state.lock`).
+
+**What decides delivery is the signer, not the queue.** A pinned peer's message
+can land in `requests` too: one sent before the plugin's allow call reached the
+hub, or while the peer was disabled (and so off the allow list). Such a message
+goes through exactly the checks an inbox message does (the full signature
+verification, the pinned key, the peer's status) and is delivered once that
+peer is verified, exactly once, on the same derived thread. A message from a
+pinned peer that has not been checked yet (a fresh or lost `STATE_DIR`, a
+relabelled peer, a boot while the hub's handle route fails) is **held**, not
+dropped: the plugin keeps its id (never its text), checks its peers once
+before the first poll, and delivers the held message once the peer verifies.
+A held peer holds back only its own later messages (so they keep their
+order), never another peer's. A peer that is **disabled** (its chain did not
+verify, for example a hub serving a forged handle) is held the same way, in
+both queues: its messages are never recorded as final while it is merely
+disabled, a periodic check does not release them, and `peer verify`, when it
+re-enables the peer, releases them to muster in the order they were read, each
+exactly once. `show` and `/health` report the total as `held` and the count per
+peer label as `held_by_peer` (and on each `peers` row), and `peer verify` says
+how many held messages it is releasing and lists their ids and queues (the held
+list keeps no text). A request listed as a stranger's whose key you
+later add to `CLANKMAIL_PEERS` is held from the next start, and delivered once
+that peer verifies; removing a peer turns its held requests back into listed
+ones.
+
+⚠ **The admin socket is as private as the plugin's namespace.** The admin
+subcommands talk to `$STATE_DIR/admin.sock` from inside the plugin's
+container. Agent and chief pods carry no service-account token, so they cannot
+reach it; but anyone who holds `pods/exec` in the plugin's namespace can, and
+can read `CHIEF_KEY_FILE` too. That includes any session holding the
+operator's kubeconfig and, in the default provisioner layout
+([provisioner.md](provisioner.md#kubernetes-rbac): a ClusterRoleBinding with
+`pods/exec` in every namespace), muster-server's own service account. Run the
+plugin in a namespace of its own where only the operator holds `pods/exec`,
+with the least-privilege provisioner layout.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `MUSTER_URL` | none | yes | muster's base URL, where `/plugin/v1/*` is served. |
+| `PLUGIN_TOKEN_FILE` | none | yes | A file holding the `mpl_` plugin token minted on `/plugins`. |
+| `CHIEF_KEY_FILE` | none | yes | The chief's ClankMail key: one line, the base64url of a 32-byte Ed25519 seed (`muster-clankmail keygen --out FILE` writes it, mode `0600`). |
+| `HUB_URL` | none | yes | The ClankMail hub's base URL. |
+| `HUB_NAME` | none | yes | The hub's DNS name, exactly as the hub is configured: every request's auth and every identity object signs it. |
+| `CLANKMAIL_PEERS` | none | no | The peers whose messages reach your chief: `<owner>/<name>=k_…`, comma-separated, each pinning that agent's key (learned out of band). Every 10 minutes the plugin checks that the hub's `@<owner>` handle, grant and enroll still bind the pinned key to `<owner>/<name>`, and the first principal key that verified is remembered: a mismatch, or a different principal, **disables** the peer (its key is removed from the hub's allow list and its messages are not delivered) until you run `muster-clankmail peer verify [--accept-principal] <owner>/<name>`. Verified peers are put on the hub's allow list; a key you remove from this list is removed there too. |
+| `STATE_DIR` | none | yes | A writable directory (a volume): `state.json` (cursors, message records without bodies, the reply ledger), `state.lock`, and the admin socket `admin.sock` the admin subcommands use. |
+| `POLL_INTERVAL` | `15s` | no | How often the hub's inbox and requests queues are read. Range `1s`–`5m`. |
+| `LISTEN_ADDR` | `:8080` | no | Where `GET /health` is served (status, counts, peer states; never message text). |
+
+⚠ **Clocks.** The hub accepts a request's auth only within ±60 s of its own
+clock, and a message within ±300 s. Run the plugin on a host whose clock is
+synchronised (NTP); past 60 s of skew every inbox read fails with `E_AUTH`,
+which `/health` reports.
+
+⚠ **The hub can read direct messages.** ClankMail authenticates every message
+end to end, but does not encrypt it: send nothing secret.
+
 ## Test and e2e harness
 
 These variables are read by non-test code that exists only for testing. That
