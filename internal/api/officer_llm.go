@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -37,7 +35,7 @@ const llmPathPrefix = "/llm/"
 const LLMMessagesRoute = "POST /llm/v1/messages"
 
 func (s *Server) registerLLMRoutes(mux Mux) {
-	mux.HandleFunc(LLMMessagesRoute, s.handleLLMMessages)
+	mux.HandleFunc(LLMMessagesRoute, s.requireConnectorAgent(s.serveLLMMessages))
 	mux.HandleFunc(llmPathPrefix, s.handleLLMOtherPath)
 }
 
@@ -48,29 +46,16 @@ func (s *Server) handleLLMOtherPath(w http.ResponseWriter, r *http.Request) {
 	llmproxy.Refuse(w, http.StatusNotFound, "not_found_error", "only POST /llm/v1/messages is served here")
 }
 
-// handleLLMMessages is POST /llm/v1/messages: the calling agent is
-// authenticated by its own token (authenticateCallingAgent, the connector
-// surface's identity check, which refuses the shared hook and service
-// tokens), and the request acts as its owner — the officer's owner, whose the
-// usage and audit rows are (row-level security).
-func (s *Server) handleLLMMessages(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Agents == nil {
-		metrics.OfficerLLMRefused.WithLabelValues("none", "unconfigured").Inc()
-		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "no officer on this server declares `llm`")
-		return
-	}
-	a, ok := s.authenticateCallingAgent(w, r)
-	if !ok {
-		return
-	}
-	p := s.principalFor(r.Context(), agentOwnerID(a), authz.ViaConnect)
-	s.admit(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)), s.serveLLMMessages, p)
-}
+// LLM requests are admitted by requireConnectorAgent, the connector
+// surface's own door: the calling agent is resolved from its own token (the
+// shared hook and service tokens are refused), and the request acts as its
+// owner — the officer's owner, whose the usage and audit rows are (row-level
+// security). One door, so the proxy authenticates exactly as /connect/ does.
 
-// serveLLMMessages is handleLLMMessages once the agent is admitted: it must
-// be a routine instance of an officer that declares `llm`.
+// serveLLMMessages is POST /llm/v1/messages once the agent is admitted: it
+// must be a routine instance of an officer that declares `llm`.
 func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
-	a, _ := r.Context().Value(agentCtxKey{}).(agents.Agent)
+	a, _ := agentFromContext(r.Context())
 	if s.officerRT == nil || s.officerRT.llm == nil {
 		metrics.OfficerLLMRefused.WithLabelValues("none", "unconfigured").Inc()
 		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "no officer on this server declares `llm`")
