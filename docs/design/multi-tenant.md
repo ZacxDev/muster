@@ -4,8 +4,9 @@
 below are **decided**, and the operator took the design's recommendation on
 every question it raised ([decisions taken](#9-decisions-taken)), except
 decision 9, which was reversed after review because its recommendation rested
-on a false claim. One thing is still to be measured before phase 2, and
-phase 3 is optional, pending the operator's keep-or-drop.
+on a false claim, and decision 7, where the operator dropped the optional
+server instance identity, so no server change remains. One thing is still to
+be measured before phase 2.
 
 This page proposes letting each muster **client** (the `muster` CLI, the
 `muster-mirror` host agent, and the Android app) talk to **more than one
@@ -57,15 +58,10 @@ The design in one line each:
   notification, tap and signed action carries its tenant, and an action is
   signed and sent to the tenant its push arrived on, never to "the current
   one".
-- **Server: one small, optional change.** An `instance` object (`id`, `name`)
-  on `/health`, so the CLI and the Android app can tell a different deployment
-  behind the **same origin** and display the server's own name. Clients pin
-  the **origin** from day one, and that alone binds each credential to its
-  server. The instance id adds only the same-origin case; without it, clients
-  pin the origin only.
-- **Order:** CLI, then mirror, then the server's instance identity (optional),
-  then Android. Each phase ships alone and rolls back alone, and no other phase
-  depends on phase 3.
+- **Server: no change.** Clients pin the **origin**, and that alone binds each
+  credential to its server.
+- **Order:** CLI, then mirror, then Android. Each phase ships alone and rolls
+  back alone.
 - **Fixed separately:** the mirror's redirect-following, a credential leak path
   even with one server (branch `fix/mirror-refuse-redirects`).
 
@@ -83,7 +79,8 @@ Decided; this page does not reopen them.
   opened as a draft PR, with phases and open decisions. No code.
 - **Open decisions: "Yes, use recommendations".** Every question this page
   raised takes its own recommendation ([decisions taken](#9-decisions-taken));
-  decision 9 was later reversed, after review.
+  decision 9 was later reversed, after review, and the optional instance
+  identity (decision 7) was then dropped: "Drop it".
 
 ## Part 1: how each client connects today
 
@@ -228,14 +225,14 @@ candidate requirements proposed at dispatch, not things the operator asked for.
 |---|---|
 | A tenants file (`~/.config/muster/tenants.toml`) | **Simplify.** The CLI already parses `KEY=VALUE` env files (`cmd/muster/config.go:74-109`) and `--env-file` already selects one per call. A tenant is one env file; a TOML registry is a second format, a second parser and a migration. |
 | OS keyring for credentials | **Drop.** Every other muster credential on a host is a 0600 file (mirror token, MCP secret, opencode token, env file), the CLI runs on headless hosts, in agent pods and under nix, and a keyring is absent or locked in most of those. |
-| A pinned server identity | **Keep the origin pin; the instance id is optional.** Pin the **origin** now: it is what a credential is bound to, it needs no server change, and for "Separate servers" it alone keeps each credential on its own server. Pin an **instance id** only if optional phase 3 ships; its one added case is a different deployment behind the same origin, plus a name to display. |
+| A pinned server identity | **Keep as the origin pin.** Pin the **origin**: it is what a credential is bound to, it needs no server change, and for "Separate servers" it alone keeps each credential on its own server. A server-served instance id was considered and dropped ([decision 7](#9-decisions-taken)). |
 | A display colour or badge | **Keep for Android, drop for the CLI.** A terminal gets a label on stderr; colour adds nothing a label does not. |
 | A single multi-server mirror | **Drop.** Today's binary already runs one tenant cleanly; several processes isolate faults (see [mirror](#3-the-mirror)). They do not isolate credentials: every process runs as the same Unix user. |
 | Per-session or per-repo routing rules | **Drop.** A rule is enforced only on the listing; an interactive terminal can switch to any session of its tmux server (`cmd/muster-mirror/main.go:177`). Route by **tmux server** instead. |
 | Send-queue polling per tenant | **Drop as moot.** The host never polls; pastes come down each tenant's own tunnel. |
 | Android per-tenant WebView data | **Keep.** Without it, switching means signing in again each time, which breaks "switched quickly". |
 | Lock-screen privacy per tenant | **Simplify.** Add the tenant's label to every notification; keep the operator's existing "full text always" rule; no hide switch. |
-| A server change | **Keep it optional.** Nothing in phases 1, 2 and 4 needs it. |
+| A server change | **Drop.** No phase needs one ([server changes](#7-server-changes)). |
 
 ## Part 2: the design
 
@@ -249,7 +246,6 @@ A tenant has:
 | **label** | what a person reads ("work", "team"); defaults to the name | `MUSTER_TENANT_LABEL` |
 | **base URL** | the server, `https://…`; its **origin** (scheme, host, effective port) is what the credential is bound to | `MUSTER_API_URL` |
 | **credential** | the token for that server | `MUSTER_TOKEN` |
-| **pinned identity** | optional: the server's instance id, recorded on first contact if the server serves one (phase 3). Absent, the tenant is pinned by origin only | `MUSTER_TENANT_INSTANCE_ID` |
 | **colour** | Android only, chosen at pairing | the app's record |
 
 **On disk (CLI):**
@@ -325,11 +321,11 @@ Commands, in the kubectl-context style:
 
 | command | does |
 |---|---|
-| `muster tenant list` | one JSON row per tenant: name, label, origin, current, instance id if pinned. Never a token |
+| `muster tenant list` | one JSON row per tenant: name, label, origin, current. Never a token |
 | `muster tenant current` | the current tenant and where that choice came from (flag, env, file, default) |
 | `muster tenant use <name>` | writes `~/.muster/current` atomically |
 | `muster tenant use --clear` | deletes `~/.muster/current`, so selection falls back to `default` (the zero-touch path also needs no tenant files: [the tenant model](#1-the-tenant-model)) |
-| `muster tenant add <name> --api-url <url>` | refuses a name that is `default` or already exists, and an origin another tenant already has (two tenants on one origin would make "which tenant" ambiguous); creates the 0600 file; reads the token from **stdin** (never argv, as today: `cmd/muster/config.go:62-65`); then calls `/health` and `/api/whoami` and prints the origin and principal it is about to pin, plus the instance id if the server serves one (optional phase 3) |
+| `muster tenant add <name> --api-url <url>` | refuses a name that is `default` or already exists, and an origin another tenant already has (two tenants on one origin would make "which tenant" ambiguous); creates the 0600 file; reads the token from **stdin** (never argv, as today: `cmd/muster/config.go:62-65`); then calls `/api/whoami` and prints the origin and principal it is about to pin |
 | `muster tenant remove <name>` | deletes the file; refuses `default`; clears `current` if it pointed there |
 
 **Credentials: 0600 files, recommended over an OS keyring** (reasons in the
@@ -353,18 +349,10 @@ skew note, the auth error and the route-absent error name the tenant too, since
 tenant they stay as they are today. The zero-touch path has no tenant files, so
 `default` is its only tenant, and it stays byte for byte the same.
 
-**Identity check on connect (only with optional phase 3).** The origin pin
-needs no check at connect time: the tenant file is the pair, so the token only
-ever goes to its own origin. If phase 3 ships, the skew probe, which already
-calls `/health` once per process (`cmd/muster/client.go:477-500`), also
-compares instance ids: when the tenant has a pinned instance id and `/health`
-serves a different one, the CLI exits with a new code before the verb runs. A
-server that serves no id is accepted (origin pin only), which is every server
-if phase 3 is dropped. Two consequences, both deliberate: when `/health` fails,
-the check is skipped and the command runs (the probe already returns silently
-on error, `cmd/muster/client.go:479-482`; the origin pin still holds); and a
-**served** mismatch fails the command, which reverses the probe's "never turn
-a working command into a failing one" contract (`:474-476`) for that one case.
+The origin pin needs no check at connect time: the tenant file is the pair, so
+the token only ever goes to its own origin. The skew probe is unchanged and
+still never turns a working command into a failing one
+(`cmd/muster/client.go:474-476`).
 
 ### 3. The mirror
 
@@ -656,7 +644,6 @@ data class TenantRecord(
     val label: String,
     val colour: Int,
     val origin: String,          // the pin for the credential
-    val instanceId: String?,     // optional (phase 3); null = origin pin only
     val token: String?, val deviceId: Long?,
     val keyAlias: String?, val keyKind: String?, val keyLevel: String?,
     val pushHosts: List<String>, val pushStatus: PushStatus,
@@ -827,9 +814,13 @@ also shows **which** server is asking, by label.
 |---|---|
 | A credential is only ever sent to the origin it was minted for | CLI: the tenant file is the pair; off the zero-touch path (any `--tenant`, `MUSTER_TENANT`, `current` file or tenant file under `~/.muster/tenants/`), a lone URL or token override, `MUSTER_HOOK_TOKEN` included, is refused. On the zero-touch path resolution is today's, field by field, and a lone override or an `--env-file` mix can still send a token to another origin; that is kept for compatibility and is **not** covered by this invariant. Mirror: one process, one URL, one token; the hook picks the record whose recorded socket matches `$TMUX` (an old legacy record with no socket only on the default server, compared after resolving symlinks; otherwise fail open), a per-tenant record always names its own token file, and "recorded token to recorded URL" holds. Android: each tenant's `DeviceApi` is built from that tenant's origin; buttons and taps carry the tenant. |
 | Redirects across origins are refused | CLI and Android already refuse every redirect (`cmd/muster/client.go:185`, `android:core/net/.../DeviceApi.kt:34`). The mirror's tunnel and MCP proxy follow them today (Go forwards the bearer to same-host and subdomain targets); that is fixed separately, before this design (branch `fix/mirror-refuse-redirects`), and this invariant depends on it. |
-| The pinned identity is verified on connect | Origin: always, by construction; this alone keeps a credential on its own server. Instance id (optional, phase 3 only): checked against `/health` by the CLI, and against `/api/device/config` by the app, when served (the mirror pins the origin only); a mismatch stops that tenant and says so. Without phase 3, nothing detects a different deployment behind the same origin. |
+| Each tenant is pinned to its server | By origin, always, by construction: every client sends a tenant's credential only to the origin stored with it, which alone keeps the credential on its own server. |
 | Nothing leaks between tenants in caches or logs | Separate files, processes, WebView profiles, snapshots and notification namespaces. Logs and traces name the tenant label, never a token. `muster tenant list` never prints a token. **Not against the same Unix user:** every tenant's files on a host belong to one user, so an interactive terminal or an agent on any tenant can read them all; isolating that needs one Unix user per tenant ([the mirror](#which-tenant-gets-a-hosts-sessions)). |
 | A push cannot be misattributed | Per-tenant UnifiedPush instance with its own keys; the decrypted-only rule; tenant-namespaced tags; a button signs for the tenant it came from. |
+
+**Residual risk, accepted:** nothing detects a different muster deployment
+put behind a tenant's origin (a server rebuilt or replaced at the same URL);
+clients keep sending that tenant's credential there ([decision 7](#9-decisions-taken)).
 
 ### 6. Isolation: one tenant down or slow
 
@@ -839,49 +830,26 @@ also shows **which** server is asking, by label.
   reconnect loop.
 - **Android:** per-tenant work (config reads, push registration, pairing) runs
   as separate jobs with their own timeouts; a slow tenant never blocks the
-  switcher, which renders from local state. A tenant that fails its identity
-  check (only possible with optional phase 3) is shown as such and does not
-  stop the others.
+  switcher, which renders from local state.
 
 ### 7. Server changes
 
-**None are required** for phases 1, 2 and 4. Clients pin the origin, and for
-"Separate servers" that alone binds each credential to its server: a token is
-only ever sent to the origin it was stored with.
-
-**One small, optional change** for phase 3 (operator to confirm keep or drop):
-an `instance` object on `GET /health`, also in `GET /api/device/config`. Its
-consumers are the CLI and the Android app; the mirror does not check it. The
-only scenario it serves is **a different deployment behind the same origin** (a
-server rebuilt or replaced at the same URL), which the origin pin cannot see;
-it also gives clients the server's own name to display. If it is dropped, clients pin the origin only and nothing else
-changes. The shape, if kept:
-
-```json
-{"status": "ok", "version": "…", "uptime": 12.3,
- "instance": {"id": "6f0c…", "name": "team"}}
-```
-
-- `id`: random, generated once on first boot and kept in the database, so it
-  survives restarts and redeploys, and changes when it is a different deployment.
-- `name`: `MUSTER_INSTANCE_NAME`, else the host of `MUSTER_PUBLIC_URL`, else
-  omitted.
-- `/health` is unauthenticated, so the id is public. It is an identifier, not a
-  secret, and must never be used as one.
+**None.** Clients pin the origin, and for "Separate servers" that alone binds
+each credential to its server: a token is only ever sent to the origin it was
+stored with. An optional server instance identity was proposed and dropped
+([decision 7](#9-decisions-taken)).
 
 ### 8. Phasing
 
-**Order (decided): CLI, mirror, server identity (optional), Android.**
+**Order (decided): CLI, mirror, Android.**
 
 Why this order, not Android first: the CLI phase fixes the credential-mixing
 leak and fixes the tenant model's shape for little cost; the mirror phase is
 mostly configuration, plus small daemon and hook changes that make the hook
-safe; the optional identity change is
-small and, if kept, lands before the phone so the app can pin it from its
-first release. Android is the largest phase and the one that delivers "every
-tenant notifies"; it depends on nothing in phases 1, 2 or 3, so if the
-operator's need turns out to be phone-first it can move ahead of the mirror
-without other changes. Phases 1, 2 and 4 each work with or without phase 3.
+safe. Android is the largest phase and the one that delivers "every tenant
+notifies"; it depends on nothing in phases 1 or 2, so if the operator's need
+turns out to be phone-first it can move ahead of the mirror without other
+changes.
 
 **Phase 1: CLI.**
 - Build: the tenant directory, `current`, `--tenant`, `MUSTER_TENANT`, the pair
@@ -943,20 +911,7 @@ without other changes. Phases 1, 2 and 4 each work with or without phase 3.
   open for any other. An older hook binary ignores the recorded socket and
   reads the legacy record as today.
 
-**Phase 3: server instance identity (optional; operator to confirm keep or drop).**
-- Serves only one scenario: a different deployment behind the same origin
-  ([server changes](#7-server-changes)). Dropping it removes this phase and the
-  clients' instance-id checks; phases 1, 2 and 4 are unchanged. It covers the
-  CLI and Android only; the mirror pins the origin only.
-- Build: the `instance` object on `/health` and `/api/device/config`, its
-  migration, the env variable.
-- Test plan: the id is stable across a restart and differs between two
-  databases; both endpoints serve the same object (a new field changes no route,
-  so `routes.golden` is untouched); `docs/configuration.md` and its test.
-- Rollback: an older client ignores the field; a newer client treats its absence
-  as origin-only pinning.
-
-**Phase 4: Android.**
+**Phase 3: Android.**
 - Build: the tenant records and migration, per-tenant push instances, channel
   groups, namespaced tags, tenant-carrying taps and buttons, WebView profiles,
   the switcher.
@@ -988,8 +943,9 @@ without other changes. Phases 1, 2 and 4 each work with or without phase 3.
 ### 9. Decisions taken
 
 The operator answered "Yes, use recommendations": each question this page
-raised takes the recommendation it gave. Decision 9 is the exception: it
-changed after review (see the note under it).
+raised takes the recommendation it gave. Two exceptions: decision 7, an
+optional item the operator dropped, and decision 9, which changed after review
+(see the note under it).
 
 1. **Tenant config format:** one env file per tenant plus a `current` pointer,
    not a `tenants.toml`.
@@ -1001,10 +957,13 @@ changed after review (see the note under it).
 5. **MCP with several tenants:** one registration per tenant, relying on the
    tmux-server refusal to route each session to its own tenant (routing, not
    enforcement); a local router only if the measurement below says so.
-6. **Phase order:** CLI, mirror, server identity (optional), Android.
-7. **Server instance identity:** add `instance` to `/health`, as optional
-   phase 3, which the operator is to confirm keeping or dropping. Without it,
-   clients pin the origin only.
+6. **Phase order:** CLI, mirror, Android.
+7. **Server instance identity: dropped by the operator.** The design offered
+   an optional server-served instance id, to tell a different deployment
+   behind the same origin. The operator dropped it: each tenant's credential
+   is bound to its own origin, and a different deployment behind the same
+   origin is out of scope. Clients pin the origin only, and no server change
+   remains.
 8. **The mirror's redirect-following:** fixed now, as its own change, outside
    this design (branch `fix/mirror-refuse-redirects`).
 9. **Interactive on several tenants:** `-interactive` is allowed only on a
