@@ -354,31 +354,36 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	return r, t, ""
 }
 
-// prRouteSuperseded is the error a review round's route ends with when a newer
-// round of the same pull request was routed to the same session
-// (supersedePRRoutes).
+// prRouteSuperseded is the error a review round's route ends with when a
+// LATER-ARRIVING round (another head commit) of the same pull request was
+// routed to the same session (supersedePRRoutes). "Newer" means later by
+// arrival, not a newer commit.
 const prRouteSuperseded = "superseded by a newer review round"
 
-// supersedePRRoutes ends every route of an OLDER review round of origin's pull
-// request still open for origin's session, now that route newer carries a
-// newer round there.
+// supersedePRRoutes ends every route of ANOTHER review round of origin's pull
+// request that arrived before route newer and is still open for origin's
+// session, now that route newer carries a later-arriving round there.
 //
 // 🔴 A ROUND IS A HEAD COMMIT, AND ONE ROUND MAY BE SEVERAL MESSAGES. Parts of
 // newer's own round (the same head sha) are never superseded: each part is half
 // of the review the session must see (plugins.PGStore.OlderOpenPRRoutes keys on
-// the round). An older round is superseded WHETHER OR NOT its paste was
-// delivered:
+// the round). Order is by ARRIVAL, not commit: muster cannot tell which head is
+// newer, so a late review of an older head supersedes a newer head's route. An
+// earlier-arriving round is superseded WHETHER OR NOT its paste was delivered:
 //   - still QUEUED: superseded FIRST, then its paste cancelled, so a delivery
 //     that claims the row in between finds the route closed and pastes nothing
 //     (sendQueueRoutedGate). The session never answers — and muster never
-//     auto-sends to a sender on MUSTER_ROUTE_RELAY_ALLOW — a stale round;
-//   - already delivered (or being delivered): the session has it, and the newer
-//     round replaces it, so its route need not wait out its 4-hour deadline.
+//     auto-sends to a sender on MUSTER_ROUTE_RELAY_ALLOW — a superseded round;
+//   - already delivered: the session has it, and the later round replaces it,
+//     so its route need not wait out its 4-hour deadline.
 //
-// Either way it is HANDLED, not lost (plugins.PGStore.SupersedeRoute): no
-// hand-back, the chief is not told, and its message is settled by muster, so no
-// "not acted on" ask is raised for it. A route whose paste is still being made
-// by its own injection (no row yet) is left to that injection.
+// No hand-back either way, and the chief is not told. But only a route whose
+// paste was SENT is settled by muster (plugins.PGStore.SupersedeRoute): one
+// whose paste was not sent never reached the session — it may be the NEWER
+// head, superseded by a late older one — so its message stays unsettled and
+// the "not acted on" ask (plugins.UnroutedAskAfter) still raises it. A route
+// whose paste is still being made by its own injection (no row yet) is left to
+// that injection.
 func (s *Server) supersedePRRoutes(ctx context.Context, newer plugins.Route, origin plugins.RouteOrigin) {
 	older, err := s.ext.Routes.OlderOpenPRRoutes(ctx, newer.RouteID, origin)
 	if err != nil {
@@ -402,7 +407,7 @@ func (s *Server) supersedePRRoutes(ctx context.Context, newer plugins.Route, ori
 		}
 		it, err := s.ext.SendQueue.Get(ctx, *o.SendQueueID)
 		if err != nil || it.State != sendqueue.Queued {
-			s.logger.Printf("routes: %s: %s %s; its message %d was already delivered", o.RouteID, prRouteSuperseded, newer.RouteID, *o.SendQueueID)
+			s.logger.Printf("routes: %s: %s %s; its message %d was not queued (already sent or being sent)", o.RouteID, prRouteSuperseded, newer.RouteID, *o.SendQueueID)
 			continue
 		}
 		switch _, err := s.ext.SendQueue.Cancel(ctx, *o.SendQueueID, s.sendQueueNow()); {

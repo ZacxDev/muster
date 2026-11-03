@@ -9,9 +9,11 @@
 -- 🔴 WHAT READS IT:
 --   - the supersede (plugins.PGStore.OlderOpenPRRoutes): a review ROUND is one
 --     head commit, and a round may arrive as several messages (part 1/2, 2/2).
---     Parts of one round never supersede each other; a route for a newer head
---     supersedes every open route of an OLDER head for the same pull request and
---     session. Before 0070 the supersede keyed on the pull request and session
+--     Parts of one round never supersede each other; a LATER-ARRIVING route
+--     for a DIFFERENT head supersedes every open route made earlier for another
+--     head of the same pull request and session. Order is by arrival (route id),
+--     not by commit: a late review of an older head supersedes a newer head's
+--     route. Before 0070 the supersede keyed on the pull request and session
 --     alone, so part 2 of a round superseded part 1 of the same round.
 --   - the time-out (plugins.PGStore.TimeOutRoute): a review route whose paste
 --     WAS delivered and then got no route_reply by its deadline is handled — the

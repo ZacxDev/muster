@@ -81,14 +81,17 @@ type RouteStore interface {
 	// owner (the sweep's second read; see there).
 	RoutedPastes(ctx context.Context) ([]RoutedPaste, error)
 	// OlderOpenPRRoutes is the principal's routes still routed that origin (a
-	// RouteViaPR one) made before route routeID for an OLDER round — another
-	// head commit than origin.HeadSHA — of the same pull request in the same
-	// session. Parts of origin's own round are never among them.
+	// RouteViaPR one) made BEFORE route routeID — earlier by arrival — for
+	// another round (a head commit other than origin.HeadSHA) of the same pull
+	// request in the same session. Arrival, not commit order: a route of a newer
+	// head made earlier is among them. Parts of origin's own round never are.
 	OlderOpenPRRoutes(ctx context.Context, routeID string, origin RouteOrigin) ([]Route, error)
 	// SupersedeRoute ends routeID, while it is still routed, as failed with
-	// why, owing the chief NO hand-back, and settles its message with settle
-	// (SettledByMuster): the route is handled, not lost. superseded is false —
-	// and nothing changes — for a route no longer routed.
+	// why, owing the chief NO hand-back, and — ONLY when its paste was SENT, so
+	// the session has it — settles its message with settle (SettledByMuster).
+	// A route whose paste was not sent leaves its message unsettled, so the
+	// "not acted on" ask still raises it. superseded is false — and nothing
+	// changes — for a route no longer routed.
 	SupersedeRoute(ctx context.Context, routeID, why, settle string) (r Route, superseded bool, err error)
 	// BindThread and BoundThread are the threads sessions started (threads.go).
 	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
@@ -493,6 +496,32 @@ func lockRoute(ctx context.Context, tx pgx.Tx, routeID string) (Route, error) {
 	return r, err
 }
 
+// lockRouteMessageFirst is lockRoute for a transaction that may also write the
+// route's message (settleByMusterTx): it locks the plugin_messages row FIRST,
+// then the route, the order every draft write and RelayRoute take them in — a
+// writer taking them the other way round can deadlock against those. A route's
+// plugin_message_id never changes, so reading it unlocked is safe; a route
+// carrying a task has no message to lock.
+func lockRouteMessageFirst(ctx context.Context, tx pgx.Tx, routeID string) (Route, error) {
+	if !ValidRouteID(routeID) {
+		return Route{}, ErrRouteNotFound
+	}
+	var messageID int64
+	err := tx.QueryRow(ctx, `SELECT coalesce(plugin_message_id, 0) FROM session_routes WHERE route_id = $1`, routeID).Scan(&messageID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Route{}, ErrRouteNotFound
+	}
+	if err != nil {
+		return Route{}, err
+	}
+	if messageID != 0 {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM plugin_messages WHERE id = $1 FOR UPDATE`, messageID); err != nil {
+			return Route{}, err
+		}
+	}
+	return lockRoute(ctx, tx, routeID)
+}
+
 // FailRoute ends an OPEN route as failed, recording why (the message could not
 // be put into the session, or its window moved on) and, when handBack is not
 // "", the hand-back it owes the chief. A route that is no longer open is
@@ -697,9 +726,12 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 // review whose paste was NOT sent — still queued, being sent, cancelled,
 // failed — times out as every other route does: the session may never have
 // had it. Every non-review route is unchanged.
+//
+// Locks the message row, then the route (lockRouteMessageFirst): the delivered
+// branch writes the message.
 func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, timedOut bool, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		cur, err := lockRoute(ctx, tx, routeID)
+		cur, err := lockRouteMessageFirst(ctx, tx, routeID)
 		if err != nil {
 			return err
 		}
@@ -889,8 +921,11 @@ func (s *PGStore) RoutedPastes(ctx context.Context) ([]RoutedPaste, error) {
 // 🔴 THE ROUND IS THE KEY, NOT THE PULL REQUEST. One round can arrive as several
 // messages (a long review split into parts), each its own route with the SAME
 // head commit: those must all reach the session, so a route of origin's own
-// head is never older. A review route made before 0070 has no round (NULL) and
-// IS DISTINCT FROM any: an older round. Only a RouteViaPR origin with a round
+// head is never among them. "Older" is by ARRIVAL (r.id below the new route's),
+// not by commit: muster cannot order head commits, so a late review of an older
+// head returns a newer head's earlier route (SupersedeRoute then leaves its
+// message unsettled unless its paste was sent). A review route made before 0070
+// has no round (NULL) and IS DISTINCT FROM any: another round. Only a RouteViaPR origin with a round
 // has any: every other is nil. Row-level security scopes both tables to the
 // principal.
 func (s *PGStore) OlderOpenPRRoutes(ctx context.Context, routeID string, origin RouteOrigin) ([]Route, error) {
@@ -915,9 +950,18 @@ func (s *PGStore) OlderOpenPRRoutes(ctx context.Context, routeID string, origin 
 // this: a delivery that claims the row in between finds the route closed and
 // pastes nothing (sendQueueRoutedGate). A route already answered is left to its
 // relay.
+//
+// 🔴 ONLY A ROUTE WHOSE PASTE WAS SENT IS SETTLED (prReviewPasteSent). The
+// supersede orders routes by ARRIVAL, not by head commit, so a late review of an
+// older head supersedes a newer head's route. When that route's paste was
+// still queued (or being sent, or never made), the session never had it:
+// settling its message would lose the review with no ask and no hand-back. Its
+// message is left unsettled, so the unrouted sweep's "not acted on" ask
+// (UnroutedAskAfter) still raises it. Locks the message row, then the route
+// (lockRouteMessageFirst).
 func (s *PGStore) SupersedeRoute(ctx context.Context, routeID, why, settle string) (r Route, superseded bool, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		cur, err := lockRoute(ctx, tx, routeID)
+		cur, err := lockRouteMessageFirst(ctx, tx, routeID)
 		if err != nil {
 			return err
 		}
@@ -925,10 +969,17 @@ func (s *PGStore) SupersedeRoute(ctx context.Context, routeID, why, settle strin
 		if cur.State != RouteRouted {
 			return nil
 		}
+		sent, err := prReviewPasteSent(ctx, tx, cur)
+		if err != nil {
+			return err
+		}
 		if r, err = failRouteTx(ctx, tx, cur, why, ""); err != nil {
 			return err
 		}
 		superseded = true
+		if !sent {
+			return nil
+		}
 		return settleByMusterTx(ctx, tx, cur.MessageID, settle, map[string]any{"route_id": routeID})
 	})
 	return r, superseded, err

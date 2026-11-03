@@ -152,6 +152,38 @@ func TestANewerRoundSupersedesAnAlreadyDeliveredRoundWithNoAsk(t *testing.T) {
 	}
 }
 
+// 🔴 REGRESSION (audit of #413): a LATE review of an OLDER head, arriving after
+// a newer head's review was routed but before that one's paste was sent,
+// supersedes the newer route (the supersede orders by arrival, not by head).
+// The newer review never reached the session, so muster must NOT settle its
+// message: it stays unsettled and the "not acted on" ask still fires, or the
+// newer review would be lost with no ask and no hand-back.
+func TestALateOlderRoundDoesNotSettleAQueuedNewerRound(t *testing.T) {
+	f := newPRFixture(t)
+	f.authored(t, f.asOwner, routeSID, prCreated())
+	newerMsg := f.review(t, "late-older-newer-1", prSender, true, part(1, 1, shaRoundB))
+	newer := f.oneRoute(t, newerMsg)
+	if it := f.queueRow(t, *newer.SendQueueID); it.State != sendqueue.Queued {
+		t.Fatalf("fixture: the newer head's paste is %s; want queued", it.State)
+	}
+	late := f.oneRoute(t, f.review(t, "late-older-older-1", prSender, true, part(1, 1, shaRoundA)))
+
+	// The supersede did run (positive control): the queued route ended and its
+	// paste was cancelled.
+	if got := f.routeState(t, newer.RouteID); got.State != plugins.RouteFailed || !strings.HasPrefix(got.Error, prRouteSuperseded+" (route "+late.RouteID+")") {
+		t.Fatalf("the queued route: %s %q; want failed, superseded by %s", got.State, got.Error, late.RouteID)
+	}
+	if it := f.queueRow(t, *newer.SendQueueID); it.State != sendqueue.Cancelled {
+		t.Fatalf("the queued route's paste is %s; want cancelled", it.State)
+	}
+	if r := settleReason(t, f.gatedFixture, newerMsg.ID); r != "" {
+		t.Fatalf("a superseded review whose paste was never sent was settled by muster: %q; want unsettled", r)
+	}
+	if !f.askedAbout(t, newerMsg) {
+		t.Fatal("a superseded review whose paste was never sent raised no \"not acted on\" ask")
+	}
+}
+
 // --- A: a delivered review that times out is handled ------------------------
 
 func TestADeliveredReviewThatTimesOutIsHandledWithNoAsk(t *testing.T) {
