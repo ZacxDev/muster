@@ -396,7 +396,8 @@ func (f *poolFleet) take() (starts, stops []string) {
 // TestTheWakeLoopRunsEachTierPool: one pass reads HQ once and moves each pool
 // for its own tier's items — starting the routine pool's `-r<n>` instances
 // with a kickoff that names the tier — and each pool idles out on its own
-// clock: the routine pool scales to zero while the judgement pool works on.
+// clock: the routine pool scales to zero while the judgement pool works on,
+// and the judgement pool while the routine pool works on.
 func TestTheWakeLoopRunsEachTierPool(t *testing.T) {
 	hq := hqtest.New(map[string]string{tierTok: tierID})
 	t.Cleanup(hq.Close)
@@ -459,12 +460,28 @@ func TestTheWakeLoopRunsEachTierPool(t *testing.T) {
 	if _, stops := fleet.take(); fmt.Sprint(stops) != fmt.Sprint([]string{routineStem + "1", routineStem + "2"}) {
 		t.Fatalf("routine idle for its window while judgement works: stopped %v, want r1 and r2 only", stops)
 	}
+	// The mirror image: the judgement item finishes while a new routine item
+	// keeps the routine pool busy. The judgement pool idles out on its own
+	// clock; the routine pool does not. (Both orders are asserted: a shared
+	// idle clock passes whichever order the loop writes last — measured: the
+	// routine-idles-first half alone let a one-clock mutant through.)
 	hq.Complete(j)
-	check()
+	r3 := hq.AddTieredItem(tierID, "gpu.check", "node-d", officers.TierRoutine)
+	check() // judgement idle starts now; the routine pool wakes for r3
+	if starts, _ := fleet.take(); fmt.Sprint(starts) != fmt.Sprint([]string{routineStem + "1"}) {
+		t.Fatalf("a new routine item: started %v, want routine r1 again", starts)
+	}
 	clk.Advance(11 * time.Minute)
 	check()
 	if _, stops := fleet.take(); fmt.Sprint(stops) != fmt.Sprint([]string{judgeStem + "1"}) {
-		t.Fatalf("judgement idle for its window: stopped %v, want instance 1", stops)
+		t.Fatalf("judgement idle for its window while routine works: stopped %v, want judgement instance 1 only", stops)
+	}
+	hq.Complete(r3)
+	check()
+	clk.Advance(11 * time.Minute)
+	check()
+	if _, stops := fleet.take(); fmt.Sprint(stops) != fmt.Sprint([]string{routineStem + "1"}) {
+		t.Fatalf("routine idle for its window: stopped %v, want r1", stops)
 	}
 }
 
