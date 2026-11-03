@@ -980,7 +980,7 @@ func TestEnableOfficersInstallsTheSessionSourceOrRefuses(t *testing.T) {
 	if r.installed == nil {
 		t.Fatal("EnableOfficers installed no session source")
 	}
-	if sess, ok := r.installed(inst); !ok || len(sess.AllowMCPTools) != 7 {
+	if sess, ok := r.installed(inst); !ok || len(sess.AllowMCPTools) != 8 {
 		t.Fatalf("installed source answered %v %v for a release instance", sess, ok)
 	}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))

@@ -607,7 +607,8 @@ You are officer <id>, instance <n> of <max> (<agent name>). …
    only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item …, you may
    instead ask them with officer_ask_person{…}. Asking ENDS your lease on the
-   item … HQ re-opens it with the answer and muster wakes an instance for it.
+   item … HQ re-opens it with the answer, and muster wakes an instance to take
+   it up again.
 4. When nothing is open and you hold no claim, stop and wait …
 ```
 
