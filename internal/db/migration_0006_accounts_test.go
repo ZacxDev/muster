@@ -109,8 +109,9 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - chief_preferences (0060, the chief's per-user on/off toggle).
 //   - chief_nudges (0064, the chief's stall-nudge decisions).
 //   - cc_account_failovers (0066, a claude-code agent's account rebinds).
+//   - officer_llm_usage (0071, the officer LLM proxy's per-day usage).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mail_resumes", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
+	"jobs", "mail_resumes", "mirror_tokens", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
@@ -177,6 +178,7 @@ var wantForeignKeys = []string{
 	"chief_preferences|chief_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"chief_nudges|chief_nudges_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"suggest_usage|suggest_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_llm_usage|officer_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_prs|session_prs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

@@ -26,6 +26,7 @@
 # DELETED from this file is not only a server change; it can make a client verb
 # unreachable, and that test is where it surfaces.
 /connect/{connector}/{host}/{path...}
+/llm/
 DELETE /agent/approvals/{id}
 DELETE /agents/{id}
 DELETE /api/device
@@ -225,6 +226,7 @@ POST /flows/requests/{id}/deny
 POST /flows/runner-tokens
 POST /flows/runner-tokens/{id}/revoke
 POST /invite
+POST /llm/v1/messages
 POST /login
 POST /logout
 POST /mcp

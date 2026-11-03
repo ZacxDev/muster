@@ -41,27 +41,37 @@ import (
 // A histogram or counter with no labels has an empty slice — distinct from a
 // missing entry, which is the failure.
 var wantMetrics = map[string][]string{
-	"muster_officer_error_slots":              nil,
-	"muster_officer_hq_faults":                nil,
-	"muster_officer_transcript_events_total":  {"result"},
-	"muster_build_info":                       {"version"},
-	"muster_http_requests_total":              {"code", "method", "route"},
-	"muster_http_request_duration_seconds":    {"method", "route"},
-	"muster_panics_total":                     {"source"},
-	"muster_agent_provision_total":            {"result"},
-	"muster_push_delivery_total":              {"result"},
-	"muster_push_suppressed_total":            {"reason"},
-	"muster_agent_provision_duration_seconds": {},
-	"muster_agent_kickoff_resend_total":       {"result"},
-	"muster_agent_kickoff_claim_total":        {"result"},
-	"muster_tasks_created_total":              {"source"},
-	"muster_task_routing_tags_total":          {"namespace"},
-	"muster_task_session_links_total":         {"role"},
-	"muster_task_session_links_skipped_total": {"reason"},
-	"muster_flow_jobs_total":                  {"flow", "outcome"},
-	"muster_memo_relay_agent_checks_total":    {"result"},
-	"muster_memo_relay_upstream_total":        {"result"},
-	"muster_memo_relay_deliveries_total":      {"result"},
+	"muster_officer_error_slots":                      nil,
+	"muster_officer_hq_faults":                        nil,
+	"muster_officer_transcript_events_total":          {"result"},
+	"muster_officer_llm_requests_total":               {"instance", "officer", "result"},
+	"muster_officer_llm_refused_total":                {"officer", "reason"},
+	"muster_officer_llm_tokens_total":                 {"dir", "instance", "officer"},
+	"muster_officer_llm_cost_usd_total":               {"instance", "officer"},
+	"muster_officer_llm_cost_estimated_total":         {"officer"},
+	"muster_officer_llm_upstream_auth_failures_total": {"officer", "status"},
+	"muster_officer_llm_upstream_auth_failing":        {"officer"},
+	"muster_officer_llm_spent_today_usd":              {"officer"},
+	"muster_officer_llm_budget_usd":                   {"officer"},
+	"muster_officer_llm_book_failures_total":          {"officer"},
+	"muster_build_info":                               {"version"},
+	"muster_http_requests_total":                      {"code", "method", "route"},
+	"muster_http_request_duration_seconds":            {"method", "route"},
+	"muster_panics_total":                             {"source"},
+	"muster_agent_provision_total":                    {"result"},
+	"muster_push_delivery_total":                      {"result"},
+	"muster_push_suppressed_total":                    {"reason"},
+	"muster_agent_provision_duration_seconds":         {},
+	"muster_agent_kickoff_resend_total":               {"result"},
+	"muster_agent_kickoff_claim_total":                {"result"},
+	"muster_tasks_created_total":                      {"source"},
+	"muster_task_routing_tags_total":                  {"namespace"},
+	"muster_task_session_links_total":                 {"role"},
+	"muster_task_session_links_skipped_total":         {"reason"},
+	"muster_flow_jobs_total":                          {"flow", "outcome"},
+	"muster_memo_relay_agent_checks_total":            {"result"},
+	"muster_memo_relay_upstream_total":                {"result"},
+	"muster_memo_relay_deliveries_total":              {"result"},
 }
 
 // 🔴 LABELS THAT MAY NEVER APPEAR, BY NAME. This is the denylist half: the
@@ -96,6 +106,16 @@ func gather(t *testing.T) map[string][]string {
 	MemoRelayUpstream.WithLabelValues("ok")
 	MemoRelayDeliveries.WithLabelValues("delivered")
 	OfficerTranscriptEvents.WithLabelValues("posted")
+	OfficerLLMRequests.WithLabelValues("example:area", "1", "ok")
+	OfficerLLMRefused.WithLabelValues("none", "path")
+	OfficerLLMTokens.WithLabelValues("example:area", "1", "in")
+	OfficerLLMCost.WithLabelValues("example:area", "1")
+	OfficerLLMCostEstimated.WithLabelValues("example:area")
+	OfficerLLMUpstreamAuth.WithLabelValues("example:area", "401")
+	OfficerLLMUpstreamAuthFailing.WithLabelValues("example:area")
+	OfficerLLMSpentToday.WithLabelValues("example:area")
+	OfficerLLMBudget.WithLabelValues("example:area")
+	OfficerLLMBookFailures.WithLabelValues("example:area")
 	ObserveHTTP("GET /api/tasks/{id}", "GET", 200, 0)
 
 	families, err := prometheus.DefaultGatherer.Gather()
