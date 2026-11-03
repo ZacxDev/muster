@@ -501,12 +501,13 @@ can read `CHIEF_KEY_FILE` too. That includes any session holding the
 operator's kubeconfig and, in the default provisioner layout
 ([provisioner.md](provisioner.md#kubernetes-rbac): a ClusterRoleBinding with
 `pods/exec` and `secrets` in every namespace), muster-server's own service
-account. The least-privilege layout removes that standing access but not
+account. The least-privilege layout removes that standing access (except in
+muster's own namespace, where deploy-key pools have it read Secrets) but not
 muster's ability to bind itself to `muster-agent-namespace` in any namespace,
 so a namespace of its own does not by itself keep the chief key from muster.
 Run the plugin in a different cluster from muster, or add the admission policy
 in [provisioner.md](provisioner.md#kubernetes-rbac) and keep the plugin's
-namespace outside the agent prefix; see
+namespace outside the agent prefix and separate from muster's own namespace; see
 [clankmail.md](clankmail.md#25-configure-and-run).
 
 | variable | default | required | what it does |

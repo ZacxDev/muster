@@ -288,8 +288,9 @@ holds the compose file.
    muster-clankmail` and re-run the `docker run` above with the new `-e CLANKMAIL_PEERS=…`; under
    compose, edit the service's environment and run `docker compose up -d`; under Kubernetes, edit
    the Deployment's env. A rollout follows only when `CLANKMAIL_PEERS` is set in the pod template
-   (`env`). If it comes from a ConfigMap through `envFrom`, editing the ConfigMap restarts
-   nothing: run `kubectl rollout restart deploy/<name>` after it. The plugin checks every peer once
+   (`env`) as a literal `value`. If it comes from a ConfigMap, through `envFrom` or an
+   `env[].valueFrom.configMapKeyRef`, editing the ConfigMap restarts nothing: run
+   `kubectl rollout restart deploy/<name>` after it. The plugin checks every peer once
    before its first poll.
 4. **Confirm.** Run `show` inside the plugin's container: `docker exec muster-clankmail
    /muster-clankmail show` for the `docker run` container, `docker compose exec muster-clankmail
