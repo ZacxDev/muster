@@ -35,26 +35,59 @@ import (
 // openCodeAskAncestry bounds how many parents an ask's session is walked up.
 const openCodeAskAncestry = 8
 
-// openCodeAsk is one pending ask, and when this host first saw it (Unix ms).
+// openCodeAsk is one pending ask, when this host first saw it (Unix ms), and
+// the stream generation (OpenCodeSource.gen) that last confirmed it: raised on
+// it, or listed by a re-read since it opened.
 type openCodeAsk struct {
 	opencodehost.Ask
 	since int64
+	gen   uint64
 }
+
+// turnEndEvents end a session's turn (upstream 6ec5682,
+// packages/core/src/session/execution.ts: settled publishes exactly one of
+// these per busy period).
+var turnEndEvents = map[string]bool{"session.execution.succeeded": true, "session.execution.failed": true, "session.execution.interrupted": true}
 
 // askEvent records what e says about asks and sessions' parents; under s.mu.
 // It reports the session an ask event names ("" for none): its change count
 // moves (Event.SessionID cannot see a form's — it is nested).
+//
+// 🔴 A TURN'S END TAKES ITS PERMISSION REQUESTS WITH IT. Upstream, a pending
+// permission request whose turn is interrupted is dropped from the server's
+// pending map WITHOUT a permission.replied (packages/core/src/permission.ts:
+// 251-262, an Effect.ensuring that only deletes it) — measured against a real
+// `opencode serve` (testdata/abort-v2.0.32.sse): permission.asked, then
+// session.execution.interrupted, and nothing else names the request. A form
+// is cancelled on interrupt (form.ts:157-158 → form.cancelled), so only
+// permission requests are cleared here.
 func (s *OpenCodeSource) askEvent(e opencodehost.Event) string {
 	if child, parent := e.ParentOf(); child != "" && parent != "" {
 		s.parent[child] = parent
+	}
+	if turnEndEvents[e.Type] {
+		id, cleared := e.SessionID(), false
+		for aid, a := range s.asks {
+			if a.Session == id && a.Kind == opencodehost.AskPermission {
+				delete(s.asks, aid)
+				s.settled[aid], cleared = true, true
+			}
+		}
+		if cleared {
+			s.notifyLocked()
+		}
+		return ""
 	}
 	raised, settled, session, ok := e.AskEvent()
 	if !ok {
 		return ""
 	}
 	if raised != nil {
-		if _, had := s.asks[raised.ID]; !had && !s.settled[raised.ID] {
-			s.asks[raised.ID] = openCodeAsk{Ask: *raised, since: s.now().UnixMilli()}
+		if a, had := s.asks[raised.ID]; had {
+			a.gen = s.gen
+			s.asks[raised.ID] = a
+		} else if !s.settled[raised.ID] {
+			s.asks[raised.ID] = openCodeAsk{Ask: *raised, since: s.now().UnixMilli(), gen: s.gen}
 		}
 	} else {
 		delete(s.asks, settled)
@@ -64,11 +97,16 @@ func (s *OpenCodeSource) askEvent(e opencodehost.Event) string {
 	return session
 }
 
-// resetAsks forgets every ask on a (re)connect: the stream had a gap, so a
-// session is seeded again from its pending lists when next matched. Under
-// s.mu.
-func (s *OpenCodeSource) resetAsks() {
-	s.asks, s.settled, s.seeded = map[string]openCodeAsk{}, map[string]bool{}, map[string]bool{}
+// holdAsks starts a new stream generation on a (re)connect or a skipped
+// event: every ask known so far is HELD — still reported, stale but believed
+// — and each matched session's pending lists are read again (seed), which is
+// the one place an ask settled in the gap leaves. Clearing them at the gap
+// instead would withdraw the owner's notification, and the same ask coming
+// back within the attention queue's re-push window would never be pushed
+// again. Under s.mu.
+func (s *OpenCodeSource) holdAsks() {
+	s.gen++
+	s.settled, s.seeded = map[string]bool{}, map[string]bool{}
 	s.notifyLocked()
 }
 
@@ -85,16 +123,14 @@ func (s *OpenCodeSource) underLocked(session, root string) bool {
 }
 
 // pendingAsk is the newest pending ask of root session root (or of a session
-// under it), and whether there is one. While the stream is not open there is
-// none: what the host cannot see now, it does not claim.
+// under it), and whether there is one. While the stream is down the asks last
+// known are HELD and reported as they are (holdAsks): a disconnect is not an
+// answer.
 func (s *OpenCodeSource) pendingAsk(root string) (openCodeAsk, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var best openCodeAsk
 	found := false
-	if !s.connected {
-		return best, false
-	}
 	for _, a := range s.asks {
 		if !s.underLocked(a.Session, root) {
 			continue
@@ -106,8 +142,16 @@ func (s *OpenCodeSource) pendingAsk(root string) (openCodeAsk, bool) {
 	return best, found
 }
 
-// seed reads root session root's pending asks once per connect, in the
-// background (a listing never waits on it), and nudges when it learned any.
+// openCodeSeedSessions bounds how many sessions (a root and the subagents
+// under it) one seed reads.
+const openCodeSeedSessions = 16
+
+// seed reads the pending lists of root session root, and of each session the
+// stream told is under it, once per stream generation, in the background (a
+// listing never waits on it), and RECONCILES: an ask those sessions list is
+// added (or confirmed); a held ask of theirs from an earlier generation that
+// none lists was settled in the gap, and leaves. A failed read changes
+// nothing (the held asks stay) and is retried on the next match.
 func (s *OpenCodeSource) seed(root string) {
 	s.mu.Lock()
 	if !s.connected || s.seeded[root] {
@@ -116,37 +160,61 @@ func (s *OpenCodeSource) seed(root string) {
 	}
 	s.seeded[root] = true
 	gen := s.gen
+	sessions := []string{root}
+	for child := range s.parent {
+		if len(sessions) < openCodeSeedSessions && child != root && s.underLocked(child, root) {
+			sessions = append(sessions, child)
+		}
+	}
 	s.mu.Unlock()
 	go func() {
-		cl, err := s.client()
-		if err != nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
-		defer cancel()
-		asks, err := cl.PendingAsks(ctx, root)
-		if err != nil {
+		retry := func() {
 			s.mu.Lock()
 			if s.gen == gen {
 				delete(s.seeded, root) // try again on the next match
 			}
 			s.mu.Unlock()
+		}
+		cl, err := s.client()
+		if err != nil {
+			retry()
 			return
+		}
+		ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
+		defer cancel()
+		var listed []opencodehost.Ask
+		read := map[string]bool{}
+		for _, id := range sessions {
+			asks, err := cl.PendingAsks(ctx, id)
+			if err != nil {
+				retry()
+				return
+			}
+			listed, read[id] = append(listed, asks...), true
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.gen != gen {
-			return // the stream reconnected meanwhile; that connect seeds again
+			return // a newer generation began meanwhile; it seeds again
 		}
-		added := false
-		for _, a := range asks {
-			// One settled while the read was in flight stays settled.
-			if _, had := s.asks[a.ID]; !had && !s.settled[a.ID] {
-				s.asks[a.ID] = openCodeAsk{Ask: a, since: s.now().UnixMilli()}
-				added = true
+		changed, on := false, map[string]bool{}
+		for _, a := range listed {
+			on[a.ID] = true
+			if cur, had := s.asks[a.ID]; had {
+				cur.gen = gen
+				s.asks[a.ID] = cur
+			} else if !s.settled[a.ID] { // one settled while the read was in flight stays settled
+				s.asks[a.ID] = openCodeAsk{Ask: a, since: s.now().UnixMilli(), gen: gen}
+				changed = true
 			}
 		}
-		if added {
+		for id, a := range s.asks {
+			if read[a.Session] && a.gen < gen && !on[id] {
+				delete(s.asks, id) // settled while the stream could not say so
+				changed = true
+			}
+		}
+		if changed {
 			s.notifyLocked()
 		}
 	}()
@@ -250,9 +318,10 @@ func (a openCodeAsk) offerable() ([]string, bool) {
 
 // The causes of an opencode answer's refusal (mirror.AskRefusalOpenCode…).
 var (
-	errOpenCodeGone        = errors.New("opencode is no longer waiting on that")
-	errOpenCodeUnreachable = errors.New("the opencode server could not be reached")
-	errOpenCodeUnknown     = errors.New("the answer was sent to opencode, which did not say how it went")
+	errOpenCodeGone          = errors.New("opencode is no longer waiting on that")
+	errOpenCodeUnreachable   = errors.New("the opencode server could not be reached")
+	errOpenCodeUnknown       = errors.New("the answer was sent to opencode, which did not say how it went")
+	errOpenCodeAnswerRefused = errors.New("opencode refused the answer: the question cannot take that value")
 )
 
 // answerAsk relays choice to pending ask promptID through the opencode
@@ -302,8 +371,11 @@ func (s *OpenCodeSource) answerAsk(ctx context.Context, promptID, choice string)
 		s.notifyLocked()
 		s.mu.Unlock()
 		return nil
-	case errors.Is(err, opencodehost.ErrAskSettled), errors.Is(err, opencodehost.ErrAnswerRefused):
+	case errors.Is(err, opencodehost.ErrAskSettled):
 		return fmt.Errorf("%w (%v)", errOpenCodeGone, err)
+	case errors.Is(err, opencodehost.ErrAnswerRefused):
+		// The server's 400: the ask is still pending; its field refused the value.
+		return fmt.Errorf("%w (%v)", errOpenCodeAnswerRefused, err)
 	case errors.Is(err, opencodehost.ErrUnauthorized):
 		return fmt.Errorf("%w (%v)", errOpenCodeUnreachable, err)
 	case isDialError(err):
@@ -352,6 +424,8 @@ func (h *hostSide) answerOpenCode(m mirror.Msg) {
 				ans.Refusal = mirror.AskRefusalOpenCodeUnreachable
 			case errors.Is(err, errOpenCodeUnknown):
 				ans.Refusal = mirror.AskRefusalOpenCodeUnknown
+			case errors.Is(err, errOpenCodeAnswerRefused):
+				ans.Refusal = mirror.AskRefusalOpenCodeRefused
 			case errors.Is(err, errCannotAnswer):
 				ans.Refusal = mirror.AskRefusalUnsupported
 			}

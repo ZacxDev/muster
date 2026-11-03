@@ -50,6 +50,10 @@ const (
 	// AskRefusalOpenCodeUnknown: the answer was sent and no outcome came back.
 	// It may have been answered.
 	AskRefusalOpenCodeUnknown = "opencode-unknown"
+	// AskRefusalOpenCodeRefused: opencode refused the answer itself (HTTP 400:
+	// the field cannot take that value). Nothing was answered; it is still
+	// pending.
+	AskRefusalOpenCodeRefused = "opencode-refused"
 )
 
 var (
@@ -65,6 +69,9 @@ var (
 	// ErrOpenCodeAnswerUnknown: the answer was sent and no outcome came back in
 	// time. It may have been answered: check the terminal.
 	ErrOpenCodeAnswerUnknown = errors.New("mirror: muster sent the answer but did not hear back; it may have been answered — check the terminal")
+	// ErrOpenCodeAnswerRefused: opencode refused the answer (the field cannot
+	// take that value). Nothing was answered; the ask is still pending.
+	ErrOpenCodeAnswerRefused = errors.New("mirror: opencode refused that answer; nothing was answered")
 )
 
 // openCodeAnswerTimeout bounds one answer end to end: the host makes one POST

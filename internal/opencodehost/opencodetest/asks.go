@@ -29,6 +29,47 @@ import (
 //go:embed testdata/asks-v2.0.32.sse
 var fixtureSSE string
 
+// testdata/abort-v2.0.32.sse is what the same real server sent while a REAL
+// turn (its default free model, no credentials) waited first on a permission
+// request (a session whose rules ask), then on the question tool's form, and
+// each turn was interrupted (POST /api/session/{id}/interrupt): the request
+// is followed by session.execution.interrupted and nothing that settles it;
+// the form by form.cancelled. Its location directory is /srv/fixture.
+//
+//go:embed testdata/abort-v2.0.32.sse
+var abortSSE string
+
+// The ids in the abort frames.
+const (
+	// AbortPermissionSession's turn waited on AbortShellRequest (shell, "ls
+	// -la .") when it was interrupted.
+	AbortPermissionSession = "ses_e5ce88b59ffevd01THXy0Z6WjF"
+	AbortShellRequest      = "per_1a31779020017W8wYt7c7UUj2m"
+	// AbortQuestionSession's turn waited on AbortQuestionForm.
+	AbortQuestionSession = "ses_e5ce833b5ffeGQb3gjbbeOOQWc"
+	AbortQuestionForm    = "frm_1a317d1fb00121QVUp1IrY6yOD"
+)
+
+// AbortFrame is the n-th (0-based) abort frame of type typ; it panics when
+// there is none.
+func AbortFrame(typ string, n int) string { return frameOf(abortSSE, typ, n) }
+
+// dropSentinel, sent down a subscriber's channel, ends that stream.
+const dropSentinel = "\x00drop"
+
+// DropStreams ends every open event stream, as a network drop would; the
+// client reconnects on its own.
+func (s *Server) DropStreams() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ch := range s.subs {
+		select {
+		case ch <- dropSentinel:
+		default:
+		}
+	}
+}
+
 // The ids in the fixture frames.
 const (
 	// FixtureFormSession is the root session the two forms were raised in.
@@ -56,9 +97,11 @@ type Frame struct {
 }
 
 // FixtureFrames is every frame of the fixture, in the order it was sent.
-func FixtureFrames() []Frame {
+func FixtureFrames() []Frame { return framesOf(fixtureSSE) }
+
+func framesOf(sse string) []Frame {
 	var out []Frame
-	sc := bufio.NewScanner(strings.NewReader(fixtureSSE))
+	sc := bufio.NewScanner(strings.NewReader(sse))
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		line, ok := strings.CutPrefix(sc.Text(), "data: ")
@@ -77,8 +120,10 @@ func FixtureFrames() []Frame {
 
 // FixtureFrame is the n-th (0-based) fixture frame of type typ; it panics
 // when there is none (a test's own mistake).
-func FixtureFrame(typ string, n int) string {
-	for _, f := range FixtureFrames() {
+func FixtureFrame(typ string, n int) string { return frameOf(fixtureSSE, typ, n) }
+
+func frameOf(sse, typ string, n int) string {
+	for _, f := range framesOf(sse) {
 		if f.Type == typ {
 			if n == 0 {
 				return f.JSON

@@ -146,6 +146,7 @@ func TestAnOpenCodeAnswerIsGated(t *testing.T) {
 		{"the host does not relay", false, "", "@2", mirror.ErrOpenCodeAnswerUnsupported, http.StatusConflict, true, openCodeNoRelayText},
 		{"answered in the terminal", false, "", "@2", mirror.ErrOpenCodeAskGone, http.StatusConflict, true, openCodeGoneText},
 		{"unknown outcome", false, "", "@2", mirror.ErrOpenCodeAnswerUnknown, http.StatusGatewayTimeout, true, openCodeUnknownText},
+		{"opencode refused the value", false, "", "@2", mirror.ErrOpenCodeAnswerRefused, http.StatusUnprocessableEntity, true, openCodeRefusedText},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := &openCodeAskMirror{fakeMirror: &fakeMirror{online: true, interactive: true, statusReport: true, windows: openCodeAnswerable()}, answers: true, err: c.err}

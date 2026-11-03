@@ -106,20 +106,6 @@ func TestAnAskPendingBeforeTheStreamOpenedIsRead(t *testing.T) {
 	}
 }
 
-// While the stream is down the host claims no ask (it cannot see one settle):
-// the window's status is unknown, not waiting.
-func TestNoAskIsClaimedWhileTheStreamIsDown(t *testing.T) {
-	srv, src, pane := askSource(t, "OC | Ask session")
-	srv.EmitFrame(opencodetest.FixtureFrame("permission.asked", 0))
-	waitUntil(t, "waiting", func() bool { return pane().Status == mirror.StatusWaiting })
-	src.mu.Lock()
-	src.connected = false
-	src.mu.Unlock()
-	if ap := pane(); ap.Status == mirror.StatusWaiting || ap.Pending != nil {
-		t.Fatalf("with the stream down: %+v", ap)
-	}
-}
-
 // liveOCBackend lists one opencode window resolved NOW from src, as the tmux
 // backend does on every listing.
 type liveOCBackend struct {

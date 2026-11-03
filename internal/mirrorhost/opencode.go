@@ -293,7 +293,7 @@ func (s *OpenCodeSource) run() {
 		s.mu.Lock()
 		was := s.down
 		s.connected, s.down = false, why
-		// No stream, no believed asks (pendingAsk claims none while it is down).
+		// The asks last known are HELD while the stream is down (holdAsks).
 		s.notifyLocked()
 		s.mu.Unlock()
 		if was != why {
@@ -350,10 +350,10 @@ func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 		s.logger.Printf("muster-mirror: opencode: reading %s again", cl.URL())
 	}
 	s.connected, s.down, s.stale, s.sessionsErr = true, "", true, nil
-	// The stream had a gap: what was asked or settled in it is unknown, so
-	// every matched session's pending lists are read again (seed).
-	s.gen++
-	s.resetAsks()
+	// The stream had a gap: what was asked or settled in it is unknown. The
+	// asks known before it are HELD until each matched session's pending
+	// lists are read again (seed); only that re-read drops one settled in it.
+	s.holdAsks()
 	for id := range s.changes {
 		s.changes[id]++ // anything may have happened while the stream was closed
 	}
@@ -366,6 +366,15 @@ func (s *OpenCodeSource) event(e opencodehost.Event) {
 	defer s.mu.Unlock()
 	if titleEvents[e.Type] {
 		s.stale = true // the root sessions or their titles may have changed
+	}
+	if e.Type == opencodehost.EventSkipped {
+		// An event too large to read was skipped: treat it as a gap (what it
+		// said is unknown), so the matched sessions are read again.
+		s.holdAsks()
+		for sid := range s.changes {
+			s.changes[sid]++
+		}
+		return
 	}
 	if asked := s.askEvent(e); id == "" {
 		// A form's session is nested in its event (askEvent reads it): its

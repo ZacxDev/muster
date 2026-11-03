@@ -306,10 +306,21 @@ func (e Event) SessionID() string {
 	return d.SessionID
 }
 
-// Status is a session.status event's status type (idle, busy, retry), ""
-// for any other event.
+// Status is the status an event says its session has now: a session.status
+// event's type (idle, busy, retry) — and, because the v2 server at 6ec5682
+// never publishes session.status (only its schema declares it; measured
+// against a real `opencode serve`, testdata/abort-v2.0.32.sse), the turn's
+// own lifecycle: session.execution.started is busy, and its one terminal
+// event (succeeded, failed, interrupted; packages/core/src/session/
+// execution.ts) idle. "" for any other event.
 func (e Event) Status() string {
-	if e.Type != "session.status" {
+	switch e.Type {
+	case "session.execution.started":
+		return "busy"
+	case "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted":
+		return "idle"
+	case "session.status":
+	default:
 		return ""
 	}
 	var d struct {
@@ -321,10 +332,19 @@ func (e Event) Status() string {
 	return d.Status.Type
 }
 
+// EventSkipped is the Type of the frame Events hands fn in place of an event
+// it could not read whole (a line over maxEventLine): the stream goes on, and
+// the reader knows something was missed.
+const EventSkipped = "muster.skipped"
+
 // Events reads the server's event stream until ctx ends or the stream does,
 // calling fn for each frame in order; connected is called once the server
 // has accepted the request (before any frame). It returns ErrUnauthorized for
 // a refused credential, and otherwise the reason the stream ended.
+//
+// A line longer than maxEventLine does NOT end the stream: it is discarded
+// as it is read (never held whole), its event is dropped, and fn is called
+// with an Event of Type EventSkipped instead.
 func (c *Client) Events(ctx context.Context, connected func(), fn func(Event)) error {
 	req, err := c.request(ctx, http.MethodGet, "/api/event", nil, false)
 	if err != nil {
@@ -346,33 +366,69 @@ func (c *Client) Events(ctx context.Context, connected func(), fn func(Event)) e
 	if connected != nil {
 		connected()
 	}
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 64<<10), maxEventLine)
+	rd := bufio.NewReaderSize(resp.Body, 64<<10)
 	var data []string
-	for sc.Scan() {
-		line := sc.Text()
+	skipped := false // the event being read had a line too long to keep
+	for {
+		line, long, err := readEventLine(rd, maxEventLine)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, io.EOF) {
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+		if long {
+			skipped = true
+			continue
+		}
 		switch {
 		case line == "":
-			if len(data) > 0 {
+			if skipped {
+				fn(Event{Type: EventSkipped})
+			} else if len(data) > 0 {
 				var e Event
 				if json.Unmarshal([]byte(strings.Join(data, "\n")), &e) == nil && e.Type != "" {
 					fn(e)
 				}
-				data = data[:0]
 			}
+			data, skipped = data[:0], false
 		case strings.HasPrefix(line, ":"):
 			// A comment: the server's heartbeat.
 		case strings.HasPrefix(line, "data:"):
 			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return err
+}
+
+// readEventLine reads one line of the stream without its line ending: long
+// reports a line over max bytes, which is read to its end and DISCARDED (so
+// memory stays bounded at max), never returned.
+func readEventLine(rd *bufio.Reader, max int) (line string, long bool, err error) {
+	var buf []byte
+	for {
+		chunk, err := rd.ReadSlice('\n')
+		if !long {
+			if len(buf)+len(chunk) > max+2 { // +2: the line ending itself
+				long, buf = true, nil
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+		switch {
+		case err == nil:
+			if long {
+				return "", true, nil
+			}
+			return strings.TrimRight(string(buf), "\r\n"), false, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return "", long, err
+		}
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return io.ErrUnexpectedEOF
 }
 
 // mint mints a new pair token with c's credential: POST /api/pair for a

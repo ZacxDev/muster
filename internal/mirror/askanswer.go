@@ -215,6 +215,8 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrOpenCodeUnreachable, why)
 	case AskRefusalOpenCodeUnknown:
 		return fmt.Errorf("%w: %s", ErrOpenCodeAnswerUnknown, why)
+	case AskRefusalOpenCodeRefused:
+		return fmt.Errorf("%w: %s", ErrOpenCodeAnswerRefused, why)
 	}
 	return fmt.Errorf("%w: %s", ErrAskRefused, why)
 }

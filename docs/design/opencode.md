@@ -145,6 +145,19 @@ below are what it sent, saved as `internal/opencodehost/opencodetest/testdata/as
   `busy`: there is no "waiting" status, so the host derives it from the ask.
 - A subagent's ask names the CHILD session; `session.created` names its
   `parentID`.
+- **An interrupted turn** (captured from a REAL turn of the server's default
+  free model, `testdata/abort-v2.0.32.sse`): a pending **form** is cancelled
+  (`form.cancelled`; `packages/core/src/form.ts:157-158`), but a pending
+  **permission request** is dropped from the server's map with NO event
+  (`permission.ts:251-262` only deletes it in an `Effect.ensuring`): the
+  stream shows `permission.asked`, then `session.execution.interrupted`, and
+  nothing that names the request. So the host clears a session's permission
+  requests on the turn's end (`session.execution.succeeded`, `failed`,
+  `interrupted` — one per busy period, `session/execution.ts`).
+- **The v2 server publishes no `session.status`** at 6ec5682 (only its schema
+  declares it; no publisher, and none in a real turn's frames). The turn's
+  status is its lifecycle: `session.execution.started` busy, its terminal
+  event idle — which the host now reads (`Event.Status`).
 - Before this, `Event.SessionID` read only `data.sessionID`, so a
   `form.created` named no session at all: the host did not even re-read the
   view for it.
@@ -161,8 +174,15 @@ below are what it sent, saved as `internal/opencodehost/opencodetest/testdata/as
   `mirror.PendingQuestion`: the first question, "(and N more questions)",
   tool `question`, and its option labels only when it is ONE single-select
   question of at most 4 options whose labels the wire would not change). A
-  raised or settled ask sends the listing at once. While the stream is down
-  no ask is claimed.
+  raised or settled ask sends the listing at once.
+- **A stream gap holds the asks.** While the stream is down, and after a
+  reconnect until each matched session's pending lists are re-read, the asks
+  last known are reported as they are; the re-read is the one place an ask
+  settled in the gap leaves. Clearing them at the drop would withdraw the
+  owner's notification, and the same ask back within the queue's re-push
+  window would never be pushed again.
+- **An event line over 4 MiB** is discarded as it is read and the stream goes
+  on (it used to end it); the host treats the skip as a gap (re-read).
 - **Wire**: `Pending.Options` (one label per line) beside `Kind`, `PromptID`,
   `Choices`; `RuntimeSpec.AskKinds` keeps each runtime's kinds its own. An
   opencode Pending at its bounds is never larger than a Claude one, so the

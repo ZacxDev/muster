@@ -424,6 +424,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case f := <-ch:
+			if f == dropSentinel {
+				return // DropStreams: the connection ends as a network drop would
+			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", f)
 			fl.Flush()
 		case <-beat.C:

@@ -73,6 +73,7 @@ const (
 	openCodeGoneText     = "opencode is no longer waiting on that (it was answered in the terminal, or the turn ended). Nothing was answered here."
 	openCodeUnreachText  = "muster could not reach the opencode server on that host, so nothing was answered: answer it in the terminal."
 	openCodeUnknownText  = "muster sent the answer but did not hear back: it may have been answered. Check the terminal before answering again."
+	openCodeRefusedText  = "opencode refused that answer: the question can't take that value. Nothing was answered, and it is still waiting: answer it in the terminal."
 )
 
 // openCodeItem fills it — a waiting opencode window e's item — from what it
@@ -223,6 +224,8 @@ func (s *Server) handleAttentionOpenCodeAnswer(w http.ResponseWriter, r *http.Re
 			code, text = http.StatusBadGateway, openCodeUnreachText
 		case errors.Is(err, mirror.ErrOpenCodeAnswerUnknown):
 			code, text = http.StatusGatewayTimeout, openCodeUnknownText
+		case errors.Is(err, mirror.ErrOpenCodeAnswerRefused):
+			code, text = http.StatusUnprocessableEntity, openCodeRefusedText
 		case errors.Is(err, mirror.ErrHostOffline):
 			code, text = http.StatusBadGateway, "That host is offline: nothing was answered. Answer it in the terminal."
 		case errors.Is(err, mirror.ErrOpenCodeAskGone):

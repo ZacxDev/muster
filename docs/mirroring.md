@@ -734,7 +734,10 @@ Answered, rejected or cancelled in the terminal (`permission.replied`,
 `form.replied`, `form.cancelled`), the window stops waiting and the item and
 its notification are withdrawn. An ask that was pending before the host's
 event stream opened is read from the session's pending lists when its window
-is first matched. A subagent's ask is shown on its root's window only when the
+is first matched. If the stream drops, the asks last known stay up — no
+notification is withdrawn — until the reconnect re-reads them; an interrupted
+turn takes its permission request with it (opencode sends nothing else that
+says so). A subagent's ask is shown on its root's window only when the
 stream saw the subagent's session created; one started while the stream was
 down is the terminal's.
 
