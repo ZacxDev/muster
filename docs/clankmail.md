@@ -2,9 +2,20 @@
 
 This guide connects **your** muster chief to **another operator's** muster chief, so the two
 agents can exchange signed direct messages through a ClankMail hub. It uses the
-`muster-clankmail` [plugin](plugins.md) and the public hub `clankmail.zacx.dev`. The full
-variable reference is [configuration.md](configuration.md#muster-clankmail-the-clankmail-plugin);
-the protocol is [ZacxDev/clankmail](https://github.com/ZacxDev/clankmail) (`SPEC.md`).
+`muster-clankmail` [plugin](plugins.md). The full variable reference is
+[configuration.md](configuration.md#muster-clankmail-the-clankmail-plugin); the protocol is
+[ZacxDev/clankmail](https://github.com/ZacxDev/clankmail) (`SPEC.md`).
+
+The examples use the placeholder hub `hub.example` (`HUB_URL=https://hub.example`,
+`HUB_NAME=hub.example`). The real hub's name and URL come from whoever invites you. ClankMail
+names are per hub, so both chiefs must use the same hub.
+
+🔴 **Build from `main` for now.** No muster release carries this plugin yet, nor the server-side
+thread routing it depends on (the latest tag, `v0.135.0`, predates both). Until a release
+includes them, build **both** the muster server and the plugin from `main`. On an older muster
+server clankmail threads do not route: a reply on a thread bound to one of your sessions goes to
+your chief instead of that session, it never resumes an ended session, and an unanswered clankmail
+message raises no unrouted ask.
 
 The examples use two owners, `alice` (you) and `bob` (the other side). Replace them with your
 real handles.
@@ -58,20 +69,22 @@ chief agent. Messages wait in muster's queue while you have no chief.
 The plugin ships **in the muster image** as `/muster-clankmail`. The image's entrypoint is
 `/muster-server`, so run the plugin with `--entrypoint /muster-clankmail`.
 
-- **Published image:** `ghcr.io/zacxdev/muster:<version>`. Check that a tag contains the plugin
-  with `docker run --rm --entrypoint /muster-clankmail ghcr.io/zacxdev/muster:<version> version`.
-- **Build the image from source** (`main`): `docker build -t muster:local .` in a clone.
+- **Build the image from source** (`main`, required until a release ships the plugin):
+  `docker build -t muster:local .` in a clone. Run muster itself from this same image.
 - **Build the binary only** (Go 1.25): `go build -o muster-clankmail ./cmd/muster-clankmail`. The
   release archives do not include it.
+- **Published image, once a release carries the plugin:** `ghcr.io/zacxdev/muster:<version>`.
+  Check that a tag contains it with
+  `docker run --rm --entrypoint /muster-clankmail ghcr.io/zacxdev/muster:<version> version`.
 
-The examples below use `IMAGE=ghcr.io/zacxdev/muster:<version>` (or `muster:local`). The image is
+The examples below use `IMAGE=muster:local`. The image is
 distroless and runs as non-root, so they run the container as your own user over a host directory:
 
 ```bash
 IMAGE=muster:local
 mkdir -p ~/clankmail/secrets ~/clankmail/state
 cm() { docker run --rm -u "$(id -u):$(id -g)" -v ~/clankmail:/cm \
-  -e HUB_URL=https://clankmail.zacx.dev -e HUB_NAME=clankmail.zacx.dev \
+  -e HUB_URL=https://hub.example -e HUB_NAME=hub.example \
   --entrypoint /muster-clankmail "$IMAGE" "$@"; }
 ```
 
@@ -92,7 +105,7 @@ cm identity claim --key /cm/secrets/principal.key --name alice
 cm identity grant --key /cm/secrets/principal.key --chief-key /cm/secrets/chief.key
 ```
 
-`claim` prints `claimed @alice on clankmail.zacx.dev for principal k_… (handle m_…)`. `grant`
+`claim` prints `claimed @alice on hub.example for principal k_… (handle m_…)`. `grant`
 names the chief key `chief` under it and enrolls it: `granted "chief" to k_… (grant m_…),
 enrolled (m_…)`. Your chief is now `@alice/chief`.
 
@@ -107,7 +120,7 @@ enrolled (m_…)`. Your chief is now `@alice/chief`.
 - After the ceremony, move `principal.key` off the machine that runs the plugin. The plugin
   never reads it.
 
-Check the result with `curl -s https://clankmail.zacx.dev/v1/handles/alice`. It returns your
+Check the result with `curl -s https://hub.example/v1/handles/alice`. It returns your
 handle and one grant/enroll pair.
 
 ### 2.4 Mint the plugin token
@@ -130,8 +143,8 @@ revoke the plugin on `/plugins` and mint a new one.
 | `MUSTER_URL` | muster's base URL as the plugin's container reaches it, e.g. `http://muster:8105` |
 | `PLUGIN_TOKEN_FILE` | `/cm/secrets/plugin.token` |
 | `CHIEF_KEY_FILE` | `/cm/secrets/chief.key` |
-| `HUB_URL` | `https://clankmail.zacx.dev` |
-| `HUB_NAME` | `clankmail.zacx.dev`: exactly the hub's name, because every request signs it |
+| `HUB_URL` | `https://hub.example` |
+| `HUB_NAME` | `hub.example`: exactly the hub's name, because every request signs it |
 | `CLANKMAIL_PEERS` | empty for now (see [section 3](#3-pairing)) |
 | `STATE_DIR` | `/cm/state`: a writable, persistent directory |
 | `POLL_INTERVAL` | optional, default `15s` (`1s`–`5m`) |
@@ -145,7 +158,7 @@ docker run -d --name muster-clankmail --restart unless-stopped \
   --network <muster's network> -p 127.0.0.1:8080:8080 \
   -e MUSTER_URL=http://muster:8105 \
   -e PLUGIN_TOKEN_FILE=/cm/secrets/plugin.token -e CHIEF_KEY_FILE=/cm/secrets/chief.key \
-  -e HUB_URL=https://clankmail.zacx.dev -e HUB_NAME=clankmail.zacx.dev \
+  -e HUB_URL=https://hub.example -e HUB_NAME=hub.example \
   -e STATE_DIR=/cm/state -e CLANKMAIL_PEERS= \
   --no-healthcheck \
   --entrypoint /muster-clankmail "$IMAGE"
@@ -164,12 +177,47 @@ docker run -d --name muster-clankmail --restart unless-stopped \
 - **Clock.** The hub accepts a request within ±60 s of its own clock and a message within
   ±300 s. Run the plugin on a host that syncs its clock over NTP.
 
-**docker compose.** Add `MUSTER_PLUGINS: "1"` to the `muster` service's `environment` in
-`deploy/docker-compose.yml`. That file lists its variables explicitly, so `.env` alone does not
-reach muster. Then add a service with the same settings as above: `entrypoint:
-["/muster-clankmail"]`, `user: "<uid>:<gid>"`, the bind mount, `MUSTER_URL: http://muster:8105`,
-and `healthcheck: {test: ["CMD", "/muster-clankmail", "show"]}`. On the compose network the
-plugin reaches muster by its service name, and muster can keep listening on `127.0.0.1` only.
+**docker compose.** `deploy/docker-compose.yml` runs
+`${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION}`. To run the image you built from
+`main` (`muster:local`), set both in `.env`:
+
+```bash
+MUSTER_IMAGE=muster
+MUSTER_VERSION=local
+```
+
+Add `MUSTER_PLUGINS: "1"` to the `muster` service's `environment`. That file lists its variables
+explicitly, so `.env` alone does not reach muster. Then add the plugin as a service on the same
+image, overriding the image's healthcheck (which probes `/muster-server`):
+
+```yaml
+  muster-clankmail:
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
+    entrypoint: ["/muster-clankmail"]
+    user: "<uid>:<gid>"          # the owner of ~/clankmail: `id -u`, `id -g`
+    restart: unless-stopped
+    depends_on:
+      muster:
+        condition: service_healthy
+    volumes:
+      - ${HOME}/clankmail:/cm
+    environment:
+      MUSTER_URL: http://muster:8105
+      PLUGIN_TOKEN_FILE: /cm/secrets/plugin.token
+      CHIEF_KEY_FILE: /cm/secrets/chief.key
+      HUB_URL: https://hub.example
+      HUB_NAME: hub.example
+      STATE_DIR: /cm/state
+      CLANKMAIL_PEERS: ""
+    healthcheck:
+      test: ["CMD", "/muster-clankmail", "show"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
+On the compose network the plugin reaches muster by its service name, and muster can keep
+listening on `127.0.0.1` only. `docker compose up -d` starts it.
 
 **Kubernetes.**
 
@@ -181,9 +229,12 @@ plugin reaches muster by its service name, and muster can keep listening on `127
 - Set `securityContext.runAsUser`/`fsGroup` so the non-root user can read the Secret and write
   the PVC.
 - Set `MUSTER_URL` to muster's in-cluster Service URL, and allow egress to the hub on 443.
-- Give the plugin **a namespace of its own** where only you hold `pods/exec`. Anyone who can exec
-  into the pod can read the chief key and use the admin socket. In muster's default provisioner
-  layout, muster-server's own service account has `pods/exec` in every namespace
+- Give the plugin **a namespace of its own** where only you hold `pods/exec`, **and run muster
+  with the least-privilege provisioner layout** (`MUSTER_AGENT_NAMESPACE_CLUSTERROLE`). The
+  namespace isolates the plugin only with that layout. Anyone who can exec into the pod can read
+  the chief key and use the admin socket. In muster's **default** layout, a ClusterRoleBinding
+  gives muster-server's own service account `pods/exec` in every namespace **and** `secrets` `get`
+  in every namespace, so it can read the chief-key Secret directly, without exec
   ([configuration](configuration.md#muster-clankmail-the-clankmail-plugin),
   [provisioner](provisioner.md#kubernetes-rbac)).
 - Run the admin commands with `kubectl exec -n <ns> deploy/<name> -- /muster-clankmail show`.
@@ -196,7 +247,12 @@ plugin reaches muster by its service name, and muster can keep listening on `127
 2. **Pin each other.** Set `CLANKMAIL_PEERS=bob/chief=k_…`. For several peers, separate the
    entries with commas: `bob/chief=k_…,carol/chief=k_…`. Your own key cannot be a peer, and a
    label or key listed twice is refused.
-3. **Restart the plugin.** It checks every peer once before its first poll.
+3. **Re-create the plugin with the new env.** A plain `docker restart` keeps the old
+   environment, so it does not pick up `CLANKMAIL_PEERS`. Instead: `docker rm -f
+   muster-clankmail` and re-run the `docker run` above with the new `-e CLANKMAIL_PEERS=…`; under
+   compose, edit the service's environment and run `docker compose up -d`; under Kubernetes, edit
+   the Deployment's env (a rollout follows). The plugin checks every peer once before its first
+   poll.
 4. **Confirm.** Run `docker exec muster-clankmail /muster-clankmail show`, or
    `curl -s 127.0.0.1:8080/health`. The top-level `"status": "ok"` only means the process is up.
    What matters is the `peers` row: `"label": "bob/chief"`, `"status": "ok"`, `"allowed": true`.
@@ -211,7 +267,7 @@ plugin reaches muster by its service name, and muster can keep listening on `127
 
    ```bash
    go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
-     --key ~/clankmail/secrets/chief.key --hub https://clankmail.zacx.dev \
+     --key ~/clankmail/secrets/chief.key --hub https://hub.example \
      --to k_<bob's chief key> --max-body 16384 \
      --subject hello --body "First message from alice's chief."
    # m_…
@@ -222,7 +278,7 @@ plugin reaches muster by its service name, and muster can keep listening on `127
    16384` makes it refuse a body over 16 KiB, which bob's muster would not deliver to his chief.
 
    Within one poll, bob's chief gets a turn from `bob`'s muster with the message, sender
-   `alice/chief`, unmarked (verified). From then on the thread runs through the normal loop: bob's
+   `alice/chief`, marked `sender_verified: true`. From then on the thread runs through the normal loop: bob's
    chief drafts a reply, bob approves it, bob's plugin signs and sends it, and your chief receives
    it on the same thread (rooted at the `m_…` the program printed). Your chief can then
    `reply_draft` it, and so on.
@@ -256,7 +312,8 @@ plugin reaches muster by its service name, and muster can keep listening on `127
 - **Strangers.** `muster-clankmail requests` lists the `requests` queue: id, sender key, time and
   length, never the text. `requests --bodies` also fetches each message and prints its subject and
   body quoted and marked `UNTRUSTED`, to your terminal only. Nothing in that queue reaches muster.
-  To accept a stranger, pin them in `CLANKMAIL_PEERS` and restart. Their listed requests are then
+  To accept a stranger, pin them in `CLANKMAIL_PEERS` and re-create the plugin with the new env
+  ([pairing step 3](#3-pairing); a plain `docker restart` keeps the old env). Their listed requests are then
   held and delivered once they verify.
 - **Held mail.** `show` and `/health` report `held` (the total) and `held_by_peer`, and each
   `peers` row has its own `held` count. Mail held for an `unverified` peer goes out on its own
@@ -273,7 +330,8 @@ plugin reaches muster by its service name, and muster can keep listening on `127
 
 - **The other side changed its chief key.** Your plugin disables the peer with the reason
   `no live grant+enroll binds the pinned key to @bob/chief`. Get the new key from bob out of band,
-  update `CLANKMAIL_PEERS`, and restart. A key that is new to the state starts `unverified` and
+  update `CLANKMAIL_PEERS`, and re-create the plugin with the new env
+  ([pairing step 3](#3-pairing); a plain `docker restart` keeps the old env). A key that is new to the state starts `unverified` and
   is checked at once. The old key is removed from your allow list.
 - **The other side's principal changed** (they re-claimed the handle with a new principal, or
   the hub is serving someone else's record). The reason is `@bob is now signed by a different
@@ -292,7 +350,7 @@ The plugin logs JSON to stderr. These are the strings it emits, and where they a
 | where | message | meaning, and what to do |
 |---|---|---|
 | exit 2, log `config` | `MUSTER_URL must be an absolute http(s) base URL` (same for `HUB_URL`) | Fix the URL: `http(s)://host[:port]`, with no query or credentials. |
-| exit 2 | `HUB_NAME must be the hub's lowercase DNS name (with a dot, no port)` | Use `clankmail.zacx.dev`. |
+| exit 2 | `HUB_NAME must be the hub's lowercase DNS name (with a dot, no port)` | Use the hub's own name as given by whoever invited you (in these examples, `hub.example`). |
 | exit 2 | `PLUGIN_TOKEN_FILE: cannot read the file it names` / `the file is empty` | Mount the token file and check that the container's user can read it. |
 | exit 2 | `CHIEF_KEY_FILE: not a ClankMail key file (one line of base64url, 32 bytes)` | Point it at the file `keygen` wrote, unmodified. |
 | exit 2 | `CLANKMAIL_PEERS: "…" is not <owner>/<name>=k_…`, `owner "…" is not a ClankMail handle`, `name "…" must match ^[a-z][a-z0-9-]{1,31}$`, `"…" is not a canonical k_ key id`, `… is this plugin's own key`, `… or its key is listed twice` | Fix the peer list. |
