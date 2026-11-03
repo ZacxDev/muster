@@ -57,7 +57,8 @@ func (s *Server) askFiled(a attention.Ask) {
 // (suggestAsk). Nothing for a question to the chief (not the owner's) or
 // without an engine.
 func (s *Server) startAskSuggestions(a attention.Ask) {
-	if s.ext.Suggest == nil || s.ext.Attention == nil || a.ToChief || a.Owner <= 0 {
+	// A notice has no answer, so no suggested reply either.
+	if s.ext.Suggest == nil || s.ext.Attention == nil || a.ToChief || a.Owner <= 0 || a.Kind == attention.KindNotice {
 		return
 	}
 	s.attention.suggesting.Add(1)

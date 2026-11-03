@@ -304,7 +304,11 @@ func AskStall(r Result, threshold float64) bool {
 // already shows) and its own sentence; its only words about the session are the
 // chief's own reason (GenericAskRead) — and its two options are not an answer:
 // choosing one relays nothing (IsGenericChoice).
-const genericAskBody = "Its last turn looks like it asked you something."
+
+// GenericAskBody is muster's own sentence about a session that looks like it
+// asked something, with no question of the chief's (the generic ask; a
+// generic notice's message).
+const GenericAskBody = "Its last turn looks like it asked you something."
 
 // GenericAskOptions are the generic ask's options.
 var GenericAskOptions = []string{"Open session", "Dismiss"}
@@ -320,7 +324,7 @@ func GenericAskQuestion(title, read string) string {
 	if t == "" {
 		t = "A session"
 	}
-	return t + " is waiting on you. " + genericAskBody + GenericAskRead(read)
+	return t + " is waiting on you. " + GenericAskBody + GenericAskRead(read)
 }
 
 // GenericAskRead is the generic ask's line for the chief's read of the

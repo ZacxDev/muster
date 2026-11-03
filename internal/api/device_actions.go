@@ -221,7 +221,7 @@ func (s *Server) askActionResult(w http.ResponseWriter, r *http.Request, c devic
 	case errors.Is(err, attention.ErrNotFound):
 		outcome = actionCodeNotFound
 		s.actionRefuse(w, http.StatusNotFound, actionCodeNotFound, attentionErrText(err, a))
-	case errors.Is(err, attention.ErrNotOpen):
+	case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotice):
 		outcome = actionCodeNotOpen
 		s.actionRefuse(w, http.StatusConflict, actionCodeNotOpen, attentionErrText(err, a))
 	case errors.Is(err, attention.ErrInvalid):

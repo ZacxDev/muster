@@ -4,8 +4,10 @@ A session that stops short — it finished a step and asked "shall I merge?" in
 prose, or it is waiting on a question you never saw — sits idle until you look.
 **Chief stall nudges** let your [chief](chief.md) find such sessions and either
 nudge them on, when one of your own messages to that session already covers the
-next step, or put the question to you on the [Attention](attention.md) page and
-pass your answer back.
+next step, or point you at the session with a [notice](attention.md#notices) on
+the Attention page: where it is, and the chief's short message. A notice has
+nothing to answer. You go to the session (a host's jump key takes you there:
+[below](#jumping-to-a-notice)).
 
 **It ships in shadow mode.** With the feature on, the chief judges your stalled
 sessions and every decision is recorded on the Asks page's **Chief nudges**
@@ -70,6 +72,12 @@ turned on). It considers:
 
 - every mirrored **Claude Code** window on a host that reports Claude Code's
   status (one entry per Claude session, whatever window shows it);
+- every mirrored **opencode** window that names its opencode session, on a host
+  that reports status (one entry per opencode session, keyed
+  `opencode:<id>`). Its status and status time come from the host's opencode
+  event stream, and its messages from the rendered view's backfill, as for
+  Claude Code. It is **view only**: muster cannot type into it, so it is never
+  nudged; a nudge for it becomes a notice ([Limits](#limits));
 - every **dispatched agent** of the owner's.
 
 It never considers an [officer](officers.md) (officers escalate through HQ),
@@ -110,6 +118,10 @@ The three labels and their rubrics are the operator-approved, backtested ones
 | `needs_input` | it ends asking a question or a decision only you can give (not permission for a step it already proposed) |
 | `asks_permission` | it is holding its own next planned step until you approve it ("shall I…") |
 | `neither` | a finished report, status, work in progress, or an optional offer |
+
+In live mode an **ask** decision raises a [notice](#live-mode), not a
+question: "ask" below names the chief's decision, which the Chief nudges tab
+records with its question and options.
 
 **The rule** (from a backtest on 590 real idle stalls): the **ask score** is
 P(`needs_input`) + P(`asks_permission`). At or over
@@ -375,38 +387,66 @@ holds the same conversation, and the session is still in the idle streak the
 chief judged; if it cannot read the session's state, the nudge stays queued and
 is tried again.
 
-**An ask** is an attention ask on your queue, asked by *your chief*, naming the
-session's focus title and where it runs, the chief's question and its options:
-"*<focus title>* (*<where>*) stopped and is waiting on you: …", where *<where>*
-is a mirrored window's exact tmux target as of when the ask was raised
-(`Fix CI (tmux build:4 @ laptop)`, or
-`(mango:1 · tmux scratch3:5 @ laptop)` when its host gives the window a
-codename — [attention.md](attention.md#how-a-window-is-named)), and an agent's
-`(agent <name>)`.
-It is pushed like any ask, and its page and its card on the Asks list link the
-session it is about (**View in session**: the window now running that Claude
-session, or the agent's page at the conversation that stalled), found through
-this decision's record — the ask itself is muster's own and names no session.
-When you answer it **on the Attention view**, your
-answer is claimed for the relay at once and sent into that session **word for
-word** by the sweep, which the answer wakes (queued for a window, a turn for an
-agent). Nothing else is added to it. An answer given through a mirrored
-session's `attention_answer` is recorded and **not** relayed, since a session
-fed outside text could write it. If the session moves on before you answer, the
-ask is withdrawn — only on a state muster actually read: while the session's
-host is disconnected (or its state otherwise cannot be read) the ask stays
-open.
+**An ask decision raises a notice** on your Asks list
+([attention.md](attention.md#notices)): a pointer at the session, never a
+question. It carries:
 
-A window's relay is tied to the stall it answers, as an agent's is: if you
-typed into the window after answering (a newer turn), the relay is refused at
-its paste and recorded `suppressed:superseded`, never pasted into the newer
-turn. An agent's relay goes into the conversation that was asked about (stored on the
-decision), not the agent's newest one, and only while that conversation is
-still where it stopped. The kill switch is read again when a relay or an
-agent's nudge is sent, as the send queue's gate reads it for a window. A relay
-not delivered within 2 hours (an agent that stayed busy) is dropped and
-recorded failed. A live window nudge recorded as queued whose queued message
-was never written (muster stopped between the two) is failed after 10 minutes.
+- where the session is: for a mirrored window its host and exact tmux target,
+  `<host> · <tmux session>:<window index>` (`laptop · build:4`), found by the
+  session's key over your windows when the notice is drawn, so a window
+  renumbered since shows its new index; for an agent, `agent <name>`;
+- the session's focus title;
+- the chief's short message: "Waiting on you: *<the chief's question>*", or,
+  for the generic ask, "Its last turn looks like it asked you something." and
+  "The chief's read: *<reason>*" when the chief gave one.
+
+It has **no options, no answer box and no relay**. An answer posted to it is
+refused, and the database refuses an answer on a notice row as well. It does
+not count toward the 50-open-ask cap, so a cap full of notices can no longer
+suppress a nudge (`suppressed:ask_cap`) or hold back a real question. It is
+pushed like any item, with no buttons on a phone. Its tap, and its **View in
+session** link, open the session: the window now running that conversation, or
+the agent's page at the conversation that stalled. Both are found through the
+decision's record, since the notice itself is muster's own and names no
+session.
+
+**It is withdrawn when the session moves on**, exactly as a nudge ask was, and
+only on a state muster actually read: while the session's host is disconnected
+(or its state otherwise cannot be read) the notice stays. **Dismiss** withdraws
+it at once, and it otherwise expires after 24 hours. Every one of those ends the
+decision `ask_closed`, with nothing relayed.
+
+**Asks raised before notices.** A nudge ask raised by an older muster and still
+open when this version starts keeps the relay its text promised: your answer on
+the Attention view is sent into the session word for word (queued for a window,
+a turn for an agent), tied to the stall it answers. A window's relay is refused
+at its paste and recorded `suppressed:superseded` if you typed into the window
+after answering; an agent's relay goes into the conversation that was asked
+about; the kill switch is read again when a relay is sent; a relay not
+delivered within 2 hours is dropped and recorded failed. An answer given
+through a mirrored session's `attention_answer` is recorded and not relayed.
+Nothing raised from now on reaches this path, and it drains as those asks end
+(24 hours at most, then the 2-hour relay bound). A live window nudge recorded
+as queued whose queued message was never written (muster stopped between the
+two) is failed after 10 minutes.
+
+### Jumping to a notice
+
+A host can list the notices whose session is on it, oldest first, as tmux
+targets, with the `muster` CLI and the host's ordinary credential (a personal
+token, or a bar-summary token: [cli.md](cli.md#jumping-to-a-chief-nudge)):
+
+```sh
+muster nudge ls --host laptop       # every notice on laptop, oldest first (JSON)
+muster nudge next --host laptop     # the oldest one with a tmux target (JSON)
+tmux switch-client -t "$(muster nudge next --host laptop | jq -r .target)"
+```
+
+`--host` defaults to `MUSTER_MIRROR_HOST`. `next` exits **11** with nothing on
+stdout when no notice with a target is waiting on that host, and **1** when the
+queue could only be partly read. Both read the
+[attention summary](attention.md#the-summary-api), whose notice items carry
+their `host` and `target`.
 
 ## The Chief nudges tab
 
@@ -429,10 +469,11 @@ Every decision is a row of `chief_nudges` (migration `0064`, see
 | `chief_nudge.left` | the chief said leave it |
 | `chief_nudge.suppressed` | a guard refused the decision (the row's outcome names which) |
 | `chief_nudge.sent` | live: the nudge reached the session |
-| `chief_nudge.asked` | live: the attention ask was raised |
-| `chief_nudge.relayed` | live: your answer reached the session |
+| `chief_nudge.noticed` | live: the notice was raised |
+| `chief_nudge.asked` | live, before notices: the attention ask was raised |
+| `chief_nudge.relayed` | live: your answer to an ask raised before notices reached the session |
 | `chief_nudge.failed` | live: the nudge or relay could not be sent (the row says why) |
-| `chief_nudge.ask_closed` | live: the ask ended with nothing to relay |
+| `chief_nudge.ask_closed` | live: the notice (or ask) ended with nothing to relay: withdrawn, dismissed or expired |
 
 The audit rows carry the decision's fields and where it went, never the
 session's text. The row itself holds the message, the quote, the question and
@@ -473,7 +514,15 @@ an answer from the chief (its call failed, or it refused) has its why in
 - One replica only, like the send queue and the mirror hub. The per-streak
   unique key keeps two passes from deciding the same streak twice.
 - A window on an older `muster-mirror` (no prompt times) is never nudged, only
-  asked about or left.
+  pointed at with a notice or left.
+- An **opencode** pane is never nudged: muster cannot type into it. Its
+  prompts also carry no time (the host's opencode renderer sets none), so none
+  of your messages to it could authorise a nudge anyway. A decision to nudge
+  it becomes a notice, with the reason `view_only`.
+- An opencode session that has not changed status since its host's event
+  stream connected has no status time, so it is not judged until its next turn
+  ends. The smallest fix is for the host to seed that time from the session's
+  own last-update time when the stream connects.
 - For dispatched agents, which user-role messages are yours is decided by what
   muster can tell apart (fenced injections, its own pastes, the kickoff); a
   message over the machine door counts as yours (above).

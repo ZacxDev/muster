@@ -317,6 +317,37 @@ func (f *nudgeFixture) tick(t *testing.T) {
 	}
 }
 
+// legacyNudgeAsk makes live decision d's open notice into a nudge ASK as muster
+// raised one before notices existed (migration 0071): an answerable question
+// with the chief's options, muster's own, bound to d as its ask (ask_id). The
+// notice is withdrawn. Such asks may still be open when this version is
+// deployed, and they keep the relay their text promised (relayNudgeAnswer):
+// this is how the tests reach that path now that the sweep raises notices.
+func (f *nudgeFixture) legacyNudgeAsk(t *testing.T, d chiefnudge.Decision) chiefnudge.Decision {
+	t.Helper()
+	if d.Outcome != chiefnudge.OutcomeAsked || d.AskID == 0 {
+		t.Fatalf("legacyNudgeAsk: not a raised notice: %+v", d)
+	}
+	ctx := asUser(authz.OperatorUserID)
+	if _, err := f.attn.Cancel(ctx, d.AskID); err != nil {
+		t.Fatal(err)
+	}
+	a, err := f.attn.Create(ctx, attention.New{Asker: attention.Asker{System: true, Label: chiefNudgeAskLabel},
+		Question: "A session stopped and is waiting on you:\n\n" + d.Question + "\n\nYour answer is sent into that session word for word.",
+		Options:  d.Options})
+	if err != nil || a.Kind != attention.KindAsk {
+		t.Fatalf("legacyNudgeAsk: %+v %v", a, err)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE chief_nudges SET ask_id = $1 WHERE id = $2`, a.ID, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.nudges.Get(ctx, d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
 // TestNudgeFixtureBossOutranksAnOlderChiefInTheDatabase is the fixture's own
 // guard: an agent the operator already has labelled chief — what a run cut
 // short leaves in the package's shared database — has a LOWER id than the
@@ -615,30 +646,85 @@ func TestChiefNudgeCapsTurnTheThirdNudgeIntoAnAskAndHoldTheHourlyLine(t *testing
 	}
 }
 
-// TestChiefNudgeLiveAskIsAnsweredAndRelayedVerbatim is the live ask's loop:
-// the chief asks; muster raises an attention ask on the owner's queue; the
-// owner answers on the Attention view; the answer — exactly the owner's words —
-// is queued as a chief-nudge row, pasted into the window, and the decision ends
-// relayed with its audit trail.
-func TestChiefNudgeLiveAskIsAnsweredAndRelayedVerbatim(t *testing.T) {
+// TestChiefNudgeALiveAskIsANoticeNeverAnsweredNorRelayed: a live ask decision
+// raises a NOTICE (attention.KindNotice) — muster's own, labelled with the
+// window's host and exact tmux target, carrying the chief's message, with no
+// options. The Attention view draws it with that place and NO answer box; an
+// answer posted to it anyway is refused (409) and nothing is queued, pasted or
+// relayed; and when the session moves on the notice is withdrawn, as a nudge
+// ask was. A REGRESSION test: before notices the same pass raised an
+// answerable ask whose answer was relayed into the session.
+func TestChiefNudgeALiveAskIsANoticeNeverAnsweredNorRelayed(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	f.gw.set(nudgeAskReply)
 	if n := f.pass(t); n != 1 {
 		t.Fatalf("decided %d", n)
 	}
 	d := f.one(t)
-	if d.Outcome != chiefnudge.OutcomeAsked || d.AskID == 0 || d.Mode != chiefnudge.ModeLive {
-		t.Fatalf("live ask %+v", d)
+	if d.Outcome != chiefnudge.OutcomeAsked || d.AskID == 0 || d.Mode != chiefnudge.ModeLive ||
+		strings.Join(d.Options, "|") != "main|release" {
+		t.Fatalf("live decision %+v", d)
 	}
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
-	if err != nil || !a.Asker.System || a.Asker.Label != chiefNudgeAskLabel ||
-		!strings.Contains(a.Question, "Merge into main or into release?") || a.Question != "A session (Gold:1 · tmux main:1 @ ws) stopped and is waiting on you:\n\nMerge into main or into release?\n\nYour answer is sent into that session word for word." ||
-		strings.Join(a.Options, "|") != "main|release" {
-		t.Fatalf("the ask %+v %v", a, err)
+	if err != nil || a.Kind != attention.KindNotice || !a.Asker.System || a.Asker.Label != "ws · main:1" ||
+		a.Question != "Waiting on you: Merge into main or into release?" || len(a.Options) != 0 {
+		t.Fatalf("the notice %+v %v", a, err)
 	}
-	if body := f.page(t, "/attention"); !strings.Contains(body, "Merge into main or into release?") {
-		t.Fatal("the ask is not on the Attention view")
+	body := f.page(t, "/attention")
+	item := body[strings.Index(body, `id="`+attentionAskKey(a.ID)+`"`):]
+	item = item[:strings.Index(item, "</li>")]
+	for _, want := range []string{`data-kind="notice"`, ">Notice<", `data-attention-source>ws · main:1<`,
+		`data-attention-target>main:1<`, "Waiting on you: Merge into main or into release?", "data-attention-dismiss"} {
+		if !strings.Contains(item, want) {
+			t.Fatalf("the notice's card lacks %q:\n%s", want, item)
+		}
 	}
+	if strings.Contains(item, "data-attention-answer") || strings.Contains(item, "<textarea") || strings.Contains(item, "data-attention-option") {
+		t.Fatalf("the notice's card has an answer box or options:\n%s", item)
+	}
+	if page := f.page(t, askPagePath(a.ID)); strings.Contains(page, `id="ask-answer"`) || strings.Contains(page, `id="ask-input"`) {
+		t.Fatal("the notice's page has an answer box")
+	}
+	rd, hdr := form(url.Values{"answer": {"main — and squash it."}})
+	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusConflict {
+		t.Fatalf("an answer to a notice: %d, want 409", w.Code)
+	}
+	f.pass(t)
+	f.tick(t)
+	if d := f.one(t); d.Outcome != chiefnudge.OutcomeAsked || d.RelayText != "" || d.SendQueueID != 0 {
+		t.Fatalf("after the refused answer: %+v", d)
+	}
+	if q, p := f.queuedRows(t), f.pastes(); q != 0 || len(p) != 0 {
+		t.Fatalf("a notice put something into the session: %d queued, pastes %+v", q, p)
+	}
+	if a, _ := f.attn.Get(asUser(authz.OperatorUserID), d.AskID); a.Status != attention.Open || a.Answer != "" {
+		t.Fatalf("the notice after the refused answer: %+v", a)
+	}
+	// The session moves on: the notice is withdrawn.
+	f.state(func(s *mirror.AgentState) { s.Status = mirror.StatusBusy })
+	f.pass(t)
+	if d = f.one(t); d.Outcome != chiefnudge.OutcomeAskClosed || d.Detail != "the session moved on; the ask was withdrawn" {
+		t.Fatalf("after the session moved on: %+v", d)
+	}
+	if a, _ := f.attn.Get(asUser(authz.OperatorUserID), d.AskID); a.Status != attention.Cancelled {
+		t.Fatalf("the notice after the session moved on: %+v", a)
+	}
+	if got := strings.Join(f.audited(t, d.ID), ","); got != "chief_nudge.noticed,chief_nudge.ask_closed" {
+		t.Fatalf("audit %s", got)
+	}
+}
+
+// TestChiefNudgeALegacyNudgeAskIsStillAnsweredAndRelayedVerbatim: a nudge ASK
+// raised before notices (legacyNudgeAsk) keeps the promise its text made: the
+// owner's answer on the Attention view is queued as a chief-nudge row, pasted
+// into the window word for word, and the decision ends relayed.
+func TestChiefNudgeALegacyNudgeAskIsStillAnsweredAndRelayedVerbatim(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	f.gw.set(nudgeAskReply)
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d", n)
+	}
+	d := f.legacyNudgeAsk(t, f.one(t))
 	answer := "main — and squash it.\nThen stop."
 	rd, hdr := form(url.Values{"answer": {answer}})
 	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
@@ -663,11 +749,10 @@ func TestChiefNudgeLiveAskIsAnsweredAndRelayedVerbatim(t *testing.T) {
 		t.Fatalf("pastes %+v, want exactly the owner's answer", p)
 	}
 	f.pass(t) // the reconcile
-	d = f.one(t)
-	if d.Outcome != chiefnudge.OutcomeRelayed {
+	if d = f.one(t); d.Outcome != chiefnudge.OutcomeRelayed {
 		t.Fatalf("after the paste: %+v", d)
 	}
-	if got := strings.Join(f.audited(t, d.ID), ","); got != "chief_nudge.asked,chief_nudge.relayed" {
+	if got := strings.Join(f.audited(t, d.ID), ","); got != "chief_nudge.noticed,chief_nudge.relayed" {
 		t.Fatalf("audit %s", got)
 	}
 }
@@ -916,11 +1001,13 @@ func TestChiefNudgeAFailedCallIsRecordedAndEachCheckIsAFreshContext(t *testing.T
 
 // liveAgentAsk is the live agent loop up to the owner's answer: a worker with
 // TWO conversations — the older one stalled on a question, the newer one
-// where the owner spoke last — the chief asks, the owner answers on the
+// where the owner spoke last — the chief's ask, made a LEGACY nudge ask
+// (legacyNudgeAsk: a notice has no answer), and the owner's answer on the
 // Attention view. It returns the decision, the two sessions and the answer.
 func liveAgentAsk(t *testing.T, f *nudgeFixture) (chiefnudge.Decision, agents.ChatSession, agents.ChatSession, string) {
 	t.Helper()
 	d, stalled, other := liveAgentAskOpen(t, f)
+	d = f.legacyNudgeAsk(t, d)
 	answer := "release, please"
 	rd, hdr := form(url.Values{"answer": {answer}})
 	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
@@ -1153,7 +1240,7 @@ func TestChiefNudgeAWindowRelayIsTiedToItsStall(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	f.gw.set(nudgeAskReply)
 	f.pass(t)
-	d := f.one(t)
+	d := f.legacyNudgeAsk(t, f.one(t))
 	rd, hdr := form(url.Values{"answer": {"main"}})
 	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
 		t.Fatalf("answer: %d", w.Code)
@@ -1175,9 +1262,9 @@ func TestChiefNudgeAWindowRelayIsTiedToItsStall(t *testing.T) {
 }
 
 // TestChiefNudgeMusterPutsNoSessionTextInTheGenericAsk: an ask-stall the
-// chief would leave, with NO reason, raises the GENERIC ask — muster's sentence
-// and the focus title, not a word of the session's — and choosing one of its
-// options relays nothing. (With a reason, the chief's own words are added:
+// chief would leave, with NO reason, raises the GENERIC notice — muster's
+// sentence, not a word of the session's — and dismissing it relays nothing.
+// (With a reason, the chief's own words are added:
 // chief_nudge_generic_read_pg_test.go.)
 func TestChiefNudgeMusterPutsNoSessionTextInTheGenericAsk(t *testing.T) {
 	f := newNudgeFixture(t, true)
@@ -1187,29 +1274,30 @@ func TestChiefNudgeMusterPutsNoSessionTextInTheGenericAsk(t *testing.T) {
 	f.pass(t)
 	d := f.one(t)
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
-	if err != nil || d.Outcome != chiefnudge.OutcomeAsked || strings.Join(a.Options, "|") != "Open session|Dismiss" {
-		t.Fatalf("the generic ask: %+v %+v %v", d, a, err)
+	if err != nil || d.Outcome != chiefnudge.OutcomeAsked || strings.Join(d.Options, "|") != "Open session|Dismiss" ||
+		a.Kind != attention.KindNotice || len(a.Options) != 0 {
+		t.Fatalf("the generic notice: %+v %+v %v", d, a, err)
 	}
 	last := f.script[len(f.script)-1].Text
 	for _, w := range strings.Fields(strings.Trim(last, "?.")) {
 		if len(w) > 3 && (strings.Contains(a.Question, w) || strings.Contains(d.Question, w)) {
-			t.Fatalf("session text %q reached the ask: %q / %q", w, a.Question, d.Question)
+			t.Fatalf("session text %q reached the notice: %q / %q", w, a.Question, d.Question)
 		}
 	}
-	if !strings.Contains(a.Question, "Its last turn looks like it asked you something.") {
-		t.Fatalf("the ask: %q", a.Question)
+	if a.Question != "Its last turn looks like it asked you something." {
+		t.Fatalf("the notice: %q", a.Question)
 	}
 	queued0 := f.queuedRows(t)
-	rd, hdr := form(url.Values{"option": {"Dismiss"}, "answer": {""}})
-	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/answer", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
-		t.Fatalf("answer: %d", w.Code)
+	rd, hdr := form(url.Values{})
+	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(d.AskID, 10)+"/cancel", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
+		t.Fatalf("dismiss: %d", w.Code)
 	}
 	f.pass(t)
 	if d = f.one(t); d.Outcome != chiefnudge.OutcomeAskClosed || !strings.Contains(d.Detail, "nothing to relay") {
 		t.Fatalf("after Dismiss: %+v", d)
 	}
 	if q := f.queuedRows(t); q != queued0 {
-		t.Fatalf("a generic option was relayed: %d→%d", queued0, q)
+		t.Fatalf("a dismissed notice was relayed: %d→%d", queued0, q)
 	}
 }
 
@@ -1248,5 +1336,45 @@ func TestChiefNudgeShadowDecisionsDoNotCountTowardTheLiveCap(t *testing.T) {
 	f.pass(t)
 	if d := f.decisions(t)[0]; d.Outcome != chiefnudge.OutcomeQueued {
 		t.Fatalf("shadow decisions held a live nudge back: %+v", d)
+	}
+}
+
+// TestTheAttentionToolsShowANoticeAndRefuseToAnswerIt: the chief's
+// attention_list lists a live nudge's notice as kind "notice" with its tmux
+// target, and a mirrored session's attention_answer to it is refused as a
+// notice — nothing recorded, the notice still open.
+func TestTheAttentionToolsShowANoticeAndRefuseToAnswerIt(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	f.gw.set(nudgeAskReply)
+	f.pass(t)
+	d := f.one(t)
+	ctx := f.srv.attentionPrincipal(context.Background(), authz.OperatorUserID)
+	var list struct {
+		Items []struct {
+			Key    string `json:"key"`
+			Kind   string `json:"kind"`
+			Target string `json:"target"`
+			AskID  int64  `json:"ask_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(f.srv.toolAttentionList(ctx)), &list); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, it := range list.Items {
+		if it.AskID == d.AskID {
+			found = it.Kind == attentionKindNotice && it.Target == "main:1"
+		}
+	}
+	if !found {
+		t.Fatalf("attention_list does not list the notice with its target: %+v", list.Items)
+	}
+	caller := toolCaller{asker: attention.Asker{MirrorHost: "elsewhere", MirrorSession: "1a2b3c4d-0000-4000-8000-0000000000aa", Label: "x @ elsewhere"}}
+	text := f.srv.toolAttentionAnswer(asUser(authz.OperatorUserID), caller, `{"id":`+strconv.FormatInt(d.AskID, 10)+`,"answer":"main"}`)
+	if !strings.Contains(text, "is a notice, not a question") {
+		t.Fatalf("attention_answer to a notice: %s", text)
+	}
+	if a, _ := f.attn.Get(asUser(authz.OperatorUserID), d.AskID); a.Status != attention.Open || a.Answer != "" {
+		t.Fatalf("the notice after attention_answer: %+v", a)
 	}
 }

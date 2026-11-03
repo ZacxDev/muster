@@ -18,13 +18,13 @@ import (
 // prefix muster builds around it in the row's reason — cut to a sentence or
 // two. With no reason it is the generic ask exactly as before.
 
-const (
-	genericAskHead = "A session (Gold:1 · tmux main:1 @ ws) is waiting on you. Its last turn looks like it asked you something."
-	genericAskTail = "\n\nChoosing an option sends nothing into the session; an answer you type is sent into it word for word."
-)
+// genericAskHead is the generic NOTICE's message without a read (a notice
+// names where the session is in its label, not its text).
+const genericAskHead = "Its last turn looks like it asked you something."
 
 // genericAsk runs one live pass on an ask-stall the chief leaves with reply,
-// and returns the decision and the attention ask it raised.
+// and returns the decision and the notice it raised (the decision keeps the
+// generic ask's options; the notice has none).
 func genericAsk(t *testing.T, reply string) (*nudgeFixture, chiefnudge.Decision, attention.Ask) {
 	t.Helper()
 	f := newNudgeFixture(t, true)
@@ -36,7 +36,8 @@ func genericAsk(t *testing.T, reply string) (*nudgeFixture, chiefnudge.Decision,
 	}
 	d := f.one(t)
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
-	if err != nil || d.Outcome != chiefnudge.OutcomeAsked || strings.Join(a.Options, "|") != "Open session|Dismiss" {
+	if err != nil || d.Outcome != chiefnudge.OutcomeAsked || strings.Join(d.Options, "|") != "Open session|Dismiss" ||
+		a.Kind != attention.KindNotice || len(a.Options) != 0 {
 		t.Fatalf("not the generic ask: %+v %+v %v", d, a, err)
 	}
 	return f, d, a
@@ -47,7 +48,7 @@ func genericAsk(t *testing.T, reply string) (*nudgeFixture, chiefnudge.Decision,
 func TestChiefNudgeTheGenericAskShowsTheChiefsRead(t *testing.T) {
 	const read = "It finished its draft and waits on the owner to review it, plus two sign-ups."
 	f, d, a := genericAsk(t, `{"decision":"leave","reason":"`+read+`"}`)
-	if want := genericAskHead + "\n\nThe chief's read: " + read + genericAskTail; a.Question != want {
+	if want := genericAskHead + "\n\nThe chief's read: " + read; a.Question != want {
 		t.Fatalf("the ask:\n got %q\nwant %q", a.Question, want)
 	}
 	if want := "A session is waiting on you. Its last turn looks like it asked you something.\n\nThe chief's read: " + read; d.Question != want {
@@ -70,7 +71,7 @@ func TestChiefNudgeTheGenericAskShowsTheChiefsRead(t *testing.T) {
 // the generic ask word for word as it was.
 func TestChiefNudgeTheGenericAskWithNoReasonIsUnchanged(t *testing.T) {
 	_, d, a := genericAsk(t, `{"decision":"leave","reason":"   "}`)
-	if want := genericAskHead + genericAskTail; a.Question != want {
+	if want := genericAskHead; a.Question != want {
 		t.Fatalf("the ask:\n got %q\nwant %q", a.Question, want)
 	}
 	if want := "A session is waiting on you. Its last turn looks like it asked you something."; d.Question != want {
@@ -84,10 +85,10 @@ func TestChiefNudgeTheGenericAsksReadIsCapped(t *testing.T) {
 	long := strings.Repeat("waiting ", 120) // 960 runes
 	_, _, a := genericAsk(t, `{"decision":"leave","reason":"`+long+`"}`)
 	cutRead := string([]rune(strings.TrimSpace(long))[:299]) + "…"
-	if want := genericAskHead + "\n\nThe chief's read: " + cutRead + genericAskTail; a.Question != want {
-		t.Fatalf("the capped ask:\n got %q\nwant %q", a.Question, want)
+	if want := genericAskHead + "\n\nThe chief's read: " + cutRead; a.Question != want {
+		t.Fatalf("the capped notice:\n got %q\nwant %q", a.Question, want)
 	}
-	if n := utf8.RuneCountInString(a.Question); n > attention.MaxQuestionRunes {
-		t.Fatalf("the ask is %d runes, over %d", n, attention.MaxQuestionRunes)
+	if n := utf8.RuneCountInString(a.Question); n > nudgeNoticeMaxRunes {
+		t.Fatalf("the notice is %d runes, over %d", n, nudgeNoticeMaxRunes)
 	}
 }

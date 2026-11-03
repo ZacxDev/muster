@@ -12,11 +12,12 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// A CHIEF NUDGE'S ASK LINKS THE SESSION IT IS ABOUT, on a real Postgres under
-// row-level security (nudgeSessionPath): the ask is muster's own
+// A CHIEF NUDGE'S NOTICE LINKS THE SESSION IT IS ABOUT, on a real Postgres
+// under row-level security (nudgeSessionPath): the notice is muster's own
 // (Asker.System), and its session is found through the decision that raised
-// it. Both pages draw it — the ask page's "View in session" and the Asks
-// list's card — and both answer boxes carry the mic when dictation is on.
+// it. Both pages draw it — the notice's page "View in session" and the Asks
+// list's card — and neither has an answer box (so no mic), even with
+// dictation on.
 
 // askContextLink is the ask page's "View in session" href, "" for none.
 var askContextLink = regexp.MustCompile(`<a href="([^"]+)" class="[^"]*" data-ask-context>View in session</a>`)
@@ -47,11 +48,11 @@ func askPageLink(page string) string {
 	return ""
 }
 
-// TestALiveNudgeAskAboutAMirroredSessionLinksItsWindow: the sweep's live ask
-// about the idle window @1; its ask page and its card link that window's
-// rendered view, and each answer box has its mic. RED at origin/main: the
-// nudge's ask had no session link at all (Asker.System), and no mic.
-func TestALiveNudgeAskAboutAMirroredSessionLinksItsWindow(t *testing.T) {
+// TestALiveNudgeNoticeAboutAMirroredSessionLinksItsWindow: the sweep's live
+// notice about the idle window @1; its page and its card link that window's
+// rendered view, and neither draws an answer box or a mic (the notice has no
+// answer), though dictation is on.
+func TestALiveNudgeNoticeAboutAMirroredSessionLinksItsWindow(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	f.srv.ext.Transcriber = stubTranscriber{}
 	f.gw.set(nudgeAskReply)
@@ -67,16 +68,16 @@ func TestALiveNudgeAskAboutAMirroredSessionLinksItsWindow(t *testing.T) {
 	if got := askPageLink(page); got != want {
 		t.Errorf("the ask page links %q, want %q", got, want)
 	}
-	if !strings.Contains(page, `id="ask-dictate"`) || !strings.Contains(page, `data-dictate-input="ask-input"`) {
-		t.Error("the ask page's answer box has no mic")
+	if strings.Contains(page, `id="ask-dictate"`) || strings.Contains(page, `id="ask-input"`) {
+		t.Error("the notice's page draws an answer box or a mic")
 	}
 	list := f.page(t, "/attention")
 	if got := attentionCardLink(list, d.AskID); got != want {
 		t.Errorf("the Asks list's card links %q, want %q", got, want)
 	}
 	id := strconv.FormatInt(d.AskID, 10)
-	if !strings.Contains(list, `id="answer-`+id+`-dictate"`) || strings.Count(list, "window.__musterDictate = true") != 1 {
-		t.Error("the card has no mic, or the list does not carry the mic's script exactly once")
+	if strings.Contains(list, `id="answer-`+id+`-dictate"`) || strings.Contains(list, `id="answer-`+id+`"`) {
+		t.Error("the notice's card draws an answer box or a mic")
 	}
 	// The live refresh's fragment draws the same card.
 	if got := attentionCardLink(f.page(t, "/attention/items"), d.AskID); got != want {
@@ -84,10 +85,10 @@ func TestALiveNudgeAskAboutAMirroredSessionLinksItsWindow(t *testing.T) {
 	}
 }
 
-// TestALiveNudgeAskAboutAnAgentLinksTheConversationAskedAbout: an agent with
-// two conversations, the OLDER stalled; the link opens that one (its answer is
-// relayed there), not the agent's newest. RED at origin/main: no link.
-func TestALiveNudgeAskAboutAnAgentLinksTheConversationAskedAbout(t *testing.T) {
+// TestALiveNudgeNoticeAboutAnAgentLinksTheConversationAskedAbout: an agent
+// with two conversations, the OLDER stalled; the link opens that one, not the
+// agent's newest.
+func TestALiveNudgeNoticeAboutAnAgentLinksTheConversationAskedAbout(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	d, stalled, other := liveAgentAskOpen(t, f)
 	if stalled.ID == other.ID {

@@ -47,6 +47,10 @@ type Store interface {
 	Get(ctx context.Context, id int64) (Decision, error)
 	// ByAsk is the caller's decision that raised ask id.
 	ByAsk(ctx context.Context, askID int64) (Decision, error)
+	// ByAsks is ByAsk for several asks in ONE read: the caller's decisions
+	// that raised any of askIDs, by ask id (an id no decision of the caller's
+	// raised is absent). What the attention queue joins its notices to.
+	ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, error)
 	// Move sets the caller's decision id from one of from to outcome, with its
 	// detail and (when non-zero/non-empty) its ask, queued row and relay text,
 	// writing action's audit row when action is not ""; moved false when the
@@ -302,6 +306,22 @@ func (p *PG) ByAsk(ctx context.Context, askID int64) (Decision, error) {
 		return Decision{}, ErrNotFound
 	}
 	return d, err
+}
+
+// ByAsks implements Store, under row-level security like ByAsk.
+func (p *PG) ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, error) {
+	out := map[int64]Decision{}
+	if len(askIDs) == 0 {
+		return out, nil
+	}
+	list, err := collect(p.pool.Query(ctx, `SELECT `+cols+` FROM chief_nudges WHERE ask_id = ANY($1)`, askIDs))
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range list {
+		out[d.AskID] = d
+	}
+	return out, nil
 }
 
 // Move implements Store.

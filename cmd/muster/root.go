@@ -188,6 +188,6 @@ func newRootCmd(a *app) *cobra.Command {
 	root.PersistentFlags().StringVar(&a.flagTenant, "tenant", "", "tenant to use (default from "+envTenant+", then ~/.muster/current; see `tenant`)")
 	a.envFileFlag = root.PersistentFlags().Lookup("env-file")
 
-	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a), newDoctorCmd(a), newTenantCmd(a))
+	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a), newDoctorCmd(a), newTenantCmd(a), newNudgeCmd(a))
 	return root
 }

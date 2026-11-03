@@ -184,8 +184,14 @@ type attentionItem struct {
 	Since time.Time `json:"since"`
 	// Link is where the owner acts on it.
 	Link string `json:"link"`
-	// AskID is the ask's id ("ask" items only).
+	// AskID is the ask's id ("ask" and "notice" items: a notice is an
+	// attention_asks row too, dismissed by this id — never answered).
 	AskID int64 `json:"ask_id,omitempty"`
+	// Target is a notice's mirrored window as tmux takes it,
+	// "<session>:<window index>", resolved NOW over the owner's windows
+	// (noticeItem); "" for any other item, and for a notice whose session no
+	// window holds now. What `muster nudge next` prints.
+	Target string `json:"target,omitempty"`
 	// Offline: a session item whose host dropped within attentionOfflineGrace,
 	// shown as last seen.
 	Offline bool `json:"offline,omitempty"`
@@ -334,6 +340,9 @@ func (s *Server) askHosts(ctx context.Context, a attention.Ask) []mirror.HostVie
 // askItemNow is askItem over ctx's principal's windows, read only when a
 // needs them (askHosts).
 func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem {
+	if a.Kind == attention.KindNotice {
+		return s.noticeItemNow(ctx, a)
+	}
 	return askItem(a, s.askHosts(ctx, a)...)
 }
 
@@ -617,14 +626,21 @@ func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]
 		if err != nil {
 			errs = append(errs, fmt.Errorf("asks: %w", err))
 		}
+		// The notices' sessions, in one read (attention_notice.go).
+		notices := s.noticeDecisions(ctx, asks)
 		for _, a := range asks {
 			// A question to the chief is the chief's (chief_ask_tool.go), not
 			// the owner's: the chief asks the owner with attention_ask if it must.
 			if a.ToChief {
 				continue
 			}
-			// A mirrored session's ask names its window from the SAME read of
-			// the hub as the waiting sessions below (hs): one read per build.
+			// A mirrored session's ask (and a notice's window) is named from
+			// the SAME read of the hub as the waiting sessions below (hs): one
+			// read per build.
+			if a.Kind == attention.KindNotice {
+				out = append(out, noticeItem(a, notices, hs))
+				continue
+			}
 			out = append(out, askItem(a, hs...))
 		}
 	}
@@ -687,6 +703,11 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 	owner := requestOwner(ctx)
 	dict := s.dictatePath()
 	for i := range items {
+		if items[i].Kind == attentionKindNotice && links && owner > 0 {
+			// A notice has no answer box (so no mic): only its session.
+			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
+			continue
+		}
 		if items[i].Kind != attentionKindAsk {
 			continue
 		}
@@ -763,11 +784,18 @@ const sessionPushTitle = "A session is waiting on you"
 // question (the source is a title, plained once at the sink, goNotify); a
 // waiting session's fixed sessionPushTitle.
 func attentionPushTitle(it attentionItem) string {
-	if it.Kind == attentionKindSession {
+	switch it.Kind {
+	case attentionKindSession:
 		return sessionPushTitle
+	case attentionKindNotice:
+		// A notice asks nothing: it names where to look (noticeWhere).
+		return it.Source + noticePushTitleSuffix
 	}
 	return it.Source + " is asking"
 }
+
+// noticePushTitleSuffix follows a notice's place in its notification title.
+const noticePushTitleSuffix = " may be waiting on you"
 
 // attentionPushBody is an item's notification body.
 //
@@ -807,6 +835,17 @@ func attentionPushBody(it attentionItem) string {
 			return it.pushText
 		}
 		return DraftPushBody
+	case attentionKindNotice:
+		// The session's focus title, then the chief's message: no options
+		// line, because a notice has none (and no buttons, payload v2's `ask`
+		// is not sent for it: attentionNotification).
+		var parts []string
+		for _, l := range []string{textplain.Title(it.Focus), it.Text} {
+			if l = pushLine(l); l != "" {
+				parts = append(parts, l)
+			}
+		}
+		return push.CutClusters(strings.Join(parts, "\n"), attentionPushBodyMax)
 	case attentionKindSession:
 		body := "Waiting: " + textplain.TitleKeeping(it.Source, it.target)
 		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
@@ -1202,7 +1241,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 	var b strings.Builder
 	for _, it := range items {
 		kind := map[string]string{attentionKindAsk: "Question", attentionKindSession: "Session waiting", attentionKindPlugin: "Reply draft",
-			attentionKindQuestion: "Session question", attentionKindTask: "Task to route"}[it.Kind]
+			attentionKindQuestion: "Session question", attentionKindTask: "Task to route", attentionKindNotice: "Notice"}[it.Kind]
 		age := ""
 		if !it.Since.IsZero() {
 			age = ` · <time datetime="` + it.Since.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(it.Since))) + `</time>`
@@ -1234,6 +1273,20 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 `)
 		}
 		switch it.Kind {
+		case attentionKindNotice:
+			// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or
+			// dismissed, never answered (attention.ErrNotice).
+			id := strconv.FormatInt(it.AskID, 10)
+			if it.Target != "" {
+				b.WriteString(`<p class="break-words text-xs text-fg2">tmux <code data-attention-target>` + esc(it.Target) + `</code></p>
+`)
+			}
+			if it.sessionLink != "" {
+				b.WriteString(`<a href="` + esc(it.sessionLink) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-attention-session>` + askViewInSession + `</a>
+`)
+			}
+			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"` + formAttrs + `>` + back + `<button type="submit" class="` + flowsQuietButton + `" data-attention-dismiss>Dismiss</button></form>
+`)
 		case attentionKindAsk:
 			id := strconv.FormatInt(it.AskID, 10)
 			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="flex flex-col gap-2" data-attention-answer` + formAttrs + `>
@@ -1350,6 +1403,8 @@ func attentionErrText(err error, cur attention.Ask) string {
 	switch {
 	case errors.Is(err, attention.ErrNotFound):
 		return "No such question."
+	case errors.Is(err, attention.ErrNotice):
+		return "That is a notice, not a question: it has no answer. Open its session, or dismiss it."
 	case errors.Is(err, attention.ErrNotOpen):
 		return "That question is no longer open (it is " + string(cur.Status) + ")."
 	case errors.Is(err, attention.ErrInvalid):
@@ -1362,7 +1417,7 @@ func attentionErrCode(err error) int {
 	switch {
 	case errors.Is(err, attention.ErrNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, attention.ErrNotOpen):
+	case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotice):
 		return http.StatusConflict
 	case errors.Is(err, attention.ErrInvalid):
 		return http.StatusBadRequest

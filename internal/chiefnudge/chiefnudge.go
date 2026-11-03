@@ -33,8 +33,11 @@ import (
 
 // Session kinds.
 const (
-	KindMirror = "mirror" // a mirrored Claude Code window; Key is its Claude session id
-	KindAgent  = "agent"  // one of the owner's dispatched agents; Key is its id
+	// KindMirror is a mirrored window: Key is its Claude session id, or for an
+	// opencode window its runtime-qualified key ("opencode:<id>",
+	// mirror.Window.SessionKey) — Session.Runtime says which.
+	KindMirror = "mirror"
+	KindAgent  = "agent" // one of the owner's dispatched agents; Key is its id
 )
 
 // Decisions the chief may return, plus Invalid for an answer muster could not
@@ -145,7 +148,12 @@ const (
 // transcript is read: everything candidate selection decides on.
 type Session struct {
 	Kind string
-	Key  string // Claude session id (mirror) or agent id (agent)
+	Key  string // Claude session id or "opencode:<id>" (mirror), or agent id (agent)
+	// Runtime is a mirrored window's agent runtime when it is not Claude Code
+	// (mirror.RuntimeOpenCode), "" for Claude Code and for an agent. A
+	// runtime window is VIEW ONLY: it is never nudged (the sweep raises the
+	// notice instead).
+	Runtime string
 	// Mirror address (KindMirror).
 	Host, TmuxSession, Window, Label string
 	// Index is the window's tmux index when the sweep saw it (mirror
@@ -508,6 +516,16 @@ func EscalationNoTimes(title string) string {
 	}
 	return t + " stopped. Its host does not send when your messages were written, so muster cannot check an " +
 		"instruction of yours that covers the next step. Should it continue?"
+}
+
+// EscalationViewOnly is the ask raised in place of a nudge for a session muster
+// cannot type into (an opencode pane: view only).
+func EscalationViewOnly(title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		t = "This session"
+	}
+	return t + " stopped, and muster cannot type into this kind of session. Is it waiting on you?"
 }
 
 // CleanOptions is an ask's options: trimmed, one line, deduplicated, cut, at

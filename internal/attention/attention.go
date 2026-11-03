@@ -134,6 +134,27 @@ var (
 	ErrSameHost = errors.New("attention: a mirrored session cannot answer an ask raised by a session on its own host")
 	// ErrTooMany: the owner already has MaxOpenPerOwner open asks.
 	ErrTooMany = fmt.Errorf("attention: there are already %d open asks; wait for some to be answered", MaxOpenPerOwner)
+	// ErrNotice: an answer to a notice (KindNotice). A notice points at a
+	// session; it has nothing to answer, so nothing is recorded or relayed.
+	ErrNotice = errors.New("attention: that is a notice, not a question: it has no answer (open its session, or dismiss it)")
+)
+
+// Kind is what an attention_asks row is (migration 0071).
+type Kind string
+
+const (
+	// KindAsk is a question: it has an answer (or is dismissed or expires).
+	// Every row before 0071 is one.
+	KindAsk Kind = "ask"
+	// KindNotice is a POINTER muster raised itself (today: a live chief nudge,
+	// internal/api actAsk) at a session the owner may want to look at. It has
+	// no options and no answer — never answered, only dismissed, withdrawn or
+	// expired — and it does NOT count toward MaxOpenPerOwner.
+	//
+	// 🔴 NEVER ANSWERED, IN THREE PLACES: Clean refuses options on one; the
+	// answer UPDATE (answerSQL) moves only kind = 'ask'; and 0071's CHECK
+	// refuses an answer on a notice row whatever wrote it.
+	KindNotice Kind = "notice"
 )
 
 // SystemAskerLabel is the label of an ask muster itself raised.
@@ -179,7 +200,9 @@ func (a Asker) Same(b Asker) bool {
 
 // Ask is one explicit ask.
 type Ask struct {
-	ID         int64     `json:"id"`
+	ID int64 `json:"id"`
+	// Kind is KindAsk or KindNotice (migration 0071).
+	Kind       Kind      `json:"kind,omitempty"`
 	Owner      int64     `json:"-"`
 	Asker      Asker     `json:"-"`
 	Question   string    `json:"question"`
@@ -274,6 +297,10 @@ type New struct {
 	// on that row.
 	ToChief bool
 	RouteID string
+	// Notice files a KindNotice instead of a question: muster's own (System
+	// asker), no options, no task, never to the chief — Clean refuses
+	// anything else. It is not counted toward MaxOpenPerOwner.
+	Notice bool
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -310,6 +337,16 @@ func Clean(n New) (New, error) {
 		return n, fmt.Errorf("%w: at most %d options", ErrInvalid, MaxOptions)
 	}
 	n.Options = opts
+	if n.Notice {
+		switch {
+		case !n.Asker.System:
+			return n, fmt.Errorf("%w: a notice is muster's own", ErrInvalid)
+		case len(n.Options) > 0:
+			return n, fmt.Errorf("%w: a notice has no options", ErrInvalid)
+		case n.ToChief || n.TaskID > 0 || n.PluginMessageID > 0 || n.RouteID != "":
+			return n, fmt.Errorf("%w: a notice is about a session only", ErrInvalid)
+		}
+	}
 	switch {
 	case n.Timeout <= 0:
 		n.Timeout = DefaultTimeout
@@ -497,17 +534,17 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
-	to_chief, coalesce(route_id, ''), suggestions`
+	to_chief, coalesce(route_id, ''), suggestions, kind`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
 	var opts, sugg []byte
 	var resolved, queued *time.Time
-	var status, delivery string
+	var status, delivery, kind string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -515,6 +552,7 @@ func scan(row pgx.Row) (Ask, error) {
 	}
 	a.Status = Status(status)
 	a.Delivery = Delivery(delivery)
+	a.Kind = Kind(kind)
 	if err := json.Unmarshal(opts, &a.Options); err != nil {
 		return Ask{}, fmt.Errorf("attention: options of ask %d: %w", a.ID, err)
 	}
@@ -579,15 +617,25 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	// The per-owner cap, counted under the caller's principal: row-level
 	// security makes it this owner's count. Serialised per owner by an
 	// advisory lock so two concurrent asks cannot both pass at the cap.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('attention_asks:' || current_setting('muster.uid', true), 0))`); err != nil {
-		return Ask{}, err
-	}
-	var open int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE status = 'open' AND expires_at > now()`).Scan(&open); err != nil {
-		return Ask{}, err
-	}
-	if open >= MaxOpenPerOwner {
-		return Ask{}, ErrTooMany
+	//
+	// 🔴 QUESTIONS ONLY, BOTH SIDES OF THE CAP (migration 0071): a notice is
+	// neither counted (kind = 'ask') nor refused at it, so a burst of notices
+	// can never hold a real ask back — the 6 nudges once suppressed because
+	// the cap was full of nudge asks.
+	kind := KindAsk
+	if n.Notice {
+		kind = KindNotice
+	} else {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('attention_asks:' || current_setting('muster.uid', true), 0))`); err != nil {
+			return Ask{}, err
+		}
+		var open int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM attention_asks WHERE status = 'open' AND expires_at > now() AND kind = 'ask'`).Scan(&open); err != nil {
+			return Ask{}, err
+		}
+		if open >= MaxOpenPerOwner {
+			return Ask{}, ErrTooMany
+		}
 	}
 	var task, message any
 	if n.TaskID > 0 {
@@ -597,10 +645,10 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 		message = n.PluginMessageID
 	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id, plugin_message_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12)
+			to_chief, route_id, plugin_message_id, kind)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message))
+		n.ToChief, nullable(n.RouteID), message, string(kind)))
 	if err != nil {
 		return Ask{}, err
 	}
@@ -693,7 +741,7 @@ const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, a
 	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
 	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
 	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
-	WHERE id = $1 AND status = 'open' AND expires_at > now()
+	WHERE id = $1 AND status = 'open' AND expires_at > now() AND kind = 'ask'
 	  AND ($4::text IS NULL OR mirror_host IS DISTINCT FROM $5::text)
 	RETURNING ` + cols
 
@@ -702,7 +750,17 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 	if err != nil {
 		return Ask{}, err
 	}
-	return s.settle(ctx, id, answerSQL, id, answer, ByOperator, nil, nil, nil)
+	return noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, nil, nil, nil))
+}
+
+// noticeRefused is an answer's outcome with a refusal of an open notice named
+// as such (ErrNotice) rather than as "no longer open": answerSQL moves only
+// questions, so an open notice comes back from settle unmoved.
+func noticeRefused(a Ask, err error) (Ask, error) {
+	if errors.Is(err, ErrNotOpen) && a.Kind == KindNotice && a.Status == Open {
+		return a, ErrNotice
+	}
+	return a, err
 }
 
 // AnswerFromSession runs under the caller's principal, like Answer: row-level
@@ -719,7 +777,7 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 	if !mirror.ValidClaudeSession(session) {
 		return Ask{}, fmt.Errorf("%w: not a Claude session id", ErrInvalid)
 	}
-	a, err := s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)
+	a, err := noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session))
 	// Only a STILL-OPEN ask is refused for its host: one already answered,
 	// cancelled or expired says so (ErrNotOpen), whoever asked.
 	if errors.Is(err, ErrNotOpen) && a.Status == Open && a.Asker.MirrorHost == host {
@@ -998,7 +1056,7 @@ func (s *PGStore) SetSuggestions(ctx context.Context, id int64, suggestions []st
 		return Ask{}, false, err
 	}
 	a, err := scan(s.pool.QueryRow(ctx, `UPDATE attention_asks SET suggestions = $2
-		WHERE id = $1 AND status = 'open' AND expires_at > now() AND suggestions = '[]'::jsonb
+		WHERE id = $1 AND status = 'open' AND expires_at > now() AND suggestions = '[]'::jsonb AND kind = 'ask'
 		RETURNING `+cols, id, b))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cur, false, nil
