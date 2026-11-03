@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	"github.com/ZacxDev/muster/internal/attention"
@@ -79,9 +80,11 @@ func sessionKeyEntry(hosts []mirror.HostView, host, key string) (mirror.SessionV
 }
 
 // noticeDecisions is the decisions behind the notices among asks, by ask id, in
-// ONE read (chiefnudge.Store.ByAsks); empty when there is none or the read
-// failed (logged: each notice then shows its label).
-func (s *Server) noticeDecisions(ctx context.Context, asks []attention.Ask) map[int64]chiefnudge.Decision {
+// ONE read (chiefnudge.Store.ByAsks); empty when there is none. A failed read
+// is returned (and the map is empty: each notice then shows its label and NO
+// tmux target), so a caller that builds the queue reports itself partial —
+// `muster nudge next` must not read "no target" as "none waiting".
+func (s *Server) noticeDecisions(ctx context.Context, asks []attention.Ask) (map[int64]chiefnudge.Decision, error) {
 	var ids []int64
 	for _, a := range asks {
 		if a.Kind == attention.KindNotice {
@@ -89,20 +92,22 @@ func (s *Server) noticeDecisions(ctx context.Context, asks []attention.Ask) map[
 		}
 	}
 	if len(ids) == 0 || s.ext.ChiefNudges == nil {
-		return nil
+		return nil, nil
 	}
 	out, err := s.ext.ChiefNudges.ByAsks(ctx, ids)
 	if err != nil {
-		s.logger.Printf("attention: the sessions of %d notice(s): %v", len(ids), err)
-		return nil
+		return nil, fmt.Errorf("the sessions of %d notice(s): %w", len(ids), err)
 	}
-	return out
+	return out, nil
 }
 
 // noticeItemNow is notice a as an item, its decision and ctx's principal's
 // windows read now (askItemNow's notice half).
 func (s *Server) noticeItemNow(ctx context.Context, a attention.Ask) attentionItem {
-	ds := s.noticeDecisions(ctx, []attention.Ask{a})
+	ds, err := s.noticeDecisions(ctx, []attention.Ask{a})
+	if err != nil {
+		s.logger.Printf("attention: %v", err)
+	}
 	var hosts []mirror.HostView
 	if d, ok := ds[a.ID]; ok && d.Kind == chiefnudge.KindMirror && s.ext.Mirror != nil {
 		hosts = s.ext.Mirror.Hosts(ctx)

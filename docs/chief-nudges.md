@@ -65,6 +65,20 @@ rollout.
 
 While a check runs, its lane also shows on `/healthz` with `"toolless": true`.
 
+**Rolling out notices (migration 0071).** A rolling deploy keeps the old pod
+serving for a while after the migration has run. Until it terminates, what it
+answers is the old code over the new schema:
+
+- it counts notices toward the 50-open-ask cap, so a real question raised
+  through it can be refused near the cap;
+- it draws a notice as an answerable ask, and an answer it takes is refused by
+  the database (`attention_asks_kind_check`), so that answer fails with a 500;
+- it can still claim an answer to a nudge ask for a relay (`relay_queued`); the
+  new sweep fails such a decision on its next pass, with its audit row, and
+  sends nothing.
+
+All three end when the old pod is gone. No step is needed.
+
 ## What counts as stalled
 
 Every 2 minutes the sweep looks at each owner who has a chief (and has it
@@ -419,8 +433,11 @@ decision `ask_closed`, with nothing relayed.
 **Nothing is relayed.** Relaying an owner's answer into a session is gone.
 Migration 0071 withdrew every nudge ask raised before notices that was still
 open (the sweep then closes its decision, `ask_closed`) and failed every relay
-still queued. A nudge ask answered anyway (one an older replica raised) is
-closed with nothing relayed. A live window nudge recorded as queued whose
+still queued, with a bare update that sends no push: the sweep's next pass
+closes each such decision and withdraws its notification from your devices
+then. A nudge ask answered anyway (one an older replica raised) is closed with
+nothing relayed, and a relay an older replica claims during a rolling deploy is
+failed ([Rolling out](#rolling-out)). A live window nudge recorded as queued whose
 queued message was never written (muster stopped between the two) is failed
 after 10 minutes.
 

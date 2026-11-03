@@ -1288,6 +1288,13 @@ func nudgeNoticeText(q, read string, generic bool) string {
 func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (done bool) {
 	octx := s.attentionPrincipal(ctx, d.Owner)
 	switch d.Outcome {
+	case chiefnudge.OutcomeRelayQueued:
+		// 🔴 THE ROLLOUT OVERLAP: 0071 failed every relay_queued decision, but an
+		// older replica still serving during a rolling deploy can claim an answer
+		// to a nudge ask after it ran. Nothing here relays, so it is failed — with
+		// its audit row — rather than left in flight for ever.
+		s.failNudge(octx, d, d.Outcome, NudgeRelayRetired)
+		return true
 	case chiefnudge.OutcomeQueued:
 		if d.SendQueueID == 0 {
 			age := s.now().Sub(d.UpdatedAt)
@@ -1352,12 +1359,24 @@ func (s *Server) reconcileNudge(ctx context.Context, d chiefnudge.Decision) (don
 			}
 			return false
 		}
-		_, _ = s.ext.ChiefNudges.Move(octx, d.ID, []string{chiefnudge.OutcomeAsked},
+		moved, _ := s.ext.ChiefNudges.Move(octx, d.ID, []string{chiefnudge.OutcomeAsked},
 			chiefnudge.Move{Outcome: chiefnudge.OutcomeAskClosed, Detail: "the ask ended " + string(a.Status) + "; nothing to relay"}, "chief_nudge.ask_closed")
+		if moved && a.Status == attention.Cancelled {
+			// 🔴 A WITHDRAWAL NOBODY ANNOUNCED: migration 0071 cancels every
+			// open nudge ask with a bare UPDATE, so no withdrawal push went out
+			// and a phone still shows it. Closing its decision (once: Move is
+			// conditional) clears its notification now. A dismissal that already
+			// cleared it is cleared again — a withdrawal by tag is idempotent.
+			s.askSettled(a)
+		}
 		return true
 	}
 	return true
 }
+
+// NudgeRelayRetired is the detail of a decision whose answer an older replica
+// claimed for a relay (relay_queued) after 0071: relaying is retired.
+const NudgeRelayRetired = "not relayed: relaying an answer to a nudge was retired (migration 0071, notices)"
 
 // Why a chief-nudge queued row is not pasted (sendQueueNudgeGate).
 const (

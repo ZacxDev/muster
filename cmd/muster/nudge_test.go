@@ -83,8 +83,17 @@ func TestNudgeNextExitsNoneWaitingWithAnEmptyStdout(t *testing.T) {
 // TestNudgeNextDoesNotCallAPartialQueueEmpty: a partial summary with nothing
 // found is a server error (1), never "none waiting" (11).
 func TestNudgeNextDoesNotCallAPartialQueueEmpty(t *testing.T) {
-	got := nudgeHarness(t, `{"partial":true,"items":[]}`).runCLI("nudge", "next", "--host", "alpha")
-	if got.code != exitServerError || got.stdout != "" {
-		t.Fatalf("exit %d stdout %q, want %d", got.code, got.stdout, exitServerError)
+	for _, body := range []string{
+		`{"partial":true,"items":[]}`,
+		// What the server sends when the notices' sessions could not be read
+		// (#415 round 1): the notice, by its label, with NO target. An
+		// INVARIANT guard here (the CLI already did this); the server half is
+		// internal/api TestAFailedNoticeReadMakesTheQueuePartial.
+		`{"partial":true,"items":[{"key":"ask-7","kind":"notice","host":"alpha","target":"","since":100}]}`,
+	} {
+		got := nudgeHarness(t, body).runCLI("nudge", "next", "--host", "alpha")
+		if got.code != exitServerError || got.stdout != "" {
+			t.Fatalf("%s: exit %d stdout %q, want %d", body, got.code, got.stdout, exitServerError)
+		}
 	}
 }

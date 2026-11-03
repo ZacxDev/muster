@@ -48,7 +48,10 @@ question in four ways:
   is about. A mirrored window is found by its session key over your windows
   when the item is drawn, so a renumbered window shows its new index. A
   session that no window shows now reads as the place it had when raised,
-  followed by `(not shown in any mirrored window now)`, and has no tmux target.
+  followed by `(not shown in any mirrored window now)`, and has no tmux target. When
+  muster cannot read the notices' sessions at all, each notice shows its label
+  with no target and the queue reads as partial (the summary's `partial`), so
+  `muster nudge next` exits 1 rather than claim nothing is waiting.
 - **Withdrawn when the session moves on**, as a nudge ask was. **Dismiss**
   withdraws it at once. Otherwise it expires after 24 hours.
 

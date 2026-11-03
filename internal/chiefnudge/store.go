@@ -41,7 +41,8 @@ type Store interface {
 	// every live nudge, and any relay text a row from before notices holds.
 	Injected(ctx context.Context, kind, key string) ([]string, error)
 	// Pending is every owner's live decision still in flight (queued, asked,
-	// a notice still open), system scope.
+	// a notice still open; relay_queued, which only an older replica can still
+	// write during a rolling deploy, for the sweep to fail), system scope.
 	Pending(ctx context.Context, limit int) ([]Decision, error)
 	// Get is the caller's decision id.
 	Get(ctx context.Context, id int64) (Decision, error)
@@ -286,7 +287,7 @@ func (p *PG) Injected(ctx context.Context, kind, key string) ([]string, error) {
 // Pending implements Store.
 func (p *PG) Pending(ctx context.Context, limit int) ([]Decision, error) {
 	return collect(p.pool.Query(sys(ctx), `SELECT `+cols+` FROM chief_nudges
-		WHERE outcome IN ('queued', 'asked') ORDER BY id LIMIT $1`, limit))
+		WHERE outcome IN ('queued', 'asked', 'relay_queued') ORDER BY id LIMIT $1`, limit))
 }
 
 // Get implements Store.

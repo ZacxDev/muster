@@ -627,7 +627,10 @@ func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]
 			errs = append(errs, fmt.Errorf("asks: %w", err))
 		}
 		// The notices' sessions, in one read (attention_notice.go).
-		notices := s.noticeDecisions(ctx, asks)
+		notices, err := s.noticeDecisions(ctx, asks)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("notices: %w", err))
+		}
 		for _, a := range asks {
 			// A question to the chief is the chief's (chief_ask_tool.go), not
 			// the owner's: the chief asks the owner with attention_ask if it must.
