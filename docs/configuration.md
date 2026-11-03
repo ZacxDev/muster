@@ -230,6 +230,14 @@ trace context included — at `MUSTER_TRACE_SAMPLE_RATIO`.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | none (off) | no | The OTLP/HTTP endpoint, e.g. `http://tempo:4318` (`/v1/traces` is appended). Setting it turns tracing on. Unset, the process installs no tracer, wraps no handler and adds no header. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | no | The full traces URL, instead of the endpoint above. Setting either turns tracing on. |
 | `OTEL_SDK_DISABLED` | `false` | no | `true` keeps tracing off whatever endpoint is set. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | no | Export timeout in milliseconds for the OTLP client muster builds. A value that is not a positive integer keeps tracing off and says why. |
+| `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | none | no | As `OTEL_EXPORTER_OTLP_TIMEOUT`, for traces; wins when both are set. |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | none | no | Not supported: muster's OTLP client loads no certificates. If set, tracing stays off and the log says why. |
+| `OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE` | none | no | Not supported; as `OTEL_EXPORTER_OTLP_CERTIFICATE`. |
+| `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` | none | no | Not supported; as `OTEL_EXPORTER_OTLP_CERTIFICATE`. |
+| `OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE` | none | no | Not supported; as `OTEL_EXPORTER_OTLP_CERTIFICATE`. |
+| `OTEL_EXPORTER_OTLP_CLIENT_KEY` | none | no | Not supported; as `OTEL_EXPORTER_OTLP_CERTIFICATE`. |
+| `OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY` | none | no | Not supported; as `OTEL_EXPORTER_OTLP_CERTIFICATE`. |
 | `MUSTER_TRACE_SAMPLE_RATIO` | `0.05` | no | The share of traces kept for requests that do not open a session (list refreshes, the event stream, polls), from `0` to `1`. Opens and their sockets are always kept; a page's other requests are kept at this ratio even when they carry the browser's (sampled) trace context. A value outside `0`–`1` keeps tracing off and logs why. |
 
 ## muster-mirror (host agent)
