@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,11 +99,14 @@ func (s *Server) dispatchConnectorDecideTool(ctx context.Context, c toolCaller, 
 // connectorRequestView is one pending request as connector_requests_list
 // returns it. No secret: the connector type has no field for one.
 type connectorRequestView struct {
-	ID        int64    `json:"id"`
-	AgentID   int64    `json:"agent_id"`
-	Agent     string   `json:"agent"`
-	TaskID    *int64   `json:"task_id,omitempty"`
-	Repo      string   `json:"repo,omitempty"`
+	ID      int64  `json:"id"`
+	AgentID int64  `json:"agent_id"`
+	Agent   string `json:"agent"`
+	TaskID  *int64 `json:"task_id,omitempty"`
+	Repo    string `json:"repo,omitempty"`
+	// ReadRepos are the requester's further READ-ONLY repositories (an
+	// officer's `read_repos`), which approving the github request also grants.
+	ReadRepos []string `json:"read_repos,omitempty"`
 	Connector string   `json:"connector"`
 	Exists    bool     `json:"connector_exists"`
 	Hosts     []string `json:"hosts,omitempty"`
@@ -128,7 +132,11 @@ const appNoRepoNote = "approving grants NOTHING usable: this agent was dispatche
 // officer is whether the requester is an officer instance, whose App token is
 // always read-only (callerOf): its scope is described as AccessRead's, never
 // the App's mode.
-func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string, officer bool) (string, string) {
+//
+// readRepos are the requester's further read-only repositories (agentReadRepos,
+// an officer's `read_repos`): every one of them is listed, each marked READ
+// ONLY, so the owner sees the whole set the approval grants.
+func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string, readRepos []string, officer bool) (string, string) {
 	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok {
 		if strings.TrimSpace(repo) == "" {
 			return appNoRepoNote, vc.Problem(g.AgentID)
@@ -137,8 +145,18 @@ func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k co
 		if officer {
 			scope = githubapp.AccessRead.Scope() + "; an officer's token is always read-only"
 		}
-		return "the GitHub App: each request to " + repo + " (this agent's own repository) carries a 1-hour token limited to it (" +
-			scope + "); other repositories are reached anonymously", vc.Problem(g.AgentID)
+		desc := "the GitHub App: each request to " + repo + " (this agent's own repository) carries a 1-hour token limited to it (" +
+			scope + ")"
+		if len(readRepos) > 0 {
+			marked := make([]string, 0, len(readRepos))
+			for _, r := range readRepos {
+				marked = append(marked, r+" (READ ONLY)")
+			}
+			desc += "; each request to one of its " + strconv.Itoa(len(readRepos)) + " further read repositories — " +
+				strings.Join(marked, ", ") + " — carries a 1-hour token limited to that repository (" +
+				githubapp.AccessRead.Scope() + ")"
+		}
+		return desc + "; other repositories are reached anonymously", vc.Problem(g.AgentID)
 	}
 	return "the stored " + g.Connector + " credential (whatever the token itself may do), on " + strings.Join(k.Hosts, ", ") +
 		" only, through muster's proxy", ""
@@ -168,6 +186,9 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 		shipNote := ""
 		if a, err := s.ext.Agents.Get(ctx, g.AgentID); err == nil {
 			v.Agent, v.TaskID, v.Repo = firstNonBlank(a.DisplayName, a.Name), a.NoteID, s.agentRepo(a)
+			if g.Connector == officers.GitHubConnector {
+				v.ReadRepos = s.agentReadRepos(a)
+			}
 			var o officers.Officer
 			o, _, officer = s.officerOf(a)
 			if officer && o.Ship != nil {
@@ -178,7 +199,7 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 		switch {
 		case err == nil:
 			v.Exists, v.Hosts = true, k.Hosts
-			v.Grants, v.Problem = s.grantsDescription(ctx, g, k, v.Repo, officer)
+			v.Grants, v.Problem = s.grantsDescription(ctx, g, k, v.Repo, v.ReadRepos, officer)
 			if shipNote != "" && g.Connector == officers.GitHubConnector {
 				v.Grants, v.Problem = shipNote, ""
 			}
@@ -269,8 +290,23 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 		out["also_approved"] = also
 	}
 	if approve && g.Source == connectors.SourceApp {
-		if a, aerr := s.ext.Agents.Get(ctx, g.AgentID); aerr == nil && strings.TrimSpace(s.agentRepo(a)) == "" {
-			out["warning"] = appNoRepoNote
+		if a, aerr := s.ext.Agents.Get(ctx, g.AgentID); aerr == nil {
+			if strings.TrimSpace(s.agentRepo(a)) == "" {
+				out["warning"] = appNoRepoNote
+			} else if k, kerr := s.ext.Connectors.GetConnector(ctx, g.Connector); kerr == nil {
+				// What the approval grants, every repository listed (the
+				// listing's own description): an officer's read_repos are
+				// part of it, each READ ONLY.
+				o, _, officer := s.officerOf(a)
+				out["repo"] = s.agentRepo(a)
+				if rr := s.agentReadRepos(a); len(rr) > 0 {
+					out["read_repos"] = rr
+				}
+				out["grants"], _ = s.grantsDescription(ctx, g, k, s.agentRepo(a), s.agentReadRepos(a), officer)
+				if officer && o.Ship != nil && g.Connector == officers.GitHubConnector {
+					out["grants"] = shipGrantsDescription(o)
+				}
+			}
 		}
 	}
 	return toolJSON(out)

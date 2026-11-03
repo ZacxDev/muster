@@ -22,7 +22,10 @@ With the App configured:
   for any repository other than the agent's own carries **no credential at
   all**, so a public dependency or submodule clones as it would for anyone and
   a private one fails as it would for anyone. The App token is never attached
-  to it. muster compares the path's repository without case, after fully
+  to it. (The one exception is an [officer's `read_repos`](officers.md#reading-a-repository-repo):
+  a request to one of them carries a token minted for **that** repository
+  alone, always read only — one token per repository, never one for several.)
+  muster compares the path's repository without case, after fully
   decoding it. It refuses, before minting anything, any path whose repository
   it cannot decide: a `.` or `..` segment, a doubly encoded or backslashed
   path, a leading empty segment, or `/repositories/<id>/…` (use
@@ -157,7 +160,9 @@ must only read GitHub, even when it shares an App with a write-mode deployment:
 the mode is the deployment's, the App's own permissions stay as in the table
 above. An [officer](officers.md#reading-a-repository-repo) instance's token is
 read-only in **both** modes (`connectors.Caller.ReadOnly`): a write-mode
-deployment mints write for its task agents and read for its officers.
+deployment mints write for its task agents and read for its officers. So is
+each token minted for an officer's `read_repos` (`connectors.Caller.ReadRepos`),
+whatever the mode and whoever the caller.
 
 In read mode, every place muster describes the connector says so: the
 Connectors tab, the approve card and `connector_requests_list`

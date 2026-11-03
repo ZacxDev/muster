@@ -119,7 +119,9 @@ func SourceFor(ctx context.Context, s Store, name string) string {
 //     approval was made for (Grant.Repo, 0061) — compared without case or
 //     surrounding space, as GitHub names are. An officer approved for one
 //     repository and then pointed at another, or approved with none and then
-//     given one, asks its owner again.
+//     given one, asks its owner again. For an officer with `read_repos`, repo
+//     is the whole set as RepoScope writes it, so a change to either `repo`
+//     or `read_repos` re-opens the grant and a reordering does not.
 //
 // reason is "" when the grant is returned unchanged, else the audit line's
 // why. The caller prompts the owner.
@@ -171,6 +173,45 @@ func reopenedRepoChanged(was, now string) string {
 		return strings.TrimSpace(r)
 	}
 	return "re-opened: the agent's repository changed (approved for " + name(was) + ", now " + name(now) + ")"
+}
+
+// RepoScope is the repository SET a grant is approved for (Grant.Repo, and
+// ReconcileGrant's repo): the caller's own repository and its further
+// read-only ones (Caller.ReadRepos, an officer's `read_repos`), as ONE
+// canonical string.
+//
+//   - With no read repositories it is repo itself, trimmed — byte-for-byte
+//     what every approval before read_repos recorded, so adding this changed
+//     no existing grant's key and re-opened nothing.
+//   - Otherwise it is "<repo> (+ read: <a>, <b>)", the read repositories
+//     trimmed, lowercased, deduplicated and SORTED: declaring the same set in
+//     another order or case is the same scope and does not re-open a grant,
+//     while adding, removing or changing any entry — or changing repo — does.
+//
+// 🔴 ONE CANONICAL FORM, ONE PLACE. The approval records it
+// (api.decideConnectorGrant) and every reconcile compares against it (the
+// proxy's CheckAccess, the agent routes); a door that built it differently
+// would re-open every officer grant on its first use.
+func RepoScope(repo string, readRepos []string) string {
+	repo = strings.TrimSpace(repo)
+	if len(readRepos) == 0 {
+		return repo
+	}
+	seen := map[string]bool{}
+	set := make([]string, 0, len(readRepos))
+	for _, r := range readRepos {
+		r = strings.ToLower(strings.TrimSpace(r))
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		set = append(set, r)
+	}
+	if len(set) == 0 {
+		return repo
+	}
+	sort.Strings(set)
+	return repo + " (+ read: " + strings.Join(set, ", ") + ")"
 }
 
 // SameRepo reports whether two repository names are the same repository:

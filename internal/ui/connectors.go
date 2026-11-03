@@ -95,6 +95,11 @@ type ConnectorRequestView struct {
 	// Shares, when non-empty, says what approving it shares with the owner's
 	// other agents (a standing grant, migration 0043).
 	Shares string
+	// Grants, when non-empty, is the sentence saying what approving it grants — for the GitHub
+	// App, every repository the token may be minted for (an officer's own
+	// `repo` and each of its `read_repos`, each marked READ ONLY): the same
+	// text connector_requests_list returns as approving_grants.
+	Grants string
 }
 
 // ConnectorAuditView is one audit line.
@@ -300,6 +305,7 @@ func connectorRequestCard(r ConnectorRequestView) g.Node {
 			cardTime(r.RequestedAt),
 		),
 		g.If(!r.Exists, P(Class("mt-2 text-xs text-muted"), g.Text("No connector by that name exists yet. Enter a credential to create it and approve this request in one step."))),
+		g.If(r.Grants != "", P(Class("mt-2 text-xs text-muted"), g.Attr("data-request-grants", ""), g.Text(r.Grants))),
 		g.If(r.Problem != "", connectorProblem(r.Problem)),
 		g.If(r.Shares != "", P(Class("mt-2 text-xs text-muted"), g.Attr("data-request-shares", ""), g.Text(r.Shares))),
 		g.If(r.Reason != "", P(Class("mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted"), g.Text(r.Reason))),

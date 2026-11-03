@@ -71,7 +71,20 @@ func repoNote(o Officer) string {
 Your repository is %[1]s. You may READ it through muster's %[2]q connector — %[3]s. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once it is approved, read the repository in either of two ways (both through muster's proxy):
 - git: run `+"`ccd connect-git %[2]s`"+` once (it routes git's https://github.com/ through the proxy; ccd also does this by itself within 15 seconds of the approval), then `+"`git clone --depth 50 https://github.com/%[1]s.git`"+` and read the clone; `+"`git fetch`"+` in it later for new commits.
 - the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/%[1]s/<path>\"`"+` (for example pulls/<n>, pulls/<n>/files, commits/<sha>, compare/<base>...<head>, contents/<file>?ref=<sha>); muster replaces that header with the credential.
-muster attaches a READ-ONLY token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector, onlyConnector(o))
+muster attaches a READ-ONLY token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector, onlyConnector(o)) + readReposNote(o)
+}
+
+// readReposNote is what an officer with read_repos (Officer.ReadRepos) is told
+// about them: the same grant and the same two recipes reach them, each request
+// with a READ-ONLY token limited to the one repository it names. Nothing for
+// an officer without any, whose text is unchanged.
+func readReposNote(o Officer) string {
+	if len(o.ReadRepos) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+You may also READ these repositories through the same %[1]q connector and the same approval, in the same two ways (git clone https://github.com/<owner>/<name>.git, or the REST API at /repos/<owner>/<name>/…): %[2]s. Each request to one of them carries a READ-ONLY token limited to that one repository; any other repository is reached anonymously.`,
+		GitHubConnector, strings.Join(o.ReadRepos, ", "))
 }
 
 // onlyConnector is how repoNote and shipNote describe the github connector:
