@@ -35,9 +35,12 @@ real handles.
   checks that the hub's `@bob` handle, grant and enroll still bind that exact key to
   `bob/chief`. A peer that passes is `ok` and goes on your hub allow list. The first principal
   key that verifies is remembered (trust on first use).
-- **Peer mail reaches your chief, marked verified.** A message from an `ok` peer is posted to
+- **Peer mail reaches your chief as a verified sender.** A message from an `ok` peer is posted to
   muster with `sender: bob/chief` and `sender_verified: true`. The sender is your pinned label,
-  never anything the message says. The thread is the root found by following the signed `re`
+  never anything the message says. `sender_verified` is a field on the stored message (and in the
+  JSON of `plugin_messages_list` and `plugin_drafts_list`), not text in your chief's turn. In the
+  turn, muster marks only an **unverified** sender, with `(UNVERIFIED: …)` after its name, so a
+  verified sender is one whose name carries no such mark. The thread is the root found by following the signed `re`
   chain. The hub's unsigned thread field is never used.
 - **Strangers never reach muster.** Mail from any key you did not pin lands in the hub's
   `requests` queue. The plugin counts it and lists it for you (`muster-clankmail requests`), and
@@ -186,6 +189,11 @@ MUSTER_IMAGE=muster
 MUSTER_VERSION=local
 ```
 
+`MUSTER_VERSION` also tags the `stt-cohere` service's image
+(`${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:local`), and no published image has that
+tag. If you run that profile, build its image yourself and tag it `local` (setting
+`STT_COHERE_IMAGE` to your name for it), or leave the profile off.
+
 Add `MUSTER_PLUGINS: "1"` to the `muster` service's `environment`. That file lists its variables
 explicitly, so `.env` alone does not reach muster. Then add the plugin as a service on the same
 image, overriding the image's healthcheck (which probes `/muster-server`):
@@ -201,6 +209,8 @@ image, overriding the image's healthcheck (which probes `/muster-server`):
         condition: service_healthy
     volumes:
       - ${HOME}/clankmail:/cm
+    ports:
+      - "127.0.0.1:8080:8080"    # optional: /health from the host
     environment:
       MUSTER_URL: http://muster:8105
       PLUGIN_TOKEN_FILE: /cm/secrets/plugin.token
@@ -217,7 +227,10 @@ image, overriding the image's healthcheck (which probes `/muster-server`):
 ```
 
 On the compose network the plugin reaches muster by its service name, and muster can keep
-listening on `127.0.0.1` only. `docker compose up -d` starts it.
+listening on `127.0.0.1` only. `docker compose up -d` starts it. Compose names the container
+`<project>-muster-clankmail-1`, so address it by its service name instead: run the admin commands
+as `docker compose exec muster-clankmail /muster-clankmail <command>` from the directory that
+holds the compose file.
 
 **Kubernetes.**
 
@@ -229,14 +242,37 @@ listening on `127.0.0.1` only. `docker compose up -d` starts it.
 - Set `securityContext.runAsUser`/`fsGroup` so the non-root user can read the Secret and write
   the PVC.
 - Set `MUSTER_URL` to muster's in-cluster Service URL, and allow egress to the hub on 443.
-- Give the plugin **a namespace of its own** where only you hold `pods/exec`, **and run muster
-  with the least-privilege provisioner layout** (`MUSTER_AGENT_NAMESPACE_CLUSTERROLE`). The
-  namespace isolates the plugin only with that layout. Anyone who can exec into the pod can read
-  the chief key and use the admin socket. In muster's **default** layout, a ClusterRoleBinding
-  gives muster-server's own service account `pods/exec` in every namespace **and** `secrets` `get`
-  in every namespace, so it can read the chief-key Secret directly, without exec
-  ([configuration](configuration.md#muster-clankmail-the-clankmail-plugin),
-  [provisioner](provisioner.md#kubernetes-rbac)).
+- 🔴 **A namespace of its own does not, by itself, keep the chief key from muster.** Anyone who
+  can exec into the plugin's pod or read its Secret holds the chief key and can use the admin
+  socket. That includes muster-server's own service account, in both provisioner layouts
+  ([provisioner](provisioner.md#kubernetes-rbac)):
+  - **Default layout.** The `muster-agent-namespace` ClusterRole is bound cluster-wide, so
+    muster's service account holds `secrets` `get`/`list`/`create`/`update`/`delete` and
+    `pods/exec` in **every** namespace, the plugin's included. It can read the chief-key Secret
+    directly.
+  - **Least-privilege layout** (`MUSTER_AGENT_NAMESPACE_CLUSTERROLE`). The standing access is
+    gone, but not the ability to grant it. muster's service account keeps cluster-wide
+    `rolebindings` `get`/`create` and `bind` on the `muster-agent-namespace` ClusterRole, so it
+    can bind itself to that role in the plugin's namespace and then read the Secret and exec into
+    the pod. It also keeps cluster-wide `namespaces` `delete`, so it can delete the plugin's
+    namespace.
+
+  **The consequence:** a compromised muster-server can obtain the chief key and sign as
+  `@alice/chief` to every peer that pinned you. To actually keep the key from muster, do one of:
+  - **Run the plugin in a different cluster from muster** (point `MUSTER_URL` at muster across the
+    network). muster's service account has no rights there.
+  - **Use the least-privilege layout and add the admission policy** in
+    [provisioner.md](provisioner.md#kubernetes-rbac) (the `ValidatingAdmissionPolicy` under "What
+    the narrow grant still allows"). It refuses any RoleBinding write by muster's service account
+    outside namespaces named with `MUSTER_AGENT_NAMESPACE_PREFIX`. Then the plugin's namespace
+    must not start with that prefix, and must not be muster's own namespace. This still leaves
+    muster able to delete the plugin's namespace. That destroys the plugin's state and its
+    Secret, so keep a backup of `chief.key` and `STATE_DIR`, but it does not reveal the key.
+    (muster's own namespace is out because, under this layout, muster is granted `secrets` `get`
+    there for deploy-key pools.)
+
+  In either case, give the plugin a namespace where only you hold `pods/exec` and `secrets`
+  access ([configuration](configuration.md#muster-clankmail-the-clankmail-plugin)).
 - Run the admin commands with `kubectl exec -n <ns> deploy/<name> -- /muster-clankmail show`.
 
 ## 3. Pairing
@@ -251,10 +287,15 @@ listening on `127.0.0.1` only. `docker compose up -d` starts it.
    environment, so it does not pick up `CLANKMAIL_PEERS`. Instead: `docker rm -f
    muster-clankmail` and re-run the `docker run` above with the new `-e CLANKMAIL_PEERS=…`; under
    compose, edit the service's environment and run `docker compose up -d`; under Kubernetes, edit
-   the Deployment's env (a rollout follows). The plugin checks every peer once before its first
-   poll.
-4. **Confirm.** Run `docker exec muster-clankmail /muster-clankmail show`, or
-   `curl -s 127.0.0.1:8080/health`. The top-level `"status": "ok"` only means the process is up.
+   the Deployment's env. A rollout follows only when `CLANKMAIL_PEERS` is set in the pod template
+   (`env`). If it comes from a ConfigMap through `envFrom`, editing the ConfigMap restarts
+   nothing: run `kubectl rollout restart deploy/<name>` after it. The plugin checks every peer once
+   before its first poll.
+4. **Confirm.** Run `show` inside the plugin's container: `docker exec muster-clankmail
+   /muster-clankmail show` for the `docker run` container, `docker compose exec muster-clankmail
+   /muster-clankmail show` under compose, or `kubectl exec -n <ns> deploy/<name> --
+   /muster-clankmail show`. If you published `127.0.0.1:8080`, `curl -s 127.0.0.1:8080/health`
+   returns the same JSON. The top-level `"status": "ok"` only means the process is up.
    What matters is the `peers` row: `"label": "bob/chief"`, `"status": "ok"`, `"allowed": true`.
    Also check that `poll_error`, `claim_error`, `peers_error` and `requests_error` are empty.
    Both sides must be `ok` before mail flows both ways.
@@ -278,7 +319,8 @@ listening on `127.0.0.1` only. `docker compose up -d` starts it.
    16384` makes it refuse a body over 16 KiB, which bob's muster would not deliver to his chief.
 
    Within one poll, bob's chief gets a turn from `bob`'s muster with the message, sender
-   `alice/chief`, marked `sender_verified: true`. From then on the thread runs through the normal loop: bob's
+   `alice/chief`, with no `UNVERIFIED` mark after the name (bob's muster stores the message with
+   `sender_verified: true`). From then on the thread runs through the normal loop: bob's
    chief drafts a reply, bob approves it, bob's plugin signs and sends it, and your chief receives
    it on the same thread (rooted at the `m_…` the program printed). Your chief can then
    `reply_draft` it, and so on.
@@ -323,7 +365,8 @@ listening on `127.0.0.1` only. `docker compose up -d` starts it.
   inbox poll`, followed by their ids. If it does not, it prints
   `… is disabled: releasing 0 held message(s) to muster; N stay held` and gives the reason in the
   JSON that follows. Run the admin commands inside the plugin's container
-  (`docker exec muster-clankmail /muster-clankmail …`). They talk to `$STATE_DIR/admin.sock`, and
+  (`docker exec muster-clankmail /muster-clankmail …`, or the compose or `kubectl exec` form in
+  [pairing step 4](#3-pairing)). They talk to `$STATE_DIR/admin.sock`, and
   none of them can send a message.
 
 ### If a key changes

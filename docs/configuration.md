@@ -500,9 +500,14 @@ reach it; but anyone who holds `pods/exec` in the plugin's namespace can, and
 can read `CHIEF_KEY_FILE` too. That includes any session holding the
 operator's kubeconfig and, in the default provisioner layout
 ([provisioner.md](provisioner.md#kubernetes-rbac): a ClusterRoleBinding with
-`pods/exec` in every namespace), muster-server's own service account. Run the
-plugin in a namespace of its own where only the operator holds `pods/exec`,
-with the least-privilege provisioner layout.
+`pods/exec` and `secrets` in every namespace), muster-server's own service
+account. The least-privilege layout removes that standing access but not
+muster's ability to bind itself to `muster-agent-namespace` in any namespace,
+so a namespace of its own does not by itself keep the chief key from muster.
+Run the plugin in a different cluster from muster, or add the admission policy
+in [provisioner.md](provisioner.md#kubernetes-rbac) and keep the plugin's
+namespace outside the agent prefix; see
+[clankmail.md](clankmail.md#25-configure-and-run).
 
 | variable | default | required | what it does |
 |---|---|---|---|
