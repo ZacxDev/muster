@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,12 +25,8 @@ const UnroutedAskAfter = 15 * time.Minute
 // MaxSettleReasonRunes bounds a settle reason.
 const MaxSettleReasonRunes = 2000
 
-// UnroutedAskPlugin is the one plugin, by name (as muster names a plugin
-// everywhere: the route allowlist's "<user>:<plugin>:…"), whose messages the
-// sweep judges: agent mail. Every other plugin's — Discord DMs, which the owner
-// already reads where they arrive — never raises an unrouted ask (operator
-// decision).
-const UnroutedAskPlugin = "agent-mail"
+// The sweep judges only messages from ThreadPlugins (threads.go): agent mail
+// and ClankMail. Every other plugin's never raises an unrouted ask.
 
 // awaitsDisposition is whether message m (the alias) is one the chief must act
 // on: repliable and delivered to the chief. Migration 0051's backfill spells
@@ -37,16 +34,31 @@ const UnroutedAskPlugin = "agent-mail"
 // widening the plugin scope later fires nothing from before 0051 either.
 const awaitsDisposition = `m.status = 'delivered' AND NOT m.no_reply`
 
-// fromUnroutedAskPlugin: message m came through UnroutedAskPlugin.
-const fromUnroutedAskPlugin = `EXISTS (SELECT 1 FROM plugins p WHERE p.id = m.plugin_id AND p.name = '` + UnroutedAskPlugin + `')`
+// fromThreadPlugin: message m came through one of ThreadPlugins. The names are
+// this package's constants (lower-case letters and hyphens), never input, so
+// quoting them into the SQL is safe; sqlStringList refuses anything else.
+var fromThreadPlugin = `EXISTS (SELECT 1 FROM plugins p WHERE p.id = m.plugin_id AND p.name IN (` + sqlStringList(threadPlugins[:]) + `))`
+
+// sqlStringList is names as a SQL list of string literals. It panics (at
+// package init) on a name that is not lower-case letters, digits and hyphens.
+func sqlStringList(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		if n == "" || strings.Trim(n, "abcdefghijklmnopqrstuvwxyz0123456789-") != "" {
+			panic("plugins: a thread plugin name must be lower-case letters, digits and hyphens: " + strconv.Quote(n))
+		}
+		quoted[i] = "'" + n + "'"
+	}
+	return strings.Join(quoted, ", ")
+}
 
 // dispositioned: settled, or the chief acted on it (chiefActed, retry.go).
 const dispositioned = `(m.settle_reason IS NOT NULL OR ` + chiefActed + `)`
 
 // unroutedDue is whether message m is due an ask as of the cutoff $1: it came
-// through UnroutedAskPlugin, awaits a disposition, was delivered at or before
+// through one of ThreadPlugins, awaits a disposition, was delivered at or before
 // $1, has none, and no ask was raised for it yet (whatever that ask's state now).
-const unroutedDue = fromUnroutedAskPlugin + ` AND ` + awaitsDisposition + ` AND m.delivered_at <= $1 AND NOT ` + dispositioned + `
+var unroutedDue = fromThreadPlugin + ` AND ` + awaitsDisposition + ` AND m.delivered_at <= $1 AND NOT ` + dispositioned + `
 	AND NOT EXISTS (SELECT 1 FROM attention_asks a WHERE a.plugin_message_id = m.id)`
 
 // UnroutedAsk is an open ask raised for a message that has since been

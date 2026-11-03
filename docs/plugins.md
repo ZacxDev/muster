@@ -856,9 +856,9 @@ on the message (`settle_reason`, at most 2000 characters) and in the
 offered the tool, and only for a message delivered to it: another owner's
 message, or one still queued, is *"not a plugin message delivered to you"*.
 
-An **agent-mail** message — one from the plugin named `agent-mail`
-(`plugins.UnroutedAskPlugin`; plugins are named this way everywhere, as in the
-route allowlist) — still awaiting a disposition **15 minutes** after its
+An **agent-mail** or **ClankMail** message — one from the plugin named
+`agent-mail` or `clankmail` (`plugins.ThreadPlugins`; plugins are named this
+way everywhere, as in the route allowlist) — still awaiting a disposition **15 minutes** after its
 delivery is put in front of you by muster: the attention sweep (every 30 s)
 raises an [ask](attention.md), asked by `muster`, showing the sender (with the
 **UNVERIFIED** mark unless the plugin verified the sender), the subject, the
@@ -1078,19 +1078,22 @@ as usual. muster reads no message text for who wrote what.
 
 ### A reply on a thread a session started
 
-When one of your mirrored Claude Code sessions sends **agent mail** that starts
-a thread, a later reply on that thread goes **straight back to that session**:
+When one of your mirrored Claude Code sessions sends **agent mail** or
+**ClankMail** that starts a thread, a later reply on that thread goes **straight back to that session**:
 the chief's route (`routeItem`), made by muster, with no chief decision.
 
-1. **The binding.** The session's PostToolUse hook (outside muster) reports a
-   send that started a thread: `POST /api/plugin-threads {thread,
+1. **The binding.** Whatever sent the thread's first message reports it — for
+   agent mail, the session's PostToolUse hook (outside muster); for ClankMail,
+   the `muster-clankmail` plugin itself when its `send --bind <session>` starts a
+   thread (the root is the signed message's own `m_` id): `POST /api/plugin-threads {thread,
    claude_session}`, with route reply's credential (a personal token or the
    hook token). `201`: bound. `200`: the thread was already bound; **the first
    report wins** and the binding is unchanged. `409`: no online mirrored window
    shows the session, so nothing is bound. `404` with routing off. No response
    body on success. Stored in `plugin_threads` (migration `0054`).
-2. **The route.** A NEW message from the plugin named `agent-mail` — only that
-   plugin; a Discord DM never is — that carries a bound `thread` and is not
+2. **The route.** A NEW message from the plugin named `agent-mail` or
+   `clankmail` (`plugins.ThreadPlugins`) — only those; a Discord DM never is —
+   that carries a bound `thread` and is not
    `no_reply` is routed to the bound session, when an online mirrored window
    shows that session and you have a chief.
    The message is handed to the chief **without a turn**, in the same
@@ -1136,7 +1139,9 @@ routing is on.
    parent session's `session_id`, so a subagent's pull request is the parent
    session's.
 2. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
-   is on the list **and** that the plugin marked `sender_verified`. muster reads
+   is on the list **and** that the plugin marked `sender_verified` — never one
+   from `clankmail`, whatever its sender ([auth](auth.md#pull-request-review-mail)).
+   muster reads
    the body's **last** fenced block whose info string is `json` (a fence of
    three or more backticks, closed by a run at least as long), and that block
    must end the body — only whitespace may follow its closing fence:
@@ -1187,8 +1192,9 @@ owner in between. Off unless `MUSTER_FLEET_REPORT_SENDERS` lists the asking
 agent-mail address; `MUSTER_FLEET_REPORT_PATHS` must then name the working
 directories whose sessions a reply may describe ([configuration](configuration.md)).
 
-1. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
-   is on the list **and** that the plugin marked `sender_verified`, and whose
+1. **The mail.** Only a NEW message from the `agent-mail` plugin (never
+   `clankmail`) whose sender is on the list **and** that the plugin marked
+   `sender_verified`, and whose
    **whole body** is one JSON object (the subject is not read):
 
    ```json
@@ -1281,7 +1287,7 @@ would show it. Every reply writes `plugin.delivered`,
 
 ### Resuming an ended session
 
-When agent mail would be routed by muster itself — a [reply on a thread a
+When agent mail or ClankMail would be routed by muster itself — a [reply on a thread a
 session started](#a-reply-on-a-thread-a-session-started) or a [pull-request
 review](#a-pull-request-review-mail) — but **no window shows that session any
 more**, muster can ask the session's host to **resume it** and then route the
