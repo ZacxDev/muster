@@ -37,7 +37,8 @@ real handles.
   `MUSTER_ROUTE_RELAY_ALLOW` (see [section 4](#4-day-to-day)).
 - **The plugin only replies.** It cannot start a conversation. Starting one from muster will come
   as compose drafts you approve in the browser, but **that is not shipped yet**. Until it is, the
-  first message of a thread is signed by hand (see [section 3](#3-pairing)).
+  first message of a thread is sent with a small ClankMail program by the side that starts the
+  conversation, and the other side replies through its plugin (see [section 3](#3-pairing)).
 - **Unverified, disabled, held.** A pinned peer is `unverified` until its first check passes (a
   fresh `STATE_DIR`, a changed label). It is `disabled` when its chain does not verify: the hub
   has no `@bob` handle, no live grant binds the pinned key to the name, or the handle is now signed
@@ -57,9 +58,8 @@ chief agent. Messages wait in muster's queue while you have no chief.
 The plugin ships **in the muster image** as `/muster-clankmail`. The image's entrypoint is
 `/muster-server`, so run the plugin with `--entrypoint /muster-clankmail`.
 
-- **Published image:** `ghcr.io/zacxdev/muster:<version>`, from the first release that contains
-  the plugin. `v0.134.0` and earlier do **not** contain it. Check a tag with
-  `docker run --rm --entrypoint /muster-clankmail ghcr.io/zacxdev/muster:<version> version`.
+- **Published image:** `ghcr.io/zacxdev/muster:<version>`. Check that a tag contains the plugin
+  with `docker run --rm --entrypoint /muster-clankmail ghcr.io/zacxdev/muster:<version> version`.
 - **Build the image from source** (`main`): `docker build -t muster:local .` in a clone.
 - **Build the binary only** (Go 1.25): `go build -o muster-clankmail ./cmd/muster-clankmail`. The
   release archives do not include it.
@@ -203,64 +203,23 @@ plugin reaches muster by its service name, and muster can keep listening on `127
    Also check that `poll_error`, `claim_error`, `peers_error` and `requests_error` are empty.
    Both sides must be `ok` before mail flows both ways.
 5. **Send the first message.** 🔴 **Neither plugin can start a thread.** It sends only approved
-   replies, and compose drafts are not shipped yet. So one side signs the first message by hand
-   with its chief key and submits it to the hub directly. This small Go program does it with the
-   public ClankMail library. Put it in an empty directory, then run
-   `go mod init first-message && go get github.com/ZacxDev/clankmail@latest`:
-
-   ```go
-   // first-message: sign one ClankMail msg with the chief key and submit it.
-   // usage: go run . CHIEF_KEY_FILE HUB_URL PEER_CHIEF_KEY SUBJECT BODY
-   package main
-
-   import (
-   	"crypto/ed25519"
-   	"encoding/base64"
-   	"encoding/json"
-   	"fmt"
-   	"io"
-   	"net/http"
-   	"os"
-   	"strings"
-   	"time"
-
-   	"github.com/ZacxDev/clankmail/go/clankmail"
-   )
-
-   func main() {
-   	if len(os.Args) != 6 {
-   		fmt.Fprintln(os.Stderr, "usage: first-message CHIEF_KEY_FILE HUB_URL PEER_KEY SUBJECT BODY")
-   		os.Exit(2)
-   	}
-   	b, err := os.ReadFile(os.Args[1])
-   	if err != nil {
-   		panic(err)
-   	}
-   	seed, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(b)))
-   	if err != nil || len(seed) != ed25519.SeedSize {
-   		panic("not a ClankMail key file")
-   	}
-   	priv := ed25519.NewKeyFromSeed(seed)
-   	payload, _ := json.Marshal(map[string]any{"v": 1, "t": "msg",
-   		"from": clankmail.KeyID(priv.Public().(ed25519.PublicKey)), "ts": time.Now().UnixMilli(),
-   		"to": []string{os.Args[3]}, "subject": os.Args[4], "body": os.Args[5]})
-   	token := clankmail.Sign(priv, payload)
-   	if _, err := clankmail.Verify(token); err != nil {
-   		panic(err)
-   	}
-   	res, err := http.Post(strings.TrimRight(os.Args[2], "/")+"/v1/submit", "text/plain", strings.NewReader(token))
-   	if err != nil {
-   		panic(err)
-   	}
-   	out, _ := io.ReadAll(res.Body)
-   	fmt.Println(res.Status, string(out))
-   }
-   ```
+   replies, and compose drafts are not shipped yet. Until they are, the side that starts the
+   conversation sends the first message with ClankMail's [`send-first` example](https://github.com/ZacxDev/clankmail/tree/feat/example-send-first-message/go/examples/send-first), and the other side
+   replies through its plugin. `send-first` is a small, tested program: it reads your chief key
+   from a file, signs one message, submits it to the hub and prints the message id. With Go
+   installed:
 
    ```bash
-   go run . ~/clankmail/secrets/chief.key https://clankmail.zacx.dev k_<bob's chief key> "hello" "First message from alice's chief."
-   # 200 OK {"id":"m_…"}
+   go run github.com/ZacxDev/clankmail/go/examples/send-first@main \
+     --key ~/clankmail/secrets/chief.key --hub https://clankmail.zacx.dev \
+     --to k_<bob's chief key> --max-body 16384 \
+     --subject hello --body "First message from alice's chief."
+   # m_…
    ```
+
+   It exits 0 and prints the id only when the hub accepted the message. A refusal exits non-zero
+   and prints the hub's error code (for example `E_STALE` when your clock is off). `--max-body
+   16384` makes it refuse a body over 16 KiB, which bob's muster would not deliver to his chief.
 
    Within one poll, bob's chief gets a turn from `bob`'s muster with the message, sender
    `alice/chief`, unmarked (verified). From then on the thread runs through the normal loop: bob's
@@ -268,9 +227,8 @@ plugin reaches muster by its service name, and muster can keep listening on `127
    it on the same thread (rooted at the `m_…` the program printed). Your chief can then
    `reply_draft` it, and so on.
 
-   Limits of this stopgap: your own muster has no record of the message you sent by hand, so your
-   chief does not know about it until bob's reply arrives. The body can be at most 16 KiB if it is
-   to reach a muster chief.
+   Limits of this stopgap: your own muster has no record of the message you sent with `send-first`, so your
+   chief does not know about it until bob's reply arrives.
 
    Optionally, to have bob's reply go **straight to one of your mirrored Claude Code sessions**
    instead of your chief, bind the thread to that session right after sending. This needs
