@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // `muster-mirror ask` is a Claude Code PreToolUse HOOK for AskUserQuestion: it
@@ -107,7 +108,7 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 	h := askq.Hook{
 		Base: *base, Path: "/mirror/ask",
 		Auth:   func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+token) },
-		Client: &http.Client{Timeout: askTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		Client: noredirect.Client(&http.Client{Timeout: askTimeout}),
 		Logf:   logf,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)

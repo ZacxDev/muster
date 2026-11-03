@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // THE HOOK CLIENT: what a PreToolUse hook on AskUserQuestion runs (today
@@ -74,11 +76,9 @@ func (h Hook) Run(ctx context.Context, payload []byte) bool {
 	}
 	h.Auth(req)
 	req.Header.Set("Content-Type", "application/json")
-	client := h.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
+	// The request carries a credential (Auth): never follow a redirect,
+	// whatever client was configured (internal/noredirect).
+	resp, err := noredirect.Client(h.Client).Do(req)
 	if err != nil {
 		h.logf("muster unreachable (%v); the question is the terminal's only", err)
 		return false

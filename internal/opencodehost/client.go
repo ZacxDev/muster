@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/ZacxDev/muster/internal/noredirect"
 	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
@@ -94,10 +95,10 @@ func NewClient(base string, secret func() string) (*Client, error) {
 	return &Client{base: strings.TrimSuffix(base, "/"), secret: secret,
 		// No overall timeout: the event stream is long-lived. Every other
 		// request carries its own context deadline.
-		http: &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
-			ResponseHeaderTimeout: 10 * time.Second, MaxIdleConns: 4, IdleConnTimeout: 90 * time.Second},
-			// A redirect would carry the credential somewhere else.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		// A redirect would carry the credential somewhere else
+		// (internal/noredirect).
+		http: noredirect.Client(&http.Client{Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+			ResponseHeaderTimeout: 10 * time.Second, MaxIdleConns: 4, IdleConnTimeout: 90 * time.Second}}),
 	}, nil
 }
 

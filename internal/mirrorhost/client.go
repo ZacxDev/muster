@@ -28,6 +28,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // Backend is where sessions come from: the host's tmux (Tmux), or a test's fake.
@@ -263,7 +264,10 @@ func New(cfg Config) (*Client, error) {
 	}
 	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
 	c.tunnelTr = tunnelTransport(&c.wire)
-	c.tunnel = &http.Client{Transport: c.tunnelTr}
+	// 🔴 NO REDIRECTS: the token rides every connect's Authorization header,
+	// which net/http would re-send to a Location on this hostname or a
+	// subdomain (internal/noredirect).
+	c.tunnel = noredirect.Client(&http.Client{Transport: c.tunnelTr})
 	return c, nil
 }
 

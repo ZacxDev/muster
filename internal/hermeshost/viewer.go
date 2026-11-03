@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
 // THE GATEWAY VIEWER (docs/design/hermes.md, "The gateway viewer", "Questions
@@ -266,10 +267,16 @@ func (h Home) Attach(ctx context.Context, session string) (*Viewer, []ApprovalPr
 	defer dcancel()
 	// 🔴 NO PROXY: the gateway is on loopback; a proxy from the environment
 	// would see the ticket (and cannot reach 127.0.0.1 anyway).
-	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	// 🔴 NO REDIRECTS: the ticket rides a subprotocol header, which net/http
+	// would copy to ANY Location (internal/noredirect).
+	client := noredirect.Client(&http.Client{Transport: &http.Transport{Proxy: nil}})
 	ws, _, err := websocket.Dial(dctx, u, &websocket.DialOptions{HTTPClient: client,
 		Subprotocols: []string{gatewayWSProtocol, gatewayTicketProtocol + ticket}})
 	if err != nil {
+		var refused *noredirect.Error
+		if errors.As(err, &refused) {
+			return nil, nil, fmt.Errorf("%w: its WebSocket answered with a redirect to %s, which is not followed", ErrGatewayProtocol, refused.Host)
+		}
 		return nil, nil, fmt.Errorf("%w: its WebSocket refused the viewer (%s)", ErrGatewayProtocol, errClass(err))
 	}
 	if ws.Subprotocol() != gatewayWSProtocol {
