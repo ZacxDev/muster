@@ -95,13 +95,14 @@ func (s *Server) sweepUnroutedMessages(ctx context.Context) {
 		return
 	}
 	asOf := s.unroutedNowTime()
+	ctx = withPRReadBudget(ctx, prReadsPerPass) // settleClosedPRMessage's GitHub reads, this pass
 	due, err := s.ext.Plugins.UnroutedDue(ctx, asOf, unroutedSweepBatch)
 	if err != nil {
 		s.logger.Printf("plugins: unrouted messages: %v", err)
 	}
 	capped := 0
 	for _, m := range due {
-		if s.settleClosedPRMessage(s.attentionPrincipal(ctx, m.OwnerID), m.ID, closedPRViaAsk) {
+		if s.settleClosedPRMessage(s.attentionPrincipal(ctx, m.OwnerID), m, closedPRViaAsk) {
 			continue // a review of a pull request already merged or closed: settled, no ask
 		}
 		if errors.Is(s.raiseUnroutedAsk(ctx, m), attention.ErrTooMany) {
