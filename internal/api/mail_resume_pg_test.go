@@ -244,6 +244,46 @@ func TestTheMailResumeIsOffUnlessEveryGateAllowsIt(t *testing.T) {
 	}
 }
 
+// TestAClankMailReplyResumesOnlyWhenItsOwnPluginIsListed: the mail resume
+// follows the thread route to clankmail, and MUSTER_MAIL_RESUME_ALLOW still
+// gates it per plugin — the same sender listed for agent-mail only resumes
+// nothing for a clankmail reply (to the chief); listed for clankmail, it does.
+func TestAClankMailReplyResumesOnlyWhenItsOwnPluginIsListed(t *testing.T) {
+	for _, tc := range []struct {
+		name, listed string
+		resumed      bool
+	}{
+		{"listed for agent-mail only", "agent-mail", false},
+		{"listed for clankmail", "clankmail", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			_, clank := f.newPlugin(t, "clankmail")
+			l, err := plugins.ParseRelayAllowlist(strconv.FormatInt(f.owner, 10) + ":" + tc.listed + ":" + resumeSender)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.srv.ext.MailResume = &MailResume{Allow: l}
+			m, created, err := f.plugins.Submit(f.asOwner, clank.ID, plugins.MessageIn{ExternalID: "resume-clank-" + tc.listed,
+				Sender: resumeSender, Body: "the sprocket build is green", SenderVerified: true, Thread: resumeThread})
+			if err != nil || !created {
+				t.Fatalf("submit: %v %v", created, err)
+			}
+			f.dispatch(t, m)
+			spawned, rs := f.rm.spawned(), f.routesOf(t, m)
+			if tc.resumed {
+				if len(spawned) != 1 || len(rs) != 1 || rs[0].State != plugins.RouteRouted || f.turns.count() != 0 {
+					t.Fatalf("spawned %q, routes %+v, %d chief turns; want one resume, one route, no turn", spawned, rs, f.turns.count())
+				}
+				return
+			}
+			if len(spawned) != 0 || len(rs) != 0 || f.turns.count() != 1 {
+				t.Fatalf("spawned %q, %d routes, %d chief turns; want none, 0, 1", spawned, len(rs), f.turns.count())
+			}
+		})
+	}
+}
+
 // TestASessionLiveAnywhereIsNeverResumed: a window shows the session but
 // cannot take the route (a read-only host), or a host that went offline still
 // lists it — either way it may still run, and a second CLI on one

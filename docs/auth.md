@@ -136,14 +136,24 @@ Revoke a token you suspect.
 
 `POST /api/plugin-threads` ([plugins.md](plugins.md#a-reply-on-a-thread-a-session-started))
 takes route reply's credential: a personal API token, or the hook token. 🔴
-**Accepted risk: whoever holds it can bind any agent-mail thread id of its
-owner to any of the owner's online mirrored sessions** — the first report for a
+**Accepted risk: whoever holds it can bind any thread id of its owner — for
+agent mail or ClankMail, the two thread plugins — to any of the owner's online
+mirrored sessions** — the first report for a
 thread wins — and every later reply on that thread is then pasted into that
 session **with no chief and no owner in between**, fenced as untrusted like
 every routed message, and answered through the ordinary relay (approved
 automatically only for a verified, allowlisted sender). The thread id is not
 checked against the upstream: muster cannot know who started a thread. A
 binding is never replaced; to undo one, delete its `plugin_threads` row.
+
+⚠ **One thread namespace for both thread plugins.** `plugin_threads` is keyed
+by owner and thread id, with no plugin column, so a binding routes a reply that
+carries that thread id from **either** `agent-mail` or `clankmail`. muster does
+not check which plugin a bound thread belongs to: a thread plugin that let a
+sender choose its `thread` verbatim could aim a reply at a session bound for
+the other plugin's thread. A thread plugin must report only a thread id it
+derived itself (for ClankMail, the root found by following verified `re`
+links, never the hub's unsigned `thread` field).
 
 ### Pull-request review mail
 
@@ -152,7 +162,10 @@ pasted into the session that authored the pull request **with no chief and no
 owner in between**, fenced as untrusted like every routed message. Two things
 decide it: the mail's sender, which must be on `MUSTER_PR_MAIL_SENDERS` **and**
 marked `sender_verified` by the agent-mail plugin (a verified agent-mail
-sender proves its owner; its handle is that owner's gateway's claim), and the
+sender proves its owner; its handle is that owner's gateway's claim) —
+**never** a ClankMail message, verified or not, since a ClankMail handle is
+claimed on a hub and proves nothing about who that owner is to this
+deployment — and the
 `repo`/`pr`/`head_ref` its body names. 🔴 **Accepted risk: a listed sender can
 put a message into whichever of your sessions created, or pushed the branch
 of, a pull request it names** — never another owner's session, and never one
@@ -170,7 +183,8 @@ A [fleet-report request](plugins.md#a-fleet-report-request) is answered with
 holding the names, repositories and focus titles of the owner's sessions that
 work under `MUSTER_FLEET_REPORT_PATHS`, over the requested window. One thing
 decides it: the mail's sender, which must be on `MUSTER_FLEET_REPORT_SENDERS`
-**and** marked `sender_verified` by the agent-mail plugin. The request's
+**and** marked `sender_verified` by the agent-mail plugin (never a ClankMail
+message, for the reason above). The request's
 `member` is not checked: every read runs as the owner the plugin token acts
 for, under row-level security, so no request can select another owner's rows.
 No host label is sent, and titles are not screened except for secret-shaped

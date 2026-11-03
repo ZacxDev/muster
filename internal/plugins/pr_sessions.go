@@ -63,6 +63,12 @@ func ParsePRMailSenders(raw string) (PRMailSenders, error) { return ParseAgentMa
 // Allows reports whether a message from sender, delivered by plugin pluginName
 // with the sender verified or not, is one this list reads: only through agent
 // mail, only verified, only a listed address exactly.
+//
+// 🔴 AGENT MAIL ONLY, NOT ThreadPlugins. ClankMail is a thread plugin, but its
+// handles are claimed on a hub anyone can register with, so an "<owner>/…"
+// there proves nothing about who that owner is to this deployment. Widening
+// this to ThreadPlugins would let whoever claims a listed owner's name on a
+// ClankMail hub write PR-review or fleet-report mail.
 func (s AgentMailSenders) Allows(pluginName, sender string, verified bool) bool {
 	return verified && pluginName == AgentMailPlugin && s[strings.TrimSpace(sender)]
 }

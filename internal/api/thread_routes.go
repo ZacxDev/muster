@@ -52,7 +52,8 @@ func (s *Server) handlePluginThreadBind(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusCreated)
 }
 
-// routeByThread routes a NEW message m of plugin p — agent mail, on a thread
+// routeByThread routes a NEW message m of plugin p — one of
+// plugins.ThreadPlugins (agent mail, ClankMail), on a thread
 // one of the owner's sessions started — to that session: the chief's
 // route (routeItem), made by muster, so the chief decides nothing. It reports
 // whether m is taken care of; false leaves m to the ordinary delivery to the
@@ -79,10 +80,10 @@ type musterRoute struct {
 }
 
 // threadRoute is the route routeByThread makes for m: to the session bound to
-// its thread. false when there is none (routing off, not agent mail, no
+// its thread. false when there is none (routing off, not a thread plugin, no
 // thread, or an unbound one).
 func (s *Server) threadRoute(ctx context.Context, p plugins.Plugin, m plugins.Message) (musterRoute, bool) {
-	if !routingOn(s.ext) || s.pluginDeliverer == nil || p.Name != plugins.AgentMailPlugin || m.Thread == nil {
+	if !routingOn(s.ext) || s.pluginDeliverer == nil || !plugins.IsThreadPlugin(p.Name) || m.Thread == nil {
 		return musterRoute{}, false
 	}
 	thread := *m.Thread

@@ -1220,7 +1220,7 @@ mirrored windows do.
 
 A host started with `-interactive` **and** `-resume-spawn`
 (`MUSTER_MIRROR_RESUME_SPAWN`) lets muster resume an ended Claude Code session
-when agent mail arrives for it ([plugins](plugins.md#resuming-an-ended-session)).
+when agent mail or ClankMail arrives for it ([plugins](plugins.md#resuming-an-ended-session)).
 It is off by default, because it starts a process on the host.
 
 muster's request names the session id and nothing else. The host finds the

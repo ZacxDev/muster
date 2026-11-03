@@ -10,10 +10,36 @@ import (
 // Threads a session started (plugin_threads, migration 0054):
 // docs/plugins.md#a-reply-on-a-thread-a-session-started.
 
-// AgentMailPlugin is the one plugin, by name, whose threads a session can be
-// bound to: agent mail (operator decision), the same plugin the unrouted
-// sweep judges (UnroutedAskPlugin).
-const AgentMailPlugin = UnroutedAskPlugin
+// AgentMailPlugin is the agent-mail plugin's name. It is a thread plugin
+// (ThreadPlugins), and the ONLY plugin whose mail muster reads as a
+// pull-request review or a fleet-report request (AgentMailSenders.Allows).
+const AgentMailPlugin = "agent-mail"
+
+// ClankMailPlugin is the ClankMail plugin's name: a thread plugin
+// (ThreadPlugins), never read as pull-request or fleet-report mail.
+const ClankMailPlugin = "clankmail"
+
+// threadPlugins is THE ONE LIST of the plugins, by name (as muster names a
+// plugin everywhere: the route allowlist's "<user>:<plugin>:…"), whose
+// threads a session can be bound to and whose messages the unrouted sweep
+// judges: agent mail and ClankMail (operator decision). Every other plugin's
+// — Discord DMs, which the owner already reads where they arrive — is never
+// routed by thread and never raises an unrouted ask.
+var threadPlugins = [...]string{AgentMailPlugin, ClankMailPlugin}
+
+// ThreadPlugins is threadPlugins, as a fresh slice.
+func ThreadPlugins() []string { return append([]string(nil), threadPlugins[:]...) }
+
+// IsThreadPlugin reports whether the plugin named name is one of
+// ThreadPlugins.
+func IsThreadPlugin(name string) bool {
+	for _, p := range threadPlugins {
+		if name == p {
+			return true
+		}
+	}
+	return false
+}
 
 // RouteViaThread is RouteOrigin.Via for a route muster made because the
 // message is a reply on a thread the target session started.

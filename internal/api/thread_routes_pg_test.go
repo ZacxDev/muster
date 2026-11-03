@@ -297,6 +297,58 @@ func TestADiscordMessageIsNeverRoutedByThread(t *testing.T) {
 	}
 }
 
+// TestAClankMailReplyOnABoundThreadIsRoutedToItsSession: the plugin named
+// "clankmail" is a thread plugin like agent mail — a reply on a bound thread
+// goes to the session, with no chief turn. The name is spelled here, not read
+// from a constant, so a constant that drifted from the plugin's real name
+// fails this test.
+func TestAClankMailReplyOnABoundThreadIsRoutedToItsSession(t *testing.T) {
+	f := newThreadFixture(t)
+	tok, _ := f.newPlugin(t, "clankmail")
+	const thread = "m_9c41e07ab2d35f6e"
+	if code, _ := f.bind(t, "", thread, routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	code, m := f.post(t, tok, "thr-clank-1", thread)
+	if code != 202 {
+		t.Fatalf("post: %d", code)
+	}
+	rs := f.routesOf(t, m)
+	if len(rs) != 1 || rs[0].State != plugins.RouteRouted || rs[0].TargetKey != routeSID {
+		t.Fatalf("routes: %+v; want one routed to the bound session", rs)
+	}
+	if n := f.turns.count(); n != 0 {
+		t.Fatalf("the chief took %d turn(s); a route by thread takes none", n)
+	}
+	var via string
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT detail->>'routed_via' FROM audit_log
+		WHERE action = 'session_route.routed' AND object = $1`, plugins.RouteObject(rs[0].RouteID)).Scan(&via); err != nil ||
+		via != "thread "+thread+" started by "+routeSID {
+		t.Fatalf("routed_via %q (%v)", via, err)
+	}
+}
+
+// TestAPluginOutsideTheThreadPluginsIsNeverRoutedByThread: a plugin named
+// anything else ("foo") carrying a bound thread goes to the chief; the same
+// thread through clankmail, beside it, is routed (the positive control).
+func TestAPluginOutsideTheThreadPluginsIsNeverRoutedByThread(t *testing.T) {
+	f := newThreadFixture(t)
+	foo, _ := f.newPlugin(t, "foo")
+	clank, _ := f.newPlugin(t, "clankmail")
+	const thread = "m_51d0be7c3a92f846"
+	if code, _ := f.bind(t, "", thread, routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	_, m := f.post(t, foo, "thr-foo-1", thread)
+	if rs := f.routesOf(t, m); len(rs) != 0 || f.turns.count() != 1 {
+		t.Fatalf("foo: %d routes, %d chief turns; want 0 and 1", len(rs), f.turns.count())
+	}
+	_, m = f.post(t, clank, "thr-foo-2", thread)
+	if rs := f.routesOf(t, m); len(rs) != 1 || f.turns.count() != 1 {
+		t.Fatalf("control (clankmail): %d routes, %d chief turns; want 1 and still 1", len(rs), f.turns.count())
+	}
+}
+
 func TestAnotherOwnersThreadIsInvisible(t *testing.T) {
 	f := newThreadFixture(t)
 	other := f.newMember(t)

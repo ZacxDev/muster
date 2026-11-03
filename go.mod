@@ -4,6 +4,8 @@ go 1.25.0
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
+	github.com/ZacxDev/clankmail v0.3.1-0.20261103033041-85b8d4394962
+	github.com/ZacxDev/clankmail/go/hub v0.0.0-20261103033041-85b8d4394962
 	github.com/coder/websocket v1.8.14
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/minio/minio-go/v7 v7.3.0

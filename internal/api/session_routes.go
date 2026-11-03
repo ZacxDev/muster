@@ -476,7 +476,7 @@ const (
 	RoutedPrefacePrefix = "Routed to you by "
 	routedByOwner       = "your owner, from one of their mirrored sessions"
 	// routedByThread: a route by thread (routeByThread).
-	routedByThread = "muster, because it is a reply on an agent-mail thread this session started"
+	routedByThread = "muster, because it is a reply on a mail thread this session started"
 )
 
 // renderRoutedMessageBy is renderRoutedMessage naming who routed it (by: one of
