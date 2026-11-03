@@ -712,10 +712,51 @@ of expiry — the view's first row says so, in the same words `-list -opencode`
 prints (and the window's note, below).
 
 The composer is disabled, saying sending to opencode isn't supported yet:
-muster sends nothing to opencode, and the paste guard above still refuses its
-panes. Permission requests and the
-question tool's forms are answered in the terminal; muster's attention queue
-does not see them yet.
+muster sends no message to opencode, and the paste guard above still refuses
+its panes. What the session **waits on** does reach muster (below).
+
+#### opencode's permission requests and questions (`-opencode-answer`)
+
+When the session a window shows — or a subagent's child session under it —
+asks the person something, the host reads it from the opencode server's event
+stream and the window becomes **waiting**, exactly as a Claude Code window with
+a prompt does:
+
+- a **permission request** (`permission.asked`: a tool call its rules say to
+  ask about) is a *Session waiting* item, notified as "A session is waiting on
+  you", "Waiting: <tool> · <window>" — the tool's name only on the lock
+  screen, the command on the page;
+- a **question** (the question tool's form, `form.created`) is a *Session
+  question* item, notified as "<window> is asking" with its question and, for
+  one question, its options.
+
+Answered, rejected or cancelled in the terminal (`permission.replied`,
+`form.replied`, `form.cancelled`), the window stops waiting and the item and
+its notification are withdrawn. An ask that was pending before the host's
+event stream opened is read from the session's pending lists when its window
+is first matched. A subagent's ask is shown on its root's window only when the
+stream saw the subagent's session created; one started while the stream was
+down is the terminal's.
+
+**Answering from muster** is off by default. A host started with
+`-interactive` **and** `-opencode-answer` (`MUSTER_MIRROR_OPENCODE_ANSWER`)
+relays an answer through opencode's API with its own token, never keys:
+
+- a permission request: **Allow once** or **Reject**. muster never sends
+  "always", which widens the session's rules past the one call;
+- a question: one of its options, when it is **one single-select question**
+  of at most 4 options whose labels muster can show unchanged. A form of
+  several questions, a multi-select, or a free-text answer is answered in the
+  terminal.
+
+The answer needs a sign-in from the last few minutes. muster re-checks, at the
+moment it sends, that the window still waits on exactly that ask and offers
+that answer, and the host checks again against what opencode holds now. On a
+host without the flag, or a read-only one (`-interactive` off), the ask still
+reaches the queue and notifies; its card says the answer can't be relayed
+from there. `-opencode-read-only` (set on every `muster-mirror@<tenant>`) is
+about **renewing the token** only: it does not stop a tenant's daemon from
+relaying answers, which `-interactive` and `-opencode-answer` decide.
 
 A window has no view, and an unknown status, when the host has no token, the
 server refuses the token (it expired, or the server's password was rotated),
@@ -741,8 +782,10 @@ detail:
 
 🔴 **A token is not scoped and cannot be revoked on its own** (upstream at
 `6ec5682`, docs/design/opencode.md). It reaches the whole opencode API. muster
-only ever reads with it, and its one other call is the renewal's
-`POST /api/pair`. To take muster's access away, rotate the opencode service
+only ever reads with it, except the renewal's `POST /api/pair` and — on a
+host started with `-interactive -opencode-answer` — the answer to a permission
+request or question you gave in muster (`POST …/permission/<id>/reply`,
+`POST …/form/<id>/reply`). To take muster's access away, rotate the opencode service
 password. That revokes every token, muster's and every other paired client's.
 
 ### Hermes windows

@@ -6,7 +6,8 @@
 // lifetime. Every request is recorded (Requests), which is how tests prove
 // muster-mirror never calls anything else.
 //
-// Everything it serves is synthetic: tests put sessions and messages in.
+// Sessions and messages are synthetic: tests put them in. Its asks are driven
+// by REAL frames a real server sent (asks.go).
 package opencodetest
 
 import (
@@ -54,6 +55,12 @@ type Server struct {
 	refuseRedeem bool
 	// failEvents makes /api/event answer 503.
 	failEvents bool
+	// perms and forms are each session's pending permission requests and
+	// forms (asks.go); replies every reply received; refuseReplies the status
+	// every reply answers (0: normally).
+	perms, forms  map[string][]json.RawMessage
+	replies       []Reply
+	refuseReplies int
 }
 
 // FailEvents makes the event stream answer 503 (on) — a server whose stream
@@ -257,6 +264,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"_tag":"UnauthorizedError","message":"Authentication required"}`))
+		return
+	}
+	if s.serveAsks(w, r, path) {
 		return
 	}
 	switch {

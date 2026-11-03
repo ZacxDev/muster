@@ -61,21 +61,29 @@ func TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend(t *testing.T) {
 	}
 }
 
-// TestOpenCodeIsViewOnly: opencode is a runtime of the interface that
-// muster VIEWS and nothing more — "view: yes, send: no, prompts: no" in the
-// server's table, on the wire with its own key prefix ("opencode:", 0052) and
-// a view only once its host names the session — and on the host it has a view
-// source, no gated send and no answerer, claims a pane whose terminal runs the
-// TUI, and keeps the paste guard's refusal.
-func TestOpenCodeIsViewOnly(t *testing.T) {
+// TestOpenCodeIsViewedAndAnsweredButNeverSentTo: opencode is a runtime of
+// the interface that muster VIEWS and whose asks it reads and answers, and
+// nothing more — "view: yes, send: no, prompts: yes" in the server's table,
+// its Pending naming its own asks (permission, question), advertising an
+// answer and never a send; on the wire with its own key prefix ("opencode:",
+// 0052) and a view only once its host names the session — and on the host it
+// has a view source and an answerer, no gated send, claims a pane whose
+// terminal runs the TUI, and keeps the paste guard's refusal.
+func TestOpenCodeIsViewedAndAnsweredButNeverSentTo(t *testing.T) {
 	r, ok := runtimeNamed(mirror.RuntimeOpenCode)
 	if !ok {
 		t.Fatal("no opencode runtime")
 	}
 	spec, ok := mirror.LookupRuntime(mirror.RuntimeOpenCode)
-	if !ok || !spec.Caps.View || spec.Caps.Send || spec.Caps.Prompts || !spec.OnWire || spec.KeyPrefix != "opencode:" || !spec.ViewNeedsSession ||
-		spec.GatedSend || spec.Advertises != nil || spec.PendingNamesAsk {
-		t.Fatalf("opencode's spec is not view-only: %+v", spec)
+	if !ok || !spec.Caps.View || spec.Caps.Send || !spec.Caps.Prompts || !spec.OnWire || spec.KeyPrefix != "opencode:" || !spec.ViewNeedsSession ||
+		spec.GatedSend || spec.Advertises == nil || !spec.PendingNamesAsk || !slices.Equal(spec.AskKinds, []string{mirror.PendingPermission, mirror.PendingQuestion}) {
+		t.Fatalf("opencode's spec is not view + answer only: %+v", spec)
+	}
+	if send, answer := spec.Advertises(mirror.Msg{OpenCodeAnswer: true, HermesSend: true, HermesAnswer: true}); send || !answer {
+		t.Fatalf("opencode advertises send %v answer %v from a hello saying it answers, want answer only", send, answer)
+	}
+	if send, answer := spec.Advertises(mirror.Msg{HermesSend: true, HermesAnswer: true}); send || answer {
+		t.Fatalf("opencode reads another runtime's hello flags: send %v answer %v", send, answer)
 	}
 	if _, ok := r.(viewSource); !ok {
 		t.Error("opencode has no view source")
@@ -83,8 +91,8 @@ func TestOpenCodeIsViewOnly(t *testing.T) {
 	if _, ok := r.(gatedSender); ok {
 		t.Error("opencode has a send")
 	}
-	if _, ok := r.(answerer); ok {
-		t.Error("opencode answers")
+	if _, ok := r.(answerer); !ok {
+		t.Error("opencode has no answerer")
 	}
 	proc := newFakeProc(t)
 	proc.add(10, 1, "zsh", "/w", "-zsh")

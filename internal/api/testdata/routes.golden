@@ -208,6 +208,7 @@ POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
 POST /attention/hermes/approve
+POST /attention/opencode/answer
 POST /auth/claim
 POST /auth/confirm
 POST /auth/confirm/passkey/options

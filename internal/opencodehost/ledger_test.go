@@ -68,16 +68,18 @@ func exprText(fset *token.FileSet, src []byte, e ast.Expr) string {
 	return string(src[fset.Position(e.Pos()).Offset:fset.Position(e.End()).Offset])
 }
 
-// TestTheClientMakesOnlyGETsExceptTheMint: the ONE place a request is built
-// is Client.request; every call of it names http.MethodGet except exactly one,
-// mint's POST to /api/pair; mint is called only by Pair and Renew; and no
-// file spells another way to send (http.Post, a Client.Post, a raw method
-// string). So muster-mirror cannot prompt, interrupt, reply to a permission or
-// change anything on the opencode server — whatever the rest of the code does.
-// An INVARIANT GUARD (the code never did otherwise); mutation-checked in the PR.
-func TestTheClientMakesOnlyGETsExceptTheMint(t *testing.T) {
+// TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies: the ONE place a
+// request is built is Client.request; every call of it names http.MethodGet
+// except exactly two: mint's POST to /api/pair, and reply's POST (an answer to
+// a permission request or a form); mint is called only by Pair and Renew, and
+// reply only by ReplyPermission and ReplyForm; and no file spells another way
+// to send (http.Post, a Client.Post, a raw method string). So muster-mirror
+// cannot prompt, interrupt or change anything else on the opencode server —
+// whatever the rest of the code does. An INVARIANT GUARD; mutation-checked in
+// the PR that added reply.
+func TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies(t *testing.T) {
 	fset, files := sourceFiles(t)
-	var builders, requests, mints []string
+	var builders, requests, mints, replies []string
 	for name, f := range files {
 		src, err := os.ReadFile(name)
 		if err != nil {
@@ -104,6 +106,11 @@ func TestTheClientMakesOnlyGETsExceptTheMint(t *testing.T) {
 				mints = append(mints, fn)
 			}
 		}
+		for fn, calls := range callsIn(f, func(c *ast.CallExpr) bool { return selectorName(c.Fun) == "reply" }) {
+			for range calls {
+				replies = append(replies, fn)
+			}
+		}
 		// No method spelled as a literal anywhere.
 		for _, m := range []string{`"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`, "MethodPut", "MethodPatch", "MethodDelete"} {
 			if strings.Contains(string(src), m) {
@@ -113,6 +120,7 @@ func TestTheClientMakesOnlyGETsExceptTheMint(t *testing.T) {
 	}
 	sort.Strings(requests)
 	sort.Strings(mints)
+	sort.Strings(replies)
 	if len(builders) != 1 || builders[0] != "request" {
 		t.Errorf("requests are built in %q, want only Client.request", builders)
 	}
@@ -121,11 +129,15 @@ func TestTheClientMakesOnlyGETsExceptTheMint(t *testing.T) {
 		"get http.MethodGet path",
 		"mint http.MethodGet \"/auth/connect/\"+url.PathEscape(code.Code)",
 		"mint http.MethodPost \"/api/pair\"",
+		"reply http.MethodPost path",
 	}
 	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
 		t.Errorf("the requests this package sends:\n%s\nwant:\n%s", strings.Join(requests, "\n"), strings.Join(want, "\n"))
 	}
 	if strings.Join(mints, ",") != "Pair,Renew" {
 		t.Errorf("mint is called from %q, want Pair and Renew only", mints)
+	}
+	if strings.Join(replies, ",") != "ReplyForm,ReplyPermission" {
+		t.Errorf("reply is called from %q, want ReplyPermission and ReplyForm only", replies)
 	}
 }

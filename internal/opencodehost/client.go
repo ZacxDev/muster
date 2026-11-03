@@ -379,8 +379,9 @@ func (c *Client) Events(ctx context.Context, connected func(), fn func(Event)) e
 // single-use code (the server holds it five minutes), then the
 // UNAUTHENTICATED GET /auth/connect/{code} that redeems it — with
 // Accept: application/json, which is what makes the server answer {token}
-// rather than set a browser cookie. 🔴 THE ONLY NON-GET THIS PACKAGE SENDS,
-// and only Pair and Credentials.Renew call it.
+// rather than set a browser cookie. 🔴 ONE OF THE TWO NON-GETS THIS PACKAGE
+// SENDS (the other is reply, asks.go), and only Pair and Credentials.Renew
+// call it.
 func (c *Client) mint(ctx context.Context) (string, error) {
 	req, err := c.request(ctx, http.MethodPost, "/api/pair", nil, false)
 	if err != nil {

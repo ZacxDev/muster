@@ -209,6 +209,12 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrHermesUnreachable, why)
 	case AskRefusalHermesUnknown:
 		return fmt.Errorf("%w: %s", ErrHermesAnswerUnknown, why)
+	case AskRefusalOpenCodeGone:
+		return fmt.Errorf("%w: %s", ErrOpenCodeAskGone, why)
+	case AskRefusalOpenCodeUnreachable:
+		return fmt.Errorf("%w: %s", ErrOpenCodeUnreachable, why)
+	case AskRefusalOpenCodeUnknown:
+		return fmt.Errorf("%w: %s", ErrOpenCodeAnswerUnknown, why)
 	}
 	return fmt.Errorf("%w: %s", ErrAskRefused, why)
 }

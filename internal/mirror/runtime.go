@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -73,14 +74,21 @@ type RuntimeSpec struct {
 	// PromptID, Choices), and a Pending that names none is none. false: the
 	// ask fields are not its own and are stripped.
 	PendingNamesAsk bool
+	// AskKinds are the asks (Pending.Kind) a window of it may name, when
+	// PendingNamesAsk: a Pending naming another runtime's kind is none.
+	AskKinds []string
 }
 
-// RuntimeOpenCode: opencode v2 (docs/design/opencode.md). VIEW ONLY: a host
-// whose pane runs an opencode TUI names the session the pane's title matches
+// RuntimeOpenCode: opencode v2 (docs/design/opencode.md). A host whose pane
+// runs an opencode TUI names the session the pane's title matches
 // (Window.AgentSession), and muster draws its rendered view from the opencode
-// server's API. It sends nothing to it (the host's paste guard refuses its
-// panes) and reads no prompt: its permission requests and questions are
-// answered in the terminal.
+// server's API. It sends no message to it (the host's paste guard refuses its
+// panes). What it WAITS ON reaches muster (Caps.Prompts): a permission request
+// or a question-tool form of its session (or of a subagent's child session)
+// makes the window waiting, its Pending naming the ask (PendingPermission,
+// PendingQuestion) — and a host that advertised it (Msg.OpenCodeAnswer:
+// -interactive and -opencode-answer) relays an answer through opencode's API
+// (Hub.AnswerOpenCodeAsk), never keys.
 const RuntimeOpenCode = "opencode"
 
 // runtimes is every runtime muster knows, Claude Code first.
@@ -102,12 +110,17 @@ var runtimes = []RuntimeSpec{
 		Advertises:      func(m Msg) (bool, bool) { return m.HermesSend, m.HermesAnswer },
 		NoStatus:        ErrNoHermesStatus,
 		PendingNamesAsk: true,
+		AskKinds:        []string{PendingApproval, PendingClarify, PendingSudo},
 	},
 	{
 		Name: RuntimeOpenCode, Kind: KindOpenCode,
-		Caps:   Capabilities{View: true},
+		Caps:   Capabilities{View: true, Prompts: true},
 		OnWire: true, KeyPrefix: RuntimeOpenCode + ":", ViewNeedsSession: true,
-		NoStatus: ErrNoStatus,
+		// It answers asks (OpenCodeAnswer) and sends nothing.
+		Advertises:      func(m Msg) (bool, bool) { return false, m.OpenCodeAnswer },
+		NoStatus:        ErrNoStatus,
+		PendingNamesAsk: true,
+		AskKinds:        []string{PendingPermission, PendingQuestion},
 	},
 }
 
@@ -138,7 +151,7 @@ func (h HostView) GatedSendOn(r RuntimeSpec) (send, answers bool) {
 	if r.Advertises == nil {
 		return false, false
 	}
-	return r.Advertises(Msg{HermesSend: h.HermesSend, HermesAnswer: h.HermesAnswer})
+	return r.Advertises(Msg{HermesSend: h.HermesSend, HermesAnswer: h.HermesAnswer, OpenCodeAnswer: h.OpenCodeAnswer})
 }
 
 // HasView reports whether a window of r whose host names agentSession has a
@@ -178,8 +191,9 @@ func (r RuntimeSpec) cleanPending(p *Pending) *Pending {
 		c := *p
 		c.Kind, c.Detail, c.PromptID, c.Choices = "", "", "", ""
 		p = CleanPending(&c)
-	case p.Kind == "":
-		// A window of a runtime that names its asks, naming none: none.
+	case p.Kind == "" || !slices.Contains(r.AskKinds, p.Kind):
+		// A window of a runtime that names its asks, naming none of its own:
+		// none.
 		p = nil
 	}
 	return p

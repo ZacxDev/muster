@@ -169,10 +169,11 @@ func (hermesRuntime) label() string       { return "Hermes" }
 
 // openCodeRuntime is opencode behind the interface (opencode.go): it DETECTS
 // an opencode TUI in a pane (openCodeTUI, on the pane's terminal) and, with an
-// OpenCodeSource, resolves the session its pane title names. VIEW ONLY: its
-// view is the session's messages from the opencode server's API; it has no
-// send and no answerer, and the paste guard refuses its panes
-// (openCodeShape).
+// OpenCodeSource, resolves the session its pane title names. Its view is the
+// session's messages from the opencode server's API; what it waits on (a
+// permission request, a question) is the window's Pending, and its answerer
+// relays an answer through that API (opencode_asks.go). It has no send, and
+// the paste guard refuses its panes (openCodeShape).
 type openCodeRuntime struct {
 	proc  string
 	src   *OpenCodeSource
@@ -192,6 +193,10 @@ func (openCodeRuntime) viewer(h *hostSide) (func(context.Context, mirror.Msg) bo
 	claims := func(ctx context.Context, m mirror.Msg) bool { _, is := h.openCodeWindow(ctx, m); return is }
 	return claims, func(ctx context.Context, m mirror.Msg) error { return h.openCodeTail(ctx, src, m) }, errNoOpenCodeViewNow, true
 }
+
+// answer relays an answer to an opencode ask through the opencode server
+// (opencode_asks.go).
+func (openCodeRuntime) answer(h *hostSide, m mirror.Msg) { h.answerOpenCode(m) }
 
 func (openCodeRuntime) shape(p procInfo, _ func() string) (string, bool) {
 	if openCodeShape(p) {

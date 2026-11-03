@@ -194,6 +194,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
 	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
+	openCodeAnswer := fs.Bool("opencode-answer", envBool(envOpenCodeAnswer), "with -interactive: let muster ANSWER an opencode permission request (once or reject, never always) or a one-question question-tool form (one of its options) through the opencode server's API, with this host's opencode token (docs/design/opencode.md, \"Asks\"). OFF by default: answering \"once\" lets the tool call run. Without it the asks still reach muster's attention queue; they are answered in the terminal. Never a key into the pane ("+envOpenCodeAnswer+")")
 	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -325,7 +326,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
-		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger, HermesSend: *hermesSend, HermesAnswer: *hermesAnswer,
+		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger, HermesSend: *hermesSend, HermesAnswer: *hermesAnswer, OpenCodeAnswer: *openCodeAnswer,
 		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
@@ -376,6 +377,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		logger.Printf("muster-mirror: -hermes-answer has no effect without -interactive: muster answers no Hermes approval on this host")
 	case *hermesAnswer:
 		logger.Printf("muster-mirror: ANSWERING HERMES APPROVALS IS ON (-hermes-answer): a session waiting on an approval gets a gateway viewer while it waits")
+	}
+	switch {
+	case *openCodeAnswer && !*interactive:
+		logger.Printf("muster-mirror: -opencode-answer has no effect without -interactive: muster answers no opencode ask on this host")
+	case *openCodeAnswer:
+		logger.Printf("muster-mirror: ANSWERING OPENCODE ASKS IS ON (-opencode-answer): muster may answer a permission request (once or reject) or a question through the opencode server's API")
 	}
 	switch {
 	case *resumeSpawn && !*interactive:

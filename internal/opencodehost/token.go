@@ -8,7 +8,7 @@
 // POST /api/pair and the unauthenticated GET /auth/connect/{code} — which only
 // Pair and Credentials.Renew make (Client.mint). A test in this package
 // reads its source and fails when any other request is spelled
-// (TestTheClientMakesOnlyGETsExceptTheMint), and another drives every path
+// (TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies), and another drives every path
 // against a fake server and fails on any request outside that set.
 //
 // 🔴 THE TOKEN AND THE SERVER PASSWORD ARE NEVER PRINTED OR LOGGED. What a

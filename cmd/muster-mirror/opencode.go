@@ -28,6 +28,9 @@ const (
 	// re-reads it and never renews it (-opencode-read-only). With one
 	// muster-mirror per muster server on a host, exactly one renews.
 	envOpenCodeReadOnly = "MUSTER_MIRROR_OPENCODE_READ_ONLY"
+	// envOpenCodeAnswer lets muster relay answers to opencode's permission
+	// requests and questions through its API (-opencode-answer).
+	envOpenCodeAnswer = "MUSTER_MIRROR_OPENCODE_ANSWER"
 )
 
 // openCodeTokenFileDefault is the token file's default: ~/.muster/opencode-token,

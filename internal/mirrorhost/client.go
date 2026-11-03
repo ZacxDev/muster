@@ -116,6 +116,14 @@ type Config struct {
 	// on an approval, lists its command, and advertises Msg.HermesAnswer. OFF
 	// by default: an answer of "once" lets the command run.
 	HermesAnswer bool
+	// OpenCodeAnswer lets muster relay an answer to an opencode ask — a
+	// permission request, a question-tool form — through the opencode server's
+	// API (muster-mirror's -opencode-answer, MUSTER_MIRROR_OPENCODE_ANSWER;
+	// opencode_asks.go): with -interactive and an opencode token, the host
+	// advertises Msg.OpenCodeAnswer. OFF by default: an answer of "once" lets
+	// the tool call run. Without it the asks still reach muster's attention
+	// queue (and notify); they are answered in the terminal.
+	OpenCodeAnswer bool
 	// NoSubagents makes this host behave as one that predates the subagent
 	// cards (mirror.Msg.SubagentReport): no summaries on a view's stream, none
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
@@ -355,6 +363,22 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		conn.hermes.clarify = src.State().PendingClarify
 	}
 	defer conn.hermes.close()
+	// An opencode ask raised or settled sends the listing at once, so muster
+	// notifies (and withdraws) without waiting for the next refresh.
+	if src, ok := conn.openCodeSource(); ok {
+		changes, stop := src.Changes()
+		defer stop()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-changes:
+					conn.nudge()
+				}
+			}
+		}()
+	}
 	if sb, ok := ScrollOf(c.cfg.Backend); ok {
 		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)
 	}
@@ -376,6 +400,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.SubagentReport = conn.subagentReport()
 	hello.HermesSend = conn.hermesSend()
 	hello.HermesAnswer = conn.hermesAnswer()
+	hello.OpenCodeAnswer = conn.openCodeAnswer()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	if err := conn.send(hello); err != nil {
 		return err
