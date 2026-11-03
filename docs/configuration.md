@@ -283,12 +283,18 @@ flags.
 |---|---|---|---|
 | `MUSTER_API_URL` | none | yes | The muster base URL. It has no default. |
 | `MUSTER_TOKEN` | none | yes | A personal API token (`mst_…`), or a shared machine secret. |
+| `MUSTER_TENANT` | none | no | Which tenant (muster server) to use, by name: `~/.muster/tenants/<name>.env`, or `default` for `~/.muster/muster.env`. Below `--tenant`, above `~/.muster/current`. Setting it puts the call under the pair rule ([cli.md](cli.md#several-servers-tenants)). |
 | `HOME` | the system's | no | Used to find `~/.muster/muster.env`. |
 | `CLAUDE_CODE_SESSION_ID` | none | no | Sent with task writes as the session that made them. |
 | `CLAUDE_SESSION_ID` | none | no | A fallback spelling of the variable above. |
 
 `MUSTER_HOOK_TOKEN` is also accepted as an older name for `MUSTER_TOKEN`. If both
 are set in the same place, `MUSTER_TOKEN` wins.
+
+With more than one server configured (any tenant file, a `current` file,
+`MUSTER_TENANT` or `--tenant`), the selected file supplies the URL and the token
+as a pair, and an override of only one of them is refused. See
+[cli.md](cli.md#several-servers-tenants).
 
 ## ccd (inside the claude-code agent image)
 

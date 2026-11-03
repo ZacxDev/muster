@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -80,7 +81,13 @@ func parseEnvFile(path string) (map[string]string, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseEnv(f)
+}
 
+// parseEnv is parseEnvFile's parser, over an already-opened reader. A tenant
+// file is opened by readTenantFile (O_NOFOLLOW, mode checked on the open
+// descriptor) and parsed here, so the file checked is the file read.
+func parseEnv(f io.Reader) (map[string]string, error) {
 	out := map[string]string{}
 	sc := bufio.NewScanner(f)
 	// Tokens can be long (a token plus a URL); 1 MiB is plenty and bounds the
@@ -157,6 +164,72 @@ func resolveConfig(envFilePath string, fileVals map[string]string, getenv func(s
 			"no API URL: set %s in %s, export it, or pass --api-url (e.g. --api-url http://127.0.0.1:8080)",
 			envAPIURL, envFilePath)
 	}
+	return checkAPIURL(c)
+}
+
+// pairOverride is one URL or token override of a tenant file, with the name an
+// operator would recognise it by (a flag or a variable).
+type pairOverride struct{ name, value string }
+
+// firstOverride is the highest-precedence non-empty override, or the zero value.
+func firstOverride(cands ...pairOverride) pairOverride {
+	for _, c := range cands {
+		if c.value != "" {
+			return c
+		}
+	}
+	return pairOverride{}
+}
+
+// pairRefusal is the one phrase every pair-rule refusal carries. Tests pin it,
+// so a refusal for any OTHER reason (a missing file, an unknown flag) cannot
+// pass for this one.
+const pairRefusal = "refused: a URL and a token override are accepted only as a pair"
+
+// resolvePaired is resolution OFF the zero-touch path (see tenant.go): the
+// selected file is authoritative for the URL+token PAIR.
+//
+// 🔴 THIS IS WHAT STOPS ONE TENANT'S TOKEN REACHING ANOTHER TENANT'S ORIGIN.
+// resolveConfig mixes sources field by field, so an exported MUSTER_API_URL
+// for tenant A plus tenant B's file sends B's token to A. Here an override
+// replaces the file only when BOTH halves are overridden (from any mix of flag
+// and environment); one half alone is refused, exit 2, before any request.
+// MUSTER_HOOK_TOKEN is an override like MUSTER_TOKEN: it is the name agent
+// pods and hook hosts carry, and on today's resolver it beats a file's
+// MUSTER_TOKEN.
+func resolvePaired(where string, fileVals map[string]string, getenv func(string) string, flagURL, flagToken string) (config, error) {
+	u := firstOverride(pairOverride{"--api-url", flagURL}, pairOverride{envAPIURL, getenv(envAPIURL)})
+	t := firstOverride(pairOverride{"--token", flagToken}, pairOverride{envToken, getenv(envToken)},
+		pairOverride{envTokenAlias, getenv(envTokenAlias)})
+
+	var c config
+	switch {
+	case u.value != "" && t.value != "":
+		c = config{apiURL: u.value, token: t.value}
+	case u.value != "" || t.value != "":
+		lone, missing := u.name, "a token ("+envToken+" or --token)"
+		if t.value != "" {
+			lone, missing = t.name, "a URL ("+envAPIURL+" or --api-url)"
+		}
+		return config{}, failf(exitUsage,
+			"%s is set without %s for %s: %s when more than one tenant is configured, "+
+				"and no request was sent. Set both, or neither to use that file's own pair.",
+			lone, missing, where, pairRefusal)
+	default:
+		c.apiURL = fileVals[envAPIURL]
+		c.token = fileVals[envToken]
+		if c.token == "" {
+			c.token = fileVals[envTokenAlias]
+		}
+	}
+	if c.apiURL == "" {
+		return config{}, failf(exitUsage, "no API URL: %s sets no %s", where, envAPIURL)
+	}
+	return checkAPIURL(c)
+}
+
+// checkAPIURL validates and normalises the resolved base URL.
+func checkAPIURL(c config) (config, error) {
 	u, err := url.Parse(c.apiURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return config{}, failf(exitUsage, "invalid API URL %q: want an absolute http(s) URL", c.apiURL)

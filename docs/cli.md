@@ -21,9 +21,10 @@ The verb set is pinned in two places:
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)) |
 | setup | `doctor` ([below](#muster-doctor)) |
+| several servers | `tenant list`, `tenant current`, `tenant use`, `tenant add`, `tenant remove` ([below](#several-servers-tenants)) |
 
 Global flags: `--api-url`, `--token`, `--env-file` (default
-`~/.muster/muster.env`) and `--timeout`.
+`~/.muster/muster.env`), `--tenant` and `--timeout`.
 
 ## Configuration
 
@@ -42,6 +43,56 @@ The usual credential is a **personal API token** (`mst_…`). Mint it in the
 browser at `/account/tokens`; it acts as you ([auth.md](auth.md)). Tokens cannot
 be minted from the CLI. `muster token ls` and `muster token revoke <id>` manage
 them, and `muster whoami` says who a credential acts as.
+
+## Several servers (tenants)
+
+A **tenant** is a separate muster server, at its own URL, with its own
+credential. On this host each one is an env file:
+
+```text
+~/.muster/muster.env          # tenant "default": today's file, unchanged
+~/.muster/tenants/work.env    # tenant "work" (0600; the directory 0700)
+~/.muster/current             # one line naming the current tenant; absent = default
+```
+
+```sh
+printf '%s\n' "$TOKEN" | muster tenant add work --api-url https://muster.example.com
+muster tenant list                 # name, label, origin, current; never a token
+muster tenant use work             # writes ~/.muster/current
+muster --tenant default task ls    # one call on another tenant
+muster tenant current              # which tenant, and whether flag/env/file/default chose it
+muster tenant use --clear          # deletes ~/.muster/current
+muster tenant remove work
+```
+
+- **Selection**, highest first: `--tenant`, `MUSTER_TENANT`, `~/.muster/current`,
+  `default`. `--env-file` means "this file, not a tenant": it is refused next to
+  `--tenant` and wins over `MUSTER_TENANT` and `current`.
+- `tenant add` reads the token from **stdin**, never argv (`--token` is
+  refused there). It refuses the name `default`, a name that exists, and an
+  origin another tenant already has. It checks the token with
+  `GET /api/whoami` before it writes the file, and prints the origin and the
+  principal.
+- A tenant file readable by group or others, or a symlink, is refused. An
+  optional `MUSTER_TENANT_LABEL=` line in it sets the label `tenant list` shows.
+- `tenant use` re-targets every script on this host that runs the CLI without
+  naming a tenant. Such a script should set `MUSTER_TENANT`.
+
+**The pair rule.** A host with no tenant file (no entry at all under
+`~/.muster/tenants/`), no `current` file, and nothing setting `MUSTER_TENANT` or
+`--tenant` resolves exactly as before, field by field ([configuration](#configuration)).
+Everywhere else the selected file supplies the URL and the token **as a pair**.
+A URL override (`MUSTER_API_URL`, `--api-url`) and a token override
+(`MUSTER_TOKEN`, `MUSTER_HOOK_TOKEN`, `--token`) are accepted only together; one
+without the other exits 2 and sends nothing. This is what stops one server's
+token reaching another server. `tenant use --clear` alone does not lift it while
+tenant files remain.
+
+**What is printed.** stdout stays JSON. With more than one tenant, a tenant
+chosen by `~/.muster/current` is named on stderr (`tenant: work (muster.example.com)`);
+an explicit `--tenant` or `MUSTER_TENANT` is not echoed. With more than one
+tenant, the version-skew note, the credential error and the route-absent error
+name the tenant too, and the credential error names that tenant's file.
 
 ## Installing it from elsewhere
 

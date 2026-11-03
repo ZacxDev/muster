@@ -282,10 +282,11 @@ func (d *doctorRun) resolve(deployEnv string) error {
 		d.password = vals["MUSTER_UI_PASSWORD"]
 		d.passwordURL = strings.TrimSuffix(strings.TrimSpace(vals["MUSTER_PUBLIC_URL"]), "/")
 	}
-	envFile := expandHome(a.flagEnvFile, a.homeDir)
-	vals, err := parseEnvFile(envFile)
+	// The selected tenant's file (tenant.go); on the zero-touch path that is
+	// the --env-file file, exactly as before tenants.
+	sel, vals, err := a.loadSelected()
 	if err != nil {
-		return wrapf(exitUsage, err, "reading %s", envFile)
+		return err
 	}
 	for k, v := range vals {
 		if v != "" {
@@ -315,7 +316,7 @@ func (d *doctorRun) resolve(deployEnv string) error {
 			}
 		}
 	}
-	cfg, err := resolveConfig(a.flagEnvFile, merged, getenv, a.flagAPIURL, a.flagToken)
+	cfg, err := resolveSelected(sel, merged, getenv, a.flagAPIURL, a.flagToken)
 	if err != nil {
 		return err
 	}
