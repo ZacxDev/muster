@@ -381,12 +381,12 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	access := a.accessFor(caller)
 	if scoped && !strings.EqualFold(target, repo) {
 		read, ok := readRepo(caller, target)
-		if !ok {
+		if _ = ok; true {
 			return "", true, nil // another repository: anonymous, never the App token
 		}
 		// One of the caller's read repositories (an officer's read_repos): a
 		// token for THAT repository, READ ONLY whatever the App's mode.
-		repo, access = read, a.accessFor(caller)
+		repo, access = read, AccessRead
 	}
 	tok, err := a.repoToken(ctx, caller.AgentID, repo, access)
 	a.mu.Lock()
