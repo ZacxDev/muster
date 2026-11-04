@@ -90,6 +90,9 @@ type Server struct {
 	ObsCalls []ObsCall
 	ObsOff   bool
 	ObsEmpty bool
+	// ObsFail makes a query that passes validation answer HQ's backend
+	// failure instead of running (502 upstream / wrong_shape).
+	ObsFail ObsFail
 	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
 	// "Priority"); false — the default — is an HQ from before it: 404.
 	ClaimNext bool
@@ -177,52 +180,131 @@ var ObsRegistry = []map[string]any{
 		"args": []string{"start", "end", "limit"}, "group_by": []string{}, "single_step": false, "lines": true},
 }
 
-// obsRequestFields are HQ's POST /obs/query body fields (OfficerObsQueryRequest);
-// any other field is a 400 invalid, as HQ's decoder refuses unknown fields.
-var obsRequestFields = map[string]bool{"query_id": true, "start": true, "end": true, "step": true, "tag": true,
-	"procedures": true, "min_calls": true, "name": true, "path": true, "limit": true}
+// obsStringFields and obsOtherFields are HQ's POST /obs/query body fields
+// (civ-hq internal/api/officer_obs.go OfficerObsQueryRequest) by JSON type.
+var (
+	obsStringFields = map[string]bool{"query_id": true, "start": true, "end": true, "step": true, "tag": true, "name": true, "path": true}
+	obsIntFields    = map[string]bool{"min_calls": true, "limit": true}
+)
 
-// obs serves the two obs routes as HQ does: the registry and caps; or one
-// named query, refusing an unknown field, an unknown query id and an argument
-// the entry does not take.
+// obsBodyShape is HQ's 400 invalid text for a body its decoder refuses.
+const obsBodyShape = `body must be one JSON object {"query_id", "start", "end", "step"?, "tag"?, "procedures"?, "min_calls"?, "name"?, "path"?, "limit"?}`
+
+// ObsFail, when Code is set, is the answer a query that passes validation
+// gets instead of running: HQ's 502 upstream (the backend read failed) or
+// 502 wrong_shape (the backend answered in the wrong shape).
+type ObsFail struct {
+	Status int
+	Code   string
+}
+
+// obsDecodes reports whether body would pass HQ's decoder: one JSON object
+// of the known fields (unknown ones refused), each of its type.
+func obsDecodes(body map[string]any) bool {
+	if body == nil {
+		return false
+	}
+	for k, v := range body {
+		switch {
+		case obsStringFields[k]:
+			if _, ok := v.(string); !ok {
+				return false
+			}
+		case obsIntFields[k]:
+			if f, ok := v.(float64); !ok || f != float64(int(f)) {
+				return false
+			}
+		case k == "procedures":
+			list, ok := v.([]any)
+			if !ok {
+				return false
+			}
+			for _, e := range list {
+				if _, ok := e.(string); !ok {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// obsTime is HQ's obsTime: required, RFC 3339, whole seconds.
+func obsTime(field string, body map[string]any) string {
+	v, _ := body[field].(string)
+	if v == "" {
+		return field + " is required (RFC 3339)"
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return field + " " + strconv.Quote(v) + " is not an RFC 3339 time"
+	}
+	if t.Nanosecond() != 0 {
+		return field + " " + strconv.Quote(v) + " is not a whole second"
+	}
+	return ""
+}
+
+// obs serves the two obs routes as HQ does (civ-hq internal/api/
+// officer_obs.go), refusals in HQ's order and with HQ's codes: the decoder
+// (400 invalid: not one object of the known fields, a field of the wrong
+// type), the registry (400 unknown_query), then the entry's arguments (400
+// invalid: start/end required, RFC 3339, whole seconds; an argument the
+// entry does not take; one it needs and lacks).
 func (s *Server) obs(w http.ResponseWriter, officer, verb, method string, body map[string]any) {
 	if s.ObsOff {
-		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "the obs query route is off on this HQ", "code": "obs_unconfigured"})
+		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "the obs query route is off on this HQ (CIVHQ_OFFICER_OBS)", "code": "obs_unconfigured"})
 		return
 	}
+	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
 	switch {
 	case verb == "queries" && method == http.MethodGet:
 		s.write(w, http.StatusOK, map[string]any{"queries": ObsRegistry, "limits": map[string]any{"max_range_seconds": 604800, "max_lines": 1000, "per_minute": 30}})
 	case verb == "query" && method == http.MethodPost:
-		for k := range body {
-			if !obsRequestFields[k] {
-				s.write(w, http.StatusBadRequest, map[string]any{"error": "body must be one JSON object of the known fields", "code": "invalid"})
-				return
-			}
+		if !obsDecodes(body) {
+			invalid(obsBodyShape)
+			return
 		}
 		id, _ := body["query_id"].(string)
 		var entry map[string]any
+		var ids []string
 		for _, e := range ObsRegistry {
+			ids = append(ids, e["id"].(string))
 			if e["id"] == id {
 				entry = e
 			}
 		}
 		if entry == nil {
-			s.write(w, http.StatusBadRequest, map[string]any{"error": "no registry entry " + id, "code": "unknown_query"})
+			sort.Strings(ids)
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "no registry entry " + strconv.Quote(id) + "; the entries are: " + strings.Join(ids, ", "), "code": "unknown_query"})
 			return
 		}
-		takes := map[string]bool{"query_id": true}
-		for _, a := range entry["args"].([]string) {
-			takes[a] = true
-		}
-		for k := range body {
-			if !takes[k] {
-				s.write(w, http.StatusBadRequest, map[string]any{"error": "query " + id + " takes no " + k, "code": "invalid"})
+		for _, f := range []string{"start", "end"} {
+			if msg := obsTime(f, body); msg != "" {
+				invalid(msg)
 				return
 			}
 		}
-		if body["start"] == nil || body["end"] == nil {
-			s.write(w, http.StatusBadRequest, map[string]any{"error": "start and end are required (RFC 3339)", "code": "invalid"})
+		takes := map[string]bool{}
+		for _, a := range entry["args"].([]string) {
+			takes[a] = true
+		}
+		for _, f := range []string{"step", "min_calls"} {
+			if takes[f] && body[f] == nil {
+				invalid("query " + id + " needs " + f)
+				return
+			}
+		}
+		for _, f := range []string{"step", "tag", "procedures", "name", "path", "limit", "min_calls"} {
+			if _, given := body[f]; given && !takes[f] {
+				invalid("query " + id + " takes no " + f)
+				return
+			}
+		}
+		if s.ObsFail.Code != "" {
+			s.write(w, s.ObsFail.Status, map[string]any{"error": "the backend read failed in the fake", "code": s.ObsFail.Code})
 			return
 		}
 		s.ObsCalls = append(s.ObsCalls, ObsCall{Officer: officer, Body: body})

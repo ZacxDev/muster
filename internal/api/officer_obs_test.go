@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/officers/hqtest"
 )
 
 // ---------------------------------------------------------------------------
@@ -162,40 +164,96 @@ func TestObsQuerySendsTheNamedQueryAndOnlyItsArguments(t *testing.T) {
 	}
 }
 
-// TestObsQueryRefusesARawQueryLocally: the tool takes a registry id and typed
-// arguments only. A raw PromQL/LogQL field under any name, an instance or
-// officer muster did not set, a missing query_id or window, or a malformed id
-// is refused BEFORE HQ — no request leaves muster.
-func TestObsQueryRefusesARawQueryLocally(t *testing.T) {
+// obsRefusal is a tool answer's HQ status and code ("refused": {status, hq:
+// {code}}), zero when it is not an HQ refusal.
+func obsRefusal(out string) (int, string) {
+	var got struct {
+		Refused struct {
+			Status int `json:"status"`
+			HQ     struct {
+				Code string `json:"code"`
+			} `json:"hq"`
+		} `json:"refused"`
+	}
+	_ = json.Unmarshal([]byte(out), &got)
+	return got.Refused.Status, got.Refused.HQ.Code
+}
+
+// obsWin is a valid window, RFC 3339 in whole seconds.
+const obsWin = `"start":"2000-01-01T00:00:00Z","end":"2000-01-01T01:00:00Z"`
+
+// TestHQsDecoderIsTheOneSchema: muster holds no copy of HQ's request schema.
+// The tool's arguments object goes to HQ unchanged — a raw PromQL/LogQL key
+// included, not dropped — and HQ's refusal reaches the officer with HQ's
+// status and code: an unknown field (400 invalid), an unknown or missing
+// query id (400 unknown_query), a missing or malformed window (400 invalid),
+// a field of the wrong type (400 invalid), an argument the query does not take
+// or one it needs and lacks (400 invalid). Each reaches HQ exactly once, and
+// HQ runs none of them.
+func TestHQsDecoderIsTheOneSchema(t *testing.T) {
 	r := newOfficerRig(t)
 	ctx := context.Background()
 	inst := r.addInstance(r.a, 1, 891)
-	const win = `"start":"2000-01-01T00:00:00Z","end":"2000-01-01T01:00:00Z"`
+	for _, c := range []struct {
+		name, args, code string
+		sentKey          string // a key the request HQ saw must still carry
+	}{
+		{"raw promql", `{"query_id":"fixture_calls_by_procedure","promql":"sum(rate(x[5m]))",` + obsWin + `,"step":"300s"}`, "invalid", "promql"},
+		{"raw logql", `{"query_id":"fixture_error_lines","logql":"{app=\"x\"}",` + obsWin + `}`, "invalid", "logql"},
+		{"a bare query", `{"query":"up",` + obsWin + `}`, "invalid", "query"},
+		{"an instance", `{"query_id":"fixture_error_lines","instance":"spoofed",` + obsWin + `}`, "invalid", "instance"},
+		{"procedures not an array", `{"query_id":"fixture_calls_by_procedure",` + obsWin + `,"step":"300s","procedures":"a.list"}`, "invalid", "procedures"},
+		{"no query_id", `{` + obsWin + `}`, "unknown_query", "start"},
+		{"an unknown query_id", `{"query_id":"../brief",` + obsWin + `}`, "unknown_query", "query_id"},
+		{"no start", `{"query_id":"fixture_error_lines","end":"2000-01-01T01:00:00Z"}`, "invalid", "end"},
+		{"no end", `{"query_id":"fixture_error_lines","start":"2000-01-01T00:00:00Z"}`, "invalid", "start"},
+		{"a fractional second", `{"query_id":"fixture_error_lines","start":"2000-01-01T00:00:00.5Z","end":"2000-01-01T01:00:00Z"}`, "invalid", "start"},
+		{"an argument the query does not take", `{"query_id":"fixture_error_lines",` + obsWin + `,"step":"300s"}`, "invalid", "step"},
+		{"an argument the query needs", `{"query_id":"fixture_calls_by_procedure",` + obsWin + `}`, "invalid", "query_id"},
+	} {
+		r.hq.ResetRequests()
+		out := r.s.dispatchAgentTool(ctx, inst, obsQueryTool, c.args)
+		if st, code := obsRefusal(out); !isToolErr(out) || st != 400 || code != c.code {
+			t.Errorf("%s: %s, want HQ's refusal 400 %s", c.name, out, c.code)
+		}
+		reqs := r.hq.Requests()
+		if len(reqs) != 1 || reqs[0].Path != "/api/v1/officers/"+offA+"/obs/query" || reqs[0].Auth != "Bearer "+offATok {
+			t.Errorf("%s: HQ saw %d requests (%+v), want the one POST with the officer's own token", c.name, len(reqs), reqs)
+			continue
+		}
+		if _, ok := reqs[0].Body[c.sentKey]; !ok {
+			t.Errorf("%s: the request HQ saw lacks %q (muster changed the arguments): %v", c.name, c.sentKey, reqs[0].Body)
+		}
+	}
+	if n := len(r.hq.ObsCalls); n != 0 {
+		t.Fatalf("HQ ran %d of the refused queries", n)
+	}
+}
+
+// TestObsQueryRefusesLocallyOnlyWhatMusterOwns: what muster itself owns is
+// refused before HQ — arguments that are not a JSON object, a body over HQ's
+// officer-route cap (256 KiB), and naming another officer. Positive control:
+// a well-formed call reaches HQ once and runs.
+func TestObsQueryRefusesLocallyOnlyWhatMusterOwns(t *testing.T) {
+	r := newOfficerRig(t)
+	ctx := context.Background()
+	inst := r.addInstance(r.a, 1, 893)
 	r.hq.ResetRequests()
 	for name, args := range map[string]string{
-		"raw query":            `{"query":"up",` + win + `}`,
-		"raw promql":           `{"query_id":"fixture_calls_by_procedure","promql":"sum(rate(x[5m]))",` + win + `,"step":"300s"}`,
-		"raw logql":            `{"query_id":"fixture_error_lines","logql":"{app=\"x\"}",` + win + `}`,
-		"expr":                 `{"query_id":"fixture_error_lines","expr":"up",` + win + `}`,
-		"instance from agent":  `{"query_id":"fixture_error_lines","instance":"spoofed",` + win + `}`,
-		"another officer":      `{"query_id":"fixture_error_lines","officer":"` + offB + `",` + win + `}`,
-		"no query_id":          `{` + win + `}`,
-		"query_id with a path": `{"query_id":"../brief",` + win + `}`,
-		"query_id with spaces": `{"query_id":"sum by (x) (up)",` + win + `}`,
-		"no start":             `{"query_id":"fixture_error_lines","end":"2000-01-01T01:00:00Z"}`,
-		"no end":               `{"query_id":"fixture_error_lines","start":"2000-01-01T00:00:00Z"}`,
-		"procedures not array": `{"query_id":"fixture_calls_by_procedure",` + win + `,"step":"300s","procedures":"a.list"}`,
+		"an array":        `[{"query_id":"fixture_error_lines"}]`,
+		"a string":        `"fixture_error_lines"`,
+		"null":            `null`,
+		"over the cap":    `{"query_id":"fixture_error_lines",` + obsWin + `,"path":"` + strings.Repeat("x", 256<<10) + `"}`,
+		"another officer": `{"query_id":"fixture_error_lines","officer":"` + offB + `",` + obsWin + `}`,
 	} {
 		if out := r.s.dispatchAgentTool(ctx, inst, obsQueryTool, args); !isToolErr(out) {
 			t.Errorf("%s: %s, want a local refusal", name, out)
 		}
 	}
 	if n := len(r.hq.Requests()); n != 0 {
-		t.Fatalf("malformed obs calls reached HQ (%d requests)", n)
+		t.Fatalf("calls muster must refuse reached HQ (%d requests)", n)
 	}
-	// Positive control: the same rig, a well-formed call, reaches HQ once — so
-	// the zero above is the refusals, not a tool that never sends anything.
-	if out := r.s.dispatchAgentTool(ctx, inst, obsQueryTool, `{"query_id":"fixture_error_lines",`+win+`}`); isToolErr(out) {
+	if out := r.s.dispatchAgentTool(ctx, inst, obsQueryTool, `{"query_id":"fixture_error_lines",`+obsWin+`}`); isToolErr(out) {
 		t.Fatalf("well-formed control: %s", out)
 	}
 	if n := len(r.hq.ObsCalls); n != 1 {
@@ -203,49 +261,53 @@ func TestObsQueryRefusesARawQueryLocally(t *testing.T) {
 	}
 }
 
-// TestObsQueryPassesHQsRefusalsBack: HQ's decisions reach the instance as a
-// refusal carrying HQ's status and code — an unknown query id, an argument the
-// entry does not take, and the route switched off. 🔴 The switched-off route
-// is HQ's 503 obs_unconfigured: a DECISION, so it must not read as "HQ is
-// unavailable, try again", which an instance would retry forever.
+// TestObsQueryPassesHQsRefusalsBack: HQ's 5xx DECISIONS reach the instance
+// as final refusals with HQ's status and code — 503 obs_unconfigured (the
+// route switched off; not an outage, which an instance would retry forever)
+// and 502 wrong_shape (HQ's own defect) — while 502 upstream (the backend
+// read failed) is RETRYABLE, as HQ's guide says: not a final refusal, and it
+// names the code and says retry.
 func TestObsQueryPassesHQsRefusalsBack(t *testing.T) {
 	r := newOfficerRig(t)
 	ctx := context.Background()
 	inst := r.addInstance(r.a, 1, 895)
-	const win = `"start":"2000-01-01T00:00:00Z","end":"2000-01-01T01:00:00Z"`
-	refusal := func(out string) (int, string) {
-		var got struct {
-			Refused struct {
-				Status int `json:"status"`
-				HQ     struct {
-					Code string `json:"code"`
-				} `json:"hq"`
-			} `json:"refused"`
-		}
-		_ = json.Unmarshal([]byte(out), &got)
-		return got.Refused.Status, got.Refused.HQ.Code
-	}
+	ok := `{"query_id":"fixture_error_lines",` + obsWin + `}`
 	for _, c := range []struct {
 		name, tool, args string
 		off              bool
+		fail             hqtest.ObsFail
 		status           int
 		code             string
 	}{
-		{"unknown query", obsQueryTool, `{"query_id":"no_such_query",` + win + `}`, false, 400, "unknown_query"},
-		{"undeclared argument", obsQueryTool, `{"query_id":"fixture_error_lines",` + win + `,"step":"300s"}`, false, 400, "invalid"},
-		{"route off (query)", obsQueryTool, `{"query_id":"fixture_error_lines",` + win + `}`, true, 503, "obs_unconfigured"},
-		{"route off (list)", obsListTool, `{}`, true, 503, "obs_unconfigured"},
+		{"route off (query)", obsQueryTool, ok, true, hqtest.ObsFail{}, 503, "obs_unconfigured"},
+		{"route off (list)", obsListTool, `{}`, true, hqtest.ObsFail{}, 503, "obs_unconfigured"},
+		{"wrong shape", obsQueryTool, ok, false, hqtest.ObsFail{Status: 502, Code: "wrong_shape"}, 502, "wrong_shape"},
 	} {
-		r.hq.ObsOff = c.off
+		r.hq.ObsOff, r.hq.ObsFail = c.off, c.fail
 		out := r.s.dispatchAgentTool(ctx, inst, c.tool, c.args)
-		if st, code := refusal(out); !isToolErr(out) || st != c.status || code != c.code {
-			t.Errorf("%s: %s, want a refusal with status %d and HQ code %q", c.name, out, c.status, c.code)
+		if st, code := obsRefusal(out); !isToolErr(out) || st != c.status || code != c.code {
+			t.Errorf("%s: %s, want a final refusal with status %d and HQ code %q", c.name, out, c.status, c.code)
 		}
-		if strings.Contains(out, "unavailable") {
-			t.Errorf("%s: %s reads as an outage", c.name, out)
+		if strings.Contains(out, "unavailable") || strings.Contains(out, "retry") {
+			t.Errorf("%s: %s reads as retryable", c.name, out)
 		}
 	}
+	r.hq.ObsOff, r.hq.ObsFail = false, hqtest.ObsFail{Status: 502, Code: "upstream"}
+	out := r.s.dispatchAgentTool(ctx, inst, obsQueryTool, ok)
+	var got struct {
+		Error     string `json:"error"`
+		Retryable bool   `json:"retryable"`
+		Status    int    `json:"status"`
+		Code      string `json:"code"`
+	}
+	_ = json.Unmarshal([]byte(out), &got)
+	if !isToolErr(out) || !got.Retryable || got.Status != 502 || got.Code != "upstream" || !strings.Contains(got.Error, "retry") {
+		t.Errorf("upstream: %s, want a retryable answer naming 502 upstream", out)
+	}
+	if st, _ := obsRefusal(out); st != 0 {
+		t.Errorf("upstream: %s is a final refusal; HQ's guide says retry it", out)
+	}
 	if n := len(r.hq.ObsCalls); n != 0 {
-		t.Fatalf("the fake ran %d refused queries", n)
+		t.Fatalf("the fake ran %d failed queries", n)
 	}
 }
