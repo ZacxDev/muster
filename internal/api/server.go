@@ -634,6 +634,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerCredentialRoutes(mux)
 	s.registerApprovalRoutes(mux)
 	s.registerAgentWorkRoutes(mux)
+	s.registerOfficerRoutes(mux)
 	s.registerMirrorRoutes(mux)
 	// Suggested replies (suggest.go): the composer's set, its counts and the
 	// per-user toggle.

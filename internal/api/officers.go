@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/askimage"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -22,6 +26,7 @@ import (
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/transcript"
 	"github.com/ZacxDev/muster/internal/officership"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -714,9 +719,9 @@ func queueToolDefs() []agents.ToolDef {
 			Description: "Load your officer's brief from HQ: your charter (your standing instructions, versioned), your open items, recent outcomes and your memory scopes. Call it first when you wake, instead of looking for an earlier conversation.",
 			Parameters:  objSchema(map[string]any{})},
 		{Type: "function", Name: officers.ToolItems,
-			Description: "List your officer's items in HQ. status: open (default: what you can claim), claimed, done or escalated.",
+			Description: "List your officer's items in HQ. status: open (default: what you can claim), claimed, waiting (an ask on it is open: see officer_ask_person), done or escalated.",
 			Parameters: objSchema(map[string]any{
-				"status": map[string]any{"type": "string", "enum": []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusDone, officers.StatusEscalated}},
+				"status": map[string]any{"type": "string", "enum": officers.ItemStatuses},
 				"limit":  intProp("At most this many (default HQ's).", 1, 100),
 				"cursor": strProp("The `next` value of the previous page (HQ returns it with each page; null on the last)."),
 			})},
@@ -739,6 +744,24 @@ func queueToolDefs() []agents.ToolDef {
 		{Type: "function", Name: officers.ToolRelease,
 			Description: "Give an item back before its lease ends, so another instance can take it.",
 			Parameters:  objSchema(map[string]any{"item_id": item}, "item_id")},
+		{Type: "function", Name: officers.ToolAskPerson,
+			Description: "Ask a named HQ member a question about an item you hold, when you need a human's decision to finish it (for example a design review with screenshots). " +
+				"HQ notifies them. 🔴 Asking ENDS your lease on the item: HQ sets it to waiting with no holder, so stop working it — " +
+				"do not heartbeat, complete or release it. HQ re-opens it (claimable) with the answers on it once every open ask on it is answered or withdrawn, " +
+				"and muster wakes an instance for it; if the deadline passes unanswered, HQ escalates the item to its owner. " +
+				"A second ask on a waiting item is allowed (the same item_id).",
+			Parameters: objSchema(map[string]any{
+				"item_id":  item,
+				"to":       strProp("The HQ member's GitHub login."),
+				"question": strProp("The question. Say what you need decided and why."),
+				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "Optional answers to pick from: short, unique labels."},
+				"image_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "Optional images, as the ids `ccd ask-image <path>` prints: run it in your shell on a PNG, JPEG or WebP file in your workspace " +
+						"(at most 5 MiB) and pass the \"id\" it prints. For an image on the web, download it into your workspace first. The ask cites them in order."},
+				"context_url":      strProp("Optional http(s) URL with the context (a pull request, a preview, a dashboard)."),
+				"deadline_seconds": map[string]any{"type": "integer", "description": "Optional: how long they have to answer, in seconds (HQ's default is a day; HQ refuses a value outside its range)."},
+			}, "item_id", "to", "question")},
 		{Type: "function", Name: officers.ToolReleaseEvaluation,
 			Description: "Post to HQ's release captain route (POST /releases/captain): your risk evaluation of a release and/or your post-release report. " +
 				"service and tag come from the item's payload. Give evaluation (level low|medium|high|severe, summary, optional monitors) for a release.evaluate item, " +
@@ -817,6 +840,13 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		Outcome      string          `json:"outcome"`
 		Summary      string          `json:"summary"`
 		Links        []string        `json:"links"`
+		// officer_ask_person's.
+		To              string          `json:"to"`
+		Question        string          `json:"question"`
+		Options         []string        `json:"options"`
+		ImageIDs        []string        `json:"image_ids"`
+		ContextURL      string          `json:"context_url"`
+		DeadlineSeconds json.RawMessage `json:"deadline_seconds"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("invalid arguments for %s: %v", name, err), true
@@ -909,6 +939,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil {
 			s.llmEnded(o, instance, in.ItemID)
 		}
+	case officers.ToolAskPerson:
+		if bad := needItem(); bad != "" {
+			return bad, true
+		}
+		ask := officers.Ask{To: in.To, Question: in.Question, Options: in.Options, Images: in.ImageIDs, ContextURL: in.ContextURL, DeadlineSeconds: in.DeadlineSeconds}
+		return s.officerAskPerson(ctx, c, o, instance, in.ItemID, ask), true
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
@@ -917,6 +953,67 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body, err = c.ReleaseCaptain(ctx, instance, post)
 	}
 	return officerToolResult(name, body, err), true
+}
+
+// askedNote is what a successful officer_ask_person adds to HQ's answer.
+const askedNote = "asked. Your lease on this item has ENDED: HQ set it to waiting with no holder. Stop working it now — do not heartbeat, complete or release it. " +
+	"HQ re-opens it (open, claimable) with the answer on it (asks[] in officer_items, the claim response and officer_brief's open_items) once every open ask on it is answered or withdrawn, " +
+	"and muster wakes an instance for it: claim it then and carry on with the answer. If the deadline passes unanswered, HQ escalates the item to its owner. " +
+	"To ask another question on it meanwhile, call officer_ask_person again with the same item_id."
+
+// officerAskPerson is officer_ask_person: the ask, as the instance gave it
+// (image_ids become the body's images), sent to HQ. HQ checks every limit.
+//
+// 🔴 A SUCCESS ENDS THE INSTANCE'S LEASE (HQ's contract), so the transcript
+// forwarder and the LLM proxy's item meter stop for the item as on
+// complete/release, and the result says so
+// in words (askedNote): the instance's next move is to stop working the item.
+func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask) string {
+	body, err := c.CreateAsk(ctx, item, instance, ask)
+	if err == nil && s.officerRT.fwd != nil {
+		s.officerRT.fwd.Ended(o, instance, item)
+	}
+	if err == nil {
+		s.llmEnded(o, instance, item)
+	}
+	return askToolResult(body, err)
+}
+
+// askToolResult is officer_ask_person's answer: HQ's JSON with askedNote on
+// success; HQ's status, code and message on a 4xx (refused.code beside HQ's
+// body, so an instance can branch on lease_lost / unknown_recipient /
+// rate_limited without parsing it); officerToolResult's shapes otherwise.
+func askToolResult(body []byte, err error) string {
+	if err == nil {
+		var out map[string]json.RawMessage
+		if json.Unmarshal(body, &out) != nil || out == nil {
+			return officerToolResult(officers.ToolAskPerson, body, nil)
+		}
+		note, _ := json.Marshal(askedNote)
+		out["note"] = note
+		return toolJSON(out)
+	}
+	status, msg, code, ok := officers.Refusal(err)
+	if !ok {
+		return officerToolResult(officers.ToolAskPerson, nil, err)
+	}
+	head := strconv.Itoa(status)
+	if code != "" {
+		head += " " + code
+	}
+	text := fmt.Sprintf("HQ refused %s (%s)", officers.ToolAskPerson, head)
+	if msg != "" {
+		text += ": " + msg
+	}
+	refused := map[string]any{"status": status}
+	if code != "" {
+		refused["code"] = code
+	}
+	var hqErr *officers.HQError
+	if errors.As(err, &hqErr) && json.Valid(hqErr.Body) {
+		refused["hq"] = json.RawMessage(hqErr.Body)
+	}
+	return toolJSON(map[string]any{"error": text, "refused": refused})
 }
 
 // nothingToClaimNote is officer_claim's answer when nothing is claimable.
@@ -1109,4 +1206,84 @@ func officerToolResult(name string, body []byte, err error) string {
 	default:
 		return toolErr("%s failed", name)
 	}
+}
+
+// --- the ask-image upload route (POST podagent.AskImagePath) -----------------
+
+// registerOfficerRoutes registers the officer instances' own agent-token
+// routes. It runs on every server, so the route set is fixed; without a
+// declared officer every call is refused (officerOf).
+func (s *Server) registerOfficerRoutes(mux Mux) {
+	mux.HandleFunc("POST "+podagent.AskImagePath, s.requireRelayAgent(s.handleOfficerAskImage))
+}
+
+// handleOfficerAskImage is POST /agent/officer/ask-images?filename=<name>. An
+// officer instance's pod (`ccd ask-image`, podagent.UploadAskImage) sends a
+// workspace image as the raw body. muster forwards it to HQ's
+// POST /officers/{id}/ask-images with the officer credential, and answers
+// HQ's {id, filename, content_type, size, sha256} with 201.
+//
+//   - 🔴 THE OFFICER IS THE CALLING AGENT'S, from its own token
+//     (requireRelayAgent, then officerOf), never a request field. A query
+//     naming another officer is refused, not ignored, as the tools refuse it.
+//     An agent that is no officer's instance is refused (403).
+//   - 🔴 THE BYTES ARE CHECKED HERE, WHATEVER SENT THEM. They are read
+//     through a LimitReader of askimage.MaxBytes+1 (more is a 413, before
+//     anything is sent to HQ), and typed by sniffing them (askimage.Sniff:
+//     PNG, JPEG or WebP, else 415), never by the Content-Type or the name.
+//     The pod checks the same, but anything in the pod can call this route
+//     with the agent's token.
+//   - HQ's refusal comes back with HQ's status and {error, code}, except a
+//     401/403: that is HQ refusing muster's officer credential, not the
+//     agent's token, so it is a 502 officer_credential_rejected. An outage,
+//     503.
+func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
+	a, _ := agentFromContext(r.Context())
+	o, _, ok := s.officerOf(a)
+	if !ok || !officers.ToolOffered(o, officers.ToolAskPerson) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "only an officer instance may upload an ask image", "code": "not_an_officer"})
+		return
+	}
+	q := r.URL.Query()
+	for _, k := range []string{"officer", "officer_id"} {
+		if v, named := q[k]; named && (len(v) != 1 || v[0] != o.ID) {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "you act for officer " + o.ID + " only; an upload cannot name another officer", "code": "another_officer"})
+			return
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, askimage.MaxBytes+1))
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the image could not be read", "code": "invalid"})
+		return
+	}
+	if len(data) > askimage.MaxBytes {
+		s.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": fmt.Sprintf("the image is over %d MiB", askimage.MaxBytes>>20), "code": "too_large"})
+		return
+	}
+	ct, ok := askimage.Sniff(data)
+	if !ok {
+		s.writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": "the bytes are " + ct + ", not a PNG, JPEG or WebP image", "code": "unsupported_media_type"})
+		return
+	}
+	name := officers.AskFilename(path.Base(q.Get("filename")), ct, 1)
+	up, err := s.officerRT.hq.Client(o).UploadAskImage(r.Context(), name, ct, data)
+	if err == nil {
+		s.writeJSON(w, http.StatusCreated, up)
+		return
+	}
+	if status, msg, code, ok := officers.Refusal(err); ok {
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			// HQ refused muster's officer credential, not the pod's agent token
+			// (muster accepted that): passing 401/403 on would read as "your
+			// token is bad". 502 names the credential instead.
+			s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("HQ refused muster's credential for officer %s (%d); your agent token is fine: the operator must fix the officer credential", o.ID, status), "code": "officer_credential_rejected"})
+			return
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("HQ refused the image (%d)", status)
+		}
+		s.writeJSON(w, status, map[string]any{"error": msg, "code": code})
+		return
+	}
+	s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "HQ is unavailable right now; try again in a minute", "code": "hq_unavailable"})
 }

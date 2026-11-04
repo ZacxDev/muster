@@ -177,6 +177,7 @@ POST /admin/users/{id}/role
 POST /agent/approvals
 POST /agent/blocked
 POST /agent/connectors/{name}/request
+POST /agent/officer/ask-images
 POST /agent/task/comment
 POST /agent/work
 POST /agents
