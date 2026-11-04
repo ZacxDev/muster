@@ -15,7 +15,8 @@ import (
 // 3b-1 only through these helpers, so the same test file runs against
 // the base (origin/main before 3b-1) with this file replaced by no-op stubs —
 // chiefChatQuotesLive does nothing, quoteSourceOf is "", withQuoteSource
-// returns d unchanged, failChiefChatRead does nothing, and nudgeAgents has no
+// returns d unchanged, withChiefChatInView likewise, chiefChatInViewOf is
+// false, failChiefChatRead does nothing, and nudgeAgents has no
 // OwnerTypedChatMessages — to show
 // each regression test RED there.
 
@@ -31,6 +32,16 @@ func chiefChatQuotesLive(f *nudgeFixture, owners ...int64) {
 
 // quoteSourceOf is where d's quote was checked (chief_nudges.quote_source).
 func quoteSourceOf(d chiefnudge.Decision) string { return d.QuoteSource }
+
+// withChiefChatInView is d recording that the owner's typed Chief-chat lines
+// were in the chief's prompt (chief_nudges.chief_chat_in_view).
+func withChiefChatInView(d chiefnudge.Decision) chiefnudge.Decision {
+	d.ChiefChatInView = true
+	return d
+}
+
+// chiefChatInViewOf is d's stored chief_chat_in_view.
+func chiefChatInViewOf(d chiefnudge.Decision) bool { return d.ChiefChatInView }
 
 // withQuoteSource is d recording src as its quote's source.
 func withQuoteSource(d chiefnudge.Decision, src string) chiefnudge.Decision {

@@ -68,7 +68,7 @@ func nudgeWhere(title, kind, key, host string) string {
 
 // nudgeQuoteFrom names where a decision's quote was checked (step 3b-1): the
 // owner's Chief chat, their messages to the session, or — a decision from
-// before 0079, or with session state off — just "Quote".
+// before 0081, or with session state off — just "Quote".
 func nudgeQuoteFrom(source string) string {
 	switch source {
 	case chiefnudge.SourceChiefChat:

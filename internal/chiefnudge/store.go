@@ -91,7 +91,7 @@ const cols = `id, owner_id, session_kind, session_key, mirror_host, mirror_sessi
 	coalesce(quote_at, 'epoch'::timestamptz), quote_text, covered_action, question, options, reason, mode, outcome, detail,
 	coalesce(ask_id, 0), coalesce(send_queue_id, 0), relay_text, updated_at,
 	jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error,
-	coalesce(episode_id, 0), quote_source`
+	coalesce(episode_id, 0), quote_source, chief_chat_in_view`
 
 func scan(row pgx.Row) (Decision, error) {
 	var d Decision
@@ -101,7 +101,7 @@ func scan(row pgx.Row) (Decision, error) {
 		&d.QuoteAt, &d.QuoteText, &d.Covered, &d.Question, &opts, &d.Reason, &d.Mode, &d.Outcome, &d.Detail,
 		&d.AskID, &d.SendQueueID, &d.RelayText, &d.UpdatedAt,
 		&d.JevLabel, &d.JevNeedsInput, &d.JevAsksPermission, &d.JevNeither, &d.JevAskScore, &d.JevModel, &d.JevLatencyMS, &d.JevError,
-		&d.EpisodeID, &d.QuoteSource)
+		&d.EpisodeID, &d.QuoteSource, &d.ChiefChatInView)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -167,6 +167,9 @@ func auditDetail(d Decision) map[string]any {
 	}
 	if d.QuoteSource != "" {
 		m["quote_source"] = d.QuoteSource
+	}
+	if d.ChiefChatInView {
+		m["chief_chat_in_view"] = true
 	}
 	if d.AskID > 0 {
 		m["ask_id"] = d.AskID
@@ -280,9 +283,9 @@ func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, b
 				title, streak_key, anchor_key, idle_since, decision, message, quote_id, quote_at, quote_text, covered_action,
 				question, options, reason, mode, outcome, detail, ask_id, send_queue_id, relay_text, chat_session_id,
 				jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error,
-				episode_id, quote_source)
+				episode_id, quote_source, chief_chat_in_view)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-				$27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+				$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
 			-- Either claim: one decision per streak (chief_nudges_one_per_streak)
 			-- and, with session state on, one per episode
 			-- (chief_nudges_one_per_episode, migration 0078).
@@ -292,7 +295,7 @@ func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, b
 			d.Decision, d.Message, d.QuoteID, nullTime(d.QuoteAt), d.QuoteText, d.Covered, d.Question, opts, d.Reason, d.Mode,
 			d.Outcome, d.Detail, nullID(d.AskID), nullID(d.SendQueueID), d.RelayText, nullID(d.ChatSessionID),
 			d.JevLabel, d.JevNeedsInput, d.JevAsksPermission, d.JevNeither, d.JevAskScore, d.JevModel, d.JevLatencyMS, d.JevError,
-			nullID(d.EpisodeID), d.QuoteSource)
+			nullID(d.EpisodeID), d.QuoteSource, d.ChiefChatInView)
 		var err error
 		out, err = scan(row)
 		if errors.Is(err, pgx.ErrNoRows) {

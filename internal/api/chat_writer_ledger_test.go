@@ -29,7 +29,7 @@ const (
 )
 
 // TestEveryChatWriterIsClassified is the LEDGER OF CHAT WRITERS behind
-// chat_messages.typed_by (migration 0079; docs/design/session-state.md, step
+// chat_messages.typed_by (migration 0081; docs/design/session-state.md, step
 // 3b-1). A Chief-chat turn is quoted as the owner's covering words only when it
 // carries a typer, so every way a chat row is written is listed here, across
 // the WHOLE module's non-test source, with what it writes and its kind, and

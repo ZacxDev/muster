@@ -230,12 +230,12 @@ type ChatMessage struct {
 	ToolOK   bool   `json:"toolOk,omitempty"`   // tool_result: dispatch success
 
 	// TypedBy is the user who TYPED this turn into muster's chat (migration
-	// 0079, chat_messages.typed_by), 0 for everything else. 🔴 ONE WRITER SETS
+	// 0081, chat_messages.typed_by), 0 for everything else. 🔴 ONE WRITER SETS
 	// IT: runEnteredTurn, from the owner's signed-in chat doors only
 	// (ownerTypedBy: the chat page's socket and the composer's POST — web or
 	// phone). A relayed answer, a session question or `chief ask` over a token,
 	// a plugin message, a task event, an agent's or muster's own turn and every
-	// assistant row leave it 0, and rows from before 0079 read 0 (nothing is
+	// assistant row leave it 0, and rows from before 0081 read 0 (nothing is
 	// backfilled). It is what lets a Chief-chat turn be quoted as the owner's
 	// covering words (docs/design/session-state.md, step 3b-1);
 	// internal/api's TestEveryChatWriterIsClassified pins every writer. Not

@@ -9,7 +9,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
-// TestOwnerTypedChatMessagesReadsOnlyTheTypersOwnTypedTurns (migration 0079,
+// TestOwnerTypedChatMessagesReadsOnlyTheTypersOwnTypedTurns (migration 0081,
 // step 3b-1): the read returns the agent's text USER rows typed by the user
 // asked for, in the window, oldest first, the newest limit of them — never an
 // untyped row, another typer's, an assistant row (whose typer the store refuses

@@ -1000,7 +1000,7 @@ func typedByArg(m ChatMessage) any {
 }
 
 // OwnerTypedChatMessages is up to limit of agentID's text USER rows that user
-// by TYPED (typed_by, migration 0079), written at or after since, in every
+// by TYPED (typed_by, migration 0081), written at or after since, in every
 // chat session of the agent, oldest first: the newest limit of them. The stall
 // sweep reads it for the owner's Chief chat (docs/design/session-state.md,
 // step 3b-1); a caller that must vouch for the whole window asks for one more

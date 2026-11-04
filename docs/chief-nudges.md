@@ -278,7 +278,7 @@ your sessions (operator decision 10). Only lines muster recorded as **typed by
 you** count (operator decision 13, as amended 2026-11-04, "Exclude the CLI"):
 what you type into the chat page or its composer, signed in on the web or your
 phone. The CLI does not count. muster writes that record
-(`chat_messages.typed_by`, migration 0079) at the moment the line becomes a
+(`chat_messages.typed_by`, migration 0081) at the moment the line becomes a
 turn, and nowhere else. These never count, fenced or not:
 
 - an answer relayed to the chief;
@@ -296,8 +296,9 @@ newest 20, redacted like your session messages), each with its id
 `chief_chat`). muster checks the quote, byte for byte, in **that** source only.
 A Chief-chat quote that does not check out (not verbatim in the line it names,
 or a source muster does not know) meets the same guard as any quote: it is
-recorded as `suppressed:quote_unverified`, with the source it named, the stop
-is pushed and nothing is pasted. muster reads only the newest 20 typed lines
+recorded as `suppressed:quote_unverified`, with its source (`chief_chat`, or
+empty for a source muster does not know), the stop is pushed and nothing is
+pasted. muster reads only the newest 20 typed lines
 (all the chief is shown); a read that fails contributes nothing: no Chief-chat
 quote passes. A quote from the session itself is checked exactly as before. Whether
 a Chief-chat line covers *this* session's next step is the chief's judgement,
@@ -313,10 +314,23 @@ also on `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS`, on top of every
 list it is otherwise under (`MUSTER_CHIEF_NUDGE_LIVE_OWNERS`, and the needs-you
 list for a needs-you stop). For everyone else it is shadow: recorded as
 `would_send` with its source on the Chief nudges tab, never pasted, and the
-stop pushed. The gate is read again at the paste and at an agent's turn, from
-the source stored on the decision (`chief_nudges.quote_source`), so taking an
-owner off the list stops a Chief-chat nudge already queued (*Not sent: chief
-nudges are off, or in shadow mode for you, on this server*). The pasted nudge
+stop pushed.
+
+**The whole decision is under that gate when your Chief chat was in view**
+(operator decision 2026-11-04, "Shadow whole decision"). The chief sees your
+typed Chief-chat lines on every check, and they can steer it even when it
+quotes the session. So any nudge decided while at least one typed line was in
+its prompt is shadow, whatever its quote's source, until you are on
+`MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS` (on top of the other lists).
+The decision records that the chat was in view (`chief_nudges.chief_chat_in_view`).
+With no typed line in the last 6 hours, nothing changes: a session quote is
+gated as before.
+
+The gate is read again at the paste, at an agent's turn and at the sweep's
+retry of one, from what is stored on the decision (`chief_nudges.quote_source`
+and `chief_chat_in_view`), so taking an owner off the list stops such a nudge
+already queued (*Not sent: chief nudges are off, or in shadow mode for you, on
+this server*). The pasted nudge
 says where the words were written: `[Chief nudge] Sam told the chief at 14:02:
 "…". Continue.`
 

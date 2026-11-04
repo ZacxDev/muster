@@ -553,18 +553,60 @@ func TestTheChiefChatGateHoldsAtAnAgentsTurn(t *testing.T) {
 	})
 }
 
-// TestASameSessionQuoteIsUnaffectedByTheChiefChatGate — an INVARIANT GUARD
-// (green at the base too): with a typed Chief-chat turn present and the owner
-// on the old list but NOT the Chief-chat list, a nudge quoting the session's
-// own owner message is live exactly as before: queued, pasted, the stop quiet.
-func TestASameSessionQuoteIsUnaffectedByTheChiefChatGate(t *testing.T) {
+// TestAWholeDecisionWithTheChiefChatInViewIsShadow (regression; operator
+// decision 2026-11-04, "Shadow whole decision"): the owner's typed Chief-chat
+// lines were in the chief's prompt, and the chief quotes the SESSION's own
+// owner message. For an owner on MUSTER_CHIEF_NUDGE_LIVE_OWNERS only, the nudge
+// is SHADOW (would_send, the chat recorded as in view, nothing pasted, the stop
+// pushed); with the owner on MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS
+// too, it is live (queued, pasted, the stop quiet). RED at the base: the first
+// case was live (the chat was never in view).
+func TestAWholeDecisionWithTheChiefChatInViewIsShadow(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		chiefChat      bool
+		mode, outcome  string
+		pastes, pushes int
+	}{
+		{"on the old list only: shadow", false, chiefnudge.ModeShadow, chiefnudge.OutcomeWouldSend, 0, 1},
+		{"on the Chief-chat list too: live", true, chiefnudge.ModeLive, chiefnudge.OutcomeQueued, 1, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := chiefChatFixture(t, true)
+			if c.chiefChat {
+				chiefChatQuotesLive(f.nudgeFixture, authz.OperatorUserID)
+			}
+			f.typeToChief(t, chiefChatTyped)
+			f.judge(t) // the fixture's reply quotes the SESSION's own message
+			d := f.one(t)
+			if d.Decision != chiefnudge.DecisionNudge || d.QuoteID != nudgeOwnerID || d.Mode != c.mode || d.Outcome != c.outcome ||
+				!chiefChatInViewOf(d) || quoteSourceOf(d) != "session" {
+				t.Fatalf("decision %+v\nwant a session quote, the chat in view, mode %s, outcome %s", d, c.mode, c.outcome)
+			}
+			f.tick(t)
+			if p := f.pastes(); len(p) != c.pastes {
+				t.Fatalf("pastes: %+v, want %d", p, c.pastes)
+			}
+			f.pass(t)
+			f.statePass(t)
+			if got := f.episodePushes(); len(got) != c.pushes {
+				t.Fatalf("pushes: %v, want %d", got, c.pushes)
+			}
+		})
+	}
+}
+
+// TestASameSessionQuoteWithNoChiefChatInViewIsGatedAsBefore — an INVARIANT
+// GUARD (green at the base too): with NO typed Chief-chat line in the window,
+// a session quote for an owner on the old list only is live exactly as before:
+// queued, pasted, the stop quiet, and the chat not recorded as in view.
+func TestASameSessionQuoteWithNoChiefChatInViewIsGatedAsBefore(t *testing.T) {
 	f := chiefChatFixture(t, true)
-	f.typeToChief(t, chiefChatTyped)
 	queued0 := f.queuedRows(t)
-	f.judge(t) // the fixture's reply quotes the session's own message
+	f.judge(t)
 	d := f.one(t)
 	if d.Decision != chiefnudge.DecisionNudge || d.Mode != chiefnudge.ModeLive || d.Outcome != chiefnudge.OutcomeQueued ||
-		d.QuoteID != nudgeOwnerID {
+		d.QuoteID != nudgeOwnerID || chiefChatInViewOf(d) {
 		t.Fatalf("decision %+v", d)
 	}
 	if q := f.queuedRows(t) - queued0; q != 1 {
@@ -576,6 +618,125 @@ func TestASameSessionQuoteIsUnaffectedByTheChiefChatGate(t *testing.T) {
 	}
 	if got := f.episodePushes(); len(got) != 0 {
 		t.Fatalf("pushes: %v", got)
+	}
+}
+
+// TestTheChatInViewGateIsReadAgainAtThePaste (regression): a live session-quote
+// nudge decided with the Chief chat in view, queued while its owner was on the
+// Chief-chat list, is NOT pasted once the owner is taken off it (still on the
+// old list): refused at the paste, failed with the kill switch's words, the
+// stop pushed. RED at the base: pasted (no such gate).
+func TestTheChatInViewGateIsReadAgainAtThePaste(t *testing.T) {
+	f := chiefChatFixture(t, true)
+	chiefChatQuotesLive(f.nudgeFixture, authz.OperatorUserID)
+	f.typeToChief(t, chiefChatTyped)
+	f.judge(t)
+	if d := f.one(t); d.Outcome != chiefnudge.OutcomeQueued || d.QuoteID != nudgeOwnerID {
+		t.Fatalf("precondition: %+v", d)
+	}
+	chiefChatQuotesLive(f.nudgeFixture)
+	f.tick(t)
+	if p := f.pastes(); len(p) != 0 {
+		t.Fatalf("pasted after the owner left the Chief-chat list: %+v", p)
+	}
+	f.pass(t)
+	if d := f.one(t); d.Outcome != chiefnudge.OutcomeFailed || d.Detail != SendQueueNudgeOff {
+		t.Fatalf("decision: %+v", d)
+	}
+	f.statePass(t)
+	if got := f.episodePushes(); len(got) != 1 {
+		t.Fatalf("pushes: %v", got)
+	}
+}
+
+// TestTheChatInViewGateHoldsAtAnAgentsTurnAndTheRetry (regression): a live
+// agent nudge decided with the Chief chat in view (its quote from the
+// session), whose turn could not start, is retried by the reconcile
+// (sendNudgeTurn). On the Chief-chat list it is SENT (the positive control);
+// off it, it fails with the kill switch's words and no turn starts. RED at the
+// base: sent (no such gate).
+func TestTheChatInViewGateHoldsAtAnAgentsTurnAndTheRetry(t *testing.T) {
+	seed := func(t *testing.T, f *nudgeFixture) chiefnudge.Decision {
+		t.Helper()
+		d, _ := queuedAgentNudge(t, f, jevNothing, 0)
+		if _, err := f.pool.Exec(authz.System(context.Background()), `DELETE FROM chief_nudges WHERE id = $1`, d.ID); err != nil {
+			t.Fatal(err)
+		}
+		d.ID = 0
+		d, ok, err := f.nudges.Insert(asUser(authz.OperatorUserID), withChiefChatInView(withQuoteSource(d, "session")), "")
+		if err != nil || !ok {
+			t.Fatalf("re-seed: %v %v", ok, err)
+		}
+		return d
+	}
+	t.Run("on the Chief-chat list: sent", func(t *testing.T) {
+		f := newNudgeFixture(t, true)
+		chiefChatQuotesLive(f, authz.OperatorUserID)
+		d := seed(t, f)
+		f.pass(t)
+		if got := f.nudgeByID(t, d.ID); got.Outcome != chiefnudge.OutcomeSent {
+			t.Fatalf("decision %+v", got)
+		}
+		waitFor(t, func() bool { _, turns := f.gw.seen(); return len(turns) > 0 })
+	})
+	t.Run("off the Chief-chat list: not sent", func(t *testing.T) {
+		f := newNudgeFixture(t, true)
+		d := seed(t, f)
+		f.pass(t)
+		if got := f.nudgeByID(t, d.ID); got.Outcome != chiefnudge.OutcomeFailed || got.Detail != SendQueueNudgeOff {
+			t.Fatalf("an agent nudge decided with the chat in view, off its list: %+v", got)
+		}
+		time.Sleep(200 * time.Millisecond)
+		if _, turns := f.gw.seen(); len(turns) != 0 {
+			t.Fatalf("turns %v", turns)
+		}
+	})
+}
+
+// chiefChatSecret is a synthetic token in a shape internal/redact catches
+// (its own test fixture's `sk-live-…`); it opens nothing.
+const chiefChatSecret = "sk-live-abcdef123456"
+
+// TestASecretInATypedChiefChatLineNeverLeavesRedacted (regression for the
+// stored quote): the owner types a line holding a secret-shaped token. The
+// chief is shown it REDACTED; a quote of the RAW secret does not verify
+// (suppressed), and no raw byte of it reaches the row's quote_text or message.
+// The control: a quote of the redacted form the chief was shown verifies, and
+// the nudge carries the redacted form only. RED at the base: the row kept the
+// chief's raw quote.
+func TestASecretInATypedChiefChatLineNeverLeavesRedacted(t *testing.T) {
+	const typed = "deploy with the key " + chiefChatSecret + " once CI is green"
+	for _, c := range []struct {
+		name, quote, outcome string
+	}{
+		{"a quote of the raw secret: refused", "deploy with the key " + chiefChatSecret, chiefnudge.Suppressed(chiefnudge.GuardQuote)},
+		{"a quote of what it was shown: passes", "deploy with the key «redacted» once CI is green", chiefnudge.OutcomeWouldSend},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := chiefChatFixture(t, true)
+			id := f.typeToChief(t, typed)
+			f.gw.set(chiefChatReply(id, "chief_chat", c.quote))
+			f.judge(t)
+			p := f.lastPrompt(t)
+			if strings.Contains(p, chiefChatSecret) || !strings.Contains(p, "deploy with the key «redacted» once CI is green") {
+				t.Fatalf("the prompt does not carry the redacted line:\n%s", p)
+			}
+			d := f.one(t)
+			if d.Outcome != c.outcome {
+				t.Fatalf("decision %+v, want outcome %s", d, c.outcome)
+			}
+			var quote, message string
+			if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT quote_text, message FROM chief_nudges WHERE id = $1`, d.ID).
+				Scan(&quote, &message); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(quote, chiefChatSecret) || strings.Contains(message, chiefChatSecret) {
+				t.Fatalf("a raw secret reached the row: quote %q, message %q", quote, message)
+			}
+			if c.outcome == chiefnudge.OutcomeWouldSend && !strings.Contains(message, "«redacted»") {
+				t.Fatalf("the nudge's message %q", message)
+			}
+		})
 	}
 }
 

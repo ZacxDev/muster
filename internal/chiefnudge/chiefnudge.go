@@ -369,7 +369,7 @@ func Anchor(owner []Msg) string {
 }
 
 // Where a nudge's quote is checked (Proposal.QuoteSource, Decision.QuoteSource,
-// chief_nudges.quote_source, migration 0079).
+// chief_nudges.quote_source, migration 0081).
 const (
 	// SourceSession: the candidate session's own owner messages
 	// (OwnerMessages), as every nudge before step 3b-1. A nudge that names no
@@ -715,10 +715,17 @@ type Decision struct {
 	// nudge whose episode is no longer the session's open one is dropped.
 	EpisodeID int64
 	// QuoteSource is where the nudge's quote was checked (SourceSession,
-	// SourceChiefChat; migration 0079), "" for a decision with no quote or from
-	// before 0079. 🔴 The paste gate reads it: a Chief-chat nudge is sent only
+	// SourceChiefChat; migration 0081), "" for a decision with no quote or from
+	// before 0081. 🔴 The paste gate reads it: a Chief-chat nudge is sent only
 	// for an owner on MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS too.
 	QuoteSource string
+	// ChiefChatInView: the owner's typed Chief-chat lines were in the chief's
+	// prompt when it decided (migration 0081; operator decision 2026-11-04,
+	// "Shadow whole decision"). 🔴 Such a nudge is gated like a Chief-chat
+	// quote whatever its QuoteSource: shadow until the owner is on
+	// MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS too. The paste gate, an
+	// agent's turn and the reconcile retry read it.
+	ChiefChatInView bool
 }
 
 // Jev is d's stored classification as a Result (WithJev's inverse; the latency

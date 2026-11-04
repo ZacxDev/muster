@@ -1,4 +1,4 @@
--- muster 0079 — WHO TYPED A CHAT TURN, AND WHERE A NUDGE'S QUOTE CAME FROM
+-- muster 0081 — WHO TYPED A CHAT TURN, AND WHERE A NUDGE'S QUOTE CAME FROM
 -- (docs/design/session-state.md, "Covering words", step 3b-1; internal/api
 -- chief_chat_quotes.go).
 --
@@ -13,27 +13,34 @@
 --       NULL on every row written before this migration too: nothing is
 --       backfilled, so no older turn counts as typed (operator decision 13).
 --   chief_nudges.quote_source where a nudge's quote was checked: '' (no quote,
---       or a row from before 0079), 'session' (the candidate session's own
+--       or a row from before 0081), 'session' (the candidate session's own
 --       owner messages, as always) or 'chief_chat' (an owner-typed turn of the
 --       owner's Chief chat). The Chief nudges tab shows it; the paste gate reads
 --       it (MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS).
+--   chief_nudges.chief_chat_in_view  the owner's typed Chief-chat lines were
+--       in the chief's prompt when it decided (operator decision 2026-11-04,
+--       "Shadow whole decision"): such a nudge is shadow, whatever its
+--       quote's source, until the owner is on that list too. The paste gate,
+--       an agent's turn and the reconcile retry read it. false on every older
+--       row and whenever no typed line was in the window.
 --
 -- typed_by is not a foreign key: a chat row is its owner's under row-level
 -- security, and users are never deleted (disabled_at). The partial index serves
 -- the sweep's one read — an owner's typed turns on the chief, newest first —
 -- and holds no row of any other writer.
 --
--- Must apply after 0078 (the contiguity test refuses a gap). Not re-applied by
+-- Must apply after 0080 (the contiguity test refuses a gap). Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default); both columns inherit
 -- their tables' row-level security. Idempotent.
 --
--- ROLLBACK. An image from before 0079 never writes or reads either column and
+-- ROLLBACK. An image from before 0081 never writes or reads either column and
 -- runs against this schema unchanged (a decision it records has quote_source
 -- ''). To remove them:
 --   DROP INDEX IF EXISTS chat_messages_typed_by;
 --   ALTER TABLE chat_messages DROP COLUMN IF EXISTS typed_by;
 --   ALTER TABLE chief_nudges DROP COLUMN IF EXISTS quote_source;
---   DELETE FROM schema_migrations WHERE version = 79;
+--   ALTER TABLE chief_nudges DROP COLUMN IF EXISTS chief_chat_in_view;
+--   DELETE FROM schema_migrations WHERE version = 81;
 
 SET LOCAL lock_timeout = '3s';
 
@@ -43,6 +50,8 @@ CREATE INDEX IF NOT EXISTS chat_messages_typed_by
     ON public.chat_messages (agent_id, typed_by, id) WHERE typed_by IS NOT NULL;
 
 ALTER TABLE public.chief_nudges ADD COLUMN IF NOT EXISTS quote_source TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE public.chief_nudges ADD COLUMN IF NOT EXISTS chief_chat_in_view BOOLEAN NOT NULL DEFAULT false;
 
 ALTER TABLE public.chief_nudges DROP CONSTRAINT IF EXISTS chief_nudges_quote_source_check;
 ALTER TABLE public.chief_nudges ADD CONSTRAINT chief_nudges_quote_source_check

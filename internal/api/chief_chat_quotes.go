@@ -18,12 +18,12 @@ import (
 // With session state on, a stall nudge's quote may come from the owner's own
 // Chief chat as well as from the candidate session: the Chief chat is a source
 // for ANY of the owner's sessions (decision 10). Only turns muster recorded as
-// TYPED by the owner count (chat_messages.typed_by, migration 0079): written at
+// TYPED by the owner count (chat_messages.typed_by, migration 0081): written at
 // runEnteredTurn from the owner's signed-in chat doors only (ownerTypedBy — the
 // chat page's socket and the composer's POST, on a browser session). Relayed
 // answers, session questions (and `chief ask` over a token), plugin messages,
 // task events and agent-sent turns never count, fenced or not (decision 13);
-// TestEveryChatWriterIsClassified pins every writer, and rows from before 0079
+// TestEveryChatWriterIsClassified pins every writer, and rows from before 0081
 // count for nobody.
 //
 // 🔴 THE GUARDS ARE CODE, AS FOR ANY QUOTE: the chief names the quote's source

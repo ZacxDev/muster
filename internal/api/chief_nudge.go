@@ -208,7 +208,19 @@ func (s *Server) needsYouStall(jev chiefnudge.Result) bool {
 // MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS stops one already queued.
 func (s *Server) nudgeSendLive(owner int64, d chiefnudge.Decision) bool {
 	return s.chiefNudgeLiveFor(owner, (d.EpisodeID != 0 || s.sessionStateOn()) && s.needsYouStall(d.Jev()),
-		d.QuoteSource == chiefnudge.SourceChiefChat)
+		chiefChatGated(d))
+}
+
+// 🔴 chiefChatGated: decision d is under the Chief-chat gate
+// (MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS) — its quote is from the
+// Chief chat, OR the owner's typed Chief-chat lines were in the chief's prompt
+// when it decided, whatever the quote's source (operator decision 2026-11-04,
+// "Shadow whole decision": the chief may have been steered by them). ONE
+// predicate for the decision's mode, the paste gate, an agent's turn and the
+// reconcile retry, all from what is stored on the decision. With no typed line
+// in the window a session quote is gated exactly as before.
+func chiefChatGated(d chiefnudge.Decision) bool {
+	return d.QuoteSource == chiefnudge.SourceChiefChat || d.ChiefChatInView
 }
 
 func (s *Server) chiefNudgeIdle() time.Duration {
@@ -696,7 +708,10 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	p.budget--
 	d := chiefnudge.Decision{Kind: c.Kind, Key: c.Key, Host: c.Host, TmuxSession: c.TmuxSession, Window: c.Window,
 		AgentID: c.AgentID, ChatSessionID: c.ChatSessionID, Title: c.Title, StreakKey: c.StreakKey, AnchorKey: chiefnudge.Anchor(owner),
-		IdleSince: c.IdleSince, Mode: s.chiefNudgeMode(o.ID), EpisodeID: c.episodeID}
+		IdleSince: c.IdleSince, Mode: s.chiefNudgeMode(o.ID), EpisodeID: c.episodeID,
+		// The owner's typed Chief-chat lines are in the prompt below: recorded,
+		// so the whole decision is gated as a Chief-chat one (chiefChatGated).
+		ChiefChatInView: len(chat) > 0}
 	// The stall classifier first (jev.go): it runs in shadow too — measuring it
 	// on real idle stalls is the point — and a failure only means the chief
 	// decides alone.
@@ -850,7 +865,12 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Reason = chiefnudge.GuardPartial + ": the transcript read was incomplete, so no owner message can authorise a nudge; " + d.Reason
 		return s.actAsk(octx, c, d, "", false), false, ""
 	}
-	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
+	// 🔴 THE ROW KEEPS THE QUOTE REDACTED: the chief's quote is its claim, and a
+	// quote that names a secret the chief was never shown (it saw the redacted
+	// form) must not land on chief_nudges as raw text. A quote that verifies
+	// is already in the redacted form the chief was shown, so this changes
+	// nothing for it.
+	d.QuoteID, d.QuoteText = prop.QuoteID, redact.Secrets(chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes))
 	quoted, src, qerr := checkNudgeQuote(prop, owner, chat, notify)
 	d.QuoteSource = src
 	if qerr != nil {
@@ -890,7 +910,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	// stop pushed (episodeVerdict: shadow never quiets a stop). Session state
 	// on only: with it off there is no such gate.
 	if notify {
-		d.Mode = s.nudgeModeFor(o.ID, askStall, src == chiefnudge.SourceChiefChat)
+		d.Mode = s.nudgeModeFor(o.ID, askStall, chiefChatGated(d))
 	}
 	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
 	// unsuppressed (operator decision), and is not counted.
