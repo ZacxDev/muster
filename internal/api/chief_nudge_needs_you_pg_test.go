@@ -225,6 +225,9 @@ func TestAQueuedNudgeIsDroppedWhenItsEpisodeChanges(t *testing.T) {
 	if d := f.decisions(t)[0]; d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardSuperseded) {
 		t.Fatalf("decision: %+v", d)
 	}
+	// The old stop's decision is not the new stop's (streakDecision), so the
+	// new stop, unjudged, pushes once the chief's wait has passed.
+	f.advance(episodeChiefWait + time.Minute)
 	f.statePass(t)
 	if got := f.episodePushes(); len(got) != 1 {
 		t.Fatalf("pushes: %v", got)

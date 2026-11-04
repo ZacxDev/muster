@@ -28,8 +28,9 @@ whatever is still idle after that.
 | `MUSTER_CHIEF_NUDGE_IDLE` | How long a session must have been idle to count as stalled. Default `10m`, from `2m` to `24h`. |
 | `MUSTER_CHIEF_NUDGE_HOURLY_CAP` | The most live nudges per hour, across every owner. Default `6`. Shadow mode is not capped. |
 
-All five are read at boot; the boot log says which mode the sweep is in, and
-how many owners are on both live lists.
+All of them, and `MUSTER_CHIEF_NUDGE_ASK_THRESHOLD` (below), are read at boot;
+the boot log says which mode the sweep is in, and how many owners are on both
+live lists.
 
 **The kill switch** is unsetting `MUSTER_CHIEF_NUDGES` (or removing an owner
 from the live list, or from the needs-you list for their needs-you nudges) and
@@ -98,6 +99,12 @@ one-time effects, and no step fixes either:
 
 Turning it back off is the same in reverse: open episode notifications are not
 withdrawn by a process with the flag off.
+
+**Rolling out needs-you nudges (migration 0078).** A nudge an older image
+queued before the deploy carries no episode. With session state on it is still
+held to the [needs-you](#needs-you-nudges) rule when it is sent: one for a stop
+the classifier said asked is pasted only for an owner on both live lists, and
+fails with the kill switch's words otherwise.
 
 ## What counts as stalled
 
@@ -453,7 +460,10 @@ These are code, not instructions to the chief:
   `suppressed:moved_on`. With session state on, the session's open episode must
   also still be the one the decision was taken in: a nudge queued in a stop
   that has since ended is dropped at its paste (`suppressed:superseded`) and
-  the new stop pushes.
+  the new stop pushes. So is a nudge still queued when its stop was pushed
+  (its 10-minute hold ran out): you are never both pushed and nudged for one
+  stop. And a decision about an earlier stop never quiets a later one on the
+  same streak (a window gone and back): that stop pushes.
 - **Unknown is not moved on.** When the session's state cannot be read — its
   host's connection dropped, the host has sent no window list yet (its first
   read failed), or it does not report status — nothing is

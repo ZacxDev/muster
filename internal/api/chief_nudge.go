@@ -182,10 +182,14 @@ func (s *Server) needsYouStall(jev chiefnudge.Result) bool {
 
 // nudgeSendLive reports whether decision d's nudge may reach its session NOW:
 // re-read at the paste (and at an agent's turn), so taking an owner off either
-// list stops a nudge already queued. d is a needs-you nudge when it was taken
-// in a session-state episode and the classification stored on it asked.
+// list stops a nudge already queued. d is a needs-you nudge when the
+// classification stored on it asked AND it is under session state: taken in
+// an episode, or sent while session state is on. The second covers a nudge
+// the image before step 3a queued (no episode) and that is still queued after
+// the deploy: with session state on it is held to the needs-you rule like any
+// other. With session state off neither holds, so there is no such gate.
 func (s *Server) nudgeSendLive(owner int64, d chiefnudge.Decision) bool {
-	return s.chiefNudgeLiveFor(owner, d.EpisodeID != 0 && s.needsYouStall(d.Jev()))
+	return s.chiefNudgeLiveFor(owner, (d.EpisodeID != 0 || s.sessionStateOn()) && s.needsYouStall(d.Jev()))
 }
 
 func (s *Server) chiefNudgeIdle() time.Duration {
@@ -1213,7 +1217,9 @@ func (st nudgeState) movedOn() bool { return st == nudgeMovedOn || st == nudgeMo
 // (d.EpisodeID) holds only while that episode is still the session's open one.
 // A stop that ended (sustained work, its window gone) and a new one that began
 // is a different stop even if the streak reads the same, so a queued nudge for
-// the old one is DROPPED at its paste and the new stop pushes.
+// the old one is DROPPED at its paste and the new stop pushes. So is one whose
+// stop was PUSHED after the decision was taken (its hold, episodeNudgeHold,
+// ran out): the owner was told, and must not get the nudge as well.
 func (s *Server) nudgeStateNow(ctx context.Context, d chiefnudge.Decision) nudgeState {
 	st := s.nudgeStreakNow(ctx, d)
 	if st != nudgeStalled || d.EpisodeID == 0 || s.ext.Episodes == nil {
@@ -1224,6 +1230,8 @@ func (s *Server) nudgeStateNow(ctx context.Context, d chiefnudge.Decision) nudge
 	case err != nil:
 		return nudgeUnknown
 	case !ok || ep.ID != d.EpisodeID:
+		return nudgeMovedOn
+	case !d.DecidedAt.IsZero() && ep.PushedAt.After(d.DecidedAt):
 		return nudgeMovedOn
 	}
 	return nudgeStalled

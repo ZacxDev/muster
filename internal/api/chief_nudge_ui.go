@@ -206,7 +206,7 @@ func nudgeOutcomeLabel(outcome string) string {
 	case chiefnudge.OutcomeAskClosed:
 		return "Closed"
 	case chiefnudge.OutcomeNotified:
-		return "Pushed to you as the session's stop (no notice)"
+		return "Notify: no notice; the stop is not quieted, so its own push and row stand"
 	}
 	return outcome
 }
