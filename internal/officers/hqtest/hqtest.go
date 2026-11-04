@@ -81,6 +81,12 @@ type Server struct {
 	NoticeStatus int
 	// Preflight is POST /officers/{id}/preflight's answer (404 when nil).
 	Preflight map[string]any
+	// ObsCalls is every POST /officers/{id}/obs/query the fake ran, in order.
+	// ObsOff makes both obs routes answer 503 obs_unconfigured (an HQ with
+	// the route switched off); ObsEmpty makes a query answer empty.
+	ObsCalls []ObsCall
+	ObsOff   bool
+	ObsEmpty bool
 	// Before, when set, runs ahead of every request, OUTSIDE the fake's lock
 	// (so it may call SetClaim, SetBlocked, …): a test changes HQ's state at
 	// an exact point in a multi-request exchange. Set it before any request.
@@ -144,6 +150,86 @@ type Notice struct {
 type Evaluation struct {
 	Officer string
 	Body    map[string]any
+}
+
+// ObsCall is one obs query the fake ran: the officer HQ resolved from the
+// token, and the body.
+type ObsCall struct {
+	Officer string
+	Body    map[string]any
+}
+
+// ObsRegistry is the fake's named-query registry, in the shape of HQ's
+// GET /officers/{id}/obs/queries entries (civ-hq internal/api/officer_obs.go
+// ObsQueryInfo): each entry's `args` are the only request fields it takes,
+// besides query_id. Two entries — a series one and a lines one — so a test
+// can send an argument one takes and the other refuses.
+var ObsRegistry = []map[string]any{
+	{"id": "fixture_calls_by_procedure", "backend": "prometheus", "title": "calls by procedure", "claims": "how many calls each procedure served in the window",
+		"args": []string{"start", "end", "step", "procedures"}, "group_by": []string{"procedure"}, "single_step": false, "lines": false},
+	{"id": "fixture_error_lines", "backend": "loki", "title": "error lines", "claims": "a redacted sample of error lines, never a count",
+		"args": []string{"start", "end", "limit"}, "group_by": []string{}, "single_step": false, "lines": true},
+}
+
+// obsRequestFields are HQ's POST /obs/query body fields (OfficerObsQueryRequest);
+// any other field is a 400 invalid, as HQ's decoder refuses unknown fields.
+var obsRequestFields = map[string]bool{"query_id": true, "start": true, "end": true, "step": true, "tag": true,
+	"procedures": true, "min_calls": true, "name": true, "path": true, "limit": true}
+
+// obs serves the two obs routes as HQ does: the registry and caps; or one
+// named query, refusing an unknown field, an unknown query id and an argument
+// the entry does not take.
+func (s *Server) obs(w http.ResponseWriter, officer, verb, method string, body map[string]any) {
+	if s.ObsOff {
+		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "the obs query route is off on this HQ", "code": "obs_unconfigured"})
+		return
+	}
+	switch {
+	case verb == "queries" && method == http.MethodGet:
+		s.write(w, http.StatusOK, map[string]any{"queries": ObsRegistry, "limits": map[string]any{"max_range_seconds": 604800, "max_lines": 1000, "per_minute": 30}})
+	case verb == "query" && method == http.MethodPost:
+		for k := range body {
+			if !obsRequestFields[k] {
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "body must be one JSON object of the known fields", "code": "invalid"})
+				return
+			}
+		}
+		id, _ := body["query_id"].(string)
+		var entry map[string]any
+		for _, e := range ObsRegistry {
+			if e["id"] == id {
+				entry = e
+			}
+		}
+		if entry == nil {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "no registry entry " + id, "code": "unknown_query"})
+			return
+		}
+		takes := map[string]bool{"query_id": true}
+		for _, a := range entry["args"].([]string) {
+			takes[a] = true
+		}
+		for k := range body {
+			if !takes[k] {
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "query " + id + " takes no " + k, "code": "invalid"})
+				return
+			}
+		}
+		if body["start"] == nil || body["end"] == nil {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "start and end are required (RFC 3339)", "code": "invalid"})
+			return
+		}
+		s.ObsCalls = append(s.ObsCalls, ObsCall{Officer: officer, Body: body})
+		ans := map[string]any{"audit_id": len(s.ObsCalls), "query_id": id, "backend": entry["backend"], "claims": entry["claims"],
+			"status": "ok", "empty": false, "result_count": 1, "series": []any{map[string]any{"key": "fixture.procedure", "total": 42}}, "lines": []any{}}
+		if s.ObsEmpty {
+			ans["status"], ans["empty"], ans["result_count"], ans["series"] = "empty", true, 0, []any{}
+			ans["hint"] = "an empty answer is not a zero: run the positive control first"
+		}
+		s.write(w, http.StatusOK, ans)
+	default:
+		s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
+	}
 }
 
 // New starts a fake. tokens maps each officer token to the officer it acts
@@ -365,6 +451,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Notices = append(s.Notices, Notice{Officer: officer, Body: body})
 		s.write(w, http.StatusCreated, map[string]any{"posted": true})
+	case len(parts) == 3 && parts[1] == "obs":
+		s.obs(w, officer, parts[2], r.Method, body)
 	case len(parts) == 2 && parts[1] == "preflight" && r.Method == http.MethodPost:
 		if s.Preflight == nil {
 			s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
