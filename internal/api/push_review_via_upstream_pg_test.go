@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -89,10 +90,48 @@ func (f *viaUpstreamFixture) agentSets(t *testing.T, id int64, name, status stri
 	t.Helper()
 	w := f.byHand(t, notes.Note{ID: id}, name)
 	w.NoteID = &id
+	f.agentSetsAs(t, w, id, status)
+	return w.Name
+}
+
+// agentSetsAs has the already-created worker w queue status on reference id.
+func (f *viaUpstreamFixture) agentSetsAs(t *testing.T, w agents.Agent, id int64, status string) {
+	t.Helper()
 	if text := f.srv.dispatchAgentTool(f.asOwner, w, "agent_set_task_status", `{"Status":"`+status+`"}`); !strings.Contains(text, `"queued":true`) {
 		t.Fatalf("agent_set_task_status %s on reference %d did not queue: %s", status, id, text)
 	}
-	return w.Name
+}
+
+// settleAllWithoutSnapshot claims and reports done, with no snapshot, every
+// write queued so far — one claim at a time, as the per-task order hands them
+// out — and returns how many it settled.
+func (f *viaUpstreamFixture) settleAllWithoutSnapshot(t *testing.T) int {
+	t.Helper()
+	n := 0
+	for i := 0; i < 20; i++ {
+		ids := f.claimAll(t)
+		if len(ids) == 0 {
+			return n
+		}
+		for _, wid := range ids {
+			f.settle(t, wid, nil)
+			n++
+		}
+	}
+	t.Fatal("settleAllWithoutSnapshot: still claiming after 20 rounds")
+	return n
+}
+
+// unconfirmed is how many of task id's status writes no snapshot move has
+// confirmed or spent yet (task_ref_writes.confirmed_at IS NULL).
+func (f *viaUpstreamFixture) unconfirmed(t *testing.T, id int64) int {
+	t.Helper()
+	var n int
+	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM task_ref_writes
+		WHERE note_id = $1 AND kind = 'status' AND confirmed_at IS NULL`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestAQueuedWriteConfirmedUpstreamNamesItsSource(t *testing.T) {
@@ -188,6 +227,78 @@ func TestAQueuedWriteConfirmedUpstreamNamesItsSource(t *testing.T) {
 		f.expect(t, id,
 			fmt.Sprintf("Task #%d ready for review · upstream (tracker)", id),
 			fmt.Sprintf("Task #%d ready for review · upstream (tracker)", id))
+	})
+
+	// 🔴 A MOVE DOES NOT SPEND A DONE WRITE WHOSE OWN SNAPSHOT IS STILL TO COME
+	// (audit round 1). The agent queued in_progress then ready_for_review; the
+	// plugin applied both and reported each done without a snapshot; the
+	// in_progress snapshot then arrived late. That move confirms the
+	// in_progress write, and must leave the later ready_for_review write for
+	// the snapshot that reports it. Then the upstream moves the task away and
+	// back by itself: that one is the upstream's.
+	t.Run("a late snapshot of an earlier write does not spend a later write's confirmation", func(t *testing.T) {
+		f := newViaUpstreamFixture(t)
+		key := f.key(t)
+		id := f.mustUpsert(t, key, refSnap("open", "to do", t0, nil))
+		w := f.byHand(t, notes.Note{ID: id}, "twostepworker")
+		w.NoteID = &id
+		f.agentSetsAs(t, w, id, notes.StatusInProgress)
+		f.agentSetsAs(t, w, id, notes.StatusReadyForReview)
+		if n := f.settleAllWithoutSnapshot(t); n != 2 {
+			t.Fatalf("settled %d writes, want the two queued", n)
+		}
+		f.mustUpsert(t, key, refSnap("in_progress", "in progress", t0.Add(time.Minute), nil))
+		f.mustUpsert(t, key, refSnap("ready_for_review", "awaiting review", t0.Add(2*time.Minute), nil))
+		f.mustUpsert(t, key, refSnap("in_progress", "reopened", t0.Add(3*time.Minute), nil))
+		f.mustUpsert(t, key, refSnap("ready_for_review", "awaiting review", t0.Add(4*time.Minute), nil))
+		f.expect(t, id,
+			fmt.Sprintf("Task #%d ready for review · agent %s via tracker", id, w.Name),
+			fmt.Sprintf("Task #%d ready for review · upstream (tracker)", id))
+	})
+
+	// The NEWEST unconfirmed write for the status is the one a move confirms,
+	// and the older one is spent with it: the upstream's later move away and
+	// back names neither agent.
+	t.Run("of two unconfirmed writes for the same status the newest wins", func(t *testing.T) {
+		f := newViaUpstreamFixture(t)
+		key := f.key(t)
+		id := f.mustUpsert(t, key, refSnap("in_progress", "in progress", t0, nil))
+		f.agentSets(t, id, "firstworker", notes.StatusReadyForReview)
+		second := f.agentSets(t, id, "secondworker", notes.StatusReadyForReview)
+		if n := f.settleAllWithoutSnapshot(t); n != 2 {
+			t.Fatalf("settled %d writes, want the two queued", n)
+		}
+		f.mustUpsert(t, key, refSnap("ready_for_review", "awaiting review", t0.Add(time.Minute), nil))
+		f.mustUpsert(t, key, refSnap("in_progress", "reopened", t0.Add(2*time.Minute), nil))
+		f.mustUpsert(t, key, refSnap("ready_for_review", "awaiting review", t0.Add(3*time.Minute), nil))
+		f.expect(t, id,
+			fmt.Sprintf("Task #%d ready for review · agent %s via tracker", id, second),
+			fmt.Sprintf("Task #%d ready for review · upstream (tracker)", id))
+	})
+
+	// 🔴 A RE-SAVE OF THE STATUS THE ROW ALREADY HAS IS NOT A MOVE, AND
+	// CONFIRMS NOTHING. Two identical snapshots raced: both read the old
+	// status, the first moved the row and confirmed the newest write, and the
+	// second's SetStatus replaced the status with itself. Called here at
+	// setNoteStatus — the step both racers reach — so the order is
+	// deterministic. Before the guard the second took the older write.
+	t.Run("a second identical snapshot does not take an older write", func(t *testing.T) {
+		f := newViaUpstreamFixture(t)
+		key := f.key(t)
+		id := f.mustUpsert(t, key, refSnap("in_progress", "in progress", t0, nil))
+		f.agentSets(t, id, "olderworker", notes.StatusReadyForReview)
+		f.agentSets(t, id, "newerworker", notes.StatusReadyForReview)
+		at := t0.Add(time.Minute)
+		f.mustUpsert(t, key, refSnap("ready_for_review", "awaiting review", at, nil))
+		if n := f.unconfirmed(t, id); n != 1 {
+			t.Fatalf("after the first snapshot %d writes unconfirmed, want 1 (the older, still pending)", n)
+		}
+		if _, err := f.srv.setNoteStatus(notes.OnlyIfSnapshotAt(f.asOwner, at), writerPluginReference, id, notes.StatusReadyForReview); err != nil {
+			t.Fatalf("the second, identical snapshot's status: %v", err)
+		}
+		if n := f.unconfirmed(t, id); n != 1 {
+			t.Fatalf("after the identical second snapshot %d writes unconfirmed, want 1: a re-save took the older write", n)
+		}
 	})
 
 	// A write the plugin reports FAILED did not land: the upstream's own move

@@ -10,7 +10,8 @@
 --   task_ref_writes.confirmed_at  when a snapshot's status move was matched to
 --                                 this write (same task, same status), or when
 --                                 a later move spent it (a write already done
---                                 upstream that a move did not match). NULL:
+--                                 upstream, queued before the write that move
+--                                 matched, or any when it matched none). NULL:
 --                                 not yet confirmed.
 --
 -- 🔴 A WRITE CONFIRMS AT MOST ONE MOVE. Without the mark, a write done days ago

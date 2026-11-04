@@ -583,10 +583,12 @@ type Store interface {
 	// ConfirmRefStatusWrite is called after a snapshot moved reference noteID
 	// to status: it marks, and returns (true), the queued status write that
 	// move confirms — the newest unconfirmed, undismissed, not-failed status
-	// write on the task asking for exactly that status — and marks every
-	// other unconfirmed write already DONE upstream as spent. No such write →
-	// false: the move is the upstream's own. A write confirms at most one move
-	// (0079). See PGStore.ConfirmRefStatusWrite.
+	// write on the task asking for exactly that status — and marks as spent
+	// every other unconfirmed write already DONE upstream that was queued
+	// before it (every one, when none matched). No such write → false: the
+	// move is the upstream's own. A write confirms at most one move (0079).
+	// Call it only for a real move, never a re-save of the same status. See
+	// PGStore.ConfirmRefStatusWrite.
 	ConfirmRefStatusWrite(ctx context.Context, noteID int64, status string) (RefWrite, bool, error)
 	// RefWrites returns task noteID's writes that are not done (pending,
 	// claimed, failed) and not dismissed, oldest first: the task page's

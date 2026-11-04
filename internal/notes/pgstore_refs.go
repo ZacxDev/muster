@@ -461,11 +461,29 @@ func (s *PGStore) FinishRefWrite(ctx context.Context, pluginID, id int64, ok boo
 // counts (the snapshot may report it before the plugin's result does); a
 // failed one never does — it did not land.
 //
-// 🔴 A MOVE ALSO SPENDS EVERY WRITE ALREADY DONE UPSTREAM, matched or not. A
-// write done while the task already had its status moved nothing, and left
+// 🔴 A MOVE ALSO SPENDS THE WRITES ALREADY DONE UPSTREAM THAT CAME BEFORE IT.
+// A write done while the task already had its status moved nothing, and left
 // unspent it would name its author on a later, unrelated upstream move back to
-// that status. A pending or claimed write of another status is left: it has
-// not landed yet, and the move that reports it is still to come.
+// that status. Which done writes "came before" the move:
+//
+//   - The move matched write P: only done writes with id < P. The plugin
+//     applies a task's writes in id order (ClaimRefWrites hands out one at a
+//     time per task), so P's status landed after every earlier write — they
+//     are behind it. A done write AFTER P was applied after P's status was
+//     already upstream, so it asked for a different status (P is the newest
+//     for its own), it moved the upstream, and the snapshot that reports it
+//     is still to come: spending it here would let a late snapshot of P use
+//     up its confirmation (audit round 1: in_progress then ready_for_review,
+//     both done, the in_progress snapshot arriving late).
+//   - The move matched nothing (the upstream's own change): every done write
+//     — none of them is what this move reports, and each is behind it.
+//
+// A pending or claimed write that is not P is never spent: it has not landed
+// yet, and the move that reports it is still to come.
+//
+// The caller calls this only for a real MOVE (the status differs from the one
+// the row had): a re-save of the same status — a second, identical snapshot
+// that raced the first — confirms and spends nothing (api.setNoteStatus).
 func (s *PGStore) ConfirmRefStatusWrite(ctx context.Context, noteID int64, status string) (RefWrite, bool, error) {
 	var got RefWrite
 	err := scanRefWrite(s.pool.QueryRow(ctx, `
@@ -478,7 +496,8 @@ func (s *PGStore) ConfirmRefStatusWrite(ctx context.Context, noteID int64, statu
 		), spent AS (
 			UPDATE task_ref_writes SET confirmed_at = now()
 			 WHERE note_id = $1 AND kind = 'status' AND confirmed_at IS NULL
-			   AND (id IN (SELECT id FROM pick) OR state = 'done')
+			   AND (id IN (SELECT id FROM pick)
+			        OR (state = 'done' AND (NOT EXISTS (SELECT 1 FROM pick) OR id < (SELECT id FROM pick))))
 		)
 		SELECT `+refWriteCols+` FROM task_ref_writes w JOIN notes n ON n.id = w.note_id
 		 WHERE w.id IN (SELECT id FROM pick)`, noteID, status), &got)

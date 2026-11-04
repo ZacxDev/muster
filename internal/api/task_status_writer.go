@@ -149,10 +149,13 @@ func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int6
 		status == notes.StatusComplete && ok && prev != notes.StatusComplete {
 		s.stopChiefAgentOnComplete(ctx, n)
 	}
-	if err == nil && writer == writerPluginReference {
+	if prev, ok := previous(); err == nil && writer == writerPluginReference && ok && prev != status {
 		// A snapshot moved a reference: was it one of the queued writes landing
 		// upstream? The match (same task, same status, not yet confirmed) is the
 		// store's, and spends the write, so it names at most one move.
+		// Only a real MOVE asks: a re-save of the status the row already had —
+		// the second of two identical snapshots that raced — is not one, and
+		// would otherwise take an older, unrelated write for that status.
 		// Best-effort: a failed lookup leaves the move the upstream's own.
 		if w, ok, cerr := s.ext.Notes.ConfirmRefStatusWrite(ctx, id, status); cerr != nil {
 			s.logger.Printf("tasks: task %d: match the snapshot's %s to a queued write: %v", id, status, cerr)

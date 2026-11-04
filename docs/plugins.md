@@ -377,8 +377,10 @@ counts, because the snapshot may arrive before your result does. So an agent
 that queued `in_progress` is not named when the upstream then sets
 `ready_for_review`. Once a write has reported a move it never reports another.
 A write already done upstream is also used up by the next move, whatever its
-status. A later upstream move back to that status therefore reads as the
-upstream's.
+status, unless it was queued after the write that move reports: that later
+write's own snapshot is still to come. A later upstream move back to a used-up
+write's status therefore reads as the upstream's. A snapshot that leaves the
+status as it was reports no write.
 
 But an upstream close does **not** stop the agent your chief started
 on the task ([below](#completing-a-task-stops-the-chiefs-agent)): an upstream
