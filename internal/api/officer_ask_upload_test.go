@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -218,6 +219,28 @@ func TestTheUploadRouteChecksTheBytesWhateverSentThem(t *testing.T) {
 	}
 	if imgs := r.hq.AskImages(); len(imgs) != 1 || len(imgs[0].Data) != 5<<20 {
 		t.Fatalf("HQ stored %d images, want the one 5 MiB image", len(imgs))
+	}
+}
+
+// TestAnUploadHQRefusesForTheCredentialIsNotTheAgentsFault: HQ answering the
+// upload 401 or 403 is HQ refusing muster's officer credential (muster has
+// already accepted the agent's own token), so the pod gets 502
+// officer_credential_rejected naming the officer, never HQ's 401/403 (which
+// `ccd ask-image` would report as its own token being bad). Any other HQ
+// refusal keeps HQ's status.
+func TestAnUploadHQRefusesForTheCredentialIsNotTheAgentsFault(t *testing.T) {
+	r, srv, _, _ := uploadRig(t)
+	for _, hq := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		r.hq.SetStatus(hq)
+		code, out := postAskImage(t, srv.URL, "?filename=x.png", askTokB, askPNGOf(64))
+		msg, _ := out["error"].(string)
+		if code != http.StatusBadGateway || out["code"] != "officer_credential_rejected" || !strings.Contains(msg, "officer "+offB) || !strings.Contains(msg, strconv.Itoa(hq)) {
+			t.Errorf("HQ %d: muster answered %d %v, want 502 officer_credential_rejected naming %s", hq, code, out, offB)
+		}
+	}
+	r.hq.SetStatus(http.StatusNotFound)
+	if code, out := postAskImage(t, srv.URL, "?filename=x.png", askTokB, askPNGOf(64)); code != http.StatusNotFound || out["code"] != "forced" {
+		t.Errorf("HQ 404: muster answered %d %v, want HQ's own 404", code, out)
 	}
 }
 

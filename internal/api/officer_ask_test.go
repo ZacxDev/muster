@@ -163,7 +163,8 @@ func askRefusal(t *testing.T, out string) (msg string, status float64, code stri
 // TestAnAsksRefusalsAreHQsWithTheirCode: muster checks none of HQ's limits,
 // so what HQ refuses comes back with HQ's status and code, in the error text
 // and in refused. A deadline outside HQ's range is passed through verbatim and
-// HQ's 422 is the answer; so are an unknown recipient (422), an item this
+// HQ's 400 invalid is the answer, as for its other input limits (image count,
+// option count and length); so are an unknown recipient (422), an item this
 // instance never claimed (409 lease_lost), an unknown item (404, HQ's own
 // message), and forced 409 too_many_open, 422 recipient_muted, 422
 // recipient_unreachable (an ask that would reach nobody) and 429
@@ -181,11 +182,25 @@ func TestAnAsksRefusalsAreHQsWithTheirCode(t *testing.T) {
 
 	r.hq.ResetRequests()
 	msg, status, code := askRefusal(t, ask(item, "design-lead", map[string]any{"deadline_seconds": 60}))
-	if status != 422 || code != "invalid_deadline" || !strings.Contains(msg, "422 invalid_deadline") || !strings.Contains(msg, "300 to 259200") {
+	if status != 400 || code != "invalid" || !strings.Contains(msg, "400 invalid") || !strings.Contains(msg, "deadline_seconds must be 300-259200") {
 		t.Errorf("a deadline HQ refuses: %q %v %q", msg, status, code)
 	}
 	if reqs := r.hq.Requests(); len(reqs) != 1 || reqs[0].Body["deadline_seconds"] != float64(60) {
 		t.Errorf("the deadline was not passed through verbatim: %+v", reqs)
+	}
+	// HQ's other input limits are 400 invalid too, with HQ's own message.
+	for _, tc := range []struct {
+		extra map[string]any
+		msg   string
+	}{
+		{map[string]any{"image_ids": []string{"a", "b", "c", "d", "e"}}, "at most 4 images"},
+		{map[string]any{"options": []string{"1", "2", "3", "4", "5", "6", "7"}}, "at most 6 options"},
+		{map[string]any{"options": []string{strings.Repeat("x", 41)}}, "options[0] must be 1-40 characters"},
+		{map[string]any{"deadline_seconds": 259201}, "deadline_seconds must be 300-259200"},
+	} {
+		if msg, status, code := askRefusal(t, ask(item, "design-lead", tc.extra)); status != 400 || code != "invalid" || !strings.Contains(msg, tc.msg) {
+			t.Errorf("HQ's limit %q: %q %v %q", tc.msg, msg, status, code)
+		}
 	}
 
 	out := ask("999", "design-lead", nil)
