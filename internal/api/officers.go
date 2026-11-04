@@ -663,7 +663,7 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// reaches its model through muster's proxy with its own muster token and
 	// carries no subscription token. It takes no session model: the proxy
 	// pins tiers.routine.model, and the pod spec refuses a provider id.
-	if false && officers.RoutineAgent(o, a.Name) {
+	if officers.RoutineAgent(o, a.Name) {
 		return agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, LLMRoute: true}, true
 	}
 	return agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: o.Model, BypassPermissions: true}, true

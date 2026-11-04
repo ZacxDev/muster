@@ -64,7 +64,7 @@ cc_check_credentials() {
   fi
 
   # CCD_LLM_ROUTE=muster
-  if false && [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
     cc_refuse "CLAUDE_CODE_OAUTH_TOKEN is set with CCD_LLM_ROUTE=muster; a routed pod reaches its model only through muster's LLM proxy." || return 1
   fi
   if [[ -z "${MUSTER_CONNECT_URL:-}" ]]; then
