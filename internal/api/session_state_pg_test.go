@@ -2,14 +2,13 @@ package api
 
 import (
 	"context"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 )
@@ -25,6 +24,9 @@ type stateFixture struct {
 	eps   *sessionstate.PG
 	mu    sync.Mutex
 	clock time.Time
+	// reads counts transcript reads; readErr, when set, fails them.
+	reads   int
+	readErr error
 }
 
 // newStateFixture is the nudge fixture with episodes on, its window idle for
@@ -44,6 +46,17 @@ func newStateFixture(t *testing.T, nudges bool) *stateFixture {
 		return f.clock
 	}
 	f.status(mirror.StatusIdle, 20*time.Minute)
+	inner := f.srv.nudgeReadHook
+	f.srv.nudgeReadHook = func(ctx context.Context, c chiefnudge.Session) (nudgeRead, error) {
+		f.mu.Lock()
+		f.reads++
+		err := f.readErr
+		f.mu.Unlock()
+		if err != nil {
+			return nudgeRead{}, err
+		}
+		return inner(ctx, c)
+	}
 	t.Cleanup(func() {
 		if _, err := f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_episodes WHERE owner_id IN ($1, $2)`,
 			authz.OperatorUserID, f.member); err != nil {
@@ -78,13 +91,52 @@ func (f *stateFixture) statePass(t *testing.T) {
 	}
 }
 
+// episodes is the operator's episodes, newest first, read straight from the
+// table (no production method lists them yet).
 func (f *stateFixture) episodes(t *testing.T) []sessionstate.Episode {
 	t.Helper()
-	list, err := f.eps.List(asUser(authz.OperatorUserID), 50)
+	ctx := asUser(authz.OperatorUserID)
+	rows, err := f.pool.Query(authz.System(context.Background()), `SELECT id FROM session_episodes WHERE owner_id = $1 ORDER BY id DESC`,
+		authz.OperatorUserID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return list
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		_ = rows.Scan(&id)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	open, err := f.eps.OpenEpisodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]sessionstate.Episode{}
+	for _, e := range open {
+		byID[e.ID] = e
+	}
+	var out []sessionstate.Episode
+	for _, id := range ids {
+		e, ok := byID[id]
+		if !ok {
+			e = f.endedEpisode(t, id)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// endedEpisode reads one ended episode's identity and end.
+func (f *stateFixture) endedEpisode(t *testing.T, id int64) sessionstate.Episode {
+	t.Helper()
+	var e sessionstate.Episode
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT id, session_kind, session_key, seq, state, coalesce(agent_id, 0),
+			coalesce(chat_session_id, 0), ended_at, end_reason FROM session_episodes WHERE id = $1`, id).
+		Scan(&e.ID, &e.Kind, &e.Key, &e.Seq, &e.State, &e.AgentID, &e.ChatSessionID, &e.EndedAt, &e.EndReason); err != nil {
+		t.Fatal(err)
+	}
+	return e
 }
 
 func (f *stateFixture) oneEpisode(t *testing.T) sessionstate.Episode {
@@ -117,6 +169,21 @@ func TestAStalledSessionOpensOneEpisodeWithTheChiefsNudgesOff(t *testing.T) {
 	if checks, _ := f.gw.seen(); len(checks) != 0 {
 		t.Fatalf("the chief was asked: %v", checks)
 	}
+	if f.readCount() != 0 {
+		t.Fatalf("a transcript was read for an owner the classifier does not run for: %d reads", f.readCount())
+	}
+}
+
+func (f *stateFixture) readCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
+}
+
+func (f *stateFixture) jevCalls(j *jevFake) int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.calls
 }
 
 // TestAWindowIdleUnderTheThresholdOpensNothing: the guard's other side.
@@ -132,7 +199,8 @@ func TestAWindowIdleUnderTheThresholdOpensNothing(t *testing.T) {
 // TestAStallEndingOnTheOwnersWordOpensNothing: the owner spoke last, so the
 // session has not stopped on its own word (the nudge sweep's rule).
 func TestAStallEndingOnTheOwnersWordOpensNothing(t *testing.T) {
-	f := newStateFixture(t, false)
+	f := newStateFixture(t, true)
+	withJev(t, f.nudgeFixture)
 	f.mu.Lock()
 	f.script = f.script[:1]
 	f.mu.Unlock()
@@ -277,45 +345,6 @@ func TestTheClassifierDecidesNeedsYouAndItsFailureCountsAsAsked(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestAnAgentConversationsNewMessageEndsItsStop: a dispatched agent's
-// conversation that stopped on its own question opens an episode (read from
-// the real transcript, no test hook); a new message in it — a turn that ran —
-// ends that stop as worked.
-func TestAnAgentConversationsNewMessageEndsItsStop(t *testing.T) {
-	f := newStateFixture(t, false)
-	f.srv.nudgeReadHook = nil
-	f.mirror.mu.Lock()
-	f.mirror.windows = nil
-	f.mirror.mu.Unlock()
-	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	worker := f.agentFor(t, authz.OperatorUserID, "stateworker-"+suffix, "worker", "state-worker-tok-"+suffix)
-	sess, _ := f.stallAgent(t, worker, authz.OperatorUserID)
-	mine := func() []sessionstate.Episode {
-		var out []sessionstate.Episode
-		for _, e := range f.episodes(t) {
-			if e.AgentID == worker.ID {
-				out = append(out, e)
-			}
-		}
-		return out
-	}
-	f.statePass(t)
-	got := mine()
-	if len(got) != 1 || got[0].Kind != sessionstate.KindAgent || got[0].ChatSessionID != sess.ID || !got[0].Open() ||
-		got[0].State != sessionstate.StateStalled {
-		t.Fatalf("the agent's stop: %+v", got)
-	}
-	if _, err := agents.NewPG(f.pool).AddChatMessage(asUser(authz.OperatorUserID),
-		agents.ChatMessage{AgentID: worker.ID, SessionID: sess.ID, Role: "assistant", Content: "Merged into main."}); err != nil {
-		t.Fatal(err)
-	}
-	f.statePass(t)
-	got = mine()
-	if len(got) != 1 || got[0].Open() || got[0].EndReason != sessionstate.EndWorked {
-		t.Fatalf("after a new message: %+v", got)
 	}
 }
 

@@ -87,8 +87,6 @@ ALTER TABLE public.session_episodes ALTER COLUMN owner_id
 
 CREATE UNIQUE INDEX IF NOT EXISTS session_episodes_one_open
     ON public.session_episodes (owner_id, session_kind, session_key) WHERE ended_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_session_episodes_owner_opened
-    ON public.session_episodes (owner_id, opened_at DESC);
 
 ALTER TABLE public.session_episodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.session_episodes FORCE  ROW LEVEL SECURITY;

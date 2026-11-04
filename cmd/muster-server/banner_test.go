@@ -425,6 +425,10 @@ var bannerLedger = []string{
 	// owner's sessions get pasted into — so the log must say which state this
 	// is, shadow or live.
 	envChiefNudges,
+	// SESSION STATE IS LEDGERED: ON, a pass reads every owner's sessions every
+	// 30 s and, where the chief's nudges classify, the same classifier runs on
+	// it — so the log must say which state this is.
+	envSessionState,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).

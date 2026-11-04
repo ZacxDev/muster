@@ -317,18 +317,45 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 // nudge sweep and any report agree on who is stalled. inFlight (may be nil)
 // names sessions with a live nudge decision in flight; they read as OpenAsk.
 func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []nudgeCandidate {
+	var hs []mirror.HostView
+	if s.ext.Mirror != nil {
+		hs = s.ext.Mirror.Hosts(octx)
+	}
+	return s.stallFacts(octx, inFlight, hs, false).sessions
+}
+
+// stallRead is one read of the stall facts (stallFacts).
+type stallRead struct {
+	sessions []nudgeCandidate
+	// agentsRead: the owner's agent list was read. False, the read failed (or
+	// there is no agent store): no agent is listed, and an absence proves
+	// nothing about any agent.
+	agentsRead bool
+}
+
+// stallFacts is stallInputs over hs, ONE read of the owner's hosts that a
+// caller judging absences (session state's "gone") also reads, so a host
+// cannot be online in one read and offline in the other. hermes also lists
+// HERMES windows naming their session (runtime-qualified, as opencode): the
+// stall nudges never judge them (nudgeWindowKey), session state gives them
+// episodes (docs/design/session-state.md, default D3).
+func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs []mirror.HostView, hermes bool) stallRead {
 	owner := requestOwner(octx)
 	now := s.now()
 	asked := s.nudgeOpenAskers(octx)
 	var all []nudgeCandidate
+	read := stallRead{}
 	if s.ext.Mirror != nil {
 		seen := map[string]bool{}
-		for _, h := range s.ext.Mirror.Hosts(octx) {
+		for _, h := range hs {
 			if !h.Online || !h.StatusReport {
 				continue
 			}
 			for _, w := range h.Windows {
 				key, runtime := nudgeWindowKey(w)
+				if key == "" && hermes && !w.Claude && w.AgentRuntime() == mirror.RuntimeHermes && w.AgentSession != "" {
+					key, runtime = w.SessionKey(), w.AgentRuntime()
+				}
 				if key == "" || seen[key] {
 					continue
 				}
@@ -355,7 +382,11 @@ func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []n
 		if err != nil {
 			s.logger.Printf("chief nudges: owner %d: agents: %v", owner, err)
 		}
+		read.agentsRead = err == nil
 		isChief := chiefPredicate(list)
+		// 🔴 ONE PROVISIONER LIST PER READ, NOT ONE PER AGENT (live_status.go:
+		// liveStatus is for a single-agent path).
+		idx := s.instanceIndex(octx)
 		for _, a := range list {
 			_, _, officer := s.officerOf(a)
 			agentKey := "agent:" + strconv.FormatInt(a.ID, 10)
@@ -363,7 +394,7 @@ func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []n
 				Label: firstNonBlank(a.DisplayName, a.Name), OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
 				OpenAsk: asked[agentKey]}
 			if base.OtherUser || base.Chief || base.Officer ||
-				!agentCanBeSent(s.liveStatus(octx, a)) || agents.KickoffOwed(a) || s.turns.busy(a.ID) {
+				!agentCanBeSent(liveStatusIndexed(a, idx)) || agents.KickoffOwed(a) || s.turns.busy(a.ID) {
 				all = append(all, nudgeCandidate{Session: base, agent: a}) // status "": not idle
 				continue
 			}
@@ -393,7 +424,8 @@ func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []n
 			}
 		}
 	}
-	return all
+	read.sessions = all
+	return read
 }
 
 // nudgeWindowKey is the session key a mirrored window is judged under, and its
@@ -499,7 +531,8 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	for i := range owner {
 		owner[i].Text = redact.Secrets(chiefnudge.Cut(owner[i].Text, chiefnudge.MaxOwnerMessageRunes))
 	}
-	last.Text = redact.Secrets(chiefnudge.Cut(last.Text, chiefnudge.MaxLastRunes))
+	lastRaw := last.Text
+	last.Text = stallClassifierText(lastRaw)
 	p.budget--
 	d := chiefnudge.Decision{Kind: c.Kind, Key: c.Key, Host: c.Host, TmuxSession: c.TmuxSession, Window: c.Window,
 		AgentID: c.AgentID, ChatSessionID: c.ChatSessionID, Title: c.Title, StreakKey: c.StreakKey, AnchorKey: chiefnudge.Anchor(owner),
@@ -512,9 +545,16 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	// asked about again next pass, and reuses the Result kept for it
 	// (chief_nudge_retry.go) rather than bill the owner's key again.
 	rkey := nudgeRetryKey(o.ID, c.Session)
+	//
+	// …and once per streak whichever pass ran first: session state's pass may
+	// have classified it, and stored the answer on the session's episode
+	// (session_state.go), which outlives a restart.
 	jev, cached := s.nudgeRetry.cachedJev(rkey, s.now())
+	if !cached {
+		jev, cached = s.episodeJevFor(octx, c.Session)
+	}
 	if cl := s.ext.ChiefNudge.Classifier; cl != nil && !cached {
-		jev = cl.Classify(octx, o.ID, last.Text)
+		jev = s.classifyStall(octx, cl, o.ID, lastRaw)
 		if jev.Err != "" {
 			s.logger.Printf("chief nudges: %s %s: the stall classifier: %s; the chief decides alone", c.Kind, c.Key, jev.Err)
 		}

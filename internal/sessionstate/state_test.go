@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// TestClassifyPrecedence: needs_you > stalled > working, and an answerable
+// TestStateOfPrecedence: needs_you > stalled > working, and an answerable
 // wait is needs_you with NO episode (the ask is the owner's item).
-func TestClassifyPrecedence(t *testing.T) {
+func TestStateOfPrecedence(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		f       Facts
@@ -22,7 +22,7 @@ func TestClassifyPrecedence(t *testing.T) {
 		{"an ask score alone is not a stall", Facts{AskStall: true}, StateWorking, false},
 		{"nothing", Facts{}, StateWorking, false},
 	} {
-		if s, e := Classify(c.f); s != c.state || e != c.episode {
+		if s, e := StateOf(c.f); s != c.state || e != c.episode {
 			t.Errorf("%s: %s %v, want %s %v", c.name, s, e, c.state, c.episode)
 		}
 	}

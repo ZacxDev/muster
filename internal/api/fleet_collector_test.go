@@ -218,14 +218,23 @@ func TestTheToolEncoderShowsWhatTheMailWithholds(t *testing.T) {
 // window-history reader for a report; an encoder bypassing buildFleetReport; a
 // second stall classifier) or SHRINKS (a consumer that stopped using the shared
 // path). Adding the check-in builder is an intended change here, as was adding
-// session state's pass (session_state.go), which reads the same stall facts.
+// session state's pass (session_state.go), which reads the same stall facts
+// (stallFacts) and the same classifier (classifyStall).
 func TestTheCollectorAndStallLedger(t *testing.T) {
 	want := map[string]string{
 		"WindowHistory":     "api.collectFleet",
 		"collectFleet":      "api.buildFleetReport",
 		"encodeFleetReport": "api.buildFleetReport",
-		"stallInputs":       "api.nudgeCandidates,api.sessionStateOwner",
+		"stallInputs":       "api.nudgeCandidates",
+		"stallFacts":        "api.sessionStateOwner,api.stallInputs",
 		"nudgeCandidates":   "api.sweepOwnerNudges",
+		// 🔴 THE STALL CLASSIFIER'S ONE DOOR (session_state.go): every call to
+		// the classifier is classifyStall's, which redacts and cuts its input,
+		// and its two callers are the nudge sweep and session state. A third
+		// caller of Classify — an unredacted one — fails here. (jobs.Classify,
+		// a different function of the same name, is runJobTurn's.)
+		"classifyStall": "api.decideNudge,api.sessionStateClassify",
+		"Classify":      "api.classifyStall,api.runJobTurn",
 	}
 	got := map[string][]string{}
 	root := filepath.Join("..", "..")

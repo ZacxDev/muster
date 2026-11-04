@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 )
 
 // Episode is one row of session_episodes: one stop of one session.
@@ -49,18 +49,19 @@ func (e Episode) Open() bool { return e.EndedAt.IsZero() }
 // Classification is the stall classifier's answer as an episode keeps it
 // (chiefnudge.Result's fields; Err its error class, "" = none).
 type Classification struct {
-	Label                            string
+	Label                               string
 	NeedsInput, AsksPermission, Neither float64
-	AskScore                         float64
-	Model                            string
-	Err                              string
+	AskScore                            float64
+	Model                               string
+	Err                                 string
 }
 
 // Store is session_episodes, under row-level security: every method but
 // Owners acts as ctx's principal, on its rows only.
 type Store interface {
-	// Owners is every user who is not disabled (system scope): the owners the
-	// state pass visits, each then as its own principal.
+	// Owners is every user who is not disabled: the owners the state pass
+	// visits, each then as its own principal. The stall nudges' read
+	// (chiefnudge.PG.Owners), one query and one system-scope helper.
 	Owners(ctx context.Context) ([]int64, error)
 	// Open opens an episode for the caller's session (e.Kind, e.Key), at the
 	// next seq. 🔴 THE CLAIM: claimed is false, and nothing is written, when
@@ -72,14 +73,14 @@ type Store interface {
 	// Observe writes what a pass saw of open episode id: its state, whether it
 	// waits, where it is and its streak, and its run of work.
 	Observe(ctx context.Context, id int64, o Observation) error
-	// Classify stores the classifier's answer for streak on open episode id,
-	// and the leave rule's input it gives.
-	Classify(ctx context.Context, id int64, streak string, c Classification, asked bool) error
+	// SetClassification stores the classifier's answer for streak on open
+	// episode id, and the leave rule's input it gives.
+	SetClassification(ctx context.Context, id int64, streak string, c Classification, asked bool) error
+	// OpenFor is the caller's open episode for session (kind, key), if any.
+	OpenFor(ctx context.Context, kind, key string) (Episode, bool, error)
 	// End ends open episode id for reason; ended false when it had already
 	// ended.
 	End(ctx context.Context, id int64, reason string, at time.Time) (bool, error)
-	// List is the caller's newest episodes, open and ended.
-	List(ctx context.Context, limit int) ([]Episode, error)
 }
 
 // Observation is what Store.Observe writes.
@@ -101,11 +102,6 @@ func NewPG(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
 
 // ErrBadEpisode: an episode a write refused before it reached the database.
 var ErrBadEpisode = errors.New("sessionstate: not a valid episode")
-
-// sys is the store's one system-scope helper (internal/authz's ledger names
-// it): the owners the state pass visits. Every episode is then read and
-// written as its own owner.
-func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
 const cols = `id, owner_id, session_kind, session_key, seq, state, waiting, asked, runtime, mirror_host, mirror_session, mirror_window,
 	window_index, coalesce(agent_id, 0), coalesce(chat_session_id, 0), streak_key, classified_streak,
@@ -171,22 +167,17 @@ func cut(s string, n int) string {
 
 func validState(s string) bool { return s == StateNeedsYou || s == StateStalled }
 
-// Owners implements Store.
+// Owners implements Store, through chiefnudge.PG.Owners.
 func (p *PG) Owners(ctx context.Context) ([]int64, error) {
-	rows, err := p.pool.Query(sys(ctx), `SELECT id FROM users WHERE disabled_at IS NULL ORDER BY id`)
+	os, err := chiefnudge.NewPG(p.pool).Owners(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
+	out := make([]int64, 0, len(os))
+	for _, o := range os {
+		out = append(out, o.ID)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Open implements Store.
@@ -215,17 +206,22 @@ func (p *PG) Open(ctx context.Context, e Episode) (Episode, bool, error) {
 	return out, true, nil
 }
 
+// OpenFor implements Store.
+func (p *PG) OpenFor(ctx context.Context, kind, key string) (Episode, bool, error) {
+	e, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM session_episodes WHERE session_kind = $1 AND session_key = $2 AND ended_at IS NULL`,
+		kind, key))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Episode{}, false, nil
+	}
+	if err != nil {
+		return Episode{}, false, err
+	}
+	return e, true, nil
+}
+
 // OpenEpisodes implements Store.
 func (p *PG) OpenEpisodes(ctx context.Context) ([]Episode, error) {
 	return collect(p.pool.Query(ctx, `SELECT `+cols+` FROM session_episodes WHERE ended_at IS NULL ORDER BY opened_at, id`))
-}
-
-// List implements Store.
-func (p *PG) List(ctx context.Context, limit int) ([]Episode, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 500
-	}
-	return collect(p.pool.Query(ctx, `SELECT `+cols+` FROM session_episodes ORDER BY id DESC LIMIT $1`, limit))
 }
 
 // Observe implements Store. The state's since-time moves only when the state
@@ -244,8 +240,8 @@ func (p *PG) Observe(ctx context.Context, id int64, o Observation) error {
 	return err
 }
 
-// Classify implements Store.
-func (p *PG) Classify(ctx context.Context, id int64, streak string, c Classification, asked bool) error {
+// SetClassification implements Store.
+func (p *PG) SetClassification(ctx context.Context, id int64, streak string, c Classification, asked bool) error {
 	_, err := p.pool.Exec(ctx, `UPDATE session_episodes SET classified_streak = $2, jev_label = $3, jev_needs_input = $4,
 			jev_asks_permission = $5, jev_neither = $6, jev_ask_score = $7, jev_model = $8, jev_error = $9, asked = $10, updated_at = now()
 		WHERE id = $1 AND ended_at IS NULL`,

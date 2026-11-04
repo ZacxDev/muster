@@ -135,10 +135,6 @@ var (
 		// global hourly cap and reads the live decisions still in flight; each
 		// decision is then acted on as its own owner (attentionPrincipal).
 		"internal/chiefnudge.sys",
-		// Session state (migration 0072): the episode store's one helper. It
-		// lists the owners the state pass visits; each owner's episodes are then
-		// read and written as that owner (attentionPrincipal).
-		"internal/sessionstate.sys",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already

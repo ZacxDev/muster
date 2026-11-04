@@ -110,7 +110,7 @@ func TestRacingOpensClaimOnce(t *testing.T) {
 	if claims != 1 || errs != 0 {
 		t.Fatalf("claims %d (want 1), errors %d", claims, errs)
 	}
-	if list, _ := p.List(ctx, 50); len(list) != 1 {
+	if list := listAll(t, p, ctx); len(list) != 1 {
 		t.Fatalf("rows: %+v", list)
 	}
 }
@@ -144,7 +144,7 @@ func TestObserveAndClassify(t *testing.T) {
 		t.Fatalf("a new state: %+v", got)
 	}
 	c := Classification{Label: "neither", NeedsInput: 0.1, AsksPermission: 0.05, Neither: 0.85, AskScore: 0.15, Model: "fake/jev"}
-	if err := p.Classify(ctx, e.ID, "since:2", c, false); err != nil {
+	if err := p.SetClassification(ctx, e.ID, "since:2", c, false); err != nil {
 		t.Fatal(err)
 	}
 	got = only(t, p, ctx)
@@ -155,7 +155,7 @@ func TestObserveAndClassify(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = p.Observe(ctx, e.ID, Observation{State: StateStalled, At: t2.Add(time.Minute)})
-	_ = p.Classify(ctx, e.ID, "since:9", Classification{}, true)
+	_ = p.SetClassification(ctx, e.ID, "since:9", Classification{}, true)
 	got = only(t, p, ctx)
 	if got.State != StateNeedsYou || got.ClassifiedStreak != "since:2" || got.EndReason != EndGone {
 		t.Fatalf("an ended episode was written: %+v", got)
@@ -164,9 +164,20 @@ func TestObserveAndClassify(t *testing.T) {
 
 func only(t *testing.T, p *PG, ctx context.Context) Episode {
 	t.Helper()
-	list, err := p.List(ctx, 10)
+	list, err := listAll(t, p, ctx), error(nil)
 	if err != nil || len(list) != 1 {
 		t.Fatalf("episodes: %+v %v", list, err)
 	}
 	return list[0]
+}
+
+// listAll is the caller's episodes, newest first: what a reader of the table
+// sees (no production method lists them yet).
+func listAll(t *testing.T, p *PG, ctx context.Context) []Episode {
+	t.Helper()
+	list, err := collect(p.pool.Query(ctx, `SELECT `+cols+` FROM session_episodes ORDER BY id DESC`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return list
 }

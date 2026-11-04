@@ -43,7 +43,7 @@ const (
 // stop is one episode.
 const EndAfter = 120 * time.Second
 
-// Facts is what Classify reads about one session, as the stall sweep read it.
+// Facts is what StateOf reads about one session, as the stall sweep read it.
 type Facts struct {
 	// Waiting: the host reports the session waiting on a prompt
 	// (mirror.StatusWaiting).
@@ -62,7 +62,7 @@ type Facts struct {
 	AskStall bool
 }
 
-// Classify is the session's state, and whether that state opens (or keeps) an
+// StateOf is the session's state, and whether that state opens (or keeps) an
 // episode. Precedence: needs_you > stalled > working.
 //
 //   - waiting on a prompt muster cannot answer: needs_you, an episode;
@@ -71,7 +71,7 @@ type Facts struct {
 //   - stalled and the classifier says it asked: needs_you, an episode;
 //   - stalled otherwise: stalled, an episode;
 //   - anything else: working.
-func Classify(f Facts) (state string, episode bool) {
+func StateOf(f Facts) (state string, episode bool) {
 	switch {
 	case f.Waiting && f.Answerable:
 		return StateNeedsYou, false
@@ -115,9 +115,12 @@ type Step struct {
 //
 // 🔴 MEASURED BETWEEN SIGHTINGS, NEVER TO NOW: a run is as long as the sweep saw
 // it, so a session that worked 90 s and then sat idle until the next pass is
-// not credited with the idle time. Between two passes the work is
-// UNDER-counted by up to one interval, which keeps an episode open a little
-// longer — never quieter.
+// not credited with the idle time. The cost runs the other way: between two
+// passes the work is UNDER-counted by up to one interval, so a real turn of
+// 120–150 s can be seen as 90–120 s and leave its stop open. Its NEXT stop then
+// opens no new episode — and once episodes push (the design's PR 2), that next
+// stop gets no push of its own. That is QUIETER, not louder; PR 2 must not
+// read an open episode as "already told" without accounting for it.
 func Advance(busy bool, busySince, busySeen, now time.Time) Step {
 	switch {
 	case busy && busySince.IsZero():
