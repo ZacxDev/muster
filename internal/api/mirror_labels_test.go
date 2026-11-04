@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // TestMirrorLabelsReachEverySurfaceAndNeverTheAddress: a host's labels (the
 // plugin's HostView.Labels) title the sidebar's row (where the retired Agents
-// list's card went), the terminal page and the rendered view, through the real
-// mux — while every href and socket path still
+// list's card went), the terminal page, the rendered view and an episode's
+// push (session state), through the real mux — while every href and socket path still
 // names the SESSION. Its control is the same host with no labels: raw names.
 func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, labels: map[string]string{"main": "mango:1"}}
@@ -49,6 +50,17 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	_, view := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main"))
 	if !strings.Contains(view, "<title>mango:1 · Mirrored · muster</title>") {
 		t.Error("the rendered view is not titled by the label")
+	}
+
+	// The episode push (session state): the window running the episode's
+	// conversation is named by its label too, resolved now — never the raw
+	// tmux session alone, as it was when it regressed.
+	pw, _ := viewServer(t, &fakeMirror{online: true, windows: []mirror.Window{
+		{Session: "main", ID: "@1", Index: 1, Label: "mango:1", Claude: true, ClaudeSession: labelSID}}})
+	ep := sessionstate.Episode{ID: 7, Owner: 1, Kind: sessionstate.KindMirror, Key: labelSID, Host: "ws", TmuxSession: "main", Window: "@1", Index: 1,
+		State: sessionstate.StateStalled}
+	if n := pw.episodeNotification(operatorCtx(), ep, 0); n.Title != "mango:1 · tmux main:1 @ ws is stalled" {
+		t.Errorf("the episode push is titled %q, not by the label", n.Title)
 	}
 
 	// Control: no labels — every surface is the raw name.

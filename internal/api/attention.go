@@ -816,7 +816,7 @@ func attentionPushTitle(it attentionItem) string {
 	case attentionKindSession:
 		return sessionPushTitle
 	case attentionKindNotice:
-		// A notice asks nothing: it names where to look (noticeWhere).
+		// A notice asks nothing: it names where to look (sessionKeyWhere).
 		return it.Source + noticePushTitleSuffix
 	}
 	return it.Source + " is asking"

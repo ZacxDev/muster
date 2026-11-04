@@ -50,10 +50,15 @@ import (
 //     classifier: a quiet row, never a push (coordinator default N5 — the
 //     owner spoke last).
 //
-// 🔴 NO SESSION TEXT. The notification names the session (tmux session and
-// window INDEX, host; or the agent) and says its state and how long — never a
-// window's name (often LLM-written), a tool, a command, a focus title or
-// anything the session said (episodeNotification).
+// 🔴 NO SESSION TEXT. The notification names the session the way every
+// attention surface names a mirrored window (sessionKeyWhere, mirror.Where:
+// the host's label for it — a codename from the host's labels file, never
+// anything the session wrote — then its tmux session and window INDEX and its
+// host; or the agent) and says its state and how long — never a tool, a
+// command, a focus title or anything the session said (episodeNotification).
+// The label is what the waiting push named before episodes replaced it
+// ("Waiting: mango:1 · tmux main:1 @ ws"); without it the push named only the
+// raw tmux session, which the operator could not place.
 // ---------------------------------------------------------------------------
 
 // episodeRepushFloor: a session whose previous episode pushed within this long
@@ -251,7 +256,7 @@ func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle
 // state and how long in the body — 🔴 NO SESSION TEXT (the file's header).
 func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episode, idle time.Duration) RouterNotification {
 	key := episodeKey(ep.ID)
-	who, keep := s.episodeWho(octx, ep)
+	who, keep := s.episodeWho(octx, ep, s.episodeHosts(octx, ep))
 	verb := " is stalled"
 	if ep.State == sessionstate.StateNeedsYou {
 		verb = " needs you"
@@ -260,10 +265,15 @@ func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episo
 		Tag: attentionTag(key), Data: map[string]string{"url": attentionOpenURL(key)}, TitleKeep: keep}
 }
 
-// episodeWho names ep's session: "<tmux session>:<window index> @ <host>" for
-// a mirrored window (keep: the tmux target, kept verbatim by the title rule),
-// the agent's name for an agent conversation.
-func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode) (who, keep string) {
+// episodeWho names ep's session, for its push title and its "Stalled /
+// waiting" row: for a mirrored window, the window running its conversation
+// NOW over hosts, by its session key, as every attention surface names it
+// (sessionKeyWhere: "mango:1 · tmux main:1 @ ws"; keep, its tmux target, kept
+// verbatim by the title rule) — so a window renumbered since names its new
+// index. Only when no window holds the conversation now, the place stored on
+// the episode: "<tmux session>:<window index> @ <host>". An agent conversation
+// is named by its agent.
+func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep string) {
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
 			if a, err := s.ext.Agents.Get(octx, ep.AgentID); err == nil {
@@ -271,6 +281,11 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode) (who,
 			}
 		}
 		return "An agent", ""
+	}
+	if ep.Host != "" && ep.Key != "" {
+		if _, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
+			return where, keep
+		}
 	}
 	target := ep.TmuxSession + ":" + strconv.Itoa(ep.Index)
 	if ep.TmuxSession == "" {
@@ -280,6 +295,20 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode) (who,
 		return target, target
 	}
 	return target + " @ " + ep.Host, target
+}
+
+// episodeHosts is ctx's owner's windows, read once for episodes (episodeWho),
+// nil when none of them is a mirrored window or muster mirrors nothing.
+func (s *Server) episodeHosts(ctx context.Context, eps ...sessionstate.Episode) []mirror.HostView {
+	if s.ext.Mirror == nil {
+		return nil
+	}
+	for _, ep := range eps {
+		if ep.Kind == sessionstate.KindMirror {
+			return s.ext.Mirror.Hosts(ctx)
+		}
+	}
+	return nil
 }
 
 // episodeBody is an episode push's body: its state and idle time.
@@ -514,8 +543,9 @@ func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
 		b.WriteString(`<li class="text-sm text-fg2" data-attention-episodes-error>The stalled and waiting sessions could not be read.</li>` + "\n")
 	}
 	esc := html.EscapeString
+	hosts := s.episodeHosts(ctx, eps...)
 	for _, ep := range eps {
-		who, _ := s.episodeWho(ctx, ep)
+		who, _ := s.episodeWho(ctx, ep, hosts)
 		state := "Stalled"
 		if ep.State == sessionstate.StateNeedsYou {
 			state = "Needs you"

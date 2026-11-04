@@ -29,17 +29,21 @@ import (
 // the sweep saw it, a fallback for display only (an agent's name; a window
 // nobody lists now).
 //
-// The item a notice becomes (noticeItem) says exactly where: its Source is
-// "<host> · <tmux session>:<window index>" (noticeWhere) and its Target the
+// The item a notice becomes (noticeItem) says exactly where: its Source names
+// the window as every attention surface does (sessionKeyWhere, mirror.Where:
+// "mango:1 · tmux main:2 @ ws") and its Target is the
 // "<tmux session>:<window index>" a host's `tmux switch-client -t` takes —
-// what `muster nudge next` prints (cmd/muster/nudge.go) from the summary.
+// what `muster nudge next` prints (cmd/muster/nudge.go) from the summary. A
+// window nobody lists now keeps the stored label (noticeWhere, as the sweep
+// saw it).
 // ---------------------------------------------------------------------------
 
 // attentionKindNotice is a notice's item kind.
 const attentionKindNotice = "notice"
 
-// noticeWhere is a mirrored window's place as a notice names it: the host,
-// then its exact tmux target ("ws · main:1").
+// noticeWhere is a mirrored window's place as a notice's STORED label keeps
+// it (noticeLabel): the host, then its exact tmux target ("ws · main:1"). A
+// notice whose window resolves is drawn by sessionKeyWhere instead.
 func noticeWhere(host, session string, index int) string {
 	return host + mirror.QualifierSep + noticeTarget(session, index)
 }
@@ -77,6 +81,27 @@ func sessionKeyEntry(hosts []mirror.HostView, host, key string) (mirror.SessionV
 		}
 	}
 	return mirror.SessionView{}, false
+}
+
+// sessionKeyWhere is the window on host running the conversation whose
+// session key is key, resolved NOW over hosts (sessionKeyEntry), and the words
+// every attention surface names a mirrored window by (mirror.Where: its label
+// when the host maps one, then its exact tmux target and host —
+// "mango:1 · tmux scratch3:5 @ laptop"); keep is the part a display keeps
+// verbatim (mirror.WhereTarget). ok is false when no window holds the
+// conversation now: the caller then names the place as it was stored.
+//
+// 🔴 ONE RULE, ONE PLACE for a surface that holds a session KEY rather than a
+// window — a notice (noticeItem: its Asks card, its push title, `muster nudge
+// next`), an episode (episodeWho: its push title, its "Stalled / waiting"
+// row). Joined when drawn, never copied: a window renumbered since names its
+// new index, and its label is the host's label for it now.
+func sessionKeyWhere(hosts []mirror.HostView, host, key string) (e mirror.SessionView, where, keep string, ok bool) {
+	e, ok = sessionKeyEntry(hosts, host, key)
+	if !ok {
+		return mirror.SessionView{}, "", "", false
+	}
+	return e, e.Where(), e.WhereTarget(), true
 }
 
 // noticeDecisions is the decisions behind the notices among asks, by ask id, in
@@ -139,9 +164,8 @@ func noticeItem(a attention.Ask, ds map[int64]chiefnudge.Decision, hosts []mirro
 	case chiefnudge.KindMirror:
 		it.subject = focus.MirrorSubject(d.Key)
 		it.host = d.Host
-		if e, found := sessionKeyEntry(hosts, d.Host, d.Key); found {
-			it.Source = noticeWhere(e.Host, e.Session, e.Index)
-			it.target = it.Source
+		if e, where, keep, found := sessionKeyWhere(hosts, d.Host, d.Key); found {
+			it.Source, it.target = where, keep
 			it.Target = noticeTarget(e.Session, e.Index)
 			if !e.Online {
 				it.Source += whereHostOffline
