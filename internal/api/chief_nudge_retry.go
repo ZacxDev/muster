@@ -79,6 +79,9 @@ type nudgeRetry struct {
 	// since the owner's chief last answered a check (zero: none).
 	refusedSince time.Time
 	logged       bool // the first refusal was logged
+	// ownerLast: the session state pass read this streak's transcript and the
+	// owner spoke last (session_state.go), so it is not read again for it.
+	ownerLast bool
 }
 
 // nudgeRetries is the ledger (the zero value is ready).
@@ -131,6 +134,21 @@ func (r *nudgeRetries) cachedJev(key string, now time.Time) (chiefnudge.Result, 
 		return chiefnudge.Result{}, false
 	}
 	return e.jev, true
+}
+
+// markOwnerLast notes that key's streak ends on the owner's own message.
+func (r *nudgeRetries) markOwnerLast(key string, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entryLocked(key, now).ownerLast = true
+}
+
+// isOwnerLast reports markOwnerLast for key's streak (and not expired).
+func (r *nudgeRetries) isOwnerLast(key string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.m[key]
+	return ok && now.Sub(e.created) < chiefNudgeRetryTTL && e.ownerLast
 }
 
 // keepJev keeps jev for key's streak, whose call sent nothing.

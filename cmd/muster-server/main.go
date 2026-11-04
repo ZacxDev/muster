@@ -83,6 +83,7 @@ import (
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -462,6 +463,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The chief's per-user on/off toggle (migration 0060). Off by default
 		// for a user with no chief agent; see internal/api chief_toggle.go.
 		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
+		// Session state's episodes (migration 0072): always on with a
+		// database, independent of the chief and its nudges.
+		ext.Episodes = sessionstate.NewPG(a.pool)
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
@@ -991,6 +995,9 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunAttentionSweep(ctx, 0)
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
+	// Session state: every session's state and its episodes (returns at once
+	// with no database).
+	go a.srv.RunSessionStateSweep(ctx, api.SessionStateInterval)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for
