@@ -1,6 +1,7 @@
 # Design: session state (stalls, waiting sessions, nudges and check-ins as one model)
 
-**Status: proposal. Nothing here is built.** The operator settled the shape
+**Status: steps 1, 2 and 3a are built (3a behind its own shadow gate,
+decision 15); 3b and 4 are proposals.** The operator settled the shape
 (item, Chief role, states, push, placement, check-ins, phasing, metrics) before
 this was written, then answered the draft's open questions and three more
 raised by its review; all of it is recorded under
@@ -360,7 +361,10 @@ push and row, but are **never nudged**; a Chief `nudge` for one is recorded
 and treated as `notify`, as #415 already treats a runtime window.
 
 Shadow first: decisions are recorded on the Chief nudges tab, and nothing is
-sent, until the owner is listed live (`MUSTER_CHIEF_NUDGE_LIVE_OWNERS`).
+sent, until the owner is listed live (`MUSTER_CHIEF_NUDGE_LIVE_OWNERS`). A
+`needs-you` nudge has a **separate** live list on top of that one
+(`MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS`, decision 15): it is sent only for
+an owner on both, and is shadow for everyone else.
 
 ### Covering words
 
@@ -480,7 +484,11 @@ check-ins plan (`docs/design/check-ins.md`, "Phased plan"):
    `ask` becomes the text-free `notify`, and the backtested rule keeps an
    asking session pushed.
 3. **a.** `needs-you` nudges and the `nudge`/`leave`/`notify` decision, same
-   session quotes only, shadow first. **b.** Owner-typed provenance (a Chief
+   session quotes only, shadow first — under their own live list,
+   `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS`, so an owner already live for
+   today's stalled nudges stays live for those while their needs-you nudges
+   stay shadow (decision 15). Each episode is put to the Chief at most once
+   (`chief_nudges.episode_id`, migration 0078). **b.** Owner-typed provenance (a Chief
    chat sender column; a host record for typed pane input; normalised origin
    remotes), then same-repository cross-session quotes, shadow first.
 4. **Check-ins** PRs 2–5 on the shared state with PR 4 amended, PR 6 reduced.
@@ -561,6 +569,14 @@ Recorded 2026-11-03.
     count, even unfenced ones.
 14. **Verbatim quotes stay.** The owner's words are quoted verbatim in this
     public doc ("Keep verbatim").
+15. **`needs-you` nudges: a separate shadow gate** (recorded 2026-11-04, while
+    building step 3a; it departs from "until the owner is listed live" above).
+    The owner already listed in `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` for today's
+    stalled nudges keeps those live. A `needs-you` nudge has its own list,
+    `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS` (same format), and pastes for
+    real only for an owner on **both** lists; otherwise it is shadow — recorded
+    on the Chief nudges tab, never pasted, and the episode pushed. Unset, every
+    owner's `needs-you` nudges are shadow ("Separate shadow gate").
 
 ## Effort
 

@@ -151,6 +151,8 @@ func nudgeDecisionLabel(decision string) string {
 		return "Point you at it"
 	case chiefnudge.DecisionLeave:
 		return "Leave it"
+	case chiefnudge.DecisionNotify:
+		return "Notify you"
 	}
 	return "Unreadable answer"
 }
@@ -203,6 +205,8 @@ func nudgeOutcomeLabel(outcome string) string {
 		return "Not sent"
 	case chiefnudge.OutcomeAskClosed:
 		return "Closed"
+	case chiefnudge.OutcomeNotified:
+		return "Notify: no notice; the stop is not quieted, so its own push and row stand"
 	}
 	return outcome
 }

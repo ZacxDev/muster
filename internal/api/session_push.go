@@ -40,7 +40,10 @@ import (
 //     a SENT nudge never pushes; a "leave" quiets the stop only when the
 //     session asked nothing; a queued nudge holds the push until it is sent,
 //     and a nudge that failed, was cancelled, capped or moved on pushes;
-//     anything else pushes. No decision within episodeChiefWait pushes.
+//     anything else pushes — a notify, every failure, and any SHADOW
+//     decision (a needs-you nudge off its own live list included). No
+//     decision within episodeChiefWait pushes; a later streak of a stop the
+//     chief already judged (one decision per episode) is such a stop.
 //   - an IDLE stop with no chief judging it (the feature off, the owner in
 //     shadow mode, no chief): at once. 🔴 SHADOW MODE NEVER QUIETS A STOP.
 //   - an agent conversation whose newest message is the OWNER's, with no
@@ -174,7 +177,10 @@ func (s *Server) episodeChiefJudges(octx context.Context, owner int64) bool {
 }
 
 // streakDecision is the chief's decision for ep's streak, if any. A failed
-// read is no decision (the stop then pushes after episodeChiefWait).
+// read is no decision (the stop then pushes after episodeChiefWait). 🔴 A
+// DECISION TAKEN IN ANOTHER EPISODE IS NOT THIS STOP'S: a window gone and back
+// with the same idle-since opens a new stop on the same streak, and the old
+// stop's sent nudge or leave must not quiet it.
 func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (chiefnudge.Decision, bool) {
 	r, ok := s.ext.ChiefNudges.(streakDecisionReader)
 	if !ok || s.ext.ChiefNudges == nil || ep.StreakKey == "" {
@@ -183,6 +189,9 @@ func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (
 	d, found, err := r.ForStreak(octx, ep.Kind, ep.Key, ep.StreakKey)
 	if err != nil {
 		s.logger.Printf("session state: episode %d: the chief's decision: %v", ep.ID, err)
+		return chiefnudge.Decision{}, false
+	}
+	if found && d.EpisodeID != 0 && d.EpisodeID != ep.ID {
 		return chiefnudge.Decision{}, false
 	}
 	return d, found
