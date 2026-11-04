@@ -25,8 +25,8 @@ variables: `MUSTER_S3_ENDPOINT`, `MUSTER_S3_BUCKET`, `MUSTER_S3_ACCESS_KEY`,
 `MUSTER_S3_SECRET_KEY`, `MUSTER_S3_REGION`, `MUSTER_UPLOAD_SIGNING_KEY`,
 `MUSTER_UPLOAD_MAX_BYTES` and `MUSTER_UPLOAD_LINK_TTL`. `MUSTER_PUBLIC_URL`
 and a database are also needed. With the Compose stack, the `s3` profile
-bundles a store with its bucket and lifecycle rule, and two `.env` lines turn
-attachments on: [features.md](features.md#attachments).
+bundles a store with its bucket and lifecycle rule, and two `.env` lines
+(`S3_STORE_SECRET_KEY`, `MUSTER_UPLOAD_SIGNING_KEY`) turn attachments on: [features.md](features.md#attachments).
 
 A partial or invalid set turns the feature **off**, not the server: no
 paperclip is drawn, every upload route and `GET /f/{id}` answer 404, and the

@@ -42,15 +42,20 @@ CONFIG_GO = ROOT / "cmd/muster-server/config.go"
 CONFIG_MD = ROOT / "docs/configuration.md"
 INSTALL = ROOT / "INSTALL.md"
 
-# The anchors other code links to. Add one when a feature gets its own
-# section; never remove one without moving its links.
-REQUIRED_ANCHORS = [
-    "dictation", "attachments", "push", "suggested-replies", "focus", "chief", "chief-nudges",
-    "session-state", "accounts", "connectors", "github-app", "dispatch", "plugins", "memo-relay",
-    "approval-router", "browser-flows", "agent-ask-tool",
-    # This page's own additions.
-    "core", "ask-cards", "telemetry", "android", "other-settings", "officers",
+# The anchors other code links to: EVERY id of the feature registry
+# (internal/features/features.go on the registry branch, whose hints link to
+# docs/features.md#<id>), spelled exactly as it spells them. Add one when the
+# registry gains an id; never remove one without moving its links.
+REGISTRY_IDS = [
+    "database", "mirror", "password-sign-in", "machine-token", "push", "dictation", "attachments",
+    "suggested-replies", "focus", "accounts", "connectors", "github-app", "dispatch", "agent-gateway",
+    "claude-code-agents", "chief", "chief-session-runtimes", "chief-nudges", "session-state", "plugins",
+    "plugin-tasks", "session-routing", "task-routing", "pr-mail-routing", "fleet-reports", "mail-resume",
+    "memo-relay", "approval-router", "browser-flows", "agent-ask-tool", "service-token", "android",
+    "telemetry", "officers",
 ]
+# This page's own additions.
+REQUIRED_ANCHORS = REGISTRY_IDS + ["core", "ask-cards", "other-settings"]
 
 # Server variables the compose file does NOT forward, each with why. The agent
 # plane is the one group: its provisioner uses Kubernetes in-cluster
@@ -76,6 +81,12 @@ NOT_FORWARDED = {
         # The memo relay delivers only to dispatched agents, through their gateway.
         "MUSTER_MEMO_URL", "MUSTER_MEMO_TOKEN", "MUSTER_MEMO_SCOPE_MAP",
     ]},
+    **{name: "needs the chief, which needs in-cluster dispatch (docs/features.md#chief-nudges)" for name in [
+        "MUSTER_CHIEF_NUDGES", "MUSTER_CHIEF_NUDGE_IDLE", "MUSTER_CHIEF_NUDGE_HOURLY_CAP",
+        "MUSTER_CHIEF_NUDGE_LIVE_OWNERS", "MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS",
+        "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD",
+    ]},
+    "MUSTER_TAG_AUTODISPATCH": "reserved: logs and counts eligible tasks, dispatches nothing",
     **{name: "test fixture: read only by a `-tags e2eterm` build" for name in [
         "MUSTER_E2E_HOLD_READY_DIR", "MUSTER_E2E_TERM_WINDOW", "MUSTER_E2E_GITHUB_API",
         "MUSTER_E2E_OPENROUTER_MODELS", "MUSTER_E2E_SUGGEST_URL", "MUSTER_E2E_GOTRUE_SKEW",
@@ -176,6 +187,7 @@ class FeaturesConfig(unittest.TestCase):
         self.example = EXAMPLE.read_text()
 
     def test_every_required_anchor_is_a_heading_once(self) -> None:
+        self.assertEqual(len(REGISTRY_IDS), 34, "the registry's id list changed: re-read it")
         self.assertEqual(missing_anchors(self.features), [])
         # Negative controls: a removed heading, and a second one with the same
         # text (GitHub renames it to `-1`, the link still lands on the first).

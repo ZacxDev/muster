@@ -375,16 +375,16 @@ class Guide(unittest.TestCase):
     def test_step11_attachments_generates_both_secrets_once(self) -> None:
         self.hub()
         self.sh("env_set COMPOSE_PROFILES stt")
-        b = self.lib + block("env_secret MUSTER_S3_SECRET_KEY", "mi_profiles s3")
+        b = self.lib + block("env_secret S3_STORE_SECRET_KEY", "mi_profiles s3")
         out = self.run_block(b)
         env = self.dotenv()
         self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", out)
-        self.assertRegex(env["MUSTER_S3_SECRET_KEY"], r"^[0-9a-f]{48}$")
+        self.assertRegex(env["S3_STORE_SECRET_KEY"], r"^[0-9a-f]{48}$")
         self.assertRegex(env["MUSTER_UPLOAD_SIGNING_KEY"], r"^[0-9a-f]{96}$")
-        first = (env["MUSTER_S3_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"])
+        first = (env["S3_STORE_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"])
         self.run_block(b)
         env = self.dotenv()
-        self.assertEqual((env["MUSTER_S3_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"]), first, "a re-run rotated a key")
+        self.assertEqual((env["S3_STORE_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"]), first, "a re-run rotated a key")
         self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", "a re-run added s3 twice")
 
     def test_api_to_cpu_is_a_clean_swap(self) -> None:

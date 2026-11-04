@@ -1148,14 +1148,10 @@ Turning a feature on is the same every time: its lines go into
 there, and then **Step 5's block** brings the server up with them. The compose
 file forwards every optional setting from `.env`, so it is never edited.
 
-**Example: dictation on the CPU (profile `stt`).** This is Step 1's
-`local-cpu` answer, and how to switch to it later:
-`mi_save STT local-cpu`, then Step 4's dictation block, then Step 5. Step 4
-puts `stt` in `COMPOSE_PROFILES` and generates `MUSTER_STT_TOKEN`; that one
-line is all the profile needs. Check it:
-`docker compose logs muster | grep 'dictation:'` must say `dictation: ON`.
+**Dictation** is Step 1's question and Step 4's block; to switch options later,
+`mi_save STT <option>` and re-run both, then Step 5.
 
-**Example: file attachments (profile `s3`).** The profile adds a MinIO store
+**Example: file attachments (profile `s3`).** The profile adds an S3 store (Silo, a MinIO fork)
 for attached files, its bucket created on start. It needs two secrets, which
 this generates (existing ones are kept), and `MUSTER_PUBLIC_URL`, which Step 4
 already set:
@@ -1163,7 +1159,7 @@ already set:
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
 cd "$MUSTER_DIR"
-env_secret MUSTER_S3_SECRET_KEY 24       # the store's root password, and muster's key
+env_secret S3_STORE_SECRET_KEY 24        # the store's root password, and muster's key
 env_secret MUSTER_UPLOAD_SIGNING_KEY 48  # signs the links agents are given
 env_set COMPOSE_PROFILES "$(mi_profiles s3)"
 echo "profiles: $(env_get COMPOSE_PROFILES)"
@@ -1211,6 +1207,11 @@ They take effect in Claude Code sessions started afterwards.
   `.env`, pulls the new image and restarts the server), and on every machine
   re-run that `mi_set_version`, Step 6, and Step 7's last block (which
   restarts muster-mirror). Re-run Step 10 to check.
+  **Notifications change on the first upgrade to a compose file with session
+  state on by default:** a session then sends **one push per stop** instead
+  of the separate waiting-window and stall notifications. To keep the old
+  ones, put `MUSTER_SESSION_STATE=0` in `~/muster/.env` before Step 5
+  (<https://github.com/ZacxDev/muster/blob/main/docs/features.md#session-state>).
 - **Remove a machine:** stop its service (`systemctl --user disable --now
   muster-mirror.service`, or `launchctl bootout gui/$(id -u)/io.github.zacxdev.muster-mirror`),
   and revoke its token on the hub (`docker compose exec -T muster /muster-server

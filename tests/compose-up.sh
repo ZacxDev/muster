@@ -33,7 +33,7 @@
 #     MISCONFIGURED): the conditional defaults stay out of the default stack;
 #   * session state is ON by default (`session state: ON`), and
 #     MUSTER_SESSION_STATE=0 or an EMPTY value in .env turns it OFF;
-#   * profile s3 (COMPOSE_PROFILES=s3 + MUSTER_S3_SECRET_KEY +
+#   * profile s3 (COMPOSE_PROFILES=s3 + S3_STORE_SECRET_KEY +
 #     MUSTER_UPLOAD_SIGNING_KEY + MUSTER_PUBLIC_URL): `up --wait` succeeds,
 #     muster logs `file attachments: ON` naming the bundled store, a file
 #     uploaded through POST /uploads comes back byte for byte through the
@@ -200,7 +200,7 @@ phase_s3() {
   cp "$tmp/env.core" "$tmp/env"
   # Exactly the lines docs/features.md#attachments gives.
   { echo "COMPOSE_PROFILES=s3"
-    echo "MUSTER_S3_SECRET_KEY=s3-secret-$RANDOM$RANDOM"
+    echo "S3_STORE_SECRET_KEY=s3-secret-$RANDOM$RANDOM"
     echo "MUSTER_UPLOAD_SIGNING_KEY=signing-key-fixture-$RANDOM$RANDOM-0123456789abcdef"; } >> "$tmp/env"
   start=$(date +%s)
   dc up -d --wait --wait-timeout 300 || fail "[s3] docker compose up -d --wait did not succeed"

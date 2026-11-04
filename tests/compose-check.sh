@@ -30,6 +30,8 @@
 #     (standalone, secure cookies, and session state, ON by default);
 #   * MUSTER_SESSION_STATE set EMPTY or 0 in .env reaches muster as that value
 #     (both off), not as the default 1;
+#   * YOUR OWN S3 store (endpoint + secret, no S3_STORE_SECRET_KEY) is never
+#     handed the bundled store's bucket or access key;
 #   * NEGATIVE CONTROL: the repository's .env.example as shipped (MUSTER_VERSION
 #     empty) is REFUSED — the compose file must not start an unversioned image.
 #
@@ -49,7 +51,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 sed -e 's/^MUSTER_VERSION=$/MUSTER_VERSION=1.2.3/' -e 's/=CHANGE-ME$/=fixture-secret/' "$EXAMPLE" > "$tmp/env"
 printf 'MUSTER_STT_TOKEN=fixture-stt\nHF_TOKEN=fixture-hf\n' >> "$tmp/env"
 printf 'MUSTER_VAPID_PUBLIC_KEY=fixture-vapid-pub\nMUSTER_VAPID_PRIVATE_KEY=fixture-vapid-priv\nMUSTER_VAPID_SUBJECT=mailto:ops@example.com\n' >> "$tmp/env"
-printf 'MUSTER_S3_SECRET_KEY=fixture-s3-secret\nMUSTER_UPLOAD_SIGNING_KEY=fixture-signing-key-fixture-signing-key\n' >> "$tmp/env"
+printf 'S3_STORE_SECRET_KEY=fixture-s3-secret\nMUSTER_UPLOAD_SIGNING_KEY=fixture-signing-key-fixture-signing-key\n' >> "$tmp/env"
 # The same, with a model chosen: both sides of the STT pair must follow it.
 { cat "$tmp/env"; echo "MUSTER_STT_MODEL=Systran/faster-whisper-medium"; } > "$tmp/env-model"
 
@@ -148,7 +150,7 @@ if "s3" in svcs:
         if not store or store != mine:
             errs.append(f"s3 store has {k}={store!r} but muster is given {mine!r}")
     if se.get("MINIO_ROOT_PASSWORD") != "fixture-s3-secret":
-        errs.append("the store's root password is not the .env's MUSTER_S3_SECRET_KEY")
+        errs.append("the store's root password is not the .env's S3_STORE_SECRET_KEY")
     if s3.get("ports"):
         errs.append(f"the s3 store is published on the host: {s3['ports']}")
 for e in errs:
@@ -198,6 +200,17 @@ for v in "" 0; do
   if [ "$got" = "'$v'" ]; then echo "ok   [session state]: MUSTER_SESSION_STATE='$v' in .env reaches muster as '$v' (off)"
   else echo "FAIL [session state]: MUSTER_SESSION_STATE='$v' in .env reached muster as $got"; fail=1; fi
 done
+
+# Your OWN store, with its access key and bucket forgotten: the bundled store's
+# defaults must not fill them in silently (muster then says MISCONFIGURED).
+{ cat "$tmp/env-min"; echo "MUSTER_S3_ENDPOINT=https://s3.example.com"; echo "MUSTER_S3_SECRET_KEY=own-store-secret"; } > "$tmp/env-own"
+got="$(docker compose -f "$COMPOSE" --env-file "$tmp/env-own" -p compose-check config --format json |
+  python3 -c 'import json,sys; e=json.load(sys.stdin)["services"]["muster"]["environment"]; print(" ".join(repr(e[k]) for k in ("MUSTER_S3_ENDPOINT","MUSTER_S3_BUCKET","MUSTER_S3_ACCESS_KEY","MUSTER_S3_SECRET_KEY")))')"
+if [ "$got" = "'https://s3.example.com' '' '' 'own-store-secret'" ]; then
+  echo "ok   [own s3 store]: no bundled bucket or access key is filled in for it"
+else
+  echo "FAIL [own s3 store]: endpoint, bucket, access key, secret resolved to $got"; fail=1
+fi
 
 # Negative control: the shipped example has MUSTER_VERSION empty and must be refused.
 if docker compose -f "$COMPOSE" --env-file "$EXAMPLE" -p compose-check config >/dev/null 2>"$tmp/neg.err"; then

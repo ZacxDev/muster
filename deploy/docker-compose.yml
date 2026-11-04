@@ -24,10 +24,10 @@
 #                 is the same profile under its older name.)
 #   stt-cohere    GPU speech-to-text (more accurate): about 6 GB of VRAM and a
 #                 Hugging Face token whose account accepted the model's license
-#   s3            an S3 store (MinIO) for file attachments, with its bucket
-#                 created on start. Two .env lines: MUSTER_S3_SECRET_KEY and
-#                 MUSTER_UPLOAD_SIGNING_KEY (plus MUSTER_PUBLIC_URL, which the
-#                 install sets anyway).
+#   s3            an S3 store (Silo, the maintained MinIO fork) for file
+#                 attachments, with its bucket created on start. Two .env
+#                 lines: S3_STORE_SECRET_KEY and MUSTER_UPLOAD_SIGNING_KEY
+#                 (plus MUSTER_PUBLIC_URL, which the install sets anyway).
 # A third dictation option, your own OpenAI-compatible API key, needs no
 # container. See docs/features.md and docs/dictation.md.
 #
@@ -41,9 +41,10 @@
 # ⚠ Every optional variable is written `${NAME:-}`, so an unset one is an EMPTY
 # value, never a compose warning — and muster reads an empty value exactly as an
 # unset one (it reads its environment with os.Getenv). The one feature on by
-# default here is session state (MUSTER_SESSION_STATE, `${…-1}`). A few defaults are
-# CONDITIONAL, `${A:-${B:+value}}`: they apply only once the feature's own
-# secret is set, so the default stack stays exactly as it was without them.
+# default here is session state (MUSTER_SESSION_STATE, `${…-1}`), and for it an
+# EMPTY value is not the same as unset: empty is off. A few defaults are
+# CONDITIONAL, `${A:-${B:+value}}`: they apply only once the bundled service's
+# own secret is set, so the default stack stays exactly as it was without them.
 # tests/features_config_test.py pins that this file and .env.example name the
 # same variables, and that every variable the server reads is forwarded here
 # or listed there with the reason it is not.
@@ -114,13 +115,18 @@ services:
       MUSTER_STT_TOKEN: ${MUSTER_STT_TOKEN:-}
       MUSTER_STT_MODEL: ${MUSTER_STT_MODEL:-${MUSTER_STT_TOKEN:+Systran/faster-whisper-small}}
 
-      # File attachments (docs/features.md#attachments). With the secret key
-      # set and endpoint, bucket and access key unset, they point at the `s3`
-      # profile's store.
-      MUSTER_S3_ENDPOINT: ${MUSTER_S3_ENDPOINT:-${MUSTER_S3_SECRET_KEY:+http://s3:9000}}
-      MUSTER_S3_BUCKET: ${MUSTER_S3_BUCKET:-${MUSTER_S3_SECRET_KEY:+muster-uploads}}
-      MUSTER_S3_ACCESS_KEY: ${MUSTER_S3_ACCESS_KEY:-${MUSTER_S3_SECRET_KEY:+muster}}
-      MUSTER_S3_SECRET_KEY: ${MUSTER_S3_SECRET_KEY:-}
+      # File attachments (docs/features.md#attachments). The `s3` profile's
+      # store has its OWN secret, S3_STORE_SECRET_KEY: with it set, whatever of
+      # endpoint, bucket and key pair .env leaves unset points at that store.
+      # 🔴 KEYED ON THE STORE'S SECRET, NEVER ON MUSTER_S3_SECRET_KEY: your own
+      # store (MUSTER_S3_ENDPOINT + MUSTER_S3_SECRET_KEY) must never be handed
+      # the bundled store's bucket or access key in silence — a missing one
+      # there stays missing, and muster says MISCONFIGURED. (Compose cannot
+      # compare values, so "the endpoint is unset" cannot be the trigger.)
+      MUSTER_S3_ENDPOINT: ${MUSTER_S3_ENDPOINT:-${S3_STORE_SECRET_KEY:+http://s3:9000}}
+      MUSTER_S3_BUCKET: ${MUSTER_S3_BUCKET:-${S3_STORE_SECRET_KEY:+muster-uploads}}
+      MUSTER_S3_ACCESS_KEY: ${MUSTER_S3_ACCESS_KEY:-${S3_STORE_SECRET_KEY:+muster}}
+      MUSTER_S3_SECRET_KEY: ${MUSTER_S3_SECRET_KEY:-${S3_STORE_SECRET_KEY:-}}
       MUSTER_S3_REGION: ${MUSTER_S3_REGION:-}
       MUSTER_UPLOAD_SIGNING_KEY: ${MUSTER_UPLOAD_SIGNING_KEY:-}
       MUSTER_UPLOAD_MAX_BYTES: ${MUSTER_UPLOAD_MAX_BYTES:-}
@@ -154,13 +160,6 @@ services:
       # an empty value in .env must stay empty, which muster reads as off
       # (only 1/true/yes/on is on), as does 0 (docs/features.md#session-state).
       MUSTER_SESSION_STATE: ${MUSTER_SESSION_STATE-1}
-      # The chief's stall nudges (docs/features.md#chief-nudges).
-      MUSTER_CHIEF_NUDGES: ${MUSTER_CHIEF_NUDGES:-}
-      MUSTER_CHIEF_NUDGE_IDLE: ${MUSTER_CHIEF_NUDGE_IDLE:-}
-      MUSTER_CHIEF_NUDGE_HOURLY_CAP: ${MUSTER_CHIEF_NUDGE_HOURLY_CAP:-}
-      MUSTER_CHIEF_NUDGE_LIVE_OWNERS: ${MUSTER_CHIEF_NUDGE_LIVE_OWNERS:-}
-      MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS: ${MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS:-}
-      MUSTER_CHIEF_NUDGE_ASK_THRESHOLD: ${MUSTER_CHIEF_NUDGE_ASK_THRESHOLD:-}
 
       # Plugins and what routes through them (docs/features.md#plugins).
       MUSTER_PLUGINS: ${MUSTER_PLUGINS:-}
@@ -216,12 +215,12 @@ services:
       MUSTER_TASK_REAP_AFTER: ${MUSTER_TASK_REAP_AFTER:-}
       MUSTER_AGENTS_IDLE_AFTER: ${MUSTER_AGENTS_IDLE_AFTER:-}
       MUSTER_HOST_ICONS: ${MUSTER_HOST_ICONS:-}
-      MUSTER_TAG_AUTODISPATCH: ${MUSTER_TAG_AUTODISPATCH:-}
 
-      # NOT FORWARDED, ON PURPOSE: agent dispatch, the chief's agent, officers
-      # and the memo relay (MUSTER_AGENT_PROVISIONER, MUSTER_AGENT_GATEWAY, …).
-      # Their provisioner uses Kubernetes in-cluster credentials only, so they
-      # cannot run in this stack. docs/features.md#dispatch.
+      # NOT FORWARDED, ON PURPOSE: agent dispatch, the chief and what needs it
+      # (its stall nudges, officers, the memo relay: MUSTER_AGENT_PROVISIONER,
+      # MUSTER_CHIEF_NUDGES, …). Their provisioner uses Kubernetes in-cluster
+      # credentials only, so they cannot run in this stack
+      # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH.
     # The image is distroless; the server binary probes its own /readyz.
     healthcheck:
       test: ["CMD", "/muster-server", "healthcheck"]
@@ -330,25 +329,27 @@ services:
       start_period: 15m
 
   # --- file attachments: an S3 store (profile s3) ---------------------------
-  # MinIO, as published by the pgsty fork (upstream MinIO no longer publishes
-  # images), pinned by its multi-arch index digest. Not published to the host:
+  # Silo: pgsty's maintained fork of MinIO (upstream MinIO is archived and no
+  # longer publishes images; the fork was published as pgsty/minio before its
+  # rename), pinned by its multi-arch index digest. The same S3 API, `mc` and
+  # MINIO_ROOT_* settings; the server binary is `silo`. Not published to the host:
   # only muster reaches it, on this project's network. muster streams every
   # file to its agents itself, so nothing outside needs the store.
   #
-  # Its root credentials ARE muster's key pair (one value, both sides, like
-  # the STT token): the store holds nothing but muster's uploads. On start it
+  # Its root credentials ARE muster's key pair (S3_STORE_SECRET_KEY is both,
+  # like the STT token): the store holds nothing but muster's uploads. On start it
   # creates the bucket and a lifecycle rule that expires uploads/ objects after
   # 8 days (longer than the longest link, MUSTER_UPLOAD_LINK_TTL's 168h), so
   # the bucket does not only grow; docs/uploads.md has the why.
   s3:
     profiles: ["s3"]
-    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${MUSTER_S3_ACCESS_KEY:-muster}
       # `:-`, not `:?`, for the reason given on stt-cohere. Empty, the start
       # script below refuses and says which variable, so `--wait` fails.
-      MINIO_ROOT_PASSWORD: ${MUSTER_S3_SECRET_KEY:-}
+      MINIO_ROOT_PASSWORD: ${S3_STORE_SECRET_KEY:-}
       MUSTER_S3_BUCKET: ${MUSTER_S3_BUCKET:-muster-uploads}
       MINIO_BROWSER: "off"
     entrypoint:
@@ -356,10 +357,10 @@ services:
       - -c
       - |
         if [ "$${#MINIO_ROOT_PASSWORD}" -lt 8 ]; then
-          echo "s3: MUSTER_S3_SECRET_KEY is not set, or is under 8 characters (it is this store's root password and muster's secret key)" >&2
+          echo "s3: S3_STORE_SECRET_KEY is not set, or is under 8 characters (it is this store's root password and muster's secret key)" >&2
           exit 1
         fi
-        minio server /data --quiet & pid=$$!
+        silo server /data --quiet & pid=$$!
         trap 'kill -TERM $$pid' TERM INT
         until mc alias set muster http://127.0.0.1:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
           kill -0 "$$pid" 2>/dev/null || exit 1

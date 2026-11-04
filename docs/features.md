@@ -16,7 +16,9 @@ it, and each one names exactly what it needs.
 
 The Compose file forwards every optional setting from `.env`, empty unless you
 set it, so you never edit `docker-compose.yml`. An empty value is the same as an
-unset one. Secrets go in `.env` only.
+unset one, with one exception: `MUSTER_SESSION_STATE`, which is on unless `.env`
+sets it, so there an empty value means **off** ([session state](#session-state)).
+Secrets go in `.env` only.
 
 **Checking a feature is on:** when muster starts it logs one line per feature,
 saying whether it is on or off and why. Read them with
@@ -35,6 +37,7 @@ on an older release, the log is the place.
 | feature | what it gives you | needs | default | how to enable |
 |---|---|---|---|---|
 | [Core](#core) | mirrored sessions, chat and Terminal views, typing into sessions, tasks, the Asks page, search, the installable app, the CLI and `muster doctor` | the Compose stack, tmux and `muster-mirror` on each machine, an HTTPS address (Tailscale) | on | [INSTALL.md](../INSTALL.md) |
+| ↳ [Database](#database), [Mirror](#mirror), [Password sign-in](#password-sign-in), [Machine token](#machine-token) | the core's own parts | set up by INSTALL.md | on | INSTALL.md |
 | [Push](#push) | phone notifications | VAPID keys (generated), HTTPS | on in INSTALL.md | 3 `.env` lines |
 | [Dictation](#dictation) | a microphone on every message box | a speech-to-text service: bundled (CPU or GPU) or your API key | off (INSTALL.md asks) | `--profile stt` + 1 line |
 | [Attachments](#attachments) | attach files in the message box; agents get signed links | an S3 store: bundled or your own | off | `--profile s3` + 2 lines |
@@ -42,19 +45,23 @@ on an older release, the log is the place.
 | [Focus](#focus) | a title and summary per session, searchable | an OpenRouter key | on, but idle without a key | the same line |
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
-| [Session state](#session-state) | one push per stop; the Stalled / waiting section | nothing | **on** in the Compose stack | 1 line to turn off |
+| [Session state](#session-state) | one push per stop; the Stalled / waiting section | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
 | [Accounts](#accounts) | per-user sign-in, passkeys, invites, roles | **a GoTrue server you run**, a second port | off (one shared password) | 4 lines + an override file |
 | [Browser flows](#browser-flows) | a queue of scripted browser jobs | **a runner you host** | the queue is on | nothing in `.env` |
 | [Telemetry](#telemetry) | front-end monitoring, OpenTelemetry traces | a Faro collector or an OTLP endpoint | off | 1 line each |
 | [Android](#android) | the native app's passkeys and push | the app (early: does little yet) | off | 2–3 lines |
-| [Other settings](#other-settings) | timings, host icons, a service token | nothing | defaults | 1 line each |
+| [Service token](#service-token) | another service writes to muster as the admin | a service that calls muster | off | 1 line |
+| [Other settings](#other-settings) | timings, host icons | nothing | defaults | 1 line each |
 | **Advanced** | | | | |
 | [Dispatch](#dispatch) | muster starts agents in their own pods | **Kubernetes**: muster deployed in a cluster, manifests you write | off | not in the Compose stack |
+| ↳ [Agent gateway](#agent-gateway), [Claude Code agents](#claude-code-agents) | chat with agents; the `claude-code` agent kind | dispatch, an agent image | off | not in the Compose stack |
 | [Chief](#chief) | a fleet agent; home opens its chat | dispatch (Kubernetes), an agent image, a model key | off | not in the Compose stack |
-| [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief, an OpenRouter key | off | 1 line + the chief |
+| ↳ [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief | off | not in the Compose stack |
+| [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief (Kubernetes), an OpenRouter key | off | not in the Compose stack |
 | [Plugins](#plugins) | external systems (an inbox) reach your chief; reply drafts | **a plugin process you run**, the chief | off | 1 line + more |
+| ↳ [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins | plugins, and mostly the chief | off | 1 line each |
 | [Memo relay](#memo-relay) | cairn memos delivered to dispatched agents | **cairn you host**, dispatch | off | not in the Compose stack |
 | [Approval router](#approval-router) | transcript links, router notifications, agent permission cards | **an external permission router you run** | off (standalone) | 3 lines |
 | [Officers](#officers) | standing agents fed by an HQ queue | **HQ**, dispatch | off | not in the Compose stack |
@@ -77,6 +84,35 @@ required block (`POSTGRES_PASSWORD`, `MUSTER_UI_PASSWORD`, `MUSTER_HOOK_TOKEN`,
 
 Not in the core, and set up separately: [the agent ask tool](#agent-ask-tool)
 and [ask cards](#ask-cards).
+
+The core's parts, each with its own line in the boot log:
+
+### Database
+
+Postgres, which the Compose stack runs itself (the `pgdata` volume). Required:
+muster refuses to start without `DATABASE_URL`, which the compose file sets.
+**Check:** the `persistence:` line, and `/readyz` answering 200.
+
+### Mirror
+
+Mirrored sessions: every tmux window on every machine whose `muster-mirror`
+holds a mirror token ([mirroring.md](mirroring.md)). The compose file sets
+`MUSTER_MIRROR=1`; each machine is connected in INSTALL.md Step 7.
+**Check:** `mirrored sessions: ENABLED (…)`, and `muster doctor`'s
+`mirror-hosts` and `this-host`.
+
+### Password sign-in
+
+One shared password for the web UI, `MUSTER_UI_PASSWORD` (12 characters or
+more; shorter, every page is refused and the container is unhealthy).
+[Accounts](#accounts) replaces it with per-user sign-in. [auth.md](auth.md).
+**Check:** `human web tier: CONFIGURED …`.
+
+### Machine token
+
+`MUSTER_HOOK_TOKEN`, the secret every `muster-mirror`, hook and the CLI
+presents; it acts as the admin. Required by the compose file, and muster
+refuses the `.env.example` placeholder. **Check:** `machine hook tier: ENFORCED …`.
 
 ## Optional features
 
@@ -150,25 +186,28 @@ a short-lived link signed by muster, on muster's own address.
 [uploads.md](uploads.md).
 
 - **Needs:** an S3-compatible store and `MUSTER_PUBLIC_URL` (every link is
-  written on it; INSTALL.md sets it). The `s3` profile bundles one: MinIO, as
-  the [pgsty fork](https://github.com/pgsty/minio) publishes it (upstream MinIO
-  no longer publishes images), pinned by digest, not published on the host. It
-  creates the bucket and a lifecycle rule (expire `uploads/` after 8 days) when
-  it starts.
+  written on it; INSTALL.md sets it). The `s3` profile bundles one:
+  [Silo](https://github.com/pgsty/silo), pgsty's maintained fork of MinIO
+  (upstream MinIO is archived and no longer publishes images), pinned by
+  digest, not published on the host. It creates the bucket and a lifecycle
+  rule (expire `uploads/` after 8 days) when it starts.
 - **`.env`, with the bundled store** (two lines, plus the profile):
 
   ```sh
   COMPOSE_PROFILES=s3
-  MUSTER_S3_SECRET_KEY=<a random secret, 8+ characters>   # also the store's root password
+  S3_STORE_SECRET_KEY=<a random secret, 8+ characters>    # the store's root password, and muster's secret key
   MUSTER_UPLOAD_SIGNING_KEY=<32+ random bytes>            # e.g. openssl rand -base64 48
   ```
 
-  With the secret key set and the endpoint, bucket and access key left unset,
-  muster uses `http://s3:9000`, bucket `muster-uploads` and access key
-  `muster`, which are the store's own.
-- **`.env`, with your own store:** no profile; set `MUSTER_S3_ENDPOINT`,
-  `MUSTER_S3_BUCKET`, `MUSTER_S3_ACCESS_KEY`, `MUSTER_S3_SECRET_KEY` (and
-  `MUSTER_S3_REGION` if not `us-east-1`) plus the signing key. The key's
+  With the store's secret set, muster uses `http://s3:9000`, bucket
+  `muster-uploads`, access key `muster` and that secret — the store's own —
+  for whichever `MUSTER_S3_*` setting `.env` leaves unset.
+- **`.env`, with your own store:** no profile and **no**
+  `S3_STORE_SECRET_KEY`; set `MUSTER_S3_ENDPOINT`, `MUSTER_S3_BUCKET`,
+  `MUSTER_S3_ACCESS_KEY`, `MUSTER_S3_SECRET_KEY` (and `MUSTER_S3_REGION` if not
+  `us-east-1`) plus the signing key. Nothing is filled in for you here: one
+  left out is reported as `OFF (MISCONFIGURED)` naming it, never replaced by
+  the bundled store's. The key's
   policy and the lifecycle rule are in [uploads.md](uploads.md#configuration).
 - **Limits:** `MUSTER_UPLOAD_MAX_BYTES` (25 MiB), `MUSTER_UPLOAD_LINK_TTL` (24h).
 - **Check:** `file attachments: ON — files go to MUSTER_S3_ENDPOINT=…`. A
@@ -272,6 +311,9 @@ session, never quoting it), and open stops are listed in the Asks page's
 - **On by default in the Compose stack.** The compose file sets
   `MUSTER_SESSION_STATE=1` unless `.env` says otherwise. (The server binary on
   its own defaults to off.)
+- **Upgrading switches it on.** An install made before this default, upgraded
+  with the new `docker-compose.yml`, moves to one push per stop at its next
+  start. To keep the old notifications, put `MUSTER_SESSION_STATE=0` in `.env`.
 - **Needs:** nothing beyond the core: only the database it already has. Its
   stall classifier runs only where [chief nudges](#chief-nudges) run.
 - **Turning it off:** `MUSTER_SESSION_STATE=0` in `.env` (an empty value does
@@ -382,6 +424,15 @@ early stage and does little yet.
   `MUSTER_PUSH_EXTRA_HOSTS`. [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `android passkeys: /.well-known/assetlinks.json serves …`.
 
+### Service token
+
+A service-to-service secret that acts as the admin, for another service of yours
+that writes to muster (each request also names its actor in `X-Muster-Actor`).
+
+- **`.env`:** `MUSTER_SERVICE_TOKEN=<32+ random characters>`.
+- **Check:** `service-to-service tier: CONFIGURED …`; unset, those routes answer
+  503 and the line says `DISABLED (fail-closed)`.
+
 ### Other settings
 
 Tuning, none of which needs anything else. Each is one `.env` line; defaults
@@ -395,8 +446,6 @@ and ranges are in [configuration.md](configuration.md).
 | `MUSTER_AGENTS_IDLE_AFTER` | when a session folds under **Idle** in the sidebar (14d) |
 | `MUSTER_HOST_ICONS` | an icon per machine, e.g. `laptop=laptop,tower=server` |
 | `MUSTER_LIVE_HEARTBEAT` | the live streams' heartbeat (15s) |
-| `MUSTER_SERVICE_TOKEN` | a service-to-service secret that acts as the admin (32+ characters) |
-| `MUSTER_TAG_AUTODISPATCH` | reserved: logs and counts eligible tasks, dispatches nothing |
 | `MUSTER_PUBLIC_URL`, `MUSTER_SECURE_COOKIES`, `MUSTER_HTTP_PORT`, `MUSTER_BIND` | the address and port (INSTALL.md sets them) |
 
 ## Advanced features
@@ -420,6 +469,23 @@ deletes it. [provisioner.md](provisioner.md).
   dispatch not set up".
 - **Check:** `agent provisioning: LIFECYCLE …` instead of `UNWIRED`.
 
+### Agent gateway
+
+Chat with a dispatched agent, and delivery of its first turn (the kickoff):
+`MUSTER_AGENT_GATEWAY=hooks-sha256` with the runtime's config and install
+script, for a `gateway`-kind agent image you supply
+([provisioner.md](provisioner.md#the-two-switches)). Needs [dispatch](#dispatch);
+not available in the Compose stack. **Check:** `agent provisioning CHAT: WIRED …`.
+
+### Claude Code agents
+
+The `claude-code` agent kind: the Claude Code CLI in a pod (`images/claude-code-agent`),
+on Claude subscription tokens, with worker pools and the jobs API
+([provisioner.md](provisioner.md), [jobs.md](jobs.md)). `MUSTER_AGENT_KINDS=gateway,claude-code`,
+`MUSTER_AGENT_CC_IMAGE`, `MUSTER_AGENT_CC_ACCOUNTS` and a
+`MUSTER_AGENT_CC_TOKEN_<NAME>` per account. Needs [dispatch](#dispatch); not
+available in the Compose stack.
+
 ### Chief
 
 Your fleet agent: it answers you about the state of the work, and plugin
@@ -431,6 +497,13 @@ messages are delivered to it. [chief.md](chief.md).
 - **In the Compose stack** Account → Chief says "Not available on this install",
   and a session's `chief_ask` is told to use `attention_ask` instead.
 
+### Chief session runtimes
+
+A picker for the runtime (and Claude model) of each chief chat session:
+`MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`, with a `claude-code` chief
+([chief.md](chief.md#sessions-on-more-than-one-runtime)). Not available in the
+Compose stack. **Check:** `chief session runtimes: ON (…)`.
+
 ### Chief nudges
 
 Your chief finds sessions that stopped short, and either nudges them with your
@@ -438,10 +511,14 @@ own words or points you at them. Ships in **shadow mode**: decisions are
 recorded on the Asks page's Chief nudges tab, nothing is sent.
 [chief-nudges.md](chief-nudges.md).
 
-- **Needs** the [chief](#chief) and the OpenRouter key
-  (`MUSTER_AGENT_OPENROUTER_KEY`) for its stall classifier.
-- **`.env`:** `MUSTER_CHIEF_NUDGES=1`; `MUSTER_CHIEF_NUDGE_LIVE_OWNERS=<user
-  ids>` to act on them for those users; the timing knobs are in chief-nudges.md.
+- **Needs** the [chief](#chief), which needs in-cluster [dispatch](#dispatch)
+  (Kubernetes), and the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`) for its
+  stall classifier.
+- **Not available in the Compose stack**: `MUSTER_CHIEF_NUDGES` and the five
+  `MUSTER_CHIEF_NUDGE_*` settings are not forwarded, like the rest of the
+  agent plane. In a Kubernetes deployment, `MUSTER_CHIEF_NUDGES=1` turns it on
+  and `MUSTER_CHIEF_NUDGE_LIVE_OWNERS=<user ids>` acts on it for those users;
+  the knobs are in chief-nudges.md.
 - **Check:** `chief nudges: ON in SHADOW (MUSTER_CHIEF_NUDGES=1) — …`.
 
 ### Plugins
@@ -452,15 +529,54 @@ to your chief and send the replies you approve. [plugins.md](plugins.md).
 - **Needs a plugin process you run** (this repository has the ClankMail one,
   `muster-clankmail`), and the [chief](#chief) to act on what arrives: without
   an agent gateway, messages queue and the log warns.
-- **`.env`:** `MUSTER_PLUGINS=1`. What builds on it, each needing it on:
-  `MUSTER_SESSION_ROUTING=1` (the chief hands a message to one of your
-  sessions), `MUSTER_TASK_ROUTING=1`, `MUSTER_PLUGIN_TASK_NAMESPACES`,
-  `MUSTER_ROUTE_RELAY_ALLOW`, `MUSTER_PR_MAIL_SENDERS`,
-  `MUSTER_FLEET_REPORT_SENDERS` with `MUSTER_FLEET_REPORT_PATHS`, and
-  `MUSTER_MAIL_RESUME_ALLOW` (with a host running `muster-mirror
-  -resume-spawn`). Their grammar is in [configuration.md](configuration.md#muster-server-optional-features).
+- **`.env`:** `MUSTER_PLUGINS=1`. The features below build on it; their
+  grammar is in [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `plugins: ENABLED (MUSTER_PLUGINS=1) — …`; `/plugins` (no menu
   link) mints plugin tokens.
+
+### Plugin tasks
+
+A plugin files one task per upstream record (`POST /plugin/v1/tasks`).
+`MUSTER_PLUGIN_TASK_NAMESPACES=<tag namespaces>`, with plugins on; no chief
+needed. **Check:** `plugin tasks: ON …`.
+
+### Session routing
+
+The chief hands a plugin message to one of your sessions and relays the
+session's answer ([plugins.md](plugins.md#routing-a-message-to-a-session)).
+`MUSTER_SESSION_ROUTING=1`, with plugins on and the [chief](#chief);
+`MUSTER_ROUTE_RELAY_ALLOW` lists the senders whose answers go out without your
+approval. **Check:** `session routing: ON (…)`.
+
+### Task routing
+
+The chief routes a task a plugin filed: to the Asks page, or to the agent
+working it ([plugins.md](plugins.md#routing-a-task-to-the-chief)).
+`MUSTER_TASK_ROUTING=1`, with plugins on and the [chief](#chief).
+**Check:** `task routing: ON …`.
+
+### PR mail routing
+
+Review mail about a pull request goes to the mirrored session that opened it
+([plugins.md](plugins.md#a-pull-request-review-mail)).
+`MUSTER_PR_MAIL_SENDERS=<owner>/<handle>,…`, with session routing on, an
+agent-mail plugin, and a host hook reporting who authored what.
+**Check:** `pull-request routing: ON (…)`.
+
+### Fleet reports
+
+muster answers a "what did my sessions do" request itself
+([plugins.md](plugins.md#a-fleet-report-request)).
+`MUSTER_FLEET_REPORT_SENDERS` with `MUSTER_FLEET_REPORT_PATHS`, plugins on, an
+agent-mail plugin, and [focus](#focus). **Check:** `fleet-report requests: ON (…)`.
+
+### Mail resume
+
+Mail for a session that has ended resumes it in a new tmux window
+([plugins.md](plugins.md#resuming-an-ended-session)).
+`MUSTER_MAIL_RESUME_ALLOW`, with session routing on and a host running
+`muster-mirror -resume-spawn`; `MUSTER_MAIL_RESUME_OFF=1` is the kill switch.
+**Check:** `mail resume: ON (…)`.
 
 ### Memo relay
 
