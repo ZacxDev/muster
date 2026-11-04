@@ -586,7 +586,7 @@ type Store interface {
 	// write on the task asking for exactly that status — and marks as spent
 	// every other unconfirmed write already DONE upstream that was queued
 	// before it (every one, when none matched). No such write → false: the
-	// move is the upstream's own. A write confirms at most one move (0079).
+	// move is the upstream's own. A write confirms at most one move (0080).
 	// Call it only for a real move, never a re-save of the same status. See
 	// PGStore.ConfirmRefStatusWrite.
 	ConfirmRefStatusWrite(ctx context.Context, noteID int64, status string) (RefWrite, bool, error)

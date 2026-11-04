@@ -1,4 +1,4 @@
--- muster 0079 — A QUEUED STATUS WRITE IS CONFIRMED ONCE (internal/notes/pgstore_refs.go
+-- muster 0080 — A QUEUED STATUS WRITE IS CONFIRMED ONCE (internal/notes/pgstore_refs.go
 -- ConfirmRefStatusWrite; internal/api/push_task.go reviewSourceLabel;
 -- docs/plugins.md#writes-on-a-reference-are-queued).
 --
@@ -22,12 +22,12 @@
 -- unconfirmed (an existing row can only ever be matched by a move to its own
 -- status, which is what it asked for). Not re-applied by db.RLSOn (it changes
 -- no policy, grant or default); the column inherits the table's row-level
--- security. Idempotent. Must apply after 0078 (the contiguity test refuses a gap).
+-- security. Idempotent. Must apply after 0079 (the contiguity test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it, and
 -- labels every snapshot move as the upstream's, which is what it did before):
 --   ALTER TABLE task_ref_writes DROP COLUMN IF EXISTS confirmed_at;
---   DELETE FROM schema_migrations WHERE version = 79;
+--   DELETE FROM schema_migrations WHERE version = 80;
 
 SET LOCAL lock_timeout = '3s';
 
