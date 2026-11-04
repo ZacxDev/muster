@@ -238,9 +238,12 @@ func TestAFailingTranscriptReadBacksOff(t *testing.T) {
 	}
 }
 
-// TestAnAgentsQuickExchangeStaysOneStop (F7): the agent asks, the owner
-// answers, the agent asks a follow-up 10 s later — one stop. A reply turn of
-// more than EndAfter ends it.
+// TestAnAgentsQuickExchangeStaysOneStop (F7): the agent's turn is timed by
+// its messages — a 10 s exchange does not end the stop, a reply turn of more
+// than EndAfter does. The exchange's messages are dated BEFORE the stop
+// opened, so the owner-acted end (an owner message after the opening, which
+// ends a stop at once: TestTheOwnerAnsweringAnAgentEndsItsStop) does not
+// apply here, and the turn timing is what is measured.
 func TestAnAgentsQuickExchangeStaysOneStop(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.srv.nudgeReadHook = nil

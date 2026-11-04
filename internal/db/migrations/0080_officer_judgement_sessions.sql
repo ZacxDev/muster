@@ -1,4 +1,4 @@
--- muster 0079 — THE JUDGEMENT-TIER DAILY SESSION CAP, PERSISTED
+-- muster 0080 — THE JUDGEMENT-TIER DAILY SESSION CAP, PERSISTED
 -- (internal/officers sessions.go; docs/officers.md "The two pools").
 --
 --   officer_judgement_sessions   one row per (owner, officer, UTC day): the
@@ -20,12 +20,12 @@
 -- rest, and --rls-on re-applies this file (db.RLSOn), so every statement is
 -- idempotent.
 --
--- Must apply after 0078 (the contiguity test refuses a gap).
+-- Must apply after 0079 (the contiguity test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the
 -- table, and keeps its count in memory):
 --   DROP TABLE public.officer_judgement_sessions;
---   DELETE FROM schema_migrations WHERE version = 79;
+--   DELETE FROM schema_migrations WHERE version = 80;
 
 SET LOCAL lock_timeout = '3s';
 

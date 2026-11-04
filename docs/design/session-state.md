@@ -263,10 +263,71 @@ An episode is one stop of one session.
   runtime key, or the agent conversation), not the waiting or idle streak key,
   plus a sequence number. At most one episode per session is open.
 - **Opens** when the session enters `needs-you` or `stalled`.
-- **Ends** only when the session has been `working` continuously for at least
-  `N` (default 120 s), or a turn completes after at least `N` of work. A busy
-  blip shorter than `N` (a permission let through, a quick tool call, the
-  owner answering at the terminal) never ends it. **One stop is one episode**
+- **Ends** in one of four ways:
+  - **the owner acted in the session** (`end_reason` `owner`), on the next
+    state pass: a message of the owner's own written AFTER the episode opened
+    (a chief nudge, a relayed answer or a routed message muster pasted in does
+    not count, nor does an untimed or fenced one), or, for a waiting episode,
+    the session no longer waiting (the prompt was answered). The owner's
+    message that preceded the stop (the `owner_last` case) does not end it;
+    only a newer one does. A session that waits now, or whose status is
+    unknown, is not ended this way (`sessionstate.OwnerActed`). The
+    conversation is read for this once after the episode opens (or after a
+    restart, so episodes opened before the rule existed are read too), then
+    again only when the session's streak moves — a record of what was READ,
+    kept apart from the streak every pass writes onto the episode;
+  - **the owner opened the session in muster** (`viewed`), at once: the
+    document of the session's own page — a mirrored window's rendered view or
+    terminal page, or an agent's page for the conversation it draws — under
+    the owner's principal (the web UI and the app show the same pages). Not
+    the bar, the Agents list, the Asks page with its Stalled / waiting row, the
+    tap route on its own (it redirects to the session's page, which counts),
+    the view's socket or fragments, a prefetch (`Sec-Purpose` / `Purpose:
+    prefetch`) or a `HEAD`, and never another user's request. Looking at the
+    window in tmux outside muster cannot be seen. Its own reason, not
+    `owner`'s: the end reason records why a push cleared, and "looked" is not
+    "answered" (`internal/api/session_viewed.go`);
+  - **sustained work** (`worked`): the session has been `working`
+    continuously for at least `N` (default 120 s), or a turn completes after
+    at least `N` of work. A busy blip shorter than `N` that the owner did not
+    start (a quick tool call, a background task's notice) does not end it;
+  - **gone** (`gone`): its window left a host that is online and reporting.
+
+  **A handled stop is not opened again on the same streak**
+  (`sessionstate.Handled`: `viewed`, and the one-time `reset` below): while
+  the session sits where it was, neither the pass nor the waiting hook opens
+  a new episode for it, so the stop the owner dealt with is not pushed again.
+  Once its streak moves (a new status, a new message) the next stop is a new
+  episode as usual. A view ends its episode on the streak the page showed
+  (the session's current one, not the one the last pass wrote), so the stop
+  the owner looked at is the one treated as handled.
+
+  **`owner` is not handled.** It means the owner answered, so the session
+  moved, and any stop after it is new. The episode ends on the pass that READ
+  the owner's message, which can be a pass later than the one that first saw
+  the session stop again (a failed read is retried), so an `owner` episode can
+  end carrying the NEXT stop's streak. Treating that as handled would suppress
+  the real next stop's push for as long as the session sat on it.
+
+  **A handled stop opened again anyway is ended again**
+  (`sessionstate.PG.EndRepeat`): an open episode whose session is on the
+  streak its previous episode ended handled on is ended for that same reason,
+  with that streak, and its push withdrawn, on the next pass. The reopen
+  guard (`PG.Open`) cannot refuse every one, so this is a permanent repair,
+  not a rollout step. Three writers produce one:
+  - the image before 0079, still running during a rolling update, opens and
+    pushes a session still stopped after the reset;
+  - the waiting hook (the older image's, and this one's whenever
+    `windowStreakKey` returns `""` because the host reports no status time)
+    opens with no streak, and a streak of `""` never matches the guard;
+  - a pass whose facts were read before a concurrent view opens on the
+    streak it read, which is not the one the view ended on.
+
+  The streak compared is the session's current one, so each is ended within
+  one pass, and the repush floor holds the next push. The reset therefore
+  needs no manual deploy step.
+
+  **One stop of a session that carries on by itself is one episode**
   (default D1): `needs-you` → `stalled` within it updates its state and does
   not push again.
 - **Repush floor:** a session whose previous episode pushed within 2 minutes
@@ -274,8 +335,10 @@ An episode is one stop of one session.
   `attentionRepushAfter` (`attention.go:943`).
 
 Scenario: three Bash permissions in a row, each approved from tmux within
-seconds. Today that is one push (the 2-minute guard); here it is one episode
-and one push.
+seconds. Today that is one push (the 2-minute guard); here each approval ends
+its episode (the owner acted), and the next prompt's episode is held by the
+repush floor and ended by its own approval before the floor passes: still one
+push.
 
 ### Claiming, pushing and clearing (the episodes table)
 
@@ -301,8 +364,15 @@ the Chief decision (if any) and the nudge's send-queue id.
   notified. (This replaces today's silent seeding for these pushes.)
 - **Clearing** is from the table: ending an episode sets `ended_at`, sends the
   resolved push for its tag, and sets `cleared_at`. A pass after a restart
-  ends and clears any open row whose session is now working past `N` or gone,
-  so a notification for a session that moved on during downtime is cleared.
+  ends and clears any open row whose session is now working past `N`, gone,
+  or acted in by its owner, so a notification for a session that moved on
+  during downtime is cleared. The same rule withdrew the **backlog**:
+  migration 0079 ended every episode open when it applied (`end_reason`
+  `reset`, once), and the next pass sent each pushed one's resolved push and
+  set its `cleared_at`; a session still on the same streak is not reopened
+  (handled), and a reopen by the older image mid-rollout is ended again
+  (`EndRepeat`, above, which also repairs the repeats this image's own
+  waiting hook and racing passes write).
 
 This table **replaces `KindNotice`'s use for stalls** (round 0 D4). Once
 nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases
@@ -507,7 +577,9 @@ Taken by the coordinator, not decided by the operator. Each can be changed
 without reworking the rest of the design.
 
 - **D1. One stop is one episode.** A `needs-you` → `stalled` change within a
-  stop does not push again; an episode ends only after `N` (120 s) of work.
+  stop does not push again; an episode ends after `N` (120 s) of work, or at
+  once when the owner acts in the session (a message of their own after it
+  opened, or a waiting prompt answered) or opens it in muster.
 - **D2. Keep the stall classifier,** in the roles above: it splits
   `needs-you` from `stalled` for an idle session, and gates the `needs-you`
   nudge.

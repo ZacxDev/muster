@@ -222,7 +222,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		now = time.Now
 	}
 	// The judgement session cap's ledger is persisted (officers.
-	// PGSessionStore, migration 0079), read and written as the officer's
+	// PGSessionStore, migration 0080), read and written as the officer's
 	// owner. An officer that declares a cap with no store is refused: a cap
 	// that cannot be kept is no cap.
 	var judgement *officers.JudgementLedger

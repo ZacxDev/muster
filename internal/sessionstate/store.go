@@ -69,7 +69,9 @@ type Store interface {
 	// Open opens an episode for the caller's session (e.Kind, e.Key), at the
 	// next seq. 🔴 THE CLAIM: claimed is false, and nothing is written, when
 	// the session already has an open episode (session_episodes_one_open) —
-	// another pass, or another replica, won it.
+	// another pass, or another replica, won it — and when the session's latest
+	// episode ended Handled on e.StreakKey (the stop was dealt with, and the
+	// session has not moved since).
 	Open(ctx context.Context, e Episode) (Episode, bool, error)
 	// OpenEpisodes is the caller's open episodes, oldest first.
 	OpenEpisodes(ctx context.Context) ([]Episode, error)
@@ -84,6 +86,17 @@ type Store interface {
 	// End ends open episode id for reason; ended false when it had already
 	// ended.
 	End(ctx context.Context, id int64, reason string, at time.Time) (bool, error)
+	// EndViewed ends open episode id 'viewed' (EndViewed) and records streak,
+	// the streak the owner was shown, as the one it ended on ("" keeps the
+	// stored one); ended false when it had already ended.
+	EndViewed(ctx context.Context, id int64, streak string, at time.Time) (bool, error)
+	// EndRepeat ends open episode id when it REPEATS a handled stop: the
+	// session's previous episode ended Handled on streak, the streak the session
+	// is on now — so the session has not moved since the owner dealt with it,
+	// and the open one is that stop opened again by a process without PG.Open's
+	// guard (an older image, mid-rollout). It ends for the previous episode's
+	// reason, which is returned; ended false (nothing written) otherwise.
+	EndRepeat(ctx context.Context, id int64, streak string, at time.Time) (reason string, ended bool, err error)
 	// Get is the caller's episode id; ok false when it is none of theirs.
 	Get(ctx context.Context, id int64) (Episode, bool, error)
 	// ClaimPush claims open episode id's push at at. 🔴 THE PUSH CLAIM:
@@ -221,14 +234,23 @@ func (p *PG) Open(ctx context.Context, e Episode) (Episode, bool, error) {
 	// 🔴 ON CONFLICT DO NOTHING WITH NO TARGET: both unique indexes refuse a
 	// second open episode — session_episodes_one_open (the claim) and the seq
 	// key, which two passes computing the same next seq would both reach.
+	//
+	// 🔴 A HANDLED STOP IS NOT OPENED AGAIN (Handled): when the session's
+	// latest episode ended handled — the owner acted, opened the session, or
+	// the backlog reset — on the streak e names, nothing is written. The
+	// session has not moved since, so a new episode would push the stop again.
+	// A streak of "" names nothing and never matches.
 	row := p.pool.QueryRow(ctx, `INSERT INTO session_episodes (session_kind, session_key, seq, state, waiting, asked, runtime,
 			mirror_host, mirror_session, mirror_window, window_index, agent_id, chat_session_id, streak_key)
 		SELECT $1, $2, coalesce(max(seq), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		  FROM session_episodes WHERE session_kind = $1 AND session_key = $2
+		HAVING NOT EXISTS (SELECT 1 FROM session_episodes last
+		  WHERE last.session_kind = $1 AND last.session_key = $2 AND last.seq = max(session_episodes.seq)
+		    AND last.end_reason = ANY($14) AND last.streak_key = $13 AND $13 <> '')
 		ON CONFLICT DO NOTHING
 		RETURNING `+cols,
 		e.Kind, e.Key, e.State, e.Waiting, e.Asked, cut(e.Runtime, 32), cut(e.Host, 200), cut(e.TmuxSession, 200), cut(e.Window, 32),
-		e.Index, nullID(e.AgentID), nullID(e.ChatSessionID), cut(e.StreakKey, 100))
+		e.Index, nullID(e.AgentID), nullID(e.ChatSessionID), cut(e.StreakKey, 100), handledReasons)
 	out, err := scan(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Episode{}, false, nil
@@ -284,7 +306,7 @@ func (p *PG) SetClassification(ctx context.Context, id int64, streak string, c C
 
 // End implements Store.
 func (p *PG) End(ctx context.Context, id int64, reason string, at time.Time) (bool, error) {
-	if reason != EndWorked && reason != EndGone {
+	if reason != EndWorked && reason != EndGone && reason != EndOwner && reason != EndViewed {
 		return false, ErrBadEpisode
 	}
 	tag, err := p.pool.Exec(ctx, `UPDATE session_episodes SET ended_at = $2, end_reason = $3, updated_at = $2
@@ -293,6 +315,60 @@ func (p *PG) End(ctx context.Context, id int64, reason string, at time.Time) (bo
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// EndViewed implements Store. 🔴 THE STREAK THE OWNER WAS SHOWN, NOT THE ONE
+// LAST OBSERVED: a pass writes an episode's streak every 30 s, so the stored
+// one can lag the session's (it stopped again since); ending on the lagging
+// one would leave the stop the owner just looked at unhandled, and the next
+// pass would open and push it.
+func (p *PG) EndViewed(ctx context.Context, id int64, streak string, at time.Time) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE session_episodes SET ended_at = $2, end_reason = $3,
+			streak_key = CASE WHEN $4 = '' THEN streak_key ELSE $4 END, updated_at = $2
+		WHERE id = $1 AND ended_at IS NULL`, id, at, EndViewed, cut(streak, 100))
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// EndRepeat implements Store. 🔴 THE ONE GUARD, TWO SIDES: Open refuses to
+// write an episode while the session's latest one ended Handled on the streak
+// being opened; EndRepeat ends one that was written anyway, by the same
+// predicate (handledReasons, a non-empty streak equal to the previous
+// episode's). A PERMANENT repair, not a rollout step — the guard cannot refuse
+// every repeat: an image from before migration 0079 has no guard (during a
+// rolling update its pass, after the reset, opens and pushes a still-stopped
+// session again); a waiting hook opens with no streak at all (the older
+// image's, and this one's whenever the host reports no status time), and ""
+// never matches; and a pass whose facts were read before a concurrent view
+// opens on the streak it read, not the one the view ended on. So the streak
+// compared is the session's CURRENT one (the caller's), never the repeat's
+// stored one — and that streak is written onto the repeat as it ends,
+// so it becomes the latest episode ended handled on it and Open's guard keeps
+// holding (a repeat from the old waiting hook stores no streak, and ending it
+// on "" would let the very next pass open the stop a third time). The repeat's
+// push is withdrawn by the pass's clearEndedEpisodes, as any ended episode's.
+func (p *PG) EndRepeat(ctx context.Context, id int64, streak string, at time.Time) (string, bool, error) {
+	if streak == "" {
+		return "", false, nil
+	}
+	var reason string
+	err := p.pool.QueryRow(ctx, `UPDATE session_episodes cur SET ended_at = $2, end_reason = prev.end_reason, streak_key = $4, updated_at = $2
+		FROM session_episodes prev
+		WHERE cur.id = $1 AND cur.ended_at IS NULL
+		  AND prev.owner_id = cur.owner_id AND prev.session_kind = cur.session_kind AND prev.session_key = cur.session_key
+		  AND prev.seq = (SELECT max(p2.seq) FROM session_episodes p2 WHERE p2.owner_id = cur.owner_id
+		      AND p2.session_kind = cur.session_kind AND p2.session_key = cur.session_key AND p2.seq < cur.seq)
+		  AND prev.end_reason = ANY($3) AND prev.streak_key = $4
+		RETURNING cur.end_reason`, id, at, handledReasons, cut(streak, 100)).Scan(&reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return reason, true, nil
 }
 
 // Get implements Store.

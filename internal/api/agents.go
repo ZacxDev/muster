@@ -1520,9 +1520,12 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// The viewer opened this agent: its "recently viewed" entry (best-effort).
+	// The viewer opened this agent: its "recently viewed" entry, and the open
+	// stop of the conversation the page draws ends (session_viewed.go) —
+	// best-effort, both.
 	ctx = op.begin("visit")
 	s.recordAgentVisit(ctx, a.ID)
+	s.episodeViewedAgent(ctx, r, a.ID, active.ID)
 	// Opening a session clears its unread replies (best-effort).
 	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)

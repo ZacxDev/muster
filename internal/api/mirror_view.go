@@ -81,8 +81,11 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).ViewPath()), http.StatusSeeOther)
 		return
 	}
-	// The viewer opened this window (best-effort).
-	s.recordMirrorVisit(op.begin("visit"), h.Host, e.Session, e.Window)
+	// The viewer opened this window (best-effort): its "recently viewed"
+	// entry, and its open stop ends (session_viewed.go).
+	vctx := op.begin("visit")
+	s.recordMirrorVisit(vctx, h.Host, e.Session, e.Window)
+	s.episodeViewedMirror(vctx, r, h, e)
 	ctx := op.begin("view")
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
