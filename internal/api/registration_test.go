@@ -29,6 +29,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -101,6 +102,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		ChiefPrefs:      &memChiefPrefs{},
 		ChiefNudge:      &ChiefNudges{},
 		ChiefNudges:     chiefnudge.NewPG(nil),
+		Episodes:        sessionstate.NewPG(nil),
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
 		MirrorTokens:    stubMirrorTokens{},

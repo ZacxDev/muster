@@ -405,7 +405,8 @@ After a **successful** teardown, on both doors:
 agent down). Only `agent_destroy` also moves it back: a task still
 `in_progress` with no other live agent goes to `open` (status writer
 `agent-destroy-reopen`), which `task_dispatch` needs (open, ungated, no live
-agent). The write is conditional — it moves the task only while it is still
+agent). A plugin task reference is never moved back: its status is the
+upstream's ([plugins.md](plugins.md#task-references)). The write is conditional — it moves the task only while it is still
 `in_progress` — so a status you set meanwhile is kept. After the browser's
 Delete the task stays as it was; reopen it on its card.
 

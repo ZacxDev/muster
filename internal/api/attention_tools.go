@@ -155,6 +155,19 @@ func (c toolCaller) author() string {
 	return c.asker.Label
 }
 
+// refOrigin is the caller as a write queued on a task reference names it: its
+// comment author, the agent, and a mirrored session's id.
+func (c toolCaller) refOrigin() refOrigin {
+	o := refOrigin{Author: c.author()}
+	if c.agent != nil {
+		o.Agent = c.agent.Name
+	}
+	if c.asker.MirrorSession != "" {
+		o.Session = c.asker.MirrorSession
+	}
+	return o
+}
+
 // mirroredSession reports whether c is one of the owner's mirrored Claude Code
 // sessions — the caller mirror_mcp.go builds from a mirror host's token and a
 // session that host lists — and not a dispatched agent or muster itself. It is
@@ -785,9 +798,13 @@ func (s *Server) toolTaskComment(ctx context.Context, c toolCaller, arguments st
 	if strings.TrimSpace(in.Body) == "" {
 		return toolErr("body required")
 	}
-	cm, err := s.ext.Notes.AddComment(ctx, notes.Comment{NoteID: in.ID, Author: c.author(), Body: in.Body})
+	cm, queued, err := s.addTaskComment(withRefOrigin(ctx, c.refOrigin()), commentByActor,
+		notes.Comment{NoteID: in.ID, Author: c.author(), Body: in.Body})
 	if err != nil {
 		return s.taskErr(in.ID, err, "comment on")
+	}
+	if queued != nil {
+		return toolJSON(map[string]any{"queued": true, "write_id": queued.ID, "message": refQueuedText})
 	}
 	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(in.ID, 10))
 	return toolJSON(cm)
@@ -809,7 +826,10 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 	if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
 		return toolErr("%s", why)
 	}
-	n, err := s.setNoteStatus(notes.ForAgent(ctx), writerTaskTool, in.ID, in.Status)
+	n, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(ctx, c.refOrigin())), writerTaskTool, in.ID, in.Status)
+	if errors.Is(err, errQueuedUpstream) {
+		return toolJSON(map[string]any{"queued": true, "task_id": n.ID, "message": refQueuedText})
+	}
 	if errors.Is(err, notes.ErrCompleteLocked) {
 		return toolErr("%s", agentStatusRefusal(notes.StatusComplete, in.Status))
 	}

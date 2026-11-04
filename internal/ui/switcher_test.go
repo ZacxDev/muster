@@ -2,6 +2,7 @@ package ui
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -473,8 +474,8 @@ func TestTheSwitcherNeverClampsALabel(t *testing.T) {
 // TestTheSwitcherSearchFindsByRepoKindAndSession: operator ask "Teach the
 // palette repo+kind". Each entry carries data-switcher-words — its repository,
 // its kind and (a window's) raw tmux session name, lower-cased — escaped like
-// every other attribute; and the palette's rank reads them as a FOURTH tier,
-// after codename prefix, codename substring and title. Values pairwise
+// every other attribute; and the palette's rank reads them LAST, after the
+// codename, the title and the previous focus titles (paletteMatchJS). Values pairwise
 // distinct, so a field filled from another fails by name. Red at origin/main:
 // no words attribute, no tier.
 func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
@@ -502,7 +503,8 @@ func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
 	}
 	for _, want := range []string{
 		"words: a.getAttribute('data-switcher-words') || ''",
-		"if (fold(e.title).indexOf(q) >= 0) return 2;\n    if (fold(e.words).indexOf(q) >= 0) return 3;\n    return -1;",
+		"if (low(e.title).indexOf(q) >= 0) return { r: 2, why: 'title' };",
+		"if (low(e.words).indexOf(q) >= 0) return { r: 4, why: 'words' };\n    return null;",
 	} {
 		if !strings.Contains(paletteJS, want) {
 			t.Errorf("the palette's script lacks %q", want)
@@ -511,6 +513,59 @@ func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
 	// Drawn by textContent only: the script never writes markup it was given.
 	if regexp.MustCompile(`innerHTML\s*=[^=]`).MatchString(paletteJS) {
 		t.Error("the palette writes innerHTML")
+	}
+}
+
+// TestTheSwitcherSearchFindsByPreviousFocusTitles: operator ask "find agents
+// by their focus titles, either current or previous". Each entry with previous
+// focus titles carries them as data-switcher-prev — one per line, newest
+// first, each collapsed to one line, repeats and blanks dropped, escaped —
+// on the bar's entry AND the sidebar's row (the palette reads whichever the
+// page has); an entry with none carries no attribute. Values pairwise
+// distinct. Red at origin/main: no attribute.
+func TestTheSwitcherSearchFindsByPreviousFocusTitles(t *testing.T) {
+	list, mirrors := switcherFixture()
+	list[0].PrevFocus = []string{"Porting the <importer>", "Tuning  the\tcache", "Porting the <importer>", ""}
+	mirrors[0].PrevFocus = []string{"Bisecting the tunnel"}
+	want := map[string]string{
+		"ag-one":  `data-switcher-prev="Porting the &lt;importer&gt;` + "\n" + `Tuning the cache"`,
+		"mango:1": `data-switcher-prev="Bisecting the tunnel"`,
+	}
+	s := NewSwitcher(list, mirrors, nil, SwitcherCurrent{})
+	bar := renderString(t, switcherBar(s, true))
+	all := bar[strings.Index(bar, `data-switcher-list="all"`):strings.Index(bar, `id="switcher-views"`)]
+	nav := renderString(t, NavAgentsList(list, mirrors, "/tasks", time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)))
+	for name, where := range map[string]string{"the bar's All row": all, "the sidebar": nav} {
+		for code, attr := range want {
+			tag := regexp.MustCompile(`<a [^>]*data-switcher-code="` + regexp.QuoteMeta(code) + `"[^>]*>`).FindString(where)
+			if tag == "" {
+				t.Fatalf("%s: no entry for %s (instrument):\n%s", name, code, where)
+			}
+			if !strings.Contains(tag, attr) {
+				t.Errorf("%s: %s lacks %s: %s", name, code, attr, tag)
+			}
+		}
+		if n := strings.Count(where, "data-switcher-prev="); n != len(want) {
+			t.Errorf("%s: %d entries carry previous titles, want %d (only those with some)", name, n, len(want))
+		}
+	}
+	// The palette reads the attribute, one title per line, and its rank
+	// carries the previous-title tier and says why it matched.
+	for _, frag := range []string{
+		"prev: (a.getAttribute('data-switcher-prev') || '').split('\\n').filter(Boolean),",
+		"if (low(prev[i]).indexOf(q) >= 0) return { r: 3, why: 'previous', hit: prev[i] };",
+		"p.setAttribute('data-match-previous', '');",
+	} {
+		if !strings.Contains(paletteJS, frag) {
+			t.Errorf("the palette's script lacks %q", frag)
+		}
+	}
+}
+
+// TestThePaletteSpellsItsServerFloor: the script's MIN is PaletteServerMinRunes.
+func TestThePaletteSpellsItsServerFloor(t *testing.T) {
+	if paletteServerMinRunesJS != strconv.Itoa(PaletteServerMinRunes) {
+		t.Fatalf("the script asks from %s characters, PaletteServerMinRunes is %d", paletteServerMinRunesJS, PaletteServerMinRunes)
 	}
 }
 

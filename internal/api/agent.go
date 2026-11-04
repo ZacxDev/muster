@@ -108,7 +108,8 @@ func (s *Server) handleAgentTaskComment(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "comment body required"})
 		return
 	}
-	c, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{NoteID: id, Author: a.Name, Body: body.Body})
+	c, queued, err := s.addTaskComment(withRefOrigin(r.Context(), refOrigin{Agent: a.Name}), commentByActor,
+		notes.Comment{NoteID: id, Author: a.Name, Body: body.Body})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
@@ -116,6 +117,11 @@ func (s *Server) handleAgentTaskComment(w http.ResponseWriter, r *http.Request) 
 		}
 		s.logger.Printf("agent: comment task %d: %v", id, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not add comment"})
+		return
+	}
+	if queued != nil {
+		// A reference: the comment went to the upstream's queue (task_ref_queue.go).
+		s.writeJSON(w, http.StatusAccepted, map[string]any{"queued": true, "write": queued, "message": refQueuedText})
 		return
 	}
 	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
@@ -166,7 +172,14 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why})
 		return
 	}
-	note, err := s.setNoteStatus(notes.ForAgent(r.Context()), writerAgentRoute, id, body.Status)
+	note, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(r.Context(), refOrigin{Author: a.Name, Agent: a.Name})), writerAgentRoute, id, body.Status)
+	if errors.Is(err, errQueuedUpstream) {
+		s.writeJSON(w, http.StatusAccepted, struct {
+			notes.Note
+			Queued bool `json:"queued"`
+		}{note, true})
+		return
+	}
 	if err != nil {
 		if errors.Is(err, notes.ErrCompleteLocked) {
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal(notes.StatusComplete, body.Status)})
@@ -656,9 +669,13 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if strings.TrimSpace(in.Body) == "" {
 			return toolErr("body required")
 		}
-		c, err := s.ext.Notes.AddComment(ctx, notes.Comment{NoteID: *a.NoteID, Author: a.Name, Body: in.Body})
+		c, queued, err := s.addTaskComment(withRefOrigin(ctx, refOrigin{Agent: a.Name}), commentByActor,
+			notes.Comment{NoteID: *a.NoteID, Author: a.Name, Body: in.Body})
 		if err != nil {
 			return toolErr("could not comment: %v", err)
+		}
+		if queued != nil {
+			return toolJSON(map[string]any{"queued": true, "write_id": queued.ID, "message": refQueuedText})
 		}
 		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
 		return toolJSON(c)
@@ -675,7 +692,10 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
 			return toolErr("%s", why)
 		}
-		n, err := s.setNoteStatus(notes.ForAgent(ctx), writerAgentTool, *a.NoteID, in.Status)
+		n, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(ctx, refOrigin{Author: a.Name, Agent: a.Name})), writerAgentTool, *a.NoteID, in.Status)
+		if errors.Is(err, errQueuedUpstream) {
+			return toolJSON(map[string]any{"queued": true, "task_id": n.ID, "message": refQueuedText})
+		}
 		if errors.Is(err, notes.ErrCompleteLocked) {
 			return toolErr("%s", agentStatusRefusal(notes.StatusComplete, in.Status))
 		}

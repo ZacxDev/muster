@@ -40,6 +40,18 @@ const transcript = path.join(dir, sid + '.jsonl');
 // problem): the palette must not find it by the other window's focus.
 const sid2 = '0b2c3d4e-5f60-4718-8a9c-' + stamp.padStart(12, '0').slice(-12);
 const transcript2 = path.join(dir, sid2 + '.jsonl');
+// A third Claude window (@5) whose CURRENT focus is about something else and
+// whose PREVIOUS one names the reconciliation: the palette finds it by that
+// previous title, ranked after the window whose codename is the word
+// ("reconciling:1") and the agent whose CURRENT focus starts with it.
+const sid3 = '0b2c3d4e-5f60-4718-8a9d-' + stamp.padStart(12, '0').slice(-12);
+const transcript3 = path.join(dir, sid3 + '.jsonl');
+const PREVIOUS_TITLE = 'Reconciling the payout zephyr';
+// A title @5 had LONG ago: older than the page's recent previous titles (it
+// is followed by more than the in-page bound of newer distinct titles), so
+// only the palette's server search can find it.
+const OLD_TITLE = 'Quokka census migration';
+const FILLERS = Array.from({ length: 14 }, (_, i) => `Sorting batch ${String(i + 1).padStart(2, '0')}`);
 // `history`: that many earlier focuses are written first (e2e/mkchat), so the
 // mirrored session's history is 46 rows — three pages of 20 — and the agent's 4.
 const MIRROR_HISTORY = 45;
@@ -48,6 +60,7 @@ const focusEnv = JSON.stringify([
   { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY },
   { subject: 'mirror:' + sid, title: 'Bisecting the flaky tunnel test', description: 'The backoff resets too early.', history: MIRROR_HISTORY },
   { subject: 'mirror:' + sid2, error: 'no OpenRouter key' },
+  { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [OLD_TITLE, ...FILLERS, PREVIOUS_TITLE] },
 ]);
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
@@ -79,9 +92,10 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(transcript, '');
   fs.writeFileSync(transcript2, '');
+  fs.writeFileSync(transcript3, '');
   const now = Math.floor(Date.now() / 1000);
   // session|id|index|active|command|activity|claude-transcript
-  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\n`);
+  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\nfocuswin|@5|5|0|claude|${now - 300}|${transcript3}\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -169,6 +183,212 @@ for (const vp of [
       await expect(options).toHaveCount(1);
       await expect(options.first()).toContainText('Bisecting the flaky tunnel test');
       await page.keyboard.press('Escape');
+    });
+
+    // 🔴 PREVIOUS FOCUS TITLES (operator ask: "find agents by their focus
+    // titles, either current or previous"). Typed into the real palette, a
+    // fragment of a title the window @5 HAD finds it, saying why on its second
+    // line ("Previously: …"); and "reconciling" lists, in this order, the
+    // window whose codename starts with it, the agent whose CURRENT focus does,
+    // and @5 by its PREVIOUS one. Red at origin/main: @5 is not found at all.
+    test('the palette finds a session by a previous focus title, ranked after its name and a current title', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      await expect(page.locator(`#sidebar-agents-list a[href^="/agents/${agentName}"]`)).toHaveCount(1);
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      const w5 = options.filter({ has: page.locator('[data-match-previous]') });
+
+      await input.fill('payout zeph');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toHaveAttribute('data-match', 'previous');
+      await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + PREVIOUS_TITLE);
+      await expect(options.first().locator('span').first()).toHaveText('focuswin:5');
+
+      // The ranking: name, then current title, then previous title.
+      await input.fill('reconciling');
+      const rows = await options.evaluateAll((els) =>
+        els.map((e) => `${e.getAttribute('data-match')}:${(e.firstElementChild as HTMLElement).textContent}`));
+      const at = (re: RegExp) => rows.findIndex((r) => re.test(r));
+      const name = at(/^code:reconciling:1/), current = at(/^title:/), previous = at(/^previous:focuswin:5$/);
+      expect(name, `the codename match is listed: ${rows}`).toBeGreaterThanOrEqual(0);
+      expect(current, `the current-title match is listed: ${rows}`).toBeGreaterThan(name);
+      expect(previous, `the previous-title match is listed last of the three: ${rows}`).toBeGreaterThan(current);
+      await expect(w5).toHaveCount(1);
+      // The server search answers "reconciling" too — with the agent (its
+      // current title is in its history) and @5 — and neither is listed twice.
+      await page.waitForResponse((r) => r.url().includes('/ui/palette/history') && r.url().includes('q=reconciling'));
+      await page.waitForTimeout(100);
+      await expect(w5).toHaveCount(1);
+      await expect(options.filter({ hasText: agentName })).toHaveCount(1);
+
+      // Enter on it opens that window.
+      await input.fill('payout zephyr');
+      await page.keyboard.press('Enter');
+      await expect(page).toHaveURL(/window=%405/);
+    });
+
+    // 🔴 THE WHOLE RETENTION, ON TYPING (owner answer: "Recent in-page + full
+    // on typing"). @5's OLD title is not on the page — its row's previous
+    // titles stop at the in-page bound (the CONTROL) — and once typing pauses
+    // the server search finds it, shown as a previous title. Red at
+    // origin/main: no server search, no option.
+    test('a title older than the page is found once typing pauses', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      const row5 = page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:5"]');
+      await expect(row5).toHaveAttribute('data-switcher-prev', /Sorting batch 14/);
+      expect(await row5.getAttribute('data-switcher-prev'), 'the old title is not on the page').not.toContain('Quokka');
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      const answered = page.waitForResponse((r) => r.url().includes('/ui/palette/history') && r.url().includes('q=quokka%20cen'));
+      await input.fill('quokka cen');
+      await answered;
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toHaveAttribute('data-match', 'previous');
+      await expect(options.first().locator('[data-match-previous]')).toHaveText('Previously: ' + OLD_TITLE);
+      await expect(options.first().locator('span').first()).toHaveText('focuswin:5');
+    });
+
+    // 🔴 ONLY THE LATEST ANSWER LANDS. The server search is intercepted: a
+    // two-character query is never asked; typing a key at a time asks once,
+    // after the pause; the answer to an earlier query is
+    // held until a later one has been answered and drawn, then released — and
+    // it changes nothing. The later answer is merged once (a hit for an entry
+    // the page already matched is dropped) and ranked as a previous title,
+    // after the page's current-title match.
+    test('the server search: a stale answer never overwrites a newer one; hits merge once, as previous titles', async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      const agentHref = await page.locator(`#sidebar-agents-list a[data-switcher-code="${agentName}"]`).getAttribute('href');
+      const w5Href = await page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:5"]').getAttribute('href');
+      expect(agentHref && w5Href, 'both rows are on the page').toBeTruthy();
+      const asked: string[] = [];
+      let release = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      await page.route('**/ui/palette/history?**', async (route) => {
+        const q = new URL(route.request().url()).searchParams.get('q') ?? '';
+        asked.push(q);
+        if (q === 'zzstale') {
+          await held;
+          await route.fulfill({ json: { hits: [{ href: agentHref, title: 'Stale zzstale answer' }, { href: w5Href, title: 'Stale zzstale answer' }] } }).catch(() => {});
+          return;
+        }
+        if (q === 'claude code') {
+          await route.fulfill({ json: { hits: [{ href: w5Href, title: 'Old claude code audit' }] } });
+          return;
+        }
+        if (q === 'quarterly') {
+          await route.fulfill({ json: { hits: [{ href: agentHref, title: 'a duplicate of the page match' }, { href: w5Href, title: 'Old quarterly audit' }] } });
+          return;
+        }
+        await route.fulfill({ json: { hits: [] } });
+      });
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+
+      await input.fill('zz');
+      await page.waitForTimeout(700);
+      expect(asked, 'a two-character query is not sent').toEqual([]);
+      // Typed a key at a time, faster than the debounce: ONE request, for the
+      // whole word, not one per key.
+      await input.fill('');
+      await input.pressSequentially('zzdebounce', { delay: 60 });
+      await expect.poll(() => asked.length).toBe(1);
+      await page.waitForTimeout(700);
+      expect(asked, 'one request after typing pauses').toEqual(['zzdebounce']);
+      asked.length = 0;
+
+      await input.fill('zzstale');
+      await expect.poll(() => asked).toContain('zzstale');
+      await input.fill('quarterly');
+      const ofHref = (h: string) => page.locator(`#switcher-search-results [role="option"][data-href="${h}"]`);
+      await expect(ofHref(w5Href!)).toHaveCount(1);
+      const order = async () => options.evaluateAll((els) => els.map((e) => `${e.getAttribute('data-match')}:${e.getAttribute('data-href')}`));
+      const want = [`title:${agentHref}`, `previous:${w5Href}`];
+      const pick = (rows: string[]) => rows.filter((r) => want.includes(r));
+      expect(pick(await order()), 'the page match first, the server-only hit after it, each once').toEqual(want);
+      await expect(ofHref(w5Href!).locator('[data-match-previous]')).toHaveText('Previously: Old quarterly audit');
+      await expect(ofHref(agentHref!)).toHaveCount(1);
+
+      release();
+      await page.waitForTimeout(700);
+      expect(pick(await order()), 'the stale answer changed nothing').toEqual(want);
+      await expect(page.locator('#switcher-search-results')).not.toContainText('Stale zzstale answer');
+
+      // A server hit RAISES an entry the page matched less well: @5 matches
+      // "claude code" by its words (its kind) alone, and the hit lifts it to
+      // the previous-title rank, with its "Previously:" line.
+      await input.fill('claude code');
+      await expect(ofHref(w5Href!)).toHaveAttribute('data-match', 'previous');
+      await expect(ofHref(w5Href!).locator('[data-match-previous]')).toHaveText('Previously: Old claude code audit');
+      const rows2 = await order();
+      expect(rows2.indexOf(`previous:${w5Href}`), `@5 is listed before the words-only matches: ${rows2}`).toBe(0);
+      expect(rows2.slice(1).every((r) => r.startsWith('words:')), `the rest match by their words: ${rows2}`).toBe(true);
+      await page.unroute('**/ui/palette/history?**');
+    });
+
+    // The palette's rank as a table (window.musterPaletteMatch, the rule the
+    // palette above runs): the original substring ranks — codename prefix,
+    // codename substring, title — then ONE rank for a previous title (its
+    // newest match), then the words. Values pairwise distinct.
+    // The whole list as a table (window.musterPaletteRank): the page's matches
+    // with the server's hits merged — a hit adds an entry the page did not
+    // match (at the previous-title rank), RAISES one the page matched only by
+    // its words, leaves one the page matched better alone, and names no entry
+    // that is not on the page. Ties in page order.
+    test('the palette list: server hits add, raise, never lower, and name only page entries', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/tasks');
+      const got = await page.evaluate(() => {
+        const rank = (window as unknown as { musterPaletteRank: (es: object[], q: string, hits: object[]) => { e: { href: string }; r: number; why: string; hit?: string }[] }).musterPaletteRank;
+        const es = [
+          { href: '/a', code: 'ag-a', title: '', prev: [], words: 'acme-repo shell' },
+          { href: '/b', code: 'ag-b', title: 'Acme importer', prev: [], words: '' },
+          { href: '/c', code: 'ag-c', title: '', prev: [], words: '' },
+          { href: '/d', code: 'acme-d', title: '', prev: [], words: '' },
+        ];
+        const hits = [
+          { href: '/a', title: 'Old acme audit' },
+          { href: '/b', title: 'not shown: b matched better' },
+          { href: '/c', title: 'Old acme notes' },
+          { href: '/d', title: 'not shown: d matched by name' },
+          { href: '/gone', title: 'not on the page' },
+        ];
+        return rank(es, 'acme', hits).map((it) => `${it.e.href}=${it.r}/${it.why}${it.hit ? '/' + it.hit : ''}`);
+      });
+      expect(got).toEqual(['/d=0/code', '/b=2/title', '/a=3/previous/Old acme audit', '/c=3/previous/Old acme notes']);
+    });
+
+    test('the palette rank: name before current title before previous title before words', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/tasks');
+      const got = await page.evaluate(() => {
+        const m = (window as unknown as { musterPaletteMatch: (e: object, q: string) => { r: number; why: string; hit?: string } | null }).musterPaletteMatch;
+        const e = { code: 'mango:1', title: 'Porting the importer', prev: ['Bisecting the tunnel', 'Tunnel bisecting'], words: 'acme-repo claude code' };
+        return ['MANGO', 'go:1', 'porting', 'importer', 'tunnel', 'bisecting', 'acme', 'mg1', 'zzz', '  '].map((q) => {
+          const r = m(e, q);
+          return r ? `${q}=${r.r}/${r.why}${r.hit ? '/' + r.hit : ''}` : `${q}=none`;
+        });
+      });
+      expect(got).toEqual([
+        'MANGO=0/code',
+        'go:1=1/code',
+        'porting=2/title',
+        'importer=2/title',
+        'tunnel=3/previous/Bisecting the tunnel',
+        'bisecting=3/previous/Bisecting the tunnel',
+        'acme=4/words',
+        'mg1=none',
+        'zzz=none',
+        '  =0/',
+      ]);
     });
 
     test('the rendered view\'s sheet tabs "Your messages" with "Focus history", by arrow keys, and keeps the choice', async ({ page }) => {

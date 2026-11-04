@@ -132,6 +132,13 @@ type Note struct {
 	// omitempty keeps the JSON shape byte-identical for a task with no thread, so
 	// every existing producer sees no contract change.
 	Sessions []SessionLink `json:"sessions,omitempty"`
+	// Ref is set exactly when this task is a plugin task REFERENCE (migration
+	// 0072, references.go): the upstream owns it, and its status and comments
+	// written here are queued for the plugin. omitempty: an ordinary task's
+	// JSON is unchanged.
+	Ref *Reference `json:"reference,omitempty"`
+	// refRaw is the reference columns as scanned, before adoptRef.
+	refRaw refScan
 }
 
 // NoteUpdate is a PARTIAL edit to a task's editable content + dispatch config.
@@ -552,6 +559,37 @@ type Store interface {
 	// There is no Restore twin: comment recovery, like task recovery, is
 	// store/DB-level only and no HTTP route exposes it.
 	SoftDeleteComment(ctx context.Context, noteID, commentID int64) error
+	// UpsertReference finds the live reference for in.Key (or the copy row it
+	// converts in place, or — with in.Create — files a new one) and applies
+	// in.Snapshot's title, body and snapshot, unless it is OLDER than the stored
+	// one (Applied false). It never writes the status: the caller does, through
+	// SetStatus under OnlyIfSnapshotAt, so the write is logged with its writer.
+	// in.Detach dismisses the row instead. A live reference of another plugin →
+	// ErrRefOtherPlugin. See references.go and PGStore.UpsertReference.
+	UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpsert, error)
+	// EnqueueRefWrite queues w for the plugin that owns task w.NoteID's
+	// reference, and reports whether it inserted (false: a dedupe hit — the row
+	// already queued is returned). A task that is not a live reference →
+	// ErrNotReference, and nothing is written: the caller writes locally.
+	EnqueueRefWrite(ctx context.Context, w RefWrite) (RefWrite, bool, error)
+	// ClaimRefWrites leases up to limit pending writes of plugin pluginID for
+	// lease, oldest first, after returning expired leases to pending.
+	ClaimRefWrites(ctx context.Context, pluginID int64, limit int, lease time.Duration) ([]RefWrite, error)
+	// FinishRefWrite records plugin pluginID's result for write id: done (ok) or
+	// failed with errText, and whether this call settled it (false: a repeat —
+	// the first result wins, and the stored row is returned). A write this
+	// plugin never held → ErrRefWriteNotLeased.
+	FinishRefWrite(ctx context.Context, pluginID, id int64, ok bool, errText string) (RefWrite, bool, error)
+	// RefWrites returns task noteID's writes that are not done (pending,
+	// claimed, failed), oldest first: the task page's
+	// "sending…" / "failed" lines.
+	RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error)
+	// ListLiveInNamespace returns the live tasks (not dismissed, not a merge
+	// loser) in q.Namespace that plugin q.PluginID may see — its own
+	// references, and COPY rows carrying a tag in the namespace — ascending by
+	// id, at most q.Limit, with their comments: what a plugin reconciles and
+	// converts. See RefListQuery for the filters.
+	ListLiveInNamespace(ctx context.Context, q RefListQuery) ([]Note, error)
 	AddAttachment(ctx context.Context, noteID int64, a Attachment) (Attachment, error)
 	// GetAttachment returns a single attachment including its Data, for download.
 	GetAttachment(ctx context.Context, id int64) (Attachment, error)

@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
@@ -266,6 +267,12 @@ type Extensions struct {
 	// no sweep, no tab, and any queued nudge is refused at its paste.
 	ChiefNudge  *ChiefNudges
 	ChiefNudges chiefnudge.Store
+
+	// Episodes is session state's store (internal/sessionstate, migration
+	// 0073; session_state.go): one row per stop of one of an owner's
+	// sessions. nil (no database): no state pass runs. It does NOT depend on
+	// ChiefNudge — the state, and the episodes, are code-only.
+	Episodes sessionstate.Store
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

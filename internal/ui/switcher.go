@@ -196,6 +196,10 @@ type SwitcherItem struct {
 	// title, as plain words: its repository, its kind and — a window's — its
 	// raw tmux session name; "" for none. Space-separated, lower-cased.
 	Words string
+	// Prev is the entry's previous focus titles, newest first, one per line
+	// (switcherPrevTitles): what the search finds it by after its current
+	// title, and shows as "Previously: …" when that is why it matched.
+	Prev string
 }
 
 // switcherName is an entry's WHOLE name, what its pill shows:
@@ -327,6 +331,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			// The host is a word too (the retired Agents list's host tabs): a
 			// dispatched agent's is the cluster.
 			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost)
+			it.Prev = switcherPrevTitles(a.PrevFocus)
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
@@ -335,6 +340,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Code = switcherName(e)
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
 			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host)
+			it.Prev = switcherPrevTitles(m.PrevFocus)
 		}
 		out[i] = it
 	}
@@ -361,6 +367,22 @@ func switcherSearchTitle(code string, names ...string) string {
 		}
 	}
 	return strings.Join(out, " · ")
+}
+
+// switcherPrevTitles is titles, each on one line (white space collapsed),
+// distinct and non-empty, joined by newlines: an entry's data-switcher-prev.
+// A focus title is single-line already (focus.Clean); the collapse keeps the
+// separator unambiguous whatever reaches it.
+func switcherPrevTitles(titles []string) string {
+	var out []string
+	seen := map[string]bool{"": true}
+	for _, t := range titles {
+		if t = strings.Join(strings.Fields(t), " "); !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // switcherSearchWords is the non-empty parts, lower-cased and joined by
@@ -732,6 +754,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),
 		g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
 		g.If(it.Words != "", g.Attr("data-switcher-words", it.Words)),
+		g.If(it.Prev != "", g.Attr("data-switcher-prev", it.Prev)),
 	}
 	if it.Current {
 		return Span(

@@ -283,7 +283,11 @@ var htmlWithoutNoStore = map[string]string{
 	"handleNoteDelete":          htmlFragment,
 	"handleNoteEditModal":       htmlFragment,
 	"renderNoteCard":            htmlFragment,
-	"handleUITagVocabulary":     htmlFragment,
+	// A write queued on a plugin task reference answers 202 with the card, so
+	// these set the type before renderNoteCard can (task_ref_queue.go).
+	"handleNoteStatus":      htmlFragment,
+	"handleNoteComment":     htmlFragment,
+	"handleUITagVocabulary": htmlFragment,
 }
 
 // TestEveryHTMLWriterIsClassified enumerates the functions that set

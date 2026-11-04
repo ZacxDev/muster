@@ -63,6 +63,11 @@ type TaskCardView struct {
 	// defect this field exists to close (a "Dispatch" over a 503 on every card
 	// of a docker compose install).
 	Dispatch bool
+
+	// RefWrites are a plugin task REFERENCE's writes still on their way to the
+	// upstream (pending, claimed, failed), for the detail shape's thread. Nil
+	// for an ordinary task, and on the board, which does not read them.
+	RefWrites []notes.RefWrite
 }
 
 // NotesPanel is the static shell for the Tasks tab. The + FAB (body-level, in
@@ -978,6 +983,8 @@ func noteCard(v TaskCardView) g.Node {
 				// · session abc12345…" when the task carries a source_type, else
 				// nothing (pre-0017 / header-less tasks). Nil-safe internally.
 				taskProvenanceChip(n),
+				// A plugin task REFERENCE (task_refs.go): its upstream's label.
+				taskRefChip(n),
 				// Task-thread COUNT only (migration 0023) — one chip, beside the
 				// provenance chip and reusing its classes. The per-session detail is
 				// one tap away on the detail page.
@@ -1003,6 +1010,8 @@ func noteCard(v TaskCardView) g.Node {
 			),
 			g.If(len(n.Attachments) > 0, noteAttachments(n.Attachments)),
 			taskSessionsSection(n),
+			taskRefSection(n, v.RefWrites),
+			taskLocalCommentsLabel(n),
 			taskComments(n.ID, n.Comments),
 			taskCommentForm(n.ID),
 		)),
@@ -1865,6 +1874,46 @@ type NoteEditView struct {
 	Vocabulary []notes.TagCount
 }
 
+// editTitleBodyFields is the edit form's title and body. On a plugin task
+// reference they are the upstream's: shown READ-ONLY, as text, with NO form
+// field — so the form submits neither and the server leaves them alone
+// (api.refEditRefusal refuses a changed one on either edit path).
+func editTitleBodyFields(n notes.Note) g.Node {
+	if n.IsReference() {
+		ro := "w-full whitespace-pre-wrap break-words rounded-lg bg-s2 px-3 py-2 text-sm text-fg"
+		return g.Group{
+			P(Class("text-xs text-muted"), g.Attr("data-ref-readonly", ""),
+				g.Text("This task is a reference: its title and description follow the upstream. Edit them there.")),
+			labelledField("Title", Div(Class(ro), g.Attr("aria-readonly", "true"), g.Text(textplain.Title(n.Title)))),
+			labelledField("Task", Div(Class(ro), g.Attr("aria-readonly", "true"), g.Text(n.Body))),
+		}
+	}
+	return g.Group{
+		// Title (migration 0018): the real display title, no longer smuggled
+		// through `directory`. Optional — empty falls back to the directory.
+		labelledField("Title",
+			Input(
+				Type("text"),
+				Name("title"),
+				Value(n.Title),
+				Placeholder("short title (optional)"),
+				Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+			),
+		),
+		labelledField("Task",
+			Textarea(
+				Name("body"),
+				Rows("4"),
+				Required(),
+				g.Attr("autofocus", ""),
+				Placeholder("What needs doing?"),
+				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+				g.Text(n.Body),
+			),
+		),
+	}
+}
+
 // NotesEditModalBody is the /ui/tasks/{id}/edit partial: the EDIT-task form,
 // pre-filled with the task's current directory/body/model/repo/branch,
 // loaded into #task-modal-body when the card's Edit button is tapped. It posts
@@ -1918,28 +1967,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 			// success feedback, since the modal simply vanished before.
 			hx("hx-on::after-request", "if(event.target===this && event.detail.successful){if(window.cgTaskModalSaved)window.cgTaskModalSaved('task-"+ids+"');if(window.cgTaskModalClose){window.cgTaskModalClose()}else{document.getElementById('task-modal').classList.add('hidden')}}"),
 			Class("flex flex-col gap-3"),
-			// Title (migration 0018): the real display title, no longer smuggled
-			// through `directory`. Optional — empty falls back to the directory.
-			labelledField("Title",
-				Input(
-					Type("text"),
-					Name("title"),
-					Value(n.Title),
-					Placeholder("short title (optional)"),
-					Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-				),
-			),
-			labelledField("Task",
-				Textarea(
-					Name("body"),
-					Rows("4"),
-					Required(),
-					g.Attr("autofocus", ""),
-					Placeholder("What needs doing?"),
-					Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-					g.Text(n.Body),
-				),
-			),
+			editTitleBodyFields(n),
 			// Tags: chip editor (hidden `tag` inputs = the submitted set) + a
 			// vocabulary-backed suggestion list. Routing chips lock on an in-progress
 			// task (the server enforces the same refinement of the 409 rule).

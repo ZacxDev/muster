@@ -245,6 +245,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 			cards[i].PrimaryChief = cards[i].ID == pc.ID
 		}
 	}
+	// Each entry's previous focus titles, one read for all of them (the
+	// command palette's search: withPreviousTitles).
+	s.withPreviousTitles(ctx, cards, mirrors)
 	s.withCardAttention(ctx, cards, mirrors)
 	// The Idle section (ui.InIdleSection), with the server's clock, after the
 	// pins are marked: decided on every build, so an entry active again leaves
@@ -858,11 +861,23 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 		s.logger.Printf("agents: dispatch status get task %d: %v", noteID, err)
 		return
 	}
-	if n.Status != notes.StatusOpen {
+	// A reference advances (a queued in_progress for its upstream) only from
+	// an open SNAPSHOT: one already in progress upstream (dispatchableStatus
+	// lets the chief start an agent on it) needs no write, and one in review
+	// or complete there must not be pulled back.
+	from := n.Status
+	if n.Ref != nil {
+		from = n.Ref.Snapshot.Status
+	}
+	if from != notes.StatusOpen {
 		return
 	}
 	if _, err := s.setNoteStatus(ctx, writerDispatchAdvance, noteID, notes.StatusInProgress); err != nil {
-		s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		// A reference's advance is queued for its upstream (task_ref_queue.go),
+		// which broadcast already: the row moves when the plugin confirms.
+		if !errors.Is(err, errQueuedUpstream) {
+			s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		}
 		return
 	}
 	// 🔴 BROADCAST AFTER THE COMMIT, AND THIS IS THE ONLY POST-COMMIT EVENT THE

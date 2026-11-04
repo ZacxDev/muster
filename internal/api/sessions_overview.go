@@ -268,7 +268,7 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 		omitted, live = len(live)-in.Limit, live[:in.Limit]
 	}
 	fi := s.focusIndex(ctx)
-	recent, err := s.ext.Focus.RecentTitles(ctx, liveOf(live), s.now().Add(-focus.HistoryWindow))
+	recent, err := s.ext.Focus.RecentTitles(ctx, liveOf(live), s.now().Add(-focus.HistoryWindow), 0)
 	if err != nil {
 		s.logger.Printf("sessions_overview: recent titles: %v", err)
 	}
