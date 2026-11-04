@@ -1491,7 +1491,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	switch {
 	case ext.Episodes != nil:
 		l.Printf("session state: ON (%s=1) — every %s each owner's sessions are given a state and every stop an episode "+
-			"(session_episodes); nothing reads them yet, so nothing is pushed or shown", envSessionState, api.SessionStateInterval)
+			"(session_episodes); each stop is pushed ONCE, with no session text (a waiting window at once, an idle stop on the chief's decision), "+
+			"shown in the Asks page's Stalled / waiting section, and a live chief ask raises no notice", envSessionState, api.SessionStateInterval)
 	case a.cfg.SessionState:
 		l.Printf("session state: INERT — %s=1 but there is no database", envSessionState)
 	default:
