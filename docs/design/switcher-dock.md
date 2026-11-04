@@ -402,7 +402,7 @@ manipulation is not animation), and the release jumps to its snap.
   so opening never raises the keyboard. Opened by the desktop chevron or a
   keyboard: the filter, so typing filters at once.
 - **Escape** (the dialog's `cancel` event) closes through the same path as
-  every other close (below).
+  every other close: see [One cleanup point](#one-cleanup-point).
 - **The palette's `/` is off while the dock is open.** Its document `keydown`
   (`palette.go:419-435`) already skips a text field, which covers the filter,
   but not the tabs or rows. It gains one early return, `if
@@ -678,6 +678,24 @@ is force-closed (and its claim released) in case anything left it open.
 **No phantom entry anywhere**: with no push, a reload or a restore has nothing
 to clean up, and the "one Back press that does nothing visible" case is gone.
 
+**htmx's history cache must never store the dock open.** htmx's save
+(`zt` in `web/static/vendor/htmx.min.js`) fires `htmx:beforeHistorySave` and
+then stores the history element's cloned HTML (`jt`, `_t`) in
+`localStorage`, so a `<dialog open>` would come back from the cache as a
+non-modal open dialog. The dock closes on `htmx:beforeHistorySave`, the same
+hook `view_swap.go` uses to remove its frame before a save (`:205-211`). This
+save also runs when htmx restores on Back (`Wt` calls `zt` first), so a Back
+or Forward between boosted entries with the dock open is covered too.
+
+<a id="one-cleanup-point"></a>
+**One cleanup point: the dialog's `close` event.** Every path ends in
+`dialog.close()`: Escape and Android back in a browser (via `cancel`), the
+backdrop, ×, the header drag, `musterBack()`, a row's `click`, `pageshow`
+with `persisted`, and `htmx:beforeHistorySave`. The `close` handler alone does
+the rest: post `back-claim` `false`, reset the sheet's transform and height,
+release pointer capture, and return focus. No path cleans up on its own, so
+none can forget a step.
+
 #### The shell change (muster-android)
 
 `ShellBack` today (`feature/shell/…/ShellBack.kt`) is enabled exactly while
@@ -701,15 +719,35 @@ small PR in that repo, **in the plan and shipped alongside Phase 1**
    If the result is not `"true"` (an old page, a page that already closed),
    the shell clears `claimed` and does what it does today: `goBack()` if it can,
    else it disables itself and re-dispatches the press to the system.
-4. **The reset.** `claimed` clears on every main-frame page start, on
-   `doUpdateVisitedHistory`, and when the WebView is replaced or its renderer
-   is gone (the places that already call `back.sync()`,
-   `MainActivity.kt:229`, `:264`, `:305`, `:535`). A page that dies holding a
-   claim can therefore cost at most one Back press, never trap Back.
+   **A hung page cannot hold the press:** `evaluateJavascript` never answers
+   while the page's main thread is stuck, so the shell posts a
+   `CLAIM_TIMEOUT_MS = 300` fallback on the main `Handler` when it evaluates.
+   Whichever comes first, the answer or the timeout, decides the press, once;
+   the timeout clears `claimed` and falls back exactly as a `"false"` answer
+   does, and a late answer after it is ignored.
+4. **The reset.** `claimed` clears on every main-frame page start
+   (`PageEvent.STARTED`), and when the WebView is replaced or its renderer is
+   gone (`MainActivity.kt:229`, `:264`, `:535`). **Not on
+   `doUpdateVisitedHistory`**: the view swap calls `history.replaceState` on
+   the top window whenever its frame loads (`view_swap.go:95`, `:109`, `:171`),
+   which would clear a live claim with the dock still open. Page start covers
+   every cross-document navigation, a reload included. The one navigation it
+   does not see is a same-document one (an htmx boosted swap) that replaces
+   the body while a claim is held; but the dock closes on that swap's
+   `htmx:beforeHistorySave` and posts `false`, and if that message were lost
+   the stale claim still costs no press: the next Back evaluates
+   `musterBack()`, the new page's closed dock answers `false`, and the shell
+   falls back within the same press. **Bound:** a stale or hung claim delays
+   one Back press by at most `CLAIM_TIMEOUT_MS` (300 ms); it never takes the
+   press away.
 5. **Tests** (Robolectric, beside `ShellBackTest`): a claim with
    `canGoBack()` false enables the callback; a press with a claim evaluates the
    script and does not call `goBack()`; a `"false"` result falls back to
-   `goBack()`; a page start clears the claim; a `back-claim` from a subframe
+   `goBack()`; **no answer within 300 ms** (Robolectric's `ShadowWebView`
+   never runs the callback, so the paused main looper advanced by 300 ms is a
+   hung page) falls back to `goBack()`, and an answer arriving after that does
+   nothing; a page start clears the claim; a `doUpdateVisitedHistory` does
+   not; a `back-claim` from a subframe
    or with `"open":"yes"` is refused (`BridgeAndNavigationTest`).
 
 On muster's side the claim is posted only where `window.musterApp` exists
@@ -728,7 +766,16 @@ intercepted and re-issued in the top window, `:246-276`); its
 shell's bridge refuses anything not from the main frame.
 
 **So the dock always opens in the top document.** The frame's bar asks the
-parent through the same-origin parent call the swap already uses:
+parent through the same-origin parent call the swap already uses. **Before
+calling `preventDefault`**, the view button's handler checks, with
+`view_swap.go`'s own `framed` predicate (`:59-60`: a `frameElement` carrying
+`data-muster-view` and a parent with `musterViews`), that
+`typeof window.parent.musterDock?.open === 'function'`. If the parent has no
+`musterDock` (an older parent page under a newer frame, or a cross-version
+window during a deploy), the handler does nothing, so the button's
+`popovertarget` opens the frame's own **view menu** as it does today, and a
+swipe on the frame's bar is ignored. The frame's own dock is never the
+fallback: it is exactly the dock the three problems above describe. Otherwise:
 `window.parent.musterDock.open(bar)`, where `bar` is the frame's own
 `#session-switcher` element and the opener is the element to return focus to.
 The top window's dock reads its rows from **that** bar (the frame is the newer
@@ -741,6 +788,16 @@ session is handed to `musterViews.showOwn(href)` first, as a frame link is
 frame's own dock element stays closed and unused. `musterDock` exists in every
 document that draws the sidebar, and both the agent page and the Rendered view
 do.
+
+**The dock sits under an inert ancestor while the frame is shown.**
+`inertAll` sets `inert` on every child of the top body except the frame
+(`view_swap.go:74-82`), `#sidebar-root` included. A modal dialog opened there
+still takes taps, focus and Escape: **measured on Chromium 153** (round 2 of
+this PR's audit). Older Android WebViews are **UNVERIFIED**; case 20 runs in
+the CI's Chromium only. If one is found that keeps the dialog inert,
+`musterDock.open` lifts `inert` from its body-level ancestor while open and
+restores it on `close`, the way `inertAll` already exempts an open
+`#term-confirm` (`:77-79`).
 
 ## Desktop chevron
 
@@ -762,14 +819,20 @@ there. No snap points, no drag.
 
 **Which layout applies** is one media query, used by both the CSS and the
 script (`matchMedia`): **touch layout when `(pointer: coarse)`, mouse layout
-otherwise**, at any width (decision 3, as amended): a narrow window driven by a mouse gets the
-mouse layout (view menu plus chevron, centred panel), which works at 390px
-too. The reason is concrete: the default e2e project is Desktop Chrome at
-390px with a fine pointer, and a width rule would switch eight existing specs
-(`switcher-search`, `composer-switcher`, `agents-switcher`, `agents-list-ux`,
-`terminal`, `uploads`, `pins`, `bfcache-restore`) from the view menu to the
-dock. Under the pointer rule they keep testing the menu they were written for,
-unchanged, and the dock's own specs opt into `hasTouch`. **The touch layout gets the gestures and the mouse
+otherwise**, at any width (decision 3, as amended by the owner, who
+re-confirmed "touch pointer only" with the spec facts below): a narrow window
+driven by a mouse gets the mouse layout (view menu plus chevron, centred
+panel), which works at 390px too.
+
+**What the rule does to the existing specs** (corrected in round 2: an
+earlier draft said the pointer rule left all eight untouched, which is false).
+The default project is Desktop Chrome at 390px with a fine pointer, so the
+specs' default and desktop runs keep the mouse layout. But seven of them also
+run a phone variant with `hasTouch: true` / `isMobile: true`, where
+`(pointer: coarse)` matches and the view button opens the dock, not
+`#switcher-views`. Those phone halves change in Phase 1
+([the list](#phase-1-the-dock-opened-by-tap)); `bfcache-restore` (no touch
+context) and every desktop half stay as they are. **The touch layout gets the gestures and the mouse
 layout gets the chevron, and nothing crosses over**: in the mouse layout the
 bar and the dock bind no drag at all, so a mouse that drags across the bar
 selects text as it does today, and the dock opens only by the chevron.
@@ -893,6 +956,18 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
     page's own session shows the view underneath without a load; Escape
     returns focus to the view button inside the frame; `back-claim` is posted
     by the top window only. The same from the Rendered view's Terminal swap.
+21. **The history cache never holds the dock open**: on an agent page reached
+    by a boosted link, open the dock, `page.goBack()` to the previous boosted
+    entry (htmx restores it: one `htmx:historyRestore`, asserted), then
+    `page.goForward()`: the restored page's `#switcher-dock` is not `open`
+    and the body is not inert. Control: with the `htmx:beforeHistorySave`
+    close removed, the restored dialog carries `open`.
+22. **An older parent page**: open the Terminal view frame, then delete
+    `window.musterDock` in the top window (an older parent). A tap on the
+    frame's view button opens the frame's `#switcher-views` menu, no
+    `<dialog>` is open in either document, and a swipe on the frame's bar
+    does nothing. Control: with `musterDock` present, the same tap opens the
+    top dock.
 
 Go unit tests: the two new pill attributes (with values the fixtures cannot
 produce by accident: a host and a focus title distinct from every name),
@@ -901,9 +976,12 @@ produce by accident: a host and a focus title distinct from every name),
 
 **Each guard is mutation-checked once**: remove the keyboard check (case 7
 goes red), drop `data-own-swipe` from the dock (12), let the list drive the
-sheet (6), add a `pushState` on open (9: the boosted-page restore counter
-goes to one), open the dock in the frame's own document (20), drop the
-view button's `touch-action` (1), and confirm that test fails
+sheet (6), add a `pushState` on open (9: caught by the unchanged
+`history.length` assertion; a `pushState` without a matching `back` never
+reaches htmx, so the restore counter would stay 0 and is not the guard), drop
+the `htmx:beforeHistorySave` close (21), open the dock in the frame's own
+document (20), call `preventDefault` before the `parent.musterDock` check
+(22), drop the view button's `touch-action` (1), and confirm that test fails
 with its own assertion.
 
 ## Phases
@@ -922,9 +1000,31 @@ the dialog's close watcher for browser back, the `back-claim` /
 `musterBack()` pair for the shell; close before a row's navigation and on
 `pageshow.persisted`; the dock in the top document for the view-swap frame;
 `musterSwitcherShow`; the palette's `/` off while open; the touch layout by
-`(pointer: coarse)`; focus, `aria`, safe areas, reduced motion. **The eight
-existing specs listed under [Desktop chevron](#desktop-chevron) need no change**
-under the pointer rule; their run is part of the acceptance.
+`(pointer: coarse)`; the close on `htmx:beforeHistorySave`; the
+`parent.musterDock` check in the frame; one cleanup point (`close`); focus,
+`aria`, safe areas, reduced motion.
+
+**The seven existing specs whose phone halves change.** Each opens
+`#switcher-views` from `#switcher-toggle` in a `hasTouch: true` context,
+which now opens the dock. The change is the same in each: one shared helper
+in `e2e/lib/`, `pickView(page, view)`, that opens the menu in the mouse layout
+and the dock (then its tab, then closes it) in the touch layout, chosen by
+`matchMedia('(pointer: coarse)')`. **Count assertions that read
+`#switcher-views [data-switcher-count]` stay**: the menu stays in the DOM in
+both layouts, and its counts are refreshed with the rows either way.
+
+| Spec | Phone variant | What changes in it |
+|---|---|---|
+| `agents-list-ux.spec.ts` | the `phone 390×844 touch` matrix entry (`:264`) | the Waiting pick (`:344-348`) goes through `pickView`; the count read (`:353`) stays |
+| `switcher-search.spec.ts` | `phone 390×844` (`:118`) | the menu's own behaviour (its animation, upward placement, arrow navigation and focus, `:129-178`) moves to the desktop half only; the phone half asserts instead that the toggle names the dialog (`aria-haspopup="dialog"`), opens the dock, and that a tab pick sets the bar's icon |
+| `terminal.spec.ts` | file-level `hasTouch` (`:17`), and the matrix at `:363` and `:456` | the Recent and All picks (`:295-303`) go through `pickView` |
+| `composer-switcher.spec.ts` | `:322`, `:413` | its local `pick` helper (`:42-45`) becomes `pickView` |
+| `agents-switcher.spec.ts` | `:145`, `:496` | the picks (`:166-178`, `:543-545`) go through `pickView`; the visibility asserts on the menu (`:167`, `:169`, `:544`) apply in the mouse layout only; the `pins` count reads (`:180`, `:369-392`) stay |
+| `pins.spec.ts` | `phone 390×844 touch` (`:156`) | the Pins pick (`:193-194`) goes through `pickView` |
+| `uploads.spec.ts` | the `newContext` at `:335` with `hasTouch: vp.mobile` | the All pick (`:390-392`) goes through `pickView` |
+
+`bfcache-restore.spec.ts` (no touch context; it only reads the menu's count,
+`:314`) and every desktop half need no change.
 
 **The companion muster-android PR** ([the contract](#the-shell-change-muster-android)),
 all under `feature/shell/` and `app/` in [ZacxDev/muster-android][android]:
@@ -932,9 +1032,9 @@ all under `feature/shell/` and `app/` in [ZacxDev/muster-android][android]:
 | File | Change |
 |---|---|
 | `feature/shell/src/main/kotlin/…/feature/shell/BridgeMessage.kt` | `BackClaim(open: Boolean)`; `"back-claim"` parsed, `open` a JSON boolean or refused; the KDoc's message list gains it |
-| `feature/shell/src/main/kotlin/…/feature/shell/ShellBack.kt` | `claimed`; `isEnabled = claimed \|\| canGoBack()`; the claimed press evaluates `window.musterBack`, falling back to `goBack()` or the system |
-| `app/src/main/kotlin/…/MainActivity.kt` | `onBridgeMessage` routes `BackClaim` to `back` (`:236-243`); the claim cleared where `back.sync()` already runs (`:229`, `:264`, `:305`, `:535`) and on `PageEvent.STARTED` in `onPageEvent` (`:293`), which `ShellWebView` already reports from `onPageStarted` (`ShellWebView.kt:145-154`), so that file needs no change |
-| `feature/shell/src/test/kotlin/…/feature/shell/ShellBackTest.kt` | the claim cases: enabled with `canGoBack()` false, evaluates and does not `goBack()`, a `"false"` answer falls back, a page start clears it |
+| `feature/shell/src/main/kotlin/…/feature/shell/ShellBack.kt` | `claimed`; `isEnabled = claimed \|\| canGoBack()`; the claimed press evaluates `window.musterBack`, falling back to `goBack()` or the system on a non-`"true"` answer or after `CLAIM_TIMEOUT_MS` (300 ms) |
+| `app/src/main/kotlin/…/MainActivity.kt` | `onBridgeMessage` routes `BackClaim` to `back` (`:236-243`); the claim cleared when the WebView is replaced or its renderer is gone (`:229`, `:264`, `:535`) and on `PageEvent.STARTED` in `onPageEvent` (`:293`), which `ShellWebView` already reports from `onPageStarted` (`ShellWebView.kt:145-154`), so that file needs no change |
+| `feature/shell/src/test/kotlin/…/feature/shell/ShellBackTest.kt` | the claim cases: enabled with `canGoBack()` false, evaluates and does not `goBack()`, a `"false"` answer falls back, no answer in 300 ms falls back and a late answer is ignored, a page start clears it, a `doUpdateVisitedHistory` does not |
 | `feature/shell/src/test/kotlin/…/feature/shell/BridgeAndNavigationTest.kt` | `back-claim` parsed; refused from a subframe, with `"open":"yes"`, and over 1024 characters |
 
 The two PRs can land in either order: without the app change the page's
@@ -944,7 +1044,9 @@ today.
 
 Acceptance: cases 2, 5, 9, 9a, 9b, 15, 16, 17, 18, 19, 20 green in the phone
 project, and the narrow-mouse and desktop projects unchanged (the view menu
-still opens); the eight specs above green untouched; the waiting badge only
+still opens); the seven specs above green with their phone halves on the
+dock and their desktop halves unchanged, and `bfcache-restore` green
+untouched; cases 21 and 22; the waiting badge only
 (decision 7). The muster-android PR's unit tests above green in its CI. **On
 an emulator with both PRs: open the dock, press Back, the dock closes and the
 page stays; press Back again, the page goes back as before; open the dock on
