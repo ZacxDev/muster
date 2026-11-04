@@ -664,7 +664,7 @@ func TestChiefNudgeALiveAskIsANoticeNeverAnsweredNorRelayed(t *testing.T) {
 		t.Fatalf("live decision %+v", d)
 	}
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
-	if err != nil || a.Kind != attention.KindNotice || !a.Asker.System || a.Asker.Label != "ws · main:1" ||
+	if err != nil || a.Kind != attention.KindNotice || !a.Asker.System || a.Asker.Label != "tmux main:1 @ ws" ||
 		a.Question != "Waiting on you: Merge into main or into release?" || len(a.Options) != 0 {
 		t.Fatalf("the notice %+v %v", a, err)
 	}

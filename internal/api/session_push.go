@@ -204,8 +204,9 @@ func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (
 
 // settleEpisode is one open episode's push, for the state pass: f's verdict
 // pushes it, holds it, or records why it is quiet. idle is the session's idle
-// time, for the notification.
-func (s *Server) settleEpisode(octx context.Context, ep sessionstate.Episode, f episodeFacts, idle time.Duration) {
+// time, for the notification; hosts the owner's windows as the pass read them
+// (episodeNotification).
+func (s *Server) settleEpisode(octx context.Context, ep sessionstate.Episode, f episodeFacts, idle time.Duration, hosts []mirror.HostView) {
 	if !ep.Open() || !ep.PushedAt.IsZero() {
 		return
 	}
@@ -215,7 +216,7 @@ func (s *Server) settleEpisode(octx context.Context, ep sessionstate.Episode, f 
 	switch v := episodeVerdict(f); v {
 	case verdictHold:
 	case verdictPush:
-		s.pushEpisode(octx, ep, idle)
+		s.pushEpisode(octx, ep, idle, hosts)
 	default:
 		if ep.Quiet != v {
 			if err := s.ext.Episodes.SetQuiet(octx, ep.ID, v); err != nil {
@@ -229,8 +230,9 @@ func (s *Server) settleEpisode(octx context.Context, ep sessionstate.Episode, f 
 // NEVER SUPPRESSES: while its session's previous episode pushed less than
 // episodeRepushFloor ago, ep is held (quiet repush_floor, drawn as such), and
 // a later pass pushes it once the floor has passed — if it is still open. A
-// stop is never left silent by the floor.
-func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle time.Duration) {
+// stop is never left silent by the floor. hosts is the owner's windows as the
+// caller read them, nil for none read (episodeNotification).
+func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle time.Duration, hosts []mirror.HostView) {
 	prev, err := s.ext.Episodes.PreviousPush(octx, ep.Kind, ep.Key, ep.Seq)
 	if err != nil {
 		s.logger.Printf("session state: episode %d: previous push: %v", ep.ID, err)
@@ -248,15 +250,20 @@ func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle
 	if !claimed {
 		return // pushed already — by the hook, another pass or a replica
 	}
-	s.goNotify(ep.Owner, push.EventAttention, s.episodeNotification(octx, ep, idle), nil)
+	s.goNotify(ep.Owner, push.EventAttention, s.episodeNotification(octx, ep, idle, hosts), nil)
 	s.attentionChanged(ep.Owner, episodeKey(ep.ID))
 }
 
 // episodeNotification is ep's notification: WHO and WHERE in the title, the
 // state and how long in the body — 🔴 NO SESSION TEXT (the file's header).
-func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episode, idle time.Duration) RouterNotification {
+// hosts is the owner's windows as the caller already read them (the state
+// pass's one read, the hub hook's); nil reads them once here (episodeHosts).
+func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episode, idle time.Duration, hosts []mirror.HostView) RouterNotification {
 	key := episodeKey(ep.ID)
-	who, keep := s.episodeWho(octx, ep, s.episodeHosts(octx, ep))
+	if hosts == nil {
+		hosts = s.episodeHosts(octx, ep)
+	}
+	who, keep := s.episodeWho(octx, ep, hosts)
 	verb := " is stalled"
 	if ep.State == sessionstate.StateNeedsYou {
 		verb = " needs you"
@@ -268,11 +275,13 @@ func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episo
 // episodeWho names ep's session, for its push title and its "Stalled /
 // waiting" row: for a mirrored window, the window running its conversation
 // NOW over hosts, by its session key, as every attention surface names it
-// (sessionKeyWhere: "mango:1 · tmux main:1 @ ws"; keep, its tmux target, kept
-// verbatim by the title rule) — so a window renumbered since names its new
-// index. Only when no window holds the conversation now, the place stored on
-// the episode: "<tmux session>:<window index> @ <host>". An agent conversation
-// is named by its agent.
+// (sessionKeyWhere: "mango:1 · tmux main:1 @ ws", "(host offline)" after it
+// when its host has dropped and the hub still lists it — entryWhere; keep,
+// its tmux target, kept verbatim by the title rule) — so a window renumbered
+// since names its new index. Only when no window holds the conversation now,
+// the place stored on the episode in the same shape without the label
+// (mirror.WhereTarget: "tmux main:1 @ ws"). An agent conversation is named by
+// its agent.
 func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep string) {
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
@@ -287,6 +296,11 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 			return where, keep
 		}
 	}
+	if ep.TmuxSession != "" && ep.Host != "" {
+		where := mirror.WhereTarget(ep.Host, ep.TmuxSession, ep.Window, ep.Index)
+		return where, where
+	}
+	// No tmux target or no host stored: as much of the place as is known.
 	target := ep.TmuxSession + ":" + strconv.Itoa(ep.Index)
 	if ep.TmuxSession == "" {
 		target = "A session"
@@ -431,7 +445,7 @@ func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items [
 		case !ep.PushedAt.IsZero():
 		case send:
 			ep.State = sessionstate.StateNeedsYou
-			s.pushEpisode(octx, ep, 0)
+			s.pushEpisode(octx, ep, 0, hs)
 		default:
 			if _, err := s.ext.Episodes.ClaimPush(octx, ep.ID, s.now()); err != nil {
 				s.logger.Printf("session state: waiting %s: seed: %v", it.Key, err)

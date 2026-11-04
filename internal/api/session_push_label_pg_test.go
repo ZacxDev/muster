@@ -65,6 +65,15 @@ func TestAStalledRowNamesItsWindowByItsLabelNow(t *testing.T) {
 	if !strings.Contains(page, `data-attention-episode-where>Gold:6 · tmux main:6 @ ws</code>`) {
 		t.Fatalf("the row does not name where the window is now:\n%s", episodeRows(page))
 	}
+	// Its host drops; the hub still lists the window (the grace period): the
+	// row says so, as a notice does (entryWhere).
+	f.mirror.mu.Lock()
+	f.mirror.online = false
+	f.mirror.mu.Unlock()
+	page = f.page(t, "/attention")
+	if !strings.Contains(page, `data-attention-episode-where>Gold:6 · tmux main:6 @ ws (host offline)</code>`) {
+		t.Fatalf("the row does not mark its offline host:\n%s", episodeRows(page))
+	}
 }
 
 // episodeRows is page's "Stalled / waiting" section, for a failure message.

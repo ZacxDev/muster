@@ -49,8 +49,10 @@ question in four ways:
   when the item is drawn, and named as every attention text names a window
   ([`<where>`](#how-a-window-is-named): its label, then its tmux target and
   host), so a renumbered window shows its new index. A
-  session that no window shows now reads as the place it had when raised,
-  followed by `(not shown in any mirrored window now)`, and has no tmux target. When
+  session that no window shows now reads as the place it had when raised
+  (`tmux scratch3:5 @ laptop`; a notice raised before that shape keeps the
+  `laptop · scratch3:5` it was stored with), followed by
+  `(not shown in any mirrored window now)`, and has no tmux target. When
   muster cannot read the notices' sessions at all, each notice shows its label
   with no target and the queue reads as partial (the summary's `partial`), so
   `muster nudge next` exits 1 rather than claim nothing is waiting.
@@ -100,9 +102,11 @@ was down has its notification closed.
 - Title: `<where> needs you` (or `is stalled`), the window named as every
   attention text names it ([below](#how-a-window-is-named): `mango:1 · tmux
   scratch3:5 @ laptop needs you`), found by the stop's session key when the
-  push is sent, so a renumbered window names its new index; only when no
-  window holds the session then, the place the stop opened at
-  (`scratch3:5 @ laptop needs you`). An agent is named by its name. Body:
+  push is sent, so a renumbered window names its new index, and a window
+  whose host has just dropped is followed by `(host offline)`, as an ask's
+  and a notice's are; only when no window holds the session then, the place
+  the stop opened at, in the same shape without the label
+  (`tmux scratch3:5 @ laptop needs you`). An agent is named by its name. Body:
   `Needs you · idle 12m` (`just now` under a minute). **No session text**:
   no tool, command, focus title or anything the session said (the codename
   is the host's, from its labels file, not the session's). Tapping it opens the

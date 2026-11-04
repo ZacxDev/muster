@@ -467,8 +467,8 @@ func TestTwoProcessesThatReadAStopUnpushedPushItOnce(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("open: %v %v", claimed, err)
 	}
-	f.srv.pushEpisode(octx, ep, 0) // both read ep unpushed
-	f.srv.pushEpisode(octx, ep, 0)
+	f.srv.pushEpisode(octx, ep, 0, nil) // both read ep unpushed
+	f.srv.pushEpisode(octx, ep, 0, nil)
 	if got := f.episodePushes(); len(got) != 1 {
 		t.Fatalf("pushes: %v", got)
 	}

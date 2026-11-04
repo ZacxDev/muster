@@ -29,12 +29,14 @@ func TestAnEpisodePushNamesItsWindowByItsLabelResolvedNow(t *testing.T) {
 		return ep
 	}
 	for _, c := range []struct {
-		name      string
-		windows   []mirror.Window
-		others    []mirror.HostView
-		ep        sessionstate.Episode
-		title     string
-		titleKeep string
+		name        string
+		offline     bool
+		windows     []mirror.Window
+		others      []mirror.HostView
+		othersFirst bool // others listed before "ws"
+		ep          sessionstate.Episode
+		title       string
+		titleKeep   string
 	}{
 		{
 			name:    "a labelled window is named by its label, then its tmux target and host",
@@ -50,12 +52,16 @@ func TestAnEpisodePushNamesItsWindowByItsLabelResolvedNow(t *testing.T) {
 			title: "mango:2 · tmux scratch11:2 @ ws needs you", titleKeep: "tmux scratch11:2 @ ws",
 		},
 		{
-			name:    "a label another host also lists: this host's window, qualified by its host",
+			// The other host lists the SAME session id (a host-local key: two
+			// hosts' transcripts can collide), listed first, so only the host
+			// filter (claudeSessionEntry) picks this host's window.
+			name:    "a label and session id another host also lists: this host's window, qualified by its host",
 			windows: []mirror.Window{{Session: "scratch11", ID: "@3", Index: 1, Label: "mango:1", Claude: true, ClaudeSession: labelSID}},
 			others: []mirror.HostView{{Host: "tower", Online: true, Windows: mirror.NormalizeWindows([]mirror.Window{
-				{Session: "mango", ID: "@1", Index: 1, Label: "mango:1", Claude: true, ClaudeSession: labelSID2}}, 0)}},
-			ep:    needs(sessionstate.Episode{Key: labelSID, TmuxSession: "scratch11", Window: "@3", Index: 1}),
-			title: "mango:1 · tmux scratch11:1 @ ws needs you", titleKeep: "tmux scratch11:1 @ ws",
+				{Session: "mango", ID: "@1", Index: 1, Label: "mango:1", Claude: true, ClaudeSession: labelSID}}, 0)}},
+			othersFirst: true,
+			ep:          needs(sessionstate.Episode{Key: labelSID, TmuxSession: "scratch11", Window: "@3", Index: 1}),
+			title:       "mango:1 · tmux scratch11:1 @ ws needs you", titleKeep: "tmux scratch11:1 @ ws",
 		},
 		{
 			name:    "an unlabelled window is its tmux target and host",
@@ -67,13 +73,25 @@ func TestAnEpisodePushNamesItsWindowByItsLabelResolvedNow(t *testing.T) {
 			name:    "no window holds the conversation now: the place stored on the episode",
 			windows: []mirror.Window{{Session: "scratch11", ID: "@9", Index: 8, Label: "mango:8", Claude: true, ClaudeSession: labelSID2}},
 			ep:      needs(sessionstate.Episode{Key: labelSID, TmuxSession: "scratch11", Window: "@3", Index: 8}),
-			title:   "scratch11:8 @ ws needs you", titleKeep: "scratch11:8",
+			title:   "tmux scratch11:8 @ ws needs you", titleKeep: "tmux scratch11:8 @ ws",
+		},
+		{
+			name:    "a host offline but still listed (its grace period) is marked, as a notice is",
+			offline: true,
+			windows: []mirror.Window{{Session: "scratch11", ID: "@3", Index: 8, Label: "mango:8", Claude: true, ClaudeSession: labelSID}},
+			ep:      needs(sessionstate.Episode{Key: labelSID, TmuxSession: "scratch11", Window: "@3", Index: 8}),
+			title:   "mango:8 · tmux scratch11:8 @ ws (host offline) needs you", titleKeep: "tmux scratch11:8 @ ws",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fm := &fakeMirror{online: true, statusReport: true, windows: c.windows, others: c.others}
+			fm := &fakeMirror{online: !c.offline, statusReport: true, windows: c.windows, others: c.others}
 			s, _ := viewServer(t, fm)
-			n := s.episodeNotification(operatorCtx(), c.ep, 0)
+			var hosts []mirror.HostView // nil: episodeNotification reads them
+			if c.othersFirst {
+				hs := fm.Hosts(operatorCtx())
+				hosts = append(hs[1:], hs[0])
+			}
+			n := s.episodeNotification(operatorCtx(), c.ep, 0, hosts)
 			if n.Title != c.title || n.TitleKeep != c.titleKeep {
 				t.Fatalf("title %q keep %q, want %q keep %q", n.Title, n.TitleKeep, c.title, c.titleKeep)
 			}
@@ -91,11 +109,11 @@ func TestAnAgentEpisodeIsStillNamedByItsAgent(t *testing.T) {
 	fm := &fakeMirror{online: true, windows: []mirror.Window{{Session: "main", ID: "@1", Index: 1, Label: "mango:1", Claude: true, ClaudeSession: labelSID}}}
 	s, _ := viewServer(t, fm)
 	ep := sessionstate.Episode{ID: 42, Owner: 1, Kind: sessionstate.KindAgent, Key: labelSID, AgentID: 8, State: sessionstate.StateStalled}
-	if n := s.episodeNotification(operatorCtx(), ep, 0); n.Title != plainName+" is stalled" || n.TitleKeep != plainName {
+	if n := s.episodeNotification(operatorCtx(), ep, 0, nil); n.Title != plainName+" is stalled" || n.TitleKeep != plainName {
 		t.Fatalf("title %q keep %q", n.Title, n.TitleKeep)
 	}
 	ep.AgentID = 999 // no such agent
-	if n := s.episodeNotification(operatorCtx(), ep, 0); n.Title != "An agent is stalled" || n.TitleKeep != "" {
+	if n := s.episodeNotification(operatorCtx(), ep, 0, nil); n.Title != "An agent is stalled" || n.TitleKeep != "" {
 		t.Fatalf("an unreadable agent: title %q keep %q", n.Title, n.TitleKeep)
 	}
 }
