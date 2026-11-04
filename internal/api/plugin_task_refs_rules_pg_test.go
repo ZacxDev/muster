@@ -110,8 +110,22 @@ func TestARotatedPluginAdoptsItsReferencesAndTheirWrites(t *testing.T) {
 		t.Fatalf("another plugin's upsert while the holder is live: HTTP %d %v, want 409", code, out["_raw"])
 	}
 
+	keyQ := "namespace=tracker&live=true&key=" + url.QueryEscape(key)
+	if l := f.list(t, f.tok2, keyQ); l.code != http.StatusOK || len(l.Tasks) != 0 {
+		t.Fatalf("another plugin's listing of a LIVE holder's key: HTTP %d %s, want 200 and no row", l.code, l.raw)
+	}
+
 	if ok, err := f.plugins.Revoke(f.asOwner, f.plugin); err != nil || !ok {
 		t.Fatalf("revoke the holder: %v %v", ok, err)
+	}
+	// The rotated plugin must FIND what it may adopt before it upserts: its
+	// reconcile lists, and a notice looks its key up. A listing that showed only
+	// its own references left every revoked plugin's reference unfound.
+	if l := f.list(t, f.tok2, keyQ); l.code != http.StatusOK || len(l.Tasks) != 1 || l.Tasks[0].ID != id {
+		t.Fatalf("the new plugin's key lookup of a revoked holder's reference: HTTP %d %s, want task %d", l.code, l.raw, id)
+	}
+	if l := f.list(t, f.tok2, "namespace=tracker&live=true&open=true"); !strings.Contains(","+l.keys()+",", ","+key+",") {
+		t.Fatalf("the new plugin's reconcile listing %q leaves out the revoked holder's reference %s", l.keys(), key)
 	}
 	code, out, again := f.upsert(t, f.tok2, key, refSnap("in_progress", "in progress", t0, nil), nil)
 	if code != http.StatusOK || again != id {

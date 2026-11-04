@@ -106,12 +106,12 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 	// is too (the plugin token's owner, the same principal that can see the row),
 	// so the takeover never crosses owners. The trigger re-checks the new id.
 	if isRef && pluginID != nil && *pluginID != in.PluginID {
-		var holderLive bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugins WHERE id = $1 AND revoked_at IS NULL)`,
-			*pluginID).Scan(&holderLive); err != nil {
+		var adoptable bool
+		if err := tx.QueryRow(ctx, `SELECT `+fmt.Sprintf(refHolderNotLive, "$1::bigint"),
+			*pluginID).Scan(&adoptable); err != nil {
 			return RefUpsert{}, err
 		}
-		if holderLive {
+		if !adoptable {
 			return RefUpsert{}, ErrRefOtherPlugin
 		}
 		// The reference and its unfinished writes move together, in this
@@ -419,12 +419,24 @@ func (s *PGStore) RefWrites(ctx context.Context, noteID int64) ([]RefWrite, erro
 	return s.refWritesWhere(ctx, `w.note_id = $1 AND w.state <> 'done' ORDER BY w.id`, noteID)
 }
 
+// refHolderNotLive is the ONE predicate for "a reference held by this plugin id
+// may be taken over": the holder is revoked or gone. The upsert adopts on it and
+// the listing shows such references on it, so a rotated plugin can find what it
+// is about to adopt — with two copies, a listing that only showed the caller's
+// own references hid every reference a revoked plugin held, and the rotated
+// plugin never upserted them (measured end to end: reconcile listed 0, an update
+// notice for the key found nothing and was acked). %s is the holder id.
+const refHolderNotLive = `NOT EXISTS (SELECT 1 FROM plugins WHERE id = %s AND revoked_at IS NULL)`
+
 // ListLiveInNamespace: see the Store interface.
 //
-// 🔴 WHAT A PLUGIN MAY SEE, IN THE WHERE CLAUSE: a reference only when this
-// plugin holds it (ext_plugin_id), and a COPY row (no ext_key) carrying a tag
-// in the namespace. Another plugin's reference is never listed, even in a
-// namespace both plugins file into.
+// 🔴 WHAT A PLUGIN MAY SEE, IN THE WHERE CLAUSE: a reference when this plugin
+// holds it (ext_plugin_id) or may adopt it (refHolderNotLive: its holder is
+// revoked or gone — always one of the same owner's plugins, by
+// notes_ext_plugin_is_owners, and the owner_id check keeps that true without
+// RLS), and a COPY row (no ext_key) carrying a tag in the namespace. A LIVE
+// plugin's reference is never listed to another, even in a namespace both
+// plugins file into.
 //
 // q.Key narrows to the ONE row an upsert for that key would work on: the
 // reference, else the copy row it would convert (copyRowOrder — the same
@@ -450,7 +462,10 @@ func (s *PGStore) ListLiveInNamespace(ctx context.Context, q RefListQuery) ([]No
 		  AND id > $3
 		  AND ($4 = false OR status <> '` + taskstatus.Complete + `')
 		  AND (CASE WHEN ext_key IS NOT NULL
-		            THEN ext_plugin_id = $5 AND ext_key LIKE $1 AND ($6 = '' OR ext_key = $6)
+		            THEN (ext_plugin_id = $5
+		                  OR (` + fmt.Sprintf(refHolderNotLive, "notes.ext_plugin_id") + `
+		                      AND owner_id = (SELECT owner_id FROM plugins WHERE id = $5)))
+		                 AND ext_key LIKE $1 AND ($6 = '' OR ext_key = $6)
 		            ELSE EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE $1) AND ($6 = '' OR tags @> ARRAY[$6]::text[])
 		       END)`
 	order := `id`

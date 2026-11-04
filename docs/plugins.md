@@ -340,7 +340,9 @@ reference held by a plugin that has been revoked (or deleted) is **adopted**
 by the next of your plugins to upsert its key: the reference moves to the new
 plugin, and so do its unfinished writes (a write the old plugin had claimed
 but not reported is pending again, `attempts` kept). While the holding plugin
-is still live, another plugin's upsert is a `409`.
+is still live, another plugin's upsert is a `409`. The listing below shows a
+revoked plugin's references to your other plugins, so a rotated plugin's first
+reconcile adopts them all.
 
 **Stale snapshots apply nothing.** An upsert whose `updated_at` is older than
 the stored snapshot's is accepted (`200`, `"applied": false`) but changes
@@ -446,9 +448,11 @@ once reported done, stops the agent your chief started on the task, just as a
 #### `GET /plugin/v1/tasks?namespace=<ns>&live=true`
 
 The live tasks (not dismissed, not merged away) in `ns` that **your plugin**
-may see: the references your plugin holds, and the copy rows (filed with
-`create`) that carry a key in `ns`. Another plugin's reference is never
-listed. Use it to convert your copy rows and to reconcile.
+may see: the references your plugin holds, the references a revoked (or
+deleted) plugin of yours holds (the ones your next upsert would adopt, so a
+rotated plugin finds them by reconciling or by `key=`), and the copy rows
+(filed with `create`) that carry a key in `ns`. A live plugin's reference is
+never listed to another. Use it to convert your copy rows and to reconcile.
 
 | parameter | meaning |
 |---|---|
