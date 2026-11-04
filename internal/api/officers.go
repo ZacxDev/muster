@@ -846,9 +846,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if strings.TrimSpace(string(in.ItemID)) == "" {
 			// no item_id: HQ picks the next item (claim-next)
 			var claimed officers.ItemID
-			// the claim's tier: "" until officer tiers (#419) land, then o.Tier —
-			// exactly what claim-by-id sends (officer_claim_next_tier_test.go)
-			body, claimed, err = s.officerClaimNext(ctx, c, instance, in.LeaseSeconds, "")
+			// the claim's tier is the instance's pool's (o.Tier; "" for an
+			// untiered officer sends no tier key), exactly what claim-by-id
+			// sends: HQ then picks only an item of that tier
+			// (officer_claim_next_tier_test.go)
+			body, claimed, err = s.officerClaimNext(ctx, c, instance, in.LeaseSeconds, o.Tier)
 			if errors.Is(err, errNoClaimNext) {
 				return toolErr(noClaimNextNote), true
 			}

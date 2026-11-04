@@ -521,8 +521,9 @@ next item (HQ's claim-next: the highest priority first, then the earliest due,
 then the oldest; never a blocked item) and answers HQ's `{item,
 lease_expires_at}`. When nothing is claimable it answers `{item: null,
 claimed: false, note}` — not an error: the instance stops and waits. It sends
-no `tier` yet; with officer tiers it sends the instance's tier exactly as
-claim-by-id does. **An HQ without claim-next** answers 404, and the
+the instance's pool `tier` exactly as claim-by-id does (none for an untiered
+officer), so HQ picks only an item of that tier: a routine instance claims
+routine items and a judgement instance judgement items. **An HQ without claim-next** answers 404, and the
 instance gets the tool error "this HQ has no claim-next; call officer_items
 and officer_claim{item_id}" — muster does not pick an item itself. With an
 `item_id` the claim is exactly as before.
@@ -1166,9 +1167,10 @@ An officer may split its instances into two **pools**, one per HQ item tier
   A live claim belongs to the pool of the instance holding it, whatever the
   item's tier. Each pool has its **own idle clock**: the routine pool scales to
   zero while the judgement pool keeps working, and the other way round.
-- **Claims.** Each instance's `officer_claim` sends its pool's `tier`. HQ then
-  refuses another tier's item with `409 wrong_tier`, and the instance gets that
-  refusal as it is. `officer_items` lists only the instance's own tier
+- **Claims.** Each instance's `officer_claim` sends its pool's `tier`. With an
+  `item_id`, HQ refuses another tier's item with `409 wrong_tier`, and the
+  instance gets that refusal as it is; without one (claim-next), HQ picks only
+  from the instance's own tier. `officer_items` lists only the instance's own tier
   (`?tier=`). The first message says which tier the instance works.
 - **No `tiers`: exactly as before.** There is one pool and the same names. The
   claim sends no `tier` key and the items list has no tier filter.
