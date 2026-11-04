@@ -589,18 +589,21 @@ Each refusal has its own sentence, in this order:
 9. With **no task**: `owner_asked: true` is missing, `request_key` is missing,
    or `prompt` is missing (a `worker_pool` agent may have none).
 10. `prompt` is over 8 KiB.
-11. **`request_key`**, when given. A key is the chief's, per request of
-   yours: the same key with the same parameters (target, task, repository
+11. **`request_key`**, when given — decided **first under the lock**
+   (guard 14), so guards 12–13 still run for a retry. A key is the chief's,
+   per request of yours: the same key with the same parameters (target, task, repository
    ignoring case, base, model, worker pool, the cleaned prompt, owner_asked)
    within 24 hours **replays** — the first start's result as it stands now,
    `{"replayed": true, "agent_id", "agent", "status", "budget"}`, starting
-   nothing and spending nothing, and running no check of your turn. The same
+   nothing and spending nothing, and running none of the checks under the lock
+   after it (your turn among them). The same
    key with any parameter changed is refused (*"request_key %q was used in the
    last 24 hours for a different dispatch: use a new key for a new request"*).
    Keys are per owner. A start released because its create was refused does
-   not hold its key; one whose create failed after it was spent does, and
-   replays `{"started": false}` once 10 minutes have passed (before that it
-   reads `"status": "starting"`). The key lives in the reservation's audit row
+   not hold its key; one whose create failed after it was spent does: that
+   failure is recorded (`task.chief_dispatch_failed`, naming the reservation),
+   and its replay answers `{"started": false}`. A reservation with no agent and
+   no such record replays `"status": "starting"`. The key lives in the reservation's audit row
    (`detail.request_key`, `detail.request_hash`), looked up through migration
    0074's index.
 12. Without `owner_asked` (only possible on a task), a `prompt` that is not
@@ -678,8 +681,10 @@ Each refusal has its own sentence, in this order:
 
    With `owner_asked` passed, the `prompt` is accepted as the chief's relay of
    that message of yours, without guard 12. The chief names no message: muster
-   takes the one your running turn stored. The checks run after guard 12b and
-   again under the lock below; the gate is removed only **after** the agent was
+   takes the one your running turn stored. Your turn is checked **once, under
+   the lock below** (guard 15), on the turn in flight then; on a gated task
+   `verifyGateRelease` also reads it after guard 12b, and the lock then
+   requires the same message. The gate is removed only **after** the agent was
    created, so a refusal from guard 14 on (a cap, say) leaves the task gated.
    On a release the task gets a comment by `muster` naming your message and
    quoting it verbatim, you get a push ("your chief released the gate on task
@@ -706,7 +711,7 @@ Each refusal has its own sentence, in this order:
    `request_key` is its retry guard instead.
 15. The task is not yours, is gated (`gate:` tag), names a different
    repository than `repo`, is not `open`, or already has a live agent (use
-   `task_forward`). With `owner_asked`, your turn is checked again here.
+   `task_forward`). With `owner_asked`, your turn is checked here.
 16. **5** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet. Live is the agent row's **stored** status; a

@@ -355,8 +355,8 @@ func TestOwnerAskedRefusalWalksEveryRow(t *testing.T) {
 		{chiefReleaseOutsideTurn, "owner_asked: muster is also running a turn for you that your owner did not type, so muster cannot tell which of them asked for this; ask your owner again in the chat once it is over"},
 		{chiefReleaseOtherCLIBusy, "owner_asked: another of your sessions is working at the same time as your owner's turn, so muster cannot tell that this call comes from your owner's; ask your owner again in the chat once only their turn is running"},
 		{chiefReleaseUnaccountedCLI, "owner_asked: a Claude Code process in your pod is running without a session record, so muster cannot tell whether it is working at the same time as your owner's turn; ask your owner again in the chat"},
-		{chiefReleaseCLIsUnknown, "owner_asked: muster could not read which of your sessions are working (your pod did not answer, or its image is too old to say), so nothing was started; ask your owner to start it with muster agent create"},
-		{chiefReleaseNotOverMCP, "owner_asked: this session is not a Claude Code session, and only a Claude Code session can show muster that your owner typed this; ask your owner to start it with muster agent create"},
+		{chiefReleaseCLIsUnknown, "owner_asked: muster could not read which of your sessions are working (your pod did not answer, or its image is too old to say), so nothing was started; ask your owner to start it from the dispatch form"},
+		{chiefReleaseNotOverMCP, "owner_asked: this session is not a Claude Code session, and only a Claude Code session can show muster that your owner typed this; ask your owner to start it from the dispatch form"},
 		{chiefReleaseUnverifiable, "owner_asked: your owner's turn could not be read, so nothing was started; try again later"},
 		{chiefReleaseChanged, "owner_asked: your owner's turn changed while the start was being checked; call again"},
 	}
@@ -384,11 +384,12 @@ func TestOwnerAskedRefusalWalksEveryRow(t *testing.T) {
 	}
 }
 
-// TestOwnerAskedIsRecheckedUnderTheLock: what owner_asked verified can change
-// before the reservation's lock — the owner's turn ends, or a new one replaces
-// it. On an ungated task and with no task, the re-check under the lock refuses
-// with that kind's own sentence, and nothing is reserved.
-func TestOwnerAskedIsRecheckedUnderTheLock(t *testing.T) {
+// TestOwnerAskedIsCheckedUnderTheLock: on an ungated task and with no task the
+// owner's-turn check runs ONCE, under the reservation's lock, on the turn in
+// flight THEN. A turn that ended between the call and the lock is refused with
+// that kind's own sentence and nothing is reserved; a turn the owner typed in
+// between is the one in flight, and starts (no earlier read pins a message).
+func TestOwnerAskedIsCheckedUnderTheLock(t *testing.T) {
 	var hook func()
 	f := newReleaseFixture(t)
 	f.srv.ext.ChiefDispatch = betweenDispatch{DispatchStore: f.plugins, before: func() {
@@ -398,32 +399,45 @@ func TestOwnerAskedIsRecheckedUnderTheLock(t *testing.T) {
 	}}
 	st := agents.NewPG(f.pool)
 	ungated := f.task(t, "turn ends in between")
+	other := f.task(t, "a new turn in between")
 	for _, c := range []struct {
-		name string
-		args map[string]any
-		gone string
-		new  string
+		name      string
+		args, new map[string]any
+		gone      string
 	}{
 		{"ungated", map[string]any{"target": "pod/claude-code", "task_id": ungated.ID, "owner_asked": true},
-			ownerAskedNoTaskNoOwnerTurn + ownerAskedUngatedTail, ownerAskedNoTaskChanged + ownerAskedUngatedTail},
-		{"no task", noTask("lock-1", "between work"), ownerAskedNoTaskNoOwnerTurn, ownerAskedNoTaskChanged},
+			map[string]any{"target": "pod/claude-code", "task_id": other.ID, "owner_asked": true},
+			ownerAskedNoTaskNoOwnerTurn + ownerAskedUngatedTail},
+		{"no task", noTask("lock-1", "between work"), noTask("lock-2", "between work two"), ownerAskedNoTaskNoOwnerTurn},
 	} {
 		said := f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 		hook = func() { _ = st.ClearOwnerTurn(f.asOwner, f.chief.ID, said.ID) }
+		reserved := f.allReservations(t)
 		text := f.callRaw(f.chief, agentDispatchTool, c.args)
 		if got := errorText(t, text); got != c.gone {
 			t.Errorf("%s, the turn ended: %q\nwant %q", c.name, got, c.gone)
 		}
+		if n := f.allReservations(t); n != reserved {
+			t.Errorf("%s: a refusal under the lock reserved (%d rows, want %d)", c.name, n, reserved)
+		}
+		var newer agents.ChatMessage
 		f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
-		hook = func() { f.ownerTurn(t, f.chief, f.owner, "a newer message of the owner's") }
-		text = f.callRaw(f.chief, agentDispatchTool, c.args)
-		if got := errorText(t, text); got != c.new {
-			t.Errorf("%s, a new turn: %q\nwant %q", c.name, got, c.new)
+		hook = func() { newer = f.ownerTurn(t, f.chief, f.owner, "a newer message of the owner's") }
+		text = f.callRaw(f.chief, agentDispatchTool, c.new)
+		if strings.Contains(text, `"error"`) {
+			t.Errorf("%s, a new owner turn in between: %s; want a start", c.name, text)
+		}
+		var detail map[string]any
+		var raw []byte
+		if err := f.pool.QueryRow(f.asOwner, `SELECT detail FROM audit_log WHERE action = $1 AND user_id = $2 ORDER BY id DESC LIMIT 1`,
+			plugins.ActionChiefDispatch, f.owner).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.Unmarshal(raw, &detail)
+		if detail["owner_message"] != float64(newer.ID) {
+			t.Errorf("%s: the reservation's owner_message %v, want the turn in flight under the lock (%d)", c.name, detail["owner_message"], newer.ID)
 		}
 		hook = nil
-	}
-	if n := f.allReservations(t); n != 0 {
-		t.Errorf("%d reservations after refusals under the lock", n)
 	}
 }
 
@@ -678,6 +692,9 @@ func TestARequestKeyWithAnyParameterChangedIsRefused(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newReleaseFixture(t)
+			// The key is decided under the lock, after the connected-repo
+			// check, so the changed repo must be one the owner connected.
+			f.withConnectedRepos(t, "example-org/widget")
 			n := f.task(t, "key "+c.name)
 			f.ownerTurn(t, f.chief, f.owner, "Start it.")
 			if text := f.callRaw(f.chief, agentDispatchTool, c.first(n.ID)); strings.Contains(text, `"error"`) {
@@ -758,9 +775,9 @@ func TestARequestKeyExpiresAfterADay(t *testing.T) {
 	}
 }
 
-// TestASpentFailedStartReplaysStartedFalse: a reservation that holds its key
-// but recorded no agent (its create failed after the unit was spent) replays
-// started: false once its 10-minute window is over, and "starting" within it.
+// TestASpentFailedStartReplaysStartedFalse: a replay of a reservation with no
+// agent reads "status": "starting" — however old it is — until the failed
+// create's marker names it, and started: false after.
 func TestASpentFailedStartReplaysStartedFalse(t *testing.T) {
 	f := newReleaseFixture(t)
 	in := agentDispatchIn{Target: "pod/claude-code", Prompt: "failed work", RequestKey: "spent-1", OwnerAsked: true}
@@ -769,23 +786,65 @@ func TestASpentFailedStartReplaysStartedFalse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, obj, map[string]any{plugins.DetailRequestKey: "spent-1",
-		plugins.DetailRequestHash: dispatchRequestHash(in, prompt)}, nil); err != nil {
+	res, err := f.plugins.ReserveChiefDispatch(f.asOwner, obj, map[string]any{plugins.DetailRequestKey: "spent-1",
+		plugins.DetailRequestHash: dispatchRequestHash(in, prompt)}, nil)
+	if err != nil {
 		t.Fatal(err)
-	}
-	f.say(t, f.chief, "not the owner's turn: a replay needs none")
-	args := noTask("spent-1", "failed work")
-	if text := f.callRaw(f.chief, agentDispatchTool, args); !strings.Contains(text, `"replayed":true`) || !strings.Contains(text, `"status":"starting"`) {
-		t.Fatalf("within the window: %s", text)
 	}
 	if _, err := f.pool.Exec(authz.System(context.Background()),
 		`UPDATE audit_log SET at = at - interval '11 minutes' WHERE object = $1`, obj); err != nil {
 		t.Fatal(err)
 	}
+	f.say(t, f.chief, "not the owner's turn: a replay needs none")
+	args := noTask("spent-1", "failed work")
+	if text := f.callRaw(f.chief, agentDispatchTool, args); !strings.Contains(text, `"replayed":true`) || !strings.Contains(text, `"status":"starting"`) {
+		t.Fatalf("no marker, 11 minutes old: %s; want starting", text)
+	}
+	if err := f.plugins.RecordChiefDispatchFailed(f.asOwner, obj, res.ReservationID); err != nil {
+		t.Fatal(err)
+	}
 	text := f.callRaw(f.chief, agentDispatchTool, args)
-	if !strings.Contains(text, `"replayed":true`) || !strings.Contains(text, `"started":false`) ||
+	if !strings.Contains(text, `"replayed":true`) || !strings.Contains(text, `"started":false`) || strings.Contains(text, `"status"`) ||
 		!strings.Contains(text, "the first call with this key reserved a start that failed; use a new request_key to try again") {
-		t.Fatalf("past the window: %s", text)
+		t.Fatalf("marked: %s; want started false", text)
+	}
+}
+
+// failingCreate is the agents store whose Create fails with an error that is
+// no refusal: the fail-closed branch, where the start stays spent.
+type failingCreate struct{ *agents.PGStore }
+
+func (failingCreate) Create(context.Context, agents.Agent) (agents.Agent, error) {
+	return agents.Agent{}, errors.New("the database went away")
+}
+
+// TestAFailedCreateIsMarkedAndItsReplayAnswersStartedFalse: the fail-closed
+// create failure writes the failed marker for ITS reservation, the unit stays
+// spent, and the same request_key then replays started: false at once.
+func TestAFailedCreateIsMarkedAndItsReplayAnswersStartedFalse(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.ownerTurn(t, f.chief, f.owner, "Start it.")
+	f.srv.ext.Agents = failingCreate{agents.NewPG(f.pool)}
+	today := f.budget(t).Today
+	text := f.callRaw(f.chief, agentDispatchTool, noTask("fails-1", "work that fails"))
+	if got := errorText(t, text); got != "the agent could not be started; use task_route_attention" {
+		t.Fatalf("the failed create: %q", got)
+	}
+	objs := f.dispatchObjects(t)
+	if len(objs) != 1 {
+		t.Fatalf("dispatch objects %v, want one (the spent reservation)", objs)
+	}
+	var marks int
+	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2`,
+		plugins.ActionChiefDispatchFailed, objs[0]).Scan(&marks); err != nil || marks != 1 {
+		t.Fatalf("failed markers on %s: %d (%v), want 1", objs[0], marks, err)
+	}
+	if got := f.budget(t).Today; got != today+1 {
+		t.Errorf("today %d, want %d: a failed create stays spent", got, today+1)
+	}
+	text = f.callRaw(f.chief, agentDispatchTool, noTask("fails-1", "work that fails"))
+	if !strings.Contains(text, `"replayed":true`) || !strings.Contains(text, `"started":false`) {
+		t.Fatalf("the replay: %s; want started false", text)
 	}
 }
 

@@ -60,6 +60,10 @@ const (
 	// its latest ActionChiefDispatch row is newer (by id) than its latest
 	// release row.
 	ActionChiefDispatchReleased = "task.chief_dispatch_released"
+	// ActionChiefDispatchFailed records that the create after a reservation
+	// failed after the unit was spent (RecordChiefDispatchFailed). It releases
+	// nothing; it is the marker a request_key replay answers started: false on.
+	ActionChiefDispatchFailed = "task.chief_dispatch_failed"
 )
 
 var (
@@ -109,12 +113,13 @@ var ErrRequestKeyReused = errors.New("plugins: the request_key was used for a di
 type ChiefDispatch struct {
 	// Replayed: the request_key named a reservation of the owner's from the
 	// last ChiefDispatchWindow with the same parameters; nothing was reserved,
-	// and ReservationID, Object, AgentID and ReservedAt are that reservation's.
+	// and ReservationID, Object, AgentID and Failed are that reservation's.
 	Replayed bool
 	// Object is the replayed reservation's ledger object (Replayed only).
 	Object string
-	// ReservedAt is when the replayed reservation was made (Replayed only).
-	ReservedAt time.Time
+	// Failed: the replayed reservation's create failed after the unit was
+	// spent (an ActionChiefDispatchFailed row names it). Replayed only.
+	Failed bool
 	// Prior: this task already had a chief start; nothing was reserved.
 	Prior bool
 	// AgentID is the agent the prior start recorded, nil when it recorded none
@@ -192,12 +197,12 @@ type DispatchStore interface {
 	// A cap refusal returns, with its error, the budget it was decided on
 	// (ChiefDispatch.Budget).
 	ReserveChiefDispatch(ctx context.Context, object string, detail map[string]any, check func() error) (ChiefDispatch, error)
-	// LookupChiefDispatchKey is the request_key check ReserveChiefDispatch runs
-	// first under its lock, as a read: a Replayed answer for key with hash,
-	// ErrRequestKeyReused, or the zero ChiefDispatch when the key holds no
-	// reservation. It lets a replay answer before any check that only a first
-	// call needs (the owner's turn); the reservation re-decides it under the lock.
-	LookupChiefDispatchKey(ctx context.Context, key, hash string) (ChiefDispatch, error)
+	// RecordChiefDispatchFailed records that the create after reservationID
+	// (a ChiefDispatch.ReservationID of object) FAILED after the unit was
+	// spent (fail-closed: not a refusal, which ReleaseRefusedChiefDispatch
+	// releases instead). Nothing is released; a request_key replay of that
+	// reservation reads it (ChiefDispatch.Failed) and answers started: false.
+	RecordChiefDispatchFailed(ctx context.Context, object string, reservationID int64) error
 	// ChiefDispatchBudget is the principal's chief-dispatch budget now
 	// (chiefBudget, the count the caps compare). Read-only.
 	ChiefDispatchBudget(ctx context.Context) (ChiefBudget, error)
@@ -371,28 +376,9 @@ func requestKeyOf(detail map[string]any) (key, hash string) {
 	return key, hash
 }
 
-// LookupChiefDispatchKey: see DispatchStore. A read, without the reservation
-// lock: what it answers can only be made stale by a reservation that commits
-// after it, which ReserveChiefDispatch's own check under the lock then finds.
-func (s *PGStore) LookupChiefDispatchKey(ctx context.Context, key, hash string) (ChiefDispatch, error) {
-	p, ok := authz.From(ctx)
-	if !ok || p.UserID <= 0 {
-		return ChiefDispatch{}, errors.New("plugins: a request_key lookup needs a user principal")
-	}
-	var out ChiefDispatch
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		out, err = requestKeyMatch(ctx, tx, p.UserID, key, hash)
-		return err
-	})
-	if err != nil {
-		return ChiefDispatch{}, err
-	}
-	return out, nil
-}
-
-// requestKeyMatch is THE request_key rule, for ReserveChiefDispatch (under its
-// lock) and LookupChiefDispatchKey: owner's newest reservation from the last
+// requestKeyMatch is THE request_key rule, decided by ReserveChiefDispatch
+// FIRST, under its lock — so a replay starts nothing, spends nothing, and runs
+// none of the caller's check (the owner's turn among it): owner's newest reservation from the last
 // ChiefDispatchWindow whose detail carries key, unless a release names it as a
 // refused reservation (ReleaseRefusedChiefDispatch: a create refused before any
 // agent existed made nothing, so its key is free). With the same hash it is a
@@ -407,14 +393,17 @@ func requestKeyMatch(ctx context.Context, tx pgx.Tx, owner int64, key, hash stri
 		out    ChiefDispatch
 		stored string
 	)
-	err := tx.QueryRow(ctx, `SELECT r.id, r.object, r.at, coalesce(r.detail->>'request_hash', '') FROM audit_log r
+	err := tx.QueryRow(ctx, `SELECT r.id, r.object, coalesce(r.detail->>'request_hash', ''),
+		       EXISTS (SELECT 1 FROM audit_log f WHERE f.action = $5 AND f.user_id = $1 AND f.object = r.object
+		                AND f.detail->>'reservation' = r.id::text)
+		  FROM audit_log r
 		 WHERE r.action = '`+ActionChiefDispatch+`' AND r.detail ? 'request_key'
 		   AND r.user_id = $1 AND r.detail->>'request_key' = $2
 		   AND r.at > now() - make_interval(secs => $3)
 		   AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $4 AND x.user_id = $1 AND x.object = r.object
 		                    AND x.detail->>'refused_reservation' = r.id::text)
 		 ORDER BY r.id DESC LIMIT 1`,
-		owner, key, ChiefDispatchWindow.Seconds(), ActionChiefDispatchReleased).Scan(&out.ReservationID, &out.Object, &out.ReservedAt, &stored)
+		owner, key, ChiefDispatchWindow.Seconds(), ActionChiefDispatchReleased, ActionChiefDispatchFailed).Scan(&out.ReservationID, &out.Object, &stored, &out.Failed)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ChiefDispatch{}, nil
@@ -702,6 +691,13 @@ func (s *PGStore) ReleaseRefusedChiefDispatch(ctx context.Context, object string
 		return audit(ctx, tx, ActionChiefDispatchReleased, object, map[string]any{"refused_reservation": reservationID})
 	})
 	return wrote, err
+}
+
+// RecordChiefDispatchFailed: see DispatchStore.
+func (s *PGStore) RecordChiefDispatchFailed(ctx context.Context, object string, reservationID int64) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		return audit(ctx, tx, ActionChiefDispatchFailed, object, map[string]any{"reservation": reservationID})
+	})
 }
 
 // RecordTaskRouted: see DispatchStore.

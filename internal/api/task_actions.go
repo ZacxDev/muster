@@ -75,7 +75,7 @@ func chiefMayDispatch(ext Extensions, owner int64) bool {
 // chiefDispatchDeploymentRefusal is agent_dispatch's refusal for owner that no
 // task or argument changes, "" when there is none: the opt-in
 // (chiefMayDispatch), then the deployment's ability to start an agent at all.
-// toolTaskDispatch answers with it first; chiefTaskActions offers dispatch only
+// toolAgentDispatch answers with it first; chiefTaskActions offers dispatch only
 // when it is "".
 func (s *Server) chiefDispatchDeploymentRefusal(owner int64) string {
 	if !chiefMayDispatch(s.ext, owner) {
@@ -92,7 +92,7 @@ func (s *Server) chiefDispatchDeploymentRefusal(owner int64) string {
 
 // chiefDispatchTaskRefusal is agent_dispatch's refusal for task n itself, ""
 // when there is none: gated, not open, or a live agent (pending, provisioning,
-// running) already on it. toolTaskDispatch runs it under its reservation lock;
+// running) already on it. toolAgentDispatch runs it under its reservation lock;
 // chiefTaskActions offers dispatch only when it is "". The tool's ARGUMENT
 // checks (kind, repo, instructions) come on top and are not part of the offer:
 // the chief picks those.

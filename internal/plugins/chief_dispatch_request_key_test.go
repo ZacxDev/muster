@@ -1,10 +1,14 @@
 package plugins
 
 import (
+	"context"
 	"errors"
 	"regexp"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
@@ -53,7 +57,7 @@ func TestADispatchObjectIsFreshAndHasNoPriorStart(t *testing.T) {
 // is a new reservation of its own; the read-only lookup agrees with the
 // reservation's own check.
 func TestARequestKeyIsPerOwnerAndBoundToItsHash(t *testing.T) {
-	s, _, dsn := pgStore(t)
+	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
 	o2, _ := NewDispatchObject()
 	first, err := s.ReserveChiefDispatch(session(2), o2, keyed("shared-key", "hash-a"), nil)
@@ -68,14 +72,18 @@ func TestARequestKeyIsPerOwnerAndBoundToItsHash(t *testing.T) {
 	if err != nil || !r.Replayed || r.ReservationID != first.ReservationID || r.Object != o2 || r.AgentID == nil || *r.AgentID != 4242 {
 		t.Fatalf("replay: %+v %v; want reservation %d on %s with agent 4242", r, err, first.ReservationID, o2)
 	}
-	if l, err := s.LookupChiefDispatchKey(session(2), "shared-key", "hash-a"); err != nil || !l.Replayed || l.ReservationID != first.ReservationID {
-		t.Fatalf("lookup: %+v %v", l, err)
+	// A replay ran no check and wrote nothing: one reservation row only.
+	if r, err := s.ReserveChiefDispatch(session(2), other, keyed("shared-key", "hash-a"), func() error {
+		t.Error("a replay ran the caller's check")
+		return nil
+	}); err != nil || !r.Replayed {
+		t.Fatalf("second replay: %+v %v", r, err)
+	}
+	if n := reservationRows(t, pool, 2); n != 1 {
+		t.Fatalf("%d reservation rows after two replays, want 1", n)
 	}
 	if _, err := s.ReserveChiefDispatch(session(2), other, keyed("shared-key", "hash-b"), nil); !errors.Is(err, ErrRequestKeyReused) {
 		t.Fatalf("a changed hash: %v; want ErrRequestKeyReused", err)
-	}
-	if _, err := s.LookupChiefDispatchKey(session(2), "shared-key", "hash-b"); !errors.Is(err, ErrRequestKeyReused) {
-		t.Fatalf("lookup, a changed hash: %v", err)
 	}
 	// Owner 3, same key, different hash: theirs alone, a fresh reservation.
 	o3, _ := NewDispatchObject()
@@ -83,12 +91,8 @@ func TestARequestKeyIsPerOwnerAndBoundToItsHash(t *testing.T) {
 	if err != nil || r3.Replayed || r3.ReservationID == first.ReservationID {
 		t.Fatalf("owner 3: %+v %v; want a new reservation", r3, err)
 	}
-	if l, err := s.LookupChiefDispatchKey(session(3), "shared-key", "hash-a"); !errors.Is(err, ErrRequestKeyReused) || l.Replayed {
-		t.Fatalf("owner 3's lookup with owner 2's hash: %+v %v; want its own key's reuse refusal", l, err)
-	}
-	// A key with no reservation: the zero answer.
-	if l, err := s.LookupChiefDispatchKey(session(2), "unused-key", "h"); err != nil || l.Replayed || l.ReservationID != 0 {
-		t.Fatalf("unused key: %+v %v", l, err)
+	if _, err := s.ReserveChiefDispatch(session(3), o3, keyed("shared-key", "hash-a"), nil); !errors.Is(err, ErrRequestKeyReused) {
+		t.Fatalf("owner 3 with owner 2's hash: %v; want its own key's reuse refusal", err)
 	}
 }
 
@@ -130,6 +134,50 @@ func TestARefusedReleaseFreesItsRequestKey(t *testing.T) {
 	}
 }
 
+// TestAFailedStartIsMarkedForItsReplay: a reservation whose create failed
+// after the unit was spent replays Failed once RecordChiefDispatchFailed names
+// it — and not before, however old it is (no time window decides it).
+func TestAFailedStartIsMarkedForItsReplay(t *testing.T) {
+	s, _, dsn := pgStore(t)
+	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
+	o, _ := NewDispatchObject()
+	first, err := s.ReserveChiefDispatch(session(2), o, keyed("failed-key", "h"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbtest.OwnerExec(t, dsn, `UPDATE audit_log SET at = at - interval '11 minutes' WHERE object = '`+o+`'`)
+	other, _ := NewDispatchObject()
+	if r, err := s.ReserveChiefDispatch(session(2), other, keyed("failed-key", "h"), nil); err != nil || !r.Replayed || r.Failed {
+		t.Fatalf("unmarked, 11 minutes old: %+v %v; want a replay, not failed", r, err)
+	}
+	if err := s.RecordChiefDispatchFailed(session(2), o, first.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.ReserveChiefDispatch(session(2), other, keyed("failed-key", "h"), nil); err != nil || !r.Replayed || !r.Failed {
+		t.Fatalf("marked: %+v %v; want a replay that failed", r, err)
+	}
+	// A marker naming ANOTHER reservation of the object marks nothing here.
+	o2, _ := NewDispatchObject()
+	second, _ := s.ReserveChiefDispatch(session(2), o2, keyed("other-key", "h"), nil)
+	if err := s.RecordChiefDispatchFailed(session(2), o2, second.ReservationID+1000); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.ReserveChiefDispatch(session(2), other, keyed("other-key", "h"), nil); err != nil || !r.Replayed || r.Failed {
+		t.Fatalf("a marker for another reservation: %+v %v", r, err)
+	}
+}
+
+// reservationRows is owner's reservation rows.
+func reservationRows(t *testing.T, pool *pgxpool.Pool, owner int64) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(authz.System(context.Background()),
+		`SELECT count(*) FROM audit_log WHERE action = 'task.chief_dispatch' AND user_id = $1`, owner).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // TestAReplayedTaskStartNamesItsOwnAgent: on a task with two reservations (the
 // first released by a destroy), each key replays the agent ITS reservation
 // recorded, never the other's.
@@ -153,7 +201,8 @@ func TestAReplayedTaskStartNamesItsOwnAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]int64{"k-one": 6001, "k-two": 6002} {
-		r, err := s.LookupChiefDispatchKey(session(2), key, "h")
+		o, _ := NewDispatchObject()
+		r, err := s.ReserveChiefDispatch(session(2), o, keyed(key, "h"), nil)
 		if err != nil || !r.Replayed || r.AgentID == nil || *r.AgentID != want {
 			t.Errorf("%s: %+v %v; want agent %d", key, r, err, want)
 		}

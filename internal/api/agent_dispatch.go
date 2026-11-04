@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
@@ -281,9 +280,9 @@ const (
 	ownerAskedNoTaskUnaccountedCLI = "owner_asked: a Claude Code process in your pod is running without a session record, so " +
 		"muster cannot tell whether it is working at the same time as your owner's turn; ask your owner again in the chat"
 	ownerAskedNoTaskCLIsUnknown = "owner_asked: muster could not read which of your sessions are working (your pod did not " +
-		"answer, or its image is too old to say), so nothing was started; ask your owner to start it with muster agent create"
+		"answer, or its image is too old to say), so nothing was started; ask your owner to start it from the dispatch form"
 	ownerAskedNoTaskNotOverMCP = "owner_asked: this session is not a Claude Code session, and only a Claude Code session can " +
-		"show muster that your owner typed this; ask your owner to start it with muster agent create"
+		"show muster that your owner typed this; ask your owner to start it from the dispatch form"
 	ownerAskedNoTaskUnverifiable = "owner_asked: your owner's turn could not be read, so nothing was started; try again later"
 	ownerAskedNoTaskChanged      = "owner_asked: your owner's turn changed while the start was being checked; call again"
 
@@ -359,12 +358,13 @@ func (e errTaskDispatch) Error() string { return string(e) }
 // owner's opt-in and the deployment; the target (required, existing now); the
 // request_key's shape; worker_pool's rules; model only for pod/gateway; what a
 // dispatch with no task needs (owner_asked, request_key, prompt); the prompt's
-// cap; the request_key's replay or reuse; then today's task_dispatch guards in
-// today's order — the prompt's provenance without owner_asked (ownerAnswer),
-// the kind (resolveKind), a repository the owner connected — then owner_asked
-// (ownerTurnFor, on ANY task or none; a gate the chief filed is released),
-// then under the owner's reservation lock: the request_key again, the one
-// start per task, the task itself, the owner's turn again, and the two caps.
+// cap; then today's task_dispatch guards in today's order — the prompt's
+// provenance without owner_asked (ownerAnswer), the kind (resolveKind), a
+// repository the owner connected — then, on a gated task with owner_asked,
+// verifyGateRelease; then under the owner's reservation lock: the request_key
+// (a replay or a reuse refusal answers here, before anything below), the one
+// start per task, the owner's turn (ownerTurnFor, on ANY task or none), the
+// task itself, and the two caps.
 func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agentDispatchIn) string {
 	owner := agentOwnerID(a)
 	if why := s.chiefDispatchDeploymentRefusal(owner); why != "" {
@@ -409,23 +409,6 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		return refuse(chiefDispatchPromptCap)
 	}
 	hash := dispatchRequestHash(in, prompt)
-	// 🔴 A REPLAY ANSWERS BEFORE ANY CHECK ONLY A FIRST CALL NEEDS: it starts
-	// nothing and spends nothing, so it runs no owner's-turn check — it only
-	// returns what the first call already answered. ReserveChiefDispatch decides
-	// the key again, under the owner's lock, which is what serialises two
-	// concurrent first calls.
-	if in.RequestKey != "" {
-		r, err := s.ext.ChiefDispatch.LookupChiefDispatchKey(ctx, in.RequestKey, hash)
-		switch {
-		case errors.Is(err, plugins.ErrRequestKeyReused):
-			return refuse(fmt.Sprintf(agentDispatchKeyReused, in.RequestKey))
-		case err != nil:
-			s.logger.Printf("task routing: look up request_key %q: %v", in.RequestKey, err)
-			return refuse("the start could not be reserved")
-		case r.Replayed:
-			return s.replayAnswer(ctx, in, r)
-		}
-	}
 	// 🔴 WITHOUT owner_asked (only possible on a task), A PROMPT IS ONLY EVER THE
 	// OWNER'S OWN WORDS: verbatim, the owner's answer to an attention ask linked
 	// to THIS task (ownerAnswer) — today's task_dispatch rule. Refused before the
@@ -475,11 +458,12 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			}
 		}
 	}
-	// 🔴 owner_asked: true ALWAYS RUNS ownerTurnFor — on a task the chief gated
-	// (verifyGateRelease: its gate is then released once the agent exists), on
-	// an ungated task, and with no task. Checked here (a refusal spends nothing)
-	// and again under the reservation's lock (check). The refusal is worded for
-	// the kind of dispatch (ownerAskedRefusal).
+	// 🔴 owner_asked: true ALWAYS RUNS ownerTurnFor — on a task the chief gated,
+	// on an ungated task, and with no task — ONCE, under the reservation's lock
+	// (check), where a refusal spends nothing either. The one check before the
+	// lock is a gated task's verifyGateRelease, which decides the gates to
+	// release (rel); check() then requires the same owner's message. The
+	// refusal is worded for the kind of dispatch (ownerAskedRefusal).
 	var (
 		rel      *gateRelease
 		ownerMsg agents.ChatMessage
@@ -500,14 +484,6 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 				detail["gate_released_by_owner_message"] = r.msg.ID
 			}
 		}
-		if rel == nil {
-			msg, why := s.ownerTurnFor(ctx, a)
-			if why != "" {
-				return refuse(ownerAskedRefusal(why, taskKind))
-			}
-			ownerMsg = msg
-		}
-		detail["owner_message"] = ownerMsg.ID
 	}
 	object := plugins.NoteObject(in.TaskID)
 	if !onTask {
@@ -518,16 +494,18 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	}
 	var task notes.Note
 	check := func() error {
-		// 🔴 UNDER THE LOCK, owner_asked is re-checked: the owner's turn still in
-		// flight, on the same message.
+		// 🔴 UNDER THE LOCK, owner_asked is checked: the owner's turn in flight
+		// now (and, for a gate release, on the message verifyGateRelease read).
 		if in.OwnerAsked {
 			msg, why := s.ownerTurnFor(ctx, a)
 			if why != "" {
 				return errTaskDispatch(ownerAskedRefusal(why, taskKind))
 			}
-			if msg.ID != ownerMsg.ID {
+			if rel != nil && msg.ID != ownerMsg.ID {
 				return errTaskDispatch(ownerAskedRefusal(chiefReleaseChanged, taskKind))
 			}
+			// Written into the reservation's row, which is inserted after check.
+			detail["owner_message"] = msg.ID
 		}
 		if !onTask {
 			return nil
@@ -625,11 +603,21 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	// are read again HERE, at the call, because the provisioner-seam walk
 	// (provisioner_seam_test.go) is function-granular — a body that calls the
 	// provisioner and nil-checks it is the barrier.
+	//
+	// Past the reservation, a start that makes no agent and is not released
+	// stays spent (fail-closed) and records so (failSpent): the marker a
+	// request_key replay answers started: false on.
+	failSpent := func(msg string) string {
+		if ferr := s.ext.ChiefDispatch.RecordChiefDispatchFailed(ctx, object, res.ReservationID); ferr != nil {
+			s.logger.Printf("task routing: record the failed start (%s): %v", object, ferr)
+		}
+		return refuse(msg)
+	}
 	if s.ext.Provisioner == nil {
-		return refuse("this deployment cannot start agents")
+		return failSpent("this deployment cannot start agents")
 	}
 	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-		return refuse("this deployment cannot start an agent now: " + reason)
+		return failSpent("this deployment cannot start an agent now: " + reason)
 	}
 	rec, err := s.createAndDispatchAgent(ctx, p)
 	if err != nil {
@@ -644,7 +632,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			}
 			return refuse("the agent could not be started: " + err.Error() + "; use task_route_attention")
 		}
-		return refuse("the agent could not be started; use task_route_attention")
+		return failSpent("the agent could not be started; use task_route_attention")
 	}
 	if err := s.ext.ChiefDispatch.RecordChiefDispatchAgent(ctx, object, rec.ID); err != nil {
 		s.logger.Printf("task routing: record agent %d (%s): %v", rec.ID, object, err)
@@ -686,12 +674,6 @@ func (s *Server) ownersTaskIf(ctx context.Context, a agents.Agent, onTask bool, 
 // cleanPrompt is cleanChiefText at agent_dispatch's cap.
 func cleanPrompt(raw string) (string, bool) { return cleanChiefText(raw, chiefPromptMax) }
 
-// replayStartingFor is how long a replayed reservation with no agent recorded
-// reads as still starting: the window a reservation holds its live slot in
-// without one (plugins' pendingAgentWindow). Past it, the first call's create
-// failed after the unit was spent.
-const replayStartingFor = 10 * time.Minute
-
 // replayAnswer is a request_key replay: the first dispatch's result as it
 // stands now. It starts nothing and spends nothing.
 func (s *Server) replayAnswer(ctx context.Context, in agentDispatchIn, r plugins.ChiefDispatch) string {
@@ -711,12 +693,14 @@ func (s *Server) replayAnswer(ctx context.Context, in agentDispatchIn, r plugins
 		}
 		out["status"] = status
 		out["next"] = "This request_key already started this agent; nothing new was started. Do not start another."
-	case time.Since(r.ReservedAt) < replayStartingFor:
-		out["status"] = "starting"
-		out["next"] = "The first call with this request_key is still starting its agent; nothing new was started. Do not start another."
-	default:
+	case r.Failed:
+		// The first call's create failed after its unit was spent
+		// (RecordChiefDispatchFailed): a recorded fact, not a guess from age.
 		out["started"] = false
 		out["next"] = "the first call with this key reserved a start that failed; use a new request_key to try again"
+	default:
+		out["status"] = "starting"
+		out["next"] = "The first call with this request_key is still starting its agent; nothing new was started. Do not start another."
 	}
 	if b := s.chiefBudgetNow(ctx); b != nil {
 		out["budget"] = b
