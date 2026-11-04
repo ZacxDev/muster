@@ -34,7 +34,7 @@ func TestTheFramerEmitsWholeEventsHoweverTheBytesArrive(t *testing.T) {
 	}
 	u := m.Usage
 	if m.Provider != "Prov" || m.MessageID != "msg_1" || m.StopReason != "tool_use" || u.Cost == nil || *u.Cost != 0.25 ||
-		val(u.Input) != 10 || val(u.CacheRead) != 4 || val(u.Output) != 9 || u.CacheWrite != nil || u.tokens() != 23 {
+		val(u.Input) != 10 || val(u.CacheRead) != 4 || val(u.Output) != 9 || u.CacheWrite != nil || u.tokens() != 19 {
 		t.Fatalf("meter = %+v usage in=%d cr=%d out=%d", m, val(u.Input), val(u.CacheRead), val(u.Output))
 	}
 }

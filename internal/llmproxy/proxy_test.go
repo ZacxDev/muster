@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -173,11 +175,18 @@ func (r *rig) audits() []Record {
 func newRig(t *testing.T, officer string, h func(http.ResponseWriter, *http.Request, int)) *rig {
 	t.Helper()
 	up := newUpstream(t, h)
+	return newRigAt(t, officer, up, up.URL)
+}
+
+// newRigAt is newRig against the provider at upURL (up may be nil when
+// nothing listens there).
+func newRigAt(t *testing.T, officer string, up *upstream, upURL string) *rig {
+	t.Helper()
 	st := newMemStore()
 	logs := &syncBuffer{}
 	r := &rig{store: st, up: up, logs: logs, caller: Caller{Officer: officer, Instance: 1, InstanceLabel: "r1", AgentID: 7,
 		AgentName: "officer-x-y-r1", Model: "example/pinned-model", DailyBudgetUSD: 5, MaxTokensPerItem: 1_000_000, Key: testKey}}
-	p, err := New(Config{Upstream: up.URL + "/api", Store: st, Logger: log.New(logs, "", 0), Audit: func(_ context.Context, rec Record) {
+	p, err := New(Config{Upstream: upURL + "/api", Store: st, Logger: log.New(logs, "", 0), Audit: func(_ context.Context, rec Record) {
 		r.mu.Lock()
 		r.audit = append(r.audit, rec)
 		r.mu.Unlock()
@@ -204,7 +213,13 @@ const clientBody = `{"model":"claude-sonnet-4-5","stream":true,"max_tokens":3200
 
 func (r *rig) post(t *testing.T) (*http.Response, string) {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, r.srv.URL+"/llm/v1/messages?beta=true", strings.NewReader(clientBody))
+	return r.postBody(t, clientBody)
+}
+
+// postBody is post with body in place of clientBody.
+func (r *rig) postBody(t *testing.T, body string) (*http.Response, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, r.srv.URL+"/llm/v1/messages?beta=true", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+instanceToken)
 	req.Header.Set("X-Muster-Token", instanceToken)
@@ -402,13 +417,13 @@ func TestAStoreThatCannotBeReadRefusesWithoutSending(t *testing.T) {
 }
 
 // TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero: tokens are counted
-// per held item (input, cache and output); past the cap the next request is
+// per held item (uncached input, cache writes and output; not cache reads); past the cap the next request is
 // refused with a 400 and not sent; a new claim, or a wake-loop read that shows
 // the instance holding nothing, starts the count again.
 func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 	const officer = "items:cap"
 	r := newRig(t, officer, streamOK(0.0001))
-	r.set(func(c *Caller) { c.MaxTokensPerItem = 2000 }) // each request is 1000 + 300 + 7 = 1307 tokens
+	r.set(func(c *Caller) { c.MaxTokensPerItem = 2000 }) // each request counts 1000 + 7 = 1007 tokens (its 300 cache reads do not count)
 	r.p.Claimed(officer, 1, "item-a")
 	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusBadRequest} {
 		resp, body := r.post(t)
@@ -466,8 +481,8 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 	r.p.Claimed(officer, 1, "item-c")
 	r.post(t)
 	r.p.Ended(officer, 1, "item-other")
-	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-c" || used != 1307 {
-		t.Fatalf("after an Ended for another item: %d on %q, want 1307 on item-c", used, item)
+	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-c" || used != 1007 {
+		t.Fatalf("after an Ended for another item: %d on %q, want 1007 on item-c", used, item)
 	}
 	r.p.Ended(officer, 1, "item-c")
 	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "" || used != 0 {
@@ -639,5 +654,148 @@ func TestOnlyBetaTrueIsForwardedAsAQuery(t *testing.T) {
 	resp.Body.Close()
 	if req, _ := r.up.last(); req.URL.RawQuery != "" {
 		t.Fatalf("forwarded query %q, want none", req.URL.RawQuery)
+	}
+}
+
+// TestOnlyKnownMessagesFieldsGoUpstream: the body sent upstream is built from
+// an allowlist of Anthropic Messages request fields, with model rewritten to
+// the pin. OpenRouter's routing fields (fallbacks, models, provider, route,
+// plugins, transforms) would let a request reach a model other than the pinned
+// one, so they, and any key the allowlist does not name, never reach the
+// provider.
+func TestOnlyKnownMessagesFieldsGoUpstream(t *testing.T) {
+	r := newRig(t, "pin:fields", streamOK(0.001))
+	body := `{"model":"claude-sonnet-4-5","stream":true,"max_tokens":32000,"messages":[{"role":"user","content":"hi"}],` +
+		`"thinking":{"type":"adaptive"},"system":[{"type":"text","text":"be brief"}],"tools":[],"metadata":{"user_id":"u1"},` +
+		`"temperature":1,"tool_choice":{"type":"auto"},"stop_sequences":["x"],"top_k":5,"top_p":0.9,"context_management":{},` +
+		`"fallbacks":[{"model":"anthropic/claude-opus-4.1"}],"models":["anthropic/claude-opus-4.1"],` +
+		`"provider":{"order":["Anthropic"],"data_collection":"allow"},"route":"fallback","plugins":[{"id":"web"}],` +
+		`"transforms":["middle-out"],"some_future_key":{"model":"anthropic/claude-opus-4.1"}}`
+	if resp, out := r.postBody(t, body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d %s", resp.StatusCode, out)
+	}
+	_, sentRaw := r.up.last()
+	var sent map[string]json.RawMessage
+	if err := json.Unmarshal(sentRaw, &sent); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for k := range sent {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	want := []string{"context_management", "max_tokens", "messages", "metadata", "model", "stop_sequences", "stream",
+		"system", "temperature", "thinking", "tool_choice", "tools", "top_k", "top_p"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("upstream body keys = %v\nwant exactly %v", got, want)
+	}
+	if string(sent["model"]) != `"example/pinned-model"` {
+		t.Fatalf("upstream model = %s, want the pinned example/pinned-model", sent["model"])
+	}
+	if strings.Contains(string(sentRaw), "claude-opus") || strings.Contains(string(sentRaw), "claude-sonnet") {
+		t.Fatalf("a model other than the pin reached the provider: %s", sentRaw)
+	}
+	if string(sent["messages"]) != `[{"role":"user","content":"hi"}]` || string(sent["system"]) != `[{"type":"text","text":"be brief"}]` {
+		t.Fatalf("a kept field changed on the way: messages %s system %s", sent["messages"], sent["system"])
+	}
+}
+
+// TestAProviderThatCannotBeReachedBooksNothing: when the connection to the
+// provider fails before the request is written (nothing listens there), the
+// provider billed nothing, so nothing is booked: the day's spend, the bookings
+// and the per-item count are unchanged, and the next request is not refused
+// for budget. The instance gets a 502.
+func TestAProviderThatCannotBeReachedBooksNothing(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := "http://" + ln.Addr().String()
+	ln.Close()
+	const officer = "outage:dial"
+	r := newRigAt(t, officer, nil, dead)
+	// A budget one pessimistic estimate of this body would exhaust.
+	r.set(func(c *Caller) { c.DailyBudgetUSD = 0.004 })
+	r.p.Claimed(officer, 1, "item-a")
+	for i := 1; i <= 3; i++ {
+		resp, body := r.post(t)
+		if resp.StatusCode != http.StatusBadGateway || strings.Contains(body, "daily LLM budget") {
+			t.Fatalf("request %d to an unreachable provider: %d %s, want 502 (never a budget refusal)", i, resp.StatusCode, body)
+		}
+	}
+	if b := r.store.bookings(); len(b) != 0 {
+		t.Fatalf("bookings = %+v, want none: nothing reached the provider", b)
+	}
+	if spent, _ := r.store.SpentToday(context.Background(), officer, Day(time.Now())); spent != 0 {
+		t.Fatalf("spent today = %v, want 0", spent)
+	}
+	if used, _ := r.p.items.used(instanceKey{officer, 1}); used != 0 {
+		t.Fatalf("the item count = %d, want 0", used)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMCostEstimated.WithLabelValues(officer)); got != 0 {
+		t.Errorf("cost_estimated = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "r1", "upstream_error")); got != 3 {
+		t.Errorf("upstream_error = %v, want 3", got)
+	}
+}
+
+// TestARequestSentThenDroppedIsStillBookedFromTheEstimate is an INVARIANT
+// GUARD (it held before the unreachable-provider fix too): once the request
+// was written, the provider may have billed it, so a connection that drops
+// before any response is booked from the pessimistic estimate, never as free.
+func TestARequestSentThenDroppedIsStillBookedFromTheEstimate(t *testing.T) {
+	r := newRig(t, "outage:dropped", func(w http.ResponseWriter, _ *http.Request, _ int) {
+		c, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			c.Close()
+		}
+	})
+	if resp, body := r.post(t); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("%d %s, want 502", resp.StatusCode, body)
+	}
+	b := r.store.bookings()
+	want := float64(len(clientBody)/3)*EstimateUSDPerInputToken + estimateOutputTokens*EstimateUSDPerOutputToken
+	if len(b) != 1 || !b[0].Estimated || b[0].CostUSD < want*0.999 || b[0].CostUSD > want*1.001 {
+		t.Fatalf("bookings = %+v, want one estimated at %v", b, want)
+	}
+}
+
+// TestCacheReadsDoNotCountTowardTheItemCap: Claude Code resends its whole
+// context on every request, mostly as cache reads, so the per-item cap counts
+// uncached input, cache writes and output only. The cache reads are still
+// metered, booked and charged against the budget at the provider's cost.
+func TestCacheReadsDoNotCountTowardTheItemCap(t *testing.T) {
+	const officer = "items:cache"
+	r := newRig(t, officer, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range []string{
+			sse("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+				"id": "msg_cache", "model": "example/pinned-model", "provider": "ExampleProvider",
+				"usage": map[string]any{"input_tokens": 1000, "cache_read_input_tokens": 1_000_000, "cache_creation_input_tokens": 50, "output_tokens": 1}}}),
+			sse("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"},
+				"usage": map[string]any{"output_tokens": 7, "cost": 0.01}}),
+			sse("message_stop", map[string]any{"type": "message_stop"}),
+		} {
+			_, _ = io.WriteString(w, e)
+			w.(http.Flusher).Flush()
+		}
+	})
+	r.set(func(c *Caller) { c.MaxTokensPerItem = 10_000 })
+	r.p.Claimed(officer, 1, "item-a")
+	for i := 1; i <= 3; i++ {
+		if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: %d %s; a million cache-read tokens counted toward a 10000-token item cap", i, resp.StatusCode, body)
+		}
+	}
+	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-a" || used != 3*(1000+50+7) {
+		t.Fatalf("item count = %d on %q, want %d on item-a (no cache reads)", used, item, 3*(1000+50+7))
+	}
+	b := r.store.bookings()
+	if len(b) != 3 || b[0].CacheRead != 1_000_000 || b[0].CostUSD != 0.01 {
+		t.Fatalf("bookings = %+v, want three with their cache reads and the provider's cost", b)
+	}
+	if spent, _ := r.store.SpentToday(context.Background(), officer, Day(time.Now())); spent < 0.0299 || spent > 0.0301 {
+		t.Fatalf("spent today = %v, want 0.03: cache reads are still charged", spent)
 	}
 }
