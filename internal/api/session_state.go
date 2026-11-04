@@ -15,9 +15,9 @@ import (
 
 // ---------------------------------------------------------------------------
 // SESSION STATE AND EPISODES (internal/sessionstate, migration 0073;
-// docs/design/session-state.md). OFF unless MUSTER_SESSION_STATE=1: nothing
-// reads the episodes until the design's next PR, which turns it on with its
-// reader.
+// docs/design/session-state.md). OFF unless MUSTER_SESSION_STATE=1. Its
+// readers: the episode push and the Asks page's Stalled / waiting rows
+// (session_push.go).
 //
 // Every SessionStateInterval the pass computes, for each owner, every
 // session's state from the stall facts (stallFacts — the same read the stall
@@ -41,11 +41,10 @@ import (
 // stallClassifierText — redacted and cut — the SAME text the nudge sweep sends,
 // and its answer is billed once per streak whichever pass runs first.
 //
-// 🔴 FOR THE NEXT PR: this pass POLLS (every 30 s). Today a waiting window is
-// pushed AT ONCE, from the mirror hub's change hook (attentionMirrorChanged).
-// The episode push must keep pushing from that hook and use this pass only to
-// keep the rows in step — pushing from the poll would add up to 30 s to every
-// waiting push.
+// 🔴 THIS PASS POLLS (every 30 s). A waiting window is pushed AT ONCE, from the
+// mirror hub's change hook (attentionMirrorChanged → episodeWaitingPushes);
+// this pass pushes a waiting stop only when the hook missed it, and pushes an
+// idle stop (session_push.go) — a stall is 10 minutes old by then.
 // ---------------------------------------------------------------------------
 
 // SessionStateInterval is how often the state pass runs.
@@ -119,6 +118,9 @@ type statePass struct {
 	cl     *chiefnudge.Classifier // nil: the owner's classifier does not run
 	budget *int
 	now    time.Time
+	// judges: the owner's chief judges idle stops live (episodeChiefJudges),
+	// so an idle stop's push waits on its decision.
+	judges bool
 }
 
 // sessionStateOwner is one owner's part of the pass, as that owner.
@@ -150,8 +152,11 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		}
 	}
 	answerable := answerableWaits(s.waitingSessionsIn(octx, hs))
-	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now()}
-	read := s.stallFacts(octx, nil, hs, true)
+	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now(), judges: s.episodeChiefJudges(octx, owner)}
+	// The restart rule's clear first: an ended stop's notification is closed
+	// whether it ended in a pass, or while muster was down.
+	defer s.clearEndedEpisodes(octx, owner)
+	read := s.stallFacts(octx, nil, hs, sessionStateListsHermes)
 	seen := map[string]bool{}
 	agentsSeen := map[int64]bool{}
 	for _, c := range read.sessions {
@@ -239,11 +244,12 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		case c.noTranscript:
 			jev, classified = chiefnudge.Result{Err: jevNoTranscript}, true
 		case sp.cl == nil:
-			// 🔴 FOR THE NEXT PR, A DECISION TO MAKE DELIBERATELY: with no
-			// classifier no transcript is read, so a streak that ends on the
-			// OWNER's word (an Esc-interrupted window, a prompt not yet taken
-			// up) opens a "stalled, asked" stop too — louder than the nudge
-			// sweep, which drops it. Whether such a stop pushes is PR 2's call.
+			// With no classifier no transcript is read, so a streak that ends
+			// on the OWNER's word (an Esc-interrupted window, a prompt not yet
+			// taken up) opens a "stalled, asked" stop too. DECIDED (coordinator
+			// default N5, session_push.go): an agent conversation whose newest
+			// message is the owner's is a quiet row and never pushes; a
+			// mirrored window's last word is unknown here, so it pushes.
 			jev, classified = chiefnudge.Result{Err: jevNotConfigured}, true
 		default:
 			var lastOwn bool
@@ -296,6 +302,20 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			s.logger.Printf("session state: episode %d: classify: %v", ep.ID, err)
 		}
 	}
+	// The stop's one push (session_push.go): what this pass saw of it now.
+	ep.State, ep.StreakKey = state, anchor
+	s.settleEpisode(octx, ep, episodeFacts{
+		Waiting: f.Waiting,
+		Asked:   !f.Stalled || sessionstate.Asked(classified, jev.Err, f.AskStall),
+		// N5 (coordinator default): with no classifier, an agent conversation
+		// whose newest message is the owner's is not stopped on its own word —
+		// a quiet row, never a push. A mirrored window's last word is unknown
+		// without a transcript, so it pushes.
+		OwnerLast:   c.Kind == chiefnudge.KindAgent && c.ownerLast && sp.cl == nil,
+		ChiefJudges: sp.judges,
+		OpenFor:     now.Sub(ep.OpenedAt),
+		Now:         now,
+	}, c.IdleFor)
 }
 
 // agentTurnWork is how long the reply turn that moved c's conversation past
@@ -430,6 +450,9 @@ func (s *Server) episodeJevFor(octx context.Context, c chiefnudge.Session) (chie
 
 // endEpisode ends ep for reason.
 func (s *Server) endEpisode(octx context.Context, ep sessionstate.Episode, reason string, now time.Time) {
+	// Its notification is closed by the same pass's clearEndedEpisodes (the
+	// owner's pass defers it), which also closes one pushed after this pass
+	// read the episode.
 	if _, err := s.ext.Episodes.End(octx, ep.ID, reason, now); err != nil {
 		s.logger.Printf("session state: episode %d: end: %v", ep.ID, err)
 	}
@@ -443,17 +466,20 @@ func (s *Server) endEpisode(octx context.Context, ep sessionstate.Episode, reaso
 func answerableWaits(items []attentionItem) map[string]bool {
 	out := map[string]bool{}
 	for _, it := range items {
-		if it.claudeSession == "" {
-			continue
-		}
-		switch {
-		case it.Kind == attentionKindQuestion,
-			it.hermes != nil && it.hermes.promptID != "",
-			it.openCode != nil && it.openCode.kind != "" && it.openCode.why == "":
+		if it.claudeSession != "" && answerableItem(it) {
 			out[it.claudeSession] = true
 		}
 	}
 	return out
+}
+
+// answerableItem reports whether waiting item it is an ask muster can answer
+// (answerableWaits' rule, one place): it keeps its own full-text push and is
+// never an episode.
+func answerableItem(it attentionItem) bool {
+	return it.Kind == attentionKindQuestion ||
+		it.hermes != nil && it.hermes.promptID != "" ||
+		it.openCode != nil && it.openCode.kind != "" && it.openCode.why == ""
 }
 
 // episodeJev is ep's stored classification as a classifier Result.

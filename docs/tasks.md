@@ -19,7 +19,10 @@ scripts write them through the JSON API and the [CLI](cli.md).
   comments written here are queued for the plugin and appear once it confirms
   (`202`, `"queued": true`); its title, body and upstream thread are shown
   read-only (an edit of the title or body is a `409`), and its own comments
-  are muster-only history.
+  are muster-only history. A write the plugin could not apply shows as
+  "failed" with **Retry** and **Dismiss** on the task page, for the task's
+  owner only (see
+  [plugins.md](plugins.md#writes-on-a-reference-are-queued)).
 - **Attachments:** up to 10 MiB each, stored in Postgres.
 - **Tags:** up to 20 per task. Four namespaces route work:
   - `project:` — at most one per task;

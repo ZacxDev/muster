@@ -116,6 +116,40 @@ func refWriteRow(w notes.RefWrite) g.Node {
 			g.If(w.State != notes.RefWriteFailed, Span(Class("text-xs italic text-muted"), g.Text(state))),
 		),
 		Div(Class("markdown-body break-words text-xs leading-relaxed text-fg2"), renderMarkdown(what)),
+		g.If(w.State == notes.RefWriteFailed, Div(
+			g.Attr("data-ref-write-actions", ""),
+			Class("mt-1 flex items-center gap-2"),
+			// No Retry on a superseded status write: the route refuses it (a
+			// newer status is already upstream), so the page does not offer it.
+			g.If(!w.Superseded, refWriteActionForm(w, "retry", "Retry", "Send this write to the upstream again, in its place in this task's order")),
+			g.If(w.Superseded, Span(g.Attr("data-ref-write-superseded", ""), Class("text-xs italic text-muted"),
+				g.Text("a newer status is already upstream"))),
+			refWriteActionForm(w, "dismiss", "Dismiss", "Take this failed write off the task page; it is not sent"),
+		)),
+	)
+}
+
+// refWriteActionForm is one owner action on a FAILED write (POST
+// /tasks/{id}/ref-writes/{wid}/{action}): with htmx the card is re-rendered
+// in place; without it the form posts and the server answers 303 back here.
+func refWriteActionForm(w notes.RefWrite, action, label, title string) g.Node {
+	ids := strconv.FormatInt(w.NoteID, 10)
+	path := "/tasks/" + ids + "/ref-writes/" + strconv.FormatInt(w.ID, 10) + "/" + action
+	return Form(
+		Method("post"), Action(path),
+		hx("hx-post", path),
+		hx("hx-target", "#task-"+ids),
+		// Morph, like the comment form's swap, so the card's other htmx forms
+		// keep their bindings.
+		hx("hx-swap", "morph:outerHTML"),
+		hx("hx-disabled-elt", "find button"),
+		Button(
+			Type("submit"),
+			g.Attr("data-ref-write-"+action, strconv.FormatInt(w.ID, 10)),
+			g.Attr("title", title),
+			Class("press inline-flex h-11 items-center justify-center rounded-full px-2.5 text-[0.7rem] font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"),
+			g.Text(label),
+		),
 	)
 }
 

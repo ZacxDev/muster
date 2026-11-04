@@ -79,6 +79,23 @@ answers is the old code over the new schema:
 
 All three end when the old pod is gone. No step is needed.
 
+**Turning on session state (`MUSTER_SESSION_STATE=1`, migrations 0073 and 0077).**
+Flipping it (a restart) and the rolling deploy that carries it have two
+one-time effects, and no step fixes either:
+
+- **A notification shown before the flip stays.** A waiting window's
+  `attention-session-…` notification, and a notice's, shown by a process with
+  the flag off, is not withdrawn by a process with it on: such a window is now
+  an episode, outside the old diff that would have cleared it. Swipe it away;
+  the episode's own push replaces it on the next stop.
+- **Until the old pod is gone, both push.** The old pod keeps pushing
+  `attention-session-…` for waiting windows and raising notices, while the new
+  one pushes `attention-episode-…`, so one stop can notify twice during the
+  overlap. It ends when the old pod terminates.
+
+Turning it back off is the same in reverse: open episode notifications are not
+withdrawn by a process with the flag off.
+
 ## What counts as stalled
 
 Every 2 minutes the sweep looks at each owner who has a chief (and has it
@@ -143,6 +160,13 @@ sees it), and the answer is billed once per streak whichever runs first: each
 reads the other's stored answer (this sweep's decision row, the session's
 episode). Where the classifier does not run, session state reads no transcript
 and counts every idle stop as one that asked you.
+
+With `MUSTER_SESSION_STATE=1` a live **ask** raises **no notice** at all: it
+is recorded (`suppressed:episode_push`) and the stop's episode carries the one
+text-free push ([attention.md](attention.md#stalled--waiting-session-state)),
+which also follows this sweep's other decisions: a sent nudge keeps the stop
+quiet, a queued one holds its push, and a `leave` quiets it only when the
+classifier says the session asked nothing. Shadow mode never quiets a stop.
 
 In live mode an **ask** decision raises a [notice](#live-mode), not a
 question: "ask" below names the chief's decision, which the Chief nudges tab

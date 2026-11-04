@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -66,12 +67,17 @@ func TestTheAttentionOfferNamesATargetAndTheOwnersClickBindsIt(t *testing.T) {
 // --- 2. a pool worker with no prompt stays counted while it starts --------------
 
 // adapterLikeProvisioner plays agentprovision.Adapter's status writes: a save
-// (Dispatch, kickoff false) stores `stopped`; Start stores `provisioning`. At
-// Start's entry it reads the chief's live count, through the ledger.
+// (Dispatch, kickoff false) stores `stopped`; Start stores `provisioning`. Its
+// Start reads the chief's live count TWICE, at the two ends of the window
+// between the agent's row and its ledger record (agentRecordGate orders them):
+// once BEFORE agent_dispatch records the agent (the start counts as a pending
+// reservation), once AFTER (it counts as a recorded live agent). No sleep: each
+// read waits on the other side's signal.
 type adapterLikeProvisioner struct {
 	recordingProvisioner
 	store     *agents.PGStore
 	ledger    plugins.DispatchStore
+	gate      *agentRecordGate
 	mu        sync.Mutex
 	liveAtRun []int
 	saves     int
@@ -89,7 +95,7 @@ func (p *adapterLikeProvisioner) Dispatch(ctx context.Context, id int64, kickoff
 	return p.recordingProvisioner.Dispatch(ctx, id, kickoff)
 }
 
-func (p *adapterLikeProvisioner) Start(ctx context.Context, id int64) error {
+func (p *adapterLikeProvisioner) readLive(ctx context.Context) error {
 	b, err := p.ledger.ChiefDispatchBudget(ctx)
 	if err != nil {
 		return err
@@ -97,20 +103,73 @@ func (p *adapterLikeProvisioner) Start(ctx context.Context, id int64) error {
 	p.mu.Lock()
 	p.liveAtRun = append(p.liveAtRun, b.Live)
 	p.mu.Unlock()
+	return nil
+}
+
+func (p *adapterLikeProvisioner) Start(ctx context.Context, id int64) error {
+	if err := p.readLive(ctx); err != nil { // before the agent is recorded
+		return err
+	}
+	close(p.gate.readBefore)
+	if !p.gate.wait(p.gate.recorded) {
+		return errors.New("the agent was never recorded")
+	}
+	if err := p.readLive(ctx); err != nil { // after it is recorded
+		return err
+	}
 	if err := p.store.UpdateStatus(ctx, id, agents.StatusProvisioning, "", ""); err != nil {
 		return err
 	}
 	return p.recordingProvisioner.Start(ctx, id)
 }
 
+// agentRecordGate is the ledger with RecordChiefDispatchAgent held until the
+// provisioner's first read (readBefore), and announcing its first successful
+// commit (recorded) — closed once, so a retried record cannot close it twice.
+type agentRecordGate struct {
+	plugins.DispatchStore
+	readBefore, recorded chan struct{}
+	recordedOnce         sync.Once
+}
+
+// wait reports whether ch closed; the bound is a deadlock detector (a run
+// that never reaches the other side fails), not a timing assumption.
+func (g *agentRecordGate) wait(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	case <-time.After(20 * time.Second):
+		return false
+	}
+}
+
+func (g *agentRecordGate) RecordChiefDispatchAgent(ctx context.Context, object string, id int64) error {
+	if !g.wait(g.readBefore) {
+		return errors.New("the provisioner never read the live count")
+	}
+	err := g.DispatchStore.RecordChiefDispatchAgent(ctx, object, id)
+	if err == nil {
+		g.recordedOnce.Do(func() { close(g.recorded) })
+	}
+	return err
+}
+
 // TestAPoolWorkerStaysLiveWhileItStarts: the pool worker is never saved
-// `stopped` on its way up, so the live count the caps compare includes it
-// at the moment its Start runs — a concurrent dispatch cannot pass the cap in
-// that window.
+// `stopped` on its way up, so the live count the caps compare includes it on
+// BOTH sides of its ledger record while its Start runs — a concurrent dispatch
+// cannot pass the cap in that window. (Saved `stopped` first, the read after
+// the record is one short: neither a live agent nor a pending reservation.)
+//
+// ⚠ IT PINS ONLY THE START PATH'S ORDERING. Its reads are serialised against
+// the record by the gate, so it cannot see the budget's own snapshot race (a
+// read straddling the record's commit); that race is covered solely by
+// TestTheBudgetNeverMissesAStartWhoseAgentIsBeingRecorded
+// (internal/plugins/chief_budget_snapshot_test.go).
 func TestAPoolWorkerStaysLiveWhileItStarts(t *testing.T) {
 	f := newReleaseFixture(t)
-	prov := &adapterLikeProvisioner{store: agents.NewPG(f.pool), ledger: f.plugins}
-	f.srv.ext.Provisioner = prov
+	gate := &agentRecordGate{DispatchStore: f.plugins, readBefore: make(chan struct{}), recorded: make(chan struct{})}
+	prov := &adapterLikeProvisioner{store: agents.NewPG(f.pool), ledger: f.plugins, gate: gate}
+	f.srv.ext.Provisioner, f.srv.ext.ChiefDispatch = prov, gate
 	f.ownerTurn(t, f.chief, f.owner, "Start a worker in pool reviewers.")
 	live0 := f.budget(t).Live
 	text := f.callRaw(f.chief, agentDispatchTool, map[string]any{"target": "pod/claude-code", "worker_pool": "reviewers",
@@ -126,8 +185,9 @@ func TestAPoolWorkerStaysLiveWhileItStarts(t *testing.T) {
 	if prov.saves != 0 {
 		t.Errorf("the pool worker was saved stopped %d time(s) on its way up", prov.saves)
 	}
-	if len(prov.liveAtRun) != 1 || prov.liveAtRun[0] != live0+1 {
-		t.Errorf("live count during Start %v, want [%d]: the starting worker dropped out of the cap", prov.liveAtRun, live0+1)
+	if len(prov.liveAtRun) != 2 || prov.liveAtRun[0] != live0+1 || prov.liveAtRun[1] != live0+1 {
+		t.Errorf("live count during Start, before and after the agent's record %v, want [%d %d]: the starting worker dropped out of the cap",
+			prov.liveAtRun, live0+1, live0+1)
 	}
 }
 

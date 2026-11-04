@@ -47,6 +47,33 @@ func TestAReferenceCardShowsItsUpstream(t *testing.T) {
 	if strings.Contains(out, "<script>x</script>") {
 		t.Error("an upstream comment body was rendered unescaped")
 	}
+	// The FAILED write (8) carries the owner's Retry and Dismiss, each a form
+	// that posts without JavaScript and swaps the card with it; the pending
+	// one (7) carries neither.
+	for _, want := range []string{
+		`data-ref-write-retry="8"`, `data-ref-write-dismiss="8"`,
+		`action="/tasks/42/ref-writes/8/retry"`, `hx-post="/tasks/42/ref-writes/8/retry"`,
+		`action="/tasks/42/ref-writes/8/dismiss"`, `hx-post="/tasks/42/ref-writes/8/dismiss"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the failed write lacks %s", want)
+		}
+	}
+	for _, absent := range []string{`data-ref-write-retry="7"`, `data-ref-write-dismiss="7"`, `/ref-writes/7/`} {
+		if strings.Contains(out, absent) {
+			t.Errorf("the PENDING write carries %s", absent)
+		}
+	}
+	// A SUPERSEDED failed status write: Dismiss and the reason, never Retry.
+	sup := []notes.RefWrite{{ID: 9, NoteID: 42, Kind: notes.RefWriteStatus, Status: notes.StatusInProgress, Author: "user",
+		State: notes.RefWriteFailed, Error: "x", Superseded: true}}
+	supOut := render(TaskCardView{Note: n, Detail: true, RefWrites: sup})
+	if strings.Contains(supOut, `data-ref-write-retry="9"`) || strings.Contains(supOut, `/ref-writes/9/retry`) {
+		t.Error("a superseded status write is offered Retry")
+	}
+	if !strings.Contains(supOut, `data-ref-write-dismiss="9"`) || !strings.Contains(supOut, `data-ref-write-superseded`) {
+		t.Error("a superseded status write lacks Dismiss or the reason Retry is not offered")
+	}
 	// Fresh: no stale badge.
 	fresh := n
 	fresh.Ref = &notes.Reference{Key: n.Ref.Key, SyncedAt: now, Snapshot: n.Ref.Snapshot}

@@ -223,6 +223,10 @@ var routeVias = map[authz.Via][]string{
 		"DELETE /tasks/{id}",
 		"DELETE /tasks/{id}/comments/{cid}",
 		"DELETE /tasks/{id}/tags/{tag}",
+		// A failed reference write's Retry and Dismiss (task_ref_write_actions.go):
+		// requireOperatorWrite, the session tier only.
+		"POST /tasks/{id}/ref-writes/{wid}/retry",
+		"POST /tasks/{id}/ref-writes/{wid}/dismiss",
 		"GET /agents",
 		"GET /agents/{name}",
 		"GET /agents/{name}/logs/stream",

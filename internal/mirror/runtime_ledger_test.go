@@ -182,12 +182,12 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"cmd/muster-mirror/opencode_list.go printOpenCode ×1",
 		"internal/api/attention.go Server.waitingSessionsIn ×1",
 		"internal/api/attention_hermes.go attentionNotice ×1",
-		// Session state lists Hermes windows too (design default D3), and never
-		// reads their transcript; the stall nudges still judge only opencode.
-		"internal/api/chief_nudge.go Server.stallFacts ×1",
 		// The chief's stall nudges judge opencode panes — and only those of the
 		// non-Claude runtimes — by the owner's choice (chief_nudge.go).
 		"internal/api/chief_nudge.go nudgeWindowKey ×1",
+		// Session state lists Hermes windows too (design default D3), and never
+		// reads their transcript; the stall nudges still judge only opencode.
+		"internal/api/chief_nudge.go stateWindowKey ×1",
 		"internal/api/composer.go (declarations) ×5",
 		"internal/api/mirror_view.go Server.handleMirrorViewPage ×4",
 		"internal/api/send_queue.go (declarations) ×2",

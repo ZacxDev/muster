@@ -62,6 +62,51 @@ predates notices does the same, because it draws buttons only from `ask`
 ([push.md](push.md)). A tap opens the session's page, or the notice's own page
 when no window shows the session now.
 
+### Stalled / waiting (session state)
+
+With `MUSTER_SESSION_STATE=1` ([configuration.md](configuration.md)) muster
+keeps one **episode** per stop of each of your sessions (the design:
+[design/session-state.md](design/session-state.md)), and the Asks tab draws the
+open ones as a **Stalled / waiting** section below the list: one plain row per
+stop, oldest first, saying where the session is (`<tmux session>:<window
+index> @ <host>`, or the agent), whether it **needs you** or is **stalled**,
+for how long, and a **View in session** link. A row has **no answer box**. A
+waiting window muster cannot answer is a row here instead of a "Session
+waiting" item (one muster cannot key, from an older host that sends no Claude
+session id, stays a "Session waiting" item with today's push); a question muster can answer (a held AskUserQuestion, an
+opencode question or permission request, a Hermes approval) stays an
+answerable item above it, with its own full-text push.
+
+**One push per stop.** Each episode is pushed **once**, however the stop moves
+between waiting and idle, and its notification closes when the stop ends
+(sustained work, or its window gone from a host that is online). The push is
+claimed in the database, so a restart, the double rollout and the waiting
+hook racing the 30-second pass never send it twice; a stop that began while
+muster was down is pushed when it is first seen, and one that ended while it
+was down has its notification closed.
+
+- Title: `<tmux session>:<window index> @ <host> needs you` (or `is
+  stalled`); an agent is named by its name. Body: `Needs you · idle 12m`
+  (`just now` under a minute). **No session text**: no window name, tool,
+  command, focus title or anything the session said. Tapping it opens the
+  session (`/attention/open/episode-<id>`, resolved when tapped), else the row.
+- A waiting window is pushed **at once**, never through the chief.
+- An idle stop is pushed at once when no chief judges it live (the feature
+  off, you in shadow mode, no chief). When your chief judges it live, the
+  push follows its decision for the stop: a **sent** nudge never pushes; a
+  queued one holds the push (up to 10 minutes) and a nudge that failed, was
+  capped or moved on pushes; **leave** quiets the stop only when the stall
+  classifier says it asked nothing; anything else pushes. With no decision
+  within 6 minutes, it pushes.
+- A quiet stop is drawn muted, saying why (`left`, `nudged`, `you spoke last`,
+  or **held** because the session was pushed under 2 minutes ago: the repush
+  floor delays a push, it never drops one). A conversation of an agent's whose
+  newest message is yours, with no classifier, is quiet: you spoke last.
+
+With session state on, a live chief ask raises **no notice**
+([chief-nudges.md](chief-nudges.md#live-mode)): its stop's episode is the push.
+Off, everything on this page is as above.
+
 ### The Reply drafts tab
 
 With plugins on, the page has two tabs, **Ask** (the table above and the

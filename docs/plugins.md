@@ -406,6 +406,40 @@ job: muster never asks for one, so a plugin should push a snapshot for each
 of its live references on a schedule (a reconcile), as well as on each
 upstream notice.
 
+A **failed** write (the plugin reported a failure, it was handed out 10 times
+without a result, or its task stopped being the plugin's reference) stays on
+the task page with **Retry** and **Dismiss**. Only the task's owner can use
+them, from the task page (a signed-in session, from muster's own page). There
+is no machine API for them. An agent's token, the chief and a plugin token are
+refused (`401`).
+
+| route | what it does |
+|---|---|
+| `POST /tasks/{id}/ref-writes/{wid}/retry` | Puts the write back to `pending` with `attempts` 0, no error and no lease, for the plugin that holds the reference **now** (after a rotation, the adopting plugin). |
+| `POST /tasks/{id}/ref-writes/{wid}/dismiss` | Takes it off the task page. The write is kept, still `failed`, and is never sent. |
+
+With htmx the card is re-rendered in place; a plain form post answers `303`
+back to the task page.
+
+Only a failed write that has not been dismissed can be retried or dismissed:
+anything else (pending, claimed, done, dismissed) is `409`, and nothing
+changes. A retry on a task that is no longer a reference is `409` (dismiss
+it instead). An unknown task, a write on another task and another owner's
+write are `404`.
+
+A failed `status` write is **not** retried once a later status write on the
+same task was sent upstream — it is done, or it is pending again after its
+lease lapsed (the plugin may have applied it): `409`, and the page offers
+only Dismiss. The older status would undo the newer one. The same rule holds
+at the claim: a status write retried while a newer one was still claimed is
+not handed out once the newer one is sent; it is failed with
+`superseded: a later status write on this task was already sent upstream`.
+A comment, and the latest status write, can always be retried.
+
+A retried write keeps its place in its task's order: it is handed out after
+any earlier write on the task that is still pending, before the writes
+queued after it, and never while another write on the task is claimed.
+
 #### `POST /plugin/v1/task-writes/claim`
 
 `{"wait_s": 0-25, "limit": 1-20}` long-polls for your plugin's queued writes
@@ -426,11 +460,14 @@ higher, so keep your own ledger by write `id`: a crash between applying the
 write upstream and reporting it must not apply it twice. A write handed out
 10 times without a result is failed with `gave up after 10 attempts`. One
 task's writes are handed out **in order, one at a time**: a write is not
-handed out while an earlier write on the same task is still pending or
-claimed, so report each one before the next on that task arrives. A write
-whose task is no longer your live reference (it was dismissed, say) is
-failed with a reason and not handed out. A failed write stays visible on the
-task page; there is no way to dismiss one yet.
+handed out while an earlier write on the same task is still pending, or
+while any other write on the task is claimed, so report each one before the
+next on that task arrives. A write whose task is no longer your live
+reference (it was dismissed, say) is failed with a reason and not handed
+out. The owner can [retry or dismiss](#writes-on-a-reference-are-queued) a
+failed write. A retried write comes back with the same `id` and `attempts`
+counting from 1 again, so a ledger keyed by write `id` must let a write you
+recorded as failed be applied once it is handed out again.
 
 #### `POST /plugin/v1/task-writes/{id}/result`
 

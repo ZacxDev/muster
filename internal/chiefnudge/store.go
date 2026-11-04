@@ -222,6 +222,22 @@ func (p *PG) JevForStreak(ctx context.Context, kind, key, streak string) (Result
 	return r, r.OK(), nil
 }
 
+// ForStreak is the caller's decision for (kind, key, streak): ok false when the
+// streak has none yet. Session state's episode push reads it, so what the
+// chief decided about a stop decides whether the stop pushes
+// (docs/design/session-state.md, "Who decides what").
+func (p *PG) ForStreak(ctx context.Context, kind, key, streak string) (Decision, bool, error) {
+	d, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM chief_nudges WHERE session_kind = $1 AND session_key = $2 AND streak_key = $3`,
+		kind, key, streak))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Decision{}, false, nil
+	}
+	if err != nil {
+		return Decision{}, false, err
+	}
+	return d, true, nil
+}
+
 // Insert implements Store.
 func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, bool, error) {
 	d = Clean(d)

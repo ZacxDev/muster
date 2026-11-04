@@ -41,6 +41,9 @@ type Episode struct {
 	EndReason        string
 	PushedAt         time.Time
 	ClearedAt        time.Time
+	// Quiet is why the episode is not pushed now (a Quiet* constant), "" for
+	// none. Not final: a later reason to push clears it (ClaimPush).
+	Quiet string
 }
 
 // Open reports whether e has not ended.
@@ -81,6 +84,36 @@ type Store interface {
 	// End ends open episode id for reason; ended false when it had already
 	// ended.
 	End(ctx context.Context, id int64, reason string, at time.Time) (bool, error)
+	// Get is the caller's episode id; ok false when it is none of theirs.
+	Get(ctx context.Context, id int64) (Episode, bool, error)
+	// ClaimPush claims open episode id's push at at. 🔴 THE PUSH CLAIM:
+	// claimed is true for exactly one caller — the one whose write took a row
+	// with no pushed_at — and only that caller sends the push. It clears the
+	// episode's quiet reason.
+	ClaimPush(ctx context.Context, id int64, at time.Time) (bool, error)
+	// SetQuiet records why open, unpushed episode id is quiet now (a Quiet*
+	// constant).
+	SetQuiet(ctx context.Context, id int64, reason string) error
+	// PreviousPush is when the caller's session (kind, key) last had an
+	// episode before seq pushed; zero for never.
+	PreviousPush(ctx context.Context, kind, key string, seq int) (time.Time, error)
+	// Uncleared is the caller's ended episodes whose push was shown and not
+	// yet closed (cleared_at null): what the restart rule clears.
+	Uncleared(ctx context.Context) ([]Episode, error)
+	// MarkCleared records that ended episode id's notification was closed.
+	MarkCleared(ctx context.Context, id int64, at time.Time) error
+}
+
+// The reasons an episode is quiet (Episode.Quiet, migration 0077).
+const (
+	QuietLeft        = "left"         // the chief said leave it, and the session asked nothing
+	QuietNudged      = "nudged"       // the chief's nudge to it was sent
+	QuietOwnerLast   = "owner_last"   // the owner spoke last (known without a classifier)
+	QuietRepushFloor = "repush_floor" // held: its previous episode pushed under the repush floor ago; pushed once it passes
+)
+
+func validQuiet(q string) bool {
+	return q == QuietLeft || q == QuietNudged || q == QuietOwnerLast || q == QuietRepushFloor
 }
 
 // Observation is what Store.Observe writes.
@@ -107,14 +140,14 @@ const cols = `id, owner_id, session_kind, session_key, seq, state, waiting, aske
 	window_index, coalesce(agent_id, 0), coalesce(chat_session_id, 0), streak_key, classified_streak,
 	jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_error,
 	opened_at, state_since, coalesce(busy_since, 'epoch'::timestamptz), coalesce(busy_seen_at, 'epoch'::timestamptz),
-	coalesce(ended_at, 'epoch'::timestamptz), end_reason, coalesce(pushed_at, 'epoch'::timestamptz), coalesce(cleared_at, 'epoch'::timestamptz)`
+	coalesce(ended_at, 'epoch'::timestamptz), end_reason, coalesce(pushed_at, 'epoch'::timestamptz), coalesce(cleared_at, 'epoch'::timestamptz), quiet`
 
 func scan(row pgx.Row) (Episode, error) {
 	var e Episode
 	err := row.Scan(&e.ID, &e.Owner, &e.Kind, &e.Key, &e.Seq, &e.State, &e.Waiting, &e.Asked, &e.Runtime, &e.Host, &e.TmuxSession, &e.Window,
 		&e.Index, &e.AgentID, &e.ChatSessionID, &e.StreakKey, &e.ClassifiedStreak,
 		&e.Jev.Label, &e.Jev.NeedsInput, &e.Jev.AsksPermission, &e.Jev.Neither, &e.Jev.AskScore, &e.Jev.Model, &e.Jev.Err,
-		&e.OpenedAt, &e.StateSince, &e.BusySince, &e.BusySeen, &e.EndedAt, &e.EndReason, &e.PushedAt, &e.ClearedAt)
+		&e.OpenedAt, &e.StateSince, &e.BusySince, &e.BusySeen, &e.EndedAt, &e.EndReason, &e.PushedAt, &e.ClearedAt, &e.Quiet)
 	if err != nil {
 		return Episode{}, err
 	}
@@ -260,4 +293,60 @@ func (p *PG) End(ctx context.Context, id int64, reason string, at time.Time) (bo
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// Get implements Store.
+func (p *PG) Get(ctx context.Context, id int64) (Episode, bool, error) {
+	e, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM session_episodes WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Episode{}, false, nil
+	}
+	if err != nil {
+		return Episode{}, false, err
+	}
+	return e, true, nil
+}
+
+// ClaimPush implements Store.
+func (p *PG) ClaimPush(ctx context.Context, id int64, at time.Time) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE session_episodes SET pushed_at = $2, quiet = '', updated_at = $2
+		WHERE id = $1 AND ended_at IS NULL AND pushed_at IS NULL`, id, at)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// SetQuiet implements Store.
+func (p *PG) SetQuiet(ctx context.Context, id int64, reason string) error {
+	if !validQuiet(reason) {
+		return ErrBadEpisode
+	}
+	_, err := p.pool.Exec(ctx, `UPDATE session_episodes SET quiet = $2, updated_at = now()
+		WHERE id = $1 AND ended_at IS NULL AND pushed_at IS NULL AND quiet <> $2`, id, reason)
+	return err
+}
+
+// PreviousPush implements Store.
+func (p *PG) PreviousPush(ctx context.Context, kind, key string, seq int) (time.Time, error) {
+	var at *time.Time
+	err := p.pool.QueryRow(ctx, `SELECT max(pushed_at) FROM session_episodes WHERE session_kind = $1 AND session_key = $2 AND seq < $3`,
+		kind, key, seq).Scan(&at)
+	if err != nil || at == nil {
+		return time.Time{}, err
+	}
+	return *at, nil
+}
+
+// Uncleared implements Store.
+func (p *PG) Uncleared(ctx context.Context) ([]Episode, error) {
+	return collect(p.pool.Query(ctx, `SELECT `+cols+` FROM session_episodes
+		WHERE ended_at IS NOT NULL AND pushed_at IS NOT NULL AND cleared_at IS NULL ORDER BY id LIMIT 200`))
+}
+
+// MarkCleared implements Store.
+func (p *PG) MarkCleared(ctx context.Context, id int64, at time.Time) error {
+	_, err := p.pool.Exec(ctx, `UPDATE session_episodes SET cleared_at = $2, updated_at = $2
+		WHERE id = $1 AND ended_at IS NOT NULL AND cleared_at IS NULL`, id, at)
+	return err
 }
