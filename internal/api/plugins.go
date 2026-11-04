@@ -69,6 +69,11 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask))
+	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
+	// the writes people and agents queued on this plugin's references.
+	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(s.handlePluginTaskList))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/claim", s.requirePluginToken(s.handlePluginTaskWritesClaim))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/{id}/result", s.requirePluginToken(s.handlePluginTaskWriteResult))
 	// A reply sent directly, stamped with the message it answers
 	// (owner_replies.go): its waiting route ends owner_answered. 404 with routing off.
 	mux.HandleFunc("POST "+pluginOwnerAnsweredPath, s.requirePluginToken(s.handlePluginOwnerAnswered))
