@@ -703,8 +703,8 @@ func officerToolDefs() []agents.ToolDef {
 	return append(queueToolDefs(), shipToolDefs()...)
 }
 
-// queueToolDefs are every officer's queue tools (and the release officer's
-// captain tool).
+// queueToolDefs are every officer's queue tools and obs tools (and the
+// release officer's captain tool).
 func queueToolDefs() []agents.ToolDef {
 	item := strProp("The item's id, as officer_items or officer_brief returned it.")
 	lease := intProp(fmt.Sprintf("How long the lease runs, in seconds (default %d, %d to %d).", officers.DefaultLeaseSeconds, officers.MinLeaseSeconds, officers.MaxLeaseSeconds),
@@ -760,6 +760,28 @@ func queueToolDefs() []agents.ToolDef {
 				}, "level", "summary"),
 				"report": strProp(fmt.Sprintf("The post-release report, as text (1-%d characters).", officers.MaxCaptainReport)),
 			}, "service", "tag")},
+		{Type: "function", Name: officers.ToolObsQueries,
+			Description: "List the observability queries HQ lets your officer run (GET /officers/{id}/obs/queries): each query's id, what its answer may be used to claim, " +
+				"the arguments it takes (`args`), and HQ's caps (window, series, lines, queries per minute). Call it before " + officers.ToolObsQuery + ". Read-only.",
+			Parameters: objSchema(map[string]any{})},
+		{Type: "function", Name: officers.ToolObsQuery,
+			Description: "Run ONE of HQ's named observability queries (POST /officers/{id}/obs/query) over a window, with the arguments that query takes — " +
+				"the `args` " + officers.ToolObsQueries + " lists for it, and no others. There is no raw PromQL or LogQL: HQ builds the query from its reviewed registry. " +
+				"The answer says what it `claims`; quote only that. `empty: true` is NOT a zero: run the positive control its `hint` names before you report none. " +
+				"Log lines come back redacted, a sample, never a count. HQ allows a few dozen queries a minute per officer (a 429 means wait a minute); " +
+				"a refusal names the argument or limit to fix. Read-only.",
+			Parameters: objSchema(map[string]any{
+				"query_id":   strProp("The query's id, as " + officers.ToolObsQueries + " lists it."),
+				"start":      strProp("The window's start, RFC 3339 in whole seconds (e.g. 2006-01-02T15:04:05Z); the window is (start, end]."),
+				"end":        strProp("The window's end, RFC 3339 in whole seconds."),
+				"step":       strProp("Only for a query whose args include step: a duration in whole seconds, at least 1m (e.g. \"300s\")."),
+				"tag":        strProp("Only for a query whose args include tag: the release tag (image) to read."),
+				"procedures": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Only for a query whose args include procedures: the procedure names to read."},
+				"min_calls":  map[string]any{"type": "integer", "description": "Only for a query whose args include min_calls."},
+				"name":       strProp("Only for a query whose args include name."),
+				"path":       strProp("Only for a query whose args include path: a procedure or route."),
+				"limit":      map[string]any{"type": "integer", "minimum": 1, "description": "Only for a lines query (args include limit): at most this many lines (HQ's default when omitted)."},
+			}, "query_id", "start", "end")},
 	}
 }
 
@@ -898,6 +920,14 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return toolErr("%v", perr), true
 		}
 		body, err = c.ReleaseCaptain(ctx, instance, post)
+	case officers.ToolObsQueries:
+		body, err = c.ObsQueries(ctx)
+	case officers.ToolObsQuery:
+		q, perr := officers.ParseObsQuery([]byte(orEmptyJSON(arguments)))
+		if perr != nil {
+			return toolErr("%v", perr), true
+		}
+		body, err = c.ObsQuery(ctx, q)
 	}
 	return officerToolResult(name, body, err), true
 }

@@ -129,6 +129,12 @@ func (c *Client) Officer() Officer { return c.officer }
 // '/'), with body JSON-encoded when non-nil, and returns HQ's body on a 2xx.
 // A 4xx is *HQError; a transport failure, a 3xx or a 5xx wraps ErrHQUnavailable.
 func (c *Client) Do(ctx context.Context, method, path string, body any) ([]byte, error) {
+	return c.do(ctx, method, path, body, nil)
+}
+
+// do is Do, except that a 5xx whose body is HQ's JSON error with a `code` in
+// decisions is *HQError too: a route's stated refusal, not an outage.
+func (c *Client) do(ctx context.Context, method, path string, body any, decisions []string) ([]byte, error) {
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -158,9 +164,27 @@ func (c *Client) Do(ctx context.Context, method, path string, body any) ([]byte,
 		return raw, nil
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		return nil, &HQError{Status: resp.StatusCode, Body: raw}
+	case resp.StatusCode >= 500 && len(decisions) > 0 && hqCodeIn(raw, decisions):
+		return nil, &HQError{Status: resp.StatusCode, Body: raw}
 	default:
 		return nil, fmt.Errorf("%w: %s %s answered %d", ErrHQUnavailable, method, path, resp.StatusCode)
 	}
+}
+
+// hqCodeIn reports whether raw is a JSON object whose `code` is one of codes.
+func hqCodeIn(raw []byte, codes []string) bool {
+	var b struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(raw, &b) != nil || b.Code == "" {
+		return false
+	}
+	for _, c := range codes {
+		if b.Code == c {
+			return true
+		}
+	}
+	return false
 }
 
 func scrubURLError(err error) string {

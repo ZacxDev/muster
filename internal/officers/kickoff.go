@@ -167,6 +167,12 @@ const (
 	// failed Tekton TaskRuns' failing tests and error lines). Offered to a
 	// shipping officer with a `ci_logs` block only; read-only.
 	ToolCILogs = "officer_ci_logs"
+	// ToolObsQueries and ToolObsQuery read HQ's NAMED observability queries
+	// through HQ's officer obs route (obs.go): the registry, and one entry
+	// run with its declared arguments — never a raw query. Every officer's;
+	// HQ decides whether its route is on (503 obs_unconfigured when off).
+	ToolObsQueries = "officer_obs_queries"
+	ToolObsQuery   = "officer_obs_query"
 )
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
@@ -179,11 +185,12 @@ func (o Officer) Type() string {
 }
 
 // ToolOffered is THE rule for which officer tools officer o's instances get:
-// the six queue tools for every officer, and the captain route's tool for a
-// release officer only. internal/api's listing and dispatch both ask it.
+// the six queue tools and the two obs tools for every officer, and the
+// captain route's tool for a release officer only. internal/api's listing and
+// dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
 	switch tool {
-	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease:
+	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolObsQueries, ToolObsQuery:
 		return true
 	case ToolReleaseEvaluation:
 		return o.Type() == ReleaseOfficerType

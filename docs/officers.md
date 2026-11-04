@@ -513,6 +513,8 @@ listing and again at dispatch):
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
+| `officer_obs_queries` | `GET /officers/{id}/obs/queries` — HQ's named observability queries (each one's id, what its answer may claim, the arguments it takes) and HQ's caps. See [Observability queries](#observability-queries) |
+| `officer_obs_query` `{query_id, start, end, step?, tag?, procedures?, min_calls?, name?, path?, limit?}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes. Never a raw query |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
@@ -543,6 +545,34 @@ charter says to — an officers muster usually runs headless, so an attention
 ask there reaches nobody. Its MCP instructions and system prompt say the same,
 in place of the generic attention paragraph every other agent gets
 ([attention.md](attention.md#what-agents-are-told)).
+
+### Observability queries
+
+`officer_obs_queries` and `officer_obs_query` read metrics and logs through
+HQ's officer obs route, with the officer's own HQ token: no new credential,
+and no network path from the pod to a metrics or log store. Every officer's
+instances are offered both; whether the route is on is HQ's switch.
+
+🔴 **There is no raw query.** HQ keeps a registry of NAMED queries, each a
+reviewed template with typed arguments. `officer_obs_queries` lists them: an
+id, what its answer may be used to claim (`claims`), the `args` the query takes, and
+HQ's caps (window length, series, lines, queries per minute). `officer_obs_query`
+sends `{query_id, start, end}` plus the arguments that query takes, as given.
+The tool has no field a PromQL or LogQL string could go in, and muster refuses
+any key HQ's body does not have (`query`, `promql`, `expr`, an `instance` …)
+before the request leaves muster, as HQ's own decoder would. Whether a query
+takes an argument, the window's bounds and the step are HQ's to judge: it
+answers `400 invalid` for an argument the query does not take and `400
+unknown_query` for an id it does not have. muster keeps no copy of the
+registry.
+
+HQ's answer is returned as is. An `empty: true` answer is **not a zero**: its
+`hint` names the positive control to run first. Log lines come back redacted
+by HQ, as a sample, never a count. HQ's refusals reach the instance with HQ's
+status and body, including three 5xx answers that are decisions, not outages:
+`503 obs_unconfigured` (the route is switched off on that HQ), `502
+wrong_shape` and `502 upstream`. Any other 5xx is "HQ is unavailable, try
+again". A `429 rate_limited` means wait a minute.
 
 ### The first message
 
@@ -1406,7 +1436,9 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 /officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
 "failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
 uses `POST /officers/{id}/items/{item}/transcript`
-([Transcript to HQ](#transcript-to-hq)). Where the contract leaves a shape open, muster accepts:
+([Transcript to HQ](#transcript-to-hq)). Every officer may use `GET
+/officers/{id}/obs/queries` and `POST /officers/{id}/obs/query`
+([Observability queries](#observability-queries)). Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;
@@ -1416,8 +1448,10 @@ uses `POST /officers/{id}/items/{item}/transcript`
 implements the claim/lease rules as HQ does (409 to ANY claim while the lease
 is live — the holder's own included, which `officer_claim` turns into a
 heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
-across officers), the captain route's body rules, and the transcript route's
-(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`).
+across officers), the captain route's body rules, the transcript route's
+(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), and
+the obs routes' (a two-entry registry; unknown fields, unknown ids and
+undeclared arguments refused; `503 obs_unconfigured` when switched off).
 
 ## Deploying
 
