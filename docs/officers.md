@@ -567,26 +567,32 @@ HQ's officer obs route, with the officer's own HQ token: no new credential,
 and no network path from the pod to a metrics or log store. Every officer's
 instances are offered both; whether the route is on is HQ's switch.
 
-🔴 **There is no raw query.** HQ keeps a registry of NAMED queries, each a
-reviewed template with typed arguments. `officer_obs_queries` lists them: an
-id, what its answer may be used to claim (`claims`), the `args` the query takes, and
-HQ's caps (window length, series, lines, queries per minute). `officer_obs_query`
-sends `{query_id, start, end}` plus the arguments that query takes, as given.
-The tool has no field a PromQL or LogQL string could go in, and muster refuses
-any key HQ's body does not have (`query`, `promql`, `expr`, an `instance` …)
-before the request leaves muster, as HQ's own decoder would. Whether a query
-takes an argument, the window's bounds and the step are HQ's to judge: it
-answers `400 invalid` for an argument the query does not take and `400
-unknown_query` for an id it does not have. muster keeps no copy of the
-registry.
+🔴 **There is no raw query, and muster keeps no copy of HQ's request schema.**
+HQ keeps a registry of NAMED queries, each a reviewed template with typed
+arguments. `officer_obs_queries` lists them: an id, what its answer may be
+used to claim (`claims`), the `args` the query takes, and HQ's caps (window
+length, series, lines, queries per minute). `officer_obs_query` sends its
+arguments object to HQ **unchanged** — `{query_id, start, end}` plus the
+arguments that query takes. HQ's decoder is the one place the request schema
+lives: it refuses an unknown field (a `promql`, `expr` or `instance` key
+included) or a field of the wrong type (`400 invalid`), an id it does not have
+(`400 unknown_query`), a missing or malformed window and an argument the query
+does not take or needs (`400 invalid`), and the officer gets HQ's refusal with
+its code. muster never decodes the arguments into a struct of its own, which
+would silently drop an unknown key. What muster checks itself is what it owns:
+the officer (naming another is refused), its token, that the arguments are
+one JSON object, and their size (at most 256 KiB, HQ's cap on an officer
+route's body).
 
 HQ's answer is returned as is. An `empty: true` answer is **not a zero**: its
 `hint` names the positive control to run first. Log lines come back redacted
 by HQ, as a sample, never a count. HQ's refusals reach the instance with HQ's
-status and body, including three 5xx answers that are decisions, not outages:
-`503 obs_unconfigured` (the route is switched off on that HQ), `502
-wrong_shape` and `502 upstream`. Any other 5xx is "HQ is unavailable, try
-again". A `429 rate_limited` means wait a minute.
+status and body, including two 5xx answers that are final decisions, not
+outages: `503 obs_unconfigured` (the route is switched off on that HQ) and
+`502 wrong_shape` (HQ's own defect). `502 upstream` (the backend read failed)
+is **retryable**, as HQ's guide says: the answer carries `retryable: true`,
+the status and the code, and says to retry in a minute. Any other 5xx is "HQ
+is unavailable, try again". A `429 rate_limited` means wait a minute.
 
 ### Asking an HQ member (`officer_ask_person`)
 
@@ -1550,9 +1556,10 @@ across officers), the captain route's body rules, the transcript route's
 asks routes' (the upload's type and size checks, 400 `invalid` for HQ's
 input limits — deadline, image and option counts, option and question length —
 before the item is looked up, 409 `lease_lost`, 410, 422 `unknown_recipient`,
-and the item left `waiting`), and the obs routes' (a two-entry registry;
-unknown fields, unknown ids and undeclared arguments refused; `503
-obs_unconfigured` when switched off).
+and the item left `waiting`), and the obs routes' (a two-entry registry; HQ's
+refusals in HQ's order — the decoder's unknown fields and wrong types, unknown
+ids, the window, undeclared or missing arguments; `503 obs_unconfigured` when
+switched off; `502 upstream` / `wrong_shape` on demand).
 
 ## Deploying
 

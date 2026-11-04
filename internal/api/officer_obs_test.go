@@ -202,6 +202,7 @@ func TestHQsDecoderIsTheOneSchema(t *testing.T) {
 		{"raw logql", `{"query_id":"fixture_error_lines","logql":"{app=\"x\"}",` + obsWin + `}`, "invalid", "logql"},
 		{"a bare query", `{"query":"up",` + obsWin + `}`, "invalid", "query"},
 		{"an instance", `{"query_id":"fixture_error_lines","instance":"spoofed",` + obsWin + `}`, "invalid", "instance"},
+		{"limit of the wrong type", `{"query_id":"fixture_error_lines",` + obsWin + `,"limit":"twenty"}`, "invalid", "limit"},
 		{"procedures not an array", `{"query_id":"fixture_calls_by_procedure",` + obsWin + `,"step":"300s","procedures":"a.list"}`, "invalid", "procedures"},
 		{"no query_id", `{` + obsWin + `}`, "unknown_query", "start"},
 		{"an unknown query_id", `{"query_id":"../brief",` + obsWin + `}`, "unknown_query", "query_id"},
