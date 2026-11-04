@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Item is a fake item.
@@ -424,6 +425,14 @@ func (s *Server) list(officer, status string, now time.Time) []Item {
 }
 
 func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body map[string]any, now time.Time) {
+	// HQ checks an ask's input before it looks the item up: each limit is a
+	// 400 invalid, whatever the item. A forced refusal (RefuseAsks) wins.
+	if verb == "asks" && s.askRefusal == nil {
+		if msg := askInputInvalid(body); msg != "" {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"})
+			return
+		}
+	}
 	it, ok := s.items[id]
 	if !ok || it.OfficerID != officer {
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such item"})
@@ -626,11 +635,49 @@ func (s *Server) askImage(w http.ResponseWriter, officer string, r *http.Request
 	s.write(w, http.StatusCreated, map[string]any{"id": img.ID, "filename": name, "content_type": ct, "size": len(raw), "sha256": img.SHA256})
 }
 
+// askInputInvalid is HQ's ask input limits (civ-hq createPersonAsk and
+// PersonAskInput.normalize), each answered 400 invalid with HQ's message:
+// question 1-2000 characters, at most 6 options of 1-40 characters, at most 4
+// images, deadline_seconds a whole number from 300 to 259200 (absent: 24
+// hours). "" = within them.
+func askInputInvalid(body map[string]any) string {
+	q, _ := body["question"].(string)
+	if n := utf8.RuneCountInString(strings.TrimSpace(q)); n == 0 || n > 2000 {
+		return "question must be 1-2000 characters"
+	}
+	opts, _ := body["options"].([]any)
+	if len(opts) > 6 {
+		return "at most 6 options"
+	}
+	for i, v := range opts {
+		o, _ := v.(string)
+		if n := utf8.RuneCountInString(strings.TrimSpace(o)); n == 0 || n > 40 {
+			return "options[" + strconv.Itoa(i) + "] must be 1-40 characters on one line"
+		}
+	}
+	if imgs, _ := body["images"].([]any); len(imgs) > 4 {
+		return "at most 4 images"
+	}
+	if v, ok := body["deadline_seconds"]; ok && v != nil { // null = absent, as HQ decodes it
+		f, isNum := v.(float64)
+		switch {
+		case !isNum || f != float64(int(f)):
+			// HQ's field is an int: anything else fails its body decode.
+			return `body must be one JSON object {"instance", "to", "question", "options"?: [label], "images"?: [image id], "context_url"?, "deadline_seconds"?}`
+		case f <= 0:
+			return "deadline_seconds must be 300-259200"
+		case f < 300 || f > 259200:
+			return "deadline_seconds must be 300-259200 (5 minutes to 72 hours; default 24 hours)"
+		}
+	}
+	return ""
+}
+
 // ask is POST /officers/{id}/items/{item}/asks: 410 on a finished item, 409
 // lease_lost unless the instance holds a live lease or the item is already
 // waiting, 422 unknown_recipient for a login that is not a member, 400 on an
-// unknown image id, 422 invalid for a deadline_seconds outside 300..259200;
-// then the item is WAITING with no holder, and 201 {ask, item}, the ask
+// unknown image id (the input limits come first, in itemVerb:
+// askInputInvalid); then the item is WAITING with no holder, and 201 {ask, item}, the ask
 // carrying its delivery (ask.delivery), as HQ nests it.
 func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance string, live bool, body map[string]any, now time.Time) {
 	if f := s.askRefusal; f != nil {
@@ -661,12 +708,6 @@ func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance s
 				s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown image " + id, "code": "invalid"})
 				return
 			}
-		}
-	}
-	if v, ok := body["deadline_seconds"]; ok {
-		if f, isNum := v.(float64); !isNum || f < 300 || f > 259200 || f != float64(int(f)) {
-			s.write(w, http.StatusUnprocessableEntity, map[string]any{"error": "deadline_seconds must be an integer from 300 to 259200", "code": "invalid_deadline"})
-			return
 		}
 	}
 	a := Ask{ID: "ask-" + strconv.Itoa(len(s.asks)+1), Officer: officer, Item: it.ID, Body: body}

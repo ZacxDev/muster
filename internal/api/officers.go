@@ -1117,7 +1117,9 @@ func (s *Server) registerOfficerRoutes(mux Mux) {
 //     PNG, JPEG or WebP, else 415), never by the Content-Type or the name.
 //     The pod checks the same, but anything in the pod can call this route
 //     with the agent's token.
-//   - HQ's refusal comes back with HQ's status and {error, code}; an outage,
+//   - HQ's refusal comes back with HQ's status and {error, code}, except a
+//     401/403: that is HQ refusing muster's officer credential, not the
+//     agent's token, so it is a 502 officer_credential_rejected. An outage,
 //     503.
 func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
@@ -1154,6 +1156,13 @@ func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if status, msg, code, ok := officers.Refusal(err); ok {
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			// HQ refused muster's officer credential, not the pod's agent token
+			// (muster accepted that): passing 401/403 on would read as "your
+			// token is bad". 502 names the credential instead.
+			s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("HQ refused muster's credential for officer %s (%d); your agent token is fine: the operator must fix the officer credential", o.ID, status), "code": "officer_credential_rejected"})
+			return
+		}
 		if msg == "" {
 			msg = fmt.Sprintf("HQ refused the image (%d)", status)
 		}

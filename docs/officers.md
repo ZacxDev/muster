@@ -603,13 +603,19 @@ then uploaded the same way: muster never fetches a URL for an ask.
   reaches HQ.
 - **muster forwards the image** to HQ's `POST /officers/{id}/ask-images` with
   the officer credential, and answers HQ's `{id, filename, content_type, size,
-  sha256}` with 201. HQ's own refusal is passed on with its status and code.
+  sha256}` with 201. HQ's own refusal is passed on with its status and code,
+  except a 401 or 403: that is HQ refusing muster's officer credential, not
+  the agent's token, so the pod gets 502 `officer_credential_rejected` naming
+  the officer.
 
 **Refusals** come back with HQ's status and `code`, in the error text and in
 `refused.code`: for example 409 `lease_lost` (no live lease and not already
-waiting), `officer_disabled` or `too_many_open`; 410 on a finished item; 422
-`unknown_recipient`, `recipient_muted` or a limit; 429 `rate_limited`; 404 on
-an unknown item, with HQ's own message.
+waiting), `officer_disabled` or `too_many_open`; 410 on a finished item; 400
+`invalid` for an input over one of HQ's limits (a `deadline_seconds` outside
+300-259200, more than 4 images or 6 options, an option or question too long),
+checked before the item; 422 `unknown_recipient`, `recipient_muted` or
+`recipient_unreachable`; 429 `rate_limited`; 404 on an unknown item, with HQ's
+own message.
 
 ### The first message
 
@@ -1267,8 +1273,10 @@ is live — the holder's own included, which `officer_claim` turns into a
 heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
 across officers), the captain route's body rules, and the transcript route's
 (limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), and
-the asks routes' (the upload's type and size checks, 409 `lease_lost`, 410,
-422 `unknown_recipient` and `invalid_deadline`, and the item left `waiting`).
+the asks routes' (the upload's type and size checks, 400 `invalid` for HQ's
+input limits — deadline, image and option counts, option and question length —
+before the item is looked up, 409 `lease_lost`, 410, 422 `unknown_recipient`,
+and the item left `waiting`).
 
 ## Deploying
 
