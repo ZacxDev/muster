@@ -327,6 +327,97 @@ var (
 	}, []string{"result"})
 )
 
+// The officer LLM proxy (internal/llmproxy, POST /llm/v1/messages on the
+// connect listener).
+//
+// 🔴 THESE ARE LABELLED BY OFFICER AND INSTANCE, UNLIKE THE OFFICER RUNTIME'S
+// GAUGES ABOVE, AND THAT IS A DECISION, NOT A SLIP. Per-officer spend is the
+// whole point of the series (they are the usage counters a cost dashboard and
+// an alert on a runaway officer read), and both labels are bounded by
+// configuration rather than minted by a producer: `officer` is an id declared
+// in MUSTER_OFFICERS (an officer with no `llm` block never reaches a label;
+// a caller that is not an officer is "none"), and `instance` is the routine
+// instance's label, `r<n>` for n in 1..tiers.routine.max_instances (at most
+// 8), never the agent name. Nothing a pod sends becomes a label: the provider that served a
+// request (an open set) and the model the client asked for are in the log
+// line and the audit row only.
+var (
+	// OfficerLLMRequests counts proxied requests by result:
+	//   ok             — the provider answered 2xx and the response was relayed
+	//   upstream_auth  — the provider refused muster's key (401/403); also
+	//                    counted in OfficerLLMUpstreamAuth
+	//   upstream_status — any other non-2xx from the provider (relayed)
+	//   upstream_error — no answer, or the stream broke off
+	//   refused_budget — the officer's daily USD budget was spent
+	//   refused_item_cap — the instance used max_tokens_per_item on its item
+	//   refused_bad_request — a body that is not a JSON object
+	//   refused_store  — the budget could not be read, so nothing was sent
+	OfficerLLMRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_llm_requests_total",
+		Help: "Officer LLM proxy requests by officer, routine instance (r<n>) and result.",
+	}, []string{"officer", "instance", "result"})
+	// OfficerLLMRefused counts requests refused before any officer could be
+	// charged, by reason: path (not POST /llm/v1/messages), not_routine (the
+	// caller is not an allowed routine instance of an officer with `llm`),
+	// unconfigured (no officer declares `llm`). officer is "none" when the
+	// caller is not an officer instance.
+	OfficerLLMRefused = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_llm_refused_total",
+		Help: "Officer LLM proxy requests refused before reaching the provider, by officer and reason.",
+	}, []string{"officer", "reason"})
+	// OfficerLLMTokens counts tokens the provider reported, by direction: in
+	// (uncached input), cache_read, cache_write, out.
+	OfficerLLMTokens = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_llm_tokens_total",
+		Help: "Tokens the provider reported for officer LLM proxy requests, by officer, routine instance (r<n>) and direction.",
+	}, []string{"officer", "instance", "dir"})
+	// OfficerLLMCost is the USD booked against the officer's budget: the
+	// provider's own usage.cost, or the proxy's pessimistic estimate when the
+	// response carried none (OfficerLLMCostEstimated counts those).
+	OfficerLLMCost = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_llm_cost_usd_total",
+		Help: "USD booked against officers' LLM budgets, by officer and routine instance (r<n>).",
+	}, []string{"officer", "instance"})
+	// OfficerLLMCostEstimated counts requests booked from an estimate
+	// because the provider reported no cost (a broken-off stream, a client
+	// that went away). A rising count means the budget is metered on guesses.
+	OfficerLLMCostEstimated = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_llm_cost_estimated_total",
+		Help: "Officer LLM proxy requests booked from an estimate (the provider reported no cost), by officer.",
+	}, []string{"officer"})
+	// OfficerLLMUpstreamAuth counts the provider refusing muster's key, by
+	// status (401 or 403). 🔴 Claude Code retries a 401 about ten times with
+	// backoff, so on an instance a bad key looks like a model stall; this,
+	// OfficerLLMUpstreamAuthFailing and the log line are how it is told apart.
+	OfficerLLMUpstreamAuth = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_llm_upstream_auth_failures_total",
+		Help: "Provider refusals of muster's LLM key (401/403), by officer and status.",
+	}, []string{"officer", "status"})
+	// OfficerLLMUpstreamAuthFailing is 1 while the provider's last answer for
+	// the officer was a 401/403, and 0 once one succeeds again.
+	OfficerLLMUpstreamAuthFailing = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "muster_officer_llm_upstream_auth_failing",
+		Help: "1 while the provider refuses the officer's LLM key (its last answer was 401/403), else 0.",
+	}, []string{"officer"})
+	// OfficerLLMSpentToday and OfficerLLMBudget are the officer's USD spend
+	// this UTC day (as last read or booked) and its daily budget.
+	OfficerLLMSpentToday = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "muster_officer_llm_spent_today_usd",
+		Help: "USD an officer's LLM proxy requests have booked this UTC day, as last read or booked.",
+	}, []string{"officer"})
+	OfficerLLMBudget = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "muster_officer_llm_budget_usd",
+		Help: "An officer's daily LLM budget in USD (MUSTER_OFFICERS llm.daily_budget_usd).",
+	}, []string{"officer"})
+	// OfficerLLMBookFailures counts usage that could not be written to the
+	// database. The spend still counts in memory until the next read, but a
+	// restart would forget it: alert on any.
+	OfficerLLMBookFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_llm_book_failures_total",
+		Help: "Officer LLM usage rows that could not be written to the database, by officer.",
+	}, []string{"officer"})
+)
+
 // ObserveHTTP records one HTTP request's matched route pattern, method, status,
 // and duration.
 //

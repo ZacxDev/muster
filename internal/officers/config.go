@@ -116,6 +116,20 @@ type Officer struct {
 	// instance's request is still decided explicitly by the owner, and is never
 	// approved from a shared approval. Sorted and deduplicated.
 	Connectors []string `json:"connectors,omitempty"`
+	// Tiers, when set, splits the officer's instances into two pools — routine
+	// and judgement — each with its own model and max instances (tiers.go).
+	// nil (no `tiers` block) is one untiered pool: today's behaviour.
+	Tiers *Tiers `json:"-"`
+	// Tier is the pool this value describes: "" for an untiered officer, else
+	// TierJudgement or TierRoutine (Officer.Pool). Parse returns a tiered
+	// officer as its judgement pool.
+	Tier string `json:"-"`
+	// LLM, when set, lets the officer's ROUTINE pool reach its model
+	// (tiers.routine.model) through muster's LLM proxy (llm.go,
+	// internal/llmproxy), within the daily USD budget and per-item token cap
+	// it holds. It needs Tiers. nil (the default) refuses every proxy request
+	// for the officer.
+	LLM *LLM `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -132,6 +146,9 @@ func (o Officer) WithToken(token string) Officer { o.token = token; return o }
 
 // String names the officer without its token.
 func (o Officer) String() string {
+	if o.Tiers != nil {
+		return fmt.Sprintf("officer %s (hq %s, judgement max %d, routine max %d, idle %s, poll %s)", o.ID, o.HQURL, o.Tiers.Judgement.MaxInstances, o.Tiers.Routine.MaxInstances, o.IdleAfter, o.PollInterval)
+	}
 	return fmt.Sprintf("officer %s (hq %s, max %d, idle %s, poll %s)", o.ID, o.HQURL, o.MaxInstances, o.IdleAfter, o.PollInterval)
 }
 
@@ -158,6 +175,10 @@ type declared struct {
 	CILogs json.RawMessage `json:"ci_logs"`
 	// Transcript is parsed by parseTranscript.
 	Transcript json.RawMessage `json:"transcript"`
+	// Tiers is parsed by parseTiers (tiers.go).
+	Tiers json.RawMessage `json:"tiers"`
+	// LLM is parsed by parseLLM (llm.go), which reads its own key.
+	LLM json.RawMessage `json:"llm"`
 }
 
 // Transcript is an officer's `transcript` block: whether its instances' live
@@ -348,6 +369,36 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 	}
+	hasLLM := len(d.LLM) > 0 && string(d.LLM) != "null"
+	// 🔴 NO LLM PROXY FOR A SHIPPING OFFICER, as no tiers: its every instance
+	// holds the merge and release tools.
+	if hasLLM && len(d.Ship) > 0 && string(d.Ship) != "null" {
+		return Officer{}, fmt.Errorf("officer %s: llm is not supported on a shipping officer (one with `ship`): its instances hold "+
+			"its merge and release tools; remove llm", o.ID)
+	}
+	if len(d.Tiers) > 0 && string(d.Tiers) != "null" {
+		// 🔴 ONE SOURCE PER VALUE. With tiers, the judgement pool's model and
+		// max are tiers.judgement's; a top-level one beside it would be a second
+		// answer to the same question, so it is refused rather than ranked.
+		if o.Model != "" {
+			return Officer{}, fmt.Errorf("officer %s: with tiers, set the judgement pool's model as tiers.judgement.model; remove the top-level model", o.ID)
+		}
+		if d.MaxInstances != 0 {
+			return Officer{}, fmt.Errorf("officer %s: with tiers, set the judgement pool's size as tiers.judgement.max_instances; remove the top-level max_instances", o.ID)
+		}
+		// 🔴 A SHIPPING OFFICER IS NOT TIERED. Its instances push, open pull
+		// requests and reach muster's merge and tag gates; a routine pool on a
+		// cheaper model would hold the same tools. Refused, not left to config.
+		if len(d.Ship) > 0 && string(d.Ship) != "null" {
+			return Officer{}, fmt.Errorf("officer %s: tiers is not supported on a shipping officer (one with `ship`): every instance would hold its merge and release tools; remove tiers", o.ID)
+		}
+		t, err := parseTiers(d.Tiers, hasLLM)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Tiers, o.Tier = t, TierJudgement
+		o.Model, o.MaxInstances = t.Judgement.Model, t.Judgement.MaxInstances
+	}
 	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
 		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
 	}
@@ -400,9 +451,11 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 	if o.PollInterval < MinPollInterval {
 		return Officer{}, fmt.Errorf("officer %s: poll_interval %s is below the %s floor", o.ID, o.PollInterval, MinPollInterval)
 	}
-	if n := InstanceName(o.ID, o.MaxInstances); len(n) > maxName {
-		return Officer{}, fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
-			o.ID, n, len(n), maxName, MaxNamespaceLen)
+	for _, p := range o.Pools() {
+		if n := p.InstanceName(p.MaxInstances); len(n) > maxName {
+			return Officer{}, fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
+				o.ID, n, len(n), maxName, MaxNamespaceLen)
+		}
 	}
 	if len(d.Ship) > 0 && string(d.Ship) != "null" {
 		// 🔴 read_repos IS REFUSED ON A SHIPPING OFFICER. Its every request is
@@ -435,6 +488,13 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.Transcript = tr
+	}
+	if hasLLM {
+		l, err := parseLLM(o, d.LLM, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.LLM = l
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {
@@ -485,16 +545,20 @@ func (r *Registry) Get(id string) (Officer, error) {
 }
 
 // ForAgentName answers which declared officer an agent named name is an
-// instance of, and which instance (1..MaxInstances). It is THE binding rule:
-// the MCP tools act for the officer this returns and no other, and an agent
-// whose name it does not parse is not an officer instance at all.
+// instance of, and which instance (1..its pool's MaxInstances). It is THE
+// binding rule: the MCP tools act for the officer this returns and no other,
+// and an agent whose name it does not parse is not an officer instance at all.
+//
+// The officer returned is the instance's POOL (Officer.Pool): for a tiered
+// officer's routine instance, Tier routine with the routine model and max; for
+// an untiered officer, the officer itself, as before.
 func (r *Registry) ForAgentName(name string) (Officer, int, bool) {
 	if r == nil {
 		return Officer{}, 0, false
 	}
 	for _, o := range r.list {
-		if n, ok := parseInstance(o, name); ok {
-			return o, n, true
+		if p, n, ok := parseInstance(o, name); ok {
+			return p, n, true
 		}
 	}
 	return Officer{}, 0, false

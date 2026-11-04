@@ -79,7 +79,7 @@ answers is the old code over the new schema:
 
 All three end when the old pod is gone. No step is needed.
 
-**Turning on session state (`MUSTER_SESSION_STATE=1`, migrations 0073 and 0075).**
+**Turning on session state (`MUSTER_SESSION_STATE=1`, migrations 0073 and 0076).**
 Flipping it (a restart) and the rolling deploy that carries it have two
 one-time effects, and no step fixes either:
 
