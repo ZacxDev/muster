@@ -16,6 +16,13 @@ import (
 
 const llmTestKey = "sk-or-v1-officer-own-key-7a6b5c4d3e2f1a0b"
 
+// ownKeyEnv is the fixture officer's own key variable, and sharedKeyEnv the
+// deployment's admin OpenRouter key, which must never stand in for it.
+const (
+	ownKeyEnv    = "MUSTER_OFFICER_OPENROUTER_KEY_TRIAGE_EXAMPLE_WEB"
+	sharedKeyEnv = "MUSTER_AGENT_OPENROUTER_KEY"
+)
+
 // llmTiers is a tiers block whose routine pool runs an OpenRouter id (allowed
 // only beside `llm`); routine max 2, judgement max 3, so a pool reading the
 // other's max cannot pass.
@@ -39,7 +46,7 @@ func llmEnv(extra map[string]string) func(string) string {
 func TestParseReadsTheLLMBlockAndItsOwnKey(t *testing.T) {
 	e := llmEnv(map[string]string{
 		"MUSTER_OFFICER_OPENROUTER_KEY_TRIAGE_EXAMPLE_WEB": llmTestKey,
-		officers.LLMSharedKeyEnv:                           "sk-or-v1-shared-admin-key-should-lose",
+		sharedKeyEnv: "sk-or-v1-shared-admin-key-should-lose",
 	})
 	list, err := officers.Parse(llmDecl(`,`+llmTiers+`,"llm":{"daily_budget_usd":5}`), e, "muster-agent-")
 	if err != nil {
@@ -56,8 +63,8 @@ func TestParseReadsTheLLMBlockAndItsOwnKey(t *testing.T) {
 	if m := o.Pool(officers.TierJudgement).Model; m != "opus" {
 		t.Fatalf("the judgement pool's model = %q", m)
 	}
-	if l.Key() != llmTestKey || l.KeySource != "MUSTER_OFFICER_OPENROUTER_KEY_TRIAGE_EXAMPLE_WEB" {
-		t.Fatalf("key from %s, want the officer's own", l.KeySource)
+	if l.Key() != llmTestKey {
+		t.Fatal("the key is not the officer's own")
 	}
 	b, _ := json.Marshal(o)
 	lb, _ := json.Marshal(l)
@@ -73,7 +80,7 @@ func TestParseReadsTheLLMBlockAndItsOwnKey(t *testing.T) {
 // the officer's pools; a judgement instance, an `-r<n>` past the max, another
 // officer's name and an untiered or llm-less officer are not routine.
 func TestARoutineInstanceIsAnRNameOfTheRoutinePool(t *testing.T) {
-	e := llmEnv(map[string]string{officers.LLMSharedKeyEnv: "sk-shared"})
+	e := llmEnv(map[string]string{ownKeyEnv: "sk-own"})
 	list, err := officers.Parse(llmDecl(`,`+llmTiers+`,"llm":{"daily_budget_usd":5}`), e, "muster-agent-")
 	if err != nil {
 		t.Fatal(err)
@@ -120,15 +127,30 @@ func TestARoutineInstanceIsAnRNameOfTheRoutinePool(t *testing.T) {
 	}
 }
 
-// TestParseFallsBackToTheSharedKey, and names it as the source.
-func TestParseFallsBackToTheSharedKey(t *testing.T) {
-	list, err := officers.Parse(llmDecl(`,`+llmTiers+`,"llm":{"daily_budget_usd":1,"max_tokens_per_item":5000}`),
-		llmEnv(map[string]string{officers.LLMSharedKeyEnv: "sk-shared"}), "muster-agent-")
-	if err != nil {
-		t.Fatal(err)
+// TestTheSharedKeyNeverStandsInForTheOfficersOwn: an officer with `llm`
+// needs its OWN key variable. Unset or blank is a boot refusal naming the
+// officer and the exact variable, and the deployment's shared OpenRouter key
+// being set does not rescue it — the per-officer key is the one that carries a
+// provider-side credit limit. Control: the officer's own key set boots.
+func TestTheSharedKeyNeverStandsInForTheOfficersOwn(t *testing.T) {
+	decl := llmDecl(`,` + llmTiers + `,"llm":{"daily_budget_usd":1,"max_tokens_per_item":5000}`)
+	const want = "officer triage:example-web: llm: " + ownKeyEnv + " is not set"
+	for name, e := range map[string]map[string]string{
+		"own unset, shared set":   {sharedKeyEnv: "sk-shared"},
+		"own blank, shared set":   {ownKeyEnv: "   ", sharedKeyEnv: "sk-shared"},
+		"own unset, shared unset": {},
+	} {
+		_, err := officers.Parse(decl, llmEnv(e), "muster-agent-")
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want a refusal containing %q", name, err, want)
+		}
 	}
-	if l := list[0].LLM; l.Key() != "sk-shared" || l.KeySource != officers.LLMSharedKeyEnv || l.MaxTokensPerItem != 5000 {
-		t.Fatalf("llm = %+v from %s", l, l.KeySource)
+	list, err := officers.Parse(decl, llmEnv(map[string]string{ownKeyEnv: "sk-own", sharedKeyEnv: "sk-shared"}), "muster-agent-")
+	if err != nil {
+		t.Fatalf("control: the officer's own key set: %v", err)
+	}
+	if l := list[0].LLM; l.Key() != "sk-own" || l.MaxTokensPerItem != 5000 {
+		t.Fatalf("llm = %+v, want the officer's own key", l)
 	}
 }
 
@@ -136,8 +158,8 @@ func TestParseFallsBackToTheSharedKey(t *testing.T) {
 // control at the end is the same declaration, well formed, parsing — so each
 // case is the one thing it changed.
 func TestParseRefusesABadLLMBlock(t *testing.T) {
-	withKey := llmEnv(map[string]string{officers.LLMSharedKeyEnv: "sk-shared"})
-	noKey := llmEnv(nil)
+	withKey := llmEnv(map[string]string{ownKeyEnv: "sk-own"})
+	noKey := llmEnv(map[string]string{sharedKeyEnv: "sk-shared"})
 	llm := `,"llm":{"daily_budget_usd":1}`
 	routine := func(model string) string {
 		return `,"tiers":{"routine":{"model":"` + model + `"},"judgement":{"model":"opus"}}`
@@ -158,7 +180,7 @@ func TestParseRefusesABadLLMBlock(t *testing.T) {
 		{"a zero budget", `,` + llmTiers + `,"llm":{"daily_budget_usd":0}`, withKey, "not in (0, 1000]"},
 		{"an oversized budget", `,` + llmTiers + `,"llm":{"daily_budget_usd":1001}`, withKey, "not in (0, 1000]"},
 		{"a tiny item cap", `,` + llmTiers + `,"llm":{"daily_budget_usd":1,"max_tokens_per_item":10}`, withKey, "max_tokens_per_item 10"},
-		{"no key", `,` + llmTiers + llm, noKey, "no provider key"},
+		{"no key of its own", `,` + llmTiers + llm, noKey, ownKeyEnv + " is not set"},
 	} {
 		_, err := officers.Parse(llmDecl(c.fields), c.e, "muster-agent-")
 		if err == nil || !strings.Contains(err.Error(), c.want) {
