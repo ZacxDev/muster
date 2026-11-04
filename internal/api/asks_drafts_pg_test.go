@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE ASKS PAGE (asks_drafts.go), on real Postgres: /attention is renamed Asks
@@ -184,6 +185,14 @@ func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 	if !strings.Contains(page, `>Asks</h1>`) || !strings.Contains(askList(page), `id="ask-`+strconv.FormatInt(askID, 10)+`"`) {
 		t.Fatalf("the plugins-off page lacks its heading or the ask:\n%s", page)
 	}
+	// The switcher dock's tablist (ui.DockID, on every page with the sidebar)
+	// is not the page's: cut out, it alone.
+	i := strings.Index(page, `<dialog id="`+ui.DockID+`"`)
+	j := strings.Index(page[max(i, 0):], "</dialog>")
+	if i < 0 || j < 0 {
+		t.Fatal("the page draws no switcher dock to cut out")
+	}
+	page = page[:i] + page[i+j+len("</dialog>"):]
 	if strings.Contains(page, `role="tablist"`) || strings.Contains(page, `id="term-confirm"`) || strings.Contains(page, "Reply drafts") {
 		t.Fatal("with plugins off the page offers a Reply drafts tab")
 	}

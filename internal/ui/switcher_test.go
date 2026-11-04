@@ -421,9 +421,9 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]
 	for _, want := range []string{
 		`data-switcher-entry="mirror" title="mango:1" data-switcher-code="mango:1" data-switcher-title="Migrate the billing ledger"`,
-		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" data-switcher-words="w tower" class=`,
+		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" data-switcher-words="w tower" data-switcher-host="tower" class=`,
 		`data-switcher-entry="agent" title="Release tidy" data-switcher-code="ag-three" data-switcher-title="Release tidy · Tidy the release notes"`,
-		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" data-switcher-words="standard cluster" class=`,
+		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" data-switcher-words="standard cluster" data-switcher-host="cluster" class=`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("the All row lacks %s in:\n%s", want, all)

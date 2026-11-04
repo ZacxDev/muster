@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { switcherSearchPort } from '../lib/env';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { coarse } from '../lib/switcher';
 
 // THE SESSION SWITCHER'S VIEW MENU AND SEARCH (internal/ui/switcher.go), on a
 // REAL muster-server and a REAL muster-mirror (`-tags e2emirror`, which fakes
@@ -127,6 +128,38 @@ for (const vp of [
       await page.addInitScript(() => { try { if (!sessionStorage.getItem('sws-cleared')) { localStorage.removeItem('muster.switcher.view'); sessionStorage.setItem('sws-cleared', '1'); } } catch (e) {} });
       await openView(page);
       await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
+      // 🔴 THE LAYOUT IS (pointer: coarse), whatever the width: the phone
+      // context must really emulate it, or this would test the menu twice.
+      const touch = await coarse(page);
+      expect(touch, 'the layout this context emulates').toBe(vp.w === 390);
+      if (touch) {
+        // THE TOUCH LAYOUT: the view button is the dock's handle
+        // (switcher_dock.go); the menu's own behaviour is the desktop half's.
+        const dock = page.locator('#switcher-dock');
+        await expect(toggle(page)).toHaveAttribute('aria-haspopup', 'dialog');
+        await expect(toggle(page)).toHaveAttribute('aria-controls', 'switcher-dock');
+        const before = await geometry(page);
+        await resetCls(page);
+        await toggle(page).tap();
+        await expect(dock).toHaveJSProperty('open', true);
+        await expect(menu(page), 'the dock, not the menu').toBeHidden();
+        await expect(toggle(page)).toHaveAttribute('aria-expanded', 'true');
+        await expectNoShift(page, before, 'opening the dock');
+        // A tab pick sets the bar's view and icon at once, and is kept.
+        await dock.locator('[data-dock-tab="all"]').tap();
+        await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
+        await expect(page.locator('[data-switcher-list="all"]')).toBeAttached();
+        await expect(page.locator('[data-switcher-list="recent"]')).toBeHidden();
+        expect(await page.evaluate(() => localStorage.getItem('muster.switcher.view'))).toBe('all');
+        await dock.locator('[data-dock-close]').tap();
+        await expect(dock).toBeHidden();
+        await expect(toggle(page)).toHaveAttribute('aria-expanded', 'false');
+        await expect(page.locator('[data-switcher-list="all"]')).toBeVisible();
+        await page.reload();
+        await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
+        await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+        return;
+      }
       await expect(toggle(page)).toHaveAttribute('aria-haspopup', 'menu');
       await expect(toggle(page)).toHaveAttribute('aria-expanded', 'false');
       await expect(menu(page)).toBeHidden();
@@ -311,8 +344,21 @@ for (const vp of [
       // A tap outside closes it.
       await (vp.w === 390 ? open.tap() : open.click());
       await expect(pal(page)).toBeVisible();
-      await page.mouse.click(5, 836);
-      await expect(pal(page)).toBeHidden();
+      // On the phone, (5, 836) is the bar's view button, which in the touch
+      // layout opens the switcher dock (a modal, under which "/" stands down):
+      // the phone taps the transcript instead, which IS outside.
+      if (vp.w === 390) {
+        const log = (await page.locator('#mv-log').boundingBox())!;
+        const p = (await pal(page).boundingBox())!;
+        const y = p.y + p.height + 20;
+        expect(y, 'the transcript shows below the palette').toBeLessThan(log.y + log.height);
+        await page.mouse.click(log.x + log.width / 2, y);
+        await expect(pal(page)).toBeHidden();
+        expect(await page.evaluate(() => (document.getElementById('switcher-dock') as HTMLDialogElement).open), 'the tap outside opened nothing').toBe(false);
+      } else {
+        await page.mouse.click(5, 836);
+        await expect(pal(page)).toBeHidden();
+      }
 
       // Ctrl+K and Cmd+K are the browser's: neither opens the search, nor is
       // kept from the browser (not default-prevented). Measured from no text

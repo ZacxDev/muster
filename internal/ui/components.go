@@ -1017,6 +1017,9 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 		// The command palette (palette.go): one per document, in the root and
 		// not in the panel above, which a transform slides.
 		paletteBox(),
+		// The switcher dock (switcher_dock.go): one per document, beside the
+		// palette and for its reason; closed and empty where no bar opens it.
+		switcherDock(),
 		// The dispatch sheet the "+" beside the Agents label opens
 		// (navDeployButton) — and a task card's Dispatch — on every document
 		// with the sidebar, outside the sliding panel for the palette's reason:
@@ -2348,7 +2351,7 @@ var appScriptSrc = staticJS("app", `
     document.body.addEventListener('htmx:load', init);
   }
 })();
-`+paletteJS)
+`+paletteJS+dockJS)
 
 // resyncScript keeps the task list fresh after the app is backgrounded and
 // reopened. The htmx SSE extension auto-reconnects, but a dropped connection can

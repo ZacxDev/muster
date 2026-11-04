@@ -46,7 +46,9 @@ func TestEverySwitchKeepsBothViews(t *testing.T) {
 		"a terminal with no rendered view": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "scratch", WSPath: "/mirror/terminal/ws?host=host-a&session=scratch"})),
 		"a gateway agent's chat":           renderString(t, AgentDetailPage(AgentDetailView{Name: "docs-sweeper", Kind: "gateway"}, Features{})),
 	} {
-		if strings.Contains(html, "data-view-swap") || strings.Contains(html, "window.musterViews") {
+		// The frame script is its DEFINITION of window.musterViews (counted
+		// above); the switcher dock, on every page, only reads it.
+		if strings.Contains(html, "data-view-swap") || strings.Contains(html, "window.musterViews = {") {
 			t.Errorf("%s carries the switch's machinery", name)
 		}
 	}

@@ -285,6 +285,10 @@ export const layoutDispatchPort = port + 250;
 // went — a server WITH an agent provisioner (noop), so Start, Stop, Delete and
 // the sidebar's dispatch "+" are offered.
 export const agentActionsPort = port + 251;
+// tests/switcher-dock.spec.ts: the switcher dock — its own server (a mirror rig
+// that can dispatch a claude-code agent, for the agent page's Terminal frame)
+// and one mirrored host with enough windows to fill the dock's Recent tab.
+export const dockPort = port + 255;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
