@@ -60,7 +60,6 @@ var obsQueryIDRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 // HQ's to judge.
 func ParseObsQuery(raw []byte) (ObsQuery, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var q ObsQuery
 	if err := dec.Decode(&q); err != nil {
 		return ObsQuery{}, fmt.Errorf("arguments are {query_id, start, end, step?, tag?, procedures?, min_calls?, name?, path?, limit?} "+
@@ -85,10 +84,10 @@ var obsDecisionCodes = []string{"obs_unconfigured", "wrong_shape", "upstream"}
 
 // ObsQueries is GET /officers/{id}/obs/queries with the officer token.
 func (c *Client) ObsQueries(ctx context.Context) ([]byte, error) {
-	return c.do(ctx, http.MethodGet, c.officerPath()+"/obs/queries", nil, obsDecisionCodes)
+	return c.do(ctx, http.MethodGet, c.officerPath()+"/obs/queries", nil, nil)
 }
 
 // ObsQuery is POST /officers/{id}/obs/query with the officer token: q as is.
 func (c *Client) ObsQuery(ctx context.Context, q ObsQuery) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, c.officerPath()+"/obs/query", q, obsDecisionCodes)
+	return c.do(ctx, http.MethodPost, c.officerPath()+"/obs/query", q, nil)
 }
