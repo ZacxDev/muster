@@ -194,7 +194,18 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 		case budget.Full():
 			withheld = withheldBudgetFull
 		default:
-			out = append(out, chiefTaskAction{Tool: agentDispatchTool, Label: "agent_dispatch: start a new agent on it"})
+			// 🔴 ONE OPTION PER TARGET. agent_dispatch has no default target,
+			// and the owner's click reaches the chief as a turn the owner did
+			// not type — so a target-less "start one" left the chief unable to
+			// act on it. Each option names its target; agent_dispatch then
+			// holds the chief to the one picked (ownersChosenTarget).
+			targets := s.dispatchTargetsNow(ctx).Pods
+			if len(targets) == 0 {
+				withheld = withheldDeployment
+			}
+			for _, target := range targets {
+				out = append(out, chiefTaskAction{Tool: agentDispatchTool, Label: dispatchOptionLabel(target)})
+			}
 		}
 	}
 	return out, budget, withheld, nil

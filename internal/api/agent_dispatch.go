@@ -346,6 +346,66 @@ func renderChiefRelay(text string, onTask bool) string {
 	return fence.Block{Preface: pre, Marker: chiefInstructionsMarker, Count: 1, Lines: lines}.Render(fence.NewNonce())
 }
 
+// dispatchOptionLabel is task_route_attention's agent_dispatch option for
+// target: the button the owner taps and the answer the chief receives.
+func dispatchOptionLabel(target string) string {
+	return "agent_dispatch on " + target + ": start a new agent on it"
+}
+
+// dispatchOptionRE reads the target back out of a dispatchOptionLabel answer.
+var dispatchOptionRE = regexp.MustCompile(`^agent_dispatch on (pod/[a-z-]+): start a new agent on it$`)
+
+// agentDispatchNotTheOwnersTarget refuses a target other than the one the
+// owner picked on the task's ask.
+const agentDispatchNotTheOwnersTarget = "your owner chose %s for this task (their answer to your ask about it): call agent_dispatch " +
+	"with target %q, or ask them again"
+
+// ownersChosenTarget is the target the owner picked for task taskID: their
+// NEWEST answer to an ask about the task (ownerAnswer's structural link), when
+// it is one of task_route_attention's per-target options; "" otherwise.
+//
+// It only ever NARROWS a dispatch without owner_asked — the path an owner's
+// click on /attention reaches the chief by, a turn the owner did not type — to
+// exactly the target they clicked. It never lets anything through that the
+// guards would refuse, so it opens nothing R1 closed.
+func (s *Server) ownersChosenTarget(ctx context.Context, owner, taskID int64) (string, error) {
+	if s.ext.Attention == nil {
+		return "", nil
+	}
+	asks, err := s.ext.Attention.AnswersForTask(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	for _, a := range asks { // newest first
+		if a.Owner != owner || a.TaskID != taskID {
+			continue
+		}
+		if m := dispatchOptionRE.FindStringSubmatch(sameWords(a.Answer)); m != nil {
+			return m[1], nil
+		}
+		return "", nil
+	}
+	return "", nil
+}
+
+// The two ledger-write failures past the reservation, said to the chief
+// (retryOnce failed twice): what a retry would read is not what happened.
+const (
+	agentDispatchFailedUnrecorded = "the agent could not be started, and muster could not record that this start failed: a retry " +
+		"with this request_key would read as still starting, so its outcome is unknown to muster. Do not retry with it; use a new " +
+		"request_key, or task_route_attention"
+	agentDispatchAgentUnrecorded = "agent %s was started, but muster could not record it as this start's agent: a retry with this " +
+		"request_key would read as still starting, and your budget may not count it. Do not start another; tell your owner its name"
+)
+
+// retryOnce runs fn, and once more if it fails.
+func retryOnce(fn func() error) error {
+	if err := fn(); err == nil {
+		return nil
+	}
+	return fn()
+}
+
 // errTaskDispatch is a refusal decided while the reservation's lock is held.
 type errTaskDispatch string
 
@@ -419,6 +479,19 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		var why string
 		if source, why = s.ownerAnswer(ctx, owner, in.TaskID, raw); why != "" {
 			return refuse(why)
+		}
+	}
+	// 🔴 THE OWNER'S CLICK BINDS THE TARGET: on a task whose newest owner
+	// answer is one of task_route_attention's per-target options, a dispatch
+	// without owner_asked takes exactly that target.
+	if onTask && !in.OwnerAsked {
+		chosen, err := s.ownersChosenTarget(ctx, owner, in.TaskID)
+		if err != nil {
+			s.logger.Printf("task routing: answers for task %d: %v", in.TaskID, err)
+			return refuse("your owner's answers could not be read; try again later")
+		}
+		if chosen != "" && chosen != in.Target {
+			return refuse(fmt.Sprintf(agentDispatchNotTheOwnersTarget, chosen, chosen))
 		}
 	}
 	kind, err := s.resolveKind(ctx, kindArg)
@@ -590,9 +663,10 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	} else if prompt != "" {
 		kickoff = renderChiefRelay(prompt, false) + chiefDispatchRulesNoTask
 	} else {
-		// A worker_pool agent with no prompt claims no first turn: created, then
-		// started — what the form's "Save for later, then Start" did.
-		p.Kickoff, p.StartAfterSave = false, true
+		// A worker_pool agent with no prompt claims no first turn: created
+		// `provisioning`, then started — never saved `stopped` in between, so it
+		// holds its live slot throughout (StartWithoutKickoff).
+		p.Kickoff, p.StartWithoutKickoff = false, true
 	}
 	p.NoteText = kickoff
 	if kind == agents.KindClaudeCode {
@@ -607,9 +681,16 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	// Past the reservation, a start that makes no agent and is not released
 	// stays spent (fail-closed) and records so (failSpent): the marker a
 	// request_key replay answers started: false on.
+	//
+	// 🔴 A LEDGER WRITE IS RETRIED ONCE, AND A SECOND FAILURE IS SAID — never
+	// logged into a silent replay "starting" (#428 round 1, option A: no time
+	// window). Without the marker a replay of this key cannot tell the failure.
 	failSpent := func(msg string) string {
-		if ferr := s.ext.ChiefDispatch.RecordChiefDispatchFailed(ctx, object, res.ReservationID); ferr != nil {
-			s.logger.Printf("task routing: record the failed start (%s): %v", object, ferr)
+		if ferr := retryOnce(func() error {
+			return s.ext.ChiefDispatch.RecordChiefDispatchFailed(ctx, object, res.ReservationID)
+		}); ferr != nil {
+			s.logger.Printf("task routing: record the failed start (%s), after a retry: %v", object, ferr)
+			return refuse(agentDispatchFailedUnrecorded)
 		}
 		return refuse(msg)
 	}
@@ -634,11 +715,16 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		}
 		return failSpent("the agent could not be started; use task_route_attention")
 	}
-	if err := s.ext.ChiefDispatch.RecordChiefDispatchAgent(ctx, object, rec.ID); err != nil {
-		s.logger.Printf("task routing: record agent %d (%s): %v", rec.ID, object, err)
-	}
 	out := map[string]any{"target": in.Target, "agent_id": rec.ID, "agent": rec.Name,
 		"next": "Started. It opens a draft pull request at most and cannot mark a task complete. Do not start another."}
+	if err := retryOnce(func() error { return s.ext.ChiefDispatch.RecordChiefDispatchAgent(ctx, object, rec.ID) }); err != nil {
+		// The agent exists and runs; the ledger does not name it. Said, as a
+		// failed call: a replay of this key would read "starting", and the
+		// budget's live count may not hold the agent past the pending window.
+		s.logger.Printf("task routing: record agent %d (%s), after a retry: %v", rec.ID, object, err)
+		out["error"] = fmt.Sprintf(agentDispatchAgentUnrecorded, rec.Name)
+		delete(out, "next")
+	}
 	if onTask {
 		out["task_id"] = in.TaskID
 		gateStuck := false

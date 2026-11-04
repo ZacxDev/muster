@@ -932,11 +932,13 @@ func TestAgentDispatchWorkerPool(t *testing.T) {
 	if got.Kind != agents.KindClaudeCode || got.WorkerPool != "reviewers" || got.NoteID != nil || got.PendingNote != "" {
 		t.Errorf("agent %+v: want a claude-code worker in pool reviewers, no task, no first turn", got)
 	}
-	if n := f.prov.calls(1); n != 1 || f.prov.kickoffs[0] {
-		t.Errorf("dispatches %d kickoffs %v: want one save with no kickoff", n, f.prov.kickoffs)
-	}
 	if ids := f.prov.startedIDs(1); len(ids) != 1 || ids[0] != out.AgentID {
-		t.Errorf("starts %v: want agent %d started after its save", ids, out.AgentID)
+		t.Errorf("starts %v: want agent %d started", ids, out.AgentID)
+	}
+	// Started, never saved: no Dispatch at all (a save would store `stopped`
+	// and drop it out of the live count: TestAPoolWorkerStaysLiveWhileItStarts).
+	if n := f.prov.calls(0); n != 0 {
+		t.Errorf("dispatches %d (kickoffs %v): want none", n, f.prov.kickoffs)
 	}
 	if got := f.budget(t).Live; got != live0+1 {
 		t.Errorf("live %d, want %d: a pool worker holds a live slot", got, live0+1)

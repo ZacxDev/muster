@@ -64,14 +64,29 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if len(ask.Options) != len(out.Offered) {
-						t.Fatalf("buttons %q for actions %q", ask.Options, out.Offered)
-					}
+					// Every button names one offered action — agent_dispatch once
+					// per target ("agent_dispatch on <target>: …") — and every
+					// offered action has a button.
 					offered := map[string]bool{}
-					for i, tool := range out.Offered {
+					for _, tool := range out.Offered {
 						offered[tool] = true
-						if !strings.HasPrefix(ask.Options[i], tool+": ") {
-							t.Errorf("button %d %q does not name action %s", i, ask.Options[i], tool)
+					}
+					buttoned := map[string]bool{}
+					for i, opt := range ask.Options {
+						named := ""
+						for tool := range offered {
+							if strings.HasPrefix(opt, tool+": ") || strings.HasPrefix(opt, tool+" on pod/") {
+								named = tool
+							}
+						}
+						if named == "" {
+							t.Errorf("button %d %q names no offered action (%v)", i, opt, out.Offered)
+						}
+						buttoned[named] = true
+					}
+					for tool := range offered {
+						if !buttoned[tool] {
+							t.Errorf("action %s is offered with no button: %q", tool, ask.Options)
 						}
 					}
 					if offered[routeToSessionToolName] {

@@ -231,7 +231,7 @@ func TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage(t *testing.T) {
 		t.Fatalf("the chief's page: %d", w.Code)
 	}
 	block := askBlock(w.Body.String())
-	for _, want := range []string{`id="` + attentionAskKey(out.ID) + `"`, `value="agent_dispatch: start a new agent on it"`,
+	for _, want := range []string{`id="` + attentionAskKey(out.ID) + `"`, `value="agent_dispatch on pod/`,
 		`action="/attention/asks/` + strconv.FormatInt(out.ID, 10) + `/answer"`, `name="return" value="/agents/` + f.chief.Name + `?session=`} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the chief's block lacks %q:\n%s", want, block)

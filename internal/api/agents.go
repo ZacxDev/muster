@@ -942,11 +942,13 @@ type dispatchParams struct {
 	// pool (agents.Agent.WorkerPool); "" for none. Refused for any other kind
 	// and for a name agents.ValidWorkerPool refuses.
 	WorkerPool string
-	// StartAfterSave, with Kickoff false, starts the saved agent once it is
-	// stored (Provisioner.Start): an instance with no first turn claimed — what
-	// the form's "Save for later, then Start" did. agent_dispatch's worker_pool
-	// without a prompt.
-	StartAfterSave bool
+	// StartWithoutKickoff brings the new agent up with Provisioner.Start
+	// instead of Dispatch: an instance with no first turn claimed — what the
+	// form's "Save for later, then Start" ended in — WITHOUT the save. The row
+	// is created `provisioning` and Start keeps it so; a save would store
+	// `stopped` first, and in that window the agent would drop out of the
+	// chief's live count (agent_dispatch's worker_pool without a prompt).
+	StartWithoutKickoff bool
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
@@ -1149,16 +1151,15 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// adapter makes to it (see Provisioner).
 	opCtx := context.WithoutCancel(ctx)
 	safeGo(s.logger, "dispatch "+rec.Name, func() {
+		if p.StartWithoutKickoff && !p.Kickoff {
+			if err := s.ext.Provisioner.Start(opCtx, rec.ID); err != nil {
+				s.logger.Printf("agents: start %s: %v", rec.Name, err)
+			}
+			return
+		}
 		if err := s.ext.Provisioner.Dispatch(opCtx, rec.ID, p.Kickoff); err != nil {
 			s.logger.Printf("agents: dispatch %s: %v", rec.Name, err)
 			return
-		}
-		// After the save (Dispatch with kickoff false stores `stopped`), in the
-		// same goroutine, so the start never races it.
-		if p.StartAfterSave && !p.Kickoff {
-			if err := s.ext.Provisioner.Start(opCtx, rec.ID); err != nil {
-				s.logger.Printf("agents: start %s after its save: %v", rec.Name, err)
-			}
 		}
 	})
 	return rec, nil

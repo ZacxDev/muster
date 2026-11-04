@@ -307,7 +307,11 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	addendum += chiefTaskActionsLine(acts, withheld)
 	options, offered := make([]string, 0, len(acts)), make([]string, 0, len(acts))
 	for _, x := range acts {
-		options, offered = append(options, x.Label), append(offered, x.Tool)
+		options = append(options, x.Label)
+		// One entry per tool: agent_dispatch is offered once per target.
+		if len(offered) == 0 || offered[len(offered)-1] != x.Tool {
+			offered = append(offered, x.Tool)
+		}
 	}
 	ask, err := s.askOwnerAboutTask(ctx, callerOfAgent(a).asker, n, addendum, options...)
 	switch {
@@ -321,7 +325,8 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	s.recordTaskRouted(ctx, n, taskRouteAttentionTool)
 	out := map[string]any{"id": ask.ID, "task_id": n.ID, "status": "pending", "actions_offered": offered,
 		"next": "Your owner has it. Their answer will be delivered to you as a new message in your default session; act on it then " +
-			"(with one of actions_offered when they pick one). You do not need to wait; you MAY call attention_wait{id: " +
+			"(with one of actions_offered when they pick one: an \"agent_dispatch on <target>\" answer means agent_dispatch with this " +
+			"task_id and exactly that target, and no owner_asked). You do not need to wait; you MAY call attention_wait{id: " +
 			strconv.FormatInt(ask.ID, 10) + "} to block on it."}
 	// The chief's dispatch budget, when its owner opted in: why agent_dispatch
 	// is or is not among actions_offered.

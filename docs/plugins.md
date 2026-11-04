@@ -530,7 +530,7 @@ it. The flow:
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `agent_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `agent_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
+| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `agent_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent — **one button per target**, *"agent_dispatch on pod/claude-code: start a new agent on it"*, since the tool has no default target), returned to the chief as `actions_offered`. Your click reaches the chief as a turn you did not type, so it cannot pass `owner_asked`; instead `agent_dispatch` on that task then takes **exactly the target you clicked** (any other is refused, naming yours). `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `agent_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
 | `agent_dispatch {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?}` | Starts a new agent: on the task, or — without `task_id` — from a prompt alone ([below](#agent_dispatch-the-guards)). `target` is **required and has no default**: today `pod/claude-code` or `pod/gateway` (a `host/<host>/claude` or `host/<host>/opencode` target is refused until host spawning ships, [design](design/chief-dispatch.md)). A call without one is refused with the targets that exist now and the budget, so the chief asks you which. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 13](#agent_dispatch-the-guards)). Either pod kind gets the task's repository and branch (`base` picks another branch); a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent gets the task's model, or `model`. `prompt` (at most 8 KiB) opens the agent's first message. `worker_pool` makes a claude-code agent a [machine-job worker](jobs.md). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. The retired name `task_dispatch` answers *"task_dispatch is replaced by agent_dispatch, which needs a target: ask your owner where to run it"*. | see below |
 
@@ -602,7 +602,10 @@ Each refusal has its own sentence, in this order:
    Keys are per owner. A start released because its create was refused does
    not hold its key; one whose create failed after it was spent does: that
    failure is recorded (`task.chief_dispatch_failed`, naming the reservation),
-   and its replay answers `{"started": false}`. A reservation with no agent and
+   and its replay answers `{"started": false}`. Each ledger write after the
+   reservation (that marker, and the record of the agent started) is retried
+   once; if it fails again the call answers with an error saying a retry's
+   answer would be wrong — never a silent "starting". A reservation with no agent and
    no such record replays `"status": "starting"`. The key lives in the reservation's audit row
    (`detail.request_key`, `detail.request_hash`), looked up through migration
    0074's index.
@@ -624,7 +627,12 @@ Each refusal has its own sentence, in this order:
    answer as you typed it; to get one, it calls `task_route_attention` and
    waits.
 
-   12a. The pod kind is one you have no credential for.
+   12a. On a task whose newest answer of yours to an ask about it is one of
+   `task_route_attention`'s per-target buttons, a call without `owner_asked`
+   names another target (*"your owner chose pod/gateway for this task …"*).
+   This only narrows: it lets nothing through the other guards refuse.
+
+   12a′. The pod kind is one you have no credential for.
 
    12b. The **effective** repository — `repo`, or else the task's own — is not
    `owner/name`, you have no GitHub connection, or it is not one of your
