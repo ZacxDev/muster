@@ -115,6 +115,10 @@ func TestAnAskSendsHQTheContractBodyAndEndsTheLease(t *testing.T) {
 	if res.Ask["id"] != "ask-1" || res.Item["status"] != "waiting" {
 		t.Errorf("result does not carry HQ's ask and item: %s", out)
 	}
+	// HQ nests the delivery in the ask; it is passed through there, untouched.
+	if d, _ := res.Ask["delivery"].(map[string]any); d["notice"] != "both" || d["dm"] != "queued" {
+		t.Errorf("the ask's delivery is not HQ's: %s", out)
+	}
 	for _, s := range []string{"ENDED", "do not heartbeat, complete or release", "re-opens", "escalates", "same item_id"} {
 		if !strings.Contains(res.Note, s) {
 			t.Errorf("the note does not say %q: %s", s, res.Note)
@@ -161,8 +165,9 @@ func askRefusal(t *testing.T, out string) (msg string, status float64, code stri
 // and in refused. A deadline outside HQ's range is passed through verbatim and
 // HQ's 422 is the answer; so are an unknown recipient (422), an item this
 // instance never claimed (409 lease_lost), an unknown item (404, HQ's own
-// message), and forced 409 too_many_open, 422 recipient_muted and 429
-// rate_limited. None of them changes HQ's item.
+// message), and forced 409 too_many_open, 422 recipient_muted, 422
+// recipient_unreachable (an ask that would reach nobody) and 429
+// rate_limited. None of them changes HQ's item or stores an ask.
 func TestAnAsksRefusalsAreHQsWithTheirCode(t *testing.T) {
 	r, inst, item := askRig(t)
 	ctx := context.Background()
@@ -197,7 +202,7 @@ func TestAnAsksRefusalsAreHQsWithTheirCode(t *testing.T) {
 	for _, tc := range []struct {
 		status int
 		code   string
-	}{{409, "too_many_open"}, {422, "recipient_muted"}, {429, "rate_limited"}} {
+	}{{409, "too_many_open"}, {422, "recipient_muted"}, {422, "recipient_unreachable"}, {429, "rate_limited"}} {
 		r.hq.RefuseAsks(tc.status, tc.code, "refused by the fake: "+tc.code)
 		msg, status, code := askRefusal(t, ask(item, "design-lead", nil))
 		if int(status) != tc.status || code != tc.code || !strings.Contains(msg, "refused by the fake: "+tc.code) {
@@ -207,5 +212,8 @@ func TestAnAsksRefusalsAreHQsWithTheirCode(t *testing.T) {
 	r.hq.RefuseAsks(0, "", "")
 	if it := r.hq.Item(item); it.Status != "claimed" || it.ClaimedBy != inst.Name {
 		t.Fatalf("a refused ask changed HQ's item: %+v", it)
+	}
+	if n := len(r.hq.Asks()); n != 0 {
+		t.Fatalf("HQ stored %d asks, want none (every one was refused)", n)
 	}
 }

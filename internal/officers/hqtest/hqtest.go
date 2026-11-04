@@ -630,7 +630,8 @@ func (s *Server) askImage(w http.ResponseWriter, officer string, r *http.Request
 // lease_lost unless the instance holds a live lease or the item is already
 // waiting, 422 unknown_recipient for a login that is not a member, 400 on an
 // unknown image id, 422 invalid for a deadline_seconds outside 300..259200;
-// then the item is WAITING with no holder, and 201 {ask, item, delivery}.
+// then the item is WAITING with no holder, and 201 {ask, item}, the ask
+// carrying its delivery (ask.delivery), as HQ nests it.
 func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance string, live bool, body map[string]any, now time.Time) {
 	if f := s.askRefusal; f != nil {
 		s.write(w, f.status, map[string]any{"error": f.error, "code": f.code})
@@ -676,8 +677,8 @@ func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance s
 		secs = int(v)
 	}
 	s.write(w, http.StatusCreated, map[string]any{
-		"ask":      map[string]any{"id": a.ID, "state": "open", "deadline": now.Add(time.Duration(secs) * time.Second), "to": to},
-		"item":     *it,
-		"delivery": map[string]any{"notice": "both", "inbox": true, "dm": "queued"},
+		"ask": map[string]any{"id": a.ID, "state": "open", "deadline": now.Add(time.Duration(secs) * time.Second), "to": to,
+			"delivery": map[string]any{"notice": "both", "inbox": true, "dm": "queued"}},
+		"item": *it,
 	})
 }

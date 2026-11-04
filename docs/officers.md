@@ -551,7 +551,8 @@ person), it asks them with `officer_ask_person`. HQ notifies them, and:
 - 🔴 **asking ENDS the instance's lease.** HQ sets the item to `waiting` with no
   holder. The instance must stop working it, and must not heartbeat, complete or
   release it. The tool's result says so in a `note` beside HQ's answer
-  (`ask`, `item`, `delivery`), and transcript forwarding stops for the item;
+  (`ask`, with its `delivery`, and `item`), and transcript forwarding stops for
+  the item;
 - HQ **re-opens** the item (`open`, claimable) once every open ask on it is
   answered or withdrawn, with the answers on it (`asks[]` in the items list,
   the claim response and the brief's `open_items`). muster's wake loop then

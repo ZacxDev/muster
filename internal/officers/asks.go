@@ -22,7 +22,7 @@ import (
 //	     -> 201 {"id", "filename", "content_type", "size", "sha256"}
 //	POST /officers/{id}/items/{item}/asks
 //	     {"instance", "to", "question", "options"?, "images"?, "context_url"?,
-//	      "deadline_seconds"?} -> 201 {"ask", "item", "delivery"}
+//	      "deadline_seconds"?} -> 201 {"ask": {…, "delivery"}, "item"}
 //
 // The first is reached only through an instance's own pod (`ccd ask-image`,
 // the /agent/officer/ask-images route in internal/api); officer_ask_person
