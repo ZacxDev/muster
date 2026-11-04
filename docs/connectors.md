@@ -186,8 +186,8 @@ It is a credential-injecting proxy like `/connect/`, with three differences:
   officer that declares `tiers` and `llm` in `MUSTER_OFFICERS`. Every other
   agent is refused (403). Nothing is requested, approved or shared.
 - **Its credential is the officer's OpenRouter key** from muster-server's
-  environment (`MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`, else
-  `MUSTER_AGENT_OPENROUTER_KEY`), not a sealed secret. It is attached on the
+  environment (`MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`, required; the shared
+  `MUSTER_AGENT_OPENROUTER_KEY` is never used), not a sealed secret. It is attached on the
   way out and scrubbed from every byte sent back; it is never logged or
   audited.
 - **It fixes the request.** The upstream is one path

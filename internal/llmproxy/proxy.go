@@ -515,7 +515,7 @@ func (p *Proxy) upstreamAuthFailed(officer string, status int) {
 	if prev != status {
 		p.log.Printf("llm proxy: 🔴 THE PROVIDER REFUSES OFFICER %s's KEY (HTTP %d). Every request of its routine "+
 			"instances fails until the key is fixed; Claude Code retries a 401 about ten times, so on the instance this "+
-			"looks like a stall. Check the officer's key (%s<NAME> or the shared key).", officer, status, "MUSTER_OFFICER_OPENROUTER_KEY_")
+			"looks like a stall. Check the officer's key (%s<NAME>).", officer, status, "MUSTER_OFFICER_OPENROUTER_KEY_")
 	}
 }
 

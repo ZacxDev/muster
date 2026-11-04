@@ -159,7 +159,7 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_IMAGE_TAG` | `latest` | no | The tag for that image. |
 | `MUSTER_AGENT_API_URL` | none | with a provisioner | The muster URL agents use to call back. |
 | `MUSTER_AGENT_MODEL` | none (the runtime decides) | no | The default model for agents. |
-| `MUSTER_AGENT_OPENROUTER_KEY` | none | no | The admin's OpenRouter key for agents. Members bring their own keys. Also the [LLM proxy](officers.md#the-llm-proxy)'s key for an officer with `llm` and no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`. |
+| `MUSTER_AGENT_OPENROUTER_KEY` | none | no | The admin's OpenRouter key for agents. Members bring their own keys. Never used by the [LLM proxy](officers.md#the-llm-proxy): an officer with `llm` needs its own `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`. |
 | `MUSTER_AGENT_NAMESPACE_PREFIX` | `devpod-` | no | Each agent's namespace is this prefix plus the agent name. |
 | `MUSTER_AGENT_NAMESPACE_SHARED` | off | no | Puts every agent in `MUSTER_AGENT_NAMESPACE` instead of its own namespace. |
 | `MUSTER_AGENT_NAMESPACE` | none | when shared | The shared namespace. |
@@ -207,7 +207,7 @@ provisioner, and the server refuses to boot without them.
 | `MUSTER_OFFICER_GITHUB_APP_KEY_<NAME>` | none | for each officer with `ship` | The PEM private key of that shipping officer's OWN GitHub App (`ship.github_app`), never the deployment's. Read by the server only. See [officers.md](officers.md#shipping-officers). |
 | `MUSTER_OFFICER_ESCALATE_WEBHOOK_<NAME>` | none | for each officer with `ship.rollout` | An https webhook outside HQ (a Discord-style `{"content": …}` endpoint) that a failed rollout escalates to. Read by the server only. |
 | `MUSTER_OFFICER_TOKEN_<NAME>` | none | for each officer | That officer's HQ token (scope `officer`). `<NAME>` is the officer id upper-cased, with every other character written as `_`: `release:example-web` → `MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB`. Read by the server only; never passed to an instance's pod. |
-| `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` | none | for an officer with `llm`, unless `MUSTER_AGENT_OPENROUTER_KEY` is set | That officer's OpenRouter key for the [LLM proxy](officers.md#the-llm-proxy), `<NAME>` as for its token. Read by the server only; attached by the proxy on its way to OpenRouter, never logged, audited or passed to a pod. Without it the officer uses `MUSTER_AGENT_OPENROUTER_KEY` (logged at boot as the key source). Prefer a key of its own with an OpenRouter-side credit limit: a second budget wall. |
+| `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` | none | for each officer with `llm` | That officer's own OpenRouter key for the [LLM proxy](officers.md#the-llm-proxy), `<NAME>` as for its token. Unset or blank is a boot refusal naming the officer and the variable; the shared `MUSTER_AGENT_OPENROUTER_KEY` never stands in. Give it an OpenRouter-side credit limit: the budget wall that does not depend on muster. Read by the server only; attached by the proxy on its way to OpenRouter, never logged, audited or passed to a pod. |
 
 ## Tracing (muster-server and muster-mirror)
 

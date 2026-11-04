@@ -63,7 +63,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
 | `tiers` | none | Two pools of instances, routine and judgement, each with its own `model` and `max_instances`: [The two pools](#the-two-pools). Absent: one pool, as above. |
-| `llm` | none | Needs `tiers`. Lets the routine pool reach `tiers.routine.model` through muster's [LLM proxy](#the-llm-proxy), within `{"daily_budget_usd", "max_tokens_per_item"}`. Strict; its key is `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (or the shared `MUSTER_AGENT_OPENROUTER_KEY`). |
+| `llm` | none | Needs `tiers`. Lets the routine pool reach `tiers.routine.model` through muster's [LLM proxy](#the-llm-proxy), within `{"daily_budget_usd", "max_tokens_per_item"}`. Strict; it requires the officer's own key, `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (never the shared one). |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -1213,17 +1213,18 @@ One source for each value:
 | `daily_budget_usd` | required | The officer's spend cap per UTC day, over all its routine instances, (0, 1000]. Metered from the cost **the provider reports in the stream** (`usage.cost`), never from a price list: billed prices have run well above list. A request is refused once the day's booked spend reaches the cap. |
 | `max_tokens_per_item` | `400000` | 1000–20000000. Tokens a routine instance may use on the item it holds (uncached input, cache reads, cache writes and output together). Past it, its next request is refused. |
 
-The key is `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (`<NAME>` as for the HQ
-token), falling back to `MUSTER_AGENT_OPENROUTER_KEY`; the boot log names
-which one each officer uses (never the value). A key of the officer's own with
-an OpenRouter-side credit limit is a second budget wall that does not depend
-on muster.
+The key is the officer's own `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`
+(`<NAME>` as for the HQ token), and it is **required**: unset or blank is a
+boot refusal naming the officer and the variable. The deployment's shared
+`MUSTER_AGENT_OPENROUTER_KEY` is never used for it. Give each officer's key an
+**OpenRouter-side credit limit**: it is the second budget wall, the one that
+does not depend on muster.
 
 Refused at boot, each naming the problem: `llm` without `tiers` (the proxy
 serves only a routine pool); `llm` beside a Claude routine model; a routine
 provider model id without `llm`; `llm` on a [shipping officer](#shipping-officers);
 an unknown key in `llm` (`model` and an agent list included: they live in
-`tiers`); a missing or out-of-range budget or cap; no key; and `llm` on a
+`tiers`); a missing or out-of-range budget or cap; no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (even with the shared key set); and `llm` on a
 server with no database (the budget is persisted).
 
 ⚠ **The pod side is not in muster yet.** The claude-code image's entrypoint

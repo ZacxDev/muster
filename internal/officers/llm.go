@@ -37,10 +37,10 @@ const (
 // token ([TokenEnvSuffix]).
 const LLMKeyEnvPrefix = "MUSTER_OFFICER_OPENROUTER_KEY_"
 
-// LLMSharedKeyEnv is the deployment's admin OpenRouter key, used for an
-// officer that has no key of its own. It is the same variable the agents'
-// OpenRouter credential reads (cmd/muster-server).
-const LLMSharedKeyEnv = "MUSTER_AGENT_OPENROUTER_KEY"
+// 🔴 THERE IS NO FALLBACK KEY. The deployment's shared OpenRouter key
+// (MUSTER_AGENT_OPENROUTER_KEY) never stands in for an officer's own: the
+// officer's key is the one that carries a provider-side credit limit, the
+// budget wall that does not depend on muster.
 
 // LLM is an officer's `llm` block: what the LLM proxy may SPEND for the
 // officer. The model it pins a routine instance to is the routine pool's
@@ -54,11 +54,7 @@ type LLM struct {
 	// many tokens (input, cache and output together) on the item it holds,
 	// its next request is refused until it holds a different item.
 	MaxTokensPerItem int64 `json:"max_tokens_per_item"`
-	// KeySource names where the key came from (LLMKeyEnvPrefix<NAME> or
-	// LLMSharedKeyEnv), never the key.
-	KeySource string `json:"-"`
-
-	key string
+	key              string
 }
 
 // Key returns the provider key. Its only caller is the proxy, on the way to
@@ -75,7 +71,7 @@ func (l LLM) WithKey(key string) *LLM { l.key = key; return &l }
 
 // String describes l without its key.
 func (l LLM) String() string {
-	return fmt.Sprintf("llm budget $%.2f/day, %d tokens/item, key from %s", l.DailyBudgetUSD, l.MaxTokensPerItem, l.KeySource)
+	return fmt.Sprintf("llm budget $%.2f/day, %d tokens/item", l.DailyBudgetUSD, l.MaxTokensPerItem)
 }
 
 // GoString is String, so %#v cannot print the key either.
@@ -142,14 +138,11 @@ func parseLLM(o Officer, raw json.RawMessage, getenv func(string) string) (*LLM,
 	if l.MaxTokensPerItem < MinLLMMaxTokensPerItem || l.MaxTokensPerItem > MaxLLMMaxTokensPerItem {
 		return nil, fmt.Errorf("llm.max_tokens_per_item %d is not %d..%d", d.MaxTokensPerItem, MinLLMMaxTokensPerItem, MaxLLMMaxTokensPerItem)
 	}
-	own := LLMKeyEnvPrefix + TokenEnvSuffix(o.ID)
-	if k := strings.TrimSpace(getenv(LLMKeyEnvPrefix + TokenEnvSuffix(o.ID))); k != "" {
-		l.key, l.KeySource = k, own
-	} else if k := strings.TrimSpace(getenv(LLMSharedKeyEnv)); k != "" {
-		l.key, l.KeySource = k, LLMSharedKeyEnv
-	} else {
-		return nil, fmt.Errorf("llm: no provider key: set %s (recommended: a key with its own provider-side credit limit) or %s",
-			own, LLMSharedKeyEnv)
+	k := strings.TrimSpace(getenv(LLMKeyEnvPrefix + TokenEnvSuffix(o.ID)))
+	if k == "" {
+		return nil, fmt.Errorf("llm: %s%s is not set: an officer with llm needs its own OpenRouter key (give it a "+
+			"provider-side credit limit); the shared key is never used for it", LLMKeyEnvPrefix, TokenEnvSuffix(o.ID))
 	}
+	l.key = k
 	return l, nil
 }
