@@ -250,7 +250,7 @@ BEGIN
         ALTER TABLE public.session_episodes DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.session_episodes ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0074 (officer_llm_usage), when this schema has it; same reason as 0011.
+    -- 0075 (officer_llm_usage), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_llm_usage') IS NOT NULL THEN
         ALTER TABLE public.officer_llm_usage NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_llm_usage DISABLE ROW LEVEL SECURITY;

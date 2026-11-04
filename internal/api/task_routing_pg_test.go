@@ -26,7 +26,31 @@ type recordingProvisioner struct {
 	mu            sync.Mutex
 	dispatched    []int64
 	kickoffs      []bool
+	starts        []int64
 	undeliverable string
+}
+
+// Start records a Start of agent id (agent_dispatch's worker_pool with no
+// prompt: saved, then started).
+func (p *recordingProvisioner) Start(_ context.Context, id int64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.starts = append(p.starts, id)
+	return nil
+}
+
+// startedIDs is the agents Started, after waiting up to 2s for want of them.
+func (p *recordingProvisioner) startedIDs(want int) []int64 {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		p.mu.Lock()
+		out := append([]int64(nil), p.starts...)
+		p.mu.Unlock()
+		if len(out) >= want || time.Now().After(deadline) {
+			return out
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (p *recordingProvisioner) Dispatch(_ context.Context, id int64, kickoff bool) error {
@@ -98,9 +122,42 @@ func (f *taskRouteFixture) task(t *testing.T, title string, tags ...string) note
 	return n
 }
 
+// chiefTestTarget is the pod kind task_dispatch started when the chief named
+// none — claude-code when the deployment enables it, else gateway — so the
+// ported task_dispatch table names, as agent_dispatch's required target, the
+// kind it always ran with.
+func chiefTestTarget(ext Extensions) string {
+	if ext.kindEnabled(agents.KindClaudeCode) {
+		return agents.KindClaudeCode
+	}
+	return agents.KindGateway
+}
+
+// withTarget is args with agent_dispatch's target set to chiefTestTarget when
+// name is agent_dispatch and args names no target key at all. A test of the
+// required target passes "target" explicitly (or uses callRaw).
+func (f *taskRouteFixture) withTarget(name string, args map[string]any) map[string]any {
+	if name != agentDispatchTool {
+		return args
+	}
+	if _, ok := args["target"]; ok {
+		return args
+	}
+	out := map[string]any{"target": plugins.PodTarget(chiefTestTarget(f.srv.ext))}
+	for k, v := range args {
+		out[k] = v
+	}
+	return out
+}
+
 // call runs tool name for agent a the way a gateway runtime does (the trust
 // boundary: it can name a tool it was never offered), as a's owner.
 func (f *taskRouteFixture) call(a agents.Agent, name string, args map[string]any) string {
+	return f.callRaw(a, name, f.withTarget(name, args))
+}
+
+// callRaw is call without withTarget: the arguments exactly as given.
+func (f *taskRouteFixture) callRaw(a agents.Agent, name string, args map[string]any) string {
 	raw, _ := json.Marshal(args)
 	return f.srv.dispatchAgentTool(f.asOwner, a, name, string(raw))
 }
@@ -108,6 +165,7 @@ func (f *taskRouteFixture) call(a agents.Agent, name string, args map[string]any
 // mcpCall calls tool name over the real POST /mcp door with token.
 func (f *taskRouteFixture) mcpCall(t *testing.T, token, name string, args map[string]any) (string, bool, *mcpError) {
 	t.Helper()
+	args = f.withTarget(name, args)
 	raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{"name": name, "arguments": args}})
 	r, code := f.mcp(t, token, string(raw), nil)
@@ -175,11 +233,11 @@ func TestTaskDispatchFlagOffStartsNothing(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
 	n := f.task(t, "flag off")
 	for _, d := range f.srv.AgentToolDefsFor(f.asOwner, f.chief) {
-		if d.Name == taskDispatchTool {
+		if d.Name == agentDispatchTool {
 			t.Fatal("task_dispatch is offered with MUSTER_CHIEF_DISPATCH_OWNERS empty")
 		}
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchOffText, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchOffText, n.ID)
 }
 
 // TestTaskDispatchRefusesAnOwnerWhoDidNotOptIn: dispatch on (the list names
@@ -188,14 +246,14 @@ func TestTaskDispatchFlagOffStartsNothing(t *testing.T) {
 func TestTaskDispatchRefusesAnOwnerWhoDidNotOptIn(t *testing.T) {
 	f := newTaskRouteFixture(t, true, false)
 	n := f.task(t, "opt out")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchOptOut, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchOptOut, n.ID)
 }
 
 // TestTaskDispatchRefusesAGatedTask: a `gate:` task is the owner's to release.
 func TestTaskDispatchRefusesAGatedTask(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "gated", "gate:needs-owner-ok")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchGatedText, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchGatedText, n.ID)
 }
 
 // TestTaskDispatchRefusesATaskThatIsNotOpen: a task already moved on (here
@@ -206,7 +264,7 @@ func TestTaskDispatchRefusesATaskThatIsNotOpen(t *testing.T) {
 	if _, err := f.srv.setNoteStatus(f.asOwner, writerDispatchAdvance, n.ID, notes.StatusReadyForReview); err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchNotOpen, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchNotOpen, n.ID)
 }
 
 // TestTaskDispatchRefusesATaskSomeoneIsWorking: an open task with a live agent
@@ -218,7 +276,7 @@ func TestTaskDispatchRefusesATaskSomeoneIsWorking(t *testing.T) {
 		Namespace: "ns-trbusy", Status: agents.StatusRunning, NoteID: &n.ID}); err != nil {
 		t.Fatal(err)
 	}
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if !strings.Contains(text, chiefDispatchHasAgent) {
 		t.Fatalf("answer %s", text)
 	}
@@ -236,7 +294,7 @@ func TestTaskDispatchRefusesAnotherOwnersTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if !strings.Contains(text, chiefDispatchNoTask) {
 		t.Fatalf("another owner's task: %s", text)
 	}
@@ -257,12 +315,12 @@ func TestTaskDispatchRefusesAtTheLiveCap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, seed.ID, a.ID); err != nil {
+		if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, plugins.NoteObject(seed.ID), a.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	n := f.task(t, "third")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchLiveCap, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchLiveCap, n.ID)
 }
 
 // TestTaskDispatchRefusesAtTheDailyCap: ten reservations in the last day → the
@@ -270,16 +328,16 @@ func TestTaskDispatchRefusesAtTheLiveCap(t *testing.T) {
 func TestTaskDispatchRefusesAtTheDailyCap(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	for i := 0; i < plugins.MaxChiefDispatchesPerDay; i++ {
-		if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, int64(900000+i), nil, nil); err != nil {
+		if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, plugins.NoteObject(int64(900000+i)), nil, nil); err != nil {
 			t.Fatalf("seed reservation %d: %v", i, err)
 		}
 		// A finished start: its agent recorded, and no longer live (no such row).
-		if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, int64(900000+i), 0); err != nil {
+		if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, plugins.NoteObject(int64(900000+i)), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 	n := f.task(t, "eleventh")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchDailyCap, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchDailyCap, n.ID)
 }
 
 // TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask: the chief's start,
@@ -290,7 +348,7 @@ func TestTaskDispatchRefusesAtTheDailyCap(t *testing.T) {
 func TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "start me")
-	text, isErr, rpcErr := f.mcpCall(t, f.chiefTok, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text, isErr, rpcErr := f.mcpCall(t, f.chiefTok, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if rpcErr != nil || isErr {
 		t.Fatalf("the chief's start failed: rpc=%+v %s", rpcErr, text)
 	}
@@ -318,7 +376,7 @@ func TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask(t *testing.T) {
 	}
 
 	// The same call again: idempotent per task.
-	again, isErr, rpcErr := f.mcpCall(t, f.chiefTok, taskDispatchTool, map[string]any{"task_id": n.ID})
+	again, isErr, rpcErr := f.mcpCall(t, f.chiefTok, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if rpcErr != nil || isErr || !strings.Contains(again, `"already_dispatched":true`) ||
 		!strings.Contains(again, `"agent_id":`+strconv.FormatInt(out.AgentID, 10)) {
 		t.Fatalf("repeat: rpc=%+v %s", rpcErr, again)
@@ -383,13 +441,13 @@ func TestTaskDispatchTakesOnlyAConnectedRepo(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "needs a repo")
 	// No GitHub connection: refused before anything is reserved.
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app"}), chiefDispatchNoGitHub, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app"}), chiefDispatchNoGitHub, n.ID)
 
 	f.withConnectedRepos(t, "example/app")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "not a repo"}), "is not owner/name", n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "not a repo"}), "is not owner/name", n.ID)
 
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "Example/App"})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "Example/App"})
 	if strings.Contains(text, `"error"`) {
 		t.Fatalf("a connected repo: %s", text)
 	}
@@ -408,7 +466,7 @@ func TestTaskDispatchKeepsTheTasksOwnRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/other"}), chiefDispatchTaskRepo, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/other"}), chiefDispatchTaskRepo, n.ID)
 }
 
 // TestTaskDispatchIsChiefOnly: a worker calling it by name is refused by the
@@ -416,7 +474,7 @@ func TestTaskDispatchKeepsTheTasksOwnRepo(t *testing.T) {
 func TestTaskDispatchIsChiefOnly(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "worker tries")
-	f.mustRefuse(t, f.call(f.worker, taskDispatchTool, map[string]any{"task_id": n.ID}), "chief agent only", n.ID)
+	f.mustRefuse(t, f.call(f.worker, agentDispatchTool, map[string]any{"task_id": n.ID}), "chief agent only", n.ID)
 }
 
 // TestAnAgentStillCannotMarkATaskComplete is an INVARIANT GUARD, not regression
@@ -955,7 +1013,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	if _, err := f.pool.Exec(f.asOwner, `UPDATE notes SET model = 'anthropic/example-model' WHERE id = $1`, bad.ID); err != nil {
 		t.Fatal(err)
 	}
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": bad.ID}); !strings.Contains(text, "could not be started") {
+	if text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": bad.ID}); !strings.Contains(text, "could not be started") {
 		t.Fatalf("a failing create: %s", text)
 	}
 	if got := f.taskItems(t); len(got) != 1 || got[0].Link != canonicalTaskPath(bad.ID) {
@@ -968,7 +1026,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 		t.Fatalf("%d %v", code, out)
 	}
 	good := int64(out["id"].(float64))
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); strings.Contains(text, `"error"`) {
+	if text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": good}); strings.Contains(text, `"error"`) {
 		t.Fatal(text)
 	}
 	for _, it := range f.taskItems(t) {
@@ -995,7 +1053,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	}
 	// Still starting (the fake provisioner leaves it provisioning): nobody can
 	// be forwarded to yet, so the answer says so and the task stays listed.
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, "still starting") {
+	if text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, "still starting") {
 		t.Fatalf("already_dispatched with a starting agent: %s", text)
 	}
 	stillListed := false
@@ -1009,7 +1067,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET status = 'running' WHERE id = $1`, started[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
+	if text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
 		!strings.Contains(text, "An agent is already working this task") {
 		t.Fatalf("already_dispatched with a running agent must point at task_forward: %s", text)
 	}
@@ -1031,7 +1089,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET status = 'stopped' WHERE id = $1`, on[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
+	if text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
 		!strings.Contains(text, "Use task_route_attention") {
 		t.Fatalf("already_dispatched with a finished agent must point at task_route_attention: %s", text)
 	}
@@ -1167,7 +1225,7 @@ func TestTheTaskRoutingToolsAreLedgered(t *testing.T) {
 		want     []string
 	}{
 		{false, []string{taskRouteAttentionTool, taskForwardTool}},
-		{true, []string{taskRouteAttentionTool, taskForwardTool, taskDispatchTool}},
+		{true, []string{taskRouteAttentionTool, taskForwardTool, agentDispatchTool}},
 	} {
 		f := newTaskRouteFixture(t, c.dispatch, c.dispatch)
 		var chiefOnly []string

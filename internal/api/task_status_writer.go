@@ -61,7 +61,7 @@ const (
 	writerTaskTool statusWriter = "task_set_status"
 	// writerDestroyReopen is the in_progress→open step after a mirrored
 	// session's agent_destroy tore down the last live agent on a task
-	// (agent_destroy_tool.go), so the chief can task_dispatch it again.
+	// (agent_destroy_tool.go), so the chief can agent_dispatch it again.
 	writerDestroyReopen statusWriter = "agent-destroy-reopen"
 	// writerPluginReference is a plugin task REFERENCE's snapshot moving the
 	// task's status (plugin_task_refs.go, applyReference): the upstream changed,

@@ -248,8 +248,11 @@ own account from the pool unless pinned.
 
 The form posts `worker_pool` to `POST /agents` with `kind=claude-code`. With any
 other kind, or a name outside the pattern, the server refuses the dispatch with
-**409** and the reason, and creates nothing. Neither the `muster` CLI nor the
-chief's `task_dispatch` can create an agent in a pool.
+**409** and the reason, and creates nothing. The chief's `agent_dispatch` with
+`worker_pool` creates one too (target `pod/claude-code`, no task, your typed
+request: [plugins.md](plugins.md#agent_dispatch-the-guards)), with the same
+refusals; such a worker holds one of the chief's live slots for as long as it
+runs. The `muster` CLI cannot create one.
 
 **A pool worker holds no GitHub credential.** The one way an agent gets one is
 a grant on a connector that reaches github.com — the `github` connector (the

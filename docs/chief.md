@@ -114,36 +114,60 @@ The chief is offered these tools, and no other agent is:
 | `attention_list` | the attention queue |
 | `answer_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
-| `task_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
+| `agent_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
 
 The other way round, the chief is the one agent **not** offered
 `connector_request`, `connector_status`, `browser_flow_request` or
 `browser_flow_status`: its connectors are the standing grants you give it
 (`connectors_list` shows them), and it does not ask for browser flows.
 
-`task_dispatch` starts a **claude-code** agent unless the chief passes
-`kind: "gateway"` or the deployment does not enable claude-code: what you
-usually want from the chief is a Claude Code pod. That agent runs on an
-account from your Claude account pool and has no per-agent model. It works in
-the task's repository (or the `repo` the chief passes, one of your connected
-repositories): its session starts inside a checkout, so the repository's
-`CLAUDE.md` and project skills load. Its optional `instructions` (at most
-1 KiB) open the agent's first message, fenced as relayed by the chief, before
-the task's text and muster's rules (which come last and win). They are
-accepted **only** as your own words: verbatim, your answer to an attention ask
-about that same task ("start a Claude Code agent and have it open with skill
-X") — given on `/attention`, or through one of your mirrored sessions'
-`attention_answer` (operator decision "Just remove the filter": a session fed
-outside text could therefore write a dispatched agent's prompt — the accepted
-risk is spelled out in [attention.md](attention.md#mirrored-claude-code-sessions)).
-Instructions from an MCP answer say so: the agent's first message names them
-as your answer given over MCP from `<host>`/`<session>`, and the audit row
-records `instructions_via` / `instructions_from`. Anything else is refused, and the chief is told to ask you with
-`task_route_attention`. The `task.chief_dispatch` audit row records the kind,
-the instructions and the ask they came from (and, for an MCP answer, where).
-No muster page reads that row back yet: query it
-(`SELECT detail FROM audit_log WHERE action = 'task.chief_dispatch' AND object = 'note:<task id>'`).
-What the agent was told is also its first message, on its transcript. Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
+`agent_dispatch` starts an agent where you say: its `target` is **required
+and has no default**. Today that is a pod, `pod/claude-code` or
+`pod/gateway`; `host/<host>/claude` and `host/<host>/opencode` are refused until
+host spawning ships ([design](design/chief-dispatch.md)). Asked to start an
+agent without being told where, the chief calls it with no target, and the
+refusal lists the targets that exist now (the pod kinds enabled here that you
+have a credential for) with its budget, so it asks you which. It never picks
+one for you. The retired name `task_dispatch` answers *"task_dispatch is
+replaced by agent_dispatch, which needs a target: ask your owner where to run
+it"*.
+
+It starts on one of your tasks (`task_id`), or **with no task**, from a
+prompt alone. A dispatch with no task needs `owner_asked: true` — muster checks
+that the turn the chief is in is a message you typed in its chat — and a
+`request_key` the chief mints for that request and reuses on any retry of it:
+a retry with the same key answers with the first start (`replayed`), and the
+same key with anything changed is refused. `owner_asked: true` is always
+checked, on any task, so a plugin message or a task event can never start an
+agent with no task, nor get its text taken as your wishes. `worker_pool`
+creates a claude-code [machine-job worker](jobs.md) (no task), holding one of
+the chief's live slots for as long as it runs.
+
+A claude-code agent runs on an account from your Claude account pool and has
+no per-agent model; `model` is taken only by `pod/gateway`. It works in the
+task's repository (or the `repo` the chief passes, one of your connected
+repositories; `base` picks the branch): its session starts inside a checkout,
+so the repository's `CLAUDE.md` and project skills load. Its optional `prompt`
+(at most 8 KiB) opens the agent's first message, fenced as relayed by the
+chief, before the task's text and muster's rules (which come last and win).
+With `owner_asked: true` it is the chief's relay of the message you typed.
+Without it (only on a task), it is accepted **only** as your own words:
+verbatim, your answer to an attention ask about that same task ("start a
+Claude Code agent and have it open with skill X") — given on `/attention`, or
+through one of your mirrored sessions' `attention_answer` (operator decision
+"Just remove the filter": a session fed outside text could therefore write a
+dispatched agent's prompt — the accepted risk is spelled out in
+[attention.md](attention.md#mirrored-claude-code-sessions)). A prompt from an
+MCP answer says so: the agent's first message names it as your answer given
+over MCP from `<host>`/`<session>`, and the audit row records
+`instructions_via` / `instructions_from`. Anything else is refused, and the
+chief is told to ask you with `task_route_attention`. The `task.chief_dispatch`
+audit row records the kind, the target, the prompt (`instructions`), the ask it
+came from (and, for an MCP answer, where), and any `request_key`. No muster
+page reads that row back yet: query it
+(`SELECT detail FROM audit_log WHERE action = 'task.chief_dispatch' AND object = 'note:<task id>'`;
+a start with no task has the object `dispatch:<32 hex>`).
+What the agent was told is also its first message, on its transcript. Guards: [plugins.md](plugins.md#agent_dispatch-the-guards).
 
 `tasks_list` and its siblings are offered to every agent. The chief's
 `tasks_list` covers your whole board, where a worker's covers only its own

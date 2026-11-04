@@ -331,7 +331,7 @@ itself sends, not what the chief does.
 So a `claude-code` chief's check runs in a CLI that has **no tools**. ccd starts
 it with `--tools= --strict-mcp-config`: an empty list of built-in tools (no
 Bash, Edit, WebFetch, Task, …) and no MCP server at all (muster's MCP server,
-with `route_to_session`, `task_dispatch`, `answer_session_question` and the
+with `route_to_session`, `agent_dispatch`, `answer_session_question` and the
 rest, is not even started). The check's only possible effect is its text reply,
 which muster parses and validates like any check answer. Your own sessions with
 the chief, and its primary CLI, keep their tools.

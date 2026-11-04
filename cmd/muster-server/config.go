@@ -208,7 +208,7 @@ const (
 	envTaskRouting = "MUSTER_TASK_ROUTING"
 	// The users (ids, comma-separated) who opted in to their chief starting
 	// agents. Non-empty (with task routing on) is what offers the chief
-	// task_dispatch, for the listed owners only; empty, it is not offered.
+	// agent_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
 	// THE CHIEF'S STALL NUDGES (internal/api/chief_nudge.go,
 	// docs/chief-nudges.md): the sweep's switch (off by default; on, every
@@ -691,7 +691,7 @@ type config struct {
 	MailResumeOff      bool
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
-	// parse) — non-empty turns task_dispatch on.
+	// parse) — non-empty turns agent_dispatch on.
 	TaskRouting            bool
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool

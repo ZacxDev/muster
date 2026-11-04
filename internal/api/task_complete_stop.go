@@ -26,7 +26,7 @@ import (
 //
 // What does NOT change: the chief's one start on the task stays SPENT. A stop
 // writes no release (plugins.ReleaseChiefDispatch is written only by the
-// owner's destroy), so task_dispatch on the task still answers
+// owner's destroy), so agent_dispatch on the task still answers
 // already_dispatched, and Start brings the agent back.
 //
 // 🔴 IT RUNS FROM setNoteStatus, THE ONE PLACE IN THIS PACKAGE A TASK STATUS IS

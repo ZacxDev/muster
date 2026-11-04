@@ -47,7 +47,7 @@ import (
 //
 // The one thing only this door does: the TASK IS KEPT and, once the teardown
 // has succeeded, moved back from in_progress to open when no other live agent
-// is on it (reopenTaskAfterDestroy) — the state task_dispatch needs
+// is on it (reopenTaskAfterDestroy) — the state agent_dispatch needs
 // (chiefDispatchTaskRefusal: open, ungated, no live agent).
 // ---------------------------------------------------------------------------
 
@@ -174,7 +174,7 @@ func (s *Server) releaseChiefStart(ctx context.Context, a agents.Agent) {
 }
 
 // reopenTaskAfterDestroy moves destroyed agent a's task back from in_progress
-// to open when no other live agent is on it, so the chief's task_dispatch can
+// to open when no other live agent is on it, so the chief's agent_dispatch can
 // start a new one (chiefDispatchTaskRefusal wants it open). A task in any other
 // state (open already, ready_for_review, complete) is left as it is. Best-effort:
 // a failure is logged and the task stays in_progress, as the browser path leaves
@@ -201,7 +201,7 @@ func (s *Server) reopenTaskAfterDestroy(ctx context.Context, a agents.Agent) {
 	if n.IsReference() {
 		return
 	}
-	on, err := s.agentsOnTask(ctx, a.OwnerID, n.ID)
+	on, err := s.liveOnTask(ctx, a.OwnerID, n.ID)
 	if err != nil {
 		s.logger.Printf("agent_destroy: agents on task %d: %v; leaving it in_progress", n.ID, err)
 		return

@@ -692,7 +692,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if len(cfg.Officers) > 0 {
 		ocfg := api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}
 		if a.pool != nil {
-			// The LLM proxy's daily budget lives here (migration 0074); an
+			// The LLM proxy's daily budget lives here (migration 0075); an
 			// officer that declares `llm` with no database is refused.
 			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
 		}

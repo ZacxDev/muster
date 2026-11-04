@@ -1258,7 +1258,7 @@ any credential is read. For an admitted request, in order:
    `plugins` and `transforms` could serve the request from a model other than
    the pin.
 3. **The budget.** The officer's booked spend for the UTC day is read from the
-   database (`officer_llm_usage`, migration 0074). At or over
+   database (`officer_llm_usage`, migration 0075). At or over
    `daily_budget_usd`, the request is refused with **400** and nothing is
    sent. ⚠ The check is not a reservation: requests in flight together (several
    routine instances, or one instance's parallel calls) all pass while the
@@ -1343,7 +1343,7 @@ number and UTC day with requests, tokens by direction, USD and estimated request
 
 **Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
 rolling muster-server back to an image that predates it (an older image
-refuses the unknown field and does not boot). Migration 0074's own rollback is
+refuses the unknown field and does not boot). Migration 0075's own rollback is
 in its header.
 
 ## Security model

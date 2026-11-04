@@ -171,16 +171,16 @@ const taskRefWritesMigrationVersion = 72
 // security; same treatment again. Its body is idempotent.
 const sessionEpisodesMigrationVersion = 73
 
-// officerLLMUsageMigrationVersion is 0074: officer_llm_usage (the officer LLM
+// officerLLMUsageMigrationVersion is 0075: officer_llm_usage (the officer LLM
 // proxy's per-day usage), owned and under the same row-level security; same
 // treatment again. Its body is idempotent, the connector_audit CHECK it
 // widens included.
 //
-// ⚠ LATENT TRAP: re-applying 0074 re-sets connector_audit_kind_check to
+// ⚠ LATENT TRAP: re-applying 0075 re-sets connector_audit_kind_check to
 // exactly ('proxy','grant','query','llm'). Once a later migration adds a
 // kind, RLSOn fails on that kind's rows: before adding one, move the CHECK out
-// of what RLSOn re-applies (for example, skip 0074's ALTER here).
-const officerLLMUsageMigrationVersion = 74
+// of what RLSOn re-applies (for example, skip 0075's ALTER here).
+const officerLLMUsageMigrationVersion = 75
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
