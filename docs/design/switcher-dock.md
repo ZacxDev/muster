@@ -1,7 +1,8 @@
 # Design: the switcher dock (a vertical session list from the bottom bar)
 
 **Status: proposed. Nothing here is implemented.** The operator decisions
-below are **decided**. Every other section is the recommended design. Where
+below, including the three answers to this page's first open questions
+(decisions 5–7), are **decided**. Every other section is the recommended design. Where
 this page says how muster works today, it cites `file:line` at `main`
 `723832da`, and the code is the authority (see [decisions.md](../decisions.md)).
 Where it says how the Android shell behaves, it cites
@@ -26,14 +27,14 @@ phase below.
 | | Proposal |
 |---|---|
 | What it is | A native modal `<dialog id="switcher-dock">`, drawn **once per document** beside the command palette, laid out as a bottom sheet on touch/narrow screens and as a centred panel on desktop. The same pattern as the agent page's focus history dialog (`internal/ui/focus_history.go:139-174`) |
-| How it opens | Touch: a swipe up that starts on the bar's row, or a tap on the bar's view button (which becomes the grab handle). Desktop: a new chevron button on the bar |
+| How it opens | Touch: a swipe up that starts on the bar's row, or a tap on the bar's view button, which **is** the handle (decision 5). Desktop: today's view menu, plus a new chevron button |
 | Snap points | **Half**, 60% of the visual viewport, and **full**, the visual viewport less the top safe area and an 8px gap |
 | How it closes | A drag down on the sheet's header, or on the list when the list is scrolled to its top; a tap on the backdrop; Escape; system Back (`history.pushState` on open, close on `popstate`) |
-| Content | Tabs Recent / Waiting / Pins / All, a filter box under them, then vertical rows: whole name, host, current focus title, waiting or stalled badge. A row tap is a real load, like a pill |
-| Where the data comes from | **The bar already on the page.** Its four rows are server-rendered with every session page; the dock draws its rows from them when it opens. No new request, no second copy of the markup. Two new attributes per pill (host, focus title) |
+| Content | Tabs Recent / Waiting / Pins / All, a filter box under them, then vertical rows: whole name, host, current focus title, waiting badge (stalled and needs-you badges in Phase 5). Recent lists up to 30 in the dock, 8 on the bar (decision 6). A row tap is a real load, like a pill |
+| Where the data comes from | **The bar already on the page.** Its four rows are server-rendered with every session page; the dock draws its rows from them when it opens. No new request, no second copy of the markup. Two new attributes per pill (host, focus title), and an ordered href list for Recent's entries 9–30 (each one already a pill in the All row) |
 | Filter | The palette's rule (`window.musterPaletteMatch` / `musterPaletteRank`) over the shown tab, plus the palette's server search of previous titles, shared through one extracted helper |
 | Gesture rules | A drag starts **only** on the bar's row or the sheet's header. Never on xterm, the composer, or anywhere while the soft keyboard is up. No sideways swipe changes a tab, in the dock or anywhere |
-| Phases | 1 dock + tap to open + Back; 2 gestures; 3 filter; 4 desktop chevron; 5 stalled badge. Each ships alone |
+| Phases | 1 dock + tap to open + Back + Recent to 30; 2 gestures; 3 filter; 4 desktop chevron; 5 session state for Waiting and the badges. Each ships alone |
 
 ## Operator decisions
 
@@ -51,6 +52,18 @@ phase below.
 4. **Gestures.** A swipe starts only on the bar or the grab handle, never in
    the terminal (xterm) or the message box, and is ignored while the
    on-screen keyboard is up.
+5. **The handle is the view button.** On touch screens the bar's view button
+   becomes the dock's handle: a tap opens the dock, with the view tabs inside,
+   replacing the small upward view menu. A swipe up on the bar also opens it.
+   There is no separate handle, and the tap target stays at least 44px.
+   Desktop keeps today's view menu and adds the chevron.
+6. **Recent: 8 on the bar, up to 30 in the dock**, from the same recents
+   source ([Recent's extra 22](#recents-extra-22)).
+7. **Waiting ships with today's predicate.** `listEntry.waiting` drives the
+   Waiting tab and the waiting badge at first. A later phase
+   ([Phase 5](#phase-5-session-state-for-waiting-and-the-badges)) switches
+   the Waiting tab and the stalled / needs-you badges to session state once
+   #426's model lands, giving one definition everywhere.
 
 ## Current state
 
@@ -422,12 +435,12 @@ viewport), and the two custom properties make that one code path.
 
 | Piece | Reuse | New |
 |---|---|---|
-| The four lists | `NewSwitcher`, unchanged: the bar's rows are the data | — |
+| The four lists | `NewSwitcher`: the bar's rows are the data | Recent's entries 9–30 as an href list ([below](#recents-extra-22)) |
 | Name, current marking, order | the pills' `title`, `data-switcher-current`, row order | — |
 | Host | — | `data-switcher-host` on every pill (`SwitcherItem.Host` is already there, `switcher.go:184-189`) |
 | Current focus title | — | `data-switcher-focus` on every pill (`focusTitle`, `:351-356`); `data-switcher-title` joins it with the display name, so it cannot be split back out reliably |
-| Waiting badge | `data-switcher-wait` | — |
-| Stalled badge | — | server work, Phase 5 ([below](#badge-sources)) |
+| Waiting badge | `data-switcher-wait` | — (until Phase 5) |
+| Stalled / needs-you badges | — | session state, Phase 5 ([below](#badge-sources)) |
 | Matching | `musterPaletteMatch`, `musterPaletteRank` (`palette.go:158-212`) | — |
 | Server search | `/ui/palette/history` (`internal/api/palette.go`) | extract the palette's `ask` (debounce, abort, sequence check, `palette.go:252-290`) into one shared `window.musterPaletteSearch` used by both (one rule, one place) |
 
@@ -445,6 +458,57 @@ from the bar's four rows that the page already carries.**
 The palette already proves the approach: it reads its entries from the bar's
 All row (`palette.go:223-238`).
 
+<a id="recents-extra-22"></a>
+### Recent's extra 22 (decision 6)
+
+**The query needs no change.** `recents.PGStore.List`
+(`internal/recents/recents.go:55-80`) has no `LIMIT`: it reads every one of the
+viewer's rows, newest first, and the table holds at most about
+`MaxPerOwner` = 50 per owner because each visit prunes past it (`:32-36`,
+`:99-110`). `recentRefs` passes them all on (`internal/api/recents.go:42-64`,
+"every stored entry is read so that dropping cannot leave the view short").
+The cap of 8 is applied only in `NewSwitcher`'s loop
+(`internal/ui/switcher.go:298-301`, `switcherRecentMax`).
+
+**The server change**, all in `NewSwitcher`:
+
+- a second constant, `dockRecentMax = 30`, and the loop collects up to 30
+  entries (still skipping gone entries, the page's own session and repeats);
+- `Switcher.Recent` stays the first 8, so the bar is unchanged;
+- a new `Switcher.RecentMore []string` holds the **hrefs** of entries 9–30, in
+  order;
+- a Go test pins `MaxPerOwner` above `dockRecentMax`, so the store keeps
+  enough rows for 30 even when some of them name sessions that are gone.
+
+**How the dock gets them: the page carries an ordered href list, and the dock
+draws those rows from the All row's pills.** Every Recent entry is resolved
+against the same entries the All row draws (`byAgent` / `byMirror`,
+`switcher.go:272-315`), so each of the extra 22 is already a pill in the All
+row, with every attribute a dock row needs. Only their **order** is missing.
+The Recent row carries it as one hidden last child,
+`<span hidden data-switcher-recent-more="href\nhref…">`, a child rather than
+an attribute of the row so that the bfcache refresh (which replaces a region's
+children, `restore.go:94-98`) and the pin toggle's out-of-band refresh
+(`switcherRefresh`) keep it in step with the rows at no extra cost. Hrefs, not
+positions: the palette's server hits already name entries by href
+(`musterPaletteRank`, `palette.go:178-212`), and a position would break the
+moment the All row's order changed under a refresh.
+
+| Option | Cost per session page | Verdict |
+|---|---|---|
+| **Href list on the Recent row (recommended)** | at most 22 hrefs, about 1.5KB of attribute text, no markup, no request; a few lines in `NewSwitcher` | **Chosen** |
+| Render the extra 22 as hidden rows | 22 more full pills, each with an inline host-icon SVG: on the order of 15–20KB of hidden markup the parser must get through on every session page, inside the bar whose parser stalls were measured as layout shift (`switcher.go:438-457`) | No |
+| Fetch the rest on open | a new route and handler, a round trip at the moment of the gesture, and a Recent tab that grows from 8 to 30 after it opens, under the operator's finger | No |
+
+Two consequences, both acceptable and tested:
+
+- **Labels.** A row drawn from an All-row pill carries All's label, which is
+  qualified against every entry, not only Recent's. It can therefore be
+  *more* qualified than the bar's Recent label ("mango:2 · laptop" where
+  Recent alone would say "mango:2"), never less. The whole-name rule holds.
+- **The dock's Recent is the bar's 8 followed by the extra 22**, so the two
+  can never disagree about the first 8.
+
 ### How the filter works
 
 1. The filter matches **the shown tab's** entries with
@@ -461,9 +525,12 @@ All row (`palette.go:223-238`).
 
 ### Badge sources
 
+**Phases 1–4 ship with today's waiting predicate and the waiting badge only**
+(decision 7). Phase 5 moves both to session state.
+
 - **Waiting**: the pill's `data-switcher-wait`, that is `listEntry.waiting`
-  (`list_order.go:109-117`). No change.
-- **Stalled**: new. The session-state work (`docs/design/session-state.md`,
+  (`list_order.go:109-117`). No change until Phase 5.
+- **Stalled and needs-you (Phase 5)**: the session-state work (`docs/design/session-state.md`,
   its PR 1 merged at `723832da`) keeps open episodes with `state = stalled`
   (`internal/sessionstate/state.go:21-25`, `store.go:15-46`).
   `OpenEpisodes` (`store.go:223-226`) reads **every** owner's open episodes,
@@ -473,8 +540,14 @@ All row (`palette.go:223-238`).
   `Server.switcher` (`internal/api/recents.go:73-83`), and a `Stalled bool`
   on `SwitcherItem` drawn as `data-switcher-stalled`. Where there is no
   episode store, or no open episode, there is no badge.
-- **Precedence:** one badge per row, waiting over stalled, matching the
-  session-state precedence (`needs-you` > `stalled`, `session-state.md:230`).
+- **One definition (Phase 5).** The change is made in `listEntry.waiting`
+  itself, not beside it, so the Waiting tab, the bar's Waiting row, the
+  waiting dot, the sidebar's order and its waiting mark (every reader listed
+  at `list_signals.go:152-157`) all move to session state at once. A second
+  predicate next to the old one would leave the sidebar and the dock
+  disagreeing about who is waiting.
+- **Precedence:** one badge per row, needs-you over stalled
+  (`session-state.md:230`).
 
 ## Gesture rules
 
@@ -492,17 +565,22 @@ Everything else is never a start zone, by construction rather than by a
 deny-list: the composer (`#chat-input`, `#mv-input`), the quick keys, xterm,
 the transcript, the sidebar.
 
-### The grab handle on the bar
+### The grab handle on the bar (decision 5)
 
-The bar has no free room for a new control: it is a fixed 45px with every
-icon button at 44×44 (`switcher.go:529-546`), and a handle drawn on its top
-border could only be about 16px tall without covering the pills, below the
-app's 44px target rule. **Recommendation: on touch layouts, the view button
-is the handle.** It keeps its view icon (so the bar still says which view it
-shows), gains a small up-caret, and a tap opens the dock on that view's tab
-instead of the upward view menu, whose job the dock's tabs take over. No width
-taken from the pills, no new target, no layout change. On desktop the view
-button and its menu are unchanged. (See [open question 1](#open-questions).)
+**On touch layouts the view button is the handle, and there is no other.** It
+keeps its view icon (so the bar still says which view it shows), gains a small
+up-caret, and a tap opens the dock on that view's tab instead of the upward
+view menu, whose job the dock's tabs take over. Its target stays the 44×44 box
+it has today (`switcher.go:529-546`). No width is taken from the pills, and
+nothing on the bar moves. A swipe up anywhere on the shown row opens the dock
+too. On desktop the view button and its menu are unchanged, and the chevron is
+added beside them.
+
+Mechanically: in the touch layout the button's `click` calls
+`preventDefault()` (which stops its `popovertarget` from toggling the menu)
+and opens the dock, and `aria-haspopup` / `aria-controls` name the dock
+instead of the menu. Without script the button still opens the menu
+natively.
 
 ### Coexistence
 
@@ -642,8 +720,15 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
     without the emulation it is not.
 16. **Layout shift**: the existing `cls*.spec.ts` stay green; a closed dock is
     `display: none` and adds nothing to first paint.
-17. **Targets**: `layout.spec.ts`'s 44px rule covers the chevron, the close
-    button, the tabs and the rows.
+17. **Targets**: `layout.spec.ts`'s 44px rule covers the view button as the
+    handle, the chevron, the close button, the tabs and the rows.
+18. **Recent holds 30**: seed 35 recent visits, two of them to sessions since
+    deleted. The bar's Recent row shows exactly 8, the dock's Recent tab shows
+    30 in visit order, its first 8 are the bar's, and the deleted ones are
+    absent. Control: with 5 visits, both show 5.
+19. **The handle replaces the menu on touch only**: in the phone project a tap
+    on the view button opens the dock and `#switcher-views` stays closed; in
+    the desktop project the same tap opens the menu and not the dock.
 
 Go unit tests: the two new pill attributes (with values the fixtures cannot
 produce by accident: a host and a focus title distinct from every name),
@@ -662,13 +747,14 @@ anything it does not touch.
 ### Phase 1: the dock, opened by tap
 
 The `<dialog>` in `#sidebar-root`; tabs; rows read from the bar; the two
-pill attributes; the view button opens it in the touch layout; half and full
+pill attributes; Recent to 30 (`dockRecentMax`, `RecentMore`, the href list);
+the view button becomes the handle in the touch layout (decision 5); half and full
 (a tap on the sheet's grip toggles them); backdrop, close button, Escape;
 Back by `pushState`/`popstate`; `location.replace` on a row tap; focus,
 `aria`, safe areas, reduced motion.
 
-Acceptance: cases 2, 5, 9, 15, 16, 17 green in the phone and narrow-mouse
-projects; desktop unchanged (the view menu still opens). **On an Android
+Acceptance: cases 2, 5, 9, 15, 16, 17, 18, 19 green in the phone and
+narrow-mouse projects; the waiting badge only (decision 7); desktop unchanged (the view menu still opens). **On an Android
 emulator with the shell: open, press Back, the dock closes and the page
 stays** (the `doUpdateVisitedHistory` check). Screen-reader pass: the dialog's
 name, the tabs, the current row.
@@ -700,27 +786,27 @@ The chevron and the centred layout from `lg` on a fine pointer.
 Acceptance: case 14 in the desktop project; the phone project shows no
 chevron.
 
-### Phase 5: the stalled badge
+### Phase 5: session state for Waiting and the badges
 
-The owner-scoped open-episode read in `Server.switcher`, `SwitcherItem.Stalled`,
-`data-switcher-stalled`, the badge in the dock's rows.
+**Starts once #426's model reaches the UI**, that is session-state rollout
+step 2 (`docs/design/session-state.md:470-480`: states, episodes and the
+Attention section). Until then Phases 1–4 run on today's predicate
+(decision 7).
+
+The owner-scoped open-episode read in `Server.switcher`; `listEntry.waiting`
+redefined as "session state `needs-you`", in place, so every reader moves
+together (the Waiting tab and row, the waiting dot, the sidebar's order and
+mark); `SwitcherItem.Stalled` and `data-switcher-stalled`; the needs-you and
+stalled badges in the dock's rows and the bar's pills.
 
 Acceptance: a Go test that a stalled episode marks exactly its entry and
-another owner's episode marks nothing; a waiting entry with a stalled episode
-shows the waiting badge only; no store, no badge, no error.
+another owner's episode marks nothing; an idle session the classifier scores
+as asking appears in Waiting (red before this phase, green after); the
+sidebar's waiting mark and the dock's Waiting tab list the same entries for
+one fixture; a needs-you entry with a stalled episode shows the needs-you
+badge only; no store, no badge, no error.
 
 ## Open questions
 
-1. **The handle: is "the view button becomes the handle" acceptable?** It
-   keeps the 44px rule and costs no room, but on touch the upward view menu
-   goes away (the dock's tabs replace it). The alternative is a 48×24 handle
-   on the bar's top border, which needs an exception to the 44px target rule.
-2. **Should Recent hold more than 8 in the dock?** `switcherRecentMax` caps
-   the bar's Recent at 8 (`switcher.go:141`). The dock is the place where
-   more would fit; raising the cap lengthens the bar's row too, unless the
-   bar keeps 8 and the server sends a longer list for the dock (more markup on
-   every session page).
-3. **Should the Waiting tab and badge move to session-state's `needs-you`**
-   once its rollout step 2 ships (`session-state.md:470-480`)? Today they read
-   `listEntry.waiting`; an idle session the classifier scores as asking is
-   `needs-you` there but not "waiting" here.
+None open. The three this page first asked (the handle, Recent's length, the
+waiting definition) are decided as [decisions 5–7](#operator-decisions).
