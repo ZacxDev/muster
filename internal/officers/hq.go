@@ -296,6 +296,21 @@ func (c *Client) Claim(ctx context.Context, item ItemID, instance string, leaseS
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "claim"), body)
 }
 
+// ClaimNext is POST /officers/{id}/claim-next: HQ claims the next item in its
+// queue order (priority, then due, then age; never a blocked one) for
+// instance. tier, when set, is sent as the claim's `tier` (HQ then takes only
+// an item of that tier); "" sends no tier key. HQ answers {item,
+// lease_expires_at}, item null when nothing is claimable. An HQ from before
+// claim-next answers 404 (*HQError): the caller falls back to listing and
+// claiming by id.
+func (c *Client) ClaimNext(ctx context.Context, instance string, leaseSeconds int, tier string) ([]byte, error) {
+	body := map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)}
+	if tier != "" {
+		body["tier"] = tier
+	}
+	return c.Do(ctx, http.MethodPost, c.officerPath()+"/claim-next", body)
+}
+
 // Heartbeat is POST …/items/{item}/heartbeat.
 func (c *Client) Heartbeat(ctx context.Context, item ItemID, instance string, leaseSeconds int) ([]byte, error) {
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "heartbeat"), map[string]any{"instance": instance, "lease_seconds": ClampLease(leaseSeconds)})

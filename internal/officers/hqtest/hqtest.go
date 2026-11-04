@@ -35,6 +35,9 @@ type Item struct {
 	// blocked item is refused (409 blocked).
 	Blocked   bool     `json:"blocked,omitempty"`
 	BlockedBy []string `json:"blocked_by,omitempty"`
+	// Priority is HQ's item priority (urgent|high|normal|low); absent reads
+	// as normal. Only the claim-next route orders by it.
+	Priority string `json:"priority,omitempty"`
 	// Tier is HQ's item tier (civ-hq docs/OFFICERS.md, "Tiers and due
 	// dates"): routine or judgement. Empty — an item added with AddItem — is
 	// served without the field, as an HQ without tiers would, and a claim
@@ -81,6 +84,9 @@ type Server struct {
 	NoticeStatus int
 	// Preflight is POST /officers/{id}/preflight's answer (404 when nil).
 	Preflight map[string]any
+	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
+	// "Priority"); false — the default — is an HQ from before it: 404.
+	ClaimNext bool
 	// Before, when set, runs ahead of every request, OUTSIDE the fake's lock
 	// (so it may call SetClaim, SetBlocked, …): a test changes HQ's state at
 	// an exact point in a multi-request exchange. Set it before any request.
@@ -208,6 +214,13 @@ func (s *Server) SetBlocked(id string, by ...string) {
 	defer s.mu.Unlock()
 	it := s.items[id]
 	it.Blocked, it.BlockedBy = len(by) > 0, append([]string(nil), by...)
+}
+
+// SetPriority sets item id's priority.
+func (s *Server) SetPriority(id, priority string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[id].Priority = priority
 }
 
 // Item returns a copy of item id.
@@ -365,6 +378,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Notices = append(s.Notices, Notice{Officer: officer, Body: body})
 		s.write(w, http.StatusCreated, map[string]any{"posted": true})
+	case len(parts) == 2 && parts[1] == "claim-next" && r.Method == http.MethodPost && s.ClaimNext:
+		s.claimNext(w, officer, body, now)
 	case len(parts) == 2 && parts[1] == "preflight" && r.Method == http.MethodPost:
 		if s.Preflight == nil {
 			s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
@@ -392,6 +407,52 @@ func (s *Server) list(officer, status string, now time.Time) []Item {
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
+
+// claimNext is HQ's claim-next: the first claimable item (open or a lapsed
+// claim, not blocked, and — when the body names a tier — of that tier as the
+// item reads, tierOf; no tier key takes any tier) by priority, then id;
+// 200 {item, lease_expires_at}, or {item: null}. A tier other than routine or
+// judgement is 400, as on HQ.
+func (s *Server) claimNext(w http.ResponseWriter, officer string, body map[string]any, now time.Time) {
+	tier, named := "", false
+	if v, ok := body["tier"]; ok {
+		tier, _ = v.(string)
+		named = true
+		if tier != "routine" && tier != "judgement" {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "tier must be routine or judgement", "code": "bad_request"})
+			return
+		}
+	}
+	rank := map[string]int{"urgent": 0, "high": 1, "": 2, "normal": 2, "low": 3}
+	var best *Item
+	for _, it := range s.items {
+		live := it.Status == "claimed" && it.LeaseExpiresAt != nil && it.LeaseExpiresAt.After(now)
+		if it.OfficerID != officer || it.Blocked || live || (it.Status != "open" && it.Status != "claimed") {
+			continue
+		}
+		if named && tierOf(it) != tier {
+			continue
+		}
+		if best == nil || rank[it.Priority] < rank[best.Priority] || (rank[it.Priority] == rank[best.Priority] && numID(it.ID) < numID(best.ID)) {
+			best = it
+		}
+	}
+	if best == nil {
+		s.write(w, http.StatusOK, map[string]any{"item": nil, "lease_expires_at": nil})
+		return
+	}
+	instance, _ := body["instance"].(string)
+	lease := 600
+	if v, ok := body["lease_seconds"].(float64); ok {
+		lease = int(v)
+	}
+	exp := now.Add(time.Duration(lease) * time.Second)
+	best.Status, best.ClaimedBy, best.LeaseExpiresAt, best.UpdatedAt = "claimed", instance, &exp, now
+	best.Attempts++
+	s.write(w, http.StatusOK, map[string]any{"item": *best, "lease_expires_at": exp})
+}
+
+func numID(id string) int { n, _ := strconv.Atoi(id); return n }
 
 func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body map[string]any, now time.Time) {
 	it, ok := s.items[id]
