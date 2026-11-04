@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -275,6 +277,45 @@ func TestTheClassifierDecidesNeedsYouAndItsFailureCountsAsAsked(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAnAgentConversationsNewMessageEndsItsStop: a dispatched agent's
+// conversation that stopped on its own question opens an episode (read from
+// the real transcript, no test hook); a new message in it — a turn that ran —
+// ends that stop as worked.
+func TestAnAgentConversationsNewMessageEndsItsStop(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.srv.nudgeReadHook = nil
+	f.mirror.mu.Lock()
+	f.mirror.windows = nil
+	f.mirror.mu.Unlock()
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	worker := f.agentFor(t, authz.OperatorUserID, "stateworker-"+suffix, "worker", "state-worker-tok-"+suffix)
+	sess, _ := f.stallAgent(t, worker, authz.OperatorUserID)
+	mine := func() []sessionstate.Episode {
+		var out []sessionstate.Episode
+		for _, e := range f.episodes(t) {
+			if e.AgentID == worker.ID {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	f.statePass(t)
+	got := mine()
+	if len(got) != 1 || got[0].Kind != sessionstate.KindAgent || got[0].ChatSessionID != sess.ID || !got[0].Open() ||
+		got[0].State != sessionstate.StateStalled {
+		t.Fatalf("the agent's stop: %+v", got)
+	}
+	if _, err := agents.NewPG(f.pool).AddChatMessage(asUser(authz.OperatorUserID),
+		agents.ChatMessage{AgentID: worker.ID, SessionID: sess.ID, Role: "assistant", Content: "Merged into main."}); err != nil {
+		t.Fatal(err)
+	}
+	f.statePass(t)
+	got = mine()
+	if len(got) != 1 || got[0].Open() || got[0].EndReason != sessionstate.EndWorked {
+		t.Fatalf("after a new message: %+v", got)
 	}
 }
 

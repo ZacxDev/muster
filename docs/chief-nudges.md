@@ -133,6 +133,14 @@ The three labels and their rubrics are the operator-approved, backtested ones
 | `asks_permission` | it is holding its own next planned step until you approve it ("shall I…") |
 | `neither` | a finished report, status, work in progress, or an optional offer |
 
+The classification is **shared with session state** (`internal/api/session_state.go`,
+[the design](design/session-state.md)): its own pass, every 30 seconds, runs
+the same classifier at most once per idle streak (at most 5 calls a pass),
+stores the answer on the session's episode, and leaves it where this sweep's
+decision reuses it for that streak, so your key is billed once. With
+`MUSTER_CHIEF_NUDGES` unset there is no classifier: session state still runs,
+and counts every idle stop as one that asked you.
+
 In live mode an **ask** decision raises a [notice](#live-mode), not a
 question: "ask" below names the chief's decision, which the Chief nudges tab
 records with its question. The chief is asked for no options: a notice has
