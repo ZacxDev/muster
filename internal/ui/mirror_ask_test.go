@@ -183,8 +183,10 @@ func TestTheRenderedViewHasTheLiveRegion(t *testing.T) {
 // strip (the operator's "an overlay ... impossible to see the conversation
 // preceding the question"), and not positioned over it. The script keeps it
 // last (mirrorViewScript's tail): rows are inserted before it, and a reset
-// keeps it. The behaviour is the "end of the conversation" spec in
-// e2e/tests/mirror-ask.spec.ts; this pins the structure it stands on.
+// keeps it. That behaviour is guarded in a browser, not by the script's text
+// here: e2e/tests/mirror-ask.spec.ts "opened on a tall question" asserts the
+// region is the log's last child, once, after the reset batch and after rows
+// stream in. This pins the server-rendered structure it starts from.
 func TestTheLiveRegionIsTheConversationsLastChild(t *testing.T) {
 	page := render(MirrorViewPage(MirrorViewView{Host: "lap", Session: "work", Window: "@3", Interactive: true, StepUp: &StepUpView{ConfirmPath: "/auth/confirm"}}))
 	doc, err := html.Parse(strings.NewReader(page))
@@ -211,16 +213,6 @@ func TestTheLiveRegionIsTheConversationsLastChild(t *testing.T) {
 	}
 	if st := attrOf(region, "style"); st != "" {
 		t.Errorf("#mv-asks has an inline style %q: its place is the conversation's flow, set by its classes", st)
-	}
-	// The script's side of it: rows go in before the region, and a reset
-	// keeps it.
-	for _, want := range []string{"log.insertBefore(frag(op.html), tail())", "function clearLog() { var t = tail(); log.innerHTML = ''; if (t) log.appendChild(t); }"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("the conversation's script does not keep the region last: no %q", want)
-		}
-	}
-	if n := strings.Count(page, "log.innerHTML = "); n != 1 {
-		t.Errorf("the conversation's script writes the log's innerHTML in %d places; only clearLog may (it keeps the region)", n)
 	}
 }
 

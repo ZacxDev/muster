@@ -1054,7 +1054,7 @@ func mirrorViewScript() g.Node {
     // is scrolled once.
     bulk = true;
     try { rec.batches.forEach(function (b) { apply(b); }); } finally { bulk = false; }
-    log.scrollTop = log.scrollHeight;
+    toEnd();
     if (opening) opening.mark('snapshot_painted');
     gen = rec.gen; offset = rec.offset;
     opLog = rec.batches.slice(); opBytes = rec.bytes || 0; firstAt = rec.firstAt;
@@ -1073,6 +1073,12 @@ func mirrorViewScript() g.Node {
   function tail() { var t = document.getElementById('` + mirrorAsksID + `'); return t && t.parentNode === log ? t : null; }
   function clearLog() { var t = tail(); log.innerHTML = ''; if (t) log.appendChild(t); }
   function rowCount() { return log.children.length - (tail() ? 1 : 0); }
+  // toEnd scrolls the conversation to its end — unless a question card that
+  // has just shown holds it (askScript's musterAskHold): then to the card,
+  // from its first line when it is taller than the screen. Every stick to the
+  // end goes through here (a batch, a snapshot's paint, a resize), so a reset
+  // drawn after the card arrived does not scroll the question away.
+  function toEnd() { log.scrollTop = log.scrollHeight; if (window.musterAskHold) window.musterAskHold(); }
   function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
   function clearError() { errEl.hidden = true; errText.textContent = ''; }
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
@@ -1173,7 +1179,7 @@ func mirrorViewScript() g.Node {
     } else {
       var empty = log.querySelector('[data-mirror-empty]'); if (empty && rowCount() > 1) empty.remove();
     }
-    if (stick) log.scrollTop = log.scrollHeight;
+    if (stick) toEnd();
   }
 
   // painted calls fn once the browser has painted what was just drawn: the
@@ -1360,7 +1366,7 @@ func mirrorViewScript() g.Node {
   var atEnd = true;
   log.addEventListener('scroll', function () { atEnd = nearBottom(); }, { passive: true });
   if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
+    new ResizeObserver(function () { if (atEnd) toEnd(); }).observe(log);
   }
   // 🔴 NO STORAGE WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
   // CACHE. A save is a chain of storage transactions, and one still running

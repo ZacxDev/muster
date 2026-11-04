@@ -836,3 +836,133 @@ for (const vp of [
     });
   });
 }
+
+// 🔴 OPENED ON A QUESTION ALREADY PENDING (a notification's tap): the view
+// lands on the question's FIRST LINE, not the card's bottom. On open the
+// card's poll and the transcript's first batch race (measured: the poll first,
+// 34 ms against 44 ms); a reveal on a log with nothing in it yet, followed by
+// the transcript's reset batch sticking to the bottom, left question 1 above
+// the screen (this spec at 9d451102: 400 px at 412×915, 671 px at 390×664,
+// 415 px at 1280×800). An ended question's card also on the page — it shows
+// until the conversation's answered call hides it — must not take the
+// reveal from the pending one (askScript's pending). Asserted once the page has
+// SETTLED (the log's scroll position unchanged for 750 ms), never polled: the
+// card at the top of an empty log puts question 1 on screen for a moment
+// before the bottom-stick takes it away. On a fresh open and again on a
+// reload (the snapshot's paint, then the socket).
+//
+// And THE REGION STAYS THE CONVERSATION'S LAST CHILD (mirrorViewScript's
+// tail): after the reset batch that draws the conversation, and after rows
+// stream in, #mv-asks is in the document once and is #mv-log's last child —
+// asserted directly, before anything waits on the card, so a tail() that
+// loses it fails HERE rather than as a card that never shows.
+for (const vp of [
+  { name: 'phone 412×915 touch', viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true },
+  { name: 'phone 390×664 touch', viewport: { width: 390, height: 664 }, hasTouch: true, isMobile: true },
+  { name: 'desktop 1280×800', viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false },
+]) {
+  test.describe(vp.name, () => {
+    test.use({ viewport: vp.viewport, hasTouch: vp.hasTouch, isMobile: vp.isMobile, storageState: { cookies: [], origins: [] } });
+
+    test('opened on a tall question already pending, the view lands on its first line', async ({ page }) => {
+      const tag = `open-${vp.viewport.width}x${vp.viewport.height}-${stamp}`;
+      const reply = (t: string) => rec({ type: 'assistant', message: { content: [{ type: 'text', text: t }] } });
+      let more = prompt(`a long talk before the question (${tag})`);
+      for (let i = 0; i < 20; i++) {
+        more += reply(`Point ${i}.\n\nThis paragraph is here so the conversation runs to several screens before the question.`);
+        more += prompt(`go on (${i}) ${tag}`);
+      }
+      fs.appendFileSync(tr, more);
+      const log = page.locator('#mv-log');
+      // #mv-asks: in the document once, and the conversation's last child.
+      const regionLast = () =>
+        page.evaluate(() => {
+          const all = document.querySelectorAll('#mv-asks');
+          const l = document.getElementById('mv-log')!;
+          const last = l.lastElementChild;
+          return `${all.length} in the document, in the log: ${all.length === 1 && all[0].parentElement === l}, the log's last child: ${last ? last.id || last.tagName : 'none'}`;
+        });
+      const want = '1 in the document, in the log: true, the log\'s last child: mv-asks';
+
+      // An EARLIER question, answered in the terminal: the server still lists
+      // its card for a few minutes, and on open it shows until the
+      // conversation draws its answered call. The view must land on the
+      // PENDING question, not reveal this one and count the pending one shown.
+      const ended = `toolu_e2e_ended_${vp.viewport.width}x${vp.viewport.height}_${stamp}`;
+      await openView(page);
+      await expect(log.locator('[data-bubble]', { hasText: `go on (19) ${tag}` })).toBeVisible({ timeout: 20_000 });
+      expect(await regionLast(), 'after the batch that drew the conversation (first open), the region is its last child').toBe(want);
+      await registered(ended);
+      await expect(page.locator(`[data-ask-live][data-ask-tool="${ended}"]`)).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+      answerInTerminal(ended, { 'Which color do you prefer?': 'Red', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });
+      await expect(page.locator(`[data-ask-live][data-ask-tool="${ended}"]`)).toHaveAttribute('data-ask-state', 'answered-terminal', { timeout: 10_000 });
+      await page.goto('about:blank');
+      fs.appendFileSync(tr, reply(`last message before the question ${tag}`));
+
+      // The question is pending BEFORE the view opens.
+      const toolID = `toolu_e2e_open_${vp.viewport.width}x${vp.viewport.height}_${stamp}`;
+      await registered(toolID, { qs: longQuestions });
+
+      const c = page.locator(`[data-ask-live][data-ask-tool="${toolID}"]`);
+      const lastMsg = log.locator('[data-bubble]', { hasText: `last message before the question ${tag}` });
+      // The log's scroll position unchanged for 750 ms.
+      const settle = async () => {
+        let prev = -1;
+        for (let i = 0; i < 40; i++) {
+          const now = await log.evaluate((l) => l.scrollTop);
+          if (now === prev) return;
+          prev = now;
+          await page.waitForTimeout(750);
+        }
+        throw new Error('the conversation never stopped scrolling');
+      };
+      // Where question 1's first line is: its top and one line below it inside
+      // the conversation's box, and the point on it is the question itself.
+      const firstLine = () =>
+        c.evaluate((card) => {
+          const l = document.getElementById('mv-log')!.getBoundingClientRect();
+          const q = card.querySelector('[data-ask-question] legend .font-medium') as HTMLElement;
+          const r = q.getBoundingClientRect();
+          const line = parseFloat(getComputedStyle(q).lineHeight) || 20;
+          const at = document.elementFromPoint(r.left + Math.min(r.width / 2, 24), r.top + line / 2);
+          // The cards on the page, for a failure's message.
+          const cards = Array.from(document.querySelectorAll('[data-ask-live]'))
+            .map((x) => `${x.getAttribute('data-ask-tool')}:${x.getAttribute('data-ask-state')}${(x as HTMLElement).hidden ? ':hidden' : ''}`)
+            .join(' ');
+          if (r.top < l.top) return `above the conversation by ${Math.round(l.top - r.top)} px (cards: ${cards})`;
+          if (r.top + line > l.bottom) return `below the conversation by ${Math.round(r.top + line - l.bottom)} px (cards: ${cards})`;
+          if (!at || !q.contains(at)) return `covered by ${at ? at.id || at.tagName : 'nothing'}`;
+          return 'in view';
+        });
+
+      for (const how of ['open', 'reload'] as const) {
+        if (how === 'open') await openView(page);
+        else {
+          await page.reload();
+          await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+        }
+        await expect(lastMsg, `the conversation is drawn (${how})`).toBeVisible({ timeout: 20_000 });
+        expect(await regionLast(), `after the batch that drew the conversation (${how}), the region is its last child`).toBe(want);
+        await expect(c, `the question is drawn (${how}; log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+        await settle();
+        if (process.env.ASKQ_SHOTS) await page.screenshot({ path: path.join(process.env.ASKQ_SHOTS, `opened-${how}-${vp.viewport.width}x${vp.viewport.height}.png`) });
+        expect(await firstLine(), `${how}: question 1's first line is on screen`).toBe('in view');
+      }
+
+      // Rows stream in while the question is open: they go in before it.
+      fs.appendFileSync(tr, reply(`streamed after the question ${tag}`));
+      await expect(log.locator('[data-bubble]', { hasText: `streamed after the question ${tag}` })).toBeAttached({ timeout: 20_000 });
+      expect(await regionLast(), 'after rows streamed in, the region is the conversation\'s last child').toBe(want);
+
+      // Answered, so the next spec's view opens on its own question only.
+      const submit = c.getByRole('button', { name: 'Submit answers' });
+      await c.locator('fieldset').nth(0).getByText('Blue', { exact: true }).click();
+      await c.locator('fieldset').nth(1).getByText('Patch', { exact: true }).click();
+      await c.locator('fieldset').nth(2).getByText('Alpha', { exact: true }).click();
+      await submit.scrollIntoViewIfNeeded();
+      if (vp.hasTouch) await submit.tap();
+      else await submit.click();
+      await expect(c, `submitted (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
+    });
+  });
+}

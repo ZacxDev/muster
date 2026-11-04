@@ -494,13 +494,40 @@ func askScript() g.Node {
   // conversation's end, the messages before it above — else from its start, so
   // the question is read from its first line. Once per question: a poll or a
   // redraw of the same card never moves a reader who has scrolled away.
-  var revealed = {};
+  //
+  // Of several shown at once, a PENDING one. A view opened on a pending
+  // question polls the cards before the conversation is drawn, so a card that
+  // has ended — answered, dismissed — shows too until the conversation's row
+  // for it hides it (drawn); revealing that one instead marked the pending
+  // question shown, and it never was (measured in the e2e suite: question 1
+  // 400 px above the screen at 412×915).
+  function pending(card) { return card.getAttribute('data-ask-state') === '`+AskStatePending+`'; }
+  //
+  // 🔴 THE CARD HOLDS THE CONVERSATION'S END UNTIL THE READER MOVES (held). A
+  // view opened on a question already pending draws the card BEFORE the
+  // conversation (its poll is faster than the transcript's first batch,
+  // measured 34 ms against 44 ms): a reveal then is on an empty log, and the
+  // reset batch that follows sticks to the bottom — question 1 ended up
+  // hundreds of pixels above the screen. So the revealed card is held: the
+  // conversation's every scroll to its end (mirrorViewScript's toEnd, through
+  // window.musterAskHold — a batch, a snapshot's paint, a resize) reveals the
+  // card again instead, until the reader scrolls, touches, clicks or types, or
+  // the card goes or changes state.
+  var revealed = {}, held = null;
   function reveal(card) {
     if (!log || !log.contains(card)) return;
     var lr = log.getBoundingClientRect(), cr = card.getBoundingClientRect();
     if (cr.height <= lr.height) log.scrollTop = log.scrollHeight;
     else log.scrollTop += cr.top - lr.top - 12;
   }
+  function hold() {
+    if (held && (held.hidden || !region.contains(held))) held = null;
+    if (held) reveal(held);
+  }
+  window.musterAskHold = hold;
+  ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(function (t) {
+    document.addEventListener(t, function () { held = null; }, { capture: true, passive: true });
+  });
   function tidy() {
     var any = false, fresh = null;
     region.querySelectorAll('[data-ask-live]').forEach(function (c) {
@@ -509,10 +536,12 @@ func askScript() g.Node {
       if (hide) return;
       any = true;
       var tool = c.getAttribute('data-ask-tool');
-      if (!revealed[tool]) { revealed[tool] = true; if (!fresh) fresh = c; }
+      if (revealed[tool]) return;
+      revealed[tool] = true;
+      if (!fresh || (!pending(fresh) && pending(c))) fresh = c;
     });
     region.hidden = !any;
-    if (fresh) reveal(fresh);
+    if (fresh) { held = fresh; reveal(fresh); }
   }
   // The conversation draws (and redraws) its rows on its own socket, before or
   // after this region's poll: either order ends with tidy().
