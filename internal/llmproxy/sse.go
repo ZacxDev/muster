@@ -65,10 +65,13 @@ func val(p *int64) int64 {
 	return *p
 }
 
-// tokens is every token the request consumed: uncached input, cache reads,
-// cache writes and output. It is what max_tokens_per_item counts.
+// tokens is what max_tokens_per_item counts: uncached input, cache writes and
+// output. NOT cache reads: Claude Code resends its whole context on every
+// request, mostly as cache reads, so counting them would end an ordinary item
+// after a few requests. Cache reads are still metered, booked and charged
+// against the daily budget at the provider's cost.
 func (u usage) tokens() int64 {
-	return val(u.Input) + val(u.Output) + val(u.CacheRead) + val(u.CacheWrite)
+	return val(u.Input) + val(u.Output) + val(u.CacheWrite)
 }
 
 // streamMessage is the subset of an Anthropic-shaped stream event, or a

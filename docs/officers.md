@@ -1210,8 +1210,8 @@ One source for each value:
 
 | `llm` field | default | |
 |---|---|---|
-| `daily_budget_usd` | required | The officer's spend cap per UTC day, over all its routine instances, (0, 1000]. Metered from the cost **the provider reports in the stream** (`usage.cost`), never from a price list: billed prices have run well above list. A request is refused once the day's booked spend reaches the cap. |
-| `max_tokens_per_item` | `400000` | 1000–20000000. Tokens a routine instance may use on the item it holds (uncached input, cache reads, cache writes and output together). Past it, its next request is refused. |
+| `daily_budget_usd` | required | The officer's spend cap per UTC day, over all its routine instances, (0, 1000]. Metered from the cost **the provider reports in the stream** (`usage.cost`), never from a price list: billed prices have run well above list. A request is refused once the day's booked spend reaches the cap; requests in flight together can take the day slightly over it (the key's OpenRouter credit limit is the backstop). |
+| `max_tokens_per_item` | `400000` | 1000–20000000. Tokens a routine instance may use on the item it holds: uncached input, cache writes and output together. **Cache reads are not counted** (Claude Code resends its whole context on every request, mostly as cache reads); they are still metered and charged against `daily_budget_usd`. Past the cap, its next request is refused. |
 
 The key is the officer's own `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`
 (`<NAME>` as for the HQ token), and it is **required**: unset or blank is a
@@ -1224,15 +1224,18 @@ Refused at boot, each naming the problem: `llm` without `tiers` (the proxy
 serves only a routine pool); `llm` beside a Claude routine model; a routine
 provider model id without `llm`; `llm` on a [shipping officer](#shipping-officers);
 an unknown key in `llm` (`model` and an agent list included: they live in
-`tiers`); a missing or out-of-range budget or cap; no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (even with the shared key set); and `llm` on a
-server with no database (the budget is persisted).
+`tiers`); a missing or out-of-range budget or cap; no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (even with the shared key set); `llm` on a
+server with no database (the budget is persisted) or no connector store (the
+proxy's door and audit trail).
 
-⚠ **The pod side is not in muster yet.** The claude-code image's entrypoint
-still refuses `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (see [The
-instance's Claude Code session](#the-instances-claude-code-session)), and the
-pod spec refuses a provider model id as the session's model. Pointing a
-routine instance at the proxy is separate work; until it lands, do not declare
-`llm`: a routine instance of such an officer cannot be provisioned.
+🔴 **Today every `llm` officer is refused at boot.** The pod side is not in
+muster yet: the claude-code image's entrypoint still refuses
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (see [The instance's Claude
+Code session](#the-instances-claude-code-session)), with no scoped exception
+under `CCD_LLM_ROUTE=muster`, and the pod spec refuses a provider model id as
+the session's model. A routine instance of such an officer could not be
+provisioned, so muster-server refuses to start with one, naming the officer
+and the reason. The change that adds `CCD_LLM_ROUTE` lifts the refusal.
 
 #### What one request does
 
@@ -1245,12 +1248,23 @@ any credential is read. For an admitted request, in order:
    or `X-Muster-Token`; the shared hook and service tokens are refused, as on
    every connector route) and must be a routine instance of an officer that
    declares `llm`.
-2. The body must be a JSON object (at most 32 MiB); `model` is rewritten to
-   `tiers.routine.model`.
+2. The body must be a JSON object (at most 32 MiB). It is rebuilt from an
+   **allowlist** of Anthropic Messages fields (`messages`, `system`,
+   `max_tokens`, `metadata`, `stop_sequences`, `stream`, `temperature`,
+   `top_k`, `top_p`, `tools`, `tool_choice`, `thinking`,
+   `context_management`), with `model` set to `tiers.routine.model`. Every
+   other key is dropped (its name is logged, never its value), OpenRouter's
+   routing fields above all: `fallbacks`, `models`, `provider`, `route`,
+   `plugins` and `transforms` could serve the request from a model other than
+   the pin.
 3. **The budget.** The officer's booked spend for the UTC day is read from the
    database (`officer_llm_usage`, migration 0074). At or over
    `daily_budget_usd`, the request is refused with **400** and nothing is
-   sent. If the spend cannot be read, the request is refused (503) and
+   sent. ⚠ The check is not a reservation: requests in flight together (several
+   routine instances, or one instance's parallel calls) all pass while the
+   spend is under the budget, so the day can end slightly over it, by at most
+   the cost of the requests in flight. The OpenRouter-side credit limit on the
+   officer's key is the backstop. If the spend cannot be read, the request is refused (503) and
    nothing is sent: the proxy never spends blind.
 4. **The per-item cap**, against the instance's tokens on its held item (below).
 5. The request goes to `https://openrouter.ai/api/v1/messages`
@@ -1266,7 +1280,11 @@ any credential is read. For an admitted request, in order:
    per-item count and the metrics — so the instance's next request is checked
    against it. A response that reported no cost (a stream that broke off, a
    client that went away) is booked from an estimate at deliberately
-   pessimistic rates and counted as estimated.
+   pessimistic rates and counted as estimated. So is a request that was
+   written to the provider and then got no response. A connection that fails
+   **before** the request is written (DNS, refused, TLS) reached no provider,
+   which billed nothing: it is booked as nothing, and the instance gets a 502.
+   A non-2xx answer from the provider is not booked.
 8. One audit row (the [connector audit trail](connectors.md#the-llm-proxy),
    kind `llm`) and one log line: agent, officer, instance, item, model,
    requested model, provider, status, result, tokens by direction, USD,
@@ -1282,7 +1300,7 @@ model to stop; the item stays queued in HQ.
 holds from its own `officer_claim` / `officer_complete` / `officer_release`
 calls, and from every wake-loop read of HQ's claims. A new item starts the
 count at zero. A capped instance cannot heartbeat, so its lease lapses (HQ
-then hands the item on); the next wake-loop read shows the instance holding
+then hands the item on: a precondition on HQ that muster does not check); the next wake-loop read shows the instance holding
 nothing, which resets its count, so it is not stuck. Tokens used before any
 claim are counted under no item and reset on each such read: the daily budget,
 not the item cap, is the wall for an instance that never claims. The counts

@@ -4,7 +4,8 @@
 // ANTHROPIC_BASE_URL at, and that forwards to one provider (OpenRouter's
 // Anthropic-compatible POST /api/v1/messages) with the officer's key.
 //
-// Per request, in order: the body is read and its `model` rewritten to the
+// Per request, in order: the body is read and rebuilt from an allowlist of
+// Anthropic Messages fields (forwardBodyFields), its `model` set to the
 // officer's pinned model (the client's is ignored); the officer's spend this
 // UTC day is read from the store and the request refused once it reaches the
 // daily budget; the instance's tokens on its held item are checked against the
@@ -16,8 +17,15 @@
 //
 // 🔴 THE KEY IS ATTACHED HERE AND NOWHERE ELSE. It is never logged, never
 // audited, never sent to the client: every byte relayed downstream is passed
-// through redact first, and an upstream error body is replaced by muster's
-// own. The client's own credential (its muster token) is never sent upstream.
+// through redact first, a 401/403 body is replaced by muster's own message,
+// and every other non-2xx body is relayed redacted. The client's own
+// credential (its muster token) is never sent upstream.
+//
+// 🔴 THE MODEL PIN HOLDS BECAUSE THE BODY IS AN ALLOWLIST. OpenRouter reads
+// routing fields in the body (fallbacks, models, provider, route, plugins,
+// transforms) that can serve a request from a model other than the pinned
+// one. Only the Anthropic Messages fields in forwardBodyFields go upstream;
+// every other key is dropped.
 //
 // 🔴 COST IS THE PROVIDER'S, NOT A PRICE LIST'S. OpenRouter reports what it
 // billed in the stream (`usage.cost` in message_delta). Billed prices have run
@@ -35,6 +43,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptrace"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -162,8 +172,8 @@ type Config struct {
 	HTTP *http.Client
 	// Store is required.
 	Store Store
-	// Audit receives one record per request that reached the budget check;
-	// nil records none.
+	// Audit receives one record per request ServeMessages answers (a
+	// malformed body's refusal included); nil records none.
 	Audit  func(ctx context.Context, r Record)
 	Logger *log.Logger
 	// Now is the clock; nil is time.Now.
@@ -259,6 +269,15 @@ func Refuse(w http.ResponseWriter, status int, errType, msg string) {
 	_, _ = w.Write(b)
 }
 
+// forwardBodyFields are the request-body keys sent upstream: the Anthropic
+// Messages request fields Claude Code uses, `model` aside (always the pin).
+// Every other key, OpenRouter's routing fields above all, is dropped.
+var forwardBodyFields = map[string]bool{
+	"messages": true, "system": true, "max_tokens": true, "metadata": true, "stop_sequences": true,
+	"stream": true, "temperature": true, "top_k": true, "top_p": true, "tools": true, "tool_choice": true,
+	"thinking": true, "context_management": true,
+}
+
 // forwardRequestHeaders are the client headers sent upstream. Everything else
 // — the client's Authorization / X-Muster-Token / x-api-key, cookies, its
 // session id — stays here.
@@ -297,9 +316,24 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	if raw, ok := msg["model"]; ok {
 		_ = json.Unmarshal(raw, &rec.RequestedModel)
 	}
+	fwd := make(map[string]json.RawMessage, len(forwardBodyFields)+1)
+	var dropped []string
+	for key, v := range msg {
+		if forwardBodyFields[key] {
+			fwd[key] = v
+		} else if key != "model" {
+			dropped = append(dropped, key)
+		}
+	}
 	pinned, _ := json.Marshal(c.Model)
-	msg["model"] = pinned
-	out, err := json.Marshal(msg)
+	fwd["model"] = pinned
+	if len(dropped) > 0 {
+		sort.Strings(dropped)
+		// Key names only, never their values.
+		p.log.Printf("llm proxy: agent=%q officer=%s: dropped body fields not forwarded: %s", c.AgentName, c.Officer,
+			orDash(strings.Join(dropped, ",")))
+	}
+	out, err := json.Marshal(fwd)
 	if err != nil {
 		Refuse(w, http.StatusBadRequest, "invalid_request_error", "the body could not be re-encoded")
 		finish("refused_bad_request", http.StatusBadRequest)
@@ -354,9 +388,31 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	up.Header.Set("Authorization", "Bearer "+c.Key)
 
 	m := &meter{}
+	// wrote: the request was written to the provider. A connection that fails
+	// before that (DNS, refused, TLS) reached no provider, which billed nothing.
+	var wroteMu sync.Mutex
+	wrote := false
+	up = up.WithContext(httptrace.WithClientTrace(up.Context(), &httptrace.ClientTrace{
+		WroteRequest: func(i httptrace.WroteRequestInfo) {
+			if i.Err == nil {
+				wroteMu.Lock()
+				wrote = true
+				wroteMu.Unlock()
+			}
+		},
+	}))
 	resp, err := p.http.Do(up)
 	if err != nil {
-		p.book(r.Context(), c, k, item, day, m, len(body), &rec)
+		wroteMu.Lock()
+		sent := wrote
+		wroteMu.Unlock()
+		if sent {
+			// Written, then no response: the provider may have billed it, so it
+			// is booked from the pessimistic estimate.
+			p.book(r.Context(), c, k, item, day, m, len(body), &rec)
+		} else {
+			p.log.Printf("llm proxy: officer %s: the provider could not be reached (nothing sent, nothing booked): %v", c.Officer, err)
+		}
 		Refuse(w, http.StatusBadGateway, "api_error", "the provider could not be reached")
 		finish("upstream_error", http.StatusBadGateway)
 		return
@@ -477,8 +533,8 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 		estimated = true
 		cost = float64(rec.Input+rec.CacheRead+rec.CacheWrite)*EstimateUSDPerInputToken + float64(rec.Output)*EstimateUSDPerOutputToken
 	default:
-		// Nothing reported (the provider never answered, or the stream broke
-		// off before message_start): assume the provider read the whole
+		// Nothing reported (the request was written but never answered, or the
+		// stream broke off before message_start): assume the provider read the whole
 		// request (about 3 bytes a token) and wrote estimateOutputTokens.
 		estimated = true
 		cost = float64(reqBytes/3)*EstimateUSDPerInputToken + estimateOutputTokens*EstimateUSDPerOutputToken

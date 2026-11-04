@@ -183,7 +183,8 @@ It is a credential-injecting proxy like `/connect/`, with three differences:
 
 - **It is not a stored connector and needs no grant.** Who may use it is
   configuration: a routine-pool instance (`officer-<slug>-r<n>`) of an
-  officer that declares `tiers` and `llm` in `MUSTER_OFFICERS`. Every other
+  officer that declares `tiers` and `llm` in `MUSTER_OFFICERS` (today refused
+  at boot until the pod side exists: [officers](officers.md#the-llm-proxy)). Every other
   agent is refused (403). Nothing is requested, approved or shared.
 - **Its credential is the officer's OpenRouter key** from muster-server's
   environment (`MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`, required; the shared
@@ -191,8 +192,10 @@ It is a credential-injecting proxy like `/connect/`, with three differences:
   way out and scrubbed from every byte sent back; it is never logged or
   audited.
 - **It fixes the request.** The upstream is one path
-  (`https://openrouter.ai/api/v1/messages`); the body's `model` is rewritten
-  to the officer's `tiers.routine.model`; the officer's daily USD budget and per-item
+  (`https://openrouter.ai/api/v1/messages`); the body is rebuilt from an
+  allowlist of Anthropic Messages fields (OpenRouter's routing fields such as
+  `fallbacks`, `models` and `provider` are dropped) and its `model` set to the
+  officer's `tiers.routine.model`; the officer's daily USD budget and per-item
   token cap are enforced before anything is sent. Any other path under
   `/llm/` is refused 404.
 

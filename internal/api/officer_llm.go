@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -95,6 +97,16 @@ func (s *Server) newLLMProxy(cfg OfficersConfig) (*llmproxy.Proxy, error) {
 	}
 	if cfg.LLMStore == nil {
 		return nil, errors.New("officers: an officer declares `llm`, but there is no usage store to keep its budget in")
+	}
+	// The proxy's door is requireConnectorAgent, which answers 503 to every
+	// request without a connector store, and the audit rows go to that store.
+	if s.ext.Connectors == nil {
+		ids := make([]string, 0, len(on))
+		for _, o := range on {
+			ids = append(ids, o.ID)
+		}
+		return nil, fmt.Errorf("officers: %s declare `llm`, but this server has no connector store: the LLM proxy "+
+			"authenticates instances through the connector door and audits into its store", strings.Join(ids, ", "))
 	}
 	host := ""
 	if u, err := url.Parse(cfg.LLMUpstream); err == nil && u.Host != "" {

@@ -175,6 +175,11 @@ const sessionEpisodesMigrationVersion = 73
 // proxy's per-day usage), owned and under the same row-level security; same
 // treatment again. Its body is idempotent, the connector_audit CHECK it
 // widens included.
+//
+// ⚠ LATENT TRAP: re-applying 0074 re-sets connector_audit_kind_check to
+// exactly ('proxy','grant','query','llm'). Once a later migration adds a
+// kind, RLSOn fails on that kind's rows: before adding one, move the CHECK out
+// of what RLSOn re-applies (for example, skip 0074's ALTER here).
 const officerLLMUsageMigrationVersion = 74
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
