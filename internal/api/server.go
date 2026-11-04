@@ -137,6 +137,9 @@ type Server struct {
 	// nudgeRetry is the stall checks the chief refused, retried bounded
 	// (chief_nudge_retry.go).
 	nudgeRetry nudgeRetries
+	// ownerChecked is, per open episode, the streak its owner-acted read last
+	// succeeded on (session_state.go episodeOwnerActed).
+	ownerChecked episodeChecks
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's

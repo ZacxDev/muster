@@ -78,8 +78,18 @@ opencode question or permission request, a Hermes approval) stays an
 answerable item above it, with its own full-text push.
 
 **One push per stop.** Each episode is pushed **once**, however the stop moves
-between waiting and idle, and its notification closes when the stop ends
-(sustained work, or its window gone from a host that is online). The push is
+between waiting and idle, and its notification closes when the stop ends:
+**you acted in the session** (you sent it a message of your own after the stop
+began, or answered the prompt it was waiting on: the push and the row go on
+the next 30-second pass; a chief nudge muster sent does not count), **you
+opened the session in muster** (its rendered view or terminal, or the agent's
+conversation, on the web or in the app, which shows the same pages: the push
+and the row go at once; the Agents list, the bar, the Asks page and a prefetch
+do not count, and looking at the window in a tmux terminal outside muster
+cannot be seen), sustained work of its own (2 minutes), or its window gone
+from a host that is online. A stop you dealt with (acted in, or opened) is not
+pushed again while the session sits where it was; once it moves, its next
+stop is a new one. The push is
 claimed in the database, so a restart, the double rollout and the waiting
 hook racing the 30-second pass never send it twice; a stop that began while
 muster was down is pushed when it is first seen, and one that ended while it

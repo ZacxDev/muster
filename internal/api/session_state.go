@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -25,19 +26,29 @@ import (
 //
 //   - a session that enters needs_you or stalled OPENS an episode, claimed by
 //     the partial unique index (one open episode per session, across
-//     replicas);
+//     replicas) — unless its last episode ended HANDLED on the same streak
+//     (sessionstate.Handled: the owner opened it, or the 0079 reset), so a
+//     stop the owner dealt with is not pushed again while it sits still — and
+//     one another process opened anyway is ended again (PG.EndRepeat);
 //   - an open episode follows its session (state, where it is, its streak) and
-//     ENDS only after sustained work (sessionstate.Advance; for an agent, a
-//     reply turn that long) or when its window is gone from a host that is
-//     online, reporting status, and has sent its window list. A host that
-//     dropped or has not been read, a failed agent list, a failed transcript
-//     read, a failed classifier: none of them ends an episode or quiets one.
+//     ENDS when the OWNER ACTS in the session after it opened — a message of
+//     their own, or a waiting prompt answered (sessionstate.OwnerActed;
+//     episodeOwnerActed reads it) — when the owner OPENS the session's own page
+//     in muster (episodeViewed, session_viewed.go), after sustained work (sessionstate.Advance;
+//     for an agent, a reply turn that long), or when its window is gone from a
+//     host that is online, reporting status, and has sent its window list. A
+//     host that dropped or has not been read, a failed agent list, a failed
+//     transcript read, a failed classifier: none of them ends an episode or
+//     quiets one.
 //
 // 🔴 THE CLASSIFIER RUNS ONLY WHERE THE CHIEF'S NUDGES WOULD RUN IT: the
 // feature on and the owner's chief on (docs/chief-nudges.md, "The stall
-// classifier"). Everywhere else no transcript is read and no model is called:
-// an idle stop is "stalled" and labelled as asking (sessionstate.Asked), so
-// the classifier's absence can never quiet it. Where it does run, its input is
+// classifier"). Everywhere else no model is called, and no transcript is read
+// to classify: an idle stop is "stalled" and labelled as asking
+// (sessionstate.Asked), so the classifier's absence can never quiet it. The
+// one read made for every owner is the owner-acted check's
+// (episodeOwnerActed): it calls no model, and reads an open episode once after
+// it opens, then again only when its session moves. Where it does run, its input is
 // stallClassifierText — redacted and cut — the SAME text the nudge sweep sends,
 // and its answer is billed once per streak whichever pass runs first.
 //
@@ -209,6 +220,28 @@ func (s *Server) stateClassifier(octx context.Context) *chiefnudge.Classifier {
 // has.
 func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCandidate, ep sessionstate.Episode, has, answerable bool) {
 	now := sp.now
+	if has {
+		// 🔴 A HANDLED STOP OPENED AGAIN ENDS AGAIN (PG.EndRepeat): an open
+		// episode on the streak its previous episode ended 'reset' or 'viewed'
+		// on. PG.Open's guard cannot refuse every such write, so this is a
+		// PERMANENT repair, not a rollout step. Three writers: an image from
+		// before 0079 (no guard), still running during a rolling update; the
+		// waiting hook — the older image's, and this one's whenever
+		// windowStreakKey returns "" — which opens with no streak, and "" never
+		// matches the guard; and a pass whose facts were read before a
+		// concurrent view, which opens on the streak it read, not the one the
+		// view ended on. Compared on c's CURRENT streak, it is ended here for
+		// that same reason, its push is withdrawn by this pass's
+		// clearEndedEpisodes, and the Open below then refuses it (the same rule).
+		reason, ended, err := s.ext.Episodes.EndRepeat(octx, ep.ID, c.StreakKey, now)
+		if err != nil {
+			s.logger.Printf("session state: episode %d: repeat: %v", ep.ID, err)
+		} else if ended {
+			s.logger.Printf("session state: episode %d: ended %s: it repeats a handled stop", ep.ID, reason)
+			s.ownerChecked.settle(ep.ID)
+			has = false
+		}
+	}
 	// anchor is the streak the episode keeps: normally the session's current
 	// one. 🔴 FOR AN AGENT MID-TURN IT STAYS PUT: while the newest message is
 	// the owner's (a turn no turn gate saw — the API message door, a job
@@ -263,6 +296,13 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 	}
 	state, wants := sessionstate.StateOf(f)
 	busy := c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusBusy
+	if has && s.episodeOwnerActed(octx, c, ep) {
+		// The owner went to the session and acted in it: the stop is over
+		// (its push is withdrawn by this pass's clearEndedEpisodes), whether
+		// or not the session then works for EndAfter.
+		s.endEpisode(octx, ep, sessionstate.EndOwner, now)
+		has = false
+	}
 	if has {
 		step := sessionstate.Advance(busy && !wants, ep.BusySince, ep.BusySeen, now)
 		if step.End {
@@ -292,9 +332,14 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			return
 		}
 		if !claimed {
-			return // another pass or replica holds this stop
+			// Another pass or replica holds this stop, or the owner already
+			// handled it on this streak (sessionstate.Handled).
+			return
 		}
 		ep = opened
+		// Nothing the owner wrote can be after an episode opened this instant:
+		// its owner-acted check starts from this streak.
+		s.ownerChecked.checked(ep.ID, c.StreakKey)
 	}
 	if f.Stalled && classified && (ep.ClassifiedStreak != c.StreakKey || ep.Jev.Err != jev.Err || ep.Jev.Label != jev.Label) {
 		asked := sessionstate.Asked(true, jev.Err, f.AskStall)
@@ -455,7 +500,96 @@ func (s *Server) endEpisode(octx context.Context, ep sessionstate.Episode, reaso
 	// read the episode.
 	if _, err := s.ext.Episodes.End(octx, ep.ID, reason, now); err != nil {
 		s.logger.Printf("session state: episode %d: end: %v", ep.ID, err)
+		return
 	}
+	s.ownerChecked.settle(ep.ID)
+}
+
+// episodeOwnerActed reports whether the owner acted in open episode ep's
+// session c after it opened (sessionstate.OwnerActed, the rule): a waiting
+// episode's prompt answered is known from the status alone; an owner message
+// needs the conversation, which is READ WHEN THIS PROCESS HAS NOT YET READ IT
+// ON THE SESSION'S CURRENT STREAK (ownerChecked) — so every open episode is
+// read at least once after it opened (or after a restart), and again only when
+// its session moves (a new status for a window, a new message for an agent). A
+// failed read leaves it unread, so it is read again on the next pass. The read
+// is the nudge sweep's own (nudgeTranscript) and muster's own pastes are told
+// apart by the sweep's own record of them (ownerInjected), so a chief nudge is
+// never the owner acting.
+//
+// 🔴 NOT "THE STREAK MOVED SINCE THE EPISODE'S STORED ONE": every pass's
+// Observe writes the current streak onto the episode, so a session that moved
+// and was observed before this check existed (or while a read failed under
+// an older rule) would never look moved again, and its episode would never be
+// read. What was READ is kept apart from what was OBSERVED.
+func (s *Server) episodeOwnerActed(octx context.Context, c nudgeCandidate, ep sessionstate.Episode) bool {
+	f := sessionstate.OwnerFacts{OpenedAt: ep.OpenedAt, WasWaiting: ep.Waiting, Known: c.Status != "",
+		WaitingNow: c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusWaiting}
+	if !f.Known || f.WaitingNow || f.WasWaiting {
+		return sessionstate.OwnerActed(f)
+	}
+	if c.noTranscript || s.ownerChecked.done(ep.ID, c.StreakKey) {
+		return false
+	}
+	read, err := s.nudgeTranscript(octx, c)
+	if err != nil {
+		s.logger.Printf("session state: episode %d: the owner-acted read: %v", ep.ID, err)
+		return false
+	}
+	injected, err := s.ownerInjected(octx, c.Session)
+	if err != nil {
+		s.logger.Printf("session state: episode %d: the owner-acted read: injected: %v", ep.ID, err)
+		return false
+	}
+	s.ownerChecked.checked(ep.ID, c.StreakKey)
+	f.Msgs, f.Injected, f.Prefixes = read.Msgs, injected, nudgeInjectedPrefixes
+	return sessionstate.OwnerActed(f)
+}
+
+// ownerInjected is nudgeInjected for the owner-acted check, which runs with
+// the chief's nudges off too: with no nudge store there are no nudges or
+// relays of its own to leave out, and the send queue's pastes still are.
+func (s *Server) ownerInjected(octx context.Context, c chiefnudge.Session) ([]string, error) {
+	if s.ext.ChiefNudges != nil {
+		return s.nudgeInjected(octx, c)
+	}
+	if q, ok := s.ext.SendQueue.(injectedBodyReader); ok && c.Kind == chiefnudge.KindMirror {
+		return q.InjectedBodies(octx, s.now().Add(-7*24*time.Hour), 1000)
+	}
+	return nil, nil
+}
+
+// episodeChecks is, per open episode, the streak its owner-acted read last
+// succeeded on (episodeOwnerActed). In memory: after a restart every open
+// episode is read once more, then again only when its session moves.
+type episodeChecks struct {
+	mu sync.Mutex
+	m  map[int64]string
+}
+
+// checked records that episode id's conversation was read on streak.
+func (o *episodeChecks) checked(id int64, streak string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.m == nil {
+		o.m = map[int64]string{}
+	}
+	o.m[id] = streak
+}
+
+// done reports whether episode id was read on streak already.
+func (o *episodeChecks) done(id int64, streak string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	got, ok := o.m[id]
+	return ok && got == streak
+}
+
+// settle forgets episode id (it ended).
+func (o *episodeChecks) settle(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.m, id)
 }
 
 // answerableWaits is the session keys (an item's claudeSession: the Claude

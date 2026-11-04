@@ -467,8 +467,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				if st.Unknown != nil {
 					c.Status = ""
 				}
-				if st.Since > 0 && !st.Observed.IsZero() {
-					c.StreakKey = "since:" + strconv.FormatInt(st.Since, 10)
+				if c.StreakKey = windowStreakKey(st); c.StreakKey != "" {
 					c.IdleSince, c.IdleFor = st.Observed, now.Sub(st.Observed)
 				}
 				all = append(all, nudgeCandidate{Session: c, noTranscript: noTranscript})
@@ -519,7 +518,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				c.ChatSessionID, c.Key = sess.ID, chiefnudge.AgentKey(a.ID, sess.ID)
 				c.OpenAsk = c.OpenAsk || inFlight[chiefnudge.KindAgent+":"+c.Key]
 				c.Status = "idle"
-				c.StreakKey = "msg:" + strconv.FormatInt(m.ID, 10)
+				c.StreakKey = agentStreakKey(m)
 				c.IdleSince, c.IdleFor = m.CreatedAt, now.Sub(m.CreatedAt)
 				c.TurnError = m.Role == "assistant" && strings.HasPrefix(m.Content, AgentTurnFailedPrefix)
 				all = append(all, nudgeCandidate{Session: c, agent: a, session: sess, ownerLast: m.Role == "user"})
@@ -528,6 +527,27 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 	}
 	read.sessions = all
 	return read
+}
+
+// agentStreakKey is an agent conversation's streak as its newest message m
+// keys it. ONE RULE: the stall facts, the nudge's streak re-read
+// (nudgeStreakNow) and the owner viewing the conversation (session_viewed.go)
+// all key it here, so an episode the view ends names the streak the next pass
+// will see (session_state.go reads the id back from the "msg:" prefix).
+func agentStreakKey(m agents.ChatMessage) string {
+	return "msg:" + strconv.FormatInt(m.ID, 10)
+}
+
+// windowStreakKey is a mirrored window's streak as the host reports its state
+// st — the status Claude Code wrote, by the time it wrote it — "" when the
+// host reports none. ONE RULE: the stall facts and the episode push's waiting
+// hook (session_push.go) both key a window's streak by it, so an episode the
+// hook opens names the streak the pass will see.
+func windowStreakKey(st mirror.AgentState) string {
+	if st.Since > 0 && !st.Observed.IsZero() {
+		return "since:" + strconv.FormatInt(st.Since, 10)
+	}
+	return ""
 }
 
 // nudgeWindowKey is the session key a mirrored window is judged under, and its
@@ -1282,7 +1302,7 @@ func (s *Server) nudgeStreakNow(ctx context.Context, d chiefnudge.Decision) nudg
 	case len(last) == 0:
 		return nudgeMovedOn
 	}
-	return nudgeStreakState("msg:"+strconv.FormatInt(last[len(last)-1].ID, 10), d)
+	return nudgeStreakState(agentStreakKey(last[len(last)-1]), d)
 }
 
 // mirrorWindowKey is the session key of the conversation the window (host,
