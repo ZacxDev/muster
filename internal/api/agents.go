@@ -245,6 +245,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 			cards[i].PrimaryChief = cards[i].ID == pc.ID
 		}
 	}
+	// Each entry's previous focus titles, one read for all of them (the
+	// command palette's search: withPreviousTitles).
+	s.withPreviousTitles(ctx, cards, mirrors)
 	s.withCardAttention(ctx, cards, mirrors)
 	// The Idle section (ui.InIdleSection), with the server's clock, after the
 	// pins are marked: decided on every build, so an entry active again leaves

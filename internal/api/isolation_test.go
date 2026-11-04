@@ -239,10 +239,15 @@ var isolationClasses = map[string]routeClass{
 	"GET /events":                classList,
 	// The browser telemetry relay (faro_relay.go): names no object; it
 	// forwards the caller's own batch, rate-limited per user.
-	"POST /telemetry/faro":         classList,
-	"GET /share":                   classList,
-	"GET /tasks":                   classList,
-	"GET /ui/nav/agents":           classList,
+	"POST /telemetry/faro": classList,
+	"GET /share":           classList,
+	"GET /tasks":           classList,
+	"GET /ui/nav/agents":   classList,
+	// The palette's server search (palette.go): a session route naming no
+	// object — its live set is the caller's own entries; owner isolation is
+	// pinned by TestThePaletteServerSearchIsOwnerScoped and focus's
+	// TestSearchTitlesIsPerOwner.
+	"GET /ui/palette/history":      classList,
 	"GET /ui/agents/new":           classList,
 	"GET /ui/agents/notes":         classList,
 	"GET /ui/agents/repos":         classList,
