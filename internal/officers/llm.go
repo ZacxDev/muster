@@ -146,7 +146,7 @@ func parseLLM(o Officer, raw json.RawMessage, getenv func(string) string) (*LLM,
 	seen := map[string]bool{}
 	for _, a := range d.RoutineAgents {
 		a = strings.TrimSpace(a)
-		if _, ok := parseInstance(o, a); !ok {
+		if _, _, ok := parseInstance(o, a); !ok {
 			return nil, fmt.Errorf("llm.routine_agents entry %q is not an instance of %s (%s … %s)", a, o.ID,
 				InstanceName(o.ID, 1), InstanceName(o.ID, o.MaxInstances))
 		}
