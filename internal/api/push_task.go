@@ -314,7 +314,8 @@ func (s *Server) notifyAgentRunning(agentName string) {
 //
 // 🔴 ITS ONE CALLER IS setNoteStatus, the funnel every status writer passes,
 // and ctx is the context that funnel stamped: the writer (notes.WithWriter)
-// and who is writing (withRefOrigin). The title's source label is read from
+// and who is writing (withRefOrigin), and for a snapshot's move the queued
+// write it confirmed (withConfirmedRefWrite). The title's source label is read from
 // THOSE, by reviewSourceLabel — no caller names a source, so no caller can
 // name the wrong one or forget to. TestReviewPushIsSentOnlyFromTheStatusFunnel
 // pins the single caller.
@@ -352,7 +353,7 @@ func (s *Server) notifyTaskDone(ctx context.Context, n notes.Note) {
 	s.pushTask(n.OwnerID, push.EventReview, RouterNotification{
 		Type:  taskNotificationType,
 		ID:    strconv.FormatInt(n.ID, 10),
-		Title: reviewPushTitle(n.ID, reviewSourceLabel(statusWriter(notes.WriterFrom(ctx)), refOriginFrom(ctx), n)),
+		Title: reviewPushTitle(n.ID, reviewSourceLabel(statusWriter(notes.WriterFrom(ctx)), refOriginFrom(ctx), confirmedRefWriteFrom(ctx), n)),
 		Body:  taskTitle(n),
 		Tag:   fmt.Sprintf("task-%d-done", n.ID),
 	})
@@ -373,30 +374,59 @@ func reviewPushTitle(id int64, source string) string {
 // label setNoteStatus stamped — and never re-derived from the note:
 //
 //   - "upstream (<ns>)": a plugin task reference's snapshot moved the task
-//     (writerPluginReference), i.e. its upstream changed. ns is the namespace of
-//     the reference key ("hq" for "hq:868…"); plain "upstream" without one.
+//     (writerPluginReference) and the move confirmed none of the writes queued
+//     on it (via nil): the upstream itself changed. ns is the namespace of the
+//     reference key ("hq" for "hq:868…"); plain "upstream" without one.
+//   - "<source> via <ns>": the move confirmed a write queued on the reference
+//     (via: notes.Store.ConfirmRefStatusWrite — same task, same status, not
+//     yet confirmed). The write's own writer and agent are labelled by THIS
+//     rule, so "agent worker-7 via hq"; a write whose own label is "" (the
+//     owner's card control) reads as the owner's — unlabelled — confirmed or
+//     not. ("via upstream" without a namespace.)
 //   - "agent <name>" / "agent": an agent's own write — the per-agent route or
-//     native tool, the all-agents task_set_status tool, or the hook-token
-//     machine route. Named when the writer stamped an agent (refOrigin.Agent);
-//     the machine route and a mirrored session carry none, so they read "agent".
+//     native tool, or the all-agents task_set_status tool. Named when the
+//     writer stamped an agent (refOrigin.Agent); a mirrored session's
+//     task_set_status carries none, so it reads "agent".
+//   - "agent <name>" / "machine": the hook-or-service-token machine route
+//     (PATCH /api/tasks/{id}/status). It is named an agent only when the
+//     caller IS one — a service caller whose asserted actor is one of the
+//     owner's agents (handleAPITaskStatus stamps refOrigin.Agent). Every other
+//     caller of that route — the shared hook token (`muster task status`, any
+//     hook script), a personal token, a service actor that is not an agent —
+//     names no one it can be checked against, and the route is not agent-only,
+//     so it reads "machine": neither an agent nor the owner is claimed.
 //   - "": the owner's own card control (writerHumanUI), and any writer that is
 //     not one of the above. The owner just made the change, so the push is an
 //     echo to their other devices and keeps the unlabelled copy it always had —
 //     an unlabelled title therefore never means an upstream or an agent.
-func reviewSourceLabel(writer statusWriter, o refOrigin, n notes.Note) string {
+func reviewSourceLabel(writer statusWriter, o refOrigin, via *notes.RefWrite, n notes.Note) string {
 	switch writer {
 	case writerPluginReference:
+		ns := ""
 		if n.Ref != nil {
-			if ns, _ := notes.ParseTag(n.Ref.Key); ns != "" {
-				return "upstream (" + ns + ")"
+			ns, _ = notes.ParseTag(n.Ref.Key)
+		}
+		if via != nil {
+			who := reviewSourceLabel(statusWriter(via.Writer), refOrigin{Agent: via.Agent}, nil, n)
+			if who == "" {
+				return ""
 			}
+			return who + " via " + firstNonBlank(ns, "upstream")
+		}
+		if ns != "" {
+			return "upstream (" + ns + ")"
 		}
 		return "upstream"
-	case writerAgentRoute, writerAgentTool, writerTaskTool, writerMachineAPI:
+	case writerAgentRoute, writerAgentTool, writerTaskTool:
 		if name := strings.TrimSpace(o.Agent); name != "" {
 			return "agent " + name
 		}
 		return "agent"
+	case writerMachineAPI:
+		if name := strings.TrimSpace(o.Agent); name != "" {
+			return "agent " + name
+		}
+		return "machine"
 	}
 	return ""
 }

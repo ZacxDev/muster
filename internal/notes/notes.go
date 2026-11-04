@@ -580,6 +580,14 @@ type Store interface {
 	// the first result wins, and the stored row is returned). A write this
 	// plugin never held → ErrRefWriteNotLeased.
 	FinishRefWrite(ctx context.Context, pluginID, id int64, ok bool, errText string) (RefWrite, bool, error)
+	// ConfirmRefStatusWrite is called after a snapshot moved reference noteID
+	// to status: it marks, and returns (true), the queued status write that
+	// move confirms — the newest unconfirmed, undismissed, not-failed status
+	// write on the task asking for exactly that status — and marks every
+	// other unconfirmed write already DONE upstream as spent. No such write →
+	// false: the move is the upstream's own. A write confirms at most one move
+	// (0079). See PGStore.ConfirmRefStatusWrite.
+	ConfirmRefStatusWrite(ctx context.Context, noteID int64, status string) (RefWrite, bool, error)
 	// RefWrites returns task noteID's writes that are not done (pending,
 	// claimed, failed) and not dismissed, oldest first: the task page's
 	// "sending…" / "failed" lines.

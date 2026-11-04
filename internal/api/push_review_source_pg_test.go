@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -84,14 +85,33 @@ func TestTheReviewPushNamesItsSourceEndToEnd(t *testing.T) {
 		expect(t, n.ID, fmt.Sprintf("Task #%d ready for review · agent %s", n.ID, w.Name))
 	})
 
-	t.Run("the machine route reads agent", func(t *testing.T) {
+	// The machine route cannot tell who holds the shared hook token (any hook
+	// script, the owner's own `muster task status`), so an unattributed call
+	// claims neither an agent nor the owner.
+	t.Run("the machine route on the hook token reads machine", func(t *testing.T) {
 		n := f.task(t, "machine task")
 		req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+strconv.FormatInt(n.ID, 10)+"/status",
 			strings.NewReader(`{"status":"ready_for_review"}`))
 		if rec := f.serve(f.srv.handleAPITaskStatus, req, pv(n.ID)); rec.Code/100 != 2 {
 			t.Fatalf("PATCH /api/tasks/%d/status: HTTP %d %s", n.ID, rec.Code, rec.Body)
 		}
-		expect(t, n.ID, fmt.Sprintf("Task #%d ready for review · agent", n.ID))
+		expect(t, n.ID, fmt.Sprintf("Task #%d ready for review · machine", n.ID))
+	})
+
+	// A service caller whose asserted actor is one of the owner's agents IS an
+	// agent (the route already applies the agent rule to it): it is named.
+	t.Run("the machine route by a service caller that is an agent names it", func(t *testing.T) {
+		n := f.task(t, "service agent task")
+		req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+strconv.FormatInt(n.ID, 10)+"/status",
+			strings.NewReader(`{"status":"ready_for_review"}`))
+		req = req.WithContext(context.WithValue(f.asOwner, serviceActorCtxKey{}, f.chief.Name))
+		req.SetPathValue("id", strconv.FormatInt(n.ID, 10))
+		rec := httptest.NewRecorder()
+		f.srv.handleAPITaskStatus(rec, req)
+		if rec.Code/100 != 2 {
+			t.Fatalf("PATCH /api/tasks/%d/status as %s: HTTP %d %s", n.ID, f.chief.Name, rec.Code, rec.Body)
+		}
+		expect(t, n.ID, fmt.Sprintf("Task #%d ready for review · agent %s", n.ID, f.chief.Name))
 	})
 
 	// ⚠ An invariant guard, not regression coverage: the owner's push was

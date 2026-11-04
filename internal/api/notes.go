@@ -1630,14 +1630,20 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 	// into complete, never out of it, the latter decided by the row itself
 	// (notes.ForAgent). The operator's hook token, a personal token and an
 	// attributed service that is not an agent are unchanged.
+	origin := s.machineRefOrigin(r)
 	if actor, ok := serviceActorFromContext(ctx); ok && s.actorIsAgent(ctx, actor) {
 		if notes.ValidStatus(status) && !notes.StatusAllowedForAgent(status) {
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal("", status)})
 			return
 		}
 		ctx = notes.ForAgent(ctx)
+		// The one caller of this route that is KNOWN to be an agent: the
+		// ready-for-review push names it (reviewSourceLabel), and a write
+		// queued on a reference records it. Every other caller (the shared
+		// hook token, a personal token, a non-agent service) names no agent.
+		origin.Agent = actor
 	}
-	note, err := s.applyTaskStatus(withRefOrigin(ctx, s.machineRefOrigin(r)), writerMachineAPI, id, status)
+	note, err := s.applyTaskStatus(withRefOrigin(ctx, origin), writerMachineAPI, id, status)
 	if errors.Is(err, errQueuedUpstream) {
 		// A reference: queued for the upstream. 202, the task as it stands.
 		s.writeJSON(w, http.StatusAccepted, queuedTask{apiTask: s.apiTaskOne(ctx, note), Queued: true})

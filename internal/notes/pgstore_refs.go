@@ -451,6 +451,46 @@ func (s *PGStore) FinishRefWrite(ctx context.Context, pluginID, id int64, ok boo
 	return got[0], tag.RowsAffected() > 0, nil
 }
 
+// ConfirmRefStatusWrite: see the Store interface.
+//
+// 🔴 THE MATCH IS THE SAME TASK AND THE SAME STATUS, AND THE WRITE IS SPENT BY
+// IT — one statement, so two concurrent moves cannot both take one write.
+// "Same status" is what keeps an unrelated upstream change from being
+// attributed: an agent that queued in_progress did not ask for the
+// ready_for_review the upstream then set. A write still pending or claimed
+// counts (the snapshot may report it before the plugin's result does); a
+// failed one never does — it did not land.
+//
+// 🔴 A MOVE ALSO SPENDS EVERY WRITE ALREADY DONE UPSTREAM, matched or not. A
+// write done while the task already had its status moved nothing, and left
+// unspent it would name its author on a later, unrelated upstream move back to
+// that status. A pending or claimed write of another status is left: it has
+// not landed yet, and the move that reports it is still to come.
+func (s *PGStore) ConfirmRefStatusWrite(ctx context.Context, noteID int64, status string) (RefWrite, bool, error) {
+	var got RefWrite
+	err := scanRefWrite(s.pool.QueryRow(ctx, `
+		WITH pick AS (
+			SELECT id FROM task_ref_writes
+			 WHERE note_id = $1 AND kind = 'status' AND status = $2 AND state <> 'failed'
+			   AND confirmed_at IS NULL AND dismissed_at IS NULL
+			 ORDER BY id DESC LIMIT 1
+			 FOR UPDATE
+		), spent AS (
+			UPDATE task_ref_writes SET confirmed_at = now()
+			 WHERE note_id = $1 AND kind = 'status' AND confirmed_at IS NULL
+			   AND (id IN (SELECT id FROM pick) OR state = 'done')
+		)
+		SELECT `+refWriteCols+` FROM task_ref_writes w JOIN notes n ON n.id = w.note_id
+		 WHERE w.id IN (SELECT id FROM pick)`, noteID, status), &got)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RefWrite{}, false, nil
+	}
+	if err != nil {
+		return RefWrite{}, false, err
+	}
+	return got, true, nil
+}
+
 // RefWrites: see the Store interface.
 func (s *PGStore) RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error) {
 	return s.refWritesWhere(ctx, `w.note_id = $1 AND w.state <> 'done' AND w.dismissed_at IS NULL ORDER BY w.id`, noteID)
