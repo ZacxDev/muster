@@ -169,3 +169,53 @@ func TestACappedJudgementPoolIsNotWokenForNewWork(t *testing.T) {
 		t.Fatalf("control: the next day the pass has started %d judgement instances in all, want 2", n)
 	}
 }
+
+// TestClaimNextCountsAgainstTheJudgementSessionCap: officer_claim with no
+// item_id (HQ's claim-next picks the item) is a judgement session too. With a
+// cap of 2: an empty queue's "nothing to claim" consumes nothing; two
+// claim-nexts take two items; the third is refused before HQ — no claim-next
+// request leaves muster and the item stays open. The next UTC day it is
+// claimable.
+func TestClaimNextCountsAgainstTheJudgementSessionCap(t *testing.T) {
+	r := newCappedOfficerRig(t)
+	r.hq.ClaimNext = true
+	ctx := context.Background()
+	j1 := agents.Agent{Name: offTJudge + "1"}
+	next := func() string {
+		t.Helper()
+		return r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{}`)
+	}
+	if out := next(); isToolErr(out) || !strings.Contains(out, `"claimed":false`) {
+		t.Fatalf("claim-next on an empty queue: %s, want nothing to claim", out)
+	}
+	a := r.hq.AddTieredItem(offT, "gpu.alert", "node-a", officers.TierJudgement)
+	b := r.hq.AddTieredItem(offT, "gpu.alert", "node-b", officers.TierJudgement)
+	c := r.hq.AddTieredItem(offT, "gpu.alert", "node-c", officers.TierJudgement)
+	for _, want := range []string{a, b} {
+		if out := next(); isToolErr(out) || !strings.Contains(out, `"id":"`+want+`"`) {
+			t.Fatalf("claim-next (session for %s): %s", want, out)
+		}
+	}
+	r.hq.ResetRequests()
+	out := next()
+	if !isToolErr(out) || !strings.Contains(out, "max_sessions_per_day") {
+		t.Fatalf("claim-next past the cap: %s, want a refusal naming the cap", out)
+	}
+	for _, q := range r.hq.Requests() {
+		if strings.HasSuffix(q.Path, "/claim-next") {
+			t.Fatalf("the refused claim-next reached HQ: %s %s", q.Method, q.Path)
+		}
+	}
+	if st := r.hq.Item(c).Status; st != "open" {
+		t.Fatalf("item %s is %s, want it left open in HQ", c, st)
+	}
+	for _, done := range []string{a, b} {
+		if out := r.s.dispatchAgentTool(ctx, j1, officers.ToolComplete, `{"item_id":"`+done+`","outcome":"done","summary":"ok"}`); isToolErr(out) {
+			t.Fatal(out)
+		}
+	}
+	r.advance(24 * time.Hour)
+	if out := next(); isToolErr(out) || !strings.Contains(out, `"id":"`+c+`"`) {
+		t.Fatalf("claim-next the next day: %s, want item %s", out, c)
+	}
+}
