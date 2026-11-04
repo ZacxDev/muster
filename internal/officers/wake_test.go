@@ -250,7 +250,7 @@ func TestAnOpenItemArrivingMidWindowResetsIdle(t *testing.T) {
 func completeAfterClaim(t *testing.T, r *rig, id string) {
 	t.Helper()
 	c := officers.NewClient(r.o, nil)
-	if _, err := c.Claim(context.Background(), officers.ItemID(id), officers.InstanceName(relID, 1), 60); err != nil {
+	if _, err := c.Claim(context.Background(), officers.ItemID(id), officers.InstanceName(relID, 1), 60, ""); err != nil {
 		t.Fatal(err)
 	}
 	completeVia(t, r, id)

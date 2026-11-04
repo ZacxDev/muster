@@ -62,6 +62,8 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
+| `tiers` | none | Two pools of instances, routine and judgement, each with its own `model` and `max_instances`: [The two pools](#the-two-pools). Absent: one pool, as above. |
+| `llm` | none | Needs `tiers`. Lets the routine pool reach `tiers.routine.model` through muster's [LLM proxy](#the-llm-proxy), within `{"daily_budget_usd", "max_tokens_per_item"}`. Strict; it requires the officer's own key, `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (never the shared one). |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -482,6 +484,8 @@ and is waited for before the process exits.
 in muster is; see `cmd/muster-server`'s `startBackgroundLoops`). Two pods
 starting the same instance is one agent create winning on the unique name and
 one logged failure; two stopping one is idempotent.
+
+Tiered officers run one wake decision per pool: [The two pools](#the-two-pools).
 
 ### A claim held by a stopped instance
 
@@ -1123,6 +1127,225 @@ transcripts is a boot refusal.
 muster-server back to an image that predates it — an older image refuses the
 unknown field and does not boot.
 
+## Tiers and the LLM proxy
+
+### The two pools
+
+An officer may split its instances into two **pools**, one per HQ item tier
+(HQ's item `tier`, `routine` or `judgement`):
+
+```json
+{"id": "gpu-health:fleet", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "haiku", "max_instances": 3},
+           "judgement": {"model": "opus",  "max_instances": 1}}}
+```
+
+- **Names.** The judgement pool's instances are `officer-<slug>-<n>`, the names
+  an untiered officer's have always had. The routine pool's are
+  `officer-<slug>-r<n>` (shown as `#r<n>`). Both pools are the officer's
+  instances for every rule the name decides: the officer tools, delete
+  protection, the session's model, and the transcript forwarder. A name past
+  its pool's `max_instances` is an ordinary agent, as for an untiered officer.
+- **Waking.** One pass reads HQ once and runs `Decide` per pool. A pool counts
+  only the claimable items of its own tier as HQ reads them. An item with no
+  `tier`, or one muster does not know, counts as **judgement**, so it fails
+  toward the stronger model, as HQ's default does. A routine item HQ promoted
+  after two lapsed leases reads `judgement`, so the judgement pool wakes for it.
+  A live claim belongs to the pool of the instance holding it, whatever the
+  item's tier. Each pool has its **own idle clock**: the routine pool scales to
+  zero while the judgement pool keeps working, and the other way round.
+- **Claims.** Each instance's `officer_claim` sends its pool's `tier`. HQ then
+  refuses another tier's item with `409 wrong_tier`, and the instance gets that
+  refusal as it is. `officer_items` lists only the instance's own tier
+  (`?tier=`). The first message says which tier the instance works.
+- **No `tiers`: exactly as before.** There is one pool and the same names. The
+  claim sends no `tier` key and the items list has no tier filter.
+
+Refused at boot, each naming the problem:
+- a tier key other than `routine` and `judgement`;
+- a missing pool;
+- a pool without a `model`, or with a model that is not a model name;
+- an unknown key inside a pool;
+- a pool `max_instances` outside 1–8 (the default is 1);
+- a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
+  values are `tiers.judgement`'s, and two sources for one value are refused
+  rather than ranked);
+- `tiers` on a [shipping officer](#shipping-officers), because every pool
+  would hold its merge and release tools;
+- a routine name (`-r<max>`, one character longer) over the namespace bound;
+- a provider model id (`vendor/model`) in either pool, except the routine
+  pool of an officer with an [`llm` block](#the-llm-proxy) — and, the other way
+  round, an `llm` block whose routine model is a Claude model.
+
+**The models.** The judgement pool's `model` is always a Claude Code model,
+checked by the same rule as `model`. The routine pool's is a Claude model too
+(`haiku`, run on the Claude accounts like any instance) — unless the officer
+declares `llm`, when it MUST be a provider model id such as
+`deepseek/deepseek-v4.1-flash-1017`, and it is THE model the LLM proxy pins
+every routine request to. There is no second place a routine model is set.
+
+### The LLM proxy
+
+An officer with an `llm` block has its **routine pool** reach its model —
+DeepSeek through OpenRouter, for the cheap tier — **through muster-server**,
+on the connect listener the instances already use. The pod holds no provider
+key and gains no egress: its Claude Code is to run with
+`ANTHROPIC_BASE_URL=$MUSTER_CONNECT_URL/llm` and its own muster token as the
+bearer, and muster attaches the officer's key on the way to the provider.
+
+```json
+{"id": "triage:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "deepseek/deepseek-v4.1-flash-1017", "max_instances": 2},
+           "judgement": {"model": "opus", "max_instances": 1}},
+ "llm":   {"daily_budget_usd": 5, "max_tokens_per_item": 400000}}
+```
+
+One source for each value:
+
+| what | where |
+|---|---|
+| the model every routine request is pinned to | `tiers.routine.model` ([The two pools](#the-two-pools)). The model the client asked for is ignored (logged and audited as `requested_model`). Pinning the id pins the weights, not the serving stack: OpenRouter routes one id to several providers, and the one that served each request is logged and audited as `provider`. |
+| who may use the proxy | the routine pool's instances, `officer-<slug>-r<n>` for `n` within `tiers.routine.max_instances` (`officers.RoutineAgent`, the registry's own naming rule). A judgement instance, an `-r<n>` past the max, an untiered officer's instance and any other agent are refused (403). |
+| what it may spend | the `llm` block, below. |
+
+| `llm` field | default | |
+|---|---|---|
+| `daily_budget_usd` | required | The officer's spend cap per UTC day, over all its routine instances, (0, 1000]. Metered from the cost **the provider reports in the stream** (`usage.cost`), never from a price list: billed prices have run well above list. A request is refused once the day's booked spend reaches the cap; requests in flight together can take the day slightly over it (the key's OpenRouter credit limit is the backstop). |
+| `max_tokens_per_item` | `400000` | 1000–20000000. Tokens a routine instance may use on the item it holds: uncached input, cache writes and output together. **Cache reads are not counted** (Claude Code resends its whole context on every request, mostly as cache reads); they are still metered and charged against `daily_budget_usd`. Past the cap, its next request is refused. |
+
+The key is the officer's own `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`
+(`<NAME>` as for the HQ token), and it is **required**: unset or blank is a
+boot refusal naming the officer and the variable. The deployment's shared
+`MUSTER_AGENT_OPENROUTER_KEY` is never used for it. Give each officer's key an
+**OpenRouter-side credit limit**: it is the second budget wall, the one that
+does not depend on muster.
+
+Refused at boot, each naming the problem: `llm` without `tiers` (the proxy
+serves only a routine pool); `llm` beside a Claude routine model; a routine
+provider model id without `llm`; `llm` on a [shipping officer](#shipping-officers);
+an unknown key in `llm` (`model` and an agent list included: they live in
+`tiers`); a missing or out-of-range budget or cap; no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (even with the shared key set); `llm` on a
+server with no database (the budget is persisted) or no connector store (the
+proxy's door and audit trail).
+
+🔴 **Today every `llm` officer is refused at boot.** The pod side is not in
+muster yet: the claude-code image's entrypoint still refuses
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (see [The instance's Claude
+Code session](#the-instances-claude-code-session)), with no scoped exception
+under `CCD_LLM_ROUTE=muster`, and the pod spec refuses a provider model id as
+the session's model. A routine instance of such an officer could not be
+provisioned, so muster-server refuses to start with one, naming the officer
+and the reason. The change that adds `CCD_LLM_ROUTE` lifts the refusal.
+
+#### What one request does
+
+`POST /llm/v1/messages` is the **only** path served (Claude Code calls nothing
+else against its base URL: always `POST /v1/messages?beta=true`, always
+`stream: true`). Any other method or path under `/llm/` is refused 404 before
+any credential is read. For an admitted request, in order:
+
+1. The calling agent is resolved from its own token (`Authorization: Bearer`
+   or `X-Muster-Token`; the shared hook and service tokens are refused, as on
+   every connector route) and must be a routine instance of an officer that
+   declares `llm`.
+2. The body must be a JSON object (at most 32 MiB). It is rebuilt from an
+   **allowlist** of Anthropic Messages fields (`messages`, `system`,
+   `max_tokens`, `metadata`, `stop_sequences`, `stream`, `temperature`,
+   `top_k`, `top_p`, `tools`, `tool_choice`, `thinking`,
+   `context_management`), with `model` set to `tiers.routine.model`. Every
+   other key is dropped (its name is logged, never its value), OpenRouter's
+   routing fields above all: `fallbacks`, `models`, `provider`, `route`,
+   `plugins` and `transforms` could serve the request from a model other than
+   the pin.
+3. **The budget.** The officer's booked spend for the UTC day is read from the
+   database (`officer_llm_usage`, migration 0075). At or over
+   `daily_budget_usd`, the request is refused with **400** and nothing is
+   sent. ⚠ The check is not a reservation: requests in flight together (several
+   routine instances, or one instance's parallel calls) all pass while the
+   spend is under the budget, so the day can end slightly over it, by at most
+   the cost of the requests in flight. The OpenRouter-side credit limit on the
+   officer's key is the backstop. If the spend cannot be read, the request is refused (503) and
+   nothing is sent: the proxy never spends blind.
+4. **The per-item cap**, against the instance's tokens on its held item (below).
+5. The request goes to `https://openrouter.ai/api/v1/messages`
+   (`?beta=true` kept, no other query) with the officer's key and only the
+   client's `Content-Type`, `Accept`, `Anthropic-Version`, `Anthropic-Beta`,
+   `User-Agent` and `X-App` headers. The client's own credential and session
+   headers are not forwarded. Redirects are not followed.
+6. **The response is streamed through:** each server-sent event is relayed as
+   the provider sent it and flushed as it arrives. The proxy reads
+   `message_start` (message id, model, provider, input usage) and
+   `message_delta` (output usage, `usage.cost`, stop reason) on the way past.
+7. **The usage is booked before the response ends** — the database row, the
+   per-item count and the metrics — so the instance's next request is checked
+   against it. A response that reported no cost (a stream that broke off, a
+   client that went away) is booked from an estimate at deliberately
+   pessimistic rates and counted as estimated. So is a request that was
+   written to the provider and then got no response. A connection that fails
+   **before** the request is written (DNS, refused, TLS) reached no provider,
+   which billed nothing: it is booked as nothing, and the instance gets a 502.
+   A non-2xx answer from the provider is not booked.
+8. One audit row (the [connector audit trail](connectors.md#the-llm-proxy),
+   kind `llm`) and one log line: agent, officer, instance, item, model,
+   requested model, provider, status, result, tokens by direction, USD,
+   whether it was estimated, stop reason and duration. Never a body, a header
+   or the key.
+
+**Refusals end the turn.** The budget and the item cap answer **400**
+(`invalid_request_error`), not 429: Claude Code retries 429 and 5xx with
+backoff, which on an instance would read as a stall. The message tells the
+model to stop; the item stays queued in HQ.
+
+**The per-item cap and the lease.** The proxy learns which item an instance
+holds from its own `officer_claim` / `officer_complete` / `officer_release`
+calls, and from every wake-loop read of HQ's claims. A new item starts the
+count at zero. A capped instance cannot heartbeat, so its lease lapses (HQ
+then hands the item on: a precondition on HQ that muster does not check); the next wake-loop read shows the instance holding
+nothing, which resets its count, so it is not stuck. Tokens used before any
+claim are counted under no item and reset on each such read: the daily budget,
+not the item cap, is the wall for an instance that never claims. The counts
+are in memory; a restart forgets them (the budget is persisted).
+
+**A refused key is not a stall.** When OpenRouter refuses the key (401/403),
+the instance gets a **400** with muster's own `authentication_error` naming
+the fault — never the provider's status or body. Claude Code retries a 401
+about ten times with backoff, so passing it through would make the instance
+look stalled; a 400 ends the turn. muster counts every refusal, under the
+provider's own status, on
+`muster_officer_llm_upstream_auth_failures_total{officer,status}`, holds
+`muster_officer_llm_upstream_auth_failing{officer}` at 1 until a request
+succeeds again, and logs one loud line each time the state changes (failing,
+then recovered) rather than one per request. The audit row keeps the
+provider's status.
+
+**The key never reaches the instance.** It is attached in the proxy alone;
+every byte relayed downstream is scrubbed of it, and a provider error body is
+relayed scrubbed (a 401/403 body is replaced outright).
+
+#### Usage counters
+
+Per officer and routine instance (`instance` is `r<n>`, never the agent name;
+both labels are bounded by `MUSTER_OFFICERS`):
+
+| metric | |
+|---|---|
+| `muster_officer_llm_requests_total{officer,instance,result}` | `ok`, `upstream_auth`, `upstream_status`, `upstream_error`, `refused_budget`, `refused_item_cap`, `refused_bad_request`, `refused_store` |
+| `muster_officer_llm_tokens_total{officer,instance,dir}` | `in` (uncached input), `cache_read`, `cache_write`, `out` |
+| `muster_officer_llm_cost_usd_total{officer,instance}` | USD booked against the budget |
+| `muster_officer_llm_cost_estimated_total{officer}` | requests booked from an estimate (no cost reported) |
+| `muster_officer_llm_spent_today_usd{officer}`, `muster_officer_llm_budget_usd{officer}` | the day's booked spend as last read or booked, and the budget |
+| `muster_officer_llm_refused_total{officer,reason}` | refused before any officer is charged: `path`, `not_routine`, `unconfigured` (`officer` is `none` for a non-officer caller) |
+| `muster_officer_llm_upstream_auth_failures_total{officer,status}`, `muster_officer_llm_upstream_auth_failing{officer}` | the provider refusing the key |
+| `muster_officer_llm_book_failures_total{officer}` | usage that could not be written to the database; alert on any |
+
+The durable copy is `officer_llm_usage`: one row per officer, routine instance
+number and UTC day with requests, tokens by direction, USD and estimated requests.
+
+**Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
+rolling muster-server back to an image that predates it (an older image
+refuses the unknown field and does not boot). Migration 0075's own rollback is
+in its header.
+
 ## Security model
 
 - **The token never leaves muster-server.** It is read from the server's
@@ -1155,6 +1378,11 @@ unknown field and does not boot.
   a [postgres connector](connectors.md#postgres-connectors) reads that one
   database through muster-server, which holds the password and runs each
   statement read-only; the pod's network is unchanged.
+- **No model credential in a routine pod.** A routine instance of an officer
+  with `llm` reaches its model through muster's
+  [LLM proxy](#the-llm-proxy) on the connect port, with its own muster token;
+  muster-server holds the provider key, pins the model and enforces the
+  budget. An injected session can at worst spend the officer's daily budget.
 
 ## cairn
 

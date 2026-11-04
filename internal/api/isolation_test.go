@@ -353,6 +353,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /agent/connectors/{name}":          classConnect,
 	"POST /agent/connectors/{name}/request": classConnect,
 	"POST /mcp":                             classConnect,
+	"POST /llm/v1/messages":                 classConnect,
+	// Refused 404 for every caller, before any credential is read.
+	"/llm/": classPublic,
 
 	// The mirrored terminal names its object in the QUERY (?host=&session=),
 	// and fill() puts A's mirrored host there. The tunnel door is public to

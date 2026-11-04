@@ -15,7 +15,7 @@ import (
 // assert the token is absent from this text.
 func KickoffText(o Officer, n int) string {
 	tools := strings.Join([]string{ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease}, ", ")
-	return fmt.Sprintf(`You are officer %[1]s, instance %[2]d of %[3]d (%[4]s). You are an officer: a standing agent that works a queue of items HQ produces for this officer. You have no muster task and no repository checkout; that is expected.
+	return fmt.Sprintf(`You are officer %[1]s, instance %[2]s of %[3]d (%[4]s). You are an officer: a standing agent that works a queue of items HQ produces for this officer. You have no muster task and no repository checkout; that is expected.
 
 Your officer tools (MCP server "muster"): %[5]s. They act for officer %[1]s only; muster attaches the officer's HQ credential on your behalf, so you never hold or need a token — do not ask for one.
 
@@ -26,8 +26,23 @@ Start now:
 4. When %[7]s shows nothing open and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
 
 %[12]s`,
-		o.ID, n, o.MaxInstances, InstanceName(o.ID, n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o)) + repoNote(o) + connectorsNote(o) + releaseNote(o)
+		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o)) + tierNote(o) + repoNote(o) + connectorsNote(o) + releaseNote(o)
+}
+
+// tierNote tells an instance of a tiered officer which tier it works: its
+// officer_items lists, and its officer_claim takes, only that tier's items.
+// Nothing for an untiered officer, whose text is unchanged.
+func tierNote(o Officer) string {
+	if o.Tier == "" {
+		return ""
+	}
+	other := TierRoutine
+	if o.Tier == TierRoutine {
+		other = TierJudgement
+	}
+	return fmt.Sprintf("\n\nYour tier: %[1]s. This officer splits its queue into routine and judgement items, worked by separate pools of instances; you are in the %[1]s pool. %[2]s lists only %[1]s items, and %[3]s takes only those — a refusal with code wrong_tier means the item became a %[4]s item: leave it and take another.",
+		o.Tier, ToolItems, ToolClaim, other)
 }
 
 // closingLine is the kickoff's last paragraph: what the officer may never do.
