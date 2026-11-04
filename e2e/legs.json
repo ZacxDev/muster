@@ -125,7 +125,8 @@
       "tests/tool-context.spec.ts",
       "tests/agent-sidebar.spec.ts",
       "tests/onboarding.spec.ts",
-      "tests/chief-toggle.spec.ts"
+      "tests/chief-toggle.spec.ts",
+      "tests/switcher-dock.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",

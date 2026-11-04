@@ -6,6 +6,7 @@ import { startServer, Running } from '../lib/server';
 import { touchDrag } from '../lib/touch';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { openDispatchSheet } from '../lib/dispatch';
+import { coarse, pickView } from '../lib/switcher';
 
 // A claude-code agent's live terminal, at a phone's width (412×915), against a
 // REAL muster-server built with `-tags e2eterm`: the page, the socket, the
@@ -292,15 +293,16 @@ test.describe('the switcher at 390×844', () => {
     const [cols, rows] = heard[0].split('x').map(Number);
     expect(cols, 'columns at 390px').toBeGreaterThanOrEqual(30);
     expect(rows, 'rows at 844px, with the bar').toBeGreaterThanOrEqual(20);
-    await page.locator('#switcher-toggle').click();
-    await page.locator('#switcher-views [data-switcher-pick="recent"]').click();
+    // The file's context is a phone's (hasTouch): the touch layout, where the
+    // view is picked in the dock (lib/switcher.ts).
+    expect(await coarse(page), 'the touch layout').toBe(true);
+    await pickView(page, 'recent');
     await expect(bar.locator('[data-switcher-list="recent"]')).toBeVisible();
     await page.waitForTimeout(1000);
     expect(await sizes(), 'a view switch sent no resize').toEqual(heard);
 
     // A tap on the other agent's entry opens it.
-    await page.locator('#switcher-toggle').click();
-    await page.locator('#switcher-views [data-switcher-pick="all"]').click();
+    await pickView(page, 'all');
     const entry = all.locator('a[data-switcher-entry="agent"][data-switcher-code="' + other + '"]');
     await Promise.all([page.waitForURL((u) => u.pathname === '/agents/' + other), entry.click()]);
   });

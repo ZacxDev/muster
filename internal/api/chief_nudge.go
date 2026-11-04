@@ -36,7 +36,9 @@ import (
 //
 // For each, the chief is asked once (a bounded call on the chief's own runtime,
 // in a context of its own so it never enters the operator's conversation:
-// nudgeSessionName, nudgeRoute) for ONE decision: nudge, ask, or leave. Then the guards — in
+// nudgeSessionName, nudgeRoute) for ONE decision: nudge, ask, or leave — with
+// session state on, nudge, leave or NOTIFY (actNotify: no question, no notice;
+// the session's episode pushes), once per episode. Then the guards — in
 // code, never in the prompt — decide what muster does with it:
 //
 //   - a nudge is accepted only when its quote is, byte for byte, inside one of
@@ -46,6 +48,8 @@ import (
 //   - at most chiefnudge.MaxNudgesPerAnchor nudges per owner message, then the
 //     next becomes an ask;
 //   - at most ChiefNudges.HourlyCap nudges an hour across every owner;
+//   - a NEEDS-YOU nudge (the classifier says the session asked) is sent only
+//     for an owner on both live lists (chiefNudgeLiveFor);
 //   - the session must still be in the same idle streak when muster acts, and
 //     the send queue's paste refuses a window that is waiting on a prompt or
 //     has text in its box, as it always has.
@@ -83,6 +87,12 @@ type ChiefNudges struct {
 	// Live is the owners whose nudges are SENT (MUSTER_CHIEF_NUDGE_LIVE_OWNERS);
 	// everyone else is in shadow mode.
 	Live map[int64]bool
+	// NeedsYouLive is the owners whose NEEDS-YOU nudges are sent too
+	// (MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS): a nudge to a session the
+	// classifier says asked something is live only for an owner in BOTH Live
+	// and this; for everyone else it is shadow — recorded, never pasted, and
+	// the stop pushed. Operator decision 2026-11-04, "Separate shadow gate".
+	NeedsYouLive map[int64]bool
 	// Classifier is the stall classifier (Jev over OpenRouter's Decisions API,
 	// on the owner's OpenRouter key); nil: the chief decides alone.
 	Classifier *chiefnudge.Classifier
@@ -131,6 +141,55 @@ func (s *Server) chiefNudgeMode(owner int64) string {
 		return chiefnudge.ModeLive
 	}
 	return chiefnudge.ModeShadow
+}
+
+// 🔴 THE NEEDS-YOU NUDGE'S OWN GATE, ONE PLACE (operator decision 2026-11-04,
+// "Separate shadow gate"). A needs-you nudge — to an idle session the stall
+// classifier says asked something (needsYouStall) — answers the session's
+// question on the owner's behalf, so it is sent only for an owner listed in
+// BOTH MUSTER_CHIEF_NUDGE_LIVE_OWNERS and
+// MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS. Every other nudge keeps the one
+// list it always had. The decision's mode (nudgeModeFor), the send queue's
+// paste gate and an agent's turn (nudgeSendLive) all read this. Session-state
+// step 3a only: with session state off there is no needs-you nudge and no
+// such gate (decideNudge never passes needsYou true there, and nudgeSendLive
+// applies it only to a decision taken in an episode).
+func (s *Server) chiefNudgeLiveFor(owner int64, needsYou bool) bool {
+	if !s.chiefNudgeLive(owner) {
+		return false
+	}
+	return !needsYou || s.ext.ChiefNudge.NeedsYouLive[owner]
+}
+
+// nudgeModeFor is the mode of a nudge to owner's session (chiefNudgeLiveFor).
+func (s *Server) nudgeModeFor(owner int64, needsYou bool) string {
+	if s.chiefNudgeLiveFor(owner, needsYou) {
+		return chiefnudge.ModeLive
+	}
+	return chiefnudge.ModeShadow
+}
+
+// needsYouStall is the stall rule's split (chiefnudge.AskStall at the
+// configured threshold): an idle session whose last message the classifier
+// says asked the owner something. ONE predicate for session state's needs_you
+// (f.AskStall), the needs-you nudge's gate, and the backtested rule in
+// decideNudge. The leave rule reads sessionstate.Asked(classified, errClass,
+// askStall), of which this is the askStall input (a failed or absent
+// classifier counts as asked there, not here).
+func (s *Server) needsYouStall(jev chiefnudge.Result) bool {
+	return chiefnudge.AskStall(jev, s.chiefNudgeAskThreshold())
+}
+
+// nudgeSendLive reports whether decision d's nudge may reach its session NOW:
+// re-read at the paste (and at an agent's turn), so taking an owner off either
+// list stops a nudge already queued. d is a needs-you nudge when the
+// classification stored on it asked AND it is under session state: taken in
+// an episode, or sent while session state is on. The second covers a nudge
+// the image before step 3a queued (no episode) and that is still queued after
+// the deploy: with session state on it is held to the needs-you rule like any
+// other. With session state off neither holds, so there is no such gate.
+func (s *Server) nudgeSendLive(owner int64, d chiefnudge.Decision) bool {
+	return s.chiefNudgeLiveFor(owner, (d.EpisodeID != 0 || s.sessionStateOn()) && s.needsYouStall(d.Jev()))
 }
 
 func (s *Server) chiefNudgeIdle() time.Duration {
@@ -245,6 +304,9 @@ type nudgeCandidate struct {
 	// turn under way that no turn gate saw (session state keeps the stop's
 	// anchor where it was).
 	ownerLast bool
+	// episodeID: with session state on, the session's open episode, which the
+	// decision is taken in (nudgeEpisodeFor); 0 with it off.
+	episodeID int64
 }
 
 // sweepOwnerNudges decides octx's owner's candidates, while the pass has
@@ -296,10 +358,41 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 		if err != nil || decided {
 			continue
 		}
+		if s.sessionStateOn() {
+			id, ok := s.nudgeEpisodeFor(octx, c.Session)
+			if !ok {
+				continue
+			}
+			c.episodeID = id
+		}
 		c.Title = s.nudgeTitle(octx, c.Session)
 		out = append(out, c)
 	}
 	return out
+}
+
+// nudgeEpisodeFor is, with session state on, the open episode c's decision
+// would be taken in: ok false when there is none (the state pass opens it
+// within its interval; the next sweep judges it), when it cannot be read, or
+// when the chief has already judged it.
+//
+// 🔴 PER IDLE EPISODE, AT MOST ONCE (docs/design/session-state.md, "The Chief:
+// nudge, leave or notify"). An episode is one stop, which can hold several
+// idle streaks (a busy blip shorter than sessionstate.EndAfter keeps the
+// stop): only its first judged streak reaches the chief. A later streak of the
+// same stop is pushed by its episode (no decision for its streak, so
+// episodeVerdict pushes past episodeChiefWait), never judged again. The
+// partial unique index chief_nudges_one_per_episode (0078) holds the same line
+// across passes and replicas.
+func (s *Server) nudgeEpisodeFor(octx context.Context, c chiefnudge.Session) (int64, bool) {
+	ep, ok, err := s.ext.Episodes.OpenFor(octx, c.Kind, c.Key)
+	if err != nil || !ok {
+		return 0, false
+	}
+	if _, decided, err := s.ext.ChiefNudges.ForEpisode(octx, ep.ID); err != nil || decided {
+		return 0, false
+	}
+	return ep.ID, true
 }
 
 // 🔴 THE STALL FACTS, ONE PLACE. stallInputs is octx's owner's sessions with
@@ -558,7 +651,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	p.budget--
 	d := chiefnudge.Decision{Kind: c.Kind, Key: c.Key, Host: c.Host, TmuxSession: c.TmuxSession, Window: c.Window,
 		AgentID: c.AgentID, ChatSessionID: c.ChatSessionID, Title: c.Title, StreakKey: c.StreakKey, AnchorKey: chiefnudge.Anchor(owner),
-		IdleSince: c.IdleSince, Mode: s.chiefNudgeMode(o.ID)}
+		IdleSince: c.IdleSince, Mode: s.chiefNudgeMode(o.ID), EpisodeID: c.episodeID}
 	// The stall classifier first (jev.go): it runs in shadow too — measuring it
 	// on real idle stalls is the point — and a failure only means the chief
 	// decides alone.
@@ -582,10 +675,15 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		}
 	}
 	d = d.WithJev(jev)
-	askStall := chiefnudge.AskStall(jev, s.chiefNudgeAskThreshold())
-	hint := chiefnudge.Hint{}
+	// askStall: the session is NEEDS-YOU — idle, and the classifier says its
+	// last message asked the owner something.
+	askStall := s.needsYouStall(jev)
+	// notify: session state is on, so the chief answers nudge, leave or notify
+	// (step 3a) and the session's episode carries the push.
+	notify := s.sessionStateOn()
+	hint := chiefnudge.Hint{Notify: notify}
 	if askStall {
-		hint = chiefnudge.Hint{AskStall: true, Label: jev.Label, AskScore: jev.AskScore}
+		hint.AskStall, hint.Label, hint.AskScore = true, jev.Label, jev.AskScore
 	}
 	raw, err := s.askChiefForNudge(octx, chief, nudgeSessionName(chief.Name, o.ID, c.Session),
 		chiefnudge.Prompt(c.Session, last, owner, c.IdleFor, hint, fence.NewNonce()))
@@ -625,22 +723,41 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision, d.Outcome, d.Detail = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardChiefError), "the chief's call failed"+failureKind(err)
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
-	prop, perr := chiefnudge.ParseProposal(raw)
+	parse := chiefnudge.ParseProposal
+	if notify {
+		parse = chiefnudge.ParseNotifyProposal // an "ask" is read as a notify
+	}
+	prop, perr := parse(raw)
 	if perr != nil {
 		d.Decision, d.Outcome, d.Reason = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardInvalid), perr.Error()
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
+	if notify {
+		prop.Question = "" // a notify carries no question
+	}
 	d.Decision, d.Reason, d.Covered = prop.Decision, prop.Reason, prop.CoveredAction
-	// 🔴 THE BACKTESTED RULE: an ask-stall (ask score at or over the threshold)
-	// defaults to an ASK. A nudge survives it only when the classifier's label
-	// is asks_permission AND the quote guard passes (the owner's own words);
-	// a "leave", or any other nudge, becomes the ask.
-	if askStall && prop.Decision != chiefnudge.DecisionAsk {
+	pointing := prop.Decision == chiefnudge.DecisionAsk || prop.Decision == chiefnudge.DecisionNotify
+	if notify && prop.Decision == chiefnudge.DecisionNudge && viewOnly(c) {
+		// With session state on the view-only rule comes FIRST, so a
+		// needs-you nudge to one says why too (with it off, it runs where it
+		// always did, below).
+		return s.actViewOnly(octx, c, d), false, ""
+	}
+	// 🔴 THE BACKTESTED RULE, AND THE NEEDS-YOU NUDGE: an ask-stall (ask score
+	// at or over the threshold — the session is needs-you) defaults to pointing
+	// the owner at it. A "leave" never quiets it ("Push it anyway", operator
+	// decision 12): it becomes the notify. A nudge survives only when the quote
+	// guard passes — the owner's own words, which the prompt (needsYouRule)
+	// requires to ANSWER the question the session asked (decision 11; any
+	// label, needs_input as well as asks_permission). It is then sent only
+	// under the needs-you gate (chiefNudgeLiveFor, below).
+	if askStall && !pointing {
 		why := ""
 		switch {
 		case prop.Decision == chiefnudge.DecisionLeave:
 			why = "the chief said leave it"
-		case jev.Label != chiefnudge.LabelAsksPermission:
+		case !notify && jev.Label != chiefnudge.LabelAsksPermission:
+			// Session state off: unchanged by step 3a — no needs-you nudge.
 			why = "a nudge is allowed only on an asks_permission stall, and this one is " + jev.Label
 		default:
 			if _, qerr := chiefnudge.CheckQuote(prop, owner); qerr != nil {
@@ -659,8 +776,12 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 				q, generic = chiefnudge.GenericAskQuestion(c.Title, read), true
 			}
 			d.Decision, d.Question = chiefnudge.DecisionAsk, q
-			d.Reason = fmt.Sprintf("classifier: %s, ask score %.2f — the default is an ask (%s); %s",
-				jev.Label, jev.AskScore, why, prop.Reason)
+			def := "an ask"
+			if notify {
+				def = "notify"
+			}
+			d.Reason = fmt.Sprintf("classifier: %s, ask score %.2f — the default is %s (%s); %s",
+				jev.Label, jev.AskScore, def, why, prop.Reason)
 			return s.actAsk(octx, c, d, read, generic), false, ""
 		}
 	}
@@ -668,19 +789,13 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	case chiefnudge.DecisionLeave:
 		d.Outcome = chiefnudge.OutcomeLeft
 		return s.recordNudge(octx, d, "chief_nudge.left"), false, ""
-	case chiefnudge.DecisionAsk:
+	case chiefnudge.DecisionAsk, chiefnudge.DecisionNotify:
 		d.Question = prop.Question
 		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	// A nudge.
-	if c.Kind == chiefnudge.KindMirror && c.Runtime != "" {
-		// 🔴 A VIEW-ONLY SESSION IS NEVER NUDGED: muster cannot type into an
-		// opencode pane (mirror.RuntimeSpec Caps: no Send), so a queued nudge
-		// could only fail at its paste. It becomes the notice.
-		d.Decision = chiefnudge.DecisionAsk
-		d.Question = chiefnudge.EscalationViewOnly(c.Title)
-		d.Reason = "view_only: muster cannot type into a " + c.Runtime + " session, so no nudge is sent; " + d.Reason
-		return s.actAsk(octx, c, d, "", false), false, ""
+	if viewOnly(c) {
+		return s.actViewOnly(octx, c, d), false, ""
 	}
 	if read.Partial {
 		// The read cannot vouch for the owner's last six hours (it ended
@@ -720,6 +835,13 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Reason = "escalated: " + strconv.Itoa(n) + " nudges since the owner's last message; " + d.Reason
 		return s.actAsk(octx, c, d, "", false), false, ""
 	}
+	// 🔴 A NEEDS-YOU NUDGE IS LIVE ONLY UNDER BOTH LISTS (chiefNudgeLiveFor):
+	// otherwise it is shadow — recorded as would_send, never pasted, and its
+	// stop pushed (episodeVerdict: shadow never quiets a stop). Session state
+	// on only: with it off there is no such gate.
+	if notify {
+		d.Mode = s.nudgeModeFor(o.ID, askStall)
+	}
 	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
 	// unsuppressed (operator decision), and is not counted.
 	if d.Mode == chiefnudge.ModeLive && p.hourly >= s.chiefNudgeHourlyCap() {
@@ -737,6 +859,21 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return true, false, ""
 	}
 	return false, false, ""
+}
+
+// viewOnly reports whether c is a session muster cannot type into (an
+// opencode pane: mirror.RuntimeSpec Caps, no Send). A Hermes window is never
+// judged at all (nudgeWindowKey).
+func viewOnly(c nudgeCandidate) bool { return c.Kind == chiefnudge.KindMirror && c.Runtime != "" }
+
+// actViewOnly is a nudge to a view-only session: 🔴 NEVER NUDGED — a queued
+// nudge could only fail at its paste. It becomes the notice (a notify with
+// session state on), with its reason.
+func (s *Server) actViewOnly(octx context.Context, c nudgeCandidate, d chiefnudge.Decision) bool {
+	d.Decision = chiefnudge.DecisionAsk
+	d.Question = chiefnudge.EscalationViewOnly(c.Title)
+	d.Reason = "view_only: muster cannot type into a " + c.Runtime + " session, so no nudge is sent; " + d.Reason
+	return s.actAsk(octx, c, d, "", false)
 }
 
 // nudgeInjectedPrefixes are the openings of muster's own pastes, from the
@@ -1075,7 +1212,34 @@ func (st nudgeState) movedOn() bool { return st == nudgeMovedOn || st == nudgeMo
 // on: the last thing muster checks before it sends, asks, withdraws an ask or
 // pastes anything. The ONE predicate for "moved on" — every live step asks it,
 // handles nudgeUnknown as a wait, and only movedOn() as moved on.
+//
+// 🔴 THE STREAK, THEN THE EPISODE: a decision taken in a session-state episode
+// (d.EpisodeID) holds only while that episode is still the session's open one.
+// A stop that ended (sustained work, its window gone) and a new one that began
+// is a different stop even if the streak reads the same, so a queued nudge for
+// the old one is DROPPED at its paste and the new stop pushes. So is one whose
+// stop was PUSHED after the decision was taken (its hold, episodeNudgeHold,
+// ran out): the owner was told, and must not get the nudge as well.
 func (s *Server) nudgeStateNow(ctx context.Context, d chiefnudge.Decision) nudgeState {
+	st := s.nudgeStreakNow(ctx, d)
+	if st != nudgeStalled || d.EpisodeID == 0 || s.ext.Episodes == nil {
+		return st
+	}
+	ep, ok, err := s.ext.Episodes.OpenFor(ctx, d.Kind, d.Key)
+	switch {
+	case err != nil:
+		return nudgeUnknown
+	case !ok || ep.ID != d.EpisodeID:
+		return nudgeMovedOn
+	case !d.DecidedAt.IsZero() && ep.PushedAt.After(d.DecidedAt):
+		return nudgeMovedOn
+	}
+	return nudgeStalled
+}
+
+// nudgeStreakNow is nudgeStateNow's streak half: d's session read now against
+// the idle streak d was decided on.
+func (s *Server) nudgeStreakNow(ctx context.Context, d chiefnudge.Decision) nudgeState {
 	if d.Kind == chiefnudge.KindMirror {
 		if s.ext.Mirror == nil {
 			return nudgeUnknown
@@ -1219,7 +1383,7 @@ func (s *Server) queueNudgeText(ctx context.Context, d chiefnudge.Decision, text
 func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, text, state, done, action string) {
 	// 🔴 THE KILL SWITCH REACHES AN AGENT'S NUDGE TOO, read at the
 	// moment of sending (the send queue's gate does it for a window).
-	if !s.chiefNudgeLive(d.Owner) {
+	if !s.nudgeSendLive(d.Owner, d) {
 		s.failNudge(ctx, d, state, SendQueueNudgeOff)
 		return
 	}
@@ -1280,15 +1444,8 @@ func (s *Server) failNudge(ctx context.Context, d chiefnudge.Decision, state, wh
 // chief wrote no question (the generic ask), and read is its own reason the
 // notice shows (chiefnudge.GenericAskRead), "" for none.
 func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision, read string, generic bool) bool {
-	if d.Mode == chiefnudge.ModeLive && s.sessionStateOn() {
-		// 🔴 SESSION STATE ON: THE ASK IS A TEXT-FREE "NOTIFY". No notice is
-		// raised and no question is shown: the session's episode carries the
-		// one push for the stop (session_push.go), which names the session and
-		// never quotes it. The decision row keeps the chief's words for the
-		// Chief nudges tab, and its outcome is what the episode push reads.
-		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardEpisode),
-			"session state is on: no notice; the session's episode carries the push"
-		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
+	if s.sessionStateOn() {
+		return s.actNotify(ctx, d)
 	}
 	if strings.TrimSpace(d.Question) == "" {
 		d.Outcome = chiefnudge.Suppressed(chiefnudge.GuardNoQuestion)
@@ -1334,6 +1491,19 @@ func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Deci
 	}
 	s.askFiled(ask)
 	return true
+}
+
+// actNotify records d as a NOTIFY (session state on; step 3a): the chief, or a
+// rule over its answer (view only, a partial read, the nudge budget, a quote
+// that failed on an asking session, a leave on one), points the owner at the
+// session. 🔴 NOTHING IS RAISED AND NO TEXT IS KEPT: no notice, no question,
+// no options — the session's episode carries the one text-free push for the
+// stop (session_push.go), in shadow mode as in live (shadow never quiets a
+// stop). The row keeps the chief's one-line reason, and why muster made it a
+// notify, for the Chief nudges tab.
+func (s *Server) actNotify(ctx context.Context, d chiefnudge.Decision) bool {
+	d.Decision, d.Question, d.Options, d.Outcome = chiefnudge.DecisionNotify, "", nil, chiefnudge.OutcomeNotified
+	return s.recordNudge(ctx, d, "chief_nudge.notified")
 }
 
 // nudgeNoticeMaxRunes bounds a notice's message: the chief's short message, one
@@ -1479,6 +1649,10 @@ func (s *Server) sendQueueNudgeGate(ctx context.Context, it sendqueue.Item) stri
 	d, err := s.ext.ChiefNudges.Get(ctx, it.ChiefNudgeID)
 	if err != nil {
 		return SendQueueNudgeUnknown
+	}
+	if !s.nudgeSendLive(requestOwner(ctx), d) {
+		// A needs-you nudge for an owner taken off its own list.
+		return SendQueueNudgeOff
 	}
 	if d.Outcome != chiefnudge.OutcomeQueued ||
 		(d.SendQueueID != 0 && d.SendQueueID != it.ID) {

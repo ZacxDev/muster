@@ -137,8 +137,16 @@ const (
 	switcherIconGrid  = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4.25 2A2.25 2.25 0 002 4.25v2.5A2.25 2.25 0 004.25 9h2.5A2.25 2.25 0 009 6.75v-2.5A2.25 2.25 0 006.75 2h-2.5zm0 9A2.25 2.25 0 002 13.25v2.5A2.25 2.25 0 004.25 18h2.5A2.25 2.25 0 009 15.75v-2.5A2.25 2.25 0 006.75 11h-2.5zm9-9A2.25 2.25 0 0011 4.25v2.5A2.25 2.25 0 0013.25 9h2.5A2.25 2.25 0 0018 6.75v-2.5A2.25 2.25 0 0015.75 2h-2.5zm0 9A2.25 2.25 0 0011 13.25v2.5A2.25 2.25 0 0013.25 18h2.5A2.25 2.25 0 0018 15.75v-2.5A2.25 2.25 0 0015.75 11h-2.5z" clip-rule="evenodd"/></svg>`
 )
 
-// switcherRecentMax is how many entries Recent shows.
+// switcherRecentMax is how many entries the bar's Recent row shows.
 const switcherRecentMax = 8
+
+// dockRecentMax is how many entries the dock's Recent tab shows (switcher_dock.go;
+// operator decision: "8 on the bar, up to 30 in the dock", from the same
+// recents). The first switcherRecentMax are the bar's row; the rest travel as
+// Switcher.RecentMore, hrefs only. recents.MaxPerOwner must stay above it
+// (TestTheRecentsStoreKeepsEnoughForTheDock), so a few gone sessions among the
+// stored rows cannot leave the tab short.
+const dockRecentMax = 30
 
 // SwitcherCurrent names the page's own session: an agent by id, or a mirrored
 // window by its address (AgentID 0). A window addressed by its session alone
@@ -167,6 +175,10 @@ func (c SwitcherCurrent) is(e listEntry) bool {
 // Switcher is the bar's content, resolved on the server: one list per view.
 type Switcher struct {
 	Recent, Waiting, Pins, All []SwitcherItem
+	// RecentMore is the hrefs of Recent's entries switcherRecentMax+1 to
+	// dockRecentMax, in visit order: the dock's Recent tab draws them from the
+	// All row's pills (every one of them is one), after the bar's own.
+	RecentMore []string
 	// pin is the page's own session as the bar's pin toggle posts it; nil
 	// when the page is no session or its session is not among the entries.
 	pin *switcherPin
@@ -200,6 +212,10 @@ type SwitcherItem struct {
 	// (switcherPrevTitles): what the search finds it by after its current
 	// title, and shows as "Previously: …" when that is why it matched.
 	Prev string
+	// Focus is the entry's current focus title, plained; "" for none. The
+	// dock's row draws it as its second line (data-switcher-focus): Title
+	// joins it with the display name, so it cannot be split back out.
+	Focus string
 }
 
 // switcherName is an entry's WHOLE name, what its pill shows:
@@ -296,7 +312,7 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 	var recent []listEntry
 	seen := map[listEntry]bool{}
 	for _, r := range refs {
-		if len(recent) == switcherRecentMax {
+		if len(recent) == dockRecentMax {
 			break
 		}
 		var e listEntry
@@ -313,7 +329,16 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 		seen[e] = true
 		recent = append(recent, e)
 	}
-	return &Switcher{Recent: switcherItems(recent, cur), Waiting: switcherItems(waiting, cur), Pins: switcherItems(pins, cur), All: switcherItems(entries, cur), pin: pin}
+	// The bar's row is the first switcherRecentMax, labelled against each
+	// other as before; the rest are hrefs (the dock draws them from All).
+	var more []string
+	if len(recent) > switcherRecentMax {
+		for _, it := range switcherItems(recent[switcherRecentMax:], cur) {
+			more = append(more, it.Href)
+		}
+		recent = recent[:switcherRecentMax]
+	}
+	return &Switcher{Recent: switcherItems(recent, cur), RecentMore: more, Waiting: switcherItems(waiting, cur), Pins: switcherItems(pins, cur), All: switcherItems(entries, cur), pin: pin}
 }
 
 // switcherItems is es as one view's items, labelled against each other.
@@ -332,6 +357,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			// dispatched agent's is the cluster.
 			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost)
 			it.Prev = switcherPrevTitles(a.PrevFocus)
+			it.Focus = focusTitle(a.Focus)
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
@@ -341,6 +367,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
 			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host)
 			it.Prev = switcherPrevTitles(m.PrevFocus)
+			it.Focus = focusTitle(m.Focus)
 		}
 		out[i] = it
 	}
@@ -677,7 +704,22 @@ func switcherRowBody(s *Switcher, key, empty string) g.Node {
 	if len(items) == 0 {
 		return P(g.Attr("data-switcher-empty", ""), Class("truncate text-xs text-muted"), g.Text(empty))
 	}
-	return g.Group(g.Map(items, switcherEntry))
+	return g.Group{g.Group(g.Map(items, switcherEntry)), switcherRecentMoreNode(s, key)}
+}
+
+// switcherRecentMoreAttr is Recent's entries past the bar's row (Switcher.RecentMore),
+// one href per line, on a hidden LAST CHILD of the Recent row: a child, so the
+// two refreshes that replace a row's children (the bfcache restore, restore.go;
+// the pin toggle's out-of-band copy, switcherRefresh) keep it in step with the
+// row at no extra cost. The dock (switcher_dock.go) reads it.
+const switcherRecentMoreAttr = "data-switcher-recent-more"
+
+// switcherRecentMoreNode is that child, on Recent's row only, when there is more.
+func switcherRecentMoreNode(s *Switcher, key string) g.Node {
+	if key != SwitcherRecent || len(s.RecentMore) == 0 {
+		return nil
+	}
+	return Span(g.Attr("hidden", ""), g.Attr(switcherRecentMoreAttr, strings.Join(s.RecentMore, "\n")))
 }
 
 // switcherRow is one view's row: its entries, scrolling sideways, or the
@@ -755,6 +797,11 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
 		g.If(it.Words != "", g.Attr("data-switcher-words", it.Words)),
 		g.If(it.Prev != "", g.Attr("data-switcher-prev", it.Prev)),
+		// What the dock's row draws beside the label (switcher_dock.go): the
+		// host as its own value (data-switcher-words folds it in lower-cased,
+		// the icon only names it), and the current focus title alone.
+		g.If(it.Host != "", g.Attr("data-switcher-host", it.Host)),
+		g.If(it.Focus != "", g.Attr("data-switcher-focus", it.Focus)),
 	}
 	if it.Current {
 		return Span(
@@ -921,6 +968,9 @@ var switcherJS = func() string {
     show(v);
     try { localStorage.setItem(KEY, v); } catch (e) {}
   }
+  // The dock's tabs move THIS bar at once (switcher_dock.go): storage alone
+  // would reach it only at the next parse. The latest bar's, after a swap.
+  window.musterSwitcherShow = choose;
   var stored = null;
   try { stored = localStorage.getItem(KEY); } catch (e) {}
   if (stored) show(stored);
@@ -967,12 +1017,57 @@ var switcherJS = func() string {
       btn.focus();
     }
   });
+  // --- THE TOUCH LAYOUT: THE VIEW BUTTON IS THE DOCK'S HANDLE (operator
+  // decision 5; switcher_dock.go). Where the primary pointer is coarse, at any
+  // width, a tap (or ArrowUp / ArrowDown) opens the dock on the shown view's
+  // tab instead of the view menu, and the button names the dialog. A fine
+  // pointer, however narrow the window, keeps the menu. Without script the
+  // button's popovertarget opens the menu, as before.
+  //
+  // 🔴 THE DOCK IS ALWAYS THE TOP DOCUMENT'S. In the view switch's frame
+  // (view_swap.go) this bar asks the parent's — view_swap.go's own framed
+  // predicate — and ONLY when the parent has one: an older parent page has no
+  // musterDock, and then nothing is prevented, so the frame's view menu opens
+  // as it does today. The frame's own dock is never the fallback.
+  function touchLayout() { try { return window.matchMedia('` + DockTouchQuery + `').matches; } catch (e) { return false; } }
+  function dockHost() {
+    var framed = false;
+    try { framed = !!(window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `') && window.parent.musterViews); } catch (e) {}
+    var w = framed ? window.parent : window;
+    try { return w.musterDock && typeof w.musterDock.open === 'function' ? w.musterDock : null; } catch (e) { return null; }
+  }
+  function handle() { return touchLayout() ? dockHost() : null; }
+  // The button names what it opens: the dialog in the touch layout, the menu
+  // otherwise. Synced now, once the document is parsed (appScript, which
+  // defines musterDock, may come after the bar), and when the pointer changes.
+  function syncHandle() {
+    var dock = !!handle();
+    btn.setAttribute('aria-haspopup', dock ? 'dialog' : 'menu');
+    btn.setAttribute('aria-controls', dock ? '` + DockID + `' : '` + switcherMenuID + `');
+  }
+  syncHandle();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', syncHandle);
+  window.addEventListener('pageshow', syncHandle);
+  try { window.matchMedia('` + DockTouchQuery + `').addEventListener('change', syncHandle); } catch (e) {}
   // Opened by a click, a key or a tap, it puts focus on the shown view, so
   // the arrows work at once (a pointer user never sees the ring: focus-visible).
-  btn.addEventListener('click', function () { focusPick = true; });
+  btn.addEventListener('click', function (e) {
+    var dock = handle();
+    syncHandle();
+    // 🔴 THE CHECK COMES BEFORE preventDefault: with no dock to open, the
+    // click is left alone and the button's popovertarget opens the menu.
+    if (dock) {
+      e.preventDefault();
+      dock.open(bar, btn);
+      return;
+    }
+    focusPick = true;
+  });
   btn.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
+      var dock = handle();
+      if (dock) { dock.open(bar, btn); return; }
       focusPick = true;
       if (!isOpen(menu)) menu.showPopover();
     }

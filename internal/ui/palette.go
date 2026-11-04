@@ -419,6 +419,9 @@ const paletteJS = `
   // No Ctrl/Cmd+K: that is the browser's own.
   document.addEventListener('keydown', function (e) {
     if (e.key !== '/' || e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+    // The open dock is modal: the palette behind it would be inert.
+    var dock = byId('` + DockID + `');
+    if (dock && dock.open) return;
     var t = e.target;
     if (t && t.closest && t.closest('.xterm')) return;
     if (t && (t.isContentEditable || (t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')))) return;

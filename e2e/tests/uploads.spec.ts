@@ -10,6 +10,7 @@ import { signIn } from '../lib/signin';
 import { binDir, dsn, fakeS3Port, repoRoot, uploadsOffPort, uploadsPort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
+import { coarse, pickView } from '../lib/switcher';
 
 // FILE ATTACHMENTS in the Rendered view's composer, in a real browser, against
 // a real muster-server (MUSTER_MIRROR=1, password mode) whose MUSTER_S3_* point
@@ -385,10 +386,11 @@ for (const vp of [
       expect(log.y + log.height, 'the conversation ends above the composer').toBeLessThanOrEqual(compose.y + 1);
       const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       expect(sw, 'no page-level horizontal overflow').toBeLessThanOrEqual(cw);
-      // This window is current in All (and not a link). All is picked from the
-      // view menu the bar's left button opens.
-      await page.locator('#switcher-toggle').click();
-      await page.locator('#switcher-views [data-switcher-pick="all"]').click();
+      // This window is current in All (and not a link). All is picked from
+      // the bar's left button: the view menu in the mouse layout, the dock in
+      // the touch layout (lib/switcher.ts).
+      expect(await coarse(page), 'the layout this context emulates').toBe(vp.mobile);
+      await pickView(page, 'all');
       await expect(page.locator('#switcher-toggle').locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
       await expect(bar.locator('[data-switcher-list="all"] [data-switcher-current]')).toHaveAttribute('data-switcher-entry', 'mirror');
     } finally {

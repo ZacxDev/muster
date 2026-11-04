@@ -623,6 +623,69 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
 }
 
 /*
+ * The switcher dock (internal/ui/switcher_dock.go): a modal <dialog>, laid out
+ * as a bottom sheet in the touch layout, the only layout that opens it in this
+ * phase. Fixed to the bottom of the viewport, at the height of its snap,
+ * measured against the VISUAL viewport (its script writes --dock-vvh and
+ * --dock-half): half, or full less the top safe area and an 8px gap. Sitting
+ * on a soft keyboard is Phase 3's, with the filter. It slides up and its backdrop
+ * fades in, 220ms on the popovers' easing; display and overlay transition
+ * discretely so the close plays before it leaves the top layer, and a closed
+ * dock is display: none, so it adds nothing to first paint. Reduced motion: no
+ * transition at all, both ways.
+ */
+#switcher-dock {
+  position: fixed;
+  inset: auto 0 0 0;
+  margin: 0;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: var(--dock-half, 60dvh);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  border: 0;
+  border-radius: 1rem 1rem 0 0;
+  transform: translateY(100%);
+  transition:
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    overlay 220ms allow-discrete,
+    display 220ms allow-discrete;
+}
+#switcher-dock[open] {
+  display: flex;
+  transform: none;
+}
+#switcher-dock[data-snap="full"] {
+  height: calc(var(--dock-vvh, 100dvh) - env(safe-area-inset-top) - 8px);
+}
+#switcher-dock::backdrop {
+  background: rgb(0 0 0 / 0.5);
+  opacity: 0;
+  transition:
+    opacity 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    overlay 220ms allow-discrete,
+    display 220ms allow-discrete;
+}
+#switcher-dock[open]::backdrop {
+  opacity: 1;
+}
+@starting-style {
+  #switcher-dock[open] {
+    transform: translateY(100%);
+  }
+  #switcher-dock[open]::backdrop {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #switcher-dock,
+  #switcher-dock::backdrop {
+    transition: none;
+  }
+}
+
+/*
  * The agent page's ⋯ menu draws BOTH Start and Stop (internal/ui/agent_actions.go
  * agentLifecycleItems) and shows the one the status calls for, read off the
  * header strip's #agent-status, which every strip refresh re-renders: Stop

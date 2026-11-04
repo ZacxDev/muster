@@ -454,6 +454,8 @@ var bannerExempt = map[string]string{
 		"MUSTER_FLEET_REPORT_SENDERS, and senders set without it refuse to boot, so there is no silent state to announce",
 	envChiefNudgeLiveOwners: "counted on the `chief nudges: ON` line when set, and named there as empty on the SHADOW line; " +
 		"it means nothing with the sweep off, whose OFF line names " + envChiefNudges,
+	envChiefNudgeNeedsYouLiveOwners: "counted on the live `chief nudges: ON` line (owners in both lists), and named on " +
+		"the SHADOW line as doing nothing; it means nothing with the sweep off, whose OFF line names " + envChiefNudges,
 	envChiefNudgeIdle:         "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
 	envChiefNudgeAskThreshold: "printed with its VALUE on both `chief nudges: ON` lines; it means nothing with the sweep off",
 	envChiefNudgeHourlyCap: "printed with its VALUE on the live `chief nudges: ON` line (and enforced in shadow too); " +

@@ -349,8 +349,11 @@ var isolationClasses = map[string]routeClass{
 	"PATCH /agent/task/status":     classAgentToken,
 	"POST /agent/approvals":        classAgentToken,
 	"POST /agent/blocked":          classAgentToken,
-	"POST /agent/work":             classAgentToken,
-	"POST /agent/task/comment":     classAgentToken,
+	// An officer instance's workspace image for an ask (officers.go): its own
+	// token decides the officer; any other agent is refused.
+	"POST /agent/officer/ask-images": classAgentToken,
+	"POST /agent/work":               classAgentToken,
+	"POST /agent/task/comment":       classAgentToken,
 
 	"/connect/{connector}/{host}/{path...}": classConnect,
 	"GET /agent/connectors":                 classConnect,

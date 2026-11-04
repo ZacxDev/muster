@@ -220,6 +220,10 @@ const (
 	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
 	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
 	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
+	// envChiefNudgeNeedsYouLiveOwners: the owners whose NEEDS-YOU nudges are
+	// sent too — live only for an owner ALSO in envChiefNudgeLiveOwners
+	// (operator decision 2026-11-04, "Separate shadow gate").
+	envChiefNudgeNeedsYouLiveOwners = "MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS"
 	// The stall classifier's ask-score line: at or over it a stall defaults
 	// to an ask (internal/chiefnudge jev.go).
 	envChiefNudgeAskThreshold = "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD"
@@ -702,6 +706,9 @@ type config struct {
 	ChiefNudgeIdle       time.Duration
 	ChiefNudgeHourlyCap  int
 	ChiefNudgeLiveOwners map[int64]bool
+	// ChiefNudgeNeedsYouLiveOwners is MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS:
+	// a needs-you nudge is live only for an owner in both lists.
+	ChiefNudgeNeedsYouLiveOwners map[int64]bool
 	// SessionState runs session state's pass (MUSTER_SESSION_STATE=1; off by
 	// default): every session's state and its episodes (internal/sessionstate).
 	SessionState           bool
@@ -1543,6 +1550,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefNudgeLiveOwners, err)
 	}
 	c.ChiefNudgeLiveOwners = liveOwners
+	needsYouOwners, err := parseOwnerIDs(strings.TrimSpace(getenv(envChiefNudgeNeedsYouLiveOwners)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefNudgeNeedsYouLiveOwners, err)
+	}
+	c.ChiefNudgeNeedsYouLiveOwners = needsYouOwners
 	c.ChiefNudgeAskThreshold = chiefnudge.DefaultAskThreshold
 	if v := strings.TrimSpace(getenv(envChiefNudgeAskThreshold)); v != "" {
 		f, err := strconv.ParseFloat(v, 64)
