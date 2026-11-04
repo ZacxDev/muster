@@ -24,4 +24,16 @@ func TestTheNudgesTabNamesWhereAQuoteCameFrom(t *testing.T) {
 			t.Errorf("source %q: the card lacks %q:\n%s", c.source, c.want, got)
 		}
 	}
+	// A suppressed Chief-chat quote says which source it was not found in; a
+	// session one keeps its words.
+	for src, want := range map[string]string{
+		chiefnudge.SourceChiefChat: "Suppressed: the quote is not in a line you typed in your Chief chat",
+		chiefnudge.SourceSession:   "Suppressed: the quote is not in one of your messages to this session",
+	} {
+		d := chiefnudge.Decision{ID: 9, Decision: chiefnudge.DecisionNudge, Mode: chiefnudge.ModeShadow,
+			Outcome: chiefnudge.Suppressed(chiefnudge.GuardQuote), QuoteID: "chief:77", QuoteText: "ship it now please", QuoteSource: src}
+		if got := chiefNudgeCardHTML(d, time.Now()); !strings.Contains(got, want) {
+			t.Errorf("suppressed, source %q: the card lacks %q", src, want)
+		}
+	}
 }

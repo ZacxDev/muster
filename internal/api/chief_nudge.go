@@ -853,23 +853,21 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
 	quoted, src, qerr := checkNudgeQuote(prop, owner, chat, notify)
 	d.QuoteSource = src
-	if qerr != nil && notify && src != chiefnudge.SourceSession {
-		// 🔴 A QUOTE FROM THE CHIEF CHAT THAT DOES NOT VERIFY (or names a source
-		// muster does not know) IS A NOTIFY: the stop pushes; nothing is pasted.
-		// (A same-session quote keeps its old guard, below.)
-		d.Reason = chiefnudge.GuardQuote + ": " + qerr.Error() + "; " + d.Reason
-		return s.actNotify(octx, d), false, ""
-	}
-	if qerr != nil && untimed > 0 && len(owner) == 0 {
-		// The host sent the owner's messages with no times (an older
-		// muster-mirror): none can authorise a nudge, so it is an ask — and
-		// the decision says why.
-		d.Decision = chiefnudge.DecisionAsk
-		d.Question = chiefnudge.EscalationNoTimes(c.Title)
-		d.Detail = strconv.Itoa(untimed) + " message(s) of the owner's arrived with no time (an older muster-mirror): none can authorise a nudge"
-		return s.actAsk(octx, c, d, "", false), false, ""
-	}
 	if qerr != nil {
+		// 🔴 ONE GUARD FOR EVERY QUOTE THAT DOES NOT VERIFY, whatever its source:
+		// suppressed:quote_unverified, with the source on the row (a Chief-chat
+		// quote included, step 3b-1). Nothing is pasted; with session state on
+		// the stop pushes (episodeVerdict). The one exception is a quote from
+		// the SESSION when the host sent the owner's messages with no times (an
+		// older muster-mirror): none can authorise a nudge, so it is an ask —
+		// and the decision says why. A Chief-chat quote is never that case: its
+		// turns carry the database's own time.
+		if (!notify || src == chiefnudge.SourceSession) && untimed > 0 && len(owner) == 0 {
+			d.Decision = chiefnudge.DecisionAsk
+			d.Question = chiefnudge.EscalationNoTimes(c.Title)
+			d.Detail = strconv.Itoa(untimed) + " message(s) of the owner's arrived with no time (an older muster-mirror): none can authorise a nudge"
+			return s.actAsk(octx, c, d, "", false), false, ""
+		}
 		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardQuote), qerr.Error()
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}

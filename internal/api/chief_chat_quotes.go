@@ -28,9 +28,9 @@ import (
 //
 // 🔴 THE GUARDS ARE CODE, AS FOR ANY QUOTE: the chief names the quote's source
 // (quote_source), and chiefnudge.CheckQuoteFrom looks for it, verbatim, in that
-// source only. A Chief-chat quote that does not verify is a NOTIFY (the stop
-// pushes), never a paste. A read of the Chief chat that cannot vouch for the
-// whole window (it failed, or it is longer than chiefChatMaxRead) contributes
+// source only. A Chief-chat quote that does not verify meets the same guard as
+// any quote (suppressed:quote_unverified, its source recorded; the stop
+// pushes), never a paste. A read of the Chief chat that fails contributes
 // nothing: no Chief-chat quote can pass.
 //
 // 🔴 SHADOW FIRST. A nudge whose quote is from the Chief chat is sent only for
@@ -46,13 +46,6 @@ import (
 // alone.
 // ---------------------------------------------------------------------------
 
-// chiefChatMaxRead bounds one read of the owner's typed Chief-chat turns in
-// the window. 🔴 A FULL PAGE IS A PARTIAL READ: the read asks for one more, and
-// a window holding more than this contributes NOTHING, rather than quoting from
-// a part of it. (The chief is then shown the newest MaxOwnerMessages of a
-// complete read, as for a session.)
-const chiefChatMaxRead = 200
-
 // chiefChatReader is the agents store's read of the owner's typed turns
 // (agents.PGStore.OwnerTypedChatMessages); found by assertion, so a store
 // without it gives no Chief-chat quotes.
@@ -66,9 +59,12 @@ var _ chiefChatReader = (*agents.PGStore)(nil)
 // OwnerWindow, as the chief is shown them: each named "chief:<id>", redacted
 // and cut exactly like a session's owner messages (the bytes CheckQuoteFrom
 // matches), the newest MaxOwnerMessages. nil — no Chief-chat quote can pass —
-// when session state is off, when the store cannot read them, when the read
-// failed, or when it could not vouch for the whole window; empty when there
-// are none.
+// when session state is off, when the store cannot read them, or when the read
+// failed; empty when there are none.
+//
+// The read is the newest MaxOwnerMessages rows of one table, newest first: it
+// cannot have a gap, and only those are ever shown or checked, so it reads no
+// more than that.
 func (s *Server) nudgeChiefChat(octx context.Context, chief agents.Agent, owner int64) []chiefnudge.Msg {
 	if !s.sessionStateOn() {
 		return nil
@@ -78,14 +74,9 @@ func (s *Server) nudgeChiefChat(octx context.Context, chief agents.Agent, owner 
 		return nil
 	}
 	since := s.now().Add(-chiefnudge.OwnerWindow)
-	rows, err := r.OwnerTypedChatMessages(octx, chief.ID, owner, since, chiefChatMaxRead+1)
+	rows, err := r.OwnerTypedChatMessages(octx, chief.ID, owner, since, chiefnudge.MaxOwnerMessages)
 	if err != nil {
 		s.logger.Printf("chief nudges: owner %d: the Chief chat: %v; no Chief-chat quote this pass", owner, err)
-		return nil
-	}
-	if len(rows) > chiefChatMaxRead {
-		// More typed turns in the window than one read holds: a partial read
-		// authorises nothing.
 		return nil
 	}
 	msgs := make([]chiefnudge.Msg, 0, len(rows))

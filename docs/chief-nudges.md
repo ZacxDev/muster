@@ -275,14 +275,16 @@ With session state on (`MUSTER_SESSION_STATE=1`, session-state step 3b-1,
 [design](design/session-state.md#covering-words)) a nudge's quote may also come
 from **your Chief chat**: a line you typed to your chief, quoted for any of
 your sessions (operator decision 10). Only lines muster recorded as **typed by
-you** count (operator decision 13): what you type into the chat page or its
-composer, signed in on the web or your phone. muster writes that record
+you** count (operator decision 13, as amended 2026-11-04, "Exclude the CLI"):
+what you type into the chat page or its composer, signed in on the web or your
+phone. The CLI does not count. muster writes that record
 (`chat_messages.typed_by`, migration 0079) at the moment the line becomes a
 turn, and nowhere else. These never count, fenced or not:
 
 - an answer relayed to the chief;
-- a session's question, and `muster chief ask` (both come over a token, which
-  any of your sessions can hold, so muster cannot tell you typed them);
+- a session's question, and `muster chief ask` from the CLI (both come over a
+  token, which any of your sessions can hold, so muster cannot tell you typed
+  them);
 - a plugin message;
 - a task event (a forwarded task, a closed pull request);
 - an agent's or muster's own turn (a nudge, a route's note or hand-back);
@@ -293,17 +295,20 @@ newest 20, redacted like your session messages), each with its id
 (`chief:<id>`), and names where its quote is from (`quote_source`: `session` or
 `chief_chat`). muster checks the quote, byte for byte, in **that** source only.
 A Chief-chat quote that does not check out (not verbatim in the line it names,
-or a source muster does not know) is recorded as a **notify** with the reason
-`quote_unverified`: the stop is pushed and nothing is pasted. A read of the
-Chief chat that cannot vouch for the whole 6 hours (it failed, or the window
-holds more than 200 typed lines) contributes nothing: no Chief-chat quote
-passes. A quote from the session itself is checked exactly as before. Whether
+or a source muster does not know) meets the same guard as any quote: it is
+recorded as `suppressed:quote_unverified`, with the source it named, the stop
+is pushed and nothing is pasted. muster reads only the newest 20 typed lines
+(all the chief is shown); a read that fails contributes nothing: no Chief-chat
+quote passes. A quote from the session itself is checked exactly as before. Whether
 a Chief-chat line covers *this* session's next step is the chief's judgement,
 as for any quote: code only guarantees the words are yours, recent and
 verbatim.
 
-**It has its own live gate, shadow first** (operator decision 2026-11-04,
-"Chief chat first"): a nudge quoting the Chief chat is sent only for an owner
+**It has its own live gate, shadow first.** The operator decided Chief-chat
+quotes ship shadow first (2026-11-04, "Chief chat first"); the gate below is
+the coordinator's default for it, open to change (the design's
+[Defaults](design/session-state.md#defaults-open-to-change), D4): a nudge
+quoting the Chief chat is sent only for an owner
 also on `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS`, on top of every
 list it is otherwise under (`MUSTER_CHIEF_NUDGE_LIVE_OWNERS`, and the needs-you
 list for a needs-you stop). For everyone else it is shadow: recorded as

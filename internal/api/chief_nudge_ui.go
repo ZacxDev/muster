@@ -132,6 +132,9 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 `)
 	}
 	out := nudgeOutcomeLabel(d.Outcome)
+	if d.Outcome == chiefnudge.Suppressed(chiefnudge.GuardQuote) && d.QuoteSource == chiefnudge.SourceChiefChat {
+		out = "Suppressed: the quote is not in a line you typed in your Chief chat in the last 6 hours"
+	}
 	if d.Detail != "" {
 		out += " — " + d.Detail
 	}

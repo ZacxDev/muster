@@ -29,7 +29,7 @@ import (
 // are unchanged.
 //
 // 🔴 These tests use only names that exist at the base too, except through
-// chief_chat_quotes_gate_test.go's four helpers — so each REGRESSION test is
+// chief_chat_quotes_gate_test.go's helpers — so each REGRESSION test is
 // shown red against the base by running this file there with those stubbed.
 // The quote source and the notify's reason are literals for the same reason.
 
@@ -151,14 +151,15 @@ func TestAnOwnerTypedChiefChatTurnIsACoveringQuote(t *testing.T) {
 // that the owner did not TYPE into muster's chat — a session question over the
 // machine door, a relayed answer, a plugin message, a task event, an agent's
 // or muster's own turn (a nudge-style turn, a route hand-back) — is never
-// shown to the chief as the owner's, and a nudge quoting it is a NOTIFY:
+// shown to the chief as the owner's, and a nudge quoting it meets the quote
+// guard: suppressed:quote_unverified with its source (chief_chat) on the row,
 // nothing queued, nothing pasted, the stop pushed. The owner is on EVERY list,
 // so a row that wrongly counted would be queued live. Each row is written by
 // its real writer.
 //
 // ⚠ The "never counts" half is an INVARIANT the base keeps too (the base
-// counts no Chief-chat turn at all); what is new — and red at the base, which
-// records suppressed:quote_unverified — is the notify. Its teeth are the
+// counts no Chief-chat turn at all, and records the same outcome); what is new
+// — and red at the base — is only the source on the row. Its teeth are the
 // mutants (a writer made to set a typer turns its case red).
 func TestANonOwnerChiefChatTurnNeverCounts(t *testing.T) {
 	ctx := asUser(authz.OperatorUserID)
@@ -225,8 +226,9 @@ func TestANonOwnerChiefChatTurnNeverCounts(t *testing.T) {
 			queued0 := f.queuedRows(t)
 			f.judge(t)
 			d := f.one(t)
-			if d.Decision != "notify" || d.Outcome != "notified" || !strings.HasPrefix(d.Reason, "quote_unverified: ") {
-				t.Fatalf("decision %+v\nwant a notify (the quote is not the owner's typing)", d)
+			if d.Decision != chiefnudge.DecisionNudge || d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardQuote) ||
+				quoteSourceOf(d) != "chief_chat" {
+				t.Fatalf("decision %+v\nwant suppressed:quote_unverified from chief_chat (the quote is not the owner's typing)", d)
 			}
 			if p := f.lastPrompt(t); strings.Contains(p, "chief:"+strconv.FormatInt(id, 10)) {
 				t.Fatalf("the prompt shows a %s as the owner's:\n%s", c.kind, p)
@@ -242,9 +244,10 @@ func TestANonOwnerChiefChatTurnNeverCounts(t *testing.T) {
 }
 
 // TestAChiefChatTurnOutsideTheWindowDoesNotCount (regression): a typed turn
-// older than OwnerWindow (6h) is not shown and its quote is a notify; the
+// older than OwnerWindow (6h) is not shown and its quote is suppressed; the
 // control, the same turn 5 hours old, is a nudge. RED at the base: the control
-// was suppressed (the Chief chat was never read).
+// was suppressed (the Chief chat was never read). The 7-hour case alone is an
+// INVARIANT GUARD (the base records the same suppression).
 func TestAChiefChatTurnOutsideTheWindowDoesNotCount(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -252,7 +255,7 @@ func TestAChiefChatTurnOutsideTheWindowDoesNotCount(t *testing.T) {
 		outcome string
 	}{
 		{"5 hours old: counts", "5 hours", chiefnudge.OutcomeWouldSend},
-		{"7 hours old: does not", "7 hours", "notified"},
+		{"7 hours old: does not", "7 hours", chiefnudge.Suppressed(chiefnudge.GuardQuote)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := chiefChatFixture(t, true)
@@ -270,52 +273,98 @@ func TestAChiefChatTurnOutsideTheWindowDoesNotCount(t *testing.T) {
 	}
 }
 
-// TestAPartialChiefChatReadGivesNothing (new in 3b-1; no base equivalent — its
-// SQL names typed_by, so it cannot run there): a window holding more typed
-// turns than one read takes (chiefChatMaxRead, 200) cannot vouch for itself,
-// so NONE of them is shown and a quote of the newest is a notify. The control:
-// the same quote with the window at the read's bound is a nudge.
-func TestAPartialChiefChatReadGivesNothing(t *testing.T) {
+// TestAFailedChiefChatReadGivesNothing (regression): when the Chief-chat read
+// fails, the chief is shown none of it and a quote of a typed turn meets the
+// quote guard (suppressed:quote_unverified, source chief_chat, the stop
+// pushed). The control: the same quote with the read working is a nudge. RED
+// at the base: the control was suppressed (the Chief chat was never read).
+func TestAFailedChiefChatReadGivesNothing(t *testing.T) {
 	for _, c := range []struct {
 		name    string
-		extra   int // typed turns added before the quoted one
+		fail    bool
 		outcome string
+		pushes  int
 	}{
-		{"at the bound: counts", 199, chiefnudge.OutcomeWouldSend},
-		{"one over: nothing counts", 200, "notified"},
+		{"the read works: counts", false, chiefnudge.OutcomeWouldSend, 1},
+		{"the read fails: nothing counts", true, chiefnudge.Suppressed(chiefnudge.GuardQuote), 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := chiefChatFixture(t, true)
-			sess := f.chiefSession(t)
-			if _, err := f.pool.Exec(authz.System(context.Background()), `INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, typed_by)
-				SELECT $1, $2, $3, 'user', 'an earlier typed line ' || g, $2 FROM generate_series(1, $4) g`,
-				f.boss.ID, authz.OperatorUserID, sess.ID, c.extra); err != nil {
-				t.Fatal(err)
-			}
 			id := f.typeToChief(t, chiefChatTyped)
+			if c.fail {
+				failChiefChatRead(t, f.nudgeFixture)
+			}
 			f.gw.set(chiefChatReply(id, "chief_chat", chiefChatQuote))
 			f.judge(t)
 			d := f.one(t)
-			if d.Outcome != c.outcome {
-				t.Fatalf("decision %+v, want outcome %s", d, c.outcome)
+			if d.Outcome != c.outcome || quoteSourceOf(d) != "chief_chat" {
+				t.Fatalf("decision %+v, want outcome %s from chief_chat", d, c.outcome)
 			}
-			if shown := strings.Contains(f.lastPrompt(t), chiefChatTyped); shown != (c.outcome == chiefnudge.OutcomeWouldSend) {
+			if shown := strings.Contains(f.lastPrompt(t), chiefChatTyped); shown == c.fail {
 				t.Fatalf("the typed turn shown: %v", shown)
+			}
+			// A failed read is no Chief chat at all, not an empty one: the
+			// guard says no Chief-chat quote could pass here.
+			if c.fail && d.Detail != "the quote names the Chief chat, which no nudge here may quote" {
+				t.Fatalf("detail %q", d.Detail)
+			}
+			if got := f.episodePushes(); len(got) != c.pushes {
+				t.Fatalf("pushes: %v, want %d", got, c.pushes)
 			}
 		})
 	}
 }
 
-// TestAnUnverifiableChiefChatQuoteIsANotify (regression): a Chief-chat quote
-// that is not, verbatim, in the typed turn it names — or that names a source
-// muster does not know — is a NOTIFY, never a paste, with the owner on every
-// list. RED at the base: suppressed:quote_unverified.
-func TestAnUnverifiableChiefChatQuoteIsANotify(t *testing.T) {
+// TestOnlyTheNewestTypedChiefChatTurnsAreReadAndShown (new in 3b-1, round 0
+// D1; its SQL names typed_by, so it cannot run at the base): the Chief chat is
+// read newest first, MaxOwnerMessages (20) turns, which are all the chief is
+// shown and all a quote is checked against. With 20 typed turns after it, the
+// quoted turn is the 21st newest: not shown, and its quote is suppressed; with
+// 19 after it, it is the 20th: shown, and the nudge passes.
+func TestOnlyTheNewestTypedChiefChatTurnsAreReadAndShown(t *testing.T) {
 	for _, c := range []struct {
-		name, source, quote string
+		name    string
+		after   int
+		outcome string
 	}{
-		{"words the owner did not type", "chief_chat", "ship the release branch right now"},
-		{"a source muster does not know", "another_pane", chiefChatQuote},
+		{"the 20th newest: read", 19, chiefnudge.OutcomeWouldSend},
+		{"the 21st newest: not read", 20, chiefnudge.Suppressed(chiefnudge.GuardQuote)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := chiefChatFixture(t, true)
+			id := f.typeToChief(t, chiefChatTyped)
+			if _, err := f.pool.Exec(authz.System(context.Background()), `INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, typed_by)
+				SELECT $1, $2, $3, 'user', 'a later typed line ' || g, $2 FROM generate_series(1, $4) g`,
+				f.boss.ID, authz.OperatorUserID, f.chiefSession(t).ID, c.after); err != nil {
+				t.Fatal(err)
+			}
+			f.gw.set(chiefChatReply(id, "chief_chat", chiefChatQuote))
+			f.judge(t)
+			if d := f.one(t); d.Outcome != c.outcome {
+				t.Fatalf("decision %+v, want outcome %s", d, c.outcome)
+			}
+			if shown := strings.Contains(f.lastPrompt(t), chiefChatTyped); shown != (c.outcome == chiefnudge.OutcomeWouldSend) {
+				t.Fatalf("the quoted turn shown: %v", shown)
+			}
+		})
+	}
+}
+
+// TestAnUnverifiableChiefChatQuoteIsSuppressedAndPushes: a Chief-chat quote
+// that is not, verbatim, in the typed turn it names — or that names a source
+// muster does not know — meets the one quote guard: suppressed:quote_unverified
+// with the source it named on the row ("" for one muster does not know),
+// nothing queued, nothing pasted, and the STOP PUSHED (read off the push sink
+// after the state pass), with the owner on every list.
+//
+// Regression for the first case (RED at the base: no source recorded). The
+// second is an INVARIANT GUARD: the base records the same row.
+func TestAnUnverifiableChiefChatQuoteIsSuppressedAndPushes(t *testing.T) {
+	for _, c := range []struct {
+		name, source, quote, recorded string
+	}{
+		{"words the owner did not type", "chief_chat", "ship the release branch right now", "chief_chat"},
+		{"a source muster does not know", "another_pane", chiefChatQuote, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := chiefChatFixture(t, true)
@@ -325,14 +374,54 @@ func TestAnUnverifiableChiefChatQuoteIsANotify(t *testing.T) {
 			queued0 := f.queuedRows(t)
 			f.judge(t)
 			d := f.one(t)
-			if d.Decision != "notify" || d.Outcome != "notified" || !strings.HasPrefix(d.Reason, "quote_unverified: ") {
-				t.Fatalf("decision %+v\nwant a notify", d)
+			if d.Decision != chiefnudge.DecisionNudge || d.Outcome != chiefnudge.Suppressed(chiefnudge.GuardQuote) ||
+				quoteSourceOf(d) != c.recorded {
+				t.Fatalf("decision %+v\nwant suppressed:quote_unverified, source %q", d, c.recorded)
 			}
 			if q := f.queuedRows(t) - queued0; q != 0 {
 				t.Fatalf("send_queue rows written: %d", q)
 			}
 			if got := f.episodePushes(); len(got) != 1 {
-				t.Fatalf("pushes: %v", got)
+				t.Fatalf("pushes: %v, want 1 (a suppressed nudge never quiets a stop)", got)
+			}
+			f.tick(t)
+			if p := f.pastes(); len(p) != 0 {
+				t.Fatalf("pasted: %+v", p)
+			}
+		})
+	}
+}
+
+// TestAnUnverifiedChiefChatQuoteIsNeverTheUntimedEscalation (round 0 D2): when
+// the session's owner messages arrived with no time (an older muster-mirror),
+// a SESSION quote that fails is still the untimed escalation (a notify, as
+// before 3b-1 — the control), but a Chief-chat quote that fails meets the
+// quote guard: suppressed:quote_unverified with its source, the stop pushed.
+// New in 3b-1 (no base equivalent for the Chief-chat half).
+func TestAnUnverifiedChiefChatQuoteIsNeverTheUntimedEscalation(t *testing.T) {
+	for _, c := range []struct {
+		name, decision, outcome, source string
+		chief                           bool
+	}{
+		{"a session quote: the untimed escalation", "notify", "notified", "", false},
+		{"a Chief-chat quote: the quote guard", chiefnudge.DecisionNudge, chiefnudge.Suppressed(chiefnudge.GuardQuote), "chief_chat", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := chiefChatFixture(t, true)
+			f.mu.Lock()
+			f.script[0].At = time.Time{} // the owner's session message carries no time
+			f.mu.Unlock()
+			id := f.typeToChief(t, chiefChatTyped)
+			if c.chief {
+				f.gw.set(chiefChatReply(id, "chief_chat", "ship the release branch right now"))
+			}
+			f.judge(t)
+			d := f.one(t)
+			if d.Decision != c.decision || d.Outcome != c.outcome || (c.chief && quoteSourceOf(d) != c.source) {
+				t.Fatalf("decision %+v\nwant %s / %s", d, c.decision, c.outcome)
+			}
+			if got := f.episodePushes(); len(got) != 1 {
+				t.Fatalf("pushes: %v, want 1", got)
 			}
 		})
 	}
