@@ -5,7 +5,7 @@
 // What the owner sees about a session that needs them (the episode push, the
 // Attention section's rows, check-ins) is a view of these, so they cannot
 // disagree about who is stalled. This package holds the rules (StateOf,
-// Asked, Advance, OwnerActed) and the store (session_episodes, migration
+// Asked, Advance, OwnerActed, Handled) and the store (session_episodes, migration
 // 0073); the inputs
 // are read by internal/api's stall facts (stallInputs), never a copy.
 //
@@ -41,13 +41,42 @@ const (
 	EndWorked = "worked" // the session worked, continuously, for EndAfter
 	EndGone   = "gone"   // its window left a host that is online and reporting status
 	EndOwner  = "owner"  // the owner acted in the session after it opened (OwnerActed)
+	// EndViewed: the owner opened the session's own page in muster (its
+	// rendered view, its terminal, an agent's conversation) after it opened.
+	// Its own reason, not EndOwner's: the end reason is the record of WHY a
+	// push cleared, and "the owner looked" is not "the owner answered".
+	EndViewed = "viewed"
+	// EndReset is written by migration 0078 alone: every episode open when it
+	// applied, ended once so the backlog of stops opened before an episode
+	// could end on the owner's action is withdrawn. Nothing in muster writes
+	// it (PG.End refuses it).
+	EndReset = "reset"
 )
+
+// Handled reports whether an episode that ended for reason was HANDLED rather
+// than outgrown: the owner acted in the session or opened it, or the backlog
+// reset ended it. 🔴 A HANDLED STOP IS NOT OPENED AGAIN ON THE SAME STREAK
+// (PG.Open): the session has not moved since, so a new episode would push the
+// same stop the owner already dealt with. A stop that ended because the
+// session worked ('worked') or left ('gone') is not handled — its session
+// moved, and the next stop is a new one.
+func Handled(reason string) bool {
+	for _, r := range handledReasons {
+		if reason == r {
+			return true
+		}
+	}
+	return false
+}
+
+// handledReasons is Handled's set, as PG.Open's guard reads it.
+var handledReasons = []string{EndOwner, EndViewed, EndReset}
 
 // EndAfter is how long a session must work, continuously, before its episode
 // ends on its own (the design's N). A shorter blip — a quick tool call, a
 // background task's notice — does not end one, so one stop of a session that
-// carries on by itself is one episode. The OWNER acting in the session is the
-// other way an episode ends, at once (OwnerActed).
+// carries on by itself is one episode. The OWNER acting in the session
+// (OwnerActed) or opening it in muster (EndViewed) ends one at once.
 const EndAfter = 120 * time.Second
 
 // OwnerFacts is what OwnerActed reads about one open episode's session.
@@ -85,8 +114,9 @@ type OwnerFacts struct {
 // A SESSION: a status that is unknown, or a session that waits now, ends
 // nothing — whatever the conversation says.
 //
-// Merely looking at a session (the tap route, its view) is not acting in it:
-// nothing here reads a view.
+// The owner OPENING the session in muster is the other way they end it
+// (EndViewed), recorded where the session's own page is rendered
+// (internal/api's episodeViewed), not read here.
 func OwnerActed(f OwnerFacts) bool {
 	if !f.Known || f.WaitingNow {
 		return false

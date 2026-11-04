@@ -380,15 +380,20 @@ func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items [
 			continue
 		}
 		if !has {
+			// Its streak, as the pass keys it (windowStreakKey): a wait the owner
+			// already handled (opened the window, say) is not opened again while
+			// it is the same wait (sessionstate.Handled).
+			streak := windowStreakKey(s.ext.Mirror.AgentState(octx, it.card.ref.Host, w.Session, w.ID))
 			opened, claimed, err := s.ext.Episodes.Open(octx, sessionstate.Episode{Kind: sessionstate.KindMirror, Key: key,
 				State: sessionstate.StateNeedsYou, Waiting: true, Asked: true, Runtime: runtime,
-				Host: it.card.ref.Host, TmuxSession: w.Session, Window: w.ID, Index: w.Index})
+				Host: it.card.ref.Host, TmuxSession: w.Session, Window: w.ID, Index: w.Index, StreakKey: streak})
 			if err != nil {
 				s.logger.Printf("session state: waiting %s: open: %v", it.Key, err)
 				continue
 			}
 			if !claimed {
-				// Another process opened this stop this instant: it pushes.
+				// Another process opened this stop this instant (it pushes), or
+				// the owner already handled this wait.
 				continue
 			}
 			ep = opened

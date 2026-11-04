@@ -263,21 +263,42 @@ An episode is one stop of one session.
   runtime key, or the agent conversation), not the waiting or idle streak key,
   plus a sequence number. At most one episode per session is open.
 - **Opens** when the session enters `needs-you` or `stalled`.
-- **Ends** in one of three ways:
+- **Ends** in one of four ways:
   - **the owner acted in the session** (`end_reason` `owner`), on the next
     state pass: a message of the owner's own written AFTER the episode opened
     (a chief nudge, a relayed answer or a routed message muster pasted in does
     not count, nor does an untimed or fenced one), or, for a waiting episode,
     the session no longer waiting (the prompt was answered). The owner's
     message that preceded the stop (the `owner_last` case) does not end it;
-    only a newer one does. Merely viewing the session does not end it, and
-    neither does a session that waits now or whose status is unknown
-    (`sessionstate.OwnerActed`);
+    only a newer one does. A session that waits now, or whose status is
+    unknown, is not ended this way (`sessionstate.OwnerActed`). The
+    conversation is read for this once after the episode opens (or after a
+    restart, so episodes opened before the rule existed are read too), then
+    again only when the session's streak moves — a record of what was READ,
+    kept apart from the streak every pass writes onto the episode;
+  - **the owner opened the session in muster** (`viewed`), at once: the
+    document of the session's own page — a mirrored window's rendered view or
+    terminal page, or an agent's page for the conversation it draws — under
+    the owner's principal (the web UI and the app show the same pages). Not
+    the bar, the Agents list, the Asks page with its Stalled / waiting row, the
+    tap route on its own (it redirects to the session's page, which counts),
+    the view's socket or fragments, a prefetch (`Sec-Purpose` / `Purpose:
+    prefetch`) or a `HEAD`, and never another user's request. Looking at the
+    window in tmux outside muster cannot be seen. Its own reason, not
+    `owner`'s: the end reason records why a push cleared, and "looked" is not
+    "answered" (`internal/api/session_viewed.go`);
   - **sustained work** (`worked`): the session has been `working`
     continuously for at least `N` (default 120 s), or a turn completes after
     at least `N` of work. A busy blip shorter than `N` that the owner did not
     start (a quick tool call, a background task's notice) does not end it;
   - **gone** (`gone`): its window left a host that is online and reporting.
+
+  **A handled stop is not opened again on the same streak**
+  (`sessionstate.Handled`: `owner`, `viewed`, and the one-time `reset`
+  below): while the session sits where it was, neither the pass nor the
+  waiting hook opens a new episode for it, so the stop the owner dealt with is
+  not pushed again. Once its streak moves (a new status, a new message) the
+  next stop is a new episode as usual.
 
   **One stop of a session that carries on by itself is one episode**
   (default D1): `needs-you` → `stalled` within it updates its state and does
@@ -318,7 +339,11 @@ the Chief decision (if any) and the nudge's send-queue id.
   resolved push for its tag, and sets `cleared_at`. A pass after a restart
   ends and clears any open row whose session is now working past `N`, gone,
   or acted in by its owner, so a notification for a session that moved on
-  during downtime is cleared.
+  during downtime is cleared. The same rule withdrew the **backlog**:
+  migration 0078 ended every episode open when it applied (`end_reason`
+  `reset`, once), and the next pass sent each pushed one's resolved push and
+  set its `cleared_at`; a session still on the same streak is not reopened
+  (handled).
 
 This table **replaces `KindNotice`'s use for stalls** (round 0 D4). Once
 nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases
@@ -525,7 +550,7 @@ without reworking the rest of the design.
 - **D1. One stop is one episode.** A `needs-you` → `stalled` change within a
   stop does not push again; an episode ends after `N` (120 s) of work, or at
   once when the owner acts in the session (a message of their own after it
-  opened, or a waiting prompt answered).
+  opened, or a waiting prompt answered) or opens it in muster.
 - **D2. Keep the stall classifier,** in the roles above: it splits
   `needs-you` from `stalled` for an idle session, and gates the `needs-you`
   nudge.

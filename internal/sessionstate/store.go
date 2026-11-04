@@ -69,7 +69,9 @@ type Store interface {
 	// Open opens an episode for the caller's session (e.Kind, e.Key), at the
 	// next seq. 🔴 THE CLAIM: claimed is false, and nothing is written, when
 	// the session already has an open episode (session_episodes_one_open) —
-	// another pass, or another replica, won it.
+	// another pass, or another replica, won it — and when the session's latest
+	// episode ended Handled on e.StreakKey (the stop was dealt with, and the
+	// session has not moved since).
 	Open(ctx context.Context, e Episode) (Episode, bool, error)
 	// OpenEpisodes is the caller's open episodes, oldest first.
 	OpenEpisodes(ctx context.Context) ([]Episode, error)
@@ -221,14 +223,23 @@ func (p *PG) Open(ctx context.Context, e Episode) (Episode, bool, error) {
 	// 🔴 ON CONFLICT DO NOTHING WITH NO TARGET: both unique indexes refuse a
 	// second open episode — session_episodes_one_open (the claim) and the seq
 	// key, which two passes computing the same next seq would both reach.
+	//
+	// 🔴 A HANDLED STOP IS NOT OPENED AGAIN (Handled): when the session's
+	// latest episode ended handled — the owner acted, opened the session, or
+	// the backlog reset — on the streak e names, nothing is written. The
+	// session has not moved since, so a new episode would push the stop again.
+	// A streak of "" names nothing and never matches.
 	row := p.pool.QueryRow(ctx, `INSERT INTO session_episodes (session_kind, session_key, seq, state, waiting, asked, runtime,
 			mirror_host, mirror_session, mirror_window, window_index, agent_id, chat_session_id, streak_key)
 		SELECT $1, $2, coalesce(max(seq), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		  FROM session_episodes WHERE session_kind = $1 AND session_key = $2
+		HAVING NOT EXISTS (SELECT 1 FROM session_episodes last
+		  WHERE last.session_kind = $1 AND last.session_key = $2 AND last.seq = max(session_episodes.seq)
+		    AND last.end_reason = ANY($14) AND last.streak_key = $13 AND $13 <> '')
 		ON CONFLICT DO NOTHING
 		RETURNING `+cols,
 		e.Kind, e.Key, e.State, e.Waiting, e.Asked, cut(e.Runtime, 32), cut(e.Host, 200), cut(e.TmuxSession, 200), cut(e.Window, 32),
-		e.Index, nullID(e.AgentID), nullID(e.ChatSessionID), cut(e.StreakKey, 100))
+		e.Index, nullID(e.AgentID), nullID(e.ChatSessionID), cut(e.StreakKey, 100), handledReasons)
 	out, err := scan(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Episode{}, false, nil
@@ -284,7 +295,7 @@ func (p *PG) SetClassification(ctx context.Context, id int64, streak string, c C
 
 // End implements Store.
 func (p *PG) End(ctx context.Context, id int64, reason string, at time.Time) (bool, error) {
-	if reason != EndWorked && reason != EndGone && reason != EndOwner {
+	if reason != EndWorked && reason != EndGone && reason != EndOwner && reason != EndViewed {
 		return false, ErrBadEpisode
 	}
 	tag, err := p.pool.Exec(ctx, `UPDATE session_episodes SET ended_at = $2, end_reason = $3, updated_at = $2

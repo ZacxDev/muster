@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 	"testing"
 	"time"
@@ -19,8 +18,9 @@ import (
 // session and answers it — a message of their own after the stop, or the
 // waiting prompt answered — and the episode ends on the next pass, its push
 // withdrawn and its Stalled / waiting row gone, even though the session then
-// works for far less than EndAfter. A chief nudge, the owner's message from
-// before the stop, and merely opening the session do not end it.
+// works for far less than EndAfter. A chief nudge and the owner's message from
+// before the stop do not end it. (The owner OPENING the session in muster ends
+// it too, 'viewed': session_viewed_pg_test.go.)
 //
 // 🔴 These tests name only what exists at the base too (the end reason is the
 // literal "owner", not the new constant), so each REGRESSION test is shown red
@@ -213,28 +213,6 @@ func TestTheOwnersMessageBeforeTheStopKeepsItOpen(t *testing.T) {
 	}
 	if f.readCount() == 0 {
 		t.Fatal("the owner-acted read never ran: this test checked nothing")
-	}
-}
-
-// TestViewingASessionDoesNotEndItsEpisode — an INVARIANT GUARD: tapping the
-// push (the tap route) and the passes after it, with no input to the session,
-// leave the episode open and its push shown.
-func TestViewingASessionDoesNotEndItsEpisode(t *testing.T) {
-	f := newStateFixture(t, false)
-	id, _ := f.pushedStall(t)
-	w := f.call(t, http.MethodGet, "/attention/open/episode-"+strconv.FormatInt(id, 10), nil, f.operator())
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("tap: %d", w.Code)
-	}
-	f.advance(30 * time.Second)
-	f.statePass(t)
-	f.advance(30 * time.Second)
-	f.statePass(t)
-	if e := f.oneEpisode(t); e.ID != id || !e.Open() {
-		t.Fatalf("viewing ended it: %+v", e)
-	}
-	if got := f.episodePushes(); len(got) != 1 {
-		t.Fatalf("pushes: %v", got)
 	}
 }
 
