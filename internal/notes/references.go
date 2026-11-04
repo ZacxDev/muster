@@ -111,7 +111,7 @@ type RefWrite struct {
 	LeaseUntil *time.Time `json:"lease_until,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	// DismissedAt is when the owner dismissed this failed write (0075): it is
+	// DismissedAt is when the owner dismissed this failed write (0076): it is
 	// then off the task page, and can be neither retried nor dismissed again.
 	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
 	// Superseded: a failed STATUS write with a later status write on the same

@@ -23,7 +23,7 @@ import (
 
 // THE OWNER'S RETRY AND DISMISS OF A FAILED REFERENCE WRITE end to end
 // (task_ref_write_actions.go; notes.PGStore.RetryRefWrite / DismissRefWrite;
-// migration 0075): the real routes and doors, real Postgres, two members, a
+// migration 0076): the real routes and doors, real Postgres, two members, a
 // plugin and an agent of the first.
 //
 // ⚠ THIS FILE USES ONLY SYMBOLS THAT EXIST WITHOUT THE FEATURE (routes are
@@ -125,8 +125,6 @@ func (f *refActFixture) do(t *testing.T, method, path string, body any, hdr map[
 	rec := f.call(t, method, path, rd, merge(h, hdr))
 	return rec.Code, rec.Body.String(), rec.Header()
 }
-
-func bearer(tok string) map[string]string { return map[string]string{"Authorization": "Bearer " + tok} }
 
 // sessionA / sessionB are a signed-in browser on muster's own page (htmx).
 func (f *refActFixture) sessionA() map[string]string { return f.operator() }

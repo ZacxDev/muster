@@ -305,7 +305,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /tasks/{id}/tags":                    classParam,
 	"POST /ui/connector-requests/{id}/approve": classParam,
 	"POST /ui/connector-requests/{id}/deny":    classParam,
-	// A failed reference write's Retry and Dismiss (0075): {id} is A's
+	// A failed reference write's Retry and Dismiss (0076): {id} is A's
 	// reference, {wid} A's write on it (fill).
 	"POST /tasks/{id}/ref-writes/{wid}/retry":   classParam,
 	"POST /tasks/{id}/ref-writes/{wid}/dismiss": classParam,
@@ -357,6 +357,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /agent/connectors/{name}":          classConnect,
 	"POST /agent/connectors/{name}/request": classConnect,
 	"POST /mcp":                             classConnect,
+	"POST /llm/v1/messages":                 classConnect,
+	// Refused 404 for every caller, before any credential is read.
+	"/llm/": classPublic,
 
 	// The mirrored terminal names its object in the QUERY (?host=&session=),
 	// and fill() puts A's mirrored host there. The tunnel door is public to
