@@ -217,13 +217,14 @@ func TestTheToolEncoderShowsWhatTheMailWithholds(t *testing.T) {
 // in every non-test Go file of the module. It fails when a set GROWS (a second
 // window-history reader for a report; an encoder bypassing buildFleetReport; a
 // second stall classifier) or SHRINKS (a consumer that stopped using the shared
-// path). Adding the check-in builder is an intended change here.
+// path). Adding the check-in builder is an intended change here, as was adding
+// session state's pass (session_state.go), which reads the same stall facts.
 func TestTheCollectorAndStallLedger(t *testing.T) {
 	want := map[string]string{
 		"WindowHistory":     "api.collectFleet",
 		"collectFleet":      "api.buildFleetReport",
 		"encodeFleetReport": "api.buildFleetReport",
-		"stallInputs":       "api.nudgeCandidates",
+		"stallInputs":       "api.nudgeCandidates,api.sessionStateOwner",
 		"nudgeCandidates":   "api.sweepOwnerNudges",
 	}
 	got := map[string][]string{}

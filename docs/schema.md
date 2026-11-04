@@ -28,7 +28,7 @@ the set grows **or** shrinks.
 | paired phones | `devices`: each user's paired Android phones; `device_pairing_codes`: the one-time codes that pair them; `device_challenges`: the one-time challenges their signed actions spend ([design/android.md](design/android.md#the-device-credential)) |
 | suggested replies | `suggest_preferences`: each user's on/off toggle for [suggested replies](suggested-replies.md); `suggest_usage`: each user's shown / filled / sent counts, edit-distance sum and auto-pause (numbers only; no suggestion text is ever stored) |
 | the chief | `chief_preferences`: each user's on/off toggle for [the chief](chief.md#turning-the-chief-on-or-off); `chief_nudges`: every [stall-nudge](chief-nudges.md) decision the chief took about one of the user's sessions, and what became of it |
-| session state | `session_episodes`: one row per stop of one of the user's sessions — a mirrored window or an agent's conversation that entered `needs_you` or `stalled` — and how it ended ([design](design/session-state.md)) |
+| session state | `session_episodes`: one row per stop of one of the user's sessions — a mirrored window or an agent's conversation that entered `needs_you` or `stalled` — and how it ended (design: `docs/design/session-state.md`, #425) |
 
 `notes` is the task table. The name is historical. It is kept because every id in
 it is a task number people cite, and renaming it would be a data migration that
