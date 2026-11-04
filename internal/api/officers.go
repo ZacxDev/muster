@@ -793,7 +793,7 @@ func queueToolDefs() []agents.ToolDef {
 				"the `args` " + officers.ToolObsQueries + " lists for it, and no others. There is no raw PromQL or LogQL: HQ builds the query from its reviewed registry. " +
 				"The answer says what it `claims`; quote only that. `empty: true` is NOT a zero: run the positive control its `hint` names before you report none. " +
 				"Log lines come back redacted, a sample, never a count. HQ allows a few dozen queries a minute per officer (a 429 means wait a minute); " +
-				"an answer with retryable: true (502 upstream: the backend read failed) may be retried in a minute; any other refusal names the argument or limit to fix and the same call will not succeed. Read-only.",
+				"an error carrying `retryable` (502 upstream: the backend read failed) may be retried in a minute; any other refusal names the argument or limit to fix and the same call will not succeed. Read-only.",
 			Parameters: objSchema(map[string]any{
 				"query_id":   strProp("The query's id, as " + officers.ToolObsQueries + " lists it."),
 				"start":      strProp("The window's start, RFC 3339 in whole seconds (e.g. 2006-01-02T15:04:05Z); the window is (start, end]."),
@@ -1227,12 +1227,13 @@ func officerToolResult(name string, body []byte, err error) string {
 	var retry *officers.RetryableError
 	switch {
 	case errors.As(err, &retry):
-		out := map[string]any{"error": fmt.Sprintf("HQ answered %d %s to %s: a transient failure — retry it in a minute", retry.Status, retry.Code(), name),
-			"retryable": true, "status": retry.Status, "code": retry.Code()}
+		// Not `refused` (a final answer): `retryable`, still an error to MCP.
+		again := map[string]any{"status": retry.Status, "code": retry.Code()}
 		if json.Valid(retry.Body) {
-			out["hq"] = json.RawMessage(retry.Body)
+			again["hq"] = json.RawMessage(retry.Body)
 		}
-		return toolJSON(out)
+		return toolJSON(map[string]any{"error": fmt.Sprintf("HQ answered %d %s to %s: a transient failure — retry it in a minute", retry.Status, retry.Code(), name),
+			"retryable": again})
 	case errors.As(err, &blocked):
 		return blocked.result()
 	case err == nil:

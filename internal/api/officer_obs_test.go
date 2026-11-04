@@ -297,12 +297,13 @@ func TestObsQueryPassesHQsRefusalsBack(t *testing.T) {
 	out := r.s.dispatchAgentTool(ctx, inst, obsQueryTool, ok)
 	var got struct {
 		Error     string `json:"error"`
-		Retryable bool   `json:"retryable"`
-		Status    int    `json:"status"`
-		Code      string `json:"code"`
+		Retryable *struct {
+			Status int    `json:"status"`
+			Code   string `json:"code"`
+		} `json:"retryable"`
 	}
 	_ = json.Unmarshal([]byte(out), &got)
-	if !isToolErr(out) || !got.Retryable || got.Status != 502 || got.Code != "upstream" || !strings.Contains(got.Error, "retry") {
+	if !isToolErr(out) || got.Retryable == nil || got.Retryable.Status != 502 || got.Retryable.Code != "upstream" || !strings.Contains(got.Error, "retry") {
 		t.Errorf("upstream: %s, want a retryable answer naming 502 upstream", out)
 	}
 	if st, _ := obsRefusal(out); st != 0 {

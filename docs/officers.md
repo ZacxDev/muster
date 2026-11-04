@@ -590,8 +590,9 @@ by HQ, as a sample, never a count. HQ's refusals reach the instance with HQ's
 status and body, including two 5xx answers that are final decisions, not
 outages: `503 obs_unconfigured` (the route is switched off on that HQ) and
 `502 wrong_shape` (HQ's own defect). `502 upstream` (the backend read failed)
-is **retryable**, as HQ's guide says: the answer carries `retryable: true`,
-the status and the code, and says to retry in a minute. Any other 5xx is "HQ
+is **retryable**, as HQ's guide says: the answer is an error with
+`retryable: {status, code, hq}` in place of `refused`, and says to retry in a
+minute. Any other 5xx is "HQ
 is unavailable, try again". A `429 rate_limited` means wait a minute.
 
 ### Asking an HQ member (`officer_ask_person`)
