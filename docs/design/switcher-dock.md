@@ -4,7 +4,8 @@
 below, including the three answers to this page's first open questions
 (decisions 5–7), are **decided**. Every other section is the recommended design. Where
 this page says how muster works today, it cites `file:line` at `main`
-`723832da`, and the code is the authority (see [decisions.md](../decisions.md)).
+`723832da` (session-state cites at `6897dcdc`, after #430), and the code is the
+authority (see [decisions.md](../decisions.md)).
 Where it says how the Android shell behaves, it cites
 [ZacxDev/muster-android][android] at `7af3250b`. Claims nothing here has
 measured are marked **UNVERIFIED**, and each one is an acceptance check in a
@@ -26,10 +27,10 @@ phase below.
 
 | | Proposal |
 |---|---|
-| What it is | A native modal `<dialog id="switcher-dock">`, drawn **once per document** beside the command palette, laid out as a bottom sheet on touch/narrow screens and as a centred panel on desktop. The same pattern as the agent page's focus history dialog (`internal/ui/focus_history.go:139-174`) |
+| What it is | A native modal `<dialog id="switcher-dock">`, drawn **once per document** beside the command palette, laid out as a bottom sheet in the **touch layout** (a coarse primary pointer) and as a centred panel in the **mouse layout**. It always opens in the **top** document, also when the bar that opens it is inside the view-swap frame. The same pattern as the agent page's focus history dialog (`internal/ui/focus_history.go:139-174`) |
 | How it opens | Touch: a swipe up that starts on the bar's row, or a tap on the bar's view button, which **is** the handle (decision 5). Desktop: today's view menu, plus a new chevron button |
 | Snap points | **Half**, 60% of the visual viewport, and **full**, the visual viewport less the top safe area and an 8px gap |
-| How it closes | A drag down on the sheet's header (its grab handle, tabs and filter row); a tap on the backdrop; Escape; system Back (`history.pushState` on open, close on `popstate`). The list only scrolls; it never moves the sheet |
+| How it closes | A drag down on the sheet's header (its grab handle, tabs and filter row); a tap on the backdrop; the × button; Escape; Android back. **The dock touches no history**: back reaches it through the modal dialog's own close watcher in a browser, and through a small `back-claim` bridge message in the Android shell. The list only scrolls; it never moves the sheet |
 | Content | Tabs Recent / Waiting / Pins / All, a filter box under them, then vertical rows: whole name, host, current focus title, waiting badge (stalled and needs-you badges in Phase 5). Recent lists up to 30 in the dock, 8 on the bar (decision 6). A row tap is a real load, like a pill |
 | Where the data comes from | **The bar already on the page.** Its four rows are server-rendered with every session page; the dock draws its rows from them when it opens. No new request, no second copy of the markup. Two new attributes per pill (host, focus title), and an ordered href list for Recent's entries 9–30 (each one already a pill in the All row) |
 | Filter | The palette's in-page rule (`window.musterPaletteRank`) over the shown tab, previous titles included through `data-switcher-prev`. No server search: the palette stays the full-history search |
@@ -123,8 +124,11 @@ entries (`agentsListEntries`) and the viewer's recently opened refs.
 Each pill carries what the palette searches (`SwitcherItem`, `:175-203`;
 `switcherEntry`, `:752-758`): `data-switcher-code`, `data-switcher-title`
 (display name and current focus, **joined by " · "**), `data-switcher-words`,
-`data-switcher-prev` (recent previous focus titles). The host is only in the
-host icon's `title`/`aria-label` (`"Host: …"`, `internal/ui/host_icons.go:135-160`).
+`data-switcher-prev` (recent previous focus titles). The host is folded,
+lower-cased, into `data-switcher-words` (`switcherSearchWords`, `:333`, `:342`)
+and drawn in the host icon's `title`/`aria-label` (`"Host: …"`,
+`internal/ui/host_icons.go:135-160`); neither gives it back as its own
+display value, which is why the dock adds `data-switcher-host`.
 The waiting dot is `data-switcher-wait` (`:747-748`). **There is no stalled
 mark anywhere in the UI today**; see [Badge sources](#badge-sources).
 
@@ -186,10 +190,15 @@ already using. The dock therefore:
   the WebView `canGoBack()`, and `handleOnBackPressed` calls `goBack()`
   (`feature/shell/…/ShellBack.kt`). It re-syncs on every
   `doUpdateVisitedHistory` (`ShellWebView.kt:171-173`, `MainActivity.kt:304-306`).
-  So a page-level `history.pushState` is how a web overlay gets Back, provided
-  `doUpdateVisitedHistory` fires for a same-document push. That is the normal
-  Chromium WebView behaviour but **UNVERIFIED** here; it is an acceptance check
-  of Phase 1.
+  It consults the page for nothing: Back is WebView history or the system's.
+  The design below therefore adds one bridge message rather than a history
+  entry ([How back closes it](#how-back-closes-it)).
+- **The bridge.** `musterApp` is a `WebViewCompat.addWebMessageListener`
+  (`ShellWebView.kt:24`, `:116-125`); every message is a JSON string parsed by
+  `BridgeMessage.parse`, which refuses anything not from the **main frame** and
+  the paired origin, longer than 1024 characters, or of an unknown `type`
+  (`BridgeMessage.kt`). `MainActivity.onBridgeMessage` dispatches the known
+  ones (`MainActivity.kt:236-243`).
 - **Insets.** The shell pads its container for system bars, cutout **and
   the IME**, and consumes them, so in the shell `env(safe-area-inset-*)` reads
   0 and the WebView itself shrinks when the keyboard opens
@@ -210,7 +219,7 @@ already using. The dock therefore:
 <dialog id="switcher-dock" aria-labelledby="switcher-dock-title"
         data-own-swipe data-snap="half">
   <div data-dock-header>                      <!-- the drag zone -->
-    <div data-dock-grip aria-hidden="true"></div>   <!-- 36×4 visual handle -->
+    <button data-dock-grip aria-label="Expand"></button>  <!-- full width, 44px tall; draws a 36×4 handle -->
     <h2 id="switcher-dock-title" class="sr-only">Switch session</h2>
     <div role="tablist" aria-label="Session views">
       <button role="tab" id="dock-tab-recent" aria-controls="dock-list"
@@ -375,9 +384,15 @@ manipulation is not animation), and the release jumps to its snap.
   `role=dialog`, `aria-modal`, inertness outside, and Escape. Its name is the
   visually hidden "Switch session" heading.
 - **Tabs** are an ARIA tablist with roving `tabindex`; Left/Right/Home/End
-  move between them; activating one writes the bar's stored view
-  (`muster.switcher.view`, `switcher.go:106-107`) so the bar's row follows the
-  dock. The dock opens on the bar's shown view.
+  move between them. The dock opens on the bar's shown view. Activating a tab
+  must also move **the bar that opened it**, in the same document, at once, and
+  writing `muster.switcher.view` alone does not: the bar reads storage only as
+  it is parsed, and `show()` / `choose()` are private to `switcherJS`
+  (`switcher.go:908-923`). So `switcherJS` exports one hook,
+  `window.musterSwitcherShow(view)`, which is `choose(view)` (show the row, swap
+  the icon, update the menu's checks, store the choice). The dock calls it on
+  the source bar's window (the frame's, when the frame opened it) and on the
+  top window's own bar if it has one.
 - **The list is a list of links**, not a listbox, so a long-press "open in new
   tab" and a screen reader's links list work. Arrow Up/Down from the filter
   move to the first row and between rows; Enter follows.
@@ -386,9 +401,19 @@ manipulation is not animation), and the release jumps to its snap.
   keyboard: the filter, so typing filters at once.
 - **Escape** (the dialog's `cancel` event) closes through the same path as
   every other close (below).
+- **The palette's `/` is off while the dock is open.** Its document `keydown`
+  (`palette.go:419-435`) already skips a text field, which covers the filter,
+  but not the tabs or rows. It gains one early return, `if
+  (document.getElementById('switcher-dock')?.open) return;`, so `/` cannot open
+  an inert popover behind the modal.
+- **The grip is a real button**: full width and 44px tall at the sheet's top,
+  drawing the 36×4 handle inside it. A tap toggles half and full, and its name
+  says which ("Expand" / "Shrink to half"). A drag starting on it is a header
+  drag.
 - **Focus returns** to what opened it: the view button, the chevron, or, for a
-  swipe, the view button with `preventScroll`. Never to a text field on touch,
-  which would raise the keyboard.
+  swipe, the view button with `preventScroll`, in whichever document that
+  element lives (the frame's, when the frame's bar opened it). Never to a text
+  field on touch, which would raise the keyboard.
 
 ### Safe areas
 
@@ -521,13 +546,13 @@ Two consequences, both acceptable and tested:
 
 - **Waiting**: the pill's `data-switcher-wait`, that is `listEntry.waiting`
   (`list_order.go:109-117`). No change until Phase 5.
-- **Stalled and needs-you (Phase 5)**: the session-state work (`docs/design/session-state.md`,
-  its PR 1 merged at `723832da`) keeps open episodes with `state = stalled`
-  (`internal/sessionstate/state.go:21-25`, `store.go:15-46`).
-  `OpenEpisodes` (`store.go:223-226`) reads **every** owner's open episodes,
-  so the switcher needs an owner-scoped read (the caller's principal, as the
-  palette's server search is scoped, `internal/api/palette.go:21-26`), mapped
-  to entries by the sweep's `(kind, key)`. One query per page render, added to
+- **Stalled and needs-you (Phase 5)**: the session-state work
+  (`docs/design/session-state.md` at `6897dcdc`; PR 1 #426 and PR 2 #430 are
+  merged) keeps open episodes with `state` `needs_you` or `stalled`
+  (`internal/sessionstate/state.go:21-25`). `OpenEpisodes` is "the caller's
+  open episodes, oldest first" (`internal/sessionstate/store.go:74-75` at
+  `6897dcdc`), so it is already owner-scoped; the switcher maps them to its
+  entries by the sweep's `(kind, key)`. One query per page render, added to
   `Server.switcher` (`internal/api/recents.go:73-83`), and a `Stalled bool`
   on `SwitcherItem` drawn as `data-switcher-stalled`. Where there is no
   episode store, or no open episode, there is no badge.
@@ -545,7 +570,7 @@ Two consequences, both acceptable and tested:
   data for the dock to read but draw no new badge; their existing waiting dot
   stays, reading the redefined `listEntry.waiting`.
 - **Precedence:** one badge per row, needs-you over stalled
-  (`session-state.md:230`).
+  (`session-state.md:230` at `6897dcdc`).
 
 ## Gesture rules
 
@@ -574,11 +599,19 @@ nothing on the bar moves. A swipe up anywhere on the shown row opens the dock
 too. On desktop the view button and its menu are unchanged, and the chevron is
 added beside them.
 
-Mechanically: in the touch layout the button's `click` calls
-`preventDefault()` (which stops its `popovertarget` from toggling the menu)
-and opens the dock, and `aria-haspopup` / `aria-controls` name the dock
-instead of the menu. Without script the button still opens the menu
-natively.
+Mechanically, in the touch layout:
+
+- the button's `click` calls `preventDefault()` (which stops its
+  `popovertarget` from toggling the menu) and opens the dock, and
+  `aria-haspopup` / `aria-controls` name the dock instead of the menu;
+- its ArrowUp / ArrowDown, which open the menu today (`switcher.go:973-979`),
+  open the dock instead;
+- it carries **`touch-action: none`**. Without it a vertical drag that starts
+  on the button is the browser's to pan, and the browser answers with a
+  `pointercancel` before the dock sees the drag. The button scrolls nothing,
+  so `none` costs nothing.
+
+Without script the button still opens the menu natively.
 
 ### Coexistence
 
@@ -591,38 +624,125 @@ natively.
 | The soft keyboard | While `<html data-keyboard>` is set, a drag on the bar is ignored entirely. On the Rendered and Terminal views the bar is already `display: none` then; **on the agent chat page it is still drawn** (no room mark, `switcher.go:627-628`), which is where this check does the work. Inside the open dock, a drag on the header still closes it (closing blurs the filter) |
 | Android system gestures | Back (edge swipe from the side) is horizontal and arrives as Back, below. Home (swipe up from the bottom edge) starts in the gesture strip, which the shell pads out of the WebView, and which a browser leaves as the safe-area inset outside the bar's row |
 | Android pull to refresh | Never: the dock is fixed and a dialog, and the bar's row has `touch-action` without `pan-y` (`PullProbeScript.kt:86-95`) |
-| iOS edge-swipe back | Arrives as a history Back, so it closes the dock like Android back |
+| iOS edge-swipe back | Safari's tab gesture is a history Back, so it leaves the page, dock and all, as Back does today. iOS has no system back, and an installed iOS app has no edge-swipe back, so there is nothing else to wire |
 
-### How Android back closes it
+### How back closes it
 
-- **Open:** `history.pushState({musterDock: 1}, '')`, same URL. In the shell
-  this makes `canGoBack()` true and `ShellBack` enabled, provided the push
-  reaches `doUpdateVisitedHistory` (**UNVERIFIED**, Phase 1 check).
-- **Back:** `popstate` with the dock open closes it. Every other close
-  (backdrop, Escape, close button, drag) calls `history.back()` and lets the
-  same `popstate` handler close it, so there is exactly one close path and no
-  stale entry left behind. If the push failed, a close closes directly.
-- **A row tap:** `location.replace(href)`, which replaces the dock's entry
-  with the new page. History ends `[page, new page]`, exactly as after a pill
-  tap, and Back from the new page lands on the page with the dock closed. The
-  row stays a real `<a href>` so a long-press, a middle-click or a modified
-  click opens it the browser's way (and takes no `replace`).
-- **Nothing else reads this state.** htmx 2.0.4 restores only an entry whose
-  state has `htmx` (measured in `web/static/vendor/htmx.min.js`). The tab
-  router's `popstate` calls `showForPath()` (`components.go:1786`, `:1666-1670`),
-  a no-op on a session page, which has no tab panel. The dock's entry carries
-  the same URL, so neither router moves.
-- **A reload or bfcache restore with the dock's entry current**:
-  `replaceState(null, '')` and stay closed. That leaves one Back press that
-  does nothing visible, which is acceptable and rare.
-- **Desktop** pushes no entry: Back on a desktop browser means "previous
-  page", and a centred panel is not the kind of overlay a desktop user backs
-  out of.
+**Recommendation: the dock uses no history at all** (round 1 option (a)).
+
+**Why not a history entry.** Back from a pushed dock entry lands on the
+page's own entry, and that entry is often htmx's: a page reached by a boosted
+link carries `{htmx: true, …}`. The session picker (`agents_detail.go:1157-1161`)
+and the notification rows (`notifications.go:134-135`) are such links, under
+the body's `hx-boost` (`components.go:284`). htmx 2.0.4 then restores, from
+`web/static/vendor/htmx.min.js`:
+
+```js
+window.onpopstate=function(e){if(e.state&&e.state.htmx){Wt();…}else{if(n){n(e)}}}
+function Wt(e){zt();e=e||location.pathname+location.search;const t=Vt(e);
+  if(t){…qe(n);Ve(r,n,o);…}else{if(Q.config.refreshOnHistoryMiss){…reload…}else{Gt(e)}}}
+```
+
+so a dock close would snapshot the page with the dock open (`zt`), then swap
+the whole body from the cache (`Ve`) or with an XHR GET (`Gt`). The two other
+options were rejected on that source:
+
+- **(b) Stop the `popstate` in the capture phase, before `window.onpopstate`.**
+  It works only by the at-target ordering of capture before non-capture
+  listeners, it must never miss (a miss is the body swap above), and a
+  Forward press then lands on a dead dock entry. Too fragile for a close.
+- **(c) Copy htmx's state into the dock's entry.** The restore is decided by
+  the **destination** entry's state, which is the page's, not the dock's. To
+  defuse it the page's own entry would have to be rewritten on open and put
+  back on close, and a row tap leaves the document before it can be put back,
+  leaving a boosted entry that no longer restores.
+
+**What closes it instead:**
+
+| Where | Back reaches the dock by | Status |
+|---|---|---|
+| Any browser | Escape, the backdrop, ×, the header drag | built with the dock |
+| Chrome on Android (tab or installed app) | the modal `<dialog>`'s own close watcher: Android back fires `cancel` on an open modal dialog, which closes through the same path as Escape (Chrome 120 shipped `CloseWatcher` and its `<dialog>` integration). It needs a user activation to open, which both a tap and a swipe's `pointerup` give | **UNVERIFIED** here; Phase 1 check on a phone browser |
+| The Android shell | a `back-claim` bridge message ([below](#the-shell-change-muster-android)): the shell offers the press to the page first while the page holds a claim | needs a muster-android PR |
+| iOS | no system back exists; Escape-equivalents only | — |
+
+**A row tap is the pill's link, unchanged**: a real load, no `replace`, so
+history after it is `[page, new page]` as after a pill. Because the page can be
+kept in the back/forward cache, the dock is **closed without history before the
+navigation** (on the row's `click`, then the browser follows the link), so the
+cached page is stored closed. And on `pageshow` with `persisted` true, the dock
+is force-closed (and its claim released) in case anything left it open.
+
+**No phantom entry anywhere**: with no push, a reload or a restore has nothing
+to clean up, and the "one Back press that does nothing visible" case is gone.
+
+#### The shell change (muster-android)
+
+`ShellBack` today (`feature/shell/…/ShellBack.kt`) is enabled exactly while
+`webView.canGoBack()`, and its handler calls `goBack()`. The contract, one
+small PR in that repo:
+
+1. **The message.** The page posts
+   `{"type":"back-claim","open":true}` when the dock opens and
+   `{"type":"back-claim","open":false}` when it closes (and on `pagehide`).
+   `BridgeMessage.parse` gains `BackClaim(open: Boolean)`: `open` must be a JSON
+   boolean, anything else is refused. The existing main-frame and origin checks
+   apply unchanged, which is why the dock always opens in the top document
+   ([The view-swap frame](#the-view-swap-frame)).
+2. **The state.** `ShellBack` gains `claimed: Boolean`, and
+   `isEnabled = claimed || canGoBack()`. So a dock open on the first page of
+   history, where `canGoBack()` is false, still gets the press.
+3. **The press.** With `claimed`, `handleOnBackPressed` calls
+   `webView.evaluateJavascript("window.musterBack ? window.musterBack() : false")`.
+   `musterBack()` closes the dock and returns `true` when it closed something.
+   If the result is not `"true"` (an old page, a page that already closed),
+   the shell clears `claimed` and does what it does today: `goBack()` if it can,
+   else it disables itself and re-dispatches the press to the system.
+4. **The reset.** `claimed` clears on every main-frame page start, on
+   `doUpdateVisitedHistory`, and when the WebView is replaced or its renderer
+   is gone (the places that already call `back.sync()`,
+   `MainActivity.kt:229`, `:264`, `:305`, `:535`). A page that dies holding a
+   claim can therefore cost at most one Back press, never trap Back.
+5. **Tests** (Robolectric, beside `ShellBackTest`): a claim with
+   `canGoBack()` false enables the callback; a press with a claim evaluates the
+   script and does not call `goBack()`; a `"false"` result falls back to
+   `goBack()`; a page start clears the claim; a `back-claim` from a subframe
+   or with `"open":"yes"` is refused (`BridgeAndNavigationTest`).
+
+On muster's side the claim is posted only where `window.musterApp` exists
+(the shell), as `appBridgeJS` already checks (`internal/api/devices.go:616-619`).
+
+### The view-swap frame
+
+`internal/ui/view_swap.go` lays the other view (a Terminal view over an agent
+page, or the Rendered view and its Terminal) over the page as a same-origin
+`<iframe>` (`:16-20`, `:126-176`), and that frame has its own bar. A dock
+opened **inside** the frame would be wrong three ways: its navigation is
+re-routed (`leave` assigns the parent's location, `:227-229`; a navigation is
+intercepted and re-issued in the top window, `:246-276`); its
+`visualViewport` is the frame's, which a keyboard never shrinks (the reason
+`switcherKeyboardJS` measures the top window, `switcher.go:849-851`); and the
+shell's bridge refuses anything not from the main frame.
+
+**So the dock always opens in the top document.** The frame's bar asks the
+parent through the same-origin parent call the swap already uses:
+`window.parent.musterDock.open(bar)`, where `bar` is the frame's own
+`#session-switcher` element and the opener is the element to return focus to.
+The top window's dock reads its rows from **that** bar (the frame is the newer
+document, and its pin toggle refreshes only its own bar), renders above the
+frame (a modal dialog's top layer is above the frame's `z-index:2147483000`),
+measures the top `visualViewport`, posts the `back-claim` from the main frame,
+and navigates the top window on a row tap. A row for the top page's own
+session is handed to `musterViews.showOwn(href)` first, as a frame link is
+(`:227-228`), so it shows the view underneath rather than reloading it. The
+frame's own dock element stays closed and unused. `musterDock` exists in every
+document that draws the sidebar, and both the agent page and the Rendered view
+do.
 
 ## Desktop chevron
 
-**Recommendation: the same `<dialog>`, laid out from `lg` up (and on a fine
-pointer) as a centred panel**, `w-[min(36rem,calc(100vw-2rem))]`, at most 70vh,
+**Recommendation: the same `<dialog>`, laid out in the mouse layout as a
+centred panel**, `w-[min(36rem,calc(100vw-2rem))]`, at most 70vh,
 with the backdrop. Not a bottom sheet: a sheet the width of a desktop screen is
 mostly empty, and the palette and the focus history dialog are already centred
 there. No snap points, no drag.
@@ -638,9 +758,17 @@ there. No snap points, no drag.
   the ask.
 
 **Which layout applies** is one media query, used by both the CSS and the
-script (`matchMedia`): touch layout when `(max-width: 1023.98px), (pointer:
-coarse)`, mouse layout otherwise. 1024px is the bar's existing `lg` line
-(`components.go:2231`). **The touch layout gets the gestures and the mouse
+script (`matchMedia`): **touch layout when `(pointer: coarse)`, mouse layout
+otherwise**, at any width. This narrows decision 3's "below the `lg`
+breakpoint" clause to devices whose primary pointer is coarse (see
+[open question 1](#open-questions)): a narrow window driven by a mouse gets the
+mouse layout (view menu plus chevron, centred panel), which works at 390px
+too. The reason is concrete: the default e2e project is Desktop Chrome at
+390px with a fine pointer, and a width rule would switch eight existing specs
+(`switcher-search`, `composer-switcher`, `agents-switcher`, `agents-list-ux`,
+`terminal`, `uploads`, `pins`, `bfcache-restore`) from the view menu to the
+dock. Under the pointer rule they keep testing the menu they were written for,
+unchanged, and the dock's own specs opt into `hasTouch`. **The touch layout gets the gestures and the mouse
 layout gets the chevron, and nothing crosses over**: in the mouse layout the
 bar and the dock bind no drag at all, so a mouse that drags across the bar
 selects text as it does today, and the dock opens only by the chevron.
@@ -662,9 +790,14 @@ and run the behaviour that depends on them across a matrix:
 | Project | Viewport | `hasTouch` / `isMobile` | Layout it must show |
 |---|---|---|---|
 | phone | 390×844 | true / true | touch: sheet, swipe |
-| narrow mouse | 800×900 | false / false | touch layout by width: opened by the handle, no chevron |
-| touch tablet | 1180×820 | true / true | touch layout by pointer, above `lg` |
+| narrow mouse | 390×844 | false / false | **mouse** layout: view menu and chevron, centred panel (the default project's shape) |
+| touch tablet | 1180×820 | true / true | touch layout, above `lg` |
 | desktop | 1280×800 | false / false | mouse: chevron, centred panel |
+
+Every touch spec first asserts `matchMedia('(pointer: coarse)').matches` is
+true, and every mouse spec that it is false: the layout is decided by that
+query, so a context that did not emulate it would test the wrong layout and
+pass.
 
 Drags use `e2e/lib/touch.ts`'s `touchDrag` (CDP `Input.dispatchTouchEvent`),
 which goes through Chrome's own gesture handling, `touch-action` included.
@@ -678,14 +811,20 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
 40 sessions), `data-keyboard` really is set.
 
 1. **Swipe up on the bar opens at half**: the dialog is open, its height is
-   60% of the visual viewport ±2px, `history.length` grew by one.
+   60% of the visual viewport ±2px, and `history.length` and `history.state`
+   are unchanged. A swipe that starts on the view button opens it too (no
+   `pointercancel`; `touch-action: none`).
 2. **Tap on the view button opens** (touch layout), and does **not** open the
-   view menu; on desktop it still opens the view menu.
+   view menu; ArrowUp on it opens the dock too; on desktop both still open the
+   view menu. Picking the Pins tab moves the bar's row to Pins at once (via
+   `musterSwitcherShow`), in the same document, without a reload.
 3. **Drag the header up from half → full**; a drag that ends nearer half
    returns to half.
 4. **Drag the header down from half → closed**; a short drag down from full →
    half; a long one from full → closed.
-5. **Backdrop tap closes**; the close button closes; Escape closes.
+5. **Backdrop tap closes**; the close button closes; Escape closes. The grip
+   is 44px tall and a tap on it toggles half and full. With the dock open, `/`
+   on a focused tab opens no palette.
 6. **The list only scrolls**: with the list at its top, a downward drag on it
    leaves the dock open at its snap and the sheet unmoved; a drag up scrolls
    the list (`scrollTop` grew).
@@ -697,10 +836,22 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
    that state (asserted).
 8. **A swipe on the terminal does not open it**: a vertical drag on xterm
    leaves the dock closed. Control: the same drag on that page's bar opens it.
-9. **Back closes it**: `page.goBack()` closes the dock, the URL is unchanged,
-   and a marker set on `window` survives (no navigation). After a backdrop
-   close, one `goBack()` reaches the previous page (no phantom entry). After a
-   row tap, `goBack()` lands on the original page with the dock closed.
+9. **Closing never touches history, including on a boosted page.** Arrive at
+   the agent page **through the session picker** (a boosted link, so the
+   entry's state has `htmx`; asserted) and put a marker element in the body.
+   Open the dock and close it by Escape, the backdrop, × and the header drag in
+   turn: each time the marker survives, no `htmx:historyRestore` fired (a
+   listener counts them; positive control: a real `page.goBack()` to a boosted
+   entry afterwards counts one), and `history.length` is unchanged. A row tap
+   then navigates: `history.length` grew by exactly one, and `page.goBack()`
+   lands on the agent page with the dock closed, also when the page came from
+   the back/forward cache (`pageshow.persisted`, asserted true in a run that
+   uses it).
+9a. **Back in a phone browser** (manual, Phase 1): Chrome on Android, open the
+   dock, press back: the dock closes and the page stays.
+9b. **The shell's claim**: a stub `window.musterApp` records messages; opening
+   posts `back-claim` `true`, every close posts `false`, `window.musterBack()`
+   returns `true` while open and `false` when shut.
 10. **A horizontal swipe on the bar** scrolls its row (`scrollLeft` moved) and
     leaves the dock closed.
 11. **A swipe that starts on a pill does not open the pill**; a tap still
@@ -731,6 +882,16 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
 19. **The handle replaces the menu on touch only**: in the phone project a tap
     on the view button opens the dock and `#switcher-views` stays closed; in
     the desktop project the same tap opens the menu and not the dock.
+20. **The dock inside the Terminal view swap**: from an agent page, open the
+    Terminal view (the frame, `data-muster-view`), then open the dock from the
+    frame's bar by tap and by swipe. The open dialog is in the **top**
+    document and the frame's dock stays closed; its rows are the frame bar's
+    (a pin toggled in the frame shows in Pins); with the keyboard emulated in
+    the top window the filter snaps to full above it; a row tap navigates the
+    top window with `history.length` +1 and leaves no frame; a row for the
+    page's own session shows the view underneath without a load; Escape
+    returns focus to the view button inside the frame; `back-claim` is posted
+    by the top window only. The same from the Rendered view's Terminal swap.
 
 Go unit tests: the two new pill attributes (with values the fixtures cannot
 produce by accident: a host and a focus title distinct from every name),
@@ -739,7 +900,9 @@ produce by accident: a host and a focus title distinct from every name),
 
 **Each guard is mutation-checked once**: remove the keyboard check (case 7
 goes red), drop `data-own-swipe` from the dock (12), let the list drive the
-sheet (6), drop the `replace` on a row tap (9), and confirm that test fails
+sheet (6), add a `pushState` on open (9: the boosted-page restore counter
+goes to one), open the dock in the frame's own document (20), drop the
+view button's `touch-action` (1), and confirm that test fails
 with its own assertion.
 
 ## Phases
@@ -752,15 +915,23 @@ anything it does not touch.
 The `<dialog>` in `#sidebar-root`; tabs; rows read from the bar; the two
 pill attributes; Recent to 30 (`dockRecentMax`, `RecentMore`, the href list);
 the view button becomes the handle in the touch layout (decision 5); half and full
-(a tap on the sheet's grip toggles them); backdrop, close button, Escape;
-Back by `pushState`/`popstate`; `location.replace` on a row tap; focus,
-`aria`, safe areas, reduced motion.
+(the 44px grip toggles them); backdrop, close button, Escape; no history:
+the dialog's close watcher for browser back, the `back-claim` /
+`musterBack()` pair for the shell; close before a row's navigation and on
+`pageshow.persisted`; the dock in the top document for the view-swap frame;
+`musterSwitcherShow`; the palette's `/` off while open; the touch layout by
+`(pointer: coarse)`; focus, `aria`, safe areas, reduced motion. **The eight
+existing specs listed under [Desktop chevron](#desktop-chevron) need no change**
+under the pointer rule; their run is part of the acceptance.
 
-Acceptance: cases 2, 5, 9, 15, 16, 17, 18, 19 green in the phone and
-narrow-mouse projects; the waiting badge only (decision 7); desktop unchanged (the view menu still opens). **On an Android
-emulator with the shell: open, press Back, the dock closes and the page
-stays** (the `doUpdateVisitedHistory` check). Screen-reader pass: the dialog's
-name, the tabs, the current row.
+Acceptance: cases 2, 5, 9, 9a, 9b, 15, 16, 17, 18, 19, 20 green in the phone
+project, and the narrow-mouse and desktop projects unchanged (the view menu
+still opens); the eight specs above green untouched; the waiting badge only
+(decision 7). **With the muster-android `back-claim` PR on an emulator: open,
+press Back, the dock closes and the page stays; press Back again, the page
+goes back as before.** Until that PR ships, Back in the shell leaves the page
+as it does today, dock and all; nothing breaks. Screen-reader pass: the
+dialog's name, the tabs, the grip, the current row.
 
 ### Phase 2: gestures
 
@@ -792,12 +963,14 @@ chevron.
 
 ### Phase 5: session state for Waiting and the badges
 
-**Starts once #426's model reaches the UI**, that is session-state rollout
-step 2 (`docs/design/session-state.md:470-480`: states, episodes and the
-Attention section). Until then Phases 1–4 run on today's predicate
+**Gate: #426's model in the UI**, that is session-state rollout step 2
+(`docs/design/session-state.md:474-489` at `6897dcdc`: states, episodes and
+the Attention section's Stalled / waiting rows). **#430 (session-state PR 2)
+merged that step at `6897dcdc`**, so Phase 5 is no longer blocked by it; it
+still follows Phases 1–4. Until it ships, they run on today's predicate
 (decision 7).
 
-The owner-scoped open-episode read in `Server.switcher`; `listEntry.waiting`
+The caller's open episodes (`OpenEpisodes`, already owner-scoped) read in `Server.switcher`; `listEntry.waiting`
 redefined as "session state `needs-you`", in place, so every reader moves
 together (the Waiting tab and row, the waiting dot, **the sidebar's order and
 mark, which change with this phase**); `SwitcherItem.Stalled` and
@@ -814,5 +987,14 @@ error.
 
 ## Open questions
 
-None open. The three this page first asked (the handle, Recent's length, the
-waiting definition) are decided as [decisions 5–7](#operator-decisions).
+The three this page first asked (the handle, Recent's length, the waiting
+definition) are decided as [decisions 5–7](#operator-decisions). One is new,
+from round 1:
+
+1. **Touch layout by pointer alone?** This page decides the layout by
+   `(pointer: coarse)` at any width ([Desktop chevron](#desktop-chevron)),
+   which narrows decision 3's "below the `lg` breakpoint" clause: a narrow
+   **mouse** window gets the chevron and the centred panel instead of the
+   sheet. It keeps eight existing specs unchanged and gives a mouse no gesture
+   it could not use. The alternative, keeping the width clause, means updating
+   those eight specs to the dock in Phase 1. Owner to confirm.
