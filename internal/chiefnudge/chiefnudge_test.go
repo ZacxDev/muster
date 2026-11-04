@@ -284,6 +284,58 @@ func TestTheChiefIsAskedForNoOptions(t *testing.T) {
 	}
 }
 
+// TestTheNotifyPromptAsksForNoQuestion (session state's step 3a): with
+// Hint.Notify the check asks for nudge, leave or notify — no question, no
+// summary, no options, no "ask" — both under the ask-stall line and over it,
+// where it adds the needs-you rule (a nudge must quote words that ANSWER the
+// question) and drops the several-items guidance (which writes a question).
+func TestTheNotifyPromptAsksForNoQuestion(t *testing.T) {
+	const decisions = `{"decision":"nudge"|"leave"|"notify","reason":"<one short line>","quote_id":"<id>","quote":"<exact text>","covered_action":"<the pending action>"}`
+	for _, h := range []Hint{{Notify: true}, {Notify: true, AskStall: true, Label: LabelNeedsInput, AskScore: 0.95}} {
+		p := Prompt(Session{Title: "t"}, Msg{Role: "assistant", Text: "done?"}, nil, 15*time.Minute, h, "0123456789abcdef")
+		pre := p[:strings.Index(p, "<<<stall-check")]
+		if !strings.Contains(pre, decisions) {
+			t.Errorf("hint %+v: the decision line is not the nudge/leave/notify one:\n%s", h, pre)
+		}
+		for _, not := range []string{`"question"`, `"ask"`, "- ask:", "options", "write ONE question"} {
+			if strings.Contains(pre, not) {
+				t.Errorf("hint %+v: the prompt carries %q:\n%s", h, not, pre)
+			}
+		}
+		if got := strings.Contains(pre, needsYouRule); got != h.AskStall {
+			t.Errorf("hint %+v: the needs-you rule present %v", h, got)
+		}
+		if h.AskStall && !strings.Contains(pre, "The default is notify, and leave is not accepted for it.") {
+			t.Errorf("hint %+v: the default is not notify:\n%s", h, pre)
+		}
+	}
+	if p, err := ParseNotifyProposal(`{"decision":"Notify","reason":"look at it"}`); err != nil || p.Decision != DecisionNotify {
+		t.Fatalf("notify: %+v %v", p, err)
+	}
+	if p, err := ParseNotifyProposal(`{"decision":"ask","question":"which branch?"}`); err != nil || p.Decision != DecisionNotify {
+		t.Fatalf("an ask under session state: %+v %v", p, err)
+	}
+	// Session state off: unchanged — notify is no decision there.
+	if _, err := ParseProposal(`{"decision":"notify"}`); !errors.Is(err, ErrUnparseable) {
+		t.Fatalf("notify parsed with session state off: %v", err)
+	}
+}
+
+// TestADecisionsJevIsWhatWasStored: Decision.Jev is WithJev's inverse, so the
+// paste gate reads the same classification the sweep decided on.
+func TestADecisionsJevIsWhatWasStored(t *testing.T) {
+	r := Result{Label: LabelNeedsInput, AskScore: 0.91, Model: "m", LatencyMS: 7,
+		Scores: map[string]float64{LabelNeedsInput: 0.81, LabelAsksPermission: 0.10, LabelNeither: 0.09}}
+	got := Decision{}.WithJev(r).Jev()
+	if got.Label != r.Label || got.AskScore != r.AskScore || got.Model != r.Model || got.LatencyMS != 7 || got.Err != "" ||
+		got.Scores[LabelNeedsInput] != 0.81 || got.Scores[LabelAsksPermission] != 0.10 || got.Scores[LabelNeither] != 0.09 {
+		t.Fatalf("%+v", got)
+	}
+	if !AskStall(got, 0.9) || AskStall(Decision{}.Jev(), 0.9) {
+		t.Fatal("the stored classification does not decide the same ask-stall")
+	}
+}
+
 func TestTheGenericAskQuestion(t *testing.T) {
 	if q := GenericAskQuestion("Fix CI", ""); q != "Fix CI is waiting on you. Its last turn looks like it asked you something." {
 		t.Fatalf("%q", q)
