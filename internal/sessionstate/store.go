@@ -284,7 +284,7 @@ func (p *PG) SetClassification(ctx context.Context, id int64, streak string, c C
 
 // End implements Store.
 func (p *PG) End(ctx context.Context, id int64, reason string, at time.Time) (bool, error) {
-	if reason != EndWorked && reason != EndGone {
+	if reason != EndWorked && reason != EndGone && reason != EndOwner {
 		return false, ErrBadEpisode
 	}
 	tag, err := p.pool.Exec(ctx, `UPDATE session_episodes SET ended_at = $2, end_reason = $3, updated_at = $2

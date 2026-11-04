@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -27,17 +28,23 @@ import (
 //     the partial unique index (one open episode per session, across
 //     replicas);
 //   - an open episode follows its session (state, where it is, its streak) and
-//     ENDS only after sustained work (sessionstate.Advance; for an agent, a
-//     reply turn that long) or when its window is gone from a host that is
-//     online, reporting status, and has sent its window list. A host that
-//     dropped or has not been read, a failed agent list, a failed transcript
-//     read, a failed classifier: none of them ends an episode or quiets one.
+//     ENDS when the OWNER ACTS in the session after it opened — a message of
+//     their own, or a waiting prompt answered (sessionstate.OwnerActed;
+//     episodeOwnerActed reads it) — after sustained work (sessionstate.Advance;
+//     for an agent, a reply turn that long), or when its window is gone from a
+//     host that is online, reporting status, and has sent its window list. A
+//     host that dropped or has not been read, a failed agent list, a failed
+//     transcript read, a failed classifier: none of them ends an episode or
+//     quiets one.
 //
 // 🔴 THE CLASSIFIER RUNS ONLY WHERE THE CHIEF'S NUDGES WOULD RUN IT: the
 // feature on and the owner's chief on (docs/chief-nudges.md, "The stall
-// classifier"). Everywhere else no transcript is read and no model is called:
-// an idle stop is "stalled" and labelled as asking (sessionstate.Asked), so
-// the classifier's absence can never quiet it. Where it does run, its input is
+// classifier"). Everywhere else no model is called, and no transcript is read
+// to classify: an idle stop is "stalled" and labelled as asking
+// (sessionstate.Asked), so the classifier's absence can never quiet it. The
+// one read made for every owner is the owner-acted check's
+// (episodeOwnerActed): it calls no model, and only follows an open episode
+// whose session moved since the last pass. Where it does run, its input is
 // stallClassifierText — redacted and cut — the SAME text the nudge sweep sends,
 // and its answer is billed once per streak whichever pass runs first.
 //
@@ -54,6 +61,12 @@ const SessionStateInterval = 30 * time.Second
 // streaks one pass reads a transcript for and classifies. A session past it
 // opens unclassified (counted as asked) and is classified on a later pass.
 const sessionStateClassifyPerPass = 5
+
+// sessionStateOwnerReadsPerPass bounds, per owner, how many open episodes one
+// pass reads a conversation for to see whether the owner acted in it
+// (episodeOwnerActed). An episode past it stays owed, and is read on a later
+// pass: its end is delayed, never dropped.
+const sessionStateOwnerReadsPerPass = 10
 
 // The error classes an episode stores when no classifier was run for it, so
 // it is counted as asked and its streak is not read again.
@@ -117,7 +130,10 @@ type statePass struct {
 	owner  int64
 	cl     *chiefnudge.Classifier // nil: the owner's classifier does not run
 	budget *int
-	now    time.Time
+	// ownerReads bounds the owner-acted check's transcript reads in this
+	// owner's part of the pass (episodeOwnerActed).
+	ownerReads *int
+	now        time.Time
 	// judges: the owner's chief judges idle stops live (episodeChiefJudges),
 	// so an idle stop's push waits on its decision.
 	judges bool
@@ -152,7 +168,9 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		}
 	}
 	answerable := answerableWaits(s.waitingSessionsIn(octx, hs))
-	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now(), judges: s.episodeChiefJudges(octx, owner)}
+	ownerReads := sessionStateOwnerReadsPerPass
+	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, ownerReads: &ownerReads, now: s.now(),
+		judges: s.episodeChiefJudges(octx, owner)}
 	// The restart rule's clear first: an ended stop's notification is closed
 	// whether it ended in a pass, or while muster was down.
 	defer s.clearEndedEpisodes(octx, owner)
@@ -263,6 +281,13 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 	}
 	state, wants := sessionstate.StateOf(f)
 	busy := c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusBusy
+	if has && s.episodeOwnerActed(octx, sp, c, ep) {
+		// The owner went to the session and acted in it: the stop is over
+		// (its push is withdrawn by this pass's clearEndedEpisodes), whether
+		// or not the session then works for EndAfter.
+		s.endEpisode(octx, ep, sessionstate.EndOwner, now)
+		has = false
+	}
 	if has {
 		step := sessionstate.Advance(busy && !wants, ep.BusySince, ep.BusySeen, now)
 		if step.End {
@@ -455,7 +480,90 @@ func (s *Server) endEpisode(octx context.Context, ep sessionstate.Episode, reaso
 	// read the episode.
 	if _, err := s.ext.Episodes.End(octx, ep.ID, reason, now); err != nil {
 		s.logger.Printf("session state: episode %d: end: %v", ep.ID, err)
+		return
 	}
+	s.ownerOwed.settle(ep.ID)
+}
+
+// episodeOwnerActed reports whether the owner acted in open episode ep's
+// session c after it opened (sessionstate.OwnerActed, the rule): a waiting
+// episode's prompt answered is known from the status alone; an owner message
+// needs the conversation, which is READ ONLY WHEN THE SESSION MOVED — its
+// streak is not the one the episode last saw (a new status for a window, a
+// new message for an agent) — or when an earlier read for it failed or was
+// over the pass's bound (ownerOwed). A session that sat still since the last
+// pass has nothing new to read. The read is the nudge sweep's own
+// (nudgeTranscript) and muster's own pastes are told apart by the sweep's own
+// record of them (ownerInjected), so a chief nudge is never the owner acting.
+func (s *Server) episodeOwnerActed(octx context.Context, sp statePass, c nudgeCandidate, ep sessionstate.Episode) bool {
+	f := sessionstate.OwnerFacts{OpenedAt: ep.OpenedAt, WasWaiting: ep.Waiting, Known: c.Status != "",
+		WaitingNow: c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusWaiting}
+	if c.StreakKey != "" && c.StreakKey != ep.StreakKey {
+		s.ownerOwed.owe(ep.ID)
+	}
+	if !f.Known || f.WaitingNow || f.WasWaiting {
+		return sessionstate.OwnerActed(f)
+	}
+	if c.noTranscript || !s.ownerOwed.owed(ep.ID) || *sp.ownerReads <= 0 {
+		return false
+	}
+	*sp.ownerReads--
+	read, err := s.nudgeTranscript(octx, c)
+	if err != nil {
+		s.logger.Printf("session state: episode %d: the owner-acted read: %v", ep.ID, err)
+		return false
+	}
+	injected, err := s.ownerInjected(octx, c.Session)
+	if err != nil {
+		s.logger.Printf("session state: episode %d: the owner-acted read: injected: %v", ep.ID, err)
+		return false
+	}
+	s.ownerOwed.settle(ep.ID)
+	f.Msgs, f.Injected, f.Prefixes = read.Msgs, injected, nudgeInjectedPrefixes
+	return sessionstate.OwnerActed(f)
+}
+
+// ownerInjected is nudgeInjected for the owner-acted check, which runs with
+// the chief's nudges off too: with no nudge store there are no nudges or
+// relays of its own to leave out, and the send queue's pastes still are.
+func (s *Server) ownerInjected(octx context.Context, c chiefnudge.Session) ([]string, error) {
+	if s.ext.ChiefNudges != nil {
+		return s.nudgeInjected(octx, c)
+	}
+	if q, ok := s.ext.SendQueue.(injectedBodyReader); ok && c.Kind == chiefnudge.KindMirror {
+		return q.InjectedBodies(octx, s.now().Add(-7*24*time.Hour), 1000)
+	}
+	return nil, nil
+}
+
+// episodeOwedReads is the open episodes whose owner-acted read is owed: their
+// session moved, and no read of it since has succeeded. In memory: after a
+// restart an episode whose session moved while muster was down is still seen
+// to have moved (its stored streak is the one it last saw).
+type episodeOwedReads struct {
+	mu sync.Mutex
+	m  map[int64]bool
+}
+
+func (o *episodeOwedReads) owe(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.m == nil {
+		o.m = map[int64]bool{}
+	}
+	o.m[id] = true
+}
+
+func (o *episodeOwedReads) owed(id int64) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.m[id]
+}
+
+func (o *episodeOwedReads) settle(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.m, id)
 }
 
 // answerableWaits is the session keys (an item's claudeSession: the Claude

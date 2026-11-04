@@ -4,8 +4,9 @@
 //
 // What the owner sees about a session that needs them (the episode push, the
 // Attention section's rows, check-ins) is a view of these, so they cannot
-// disagree about who is stalled. This package holds the rules (Classify,
-// Asked, Advance) and the store (session_episodes, migration 0073); the inputs
+// disagree about who is stalled. This package holds the rules (StateOf,
+// Asked, Advance, OwnerActed) and the store (session_episodes, migration
+// 0073); the inputs
 // are read by internal/api's stall facts (stallInputs), never a copy.
 //
 // 🔴 A FAILURE NEVER QUIETS A SESSION. A stall classifier that failed or did
@@ -14,7 +15,11 @@
 // and nothing here depends on the chief.
 package sessionstate
 
-import "time"
+import (
+	"time"
+
+	"github.com/ZacxDev/muster/internal/chiefnudge"
+)
 
 // The states. `done` (a session that ended, or whose PRs are all merged) is a
 // LABEL a reader adds, never a state: it can never hide a session.
@@ -35,13 +40,67 @@ const (
 const (
 	EndWorked = "worked" // the session worked, continuously, for EndAfter
 	EndGone   = "gone"   // its window left a host that is online and reporting status
+	EndOwner  = "owner"  // the owner acted in the session after it opened (OwnerActed)
 )
 
 // EndAfter is how long a session must work, continuously, before its episode
-// ends (the design's N). A shorter blip — a permission let through, a quick
-// tool call, the owner answering at the terminal — never ends one, so one
-// stop is one episode.
+// ends on its own (the design's N). A shorter blip — a quick tool call, a
+// background task's notice — does not end one, so one stop of a session that
+// carries on by itself is one episode. The OWNER acting in the session is the
+// other way an episode ends, at once (OwnerActed).
 const EndAfter = 120 * time.Second
+
+// OwnerFacts is what OwnerActed reads about one open episode's session.
+type OwnerFacts struct {
+	// OpenedAt is when the episode opened.
+	OpenedAt time.Time
+	// WasWaiting: the episode waits on a prompt muster cannot answer — it
+	// opened, or was last seen, waiting (Episode.Waiting).
+	WasWaiting bool
+	// Known: the session's status is known now. WaitingNow: it waits on a
+	// prompt now.
+	Known, WaitingNow bool
+	// Msgs is the session's conversation as read now, oldest first; nil when
+	// it was not read. Injected and Prefixes are what muster itself put into
+	// it — its nudges, relays and routed messages — as chiefnudge.OwnerMessages
+	// reads them.
+	Msgs               []chiefnudge.Msg
+	Injected, Prefixes []string
+}
+
+// OwnerActed reports whether an open episode ends because its OWNER acted in
+// the session after it opened (EndOwner) — the owner went to the session and
+// answered it, so the push and the Stalled / waiting row are done with:
+//
+//   - a waiting episode whose session no longer waits: the prompt it waited
+//     on was answered;
+//   - an owner message in the conversation written AFTER the episode opened.
+//     Only the owner's own words count (chiefnudge.OwnerMessages): a chief
+//     nudge, a relayed answer or a routed message muster pasted in, a fenced
+//     message, or a message with no time is not the owner acting.
+//
+// 🔴 STRICTLY AFTER OpenedAt: the owner's message that preceded the stop (an
+// Esc-interrupted turn, the owner_last case) is at or before the opening, and
+// leaves the episode open until a NEWER one arrives. 🔴 A FAILURE NEVER QUIETS
+// A SESSION: a status that is unknown, or a session that waits now, ends
+// nothing — whatever the conversation says.
+//
+// Merely looking at a session (the tap route, its view) is not acting in it:
+// nothing here reads a view.
+func OwnerActed(f OwnerFacts) bool {
+	if !f.Known || f.WaitingNow {
+		return false
+	}
+	if f.WasWaiting {
+		return true
+	}
+	for _, m := range chiefnudge.OwnerMessages(f.Msgs, f.Injected, f.Prefixes, f.OpenedAt, false) {
+		if m.At.After(f.OpenedAt) {
+			return true
+		}
+	}
+	return false
+}
 
 // Facts is what StateOf reads about one session, as the stall sweep read it.
 type Facts struct {

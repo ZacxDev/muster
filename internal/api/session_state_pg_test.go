@@ -237,26 +237,31 @@ func TestAHeldQuestionOpensNoEpisode(t *testing.T) {
 	}
 }
 
-// TestABusyBlipKeepsTheEpisodeAndSustainedWorkEndsIt: one stop is one
-// episode. Waiting, then let through and busy for under EndAfter, then idle:
-// the SAME episode (no second one). Busy, seen past EndAfter: it ends
-// (worked). The next stop is seq 2.
+// TestABusyBlipKeepsTheEpisodeAndSustainedWorkEndsIt: one stop of a session
+// that carries on by itself is one episode. Stalled, then busy for under
+// EndAfter on a new streak with no owner action (the owner's newest message
+// is from before the stop — a background task's notice, say), then idle: the
+// SAME episode (no second one). Busy, seen past EndAfter: it ends (worked).
+// The next stop is seq 2. (A blip the OWNER starts — a waiting prompt let
+// through, a message of theirs — ends it at once: session_owner_end_pg_test.go.)
 func TestABusyBlipKeepsTheEpisodeAndSustainedWorkEndsIt(t *testing.T) {
 	f := newStateFixture(t, false)
-	f.status(mirror.StatusWaiting, 5*time.Second)
 	f.statePass(t)
 	first := f.oneEpisode(t)
 
 	f.advance(10 * time.Second)
-	f.status(mirror.StatusBusy, 0)
+	f.statusSince(mirror.StatusBusy, nudgeSince+300_000, 0)
 	f.statePass(t)
 	f.advance(sessionstate.EndAfter - 31*time.Second)
 	f.statePass(t)
 	f.advance(20 * time.Second)
-	f.status(mirror.StatusIdle, 0)
+	f.statusSince(mirror.StatusIdle, nudgeSince+400_000, 0)
 	f.statePass(t)
 	if e := f.oneEpisode(t); e.ID != first.ID || !e.Open() || !e.BusySince.IsZero() {
 		t.Fatalf("after a blip: %+v", e)
+	}
+	if f.readCount() == 0 {
+		t.Fatal("the owner-acted read never ran on the blip's new streak")
 	}
 
 	f.status(mirror.StatusBusy, 0)
