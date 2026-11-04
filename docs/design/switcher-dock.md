@@ -29,11 +29,11 @@ phase below.
 | What it is | A native modal `<dialog id="switcher-dock">`, drawn **once per document** beside the command palette, laid out as a bottom sheet on touch/narrow screens and as a centred panel on desktop. The same pattern as the agent page's focus history dialog (`internal/ui/focus_history.go:139-174`) |
 | How it opens | Touch: a swipe up that starts on the bar's row, or a tap on the bar's view button, which **is** the handle (decision 5). Desktop: today's view menu, plus a new chevron button |
 | Snap points | **Half**, 60% of the visual viewport, and **full**, the visual viewport less the top safe area and an 8px gap |
-| How it closes | A drag down on the sheet's header, or on the list when the list is scrolled to its top; a tap on the backdrop; Escape; system Back (`history.pushState` on open, close on `popstate`) |
+| How it closes | A drag down on the sheet's header (its grab handle, tabs and filter row); a tap on the backdrop; Escape; system Back (`history.pushState` on open, close on `popstate`). The list only scrolls; it never moves the sheet |
 | Content | Tabs Recent / Waiting / Pins / All, a filter box under them, then vertical rows: whole name, host, current focus title, waiting badge (stalled and needs-you badges in Phase 5). Recent lists up to 30 in the dock, 8 on the bar (decision 6). A row tap is a real load, like a pill |
 | Where the data comes from | **The bar already on the page.** Its four rows are server-rendered with every session page; the dock draws its rows from them when it opens. No new request, no second copy of the markup. Two new attributes per pill (host, focus title), and an ordered href list for Recent's entries 9–30 (each one already a pill in the All row) |
-| Filter | The palette's rule (`window.musterPaletteMatch` / `musterPaletteRank`) over the shown tab, plus the palette's server search of previous titles, shared through one extracted helper |
-| Gesture rules | A drag starts **only** on the bar's row or the sheet's header. Never on xterm, the composer, or anywhere while the soft keyboard is up. No sideways swipe changes a tab, in the dock or anywhere |
+| Filter | The palette's in-page rule (`window.musterPaletteRank`) over the shown tab, previous titles included through `data-switcher-prev`. No server search: the palette stays the full-history search |
+| Gesture rules | The touch layout gets gestures; the mouse layout gets the chevron. A drag starts **only** on the bar's row or the sheet's header. Never on xterm, the composer, or anywhere while the soft keyboard is up. No sideways swipe changes a tab, in the dock or anywhere. Release snaps by position only |
 | Phases | 1 dock + tap to open + Back + Recent to 30; 2 gestures; 3 filter; 4 desktop chevron; 5 session state for Waiting and the badges. Each ships alone |
 
 ## Operator decisions
@@ -311,15 +311,17 @@ transform.
 
 ### Drag physics
 
-**Pointer events with pointer capture** for the two drag zones that never
-scroll vertically, and **touch events bound on the list element** for the
-one that does.
+**Pointer events with pointer capture**, on the two drag zones only. Neither
+scrolls vertically, so neither has to share an axis with a scroller. The dock
+adds **no `touch*` listener anywhere**, so the sidebar test's extractor
+(`internal/ui/swipe_test.go:15-33`, which reads every document-level
+`touch…` listener) sees exactly what it sees today.
 
 | Zone | `touch-action` | Events | What a vertical drag does |
 |---|---|---|---|
 | The bar's shown row (closed) | `pan-x` | `pointerdown/move/up/cancel`, `setPointerCapture` | up: opens, the sheet follows the finger from the bar |
 | The dock header (tabs, grip, filter row) | `none` | pointer events, captured | up: toward full; down: toward half, then closed |
-| The list | `pan-y` | `touchstart` / non-passive `touchmove` **on `#dock-list`** | scrolls; at `scrollTop === 0` a downward move closes (below) |
+| The list | `pan-y` | none | scrolls natively, and nothing else: it never moves or closes the sheet |
 | The backdrop | — | `click` with `target === dialog` | closes |
 
 `pan-x` on the bar's row keeps its native sideways scroll and hands vertical
@@ -331,38 +333,26 @@ gesture is the dock's only if `|dy| > 1.2 × |dx|` (the edge swipe's ratio,
 `components.go:2268`); otherwise it is released to the row or ignored for the
 rest of that gesture.
 
-**Drag to close from the list.** At `touchstart` the script records whether
-the list is at its top. On the first `touchmove` past the slop, if it was at
-the top and the move is downward, it calls `preventDefault()` (the listener is
-non-passive, on the list only) and drives the sheet from then on; otherwise it
-does nothing and the browser scrolls. A scroll that reaches the top
-mid-gesture never turns into a close: the decision is made once per gesture.
 `overscroll-behavior: contain` on the list stops a scroll at either end from
 chaining to the page behind.
 
-> ⚠ **Bind the list's listeners on the list, not on `document`.** The sidebar
-> test's extractor (`internal/ui/swipe_test.go:15-33`) reads every
-> `document.addEventListener('touch…` up to a `{ passive: true });`
-> terminator and fails on one without it. A non-passive document listener
-> would break that test for a reason unrelated to what it guards.
+**Release snaps by position only.** The decision is one pure function,
+`dockSnap(from, top)`, where `top` is how much of the sheet is showing when
+the finger lifts, exported like `musterPaletteMatch` so a table test can run
+it (`e2e/tests/focus.spec.ts` already does this for the palette):
 
-**Release.** Velocity is the displacement over the last 100ms of samples
-(px/ms). The decision is one pure function, `dockSnap(from, offset, v)`,
-exported like `musterPaletteMatch` so a table test can run it
-(`e2e/tests/focus.spec.ts` already does this for the palette):
-
-| From | Gesture | Result |
+| From | Where it was let go | Result |
 |---|---|---|
-| closed (bar) | up ≥ 48px, or `v ≤ −0.3` | half |
-| closed (bar) | up past the half height and still moving up (`v ≤ −0.3`) | full |
-| half | `v ≤ −0.5`, or up past halfway to full | full |
-| half | `v ≥ 0.5`, or down past 50% of the half height | closed |
-| full | `v ≥ 1.5`, or down past 75% of the way to closed | closed |
-| full | `v ≥ 0.5`, or down past halfway to half | half |
-| any | otherwise | the nearest snap to where it was let go |
+| closed (bar) | dragged up less than 48px | stays closed |
+| closed (bar) | dragged up 48px or more | the nearer of half and full |
+| half or full | showing less than half of the half height | closed |
+| half or full | otherwise | the nearer of half and full |
 
-These numbers are starting points, named constants beside the function, to be
-tuned on a phone in Phase 2.
+No velocity: with two snap points and a close threshold, position alone gives
+every outcome, and a velocity term would be one more tuned constant and one
+more dimension for the tests to cover. The two thresholds (48px, and half of
+the half height) are named constants beside the function, to be tuned on a
+phone in Phase 2.
 
 **A drag never clicks.** A drag that started on a pill must not open that
 pill. Once the gesture is the dock's, the next `click` in the capture phase is
@@ -441,8 +431,8 @@ viewport), and the two custom properties make that one code path.
 | Current focus title | — | `data-switcher-focus` on every pill (`focusTitle`, `:351-356`); `data-switcher-title` joins it with the display name, so it cannot be split back out reliably |
 | Waiting badge | `data-switcher-wait` | — (until Phase 5) |
 | Stalled / needs-you badges | — | session state, Phase 5 ([below](#badge-sources)) |
-| Matching | `musterPaletteMatch`, `musterPaletteRank` (`palette.go:158-212`) | — |
-| Server search | `/ui/palette/history` (`internal/api/palette.go`) | extract the palette's `ask` (debounce, abort, sequence check, `palette.go:252-290`) into one shared `window.musterPaletteSearch` used by both (one rule, one place) |
+| Matching | `musterPaletteRank` (`palette.go:158-212`), in-page, previous titles from `data-switcher-prev` | — |
+| Server search | none in the dock; the palette keeps `/ui/palette/history` | — |
 
 ### Server-rendered with the page, or fetched on open?
 
@@ -512,15 +502,16 @@ Two consequences, both acceptable and tested:
 ### How the filter works
 
 1. The filter matches **the shown tab's** entries with
-   `musterPaletteRank(entries, q, hits)`, so the rank is the palette's
-   exactly: codename prefix, codename, title, previous title, words.
-2. Once typing pauses (275ms) on 3 or more characters, the shared search asks
-   `/ui/palette/history`; its hits (`{href, title}`) only **raise** entries
-   already in the tab, and a row matched that way shows "Previously: …" as the
-   palette's does.
-3. If the tab has no match but All has some, the empty line says so and
-   offers "N matches in All", which switches the tab. Tabs stay meaningful and
-   a typed name is never lost behind the wrong tab.
+   `musterPaletteRank(entries, q, [])`, in-page only, so the rank is the
+   palette's exactly: codename prefix, codename, title, previous title, words.
+   Previous titles are matched through each pill's `data-switcher-prev` (the
+   recent ones, `withPreviousTitles`), and a row matched that way shows
+   "Previously: …" as the palette's does.
+2. **No server search.** The command palette (the bar's magnifier, the
+   sidebar's, or `/`) remains the full-history search over every title in the
+   retention (`/ui/palette/history`). The dock is for picking from what is on
+   the page.
+3. A tab with no match says "No session matches" and nothing more.
 4. Switching tabs keeps the query and re-filters.
 
 ### Badge sources
@@ -546,6 +537,13 @@ Two consequences, both acceptable and tested:
   at `list_signals.go:152-157`) all move to session state at once. A second
   predicate next to the old one would leave the sidebar and the dock
   disagreeing about who is waiting.
+  **The sidebar changes when Phase 5 ships** (owner answer): its order and
+  its waiting mark follow the new definition along with the bar and the
+  dock, so there is one waiting definition everywhere.
+- **Where the badges are drawn.** The needs-you and stalled badges are drawn
+  **in the dock's rows only**. The bar's pills carry `data-switcher-stalled` as
+  data for the dock to read but draw no new badge; their existing waiting dot
+  stays, reading the redefined `listEntry.waiting`.
 - **Precedence:** one badge per row, needs-you over stalled
   (`session-state.md:230`).
 
@@ -553,13 +551,13 @@ Two consequences, both acceptable and tested:
 
 ### Start zones
 
-A drag is the dock's only when its `pointerdown`/`touchstart` target is
-inside one of:
+In the touch layout only (the mouse layout has no drag), a drag is the dock's
+only when its `pointerdown` target is inside one of:
 
 - **closed:** the bar's shown row, `#session-switcher [data-switcher-list]:not([hidden])`,
   or the view button;
-- **open:** the dock header `[data-dock-header]`, or the list under the
-  scrolled-to-top rule above.
+- **open:** the dock header `[data-dock-header]` (grab handle, tabs, filter
+  row). Never the list.
 
 Everything else is never a start zone, by construction rather than by a
 deny-list: the composer (`#chat-input`, `#mv-input`), the quick keys, xterm,
@@ -642,9 +640,10 @@ there. No snap points, no drag.
 **Which layout applies** is one media query, used by both the CSS and the
 script (`matchMedia`): touch layout when `(max-width: 1023.98px), (pointer:
 coarse)`, mouse layout otherwise. 1024px is the bar's existing `lg` line
-(`components.go:2231`). **Gestures follow the pointer, not the layout**: a
-`pointerType === "touch"` drag on the bar works in either layout, so a
-touchscreen laptop can swipe too.
+(`components.go:2231`). **The touch layout gets the gestures and the mouse
+layout gets the chevron, and nothing crosses over**: in the mouse layout the
+bar and the dock bind no drag at all, so a mouse that drags across the bar
+selects text as it does today, and the dock opens only by the chevron.
 
 Without script the dock never opens, and the bar works as today (its
 `<noscript>` rule, `switcher.go:518`).
@@ -663,14 +662,13 @@ and run the behaviour that depends on them across a matrix:
 | Project | Viewport | `hasTouch` / `isMobile` | Layout it must show |
 |---|---|---|---|
 | phone | 390×844 | true / true | touch: sheet, swipe |
-| narrow mouse | 800×900 | false / false | touch layout by width, opened by tap, no swipe |
+| narrow mouse | 800×900 | false / false | touch layout by width: opened by the handle, no chevron |
 | touch tablet | 1180×820 | true / true | touch layout by pointer, above `lg` |
 | desktop | 1280×800 | false / false | mouse: chevron, centred panel |
 
 Drags use `e2e/lib/touch.ts`'s `touchDrag` (CDP `Input.dispatchTouchEvent`),
-which goes through Chrome's own gesture handling, `touch-action` included. A
-helper variant that controls the step timing gives a known release velocity
-for the fling cases.
+which goes through Chrome's own gesture handling, `touch-action` included.
+Snapping is by position only, so no case depends on the drag's speed.
 
 ### Cases
 
@@ -683,13 +681,14 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
    60% of the visual viewport ±2px, `history.length` grew by one.
 2. **Tap on the view button opens** (touch layout), and does **not** open the
    view menu; on desktop it still opens the view menu.
-3. **Drag the header up from half → full**; a fling from half → full.
-4. **Drag down from half → closed**; a short slow drag down from full → half;
-   a fast one from full → closed.
+3. **Drag the header up from half → full**; a drag that ends nearer half
+   returns to half.
+4. **Drag the header down from half → closed**; a short drag down from full →
+   half; a long one from full → closed.
 5. **Backdrop tap closes**; the close button closes; Escape closes.
-6. **The list scrolls without closing**: scroll down, then drag down with
-   `scrollTop > 0` → the list scrolls up and the dock stays open; at the top,
-   a drag down closes.
+6. **The list only scrolls**: with the list at its top, a downward drag on it
+   leaves the dock open at its snap and the sheet unmoved; a drag up scrolls
+   the list (`scrollTop` grew).
 7. **Keyboard up ignores the swipe**, on the agent chat page (where the bar
    stays drawn): focus the composer and shrink the viewport height by 200px at
    the same width, so `switcherKeyboardJS` sets `data-keyboard` (asserted);
@@ -709,12 +708,15 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
 12. **The sidebar's edge swipe stands down over the dock**: a rightward drag
     from x = 4 inside the open dock leaves `#sidebar-root` closed. The
     existing edge-swipe test stays green.
-13. **Filter**: by codename, by current focus title, by a previous title from
-    the server search (a route stub with a hit), and "N matches in All".
+13. **Filter**: by codename, by current focus title, and by a previous title
+    carried in `data-switcher-prev` (shown as "Previously: …"); the dock makes
+    no request to `/ui/palette/history` while filtering (a route counter reads
+    0, with a positive control: the palette, typed into the same way, makes
+    one).
 14. **Desktop chevron**: 1280×800 shows the chevron, click opens a centred
     panel with focus in the filter, Escape closes, focus is back on the
-    chevron, the view menu still works; at 390×844 touch the chevron is not
-    shown.
+    chevron, the view menu still works; a mouse drag up on the bar opens
+    nothing; at 390×844 touch the chevron is not shown.
 15. **Reduced motion**: under `page.emulateMedia({ reducedMotion: 'reduce' })`
     the dock's computed `transition-duration` is `0s` both ways. Control:
     without the emulation it is not.
@@ -732,11 +734,12 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
 
 Go unit tests: the two new pill attributes (with values the fixtures cannot
 produce by accident: a host and a focus title distinct from every name),
-`dockSnap`'s table, `TestNoTabSwitchSwipe` unchanged and green.
+`dockSnap`'s table (both thresholds exercised just above and just below),
+`TestNoTabSwitchSwipe` unchanged and green.
 
 **Each guard is mutation-checked once**: remove the keyboard check (case 7
-goes red), drop `data-own-swipe` from the dock (12), drop the scrolled-to-top
-check (6), drop the `replace` on a row tap (9), and confirm that test fails
+goes red), drop `data-own-swipe` from the dock (12), let the list drive the
+sheet (6), drop the `replace` on a row tap (9), and confirm that test fails
 with its own assertion.
 
 ## Phases
@@ -761,8 +764,8 @@ name, the tabs, the current row.
 
 ### Phase 2: gestures
 
-`touch-action: pan-x` on the bar's rows; the bar and header drags; the
-list's scrolled-to-top close; `dockSnap` and its table; the keyboard guard;
+`touch-action: pan-x` on the bar's rows; the bar and header drags, touch
+layout only; position-only `dockSnap` and its table; the keyboard guard;
 click suppression after a drag.
 
 Acceptance: cases 1, 3, 4, 6, 7, 8, 10, 11, 12 green in phone and touch
@@ -771,17 +774,18 @@ owner's), the values recorded in the PR.
 
 ### Phase 3: the filter
 
-The extracted `musterPaletteSearch` shared with the palette; the filter over
-the shown tab; "N matches in All"; snapping to full above the keyboard.
+The in-page filter over the shown tab (`musterPaletteRank`, no server search);
+snapping to full above the keyboard. The palette is not touched.
 
 Acceptance: case 13; the palette's own specs (`switcher-search.spec.ts`,
-`focus.spec.ts`) unchanged and green after the extraction; on a phone, typing
+`focus.spec.ts`) unchanged; on a phone, typing
 in the filter keeps the tabs, the filter and at least three rows above the
 keyboard.
 
 ### Phase 4: the desktop chevron
 
-The chevron and the centred layout from `lg` on a fine pointer.
+The chevron and the centred layout from `lg` on a fine pointer; the mouse
+layout binds no drag.
 
 Acceptance: case 14 in the desktop project; the phone project shows no
 chevron.
@@ -795,16 +799,18 @@ Attention section). Until then Phases 1–4 run on today's predicate
 
 The owner-scoped open-episode read in `Server.switcher`; `listEntry.waiting`
 redefined as "session state `needs-you`", in place, so every reader moves
-together (the Waiting tab and row, the waiting dot, the sidebar's order and
-mark); `SwitcherItem.Stalled` and `data-switcher-stalled`; the needs-you and
-stalled badges in the dock's rows and the bar's pills.
+together (the Waiting tab and row, the waiting dot, **the sidebar's order and
+mark, which change with this phase**); `SwitcherItem.Stalled` and
+`data-switcher-stalled`; the needs-you and stalled badges in **the dock's rows
+only** (the bar's pills draw no new badge).
 
 Acceptance: a Go test that a stalled episode marks exactly its entry and
 another owner's episode marks nothing; an idle session the classifier scores
 as asking appears in Waiting (red before this phase, green after); the
 sidebar's waiting mark and the dock's Waiting tab list the same entries for
 one fixture; a needs-you entry with a stalled episode shows the needs-you
-badge only; no store, no badge, no error.
+badge only; the bar's pills draw no stalled badge; no store, no badge, no
+error.
 
 ## Open questions
 
