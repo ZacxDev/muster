@@ -89,6 +89,21 @@ test('every visible control is a 44px target and every field is 16px text', asyn
     await page.goto(p);
     await check(p);
   }
+  // The switcher dock (internal/ui/switcher_dock.go), open: in this file's
+  // phone context (the touch layout, asserted) the bar's view button is its
+  // handle; its grip, its close button, its tabs and its rows are measured with
+  // everything else on the page. Two other agents visited first, so Recent
+  // has rows.
+  await page.goto('/agents/release-helper');
+  await page.goto('/agents/notes-tidy');
+  await page.goto('/agents/docs-sweeper');
+  await settle(page);
+  expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches), 'the touch layout').toBe(true);
+  await page.locator('#switcher-toggle').tap();
+  await expect.poll(() => page.evaluate(() => (document.getElementById('switcher-dock') as HTMLDialogElement).open)).toBe(true);
+  expect(await page.locator('#switcher-dock #dock-list a[data-dock-row]').count(), 'the dock has rows to measure').toBeGreaterThan(0);
+  await check('switcher dock (open)');
+  await page.keyboard.press('Escape');
   await page.goto('/tasks');
   await settle(page);
   await page.click('#fab-tasks');

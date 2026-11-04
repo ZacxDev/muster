@@ -6,6 +6,7 @@ import { signIn } from '../lib/signin';
 import { hookToken, pinsPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { coarse, pickView } from '../lib/switcher';
 import { clsInit, readCls, settle } from '../lib/cls';
 
 // PINNED ENTRIES, in a real browser, against a real muster-server
@@ -189,9 +190,10 @@ for (const vp of [
       await page.reload();
       await expect.poll(() => rowHrefs(page, 'all'), { message: 'after a reload', timeout: 20_000 }).toEqual(want);
 
-      // A tap on a Pins entry opens the session.
-      await page.locator('#switcher-toggle').click();
-      await page.locator('#switcher-views [data-switcher-pick="pins"]').click();
+      // A tap on a Pins entry opens the session. The view is picked from the
+      // menu (mouse layout) or the dock (touch layout): lib/switcher.ts.
+      expect(await coarse(page), 'the layout this context emulates').toBe(touch);
+      await pickView(page, 'pins');
       const quince = viewRow(page, 'pins').locator(`a[data-switcher-entry][href="${quinceHref}"]`);
       await expect(quince).toBeVisible();
       await Promise.all([page.waitForURL((u) => u.pathname + u.search === quinceHref), touch ? quince.tap() : quince.click()]);

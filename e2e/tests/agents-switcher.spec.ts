@@ -4,6 +4,7 @@ import { agentsSwitcherPort, hookToken } from '../lib/env';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { openDispatchSheet } from '../lib/dispatch';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { coarse, pickView } from '../lib/switcher';
 
 // THE SESSION SWITCHER'S BAR AND THE SEARCH PALETTE (internal/ui/switcher.go,
 // palette.go), on a REAL muster-server and a REAL muster-mirror
@@ -163,10 +164,11 @@ for (const vp of [
       await expectNoSidewaysScroll(page);
       await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'recent');
       // All holds every entry, the page's own drawn current (one, not a link).
-      await toggle(page).click();
-      await expect(menu(page)).toBeVisible();
-      await menu(page).locator('[data-switcher-pick="all"]').click();
-      await expect(menu(page)).toBeHidden();
+      // Picked from the view menu (the mouse layout) or the dock (the touch
+      // layout, a coarse pointer): lib/switcher.ts pickView, which asserts the
+      // menu's visibility in the mouse layout only.
+      expect(await coarse(page), 'the layout this context emulates').toBe(vp.use.hasTouch);
+      await pickView(page, 'all');
       await expect(toggle(page).locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
       await expect(row(page, 'all')).toBeVisible();
       const n = await listed(page);
@@ -174,8 +176,7 @@ for (const vp of [
       await expect(row(page, 'all').locator('[data-switcher-current]')).toHaveText('mango:1');
       await expect(row(page, 'all').locator('a[data-switcher-entry]', { hasText: AGENT_TITLE })).toHaveCount(1);
       // Pins: nothing pinned.
-      await toggle(page).click();
-      await menu(page).locator('[data-switcher-pick="pins"]').click();
+      await pickView(page, 'pins');
       await expect(row(page, 'pins')).toHaveText('Nothing pinned');
       await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
     });
@@ -540,9 +541,8 @@ test.describe('the Terminal view at 390×844', () => {
     const heard = await sizes();
     expect(heard.length, `a size on screen: ${await screen.innerText()}`).toBeGreaterThan(0);
     expect(new Set(heard).size, `one size, no churn: ${heard}`).toBe(1);
-    await toggle(page).tap();
-    await expect(menu(page)).toBeVisible();
-    await menu(page).locator('[data-switcher-pick="all"]').tap();
+    expect(await coarse(page), 'the touch layout').toBe(true);
+    await pickView(page, 'all');
     await expect(row(page, 'all')).toBeVisible();
     await page.waitForTimeout(1000);
     expect(await sizes(), 'a view switch sent no resize').toEqual(heard);
