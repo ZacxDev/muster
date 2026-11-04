@@ -272,6 +272,13 @@ func newOfficerRig(t *testing.T) *officerRig {
 // token -> officer map.
 func newOfficerRigWith(t *testing.T, tokens map[string]string, build func(hqURL string) []officers.Officer) *officerRig {
 	t.Helper()
+	return newOfficerRigCfg(t, tokens, build, nil)
+}
+
+// newOfficerRigCfg is newOfficerRigWith, with cfg (when set) adjusting the
+// OfficersConfig EnableOfficers is given.
+func newOfficerRigCfg(t *testing.T, tokens map[string]string, build func(hqURL string) []officers.Officer, cfg func(*OfficersConfig)) *officerRig {
+	t.Helper()
 	hq := hqtest.New(tokens)
 	t.Cleanup(hq.Close)
 	logs := &bytes.Buffer{}
@@ -290,7 +297,11 @@ func newOfficerRigWith(t *testing.T, tokens map[string]string, build func(hqURL 
 	a, b := list[0], list[1]
 	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, chat: chat, clock: time.Now()}
 	hq.Now = r.now
-	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now, InstallSession: r.installSession})
+	ocfg := OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now, InstallSession: r.installSession}
+	if cfg != nil {
+		cfg(&ocfg)
+	}
+	rec, err := s.EnableOfficers(ocfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,7 +38,8 @@
 #      sources) sets ANTHROPIC_BASE_URL to exactly $MUSTER_CONNECT_URL/llm and
 #      ANTHROPIC_AUTH_TOKEN to the pod's muster token, while the entrypoint
 #      still refuses, before seeding, a routed pod that also carries a
-#      subscription token, another base URL, another auth token or an API key;
+#      subscription token, ANY preset base URL or auth token (even the exact
+#      values the check would set) or an API key;
 #   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json;
 #   9. with muster's connector store offered (FAKE url and token), seed registers
 #      muster's MCP server and `seed --check` agrees; `ccd connect-git` against
@@ -320,8 +321,11 @@ out="$(env -i PATH="$PATH" "${route_env[@]}" bash -c \
 echo "cc-smoke: CCD_LLM_ROUTE=muster points the CLI at the proxy with the pod's token"
 # Negative: the real entrypoint refuses each of these beside the route, before
 # it seeds anything.
+# A preset base URL or auth token is refused even when it is exactly the
+# value the check would set.
 for extra in CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-SMOKE-DELIBERATELY-INVALID ANTHROPIC_BASE_URL=https://elsewhere.invalid \
-  ANTHROPIC_AUTH_TOKEN=another-smoke-token ANTHROPIC_API_KEY=fake-smoke-value; do
+  ANTHROPIC_AUTH_TOKEN=another-smoke-token ANTHROPIC_API_KEY=fake-smoke-value \
+  ANTHROPIC_BASE_URL=http://127.0.0.1:9/llm ANTHROPIC_AUTH_TOKEN=smoke-route-token-not-real; do
   v="${extra%%=*}"
   rc=0
   out="$(env -u CLAUDE_CODE_OAUTH_TOKEN "${route_env[@]}" "$extra" CLAUDE_CONFIG_DIR=/tmp/route-cfg CCD_WORKSPACE=/tmp/route-ws \

@@ -131,9 +131,9 @@ func TestTheCredentialCheckWithoutTheRouteRefusesEveryOtherCredential(t *testing
 // TestTheLLMRouteSetsExactlyTheProxyAndThePodsOwnToken: under
 // CCD_LLM_ROUTE=muster the check points Claude Code at exactly
 // $MUSTER_CONNECT_URL/llm with the pod's own muster token as its bearer, and
-// keeps the muster host off any proxy (NO_PROXY / no_proxy). Values the pod
-// already carries are accepted only when they are exactly those; anything
-// else is refused, naming the variable.
+// keeps the muster host off any proxy (NO_PROXY / no_proxy). A base URL or
+// auth token the pod already carries is refused, naming the variable — even
+// one equal to the value the check sets (round 0 D1: nothing produces one).
 func TestTheLLMRouteSetsExactlyTheProxyAndThePodsOwnToken(t *testing.T) {
 	r := runCredCheck(t, routed(nil))
 	if r.rc != 0 {
@@ -161,10 +161,12 @@ func TestTheLLMRouteSetsExactlyTheProxyAndThePodsOwnToken(t *testing.T) {
 		ok   bool
 		says string
 	}{
-		{"base URL preset to exactly the proxy", map[string]string{"ANTHROPIC_BASE_URL": llmConnectURL + "/llm"}, true, ""},
+		// Round 0 D1: ANY preset is refused under the route, even the exact
+		// value the check would set — nothing produces one.
+		{"base URL preset to exactly the proxy", map[string]string{"ANTHROPIC_BASE_URL": llmConnectURL + "/llm"}, false, "ANTHROPIC_BASE_URL"},
 		{"base URL preset elsewhere", map[string]string{"ANTHROPIC_BASE_URL": "https://api.example.test"}, false, "ANTHROPIC_BASE_URL"},
 		{"base URL preset to the connect URL without /llm", map[string]string{"ANTHROPIC_BASE_URL": llmConnectURL}, false, "ANTHROPIC_BASE_URL"},
-		{"auth token preset to the pod's token", map[string]string{"ANTHROPIC_AUTH_TOKEN": llmHookToken}, true, ""},
+		{"auth token preset to the pod's token", map[string]string{"ANTHROPIC_AUTH_TOKEN": llmHookToken}, false, "ANTHROPIC_AUTH_TOKEN"},
 		{"auth token preset to another", map[string]string{"ANTHROPIC_AUTH_TOKEN": "someone-elses-token"}, false, "ANTHROPIC_AUTH_TOKEN"},
 		{"a subscription token beside the route", map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-fixture-not-real"}, false, "CLAUDE_CODE_OAUTH_TOKEN"},
 		{"an API key beside the route", map[string]string{"ANTHROPIC_API_KEY": "fake-value"}, false, "ANTHROPIC_API_KEY"},

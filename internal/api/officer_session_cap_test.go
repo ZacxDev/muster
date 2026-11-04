@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
@@ -21,9 +23,29 @@ import (
 
 // newCappedOfficerRig is the rig over tiered officer T (judgement opus ×2
 // with a cap of 2 sessions a day, routine haiku ×1) and untiered officer A.
+//
+// The cap is persisted (officer_judgement_sessions): the rig's session store
+// is the PG one over the package's test database, emptied first. A second
+// rig over the same database is a restarted server or another replica.
 func newCappedOfficerRig(t *testing.T) *officerRig {
 	t.Helper()
-	return newOfficerRigWith(t, map[string]string{offATok: offA, offTTok: offT}, func(hqURL string) []officers.Officer {
+	dsn := dbtest.DSN(t)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE officer_judgement_sessions RESTART IDENTITY`)
+	return cappedRigOn(t, dsn)
+}
+
+// cappedRigOn is the capped rig over the database at dsn, as it stands.
+func cappedRigOn(t *testing.T, dsn string) *officerRig {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sessions := officers.NewPGSessionStore(pool)
+	return newOfficerRigCfg(t, map[string]string{offATok: offA, offTTok: offT}, func(hqURL string) []officers.Officer {
 		raw := `[{"id":"` + offA + `","hq_url":"` + hqURL + `","max_instances":2},` +
 			`{"id":"` + offT + `","hq_url":"` + hqURL + `","tiers":{"routine":{"model":"haiku","max_instances":1},` +
 			`"judgement":{"model":"opus","max_instances":2,"max_sessions_per_day":2}}}]`
@@ -37,7 +59,7 @@ func newCappedOfficerRig(t *testing.T) *officerRig {
 			t.Fatalf("parse the capped rig's officers: %v", err)
 		}
 		return list
-	})
+	}, func(c *OfficersConfig) { c.Sessions = sessions })
 }
 
 // claimsOf counts the claim requests HQ saw for item.
@@ -217,5 +239,45 @@ func TestClaimNextCountsAgainstTheJudgementSessionCap(t *testing.T) {
 	r.advance(24 * time.Hour)
 	if out := next(); isToolErr(out) || !strings.Contains(out, `"id":"`+c+`"`) {
 		t.Fatalf("claim-next the next day: %s, want item %s", out, c)
+	}
+}
+
+// TestTheJudgementSessionCapSurvivesARestart: two sessions spent through one
+// server are still spent for a NEW server on the same database (a restart, or
+// the other replica in a rollout): its third claim of the day is refused
+// before HQ, and its wake loop does not wake the judgement pool for the new
+// item. A refused HQ claim gives its slot back across servers too.
+func TestTheJudgementSessionCapSurvivesARestart(t *testing.T) {
+	first := newCappedOfficerRig(t)
+	ctx := context.Background()
+	j1 := agents.Agent{Name: offTJudge + "1"}
+	for _, subj := range []string{"node-a", "node-b"} {
+		it := first.hq.AddTieredItem(offT, "gpu.alert", subj, officers.TierJudgement)
+		if out := first.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{"item_id":"`+it+`"}`); isToolErr(out) {
+			t.Fatalf("first server, claim %s: %s", subj, out)
+		}
+		if out := first.s.dispatchAgentTool(ctx, j1, officers.ToolComplete, `{"item_id":"`+it+`","outcome":"done","summary":"ok"}`); isToolErr(out) {
+			t.Fatal(out)
+		}
+	}
+	second := cappedRigOn(t, dbtest.DSN(t))
+	second.clock = first.now()
+	// The second server's fake HQ numbers its items from 1 again: spend ids
+	// 1 and 2 on finished items, so the new item is not one counted above.
+	for _, subj := range []string{"done-1", "done-2"} {
+		second.hq.Complete(second.hq.AddTieredItem(offT, "gpu.alert", subj, officers.TierJudgement))
+	}
+	i3 := second.hq.AddTieredItem(offT, "gpu.alert", "node-c", officers.TierJudgement)
+	if out := second.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{"item_id":"`+i3+`"}`); !isToolErr(out) || !strings.Contains(out, "max_sessions_per_day") {
+		t.Fatalf("a restarted server's third session of a cap of 2: %s, want the cap's refusal", out)
+	}
+	if n := claimsOf(second, i3); n != 0 {
+		t.Fatalf("the refused session reached HQ (%d claims)", n)
+	}
+	if res := second.rec.Check(ctx, offT, true); res.Err != nil || len(res.ActErrs) != 0 {
+		t.Fatalf("pass: %+v", res)
+	}
+	if len(second.store.created) != 0 {
+		t.Fatalf("a restarted server woke the capped judgement pool: created %v", second.store.created)
 	}
 }
