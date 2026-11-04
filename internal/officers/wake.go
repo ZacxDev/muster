@@ -129,6 +129,11 @@ type Observation struct {
 	Open      []Item
 	Claimed   []Item
 	Instances []InstanceState
+	// Capped: the pool is a judgement pool that has spent its day's session
+	// cap (JudgementLedger.Capped); then only Counted items — those it
+	// already claimed today — are work for it.
+	Capped  bool
+	Counted map[ItemID]bool
 }
 
 // Decision is what one pass decided.
@@ -161,6 +166,9 @@ type Decision struct {
 //     items of its own tier as HQ reads them (ItemTier): its instances' claims
 //     name the tier, so another tier's item is not work for them either (HQ
 //     answers 409 wrong_tier).
+//   - A judgement pool that has spent its day's session cap (obs.Capped)
+//     counts as Claimable only the items it already claimed today
+//     (obs.Counted): officer_claim refuses it any other.
 //   - Held = claimed items with a live lease whose holder is one of this
 //     pool's instances — whatever the item's tier: a claim belongs to the pool
 //     that holds it.
@@ -188,15 +196,21 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		return InstanceState{}, false
 	}
 	var d Decision
+	// claimable: the pool could claim it now. A capped judgement pool may
+	// claim only the items it already counted today (officer_claim refuses
+	// any other), so no other item is work for it.
+	claimable := func(it Item) bool {
+		return !it.Blocked && o.worksItem(it) && (!obs.Capped || obs.Counted[it.ID])
+	}
 	for _, it := range obs.Open {
-		if !it.Blocked && o.worksItem(it) {
+		if claimable(it) {
 			d.Claimable++
 		}
 	}
 	heldByUp := map[string]bool{}
 	for _, it := range obs.Claimed {
 		if !it.LeaseLive(now) {
-			if !it.Blocked && o.worksItem(it) {
+			if claimable(it) {
 				d.Claimable++
 			}
 			continue
@@ -350,6 +364,8 @@ type Reconciler struct {
 	now   func() time.Time
 	// observed is Config.Observed (nil: none).
 	observed func(o Officer, claimed []Item, at time.Time)
+	// judgement is Config.Judgement (nil: no pool is capped).
+	judgement *JudgementLedger
 
 	mu    sync.Mutex
 	state map[string]*officerState
@@ -369,6 +385,10 @@ type Config struct {
 	// a SUCCESSFUL read — a pass that saw nothing tells it nothing, so an HQ
 	// outage never reads as "no item is held". It must not block.
 	Observed func(o Officer, claimed []Item, at time.Time)
+	// Judgement is the judgement-session ledger officer_claim keeps
+	// (sessions.go): a judgement pool whose day's cap is spent is not woken
+	// for new work. nil caps nothing.
+	Judgement *JudgementLedger
 }
 
 // NewReconciler returns a loop over cfg's officers.
@@ -383,7 +403,7 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		cfg.Now = time.Now
 	}
 	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
-		state: map[string]*officerState{}, done: make(chan struct{})}, nil
+		judgement: cfg.Judgement, state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
 // erroredSlot is how an instance in error is named in the log.
@@ -635,6 +655,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 			return nil, err
 		}
 		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts}
+		out[i].Capped, out[i].Counted = r.judgement.Capped(p, r.now())
 	}
 	return out, nil
 }

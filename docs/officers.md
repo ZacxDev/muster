@@ -173,6 +173,30 @@ three things in that session's `settings.json` at provision time (the pod's
   takes effect at the instance's next pod start: seed removes the model it set
   itself (the instance keeps its volume, so it would otherwise persist), back to
   the account default. A model changed by hand inside the pod is left alone.
+  A routine instance of an officer with an [`llm` block](#the-llm-proxy) gets
+  no model here: the proxy pins it.
+
+**The LLM route (`CCD_LLM_ROUTE=muster`).** A routine instance of an officer
+with an `llm` block — and no other pod — is put on the route: its pod is given
+`CCD_LLM_ROUTE=muster` and **no** `CLAUDE_CODE_OAUTH_TOKEN`. The image's
+entrypoint runs its credential check (`images/claude-code-agent/credentials.sh`,
+installed at `/usr/local/lib/cc/credentials.sh`) before it seeds or starts
+anything. Without the route, the check refuses `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and
+`ANTHROPIC_BASE_URL`, each naming the variable, as it always has. Under the
+route it sets `ANTHROPIC_BASE_URL` to exactly `$MUSTER_CONNECT_URL/llm` and
+`ANTHROPIC_AUTH_TOKEN` to the pod's own `MUSTER_HOOK_TOKEN`. It appends the
+muster host to `NO_PROXY` and `no_proxy`, so a proxy in the pod's environment
+never carries the token. And it refuses the pod when any of these holds:
+`CLAUDE_CODE_OAUTH_TOKEN` is set; `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN`
+is already set to anything else; `ANTHROPIC_API_KEY`, Bedrock or Vertex is set;
+`MUSTER_CONNECT_URL` or `MUSTER_HOOK_TOKEN` is missing; or `CCD_LLM_ROUTE` has
+any other value. The pod holds no provider key. The proxy authenticates it by
+its muster token and attaches the officer's key upstream. Each condition has a
+positive and a negative case in the Go suite (`cmd/ccd`,
+`internal/agentspec`) and in the image smoke (`cc-smoke`). A routed pod
+still needs a `claude-code-agent` image built from this version: an older
+entrypoint refuses the route's variables, and its pod does not start.
 
 No other agent gets any of them (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
@@ -1160,6 +1184,23 @@ An officer may split its instances into two **pools**, one per HQ item tier
   (`?tier=`). The first message says which tier the instance works.
 - **No `tiers`: exactly as before.** There is one pool and the same names. The
   claim sends no `tier` key and the items list has no tier filter.
+- **The judgement session cap: `tiers.judgement.max_sessions_per_day`**
+  (1–100; leave it out for no cap). A judgement **session** is one distinct
+  item the judgement pool claims in a UTC day. Re-claiming an item already
+  counted that day is not a new one: a restarted instance re-claiming its own
+  item, or an item given back and taken again. Once the day's cap is spent:
+  - `officer_claim` from a judgement instance refuses any new item **before
+    HQ**, naming the cap. The item stays queued in HQ.
+  - The wake loop does not wake or re-prompt the judgement pool for new work.
+    It still does so for items the pool holds or already counted today.
+  - Nothing else changes. The routine pool is not capped by it (its bound is
+    the [`llm`](#the-llm-proxy) budget), and neither is an untiered officer.
+
+  A claim HQ refuses gives its session back. Two claims racing for the last
+  session cannot both pass: the session is reserved before the claim is sent.
+  ⚠ The count is held in muster-server's **memory**. A restart starts the
+  day's count again, so each restart can admit at most one more cap's worth
+  that day. The routine pool's USD budget is persisted; this cap is not.
 
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;
@@ -1167,6 +1208,8 @@ Refused at boot, each naming the problem:
 - a pool without a `model`, or with a model that is not a model name;
 - an unknown key inside a pool;
 - a pool `max_instances` outside 1–8 (the default is 1);
+- `max_sessions_per_day` on the routine pool, or outside 1–100 on the
+  judgement pool;
 - a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
   values are `tiers.judgement`'s, and two sources for one value are refused
   rather than ranked);
@@ -1228,14 +1271,12 @@ an unknown key in `llm` (`model` and an agent list included: they live in
 server with no database (the budget is persisted) or no connector store (the
 proxy's door and audit trail).
 
-🔴 **Today every `llm` officer is refused at boot.** The pod side is not in
-muster yet: the claude-code image's entrypoint still refuses
-`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (see [The instance's Claude
-Code session](#the-instances-claude-code-session)), with no scoped exception
-under `CCD_LLM_ROUTE=muster`, and the pod spec refuses a provider model id as
-the session's model. A routine instance of such an officer could not be
-provisioned, so muster-server refuses to start with one, naming the officer
-and the reason. The change that adds `CCD_LLM_ROUTE` lifts the refusal.
+**The pod side** is the [LLM route](#the-instances-claude-code-session):
+each routine instance's pod is given `CCD_LLM_ROUTE=muster` and no
+subscription token. Its entrypoint then points Claude Code at exactly
+`$MUSTER_CONNECT_URL/llm`, with the pod's own muster token as the bearer. The
+session takes no model of its own, because the proxy pins it. The judgement
+pool's instances are not routed: they run on their Claude accounts as before.
 
 #### What one request does
 

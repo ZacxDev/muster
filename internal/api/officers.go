@@ -69,6 +69,19 @@ type officerRuntime struct {
 	// llm is the officer LLM proxy (officer_llm.go, internal/llmproxy); nil
 	// when no declared officer has an `llm` block.
 	llm *llmproxy.Proxy
+	// judgement counts each tiered officer's judgement sessions per UTC day
+	// (officers.JudgementLedger): officer_claim reserves in it, and the wake
+	// loop reads it. now is the clock both use (OfficersConfig.Now).
+	judgement *officers.JudgementLedger
+	now       func() time.Time
+}
+
+// clock is the runtime's now (time.Now when unset).
+func (rt *officerRuntime) clock() time.Time {
+	if rt.now == nil {
+		return time.Now()
+	}
+	return rt.now()
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -195,7 +208,12 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
-	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: cfg.Now}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	judgement := officers.NewJudgementLedger()
+	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement}
 	switch {
 	case fwd != nil && px != nil:
 		sync := llmSync(px, reg)
@@ -213,7 +231,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, judgement: judgement, now: now, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
@@ -616,7 +634,9 @@ func (s *Server) WaitForOfficerReprompts() {
 //     postgres_query when the officer declares `connectors`. Redundant
 //     under bypass, and kept: it names exactly the muster tools the instance
 //     is for, and holds if bypass is ever lifted.
-//   - Model: the officer's configured model.
+//   - Model: the officer's configured model (its pool's, for a tiered officer).
+//   - LLMRoute, with no Model: a routine instance of an officer that declares
+//     `llm` (below).
 func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeSession, bool) {
 	o, _, ok := s.officerOf(a)
 	if !ok {
@@ -637,6 +657,14 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 			}
 			allow = append(allow, d.Name)
 		}
+	}
+	// 🔴 A ROUTINE INSTANCE OF AN `llm` OFFICER IS ON THE LLM ROUTE, AND ONLY
+	// IT (officers.RoutineAgent, the proxy's own membership rule): its pod
+	// reaches its model through muster's proxy with its own muster token and
+	// carries no subscription token. It takes no session model: the proxy
+	// pins tiers.routine.model, and the pod spec refuses a provider id.
+	if officers.RoutineAgent(o, a.Name) {
+		return agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, LLMRoute: true}, true
 	}
 	return agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: o.Model, BypassPermissions: true}, true
 }
@@ -845,7 +873,18 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
+		// 🔴 THE JUDGEMENT SESSION CAP IS CHECKED BEFORE HQ, AND THE SESSION
+		// IS RESERVED AT ONCE: the N+1th distinct item of the day never reaches
+		// HQ (it stays queued there), and two claims racing for the last
+		// session cannot both pass. A claim HQ refuses gives its session back.
+		undo, capErr := s.officerRT.judgement.Reserve(o, in.ItemID, s.officerRT.clock())
+		if capErr != nil {
+			return toolErr("%v", capErr), true
+		}
 		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds, o.Tier)
+		if err != nil {
+			undo()
+		}
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Claimed(o, instance, in.ItemID)
 		}

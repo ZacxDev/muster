@@ -498,6 +498,16 @@ type ClaudeCodeSession struct {
 	// HQMCP offers the HQ MCP server and allows every one of its tools
 	// (podagent.EnvHQMCP, internal/podagent/hqmcp.go). Set for the chief only.
 	HQMCP bool
+	// LLMRoute puts the pod on the LLM route ([EnvLLMRoute] =
+	// [LLMRouteMuster]): its Claude Code reaches its model through muster's
+	// LLM proxy at Config.ConnectURL + "/llm", authenticated by the pod's own
+	// muster token, and the pod carries NO subscription token. The image's
+	// entrypoint (images/claude-code-agent/credentials.sh) sets the base URL
+	// and the token from the route; nothing here writes an ANTHROPIC_*
+	// variable. Set for a routine instance of an officer that declares `llm`
+	// only (internal/api OfficerClaudeCodeSession). Needs Config.ConnectURL,
+	// and refuses a Model: the proxy pins the model.
+	LLMRoute bool
 }
 
 // EgressLocked reports whether the pod's network policy drops the public-443
