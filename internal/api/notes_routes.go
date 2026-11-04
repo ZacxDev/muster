@@ -146,6 +146,12 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// handleNoteCommentDelete; deleting this ONE line removes the human spelling
 	// and leaves the machine route intact.
 	mux.HandleFunc("DELETE /tasks/{id}/comments/{cid}", s.requireSession(s.handleNoteCommentDelete))
+	// The task page's Retry and Dismiss on a failed reference write: a session
+	// AND same-origin (requireOperatorWrite), like the plugin message retry.
+	// There is deliberately no /api twin: retrying what the upstream refused is
+	// a decision made looking at the task page (task_ref_write_actions.go).
+	mux.HandleFunc("POST /tasks/{id}/ref-writes/{wid}/retry", s.requireOperatorWrite(s.handleTaskRefWriteRetry))
+	mux.HandleFunc("POST /tasks/{id}/ref-writes/{wid}/dismiss", s.requireOperatorWrite(s.handleTaskRefWriteDismiss))
 	mux.HandleFunc("GET /tasks/{id}/attachments/{aid}", s.requireSession(s.handleNoteAttachment))
 	// Task MERGE (session only). SUPERSEDE semantics: the winner unions in the
 	// loser's tags + records the merge; the loser is closed with a pointer back.

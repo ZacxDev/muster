@@ -71,6 +71,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).applyReference → broadcast(ctx)",
 		"(*Server).applyReference → broadcast(ctx)",
 		"(*Server).queueIfReference → broadcast(ctx)",
+		// The owner retried or dismissed a failed write on a reference
+		// (task_ref_write_actions.go): ctx is the owner's request, and the task
+		// was read under it first.
+		"(*Server).actOnRefWrite → broadcast(ctx)",
 		// A plugin claimed or settled queued writes: owner is the authenticated
 		// plugin row's OwnerID, and the claim and the result reach only that
 		// plugin's writes, on that owner's references.

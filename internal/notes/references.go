@@ -111,6 +111,15 @@ type RefWrite struct {
 	LeaseUntil *time.Time `json:"lease_until,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// DismissedAt is when the owner dismissed this failed write (0076): it is
+	// then off the task page, and can be neither retried nor dismissed again.
+	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
+	// Superseded: a STATUS write with a later status write on the same task
+	// already sent upstream — done, or pending again after a lapsed lease
+	// (refWriteSuperseded). It cannot be retried, and a claim fails it rather
+	// than hand it out (it would undo the newer status); it can be dismissed. Not part of the plugin's
+	// contract.
+	Superseded bool `json:"-"`
 }
 
 // RefUpsert is what UpsertReference did.
@@ -183,6 +192,15 @@ var (
 	ErrRefOtherPlugin = errors.New("notes: the reference belongs to another plugin")
 	// ErrRefWriteNotLeased: a result for a write this plugin does not hold.
 	ErrRefWriteNotLeased = errors.New("notes: no such write leased to this plugin")
+	// ErrRefWriteNotFound: no such write on that task (as the caller sees it:
+	// another owner's write is not found either).
+	ErrRefWriteNotFound = errors.New("notes: no such write on this task")
+	// ErrRefWriteNotFailed: an owner's retry or dismiss of a write that is not
+	// failed (pending, claimed, done) or was already dismissed.
+	ErrRefWriteNotFailed = errors.New("notes: only a failed write can be retried or dismissed")
+	// ErrRefWriteSuperseded: a retry of a status write a later, done status
+	// write on the same task supersedes.
+	ErrRefWriteSuperseded = errors.New("notes: a later status write on this task was already sent upstream")
 )
 
 // refScan holds the reference columns as scanned; adoptRef turns them into
