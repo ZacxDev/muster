@@ -80,6 +80,24 @@ func refOriginFrom(ctx context.Context) refOrigin {
 	return o
 }
 
+// confirmedRefWriteKey carries the queued write a snapshot's status move
+// confirmed (notes.Store.ConfirmRefStatusWrite), stamped by setNoteStatus for
+// the ready-for-review push's title (reviewSourceLabel).
+type confirmedRefWriteKey struct{}
+
+func withConfirmedRefWrite(ctx context.Context, w notes.RefWrite) context.Context {
+	return context.WithValue(ctx, confirmedRefWriteKey{}, w)
+}
+
+// confirmedRefWriteFrom is the write ctx's snapshot move confirmed; nil when
+// it confirmed none (or ctx is not a snapshot's move).
+func confirmedRefWriteFrom(ctx context.Context) *notes.RefWrite {
+	if w, ok := ctx.Value(confirmedRefWriteKey{}).(notes.RefWrite); ok {
+		return &w
+	}
+	return nil
+}
+
 // queueIfReference is THE decision: when task w.NoteID is a live reference, w
 // is queued for its plugin and queued is true; otherwise nothing is written
 // and the caller writes locally. The store's INSERT is itself conditional on

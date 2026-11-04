@@ -696,7 +696,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// officer that declares `llm` with no database is refused.
 			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
 			// The judgement session cap's count lives here too (migration
-			// 0080), shared by every replica; a cap with no database is
+			// 0081), shared by every replica; a cap with no database is
 			// refused.
 			ocfg.Sessions = officers.NewPGSessionStore(a.pool)
 		}

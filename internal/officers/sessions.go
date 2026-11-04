@@ -32,7 +32,7 @@ import (
 //     a Claude session on being refused.
 //
 // 🔴 PERSISTED, AND ADMITTED BY ONE STATEMENT (operator, #436 round 0): the
-// ledger is officer_judgement_sessions (migration 0080), one row per
+// ledger is officer_judgement_sessions (migration 0081), one row per
 // (officer, UTC day) of admitted item ids, shared by every muster-server
 // replica. PGSessionStore.AdmitSession is ONE INSERT … ON CONFLICT DO UPDATE
 // whose WHERE re-checks the cap under the row lock, so a restart resets
@@ -185,7 +185,7 @@ func capRefusal(o Officer, limit int, what string) error {
 }
 
 // PGSessionStore is SessionStore on officer_judgement_sessions (migration
-// 0080), under row-level security: ctx must act as the officer's owner.
+// 0081), under row-level security: ctx must act as the officer's owner.
 type PGSessionStore struct{ pool *pgxpool.Pool }
 
 // NewPGSessionStore is the store over pool.

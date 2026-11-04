@@ -149,7 +149,7 @@ var pgBackedPackages = []string{
 	"internal/memorelay",
 	"internal/mirror",
 	"internal/notes",
-	// The judgement session cap's ledger (migration 0080). "Two replicas at
+	// The judgement session cap's ledger (migration 0081). "Two replicas at
 	// cap-1 admit exactly one" and "the count survives a new server" are
 	// claims about one SQL statement's row lock and about the table, not
 	// about Go: only a real Postgres can make them.
