@@ -28,6 +28,11 @@ How values are parsed:
 - **Keys** are 32 random bytes, base64-encoded. One way to make one:
   `head -c32 /dev/urandom | base64`.
 
+With the Compose stack, every optional server variable below is set in `.env`:
+`deploy/docker-compose.yml` forwards them all, empty unless set, except the
+agent-provisioning ones, which need Kubernetes. [features.md](features.md) says
+which variables each feature needs, and how to check it is on.
+
 The server checks its configuration at boot and refuses to start on an invalid
 or contradictory combination. After it starts, it logs one line per feature
 saying whether that feature is on, off or degraded, and why.

@@ -43,6 +43,8 @@ boot banner's `dictation:` line says which state you are in.
 There are three ways to run dictation. The production compose file
 (`deploy/docker-compose.yml`) has a profile for each of the first two, and
 `deploy/.env.example` has a ready-to-uncomment block for all three.
+[features.md](features.md#dictation) has the short version beside every other
+optional feature.
 
 ### 1. stt-cohere (GPU, recommended)
 
@@ -69,11 +71,14 @@ In `.env`:
 COMPOSE_PROFILES=stt-cohere
 MUSTER_STT_URL=http://stt-cohere:8000
 MUSTER_STT_TOKEN=<a random secret>   # also the server's own STT_API_TOKEN
+MUSTER_STT_MODEL=CohereLabs/cohere-transcribe-03-2026
 HF_TOKEN=<your Hugging Face token>
 ```
 
-Leave `MUSTER_STT_MODEL` unset: this server serves one model and ignores the
-field. The server answers `/healthz` with 503 until the model is loaded **and**
+This server serves one model and ignores the `model` field. The compose file
+sends one whenever the token is set (its default is the `stt` profile's model),
+so name this server's own model, as above, to keep muster's `dictation:` boot
+line true. The server answers `/healthz` with 503 until the model is loaded **and**
 a token is configured, so `docker compose up -d --wait` fails rather than
 reporting a dictation service that refuses every request.
 
@@ -82,23 +87,27 @@ pt vi zh`. A recording that is pure digital silence (every sample identical, as
 some phones produce when another app holds the microphone) is answered with an
 empty transcript instead of being sent to the model, which would invent text.
 
-### 2. stt-whisper (CPU fallback)
+### 2. stt (CPU)
 
-The `stt-whisper` profile runs [speaches](https://github.com/speaches-ai/speaches),
-an OpenAI-compatible faster-whisper server, pinned by digest. It needs no GPU;
-it is slower and less accurate than stt-cohere, and a larger model is more
-accurate and slower still.
+The `stt` profile (`stt-whisper` is the same profile under its older name) runs
+[speaches](https://github.com/speaches-ai/speaches), an OpenAI-compatible
+faster-whisper server, pinned by digest, as the service `stt-whisper`. It needs
+no GPU; it is slower and less accurate than stt-cohere, and a larger model is
+more accurate and slower still.
 
 ```sh
-COMPOSE_PROFILES=stt-whisper
-MUSTER_STT_URL=http://stt-whisper:8000
+COMPOSE_PROFILES=stt
 MUSTER_STT_TOKEN=<a random secret>   # also speaches' API_KEY
-MUSTER_STT_MODEL=Systran/faster-whisper-small
 ```
 
-speaches requires the `model` field and transcribes only models it has
-downloaded, so `MUSTER_STT_MODEL` is required here; the service's healthcheck
-downloads that model on first start and reports healthy only once it is on disk.
+That one line is enough: with the token set and `MUSTER_STT_URL` and
+`MUSTER_STT_MODEL` unset, the compose file points muster at
+`http://stt-whisper:8000` and gives both sides the same model,
+`Systran/faster-whisper-small`. speaches requires the `model` field and
+transcribes only models it has downloaded, so the two must agree; set
+`MUSTER_STT_MODEL` (for example `Systran/faster-whisper-medium`) to change it
+for both. The service's healthcheck downloads that model on first start and
+reports healthy only once it is on disk.
 
 ### 3. Your own OpenAI-compatible API key (no container)
 

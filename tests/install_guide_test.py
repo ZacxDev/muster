@@ -331,6 +331,62 @@ class Guide(unittest.TestCase):
         self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_URL"], env["MUSTER_STT_MODEL"], env["MUSTER_STT_TOKEN"]),
                          ("", "https://api.openai.com", "whisper-1", "sk-the-real-key"))
 
+    def test_gpu_names_its_model(self) -> None:
+        # The compose file sends a model whenever the token is set (the stt
+        # profile's, by default); stt-cohere ignores it, so the guide names
+        # Cohere's own to keep muster's dictation line true.
+        self.hub()
+        self.write_secret("hf-token", "hf_real")
+        self.dictation(STT="local-gpu")
+        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "CohereLabs/cohere-transcribe-03-2026")
+        self.dictation(STT="local-cpu")
+        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-small",
+                         "leaving the GPU kept Cohere's model for the whisper server")
+
+    def test_every_dictation_option_keeps_the_s3_profile(self) -> None:
+        # Attachments (Step 11) put s3 in COMPOSE_PROFILES too: choosing or
+        # switching dictation must replace only its own profile.
+        self.hub()
+        self.sh(f"env_set COMPOSE_PROFILES s3")
+        self.write_secret("hf-token", "hf_real")
+        want = {"local-cpu": "s3,stt", "local-gpu": "s3,stt-cohere", "none": "s3"}
+        for stt in ("local-cpu", "local-gpu", "local-cpu", "none"):
+            self.dictation(STT=stt)
+            self.assertEqual(self.dotenv()["COMPOSE_PROFILES"], want[stt], f"after {stt}")
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
+        self.assertEqual(self.dotenv()["COMPOSE_PROFILES"], "s3")
+        # With s3 on, the API option is still recognised as in effect: leaving
+        # it keeps the key aside (its only copy is .env).
+        self.dictation(STT="none")
+        kept = self.homedir / ".config/muster-install/stt-api-key"
+        self.assertTrue(kept.exists(), "leaving the API option with s3 on lost the key: it was not kept aside")
+        self.assertEqual(kept.read_text().strip(), "sk-the-real-key")
+
+    def test_cpu_rerun_from_the_old_profile_name_keeps_the_token(self) -> None:
+        # An install made when the CPU profile was called stt-whisper: a re-run
+        # moves it to `stt` without rotating the service's token.
+        self.hub()
+        self.sh("env_set COMPOSE_PROFILES stt-whisper\nenv_set MUSTER_STT_TOKEN keep-this-token")
+        self.dictation(STT="local-cpu")
+        env = self.dotenv()
+        self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_TOKEN"]), ("stt", "keep-this-token"))
+
+    def test_step11_attachments_generates_both_secrets_once(self) -> None:
+        self.hub()
+        self.sh("env_set COMPOSE_PROFILES stt")
+        b = self.lib + block("env_secret MUSTER_S3_SECRET_KEY", "mi_profiles s3")
+        out = self.run_block(b)
+        env = self.dotenv()
+        self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", out)
+        self.assertRegex(env["MUSTER_S3_SECRET_KEY"], r"^[0-9a-f]{48}$")
+        self.assertRegex(env["MUSTER_UPLOAD_SIGNING_KEY"], r"^[0-9a-f]{96}$")
+        first = (env["MUSTER_S3_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"])
+        self.run_block(b)
+        env = self.dotenv()
+        self.assertEqual((env["MUSTER_S3_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"]), first, "a re-run rotated a key")
+        self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", "a re-run added s3 twice")
+
     def test_api_to_cpu_is_a_clean_swap(self) -> None:
         self.hub()
         self.write_secret("stt-api-key", "sk-the-real-key")
@@ -338,7 +394,7 @@ class Guide(unittest.TestCase):
         self.dictation(STT="local-cpu")
         env = self.dotenv()
         self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_URL"], env["MUSTER_STT_MODEL"]),
-                         ("stt-whisper", "http://stt-whisper:8000", "Systran/faster-whisper-small"))
+                         ("stt", "http://stt-whisper:8000", "Systran/faster-whisper-small"))
         self.assertNotEqual(env["MUSTER_STT_TOKEN"], "sk-the-real-key", "the API key was handed to the local service")
         self.assertRegex(env["MUSTER_STT_TOKEN"], r"^[0-9a-f]{64}$")
 
@@ -660,11 +716,36 @@ class Guide(unittest.TestCase):
         self.assertEqual(sorted(l.split("=", 1)[0] for l in written if l.strip()),
                          ["MUSTER_MIRROR_HOST", "MUSTER_MIRROR_INTERACTIVE", "MUSTER_MIRROR_TOKEN_FILE",
                           "MUSTER_MIRROR_URL", "MUSTER_MIRROR_WRITE_HOOK_CONFIG", "PATH"])
-        for f in (ROOT / "deploy/docker-compose.yml", ROOT / "deploy/.env.example"):
-            text = f.read_text()
-            self.assertIn("MUSTER_", text, f"positive control: {f.name} names muster settings")
-            for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_MAIL_RESUME_ALLOW", "RESUME_SPAWN"):
-                self.assertNotIn(key, text, f"{f.name} sets {key}: the install would no longer be mirrored-only")
+        # Since the compose file forwards every optional setting from .env
+        # (docs/features.md), the claim is about VALUES, not spellings: the
+        # provisioner and the gateway are not forwarded at all (dispatch needs
+        # Kubernetes), mail resume is forwarded EMPTY, and no uncommented line
+        # of the env template sets any of them.
+        compose = (ROOT / "deploy/docker-compose.yml").read_text()
+        example = (ROOT / "deploy/.env.example").read_text()
+        self.assertRegex(compose, r"(?m)^      MUSTER_HOOK_TOKEN: ", "positive control: the env block is where this looks")
+        for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY"):
+            self.assertNotRegex(compose, rf"(?m)^\s+{key}:", f"the compose file forwards {key}: dispatch could be turned on")
+        self.assertRegex(compose, r"(?m)^      MUSTER_MAIL_RESUME_ALLOW: \$\{MUSTER_MAIL_RESUME_ALLOW:-\}$",
+                         "MUSTER_MAIL_RESUME_ALLOW must be forwarded with an EMPTY default")
+        for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_MAIL_RESUME_ALLOW"):
+            self.assertNotRegex(example, rf"(?m)^{key}=", f".env.example sets {key}: the install would no longer be mirrored-only")
+        for text in (compose, example):
+            self.assertNotIn("RESUME_SPAWN", text)
+
+    def test_step7_adds_the_mcp_endpoint_only_when_asked(self) -> None:
+        # Step 11's agent ask tool: the saved answer adds exactly one setting,
+        # and a re-run of Step 7 (as an update does) keeps it.
+        self.mirror_service(FAKE_LINGER="yes", ASK_TOOLS="")
+        env_file = self.homedir / ".config/muster-mirror/env"
+        self.assertNotIn("MUSTER_MIRROR_MCP_LISTEN", env_file.read_text(), "the endpoint was turned on unasked")
+        self.sh("mi_save ASK_TOOLS yes")
+        self.mirror_service(FAKE_LINGER="yes")
+        self.mirror_service(FAKE_LINGER="yes")
+        lines = env_file.read_text().splitlines()
+        self.assertIn("MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823", lines)
+        self.assertEqual(sum(l.startswith("MUSTER_MIRROR_MCP_LISTEN=") for l in lines), 1)
+        self.assertTrue(lines[-1].startswith("PATH="), "PATH must stay the last line written")
 
     def test_step7_names_the_opencode_line_muster_mirror_logs(self) -> None:
         # The seam: the guide quotes the daemon's start-up line as expected, so
