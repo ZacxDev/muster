@@ -21,7 +21,7 @@ import (
 // buttons are the offered actions, in order.
 func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 	type tally struct{ offered, withheld int }
-	seen := map[string]*tally{taskForwardTool: {}, taskDispatchTool: {}}
+	seen := map[string]*tally{taskForwardTool: {}, agentDispatchTool: {}}
 	type taskCase struct {
 		name string
 		tags []string
@@ -79,13 +79,13 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 					}
 					fwd := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "over to you"})
 					forwarded := !strings.Contains(fwd, `"error"`)
-					disp := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+					disp := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 					started := !strings.Contains(disp, `"error"`) && strings.Contains(disp, `"agent_id"`)
 					if offered[taskForwardTool] != forwarded {
 						t.Errorf("task_forward offered=%v, but the tool forwarded=%v: %s", offered[taskForwardTool], forwarded, fwd)
 					}
-					if offered[taskDispatchTool] != started {
-						t.Errorf("task_dispatch offered=%v, but the tool started an agent=%v: %s", offered[taskDispatchTool], started, disp)
+					if offered[agentDispatchTool] != started {
+						t.Errorf("task_dispatch offered=%v, but the tool started an agent=%v: %s", offered[agentDispatchTool], started, disp)
 					}
 					for tool, tl := range seen {
 						if offered[tool] {

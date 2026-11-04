@@ -942,6 +942,11 @@ type dispatchParams struct {
 	// pool (agents.Agent.WorkerPool); "" for none. Refused for any other kind
 	// and for a name agents.ValidWorkerPool refuses.
 	WorkerPool string
+	// StartAfterSave, with Kickoff false, starts the saved agent once it is
+	// stored (Provisioner.Start): an instance with no first turn claimed — what
+	// the form's "Save for later, then Start" did. agent_dispatch's worker_pool
+	// without a prompt.
+	StartAfterSave bool
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
@@ -954,7 +959,7 @@ var ErrDispatchRefused = errors.New("dispatch refused")
 
 // resolveKind is resolveKindAccount's kind half: the kind a dispatch names,
 // resolved, known, enabled on this deployment and usable by the caller — or the
-// refusal. The chief's task_dispatch asks it BEFORE it spends a reservation, so
+// refusal. The chief's agent_dispatch asks it BEFORE it spends a reservation, so
 // a kind it can never start is refused without one; createAndDispatchAgent asks
 // it again, through resolveKindAccount.
 func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
@@ -1072,10 +1077,10 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		}
 	}
 	// 🔴 A CLAUDE-CODE AGENT'S REPOSITORY MUST BE A CONNECTED ONE, from every
-	// door (the forms, the API, task_dispatch): its session starts PRE-TRUSTED
+	// door (the forms, the API, agent_dispatch): its session starts PRE-TRUSTED
 	// in the checkout (ccd seed), so the repository's .claude/settings.json
 	// (hooks, env) runs beside the subscription token. One predicate,
-	// connectedRepo, the same task_dispatch applies to every kind before it
+	// connectedRepo, the same agent_dispatch applies to every kind before it
 	// reserves. Before the row, so a refusal creates nothing.
 	if agents.RunsPodSupervisor(kind) && p.Repo != "" {
 		if why := s.connectedRepo(ctx, p.Repo); why != "" {
@@ -1147,6 +1152,13 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		if err := s.ext.Provisioner.Dispatch(opCtx, rec.ID, p.Kickoff); err != nil {
 			s.logger.Printf("agents: dispatch %s: %v", rec.Name, err)
 			return
+		}
+		// After the save (Dispatch with kickoff false stores `stopped`), in the
+		// same goroutine, so the start never races it.
+		if p.StartAfterSave && !p.Kickoff {
+			if err := s.ext.Provisioner.Start(opCtx, rec.ID); err != nil {
+				s.logger.Printf("agents: start %s after its save: %v", rec.Name, err)
+			}
 		}
 	})
 	return rec, nil
@@ -2025,7 +2037,7 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 // (handleAgentWS, handleAgentSend) and notTyped from every other caller. When it
 // is a's owner, the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
 // the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
-// thing task_dispatch's owner_asked releases a gate on (chief_owner_release.go).
+// thing agent_dispatch's owner_asked releases a gate on (chief_owner_release.go).
 // TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn pins who passes what.
 func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit) ([]agents.TurnPart, error) {
 	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})

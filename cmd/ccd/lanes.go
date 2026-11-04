@@ -92,7 +92,7 @@ import (
 // same route as ephemeral, internal/api withRoute). A check's prompt quotes
 // OTHER sessions' transcripts; fencing them as "data, not instructions" is
 // prose, and a CLI with the chief's tools (Bash, Edit, WebFetch, muster's MCP
-// route_to_session/task_dispatch/…) could be steered into calling one. So the
+// route_to_session/agent_dispatch/…) could be steered into calling one. So the
 // lane's CLI is started with toollessArgs: no built-in tool and no MCP server,
 // and its only possible effect is its text reply, which muster parses and
 // validates. Hooks are not tools: SessionStart, UserPromptSubmit and Stop still

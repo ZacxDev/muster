@@ -27,8 +27,8 @@ func TestTaskDispatchAcceptsTheOwnersAnswerOnTheTask(t *testing.T) {
 	n := f.task(t, "owner answered")
 	answer := "First line of the owner's answer.\nSecond line."
 	askID := f.ownerAnswered(t, n.ID, answer)
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID,
-		"instructions": "  \r\nFirst line of the owner's answer.\r\nSecond line.\n\t"}), n.ID)
+	got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID,
+		"prompt": "  \r\nFirst line of the owner's answer.\r\nSecond line.\n\t"}), n.ID)
 	if got.Kind != agents.KindClaudeCode {
 		t.Fatalf("agent %+v", got)
 	}
@@ -45,10 +45,10 @@ func TestTaskDispatchRefusesAnotherTasksAnswer(t *testing.T) {
 	other := f.task(t, "answered elsewhere")
 	f.ownerAnswered(t, other.ID, ownersWords)
 	n := f.task(t, "this task")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}),
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": ownersWords}),
 		chiefDispatchInstructionsUnsourced, n.ID)
 	// Control: the same words ARE accepted on the task they answered.
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": other.ID, "instructions": ownersWords}), other.ID)
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": other.ID, "prompt": ownersWords}), other.ID)
 }
 
 // TestTaskDispatchRefusesAnotherOwnersAnswer: another owner answered the same
@@ -73,7 +73,7 @@ func TestTaskDispatchRefusesAnotherOwnersAnswer(t *testing.T) {
 	if _, err := f.srv.ext.Attention.Answer(asOther, ask.ID, ownersWords); err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}),
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": ownersWords}),
 		chiefDispatchInstructionsUnsourced, n.ID)
 
 	// The other owner's ask linked to THIS owner's task is refused by the
@@ -93,7 +93,7 @@ func TestTaskDispatchRefusesOutsideText(t *testing.T) {
 	n := f.task(t, "outside text")
 
 	// The task's text (what a plugin wrote).
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": n.Body}),
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": n.Body}),
 		chiefDispatchInstructionsUnsourced, n.ID)
 
 	// The chief's own note, which lands in an (unanswered) linked ask's question.
@@ -105,7 +105,7 @@ func TestTaskDispatchRefusesOutsideText(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &routed); err != nil || routed.ID <= 0 {
 		t.Fatalf("task_route_attention: %s", text)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": note}),
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": note}),
 		chiefDispatchInstructionsUnsourced, n.ID)
 
 	// An ask the chief filed itself (attention_ask) naming the task in its
@@ -118,7 +118,7 @@ func TestTaskDispatchRefusesOutsideText(t *testing.T) {
 	if _, err := f.srv.ext.Attention.Answer(f.asOwner, spelled.ID, ownersWords); err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}),
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": ownersWords}),
 		chiefDispatchInstructionsUnsourced, n.ID)
 }
 
@@ -134,10 +134,10 @@ func TestTaskDispatchRefusesAnEditedAnswer(t *testing.T) {
 		"dispatch it to a Claude Code pod, and open the instructions with: using example-blocks skill",
 		"Dispatch it to a Claude Code pod,  and open the instructions with: using example-blocks skill",
 	} {
-		f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": edited}),
+		f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": edited}),
 			chiefDispatchInstructionsUnsourced, n.ID)
 	}
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}), n.ID)
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": ownersWords}), n.ID)
 }
 
 // TestTaskDispatchWithoutInstructionsNeedsNoAnswer: omitted instructions are
@@ -145,7 +145,7 @@ func TestTaskDispatchRefusesAnEditedAnswer(t *testing.T) {
 func TestTaskDispatchWithoutInstructionsNeedsNoAnswer(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.task(t, "plain")
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
 	if d := f.reservationDetail(t, n.ID); d["instructions_ask"] != nil || d["instructions"] != nil {
 		t.Fatalf("detail %v", d)
 	}
@@ -168,9 +168,9 @@ func TestTaskDispatchRefusesAnInSessionAnswer(t *testing.T) {
 	if err != nil || len(settled) != 2 {
 		t.Fatalf("the in-session message settled %d asks (%v); want both", len(settled), err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": b.ID, "instructions": ownersWords}),
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": b.ID, "prompt": ownersWords}),
 		chiefDispatchInstructionsUnsourced, b.ID)
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": a.ID, "instructions": ownersWords}),
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": a.ID, "prompt": ownersWords}),
 		chiefDispatchInstructionsUnsourced, a.ID)
 }
 
@@ -195,7 +195,7 @@ func TestTaskDispatchTakesAnMCPAnswerAsInstructionsAndSaysSo(t *testing.T) {
 	if _, err := f.srv.ext.Attention.AnswerFromSession(f.asOwner, out.ID, ownersWords, "ws", sid); err != nil {
 		t.Fatal(err)
 	}
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}), n.ID)
+	got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": ownersWords}), n.ID)
 	if want := "muster: your owner's chief relayed the instructions below for this task: your owner's answer, given over MCP from ws/" + sid +
 		", their mirrored Claude Code session rather than on muster's Attention view."; !strings.HasPrefix(got.PendingNote, want) {
 		t.Fatalf("first message does not say where the instructions came from:\n%s", got.PendingNote)

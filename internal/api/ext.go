@@ -285,8 +285,8 @@ type Extensions struct {
 	// TaskRouting is task routing's configuration (task_routing.go,
 	// MUSTER_TASK_ROUTING). nil is OFF, the default: POST /plugin/v1/tasks
 	// ignores route_to_chief and the chief's task_route_attention / task_forward
-	// / task_dispatch tools are not offered. ChiefDispatch is the ledger
-	// task_dispatch counts its caps from (the plugin store).
+	// / agent_dispatch tools are not offered. ChiefDispatch is the ledger
+	// agent_dispatch counts its caps from (the plugin store).
 	TaskRouting   *TaskRouting
 	ChiefDispatch plugins.DispatchStore
 

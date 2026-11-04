@@ -624,7 +624,7 @@ func GitPushRecipe(connector, path string) string {
 // (via the provisioner hook) and the interactive chat.
 func (s *Server) AgentToolDispatch(ctx context.Context, a agents.Agent) agents.ToolDispatch {
 	// In-process: a gateway-runtime session's turn, never a CLI over MCP —
-	// which task_dispatch's owner_asked tells apart (chief_owner_release.go).
+	// which agent_dispatch's owner_asked tells apart (chief_owner_release.go).
 	ctx = withInProcessToolCall(ctx)
 	return func(name, arguments string) string {
 		return s.dispatchAgentTool(ctx, a, name, arguments)

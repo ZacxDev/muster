@@ -16,10 +16,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// THE OWNER'S OWN TURN RELEASES THE CHIEF'S GATE: task_dispatch's owner_asked.
+// THE OWNER'S OWN TURN RELEASES THE CHIEF'S GATE: agent_dispatch's owner_asked.
 //
 // A plugin message becomes work only as a GATED task (task_create_gated), and
-// task_dispatch refuses a gated task. Before this the only release was the owner
+// agent_dispatch refuses a gated task. Before this the only release was the owner
 // removing the gate on the board — so an owner who TOLD their chief, in its
 // chat, to do the work met a chief that could only answer "go and approve it on
 // the board". The owner's decision: what they tell the chief to do, it does,
@@ -216,7 +216,7 @@ const (
 	chiefReleaseChanged = "owner_asked: your owner's turn or the task's gate changed while the start was being checked; call again"
 )
 
-// gateRelease is a release task_dispatch has verified and will apply once the
+// gateRelease is a release agent_dispatch has verified and will apply once the
 // agent exists: the gate tags to remove and the owner's message it rests on.
 type gateRelease struct {
 	gates []string
@@ -351,7 +351,7 @@ func (s *Server) ownerTurnFor(ctx context.Context, chief agents.Agent) (agents.C
 	return msg, ""
 }
 
-// verifyGateRelease is task_dispatch's owner_asked check on open gated task n:
+// verifyGateRelease is agent_dispatch's owner_asked check on open gated task n:
 // the release to apply after the start, or the refusal.
 func (s *Server) verifyGateRelease(ctx context.Context, chief agents.Agent, n notes.Note) (*gateRelease, string) {
 	gates, why := s.chiefsGate(ctx, n)
