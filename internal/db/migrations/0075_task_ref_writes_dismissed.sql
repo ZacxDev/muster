@@ -1,4 +1,4 @@
--- muster 0074 — A FAILED REFERENCE WRITE CAN BE DISMISSED (internal/notes/pgstore_refs.go
+-- muster 0075 — A FAILED REFERENCE WRITE CAN BE DISMISSED (internal/notes/pgstore_refs.go
 -- RetryRefWrite / DismissRefWrite; docs/plugins.md#writes-on-a-reference-are-queued).
 --
 -- 0072's failed write stayed on the task page for ever ("failed: <error>").
@@ -21,7 +21,7 @@
 -- as failed again, which is what it is):
 --   ALTER TABLE task_ref_writes DROP CONSTRAINT IF EXISTS task_ref_writes_dismissed_failed,
 --     DROP COLUMN IF EXISTS dismissed_at;
---   DELETE FROM schema_migrations WHERE version = 74;
+--   DELETE FROM schema_migrations WHERE version = 75;
 
 SET LOCAL lock_timeout = '3s';
 

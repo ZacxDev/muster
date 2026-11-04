@@ -126,7 +126,7 @@ func TestNoChiefToolCollidesWithTheGatewayRuntimesBuiltins(t *testing.T) {
 		t.Fatalf("positive control: the all-gates registry has %d tools, want more than the %d the ledgers name "+
 			"(route_to_session and the task-routing tools are behind gates the ledger fixture leaves shut): %v", len(names), want, names)
 	}
-	for _, n := range []string{"route_to_session", "task_dispatch", "task_forward", "attention_list", "sessions_overview", "connector_request"} {
+	for _, n := range []string{"route_to_session", "agent_dispatch", "task_forward", "attention_list", "sessions_overview", "connector_request"} {
 		found := false
 		for _, have := range names {
 			found = found || have == n

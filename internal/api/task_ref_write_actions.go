@@ -13,7 +13,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE OWNER'S RETRY AND DISMISS OF A FAILED REFERENCE WRITE
-// (docs/plugins.md#writes-on-a-reference-are-queued; migration 0074).
+// (docs/plugins.md#writes-on-a-reference-are-queued; migration 0075).
 //
 // A write queued on a plugin task reference (task_ref_queue.go) that FAILED —
 // the plugin reported a failure, it was handed out RefWriteMaxAttempts times

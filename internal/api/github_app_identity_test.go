@@ -79,8 +79,8 @@ func TestTaskDispatchsEffectiveRepoIsCheckedAgainstTheApp(t *testing.T) {
 	callAs := func(role authz.Role, args map[string]any) string {
 		p, _ := authz.From(f.asOwner)
 		p.Role = role
-		raw, _ := json.Marshal(args)
-		return f.srv.dispatchAgentTool(authz.WithPrincipal(f.asOwner, p), f.chief, taskDispatchTool, string(raw))
+		raw, _ := json.Marshal(f.withTarget(agentDispatchTool, args))
+		return f.srv.dispatchAgentTool(authz.WithPrincipal(f.asOwner, p), f.chief, agentDispatchTool, string(raw))
 	}
 	f.mustRefuse(t, callAs(authz.RoleMember, map[string]any{"task_id": n.ID, "repo": "example/app"}), chiefDispatchNoGitHub, n.ID)
 	f.mustRefuse(t, callAs(authz.RoleAdmin, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)

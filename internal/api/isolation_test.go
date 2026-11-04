@@ -305,7 +305,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /tasks/{id}/tags":                    classParam,
 	"POST /ui/connector-requests/{id}/approve": classParam,
 	"POST /ui/connector-requests/{id}/deny":    classParam,
-	// A failed reference write's Retry and Dismiss (0074): {id} is A's
+	// A failed reference write's Retry and Dismiss (0075): {id} is A's
 	// reference, {wid} A's write on it (fill).
 	"POST /tasks/{id}/ref-writes/{wid}/retry":   classParam,
 	"POST /tasks/{id}/ref-writes/{wid}/dismiss": classParam,
