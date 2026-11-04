@@ -62,6 +62,51 @@ predates notices does the same, because it draws buttons only from `ask`
 ([push.md](push.md)). A tap opens the session's page, or the notice's own page
 when no window shows the session now.
 
+### Stalled / waiting (session state)
+
+With `MUSTER_SESSION_STATE=1` ([configuration.md](configuration.md)) muster
+keeps one **episode** per stop of each of your sessions (the design:
+[design/session-state.md](design/session-state.md)), and the Asks tab draws the
+open ones as a **Stalled / waiting** section below the list: one plain row per
+stop, oldest first, saying where the session is (`<tmux session>:<window
+index> @ <host>`, or the agent), whether it **needs you** or is **stalled**,
+for how long, and a **View in session** link. A row has **no answer box**. A
+waiting window muster cannot answer is a row here instead of a "Session
+waiting" item (one muster cannot key, from an older host that sends no Claude
+session id, stays a "Session waiting" item with today's push); a question muster can answer (a held AskUserQuestion, an
+opencode question or permission request, a Hermes approval) stays an
+answerable item above it, with its own full-text push.
+
+**One push per stop.** Each episode is pushed **once**, however the stop moves
+between waiting and idle, and its notification closes when the stop ends
+(sustained work, or its window gone from a host that is online). The push is
+claimed in the database, so a restart, the double rollout and the waiting
+hook racing the 30-second pass never send it twice; a stop that began while
+muster was down is pushed when it is first seen, and one that ended while it
+was down has its notification closed.
+
+- Title: `<tmux session>:<window index> @ <host> needs you` (or `is
+  stalled`); an agent is named by its name. Body: `Needs you · idle 12m`
+  (`just now` under a minute). **No session text**: no window name, tool,
+  command, focus title or anything the session said. Tapping it opens the
+  session (`/attention/open/episode-<id>`, resolved when tapped), else the row.
+- A waiting window is pushed **at once**, never through the chief.
+- An idle stop is pushed at once when no chief judges it live (the feature
+  off, you in shadow mode, no chief). When your chief judges it live, the
+  push follows its decision for the stop: a **sent** nudge never pushes; a
+  queued one holds the push (up to 10 minutes) and a nudge that failed, was
+  capped or moved on pushes; **leave** quiets the stop only when the stall
+  classifier says it asked nothing; anything else pushes. With no decision
+  within 6 minutes, it pushes.
+- A quiet stop is drawn muted, saying why (`left`, `nudged`, `you spoke last`,
+  or **held** because the session was pushed under 2 minutes ago: the repush
+  floor delays a push, it never drops one). A conversation of an agent's whose
+  newest message is yours, with no classifier, is quiet: you spoke last.
+
+With session state on, a live chief ask raises **no notice**
+([chief-nudges.md](chief-nudges.md#live-mode)): its stop's episode is the push.
+Off, everything on this page is as above.
+
 ### The Reply drafts tab
 
 With plugins on, the page has two tabs, **Ask** (the table above and the
@@ -308,8 +353,8 @@ their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
 
 | tool | does |
 |---|---|
-| `attention_answer {id \| task_id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). The ask is named by **exactly one** of `id` (the ask's id) or `task_id` (the task it is about — the chief's *"Task #776 needs you"* is `{task_id: 776}`); `task_id` must have exactly one open ask of yours (*"task N has no open ask"* — also what another owner's task reads — or *"task N has K open asks (ids …): answer one by id"*). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the calling host and the Claude session it named, migration 0034); `answered_by` is still `operator`. **It counts as your own words for `task_dispatch` instructions**, exactly as a browser answer does (operator decision; see the risk [below](#mirrored-claude-code-sessions)); the started agent's first message and the `task.chief_dispatch` audit row then say it came via MCP from `<host>`/`<session>` ([chief.md](chief.md)). Refused: an open ask raised by **any mirrored session on the calling host** (*"was raised by a mirrored session on this host"*), an ask that is no longer open (*"is no longer open (it is …)"* — also for a same-host ask once it has closed), and another owner's ask or a missing id (both *"no such ask: N"*). |
-| `agent_destroy {name \| id}` | Destroys one of the owner's agents through the agent page's own teardown ([provisioner.md](provisioner.md#destroying-an-agent)), named by **exactly one** of `name` (its slug) or `id`. The pod and the row go in the background; its open asks go with the row; a running turn is cut off. **The task is kept**: once the agent is gone, a task still `in_progress` with no other live agent is back to `open`, so the chief can `task_dispatch` it — and if the chief started the destroyed agent, the chief may start **one** new agent on the task again (see [chief.md](chief.md); the browser's Delete releases it too). **No audit row** is written: where the call came from (the host the token proves, the session the caller named) is in muster's server log only. Find a name with `muster agent ls`. Refused: the chief (*"the chief agent cannot be deleted…; to replace the chief use `muster chief replace`"*), and another owner's agent, an unknown name or a missing id (all *"no such agent: X"*). Operator decision ("Build agent_destroy MCP": mirrored owner sessions only). |
+| `attention_answer {id \| task_id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). The ask is named by **exactly one** of `id` (the ask's id) or `task_id` (the task it is about — the chief's *"Task #776 needs you"* is `{task_id: 776}`); `task_id` must have exactly one open ask of yours (*"task N has no open ask"* — also what another owner's task reads — or *"task N has K open asks (ids …): answer one by id"*). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the calling host and the Claude session it named, migration 0034); `answered_by` is still `operator`. **It counts as your own words for `agent_dispatch` instructions**, exactly as a browser answer does (operator decision; see the risk [below](#mirrored-claude-code-sessions)); the started agent's first message and the `task.chief_dispatch` audit row then say it came via MCP from `<host>`/`<session>` ([chief.md](chief.md)). Refused: an open ask raised by **any mirrored session on the calling host** (*"was raised by a mirrored session on this host"*), an ask that is no longer open (*"is no longer open (it is …)"* — also for a same-host ask once it has closed), and another owner's ask or a missing id (both *"no such ask: N"*). |
+| `agent_destroy {name \| id}` | Destroys one of the owner's agents through the agent page's own teardown ([provisioner.md](provisioner.md#destroying-an-agent)), named by **exactly one** of `name` (its slug) or `id`. The pod and the row go in the background; its open asks go with the row; a running turn is cut off. **The task is kept**: once the agent is gone, a task still `in_progress` with no other live agent is back to `open`, so the chief can `agent_dispatch` it — and if the chief started the destroyed agent, the chief may start **one** new agent on the task again (see [chief.md](chief.md); the browser's Delete releases it too). **No audit row** is written: where the call came from (the host the token proves, the session the caller named) is in muster's server log only. Find a name with `muster agent ls`. Refused: the chief (*"the chief agent cannot be deleted…; to replace the chief use `muster chief replace`"*), and another owner's agent, an unknown name or a missing id (all *"no such agent: X"*). Operator decision ("Build agent_destroy MCP": mirrored owner sessions only). |
 | `chief_restart {force?}` | Restarts the owner's **own chief** — the same as Stop then Start on its agent page ([chief.md](chief.md#restarting-the-chief)), typically after a muster release so it runs the new image and tool set. It takes **no agent**: the chief is the owner's lowest-id agent labelled `chief`, resolved among the owner's own agents only. Before anything is stopped it checks the Start would be allowed (the kind's credential). It then stops and starts the chief through the provisioner and **waits** (up to 4 minutes) for it to be running and ready on a **new** pod. Returns `{agent_id, agent, before:{status, pod, ready, image}, after:{…}, restarted: true}`, where `image` is the image the agent container runs, as the provisioner reports it. It **reports** the image and does not compare it with `MUSTER_AGENT_CC_IMAGE`; `muster-ops chief-restart` remains the check that the running image equals the configured one. Without a reading of the pod before the restart, a success also carries `new_pod_confirmed: false`. A tool error says what happened instead: not seen running on a new pod after the wait (with the time it really waited), a failed stop (*"it may be stopped"*), stopped but could not be started (*"start it from its agent page"*). **Refused while the chief is mid-turn** — a plugin message, kickoff or memo being delivered, or a chat turn running — unless `force: true`, which cuts that turn off exactly as the browser's Stop does. `force` never overrides another `chief_restart` or a chief replacement in progress. Refused: an owner with no chief, a chief turned off, any argument but `force` (*"chief_restart takes no agent"*). **No audit row**, like `agent_destroy` and the browser's Stop/Start: the host, the session and the outcome are in muster's server log. Listed only with a provisioner wired. Not offered, and unknown, to every dispatched agent, the chief included. |
 | `chief_ask {question, options?, route_id?, timeout_seconds?}` | Asks the owner's **chief** a question instead of the owner ([below](#asking-the-chief)). Returns `{id, status: "pending", expires_at, next}`. The session then calls `attention_wait {id}`, which ends `answered` with `answered_by` `chief` or `operator`, or `expired` once `timeout_seconds` pass (30 minutes when omitted; 60 s to 7 days, as for `attention_ask`). `route_id` names one of the owner's routes the question is about (another owner's route or a missing one: *"no such route: X"*). Refused when the owner has no chief. Not offered, and unknown, to every dispatched agent, the chief included. |
 | `route_reply {route_id, body}` | With [session routing](plugins.md#routing-a-message-to-a-session) on: answers a plugin message the chief routed to **this** session, through the same path as `muster route reply` (screened, relayed once — sent at once to a verified, allowlisted sender, otherwise a draft the owner approves). Refused: a route sent to another session (*"route X was not routed to this session…"* — whatever the caller holds, including the route id), a route no longer waiting (*"route X is no longer waiting for an answer (it is …)"* — answered, timed out back to the chief or failed; the same body again is refused too), and another owner's route or a missing id (both *"no such route: X"*). Not offered, and refused, to every dispatched agent, the chief included. |
@@ -451,7 +496,7 @@ cancel), the tasks those sessions created — and, through `attention_answer`,
 **an answer as the operator to any of the owner's open asks** not raised by a
 mirrored session on that host, including the chief's. Such an answer is
 recorded and shown as coming via MCP from that host, and it is accepted as
-the operator's answer everywhere — **including as `task_dispatch`
+the operator's answer everywhere — **including as `agent_dispatch`
 `instructions`**, so a leaked token can write a dispatched agent's prompt —
 and, through `connector_request_decide`, **an approval as the operator of any
 of the owner's agents' pending connector requests** (recorded and shown as via

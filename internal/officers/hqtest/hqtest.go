@@ -39,6 +39,19 @@ type Item struct {
 	// blocked item is refused (409 blocked).
 	Blocked   bool     `json:"blocked,omitempty"`
 	BlockedBy []string `json:"blocked_by,omitempty"`
+	// Tier is HQ's item tier (civ-hq docs/OFFICERS.md, "Tiers and due
+	// dates"): routine or judgement. Empty — an item added with AddItem — is
+	// served without the field, as an HQ without tiers would, and a claim
+	// naming a tier reads it as judgement (HQ's default for an unnamed kind).
+	Tier string `json:"tier,omitempty"`
+}
+
+// tierOf is the tier item it reads as: its own, or judgement when unset.
+func tierOf(it *Item) string {
+	if it.Tier == "" {
+		return "judgement"
+	}
+	return it.Tier
 }
 
 // Request is one recorded request. Body is the body decoded as a JSON
@@ -230,6 +243,24 @@ func (s *Server) AddItem(officer, kind, subject string) string {
 	return id
 }
 
+// AddTieredItem adds an open item of tier (routine or judgement) for officer
+// and returns its id.
+func (s *Server) AddTieredItem(officer, kind, subject, tier string) string {
+	id := s.AddItem(officer, kind, subject)
+	s.mu.Lock()
+	s.items[id].Tier = tier
+	s.mu.Unlock()
+	return id
+}
+
+// SetTier sets item id's tier as HQ reads it now (e.g. judgement for a routine
+// item HQ promoted after two lapsed leases).
+func (s *Server) SetTier(id, tier string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[id].Tier = tier
+}
+
 // SetClaim puts item id in status claimed by holder until expires.
 func (s *Server) SetClaim(id, holder string, expires time.Time) {
 	s.mu.Lock()
@@ -368,6 +399,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		// HQ's envelope (civ-hq docs/OFFICERS.md): {items, next}, next null on
 		// the last page. PageSize > 0 pages the list so a test can see paging.
 		items := s.list(officer, r.URL.Query().Get("status"), now)
+		if tier := r.URL.Query().Get("tier"); tier != "" {
+			// `?tier=` (civ-hq docs/OFFICERS.md): the tier as items read now.
+			kept := items[:0]
+			for _, it := range items {
+				if tierOf(&it) == tier {
+					kept = append(kept, it)
+				}
+			}
+			items = kept
+		}
 		start := 0
 		if c := r.URL.Query().Get("cursor"); c != "" {
 			start, _ = strconv.Atoi(c)
@@ -446,6 +487,16 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 	live := it.Status == "claimed" && it.LeaseExpiresAt != nil && it.LeaseExpiresAt.After(now)
 	switch verb {
 	case "claim":
+		// HQ's claim body is {instance, lease_seconds?, tier?}; every body
+		// refuses unknown fields (400), so a misspelled tier key is caught.
+		for k := range body {
+			switch k {
+			case "instance", "lease_seconds", "tier":
+			default:
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown field " + k, "code": "bad_request"})
+				return
+			}
+		}
 		if it.Status == "done" || it.Status == "escalated" {
 			s.write(w, http.StatusGone, map[string]any{"error": "done"})
 			return
@@ -456,6 +507,20 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		if live {
 			s.write(w, http.StatusConflict, map[string]any{"error": "held", "code": "held", "held_by": it.ClaimedBy, "lease_expires_at": it.LeaseExpiresAt})
 			return
+		}
+		// A claim naming a tier takes only an item of that tier as it reads
+		// (409 wrong_tier, nothing changed); a claim without one takes any.
+		// HQ's precedence: held, wrong_tier, not_due, blocked.
+		if tier, named := body["tier"]; named {
+			t, _ := tier.(string)
+			if t != "routine" && t != "judgement" {
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "tier must be routine or judgement", "code": "bad_request"})
+				return
+			}
+			if t != tierOf(it) {
+				s.write(w, http.StatusConflict, map[string]any{"error": "wrong tier", "code": "wrong_tier", "item_tier": tierOf(it)})
+				return
+			}
 		}
 		// HQ's task ordering: a blocked item is not claimable; nothing changes.
 		if it.Blocked {

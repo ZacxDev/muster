@@ -42,7 +42,7 @@ import (
 // sessions (file, wait, cancel), the tasks those sessions created, and — 🔴
 // through attention_answer — an answer AS THE OPERATOR to any of the owner's
 // open asks not raised by a mirrored session on that host (the chief's
-// included — and, by operator decision, as task_dispatch instructions too:
+// included — and, by operator decision, as agent_dispatch instructions too:
 // a leaked mmt_ can write a dispatched agent's prompt; the kickoff and audit
 // row name the host it came from) — and 🔴 through connector_request_decide,
 // an APPROVAL AS THE OPERATOR of any of the owner's agents' pending connector

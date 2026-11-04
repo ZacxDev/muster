@@ -260,7 +260,19 @@ const (
 
 func newOfficerRig(t *testing.T) *officerRig {
 	t.Helper()
-	hq := hqtest.New(map[string]string{offATok: offA, offBTok: offB})
+	return newOfficerRigWith(t, map[string]string{offATok: offA, offBTok: offB}, func(hqURL string) []officers.Officer {
+		a := officers.Officer{ID: offA, HQURL: hqURL, MaxInstances: 2, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offATok)
+		b := officers.Officer{ID: offB, HQURL: hqURL, MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offBTok)
+		return []officers.Officer{a, b}
+	})
+}
+
+// newOfficerRigWith is the rig over the two officers build declares against
+// the fake HQ's base URL (r.a and r.b, in that order); tokens is the fake's
+// token -> officer map.
+func newOfficerRigWith(t *testing.T, tokens map[string]string, build func(hqURL string) []officers.Officer) *officerRig {
+	t.Helper()
+	hq := hqtest.New(tokens)
 	t.Cleanup(hq.Close)
 	logs := &bytes.Buffer{}
 	store := &officerAgents{rows: []agents.Agent{
@@ -271,8 +283,11 @@ func newOfficerRig(t *testing.T) *officerRig {
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(logs, "", 0))
 	chat := &repromptChat{}
 	s.UseExtensions(Extensions{Agents: store, Provisioner: prov, Gateway: chat, SessionLiveness: stubLiveness{}, Kinds: stubKinds{pick: "acct-one"}})
-	a := officers.Officer{ID: offA, HQURL: hq.BaseURL(), MaxInstances: 2, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offATok)
-	b := officers.Officer{ID: offB, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offBTok)
+	list := build(hq.BaseURL())
+	if len(list) != 2 {
+		t.Fatalf("the officer rig declares two officers, got %d", len(list))
+	}
+	a, b := list[0], list[1]
 	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, chat: chat, clock: time.Now()}
 	hq.Now = r.now
 	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now, InstallSession: r.installSession})
@@ -496,7 +511,7 @@ func TestTheWakeLoopCreatesStartsAndStopsInstanceAgents(t *testing.T) {
 
 	// Idle: the item is done; after the window the instance is stopped.
 	cl := officers.NewClient(r.b, nil)
-	if _, err := cl.Claim(ctx, "1", c.Name, 60); err != nil {
+	if _, err := cl.Claim(ctx, "1", c.Name, 60, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cl.Complete(ctx, "1", c.Name, officers.Completion{Outcome: "done", Summary: "ok"}); err != nil {

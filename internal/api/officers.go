@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/transcript"
 	"github.com/ZacxDev/muster/internal/officership"
@@ -70,6 +71,9 @@ type officerRuntime struct {
 	// fwd forwards instances' transcripts to HQ (internal/officers/transcript);
 	// nil when no declared officer enables `transcript`.
 	fwd *transcript.Forwarder
+	// llm is the officer LLM proxy (officer_llm.go, internal/llmproxy); nil
+	// when no declared officer has an `llm` block.
+	llm *llmproxy.Proxy
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -106,6 +110,12 @@ type OfficersConfig struct {
 	// (tests drive Tick).
 	TranscriptInterval time.Duration
 	NoTranscriptRun    bool
+	// LLMStore keeps the LLM proxy's per-day usage (the budget); REQUIRED
+	// when an officer declares `llm`. LLMUpstream replaces the provider's API
+	// base and LLMHTTP its transport (tests); ""/nil is production.
+	LLMStore    llmproxy.Store
+	LLMUpstream string
+	LLMHTTP     *http.Client
 }
 
 // transcriptReader is the agent gateway's transcript read
@@ -186,16 +196,29 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
+	px, err := s.newLLMProxy(cfg)
+	if err != nil {
+		return nil, err
+	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: cfg.Now}
-	if fwd != nil {
+	switch {
+	case fwd != nil && px != nil:
+		sync := llmSync(px, reg)
+		rcfg.Observed = func(o officers.Officer, claimed []officers.Item, at time.Time) {
+			fwd.Sync(o, claimed, at)
+			sync(o, claimed, at)
+		}
+	case fwd != nil:
 		rcfg.Observed = fwd.Sync
+	case px != nil:
+		rcfg.Observed = llmSync(px, reg)
 	}
 	rec, err := officers.NewReconciler(rcfg)
 	if err != nil {
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
@@ -211,14 +234,25 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		if o.Repo != "" {
 			repo = o.Repo + " (github connector, read through the proxy; no checkout)"
 		}
-		s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s, repo %s",
-			o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval, repo)
+		if o.Tiers == nil {
+			s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s, repo %s",
+				o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval, repo)
+			continue
+		}
+		var pools []string
+		for _, p := range o.Pools() {
+			pools = append(pools, fmt.Sprintf("%s instances %s..%s (model %s)", p.Tier, p.InstanceName(1), p.InstanceName(p.MaxInstances), p.Model))
+		}
+		s.logger.Printf("officers: %s on: %s, idle scale-to-zero after %s per pool, poll %s, repo %s",
+			o.ID, strings.Join(pools, "; "), o.IdleAfter, o.PollInterval, repo)
 	}
 	return rec, nil
 }
 
 // officerOf is THE binding rule: the declared officer agent a is an instance
-// of, and which instance. Not an officer instance → ok false.
+// of, and which instance. Not an officer instance → ok false. The officer is
+// the instance's pool (officers.Registry.ForAgentName): a tiered officer's
+// routine instance gets the routine Tier, Model and MaxInstances.
 func (s *Server) officerOf(a agents.Agent) (officers.Officer, int, bool) {
 	if s.officerRT == nil {
 		return officers.Officer{}, 0, false
@@ -357,15 +391,16 @@ func (f officerFleet) byName(ctx context.Context, o officers.Officer) (map[strin
 	}
 	out := map[string]agents.Agent{}
 	for _, a := range list {
-		if bo, _, ok := f.s.officerRT.reg.ForAgentName(a.Name); ok && bo.ID == o.ID {
+		if bo, _, ok := f.s.officerRT.reg.ForAgentName(a.Name); ok && bo.ID == o.ID && bo.Tier == o.Tier {
 			out[a.Name] = a
 		}
 	}
 	return out, nil
 }
 
-// Instances implements officers.Fleet. It FAILS BLIND: an unreadable agent
-// table or provisioner is an error, never "nothing is up".
+// Instances implements officers.Fleet for pool o (an untiered officer, or one
+// pool of a tiered one). It FAILS BLIND: an unreadable agent table or
+// provisioner is an error, never "nothing is up".
 func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]officers.InstanceState, error) {
 	octx := f.s.officerPrincipal(ctx, o.Owner)
 	rows, err := f.byName(octx, o)
@@ -378,7 +413,7 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 	}
 	out := make([]officers.InstanceState, 0, o.MaxInstances)
 	for n := 1; n <= o.MaxInstances; n++ {
-		name := officers.InstanceName(o.ID, n)
+		name := o.InstanceName(n)
 		a, ok := rows[name]
 		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx),
 			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
@@ -391,12 +426,12 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 // turn, or — when its agent exists — re-arm its first turn and start it.
 func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kickoff string) error {
 	octx := f.s.officerPrincipal(ctx, o.Owner)
-	name := officers.InstanceName(o.ID, n)
+	name := o.InstanceName(n)
 	a, err := f.s.ext.Agents.GetByName(octx, name)
 	if err != nil {
 		_, err := f.s.createAndDispatchAgent(octx, dispatchParams{
 			Name:        name,
-			DisplayName: fmt.Sprintf("officer %s #%d", o.ID, n),
+			DisplayName: fmt.Sprintf("officer %s #%s", o.ID, o.InstanceLabel(n)),
 			Kind:        agents.KindClaudeCode,
 			CCAccount:   o.CCAccount,
 			CCFailover:  o.CCFailover,
@@ -455,7 +490,7 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		return errors.New("officers: no agent gateway to send a re-prompt through")
 	}
 	octx := s.officerPrincipal(ctx, o.Owner)
-	name := officers.InstanceName(o.ID, n)
+	name := o.InstanceName(n)
 	a, err := s.ext.Agents.GetByName(octx, name)
 	if err != nil {
 		return err
@@ -549,7 +584,7 @@ func failureKind(err error) string {
 // sees its holder down.
 func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error {
 	octx := f.s.officerPrincipal(ctx, o.Owner)
-	a, err := f.s.ext.Agents.GetByName(octx, officers.InstanceName(o.ID, n))
+	a, err := f.s.ext.Agents.GetByName(octx, o.InstanceName(n))
 	if err != nil {
 		return err
 	}
@@ -832,15 +867,20 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			status = officers.StatusOpen
 		}
 		var page officers.ItemsPage
-		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor})
+		// A tiered instance lists its own tier's items only (o.Tier is its
+		// pool's; "" — an untiered officer — lists every tier, as before).
+		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor, Tier: o.Tier})
 		body = page.Raw
 	case officers.ToolClaim:
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
-		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds)
+		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds, o.Tier)
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Claimed(o, instance, in.ItemID)
+		}
+		if err == nil {
+			s.llmClaimed(o, instance, in.ItemID)
 		}
 	case officers.ToolHeartbeat:
 		if bad := needItem(); bad != "" {
@@ -868,6 +908,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
 		}
+		if err == nil {
+			s.llmEnded(o, instance, in.ItemID)
+		}
 	case officers.ToolRelease:
 		if bad := needItem(); bad != "" {
 			return bad, true
@@ -875,6 +918,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body, err = c.Release(ctx, in.ItemID, instance)
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
+		}
+		if err == nil {
+			s.llmEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolAskPerson:
 		if bad := needItem(); bad != "" {
@@ -965,8 +1011,12 @@ const alreadyYoursNote = "already yours — lease renewed (you held this item un
 // claim. If the lease ran out between the two calls (heartbeat 409), the item
 // is claimable again and the claim is retried once. A 409 naming anyone else
 // is returned unchanged.
-func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item officers.ItemID, instance string, lease int) ([]byte, error) {
-	body, err := c.Claim(ctx, item, instance, lease)
+//
+// tier is the calling instance's pool's (officers.Officer.Tier), sent on
+// every claim — the retry too — so HQ takes only an item of that tier (409
+// wrong_tier, passed back unchanged); "" (an untiered officer) sends none.
+func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item officers.ItemID, instance string, lease int, tier string) ([]byte, error) {
+	body, err := c.Claim(ctx, item, instance, lease, tier)
 	var hqErr *officers.HQError
 	if err == nil || !errors.As(err, &hqErr) || hqErr.Status != http.StatusConflict {
 		return body, err
@@ -983,7 +1033,7 @@ func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item offi
 	hb, hbErr := c.Heartbeat(ctx, item, instance, lease)
 	var hbHQ *officers.HQError
 	if errors.As(hbErr, &hbHQ) && hbHQ.Status == http.StatusConflict {
-		body, err := c.Claim(ctx, item, instance, lease)
+		body, err := c.Claim(ctx, item, instance, lease, tier)
 		if b := asClaimBlocked(item, err); b != nil {
 			return nil, b
 		}

@@ -93,6 +93,11 @@ const (
 	// GuardChiefNotReady: the same for a typed 503 not_ready (CCD_MAX_SESSIONS=0,
 	// or a check CLI that never reaches its prompt).
 	GuardChiefNotReady = "chief_not_ready"
+	// GuardEpisode: a live ask (now "notify") raised NO notice, because
+	// session state is on (MUSTER_SESSION_STATE) and the session's episode
+	// carries the one text-free push for the stop
+	// (docs/design/session-state.md, "Push").
+	GuardEpisode = "episode_push"
 )
 
 // Suppressed is the outcome for guard.

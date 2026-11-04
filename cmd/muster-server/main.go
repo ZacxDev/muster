@@ -73,6 +73,7 @@ import (
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -689,7 +690,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// startBackgroundLoops. Refused at boot, like any contradictory
 	// configuration, when officers are declared without what they need.
 	if len(cfg.Officers) > 0 {
-		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}); err != nil {
+		ocfg := api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}
+		if a.pool != nil {
+			// The LLM proxy's daily budget lives here (migration 0075); an
+			// officer that declares `llm` with no database is refused.
+			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
+		}
+		if a.officers, err = srv.EnableOfficers(ocfg); err != nil {
 			a.Close()
 			return nil, fmt.Errorf("%s: %w", envOfficers, err)
 		}
@@ -1484,7 +1491,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	switch {
 	case ext.Episodes != nil:
 		l.Printf("session state: ON (%s=1) — every %s each owner's sessions are given a state and every stop an episode "+
-			"(session_episodes); nothing reads them yet, so nothing is pushed or shown", envSessionState, api.SessionStateInterval)
+			"(session_episodes); each stop is pushed ONCE, with no session text (a waiting window at once, an idle stop on the chief's decision), "+
+			"shown in the Asks page's Stalled / waiting section, and a live chief ask raises no notice", envSessionState, api.SessionStateInterval)
 	case a.cfg.SessionState:
 		l.Printf("session state: INERT — %s=1 but there is no database", envSessionState)
 	default:

@@ -320,7 +320,7 @@ func (f *destroyFixture) drain() []string {
 // dispatch is the chief's task_dispatch on task id, through the gateway
 // dispatcher as user 1.
 func (f *destroyFixture) dispatch(id int64) string {
-	return f.srv.dispatchAgentTool(asUser(1), f.ownChief, "task_dispatch", `{"task_id":`+strconv.FormatInt(id, 10)+`}`)
+	return f.srv.dispatchAgentTool(asUser(1), f.ownChief, "agent_dispatch", `{"target":"pod/`+chiefTestTarget(f.srv.ext)+`","task_id":`+strconv.FormatInt(id, 10)+`}`)
 }
 
 // mustStart is a chief task_dispatch on task id that must start an agent: its id.

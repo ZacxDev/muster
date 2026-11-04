@@ -211,7 +211,7 @@ func TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage(t *testing.T) {
 		ID      int64    `json:"id"`
 		Offered []string `json:"actions_offered"`
 	}
-	if err := json.Unmarshal([]byte(res), &out); err != nil || out.ID <= 0 || !containsStr(out.Offered, taskDispatchTool) {
+	if err := json.Unmarshal([]byte(res), &out); err != nil || out.ID <= 0 || !containsStr(out.Offered, agentDispatchTool) {
 		t.Fatalf("task_route_attention answered %s", res)
 	}
 	// The chief's page, as its owner (a member: the handler itself, under the
@@ -231,7 +231,7 @@ func TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage(t *testing.T) {
 		t.Fatalf("the chief's page: %d", w.Code)
 	}
 	block := askBlock(w.Body.String())
-	for _, want := range []string{`id="` + attentionAskKey(out.ID) + `"`, `value="task_dispatch: start a new agent on it"`,
+	for _, want := range []string{`id="` + attentionAskKey(out.ID) + `"`, `value="agent_dispatch on pod/`,
 		`action="/attention/asks/` + strconv.FormatInt(out.ID, 10) + `/answer"`, `name="return" value="/agents/` + f.chief.Name + `?session=`} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the chief's block lacks %q:\n%s", want, block)

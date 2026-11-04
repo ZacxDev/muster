@@ -30,7 +30,7 @@ attention queue).
 | Where it comes from | Code over inputs muster already reads (host status, `stallInputs`, `waitingSessions`), plus **one model input**: the stall classifier's score, which splits `needs-you` from `stalled` for an idle session and is persisted on the episode |
 | Waiting windows | Push **at once**, in code, never through the Chief. Questions muster can answer (a held AskUserQuestion, an opencode question) stay **answerable asks** with full text and are not episodes |
 | The Chief | Consulted only for **idle** episodes, and only when it is available. It decides **`nudge`, `leave` or `notify`**. No summary, no options, no notice text. `leave` quiets only a session that asked nothing. Covering words widen to the owner's own typed messages in sessions on the **same repository** plus their typed Chief chat, once muster can attribute them; shadow mode first |
-| Push | **One push per episode**, claimed in the database before it is sent. Text built in code: tmux session, window index, host, state and idle time. **No session text.** Tap opens the session. No push for an episode whose nudge was **sent**, or that was left with no question |
+| Push | **One push per episode**, claimed in the database before it is sent (at most once; a graceful shutdown drains it). Text built in code: tmux session, window index, host, state and idle time. **No session text.** Tap opens the session. No push for an episode whose nudge was **sent**, or that was left with no question |
 | Attention | A **"Stalled / waiting"** section of plain rows, no answer box, oldest first, replacing chief-nudge notices. Left sessions are quiet rows. Answerable asks stay above it |
 | Check-ins | Snapshots of the same state at 09:00, 13:00 and 17:00; the Chief narrative on scheduled runs only (an amendment to `check-ins.md` PR 4) |
 | Independence | State, rows and pushes are code-only and run with `MUSTER_CHIEF_NUDGES` unset and with no chief. Only the Chief's call needs them |
@@ -287,9 +287,13 @@ the Chief decision (if any) and the nudge's send-queue id.
   `(owner, kind, key) WHERE ended_at IS NULL`, the pattern of
   `chief_nudges_one_per_streak` (`0064:97`). Only the inserting process
   pushes. That resolves the double rollout's race.
-- **`pushed_at`** is written by the winner after the push is handed to the
-  sink. An open row with `pushed_at` null and no reason to stay quiet is
-  pushed by the next pass, whichever process runs it.
+- **`pushed_at` is the push's claim**, written (`UPDATE … WHERE pushed_at IS
+  NULL`) immediately BEFORE the push is handed to the sink, by whichever
+  process takes the row — so the push is **at most once**. A graceful
+  shutdown drains every handed-off push (`WaitForPushes`), so only a crash in
+  the moment between the claim and the hand-off loses one. An open row with
+  `pushed_at` null and no reason to stay quiet is pushed by the next pass,
+  whichever process runs it.
 - **Restart.** Open rows survive a restart, so nothing re-pushes. A session
   found `needs-you` or `stalled` with no open row, including one that began
   while muster was down, gets a row and **is pushed**: no row means nobody was

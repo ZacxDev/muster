@@ -118,9 +118,11 @@ type Step struct {
 // not credited with the idle time. The cost runs the other way: between two
 // passes the work is UNDER-counted by up to one interval, so a real turn of
 // 120–150 s can be seen as 90–120 s and leave its stop open. Its NEXT stop then
-// opens no new episode — and once episodes push (the design's PR 2), that next
-// stop gets no push of its own. That is QUIETER, not louder; PR 2 must not
-// read an open episode as "already told" without accounting for it.
+// opens no new episode — and since episodes push (internal/api
+// session_push.go), that next stop gets no push of its own: the open episode
+// already pushed. That is QUIETER, not louder, and it is ACCEPTED, not fixed:
+// the cost is bounded to a turn of 120–150 s, and its window still shows the
+// stop as a row on the Asks page.
 func Advance(busy bool, busySince, busySeen, now time.Time) Step {
 	switch {
 	case busy && busySince.IsZero():

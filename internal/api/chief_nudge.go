@@ -360,11 +360,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				continue
 			}
 			for _, w := range h.Windows {
-				key, runtime := nudgeWindowKey(w)
-				noTranscript := false
-				if key == "" && hermes && !w.Claude && w.AgentRuntime() == mirror.RuntimeHermes && w.AgentSession != "" {
-					key, runtime, noTranscript = w.SessionKey(), w.AgentRuntime(), true
-				}
+				key, runtime, noTranscript := stateWindowKey(w, hermes)
 				if key == "" || seen[key] {
 					continue
 				}
@@ -464,6 +460,19 @@ func nudgeWindowKey(w mirror.Window) (key, runtime string) {
 		return w.SessionKey(), w.AgentRuntime()
 	}
 	return "", ""
+}
+
+// stateWindowKey is the session key the stall facts list a window under
+// (nudgeWindowKey), and with hermes a Hermes window naming its conversation
+// too (noTranscript: muster reads none of it). "" when the window is not
+// listed. ONE RULE: the episode push's waiting hook keys a window by it too
+// (session_push.go), so the hook never opens an episode the pass cannot see.
+func stateWindowKey(w mirror.Window, hermes bool) (key, runtime string, noTranscript bool) {
+	key, runtime = nudgeWindowKey(w)
+	if key == "" && hermes && !w.Claude && w.AgentRuntime() == mirror.RuntimeHermes && w.AgentSession != "" {
+		return w.SessionKey(), w.AgentRuntime(), true
+	}
+	return key, runtime, false
 }
 
 // nudgeOpenAskers is the sessions of octx's owner with an open attention ask of
@@ -1271,6 +1280,16 @@ func (s *Server) failNudge(ctx context.Context, d chiefnudge.Decision, state, wh
 // chief wrote no question (the generic ask), and read is its own reason the
 // notice shows (chiefnudge.GenericAskRead), "" for none.
 func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision, read string, generic bool) bool {
+	if d.Mode == chiefnudge.ModeLive && s.sessionStateOn() {
+		// 🔴 SESSION STATE ON: THE ASK IS A TEXT-FREE "NOTIFY". No notice is
+		// raised and no question is shown: the session's episode carries the
+		// one push for the stop (session_push.go), which names the session and
+		// never quotes it. The decision row keeps the chief's words for the
+		// Chief nudges tab, and its outcome is what the episode push reads.
+		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardEpisode),
+			"session state is on: no notice; the session's episode carries the push"
+		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
+	}
 	if strings.TrimSpace(d.Question) == "" {
 		d.Outcome = chiefnudge.Suppressed(chiefnudge.GuardNoQuestion)
 		return s.recordNudge(ctx, d, "chief_nudge.suppressed")

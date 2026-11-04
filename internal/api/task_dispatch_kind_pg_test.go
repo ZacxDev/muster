@@ -82,7 +82,7 @@ func (f *taskRouteFixture) modelTask(t *testing.T, title string) notes.Note {
 func TestTaskDispatchDefaultsToClaudeCode(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.modelTask(t, "default kind")
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
+	got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
 	if got.Kind != agents.KindClaudeCode || got.CCAccount != "pool-acct-a" || got.Model != "" {
 		t.Fatalf("agent kind=%q account=%q model=%q; want claude-code on pool-acct-a with no model", got.Kind, got.CCAccount, got.Model)
 	}
@@ -96,7 +96,7 @@ func TestTaskDispatchDefaultsToClaudeCode(t *testing.T) {
 func TestTaskDispatchStartsAGatewayWhenAsked(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.modelTask(t, "gateway kind")
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "gateway"}), n.ID)
+	got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "target": "pod/gateway"}), n.ID)
 	if got.Kind != agents.KindGateway || got.CCAccount != "" || got.Model != "openrouter/example/model-a" {
 		t.Fatalf("agent kind=%q account=%q model=%q; want a gateway agent on the task's model", got.Kind, got.CCAccount, got.Model)
 	}
@@ -110,7 +110,7 @@ func TestTaskDispatchStartsAGatewayWhenAsked(t *testing.T) {
 func TestTaskDispatchDefaultsToGatewayWithoutClaudeCode(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway))
 	n := f.task(t, "gateway only")
-	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID); got.Kind != agents.KindGateway {
+	if got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), n.ID); got.Kind != agents.KindGateway {
 		t.Fatalf("agent kind %q, want gateway", got.Kind)
 	}
 }
@@ -120,20 +120,21 @@ func TestTaskDispatchDefaultsToGatewayWithoutClaudeCode(t *testing.T) {
 func TestTaskDispatchRefusesAKindItCannotStart(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway))
 	n := f.task(t, "bad kind")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "claude-code"}), "is not enabled on this deployment", n.ID)
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "robot"}), "unknown agent kind", n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "target": "pod/claude-code"}), "is not enabled on this deployment", n.ID)
+	// An unknown kind is no target at all now: the target's own sentence.
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "target": "pod/robot"}), `target \"pod/robot\" is not one of:`, n.ID)
 
 	// The REMOVED hermes kind is an unknown kind — even to a kinds service that
 	// still lists it — refused before the reservation.
 	h := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway, agents.KindClaudeCode, "hermes"))
 	hn := h.task(t, "hermes kind")
-	h.mustRefuse(t, h.call(h.chief, taskDispatchTool, map[string]any{"task_id": hn.ID, "kind": "hermes"}), `unknown agent kind \"hermes\"`, hn.ID)
+	h.mustRefuse(t, h.call(h.chief, agentDispatchTool, map[string]any{"task_id": hn.ID, "target": "pod/hermes"}), `target \"pod/hermes\" is not one of:`, hn.ID)
 
 	u := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
 		ext.Kinds = stubKinds{pick: "pool-acct-a", unavailable: map[string]string{agents.KindClaudeCode: "add a Claude account first"}}
 	})
 	m := u.task(t, "no credential")
-	u.mustRefuse(t, u.call(u.chief, taskDispatchTool, map[string]any{"task_id": m.ID}), "add a Claude account first", m.ID)
+	u.mustRefuse(t, u.call(u.chief, agentDispatchTool, map[string]any{"task_id": m.ID}), "add a Claude account first", m.ID)
 }
 
 // TestTaskDispatchGivesAClaudeCodeAgentItsRepository: a claude-code agent
@@ -145,8 +146,8 @@ func TestTaskDispatchGivesAClaudeCodeAgentItsRepository(t *testing.T) {
 	f.withConnectedRepos(t, "example/app", "example/other")
 	n := f.task(t, "repo arg")
 	f.ownerAnswered(t, n.ID, "using the x skill")
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app",
-		"instructions": "using the x skill"}), n.ID)
+	got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app",
+		"prompt": "using the x skill"}), n.ID)
 	if got.Kind != agents.KindClaudeCode || got.Repo != "example/app" || got.Model != "" || got.CCAccount != "pool-acct-a" {
 		t.Fatalf("chief-repo agent %+v", got)
 	}
@@ -154,7 +155,7 @@ func TestTaskDispatchGivesAClaudeCodeAgentItsRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": r.ID}), r.ID); got.Kind != agents.KindClaudeCode ||
+	if got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": r.ID}), r.ID); got.Kind != agents.KindClaudeCode ||
 		got.Repo != "example/other" || got.RepoBranch != "release/9" {
 		t.Fatalf("task-repo agent %+v", got)
 	}
@@ -168,8 +169,8 @@ func TestTaskDispatchStillRefusesAnUnconnectedRepoForClaudeCode(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	f.withConnectedRepos(t, "example/app")
 	n := f.task(t, "stranger repo")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app", "kind": "claude-code"}), chiefDispatchRepo, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app", "target": "pod/claude-code"}), chiefDispatchRepo, n.ID)
 }
 
 // TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast: the chief's
@@ -181,7 +182,7 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 	n := f.task(t, "with instructions")
 	raw := "Open with the example-blocks skill.\x1b[31m‮\nThen read the task."
 	askID := f.ownerAnswered(t, n.ID, raw)
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": raw}), n.ID)
+	got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": raw}), n.ID)
 	msg := got.PendingNote
 	iInstr := strings.Index(msg, "| Open with the example-blocks skill.[31m\n| Then read the task.\n")
 	iBody, iRules := strings.Index(msg, n.Body), strings.Index(msg, chiefDispatchRules)
@@ -213,34 +214,40 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 	}
 }
 
-// TestTaskDispatchRefusesInstructionsOverTheCap: over 1 KiB is refused before
-// the reservation.
-func TestTaskDispatchRefusesInstructionsOverTheCap(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+// TestAgentDispatchRefusesAPromptOverTheCap: over 8 KiB is refused before
+// the reservation; exactly 8 KiB starts. The prompt here is the chief's relay
+// of the owner's typed turn (owner_asked): an attention answer is itself capped
+// at 8000 characters, below the prompt's cap, so an ownerAnswer prompt cannot
+// reach it. Without owner_asked, 1 KiB + 1 — over task_dispatch's old cap — is
+// accepted now.
+func TestAgentDispatchRefusesAPromptOverTheCap(t *testing.T) {
+	f := newReleaseFixture(t)
 	n := f.task(t, "long instructions")
-	f.ownerAnswered(t, n.ID, strings.Repeat("a", chiefInstructionsMax+1))
-	f.ownerAnswered(t, n.ID, strings.Repeat("a", chiefInstructionsMax))
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID,
-		"instructions": strings.Repeat("a", chiefInstructionsMax+1)}), chiefDispatchInstructionsCap, n.ID)
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID,
-		"instructions": strings.Repeat("a", chiefInstructionsMax)}), n.ID)
+	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "owner_asked": true,
+		"prompt": strings.Repeat("a", chiefPromptMax+1)}), chiefDispatchPromptCap, n.ID)
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "owner_asked": true,
+		"prompt": strings.Repeat("a", chiefPromptMax)}), n.ID)
+	m := f.task(t, "over the old cap")
+	f.ownerAnswered(t, m.ID, strings.Repeat("b", 1025))
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": m.ID, "prompt": strings.Repeat("b", 1025)}), m.ID)
 }
 
-// TestCleanInstructions pins the cap's boundary and what is stripped.
-func TestCleanInstructions(t *testing.T) {
+// TestCleanPrompt pins the cap's boundary and what is stripped.
+func TestCleanPrompt(t *testing.T) {
 	for _, c := range []struct {
 		in, want string
 		ok       bool
 	}{
 		{"  a\r\nb\tc  ", "a\nb c", true},
 		{"x\x00y​z\x7f", "xyz", true},
-		{strings.Repeat("é", chiefInstructionsMax/2), strings.Repeat("é", chiefInstructionsMax/2), true},
-		{strings.Repeat("é", chiefInstructionsMax/2) + "a", "", false},
-		{"\x00" + strings.Repeat("b", chiefInstructionsMax), "", false},
+		{strings.Repeat("é", chiefPromptMax/2), strings.Repeat("é", chiefPromptMax/2), true},
+		{strings.Repeat("é", chiefPromptMax/2) + "a", "", false},
+		{"\x00" + strings.Repeat("b", chiefPromptMax), "", false},
 	} {
-		got, ok := cleanInstructions(c.in)
+		got, ok := cleanPrompt(c.in)
 		if got != c.want || ok != c.ok {
-			t.Errorf("cleanInstructions(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
+			t.Errorf("cleanPrompt(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
 		}
 	}
 }

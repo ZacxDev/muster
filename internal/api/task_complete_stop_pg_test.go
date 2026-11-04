@@ -96,7 +96,7 @@ func newCompleteStopFixture(t *testing.T) *completeStopFixture {
 // dispatch has the chief start an agent on n (task_dispatch) and returns it.
 func (f *completeStopFixture) dispatch(t *testing.T, n notes.Note) agents.Agent {
 	t.Helper()
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 	var out struct {
 		AgentID int64 `json:"agent_id"`
 	}
@@ -204,7 +204,7 @@ func TestCompletingATaskStopsTheChiefsAgentAndFreesItsSlot(t *testing.T) {
 	waiting := f.task(t, "approved but refused")
 	// (mustRefuse's "no Dispatch at all" check does not fit here: the five
 	// starts above each made one.)
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": waiting.ID}); !strings.Contains(text, chiefDispatchLiveCap) {
+	if text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": waiting.ID}); !strings.Contains(text, chiefDispatchLiveCap) {
 		t.Fatalf("at the cap, a start answered %s; want the live cap's refusal", text)
 	}
 	if len(f.agentsOn(t, waiting.ID)) != 0 || f.reservations(t, waiting.ID) != 0 {
@@ -225,13 +225,13 @@ func TestCompletingATaskStopsTheChiefsAgentAndFreesItsSlot(t *testing.T) {
 	}
 
 	// The slot is free: the start refused at the cap now succeeds.
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": waiting.ID})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": waiting.ID})
 	if strings.Contains(text, `"error"`) || !strings.Contains(text, `"agent_id"`) {
 		t.Fatalf("after the stop, the refused start is still refused: %s", text)
 	}
 
 	// Case 5: the completed task's one start is still spent.
-	again := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": tasks[0].ID})
+	again := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": tasks[0].ID})
 	if !strings.Contains(again, `"already_dispatched":true`) ||
 		!strings.Contains(again, `"agent_id":`+strconv.FormatInt(started[0].ID, 10)) {
 		t.Fatalf("a repeat start on the completed task: %s; want already_dispatched naming agent %d", again, started[0].ID)

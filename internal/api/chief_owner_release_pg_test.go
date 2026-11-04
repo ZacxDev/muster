@@ -195,7 +195,7 @@ func TestTaskDispatchReleasesTheChiefsGateDuringTheOwnersTurn(t *testing.T) {
 	f.say(t, f.chief, "Plugin Agent mail: message_id 41 from an outside sender.")
 	said := f.ownerTurn(t, f.chief, f.owner, ownersTypedWords+"\nThanks.")
 
-	text := f.call(f.chief, taskDispatchTool, ownerAsked(n.ID))
+	text := f.call(f.chief, agentDispatchTool, ownerAsked(n.ID))
 	got := f.startedOne(t, text, n.ID)
 	var out struct {
 		Released int64 `json:"gate_released_by_owner_message"`
@@ -243,9 +243,9 @@ func TestTaskDispatchRefusesWithoutAnOwnerTurnInFlight(t *testing.T) {
 	f := newReleaseFixture(t)
 	n := f.fileGated(t, "refused owner line")
 	f.say(t, f.chief, "Plugin Agent mail: message_id 41 from an outside sender.")
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
 	f.say(t, f.chief, ownersTypedWords) // the owner's line, refused by the runtime: stored, never marked
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
 }
 
 // gateStuckNotes is a notes store whose RemoveTags always fails.
@@ -266,7 +266,7 @@ func TestTaskDispatchSaysSoWhenTheGateCannotBeRemoved(t *testing.T) {
 	n := f.fileGated(t, "gate stuck")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	f.srv.ext.Notes = gateStuckNotes{Store: f.notes}
-	text := f.call(f.chief, taskDispatchTool, ownerAsked(n.ID))
+	text := f.call(f.chief, agentDispatchTool, ownerAsked(n.ID))
 	f.srv.ext.Notes = f.notes
 	f.startedOne(t, text, n.ID)
 	if !strings.Contains(text, `"gate_not_removed":true`) {
@@ -315,21 +315,21 @@ func TestTaskDispatchRefusesWhileAnotherLaneWorks(t *testing.T) {
 		{"an unknown CLI with a background shell", agents.CLIState{SessionID: "bg", Status: "shell"}},
 	} {
 		f.pod.only(c.other)
-		f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseOtherCLIBusy, n)
+		f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseOtherCLIBusy, n)
 	}
 	// `chief ask` over the machine token runs on the primary: the primary busy.
 	f.pod.only()
 	f.pod.mu.Lock()
 	f.pod.act.CLIs[1].Status = "busy"
 	f.pod.mu.Unlock()
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseOtherCLIBusy, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseOtherCLIBusy, n)
 
 	// A live CLI process with no session record (round 3): its own sentence.
 	f.pod.only(agents.CLIState{PID: 4321, Status: "unaccounted", Unaccounted: true})
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseUnaccountedCLI, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseUnaccountedCLI, n)
 
 	f.pod.only(agents.CLIState{Lane: "agent:chief:webchat:quiet", Known: true, SessionID: "q", Status: "idle"})
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), n.ID)
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), n.ID)
 }
 
 // TestTaskDispatchRefusesWhenThePodCannotSay: ccd unreachable, an image
@@ -340,13 +340,13 @@ func TestTaskDispatchRefusesWhenThePodCannotSay(t *testing.T) {
 	n := f.fileGated(t, "pod cannot say")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	f.pod.fail(errors.New("dial tcp: connection refused"))
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
 	f.pod.fail(agentgateway.ErrCLIActivityUnsupported)
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
 	f.pod.mu.Lock()
 	f.pod.err, f.pod.act = nil, agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{{Primary: true, Known: true, SessionID: "p", Status: "idle"}}}
 	f.pod.mu.Unlock()
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseCLIsUnknown, n)
 }
 
 // TestTaskDispatchNeverReleasesFromAnInProcessCall: a gateway-runtime
@@ -356,10 +356,10 @@ func TestTaskDispatchNeverReleasesFromAnInProcessCall(t *testing.T) {
 	f := newReleaseFixture(t)
 	n := f.fileGated(t, "in process")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
-	raw, _ := json.Marshal(ownerAsked(n.ID))
-	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)(taskDispatchTool, string(raw))
+	raw, _ := json.Marshal(f.withTarget(agentDispatchTool, ownerAsked(n.ID)))
+	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)(agentDispatchTool, string(raw))
 	f.mustRefuseRelease(t, text, chiefReleaseNotOverMCP, n)
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), n.ID) // control: over MCP
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), n.ID) // control: over MCP
 }
 
 // TestTaskDispatchRefusesAnotherUsersOrAnotherAgentsTurn: a marker typed by a
@@ -369,9 +369,9 @@ func TestTaskDispatchRefusesAnotherUsersOrAnotherAgentsTurn(t *testing.T) {
 	f := newReleaseFixture(t)
 	n := f.fileGated(t, "someone else's turn")
 	f.ownerTurn(t, f.worker, f.owner, ownersTypedWords)
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
 	f.ownerTurn(t, f.chief, f.newMember(t), ownersTypedWords)
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNotOwnersTurn, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseNotOwnersTurn, n)
 }
 
 // TestTaskDispatchRefusesOnceTheOwnersTurnIsOver: the marker cleared when the
@@ -385,16 +385,16 @@ func TestTaskDispatchRefusesOnceTheOwnersTurnIsOver(t *testing.T) {
 	if err := st.ClearOwnerTurn(f.asOwner, f.chief.ID, said.ID); err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
 
 	lapsed := f.say(t, f.chief, ownersTypedWords)
 	if err := st.SetOwnerTurn(f.asOwner, f.chief.ID, f.owner, lapsed.ID, ownerLane, -time.Second); err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseNoOwnerTurn, n)
 
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), n.ID)
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), n.ID)
 }
 
 // TestTaskDispatchRefusesWhileAnOutsideTurnIsInFlight: the owner's turn is in
@@ -410,11 +410,11 @@ func TestTaskDispatchRefusesWhileAnOutsideTurnIsInFlight(t *testing.T) {
 	if won, err := st.ClaimKickoff(f.asOwner, f.chief.ID, holder, time.Minute); err != nil || !won {
 		t.Fatalf("control: could not take the chief's claim: %v %v", won, err)
 	}
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefReleaseOutsideTurn, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseOutsideTurn, n)
 	if err := st.ReleaseKickoffClaim(f.asOwner, f.chief.ID, holder); err != nil {
 		t.Fatal(err)
 	}
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), n.ID)
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), n.ID)
 }
 
 // TestTaskDispatchNeverReleasesAGateTheOwnerSet — finding 2. A hold the owner
@@ -425,14 +425,14 @@ func TestTaskDispatchNeverReleasesAGateTheOwnerSet(t *testing.T) {
 	f := newReleaseFixture(t)
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	own := f.task(t, "the owner's hold", "gate:waiting-on-legal")
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(own.ID)), chiefReleaseNotChiefsGate, own)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(own.ID)), chiefReleaseNotChiefsGate, own)
 
 	both := f.fileGated(t, "filed, then held")
 	held, err := f.notes.AddTags(f.asOwner, both.ID, []string{"gate:waiting-on-legal"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(both.ID)), chiefReleaseNotChiefsGate, held)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(both.ID)), chiefReleaseNotChiefsGate, held)
 }
 
 // TestTheFiledGateRecordIsTheOwnersOwn: task_create_gated records the exact
@@ -460,7 +460,7 @@ func TestTaskDispatchARefusedStartLeavesTheGateOn(t *testing.T) {
 	}
 	n := f.fileGated(t, "capped")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(n.ID)), chiefDispatchLiveCap, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefDispatchLiveCap, n)
 }
 
 // betweenDispatch is the chief-dispatch ledger with a hook run just before the
@@ -471,11 +471,11 @@ type betweenDispatch struct {
 	before func()
 }
 
-func (b betweenDispatch) ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (plugins.ChiefDispatch, error) {
+func (b betweenDispatch) ReserveChiefDispatch(ctx context.Context, object string, detail map[string]any, check func() error) (plugins.ChiefDispatch, error) {
 	if b.before != nil {
 		b.before()
 	}
-	return b.DispatchStore.ReserveChiefDispatch(ctx, taskID, detail, check)
+	return b.DispatchStore.ReserveChiefDispatch(ctx, object, detail, check)
 }
 
 // TestTaskDispatchRechecksTheReleaseUnderTheLock: what owner_asked verified
@@ -496,19 +496,19 @@ func TestTaskDispatchRechecksTheReleaseUnderTheLock(t *testing.T) {
 	ended := f.fileGated(t, "turn ends in between")
 	said := f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	hook = func() { _ = st.ClearOwnerTurn(f.asOwner, f.chief.ID, said.ID) }
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(ended.ID)), chiefReleaseNoOwnerTurn, ended)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(ended.ID)), chiefReleaseNoOwnerTurn, ended)
 
 	// A NEW owner turn replaced the one verified: the release would quote a
 	// message that is no longer the one running.
 	moved := f.fileGated(t, "a new turn in between")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	hook = func() { f.ownerTurn(t, f.chief, f.owner, "something else entirely") }
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, ownerAsked(moved.ID)), chiefReleaseChanged, moved)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(moved.ID)), chiefReleaseChanged, moved)
 
 	held := f.fileGated(t, "held in between")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
 	hook = func() { _, _ = f.notes.AddTags(f.asOwner, held.ID, []string{"gate:waiting-on-legal"}) }
-	text := f.call(f.chief, taskDispatchTool, ownerAsked(held.ID))
+	text := f.call(f.chief, agentDispatchTool, ownerAsked(held.ID))
 	hook = nil
 	after, err := f.notes.Get(f.asOwner, held.ID)
 	if err != nil {
@@ -527,19 +527,23 @@ func TestTaskDispatchStillRefusesAGatedTaskWithoutOwnerAsked(t *testing.T) {
 	f := newReleaseFixture(t)
 	n := f.fileGated(t, "no flag")
 	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
-	f.mustRefuseRelease(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchGatedText, n)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchGatedText, n)
 	if !strings.Contains(chiefDispatchGatedText, "owner_asked: true") {
 		t.Errorf("the gated refusal does not tell the chief about owner_asked: %q", chiefDispatchGatedText)
 	}
 }
 
-// TestTaskDispatchOwnerAskedOnAnUngatedTaskChangesNothing: on an ungated task
-// owner_asked is ignored — it starts with no owner turn at all, and records no
-// release.
-func TestTaskDispatchOwnerAskedOnAnUngatedTaskChangesNothing(t *testing.T) {
+// TestAgentDispatchOwnerAskedOnAnUngatedTaskIsVerifiedAndReleasesNothing: on
+// an ungated task owner_asked is NO LONGER ignored (task_dispatch started with
+// no owner turn at all — the hole R1 closes): with no owner's turn it is
+// refused with the ungated sibling sentence; in the owner's turn it starts, and
+// records no gate release.
+func TestAgentDispatchOwnerAskedOnAnUngatedTaskIsVerifiedAndReleasesNothing(t *testing.T) {
 	f := newReleaseFixture(t)
 	n := f.task(t, "ungated")
-	text := f.call(f.chief, taskDispatchTool, ownerAsked(n.ID))
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), ownerAskedNoTaskNoOwnerTurn+ownerAskedUngatedTail, n.ID)
+	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
+	text := f.call(f.chief, agentDispatchTool, ownerAsked(n.ID))
 	f.startedOne(t, text, n.ID)
 	if strings.Contains(text, "gate_released_by_owner_message") {
 		t.Errorf("an ungated start claims a gate release: %s", text)

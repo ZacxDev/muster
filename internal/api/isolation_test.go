@@ -305,6 +305,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /tasks/{id}/tags":                    classParam,
 	"POST /ui/connector-requests/{id}/approve": classParam,
 	"POST /ui/connector-requests/{id}/deny":    classParam,
+	// A failed reference write's Retry and Dismiss (0076): {id} is A's
+	// reference, {wid} A's write on it (fill).
+	"POST /tasks/{id}/ref-writes/{wid}/retry":   classParam,
+	"POST /tasks/{id}/ref-writes/{wid}/dismiss": classParam,
 
 	"DELETE /api/tasks/{id}":                   classAdmin,
 	"DELETE /api/tasks/{id}/comments/{cid}":    classAdmin,
@@ -356,6 +360,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /agent/connectors/{name}":          classConnect,
 	"POST /agent/connectors/{name}/request": classConnect,
 	"POST /mcp":                             classConnect,
+	"POST /llm/v1/messages":                 classConnect,
+	// Refused 404 for every caller, before any credential is read.
+	"/llm/": classPublic,
 
 	// The mirrored terminal names its object in the QUERY (?host=&session=),
 	// and fill() puts A's mirrored host there. The tunnel door is public to
@@ -954,7 +961,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
-		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID}
+		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -963,7 +970,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
-		device: ghostID, refWrite: ghostID}
+		device: ghostID, refWrite: ghostID, refTask: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1295,6 +1302,7 @@ type isoObjs struct {
 	route                                     string // a session route's id (0021)
 	pluginMsg                                 int64  // a plugin message's id (its retry route)
 	refWrite                                  int64  // a write queued on a plugin task reference (0072)
+	refTask                                   int64  // the reference refWrite is on (its retry/dismiss routes' {id})
 	ask                                       int64  // an attention ask's id (0025)
 	standing                                  int64  // a shared approval's id (0043)
 }
@@ -1332,6 +1340,11 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.draft, 10)
 	case strings.HasPrefix(path, "/plugin/v1/task-writes/{id}"):
 		id = strconv.FormatInt(o.refWrite, 10)
+	case strings.Contains(path, "/ref-writes/{wid}"):
+		// The owner's retry/dismiss: {id} is the reference the write is on
+		// ({wid} is replaced below). A's write is leased (then settled by A's
+		// own result walk), so A's answer is a 409 where the ghost's is a 404.
+		id = strconv.FormatInt(o.refTask, 10)
 	case strings.Contains(path, "/flows/requests/{id}"):
 		id = strconv.FormatInt(o.flowReq, 10)
 	case strings.Contains(path, "flows/jobs/{id}") || strings.HasPrefix(path, "/runner/flows/{id}"):
@@ -1374,6 +1387,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	path = strings.NewReplacer(
 		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
 		"{cid}", strconv.FormatInt(o.comment, 10), "{aid}", strconv.FormatInt(o.attach, 10),
+		"{wid}", strconv.FormatInt(o.refWrite, 10),
 		"{tag}", url.PathEscape(o.tag), "{sid}", strconv.FormatInt(o.chat, 10),
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
 	).Replace(path)

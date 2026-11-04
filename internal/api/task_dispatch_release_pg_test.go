@@ -19,7 +19,7 @@ import (
 // the one after answers already_dispatched (the release freed exactly one).
 func refusedThenRetried(t *testing.T, f *taskRouteFixture, n notes.Note, want string, fix func()) {
 	t.Helper()
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if !strings.Contains(text, `"error"`) || !strings.Contains(text, "could not be started") || !strings.Contains(text, want) {
 		t.Fatalf("the refused start: %s; want a refusal naming %q", text, want)
 	}
@@ -30,14 +30,14 @@ func refusedThenRetried(t *testing.T, f *taskRouteFixture, n notes.Note, want st
 		t.Fatalf("reservations after the refusal: %d, want 1 (the unit is spent)", r)
 	}
 	fix()
-	text = f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text = f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 	if strings.Contains(text, `"error"`) || strings.Contains(text, "already_dispatched") || !strings.Contains(text, `"agent_id"`) {
 		t.Fatalf("the call after the refusal: %s; want a started agent (the refused start released)", text)
 	}
 	if got := f.agentsOn(t, n.ID); len(got) != 1 {
 		t.Fatalf("agents on the task after the retry: %d, want 1", len(got))
 	}
-	if again := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
+	if again := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
 		t.Fatalf("a third call: %s", again)
 	}
 }

@@ -105,6 +105,10 @@ var publicRoutes = []string{
 	// single-use code, minted by a signed-in session, IS the authority
 	// (devices.PGStore.Redeem, under System). Throttled per client address.
 	"POST /api/device/pair",
+	// The officer LLM proxy's catch-all (officer_llm.go): every path under
+	// /llm/ but POST /llm/v1/messages is refused 404 before any credential is
+	// read, so it attaches no Principal and serves nothing.
+	"/llm/",
 }
 
 // routeVias is, for every non-public route, each door that admits it.
@@ -219,6 +223,10 @@ var routeVias = map[authz.Via][]string{
 		"DELETE /tasks/{id}",
 		"DELETE /tasks/{id}/comments/{cid}",
 		"DELETE /tasks/{id}/tags/{tag}",
+		// A failed reference write's Retry and Dismiss (task_ref_write_actions.go):
+		// requireOperatorWrite, the session tier only.
+		"POST /tasks/{id}/ref-writes/{wid}/retry",
+		"POST /tasks/{id}/ref-writes/{wid}/dismiss",
 		"GET /agents",
 		"GET /agents/{name}",
 		"GET /agents/{name}/logs/stream",
@@ -419,6 +427,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /agent/connectors/{name}",
 		"POST /agent/connectors/{name}/request",
 		"POST /mcp",
+		// The officer LLM proxy (officer_llm.go): the calling agent's own token.
+		"POST /llm/v1/messages",
 	},
 	authz.ViaRelay: {
 		"DELETE /agent/approvals/{id}",
