@@ -106,34 +106,31 @@ func TestOfficerClaimWithAnItemClaimsThatItem(t *testing.T) {
 	}
 }
 
-// TestOfficerClaimFallsBackWithoutClaimNext: an HQ from before claim-next
-// answers its route 404. officer_claim{} then lists the open items and
-// claims the oldest one that is not blocked, by id — the blocked oldest one
-// skipped — then the next, then answers nothing to claim; the instance never
-// sees the 404.
-func TestOfficerClaimFallsBackWithoutClaimNext(t *testing.T) {
+// TestOfficerClaimNextOn404SaysClaimByID: an HQ from before claim-next
+// answers its route 404. officer_claim{} then answers the tool error naming
+// the way that works there — officer_items, then officer_claim{item_id} —
+// and muster picks nothing itself: no list read, no claim, the items
+// untouched.
+func TestOfficerClaimNextOn404SaysClaimByID(t *testing.T) {
 	r := newOfficerRig(t)
 	one := r.addInstance(r.a, 1, 973)
-	blocked := r.hq.AddItem(offA, "engineering.task", "task:blocked")
-	r.hq.SetBlocked(blocked, "first_task_x1")
 	b := r.hq.AddItem(offA, "engineering.task", "task:b")
-	c := r.hq.AddItem(offA, "engineering.task", "task:c")
-	for _, want := range []string{b, c} {
-		r.hq.ResetRequests()
-		res := decodeClaim(t, r.s.dispatchAgentTool(context.Background(), one, officers.ToolClaim, `{}`))
-		if res.Item == nil || string(res.Item.ID) != want || res.Item.ClaimedBy != one.Name {
-			t.Fatalf("fallback officer_claim{}: %+v, want item %s claimed by %s", res.Item, want, one.Name)
-		}
-		got := r.claimPaths()
-		if len(got) != 2 || got[0] != "POST /api/v1/officers/"+offA+"/claim-next" || got[1] != "POST /api/v1/officers/"+offA+"/items/"+want+"/claim" {
-			t.Fatalf("POSTs %v, want claim-next (404) then the claim of %s", got, want)
-		}
+	r.hq.ResetRequests()
+	out := r.s.dispatchAgentTool(context.Background(), one, officers.ToolClaim, `{}`)
+	if !isToolErr(out) {
+		t.Fatalf("officer_claim{} on an HQ without claim-next: %s, want a tool error", out)
 	}
-	res := decodeClaim(t, r.s.dispatchAgentTool(context.Background(), one, officers.ToolClaim, `{}`))
-	if res.Item != nil || res.Claimed == nil || *res.Claimed || res.Note != waitNote {
-		t.Fatalf("fallback with only a blocked item left: %+v, want nothing to claim", res)
+	var e struct {
+		Error string `json:"error"`
 	}
-	if it := r.hq.Item(blocked); it.Status != "open" || it.Attempts != 0 {
-		t.Fatalf("the blocked item changed: %+v", it)
+	if err := json.Unmarshal([]byte(out), &e); err != nil || e.Error != "this HQ has no claim-next; call officer_items and officer_claim{item_id}" {
+		t.Fatalf("officer_claim{} on an HQ without claim-next: %s, want exactly the claim-by-id error", out)
+	}
+	reqs := r.hq.Requests()
+	if len(reqs) != 1 || reqs[0].Method != "POST" || reqs[0].Path != "/api/v1/officers/"+offA+"/claim-next" {
+		t.Fatalf("requests %+v, want only the claim-next POST (no list, no claim)", reqs)
+	}
+	if it := r.hq.Item(b); it.Status != "open" || it.Attempts != 0 {
+		t.Fatalf("the item changed: %+v", it)
 	}
 }

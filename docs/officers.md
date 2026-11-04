@@ -516,12 +516,12 @@ listing and again at dispatch):
 next item (HQ's claim-next: the highest priority first, then the earliest due,
 then the oldest; never a blocked item) and answers HQ's `{item,
 lease_expires_at}`. When nothing is claimable it answers `{item: null,
-claimed: false, note}` — not an error: the instance stops and waits. With the
-officer's tier set it is sent as the claim's `tier` (`claimTier`, the one
-place). **An HQ without claim-next** answers 404; muster then falls back to the
-old way, by itself: it lists the open items, skips blocked ones and claims the
-oldest by id, moving on past a 409 or 410, and answers the same shapes. With
-an `item_id` the claim is exactly as before.
+claimed: false, note}` — not an error: the instance stops and waits. It sends
+no `tier` yet; with officer tiers it sends the instance's tier exactly as
+claim-by-id does. **An HQ without claim-next** answers 404, and the
+instance gets the tool error "this HQ has no claim-next; call officer_items
+and officer_claim{item_id}" — muster does not pick an item itself. With an
+`item_id` the claim is exactly as before.
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
@@ -563,7 +563,7 @@ You are officer <id>, instance <n> of <max> (<agent name>). …
    item with officer_complete{item_id, outcome: "escalated", summary} … — HQ
    notifies the officer's owner — rather than attention_ask … Use attention_ask
    only if your charter explicitly says to.
-4. When nothing is open and you hold no claim, stop and wait …
+4. When officer_claim{} answers item null and you hold no claim, stop and wait …
 ```
 
 An officer with a `repo` is also told that it may read that repository through
