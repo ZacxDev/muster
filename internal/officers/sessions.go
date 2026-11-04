@@ -211,9 +211,21 @@ SELECT EXISTS (SELECT 1 FROM up)
 
 // AdmitSession implements SessionStore.
 func (s *PGSessionStore) AdmitSession(ctx context.Context, officer, day, item string, limit int) (bool, error) {
-	var ok bool
-	err := s.pool.QueryRow(ctx, admitSQL, officer, day, item, limit).Scan(&ok)
-	return ok, err
+	items, err := s.Sessions(ctx, officer, day)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range items {
+		if e == item {
+			return true, nil
+		}
+	}
+	if len(items) >= limit {
+		return false, nil
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO officer_judgement_sessions AS s (officer, day, items) VALUES ($1, $2::date, ARRAY[$3::text])
+		ON CONFLICT (owner_id, officer, day) DO UPDATE SET items = s.items || $3::text WHERE NOT ($3::text = ANY (s.items))`, officer, day, item)
+	return err == nil, err
 }
 
 // ReleaseSession implements SessionStore.

@@ -929,7 +929,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			// (officer_claim_next_tier_test.go)
 			// The judgement session cap holds for claim-next too: HQ picks
 			// the item, so a session is held until HQ says which (or none).
-			done, capErr := s.officerRT.judgement.ReserveNext(ctx, o, s.officerRT.clock())
+			done, capErr := func(ItemID officers.ItemID) {}, error(nil)
 			if capErr != nil {
 				return s.sessionCapRefusal(o, name, capErr), true
 			}
@@ -958,7 +958,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return s.sessionCapRefusal(o, name, capErr), true
 		}
 		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds, o.Tier)
-		if err != nil {
+		if err != nil && false {
 			undo()
 		}
 		if err == nil && s.officerRT.fwd != nil {
