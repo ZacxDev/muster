@@ -133,12 +133,15 @@ The three labels and their rubrics are the operator-approved, backtested ones
 | `asks_permission` | it is holding its own next planned step until you approve it ("shall I…") |
 | `neither` | a finished report, status, work in progress, or an optional offer |
 
-The classification is **shared with session state** (`internal/api/session_state.go`,
-the design, `docs/design/session-state.md` (#425)): its own pass, every 30 seconds, runs
-the same classifier at most once per idle streak (at most 5 calls a pass),
-stores the answer on the session's episode, and leaves it where this sweep's
-decision reuses it for that streak, so your key is billed once. With
-`MUSTER_CHIEF_NUDGES` unset there is no classifier: session state still runs,
+The classification is **shared with session state** (`internal/api/session_state.go`;
+the design, `docs/design/session-state.md`, #425), which runs only with
+`MUSTER_SESSION_STATE=1`. Its own pass, every 30 seconds, runs the classifier
+**only where this sweep would**: the feature on and your chief on. It runs at
+most once per idle streak, and at most 5 transcript reads a pass. It sends
+**the same text** (the one function both use: cut, then redacted, as the chief
+sees it), and the answer is billed once per streak whichever runs first: each
+reads the other's stored answer (this sweep's decision row, the session's
+episode). Where the classifier does not run, session state reads no transcript
 and counts every idle stop as one that asked you.
 
 In live mode an **ask** decision raises a [notice](#live-mode), not a

@@ -104,6 +104,22 @@ func TestAHostThatHasSentNoWindowListEndsNothing(t *testing.T) {
 	}
 }
 
+// TestAHostThatStoppedReportingStatusEndsNothing (F2): a host online with its
+// windows listed but no status report cannot say a window is gone — its
+// windows are simply not judged.
+func TestAHostThatStoppedReportingStatusEndsNothing(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.statePass(t)
+	first := f.oneEpisode(t)
+	f.mirror.mu.Lock()
+	f.mirror.statusReport = false
+	f.mirror.mu.Unlock()
+	f.statePass(t)
+	if e := f.oneEpisode(t); e.ID != first.ID || !e.Open() {
+		t.Fatalf("a host not reporting status ended it: %+v", e)
+	}
+}
+
 // listFailing is an agent store whose List fails while fail is set.
 type listFailing struct {
 	agents.Store

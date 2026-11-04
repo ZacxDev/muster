@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"io"
 	"log"
 	"os"
@@ -821,6 +822,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudgeIdle:       15 * time.Minute,
 		ChiefNudgeHourlyCap:  4,
 		ChiefNudgeLiveOwners: map[int64]bool{1: true},
+		// Session state: the banner branches on ext.Episodes (below).
+		SessionState: true,
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
@@ -859,6 +862,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code"},
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
+		Episodes:        sessionstate.NewPG(nil),
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut

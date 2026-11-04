@@ -225,7 +225,7 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			// Classified for this streak already — by an earlier pass, or
 			// before a restart.
 			jev, classified = episodeJev(ep), true
-		case c.Runtime == mirror.RuntimeHermes:
+		case c.noTranscript:
 			jev, classified = chiefnudge.Result{Err: jevNoTranscript}, true
 		case sp.cl == nil:
 			jev, classified = chiefnudge.Result{Err: jevNotConfigured}, true

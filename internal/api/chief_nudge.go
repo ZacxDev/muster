@@ -237,6 +237,9 @@ type nudgeCandidate struct {
 	chiefnudge.Session
 	agent   agents.Agent
 	session agents.ChatSession // an agent's conversation
+	// noTranscript: a window muster reads no transcript of (a Hermes window,
+	// listed for session state only): never read, never classified.
+	noTranscript bool
 }
 
 // sweepOwnerNudges decides octx's owner's candidates, while the pass has
@@ -353,8 +356,9 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 			}
 			for _, w := range h.Windows {
 				key, runtime := nudgeWindowKey(w)
+				noTranscript := false
 				if key == "" && hermes && !w.Claude && w.AgentRuntime() == mirror.RuntimeHermes && w.AgentSession != "" {
-					key, runtime = w.SessionKey(), w.AgentRuntime()
+					key, runtime, noTranscript = w.SessionKey(), w.AgentRuntime(), true
 				}
 				if key == "" || seen[key] {
 					continue
@@ -373,7 +377,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 					c.StreakKey = "since:" + strconv.FormatInt(st.Since, 10)
 					c.IdleSince, c.IdleFor = st.Observed, now.Sub(st.Observed)
 				}
-				all = append(all, nudgeCandidate{Session: c})
+				all = append(all, nudgeCandidate{Session: c, noTranscript: noTranscript})
 			}
 		}
 	}
