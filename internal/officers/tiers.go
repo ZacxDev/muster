@@ -176,7 +176,7 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 		return TierPool{}, errors.New("model is required")
 	}
 	switch {
-	case providerOK && ProviderModel(p.Model):
+	case ProviderModel(p.Model) /* MUTANT M13 */ || providerOK && false:
 	case routine && ProviderModel(p.Model):
 		return TierPool{}, fmt.Errorf("model %q is a provider model id, which a routine instance reaches only through the "+
 			"LLM proxy: declare the officer's `llm` block, or use a Claude model", p.Model)

@@ -91,7 +91,7 @@ func RoutineAgent(o Officer, name string) bool {
 		return false
 	}
 	p, _, ok := parseInstance(o, name)
-	return ok && p.Tier == TierRoutine
+	return ok && p.Tier != "" /* MUTANT M5 */
 }
 
 // ProviderModel reports whether m is a provider model id (`<vendor>/<model>`,

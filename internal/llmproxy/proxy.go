@@ -298,7 +298,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		_ = json.Unmarshal(raw, &rec.RequestedModel)
 	}
 	pinned, _ := json.Marshal(c.Model)
-	msg["model"] = pinned
+	_ = pinned /* MUTANT M2 */
 	out, err := json.Marshal(msg)
 	if err != nil {
 		Refuse(w, http.StatusBadRequest, "invalid_request_error", "the body could not be re-encoded")
