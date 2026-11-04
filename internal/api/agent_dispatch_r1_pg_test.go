@@ -124,10 +124,12 @@ func (p *adapterLikeProvisioner) Start(ctx context.Context, id int64) error {
 }
 
 // agentRecordGate is the ledger with RecordChiefDispatchAgent held until the
-// provisioner's first read (readBefore), and announcing its commit (recorded).
+// provisioner's first read (readBefore), and announcing its first successful
+// commit (recorded) — closed once, so a retried record cannot close it twice.
 type agentRecordGate struct {
 	plugins.DispatchStore
 	readBefore, recorded chan struct{}
+	recordedOnce         sync.Once
 }
 
 // wait reports whether ch closed; the bound is a deadlock detector (a run
@@ -146,7 +148,9 @@ func (g *agentRecordGate) RecordChiefDispatchAgent(ctx context.Context, object s
 		return errors.New("the provisioner never read the live count")
 	}
 	err := g.DispatchStore.RecordChiefDispatchAgent(ctx, object, id)
-	close(g.recorded)
+	if err == nil {
+		g.recordedOnce.Do(func() { close(g.recorded) })
+	}
 	return err
 }
 
@@ -155,6 +159,12 @@ func (g *agentRecordGate) RecordChiefDispatchAgent(ctx context.Context, object s
 // BOTH sides of its ledger record while its Start runs — a concurrent dispatch
 // cannot pass the cap in that window. (Saved `stopped` first, the read after
 // the record is one short: neither a live agent nor a pending reservation.)
+//
+// ⚠ IT PINS ONLY THE START PATH'S ORDERING. Its reads are serialised against
+// the record by the gate, so it cannot see the budget's own snapshot race (a
+// read straddling the record's commit); that race is covered solely by
+// TestTheBudgetNeverMissesAStartWhoseAgentIsBeingRecorded
+// (internal/plugins/chief_budget_snapshot_test.go).
 func TestAPoolWorkerStaysLiveWhileItStarts(t *testing.T) {
 	f := newReleaseFixture(t)
 	gate := &agentRecordGate{DispatchStore: f.plugins, readBefore: make(chan struct{}), recorded: make(chan struct{})}

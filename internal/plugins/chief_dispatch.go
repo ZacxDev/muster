@@ -487,9 +487,10 @@ func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, erro
 	// the recorded-agent half ran before the agent row existed and the
 	// pending-reservation half after it, and the start was counted by NEITHER
 	// — live read one short, here AND under ReserveChiefDispatch's lock, so a
-	// concurrent start could pass the live cap by one. Measured: 23 of 300 runs
-	// of TestAPoolWorkerStaysLiveWhileItStarts read live 0; 0 of 300 with one
-	// snapshot. UNION ALL keeps both halves in one statement.
+	// concurrent start could pass the live cap by one. UNION ALL keeps both
+	// halves in one statement. The race's guard is
+	// TestTheBudgetNeverMissesAStartWhoseAgentIsBeingRecorded
+	// (chief_budget_snapshot_test.go).
 	rows, err := tx.Query(ctx, `SELECT src, id, name, object, kind_or_target FROM (
 		  SELECT 0 AS src, a.id AS id, a.name AS name, l.object AS object, a.kind AS kind_or_target, a.id AS ord FROM agents a
 		    JOIN LATERAL (SELECT object FROM audit_log
