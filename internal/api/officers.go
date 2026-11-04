@@ -948,12 +948,16 @@ const askedNote = "asked. Your lease on this item has ENDED: HQ set it to waitin
 // (image_ids become the body's images), sent to HQ. HQ checks every limit.
 //
 // 🔴 A SUCCESS ENDS THE INSTANCE'S LEASE (HQ's contract), so the transcript
-// forwarder stops for the item as on complete/release, and the result says so
+// forwarder and the LLM proxy's item meter stop for the item as on
+// complete/release, and the result says so
 // in words (askedNote): the instance's next move is to stop working the item.
 func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask) string {
 	body, err := c.CreateAsk(ctx, item, instance, ask)
 	if err == nil && s.officerRT.fwd != nil {
 		s.officerRT.fwd.Ended(o, instance, item)
+	}
+	if err == nil {
+		s.llmEnded(o, instance, item)
 	}
 	return askToolResult(body, err)
 }
