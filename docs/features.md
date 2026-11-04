@@ -207,7 +207,10 @@ a short-lived link signed by muster, on muster's own address.
   `MUSTER_S3_ACCESS_KEY`, `MUSTER_S3_SECRET_KEY` (and `MUSTER_S3_REGION` if not
   `us-east-1`) plus the signing key. Nothing is filled in for you here: one
   left out is reported as `OFF (MISCONFIGURED)` naming it, never replaced by
-  the bundled store's. The key's
+  the bundled store's. Do not leave `S3_STORE_SECRET_KEY` in `.env` beside your
+  own `MUSTER_S3_ENDPOINT`: the compose file then refuses the pair (attachments
+  `OFF (MISCONFIGURED)`, the bucket naming `S3_STORE_SECRET_KEY`) rather than
+  send the bundled store's key to your endpoint. The key's
   policy and the lifecycle rule are in [uploads.md](uploads.md#configuration).
 - **Limits:** `MUSTER_UPLOAD_MAX_BYTES` (25 MiB), `MUSTER_UPLOAD_LINK_TTL` (24h).
 - **Check:** `file attachments: ON — files go to MUSTER_S3_ENDPOINT=…`. A
@@ -608,9 +611,11 @@ permission prompts. [configuration.md](configuration.md#muster-server-permission
   ```
 
   The approval gate alone (`MUSTER_APPROVAL_GATE_URL`,
-  `MUSTER_APPROVAL_GATE_TOKEN`) is allowed beside standalone; the header
-  names (`MUSTER_ROUTER_ACTOR`, `…_ACTOR_HEADER`, `…_TOKEN_HEADER`) default to
-  `X-Router-*`.
+  `MUSTER_APPROVAL_GATE_TOKEN`) is allowed beside standalone.
+  `MUSTER_ROUTER_ACTOR` is the actor name muster sends (default `muster`); the
+  header names it and the token are sent in, `MUSTER_ROUTER_ACTOR_HEADER` and
+  `MUSTER_ROUTER_TOKEN_HEADER`, default to `X-Router-Actor` and
+  `X-Router-Token`.
 - **Check:** `permission router: CONFIGURED — …`, or `approval relay gate:
   DEDICATED — …` for the gate alone.
 

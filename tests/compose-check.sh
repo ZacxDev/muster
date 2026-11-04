@@ -32,6 +32,9 @@
 #     (both off), not as the default 1;
 #   * YOUR OWN S3 store (endpoint + secret, no S3_STORE_SECRET_KEY) is never
 #     handed the bundled store's bucket or access key;
+#   * your own endpoint WITH S3_STORE_SECRET_KEY left set resolves to a bucket
+#     muster refuses, so the bundled credentials are never sent there;
+#   * the bundled store's start script refuses the CHANGE-ME placeholder;
 #   * NEGATIVE CONTROL: the repository's .env.example as shipped (MUSTER_VERSION
 #     empty) is REFUSED — the compose file must not start an unversioned image.
 #
@@ -211,6 +214,48 @@ if [ "$got" = "'https://s3.example.com' '' '' 'own-store-secret'" ]; then
 else
   echo "FAIL [own s3 store]: endpoint, bucket, access key, secret resolved to $got"; fail=1
 fi
+
+# Your own endpoint AND the bundled store's secret left in .env: the bundled
+# access key and password must never reach your endpoint. The bucket carries a
+# note that is not a bucket name, so muster refuses the set and sends nothing.
+{ cat "$tmp/env-min"; echo "MUSTER_S3_ENDPOINT=https://s3.example.com"; echo "S3_STORE_SECRET_KEY=bundled-secret"; } > "$tmp/env-both"
+bucket="$(docker compose -f "$COMPOSE" --env-file "$tmp/env-both" -p compose-check config --format json |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["muster"]["environment"]["MUSTER_S3_BUCKET"])')"
+if printf '%s' "$bucket" | grep -Eq '^[a-z0-9.-]{3,63}$'; then
+  echo "FAIL [own s3 store + bundled secret]: the bucket resolved to a valid name ('$bucket'), so the bundled credentials would be sent"; fail=1
+elif printf '%s' "$bucket" | grep -q 'S3_STORE_SECRET_KEY'; then
+  echo "ok   [own s3 store + bundled secret]: the bucket is refused, naming S3_STORE_SECRET_KEY"
+else
+  echo "FAIL [own s3 store + bundled secret]: the bucket ('$bucket') does not say why"; fail=1
+fi
+
+# The bundled store refuses .env.example's placeholder as its password. The
+# start script's CHECKS (everything before it starts the server) are run here:
+# the placeholder must be refused, naming it, and a real secret must get past
+# them (negative control).
+checks="$(docker compose -f "$COMPOSE" --env-file "$tmp/env" -p compose-check --profile s3 config --format json |
+  python3 -c '
+import json, sys
+ep = json.load(sys.stdin)["services"]["s3"]["entrypoint"]
+# docker compose config keeps the $$ escapes of the file; the container sees $.
+script = ep[ep.index("-c") + 1].replace("$$", "$")
+head = script.split("\nsilo server", 1)
+if len(head) != 2:
+    sys.exit("the s3 start script no longer starts the server with `silo server`")
+print(head[0] + "\necho CHECKS-PASSED")')" || { echo "FAIL [s3 store]: could not read its start script"; fail=1; }
+for pw in CHANGE-ME a-real-secret-123; do
+  out="$(env -i MINIO_ROOT_USER=muster MINIO_ROOT_PASSWORD="$pw" /bin/sh -c "$checks" 2>&1 || true)"
+  if grep -q 'expected\|syntax error\|not found' <<<"$out"; then
+    echo "FAIL [s3 store]: the start script's checks did not run cleanly: $out"; fail=1; continue
+  fi
+  case "$pw" in
+    CHANGE-ME) if grep -q 'placeholder CHANGE-ME' <<<"$out" && ! grep -q CHECKS-PASSED <<<"$out"; then
+                 echo "ok   [s3 store]: S3_STORE_SECRET_KEY=CHANGE-ME is refused, naming the placeholder"
+               else echo "FAIL [s3 store]: the placeholder password was not refused: $out"; fail=1; fi ;;
+    *) if grep -q CHECKS-PASSED <<<"$out"; then echo "ok   [s3 store]: a real secret passes the checks (control)"
+       else echo "FAIL [s3 store]: a real secret was refused: $out"; fail=1; fi ;;
+  esac
+done
 
 # Negative control: the shipped example has MUSTER_VERSION empty and must be refused.
 if docker compose -f "$COMPOSE" --env-file "$EXAMPLE" -p compose-check config >/dev/null 2>"$tmp/neg.err"; then

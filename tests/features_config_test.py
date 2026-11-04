@@ -46,6 +46,10 @@ INSTALL = ROOT / "INSTALL.md"
 # (internal/features/features.go on the registry branch, whose hints link to
 # docs/features.md#<id>), spelled exactly as it spells them. Add one when the
 # registry gains an id; never remove one without moving its links.
+# ⚠ A HAND COPY, taken from origin/feat/feature-registry while neither PR had
+# merged. Once both have, the registry PR should replace it with a
+# cross-check that reads the ids from internal/features itself, so the two
+# cannot drift.
 REGISTRY_IDS = [
     "database", "mirror", "password-sign-in", "machine-token", "push", "dictation", "attachments",
     "suggested-replies", "focus", "accounts", "connectors", "github-app", "dispatch", "agent-gateway",

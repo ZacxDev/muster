@@ -1212,6 +1212,11 @@ They take effect in Claude Code sessions started afterwards.
   of the separate waiting-window and stall notifications. To keep the old
   ones, put `MUSTER_SESSION_STATE=0` in `~/muster/.env` before Step 5
   (<https://github.com/ZacxDev/muster/blob/main/docs/features.md#session-state>).
+  **GPU dictation (`local-gpu`) installed before this release:** re-run Step 4's
+  dictation block once (or set `MUSTER_STT_MODEL=CohereLabs/cohere-transcribe-03-2026`
+  in `.env`), else muster's `dictation:` line names the CPU model
+  `Systran/faster-whisper-small`; dictation itself works either way, as the
+  GPU server ignores the field.
 - **Remove a machine:** stop its service (`systemctl --user disable --now
   muster-mirror.service`, or `launchctl bootout gui/$(id -u)/io.github.zacxdev.muster-mirror`),
   and revoke its token on the hub (`docker compose exec -T muster /muster-server

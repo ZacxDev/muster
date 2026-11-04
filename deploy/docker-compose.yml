@@ -121,10 +121,16 @@ services:
       # 🔴 KEYED ON THE STORE'S SECRET, NEVER ON MUSTER_S3_SECRET_KEY: your own
       # store (MUSTER_S3_ENDPOINT + MUSTER_S3_SECRET_KEY) must never be handed
       # the bundled store's bucket or access key in silence — a missing one
-      # there stays missing, and muster says MISCONFIGURED. (Compose cannot
-      # compare values, so "the endpoint is unset" cannot be the trigger.)
+      # there stays missing, and muster says MISCONFIGURED.
+      # 🔴 BOTH SET — your own MUSTER_S3_ENDPOINT, and S3_STORE_SECRET_KEY left
+      # in .env — would hand your store the bundled access key and password.
+      # Compose interpolation has no "unless", so the defaults cannot be
+      # withdrawn; instead the bucket gets a note appended that is not a
+      # bucket name. muster then turns attachments OFF (MISCONFIGURED), quoting
+      # the note, and sends nothing anywhere. With the bundled store, leave
+      # MUSTER_S3_ENDPOINT unset.
       MUSTER_S3_ENDPOINT: ${MUSTER_S3_ENDPOINT:-${S3_STORE_SECRET_KEY:+http://s3:9000}}
-      MUSTER_S3_BUCKET: ${MUSTER_S3_BUCKET:-${S3_STORE_SECRET_KEY:+muster-uploads}}
+      MUSTER_S3_BUCKET: ${MUSTER_S3_BUCKET:-${S3_STORE_SECRET_KEY:+muster-uploads}}${MUSTER_S3_ENDPOINT:+${S3_STORE_SECRET_KEY:+ (refused - S3_STORE_SECRET_KEY is for the bundled store only, remove it when MUSTER_S3_ENDPOINT is set)}}
       MUSTER_S3_ACCESS_KEY: ${MUSTER_S3_ACCESS_KEY:-${S3_STORE_SECRET_KEY:+muster}}
       MUSTER_S3_SECRET_KEY: ${MUSTER_S3_SECRET_KEY:-${S3_STORE_SECRET_KEY:-}}
       MUSTER_S3_REGION: ${MUSTER_S3_REGION:-}
@@ -358,6 +364,10 @@ services:
       - |
         if [ "$${#MINIO_ROOT_PASSWORD}" -lt 8 ]; then
           echo "s3: S3_STORE_SECRET_KEY is not set, or is under 8 characters (it is this store's root password and muster's secret key)" >&2
+          exit 1
+        fi
+        if [ "$$MINIO_ROOT_PASSWORD" = CHANGE-ME ]; then
+          echo "s3: S3_STORE_SECRET_KEY is still the .env.example placeholder CHANGE-ME; set a random secret" >&2
           exit 1
         fi
         silo server /data --quiet & pid=$$!
