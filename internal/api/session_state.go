@@ -27,8 +27,9 @@ import (
 //   - a session that enters needs_you or stalled OPENS an episode, claimed by
 //     the partial unique index (one open episode per session, across
 //     replicas) — unless its last episode ended HANDLED on the same streak
-//     (sessionstate.Handled: the owner acted, opened it, or the 0078 reset),
-//     so a stop the owner dealt with is not pushed again while it sits still;
+//     (sessionstate.Handled: the owner opened it, or the 0079 reset), so a
+//     stop the owner dealt with is not pushed again while it sits still — and
+//     one another process opened anyway is ended again (PG.EndRepeat);
 //   - an open episode follows its session (state, where it is, its streak) and
 //     ENDS when the OWNER ACTS in the session after it opened — a message of
 //     their own, or a waiting prompt answered (sessionstate.OwnerActed;
@@ -219,6 +220,22 @@ func (s *Server) stateClassifier(octx context.Context) *chiefnudge.Classifier {
 // has.
 func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCandidate, ep sessionstate.Episode, has, answerable bool) {
 	now := sp.now
+	if has {
+		// 🔴 A HANDLED STOP OPENED AGAIN BY ANOTHER PROCESS ENDS AGAIN (PG.EndRepeat):
+		// an image without PG.Open's guard (one from before 0079, still running
+		// during a rolling update) opens and pushes a session still stopped on
+		// the streak its previous episode ended 'reset' or 'viewed' on. Ended
+		// here for that same reason, its push is withdrawn by this pass's
+		// clearEndedEpisodes; the Open below then refuses it (the same rule).
+		reason, ended, err := s.ext.Episodes.EndRepeat(octx, ep.ID, c.StreakKey, now)
+		if err != nil {
+			s.logger.Printf("session state: episode %d: repeat: %v", ep.ID, err)
+		} else if ended {
+			s.logger.Printf("session state: episode %d: ended %s: it repeats a handled stop", ep.ID, reason)
+			s.ownerChecked.settle(ep.ID)
+			has = false
+		}
+	}
 	// anchor is the streak the episode keeps: normally the session's current
 	// one. 🔴 FOR AN AGENT MID-TURN IT STAYS PUT: while the newest message is
 	// the owner's (a turn no turn gate saw — the API message door, a job

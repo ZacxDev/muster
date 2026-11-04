@@ -165,3 +165,14 @@ func TestAdvanceEndsOnlyOnSustainedWork(t *testing.T) {
 		t.Fatalf("idle and never seen working: %+v", st)
 	}
 }
+
+// TestHandledIsViewedAndResetOnly pins Handled's set, spelled as the column
+// holds it: 'owner' is NOT handled (the streak an 'owner' end carries can be
+// the next stop's — round-1 F1), and neither is an outgrown stop.
+func TestHandledIsViewedAndResetOnly(t *testing.T) {
+	for reason, want := range map[string]bool{"": false, "worked": false, "gone": false, "owner": false, "viewed": true, "reset": true, "other": false} {
+		if got := Handled(reason); got != want {
+			t.Errorf("Handled(%q) = %v, want %v", reason, got, want)
+		}
+	}
+}

@@ -4,21 +4,18 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
-	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE OWNER OPENING A SESSION ENDS ITS EPISODE (session_viewed.go), THE
-// OWNER-ACTED READ COVERS THE BACKLOG, AND MIGRATION 0078 ENDS THE BACKLOG ONCE
+// OWNER-ACTED READ COVERS THE BACKLOG, AND MIGRATION 0079 ENDS THE BACKLOG ONCE
 // — end to end on a real Postgres.
 //
 // 🔴 These tests name only what exists at the commit before this change too
@@ -309,36 +306,20 @@ func TestASessionSittingStillIsReadOnceNotEveryPass(t *testing.T) {
 	}
 }
 
-// migration0078 is migration 0078's SQL (by its slug, so a renumber at merge
-// does not lose it).
-func migration0078(t *testing.T) string {
-	t.Helper()
-	files, err := filepath.Glob(filepath.Join("..", "db", "migrations", "[0-9][0-9][0-9][0-9]_session_episode_end_*.sql"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("migration 0078: %v %v", files, err)
-	}
-	b, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
-// TestMigration0078EndsAPushedOpenEpisodeAndTheNextPassWithdrawsIt
-// (regression, the operator's backlog decision): a stop pushed before 0078
+// TestMigration0079EndsAPushedOpenEpisodeAndTheNextPassWithdrawsIt
+// (regression, the operator's backlog decision): a stop pushed before 0079
 // applies is ended 'reset' by it; the next pass withdraws its push (cleared_at
 // set, a resolved push for its tag) and drops its row, and the session, still
 // on the same streak, is not opened and pushed again. The migration is applied
 // as the migrator would, scoped to the operator's rows so the package's
-// shared database keeps other tests' episodes. Red before: 0078 only widened
+// shared database keeps other tests' episodes. Red before: 0079 only widened
 // the check, so the episode stayed open and pushed.
-func TestMigration0078EndsAPushedOpenEpisodeAndTheNextPassWithdrawsIt(t *testing.T) {
+func TestMigration0079EndsAPushedOpenEpisodeAndTheNextPassWithdrawsIt(t *testing.T) {
 	f := newStateFixture(t, false)
 	id, tag := f.pushedStall(t)
-	dbtest.OwnerExec(t, dbtest.DSN(t), `BEGIN; SELECT set_config('muster.uid', '`+strconv.FormatInt(authz.OperatorUserID, 10)+
-		`', true), set_config('muster.scope', '', true); `+migration0078(t)+` COMMIT;`)
+	f.applyReset(t)
 	if e := f.episodeByID(t, id); e.EndedAt.IsZero() || e.EndReason != endReset {
-		t.Fatalf("after 0078: ended %v reason %q, want %q", e.EndedAt, e.EndReason, endReset)
+		t.Fatalf("after 0079: ended %v reason %q, want %q", e.EndedAt, e.EndReason, endReset)
 	}
 	if f.cleared(t, id) {
 		t.Fatal("cleared before any pass: the withdrawal is the pass's")

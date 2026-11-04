@@ -46,20 +46,32 @@ const (
 	// Its own reason, not EndOwner's: the end reason is the record of WHY a
 	// push cleared, and "the owner looked" is not "the owner answered".
 	EndViewed = "viewed"
-	// EndReset is written by migration 0078 alone: every episode open when it
+	// EndReset is written by migration 0079: every episode open when it
 	// applied, ended once so the backlog of stops opened before an episode
-	// could end on the owner's action is withdrawn. Nothing in muster writes
-	// it (PG.End refuses it).
+	// could end on the owner's action is withdrawn. Muster itself writes it in
+	// one place only: PG.EndRepeat, ending an episode another process (an
+	// older image, mid-rollout) opened again on the streak a reset episode
+	// ended on. PG.End refuses it.
 	EndReset = "reset"
 )
 
-// Handled reports whether an episode that ended for reason was HANDLED rather
-// than outgrown: the owner acted in the session or opened it, or the backlog
-// reset ended it. 🔴 A HANDLED STOP IS NOT OPENED AGAIN ON THE SAME STREAK
-// (PG.Open): the session has not moved since, so a new episode would push the
-// same stop the owner already dealt with. A stop that ended because the
-// session worked ('worked') or left ('gone') is not handled — its session
-// moved, and the next stop is a new one.
+// Handled reports whether an episode that ended for reason was HANDLED on the
+// streak it ended on: the owner opened the session in muster ('viewed'), or the
+// backlog reset ended it ('reset'). 🔴 A HANDLED STOP IS NOT OPENED AGAIN ON THE
+// SAME STREAK (PG.Open), and an episode another process opened on it anyway is
+// ended again (PG.EndRepeat): the session has not moved since, so a new episode
+// would push the same stop the owner already dealt with.
+//
+// 🔴 'owner' IS NOT HANDLED, ON PURPOSE: it means the owner ACTED — answered —
+// so the session moved, and any stop after it is new. The episode is ended on
+// the pass that READ the owner's word, which can be later than the pass that
+// first saw the session's next stop (a failed read is retried), so the streak
+// an 'owner' episode ends carrying can be the NEXT stop's. Treating it as
+// handled would suppress that real stop's push until the session moved again.
+// 'viewed' and 'reset' carry no such lag: a view ends the episode on the streak
+// the owner was shown (episodeViewed), and the reset on the one last observed.
+// A stop that ended because the session worked ('worked') or left ('gone') is
+// not handled either — its session moved.
 func Handled(reason string) bool {
 	for _, r := range handledReasons {
 		if reason == r {
@@ -69,8 +81,9 @@ func Handled(reason string) bool {
 	return false
 }
 
-// handledReasons is Handled's set, as PG.Open's guard reads it.
-var handledReasons = []string{EndOwner, EndViewed, EndReset}
+// handledReasons is Handled's set, as PG.Open's and PG.EndRepeat's guards read
+// it.
+var handledReasons = []string{EndViewed, EndReset}
 
 // EndAfter is how long a session must work, continuously, before its episode
 // ends on its own (the design's N). A shorter blip — a quick tool call, a

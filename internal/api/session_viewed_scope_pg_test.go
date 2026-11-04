@@ -15,11 +15,11 @@ import (
 func TestTheViewRuleEndsOnlyTheRequestersOwnEpisode(t *testing.T) {
 	f := newStateFixture(t, false)
 	id, _ := f.pushedStall(t)
-	f.srv.episodeViewed(asUser(f.member), sessionstate.KindMirror, nudgeSID)
+	f.srv.episodeViewed(asUser(f.member), sessionstate.KindMirror, nudgeSID, func() string { return "" })
 	if e := f.episodeByID(t, id); !e.Open() {
 		t.Fatalf("a member's view ended the operator's stop: %+v", e)
 	}
-	f.srv.episodeViewed(asUser(authz.OperatorUserID), sessionstate.KindMirror, nudgeSID)
+	f.srv.episodeViewed(asUser(authz.OperatorUserID), sessionstate.KindMirror, nudgeSID, func() string { return "" })
 	if e := f.episodeByID(t, id); e.EndReason != sessionstate.EndViewed {
 		t.Fatalf("the control — the owner's view: reason %q", e.EndReason)
 	}

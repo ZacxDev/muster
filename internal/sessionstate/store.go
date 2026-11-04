@@ -86,6 +86,17 @@ type Store interface {
 	// End ends open episode id for reason; ended false when it had already
 	// ended.
 	End(ctx context.Context, id int64, reason string, at time.Time) (bool, error)
+	// EndViewed ends open episode id 'viewed' (EndViewed) and records streak,
+	// the streak the owner was shown, as the one it ended on ("" keeps the
+	// stored one); ended false when it had already ended.
+	EndViewed(ctx context.Context, id int64, streak string, at time.Time) (bool, error)
+	// EndRepeat ends open episode id when it REPEATS a handled stop: the
+	// session's previous episode ended Handled on streak, the streak the session
+	// is on now — so the session has not moved since the owner dealt with it,
+	// and the open one is that stop opened again by a process without PG.Open's
+	// guard (an older image, mid-rollout). It ends for the previous episode's
+	// reason, which is returned; ended false (nothing written) otherwise.
+	EndRepeat(ctx context.Context, id int64, streak string, at time.Time) (reason string, ended bool, err error)
 	// Get is the caller's episode id; ok false when it is none of theirs.
 	Get(ctx context.Context, id int64) (Episode, bool, error)
 	// ClaimPush claims open episode id's push at at. 🔴 THE PUSH CLAIM:
@@ -304,6 +315,56 @@ func (p *PG) End(ctx context.Context, id int64, reason string, at time.Time) (bo
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// EndViewed implements Store. 🔴 THE STREAK THE OWNER WAS SHOWN, NOT THE ONE
+// LAST OBSERVED: a pass writes an episode's streak every 30 s, so the stored
+// one can lag the session's (it stopped again since); ending on the lagging
+// one would leave the stop the owner just looked at unhandled, and the next
+// pass would open and push it.
+func (p *PG) EndViewed(ctx context.Context, id int64, streak string, at time.Time) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE session_episodes SET ended_at = $2, end_reason = $3,
+			streak_key = CASE WHEN $4 = '' THEN streak_key ELSE $4 END, updated_at = $2
+		WHERE id = $1 AND ended_at IS NULL`, id, at, EndViewed, cut(streak, 100))
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// EndRepeat implements Store. 🔴 THE ONE GUARD, TWO SIDES: Open refuses to
+// write an episode while the session's latest one ended Handled on the streak
+// being opened; EndRepeat ends one that was written anyway, by the same
+// predicate (handledReasons, a non-empty streak equal to the previous
+// episode's). An image from before migration 0079 has no such guard: during
+// a rolling update its pass, after the reset, opens and pushes a still-stopped
+// session again, and its waiting hook does so with no streak at all — so the
+// streak compared is the session's CURRENT one (the caller's), never the
+// repeat's stored one — and that streak is written onto the repeat as it ends,
+// so it becomes the latest episode ended handled on it and Open's guard keeps
+// holding (a repeat from the old waiting hook stores no streak, and ending it
+// on "" would let the very next pass open the stop a third time). The repeat's
+// push is withdrawn by the pass's clearEndedEpisodes, as any ended episode's.
+func (p *PG) EndRepeat(ctx context.Context, id int64, streak string, at time.Time) (string, bool, error) {
+	if streak == "" {
+		return "", false, nil
+	}
+	var reason string
+	err := p.pool.QueryRow(ctx, `UPDATE session_episodes cur SET ended_at = $2, end_reason = prev.end_reason, streak_key = $4, updated_at = $2
+		FROM session_episodes prev
+		WHERE cur.id = $1 AND cur.ended_at IS NULL
+		  AND prev.owner_id = cur.owner_id AND prev.session_kind = cur.session_kind AND prev.session_key = cur.session_key
+		  AND prev.seq = (SELECT max(p2.seq) FROM session_episodes p2 WHERE p2.owner_id = cur.owner_id
+		      AND p2.session_kind = cur.session_kind AND p2.session_key = cur.session_key AND p2.seq < cur.seq)
+		  AND prev.end_reason = ANY($3) AND prev.streak_key = $4
+		RETURNING cur.end_reason`, id, at, handledReasons, cut(streak, 100)).Scan(&reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return reason, true, nil
 }
 
 // Get implements Store.

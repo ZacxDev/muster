@@ -294,11 +294,30 @@ An episode is one stop of one session.
   - **gone** (`gone`): its window left a host that is online and reporting.
 
   **A handled stop is not opened again on the same streak**
-  (`sessionstate.Handled`: `owner`, `viewed`, and the one-time `reset`
-  below): while the session sits where it was, neither the pass nor the
-  waiting hook opens a new episode for it, so the stop the owner dealt with is
-  not pushed again. Once its streak moves (a new status, a new message) the
-  next stop is a new episode as usual.
+  (`sessionstate.Handled`: `viewed`, and the one-time `reset` below): while
+  the session sits where it was, neither the pass nor the waiting hook opens
+  a new episode for it, so the stop the owner dealt with is not pushed again.
+  Once its streak moves (a new status, a new message) the next stop is a new
+  episode as usual. A view ends its episode on the streak the page showed
+  (the session's current one, not the one the last pass wrote), so the stop
+  the owner looked at is the one treated as handled.
+
+  **`owner` is not handled.** It means the owner answered, so the session
+  moved, and any stop after it is new. The episode ends on the pass that READ
+  the owner's message, which can be a pass later than the one that first saw
+  the session stop again (a failed read is retried), so an `owner` episode can
+  end carrying the NEXT stop's streak. Treating that as handled would suppress
+  the real next stop's push for as long as the session sat on it.
+
+  **A handled stop opened again anyway is ended again**
+  (`sessionstate.PG.EndRepeat`): an open episode whose session is on the
+  streak its previous episode ended handled on is ended for that same reason,
+  with that streak, and its push withdrawn, on the next pass. Only a process
+  without the reopen guard writes one: the image before 0079, still running
+  during a rolling update, opens and pushes a session still stopped after the
+  reset (its waiting hook with no streak at all). So the reset needs no manual
+  deploy step; at worst a push the older image sends is withdrawn within one
+  pass, and the repush floor holds its next one.
 
   **One stop of a session that carries on by itself is one episode**
   (default D1): `needs-you` → `stalled` within it updates its state and does
@@ -340,10 +359,11 @@ the Chief decision (if any) and the nudge's send-queue id.
   ends and clears any open row whose session is now working past `N`, gone,
   or acted in by its owner, so a notification for a session that moved on
   during downtime is cleared. The same rule withdrew the **backlog**:
-  migration 0078 ended every episode open when it applied (`end_reason`
+  migration 0079 ended every episode open when it applied (`end_reason`
   `reset`, once), and the next pass sent each pushed one's resolved push and
   set its `cleared_at`; a session still on the same streak is not reopened
-  (handled).
+  (handled), and a reopen by the older image mid-rollout is ended again
+  (`EndRepeat`, above).
 
 This table **replaces `KindNotice`'s use for stalls** (round 0 D4). Once
 nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases

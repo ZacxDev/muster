@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -64,7 +65,10 @@ func (s *Server) episodeViewedMirror(ctx context.Context, r *http.Request, h mir
 			// The key the stall facts list the window under (stateWindowKey,
 			// one rule with the pass and the waiting hook).
 			if key, _, _ := stateWindowKey(w, sessionStateListsHermes); key != "" {
-				s.episodeViewed(ctx, sessionstate.KindMirror, key)
+				s.episodeViewed(ctx, sessionstate.KindMirror, key, func() string {
+					// The window's streak now, as the pass keys it (windowStreakKey).
+					return windowStreakKey(s.ext.Mirror.AgentState(ctx, h.Host, w.Session, w.ID))
+				})
 			}
 			return
 		}
@@ -77,13 +81,27 @@ func (s *Server) episodeViewedAgent(ctx context.Context, r *http.Request, agentI
 	if !s.sessionStateOn() || !viewRequest(r) || agentID <= 0 || chatSessionID <= 0 {
 		return
 	}
-	s.episodeViewed(ctx, sessionstate.KindAgent, chiefnudge.AgentKey(agentID, chatSessionID))
+	s.episodeViewed(ctx, sessionstate.KindAgent, chiefnudge.AgentKey(agentID, chatSessionID), func() string {
+		// The conversation's streak now, as the pass keys it (stallFacts): its
+		// newest message.
+		if s.ext.Agents == nil {
+			return ""
+		}
+		last, err := s.ext.Agents.ListRecentChatMessages(ctx, chatSessionID, 1)
+		if err != nil || len(last) == 0 {
+			return ""
+		}
+		return "msg:" + strconv.FormatInt(last[len(last)-1].ID, 10)
+	})
 }
 
 // episodeViewed ends ctx's owner's open episode for session (kind, key)
 // 'viewed' and withdraws its push. Best-effort: a failure is logged and never
-// fails the page.
-func (s *Server) episodeViewed(ctx context.Context, kind, key string) {
+// fails the page. streak reads the session's streak NOW — the stop the owner
+// is being shown — which the episode ends on (PG.EndViewed), so the next pass
+// does not open and push it as a new stop when the stored streak lags. ""
+// (unreadable) keeps the stored one: at worst that one extra push.
+func (s *Server) episodeViewed(ctx context.Context, kind, key string, streak func() string) {
 	owner := requestOwner(ctx)
 	if owner <= 0 {
 		return
@@ -97,7 +115,7 @@ func (s *Server) episodeViewed(ctx context.Context, kind, key string) {
 		return
 	}
 	now := s.now()
-	ended, err := s.ext.Episodes.End(ctx, ep.ID, sessionstate.EndViewed, now)
+	ended, err := s.ext.Episodes.EndViewed(ctx, ep.ID, streak(), now)
 	if err != nil {
 		s.logger.Printf("session state: episode %d: viewed: %v", ep.ID, err)
 		return
