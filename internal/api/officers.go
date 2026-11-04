@@ -726,8 +726,9 @@ func queueToolDefs() []agents.ToolDef {
 				"cursor": strProp("The `next` value of the previous page (HQ returns it with each page; null on the last)."),
 			})},
 		{Type: "function", Name: officers.ToolClaim,
-			Description: "Claim one item so no other instance works it. If YOU already hold it (e.g. you were restarted mid-item), this succeeds, renews your lease and says \"already yours\" — carry on with it. A conflict answer (refused, status 409) means ANOTHER instance holds it: pick another item. Heartbeat before the lease runs out.",
-			Parameters:  objSchema(map[string]any{"item_id": item, "lease_seconds": lease}, "item_id")},
+			Description: "Claim one item so no other instance works it. With NO item_id, HQ picks the next item for you (highest priority first, then the earliest due, then the oldest; never a blocked one) and the answer is that item — or item null when nothing is claimable: stop and wait. " +
+				"Give an item_id only when your charter says to claim a particular item. If YOU already hold it (e.g. you were restarted mid-item), this succeeds, renews your lease and says \"already yours\" — carry on with it. A conflict answer (refused, status 409) means ANOTHER instance holds it: pick another item. Heartbeat before the lease runs out.",
+			Parameters: objSchema(map[string]any{"item_id": strProp("Optional: the item's id, as officer_items or officer_brief returned it. Omit it to take the next item."), "lease_seconds": lease})},
 		{Type: "function", Name: officers.ToolHeartbeat,
 			Description: "Extend your lease on an item you hold. A conflict answer means you lost the lease: stop working the item.",
 			Parameters:  objSchema(map[string]any{"item_id": item, "lease_seconds": lease}, "item_id")},
@@ -872,6 +873,22 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor, Tier: o.Tier})
 		body = page.Raw
 	case officers.ToolClaim:
+		if strings.TrimSpace(string(in.ItemID)) == "" {
+			// no item_id: HQ picks the next item (claim-next)
+			var claimed officers.ItemID
+			// the claim's tier is the instance's pool's (o.Tier; "" for an
+			// untiered officer sends no tier key), exactly what claim-by-id
+			// sends: HQ then picks only an item of that tier
+			// (officer_claim_next_tier_test.go)
+			body, claimed, err = s.officerClaimNext(ctx, c, instance, in.LeaseSeconds, o.Tier)
+			if errors.Is(err, errNoClaimNext) {
+				return toolErr(noClaimNextNote), true
+			}
+			if err == nil && claimed != "" && s.officerRT.fwd != nil {
+				s.officerRT.fwd.Claimed(o, instance, claimed)
+			}
+			break
+		}
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
@@ -997,6 +1014,51 @@ func askToolResult(body []byte, err error) string {
 		refused["hq"] = json.RawMessage(hqErr.Body)
 	}
 	return toolJSON(map[string]any{"error": text, "refused": refused})
+}
+
+// nothingToClaimNote is officer_claim's answer when nothing is claimable.
+const nothingToClaimNote = "nothing to claim right now: every open item is held, blocked or not due. Stop and wait — muster wakes you when HQ has new work."
+
+// noClaimNextNote is officer_claim{}'s tool error on an HQ without claim-next
+// (its route answers 404): the instance claims by id instead.
+const noClaimNextNote = "this HQ has no claim-next; call officer_items and officer_claim{item_id}"
+
+// errNoClaimNext is HQ answering claim-next 404: a route it does not have.
+var errNoClaimNext = errors.New("officers: HQ has no claim-next route")
+
+// officerClaimNext is officer_claim with no item_id: HQ's claim-next (POST
+// /officers/{id}/claim-next) for instance, sending tier as the claim does.
+// It answers HQ's {item, lease_expires_at} and the claimed item's id; when
+// nothing is claimable, {item: null, claimed: false, note} and no id. An HQ
+// without the route (404) is errNoClaimNext, which the tool answers with
+// noClaimNextNote.
+func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, instance string, lease int, tier string) ([]byte, officers.ItemID, error) {
+	body, err := c.ClaimNext(ctx, instance, lease, tier)
+	var hqErr *officers.HQError
+	if errors.As(err, &hqErr) && hqErr.Status == http.StatusNotFound {
+		return nil, "", errNoClaimNext
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	var res struct {
+		Item *struct {
+			ID officers.ItemID `json:"id"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(body, &res) != nil {
+		return body, "", nil // officerToolResult reports what is not JSON
+	}
+	if res.Item == nil {
+		return nothingToClaim(), "", nil
+	}
+	return body, res.Item.ID, nil
+}
+
+// nothingToClaim is officer_claim's answer when nothing is claimable.
+func nothingToClaim() []byte {
+	b, _ := json.Marshal(map[string]any{"item": nil, "claimed": false, "note": nothingToClaimNote})
+	return b
 }
 
 // alreadyYoursNote is what a claim on an item the caller already holds says.

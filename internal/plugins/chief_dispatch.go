@@ -481,50 +481,52 @@ func (s *PGStore) ChiefDispatchBudget(ctx context.Context) (ChiefBudget, error) 
 // security: see ReserveChiefDispatch.
 func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, error) {
 	b := ChiefBudget{LiveCap: MaxChiefLiveAgents, DailyCap: MaxChiefDispatchesPerDay, LiveAgents: []ChiefLiveAgent{}}
-	rows, err := tx.Query(ctx, `SELECT a.id, a.name, l.object, a.kind FROM agents a
-		  JOIN LATERAL (SELECT object FROM audit_log
-		                 WHERE action = $1 AND user_id = $3 AND (detail->>'agent_id')::bigint = a.id
-		                 ORDER BY id DESC LIMIT 1) l ON true
-		 WHERE a.status = ANY($2)
-		 ORDER BY a.id`,
-		ActionChiefDispatchAgent, liveAgentStatuses, owner)
+	// 🔴 ONE STATEMENT, SO ONE SNAPSHOT. Under READ COMMITTED each statement
+	// sees its own snapshot, and RecordChiefDispatchAgent (which takes no
+	// reservation lock) can commit between two of them: read as two queries,
+	// the recorded-agent half ran before the agent row existed and the
+	// pending-reservation half after it, and the start was counted by NEITHER
+	// — live read one short, here AND under ReserveChiefDispatch's lock, so a
+	// concurrent start could pass the live cap by one. UNION ALL keeps both
+	// halves in one statement. The race's guard is
+	// TestTheBudgetNeverMissesAStartWhoseAgentIsBeingRecorded
+	// (chief_budget_snapshot_test.go).
+	rows, err := tx.Query(ctx, `SELECT src, id, name, object, kind_or_target FROM (
+		  SELECT 0 AS src, a.id AS id, a.name AS name, l.object AS object, a.kind AS kind_or_target, a.id AS ord FROM agents a
+		    JOIN LATERAL (SELECT object FROM audit_log
+		                   WHERE action = $1 AND user_id = $3 AND (detail->>'agent_id')::bigint = a.id
+		                   ORDER BY id DESC LIMIT 1) l ON true
+		   WHERE a.status = ANY($2)
+		  UNION ALL
+		  SELECT 1, NULL, NULL, r.object, coalesce(r.detail->>'target', ''), r.id FROM audit_log r
+		   WHERE r.action = $4 AND r.user_id = $3 AND r.at > now() - make_interval(secs => $5)
+		     AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $3 AND g.object = r.object AND g.id > r.id)
+		     -- a start released after a refused create made no agent: it holds no slot
+		     AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $6 AND x.user_id = $3 AND x.object = r.object AND x.id > r.id)
+		) live ORDER BY src, ord`,
+		ActionChiefDispatchAgent, liveAgentStatuses, owner, ActionChiefDispatch, pendingAgentWindow.Seconds(), ActionChiefDispatchReleased)
 	if err != nil {
 		return ChiefBudget{}, err
 	}
 	for rows.Next() {
 		var (
-			id     int64
-			name   string
+			src    int
+			id     *int64
+			name   *string
 			object string
-			kind   string
+			kt     string
 		)
-		if err := rows.Scan(&id, &name, &object, &kind); err != nil {
+		if err := rows.Scan(&src, &id, &name, &object, &kt); err != nil {
 			rows.Close()
 			return ChiefBudget{}, err
 		}
-		b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{ID: &id, Name: &name, Task: noteObjectID(object), Target: PodTarget(kind)})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return ChiefBudget{}, err
-	}
-	rows, err = tx.Query(ctx, `SELECT r.object, coalesce(r.detail->>'target', '') FROM audit_log r
-		 WHERE r.action = $1 AND r.user_id = $4 AND r.at > now() - make_interval(secs => $3)
-		   AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $2 AND g.user_id = $4 AND g.object = r.object AND g.id > r.id)
-		   -- a start released after a refused create made no agent: it holds no slot
-		   AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $5 AND x.user_id = $4 AND x.object = r.object AND x.id > r.id)
-		 ORDER BY r.id`,
-		ActionChiefDispatch, ActionChiefDispatchAgent, pendingAgentWindow.Seconds(), owner, ActionChiefDispatchReleased)
-	if err != nil {
-		return ChiefBudget{}, err
-	}
-	for rows.Next() {
-		var object, target string
-		if err := rows.Scan(&object, &target); err != nil {
-			rows.Close()
-			return ChiefBudget{}, err
+		if src == 0 {
+			// A recorded agent: its target is its kind's.
+			b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{ID: id, Name: name, Task: noteObjectID(object), Target: PodTarget(kt)})
+		} else {
+			// A reservation whose agent is not recorded yet: its detail's target.
+			b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{Task: noteObjectID(object), Target: kt})
 		}
-		b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{Task: noteObjectID(object), Target: target})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
