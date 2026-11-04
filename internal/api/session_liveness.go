@@ -215,8 +215,8 @@ func (l *liveNotes) FindLiveByTag(ctx context.Context, key string) (notes.Note, 
 	return out, ok, err
 }
 
-func (l *liveNotes) ListLiveInNamespace(ctx context.Context, ns string, limit int) ([]notes.Note, error) {
-	list, err := l.Store.ListLiveInNamespace(ctx, ns, limit)
+func (l *liveNotes) ListLiveInNamespace(ctx context.Context, q notes.RefListQuery) ([]notes.Note, error) {
+	list, err := l.Store.ListLiveInNamespace(ctx, q)
 	return l.resolveMany(ctx, list, err)
 }
 

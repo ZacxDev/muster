@@ -302,14 +302,19 @@ func (s *Server) applyReference(ctx context.Context, p plugins.Plugin, key strin
 	if up.Converted {
 		s.logger.Printf("plugins: plugin %d converted task %s into the reference for %s", p.ID, id, key)
 	}
+	if up.Adopted {
+		s.logger.Printf("plugins: plugin %d adopted the reference for %s (task %s): its holder is no longer live", p.ID, key, id)
+	}
 	if up.Created {
 		s.taskCreatedEffects(ctx, up.Note, "api", nil)
 	}
+	statusMoved := false
 	if up.Applied && up.Note.Status != snap.Status {
 		n, err := s.setNoteStatus(notes.OnlyIfSnapshotAt(ctx, snap.UpdatedAt), writerPluginReference, up.Note.ID, snap.Status)
 		switch {
 		case err == nil:
 			up.Note = n
+			statusMoved = true
 			s.notifyTaskDone(n)
 		case errors.Is(err, notes.ErrStatusMoved):
 			// A newer snapshot was applied meanwhile; it carries its own status.
@@ -317,7 +322,10 @@ func (s *Server) applyReference(ctx context.Context, p plugins.Plugin, key strin
 			return up, err
 		}
 	}
-	if up.Applied && !up.Created {
+	// An unchanged snapshot (a reconcile's resend) changed nothing a page shows
+	// — only ext_synced_at moved — so it broadcasts nothing; an adoption moved
+	// the task's writes back to pending, which the page does show.
+	if !up.Created && (statusMoved || up.Adopted || (up.Applied && !up.Unchanged)) {
 		s.broadcast(ctx, EventTaskChanged, id)
 	}
 	return up, nil
@@ -490,12 +498,17 @@ type pluginTaskRowCmt struct {
 	Retracted bool      `json:"retracted,omitempty"`
 }
 
-// handlePluginTaskList is GET /plugin/v1/tasks?namespace=<ns>&live=true: this
-// owner's live tasks (not dismissed, not merged away) carrying a key in ns —
-// copies and references alike — with their comments (a retracted one as a
-// tombstone), oldest first, at most refListMax (`truncated` says when more
-// exist). live=true is the only listing there is, and is required so a later
-// one can be added without changing what this answers.
+// handlePluginTaskList is GET /plugin/v1/tasks?namespace=<ns>&live=true
+// [&key=<key>][&open=true][&after=<id>]: the live tasks (not dismissed, not
+// merged away) in ns that THIS plugin may see — its own references, and copy
+// rows carrying a key in ns; never another plugin's reference — with their
+// comments (a retracted one as a tombstone), ascending by id, refListMax a
+// page. key= is one full key (at most one row: the one an upsert for it works
+// on); open=true leaves out complete tasks; after= lists ids greater than it.
+// 200 {"tasks", "truncated", "next_after"}: next_after is the page's last id
+// when truncated (pass it as after=), else null. live=true is the only
+// listing there is, and is required so a later one can be added without
+// changing what this answers.
 func (s *Server) handlePluginTaskList(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Notes == nil {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "this server has no task store"})
@@ -512,15 +525,42 @@ func (s *Server) handlePluginTaskList(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "live=true is required (only live rows are listed)"})
 		return
 	}
-	list, err := s.ext.Notes.ListLiveInNamespace(r.Context(), ns, refListMax+1)
+	lq := notes.RefListQuery{Namespace: ns, PluginID: pluginFromContext(r.Context()).ID, Limit: refListMax + 1}
+	if q.Has("key") {
+		lq.Key = q.Get("key")
+		if !notes.KeyInNamespace(lq.Key, ns) {
+			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "key must be one full, normalized key in namespace " + ns})
+			return
+		}
+	}
+	switch q.Get("open") {
+	case "", "false":
+	case "true":
+		lq.OpenOnly = true
+	default:
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "open must be true or false"})
+		return
+	}
+	if q.Has("after") {
+		after, err := strconv.ParseInt(q.Get("after"), 10, 64)
+		if err != nil || after < 0 {
+			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "after must be a task id (a non-negative integer)"})
+			return
+		}
+		lq.After = after
+	}
+	list, err := s.ext.Notes.ListLiveInNamespace(r.Context(), lq)
 	if err != nil {
 		s.logger.Printf("plugins: list namespace %s: %v", ns, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the tasks could not be listed"})
 		return
 	}
 	truncated := len(list) > refListMax
+	var nextAfter *int64
 	if truncated {
 		list = list[:refListMax]
+		last := list[len(list)-1].ID
+		nextAfter = &last
 	}
 	out := make([]pluginTaskRow, 0, len(list))
 	for _, n := range list {
@@ -542,5 +582,5 @@ func (s *Server) handlePluginTaskList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"tasks": out, "truncated": truncated})
+	s.writeJSON(w, http.StatusOK, map[string]any{"tasks": out, "truncated": truncated, "next_after": nextAfter})
 }

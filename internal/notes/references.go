@@ -33,8 +33,8 @@ import (
 type Reference struct {
 	// Key is the plugin task key (`<namespace>:<id>`), notes.ext_key.
 	Key string `json:"key"`
-	// PluginID is the plugin that created or converted the reference: the only
-	// plugin its queued writes are handed to. Zero when that plugin was deleted.
+	// PluginID is the plugin that holds the reference (it created, converted or
+	// adopted it): the only plugin its queued writes are handed to.
 	PluginID int64 `json:"pluginId,omitempty"`
 	// Snapshot is the last APPLIED snapshot.
 	Snapshot RefSnapshot `json:"snapshot"`
@@ -74,6 +74,11 @@ const (
 	RefWriteClaimed = "claimed"
 	RefWriteDone    = "done"
 	RefWriteFailed  = "failed"
+
+	// RefWriteMaxAttempts is how many times a write is handed out (a claim
+	// whose lease lapsed without a result) before it is failed with
+	// refWriteGaveUp.
+	RefWriteMaxAttempts = 10
 )
 
 // RefWrite is one write a person or agent made on a reference, queued for the
@@ -122,6 +127,15 @@ type RefUpsert struct {
 	// Applied is false for a snapshot OLDER than the stored one (accepted, not
 	// applied). Equal is applied again (idempotent).
 	Applied bool
+	// Unchanged: an applied snapshot whose content (title, body, status, label,
+	// url, comments, rev, upstream updated_at) is exactly the stored one. The row
+	// was not rewritten and updated_at did not move: only ext_synced_at did (it
+	// feeds the stale badge), so there is nothing for a page to re-render.
+	Unchanged bool
+	// Adopted: the reference was held by another of the owner's plugins that is
+	// no longer live (revoked or deleted), and this plugin took it over — with
+	// its unfinished writes (see UpsertReference).
+	Adopted bool
 	// Detached: the row was dismissed (the same soft delete an owner's dismiss is).
 	Detached bool
 }
@@ -142,12 +156,30 @@ type RefUpsertIn struct {
 	RelayAuthor string
 }
 
+// RefListQuery is one page of a plugin's reconcile listing
+// (Store.ListLiveInNamespace; GET /plugin/v1/tasks).
+type RefListQuery struct {
+	// Namespace is required: the plugin task namespace listed.
+	Namespace string
+	// PluginID is the listing plugin: the only plugin whose references are seen.
+	PluginID int64
+	// Key, when set, is one full key in Namespace: at most the one row an
+	// upsert for it would work on.
+	Key string
+	// OpenOnly leaves out complete tasks.
+	OpenOnly bool
+	// After lists only ids greater than it (the paging cursor).
+	After int64
+	// Limit bounds the page.
+	Limit int
+}
+
 var (
 	// ErrNotReference: the task is not a live reference (EnqueueRefWrite's
 	// "write locally instead").
 	ErrNotReference = errors.New("notes: the task is not a reference")
 	// ErrRefOtherPlugin: the live reference for the key belongs to another of
-	// the owner's plugins.
+	// the owner's plugins, and that plugin is still live (not revoked).
 	ErrRefOtherPlugin = errors.New("notes: the reference belongs to another plugin")
 	// ErrRefWriteNotLeased: a result for a write this plugin does not hold.
 	ErrRefWriteNotLeased = errors.New("notes: no such write leased to this plugin")
@@ -182,6 +214,13 @@ func (n *Note) adoptRef() {
 		ref.SyncedAt = *r.syncedAt
 	}
 	n.Ref = ref
+}
+
+// KeyInNamespace reports whether key is one full, normalized plugin task key
+// in namespace ns (the listing's key= rule).
+func KeyInNamespace(key, ns string) bool {
+	kns, _ := ParseTag(key)
+	return kns == ns && NormalizeTag(key) == key
 }
 
 // IsReference reports whether n is a reference row.

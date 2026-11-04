@@ -1111,6 +1111,10 @@ func (s *Server) handleAPITaskEdit(w http.ResponseWriter, r *http.Request) {
 		v := capRunes(*body.Branch, maxTaskFieldLen)
 		patch.RepoBranch = &v
 	}
+	if msg := refEditRefusal(cur, patch.Title, patch.Body); msg != "" {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": msg})
+		return
+	}
 
 	// Validate the MERGE keys before any mutation, so an invalid addTags never
 	// half-applies alongside a valid field edit.
@@ -1791,22 +1795,40 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body := strings.TrimSpace(r.FormValue("body"))
-	if body == "" {
-		http.Error(w, "task body required", http.StatusBadRequest)
+	// A reference's edit form renders its title and body read-only and submits
+	// neither (NotesEditModalBody): absent there means "leave them", and a
+	// present one that differs is refused (refEditRefusal). Every other task's
+	// form submits both, and the body stays required.
+	var titleP, bodyP *string
+	_, hasTitle := r.Form["title"]
+	_, hasBody := r.Form["body"]
+	if !cur.IsReference() || hasBody {
+		body := strings.TrimSpace(r.FormValue("body"))
+		if body == "" {
+			http.Error(w, "task body required", http.StatusBadRequest)
+			return
+		}
+		body = capRunes(body, maxTaskBodyLen)
+		bodyP = &body
+	}
+	if !cur.IsReference() || hasTitle {
+		title := capRunes(strings.TrimSpace(r.FormValue("title")), maxTaskFieldLen)
+		titleP = &title
+	}
+	if msg := refEditRefusal(cur, titleP, bodyP); msg != "" {
+		http.Error(w, msg, http.StatusConflict)
 		return
 	}
-	body = capRunes(body, maxTaskBodyLen)
 	directory := capRunes(r.FormValue("directory"), maxTaskFieldLen)
-	title := capRunes(strings.TrimSpace(r.FormValue("title")), maxTaskFieldLen)
 	model := capRunes(strings.TrimSpace(r.FormValue("model")), maxTaskFieldLen)
 	repo := capRunes(strings.TrimSpace(r.FormValue("repo")), maxTaskFieldLen)
 	branch := capRunes(strings.TrimSpace(r.FormValue("repo_branch")), maxTaskFieldLen)
-	// The form submits every editable field → set them all.
+	// The form submits every editable field → set them all (a reference's
+	// title and body excepted, above).
 	updated, err := s.ext.Notes.UpdateNote(r.Context(), id, notes.NoteUpdate{
 		Directory:  &directory,
-		Title:      &title,
-		Body:       &body,
+		Title:      titleP,
+		Body:       bodyP,
 		Model:      &model,
 		Repo:       &repo,
 		RepoBranch: &branch,

@@ -334,9 +334,26 @@ Your plugin's own relay comments on it (author `plugin:<name>`) are retracted,
 and every other comment stays on the task as muster-only history. With no row
 at all, a new one is filed, with the usual "New task" push.
 
+**A rotated plugin takes its references over.** A plugin has no token
+rotation: rotating is revoking it and creating a new one, with a new id. A
+reference held by a plugin that has been revoked (or deleted) is **adopted**
+by the next of your plugins to upsert its key: the reference moves to the new
+plugin, and so do its unfinished writes (a write the old plugin had claimed
+but not reported is pending again, `attempts` kept). While the holding plugin
+is still live, another plugin's upsert is a `409`.
+
 **Stale snapshots apply nothing.** An upsert whose `updated_at` is older than
 the stored snapshot's is accepted (`200`, `"applied": false`) but changes
-nothing. An equal one applies again, so a resend is harmless.
+nothing. An equal one applies again, so a resend is harmless. A snapshot
+identical to the stored one (title, body, status, label, url, comments, rev
+and `updated_at` all the same) does not rewrite the task, move its
+`updated_at` or notify open pages: only the time it was last synced moves,
+which clears the **stale** badge.
+
+A reference's title and body are the upstream's. Editing either on muster
+(the edit form, `PATCH /api/tasks/{id}`) is refused with `409` ("this task is
+a reference; edit it upstream"), and the edit form shows them read-only. Its
+other fields (tags, directory, model, repository, branch) stay editable.
 
 The status follows the snapshot through the task-status writer
 `plugin_reference`: it is logged like any status write and sends the usual
@@ -349,7 +366,7 @@ close is not you stopping an agent.
 | `201 {"id", "created": true, "reference": true, "applied": true, …}` | A reference was filed. |
 | `200 {"id", "created": false, "reference": true, "applied", "converted", "detached"}` | The reference (or the copy row it converted) was updated, left alone as stale, or detached. |
 | `200 {"id": null, …}` | A detach found nothing to detach. |
-| `409 {"error"}` | Another of your plugins holds the live reference for this key. |
+| `409 {"error"}` | Another of your plugins holds the live reference for this key, and that plugin is live. |
 
 With `route_to_chief` the answer carries `"routed"`, and the routing answers
 (`503`, `429`, `409`) are the copy route's. The chief's task event quotes the
@@ -359,7 +376,8 @@ snapshot's status label and its newest comment.
 
 Every status write (the card, `PATCH /api/tasks/{id}/status`, `muster task
 status`, the `task_set_status` tool, an agent's own route and tool, the
-dispatch advance) and every comment from a person or agent (the card,
+dispatch advance, which on a reference is queued only while the snapshot
+is `open`) and every comment from a person or agent (the card,
 `POST /api/tasks/{id}/comments`, the `task_comment` tool, an agent's own
 route and tool, a task route's answer) on a reference:
 
@@ -373,7 +391,11 @@ The usual rules still apply first: an agent may not set `complete`, and may
 not move a task out of it. muster's own comments (the idle reaper's `stale`
 note, a merge record, a gate release) stay on the task as muster-only
 history and are never queued. A reference cannot be the loser of a merge
-(`409`): retiring the loser would close the upstream task.
+(`409`): retiring the loser would close the upstream task. Destroying an
+agent on a reference does not reopen it (on an ordinary task it does), for
+the same reason. Your chief may start an agent on a reference that is `open`
+or `in_progress` (the upstream often has it in progress before muster starts
+one), as long as no live agent is already on it.
 
 The task page shows queued writes in the thread as "sending…" or "failed:
 \<error\>", when the snapshot was last applied, and a **stale** badge once
@@ -399,9 +421,14 @@ write is now leased to you for 2 minutes:
 writes on references your plugin owns are handed to you. A write whose lease
 lapses goes back to pending and is handed out again, with `attempts` one
 higher, so keep your own ledger by write `id`: a crash between applying the
-write upstream and reporting it must not apply it twice. A write whose task
-is no longer your live reference (it was dismissed, say) is failed with a
-reason and not handed out.
+write upstream and reporting it must not apply it twice. A write handed out
+10 times without a result is failed with `gave up after 10 attempts`. One
+task's writes are handed out **in order, one at a time**: a write is not
+handed out while an earlier write on the same task is still pending or
+claimed, so report each one before the next on that task arrives. A write
+whose task is no longer your live reference (it was dismissed, say) is
+failed with a reason and not handed out. A failed write stays visible on the
+task page; there is no way to dismiss one yet.
 
 #### `POST /plugin/v1/task-writes/{id}/result`
 
@@ -418,12 +445,25 @@ once reported done, stops the agent your chief started on the task, just as a
 
 #### `GET /plugin/v1/tasks?namespace=<ns>&live=true`
 
-Your live tasks (not dismissed, not merged away) that carry a key in `ns`,
-oldest first, at most 500 (`"truncated": true` when there are more), copies
-and references alike:
+The live tasks (not dismissed, not merged away) in `ns` that **your plugin**
+may see: the references your plugin holds, and the copy rows (filed with
+`create`) that carry a key in `ns`. Another plugin's reference is never
+listed. Use it to convert your copy rows and to reconcile.
+
+| parameter | meaning |
+|---|---|
+| `namespace` | Required: one of this server's plugin task namespaces. |
+| `live=true` | Required (only live rows are listed). |
+| `key=<key>` | One full key in `namespace`: at most one row, the one an upsert for that key would work on (the reference, else the copy row it would convert). |
+| `open=true` | Leave out `complete` tasks. |
+| `after=<task id>` | Only tasks with an id greater than this. |
+
+Tasks come in ascending id order, at most 500 a page:
 `200 {"tasks": [{"id", "key", "status", "is_reference", "updated_at",
-"comments": [{"id", "author", "body", "created_at", "retracted"}]}]}`. Use it
-to convert your copy rows and to reconcile. `live=true` is required.
+"comments": [{"id", "author", "body", "created_at", "retracted"}]}],
+"truncated": bool, "next_after": <id or null>}`. When `truncated` is true,
+`next_after` is the last id on the page: pass it as `after` for the next
+one. A bad parameter is a `400`.
 
 ## Routing a task to the chief
 

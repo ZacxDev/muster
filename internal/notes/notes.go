@@ -584,10 +584,12 @@ type Store interface {
 	// claimed, failed), oldest first: the task page's
 	// "sending…" / "failed" lines.
 	RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error)
-	// ListLiveInNamespace returns up to limit live tasks (not dismissed, not a
-	// merge loser) carrying a tag in namespace ns, oldest first, with their
-	// comments: what a plugin reconciles and converts.
-	ListLiveInNamespace(ctx context.Context, ns string, limit int) ([]Note, error)
+	// ListLiveInNamespace returns the live tasks (not dismissed, not a merge
+	// loser) in q.Namespace that plugin q.PluginID may see — its own
+	// references, and COPY rows carrying a tag in the namespace — ascending by
+	// id, at most q.Limit, with their comments: what a plugin reconciles and
+	// converts. See RefListQuery for the filters.
+	ListLiveInNamespace(ctx context.Context, q RefListQuery) ([]Note, error)
 	AddAttachment(ctx context.Context, noteID int64, a Attachment) (Attachment, error)
 	// GetAttachment returns a single attachment including its Data, for download.
 	GetAttachment(ctx context.Context, id int64) (Attachment, error)

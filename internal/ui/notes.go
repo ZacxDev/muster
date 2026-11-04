@@ -1874,6 +1874,46 @@ type NoteEditView struct {
 	Vocabulary []notes.TagCount
 }
 
+// editTitleBodyFields is the edit form's title and body. On a plugin task
+// reference they are the upstream's: shown READ-ONLY, as text, with NO form
+// field — so the form submits neither and the server leaves them alone
+// (api.refEditRefusal refuses a changed one on either edit path).
+func editTitleBodyFields(n notes.Note) g.Node {
+	if n.IsReference() {
+		ro := "w-full whitespace-pre-wrap break-words rounded-lg bg-s2 px-3 py-2 text-sm text-fg"
+		return g.Group{
+			P(Class("text-xs text-muted"), g.Attr("data-ref-readonly", ""),
+				g.Text("This task is a reference: its title and description follow the upstream. Edit them there.")),
+			labelledField("Title", Div(Class(ro), g.Attr("aria-readonly", "true"), g.Text(textplain.Title(n.Title)))),
+			labelledField("Task", Div(Class(ro), g.Attr("aria-readonly", "true"), g.Text(n.Body))),
+		}
+	}
+	return g.Group{
+		// Title (migration 0018): the real display title, no longer smuggled
+		// through `directory`. Optional — empty falls back to the directory.
+		labelledField("Title",
+			Input(
+				Type("text"),
+				Name("title"),
+				Value(n.Title),
+				Placeholder("short title (optional)"),
+				Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+			),
+		),
+		labelledField("Task",
+			Textarea(
+				Name("body"),
+				Rows("4"),
+				Required(),
+				g.Attr("autofocus", ""),
+				Placeholder("What needs doing?"),
+				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+				g.Text(n.Body),
+			),
+		),
+	}
+}
+
 // NotesEditModalBody is the /ui/tasks/{id}/edit partial: the EDIT-task form,
 // pre-filled with the task's current directory/body/model/repo/branch,
 // loaded into #task-modal-body when the card's Edit button is tapped. It posts
@@ -1927,28 +1967,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 			// success feedback, since the modal simply vanished before.
 			hx("hx-on::after-request", "if(event.target===this && event.detail.successful){if(window.cgTaskModalSaved)window.cgTaskModalSaved('task-"+ids+"');if(window.cgTaskModalClose){window.cgTaskModalClose()}else{document.getElementById('task-modal').classList.add('hidden')}}"),
 			Class("flex flex-col gap-3"),
-			// Title (migration 0018): the real display title, no longer smuggled
-			// through `directory`. Optional — empty falls back to the directory.
-			labelledField("Title",
-				Input(
-					Type("text"),
-					Name("title"),
-					Value(n.Title),
-					Placeholder("short title (optional)"),
-					Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-				),
-			),
-			labelledField("Task",
-				Textarea(
-					Name("body"),
-					Rows("4"),
-					Required(),
-					g.Attr("autofocus", ""),
-					Placeholder("What needs doing?"),
-					Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-					g.Text(n.Body),
-				),
-			),
+			editTitleBodyFields(n),
 			// Tags: chip editor (hidden `tag` inputs = the submitted set) + a
 			// vocabulary-backed suggestion list. Routing chips lock on an in-progress
 			// task (the server enforces the same refinement of the 409 rule).

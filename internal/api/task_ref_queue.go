@@ -162,6 +162,26 @@ func (s *Server) addTaskCommentOnce(ctx context.Context, origin commentOrigin, c
 	return wrote, false, err
 }
 
+// refEditRefusal is the 409 message for an owner edit of task cur that would
+// CHANGE a reference's title or body (title / body: the edit's new values,
+// nil when absent), or "" when the edit is allowed. A reference's title and
+// body are the upstream's (each snapshot rewrites them); an edit here would
+// be silently overwritten by the next snapshot, and is never sent upstream.
+// The same value sent back unchanged is not a change. Both edit paths
+// (PATCH /api/tasks/{id}, POST /tasks/{id}/edit) ask this, before any write.
+func refEditRefusal(cur notes.Note, title, body *string) string {
+	if !cur.IsReference() {
+		return ""
+	}
+	if (title != nil && *title != cur.Title) || (body != nil && *body != cur.Body) {
+		return refEditRefusedText
+	}
+	return ""
+}
+
+// refEditRefusedText is refEditRefusal's message.
+const refEditRefusedText = "this task is a reference; edit it upstream"
+
 // queueStatusIfReference is setNoteStatus's half of the rule: a status write
 // by any writer but the snapshot itself is queued on a reference. The
 // conditions the store's own UPDATE would apply are honoured first, so a
@@ -175,8 +195,16 @@ func (s *Server) queueStatusIfReference(ctx context.Context, writer statusWriter
 	}
 	from, conditional := notes.OnlyFromStatus(ctx)
 	if notes.IsForAgent(ctx) || conditional {
+		// 🔴 A READ THAT FAILS HERE FAILS THE WRITE (CLOSED). Without the row
+		// there is no telling whether it is a reference, and falling through
+		// would write a reference's status LOCALLY — the drift this file exists
+		// to end. The error is returned as is (a missing task stays
+		// pgx.ErrNoRows, which setNoteStatus's callers answer as not found).
 		cur, err := s.ext.Notes.Get(ctx, id)
-		if err != nil || !cur.IsReference() {
+		if err != nil {
+			return false, err
+		}
+		if !cur.IsReference() {
 			return false, nil
 		}
 		if (notes.IsForAgent(ctx) && cur.Status == notes.StatusComplete) || (conditional && cur.Status != from) {

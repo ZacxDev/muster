@@ -14,6 +14,13 @@ import (
 
 // The reference half of PGStore (references.go has the types and the rules).
 
+// copyRowOrder is which COPY row for a key a reference upsert converts — the
+// oldest one not complete, else the newest complete one — as an ORDER BY over
+// notes. ONE spelling: UpsertReference picks with it and the listing's key=
+// lookup (ListLiveInNamespace) names the same row with it.
+const copyRowOrder = `(status = '` + taskstatus.Complete + `'),
+	CASE WHEN status = '` + taskstatus.Complete + `' THEN -id ELSE id END`
+
 // UpsertReference: see the Store interface.
 //
 // 🔴 ONE LOCK FOR THE KEY, SHARED WITH CreateOnceByTag. Both take the
@@ -35,6 +42,10 @@ import (
 // comments (author RelayAuthor): the reference renders the upstream's thread,
 // and the relay copies of it would be the thread twice. Everyone else's
 // comments stay, as muster-only history.
+//
+// A live reference another of the owner's plugins holds is ErrRefOtherPlugin
+// while that plugin is live, and is ADOPTED (with its unfinished writes) once
+// it is revoked or deleted — see the block below.
 //
 // The status is NOT written here: UpsertReference sets title, body and the
 // snapshot, and the caller moves the status through Store.SetStatus so the
@@ -75,8 +86,7 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 		lookupErr = tx.QueryRow(ctx, `SELECT id FROM notes
 			WHERE tags @> ARRAY[$1]::text[] AND ext_key IS NULL AND `+liveOnly+`
 			  AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE $2)
-			ORDER BY (status = '`+taskstatus.Complete+`'),
-			         CASE WHEN status = '`+taskstatus.Complete+`' THEN -id ELSE id END
+			ORDER BY `+copyRowOrder+`
 			LIMIT 1 FOR UPDATE`, in.Key, supersededPattern).Scan(&id)
 		switch {
 		case lookupErr == nil:
@@ -87,8 +97,35 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 	default:
 		return RefUpsert{}, lookupErr
 	}
+	// 🔴 ANOTHER PLUGIN'S REFERENCE: REFUSED WHILE THAT PLUGIN IS LIVE, ADOPTED
+	// ONCE IT IS NOT. A plugin has no token rotation — rotating is revoke +
+	// create, a new plugin id — so a reference held by a revoked (or deleted)
+	// plugin would otherwise be stranded: every upsert 409, every queued write
+	// handed to a plugin that can never claim it. The holder is always one of
+	// this row's owner's plugins (notes_ext_plugin_is_owners), and the caller
+	// is too (the plugin token's owner, the same principal that can see the row),
+	// so the takeover never crosses owners. The trigger re-checks the new id.
 	if isRef && pluginID != nil && *pluginID != in.PluginID {
-		return RefUpsert{}, ErrRefOtherPlugin
+		var holderLive bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugins WHERE id = $1 AND revoked_at IS NULL)`,
+			*pluginID).Scan(&holderLive); err != nil {
+			return RefUpsert{}, err
+		}
+		if holderLive {
+			return RefUpsert{}, ErrRefOtherPlugin
+		}
+		// The reference and its unfinished writes move together, in this
+		// transaction: a claimed write's lease belonged to the dead plugin, so it
+		// is pending again for the new one (attempts kept — the dead plugin may
+		// have applied it; the plugin's own ledger by write id is the guard).
+		if _, err := tx.Exec(ctx, `UPDATE notes SET ext_plugin_id = $2 WHERE id = $1`, id, in.PluginID); err != nil {
+			return RefUpsert{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE task_ref_writes SET plugin_id = $2, state = 'pending', lease_until = NULL
+			WHERE note_id = $1 AND state IN ('pending', 'claimed')`, id, in.PluginID); err != nil {
+			return RefUpsert{}, err
+		}
+		out.Adopted = true
 	}
 
 	if in.Detach {
@@ -101,7 +138,7 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 		if err := tx.Commit(ctx); err != nil {
 			return RefUpsert{}, err
 		}
-		return RefUpsert{Found: true, Detached: true, Note: Note{ID: id}}, nil
+		return RefUpsert{Found: true, Detached: true, Adopted: out.Adopted, Note: Note{ID: id}}, nil
 	}
 
 	if !foundAny && !in.Create {
@@ -119,7 +156,8 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 	} else {
 		// 🔴 STALE IS DECIDED HERE, ON THE LOCKED ROW: an upsert whose snapshot is
 		// OLDER than the stored one is accepted and applies nothing. Equal applies
-		// again (a resend is idempotent). Compared as instants, not as text.
+		// again (a resend is idempotent; an identical one touches only
+		// ext_synced_at, below). Compared as instants, not as text.
 		if isRef && storedAt != nil {
 			stored, perr := time.Parse(time.RFC3339Nano, *storedAt)
 			if perr == nil && snap.UpdatedAt.Before(stored) {
@@ -127,7 +165,33 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 					return RefUpsert{}, err
 				}
 				n, err := s.Get(ctx, id)
-				return RefUpsert{Note: n, Found: true, Applied: false}, err
+				return RefUpsert{Note: n, Found: true, Applied: false, Adopted: out.Adopted}, err
+			}
+		}
+		// 🔴 AN UNCHANGED SNAPSHOT REWRITES NOTHING BUT ext_synced_at. A plugin's
+		// reconcile resends every live reference on a schedule; rewriting the row
+		// each time would bump updated_at (the card's version — every open page
+		// re-renders) for a snapshot that says nothing new. The comparison is the
+		// whole stored snapshot (title, url, status, label, rev, updated_at, body,
+		// comments — jsonb equality, so key order is irrelevant) plus the row's own
+		// title and body, in the UPDATE's WHERE, on the locked row.
+		if isRef {
+			tag, err := tx.Exec(ctx, `UPDATE notes SET ext_synced_at = now()
+				WHERE id = $1 AND ext_snapshot = $2::jsonb AND title = $3 AND body = $4`, id, snap, snap.Title, snap.Body)
+			if err != nil {
+				return RefUpsert{}, err
+			}
+			if tag.RowsAffected() == 1 {
+				out.Applied, out.Unchanged = true, true
+				if err := tx.Commit(ctx); err != nil {
+					return RefUpsert{}, err
+				}
+				n, err := s.Get(ctx, id)
+				if err != nil {
+					return RefUpsert{}, err
+				}
+				out.Note, out.Found = n, true
+				return out, nil
 			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE notes SET title = $2, body = $3, ext_key = $4, ext_plugin_id = $5,
@@ -216,6 +280,9 @@ func (s *PGStore) EnqueueRefWrite(ctx context.Context, w RefWrite) (RefWrite, bo
 	return got, created, err
 }
 
+// refWriteGaveUp is the error a write given up on carries.
+var refWriteGaveUp = fmt.Sprintf("gave up after %d attempts", RefWriteMaxAttempts)
+
 // ClaimRefWrites: see the Store interface.
 //
 // 🔴 ONLY THIS PLUGIN'S WRITES, AND ONLY WHILE THE TASK IS STILL ITS LIVE
@@ -238,6 +305,14 @@ func (s *PGStore) ClaimRefWrites(ctx context.Context, pluginID int64, limit int,
 		WHERE plugin_id = $1 AND state = 'claimed' AND lease_until < now()`, pluginID); err != nil {
 		return nil, err
 	}
+	// A write handed out RefWriteMaxAttempts times without a result is given up
+	// on (failed, still shown on the task page), so one the plugin cannot apply
+	// stops blocking the writes queued after it on the same task.
+	if _, err := tx.Exec(ctx, `UPDATE task_ref_writes SET state = 'failed', finished_at = now(), error = $3
+		WHERE plugin_id = $1 AND state = 'pending' AND attempts >= $2`,
+		pluginID, RefWriteMaxAttempts, refWriteGaveUp); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(ctx, `UPDATE task_ref_writes w SET state = 'failed', finished_at = now(),
 			error = 'the task is no longer a reference this plugin owns'
 		WHERE w.plugin_id = $1 AND w.state = 'pending'
@@ -245,10 +320,19 @@ func (s *PGStore) ClaimRefWrites(ctx context.Context, pluginID int64, limit int,
 		                    AND n.ext_key IS NOT NULL AND n.deleted_at IS NULL)`, pluginID); err != nil {
 		return nil, err
 	}
+	// 🔴 ONE TASK'S WRITES ARE HANDED OUT IN ORDER, ONE AT A TIME: a write is
+	// picked only while no EARLIER write on the same task is pending or claimed.
+	// Two writes on one task (a status, then a comment about it) applied out of
+	// order, or concurrently by two workers of the plugin, would leave the
+	// upstream in an order nobody wrote. A concurrent claim skips the earlier
+	// write (SKIP LOCKED) but still sees it pending, so it skips the later one
+	// too.
 	rows, err := tx.Query(ctx, `
 		WITH picked AS (
 			SELECT w.id FROM task_ref_writes w
 			 WHERE w.plugin_id = $1 AND w.state = 'pending'
+			   AND NOT EXISTS (SELECT 1 FROM task_ref_writes e
+			                    WHERE e.note_id = w.note_id AND e.id < w.id AND e.state IN ('pending', 'claimed'))
 			 ORDER BY w.id LIMIT $2
 			 FOR UPDATE SKIP LOCKED
 		)
@@ -336,16 +420,45 @@ func (s *PGStore) RefWrites(ctx context.Context, noteID int64) ([]RefWrite, erro
 }
 
 // ListLiveInNamespace: see the Store interface.
-func (s *PGStore) ListLiveInNamespace(ctx context.Context, ns string, limit int) ([]Note, error) {
+//
+// 🔴 WHAT A PLUGIN MAY SEE, IN THE WHERE CLAUSE: a reference only when this
+// plugin holds it (ext_plugin_id), and a COPY row (no ext_key) carrying a tag
+// in the namespace. Another plugin's reference is never listed, even in a
+// namespace both plugins file into.
+//
+// q.Key narrows to the ONE row an upsert for that key would work on: the
+// reference, else the copy row it would convert (copyRowOrder — the same
+// order, so the listing and the upsert can never name different rows).
+func (s *PGStore) ListLiveInNamespace(ctx context.Context, q RefListQuery) ([]Note, error) {
+	ns := q.Namespace
 	if ns == "" || strings.Contains(ns, ":") {
 		return nil, fmt.Errorf("notes: namespace %q", ns)
 	}
+	if q.Key != "" {
+		if !KeyInNamespace(q.Key, ns) {
+			return nil, fmt.Errorf("notes: key %q is not a key in namespace %q", q.Key, ns)
+		}
+	}
+	limit := q.Limit
+	if limit < 1 {
+		limit = 1
+	}
 	// LIKE's own metacharacters in a namespace match themselves.
 	prefix := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(ns) + ":%"
-	rows, err := s.pool.Query(ctx, `SELECT `+noteCols+` FROM notes
-		WHERE `+liveOnly+` AND EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE $1)
+	where := liveOnly + `
 		  AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE $2)
-		ORDER BY id LIMIT $3`, prefix, supersededPattern, limit)
+		  AND id > $3
+		  AND ($4 = false OR status <> '` + taskstatus.Complete + `')
+		  AND (CASE WHEN ext_key IS NOT NULL
+		            THEN ext_plugin_id = $5 AND ext_key LIKE $1 AND ($6 = '' OR ext_key = $6)
+		            ELSE EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE $1) AND ($6 = '' OR tags @> ARRAY[$6]::text[])
+		       END)`
+	order := `id`
+	if q.Key != "" {
+		order, limit = `(ext_key IS NULL), `+copyRowOrder, 1
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+noteCols+` FROM notes WHERE `+where+` ORDER BY `+order+` LIMIT $7`,
+		prefix, supersededPattern, q.After, q.OpenOnly, q.PluginID, q.Key, limit)
 	if err != nil {
 		return nil, err
 	}

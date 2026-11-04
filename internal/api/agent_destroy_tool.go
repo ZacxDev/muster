@@ -192,6 +192,15 @@ func (s *Server) reopenTaskAfterDestroy(ctx context.Context, a agents.Agent) {
 	if err != nil || n.Status != notes.StatusInProgress {
 		return
 	}
+	// 🔴 A PLUGIN TASK REFERENCE IS NEVER REOPENED HERE. Its status is the
+	// upstream's (task_ref_queue.go), and on a reference this write would be
+	// QUEUED for the upstream: tearing down muster's agent would move the
+	// UPSTREAM task back to open — a side effect of tidying this board, which
+	// is the same reason a reference is never a merge loser (merge.go). Someone
+	// may be working it upstream; the plugin's next snapshot keeps the truth.
+	if n.IsReference() {
+		return
+	}
 	on, err := s.agentsOnTask(ctx, a.OwnerID, n.ID)
 	if err != nil {
 		s.logger.Printf("agent_destroy: agents on task %d: %v; leaving it in_progress", n.ID, err)
@@ -211,7 +220,9 @@ func (s *Server) reopenTaskAfterDestroy(ctx context.Context, a agents.Agent) {
 		hooks.afterWrite(n.ID, err)
 	}
 	if errors.Is(err, errQueuedUpstream) {
-		return // a reference: queued for its upstream, which broadcast already
+		// The row became a reference between the read above and this write:
+		// queued, which broadcast already. (Only that window reaches here.)
+		return
 	}
 	if err != nil {
 		s.logger.Printf("agent_destroy: reopen task %d: %v", n.ID, err)

@@ -858,7 +858,15 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 		s.logger.Printf("agents: dispatch status get task %d: %v", noteID, err)
 		return
 	}
-	if n.Status != notes.StatusOpen {
+	// A reference advances (a queued in_progress for its upstream) only from
+	// an open SNAPSHOT: one already in progress upstream (dispatchableStatus
+	// lets the chief start an agent on it) needs no write, and one in review
+	// or complete there must not be pulled back.
+	from := n.Status
+	if n.Ref != nil {
+		from = n.Ref.Snapshot.Status
+	}
+	if from != notes.StatusOpen {
 		return
 	}
 	if _, err := s.setNoteStatus(ctx, writerDispatchAdvance, noteID, notes.StatusInProgress); err != nil {
