@@ -1010,7 +1010,7 @@ func (s *PGStore) OwnerTypedChatMessages(ctx context.Context, agentID, by int64,
 		return []ChatMessage{}, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, typed_by FROM chat_messages
+		SELECT id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0) FROM chat_messages
 		WHERE agent_id = $1 AND typed_by = $2 AND role = 'user' AND kind = 'text' AND created_at >= $3
 		ORDER BY id DESC LIMIT $4`, agentID, by, since, limit)
 	if err != nil {
