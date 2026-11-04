@@ -8,6 +8,7 @@ import { signIn } from '../lib/signin';
 import { binDir, dsn, mirrorAskPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
+import { touchDrag } from '../lib/touch';
 
 // ASKUSERQUESTION IN BOTH PLACES AT ONCE, in a real browser at phone width,
 // against a real muster-server (MUSTER_MIRROR=1, its own port), a real
@@ -712,6 +713,126 @@ for (const vp of [
           await page.evaluate(async (id) => (await fetch(`/send-queue/${id}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })).status, id);
         }
       }
+    });
+  });
+}
+
+// 🔴 THE QUESTION DOES NOT HIDE THE CONVERSATION (the operator's report: "ask
+// user question shows as an overlay and makes it impossible to see the
+// conversation preceding the question"). A pending question is a card at the
+// END of the conversation — in its flow, inside the one scroll region — not a
+// box between the conversation and the composer that takes most of the screen.
+// With a long conversation and a long question: the card is in the
+// conversation and on screen when it arrives; the conversation keeps its
+// height; scrolled up by a real gesture (a finger on a phone, the wheel on a
+// desktop) its earliest message and the message just before the question are
+// each wholly visible — the points at their top, centre and bottom are the
+// message itself, not the card or the composer over it; and answering still
+// works. On origin/main the card was drawn in #mv-asks above the composer,
+// up to 70% of the screen tall, leaving the conversation a strip.
+for (const vp of [
+  { name: 'phone 412×915 touch', viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true },
+  { name: 'desktop 1280×800', viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false },
+]) {
+  test.describe(vp.name, () => {
+    test.use({ viewport: vp.viewport, hasTouch: vp.hasTouch, isMobile: vp.isMobile, storageState: { cookies: [], origins: [] } });
+
+    test('a pending question is a card at the end of the conversation, and what preceded it can be scrolled to', async ({ page }) => {
+      const tag = `${vp.viewport.width}-${stamp}`;
+      const reply = (t: string) => rec({ type: 'assistant', message: { content: [{ type: 'text', text: t }] } });
+      // A long conversation: 30 more exchanges, the last one marked.
+      let more = prompt(`let us plan the release (${tag})`);
+      for (let i = 0; i < 30; i++) {
+        more += reply(`Step ${i} of the plan.\n\nThis paragraph is here so the conversation is long enough to scroll through several screens.`);
+        more += prompt(`ok, step ${i} done`);
+      }
+      more += reply(`preceding message ${tag}: before going on I need three decisions from you.\n\n- the colour\n- the place to fix it\n- the name`);
+      fs.appendFileSync(tr, more);
+      await openView(page);
+      const log = page.locator('#mv-log');
+      // The conversation's earliest message: the transcript's first prompt
+      // (other tests in this file add to the same transcript before this one).
+      const earliest = log.locator('[data-bubble]').first();
+      const preceding = log.locator('[data-bubble]', { hasText: `preceding message ${tag}` });
+      await expect(preceding).toBeVisible({ timeout: 20_000 });
+
+      const toolID = `toolu_e2e_inline_${vp.viewport.width}_${stamp}`;
+      await registered(toolID, { qs: longQuestions });
+      const c = page.locator(`[data-ask-live][data-ask-tool="${toolID}"]`);
+      await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+      if (process.env.ASKQ_SHOTS) await page.screenshot({ path: path.join(process.env.ASKQ_SHOTS, `arrived-${vp.viewport.width}.png`) });
+
+      // (b) On screen as it arrives: the point at its head's centre is the card.
+      await expect.poll(async () => c.evaluate((card) => {
+        const head = card.firstElementChild!.getBoundingClientRect();
+        const at = document.elementFromPoint(head.left + head.width / 2, head.top + head.height / 2);
+        return !!at && card.contains(at);
+      }), 'the card is scrolled into view when it arrives').toBe(true);
+
+      // (a) Scrolled up by a real gesture, the earliest message is wholly
+      // visible and uncovered.
+      const box = (await log.boundingBox())!;
+      for (let i = 0; i < 200 && (await log.evaluate((l) => l.scrollTop)) > 0; i++) {
+        if (vp.hasTouch) {
+          const x = box.x + box.width / 2;
+          await touchDrag(page, { x, y: box.y + box.height * 0.2 }, { x, y: box.y + box.height * 0.8 }, 6);
+        } else {
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await page.mouse.wheel(0, -2000);
+          await page.waitForTimeout(30);
+        }
+      }
+      expect(await log.evaluate((l) => l.scrollTop), 'scrolled to the start of the conversation').toBe(0);
+      if (process.env.ASKQ_SHOTS) await page.screenshot({ path: path.join(process.env.ASKQ_SHOTS, `scrolled-up-${vp.viewport.width}.png`) });
+      const uncovered = (loc: typeof earliest) =>
+        loc.evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const x = r.left + Math.min(r.width / 2, 24);
+          const pts = [r.top + 2, r.top + r.height / 2, r.bottom - 2];
+          const hits = pts.map((y) => document.elementFromPoint(x, y));
+          const bad = hits.map((h, i) => (h && el.contains(h) ? '' : `${Math.round(pts[i])}:${h ? (h.id || h.tagName) : 'nothing'}`)).filter(Boolean);
+          return bad.join(', ');
+        });
+      await expect(earliest).toContainText('help me set the project up');
+      await expect(earliest).toBeInViewport();
+      expect(await uncovered(earliest), 'the earliest message is wholly visible, not under the card or the composer').toBe('');
+      // The conversation has the screen to be read in: scrolled up, the points
+      // down the middle of the screen from the header to the composer are the
+      // conversation's — not a question card over it, not a region that
+      // squeezed it into a strip.
+      const reading = await page.evaluate(() => {
+        const l = document.getElementById('mv-log')!;
+        const x = l.getBoundingClientRect().left + l.getBoundingClientRect().width / 2;
+        let ok = 0, n = 0;
+        for (let y = 0; y < window.innerHeight; y += 10) {
+          n++;
+          const at = document.elementFromPoint(x, y);
+          if (at && l.contains(at) && !at.closest('[data-ask-live]')) ok++;
+        }
+        return ok / n;
+      });
+      expect(reading, `the conversation shows on ${Math.round(reading * 100)}% of the screen with a question open`).toBeGreaterThan(0.6);
+      // And the message just before the question, scrolled to.
+      await preceding.scrollIntoViewIfNeeded();
+      expect(await uncovered(preceding), 'the message before the question is wholly visible').toBe('');
+
+      // The card is IN the conversation, after every message in it.
+      await expect(log.locator(`[data-ask-live][data-ask-tool="${toolID}"]`), 'the card is in the conversation').toHaveCount(1);
+      const after = await log.evaluate((l, id) => {
+        const card = l.querySelector(`[data-ask-live][data-ask-tool="${id}"]`)!;
+        return Array.from(l.querySelectorAll('[data-bubble]')).every((r) => !!(r.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING));
+      }, toolID);
+      expect(after, 'every message comes before the card').toBe(true);
+
+      // (c) Answering still works.
+      const submit = c.getByRole('button', { name: 'Submit answers' });
+      await c.locator('fieldset').nth(0).getByText('Blue', { exact: true }).click();
+      await c.locator('fieldset').nth(1).getByText('Patch', { exact: true }).click();
+      await c.locator('fieldset').nth(2).getByText('Alpha', { exact: true }).click();
+      await submit.scrollIntoViewIfNeeded();
+      if (vp.hasTouch) await submit.tap();
+      else await submit.click();
+      await expect(c, `submitted (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
     });
   });
 }
