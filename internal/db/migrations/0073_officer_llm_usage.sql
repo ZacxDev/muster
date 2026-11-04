@@ -1,4 +1,4 @@
--- muster 0072 — THE OFFICER LLM PROXY'S USAGE (internal/llmproxy).
+-- muster 0073 — THE OFFICER LLM PROXY'S USAGE (internal/llmproxy).
 -- docs/officers.md "The LLM proxy".
 --
 --   officer_llm_usage   one row per (owner, officer, routine instance number, UTC day)
@@ -19,7 +19,7 @@
 -- turns it off with the rest, and --rls-on re-applies this file (db.RLSOn),
 -- so every statement is idempotent.
 --
--- Must apply after 0071 (the contiguity test refuses a gap).
+-- Must apply after 0072 (the contiguity test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the
 -- table or writes 'llm'):
@@ -28,7 +28,7 @@
 --   ALTER TABLE public.connector_audit ADD CONSTRAINT connector_audit_kind_check
 --     CHECK (kind IN ('proxy', 'grant', 'query'));
 --   DROP TABLE public.officer_llm_usage;
---   DELETE FROM schema_migrations WHERE version = 72;
+--   DELETE FROM schema_migrations WHERE version = 73;
 
 SET LOCAL lock_timeout = '3s';
 

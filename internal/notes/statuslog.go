@@ -104,6 +104,11 @@ func ForAgent(ctx context.Context) context.Context {
 
 func forAgent(ctx context.Context) bool { v, _ := ctx.Value(agentWriteKey{}).(bool); return v }
 
+// IsForAgent reports whether ctx's status writes are an agent's (ForAgent). The
+// api's reference queue reads it: a write it queues instead of storing must
+// honour the same "never out of complete" rule the store's UPDATE would have.
+func IsForAgent(ctx context.Context) bool { return forAgent(ctx) }
+
 // fromStatusKey carries OnlyFrom's required current status.
 type fromStatusKey struct{}
 
@@ -123,6 +128,10 @@ func onlyFrom(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(fromStatusKey{}).(string)
 	return v, ok
 }
+
+// OnlyFromStatus answers OnlyFrom's required status on ctx, if any (the api's
+// reference queue honours it as the store's UPDATE would).
+func OnlyFromStatus(ctx context.Context) (string, bool) { return onlyFrom(ctx) }
 
 // prevStatusKey carries WithPreviousStatus's slot.
 type prevStatusKey struct{}

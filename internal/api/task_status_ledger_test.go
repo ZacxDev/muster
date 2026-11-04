@@ -79,6 +79,10 @@ var expectedStatusWriterLedger = map[string][]string{
 	"toolTaskSetStatus": {"writerTaskTool"},
 	// The in_progress→open step after a mirrored session's agent_destroy.
 	"reopenTaskAfterDestroy": {"writerDestroyReopen"},
+	// A plugin task REFERENCE's snapshot moving its status (plugin_task_refs.go).
+	// The one writer whose write on a reference is stored rather than queued,
+	// and whose `complete` stops no agent.
+	"applyReference": {"writerPluginReference"},
 }
 
 // TestEveryStatusWriterIsLabelled pins every caller of setNoteStatus to the
@@ -392,6 +396,13 @@ func exprText(e ast.Expr) string {
 // every status writer reaches it by construction. It fails when anything ELSE
 // in the package calls it too: a second call site means the stop has started to
 // move out to the writers, where the next one forgets it.
+//
+// ⚠ ONE OTHER CALLER IS LEDGERED, AND IT IS NOT A WRITER MOVING OUT:
+// handlePluginTaskWriteResult. On a plugin task reference a `complete` is not
+// stored by setNoteStatus but QUEUED for the upstream (task_ref_queue.go); the
+// owner's complete LANDS when the plugin reports it done, and that result is
+// where the stop runs. The snapshot that follows is writerPluginReference,
+// which setNoteStatus deliberately does not stop on.
 func TestTheCompleteStopIsOnTheStatusFunnel(t *testing.T) {
 	fset := token.NewFileSet()
 	files := parsePackageSources(t, fset)
@@ -402,8 +413,8 @@ func TestTheCompleteStopIsOnTheStatusFunnel(t *testing.T) {
 		})
 	}
 	sort.Strings(callers)
-	if got := strings.Join(callers, ","); got != "setNoteStatus" {
-		t.Errorf("stopChiefAgentOnComplete is called from [%s], want exactly [setNoteStatus]: "+
+	if got := strings.Join(callers, ","); got != "handlePluginTaskWriteResult,setNoteStatus" {
+		t.Errorf("stopChiefAgentOnComplete is called from [%s], want exactly [handlePluginTaskWriteResult,setNoteStatus]: "+
 			"the funnel every status writer passes, so no writer of `complete` can skip it", got)
 	}
 }

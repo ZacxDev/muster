@@ -109,6 +109,19 @@ type taskBlock struct {
 	owner   string
 }
 
+// dispatchableStatus is whether task n's STATUS allows a dispatch: open — or,
+// for a plugin task reference, open or in_progress. A reference's status is
+// the upstream's, and an upstream task is often in progress there (assigned,
+// being worked) before muster starts an agent on it; for a reference the
+// "already being worked here" check is the live-agent one that follows, not
+// the status.
+func dispatchableStatus(n notes.Note) bool {
+	if n.IsReference() && n.Status == notes.StatusInProgress {
+		return true
+	}
+	return n.Status == notes.StatusOpen
+}
+
 // chiefDispatchTaskBlock is THE task predicate behind chiefDispatchTaskRefusal
 // (the tool's refusal) and chiefTaskActions (the ask's reason): one check,
 // two wordings.
@@ -118,7 +131,7 @@ func (s *Server) chiefDispatchTaskBlock(ctx context.Context, owner int64, n note
 		return taskBlock{"task " + id + " (" + reason + ") " + chiefDispatchGatedText,
 			"this task is gated (" + reason + "), so only you can release it"}, nil
 	}
-	if n.Status != notes.StatusOpen {
+	if !dispatchableStatus(n) {
 		return taskBlock{"task " + id + " " + chiefDispatchNotOpen + " (" + n.Status + ")",
 			"this task is not open (" + n.Status + "), so it cannot start one on it"}, nil
 	}

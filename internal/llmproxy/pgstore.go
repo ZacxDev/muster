@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGStore is Store on officer_llm_usage (migration 0072), under row-level
+// PGStore is Store on officer_llm_usage (migration 0073), under row-level
 // security: ctx must act as the officer's owner (the request's principal is
 // the calling instance's owner, which is its officer's), and the row lands
 // under that owner. Numbers only: no column can hold a prompt, a response or

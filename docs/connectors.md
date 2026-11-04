@@ -197,7 +197,7 @@ It is a credential-injecting proxy like `/connect/`, with three differences:
   `/llm/` is refused 404.
 
 **Audit.** Each proxied request writes one row to the connector audit trail
-with kind `llm` (migration 0072), connector `llm`, method `POST`, the
+with kind `llm` (migration 0073), connector `llm`, method `POST`, the
 provider's host, path `/api/v1/messages`, the response status, and a detail
 line: officer, instance, item, model, requested model, provider, result,
 tokens in / cache read / cache write / out, USD (and whether it was

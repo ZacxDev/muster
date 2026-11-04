@@ -63,6 +63,14 @@ const (
 	// session's agent_destroy tore down the last live agent on a task
 	// (agent_destroy_tool.go), so the chief can task_dispatch it again.
 	writerDestroyReopen statusWriter = "agent-destroy-reopen"
+	// writerPluginReference is a plugin task REFERENCE's snapshot moving the
+	// task's status (plugin_task_refs.go, applyReference): the upstream changed,
+	// and the row follows. It is the ONE writer a reference's status is stored
+	// from — every other writer's write on a reference is queued for the
+	// upstream (task_ref_queue.go) — and the one writer whose `complete` does
+	// NOT stop the chief's agent: an upstream close is not the owner stopping
+	// an agent.
+	writerPluginReference statusWriter = "plugin_reference"
 	// 🔴 TWO LABELS WERE DELETED HERE (upstream task #653 phase two), and the
 	// deletion-tracking note matters more than usual because these are LOG VALUES:
 	//
@@ -108,10 +116,28 @@ const (
 // TestEveryStatusWriterIsLabelled's caller ledger, not the compiler; see the
 // UnlabelledWriter comment in internal/notes/statuslog.go, which used to claim
 // the opposite and is now consistent with this.
+//
+// 🔴 ON A PLUGIN TASK REFERENCE THE WRITE IS QUEUED, NOT STORED
+// (queueStatusIfReference, task_ref_queue.go): the upstream owns the status. The
+// task comes back unchanged with errQueuedUpstream, which every caller answers
+// as success (`queued: true`). Only writerPluginReference — the snapshot itself
+// — stores a reference's status, and its `complete` stops nothing.
 func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int64, status string) (notes.Note, error) {
+	queued, err := s.queueStatusIfReference(ctx, writer, id, status)
+	if err != nil {
+		return notes.Note{}, err
+	}
+	if queued {
+		n, err := s.ext.Notes.Get(ctx, id)
+		if err != nil {
+			return notes.Note{}, err
+		}
+		return n, errQueuedUpstream
+	}
 	wctx, previous := notes.WithPreviousStatus(notes.WithWriter(ctx, string(writer)))
 	n, err := s.ext.Notes.SetStatus(wctx, id, status)
-	if prev, ok := previous(); err == nil && status == notes.StatusComplete && ok && prev != notes.StatusComplete {
+	if prev, ok := previous(); err == nil && writer != writerPluginReference &&
+		status == notes.StatusComplete && ok && prev != notes.StatusComplete {
 		s.stopChiefAgentOnComplete(ctx, n)
 	}
 	return n, err

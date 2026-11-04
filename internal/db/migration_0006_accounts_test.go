@@ -109,10 +109,11 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - chief_preferences (0060, the chief's per-user on/off toggle).
 //   - chief_nudges (0064, the chief's stall-nudge decisions).
 //   - cc_account_failovers (0066, a claude-code agent's account rebinds).
-//   - officer_llm_usage (0072, the officer LLM proxy's per-day usage).
+//   - officer_llm_usage (0073, the officer LLM proxy's per-day usage).
+//   - task_ref_writes (0072, the writes queued on a plugin task reference).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -198,6 +199,14 @@ var wantForeignKeys = []string{
 	"note_comments|note_comments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"note_comments|note_comments_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"notes|notes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// (0072's notes.ext_plugin_id has NO foreign key, deliberately — see the
+	// migration: notes_ext_plugin_is_owners checks it instead.)
+	// 0072: a write queued on a reference. Its plugin is a composite key (the
+	// plugin is the write owner's); its task is plain, owner-checked by
+	// task_ref_writes_task_is_owners (0027's reason).
+	"task_ref_writes|task_ref_writes_note_id_fkey|FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE",
+	"task_ref_writes|task_ref_writes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"task_ref_writes|task_ref_writes_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	"agent_focus|agent_focus_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"agent_focus|agent_focus_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"agent_focus_history|agent_focus_history_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",

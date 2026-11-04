@@ -50,8 +50,9 @@ const pluginTasksPath = pluginAPIPrefix + "/tasks"
 
 // pluginTaskRequestBytes bounds what the route reads: the body and the comment
 // each at plugins.MaxBodyBytes, escaped at worst 6 bytes per byte, plus the
-// title and key the same way and room for the field names.
-const pluginTaskRequestBytes = 6*(2*plugins.MaxBodyBytes+maxTaskFieldLen+notes.MaxTagRunes*4) + 1024
+// title and key the same way and room for the field names — plus a reference's
+// snapshot (pluginRefRequestBytes), which is the larger of the two shapes.
+const pluginTaskRequestBytes = 6*(2*plugins.MaxBodyBytes+maxTaskFieldLen+notes.MaxTagRunes*4) + 1024 + pluginRefRequestBytes
 
 type pluginTaskIn struct {
 	Key    string `json:"key"`
@@ -69,6 +70,13 @@ type pluginTaskIn struct {
 	// Notice is what kind of notice this is, by the plugin's reading:
 	// "assigned", "mentioned" or "update". Only with route_to_chief.
 	Notice string `json:"notice"`
+	// Reference makes the row a plugin task REFERENCE and carries the
+	// upstream's snapshot (plugin_task_refs.go). Not with create or comment.
+	Reference *pluginRefIn `json:"reference"`
+	// EventID names the upstream event a reference notice is (what the
+	// comment names for a copy task): required with reference and
+	// route_to_chief, and a resend under the same event_id routes nothing twice.
+	EventID string `json:"event_id"`
 }
 
 // truncBytes cuts s to at most n bytes, on a rune boundary.
@@ -108,6 +116,12 @@ func validatePluginTask(in pluginTaskIn) string {
 	}
 	if err := notes.ValidateTags([]string{in.Key}); err != nil {
 		return "key: " + err.Error()
+	}
+	if in.Reference != nil {
+		return validatePluginRef(in)
+	}
+	if in.EventID != "" {
+		return "event_id is only for reference"
 	}
 	if in.Create == nil && in.Comment == "" {
 		return "nothing to do: give create, a non-blank comment, or both"
@@ -150,6 +164,9 @@ func pluginCommentAuthor(p plugins.Plugin) string { return "plugin:" + p.Name }
 //     IN THE SAME TRANSACTION, so a resend of the same request finds both and
 //     adds nothing; 201 {id, created:true, commented};
 //   - none does and create is absent: nothing is written; 200 {id:null, ...}.
+//
+// With `reference` instead of create/comment the request is a plugin task
+// REFERENCE upsert: handlePluginReference (plugin_task_refs.go).
 func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Notes == nil {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "this server has no task store"})
@@ -176,49 +193,13 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 	}
 	p := pluginFromContext(r.Context())
 	ctx := r.Context()
+	if in.Reference != nil {
+		s.handlePluginReference(w, r, p, in)
+		return
+	}
 	answer := func(code int, id *int64, created, commented bool) {
 		out := map[string]any{"id": id, "created": created, "commented": commented}
-		if in.RouteToChief {
-			// 🔴 ROUTED ON EVERY ANSWER THAT NAMES A TASK, A RESEND INCLUDED. The
-			// event's external_id is a function of the key and the comment, so a
-			// resend finds the stored event and delivers nothing twice — and a
-			// plugin resending after a hand-off that failed (or a muster that
-			// stopped between the task and the hand-off) gets it handed off.
-			// `routed` says where the notice went: "chief", "agent",
-			// "attention", or false (filed only).
-			var routed any = false
-			if id != nil && taskRoutingOn(s.ext) {
-				to, err := s.routeTaskNotice(r, p, *id, in.Key, in.Notice, in.Comment)
-				if to != "" && err == nil {
-					routed = to
-				}
-				switch {
-				case err == nil:
-				case errors.Is(err, plugins.ErrTaskEventIDTaken):
-					// Permanent: the plugin itself posted a message under the
-					// event's id. Resending cannot help, so not a 503.
-					s.writeJSON(w, http.StatusConflict, map[string]any{
-						"error": "the task is filed, but this plugin already holds a message under the task event's external_id", "id": id})
-					return
-				case errors.Is(err, errNoticeInFlight):
-					w.Header().Set("Retry-After", strconv.Itoa(int(plugins.NoticeRouteReclaimAfter/time.Second)))
-					s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "id": id})
-					return
-				case errors.Is(err, errRouteRateLimited):
-					w.Header().Set("Retry-After", "60")
-					s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": err.Error(), "id": id})
-					return
-				default:
-					s.logger.Printf("plugins: plugin %d task %d: route the %s notice: %v", p.ID, *id, in.Notice, err)
-					w.Header().Set("Retry-After", "60")
-					s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-						"error": "the task is filed but the notice was not routed; send it again", "id": id})
-					return
-				}
-			}
-			out["routed"] = routed
-		}
-		s.writeJSON(w, code, out)
+		s.routeAndAnswerPluginTask(w, r, p, in, taskNoticeEvent{Discriminator: in.Comment, Change: in.Comment}, code, id, out)
 	}
 	var comment *notes.Comment
 	if in.Comment != "" {
@@ -260,7 +241,7 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	comment.NoteID = found.ID
-	wrote, err := s.ext.Notes.AddCommentOnce(ctx, *comment)
+	wrote, _, err := s.addTaskCommentOnce(ctx, commentByPlugin, *comment, "")
 	switch {
 	case err == nil:
 	case errors.Is(err, pgx.ErrNoRows):
@@ -276,4 +257,54 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(found.ID, 10))
 	}
 	answer(http.StatusOK, &found.ID, false, wrote)
+}
+
+// routeAndAnswerPluginTask writes POST /plugin/v1/tasks' answer out (with code),
+// first routing the notice when the request asked (route_to_chief): the copy
+// path and the reference path share it, so the routing answer — `routed`, and
+// the 409/429/503 refusals — has one spelling.
+//
+// 🔴 ROUTED ON EVERY ANSWER THAT NAMES A TASK, A RESEND INCLUDED. The event's
+// external_id is a function of the key and the event's discriminator (the
+// comment for a copy task, the event_id for a reference), so a resend finds the
+// stored event and delivers nothing twice — and a plugin resending after a
+// hand-off that failed (or a muster that stopped between the task and the
+// hand-off) gets it handed off. `routed` says where the notice went: "chief",
+// "agent", "attention", or false (filed only).
+func (s *Server) routeAndAnswerPluginTask(w http.ResponseWriter, r *http.Request, p plugins.Plugin, in pluginTaskIn,
+	ev taskNoticeEvent, code int, id *int64, out map[string]any) {
+	if in.RouteToChief {
+		var routed any = false
+		if id != nil && taskRoutingOn(s.ext) {
+			to, err := s.routeTaskNoticeEvent(r, p, *id, in.Key, in.Notice, ev)
+			if to != "" && err == nil {
+				routed = to
+			}
+			switch {
+			case err == nil:
+			case errors.Is(err, plugins.ErrTaskEventIDTaken):
+				// Permanent: the plugin itself posted a message under the
+				// event's id. Resending cannot help, so not a 503.
+				s.writeJSON(w, http.StatusConflict, map[string]any{
+					"error": "the task is filed, but this plugin already holds a message under the task event's external_id", "id": id})
+				return
+			case errors.Is(err, errNoticeInFlight):
+				w.Header().Set("Retry-After", strconv.Itoa(int(plugins.NoticeRouteReclaimAfter/time.Second)))
+				s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "id": id})
+				return
+			case errors.Is(err, errRouteRateLimited):
+				w.Header().Set("Retry-After", "60")
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": err.Error(), "id": id})
+				return
+			default:
+				s.logger.Printf("plugins: plugin %d task %d: route the %s notice: %v", p.ID, *id, in.Notice, err)
+				w.Header().Set("Retry-After", "60")
+				s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+					"error": "the task is filed but the notice was not routed; send it again", "id": id})
+				return
+			}
+		}
+		out["routed"] = routed
+	}
+	s.writeJSON(w, code, out)
 }

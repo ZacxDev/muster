@@ -406,6 +406,9 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
 		"POST /plugin/v1/tasks",
+		"GET /plugin/v1/tasks",
+		"POST /plugin/v1/task-writes/claim",
+		"POST /plugin/v1/task-writes/{id}/result",
 		"POST /plugin/v1/messages/{id}/owner-answered",
 	},
 	authz.ViaAgent: {
