@@ -740,21 +740,35 @@ every host target.**
   owner typed in your chat"`
 - **On a task the chief gated**, the owner's-turn refusals are today's,
   unchanged (`:193-216`).
-- **On an ungated task, or with no task**, today's sentences would be wrong:
-  each one talks about releasing "the gate". So each gets a sibling sentence
-  that does not mention a gate. The check that fails is the same, and only
-  the words differ:
+- **On an ungated task, or with no task**, today's sentences would be wrong.
+  Each one talks about releasing "the gate", and most end in "use
+  task_route_attention", which needs a task. So every `chiefRelease*` sentence
+  that `ownerTurnFor` can return gets two siblings. The check that fails is
+  the same; only the words differ.
+  - The **no task** sentence is below.
+  - The **ungated task** sentence is the no-task one, followed by `; or use
+    task_route_attention`. Only the ungated-task variant ends that way, because
+    `task_route_attention` takes a task.
 
-  | today's constant (gated task) | sibling (ungated task, or no task) |
+  | today's constant (`chief_owner_release.go:193-216`), task the chief gated | sibling, **no task** |
   |---|---|
-  | `chiefReleaseNoOwnerTurn` | `ownerAskedNoOwnerTurn`: `"owner_asked: you are not answering a message your owner typed in your muster chat right now, so muster cannot take this as their request; ask them, or call again without owner_asked"` |
-  | `chiefReleaseNotOwnersTurn` | `ownerAskedNotOwnersTurn`: `"owner_asked: the message you are answering was not typed by your owner, so muster cannot take this as their request"` |
-  | `chiefReleaseOutsideTurn` | `ownerAskedOutsideTurn`: `"owner_asked: muster is also running a turn for you that your owner did not type, so muster cannot tell which one asked; call again once it ends"` |
-  | `chiefReleaseOtherCLIBusy`, `chiefReleaseUnaccountedCLI`, `chiefReleaseCLIsUnknown`, `chiefReleaseNotOverMCP`, `chiefReleaseUnverifiable` | the same text with "so the gate was not released" replaced by "so nothing was started" |
+  | `chiefReleaseNoOwnerTurn` | `"owner_asked: you are not answering a message your owner typed in your muster chat right now, so muster cannot take this as their request (a plugin message, a relayed answer, a note from muster, a turn you started yourself or anything typed in your terminal never counts); ask them in the chat"` |
+  | `chiefReleaseNotOwnersTurn` | `"owner_asked: the message you are answering was not typed by your owner, so muster cannot take this as their request"` |
+  | `chiefReleaseOutsideTurn` | `"owner_asked: muster is also running a turn for you that your owner did not type, so muster cannot tell which of them asked for this; ask your owner again in the chat once it is over"` |
+  | `chiefReleaseOtherCLIBusy` | `"owner_asked: another of your sessions is working at the same time as your owner's turn, so muster cannot tell that this call comes from your owner's; ask your owner again in the chat once only their turn is running"` |
+  | `chiefReleaseUnaccountedCLI` | `"owner_asked: a Claude Code process in your pod is running without a session record, so muster cannot tell whether it is working at the same time as your owner's turn; ask your owner again in the chat"` |
+  | `chiefReleaseCLIsUnknown` | `"owner_asked: muster could not read which of your sessions are working (your pod did not answer, or its image is too old to say), so nothing was started; ask your owner to start it with muster agent create"` |
+  | `chiefReleaseNotOverMCP` | `"owner_asked: this session is not a Claude Code session, and only a Claude Code session can show muster that your owner typed this; ask your owner to start it with muster agent create"` |
+  | `chiefReleaseUnverifiable` | `"owner_asked: your owner's turn could not be read, so nothing was started; try again later"` |
+  | `chiefReleaseChanged` | `"owner_asked: your owner's turn changed while the start was being checked; call again"` |
+  | `chiefReleaseNotChiefsGate` | — : it applies only to a gated task |
 
+  The constants are named `ownerAskedNoTask<Name>` and
+  `ownerAskedUngated<Name>`, for example `ownerAskedNoTaskNoOwnerTurn`.
   `ownerTurnFor` keeps returning today's constants. A single mapping function,
-  `ownerAskedRefusal(why, gated bool)`, picks the sentence, so there is only
-  one place where the two sets can drift apart.
+  `ownerAskedRefusal(why string, task taskKind)`, where `taskKind` is gated,
+  ungated or none, turns them into the right sentence. That is the one place
+  the three sets meet, and a test walks every row of the table through it.
 
 ### 2.6 Budget and accounting for a dispatch with no task
 
@@ -806,17 +820,58 @@ source of live slots:
     new file `internal/plugins/host_dispatches.go`. Its row is written with the
     same `tx`.
   - `ReserveChiefDispatch` gains a hook,
-    `onReserved func(tx pgx.Tx, reservationID int64) error`. It runs inside the
-    transaction, after the reservation row is written and before the commit. A
-    host dispatch passes a hook that inserts its `pending` row. A hook error
-    rolls back the whole reservation.
-  - `ReleaseChiefDispatch`'s body moves into `releaseChiefDispatchTx(ctx, tx,
-    …)`. The public method keeps its `inTx` wrapper and calls the new
-    function.
-  - One new store method, **`EndHostDispatch(ctx, id, why)`**, sets `ended`
-    and, for a row with a task, calls `releaseChiefDispatchTx` **in the same
-    transaction**. Ending a dispatch and releasing its task's start then commit
-    together, or not at all.
+    `onReserved func(tx pgx.Tx, reservationID int64) error`.
+    - It runs inside the transaction, after the reservation row is written and
+      before the commit. `reservationID` is that row's id, read back by object
+      as `ReservationID` is today (`:280-281`).
+    - A host dispatch passes a hook that inserts its `pending` row,
+      **recording `reservation_id`** ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)).
+    - A hook error rolls back the whole reservation.
+  - **Releasing a host dispatch is keyed by its reservation, not by an agent.**
+    Today's two release bodies cannot release one:
+    - `ReleaseChiefDispatch` (`:466-497`) releases only when
+      `latestStartAgent`'s `agent_id` equals the destroyed agent. A host row
+      that is `pending`, refused or counted down has no agent row at all, so
+      that release would do nothing, and the task's start would stay spent
+      forever.
+    - A running host row's agent row has the detail `{host_dispatch_id}`, so
+      `(detail->>'agent_id')::bigint` is NULL. `latestStartAgent` (`:420-432`)
+      scans it into an `int64`, and pgx refuses to scan NULL into one, so the
+      surrounding transaction would fail.
+  - So there are three changes:
+    1. **`latestStartAgent` returns which kind of start it found.** It scans
+       both `(detail->>'agent_id')::bigint` and
+       `(detail->>'host_dispatch_id')::bigint` into `*int64`, and returns
+       `startAgent{AgentID *int64; HostDispatchID *int64}`. Every caller
+       branches on that:
+       - `ReserveChiefDispatch`'s already-dispatched answer names the agent or
+         the host dispatch;
+       - `ReleaseChiefDispatch`, the pod destroy path, writes nothing when the
+         latest start is a host dispatch. Destroying some pod on the task
+         does not release a host start;
+       - `ChiefStartedAgent` returns `ok = false` for a host start. A
+         completed task never stops a host window ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task));
+       - `ReleaseRefusedChiefDispatch` treats an agent row of either kind as
+         "an agent was started".
+    2. **A new `releaseHostDispatchTx(ctx, tx, owner, taskID, reservationID)`**
+       runs under the owner's advisory lock, which `EndHostDispatch` already
+       holds:
+       - when `reservationID` is the task's latest **unreleased**
+         reservation (`chiefStartRows`), it writes
+         `ActionChiefDispatchReleased` with
+         `{host_dispatch_id, reservation}`, **whether or not an agent row
+         exists**. That is `ReleaseRefusedChiefDispatch`'s keying, by
+         reservation, extended to the case where the dispatch did produce a
+         window;
+       - when a newer reservation exists, or this one is already released, it
+         writes nothing, because that start is no longer this dispatch's.
+    3. **`EndHostDispatch(ctx, id, why)`** sets `ended` and, for a row with a
+       task, calls `releaseHostDispatchTx` with the row's `reservation_id`,
+       **in the same transaction**. Ending a dispatch and releasing its task's
+       start commit together, or not at all.
+
+       `ReleaseChiefDispatch`'s pod body is unchanged, apart from the branch in
+       change 1.
   - B skips host reservations, so there is no double count while the
     10-minute window is open.
   - C does not depend on that window, so nothing drops out after 10 minutes.
@@ -824,8 +879,9 @@ source of live slots:
     `{host_dispatch_id}`) is written for the audit trail only, and A does not
     count it.
 - **When a host slot is freed.** `host_dispatches.status` alone decides it,
-  and only the reconciler in [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)
-  writes that status. An offline host's dispatches stay `pending` or
+  and the one ledger in [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)
+  bounds who writes it. `ended` is written only by `EndHostDispatch`, which
+  only the reconciler and `agent_destroy` call. An offline host's dispatches stay `pending` or
   `running`, so they keep their slots (fail-closed), until the sweep there ends
   them. The cost is a slot held while a laptop sleeps. The alternative would
   let the chief exceed the cap whenever a host disconnects.
@@ -976,11 +1032,19 @@ exiting, ends the dispatch, and the listing reports it
 
 **Server side.** `Hub.SpawnAgent` copies `Hub.SpawnResume`: the owner-scoped
 lookup, an id from `hc.next`, a reply channel and a timeout. The timeout is
-**60 s, not 15 s**, because a `git fetch` comes first. A timeout after the
-write means **unconfirmed**, not failed, as it does for a paste
-(`pasteTo`, `internal/mirror/transcript.go:705-740`). The row stays `pending` and keeps
-its live slot, and a later listing that carries the window's `dispatch` id
-makes it `running`.
+**60 s, not 15 s**, because a `git fetch` comes first. The host's own spawn
+deadline is **45 s**, measured from when it receives the request, queue wait
+included, so a reply normally arrives inside the wait
+([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task), "Three
+deadlines").
+
+A timeout after the write means **unconfirmed**, not failed, as it does for a
+paste (`pasteTo`, `internal/mirror/transcript.go:705-740`).
+- The row stays `pending` and keeps its live slot.
+- A late reply is applied through the late path, keyed by `dispatch`.
+- A listing that carries the window's `dispatch` id makes the row `running`.
+- If neither arrives, the reconciler counts the row down once it is more than
+  90 s old.
 
 **Refusal codes.** Four codes cover everything the host can refuse. Each code
 names the one thing the chief can do about it. `detail` is a fixed sentence
@@ -1070,7 +1134,11 @@ git -C <clone> worktree add --no-track -b muster/<dispatch>-<slug> <dir> refs/re
   failure is a warning in the result, not a refusal. The host never copies
   untracked files from the clone: their content is the owner's, possibly
   credentials, and the agent did not ask for them.
-- **Concurrency.** Spawns on one host run one at a time, behind a mutex.
+- **Concurrency.** Spawns on one host run one at a time, behind a mutex. The
+  45 s spawn deadline starts when the request is **received**, not when it
+  takes the mutex. So a spawn that queues behind a slow one runs out of time,
+  and is refused before it can start an agent
+  ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)).
 
 **Cleanup.** A worktree is never force-removed.
 
@@ -1447,6 +1515,7 @@ under row-level security on `owner_id`:
 | `runtime` | text | `claude` or `opencode` |
 | `repo`, `base`, `branch`, `worktree` | text | `branch` and `worktree` come from the reply |
 | `task_id` | bigint, null | `REFERENCES notes ON DELETE SET NULL`, as `agents.note_id` does |
+| `reservation_id` | bigint, not null | the id of the `task.chief_dispatch` audit row that reserved this dispatch, written by the `onReserved` hook. Ending the dispatch releases the task's start by this id (`releaseHostDispatchTx`, [2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)) |
 | `agent_session` | text, null | the id the host minted |
 | `tmux_window` | text, null | `@N` |
 | `status` | text | `pending`, `running` or `ended` (below) |
@@ -1462,7 +1531,7 @@ whether it holds a live slot, and whether `task_forward` can reach it.
 
 | status | meaning | live slot | `task_forward` |
 |---|---|---|---|
-| `pending` | asked for, and not yet seen in a listing: the spawn is still in flight, its reply timed out unconfirmed, or the host is offline | yes | no |
+| `pending` | asked for, and not yet seen in a listing: the spawn is in flight (the host gives up at 45 s), its reply timed out unconfirmed (after 60 s), or the host is offline. Once more than 90 s old, it is counted down by missing listings | yes | no |
 | `running` | its window is in the host's listing, carrying its `dispatch` | yes | yes ([3.10](#310-forwarding-into-a-host-spawned-agent)) |
 | `ended` | refused (`refusal` says why), its window gone, or its host not seen for 24 hours | no | no |
 
@@ -1471,105 +1540,151 @@ server-side caps and no tasks. Here the live cap needs a count that survives a
 muster restart, and the task needs something to own its link. The ledger rows
 alone cannot say which window is still alive.
 
-**Who writes `status`: one component, the host-dispatch reconciler**
-(`internal/api/host_dispatch_reconcile.go`, new).
-- It writes through the `plugins.PGStore` methods in
-  [2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task), which are
-  `UpdateHostDispatch` and `EndHostDispatch`.
-- The only other caller of `EndHostDispatch` is the owner's recovery tool
-  (below).
-- Apart from the `pending` insert inside the reservation, nothing else writes
-  `status`, `missing_listings`, `host_seen_at` or `ended_at`.
-- A seam test pins that set. It is an asserted ledger of the callers of the
-  two methods, built from the Go source of `internal/api` and
-  `internal/plugins`. It fails if that set grows or shrinks.
+**Who writes the row.** There is one seam ledger, with three writers:
+- **The `pending` insert**, through the `onReserved` hook, inside the
+  reservation ([2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)).
+- **`UpdateHostDispatch`**, which writes the window and session fields,
+  `running`, `missing_listings` and `host_seen_at`. **Its only caller is the
+  host-dispatch reconciler** (`internal/api/host_dispatch_reconcile.go`, new).
+- **`EndHostDispatch`**, which is **the only writer of `ended`** and the only
+  caller of `releaseHostDispatchTx`. **Its only callers are the reconciler and
+  `agent_destroy`** (the owner's recovery, below).
 
-**Its inputs.**
+A seam test pins all three. It is an asserted ledger over the Go source of
+`internal/api` and `internal/plugins`: the SQL that writes `host_dispatches`
+appears only in those three store functions, and each function has exactly
+the callers named here. The test fails if either set grows or shrinks.
+
+**The reconciler's inputs.**
 - **The spawn reply, from either of two paths.**
   - **The waiter.** `Hub.SpawnAgent` waits up to 60 s for the reply on its
     request id, as `SpawnResume` does.
   - **The late path.** It does **not** go through the waiter. Every
     `agent-spawned` frame carries its `dispatch` id
-    ([3.1](#31-wire-messages-and-capability)). The hub's read loop also hands
-    every such frame to a second new hook,
+    ([3.1](#31-wire-messages-and-capability)). The hub's read loop hands every
+    such frame to a second new hook,
     `Hub.SetSpawnReplyNotify(func(owner int64, host string, m Msg))`, whether
-    or not a waiter is still registered for its request id. After a timeout
-    the waiter is gone, and the hub drops the frame for it, as `pasteTo`'s
-    bookkeeping drops a late paste reply. The hook still delivers the frame,
-    and the reconciler applies it **keyed by `dispatch`**, never by request
-    id.
-  - The reconciler treats a reply as one event, however many times it
-    arrives. A reply for a row that is already `ended` changes nothing.
+    or not a waiter is still registered for its request id. Once a waiter
+    times out it is gone, and the hub drops the frame for it, as `pasteTo`'s
+    bookkeeping drops a late paste reply. The hook still delivers the frame.
+  - **How a reply is matched**, by either path. The reconciler acts as the
+    **hook's `owner`**, the owner of the connection the frame arrived on, and
+    never as an owner named inside the frame. It loads the row by `dispatch`
+    under that principal, so row-level security hides any other owner's row.
+    It then applies the reply only if `row.owner_id == owner` **and**
+    `row.host == host`, the connection's host. Otherwise it drops the reply
+    and logs it. A host can therefore settle only its own owner's dispatches,
+    and only those addressed to it.
+  - A reply counts as one event however many times it arrives. A reply for a
+    row that is already `ended` changes nothing: that case is the orphan
+    case, below.
 - **Each listing.** The hub calls a new hook,
   `Hub.SetListingNotify(func(owner int64, host string, windows []Window))`.
   It works like `SetWaitingNotify` (`internal/mirror/hub.go:278-282`): it is
   called on its own goroutine after the hub has applied the listing.
 - **A timer**, for the sweep.
 
-**Its principal.** Each write runs as **the row's owner**.
+**Its principal.** Each write runs as **the row's owner**, which is the hook's
+`owner`.
 - It builds that principal the way the stopped-agent reaper does
   (`reapPrincipal`, `internal/api/agent_reap.go:86`), with a new
   `authz.ViaHostDispatch`. The reaper uses `authz.ViaReap`; a separate `Via`
   keeps the two apart in the logs.
-- The new value joins the `Via` ledger in `internal/authz/ledger_test.go:271`.
-- Row-level security and `ReleaseChiefDispatch`'s user-principal check
-  (`chief_dispatch.go:215-217`) therefore hold, exactly as they do for the
-  owner's own calls.
+- The new value joins the `Via` ledger (`internal/authz/ledger_test.go:271`).
+- Row-level security, and the user-principal checks in the store, therefore
+  hold exactly as they do for the owner's own calls.
 
-**Its writes:**
+**Three deadlines, in order.** Each one is shorter than the next, so a spawn
+can never outlive its row:
+
+| deadline | value | who enforces it | what happens past it |
+|---|---|---|---|
+| the host's spawn deadline | **45 s**, from the moment the host **receives** `agent-spawn`, so the time spent queued behind the host's spawn mutex counts | host | the host refuses (`failed`, detail `deadline passed`) and **never starts the agent** |
+| the server's reply wait | 60 s | `Hub.SpawnAgent` | the row stays `pending`; a later reply still lands, through the late path |
+| the pending countdown | 90 s (the 60 s wait plus a 30 s margin), then two missing listings | reconciler | the row ends, and the task's start is released |
+
+How the host enforces its deadline:
+- It passes the time remaining to every step it runs, as a context deadline:
+  the fetch, the worktree add, and the trust write.
+- It checks the deadline once more **immediately before `tmux new-window`**,
+  which is the point of no return. Past the deadline it refuses there, and
+  removes the worktree it created.
+- After `new-window`, the remaining steps are bounded local tmux calls: the
+  tag, the landing check, and the listing.
+
+So a spawn queued behind a 70 s fetch is refused at 45 s, and never runs.
+
+**The reconciler's writes:**
 1. **Reserve.** `toolAgentDispatch` inserts the row as `pending` through the
-   `onReserved` hook, inside the reservation's transaction
-   ([2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)). Then the
-   server sends `agent-spawn`.
+   `onReserved` hook, recording `reservation_id`. Then the server sends
+   `agent-spawn`.
 2. **Refused**, by either reply path: `EndHostDispatch(id, refusal)`. The
-   refusal is recorded, and a task's start is released in the same
-   transaction.
-3. **Spawned**, by either reply path. It records the window, the session id,
-   the branch and the worktree. It also writes the audit-only
+   task's start is released by `reservation_id`, in the same transaction.
+3. **Spawned**, by either reply path: `UpdateHostDispatch` records the window,
+   the session id, the branch and the worktree, and writes the audit-only
    `task.chief_dispatch_agent` row, `{host_dispatch_id}`.
 4. **A listing from the row's host.** The reconciler sets
    `host_seen_at = now()`. Then:
    - if the listing carries a window whose `dispatch` is the row's id, and
-     whose runtime is the row's runtime: the row becomes `running`, and
-     `missing_listings` resets to 0;
+     whose runtime matches the row's: `running`, and `missing_listings = 0`;
    - if it does not, and the row is `running`: `missing_listings + 1`;
-   - if it does not, and the row is `pending` and **older than 90 s** (the
-     60 s spawn timeout plus a 30 s margin): `missing_listings + 1` as well.
-     A younger `pending` row is not counted, because its window may not exist
-     yet;
-   - **at 2, the row ends**: `EndHostDispatch(id, "window gone")`. It takes
-     two listings, so one transient miss cannot free a slot.
+   - if it does not, and the row is `pending` and **more than 90 s old**:
+     `missing_listings + 1` as well. A younger `pending` row is not counted,
+     because its window may not exist yet;
+   - **at 2, `EndHostDispatch(id, "window gone")`.** It takes two listings,
+     so a single transient miss cannot free a slot.
 
-   So a spawn that never produced a window frees its slot and its task's
-   start about 90 s after it was asked for, plus two listing intervals. That
-   covers a fetch that ran past the timeout and then failed, a mirror that
-   crashed or restarted mid-spawn, and a reply that never came. A host that
-   is offline sends no listings, so its rows are left to step 5.
+   So a spawn that produced no window frees its slot and its task's start
+   about 90 s after it was asked for, plus two listing intervals. That covers
+   a fetch that ran long and failed, a mirror that crashed or restarted
+   mid-spawn, and a reply that never came. An offline host sends no listings,
+   so its rows are left to step 5.
 5. **The sweep**, every 10 minutes. It ends every `pending` or `running` row
-   whose `host_seen_at` is more than **24 hours** old (`"host not seen"`).
-   - It reads only the table, so its result holds across a muster restart.
-     It never relies on the hub's in-memory view of offline hosts
+   whose `host_seen_at` is more than **24 hours** old, with
+   `EndHostDispatch(id, "host not seen")`.
+   - It reads only the table, so it gives the same answer after a muster
+     restart. It never relies on the hub's in-memory view of offline hosts
      (`offlineRetention`, `internal/mirror/hub.go:59`).
    - It finds the owners with open rows the same way the reaper finds owners
      (`agent_reap.go:92`), then acts as each one.
-6. **Release.** `EndHostDispatch` releases the task's one start in the
-   **same transaction** as `ended` (`releaseChiefDispatchTx`,
-   [2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)). That holds
-   whether the owner closed the window, the agent exited, the spawn never
-   produced a window, or the host was never seen again.
+6. **Release** happens only inside `EndHostDispatch`, by `reservation_id`
+   ([2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)). That covers
+   every way a dispatch ends:
+   - the window closed;
+   - the agent exited;
+   - the spawn was refused, or produced no window;
+   - the host was never seen again;
+   - the owner ended it.
+
+**A window whose dispatch has already ended is never left running silently.**
+The deadlines above are meant to make this impossible, but a host clock jump,
+a stalled tmux, or a bug could still produce one. When a listing carries a
+window with an `@muster-dispatch` tag whose row is `ended`, or for which no
+row exists for this owner:
+- **The reconciler does not adopt it.** Making it `running` again would put
+  an agent back that the budget no longer counts.
+- **It raises an attention item for the owner**, kind `host_dispatch_orphan`,
+  one per dispatch id (the dedupe key). The item names the host, the window
+  and the dispatch: *"an agent window on `<host>` (`agents:<window>`,
+  dispatch N) is still running, but muster ended its dispatch (`<why>`): it is
+  not counted or tracked. Close the window on that host."* It reaches the
+  owner's phone the way every attention item does.
+- **It logs at error level**, so an operator who watches the server log sees
+  it too.
+- The item clears once a listing no longer carries that window.
 
 **The owner's recovery: `agent_destroy` takes a host dispatch.** The tool
-already exists, and only the owner's own mirrored Claude Code sessions can
-call it (`agent_destroy_tool.go:57`; the chief cannot). It gains a third way
-to name its target, `host_dispatch` (an id), beside `name` and `id`.
+already exists, and only the owner's own mirrored sessions can call it
+(`agent_destroy_tool.go:57`; the chief cannot). It gains a third way to name
+its target, `host_dispatch` (an id), beside `name` and `id`.
 - On a `pending` or `running` row of the owner's, it calls
-  `EndHostDispatch(id, "ended by owner")`. That frees the slot and releases
+  `EndHostDispatch(id, "ended by owner")`, which frees the slot and releases
   the task's start at once.
-- It does **not** close the tmux window, because there is no kill (D7). The
-  answer says so: `"ended host dispatch N; its window, if any, is still open
-  on <host>: close it there"`.
-- This is the way out when a row is stuck for any reason the reconciler did
-  not foresee. It needs no new route and no new UI.
+- It does **not** close the tmux window (D7). The answer says so: `"ended host
+  dispatch N; its window, if any, is still open on <host>: close it there"`.
+- **A host-spawned agent cannot call it**, and cannot call any other owner
+  tool ([5.1](#51-who-can-trigger-a-spawn), "Owner tools refuse spawned
+  agents").
 
 **What the owner sees in muster.** The window is an ordinary mirrored window,
 with everything that already ships: the rendered view, the waiting state,
@@ -1731,8 +1846,13 @@ new paste path.
   a status yet is never pasted into.
   - `ExpectTurn` refuses a paste whose turn moved after the decision, and the
     row goes back to the queue.
-  - A row not delivered within the queue's `AuthorizedFor` ends failed, like
-    any other queued row.
+  - **A chief-forward row has its own age limit of 10 minutes**, far shorter
+    than the queue's general `AuthorizedFor`. `sendQueueChiefForwardGate`
+    checks `now() - CreatedAt` first. Past 10 minutes the row ends failed,
+    with the detail `"Not sent: this forward is more than 10 minutes old, and
+    the task may have changed since; the chief can forward it again."` A
+    forward describes the task's state when it was written, so an old one
+    would be stale.
   - `task_forward` answers `"queued for the agent on task N; muster delivers
     it once that agent is idle"`.
 - **What bounds it.** The gate decides when to ask. The **host's tag check is
@@ -1855,6 +1975,26 @@ API has only `GET /api/agents` and `POST /api/agents/{name}/messages`), and
     value. An image from before this change treats an unknown scope as
     reaching nothing (`api_tokens.go:161-165`), which is the safe direction if
     it is rolled back.
+  - **The refusal sentences.** `ScopedTokenRefusal` (`api_tokens.go:146-147`)
+    is written for the summary scope: it names a "bar-summary token" and tells
+    the user to mint a full token. That would be wrong both ways here, so the
+    one sentence becomes a function of the token's scope and the route:
+    - a **full** token on `POST /api/agents`: `"creating agents needs a token
+      of scope agent-create: mint one at /account/tokens (Create agents). A
+      full-access token does not reach this route, so that the CLI's ordinary
+      token cannot create agents"`;
+    - an **agent-create** token on any other route: `"an agent-create token
+      reaches only POST /api/agents; use a full-access token for anything
+      else"`;
+    - a **summary** token: today's sentence, unchanged.
+  - **The other scope changes:**
+    - `apitokens.ScopeAgentCreate = "agent-create"`;
+    - `CleanScope` (`internal/apitokens/apitokens.go:254-257`) accepts the
+      new scope;
+    - the mint form at `/account/tokens` (`api_tokens.go:359`) gains a third
+      radio, **Create agents**, with the line "reaches only POST /api/agents,
+      and nothing else";
+    - the token list shows each token's scope.
   - **The handler refuses a `ViaHook` principal** (`authz.ViaHook`,
     `internal/authz/authz.go:56-58`): the shared hook secret, which acts as
     user 1 whoever holds it. It also refuses every `Via` other than
@@ -1937,6 +2077,40 @@ test of that option through the tool, with the same refusals.
 the spawn. The cost, stated: whoever can type into the owner's muster chat
 from a signed-in browser session can ask the chief for a host spawn. That is
 the same reach that session already has to the chief itself.
+
+**Owner tools refuse spawned agents.** Host spawns create a new kind of
+mirrored session: one that muster started, running a prompt the chief
+relayed, in normal permission mode. Today `mirroredSession()`
+(`internal/api/attention_tools.go:162-163`) admits **any** listed session, and
+it is the caller rule for every tool that acts **with the owner's authority**:
+
+| tool | file:line |
+|---|---|
+| `agent_destroy` | `agent_destroy_tool.go:78` |
+| `chief_restart` | `chief_restart_tool.go:154` |
+| `attention_answer` | `attention_tools.go:268` |
+| connector request decide (two tools) | `connector_decide_tools.go:166,221` |
+| plugin message route (two tools) | `plugin_message_route_tools.go:171,211` |
+| plugin draft decide (two tools) | `plugin_draft_tools.go:140,179` |
+| `route_reply` | `route_reply_tool.go:68` |
+
+Without a change, a host-spawned agent could therefore answer the owner's
+asks, approve plugin drafts, end its own dispatch, or restart the chief.
+
+**So all ten sites switch to one new predicate, `ownersOwnSession()`.** It
+holds when `mirroredSession()` holds **and** the caller's own window, found
+from its pane headers in the hub's listing, carries **no `dispatch` tag**. If
+that window cannot be found or read, the caller is refused. That is the
+closed direction.
+- The refusal is: `"this tool acts with your owner's authority, and a session
+  muster started for the chief cannot use it; ask your owner"`.
+- A spawned agent keeps the tools that do not act for the owner, such as
+  `attention_ask`, `task_get` and `task_comment`.
+- `route_reply` is included, so `route_to_session` stops offering a
+  host-spawned window as a route target: a spawned agent cannot answer a
+  route.
+- A seam ledger asserts that no owner-authority tool calls `mirroredSession()`
+  directly. It fails when a new one does.
 
 **`POST /api/agents` and what still bounds it.** The route creates pods only,
 never a host spawn. Through it, a holder of an `agent-create` token can create
@@ -2116,7 +2290,7 @@ still works: every phase ships on its own.
 - **No task:**
   - without `owner_asked`: refused;
   - with `owner_asked`, but on a plugin-message turn: refused with
-    `ownerAskedNoOwnerTurn`. A plugin turn has no owner-turn marker, so
+    `ownerAskedNoTaskNoOwnerTurn`. A plugin turn has no owner-turn marker, so
     `ownerTurnFor` returns `chiefReleaseNoOwnerTurn`
     (`chief_owner_release.go:320-321`), and the mapping turns it into the
     sentence without the gate;
@@ -2125,16 +2299,18 @@ still works: every phase ships on its own.
     object matches `^dispatch:[0-9a-f]{32}$`, and `today` goes up by 1.
 - **`owner_asked` on an ungated task (R1):** an open, ungated task, with
   `owner_asked: true` and an 8 KiB prompt, on a **plugin-message turn**, is
-  refused with `ownerAskedNoOwnerTurn`, the sentence that does not mention a
-  gate. It is not `chiefReleaseNotOwnersTurn`: a plugin turn has no owner-turn
+  refused with `ownerAskedUngatedNoOwnerTurn`, the sentence that does not
+  mention a gate. It is not `chiefReleaseNotOwnersTurn`: a plugin turn has no owner-turn
   marker at all, so the check fails at `chief_owner_release.go:320-321`.
   Nothing is reserved, and no agent row exists. The same call in the owner's typed turn starts the agent, with
   the prompt fenced as relayed by the chief. The same task with no
   `owner_asked` and the same prompt is refused by `ownerAnswer`, as today.
 - **The sibling refusals:** the same failure on a task the chief gated answers
-  today's `chiefReleaseNoOwnerTurn`, and on an ungated task answers
-  `ownerAskedNoOwnerTurn`. Each pair is its own case. This pins the one
-  mapping function.
+  today's `chiefReleaseNoOwnerTurn`, on an ungated task answers
+  `ownerAskedUngatedNoOwnerTurn`, and with no task answers
+  `ownerAskedNoTaskNoOwnerTurn`, which does not mention `task_route_attention`.
+  A table-driven test runs every row of [2.5](#25-gating-when-there-is-no-task-to-hang-it-on)'s
+  table through `ownerAskedRefusal`, for all three task kinds.
 - **Unknown fields:** a call with a field outside the table (`kind`, the old
   name, and `foo`) is refused with the arguments sentence. Each is its own
   case, and nothing is reserved.
@@ -2214,10 +2390,14 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
 - `POST /api/agents`:
   - an `agent-create` token creates an agent as its owner, with both
     `start: true` and `start: false`;
-  - **a full-scope token is refused**, with the scoped-token sentence, while
-    the same token still reaches every other machine route. Mutation check:
+  - **a full-scope token is refused**, with the full-token sentence from
+    [4](#4-replacing-the-dispatch-ui-a-machine-route-a-cli-verb-then-the-deletion),
+    while the same token still reaches every other machine route. Mutation check:
     drop the `explicitScopeRoutes` exception, and this case goes red;
-  - an `agent-create` token is refused on every other route;
+  - an `agent-create` token is refused on every other route, with the
+    agent-create sentence. A summary token still gets today's sentence;
+  - `CleanScope("agent-create")` is accepted, and the mint form offers
+    **Create agents**;
   - the shared hook secret (`ViaHook`) is refused by the handler;
   - each of the form's refusals answers with its sentence: kind, account,
     worker pool, `connectedRepo`, the model credential, a gated `note_id`, and
@@ -2260,10 +2440,18 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
   `Hub.SetSpawnReplyNotify` (the late-reply path), the countdown for `pending`
   rows past 90 s, and the 24-hour sweep;
 - `host_dispatches` in `plugins.PGStore`, `ReserveChiefDispatch`'s
-  `onReserved` hook, `releaseChiefDispatchTx`, and `EndHostDispatch`
+  `onReserved` hook (with `reservation_id`), `latestStartAgent`'s nullable
+  two-kind scan, `releaseHostDispatchTx`, and `EndHostDispatch`
   ([2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task),
   [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task));
 - `agent_destroy` taking a `host_dispatch` id, as the owner's recovery;
+- `host_dispatches.reservation_id`, and release keyed by it
+  (`releaseHostDispatchTx`);
+- the host's 45 s spawn deadline, which counts queue wait;
+- the `host_dispatch_orphan` attention item;
+- `ownersOwnSession()` at all ten owner-tool sites
+  ([5.1](#51-who-can-trigger-a-spawn));
+- the 10-minute age limit on chief-forward rows;
 - mentions on tasks that only a host agent works, handed to the chief as a
   notice;
 - `host_dispatches` (migration 0073);
@@ -2311,6 +2499,11 @@ live run to find what the tests could not.
 
     In every case the prompt file is gone once the runtime starts. A wrapper
     whose read fails exits 97, and the dispatch ends.
+  - **The spawn deadline counts queue wait.** A second spawn is queued
+    behind a first that a stub `git` holds for 50 s. The second is refused
+    with `failed`, detail `deadline passed`. No `new-window` runs for it, and
+    its worktree is removed. A spawn that reaches the deadline check before
+    `new-window` while past the deadline is refused there.
   - **Host-built words pass the character check.** An `<agent-spawn-dir>`, or
     a prompt directory, containing a `;` makes `-agent-spawn` `unavailable` at
     startup.
@@ -2365,7 +2558,7 @@ live run to find what the tests could not.
   - a host spawn counts in `live` while it is `pending` (including a reply
     that timed out, and an offline host) and while it is `running`. An
     `ended` one does not count;
-  - **the reconciler**, which is the only writer of `status`:
+  - **the reconciler**, through `UpdateHostDispatch`, and `EndHostDispatch` (the only writer of `ended`):
     - closing the window takes the row to `ended` after two listings, and not
       after one, and releases the task's one start, writing as the owner
       (`ViaHostDispatch`);
@@ -2380,6 +2573,33 @@ live run to find what the tests could not.
     - `agent_destroy` with `host_dispatch` ends a `pending` row and a
       `running` row of the owner's, and releases their tasks' starts. It
       refuses another owner's row, and it is refused for the chief;
+  - **every way a host dispatch on a task ends releases the task's start, and
+    a new `agent_dispatch` on that task then succeeds.** Each is its own case:
+    - a refused spawn (no agent row);
+    - a `pending` row counted down (no agent row);
+    - a `running` row whose window closed (agent row `{host_dispatch_id}`);
+    - a row ended by `agent_destroy`;
+    - a row ended by the sweep.
+
+    In every case, `ActionChiefDispatchReleased` names the row's
+    `reservation_id`. A release by an older `reservation_id`, after a newer
+    reservation exists, writes nothing;
+  - **`latestStartAgent` on a host start** returns `HostDispatchID` and no
+    error. Today's `int64` scan fails on the NULL `agent_id`, so this is
+    pinned. Destroying a pod on a task whose latest start is a host dispatch
+    releases nothing. A completed task stops no host window;
+  - **late reply matching:** a reply for owner A's dispatch, arriving on
+    owner B's connection, changes nothing and is logged. So does a reply for
+    host X's dispatch arriving on host Y's connection, for the same owner;
+  - **orphan window:** a listing carrying a `dispatch` whose row is `ended`
+    raises exactly one `host_dispatch_orphan` attention item, does not make
+    the row `running`, and clears once the window is gone;
+  - **owner tools refuse spawned agents:** for each of the ten tools, a call
+    from a window that carries a `dispatch` tag is refused with the
+    owner-authority sentence. A call from an untagged window of the owner's
+    works. A caller whose window cannot be found in the listing is refused.
+    Mutation check: revert one site to `mirroredSession()`, and that tool's
+    case goes red;
     - a host whose `host_seen_at` is 25 hours old has its rows ended by the
       sweep. That still holds after a muster restart, with the hub empty;
     - a reservation for a host target is counted once in `live`: in source C
@@ -2393,7 +2613,9 @@ live run to find what the tests could not.
     - it queues a chief-forward row for a host window on the task, and the
       dispatcher delivers it once the window is idle;
     - a row for a `waiting`, `busy` or unreported window is not delivered
-      until the window is idle, and it fails after `AuthorizedFor`;
+      until the window is idle;
+    - a row more than 10 minutes old fails with the stale-forward detail, and
+      is never pasted;
     - the gate refuses a row whose dispatch has ended, or whose window or
       session no longer matches;
     - it never targets a host window whose listing lacks the row's `dispatch`,
@@ -2403,8 +2625,12 @@ live run to find what the tests could not.
   - The only caller of `Hub.SpawnAgent` is `toolAgentDispatch`.
   - The only code that sets `ChiefForwardDispatch` on a `sendqueue.Item` is
     `toolTaskForward`. The ledger scans `internal/api`'s Go source.
-  - The only callers of `EndHostDispatch` are the reconciler and
-    `agent_destroy`.
+  - **The one `host_dispatches` ledger** ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)):
+    - the `pending` insert is made only through `onReserved`;
+    - `UpdateHostDispatch` is called only by the reconciler;
+    - `EndHostDispatch` is the only writer of `ended`, and is called only by
+      the reconciler and `agent_destroy`.
+  - No owner-authority tool calls `mirroredSession()` directly.
   - The only writer of `host_dispatches.status` is the reconciler, apart
     from the insert inside the reservation.
   - `TestEveryServerPasteGoesThroughPasteWindow` is **unchanged and green**.
@@ -2417,6 +2643,11 @@ live run to find what the tests could not.
     red, because the host no longer receives a `dispatch` to check;
   - drop the `pending` age countdown: the stuck-`pending` case goes red with a
     slot still held;
+  - make `releaseHostDispatchTx` require an agent row, which is today's
+    behaviour: the refused and counted-down release cases go red, and the new
+    dispatch on the task is refused `already_dispatched`;
+  - start the host deadline at mutex acquisition rather than receipt: the
+    queued-spawn case goes red with a started window;
   - deliver late replies only through the waiter: the late-reply case goes
     red.
 
