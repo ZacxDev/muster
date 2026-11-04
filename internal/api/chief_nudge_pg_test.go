@@ -1096,8 +1096,8 @@ func withJev(t *testing.T, f *nudgeFixture) *jevFake {
 }
 
 // TestChiefNudgeTheClassifierLineDecidesTheDefault is the backtested rule at
-// the server, on both sides of 0.9: at 0.91 (needs_input) the chief's leave
-// becomes an ask; at 0.89 the same leave stands. The
+// the server, on both sides of 0.9: at 0.91 (needs_input) the chief's nudge
+// — with a GOOD quote — becomes an ask; at 0.89 the same nudge stands. The
 // classification is persisted on the row and shown on the tab, and shadow
 // mode still sends nothing and raises no ask.
 func TestChiefNudgeTheClassifierLineDecidesTheDefault(t *testing.T) {
@@ -1105,10 +1105,6 @@ func TestChiefNudgeTheClassifierLineDecidesTheDefault(t *testing.T) {
 	j := withJev(t, f)
 	queued0, asks0 := f.queuedRows(t), f.askRows(t)
 
-	// The chief would leave it: over the line that is not accepted (the session
-	// asked), under it it is. (A NEEDS-YOU nudge with a good quote survives the
-	// line since step 3a: TestANeedsYouNudge… in chief_nudge_needs_you_pg_test.go.)
-	f.gw.set(`{"decision":"leave","reason":"it is done"}`)
 	j.set(200, 0.81, 0.10, 0.09) // ask score 0.91
 	if n := f.pass(t); n != 1 {
 		t.Fatalf("decided %d", n)
@@ -1138,7 +1134,7 @@ func TestChiefNudgeTheClassifierLineDecidesTheDefault(t *testing.T) {
 	if n := f.pass(t); n != 1 {
 		t.Fatalf("decided %d", n)
 	}
-	if d := f.decisions(t)[0]; d.Decision != chiefnudge.DecisionLeave || d.Outcome != chiefnudge.OutcomeLeft {
+	if d := f.decisions(t)[0]; d.Decision != chiefnudge.DecisionNudge || d.Outcome != chiefnudge.OutcomeWouldSend {
 		t.Fatalf("at 0.89: %+v", d)
 	}
 	if q, a := f.queuedRows(t), f.askRows(t); q != queued0 || a != asks0 {

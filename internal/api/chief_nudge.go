@@ -150,7 +150,10 @@ func (s *Server) chiefNudgeMode(owner int64) string {
 // BOTH MUSTER_CHIEF_NUDGE_LIVE_OWNERS and
 // MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS. Every other nudge keeps the one
 // list it always had. The decision's mode (nudgeModeFor), the send queue's
-// paste gate and an agent's turn (nudgeSendLive) all read this.
+// paste gate and an agent's turn (nudgeSendLive) all read this. Session-state
+// step 3a only: with session state off there is no needs-you nudge and no
+// such gate (decideNudge never passes needsYou true there, and nudgeSendLive
+// applies it only to a decision taken in an episode).
 func (s *Server) chiefNudgeLiveFor(owner int64, needsYou bool) bool {
 	if !s.chiefNudgeLive(owner) {
 		return false
@@ -168,18 +171,21 @@ func (s *Server) nudgeModeFor(owner int64, needsYou bool) string {
 
 // needsYouStall is the stall rule's split (chiefnudge.AskStall at the
 // configured threshold): an idle session whose last message the classifier
-// says asked the owner something — session state's needs_you, the leave rule's
-// "asked", and the needs-you nudge's gate. ONE predicate for all three.
+// says asked the owner something. ONE predicate for session state's needs_you
+// (f.AskStall), the needs-you nudge's gate, and the backtested rule in
+// decideNudge. The leave rule reads sessionstate.Asked(classified, errClass,
+// askStall), of which this is the askStall input (a failed or absent
+// classifier counts as asked there, not here).
 func (s *Server) needsYouStall(jev chiefnudge.Result) bool {
 	return chiefnudge.AskStall(jev, s.chiefNudgeAskThreshold())
 }
 
 // nudgeSendLive reports whether decision d's nudge may reach its session NOW:
 // re-read at the paste (and at an agent's turn), so taking an owner off either
-// list stops a nudge already queued. Whether d is a needs-you nudge is read
-// from the classification stored on it.
+// list stops a nudge already queued. d is a needs-you nudge when it was taken
+// in a session-state episode and the classification stored on it asked.
 func (s *Server) nudgeSendLive(owner int64, d chiefnudge.Decision) bool {
-	return s.chiefNudgeLiveFor(owner, s.needsYouStall(d.Jev()))
+	return s.chiefNudgeLiveFor(owner, d.EpisodeID != 0 && s.needsYouStall(d.Jev()))
 }
 
 func (s *Server) chiefNudgeIdle() time.Duration {
@@ -361,13 +367,6 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 	return out
 }
 
-// episodeDecisionReader is the nudge store's read of an episode's decision
-// (chiefnudge.PG.ForEpisode); a store without it leaves the claim to the
-// database (chief_nudges_one_per_episode).
-type episodeDecisionReader interface {
-	ForEpisode(ctx context.Context, episodeID int64) (chiefnudge.Decision, bool, error)
-}
-
 // nudgeEpisodeFor is, with session state on, the open episode c's decision
 // would be taken in: ok false when there is none (the state pass opens it
 // within its interval; the next sweep judges it), when it cannot be read, or
@@ -386,11 +385,8 @@ func (s *Server) nudgeEpisodeFor(octx context.Context, c chiefnudge.Session) (in
 	if err != nil || !ok {
 		return 0, false
 	}
-	if r, has := s.ext.ChiefNudges.(episodeDecisionReader); has {
-		_, decided, err := r.ForEpisode(octx, ep.ID)
-		if err != nil || decided {
-			return 0, false
-		}
+	if _, decided, err := s.ext.ChiefNudges.ForEpisode(octx, ep.ID); err != nil || decided {
+		return 0, false
 	}
 	return ep.ID, true
 }
@@ -723,37 +719,25 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		d.Decision, d.Outcome, d.Detail = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardChiefError), "the chief's call failed"+failureKind(err)
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
-	prop, perr := chiefnudge.ParseProposal(raw)
+	parse := chiefnudge.ParseProposal
+	if notify {
+		parse = chiefnudge.ParseNotifyProposal // an "ask" is read as a notify
+	}
+	prop, perr := parse(raw)
 	if perr != nil {
 		d.Decision, d.Outcome, d.Reason = chiefnudge.DecisionInvalid, chiefnudge.Suppressed(chiefnudge.GuardInvalid), perr.Error()
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
-	// ONE DECISION SET PER MODE: with session state on the chief points the
-	// owner at a session by NOTIFY (no question), with it off by ASK (a
-	// notice's question). An answer in the other spelling is read as this
-	// mode's — a legacy notify with no question gets the generic one.
-	switch {
-	case notify && prop.Decision == chiefnudge.DecisionAsk:
-		prop.Decision, prop.Question = chiefnudge.DecisionNotify, ""
-	case !notify && prop.Decision == chiefnudge.DecisionNotify:
-		prop.Decision = chiefnudge.DecisionAsk
-		if strings.TrimSpace(prop.Question) == "" {
-			prop.Question = chiefnudge.GenericAskQuestion(c.Title, prop.Reason)
-		}
+	if notify {
+		prop.Question = "" // a notify carries no question
 	}
 	d.Decision, d.Reason, d.Covered = prop.Decision, prop.Reason, prop.CoveredAction
 	pointing := prop.Decision == chiefnudge.DecisionAsk || prop.Decision == chiefnudge.DecisionNotify
-	if prop.Decision == chiefnudge.DecisionNudge && c.Kind == chiefnudge.KindMirror && c.Runtime != "" {
-		// 🔴 A VIEW-ONLY SESSION IS NEVER NUDGED: muster cannot type into an
-		// opencode pane (mirror.RuntimeSpec Caps: no Send), so a queued nudge
-		// could only fail at its paste. The nudge is recorded as a notify (a
-		// notice with session state off), with its reason — before any other
-		// rule, so a needs-you nudge to one says why too. (A Hermes window is
-		// never judged at all: nudgeWindowKey.)
-		d.Decision = chiefnudge.DecisionAsk
-		d.Question = chiefnudge.EscalationViewOnly(c.Title)
-		d.Reason = "view_only: muster cannot type into a " + c.Runtime + " session, so no nudge is sent; " + d.Reason
-		return s.actAsk(octx, c, d, "", false), false, ""
+	if notify && prop.Decision == chiefnudge.DecisionNudge && viewOnly(c) {
+		// With session state on the view-only rule comes FIRST, so a
+		// needs-you nudge to one says why too (with it off, it runs where it
+		// always did, below).
+		return s.actViewOnly(octx, c, d), false, ""
 	}
 	// 🔴 THE BACKTESTED RULE, AND THE NEEDS-YOU NUDGE: an ask-stall (ask score
 	// at or over the threshold — the session is needs-you) defaults to pointing
@@ -768,6 +752,9 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		switch {
 		case prop.Decision == chiefnudge.DecisionLeave:
 			why = "the chief said leave it"
+		case !notify && jev.Label != chiefnudge.LabelAsksPermission:
+			// Session state off: unchanged by step 3a — no needs-you nudge.
+			why = "a nudge is allowed only on an asks_permission stall, and this one is " + jev.Label
 		default:
 			if _, qerr := chiefnudge.CheckQuote(prop, owner); qerr != nil {
 				why = "the nudge's quote failed: " + qerr.Error()
@@ -803,6 +790,9 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	// A nudge.
+	if viewOnly(c) {
+		return s.actViewOnly(octx, c, d), false, ""
+	}
 	if read.Partial {
 		// The read cannot vouch for the owner's last six hours (it ended
 		// early, has a gap, or a cap cut the window): its owner messages
@@ -843,8 +833,11 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	}
 	// 🔴 A NEEDS-YOU NUDGE IS LIVE ONLY UNDER BOTH LISTS (chiefNudgeLiveFor):
 	// otherwise it is shadow — recorded as would_send, never pasted, and its
-	// stop pushed (episodeVerdict: shadow never quiets a stop).
-	d.Mode = s.nudgeModeFor(o.ID, askStall)
+	// stop pushed (episodeVerdict: shadow never quiets a stop). Session state
+	// on only: with it off there is no such gate.
+	if notify {
+		d.Mode = s.nudgeModeFor(o.ID, askStall)
+	}
 	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
 	// unsuppressed (operator decision), and is not counted.
 	if d.Mode == chiefnudge.ModeLive && p.hourly >= s.chiefNudgeHourlyCap() {
@@ -862,6 +855,21 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return true, false, ""
 	}
 	return false, false, ""
+}
+
+// viewOnly reports whether c is a session muster cannot type into (an
+// opencode pane: mirror.RuntimeSpec Caps, no Send). A Hermes window is never
+// judged at all (nudgeWindowKey).
+func viewOnly(c nudgeCandidate) bool { return c.Kind == chiefnudge.KindMirror && c.Runtime != "" }
+
+// actViewOnly is a nudge to a view-only session: 🔴 NEVER NUDGED — a queued
+// nudge could only fail at its paste. It becomes the notice (a notify with
+// session state on), with its reason.
+func (s *Server) actViewOnly(octx context.Context, c nudgeCandidate, d chiefnudge.Decision) bool {
+	d.Decision = chiefnudge.DecisionAsk
+	d.Question = chiefnudge.EscalationViewOnly(c.Title)
+	d.Reason = "view_only: muster cannot type into a " + c.Runtime + " session, so no nudge is sent; " + d.Reason
+	return s.actAsk(octx, c, d, "", false)
 }
 
 // nudgeInjectedPrefixes are the openings of muster's own pastes, from the

@@ -37,6 +37,9 @@ import (
 var (
 	jevAsked   = [3]float64{0.81, 0.10, 0.09}
 	jevNothing = [3]float64{0.02, 0.03, 0.95}
+	// jevPermission is a stop over the line labelled asks_permission (ask
+	// score 0.93) — the one class of nudge the base ever sent live.
+	jevPermission = [3]float64{0.05, 0.88, 0.07}
 )
 
 // newNeedsYouFixture is the state fixture with the classifier wired to
@@ -540,5 +543,113 @@ func TestTheDatabaseHoldsOneDecisionPerEpisode(t *testing.T) {
 	var unique interface{ SQLState() string }
 	if !errors.As(err, &unique) || unique.SQLState() != "23505" {
 		t.Fatalf("err %v, want a unique violation", err)
+	}
+}
+
+// TestAnAsksPermissionNudgeIsNeedsYou (regression; operator decision on #433
+// round 0: asks_permission nudges count as needs-you): a stop over the line
+// labelled asks_permission is needs-you, so its nudge is SHADOW with only the
+// old list — recorded, not pasted, the stop pushed — and live only with both.
+// RED at the base for the old-list case: there it was sent live.
+func TestAnAsksPermissionNudgeIsNeedsYou(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		needsYou       bool
+		mode, outcome  string
+		queued, pushes int
+	}{
+		{"only the old list", false, chiefnudge.ModeShadow, chiefnudge.OutcomeWouldSend, 0, 1},
+		{"both lists", true, chiefnudge.ModeLive, chiefnudge.OutcomeQueued, 1, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, _ := newNeedsYouFixture(t, jevPermission, true)
+			if c.needsYou {
+				needsYouLive(f.nudgeFixture, authz.OperatorUserID)
+			}
+			queued0 := f.queuedRows(t)
+			f.judge(t)
+			d := f.one(t)
+			if d.Decision != chiefnudge.DecisionNudge || d.JevLabel != chiefnudge.LabelAsksPermission || d.Mode != c.mode || d.Outcome != c.outcome {
+				t.Fatalf("decision %+v\nwant an asks_permission nudge, mode %s, outcome %s", d, c.mode, c.outcome)
+			}
+			if q := f.queuedRows(t) - queued0; q != c.queued {
+				t.Fatalf("send_queue rows written: %d, want %d", q, c.queued)
+			}
+			if got := f.episodePushes(); len(got) != c.pushes {
+				t.Fatalf("pushes: %v, want %d", got, c.pushes)
+			}
+			if c.mode == chiefnudge.ModeShadow {
+				f.tick(t)
+				if p := f.pastes(); len(p) != 0 {
+					t.Fatalf("a shadow asks_permission nudge was pasted: %+v", p)
+				}
+			}
+		})
+	}
+}
+
+// TestAStopWhoseClassifierFailedKeepsTheOldList — an INVARIANT GUARD (the
+// operator's decision on #433 round 0: the classifier-failure scoping stays as
+// built): a stop whose classifier failed is NOT needs-you for the gate, so its
+// nudge is live on the old list alone; and a leave on it cannot quiet it — the
+// leave rule counts a failed classifier as asked (sessionstate.Asked), so the
+// stop pushes. The decision itself is recorded as the chief's leave: the
+// conversion to notify is for a stop the classifier SAYS asked.
+func TestAStopWhoseClassifierFailedKeepsTheOldList(t *testing.T) {
+	failed := func(t *testing.T) *stateFixture {
+		f, j := newNeedsYouFixture(t, jevNothing, true)
+		j.set(502, 0, 0, 0)
+		return f
+	}
+	t.Run("a nudge is live on the old list", func(t *testing.T) {
+		f := failed(t)
+		queued0 := f.queuedRows(t)
+		f.judge(t)
+		d := f.one(t)
+		if d.Decision != chiefnudge.DecisionNudge || d.JevError != "http-502" || d.Mode != chiefnudge.ModeLive || d.Outcome != chiefnudge.OutcomeQueued {
+			t.Fatalf("decision %+v", d)
+		}
+		if q := f.queuedRows(t) - queued0; q != 1 {
+			t.Fatalf("send_queue rows written: %d, want 1", q)
+		}
+	})
+	t.Run("a leave pushes", func(t *testing.T) {
+		f := failed(t)
+		f.gw.set(`{"decision":"leave","reason":"it is done"}`)
+		f.judge(t)
+		if d := f.one(t); d.Decision != chiefnudge.DecisionLeave || d.JevError != "http-502" {
+			t.Fatalf("decision %+v", d)
+		}
+		if got := f.episodePushes(); len(got) != 1 {
+			t.Fatalf("pushes: %v", got)
+		}
+		if q := f.quietOf(t, f.oneEpisode(t).ID); q != "" {
+			t.Fatalf("quiet %q", q)
+		}
+	})
+}
+
+// TestASessionStateOffPermissionNudgeHasNoNewGate (round 0, D1; regression
+// against 6060249f, where the needs-you gate leaked into state off): with
+// MUSTER_SESSION_STATE unset, an asks_permission stop's nudge for an owner on
+// the old list alone is sent live, exactly as before step 3a.
+func TestASessionStateOffPermissionNudgeHasNoNewGate(t *testing.T) {
+	f := newNudgeFixture(t, true)
+	j := withJev(t, f)
+	j.set(200, jevPermission[0], jevPermission[1], jevPermission[2])
+	queued0 := f.queuedRows(t)
+	f.pass(t)
+	d := f.one(t)
+	if d.Decision != chiefnudge.DecisionNudge || d.JevLabel != chiefnudge.LabelAsksPermission || d.Mode != chiefnudge.ModeLive ||
+		d.Outcome != chiefnudge.OutcomeQueued || d.EpisodeID != 0 {
+		t.Fatalf("decision %+v", d)
+	}
+	if q := f.queuedRows(t) - queued0; q != 1 {
+		t.Fatalf("send_queue rows written: %d, want 1", q)
+	}
+	// …and the paste gate lets it through (no needs-you gate at the paste).
+	f.tick(t)
+	if p := f.pastes(); len(p) != 1 || !strings.HasPrefix(p[0].text, chiefnudge.NudgeLabel) {
+		t.Fatalf("pastes with session state off: %+v", p)
 	}
 }

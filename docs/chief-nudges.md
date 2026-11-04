@@ -191,8 +191,10 @@ P(`needs_input`) + P(`asks_permission`). At or over
 question or permission request, and the **default outcome is an ask**: the chief
 is told so and writes the question (with session state on, the default is a
 `notify`, and no question is written). A "leave" never survives it: it becomes
-the ask (the notify). A nudge survives it only when the quote guard passes —
-a [needs-you nudge](#needs-you-nudges), for either label. When the chief gave no question, it is the
+the ask (the notify). With session state off, a nudge survives it only when
+the label is `asks_permission` **and** the quote guard passes. With session
+state on, a nudge survives it for either label when the quote guard passes: a
+[needs-you nudge](#needs-you-nudges). When the chief gave no question, it is the
 **generic ask** — "*<focus title>* is waiting on you. Its last turn looks like
 it asked you something." — in which muster puts no session text (its only
 words about the session are the chief's own, below). When the chief's answer
@@ -236,8 +238,10 @@ latency, or its error, and the tab shows them.
 ### Needs-you nudges
 
 A session over the line asked you something (`needs_input`) or asked leave
-for its next step (`asks_permission`). It is **needs-you**, and since
-session-state step 3a it may be nudged (operator decision 11): the chief is
+for its next step (`asks_permission`). It is **needs-you**, and with session
+state on (`MUSTER_SESSION_STATE=1`, step 3a) it may be nudged for either label
+(operator decision 11; with session state off nothing here changes: only an
+`asks_permission` stop can be nudged, under the old list alone): the chief is
 told that a nudge is accepted only when one of your messages to that session
 already **answers the question it asked**, quoting the words that answer it
 and naming in `covered_action` the answer they give. The quote guard is the
@@ -249,7 +253,8 @@ gate"): a needs-you nudge is sent only for an owner on **both**
 `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` and `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS`.
 For everyone else it is shadow: recorded on the Chief nudges tab as
 `would_send`, never pasted, not counted toward the hourly cap, and the stop is
-pushed. Every other nudge (to a session the classifier says asked nothing, or
+pushed. That includes an `asks_permission` stop, which before step 3a was
+nudged live on the old list alone (operator decision on #433). Every other nudge (to a session the classifier says asked nothing, or
 whose classification failed) keeps `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` alone. The
 gate is read again at the paste (and at an agent's turn), from the
 classification stored on the decision, so taking an owner off the needs-you

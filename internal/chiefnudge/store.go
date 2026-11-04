@@ -60,6 +60,10 @@ type Store interface {
 	Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error)
 	// List is the caller's newest decisions.
 	List(ctx context.Context, limit int) ([]Decision, error)
+	// ForEpisode is the caller's decision taken in session-state episode id,
+	// ok false when it has none (the sweep judges an episode at most once; the
+	// 0078 unique index is the guarantee).
+	ForEpisode(ctx context.Context, episodeID int64) (Decision, bool, error)
 }
 
 // Move is what Store.Move writes.

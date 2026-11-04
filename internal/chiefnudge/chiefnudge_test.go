@@ -309,8 +309,15 @@ func TestTheNotifyPromptAsksForNoQuestion(t *testing.T) {
 			t.Errorf("hint %+v: the default is not notify:\n%s", h, pre)
 		}
 	}
-	if p, err := ParseProposal(`{"decision":"Notify","reason":"look at it"}`); err != nil || p.Decision != DecisionNotify {
+	if p, err := ParseNotifyProposal(`{"decision":"Notify","reason":"look at it"}`); err != nil || p.Decision != DecisionNotify {
 		t.Fatalf("notify: %+v %v", p, err)
+	}
+	if p, err := ParseNotifyProposal(`{"decision":"ask","question":"which branch?"}`); err != nil || p.Decision != DecisionNotify {
+		t.Fatalf("an ask under session state: %+v %v", p, err)
+	}
+	// Session state off: unchanged — notify is no decision there.
+	if _, err := ParseProposal(`{"decision":"notify"}`); !errors.Is(err, ErrUnparseable) {
+		t.Fatalf("notify parsed with session state off: %v", err)
 	}
 }
 

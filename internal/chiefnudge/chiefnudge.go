@@ -383,10 +383,15 @@ type Proposal struct {
 var ErrUnparseable = errors.New("chiefnudge: the chief's answer is not a decision")
 
 // ParseProposal reads the first JSON object in raw (a model may wrap it in
-// prose or a code fence) and checks its decision is one of nudge, ask, leave,
-// notify. Which of ask and notify the sweep acts on is the sweep's (it maps one
-// onto the other, by whether session state is on).
-func ParseProposal(raw string) (Proposal, error) {
+// prose or a code fence) and checks its decision is one of nudge, ask, leave:
+// the stall check's answer with session state OFF, unchanged by step 3a.
+func ParseProposal(raw string) (Proposal, error) { return parseProposal(raw, false) }
+
+// ParseNotifyProposal is ParseProposal with session state ON (step 3a): notify
+// is a decision too, and an "ask" is read as a notify.
+func ParseNotifyProposal(raw string) (Proposal, error) { return parseProposal(raw, true) }
+
+func parseProposal(raw string, notify bool) (Proposal, error) {
 	i := strings.IndexByte(raw, '{')
 	if i < 0 {
 		return Proposal{}, ErrUnparseable
@@ -397,10 +402,14 @@ func ParseProposal(raw string) (Proposal, error) {
 		return Proposal{}, fmt.Errorf("%w: %v", ErrUnparseable, err)
 	}
 	p.Decision = strings.ToLower(strings.TrimSpace(p.Decision))
-	switch p.Decision {
-	case DecisionNudge, DecisionAsk, DecisionLeave, DecisionNotify:
+	switch {
+	case p.Decision == DecisionNudge, p.Decision == DecisionAsk, p.Decision == DecisionLeave:
+	case notify && p.Decision == DecisionNotify:
 	default:
 		return Proposal{}, fmt.Errorf("%w: decision %q", ErrUnparseable, p.Decision)
+	}
+	if notify && p.Decision == DecisionAsk {
+		p.Decision = DecisionNotify
 	}
 	p.Reason = cut(oneLine(p.Reason), maxReasonRunes)
 	p.CoveredAction = cut(oneLine(p.CoveredAction), maxActionRunes)
