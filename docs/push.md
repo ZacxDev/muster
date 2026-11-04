@@ -25,7 +25,7 @@ has its own toggle, and all are on by default:
 
 | event | when |
 |---|---|
-| `review` | A task becomes ready for review. When it leaves review, the notification is withdrawn. |
+| `review` | A task becomes ready for review. The title says who moved it. `· agent <name>` means an agent did (`· agent` when the write names no agent, as a mirrored session's `task_set_status` does). `· machine` means `PATCH /api/tasks/{id}/status` (`muster task status`) by a caller muster cannot tell is an agent: the shared hook token, a personal token, or a service caller that is not one of your agents. A service caller that *is* one of your agents is named `· agent <name>`. No label means you did it yourself on the card. On a [plugin](plugins.md#task-references) task reference, a write is queued and the task moves when the upstream confirms it, so the title names the write through the upstream, e.g. `Task #42 ready for review · agent worker-7 via hq`. Your own queued write is still unlabelled. `· upstream (hq)` means the upstream itself changed. The namespace is the reference key's, before the colon. When the task leaves review, the notification is withdrawn. |
 | `connector` | An agent requests access to a connector. |
 | `agent` | A task's agent comes up. |
 | `created` | A machine (an agent, the CLI) created tasks. |

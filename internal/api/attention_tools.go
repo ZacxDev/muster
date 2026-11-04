@@ -837,6 +837,5 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 		return s.taskErr(in.ID, err, "set the status of")
 	}
 	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(in.ID, 10))
-	s.notifyTaskDone(n)
 	return toolJSON(n)
 }

@@ -314,8 +314,7 @@ func (s *Server) applyReference(ctx context.Context, p plugins.Plugin, key strin
 		switch {
 		case err == nil:
 			up.Note = n
-			statusMoved = true
-			s.notifyTaskDone(n)
+			statusMoved = true // setNoteStatus sent the ready-for-review push, labelled upstream
 		case errors.Is(err, notes.ErrStatusMoved):
 			// A newer snapshot was applied meanwhile; it carries its own status.
 		default:
