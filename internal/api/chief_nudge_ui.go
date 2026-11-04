@@ -66,6 +66,19 @@ func nudgeWhere(title, kind, key, host string) string {
 	return title + " (" + where + ")"
 }
 
+// nudgeQuoteFrom names where a decision's quote was checked (step 3b-1): the
+// owner's Chief chat, their messages to the session, or — a decision from
+// before 0079, or with session state off — just "Quote".
+func nudgeQuoteFrom(source string) string {
+	switch source {
+	case chiefnudge.SourceChiefChat:
+		return "Quote from your Chief chat"
+	case chiefnudge.SourceSession:
+		return "Quote from your messages to this session"
+	}
+	return "Quote"
+}
+
 // chiefNudgeCardHTML is one decision's card.
 func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 	esc := html.EscapeString
@@ -102,7 +115,8 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		if !d.QuoteAt.IsZero() {
 			when = " · " + d.QuoteAt.UTC().Format(time.RFC3339)
 		}
-		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-quote>Quote [` + esc(d.QuoteID) + esc(when) + `]: "` + esc(d.QuoteText) + `"</p>
+		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-quote data-quote-source="` + esc(d.QuoteSource) + `">` +
+			esc(nudgeQuoteFrom(d.QuoteSource)) + ` [` + esc(d.QuoteID) + esc(when) + `]: "` + esc(d.QuoteText) + `"</p>
 `)
 	}
 	if d.Covered != "" {

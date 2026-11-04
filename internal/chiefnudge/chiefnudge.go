@@ -80,8 +80,8 @@ const (
 	// OutcomeNotified: a notify (session state on). Nothing is sent and no
 	// notice raised: the session's episode carries the push, in either mode
 	// (shadow mode never quiets a stop, so a shadow notify pushes too).
-	OutcomeNotified = "notified"
-	SuppressedPrefix   = "suppressed:"
+	OutcomeNotified  = "notified"
+	SuppressedPrefix = "suppressed:"
 )
 
 // Guard names (the part after SuppressedPrefix).
@@ -368,6 +368,26 @@ func Anchor(owner []Msg) string {
 	return owner[len(owner)-1].ID
 }
 
+// Where a nudge's quote is checked (Proposal.QuoteSource, Decision.QuoteSource,
+// chief_nudges.quote_source, migration 0079).
+const (
+	// SourceSession: the candidate session's own owner messages
+	// (OwnerMessages), as every nudge before step 3b-1. A nudge that names no
+	// source is read as this one.
+	SourceSession = "session"
+	// SourceChiefChat: a turn of the owner's Chief chat that muster recorded as
+	// TYPED by the owner (chat_messages.typed_by; docs/design/session-state.md,
+	// "Covering words", step 3b-1). Session state on only, and live only for an
+	// owner on MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS too.
+	SourceChiefChat = "chief_chat"
+)
+
+// ChiefChatIDPrefix opens the id a Chief-chat turn is shown (and quoted) by:
+// "chief:<chat message id>". It can never equal a session message's id (a
+// transcript place "line:<n>", or an agent's bare chat message id), so a quote
+// id names one source whatever the chief says its source is.
+const ChiefChatIDPrefix = "chief:"
+
 // Proposal is the chief's answer, as parsed.
 type Proposal struct {
 	Decision      string `json:"decision"`
@@ -376,6 +396,10 @@ type Proposal struct {
 	Quote         string `json:"quote"`
 	CoveredAction string `json:"covered_action"`
 	Question      string `json:"question"`
+	// QuoteSource is where the chief says its quote is from: SourceSession,
+	// SourceChiefChat, or "" (read as SourceSession). Only the prompt with
+	// session state on asks for it; with it off it is never read.
+	QuoteSource string `json:"quote_source"`
 }
 
 // ErrUnparseable: the chief's answer holds no JSON object with a known
@@ -415,6 +439,7 @@ func parseProposal(raw string, notify bool) (Proposal, error) {
 	p.CoveredAction = cut(oneLine(p.CoveredAction), maxActionRunes)
 	p.Question = cut(strings.TrimSpace(p.Question), maxQuestionRunes)
 	p.QuoteID = strings.TrimSpace(p.QuoteID)
+	p.QuoteSource = strings.ToLower(strings.TrimSpace(p.QuoteSource))
 	return p, nil
 }
 
@@ -426,6 +451,8 @@ var (
 	ErrNoCover      = errors.New("the nudge names no pending action its quote covers")
 	ErrQuoteUnknown = errors.New("the quote names no owner message of this session")
 	ErrQuoteNotIn   = errors.New("the quote is not, byte for byte and on word boundaries, in the owner message it names")
+	ErrQuoteSource  = errors.New("the nudge names a quote source muster does not know")
+	ErrChiefChatOff = errors.New("the quote names the Chief chat, which no nudge here may quote")
 )
 
 // Shown is text as the chief is shown it in the stall check's fenced block:
@@ -474,6 +501,42 @@ func CheckQuote(p Proposal, owner []Msg) (Msg, error) {
 		return Msg{}, ErrQuoteNotIn
 	}
 	return Msg{}, ErrQuoteUnknown
+}
+
+// QuoteSourceOf is the source p's quote is checked against: "" is read as
+// SourceSession (every nudge before step 3b-1 named none); anything else is
+// returned as the chief wrote it, for CheckQuoteFrom to refuse.
+func QuoteSourceOf(p Proposal) string {
+	if p.QuoteSource == "" {
+		return SourceSession
+	}
+	return p.QuoteSource
+}
+
+// CheckQuoteFrom is CheckQuote over the source p NAMES (QuoteSourceOf):
+// session, the candidate session's own owner messages exactly as CheckQuote
+// always checked them; chiefChat, the owner's TYPED Chief-chat turns in the
+// window (nil when the Chief chat may not be quoted here — session state off —
+// or its read could not vouch for the window: then no Chief-chat quote passes).
+// It returns the message and the source it was found in.
+//
+// 🔴 ONE SOURCE, THE NAMED ONE. A quote is looked for only in the source the
+// chief named, so a Chief-chat quote is never recorded (or gated) as a session
+// one, and the reverse. An unknown source is refused.
+func CheckQuoteFrom(p Proposal, session, chiefChat []Msg) (Msg, string, error) {
+	switch src := QuoteSourceOf(p); src {
+	case SourceSession:
+		m, err := CheckQuote(p, session)
+		return m, src, err
+	case SourceChiefChat:
+		if chiefChat == nil {
+			return Msg{}, src, ErrChiefChatOff
+		}
+		m, err := CheckQuote(p, chiefChat)
+		return m, src, err
+	default:
+		return Msg{}, "", ErrQuoteSource
+	}
 }
 
 // containsPhrase reports whether q occurs in text with a word boundary on
@@ -571,6 +634,27 @@ func NudgeText(ownerName string, m Msg, quote string, loc *time.Location) string
 	return NudgeLabel + " " + name + " said" + when + ": \"" + oneLine(quote) + "\". Continue."
 }
 
+// NudgeTextFrom is NudgeText for a quote checked in source: a Chief-chat quote
+// says it was said to the chief, so the session reads where the words were
+// written. A session quote is NudgeText unchanged.
+func NudgeTextFrom(ownerName string, m Msg, quote, source string, loc *time.Location) string {
+	if source != SourceChiefChat {
+		return NudgeText(ownerName, m, quote, loc)
+	}
+	name := strings.TrimSpace(oneLine(ownerName))
+	if name == "" {
+		name = "Your owner"
+	}
+	when := ""
+	if !m.At.IsZero() {
+		if loc == nil {
+			loc = time.UTC
+		}
+		when = " at " + m.At.In(loc).Format("15:04")
+	}
+	return NudgeLabel + " " + name + " told the chief" + when + ": \"" + oneLine(quote) + "\". Continue."
+}
+
 // EscalationQuestion is the ask raised in place of a third nudge.
 func EscalationQuestion(title string) string {
 	t := strings.TrimSpace(title)
@@ -630,6 +714,11 @@ type Decision struct {
 	// most once (chief_nudges_one_per_episode, migration 0078), and a queued
 	// nudge whose episode is no longer the session's open one is dropped.
 	EpisodeID int64
+	// QuoteSource is where the nudge's quote was checked (SourceSession,
+	// SourceChiefChat; migration 0079), "" for a decision with no quote or from
+	// before 0079. 🔴 The paste gate reads it: a Chief-chat nudge is sent only
+	// for an owner on MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS too.
+	QuoteSource string
 }
 
 // Jev is d's stored classification as a Result (WithJev's inverse; the latency

@@ -93,6 +93,12 @@ type ChiefNudges struct {
 	// and this; for everyone else it is shadow — recorded, never pasted, and
 	// the stop pushed. Operator decision 2026-11-04, "Separate shadow gate".
 	NeedsYouLive map[int64]bool
+	// ChiefChatQuotesLive is the owners whose nudges QUOTING THE CHIEF CHAT are
+	// sent too (MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS; session-state
+	// step 3b-1, chief_chat_quotes.go): such a nudge is live only for an owner
+	// also in this, on top of every other gate it is under; for everyone else
+	// it is shadow. A same-session quote is not under it.
+	ChiefChatQuotesLive map[int64]bool
 	// Classifier is the stall classifier (Jev over OpenRouter's Decisions API,
 	// on the owner's OpenRouter key); nil: the chief decides alone.
 	Classifier *chiefnudge.Classifier
@@ -154,16 +160,24 @@ func (s *Server) chiefNudgeMode(owner int64) string {
 // step 3a only: with session state off there is no needs-you nudge and no
 // such gate (decideNudge never passes needsYou true there, and nudgeSendLive
 // applies it only to a decision taken in an episode).
-func (s *Server) chiefNudgeLiveFor(owner int64, needsYou bool) bool {
+//
+// 🔴 AND THE CHIEF-CHAT QUOTE'S GATE (step 3b-1, chief_chat_quotes.go): a
+// nudge whose quote is from the owner's Chief chat (chiefChat) is sent only
+// for an owner ALSO on MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS, on top
+// of the lists above. A same-session quote is not under it.
+func (s *Server) chiefNudgeLiveFor(owner int64, needsYou, chiefChat bool) bool {
 	if !s.chiefNudgeLive(owner) {
 		return false
 	}
-	return !needsYou || s.ext.ChiefNudge.NeedsYouLive[owner]
+	if needsYou && !s.ext.ChiefNudge.NeedsYouLive[owner] {
+		return false
+	}
+	return !chiefChat || s.ext.ChiefNudge.ChiefChatQuotesLive[owner]
 }
 
 // nudgeModeFor is the mode of a nudge to owner's session (chiefNudgeLiveFor).
-func (s *Server) nudgeModeFor(owner int64, needsYou bool) string {
-	if s.chiefNudgeLiveFor(owner, needsYou) {
+func (s *Server) nudgeModeFor(owner int64, needsYou, chiefChat bool) string {
+	if s.chiefNudgeLiveFor(owner, needsYou, chiefChat) {
 		return chiefnudge.ModeLive
 	}
 	return chiefnudge.ModeShadow
@@ -188,8 +202,13 @@ func (s *Server) needsYouStall(jev chiefnudge.Result) bool {
 // the image before step 3a queued (no episode) and that is still queued after
 // the deploy: with session state on it is held to the needs-you rule like any
 // other. With session state off neither holds, so there is no such gate.
+//
+// A nudge whose stored quote source is the Chief chat is held to that gate
+// too (chiefNudgeLiveFor), whatever session state is now: taking an owner off
+// MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS stops one already queued.
 func (s *Server) nudgeSendLive(owner int64, d chiefnudge.Decision) bool {
-	return s.chiefNudgeLiveFor(owner, (d.EpisodeID != 0 || s.sessionStateOn()) && s.needsYouStall(d.Jev()))
+	return s.chiefNudgeLiveFor(owner, (d.EpisodeID != 0 || s.sessionStateOn()) && s.needsYouStall(d.Jev()),
+		d.QuoteSource == chiefnudge.SourceChiefChat)
 }
 
 func (s *Server) chiefNudgeIdle() time.Duration {
@@ -660,6 +679,12 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	owner := chiefnudge.OwnerMessages(msgs, injected, nudgeInjectedPrefixes, s.now().Add(-chiefnudge.OwnerWindow),
 		c.Kind == chiefnudge.KindAgent && full)
 	untimed := chiefnudge.Untimed(msgs)
+	// notify: session state is on, so the chief answers nudge, leave or notify
+	// (step 3a) and the session's episode carries the push. Only then may a
+	// quote come from the owner's typed Chief chat (step 3b-1): chat is nil
+	// with it off.
+	notify := s.sessionStateOn()
+	chat := s.nudgeChiefChat(octx, chief, o.ID)
 	// 🔴 THE CHIEF SEES REDACTED TEXT, AND THE QUOTE IS MATCHED AGAINST EXACTLY
 	// WHAT IT SAW: each owner message is redacted and cut here, once, and both
 	// the prompt and CheckQuote read this copy.
@@ -698,10 +723,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	// askStall: the session is NEEDS-YOU — idle, and the classifier says its
 	// last message asked the owner something.
 	askStall := s.needsYouStall(jev)
-	// notify: session state is on, so the chief answers nudge, leave or notify
-	// (step 3a) and the session's episode carries the push.
-	notify := s.sessionStateOn()
-	hint := chiefnudge.Hint{Notify: notify}
+	hint := chiefnudge.Hint{Notify: notify, ChiefChat: chat}
 	if askStall {
 		hint.AskStall, hint.Label, hint.AskScore = true, jev.Label, jev.AskScore
 	}
@@ -780,7 +802,9 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 			// Session state off: unchanged by step 3a — no needs-you nudge.
 			why = "a nudge is allowed only on an asks_permission stall, and this one is " + jev.Label
 		default:
-			if _, qerr := chiefnudge.CheckQuote(prop, owner); qerr != nil {
+			_, src, qerr := checkNudgeQuote(prop, owner, chat, notify)
+			d.QuoteSource = src
+			if qerr != nil {
 				why = "the nudge's quote failed: " + qerr.Error()
 			}
 		}
@@ -827,7 +851,15 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return s.actAsk(octx, c, d, "", false), false, ""
 	}
 	d.QuoteID, d.QuoteText = prop.QuoteID, chiefnudge.Cut(prop.Quote, chiefnudge.MaxQuoteRunes)
-	quoted, qerr := chiefnudge.CheckQuote(prop, owner)
+	quoted, src, qerr := checkNudgeQuote(prop, owner, chat, notify)
+	d.QuoteSource = src
+	if qerr != nil && notify && src != chiefnudge.SourceSession {
+		// 🔴 A QUOTE FROM THE CHIEF CHAT THAT DOES NOT VERIFY (or names a source
+		// muster does not know) IS A NOTIFY: the stop pushes; nothing is pasted.
+		// (A same-session quote keeps its old guard, below.)
+		d.Reason = chiefnudge.GuardQuote + ": " + qerr.Error() + "; " + d.Reason
+		return s.actNotify(octx, d), false, ""
+	}
 	if qerr != nil && untimed > 0 && len(owner) == 0 {
 		// The host sent the owner's messages with no times (an older
 		// muster-mirror): none can authorise a nudge, so it is an ask — and
@@ -860,7 +892,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 	// stop pushed (episodeVerdict: shadow never quiets a stop). Session state
 	// on only: with it off there is no such gate.
 	if notify {
-		d.Mode = s.nudgeModeFor(o.ID, askStall)
+		d.Mode = s.nudgeModeFor(o.ID, askStall, src == chiefnudge.SourceChiefChat)
 	}
 	// The hourly cap bounds what is SENT. Shadow mode records what it would do,
 	// unsuppressed (operator decision), and is not counted.
@@ -869,7 +901,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 			strconv.Itoa(p.hourly)+" nudges in the last hour (cap "+strconv.Itoa(s.chiefNudgeHourlyCap())+")"
 		return s.recordNudge(octx, d, "chief_nudge.suppressed"), false, ""
 	}
-	d.Message = chiefnudge.NudgeText(o.Name, quoted, prop.Quote, time.Local)
+	d.Message = chiefnudge.NudgeTextFrom(o.Name, quoted, prop.Quote, src, time.Local)
 	if d.Mode != chiefnudge.ModeLive {
 		d.Outcome = chiefnudge.OutcomeWouldSend
 		return s.recordNudge(octx, d, "chief_nudge.would_send"), false, ""

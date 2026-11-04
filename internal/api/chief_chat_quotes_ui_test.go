@@ -1,0 +1,27 @@
+package api
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/chiefnudge"
+)
+
+// TestTheNudgesTabNamesWhereAQuoteCameFrom (step 3b-1): a decision's card says
+// whether its quote was checked in the owner's Chief chat or in their messages
+// to the session, so a shadow Chief-chat quote can be told apart; a decision
+// with no recorded source (state off, or from before 0079) reads as before.
+func TestTheNudgesTabNamesWhereAQuoteCameFrom(t *testing.T) {
+	for _, c := range []struct{ source, want string }{
+		{chiefnudge.SourceChiefChat, `data-quote-source="chief_chat">Quote from your Chief chat [chief:77]: "ship it now please"`},
+		{chiefnudge.SourceSession, `data-quote-source="session">Quote from your messages to this session [chief:77]: "ship it now please"`},
+		{"", `data-quote-source="">Quote [chief:77]: "ship it now please"`},
+	} {
+		d := chiefnudge.Decision{ID: 9, Decision: chiefnudge.DecisionNudge, Mode: chiefnudge.ModeShadow, Outcome: chiefnudge.OutcomeWouldSend,
+			QuoteID: "chief:77", QuoteText: "ship it now please", QuoteSource: c.source}
+		if got := chiefNudgeCardHTML(d, time.Now()); !strings.Contains(got, c.want) {
+			t.Errorf("source %q: the card lacks %q:\n%s", c.source, c.want, got)
+		}
+	}
+}

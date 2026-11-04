@@ -965,11 +965,11 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 		m.Kind = "text"
 	}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok)
-		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at`,
-		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK).
-		Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)
+		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by)
+		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0)`,
+		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, typedByArg(m)).
+		Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy)
 	if err != nil {
 		return m, err
 	}
@@ -988,6 +988,48 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 			WHERE id = $1`, m.SessionID, title)
 	}
 	return m, nil
+}
+
+// typedByArg is m's typed_by: NULL unless m is a USER row with a typer. 🔴 An
+// assistant row is never anyone's typing, whatever its caller set.
+func typedByArg(m ChatMessage) any {
+	if m.TypedBy <= 0 || m.Role != "user" {
+		return nil
+	}
+	return m.TypedBy
+}
+
+// OwnerTypedChatMessages is up to limit of agentID's text USER rows that user
+// by TYPED (typed_by, migration 0079), written at or after since, in every
+// chat session of the agent, oldest first: the newest limit of them. The stall
+// sweep reads it for the owner's Chief chat (docs/design/session-state.md,
+// step 3b-1); a caller that must vouch for the whole window asks for one more
+// than it shows and treats a full page as a partial read.
+func (s *PGStore) OwnerTypedChatMessages(ctx context.Context, agentID, by int64, since time.Time, limit int) ([]ChatMessage, error) {
+	if limit <= 0 || by <= 0 {
+		return []ChatMessage{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, typed_by FROM chat_messages
+		WHERE agent_id = $1 AND typed_by = $2 AND role = 'user' AND kind = 'text' AND created_at >= $3
+		ORDER BY id DESC LIMIT $4`, agentID, by, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ChatMessage, 0, limit)
+	for rows.Next() {
+		var m ChatMessage
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	reverseChatChronological(out)
+	return out, nil
 }
 
 func (s *PGStore) ListChatMessages(ctx context.Context, sessionID int64) ([]ChatMessage, error) {
