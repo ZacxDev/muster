@@ -311,7 +311,14 @@ func (s *Server) notifyAgentRunning(agentName string) {
 // it. It fires only for a task this process actually notified (the dedupe
 // mark), so a task that never buzzed sends nothing, and a repeated save of
 // the new status sends nothing more.
-func (s *Server) notifyTaskDone(n notes.Note) {
+//
+// 🔴 ITS ONE CALLER IS setNoteStatus, the funnel every status writer passes,
+// and ctx is the context that funnel stamped: the writer (notes.WithWriter)
+// and who is writing (withRefOrigin). The title's source label is read from
+// THOSE, by reviewSourceLabel — no caller names a source, so no caller can
+// name the wrong one or forget to. TestReviewPushIsSentOnlyFromTheStatusFunnel
+// pins the single caller.
+func (s *Server) notifyTaskDone(ctx context.Context, n notes.Note) {
 	if n.Status != notes.StatusReadyForReview {
 		// Left (or never in) the review state: drop any dedupe mark so a future
 		// transition back into ready_for_review notifies.
@@ -345,10 +352,53 @@ func (s *Server) notifyTaskDone(n notes.Note) {
 	s.pushTask(n.OwnerID, push.EventReview, RouterNotification{
 		Type:  taskNotificationType,
 		ID:    strconv.FormatInt(n.ID, 10),
-		Title: fmt.Sprintf("Task #%d ready for review", n.ID),
+		Title: reviewPushTitle(n.ID, reviewSourceLabel(statusWriter(notes.WriterFrom(ctx)), refOriginFrom(ctx), n)),
 		Body:  taskTitle(n),
 		Tag:   fmt.Sprintf("task-%d-done", n.ID),
 	})
+}
+
+// reviewPushTitle is the ready-for-review push's title: "Task #N ready for
+// review", then " · <source>" when the source has a label. The " · " joiner is
+// the one muster's other short labels already use ("#<id> · <title>").
+func reviewPushTitle(id int64, source string) string {
+	if source == "" {
+		return fmt.Sprintf("Task #%d ready for review", id)
+	}
+	return fmt.Sprintf("Task #%d ready for review · %s", id, source)
+}
+
+// reviewSourceLabel is THE rule for where a ready-for-review status came from,
+// as the push names it (one rule, one place). It is decided by writer — the
+// label setNoteStatus stamped — and never re-derived from the note:
+//
+//   - "upstream (<ns>)": a plugin task reference's snapshot moved the task
+//     (writerPluginReference), i.e. its upstream changed. ns is the namespace of
+//     the reference key ("hq" for "hq:868…"); plain "upstream" without one.
+//   - "agent <name>" / "agent": an agent's own write — the per-agent route or
+//     native tool, the all-agents task_set_status tool, or the hook-token
+//     machine route. Named when the writer stamped an agent (refOrigin.Agent);
+//     the machine route and a mirrored session carry none, so they read "agent".
+//   - "": the owner's own card control (writerHumanUI), and any writer that is
+//     not one of the above. The owner just made the change, so the push is an
+//     echo to their other devices and keeps the unlabelled copy it always had —
+//     an unlabelled title therefore never means an upstream or an agent.
+func reviewSourceLabel(writer statusWriter, o refOrigin, n notes.Note) string {
+	switch writer {
+	case writerPluginReference:
+		if n.Ref != nil {
+			if ns, _ := notes.ParseTag(n.Ref.Key); ns != "" {
+				return "upstream (" + ns + ")"
+			}
+		}
+		return "upstream"
+	case writerAgentRoute, writerAgentTool, writerTaskTool, writerMachineAPI:
+		if name := strings.TrimSpace(o.Agent); name != "" {
+			return "agent " + name
+		}
+		return "agent"
+	}
+	return ""
 }
 
 // --- 4. External COMMENT on a task (machine endpoint only, coalesced) ---

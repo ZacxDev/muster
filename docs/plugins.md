@@ -359,7 +359,10 @@ other fields (tags, directory, model, repository, branch) stay editable.
 
 The status follows the snapshot through the task-status writer
 `plugin_reference`: it is logged like any status write and sends the usual
-pushes. But an upstream close does **not** stop the agent your chief started
+pushes, the ready-for-review one titled `· upstream (<namespace>)` so you can
+tell it from an agent's ([push.md](push.md)). This includes a snapshot that
+reports one of your queued writes landing upstream: by then it is the
+upstream's status. But an upstream close does **not** stop the agent your chief started
 on the task ([below](#completing-a-task-stops-the-chiefs-agent)): an upstream
 close is not you stopping an agent.
 

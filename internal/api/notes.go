@@ -1500,17 +1500,10 @@ func (s *Server) applyTaskStatus(ctx context.Context, writer statusWriter, id in
 	if err != nil {
 		return notes.Note{}, err
 	}
-	// Background push when this task ENTERS ready_for_review (deduped so a re-save
-	// doesn't re-buzz). Best-effort + nil-push-safe.
-	s.notifyTaskDone(note)
-	// ⚠ NOTHING CLOSES THAT NOTIFICATION WHEN THE TASK LEAVES REVIEW, so the
-	// Android icon dot (Android's badge is the unread-notification count; it has
-	// no badging API) is NOT cleared by muster. A router-relayed close was tried
-	// and removed (PR #38, round 0): as deployed, muster runs standalone — no
-	// router, no push routes — so it could never reach a device, and it cost a DB
-	// read before every status write. Clearing the dot needs muster-native Web Push — a
-	// separate arc. The desktop badge (setAppBadge, /ui/tasks/review-count) is
-	// unaffected: it re-reads the count on task.changed.
+	// The ready-for-review push — and its withdrawal when the task leaves review
+	// (notifyTaskDone's "resolved") — already went from setNoteStatus, the funnel
+	// that stamps the writer the push's title names. The desktop badge
+	// (setAppBadge, /ui/tasks/review-count) re-reads the count on task.changed.
 	// 🔴 BROADCAST HERE, FOR EVERY CALLER, AND AFTER THE WRITE — the human route
 	// used to broadcast NOTHING while the machine route broadcast from its own
 	// handler. That split is what let the two disagree, and two comments in this

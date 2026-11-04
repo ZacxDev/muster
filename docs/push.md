@@ -25,7 +25,7 @@ has its own toggle, and all are on by default:
 
 | event | when |
 |---|---|
-| `review` | A task becomes ready for review. When it leaves review, the notification is withdrawn. |
+| `review` | A task becomes ready for review. The title says who moved it: `Task #42 ready for review · upstream (hq)` when a [plugin](plugins.md) task reference's upstream changed (the namespace is the reference key's, before the colon), `· agent <name>` when an agent did (`· agent` when the write names no agent, as the machine route `PATCH /api/tasks/{id}/status` does), and no label when you did it yourself on the card. When it leaves review, the notification is withdrawn. |
 | `connector` | An agent requests access to a connector. |
 | `agent` | A task's agent comes up. |
 | `created` | A machine (an agent, the CLI) created tasks. |

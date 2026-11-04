@@ -90,7 +90,7 @@ func TestATaskPushBodyKeepsSnakeCase(t *testing.T) {
 	pusher := &payloadPusher{}
 	s := eventServer(store, pusher)
 
-	s.notifyTaskDone(notes.Note{ID: 32, OwnerID: 7, Status: notes.StatusReadyForReview,
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 32, OwnerID: 7, Status: notes.StatusReadyForReview,
 		Body: "**Goal:** rename `config` in snake_case_names and [the doc](https://example.com/d)\n\nmore"})
 	s.WaitForPushes()
 	got := pusher.to(ep("review-plain"))
@@ -161,7 +161,7 @@ func TestATaskPushBodyIsPlainedExactlyOnce(t *testing.T) {
 	claim(t, store, 7, ep("review-once"))
 	pusher := &payloadPusher{}
 	s := eventServer(store, pusher)
-	s.notifyTaskDone(notes.Note{ID: 36, OwnerID: 7, Status: notes.StatusReadyForReview, Body: `Done: \*\*x\*\* shipped`})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 36, OwnerID: 7, Status: notes.StatusReadyForReview, Body: `Done: \*\*x\*\* shipped`})
 	s.WaitForPushes()
 	got := pusher.to(ep("review-once"))
 	if len(got) != 1 {
