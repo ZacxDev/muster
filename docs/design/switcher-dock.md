@@ -475,10 +475,9 @@ from the bar's four rows that the page already carries.**
 The palette already proves the approach: it reads its entries from the bar's
 All row (`palette.go:223-238`).
 
-<a id="recents-extra-22"></a>
-### Recent's extra 22 (decision 6)
+### Recent's extra 22
 
-**The query needs no change.** `recents.PGStore.List`
+For decision 6. **The query needs no change.** `recents.PGStore.List`
 (`internal/recents/recents.go:55-80`) has no `LIMIT`: it reads every one of the
 viewer's rows, newest first, and the table holds at most about
 `MaxPerOwner` = 50 per owner because each visit prunes past it (`:32-36`,
@@ -687,8 +686,9 @@ hook `view_swap.go` uses to remove its frame before a save (`:205-211`). This
 save also runs when htmx restores on Back (`Wt` calls `zt` first), so a Back
 or Forward between boosted entries with the dock open is covered too.
 
-<a id="one-cleanup-point"></a>
-**One cleanup point: the dialog's `close` event.** Every path ends in
+#### One cleanup point
+
+**The dialog's `close` event.** Every path ends in
 `dialog.close()`: Escape and Android back in a browser (via `cancel`), the
 backdrop, ×, the header drag, `musterBack()`, a row's `click`, `pageshow`
 with `persisted`, and `htmx:beforeHistorySave`. The `close` handler alone does
