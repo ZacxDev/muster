@@ -79,6 +79,23 @@ answers is the old code over the new schema:
 
 All three end when the old pod is gone. No step is needed.
 
+**Turning on session state (`MUSTER_SESSION_STATE=1`, migrations 0073–0074).**
+Flipping it (a restart) and the rolling deploy that carries it have two
+one-time effects, and no step fixes either:
+
+- **A notification shown before the flip stays.** A waiting window's
+  `attention-session-…` notification, and a notice's, shown by a process with
+  the flag off, is not withdrawn by a process with it on: such a window is now
+  an episode, outside the old diff that would have cleared it. Swipe it away;
+  the episode's own push replaces it on the next stop.
+- **Until the old pod is gone, both push.** The old pod keeps pushing
+  `attention-session-…` for waiting windows and raising notices, while the new
+  one pushes `attention-episode-…`, so one stop can notify twice during the
+  overlap. It ends when the old pod terminates.
+
+Turning it back off is the same in reverse: open episode notifications are not
+withdrawn by a process with the flag off.
+
 ## What counts as stalled
 
 Every 2 minutes the sweep looks at each owner who has a chief (and has it

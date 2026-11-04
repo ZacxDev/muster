@@ -211,17 +211,16 @@ func (s *Server) settleEpisode(octx context.Context, ep sessionstate.Episode, f 
 	}
 }
 
-// pushEpisode claims and sends ep's one push, unless its session's previous
-// episode pushed within episodeRepushFloor of this one opening (then it is
-// quiet for good: the same stop back again).
+// pushEpisode claims and sends ep's one push. 🔴 THE REPUSH FLOOR DELAYS, IT
+// NEVER SUPPRESSES: while its session's previous episode pushed less than
+// episodeRepushFloor ago, ep is held (quiet repush_floor, drawn as such), and
+// a later pass pushes it once the floor has passed — if it is still open. A
+// stop is never left silent by the floor.
 func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle time.Duration) {
-	if ep.Quiet == sessionstate.QuietRepushFloor {
-		return
-	}
 	prev, err := s.ext.Episodes.PreviousPush(octx, ep.Kind, ep.Key, ep.Seq)
 	if err != nil {
 		s.logger.Printf("session state: episode %d: previous push: %v", ep.ID, err)
-	} else if !prev.IsZero() && ep.OpenedAt.Sub(prev) < episodeRepushFloor {
+	} else if !prev.IsZero() && s.now().Sub(prev) < episodeRepushFloor {
 		if err := s.ext.Episodes.SetQuiet(octx, ep.ID, sessionstate.QuietRepushFloor); err != nil {
 			s.logger.Printf("session state: episode %d: quiet: %v", ep.ID, err)
 		}
@@ -323,29 +322,49 @@ func plainWaitingItem(it attentionItem) bool {
 	return it.Kind == attentionKindSession && !answerableItem(it)
 }
 
-// episodeWaitingPushes opens (or finds) the episode of each of octx's owner's
-// plain waiting windows in items and pushes it at once: the waiting push,
-// from the mirror hub's change hook. A window whose session key is unknown
-// (a Hermes window naming no conversation) is the state pass's, which keys it
-// as the stall facts do.
-func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items []attentionItem, hs []mirror.HostView) {
-	for _, it := range items {
-		if !plainWaitingItem(it) || it.claudeSession == "" {
+// episodeCover is the episode key session state keeps waiting item it under,
+// and where it is: ok only for a plain waiting window (plainWaitingItem) on a
+// host the state pass reads (online, reporting status) whose window it lists
+// (stateWindowKey, the stall facts' own rule). 🔴 ONLY A COVERED ITEM LEAVES
+// TODAY'S WAITING DIFF: a window session state cannot key (an older host that
+// sends no Claude session id, a runtime window naming no conversation) keeps
+// today's summary-only push, never silence.
+func episodeCover(hs []mirror.HostView, it attentionItem) (key, runtime string, w mirror.Window, ok bool) {
+	if !plainWaitingItem(it) {
+		return "", "", mirror.Window{}, false
+	}
+	for _, h := range hs {
+		if h.Host != it.card.ref.Host || !h.Online || !h.StatusReport {
 			continue
 		}
-		e, ok := sessionKeyEntry(hs, it.host, it.claudeSession)
+		for _, x := range h.Windows {
+			if x.Session == it.card.ref.Session && x.ID == it.card.ref.Window {
+				key, runtime, _ = stateWindowKey(x, true)
+				return key, runtime, x, key != ""
+			}
+		}
+	}
+	return "", "", mirror.Window{}, false
+}
+
+// episodeWaitingPushes opens (or finds) the episode of each covered waiting
+// window in items (episodeCover) and pushes it at once: the waiting push, from
+// the mirror hub's change hook.
+func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items []attentionItem, hs []mirror.HostView) {
+	for _, it := range items {
+		key, runtime, w, ok := episodeCover(hs, it)
 		if !ok {
 			continue
 		}
-		ep, has, err := s.ext.Episodes.OpenFor(octx, sessionstate.KindMirror, it.claudeSession)
+		ep, has, err := s.ext.Episodes.OpenFor(octx, sessionstate.KindMirror, key)
 		if err != nil {
 			s.logger.Printf("session state: waiting %s: %v", it.Key, err)
 			continue
 		}
 		if !has {
-			opened, claimed, err := s.ext.Episodes.Open(octx, sessionstate.Episode{Kind: sessionstate.KindMirror, Key: it.claudeSession,
-				State: sessionstate.StateNeedsYou, Waiting: true, Asked: true, Runtime: windowRuntime(hs, e),
-				Host: e.Host, TmuxSession: e.Session, Window: e.Window, Index: e.Index})
+			opened, claimed, err := s.ext.Episodes.Open(octx, sessionstate.Episode{Kind: sessionstate.KindMirror, Key: key,
+				State: sessionstate.StateNeedsYou, Waiting: true, Asked: true, Runtime: runtime,
+				Host: it.card.ref.Host, TmuxSession: w.Session, Window: w.ID, Index: w.Index})
 			if err != nil {
 				s.logger.Printf("session state: waiting %s: open: %v", it.Key, err)
 				continue
@@ -361,23 +380,6 @@ func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items [
 			s.pushEpisode(octx, ep, 0)
 		}
 	}
-}
-
-// windowRuntime is the runtime of e's window as the stall facts key it
-// (nudgeWindowKey): "" for a Claude Code window, else
-// mirror.Window.AgentRuntime.
-func windowRuntime(hs []mirror.HostView, e mirror.SessionView) string {
-	for _, h := range hs {
-		if h.Host != e.Host {
-			continue
-		}
-		for _, w := range h.Windows {
-			if w.Session == e.Session && w.ID == e.Window && !w.Claude {
-				return w.AgentRuntime()
-			}
-		}
-	}
-	return ""
 }
 
 // --- the tap route -----------------------------------------------------------
@@ -422,19 +424,36 @@ var episodeQuietText = map[string]string{
 	sessionstate.QuietLeft:        "quiet: the chief left it, and it asked nothing",
 	sessionstate.QuietNudged:      "quiet: the chief's nudge was sent",
 	sessionstate.QuietOwnerLast:   "quiet: you spoke last",
-	sessionstate.QuietRepushFloor: "quiet: the same stop again within 2 minutes",
+	sessionstate.QuietRepushFloor: "held: the session was pushed under 2 minutes ago",
+}
+
+// askListHTML is the Asks list's <li>s, as the page draws them and as its live
+// refresh redraws them: the items (pageAttentionItems), the recent answers,
+// then the "Stalled / waiting" section (episodeSectionHTML). With a section
+// drawn, the list's "Nothing is waiting on you." line is dropped — a stalled
+// session is waiting on you.
+func (s *Server) askListHTML(ctx context.Context, items []attentionItem, now time.Time) string {
+	list := askTabListHTML(s.pageAttentionItems(ctx, items), s.answeredAsksNow(ctx, now), now)
+	sec := s.episodeSectionHTML(ctx, now)
+	if sec != "" {
+		list = strings.Replace(list, attentionEmptyHTML, "", 1)
+	}
+	return list + sec
 }
 
 // pageAttentionItems is items as the Asks list draws them: with session state
-// on, a plain waiting window is a row of the "Stalled / waiting" section
-// (episodeSectionHTML), not a list item too.
-func (s *Server) pageAttentionItems(items []attentionItem) []attentionItem {
-	if !s.sessionStateOn() {
+// on, a waiting window session state covers (episodeCover — the hook's own
+// rule) is a row of the "Stalled / waiting" section (episodeSectionHTML), not
+// a list item too. One it cannot key stays a list item, as it stays in
+// today's push.
+func (s *Server) pageAttentionItems(ctx context.Context, items []attentionItem) []attentionItem {
+	if !s.sessionStateOn() || s.ext.Mirror == nil {
 		return items
 	}
+	hs := s.ext.Mirror.Hosts(ctx)
 	out := items[:0:0]
 	for _, it := range items {
-		if !plainWaitingItem(it) {
+		if _, _, _, ok := episodeCover(hs, it); !ok {
 			out = append(out, it)
 		}
 	}
@@ -442,26 +461,28 @@ func (s *Server) pageAttentionItems(items []attentionItem) []attentionItem {
 }
 
 // episodeSectionHTML is the "Stalled / waiting" section of ctx's owner's Asks
-// page: one plain row per open episode, oldest first — where the session is,
+// list: one plain row per open episode, oldest first — where the session is,
 // its state and for how long, and a link to it. 🔴 NO ANSWER BOX: a row is
-// looked at, never answered. A quiet row is drawn muted and says why it did
-// not push. "" with session state off.
+// looked at, never answered. A quiet row is drawn muted and says why it has
+// not pushed. It is ONE <li> of the list, so the list's live refresh
+// (handleAttentionItems) redraws it: an Asks page left open shows a window
+// that starts waiting. "" with session state off, or with no open episode.
 func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
 	if !s.sessionStateOn() {
 		return ""
 	}
 	eps, err := s.ext.Episodes.OpenEpisodes(ctx)
+	if err == nil && len(eps) == 0 {
+		return ""
+	}
 	var b strings.Builder
-	b.WriteString(`<section class="flex flex-col gap-2" data-testid="attention-episodes" aria-labelledby="attention-episodes-h">
+	b.WriteString(`<li class="flex flex-col gap-2" data-attention-episodes-item><section class="flex flex-col gap-2" data-testid="attention-episodes" aria-labelledby="attention-episodes-h">
 <h2 id="attention-episodes-h" class="text-sm font-semibold text-fg">Stalled / waiting</h2>
 <ul class="flex flex-col gap-2" data-attention-episodes>
 `)
-	switch {
-	case err != nil:
+	if err != nil {
 		s.logger.Printf("attention: episodes: %v", err)
 		b.WriteString(`<li class="text-sm text-fg2" data-attention-episodes-error>The stalled and waiting sessions could not be read.</li>` + "\n")
-	case len(eps) == 0:
-		b.WriteString(`<li class="text-sm text-fg2" data-attention-episodes-empty>No session is stalled or waiting.</li>` + "\n")
 	}
 	esc := html.EscapeString
 	for _, ep := range eps {
@@ -472,7 +493,9 @@ func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
 		}
 		cls := flowsCardClass
 		quiet := ""
-		if q, ok := episodeQuietText[ep.Quiet]; ok && ep.PushedAt.IsZero() {
+		// A quiet reason is only ever held by an unpushed episode (SetQuiet
+		// refuses a pushed one, ClaimPush clears it).
+		if q, ok := episodeQuietText[ep.Quiet]; ok {
 			cls += " opacity-60"
 			quiet = ` · <span data-attention-episode-quiet="` + esc(ep.Quiet) + `">` + esc(q) + `</span>`
 		}
@@ -484,6 +507,6 @@ func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
 </li>
 `)
 	}
-	b.WriteString("</ul>\n</section>\n")
+	b.WriteString("</ul>\n</section></li>\n")
 	return b.String()
 }

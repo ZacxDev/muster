@@ -109,7 +109,7 @@ const (
 	QuietLeft        = "left"         // the chief said leave it, and the session asked nothing
 	QuietNudged      = "nudged"       // the chief's nudge to it was sent
 	QuietOwnerLast   = "owner_last"   // the owner spoke last (known without a classifier)
-	QuietRepushFloor = "repush_floor" // its previous episode pushed within the repush floor
+	QuietRepushFloor = "repush_floor" // held: its previous episode pushed under the repush floor ago; pushed once it passes
 )
 
 func validQuiet(q string) bool {

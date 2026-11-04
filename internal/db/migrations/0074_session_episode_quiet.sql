@@ -10,12 +10,13 @@
 --                         classifier ran, so muster knows it from the
 --                         messages alone): the session is not stopped on its
 --                         own word;
---         'repush_floor'  the session's previous episode pushed within the
---                         repush floor (2 minutes): this stop is the same one
---                         back again, so it is not pushed a second time.
---       Quiet is NOT final: a pass that later finds a reason to push (a new
---       streak the chief says notify on, a nudge whose send failed) pushes it
---       and clears this. Only an episode's FIRST push is ever sent.
+--         'repush_floor'  HELD: the session's previous episode pushed under
+--                         the repush floor (2 minutes) ago; the stop is pushed
+--                         once the floor has passed, if it is still open.
+--       Quiet is NOT final, for any reason: a pass that later finds a reason
+--       to push (the floor passed, a new streak the chief says notify on, a
+--       nudge whose send failed) pushes it and clears this. Only an episode's
+--       FIRST push is ever sent.
 --
 -- 🔴 NO NEW CLAIM. Pushing an episode claims it on pushed_at (UPDATE … WHERE
 -- pushed_at IS NULL): only the process whose UPDATE took the row sends the

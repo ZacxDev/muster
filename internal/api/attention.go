@@ -979,12 +979,16 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		}
 	}
 	waiting := s.waitingSessionsIn(octx, hs)
+	// episodePushed: the items an episode push already covered at the last
+	// nudge (session state on), so their stop was pushed.
+	var episodePushed map[string]bool
 	if s.sessionStateOn() {
-		// 🔴 SESSION STATE ON: A WAITING WINDOW MUSTER CANNOT ANSWER IS AN
-		// EPISODE, pushed (once per stop, claimed) from here at once
-		// (session_push.go) — and left out of this diff, which would push it a
-		// second time and clear it the moment it stops waiting. Answerable asks
-		// stay here, with their own full-text push.
+		// 🔴 SESSION STATE ON: A WAITING WINDOW MUSTER CANNOT ANSWER, AND THAT
+		// SESSION STATE KEYS (episodeCover), IS AN EPISODE, pushed (once per
+		// stop, claimed) from here at once (session_push.go) — and left out of
+		// this diff, which would push it a second time and clear it the moment
+		// it stops waiting. Answerable asks, and a window session state cannot
+		// key, stay here, with today's push.
 		kept, fresh := waiting[:0:0], []attentionItem(nil)
 		cur := map[string]bool{}
 		s.attention.mu.Lock()
@@ -992,8 +996,9 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 			s.attention.episodeWaiting = map[int64]map[string]bool{}
 		}
 		prev := s.attention.episodeWaiting[owner]
+		episodePushed = prev
 		for _, it := range waiting {
-			if !plainWaitingItem(it) {
+			if _, _, _, ok := episodeCover(hs, it); !ok {
 				kept = append(kept, it)
 				continue
 			}
@@ -1044,9 +1049,12 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		if _, ok := before[k]; ok {
 			continue
 		}
-		if !seen[it.host] {
+		if !seen[it.host] || episodePushed[k] {
 			// The host's first observation: seed, do not push — and stamp it, so
-			// the re-push window covers a seeded session too.
+			// the re-push window covers a seeded session too. Likewise a window
+			// whose stop an EPISODE push covered at the last nudge and that now
+			// names an answerable ask (a host that reports waiting before it
+			// names the ask): the stop was pushed once already.
 			s.attention.pushedAt[k] = at
 			continue
 		}
@@ -1203,8 +1211,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(attentionNotice(r))
 	now := time.Now()
 	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
-		askTabListHTML(s.pageAttentionItems(items), s.answeredAsksNow(r.Context(), now), now) + `</ul>` +
-		s.episodeSectionHTML(r.Context(), now)
+		s.askListHTML(r.Context(), items, now) + `</ul>`
 	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
 		b.WriteString(askList)
 	} else {
@@ -1255,7 +1262,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := time.Now()
-	_, _ = w.Write([]byte(askTabListHTML(s.pageAttentionItems(items), s.answeredAsksNow(r.Context(), now), now)))
+	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, now)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
@@ -1293,7 +1300,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 		formAttrs = ` hx-boost="false"`
 	}
 	if len(items) == 0 {
-		return `<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li>`
+		return attentionEmptyHTML
 	}
 	var b strings.Builder
 	for _, it := range items {
@@ -1397,6 +1404,9 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 	}
 	return b.String()
 }
+
+// attentionEmptyHTML is the list's line when nothing is in it.
+const attentionEmptyHTML = `<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li>`
 
 // attentionAge is a short age.
 func attentionAge(d time.Duration) string {

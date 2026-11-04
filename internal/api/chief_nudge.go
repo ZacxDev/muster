@@ -360,11 +360,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				continue
 			}
 			for _, w := range h.Windows {
-				key, runtime := nudgeWindowKey(w)
-				noTranscript := false
-				if key == "" && hermes && !w.Claude && w.AgentRuntime() == mirror.RuntimeHermes && w.AgentSession != "" {
-					key, runtime, noTranscript = w.SessionKey(), w.AgentRuntime(), true
-				}
+				key, runtime, noTranscript := stateWindowKey(w, hermes)
 				if key == "" || seen[key] {
 					continue
 				}
@@ -464,6 +460,19 @@ func nudgeWindowKey(w mirror.Window) (key, runtime string) {
 		return w.SessionKey(), w.AgentRuntime()
 	}
 	return "", ""
+}
+
+// stateWindowKey is the session key the stall facts list a window under
+// (nudgeWindowKey), and with hermes a Hermes window naming its conversation
+// too (noTranscript: muster reads none of it). "" when the window is not
+// listed. ONE RULE: the episode push's waiting hook keys a window by it too
+// (session_push.go), so the hook never opens an episode the pass cannot see.
+func stateWindowKey(w mirror.Window, hermes bool) (key, runtime string, noTranscript bool) {
+	key, runtime = nudgeWindowKey(w)
+	if key == "" && hermes && !w.Claude && w.AgentRuntime() == mirror.RuntimeHermes && w.AgentSession != "" {
+		return w.SessionKey(), w.AgentRuntime(), true
+	}
+	return key, runtime, false
 }
 
 // nudgeOpenAskers is the sessions of octx's owner with an open attention ask of

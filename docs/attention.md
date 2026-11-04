@@ -72,7 +72,8 @@ stop, oldest first, saying where the session is (`<tmux session>:<window
 index> @ <host>`, or the agent), whether it **needs you** or is **stalled**,
 for how long, and a **View in session** link. A row has **no answer box**. A
 waiting window muster cannot answer is a row here instead of a "Session
-waiting" item; a question muster can answer (a held AskUserQuestion, an
+waiting" item (one muster cannot key, from an older host that sends no Claude
+session id, stays a "Session waiting" item with today's push); a question muster can answer (a held AskUserQuestion, an
 opencode question or permission request, a Hermes approval) stays an
 answerable item above it, with its own full-text push.
 
@@ -98,7 +99,8 @@ was down has its notification closed.
   classifier says it asked nothing; anything else pushes. With no decision
   within 6 minutes, it pushes.
 - A quiet stop is drawn muted, saying why (`left`, `nudged`, `you spoke last`,
-  `the same stop again within 2 minutes`). A conversation of an agent's whose
+  or **held** because the session was pushed under 2 minutes ago: the repush
+  floor delays a push, it never drops one). A conversation of an agent's whose
   newest message is yours, with no classifier, is quiet: you spoke last.
 
 With session state on, a live chief ask raises **no notice**

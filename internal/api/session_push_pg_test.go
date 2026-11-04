@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE EPISODE PUSH end to end on a real Postgres (session_push.go): one
@@ -299,14 +301,16 @@ func TestAnEndedStopClosesItsNotification(t *testing.T) {
 	}
 }
 
-// TestTheRepushFloorKeepsTheSameStopQuiet (regression): a session whose
-// previous episode pushed within the floor of this one opening is not pushed
-// again.
-func TestTheRepushFloorKeepsTheSameStopQuiet(t *testing.T) {
+// TestTheRepushFloorDelaysButNeverDropsAPush (regression): a session whose
+// previous episode pushed under the floor ago is HELD, not dropped — a stop
+// the previous one's notification no longer covers (it ended and was closed)
+// is pushed once the floor has passed, if it is still open. Probed over an
+// hour of passes.
+func TestTheRepushFloorDelaysButNeverDropsAPush(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.statePass(t)
 	first := f.oneEpisode(t)
-	// The first stop ends as gone-and-back would, at once.
+	// The first stop ends at once, as gone-and-back would, its notification closed.
 	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE session_episodes SET ended_at = now(), end_reason = 'gone', cleared_at = now() WHERE id = $1`, first.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -316,26 +320,43 @@ func TestTheRepushFloorKeepsTheSameStopQuiet(t *testing.T) {
 		t.Fatalf("episodes: %+v", list)
 	}
 	if got := f.episodePushes(); len(got) != 1 {
-		t.Fatalf("pushes: %v", got)
+		t.Fatalf("pushes inside the floor: %v", got)
 	}
 	if q := f.quietOf(t, list[0].ID); q != sessionstate.QuietRepushFloor {
 		t.Fatalf("quiet %q", q)
 	}
+	pushed := 0
+	for i := 0; i < 120; i++ { // an hour of passes, 30 s apart
+		f.advance(30 * time.Second)
+		f.statePass(t)
+		pushed = 0
+		for _, p := range f.episodePushes() {
+			if p == "attention attention-episode-"+strconv.FormatInt(list[0].ID, 10) {
+				pushed++
+			}
+		}
+		if pushed > 0 {
+			break
+		}
+	}
+	if pushed != 1 {
+		t.Fatalf("the held stop pushed %d time(s); pushes %v", pushed, f.episodePushes())
+	}
+	if q := f.quietOf(t, list[0].ID); q != "" {
+		t.Fatalf("quiet after the push %q", q)
+	}
 }
 
 // TestAnEpisodesTapOpensItsSession (regression): GET /attention/open/
-// episode-<id> resolves the session's window when tapped; another owner's
-// episode id falls back to the queue.
+// episode-<id> resolves the session's window when tapped; an id that is no
+// episode falls back to the queue.
 func TestAnEpisodesTapOpensItsSession(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.statePass(t)
 	e := f.oneEpisode(t)
 	w := f.call(t, http.MethodGet, "/attention/open/episode-"+strconv.FormatInt(e.ID, 10), nil, f.operator())
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/mirror/ws/main/@1" && !strings.HasPrefix(w.Header().Get("Location"), "/mirror/") {
-		t.Fatalf("tap: %d %q", w.Code, w.Header().Get("Location"))
-	}
-	if loc := w.Header().Get("Location"); strings.HasPrefix(loc, "/attention#") {
-		t.Fatalf("tap fell back to the queue: %q", loc)
+	if want := (ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}).ViewPath(); w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+		t.Fatalf("tap: %d %q, want %q", w.Code, w.Header().Get("Location"), want)
 	}
 	w = f.call(t, http.MethodGet, "/attention/open/episode-999999999", nil, f.operator())
 	if loc := w.Header().Get("Location"); w.Code != http.StatusSeeOther || loc != "/attention#episode-999999999" {
@@ -481,6 +502,129 @@ func TestATapNeverOpensAnotherOwnersEpisode(t *testing.T) {
 	key := "episode-" + strconv.FormatInt(e.ID, 10)
 	w := f.call(t, http.MethodGet, "/attention/open/"+key, nil, f.operator())
 	if loc := w.Header().Get("Location"); loc != "/attention#"+key {
+		t.Fatalf("tap: %d %q", w.Code, loc)
+	}
+}
+
+// seenIdleThenWaiting has the hub hook see the fixture's host first with its
+// window idle (seeding the host, as a running muster has), then waiting.
+func (f *stateFixture) seenIdleThenWaiting() {
+	f.status(mirror.StatusIdle, time.Minute)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.status(mirror.StatusWaiting, time.Second)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+}
+
+// TestAWaitingWindowWithNoSessionKeyKeepsTodaysPush (regression; audit F1):
+// a window session state cannot key (a host that sends no Claude session id)
+// keeps today's summary-only push with the flag on — never silence — and
+// opens no episode.
+func TestAWaitingWindowWithNoSessionKeyKeepsTodaysPush(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.mirror.mu.Lock()
+	f.mirror.windows[0].ClaudeSession = ""
+	f.mirror.mu.Unlock()
+	f.seenIdleThenWaiting()
+	f.statePass(t)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	got := f.pushes()
+	if len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-session-") {
+		t.Fatalf("pushes: %v", got)
+	}
+	if list := f.episodes(t); len(list) != 0 {
+		t.Fatalf("episodes: %+v", list)
+	}
+}
+
+// TestAKeyedWaitingWindowPushesOnlyItsEpisode (regression; audit F1's control
+// and F3): a host seen first while idle, so today's diff WOULD push the
+// window — with a key, it is the episode's push alone, never both.
+func TestAKeyedWaitingWindowPushesOnlyItsEpisode(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.seenIdleThenWaiting()
+	f.statePass(t)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	e := f.oneEpisode(t)
+	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-episode-"+strconv.FormatInt(e.ID, 10) {
+		t.Fatalf("pushes: %v", got)
+	}
+}
+
+// TestAWaitThatNamesItsAskLaterPushesOnce (regression; audit F8): a host
+// reports the window waiting before the ask it waits on is known (here: the
+// held AskUserQuestion registers a moment later). The stop's episode pushed
+// already, so the now-answerable ask does not push a second time.
+func TestAWaitThatNamesItsAskLaterPushesOnce(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.seenIdleThenWaiting()
+	if _, err := f.srv.Questions().Open(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: nudgeSID, ToolUseID: "toolu_push_flip"},
+		[]askq.Question{{Question: "Which database?", Options: []askq.Option{{Label: "postgres"}, {Label: "sqlite"}}}}, askq.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	if got := f.pushes(); len(got) != 1 {
+		t.Fatalf("pushes: %v", got)
+	}
+}
+
+// TestTheAsksListMovesAWaitingWindowIntoTheSectionLive (regression; audit F4
+// A06 and F5): with the flag on a keyed waiting window is a section row, not
+// also a "Session waiting" item — and the list's live refresh carries the
+// section, so an open page shows a window that just started waiting.
+func TestTheAsksListMovesAWaitingWindowIntoTheSectionLive(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.seenIdleThenWaiting()
+	e := f.oneEpisode(t)
+	for _, path := range []string{"/attention", "/attention/items"} {
+		body := f.page(t, path)
+		if strings.Contains(body, `data-kind="session"`) {
+			t.Fatalf("%s: the window is a list item too:\n%s", path, body)
+		}
+		if !strings.Contains(body, `id="episode-`+strconv.FormatInt(e.ID, 10)+`"`) {
+			t.Fatalf("%s: no row:\n%s", path, body)
+		}
+		if strings.Contains(body, `data-testid="attention-empty"`) {
+			t.Fatalf("%s: says nothing is waiting beside a row:\n%s", path, body)
+		}
+	}
+}
+
+// TestAQuietRowIsDrawnMutedWithItsReason (regression; audit F4 A12): a left
+// stop's row is muted and says why.
+func TestAQuietRowIsDrawnMutedWithItsReason(t *testing.T) {
+	f := newStateFixture(t, true)
+	f.live()
+	j := withJev(t, f.nudgeFixture)
+	j.set(200, 0.02, 0.03, 0.95)
+	f.gw.set(`{"decision":"leave","reason":"it is done"}`)
+	f.statePass(t)
+	f.pass(t)
+	f.statePass(t)
+	e := f.oneEpisode(t)
+	body := f.page(t, "/attention")
+	i := strings.Index(body, `id="episode-`+strconv.FormatInt(e.ID, 10)+`"`)
+	if i < 0 {
+		t.Fatalf("no row:\n%s", body)
+	}
+	row := body[i : i+strings.Index(body[i:], "</li>")]
+	if !strings.Contains(row, "opacity-60") || !strings.Contains(row, `data-attention-episode-quiet="left"`) {
+		t.Fatalf("row: %s", row)
+	}
+}
+
+// TestATapOnAnotherOwnersRealEpisodeFallsBack (regression; audit F4): an
+// episode of ANOTHER user's, tapped by the operator, opens the queue — under
+// real row-level security, not a stub.
+func TestATapOnAnotherOwnersRealEpisodeFallsBack(t *testing.T) {
+	f := newStateFixture(t, false)
+	ep, claimed, err := f.eps.Open(asUser(f.member), sessionstate.Episode{Kind: sessionstate.KindMirror, Key: "member-session-key",
+		State: sessionstate.StateStalled, Asked: true, Host: "ws", TmuxSession: "main", Window: "@1", Index: 1})
+	if err != nil || !claimed {
+		t.Fatalf("open: %v %v", claimed, err)
+	}
+	key := "episode-" + strconv.FormatInt(ep.ID, 10)
+	w := f.call(t, http.MethodGet, "/attention/open/"+key, nil, f.operator())
+	if loc := w.Header().Get("Location"); w.Code != http.StatusSeeOther || loc != "/attention#"+key {
 		t.Fatalf("tap: %d %q", w.Code, loc)
 	}
 }

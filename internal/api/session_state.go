@@ -450,15 +450,11 @@ func (s *Server) episodeJevFor(octx context.Context, c chiefnudge.Session) (chie
 
 // endEpisode ends ep for reason.
 func (s *Server) endEpisode(octx context.Context, ep sessionstate.Episode, reason string, now time.Time) {
-	ended, err := s.ext.Episodes.End(octx, ep.ID, reason, now)
-	if err != nil {
+	// Its notification is closed by the same pass's clearEndedEpisodes (the
+	// owner's pass defers it), which also closes one pushed after this pass
+	// read the episode.
+	if _, err := s.ext.Episodes.End(octx, ep.ID, reason, now); err != nil {
 		s.logger.Printf("session state: episode %d: end: %v", ep.ID, err)
-		return
-	}
-	if ended {
-		// Its notification closes with it (and clearEndedEpisodes catches one
-		// pushed after this pass read it).
-		s.clearEpisode(octx, ep)
 	}
 }
 
