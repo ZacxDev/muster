@@ -478,10 +478,19 @@ attribute a message to the owner:
 
 One push per episode, under the existing `attention` toggle:
 
-- **Title:** the tmux session, the window **index** and the host, e.g.
-  `alpha:3 @ host-a needs you` or `alpha:3 @ host-a is stalled`. Never the
-  window's name, which is often LLM-written (`attention.go:832-833`). A
-  dispatched agent is named by its agent name.
+- **Title:** the window as every attention text names it (`mirror.Where`):
+  the host's label for it, then its tmux session, window **index** and host,
+  e.g. `gold:3 · tmux alpha:3 @ host-a needs you` or `… is stalled` — resolved
+  by the episode's session key when the push is sent, so a renumbered window
+  names its new index. Only when no window holds the session then does it fall
+  back to the place stored on the episode, in the same shape without the
+  label (`tmux alpha:3 @ host-a needs you`); a window whose host has just
+  dropped is followed by `(host offline)`, as a notice's is. A
+  dispatched agent is named by its agent name. *(As first built, the title was
+  only the stored tmux session and index — the one surface not naming the
+  window by its label, which the operator could not place; the label is the
+  host's codename from its labels file, not session text, and the waiting
+  push this replaced already carried it.)*
 - **Body:** the state and idle time, e.g. `Needs you · idle 12m`. **No session
   text**: no last line, no tool call, no focus title. This keeps both earlier
   operator decisions: a plain waiting session's push is summary only

@@ -501,8 +501,10 @@ is tried again.
 ([attention.md](attention.md#notices)): a pointer at the session, never a
 question. It carries:
 
-- where the session is: for a mirrored window its host and exact tmux target,
-  `<host> · <tmux session>:<window index>` (`laptop · build:4`), found by the
+- where the session is: for a mirrored window its label, exact tmux target
+  and host, as every attention text names a window
+  ([attention.md](attention.md#how-a-window-is-named):
+  `mango:4 · tmux build:4 @ laptop`), found by the
   session's key over your windows when the notice is drawn, so a window
   renumbered since shows its new index; for an agent, `agent <name>`;
 - the session's focus title;
