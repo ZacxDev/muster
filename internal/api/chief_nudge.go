@@ -1271,6 +1271,16 @@ func (s *Server) failNudge(ctx context.Context, d chiefnudge.Decision, state, wh
 // chief wrote no question (the generic ask), and read is its own reason the
 // notice shows (chiefnudge.GenericAskRead), "" for none.
 func (s *Server) actAsk(ctx context.Context, c nudgeCandidate, d chiefnudge.Decision, read string, generic bool) bool {
+	if d.Mode == chiefnudge.ModeLive && s.sessionStateOn() {
+		// 🔴 SESSION STATE ON: THE ASK IS A TEXT-FREE "NOTIFY". No notice is
+		// raised and no question is shown: the session's episode carries the
+		// one push for the stop (session_push.go), which names the session and
+		// never quotes it. The decision row keeps the chief's words for the
+		// Chief nudges tab, and its outcome is what the episode push reads.
+		d.Outcome, d.Detail = chiefnudge.Suppressed(chiefnudge.GuardEpisode),
+			"session state is on: no notice; the session's episode carries the push"
+		return s.recordNudge(ctx, d, "chief_nudge.suppressed")
+	}
 	if strings.TrimSpace(d.Question) == "" {
 		d.Outcome = chiefnudge.Suppressed(chiefnudge.GuardNoQuestion)
 		return s.recordNudge(ctx, d, "chief_nudge.suppressed")

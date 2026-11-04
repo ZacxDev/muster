@@ -144,6 +144,13 @@ reads the other's stored answer (this sweep's decision row, the session's
 episode). Where the classifier does not run, session state reads no transcript
 and counts every idle stop as one that asked you.
 
+With `MUSTER_SESSION_STATE=1` a live **ask** raises **no notice** at all: it
+is recorded (`suppressed:episode_push`) and the stop's episode carries the one
+text-free push ([attention.md](attention.md#stalled--waiting-session-state)),
+which also follows this sweep's other decisions: a sent nudge keeps the stop
+quiet, a queued one holds its push, and a `leave` quiets it only when the
+classifier says the session asked nothing. Shadow mode never quiets a stop.
+
 In live mode an **ask** decision raises a [notice](#live-mode), not a
 question: "ask" below names the chief's decision, which the Chief nudges tab
 records with its question. The chief is asked for no options: a notice has

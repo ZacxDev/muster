@@ -57,9 +57,10 @@ const attentionOpenPath = attentionPath + "/open/"
 // attentionOpenURL is what an item's notification opens.
 func attentionOpenURL(key string) string { return attentionOpenPath + key }
 
-// attentionOpenKey is a key the tap route takes: an ask's, or a waiting
-// window's (sessionKey). Anything else is a 404 — it never reaches a redirect.
-var attentionOpenKey = regexp.MustCompile(`^(ask-[1-9][0-9]{0,18}|session-[0-9a-f]{16})$`)
+// attentionOpenKey is a key the tap route takes: an ask's, a waiting window's
+// (sessionKey), or a session-state episode's (episodeKey). Anything else is a
+// 404 — it never reaches a redirect.
+var attentionOpenKey = regexp.MustCompile(`^(ask-[1-9][0-9]{0,18}|session-[0-9a-f]{16}|episode-[1-9][0-9]{0,18})$`)
 
 // pushTargetLookupTimeout bounds the reads a tap's resolution makes (the ask,
 // the asking agent's row), so a slow database delays the tap only briefly
@@ -87,6 +88,10 @@ func (s *Server) openTarget(ctx context.Context, key string) string {
 	owner := requestOwner(ctx)
 	if owner <= 0 {
 		return attentionItemPath(key)
+	}
+	if id := episodeKeyID(key); id > 0 {
+		// A stop's push (session_push.go): its session, resolved now.
+		return s.episodeOpenTarget(ctx, owner, id, key)
 	}
 	var it attentionItem
 	found := false

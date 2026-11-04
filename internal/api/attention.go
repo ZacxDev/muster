@@ -123,6 +123,12 @@ type attentionState struct {
 	// pushedAt is when each session item was last pushed: a session that goes
 	// waiting again within attentionRepushAfter is not pushed again.
 	pushedAt map[string]time.Time
+	// episodeWaiting is each owner's plain waiting windows (by item key) as the
+	// last hub nudge saw them, with session state on: only a window that
+	// STARTED waiting since is looked up and pushed as an episode
+	// (episodeWaitingPushes) — the push itself is claimed in the database, so
+	// this only spares the reads.
+	episodeWaiting map[int64]map[string]bool
 	// drafts are the reply drafts whose `plugin` notification may be showing,
 	// by draft id: what an expiry or a supersede clears (attention_drafts.go).
 	drafts       map[int64]draftNote
@@ -965,12 +971,43 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	defer s.attention.diffMu.Unlock()
 	now := map[string]attentionItem{}
 	hosts := map[string]bool{} // online now
-	for _, h := range s.ext.Mirror.Hosts(s.attentionPrincipal(context.Background(), owner)) {
+	octx := s.attentionPrincipal(context.Background(), owner)
+	hs := s.ext.Mirror.Hosts(octx)
+	for _, h := range hs {
 		if h.Online {
 			hosts[h.Host] = true
 		}
 	}
-	for _, it := range s.waitingSessions(s.attentionPrincipal(context.Background(), owner)) {
+	waiting := s.waitingSessionsIn(octx, hs)
+	if s.sessionStateOn() {
+		// 🔴 SESSION STATE ON: A WAITING WINDOW MUSTER CANNOT ANSWER IS AN
+		// EPISODE, pushed (once per stop, claimed) from here at once
+		// (session_push.go) — and left out of this diff, which would push it a
+		// second time and clear it the moment it stops waiting. Answerable asks
+		// stay here, with their own full-text push.
+		kept, fresh := waiting[:0:0], []attentionItem(nil)
+		cur := map[string]bool{}
+		s.attention.mu.Lock()
+		if s.attention.episodeWaiting == nil {
+			s.attention.episodeWaiting = map[int64]map[string]bool{}
+		}
+		prev := s.attention.episodeWaiting[owner]
+		for _, it := range waiting {
+			if !plainWaitingItem(it) {
+				kept = append(kept, it)
+				continue
+			}
+			cur[it.Key] = true
+			if !prev[it.Key] {
+				fresh = append(fresh, it) // started waiting since the last nudge (or first seen by this process)
+			}
+		}
+		s.attention.episodeWaiting[owner] = cur
+		s.attention.mu.Unlock()
+		s.episodeWaitingPushes(octx, owner, fresh, hs)
+		waiting = kept
+	}
+	for _, it := range waiting {
 		now[it.Key] = it
 	}
 	if attentionDiffHook != nil {
@@ -1166,7 +1203,8 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(attentionNotice(r))
 	now := time.Now()
 	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
-		askTabListHTML(items, s.answeredAsksNow(r.Context(), now), now) + `</ul>`
+		askTabListHTML(s.pageAttentionItems(items), s.answeredAsksNow(r.Context(), now), now) + `</ul>` +
+		s.episodeSectionHTML(r.Context(), now)
 	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
 		b.WriteString(askList)
 	} else {
@@ -1217,7 +1255,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := time.Now()
-	_, _ = w.Write([]byte(askTabListHTML(items, s.answeredAsksNow(r.Context(), now), now)))
+	_, _ = w.Write([]byte(askTabListHTML(s.pageAttentionItems(items), s.answeredAsksNow(r.Context(), now), now)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
