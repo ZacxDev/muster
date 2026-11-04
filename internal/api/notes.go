@@ -647,6 +647,12 @@ func (s *Server) taskCreatedEffects(ctx context.Context, note notes.Note, source
 type apiTask struct {
 	notes.Note
 	Agent *agentJSON `json:"agent"`
+	// RefWrites, on a single-task answer for a plugin task REFERENCE only, are
+	// its writes still on their way (pending, claimed) or failed and not
+	// dismissed — the task page's lines, and the ids
+	// POST /api/tasks/{id}/ref-writes/{wid}/retry|dismiss name. Absent on an
+	// ordinary task and on the list.
+	RefWrites []notes.RefWrite `json:"refWrites,omitempty"`
 }
 
 // apiTaskSummary is the `?summary=1` shape: the routing/lifecycle fields a poller
@@ -835,6 +841,13 @@ func (s *Server) apiTaskOne(ctx context.Context, note notes.Note) apiTask {
 	out := apiTask{Note: note}
 	if a, ok := s.apiAgentsByNote(ctx, []notes.Note{note})[note.ID]; ok {
 		out.Agent = &a
+	}
+	if note.IsReference() {
+		if ws, err := s.ext.Notes.RefWrites(ctx, note.ID); err == nil {
+			out.RefWrites = ws
+		} else {
+			s.logger.Printf("notes: queued writes of reference %d: %v", note.ID, err)
+		}
 	}
 	return out
 }

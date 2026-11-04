@@ -115,6 +115,12 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// handleAPITaskCommentDelete for the route shape rationale and the
 	// enforce-when-set caveat.
 	mux.HandleFunc("DELETE /api/tasks/{id}/comments/{cid}", s.requireHookToken(s.handleAPITaskCommentDelete))
+	// The owner's retry and dismiss of a FAILED write queued on a plugin task
+	// reference (task_ref_write_actions.go, 0074), machine spelling. The hook
+	// tier, like the task's other sub-resources: a personal token acts as its
+	// owner. No agent or plugin credential opens either.
+	mux.HandleFunc("POST /api/tasks/{id}/ref-writes/{wid}/retry", s.requireHookToken(s.handleAPITaskRefWriteRetry))
+	mux.HandleFunc("POST /api/tasks/{id}/ref-writes/{wid}/dismiss", s.requireHookToken(s.handleAPITaskRefWriteDismiss))
 	// Task threads, REVERSE direction (migration 0023): every live task a Claude
 	// Code session touched, most-recently-touched first. The FORWARD direction has
 	// no route on purpose — a task's `sessions` array is EMBEDDED on
@@ -146,6 +152,10 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// handleNoteCommentDelete; deleting this ONE line removes the human spelling
 	// and leaves the machine route intact.
 	mux.HandleFunc("DELETE /tasks/{id}/comments/{cid}", s.requireSession(s.handleNoteCommentDelete))
+	// The task page's Retry and Dismiss on a failed reference write: a session
+	// AND same-origin (requireOperatorWrite), like the plugin message retry.
+	mux.HandleFunc("POST /tasks/{id}/ref-writes/{wid}/retry", s.requireOperatorWrite(s.handleTaskRefWriteRetry))
+	mux.HandleFunc("POST /tasks/{id}/ref-writes/{wid}/dismiss", s.requireOperatorWrite(s.handleTaskRefWriteDismiss))
 	mux.HandleFunc("GET /tasks/{id}/attachments/{aid}", s.requireSession(s.handleNoteAttachment))
 	// Task MERGE (session only). SUPERSEDE semantics: the winner unions in the
 	// loser's tags + records the merge; the loser is closed with a pointer back.

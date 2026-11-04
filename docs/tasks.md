@@ -19,7 +19,9 @@ scripts write them through the JSON API and the [CLI](cli.md).
   comments written here are queued for the plugin and appear once it confirms
   (`202`, `"queued": true`); its title, body and upstream thread are shown
   read-only (an edit of the title or body is a `409`), and its own comments
-  are muster-only history.
+  are muster-only history. A write the plugin could not apply shows as
+  "failed" with **Retry** and **Dismiss** for the task's owner (see
+  [plugins.md](plugins.md#writes-on-a-reference-are-queued)).
 - **Attachments:** up to 10 MiB each, stored in Postgres.
 - **Tags:** up to 20 per task. Four namespaces route work:
   - `project:` — at most one per task;
@@ -75,6 +77,7 @@ not: they need a signed-in session. Verbs, flags and exit codes are the
 | delete | `DELETE /api/tasks/{id}` | **Tears down the task's live agent pod.** No in-progress guard; `404` if absent. |
 | comment | `POST /api/tasks/{id}/comments` | `{body}` only. The author comes from the `X-Muster-Source` allowlist, **never from the body**. The body is whitespace-trimmed on storage. |
 | un-comment | `DELETE /api/tasks/{id}/comments/{cid}` | **Soft**: it leaves a tombstone (below). A repeat is `404`. |
+| retry / dismiss a reference write | `POST /api/tasks/{id}/ref-writes/{wid}/retry`, `…/dismiss` | A [reference](plugins.md#writes-on-a-reference-are-queued)'s **failed** write only (`409` otherwise): retry queues it again in its place, dismiss takes it off the task. The ids are in `refWrites` on `GET /api/tasks/{id}`. |
 | vocabulary | `GET /api/tags`, `GET /api/projects` | `[{tag,count}]`; projects is an **object**, `{"projects":[{name,count}]}`. |
 | merge | `POST /tasks/merge` | A browser-session route, form-encoded. It has no `/api` twin, by design. |
 

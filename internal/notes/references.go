@@ -111,6 +111,9 @@ type RefWrite struct {
 	LeaseUntil *time.Time `json:"lease_until,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// DismissedAt is when the owner dismissed this failed write (0074): it is
+	// then off the task page, and can be neither retried nor dismissed again.
+	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
 }
 
 // RefUpsert is what UpsertReference did.
@@ -183,6 +186,12 @@ var (
 	ErrRefOtherPlugin = errors.New("notes: the reference belongs to another plugin")
 	// ErrRefWriteNotLeased: a result for a write this plugin does not hold.
 	ErrRefWriteNotLeased = errors.New("notes: no such write leased to this plugin")
+	// ErrRefWriteNotFound: no such write on that task (as the caller sees it:
+	// another owner's write is not found either).
+	ErrRefWriteNotFound = errors.New("notes: no such write on this task")
+	// ErrRefWriteNotFailed: an owner's retry or dismiss of a write that is not
+	// failed (pending, claimed, done) or was already dismissed.
+	ErrRefWriteNotFailed = errors.New("notes: only a failed write can be retried or dismissed")
 )
 
 // refScan holds the reference columns as scanned; adoptRef turns them into

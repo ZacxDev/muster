@@ -206,6 +206,8 @@ POST /api/push/unsubscribe
 POST /api/routes/{id}/reply
 POST /api/tasks
 POST /api/tasks/{id}/comments
+POST /api/tasks/{id}/ref-writes/{wid}/dismiss
+POST /api/tasks/{id}/ref-writes/{wid}/retry
 POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
@@ -273,6 +275,8 @@ POST /tasks/merge
 POST /tasks/{id}/comments
 POST /tasks/{id}/complete
 POST /tasks/{id}/edit
+POST /tasks/{id}/ref-writes/{wid}/dismiss
+POST /tasks/{id}/ref-writes/{wid}/retry
 POST /tasks/{id}/tags
 POST /telemetry/faro
 POST /transcribe

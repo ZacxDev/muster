@@ -223,11 +223,11 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 // refWriteCols is the ONE projection of a task_ref_writes row joined to its
 // task (alias w, n), in scanRefWrite's order.
 const refWriteCols = `w.id, w.note_id, COALESCE(n.ext_key, ''), w.plugin_id, w.kind, w.status, w.body, w.author, w.agent, w.session,
-	w.writer, COALESCE(w.dedupe_key, ''), w.state, w.error, w.attempts, w.lease_until, w.created_at, w.finished_at`
+	w.writer, COALESCE(w.dedupe_key, ''), w.state, w.error, w.attempts, w.lease_until, w.created_at, w.finished_at, w.dismissed_at`
 
 func scanRefWrite(row pgx.Row, w *RefWrite) error {
 	return row.Scan(&w.ID, &w.NoteID, &w.Key, &w.PluginID, &w.Kind, &w.Status, &w.Body, &w.Author, &w.Agent, &w.Session,
-		&w.Writer, &w.DedupeKey, &w.State, &w.Error, &w.Attempts, &w.LeaseUntil, &w.CreatedAt, &w.FinishedAt)
+		&w.Writer, &w.DedupeKey, &w.State, &w.Error, &w.Attempts, &w.LeaseUntil, &w.CreatedAt, &w.FinishedAt, &w.DismissedAt)
 }
 
 // EnqueueRefWrite: see the Store interface.
@@ -327,12 +327,19 @@ func (s *PGStore) ClaimRefWrites(ctx context.Context, pluginID int64, limit int,
 	// upstream in an order nobody wrote. A concurrent claim skips the earlier
 	// write (SKIP LOCKED) but still sees it pending, so it skips the later one
 	// too.
+	//
+	// 🔴 AND NOTHING IS HANDED OUT WHILE ANY OTHER WRITE ON THE TASK IS CLAIMED,
+	// EARLIER OR LATER. Before an owner could retry a failed write (RetryRefWrite)
+	// a pending write never had a LATER one in flight; a retried one can — it
+	// goes back to pending at its own (older) id while a write queued after it
+	// is leased — and the earlier-only rule would hand both out at once.
 	rows, err := tx.Query(ctx, `
 		WITH picked AS (
 			SELECT w.id FROM task_ref_writes w
 			 WHERE w.plugin_id = $1 AND w.state = 'pending'
 			   AND NOT EXISTS (SELECT 1 FROM task_ref_writes e
-			                    WHERE e.note_id = w.note_id AND e.id < w.id AND e.state IN ('pending', 'claimed'))
+			                    WHERE e.note_id = w.note_id AND e.id <> w.id
+			                      AND (e.state = 'claimed' OR (e.id < w.id AND e.state = 'pending')))
 			 ORDER BY w.id LIMIT $2
 			 FOR UPDATE SKIP LOCKED
 		)
@@ -416,7 +423,72 @@ func (s *PGStore) FinishRefWrite(ctx context.Context, pluginID, id int64, ok boo
 
 // RefWrites: see the Store interface.
 func (s *PGStore) RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error) {
-	return s.refWritesWhere(ctx, `w.note_id = $1 AND w.state <> 'done' ORDER BY w.id`, noteID)
+	return s.refWritesWhere(ctx, `w.note_id = $1 AND w.state <> 'done' AND w.dismissed_at IS NULL ORDER BY w.id`, noteID)
+}
+
+// refWriteActionable is the ONE SQL spelling of "an owner may retry or dismiss
+// this write" (alias w): it failed and was not dismissed.
+const refWriteActionable = `w.state = 'failed' AND w.dismissed_at IS NULL`
+
+// RetryRefWrite: see the Store interface.
+//
+// 🔴 ONLY A FAILED, UNDISMISSED WRITE, AND ONLY WHILE ITS TASK IS STILL A LIVE
+// REFERENCE — all in the UPDATE's WHERE, so there is no read-then-write gap.
+// The write is handed to the plugin that holds the reference NOW
+// (n.ext_plugin_id): a reference adopted since the failure moved only its
+// unfinished writes, and a failed one left on the revoked plugin would sit
+// pending for a plugin that can never claim it.
+//
+// It goes back to pending at its OWN id, so per-task order holds: it waits for
+// any earlier pending write, and ClaimRefWrites hands nothing out while any
+// other write on the task is claimed. Writes queued after it that are still
+// pending wait for it in turn.
+func (s *PGStore) RetryRefWrite(ctx context.Context, noteID, id int64) (RefWrite, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE task_ref_writes w SET state = 'pending', attempts = 0, error = '',
+			lease_until = NULL, finished_at = NULL, plugin_id = n.ext_plugin_id
+		  FROM notes n
+		 WHERE w.id = $2 AND w.note_id = $1 AND n.id = w.note_id AND `+refWriteActionable+`
+		   AND n.ext_key IS NOT NULL AND n.ext_plugin_id IS NOT NULL AND n.deleted_at IS NULL`, noteID, id)
+	if err != nil {
+		return RefWrite{}, err
+	}
+	return s.refWriteAfterOwnerAction(ctx, noteID, id, tag.RowsAffected() == 1, true)
+}
+
+// DismissRefWrite: see the Store interface.
+func (s *PGStore) DismissRefWrite(ctx context.Context, noteID, id int64) (RefWrite, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE task_ref_writes w SET dismissed_at = now()
+		 WHERE w.id = $2 AND w.note_id = $1 AND `+refWriteActionable, noteID, id)
+	if err != nil {
+		return RefWrite{}, err
+	}
+	return s.refWriteAfterOwnerAction(ctx, noteID, id, tag.RowsAffected() == 1, false)
+}
+
+// refWriteAfterOwnerAction reads write id of task noteID back after a retry or
+// dismiss, and when the UPDATE changed nothing names why (the Store
+// interface's refusals). needRef: the action also needed the task to be a live
+// reference (a retry does; a dismiss does not).
+func (s *PGStore) refWriteAfterOwnerAction(ctx context.Context, noteID, id int64, changed, needRef bool) (RefWrite, error) {
+	got, err := s.refWritesWhere(ctx, `w.id = $1 AND w.note_id = $2`, id, noteID)
+	if err != nil {
+		return RefWrite{}, err
+	}
+	if len(got) == 0 {
+		return RefWrite{}, ErrRefWriteNotFound
+	}
+	w := got[0]
+	switch {
+	case changed:
+		return w, nil
+	case w.State != RefWriteFailed || w.DismissedAt != nil:
+		return RefWrite{}, ErrRefWriteNotFailed
+	case needRef:
+		return RefWrite{}, ErrNotReference
+	}
+	// Failed, undismissed, and yet unchanged: it changed under us (a concurrent
+	// retry or dismiss). Answer as for the state it is in now.
+	return RefWrite{}, ErrRefWriteNotFailed
 }
 
 // refHolderNotLive is the ONE predicate for "a reference held by this plugin id

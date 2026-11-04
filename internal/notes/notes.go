@@ -581,9 +581,19 @@ type Store interface {
 	// plugin never held → ErrRefWriteNotLeased.
 	FinishRefWrite(ctx context.Context, pluginID, id int64, ok bool, errText string) (RefWrite, bool, error)
 	// RefWrites returns task noteID's writes that are not done (pending,
-	// claimed, failed), oldest first: the task page's
+	// claimed, failed) and not dismissed, oldest first: the task page's
 	// "sending…" / "failed" lines.
 	RefWrites(ctx context.Context, noteID int64) ([]RefWrite, error)
+	// RetryRefWrite puts task noteID's FAILED write id back to pending for the
+	// plugin that holds the reference now (attempts 0, error and lease
+	// cleared). No such write on that task → ErrRefWriteNotFound; one that is
+	// not failed, or was dismissed → ErrRefWriteNotFailed; a task that is no
+	// longer a live reference → ErrNotReference. Nothing changes on a refusal.
+	RetryRefWrite(ctx context.Context, noteID, id int64) (RefWrite, error)
+	// DismissRefWrite takes task noteID's FAILED write id off the task page
+	// (dismissed_at; the row is kept). The same refusals as RetryRefWrite,
+	// except that a task no longer a reference may still dismiss its writes.
+	DismissRefWrite(ctx context.Context, noteID, id int64) (RefWrite, error)
 	// ListLiveInNamespace returns the live tasks (not dismissed, not a merge
 	// loser) in q.Namespace that plugin q.PluginID may see — its own
 	// references, and COPY rows carrying a tag in the namespace — ascending by

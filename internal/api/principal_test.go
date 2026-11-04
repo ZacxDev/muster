@@ -219,6 +219,10 @@ var routeVias = map[authz.Via][]string{
 		"DELETE /tasks/{id}",
 		"DELETE /tasks/{id}/comments/{cid}",
 		"DELETE /tasks/{id}/tags/{tag}",
+		// A failed reference write's Retry and Dismiss (task_ref_write_actions.go):
+		// requireOperatorWrite, the session tier only.
+		"POST /tasks/{id}/ref-writes/{wid}/retry",
+		"POST /tasks/{id}/ref-writes/{wid}/dismiss",
 		"GET /agents",
 		"GET /agents/{name}",
 		"GET /agents/{name}/logs/stream",
@@ -328,6 +332,11 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
+		// A failed reference write's retry and dismiss (task_ref_write_actions.go):
+		// requireHookToken. NOT the service tier: the chief's asserted identity
+		// is refused.
+		"POST /api/tasks/{id}/ref-writes/{wid}/retry",
+		"POST /api/tasks/{id}/ref-writes/{wid}/dismiss",
 	},
 	authz.ViaService: {
 		// The machine job API (jobs.go): requireServiceToken, the service tier ONLY.
@@ -360,6 +369,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
+		"POST /api/tasks/{id}/ref-writes/{wid}/retry",
+		"POST /api/tasks/{id}/ref-writes/{wid}/dismiss",
 		"GET /api/doctor",
 		"POST /api/routes/{id}/reply",
 		"POST /api/plugin-threads",
