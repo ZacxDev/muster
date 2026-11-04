@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 )
@@ -240,6 +241,10 @@ type nudgeCandidate struct {
 	// noTranscript: a window muster reads no transcript of (a Hermes window,
 	// listed for session state only): never read, never classified.
 	noTranscript bool
+	// ownerLast: an agent conversation's newest message is the owner's — a
+	// turn under way that no turn gate saw (session state keeps the stop's
+	// anchor where it was).
+	ownerLast bool
 }
 
 // sweepOwnerNudges decides octx's owner's candidates, while the pass has
@@ -389,8 +394,12 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 		read.agentsRead = err == nil
 		isChief := chiefPredicate(list)
 		// 🔴 ONE PROVISIONER LIST PER READ, NOT ONE PER AGENT (live_status.go:
-		// liveStatus is for a single-agent path).
-		idx := s.instanceIndex(octx)
+		// liveStatus is for a single-agent path) — and none for an owner with
+		// no agents.
+		var idx map[string]*provision.Instance
+		if len(list) > 0 {
+			idx = s.instanceIndex(octx)
+		}
 		for _, a := range list {
 			_, _, officer := s.officerOf(a)
 			agentKey := "agent:" + strconv.FormatInt(a.ID, 10)
@@ -424,7 +433,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				c.StreakKey = "msg:" + strconv.FormatInt(m.ID, 10)
 				c.IdleSince, c.IdleFor = m.CreatedAt, now.Sub(m.CreatedAt)
 				c.TurnError = m.Role == "assistant" && strings.HasPrefix(m.Content, AgentTurnFailedPrefix)
-				all = append(all, nudgeCandidate{Session: c, agent: a, session: sess})
+				all = append(all, nudgeCandidate{Session: c, agent: a, session: sess, ownerLast: m.Role == "user"})
 			}
 		}
 	}

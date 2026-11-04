@@ -204,13 +204,24 @@ func (s *Server) stateClassifier(octx context.Context) *chiefnudge.Classifier {
 // has.
 func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCandidate, ep sessionstate.Episode, has, answerable bool) {
 	now := sp.now
+	// anchor is the streak the episode keeps: normally the session's current
+	// one. 🔴 FOR AN AGENT MID-TURN IT STAYS PUT: while the newest message is
+	// the owner's (a turn no turn gate saw — the API message door, a job
+	// turn), the stop's anchor is NOT moved onto that prompt, so the reply,
+	// when it lands, is timed from the first message after the stop rather
+	// than from the prompt (which would read a single long reply as 0 s and
+	// never end the stop).
+	anchor := c.StreakKey
 	if has && c.Kind == chiefnudge.KindAgent && c.StreakKey != ep.StreakKey {
-		// 🔴 AN AGENT HAS NO BUSY STATUS TO TIME, SO ITS TURN IS TIMED BY ITS
-		// MESSAGES: a new message ends the stop only when the reply turn ran at
-		// least EndAfter (agentTurnWork). A quick exchange — it asks, the owner
-		// answers, it asks a follow-up — stays one stop, as a mirrored window's
-		// would.
-		if s.agentTurnWork(octx, c, ep) >= sessionstate.EndAfter {
+		switch {
+		case c.ownerLast:
+			anchor = ep.StreakKey
+		case s.agentTurnWork(octx, c, ep) >= sessionstate.EndAfter:
+			// 🔴 AN AGENT HAS NO BUSY STATUS TO TIME, SO ITS TURN IS TIMED BY
+			// ITS MESSAGES: a new reply ends the stop only when the turn ran at
+			// least EndAfter (agentTurnWork). A quick exchange — it asks, the
+			// owner answers, it asks a follow-up — stays one stop, as a
+			// mirrored window's would.
 			s.endEpisode(octx, ep, sessionstate.EndWorked, now)
 			has = false
 		}
@@ -228,6 +239,11 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		case c.noTranscript:
 			jev, classified = chiefnudge.Result{Err: jevNoTranscript}, true
 		case sp.cl == nil:
+			// 🔴 FOR THE NEXT PR, A DECISION TO MAKE DELIBERATELY: with no
+			// classifier no transcript is read, so a streak that ends on the
+			// OWNER's word (an Esc-interrupted window, a prompt not yet taken
+			// up) opens a "stalled, asked" stop too — louder than the nudge
+			// sweep, which drops it. Whether such a stop pushes is PR 2's call.
 			jev, classified = chiefnudge.Result{Err: jevNotConfigured}, true
 		default:
 			var lastOwn bool
@@ -248,7 +264,7 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			has = false
 		} else {
 			o := sessionstate.Observation{State: ep.State, Waiting: ep.Waiting, Host: c.Host, TmuxSession: c.TmuxSession, Window: c.Window,
-				Index: c.Index, StreakKey: c.StreakKey, BusySince: step.BusySince, BusySeen: step.BusySeen, At: now}
+				Index: c.Index, StreakKey: anchor, BusySince: step.BusySince, BusySeen: step.BusySeen, At: now}
 			if wants {
 				o.State, o.Waiting = state, f.Waiting
 			}
