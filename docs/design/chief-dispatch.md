@@ -135,7 +135,7 @@ The owner's answers to the first draft's open questions:
 
 5. **Worker pools.** `agent_dispatch` gains a `worker_pool` option, under the
    same target, budget and `owner_asked` rules. This unblocks the UI deletion
-   ([2.2](#22-parameters), [4](#4-the-ui-deletion-plan)).
+   ([2.2](#22-parameters), [4](#4-replacing-the-dispatch-ui-a-machine-route-a-cli-verb-then-the-deletion)).
 6. **Default tmux server only: accepted.** The owner's default mirror runs on
    each host's default tmux server, so a mirror on any other server refuses to
    spawn ([3.8](#38-read-only-and-tenant-hosts)).
@@ -578,7 +578,7 @@ migration 0041's `agents_worker_pool_check` also refuses a bad row.
   refuses even a pool worker that would claim no first turn, with today's
   `"this deployment cannot start an agent now: <reason>"`. That keeps one
   refusal order for every call. A deployment in that state creates pool
-  workers through the machine route instead ([4](#4-the-ui-deletion-plan)).
+  workers through the machine route instead ([4](#4-replacing-the-dispatch-ui-a-machine-route-a-cli-verb-then-the-deletion)).
 - **The same target, budget and gating rules as any other dispatch with no
   task** (decision 5): `owner_asked` is verified, `request_key` is required,
   and the agent spends one unit of the daily cap and holds one live slot. Pool
@@ -721,7 +721,7 @@ every host target.**
   `ownerTurnFor` refuses any session that is not Claude Code
   (`chiefReleaseNotOverMCP`, `:212`). Such a chief can only dispatch pods on
   ungated tasks. Every other dispatch needs the machine route
-  ([4](#4-the-ui-deletion-plan)).
+  ([4](#4-replacing-the-dispatch-ui-a-machine-route-a-cli-verb-then-the-deletion)).
 
 | dispatch | `owner_asked` | `ownerTurnFor` runs |
 |---|---|---|
@@ -738,8 +738,23 @@ every host target.**
   task_create_gated and use task_route_attention"`
 - `"a host target needs owner_asked: true, in your answer to a message your
   owner typed in your chat"`
-- The owner's-turn refusals that exist today, unchanged (`:193-216`). They now
-  also answer `owner_asked: true` on an ungated task.
+- **On a task the chief gated**, the owner's-turn refusals are today's,
+  unchanged (`:193-216`).
+- **On an ungated task, or with no task**, today's sentences would be wrong:
+  each one talks about releasing "the gate". So each gets a sibling sentence
+  that does not mention a gate. The check that fails is the same, and only
+  the words differ:
+
+  | today's constant (gated task) | sibling (ungated task, or no task) |
+  |---|---|
+  | `chiefReleaseNoOwnerTurn` | `ownerAskedNoOwnerTurn`: `"owner_asked: you are not answering a message your owner typed in your muster chat right now, so muster cannot take this as their request; ask them, or call again without owner_asked"` |
+  | `chiefReleaseNotOwnersTurn` | `ownerAskedNotOwnersTurn`: `"owner_asked: the message you are answering was not typed by your owner, so muster cannot take this as their request"` |
+  | `chiefReleaseOutsideTurn` | `ownerAskedOutsideTurn`: `"owner_asked: muster is also running a turn for you that your owner did not type, so muster cannot tell which one asked; call again once it ends"` |
+  | `chiefReleaseOtherCLIBusy`, `chiefReleaseUnaccountedCLI`, `chiefReleaseCLIsUnknown`, `chiefReleaseNotOverMCP`, `chiefReleaseUnverifiable` | the same text with "so the gate was not released" replaced by "so nothing was started" |
+
+  `ownerTurnFor` keeps returning today's constants. A single mapping function,
+  `ownerAskedRefusal(why, gated bool)`, picks the sentence, so there is only
+  one place where the two sets can drift apart.
 
 ### 2.6 Budget and accounting for a dispatch with no task
 
@@ -775,7 +790,7 @@ source of live slots:
 | source | counts | holds a slot while |
 |---|---|---|
 | A. recorded pod agents (`task.chief_dispatch_agent` rows with `agent_id`) | pod dispatches whose agent row exists | `agents.status` is `pending`, `provisioning` or `running` (today's rule, `chief_dispatch.go:328-334`) |
-| B. pod reservations with no agent row yet | pod dispatches still being created | the 10-minute `pendingAgentWindow` (today's rule, `:354-360`), **now restricted to reservations whose `detail.target` starts with `pod/`** |
+| B. pod reservations with no agent row yet | pod dispatches still being created | the 10-minute `pendingAgentWindow` (today's rule, `:354-360`), **now restricted to reservations whose `detail.target` does not start with `host/`**. That way a reservation written before this change, whose detail holds only `{"kind": …}`, still counts |
 | C. `host_dispatches` rows | **every** host dispatch, and nothing else | `status` is `pending` or `running` |
 
 - **A host dispatch is counted only in C.** Its `host_dispatches` row is
@@ -783,6 +798,25 @@ source of live slots:
   advisory lock (`chief_dispatch.go:221`), in the same commit as the
   `task.chief_dispatch` row. So there is no moment when the reservation is
   counted but the row is not.
+- **The API change that makes this possible.** Today
+  `ReserveChiefDispatch(ctx, taskID, detail, check)` (`chief_dispatch.go:214`)
+  hands `check` no transaction. `ReleaseChiefDispatch` (`:466`) opens its own
+  `inTx`. So:
+  - `host_dispatches` lives in **`plugins.PGStore`**, beside the ledger, as a
+    new file `internal/plugins/host_dispatches.go`. Its row is written with the
+    same `tx`.
+  - `ReserveChiefDispatch` gains a hook,
+    `onReserved func(tx pgx.Tx, reservationID int64) error`. It runs inside the
+    transaction, after the reservation row is written and before the commit. A
+    host dispatch passes a hook that inserts its `pending` row. A hook error
+    rolls back the whole reservation.
+  - `ReleaseChiefDispatch`'s body moves into `releaseChiefDispatchTx(ctx, tx,
+    …)`. The public method keeps its `inTx` wrapper and calls the new
+    function.
+  - One new store method, **`EndHostDispatch(ctx, id, why)`**, sets `ended`
+    and, for a row with a task, calls `releaseChiefDispatchTx` **in the same
+    transaction**. Ending a dispatch and releasing its task's start then commit
+    together, or not at all.
   - B skips host reservations, so there is no double count while the
     10-minute window is open.
   - C does not depend on that window, so nothing drops out after 10 minutes.
@@ -804,7 +838,14 @@ source of live slots:
   - the already-dispatched answer (`:753`);
   - `routeTaskNotice`, which decides whether a task notice goes to a working
     agent or to the chief (`:1015`);
-  - mention routing (`routeMention`, `:1088`);
+  - mention routing (`routeMention`, `:1088`, then `actOnMention`, `:1151`).
+    It delivers only to a pod (`*agents.Agent`). **A mention on a task that
+    only a host agent works is not dropped, and is not pasted into the
+    window.** It goes to the chief as a task notice, through the same
+    `handTaskToChief` (`:1043`) that an unrouted notice takes. The chief can
+    then `task_forward` it, so the paste goes through the gated path in
+    [3.10](#310-forwarding-into-a-host-spawned-agent). A mention that names a
+    pod is unchanged;
   - `agent_destroy`'s check for whether a task in progress still has anyone
     on it (`agent_destroy_tool.go:195`).
 
@@ -950,7 +991,7 @@ for the owner and the logs; the chief acts only on the code.
 | `unavailable` | the host's own preconditions: no `-agent-spawn`, no `-interactive`, not the default tmux server, no tmux server running, the runtime binary not found | `"host %q cannot start %s agents now: <detail>"`. Offer your owner another target |
 | `no_repo` | no clone of `<owner>/<repo>` under the host's roots, or more than one | `"repo %s has no single clone on host %q: <detail>"`. Ask your owner which repository, or which host |
 | `bad_base` | `base` is not a valid branch name, or does not exist on the remote | `"branch %q does not exist on %s's remote"`. Ask your owner which branch |
-| `failed` | anything after work started: the fetch, the worktree, tmux, the tag, the landing check, the trust entry ([3.6.1](#361-claude-codes-folder-trust-entry)), or opencode's prompt. The host removes whatever it created, unless the trust-entry restore itself failed | `"the agent could not be started on %q: <detail>; tell your owner"`. Do not retry with the same `request_key` |
+| `failed` | anything after work started: the fetch, the worktree, tmux, the tag, the landing check, the trust entry ([3.6.1](#361-claude-codes-folder-trust-entry)), or opencode's prompt. The host removes whatever it created | `"the agent could not be started on %q: <detail>; tell your owner"`. Do not retry with the same `request_key` |
 
 `not_listed` is not a refusal. It means the window exists but has not yet
 appeared in a listing on this connection. The row stays `pending`, and the
@@ -1045,8 +1086,10 @@ git -C <clone> worktree add --no-track -b muster/<dispatch>-<slug> <dir> refs/re
 - **A sweep** runs at mirror start, and every hour after that. It applies the
   same rule to every directory under `<agent-spawn-dir>` whose dispatch id
   names no live tagged window, so a host crash leaves no worktree unaccounted
-  for. The same sweep deletes any prompt file under `<agent-spawn-dir>/.prompts/`
-  older than an hour ([3.6](#36-the-commands-and-prompt-delivery)). The host
+  for. It walks only `<owner>__<repo>/<dispatch>` directories. Prompt files
+  are elsewhere ([3.6](#36-the-commands-and-prompt-delivery)), and a separate
+  hourly pass deletes any prompt file there that is more than an hour old. The
+  host
   logs each worktree it keeps, with the reason. A kept worktree stays on disk
   until the owner removes it by hand.
 - **The trust entry is not removed** (D5). It is keyed by a path that is never
@@ -1125,17 +1168,35 @@ measured on tmux 3.7c (host-sessions, "The command"). tmux(1) describes `;` as
 its command separator and `\;` as a literal semicolon, but this design does not
 rely on escaping: the prompt never becomes a word tmux parses. Instead:
 
-1. The host writes the prompt to `<agent-spawn-dir>/.prompts/<dispatch>`. The
-   directory has mode `0700`; the file is created with `O_CREAT|O_EXCL` and
-   mode `0600`. It lives outside the worktree, so it can never be committed.
-2. The tmux command gets only constant words and host-built ones. Every one of
-   them is checked against `[A-Za-z0-9/._=@:-]`, so none can end in `;`:
-   - the shell, the binary and the prompt file are absolute paths. The mirror
-     checks at startup that `<agent-spawn-dir>` contains only those
-     characters, and otherwise reports `-agent-spawn` as `unavailable` (detail
-     `agents dir path has characters tmux would parse`);
-   - the session id;
-   - the fixed flags.
+1. The host writes the prompt to `$XDG_RUNTIME_DIR/muster-mirror/prompts/<dispatch>`.
+   - The directory has mode `0700`. The file is created with
+     `O_CREAT|O_EXCL`, mode `0600`.
+   - This is outside `<agent-spawn-dir>` and its dispatch namespace, so the
+     worktree sweep never meets it ([3.3](#33-worktrees)).
+   - It is outside the worktree too, so it can never be committed.
+   - `$XDG_RUNTIME_DIR` is the user's per-login runtime directory, so a
+     leftover file is gone by the next boot at the latest.
+   - With `XDG_RUNTIME_DIR` unset, `-agent-spawn` reports `unavailable`
+     (detail `no XDG_RUNTIME_DIR for prompt files`).
+2. The tmux command holds two kinds of word, and each kind has its own rule:
+   - **Host-built words** are checked against `[A-Za-z0-9/._=@:-]` at the
+     moment they are built. Those characters cannot form a trailing `;`. They
+     are:
+     - the paths: the shell, the binary, the prompt file and the worktree;
+     - the names: the session `agents` and the window name;
+     - the ids: the session id.
+
+     The mirror also checks at startup that `<agent-spawn-dir>` and the prompt
+     directory contain only those characters. Otherwise it reports
+     `-agent-spawn` as `unavailable` (detail `a spawn path has characters tmux
+     would parse`).
+   - **Constant words** are fixed in the source and never built from input.
+     They are the two wrapper scripts, the flags (`--session-id`, `--`,
+     `--session`), and tmux's own options (`-d`, `-P`, `-F '#{window_id}'`,
+     `-n`, `-c`, `-t`). The rule for them is that **none may end in `;`**. A
+     unit test enumerates every constant word the spawn uses and asserts that.
+     The wrapper scripts contain `;` inside them, but each ends in `"$p"` or
+     `"--prompt=$p"`.
 3. A **constant** wrapper script reads the file, deletes it, and execs the
    runtime with the prompt as one final argument. The prompt reaches the shell
    only as the value of a variable inside double quotes, so the shell never
@@ -1411,58 +1472,104 @@ muster restart, and the task needs something to own its link. The ledger rows
 alone cannot say which window is still alive.
 
 **Who writes `status`: one component, the host-dispatch reconciler**
-(`internal/api/host_dispatch_reconcile.go`, new). Nothing else writes `status`,
-`missing_listings`, `host_seen_at` or `ended_at`. A seam test pins that, with
-an asserted ledger of the SQL writers.
+(`internal/api/host_dispatch_reconcile.go`, new).
+- It writes through the `plugins.PGStore` methods in
+  [2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task), which are
+  `UpdateHostDispatch` and `EndHostDispatch`.
+- The only other caller of `EndHostDispatch` is the owner's recovery tool
+  (below).
+- Apart from the `pending` insert inside the reservation, nothing else writes
+  `status`, `missing_listings`, `host_seen_at` or `ended_at`.
+- A seam test pins that set. It is an asserted ledger of the callers of the
+  two methods, built from the Go source of `internal/api` and
+  `internal/plugins`. It fails if that set grows or shrinks.
 
-- **Its inputs:**
-  - the spawn reply;
-  - each listing. The hub calls a new hook,
-    `Hub.SetListingNotify(func(owner int64, host string, windows []Window))`.
-    It works like `SetWaitingNotify` (`internal/mirror/hub.go:278-282`): it is
-    called on its own goroutine after the hub has applied each listing;
-  - a timer, for the sweep.
-- **Its principal.** Each write runs as **the row's owner**. The reconciler
-  builds that principal the way the stopped-agent reaper does
+**Its inputs.**
+- **The spawn reply, from either of two paths.**
+  - **The waiter.** `Hub.SpawnAgent` waits up to 60 s for the reply on its
+    request id, as `SpawnResume` does.
+  - **The late path.** It does **not** go through the waiter. Every
+    `agent-spawned` frame carries its `dispatch` id
+    ([3.1](#31-wire-messages-and-capability)). The hub's read loop also hands
+    every such frame to a second new hook,
+    `Hub.SetSpawnReplyNotify(func(owner int64, host string, m Msg))`, whether
+    or not a waiter is still registered for its request id. After a timeout
+    the waiter is gone, and the hub drops the frame for it, as `pasteTo`'s
+    bookkeeping drops a late paste reply. The hook still delivers the frame,
+    and the reconciler applies it **keyed by `dispatch`**, never by request
+    id.
+  - The reconciler treats a reply as one event, however many times it
+    arrives. A reply for a row that is already `ended` changes nothing.
+- **Each listing.** The hub calls a new hook,
+  `Hub.SetListingNotify(func(owner int64, host string, windows []Window))`.
+  It works like `SetWaitingNotify` (`internal/mirror/hub.go:278-282`): it is
+  called on its own goroutine after the hub has applied the listing.
+- **A timer**, for the sweep.
+
+**Its principal.** Each write runs as **the row's owner**.
+- It builds that principal the way the stopped-agent reaper does
   (`reapPrincipal`, `internal/api/agent_reap.go:86`), with a new
-  `authz.ViaHostDispatch`. The reaper uses `authz.ViaReap`, and a separate
-  `Via` value keeps the two apart in the logs. So row-level security and
-  `ReleaseChiefDispatch`'s user-principal check (`chief_dispatch.go:215-217`)
-  hold, exactly as for the owner's own calls.
-- **Its writes:**
-  1. **Reserve.** `toolAgentDispatch` inserts the row as `pending`, inside the
-     reservation's transaction ([2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)).
-     This is the one write the reconciler does not own, because it must
-     commit together with the reservation. Then the server sends
-     `agent-spawn`.
-  2. **Refused.** The reply is a refusal: `ended`, with `refusal`. A refused
-     spawn on a task then releases that task's start
-     (`ReleaseRefusedChiefDispatch`).
-  3. **Spawned.** The reply is `agent-spawned`: it records the window, the
-     session id, the branch and the worktree. It also writes the
-     audit-only `task.chief_dispatch_agent` row with `{host_dispatch_id}`.
-  4. **A listing from the row's host.** The reconciler sets `host_seen_at =
-     now()`. Then:
-     - if the listing carries a window whose `dispatch` is the row's id, and
-       its runtime is the row's runtime: `running`, and `missing_listings =
-       0`;
-     - if it does not, and the row is `running`: `missing_listings + 1`.
-       **At 2, the row becomes `ended`.** Two listings, so that one transient
-       missing listing cannot free a slot. A `pending` row is not counted
-       down this way, because its window may not exist yet.
-  5. **The sweep**, every 10 minutes. It ends every `pending` or `running` row
-     whose `host_seen_at` is more than **24 hours** old. It reads only the
-     table, so the result holds across a muster restart. It never relies on
-     the hub's in-memory view of offline hosts (`offlineRetention`,
-     `internal/mirror/hub.go:59`). The sweep finds the owners with open rows
-     the same way the reaper finds owners (`agent_reap.go:92`), then acts as
-     each one.
-  6. **Release.** In the same transaction as any write that sets `ended` on a
-     row that has a `task_id`, the reconciler calls `ReleaseChiefDispatch` for
-     that task, as the owner. `ReleaseChiefDispatch` is extended to accept a
-     `host_dispatch_id` where today it takes an `agent_id` (`:466`). That frees the task's one start whether the
-     owner closed the window, the agent exited, or the host was never seen
-     again.
+  `authz.ViaHostDispatch`. The reaper uses `authz.ViaReap`; a separate `Via`
+  keeps the two apart in the logs.
+- The new value joins the `Via` ledger in `internal/authz/ledger_test.go:271`.
+- Row-level security and `ReleaseChiefDispatch`'s user-principal check
+  (`chief_dispatch.go:215-217`) therefore hold, exactly as they do for the
+  owner's own calls.
+
+**Its writes:**
+1. **Reserve.** `toolAgentDispatch` inserts the row as `pending` through the
+   `onReserved` hook, inside the reservation's transaction
+   ([2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)). Then the
+   server sends `agent-spawn`.
+2. **Refused**, by either reply path: `EndHostDispatch(id, refusal)`. The
+   refusal is recorded, and a task's start is released in the same
+   transaction.
+3. **Spawned**, by either reply path. It records the window, the session id,
+   the branch and the worktree. It also writes the audit-only
+   `task.chief_dispatch_agent` row, `{host_dispatch_id}`.
+4. **A listing from the row's host.** The reconciler sets
+   `host_seen_at = now()`. Then:
+   - if the listing carries a window whose `dispatch` is the row's id, and
+     whose runtime is the row's runtime: the row becomes `running`, and
+     `missing_listings` resets to 0;
+   - if it does not, and the row is `running`: `missing_listings + 1`;
+   - if it does not, and the row is `pending` and **older than 90 s** (the
+     60 s spawn timeout plus a 30 s margin): `missing_listings + 1` as well.
+     A younger `pending` row is not counted, because its window may not exist
+     yet;
+   - **at 2, the row ends**: `EndHostDispatch(id, "window gone")`. It takes
+     two listings, so one transient miss cannot free a slot.
+
+   So a spawn that never produced a window frees its slot and its task's
+   start about 90 s after it was asked for, plus two listing intervals. That
+   covers a fetch that ran past the timeout and then failed, a mirror that
+   crashed or restarted mid-spawn, and a reply that never came. A host that
+   is offline sends no listings, so its rows are left to step 5.
+5. **The sweep**, every 10 minutes. It ends every `pending` or `running` row
+   whose `host_seen_at` is more than **24 hours** old (`"host not seen"`).
+   - It reads only the table, so its result holds across a muster restart.
+     It never relies on the hub's in-memory view of offline hosts
+     (`offlineRetention`, `internal/mirror/hub.go:59`).
+   - It finds the owners with open rows the same way the reaper finds owners
+     (`agent_reap.go:92`), then acts as each one.
+6. **Release.** `EndHostDispatch` releases the task's one start in the
+   **same transaction** as `ended` (`releaseChiefDispatchTx`,
+   [2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)). That holds
+   whether the owner closed the window, the agent exited, the spawn never
+   produced a window, or the host was never seen again.
+
+**The owner's recovery: `agent_destroy` takes a host dispatch.** The tool
+already exists, and only the owner's own mirrored Claude Code sessions can
+call it (`agent_destroy_tool.go:57`; the chief cannot). It gains a third way
+to name its target, `host_dispatch` (an id), beside `name` and `id`.
+- On a `pending` or `running` row of the owner's, it calls
+  `EndHostDispatch(id, "ended by owner")`. That frees the slot and releases
+  the task's start at once.
+- It does **not** close the tmux window, because there is no kill (D7). The
+  answer says so: `"ended host dispatch N; its window, if any, is still open
+  on <host>: close it there"`.
+- This is the way out when a row is stuck for any reason the reconciler did
+  not foresee. It needs no new route and no new UI.
 
 **What the owner sees in muster.** The window is an ordinary mirrored window,
 with everything that already ships: the rendered view, the waiting state,
@@ -1479,7 +1586,8 @@ closes the tmux window, from a terminal or through Live keys, and the listing
 ends the dispatch. When a dispatch on a task ends, the task's one start is
 released (`ReleaseChiefDispatch`), as the owner destroying a pod does today.
 This holds whether the owner closed the window or the agent exited, because
-there is no other owner action to wait for.
+there is no other owner action to wait for. A row stuck for any other reason is
+ended by the owner's `agent_destroy` with `host_dispatch` (above).
 
 **When the task becomes complete.** Today a pod is *stopped* when its task
 becomes complete (`stopChiefAgentOnComplete`). **A host window is not closed
@@ -1495,18 +1603,26 @@ be typing into it. Its slot is freed only when the window ends.
 - **a mirror on any tmux server but the default one**: detail `not the
   default tmux server`.
 
-**What "the default tmux server" means, exactly.** The mirror asks its own tmux
-server for the socket it is using (`display-message -p '#{socket_path}'`,
-with `tmuxEnv`'s environment, `internal/mirrorhost/tmux.go:87-98`). The basename
-of that path must be `default`.
-
-- This honours `TMUX_TMPDIR`. `tmuxEnv` keeps that variable, because it
-  decides where the default socket lives (`tmux.go:87`). A default server
-  under a custom `TMUX_TMPDIR` is therefore still the default server.
-- A server named with `-L <name>` (`-tmux-socket`), or a socket path whose
-  basename is anything else (`-tmux-socket-path`), is refused.
-- The check runs at startup and again at each spawn, because the server can
-  be restarted underneath the mirror.
+**What "the default tmux server" means, exactly.** The rule is: **refuse
+whenever `-tmux-socket` (`-L`) or `-tmux-socket-path` (`-S`) is set, unless it
+resolves to the default socket.**
+- **The default socket** is `realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>/default`,
+  computed from the environment `tmuxEnv` passes to tmux
+  (`internal/mirrorhost/tmux.go:87-98`). `tmuxEnv` keeps `TMUX_TMPDIR`
+  because it decides where the default socket lives (`tmux.go:87`), so a
+  default server under a custom `TMUX_TMPDIR` is still the default server.
+- **No flag set:** the default server, accepted.
+- **`-L default`,** or an `-S` path whose `realpath` equals the default
+  socket: the default server, accepted.
+- **Anything else:** refused. That covers `-L work`, and any `-S` path that
+  is not the default socket even when its basename is `default`, such as a
+  `default` socket in another directory.
+- **Where this comes from.** It is multi-tenant.md's own classification: the
+  default mirror runs on the default tmux server, and each tenant's mirror
+  runs on its own named server, `muster-mirror@<tenant>` → `tmux -L <tenant>`
+  (multi-tenant.md:439-461). Any server other than the default is therefore,
+  by that design, a tenant's.
+- The check runs at startup, and again at each spawn.
 
 **Why the last rule is structural.** In multi-tenant.md, a non-default tmux
 server is exactly what marks a tenant's mirror
@@ -1559,13 +1675,15 @@ host-spawned window on the task as well.
   If any of these fails, the row is not a candidate. The tool then answers
   today's "no running agent works task N" sentence, with `task_dispatch`
   reworded to `agent_dispatch`.
-- The request names the dispatch, through a new paste option
-  (`mirror.ChiefForward(dispatch)`, below). The paste message gains a
-  `dispatch` field, and
+- The paste names the dispatch, through a new paste option,
+  `mirror.ForDispatch(dispatch)` (below). That option only stamps a
+  `dispatch` field onto the paste message, and
   **the host refuses a paste carrying `dispatch` unless that window's own
   `@muster-dispatch` (read with `show-options -w`, without `-A`) equals it**
   (`not_muster_window`). So a forward can never land in a window the owner
-  opened, even if the hub's state is stale or wrong.
+  opened, even if the hub's state is stale or wrong. **This host-side tag check
+  is the real security bound on forwarding.** Everything on the server decides
+  only whether and when to ask.
 - A dispatch with no task has no task events, so `task_forward` never reaches
   it. That is by construction, not a separate rule.
 
@@ -1575,52 +1693,55 @@ the agent to re-read it, then the chief's note, fenced as data and bounded by
 `taskRouteNoteMax` (2000 bytes, `:71`). The chief writes no free text into the
 window beyond that fenced note.
 
-**claude: through `Hub.PasteWindow`, at idle only.**
-
-A forward is an ordinary call to `Hub.PasteWindow`
-(`internal/mirror/transcript.go:429`), with two options. There is no second
-paste entry point. So `TestEveryServerPasteGoesThroughPasteWindow`
-(`internal/mirror/hermes_switch_test.go:19-120`) stays unchanged and green:
-`pasteTo` is still built in one function and called from one. Every guard
-`PasteWindow` runs still applies to a forward:
-- `SanitizePaste`;
-- `lookupPaste`;
-- the interactive check;
-- `gatedSendSwitch`;
-- the Hermes idle gate.
-
-**The two options.**
-- **`mirror.ChiefForward(dispatch)`** takes the place of the browser step-up,
-  for this paste only. `PasteWindow` begins with `if !stepup.Fresh(ctx, …)
-  { return ErrStepUpRequired }` (`:435`), and a chief has no browser sign-in.
-  That check becomes "fresh step-up, **or** a chief-forward principal". The
-  principal is accepted only when both of these hold:
-  1. `ctx` carries a chief-forward marker naming the same non-zero
-     `dispatch`. Only `mirror.WithChiefForward(ctx, dispatch)` can set it,
-     because its context key is unexported, and `toolTaskForward` is its only
-     caller. A new seam ledger in `internal/api` asserts that, failing if the
-     set of callers grows or shrinks.
-  2. The paste carries that `dispatch` to the host, which refuses it unless
-     the window's own `@muster-dispatch` equals it (above).
-
-  The marker alone, or the option alone, is refused with `ErrStepUpRequired`
-  as today. So the option is not a bypass that some other caller could pass.
-- **`mirror.ExpectTurn(turn)`**, which already exists (`:426-428`). It makes
-  the forward a queued paste: it is refused with `ErrSuperseded` unless the
-  window's turn is still the one the server checked.
-
-**Idle only.** `toolTaskForward` reads the window's Claude status from the
-hub, and calls `PasteWindow` only when it is `idle`. `ExpectTurn` then refuses
-the paste if the status moved in between. The forward is refused, and nothing
-is sent, when the status is:
-- `waiting`: a paste followed by Enter could answer the permission prompt on
-  screen;
-- `busy`;
-- not reported yet: the session is still starting.
-
-The sentence is `"the agent on task N is <status>; nothing was sent: use
-task_route_attention, or forward again later"`. There is no queue. A forward
-is about the task's state now, and an old one would be stale.
+**claude: a chief-forward row in the send queue.** This reuses the send
+queue's existing pattern for messages the chief causes, rather than adding a
+new paste path.
+- **The precedent.** The send queue already delivers rows that no browser
+  sign-in authorises: chief nudges and relayed answers (`it.ChiefNudgeID`),
+  and routed messages (`it.RouteID`). Each kind passes its own gate. Then
+  `internal/api` sets the auth time to the moment of delivery, with
+  `ctx = stepup.WithAuthTime(ctx, s.stepUpNow())`
+  (`internal/api/send_queue.go:884,892,900`), and the row is pasted through
+  `PasteWindow` like any other queued send.
+- **The new kind.** A forward adds a send-queue row with a new field,
+  `ChiefForwardDispatch int64` (column `chief_forward_dispatch`, in the
+  migration with `host_dispatches`). The row targets the dispatch's
+  `(host, session, window)`, and its body is `renderTaskForward`'s text.
+  - Its gate, `sendQueueChiefForwardGate`, runs at delivery. It re-reads the
+    `host_dispatches` row as the owner and passes only while:
+    - the row is `running`;
+    - its window and session id still match the hub's listing;
+    - its task is still the forwarded task.
+  - When the gate passes, the branch sets `WithAuthTime(ctx, s.stepUpNow())`,
+    as the nudge and route branches do.
+  - The paste then goes through `PasteWindow`, carrying `ExpectTurn` (as every
+    dispatcher send does, `send_queue.go:849-851`) and
+    `mirror.ForDispatch(dispatch)`.
+- **What stays unchanged.**
+  - `PasteWindow`, including its step-up check (`transcript.go:435`), which
+    sees the delivery-time auth like every other queued row.
+  - `SanitizePaste`, `gatedSendSwitch` and the Hermes idle gate.
+  - `TestEveryServerPasteGoesThroughPasteWindow`
+    (`internal/mirror/hermes_switch_test.go:19-120`).
+  - There is no `ChiefForward` option and no context marker.
+- **Idle only, without new code.** The dispatcher sends a row only once its
+  window has been idle for `IdleFor`, and it treats an unknown state as not
+  idle (`internal/sendqueue/dispatcher.go:17-71`). So a `waiting` window (its
+  permission prompt is on screen), a `busy` one, or one that has not reported
+  a status yet is never pasted into.
+  - `ExpectTurn` refuses a paste whose turn moved after the decision, and the
+    row goes back to the queue.
+  - A row not delivered within the queue's `AuthorizedFor` ends failed, like
+    any other queued row.
+  - `task_forward` answers `"queued for the agent on task N; muster delivers
+    it once that agent is idle"`.
+- **What bounds it.** The gate decides when to ask. The **host's tag check is
+  the bound**: the paste carries `dispatch`, and the host refuses it unless
+  the window's own `@muster-dispatch` equals it. A ledger also bounds who can
+  create such a row. It scans the Go source of `internal/api` for every
+  `sendqueue.Item` composite literal or assignment that sets
+  `ChiefForwardDispatch`, and asserts that `toolTaskForward` is the only one.
+  It fails if that set grows or shrinks.
 
 **opencode: its own API, never keystrokes** (phase 4).
 - A new wire pair, `opencode-send {id, dispatch, session, text}` /
@@ -1650,8 +1771,9 @@ is about the task's state now, and an old one would be stale.
 | the task is the owner's | `ownersTask` (`:308`) |
 | the target is a chief-dispatched window **on this task** | `forwardTarget` over `host_dispatches` |
 | the window is still that dispatch's | hub state, then the host's own tag check |
-| it goes through `PasteWindow`, keeping `SanitizePaste`, `gatedSendSwitch` and the existing paste seam ledger | `mirror.ChiefForward` + `WithChiefForward`, whose only caller is `toolTaskForward` |
-| claude: `idle`; opencode: no pending ask, not active | hub (claude status) / host (opencode) |
+| it is a send-queue row, delivered through `PasteWindow` with `ExpectTurn`, which keeps `SanitizePaste`, `gatedSendSwitch` and the existing paste seam ledger | `sendQueueChiefForwardGate`, then `WithAuthTime(ctx, s.stepUpNow())`, as the nudge and route rows do (`send_queue.go:884,892,900`); only `toolTaskForward` creates such a row |
+| **the bound:** the window's own `@muster-dispatch` equals the paste's `dispatch` | host |
+| claude: idle for `IdleFor` (the dispatcher's rule); opencode: no pending ask, not active | send-queue dispatcher / host (opencode) |
 | the text is muster's fenced forward, at most 2000 bytes of note | `renderTaskForward` |
 | at most **12 forwards per window per hour** | host, in memory, like the resume limits (`internal/mirrorhost/resume.go:61-64`). This is a guard against paste loops: nothing else bounds how often a chief can type into a window. |
 
@@ -1683,7 +1805,7 @@ UI trigger is superseded, and that its mechanics live on here.
 
 ---
 
-## 4. The UI deletion plan
+## 4. Replacing the dispatch UI: a machine route, a CLI verb, then the deletion
 
 **What goes, with nothing in its place** (D8). These are the items in
 [1.5](#15-every-consumer-of-what-gets-deleted)'s "deleted" list:
@@ -1718,10 +1840,25 @@ is neither today: the CLI has `muster agent messages|task|ls|resolve`, and the
 API has only `GET /api/agents` and `POST /api/agents/{name}/messages`), and
 **then** deletes the UI:
 - **`POST /api/agents`**, on the machine tier, behind `requireArmedHookToken`
-  (`internal/api/agents.go:148`, `internal/api/auth.go:588`). It accepts **only
-  a personal `mst_` token**, which acts as its owner (`authz.ViaToken`,
-  `internal/api/api_tokens.go:25-31`). It refuses the shared hook secret,
-  which acts as user 1 whoever holds it.
+  (`internal/api/agents.go:148`, `internal/api/auth.go:588`). Who may call it:
+  - **Only a personal `mst_` token with a new scope, `agent-create`.** Such a
+    token acts as its owner (`authz.ViaToken`,
+    `internal/api/api_tokens.go:25-31`). The scope is added to
+    `tokenScopeRoutes` (`api_tokens.go:157`) with exactly this one pattern.
+  - **A full-scope token does not reach it.** Today `tokenScopeAdmits` lets
+    `ScopeFull` reach every route (`api_tokens.go:165`). It gains one
+    exception: a pattern listed in a new `explicitScopeRoutes` set (this route
+    only) is admitted **only** to the scope that names it. So the ordinary CLI
+    token, which is a full token, cannot create agents. The owner has to mint
+    an `agent-create` token deliberately, at `/account/tokens`.
+  - Migration 0068's `api_tokens_scope_check` is widened to allow the new
+    value. An image from before this change treats an unknown scope as
+    reaching nothing (`api_tokens.go:161-165`), which is the safe direction if
+    it is rolled back.
+  - **The handler refuses a `ViaHook` principal** (`authz.ViaHook`,
+    `internal/authz/authz.go:56-58`): the shared hook secret, which acts as
+    user 1 whoever holds it. It also refuses every `Via` other than
+    `ViaToken`.
 - It takes the form's fields as JSON: `kind`, `repo`, `repo_branch`, `model`,
   `prompt`, `note_id`, `cc_account`, `cc_failover`, `worker_pool`, and
   `start` (`true` to dispatch, `false` for what "Save for later" did).
@@ -1732,7 +1869,9 @@ API has only `GET /api/agents` and `POST /api/agents/{name}/messages`), and
   acting with their own credential, not the chief.
 - **`muster agent create`** in the CLI wraps it, with flags named after the
   fields. It is a new verb, so the verb ledger (`make verb-ledger`) gains one
-  entry.
+  entry. It reads its token from `MUSTER_AGENT_CREATE_TOKEN`, never from the
+  CLI's ordinary token, so the full token in the CLI's env file never reaches
+  this route.
 - `KickoffRefusalSummary` then points at `muster agent create --start=false`
   followed by Start ([below](#text-that-must-change-in-the-same-pr)).
 
@@ -1742,7 +1881,8 @@ API has only `GET /api/agents` and `POST /api/agents/{name}/messages`), and
 - `POST /agents/{id}/start`, which still starts any `stopped` row.
 - The repository and model option routes, which the task forms use.
 
-**Migrations: none.**
+**Migrations:** only the widened `api_tokens_scope_check` for the new token
+scope. Nothing changes for draft data:
 - There is no draft data. Rows that "Save for later" created are `stopped`
   agents. They stay, and they can still be started from their pages.
 - The reaper's skip for saved rows that never started
@@ -1798,8 +1938,25 @@ the spawn. The cost, stated: whoever can type into the owner's muster chat
 from a signed-in browser session can ask the chief for a host spawn. That is
 the same reach that session already has to the chief itself.
 
-**No HTTP route or token can spawn.** There is no UI form, no `mst_` route, no
-hook-token route and no CLI verb. The only caller of `Hub.SpawnAgent` is
+**`POST /api/agents` and what still bounds it.** The route creates pods only,
+never a host spawn. Through it, a holder of an `agent-create` token can create
+pre-trusted pods with no caps, no `ownerTurnFor` and no `request_key`. That is
+what the form allowed.
+- **Who can hold one.** The bound is who holds such a token. It is not the
+  CLI's ordinary token, because full tokens are refused there
+  ([4](#4-replacing-the-dispatch-ui-a-machine-route-a-cli-verb-then-the-deletion)).
+  Any process running as the owner's Unix user, including a host-spawned agent,
+  can read that user's files. So an `agent-create` token that sits in a file
+  on such a host reaches whatever that process reaches.
+- **The advice in the docs:** mint it only where it is needed, keep it out of
+  any env file a spawned agent's shell inherits, and revoke it when it is not
+  in use.
+- **What still bounds each pod it creates:** `connectedRepo`, the kinds the
+  deployment enables, the owner's Claude account pool, and revocation, which
+  refuses the token on its next request.
+
+**No HTTP route or token can spawn on a host.** There is no UI form, no `mst_`
+route, no hook-token route and no CLI verb for it. The only caller of `Hub.SpawnAgent` is
 `toolAgentDispatch`. A seam test pins that, the way `provisioner_seam_test.go`
 pins the provisioner's callers: it asserts the ledger of callers, and fails
 when that set grows or shrinks.
@@ -1852,9 +2009,11 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
 
 ### 5.2 argv and prompt injection
 
-- **Shell.** None. Every call is an argv. The only script is the constant
-  `exec "$@"` (`internal/mirrorhost/resume.go:405`), and the prompt is a
-  positional parameter, never interpolated.
+- **Shell.** Every call is an argv. The only shell code is two constant
+  wrapper scripts, one per runtime ([3.6](#36-the-commands-and-prompt-delivery)).
+  Each reads the prompt from its `0600` file into a variable, deletes the
+  file, and execs the runtime with that variable, in double quotes, as the
+  last argument. The shell never parses the prompt.
 - **tmux.** The prompt never reaches tmux. tmux would split a command at any
   argument ending in `;`, so the prompt travels in a `0600` file instead, and
   a constant wrapper reads it ([3.6](#36-the-commands-and-prompt-delivery)).
@@ -1957,16 +2116,25 @@ still works: every phase ships on its own.
 - **No task:**
   - without `owner_asked`: refused;
   - with `owner_asked`, but on a plugin-message turn: refused with
-    `chiefReleaseNotOwnersTurn`;
+    `ownerAskedNoOwnerTurn`. A plugin turn has no owner-turn marker, so
+    `ownerTurnFor` returns `chiefReleaseNoOwnerTurn`
+    (`chief_owner_release.go:320-321`), and the mapping turns it into the
+    sentence without the gate;
   - without `request_key`: refused;
   - with both, in the owner's typed turn: an agent starts, the ledger row's
     object matches `^dispatch:[0-9a-f]{32}$`, and `today` goes up by 1.
 - **`owner_asked` on an ungated task (R1):** an open, ungated task, with
   `owner_asked: true` and an 8 KiB prompt, on a **plugin-message turn**, is
-  refused with `chiefReleaseNotOwnersTurn`. Nothing is reserved, and no agent
-  row exists. The same call in the owner's typed turn starts the agent, with
+  refused with `ownerAskedNoOwnerTurn`, the sentence that does not mention a
+  gate. It is not `chiefReleaseNotOwnersTurn`: a plugin turn has no owner-turn
+  marker at all, so the check fails at `chief_owner_release.go:320-321`.
+  Nothing is reserved, and no agent row exists. The same call in the owner's typed turn starts the agent, with
   the prompt fenced as relayed by the chief. The same task with no
   `owner_asked` and the same prompt is refused by `ownerAnswer`, as today.
+- **The sibling refusals:** the same failure on a task the chief gated answers
+  today's `chiefReleaseNoOwnerTurn`, and on an ungated task answers
+  `ownerAskedNoOwnerTurn`. Each pair is its own case. This pins the one
+  mapping function.
 - **Unknown fields:** a call with a field outside the table (`kind`, the old
   name, and `foo`) is refused with the arguments sentence. Each is its own
   case, and nothing is reserved.
@@ -2035,7 +2203,7 @@ known to be caught in the batch as a positive control:
 ### Phase 2: delete the dispatch UI
 
 **What ships, in this order, in one PR:**
-1. `POST /api/agents` and `muster agent create` ([4](#4-the-ui-deletion-plan)),
+1. `POST /api/agents` and `muster agent create` ([4](#4-replacing-the-dispatch-ui-a-machine-route-a-cli-verb-then-the-deletion)),
    so a deployment without the chief can still create agents;
 2. then the UI deletion, in full.
 
@@ -2044,16 +2212,22 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
 
 **Tests:**
 - `POST /api/agents`:
-  - a personal `mst_` token creates an agent as its owner, with both
+  - an `agent-create` token creates an agent as its owner, with both
     `start: true` and `start: false`;
-  - the shared hook secret is refused;
+  - **a full-scope token is refused**, with the scoped-token sentence, while
+    the same token still reaches every other machine route. Mutation check:
+    drop the `explicitScopeRoutes` exception, and this case goes red;
+  - an `agent-create` token is refused on every other route;
+  - the shared hook secret (`ViaHook`) is refused by the handler;
   - each of the form's refusals answers with its sentence: kind, account,
     worker pool, `connectedRepo`, the model credential, a gated `note_id`, and
     `KickoffUndeliverableReason` with `start: true`. The table is ported from
     `kinds_test.go`, `worker_pool_form_test.go` and
     `kickoff_preflight_test.go`;
   - `start: false` works where `KickoffUndeliverableReason` is set.
-- `muster agent create` drives the route. `make verb-ledger` gains the verb.
+- `muster agent create` drives the route, and reads only
+  `MUSTER_AGENT_CREATE_TOKEN`. With only the CLI's ordinary full token set, it
+  fails with the scope refusal. `make verb-ledger` gains the verb.
 - `removed_surfaces_test.go`: the three routes answer 404, and the elements
   `#sidebar-deploy` and `#home-deploy` are absent.
 - The route golden files are updated.
@@ -2064,8 +2238,10 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
 **Acceptance:**
 - `git grep -n -e sidebar-deploy -e home-deploy -e 'value="save"' -e /ui/agents/new -- internal cmd e2e web ':!internal/ui/removed_surfaces_test.go'`
   finds nothing. It is scoped to code paths, so this doc and the other docs,
-  which name these strings, are not matched. A positive control runs first:
-  the same grep at the parent commit finds the 16 specs.
+  which name these strings, are not matched. **A positive control runs
+  first:** the same grep at the parent commit lists **16 files under `e2e/`**
+  (15 specs plus `e2e/lib/dispatch.ts`) **and 19 under `internal/`**. Measured
+  at `4ec696cf` with `git grep -l`.
 - On a deployment with no chief, `muster agent create` creates and starts an
   agent.
 - A stopped agent that "Save for later" created before the upgrade still
@@ -2080,17 +2256,25 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
 - **`trustSpawnedWorktree`** ([3.6.1](#361-claude-codes-folder-trust-entry));
 - the prompt file and the two constant wrappers ([3.6](#36-the-commands-and-prompt-delivery));
 - `connectedRepo` for every host target ([5.1](#51-who-can-trigger-a-spawn));
-- the host-dispatch reconciler, `Hub.SetListingNotify` and the 24-hour sweep
-  ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task));
+- the host-dispatch reconciler, with `Hub.SetListingNotify`,
+  `Hub.SetSpawnReplyNotify` (the late-reply path), the countdown for `pending`
+  rows past 90 s, and the 24-hour sweep;
+- `host_dispatches` in `plugins.PGStore`, `ReserveChiefDispatch`'s
+  `onReserved` hook, `releaseChiefDispatchTx`, and `EndHostDispatch`
+  ([2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task),
+  [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task));
+- `agent_destroy` taking a `host_dispatch` id, as the owner's recovery;
+- mentions on tasks that only a host agent works, handed to the chief as a
+  notice;
 - `host_dispatches` (migration 0073);
 - `Hub.SpawnAgent`;
 - the `host/<host>/claude` target;
 - the chip on the window page;
 - the cleanup sweep;
-- **forwarding to claude windows**: `forwardTarget` over `liveOnTask`;
-  `PasteWindow` with `mirror.ChiefForward` and `ExpectTurn`, plus
-  `WithChiefForward`; the paste's `dispatch` field and the host's tag check;
-  the idle-only rule; and the 12-per-hour limit
+- **forwarding to claude windows**: `forwardTarget` over `liveOnTask`; the
+  chief-forward send-queue row with `sendQueueChiefForwardGate`; `PasteWindow`
+  with `ExpectTurn` and `mirror.ForDispatch`; the host's tag check; and the
+  12-per-hour limit
   ([3.10](#310-forwarding-into-a-host-spawned-agent)).
 
 **This is the first real run of the spawn pattern.** `-resume-spawn` has never
@@ -2127,8 +2311,16 @@ live run to find what the tests could not.
 
     In every case the prompt file is gone once the runtime starts. A wrapper
     whose read fails exits 97, and the dispatch ends.
-  - **Every tmux word passes the character check.** An `<agent-spawn-dir>`
-    containing a `;` makes `-agent-spawn` `unavailable` at startup.
+  - **Host-built words pass the character check.** An `<agent-spawn-dir>`, or
+    a prompt directory, containing a `;` makes `-agent-spawn` `unavailable` at
+    startup.
+  - **Constant words do not end in `;`.** A unit test enumerates every
+    constant word the spawn passes to tmux, including both wrapper scripts and
+    `-F '#{window_id}'`, and asserts that none ends in `;`.
+  - **Prompt files** are written under `$XDG_RUNTIME_DIR/muster-mirror/prompts/`,
+    never under `<agent-spawn-dir>`. The worktree sweep never touches that
+    directory, and the hourly prompt pass deletes a file there older than an
+    hour. With `XDG_RUNTIME_DIR` unset, the result is `unavailable`.
   - Each of the four refusal codes gets its own case, and so does each cause
     it covers, asserting its `detail`. That covers a repository with no clone,
     one with two clones, and the case where the refusal names the
@@ -2138,10 +2330,14 @@ live run to find what the tests could not.
   - A leftover branch with the dispatch's name gives `failed`, and the branch
     is untouched.
   - A `base` of `--upload-pack=x` is refused before git runs.
-  - A tenant-style mirror refuses with `unavailable`, detail `not the default
-    tmux server`. That covers `-tmux-socket x`, and a `-tmux-socket-path` whose
-    basename is not `default`. A default server under a custom `TMUX_TMPDIR`
-    is accepted.
+  - **The default tmux server.** Each of these is its own case:
+    - `-tmux-socket work` is refused with `unavailable`, detail `not the
+      default tmux server`;
+    - a `-tmux-socket-path` to a socket named `default` in another directory
+      is refused the same way;
+    - no flag, `-L default`, and an `-S` path that `realpath`s to
+      `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/default` are each accepted;
+    - a custom `TMUX_TMPDIR` is honoured.
   - `@muster-dispatch` is set on the window. A global value blocks the spawn.
   - Cleanup, after the test closes the window: a clean worktree is removed, a
     dirty one stays, and an unpushed branch stays. The sweep after a simulated
@@ -2173,7 +2369,17 @@ live run to find what the tests could not.
     - closing the window takes the row to `ended` after two listings, and not
       after one, and releases the task's one start, writing as the owner
       (`ViaHostDispatch`);
-    - a `pending` row is not counted down;
+    - a `pending` row younger than 90 s is not counted down;
+    - **a `pending` row older than 90 s and absent from two listings ends**,
+      and releases its task's start in the same transaction;
+    - **a late reply after the timeout is applied.** The waiter has timed out
+      and the row is `pending`. Then an `agent-spawned` frame for its
+      `dispatch` arrives, and the row records the window. A late refusal ends
+      the row. A duplicate reply changes nothing. Neither goes through the
+      waiter;
+    - `agent_destroy` with `host_dispatch` ends a `pending` row and a
+      `running` row of the owner's, and releases their tasks' starts. It
+      refuses another owner's row, and it is refused for the chief;
     - a host whose `host_seen_at` is 25 hours old has its rows ended by the
       sweep. That still holds after a muster restart, with the hub empty;
     - a reservation for a host target is counted once in `live`: in source C
@@ -2181,28 +2387,38 @@ live run to find what the tests could not.
   - with 5 live dispatches, a host spawn is refused with the live-cap
     sentence. The server's budget is the only spawn limit (D3);
   - `liveOnTask` blocks a pod beside a host agent on the same task;
+  - a mention on a task that only a host agent works reaches the chief as a
+    task notice, and is not pasted;
   - `task_forward`:
-    - it reaches a host window on the task;
-    - it refuses, with each status's sentence, when the window is `waiting`,
-      `busy` or has not reported a status;
+    - it queues a chief-forward row for a host window on the task, and the
+      dispatcher delivers it once the window is idle;
+    - a row for a `waiting`, `busy` or unreported window is not delivered
+      until the window is idle, and it fails after `AuthorizedFor`;
+    - the gate refuses a row whose dispatch has ended, or whose window or
+      session no longer matches;
     - it never targets a host window whose listing lacks the row's `dispatch`,
       or whose session id differs;
     - it never targets a task-less dispatch;
 - **Seam ledgers.**
   - The only caller of `Hub.SpawnAgent` is `toolAgentDispatch`.
-  - The only caller of `mirror.WithChiefForward` is `toolTaskForward`.
+  - The only code that sets `ChiefForwardDispatch` on a `sendqueue.Item` is
+    `toolTaskForward`. The ledger scans `internal/api`'s Go source.
+  - The only callers of `EndHostDispatch` are the reconciler and
+    `agent_destroy`.
   - The only writer of `host_dispatches.status` is the reconciler, apart
     from the insert inside the reservation.
   - `TestEveryServerPasteGoesThroughPasteWindow` is **unchanged and green**.
 - **Mutation checks for forwarding:**
   - drop the host's tag check: the mismatched-tag case goes red **with a
     delivered paste**, not with another error;
-  - drop the idle check: the `waiting` case goes red;
-  - accept `ChiefForward` without the context marker: a test that passes
-    the option from a context without the marker goes red, because it is no
-    longer refused with `ErrStepUpRequired`;
-  - accept the marker without the option, or with a different `dispatch`:
-    the same test's other two cases go red.
+  - drop `sendQueueChiefForwardGate`'s `running` check: the ended-dispatch
+    case goes red with a delivered paste;
+  - drop `mirror.ForDispatch` from the paste: the mismatched-tag case goes
+    red, because the host no longer receives a `dispatch` to check;
+  - drop the `pending` age countdown: the stuck-`pending` case goes red with a
+    slot still held;
+  - deliver late replies only through the waiter: the late-reply case goes
+    red.
 
 **Acceptance:**
 - **Live, on the owner's default mirror:**
