@@ -249,7 +249,12 @@ func TestAWorkspacePathInImagesPointsAtCcdAskImage(t *testing.T) {
 	} {
 		r.hq.ResetRequests()
 		out := call(tc.args)
-		if !isToolErr(out) || !strings.Contains(out, tc.want) {
+		// The error text decoded: JSON escapes the < and > of "<path>".
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(out), &refusal)
+		if !isToolErr(out) || !strings.Contains(refusal.Error, tc.want) {
 			t.Errorf("%s: %s, want a refusal saying %q", tc.name, out, tc.want)
 		}
 		if n := len(r.hq.Requests()); n != 0 {
