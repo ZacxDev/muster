@@ -202,6 +202,26 @@ func (p *PG) Decided(ctx context.Context, kind, key, streak string) (bool, error
 	return n > 0, err
 }
 
+// JevForStreak is the stall classifier's answer recorded on the caller's
+// decision for (kind, key, streak): ok false when no decision holds a usable
+// one (none recorded, or it failed). Session state reads it so the classifier
+// is billed once per streak whichever pass ran first.
+func (p *PG) JevForStreak(ctx context.Context, kind, key, streak string) (Result, bool, error) {
+	var r Result
+	var ni, ap, ne float64
+	err := p.pool.QueryRow(ctx, `SELECT jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error
+		FROM chief_nudges WHERE session_kind = $1 AND session_key = $2 AND streak_key = $3`, kind, key, streak).
+		Scan(&r.Label, &ni, &ap, &ne, &r.AskScore, &r.Model, &r.LatencyMS, &r.Err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, false, nil
+	}
+	if err != nil {
+		return Result{}, false, err
+	}
+	r.Scores = map[string]float64{LabelNeedsInput: ni, LabelAsksPermission: ap, LabelNeither: ne}
+	return r, r.OK(), nil
+}
+
 // Insert implements Store.
 func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, bool, error) {
 	d = Clean(d)

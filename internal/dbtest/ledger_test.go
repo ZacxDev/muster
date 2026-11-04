@@ -163,6 +163,11 @@ var pgBackedPackages = []string{
 	// retried" are claims about row-level security, a unique index and a
 	// conditional UPDATE.
 	"internal/sendqueue",
+	// Session state's episodes (migration 0073). "One open episode per
+	// session, claimed once under a race" is a claim about a partial unique
+	// index, and "another user cannot see your episodes" about row-level
+	// security.
+	"internal/sessionstate",
 	// Suggested replies' per-user toggle (migration 0048). "Another user cannot
 	// read or flip your toggle" is a claim about row-level security.
 	"internal/suggest",

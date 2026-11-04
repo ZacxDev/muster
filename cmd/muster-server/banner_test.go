@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"io"
 	"log"
 	"os"
@@ -425,6 +426,10 @@ var bannerLedger = []string{
 	// owner's sessions get pasted into — so the log must say which state this
 	// is, shadow or live.
 	envChiefNudges,
+	// SESSION STATE IS LEDGERED: ON, a pass reads every owner's sessions every
+	// 30 s and, where the chief's nudges classify, the same classifier runs on
+	// it — so the log must say which state this is.
+	envSessionState,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -817,6 +822,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudgeIdle:       15 * time.Minute,
 		ChiefNudgeHourlyCap:  4,
 		ChiefNudgeLiveOwners: map[int64]bool{1: true},
+		// Session state: the banner branches on ext.Episodes (below).
+		SessionState: true,
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
@@ -855,6 +862,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code"},
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
+		Episodes:        sessionstate.NewPG(nil),
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
