@@ -1007,6 +1007,22 @@ var errRouteRateLimited = errors.New("the chief's task-event queue for this plug
 // (ReleaseNoticeRoute, on a context the request's cancellation cannot reach)
 // so the resend acts again.
 func (s *Server) routeTaskNotice(r *http.Request, p plugins.Plugin, id int64, key, notice, comment string) (string, error) {
+	return s.routeTaskNoticeEvent(r, p, id, key, notice, taskNoticeEvent{Discriminator: comment, Change: comment})
+}
+
+// taskNoticeEvent is what names a routed notice and what it says. For a copy
+// task both are the plugin's comment (routeTaskNotice — the comment is unique
+// per upstream event by the plugin contract). For a plugin task REFERENCE,
+// which carries no relay comment, the discriminator is the plugin's event_id
+// (refEventDiscriminator) and the change is muster's own summary of the
+// snapshot (refNoticeChange).
+type taskNoticeEvent struct {
+	Discriminator, Change string
+}
+
+// routeTaskNoticeEvent is routeTaskNotice with the event's name and text given
+// separately; see taskNoticeEvent.
+func (s *Server) routeTaskNoticeEvent(r *http.Request, p plugins.Plugin, id int64, key, notice string, ev taskNoticeEvent) (string, error) {
 	ctx := r.Context()
 	n, err := s.ext.Notes.Get(ctx, id)
 	if err != nil {
@@ -1025,7 +1041,7 @@ func (s *Server) routeTaskNotice(r *http.Request, p plugins.Plugin, id int64, ke
 	}
 	switch {
 	case notice == noticeAssigned, notice == noticeUpdate && live != nil:
-		return routedChief, s.handTaskToChief(r, p, n, on, key, notice, comment)
+		return routedChief, s.handTaskToChief(r, p, n, on, key, notice, ev)
 	case notice == noticeMentioned:
 		var reach *agents.Agent
 		for i := range on { // newest first
@@ -1034,22 +1050,22 @@ func (s *Server) routeTaskNotice(r *http.Request, p plugins.Plugin, id int64, ke
 				break
 			}
 		}
-		return s.routeMention(ctx, p, n, reach, key, comment)
+		return s.routeMention(ctx, p, n, reach, key, ev)
 	}
 	return "", nil
 }
 
 // handTaskToChief stores (once) and starts delivering the task event for n.
-func (s *Server) handTaskToChief(r *http.Request, p plugins.Plugin, n notes.Note, on []agents.Agent, key, event, comment string) error {
+func (s *Server) handTaskToChief(r *http.Request, p plugins.Plugin, n notes.Note, on []agents.Agent, key, event string, notice taskNoticeEvent) error {
 	ctx := r.Context()
-	ev := plugins.TaskEvent{Event: event, TaskID: n.ID, Key: key, Status: n.Status, Title: taskLabel(n), Change: comment}
+	ev := plugins.TaskEvent{Event: event, TaskID: n.ID, Key: key, Status: n.Status, Title: taskLabel(n), Change: notice.Change}
 	if reason, gated := notes.GateReason(n.Tags); gated {
 		ev.Gate = reason
 	}
 	for _, x := range on {
 		ev.Agents = append(ev.Agents, plugins.TaskEventAgent{ID: x.ID, Name: firstNonBlank(x.DisplayName, x.Name), Status: x.Status})
 	}
-	in, err := plugins.NewTaskEventIn(ev, key+"\x00"+comment)
+	in, err := plugins.NewTaskEventIn(ev, key+"\x00"+notice.Discriminator)
 	if err != nil {
 		return err
 	}
@@ -1085,7 +1101,7 @@ const mentionAttentionNote = "You were mentioned on it upstream; the notice is o
 // mid-action cancels the action, and must not also cancel the release that
 // lets its resend deliver (audit round 3). A crash between the two leaves a
 // reservation that a later send reclaims (plugins.NoticeRouteReclaimAfter).
-func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Note, target *agents.Agent, key, comment string) (string, error) {
+func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Note, target *agents.Agent, key string, notice taskNoticeEvent) (string, error) {
 	if s.ext.ChiefDispatch == nil {
 		return "", nil
 	}
@@ -1099,7 +1115,7 @@ func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Not
 		return "", nil
 	}
 	in, err := plugins.NewTaskEventIn(plugins.TaskEvent{Event: noticeMentioned, TaskID: n.ID, Key: key, Status: n.Status,
-		Title: taskLabel(n), Change: comment}, mentionRouteDiscriminator(key, comment))
+		Title: taskLabel(n), Change: notice.Change}, mentionRouteDiscriminator(key, notice.Discriminator))
 	if err != nil {
 		return "", err
 	}
@@ -1126,7 +1142,7 @@ func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Not
 		}
 		return *m.RoutedTo, nil
 	}
-	err = s.actOnMention(ctx, n, target, comment)
+	err = s.actOnMention(ctx, n, target, notice.Change)
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), noticeRouteBookkeeping)
 	defer cancel()
 	if err != nil {

@@ -5,7 +5,7 @@
 // What the owner sees about a session that needs them (the episode push, the
 // Attention section's rows, check-ins) is a view of these, so they cannot
 // disagree about who is stalled. This package holds the rules (Classify,
-// Asked, Advance) and the store (session_episodes, migration 0072); the inputs
+// Asked, Advance) and the store (session_episodes, migration 0073); the inputs
 // are read by internal/api's stall facts (stallInputs), never a copy.
 //
 // 🔴 A FAILURE NEVER QUIETS A SESSION. A stall classifier that failed or did

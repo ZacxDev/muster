@@ -111,6 +111,7 @@ GET /mirror/view/send
 GET /mirror/view/subagent
 GET /mirror/view/suggest
 GET /mirror/view/ws
+GET /plugin/v1/tasks
 GET /plugins
 GET /readyz
 GET /send-queue
@@ -136,6 +137,7 @@ GET /ui/connectors/{name}/rotate
 GET /ui/focus/history
 GET /ui/nav/agents
 GET /ui/notifications
+GET /ui/palette/history
 GET /ui/tags
 GET /ui/tasks
 GET /ui/tasks/new
@@ -242,6 +244,8 @@ POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages
 POST /plugin/v1/messages/{id}/owner-answered
+POST /plugin/v1/task-writes/claim
+POST /plugin/v1/task-writes/{id}/result
 POST /plugin/v1/tasks
 POST /plugins
 POST /plugins/drafts/{id}/approve

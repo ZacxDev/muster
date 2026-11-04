@@ -61,8 +61,21 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its
-		// body is createTaskOnce, which createTask and the plugin task route share.
-		"(*Server).createTaskOnce → broadcast(ctx)",
+		// side effects are taskCreatedEffects, which createTaskOnce (createTask,
+		// the plugin task route) and a plugin task reference filed new share.
+		"(*Server).taskCreatedEffects → broadcast(ctx)",
+		// Plugin task REFERENCES (plugin_task_refs.go, task_ref_queue.go): a
+		// snapshot applied or a reference detached (the plugin request's
+		// principal is the plugin token's owner, authz.ViaPlugin), and a write
+		// queued on one (the writer's request — the task's owner).
+		"(*Server).applyReference → broadcast(ctx)",
+		"(*Server).applyReference → broadcast(ctx)",
+		"(*Server).queueIfReference → broadcast(ctx)",
+		// A plugin claimed or settled queued writes: owner is the authenticated
+		// plugin row's OwnerID, and the claim and the result reach only that
+		// plugin's writes, on that owner's references.
+		"(*Server).handlePluginTaskWritesClaim → broadcastTo(p.OwnerID)",
+		"(*Server).handlePluginTaskWriteResult → broadcastTo(p.OwnerID)",
 		// The plugin task route's comment on an existing task (plugin_tasks.go),
 		// once on the create path (the task existed) and once on the comment-only
 		// path: the request's principal is the plugin token's owner (authz.ViaPlugin).

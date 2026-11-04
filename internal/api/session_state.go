@@ -14,7 +14,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// SESSION STATE AND EPISODES (internal/sessionstate, migration 0072;
+// SESSION STATE AND EPISODES (internal/sessionstate, migration 0073;
 // docs/design/session-state.md). OFF unless MUSTER_SESSION_STATE=1: nothing
 // reads the episodes until the design's next PR, which turns it on with its
 // reader.

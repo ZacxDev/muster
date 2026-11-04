@@ -169,6 +169,9 @@ type Server struct {
 	// draftWake wakes waiting claims when this process approves a draft.
 	pluginRetrying sync.Map
 	draftWake      draftSignal
+	// refWriteWake wakes waiting task-write claims when this process queues a
+	// write on a plugin task reference (task_ref_queue.go).
+	refWriteWake draftSignal
 	// routeKick wakes the route sweep (RunRouteTimeouts) early: a route just
 	// ended owing its chief a hand-back.
 	routeKick     chan struct{}
@@ -624,6 +627,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerSendQueueRoutes(mux)
 	// Focus history (internal/focus): one page of a session's past focus; 404 without a store.
 	s.registerFocusHistoryRoutes(mux)
+	s.registerPaletteRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
 	s.registerCredentialRoutes(mux)

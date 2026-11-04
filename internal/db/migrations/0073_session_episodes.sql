@@ -1,4 +1,4 @@
--- muster 0072 — SESSION EPISODES (internal/sessionstate;
+-- muster 0073 — SESSION EPISODES (internal/sessionstate;
 -- docs/design/session-state.md, "Episodes" and "Claiming, pushing and
 -- clearing").
 --
@@ -24,11 +24,11 @@
 -- classifier says the session asked, AND when it failed or never ran — a
 -- failure can never quiet a session.
 --
--- Must apply after 0071 (the contiguity test refuses a gap). Owned, under the
+-- Must apply after 0072 (the contiguity test refuses a gap). Owned, under the
 -- same row-level security as every owned table, and re-applied by db.RLSOn.
 -- Idempotent.
 --
--- ROLLBACK. An image from before 0072 never reads or writes the table; it can
+-- ROLLBACK. An image from before 0073 never reads or writes the table; it can
 -- run against this schema unchanged. To remove it: DROP TABLE
 -- public.session_episodes (nothing references it).
 

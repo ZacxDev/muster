@@ -241,6 +241,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/repos",
 		"GET /ui/agents/{id}/header",
 		"GET /ui/focus/history",
+		"GET /ui/palette/history",
 		"GET /ui/agents/{id}/status",
 		"GET /ui/agents/{name}/chat-log",
 		"GET /ui/agents/{name}/task",
@@ -401,6 +402,9 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
 		"POST /plugin/v1/tasks",
+		"GET /plugin/v1/tasks",
+		"POST /plugin/v1/task-writes/claim",
+		"POST /plugin/v1/task-writes/{id}/result",
 		"POST /plugin/v1/messages/{id}/owner-answered",
 	},
 	authz.ViaAgent: {

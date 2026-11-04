@@ -463,7 +463,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The chief's per-user on/off toggle (migration 0060). Off by default
 		// for a user with no chief agent; see internal/api chief_toggle.go.
 		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
-		// Session state's episodes (migration 0072): off unless
+		// Session state's episodes (migration 0073): off unless
 		// MUSTER_SESSION_STATE=1, and then independent of the chief's nudges.
 		if cfg.SessionState {
 			ext.Episodes = sessionstate.NewPG(a.pool)

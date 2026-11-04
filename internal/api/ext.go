@@ -269,7 +269,7 @@ type Extensions struct {
 	ChiefNudges chiefnudge.Store
 
 	// Episodes is session state's store (internal/sessionstate, migration
-	// 0072; session_state.go): one row per stop of one of an owner's
+	// 0073; session_state.go): one row per stop of one of an owner's
 	// sessions. nil (no database): no state pass runs. It does NOT depend on
 	// ChiefNudge — the state, and the episodes, are code-only.
 	Episodes sessionstate.Store

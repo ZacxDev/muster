@@ -115,6 +115,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO session_episodes (session_kind, session_key, seq, state) VALUES ('mirror', $1, 1, 'stalled')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO cc_account_failovers (agent_id, agent_name, from_account, to_account, reason) VALUES ($1, 'a', 'north', 'south', 'rate_limited')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO session_routes (route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at) VALUES ('rt_' || substr(md5($1), 1, 24), $2, $3, 'mirror', 'sess', now() + interval '1 hour')`, func() []any { return []any{tag, message, agent} }, nil},
+		{`INSERT INTO task_ref_writes (note_id, plugin_id, kind, status) VALUES ($1, $2, 'status', 'in_progress')`, func() []any { return []any{note, plugin} }, nil},
 	}
 	for _, s := range steps {
 		var err error

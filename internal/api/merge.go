@@ -196,6 +196,14 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the task you chose to keep is already complete — keep the open one instead", http.StatusConflict)
 		return
 	}
+	// 🔴 A PLUGIN TASK REFERENCE IS NEVER THE LOSER. Retiring the loser is a
+	// status write, and on a reference that is queued for its upstream
+	// (task_ref_queue.go): a merge would close the UPSTREAM task as a side
+	// effect of tidying this board. Keep the reference; merge the other in.
+	if loser.IsReference() {
+		http.Error(w, "that task follows its upstream and cannot be merged away — keep it and merge the other into it", http.StatusConflict)
+		return
+	}
 
 	// Validate the UNION before touching anything: MergeTags does not validate, so
 	// two legal tag sets can union into an illegal one (different projects, or past
@@ -233,7 +241,7 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 		observeRoutingTags(merged)
 	}
 	// (2) Winner records what it absorbed.
-	if _, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
+	if _, _, err := s.addTaskComment(r.Context(), commentByMuster, notes.Comment{
 		NoteID: winnerID, Author: mergeCommentAuthor,
 		Body: "Merged in task #" + strconv.FormatInt(loserID, 10) + mergeLabelSuffix(loser) + ".",
 	}); err != nil {
@@ -299,7 +307,7 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 	// to cover a case only reachable by reopening an already-superseded task would
 	// cost every reader clarity to serve almost none, and this comment is the record
 	// that the imprecision is known rather than overlooked.
-	if _, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
+	if _, _, err := s.addTaskComment(r.Context(), commentByMuster, notes.Comment{
 		NoteID: loserID, Author: mergeCommentAuthor,
 		Body: "Superseded by task #" + strconv.FormatInt(winnerID, 10) + mergeLabelSuffix(winner) + ". Its tags were merged there; nothing was deleted.",
 	}); err != nil {
