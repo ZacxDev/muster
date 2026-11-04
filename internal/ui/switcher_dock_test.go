@@ -195,28 +195,11 @@ func TestTheDockIsOneClosedDialogInTheSidebarRoot(t *testing.T) {
 	}
 }
 
-// TestTheDocksScriptKeepsItsGuards: the dock's script, bound once per window,
-// closes on every path through the dialog's one close handler, and the
-// palette's "/" stands down while it is open. Each name is the guard the e2e
-// suite reaches in the browser (switcher-dock.spec.ts); this pins that the
-// one static file every page loads carries them.
-func TestTheDocksScriptKeepsItsGuards(t *testing.T) {
-	for _, want := range []string{
-		"if (window.musterDock) return;",
-		"document.addEventListener('htmx:beforeHistorySave', close);",
-		"if (e.persisted) close();",
-		"window.musterBack = close;",
-		"type: 'back-claim', open: on",
-		"d.addEventListener('close', function () {",
-	} {
-		if !strings.Contains(dockJS, want) {
-			t.Errorf("the dock's script lacks %s", want)
-		}
-	}
-	if !strings.Contains(paletteJS, "var dock = byId('"+DockID+"');\n    if (dock && dock.open) return;") {
-		t.Error("the palette's \"/\" does not stand down while the dock is open")
-	}
-	// No touch listener: the sidebar's swipe test reads every one (swipe_test.go).
+// TestTheDocksScriptBindsNoTouchListener: the dock's script is part of
+// appScript, whose document-level touch listeners the sidebar's swipe test
+// reads by their TEXT (touchListenerBodies, swipe_test.go); the dock binds
+// none, so that extract stays a claim about the sidebar's code alone.
+func TestTheDocksScriptBindsNoTouchListener(t *testing.T) {
 	if strings.Contains(dockJS, "'touch") {
 		t.Error("the dock binds a touch listener")
 	}

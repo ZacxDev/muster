@@ -625,9 +625,10 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
 /*
  * The switcher dock (internal/ui/switcher_dock.go): a modal <dialog>, laid out
  * as a bottom sheet in the touch layout, the only layout that opens it in this
- * phase. Fixed to the bottom of the VISUAL viewport (its script writes
- * --dock-vvh, --dock-kb and --dock-half), at the height of its snap: half, or
- * full less the top safe area and an 8px gap. It slides up and its backdrop
+ * phase. Fixed to the bottom of the viewport, at the height of its snap,
+ * measured against the VISUAL viewport (its script writes --dock-vvh and
+ * --dock-half): half, or full less the top safe area and an 8px gap. Sitting
+ * on a soft keyboard is Phase 3's, with the filter. It slides up and its backdrop
  * fades in, 220ms on the popovers' easing; display and overlay transition
  * discretely so the close plays before it leaves the top layer, and a closed
  * dock is display: none, so it adds nothing to first paint. Reduced motion: no
@@ -635,7 +636,7 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
  */
 #switcher-dock {
   position: fixed;
-  inset: auto 0 var(--dock-kb, 0px) 0;
+  inset: auto 0 0 0;
   margin: 0;
   width: 100%;
   max-width: none;

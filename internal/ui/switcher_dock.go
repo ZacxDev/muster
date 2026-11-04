@@ -290,17 +290,15 @@ var dockJS = func() string {
 
   // THE SNAPS, against the VISUAL viewport: half is 60% of it, never less
   // than the header and three rows; full is the whole of it less the top safe
-  // area and an 8px gap (web/css/input.css). --dock-kb is the part of the
-  // layout viewport a keyboard covers, which the sheet sits on.
+  // area and an 8px gap (web/css/input.css). Sitting on a soft keyboard is
+  // Phase 3's, with the filter (nothing in this phase raises one).
   function measure() {
     var d = dlg();
     if (!d) return;
     var v = window.visualViewport, h = v ? v.height : window.innerHeight;
-    var kb = v ? Math.max(0, window.innerHeight - v.height - v.offsetTop) : 0;
     var head = d.querySelector('[data-dock-header]');
     var half = Math.max(Math.round(0.6 * h), (head ? head.offsetHeight : 0) + 3 * ROW_MIN);
     d.style.setProperty('--dock-vvh', Math.round(h) + 'px');
-    d.style.setProperty('--dock-kb', Math.round(kb) + 'px');
     d.style.setProperty('--dock-half', half + 'px');
   }
   function snap(d, to) {
@@ -320,8 +318,14 @@ var dockJS = func() string {
     d.__musterDockBound = true;
     d.addEventListener('click', function (e) {
       var t = e.target;
-      // The backdrop: a tap outside the sheet lands on the dialog itself.
-      if (t === d) { d.close(); return; }
+      // The backdrop: a tap outside the sheet lands on the dialog itself — but
+      // so does one on the sheet's own padding (the safe-area sides), so the
+      // point decides: outside the dialog's box is the backdrop.
+      if (t === d) {
+        var b = d.getBoundingClientRect();
+        if (e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom) d.close();
+        return;
+      }
       if (!t || !t.closest) return;
       if (t.closest('[data-dock-close]')) { d.close(); return; }
       if (t.closest('[data-dock-grip]')) { snap(d, d.getAttribute('data-snap') === 'full' ? 'half' : 'full'); return; }
@@ -378,7 +382,6 @@ var dockJS = func() string {
     if (!s) return;
     st = null;
     claim(false);
-    s.d.style.transform = '';
     snap(s.d, 'half');
     if (!s.opener) return;
     s.opener.setAttribute('aria-expanded', 'false');
@@ -420,7 +423,6 @@ var dockJS = func() string {
   window.musterBack = close;
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', function () { var d = dlg(); if (d && d.open) measure(); });
-    window.visualViewport.addEventListener('scroll', function () { var d = dlg(); if (d && d.open) measure(); });
   }
   // 🔴 htmx's history cache must never hold the dock open: its snapshot is
   // the body's HTML, taken right after this event (as view_swap.go removes its

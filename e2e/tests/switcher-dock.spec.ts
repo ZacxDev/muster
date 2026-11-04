@@ -1,9 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { Browser, BrowserContext, Frame, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dockPort, dsn, repoRoot } from '../lib/env';
+import { dockPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
-import { writeFileAtomic } from '../lib/atomic';
 import { launchWithBfcache } from '../lib/bfcache';
 import { coarse } from '../lib/switcher';
 
@@ -23,7 +21,7 @@ import { coarse } from '../lib/switcher';
 //           is one real load, the dock closed BEFORE it (back/forward cache);
 //           the shell's back-claim pair;
 //   15      reduced motion;
-//   18      Recent holds 30;
+//   18      Recent past the bar's 8 (the 30 itself is pinned in Go);
 //   20      the dock opened from the view switch's frame is the TOP document's;
 //   21      htmx's history cache never holds the dock open;
 //   22      an older parent page: the frame's own view menu, no dock.
@@ -58,8 +56,6 @@ const CODER = `e2e-dock-coder-${stamp}`;
 // The windows: dk01…dk37, one per session, each a Claude Code pane.
 const N = 37;
 const sess = (i: number) => 'dk' + String(i).padStart(2, '0');
-let windowsFile = '';
-let windowLines: string[] = [];
 const viewOf = (s: string) => origin + rig.viewPath(s) + '&window=' + encodeURIComponent('@1');
 const OWN = sess(1);
 
@@ -67,12 +63,12 @@ test.beforeAll(async () => {
   test.setTimeout(240_000);
   await rig.start();
   const now = Math.floor(Date.now() / 1000);
-  windowLines = Array.from({ length: N }, (_, k) => {
+  const windowLines = Array.from({ length: N }, (_, k) => {
     const s = sess(k + 1);
     const tr = rig.transcript(cc.prompt(`the prompt of ${s}`) + cc.reply(`Answered in ${s}.`), 'w' + s);
     return `${s}|@1|1|1|claude|${now - 60 * (k + 1)}|${tr}`;
   });
-  windowsFile = rig.transcript(windowLines.join('\n') + '\n', 'windows');
+  const windowsFile = rig.transcript(windowLines.join('\n') + '\n', 'windows');
   await rig.startHost({ MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
   mkchat(THREADS, [
     { title: 'First thread', hoursAgo: 3, messages: [{ role: 'user', content: 'the first thread' }] },
@@ -287,6 +283,32 @@ test.describe('phone 390×844 touch', () => {
     await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
   });
 
+  // The sheet's sides are padded by the safe area (a notched phone held
+  // sideways). A tap there lands on the dialog element itself, as a backdrop
+  // tap does; only the point tells them apart. This emulator's insets are 0,
+  // so the case gives the sheet a 24px side padding of its own.
+  test('5b: a tap on the sheet\'s own side padding keeps it open; control: a tap on the backdrop closes it', async ({ page }) => {
+    test.setTimeout(90_000);
+    await ready(page);
+    await openOwn(page);
+    expect(await coarse(page)).toBe(true);
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await dock(page).evaluate((d) => { (d as HTMLElement).style.paddingLeft = '24px'; (d as HTMLElement).style.paddingRight = '24px'; });
+    await dock(page).evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
+    const box = (await dock(page).boundingBox())!;
+    const x = box.x + 12, y = box.y + box.height / 2;
+    // REACHED: the point is inside the sheet's box and hits the dialog itself.
+    expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.id, [x, y]), 'the padding hits the dialog element').toBe('switcher-dock');
+    await page.touchscreen.tap(x, y);
+    await page.waitForTimeout(400);
+    expect(await dockOpen(page), 'a tap on the sheet\'s padding closed it').toBe(true);
+    // CONTROL: the backdrop, above the sheet, still closes it.
+    expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.id, [195, box.y / 2]), 'the backdrop hits the dialog element too').toBe('switcher-dock');
+    await page.touchscreen.tap(195, box.y / 2);
+    await expect.poll(() => dockOpen(page)).toBe(false);
+  });
+
   test('9/21: on a page reached by a boosted link, no close touches history; htmx\'s history cache never holds the dock open; a row tap is one real load', async ({ page }) => {
     test.setTimeout(120_000);
     await ready(page);
@@ -474,53 +496,36 @@ test.describe('phone 390×844 touch', () => {
     await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
   });
 
-  test('18: Recent holds 30 — 35 visits, two to windows since gone: the bar shows 8, the dock 30 in visit order, its first 8 the bar\'s, the gone ones absent; control: 5 visits, 5 in both', async ({ page }) => {
-    test.setTimeout(150_000);
+  // The server half (30 kept, visit order, gone windows dropped) is
+  // TestRecentHoldsThirtyForTheDock's; this is the script's: what it draws.
+  test('18: the dock\'s Recent is the bar\'s 8, then the hidden RecentMore hrefs, each drawn from its All pill, in order', async ({ page }) => {
+    test.setTimeout(120_000);
     await ready(page);
     expect(await coarse(page)).toBe(true);
-    const clear = () => execFileSync('go', ['run', './e2e/recentsfix', 'clear'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
-    const barHrefs = () => page.locator('#session-switcher [data-switcher-list="recent"] a[data-switcher-entry]').evaluateAll((es) => es.map((e) => e.getAttribute('href')!));
-    const dockRecent = async () => {
-      await toggle(page).tap();
-      await expect.poll(() => dockOpen(page)).toBe(true);
-      await dock(page).locator('[data-dock-tab="recent"]').tap();
-      const hs = await rows(page).evaluateAll((es) => es.map((e) => e.getAttribute('href')!));
-      await page.keyboard.press('Escape');
-      await expect.poll(() => dockOpen(page)).toBe(false);
-      return hs;
-    };
-    const sessOf = (h: string) => new URL(h, origin).searchParams.get('session');
-
-    // CONTROL: 5 visits.
-    clear();
-    for (let i = 2; i <= 6; i++) await visit(page, sess(i));
+    for (let i = 2; i <= 13; i++) await visit(page, sess(i));
     await page.goto(viewOf(OWN));
     await expect(page.locator('#session-switcher')).toBeVisible();
-    expect((await barHrefs()).map(sessOf), 'the bar, 5 visits').toEqual([6, 5, 4, 3, 2].map(sess));
-    expect((await dockRecent()).map(sessOf), 'the dock, 5 visits').toEqual([6, 5, 4, 3, 2].map(sess));
+    const bar = await page.locator('#session-switcher [data-switcher-list="recent"] a[data-switcher-entry]').evaluateAll((es) => es.map((e) => e.getAttribute('href')!));
+    expect(bar.length, 'the bar shows 8').toBe(8);
+    const more = await page.evaluate(() => (document.querySelector('#session-switcher [data-switcher-recent-more]')?.getAttribute('data-switcher-recent-more') || '').split('\n').filter(Boolean));
+    expect(more.length, 'twelve visits leave entries past the bar\'s 8').toBeGreaterThanOrEqual(4);
+    // Each extra href's label, as its All pill draws it.
+    const allLabel = await page.evaluate((hs) => hs.map((h) => {
+      const a = Array.from(document.querySelectorAll('#session-switcher [data-switcher-list="all"] a[data-switcher-entry]')).find((x) => x.getAttribute('href') === h);
+      return a ? a.querySelector('span.whitespace-nowrap')?.textContent ?? a.getAttribute('title') : null;
+    }), more);
+    expect(allLabel.every((l) => !!l), 'every extra href has an All pill').toBe(true);
 
-    // 35 visits, dk02…dk36, then two of them gone (dk30, dk12).
-    expect(Number(clear()), 'the control\'s visits were cleared').toBeGreaterThanOrEqual(5);
-    for (let i = 2; i <= 36; i++) await visit(page, sess(i));
-    const gone = [sess(30), sess(12)];
-    writeFileAtomic(windowsFile, windowLines.filter((l) => !gone.some((g) => l.startsWith(g + '|'))).join('\n') + '\n');
-    try {
-      await expect
-        .poll(async () => { const html = await (await page.request.get(origin + '/ui/nav/agents')).text(); return gone.filter((g) => html.includes(`session=${g}&`)).length; }, { message: 'the two windows are gone from the list', timeout: 20_000 })
-        .toBe(0);
-      await page.goto(viewOf(OWN));
-      await expect(page.locator('#session-switcher')).toBeVisible();
-      const want: string[] = [];
-      for (let i = 36; i >= 2 && want.length < 30; i--) if (!gone.includes(sess(i))) want.push(sess(i));
-      const bar = (await barHrefs()).map(sessOf);
-      expect(bar, 'the bar shows exactly 8, newest first').toEqual(want.slice(0, 8));
-      const d = (await dockRecent()).map(sessOf);
-      expect(d, 'the dock shows 30 in visit order, the gone ones absent').toEqual(want);
-      expect(d.slice(0, 8), "its first 8 are the bar's").toEqual(bar);
-      await expect(dock(page).locator('[data-dock-tab="recent"] [data-dock-count]')).toHaveText('30');
-    } finally {
-      writeFileAtomic(windowsFile, windowLines.join('\n') + '\n');
-    }
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await dock(page).locator('[data-dock-tab="recent"]').tap();
+    const hs = await rows(page).evaluateAll((es) => es.map((e) => e.getAttribute('href')));
+    expect(hs, "the dock's Recent: the bar's 8, then the extras, in order").toEqual([...bar, ...more]);
+    const labels = await rows(page).locator('[data-dock-label]').allTextContents();
+    expect(labels.slice(8), 'each extra drawn from its All pill').toEqual(allLabel);
+    await expect(dock(page).locator('[data-dock-tab="recent"] [data-dock-count]')).toHaveText(String(8 + more.length));
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page)).toBe(false);
   });
 });
 
