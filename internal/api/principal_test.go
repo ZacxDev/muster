@@ -241,6 +241,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/repos",
 		"GET /ui/agents/{id}/header",
 		"GET /ui/focus/history",
+		"GET /ui/palette/history",
 		"GET /ui/agents/{id}/status",
 		"GET /ui/agents/{name}/chat-log",
 		"GET /ui/agents/{name}/task",

@@ -182,6 +182,9 @@ type focusSpec struct {
 	// focus 01" … oldest first), each a change, so the session's focus history
 	// (migration 0022) holds History+1 rows, the focus itself newest.
 	History int `json:"history"`
+	// HistoryTitles, when set, are written BEFORE the History ones, oldest
+	// first, each a change: earlier focuses with titles a spec can search by.
+	HistoryTitles []string `json:"historyTitles"`
 }
 
 func focusSpecs() ([]focusSpec, error) {
@@ -219,6 +222,11 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 				return fmt.Errorf("focus error %s: %w", sub, err)
 			}
 			continue
+		}
+		for _, ti := range sp.HistoryTitles {
+			if _, err := fs.Upsert(ctx, sub, focus.Write{Title: ti, Description: "An earlier focus.", Source: focus.SourceSummarizer}); err != nil {
+				return fmt.Errorf("focus history %s: %w", sub, err)
+			}
 		}
 		for i := 1; i <= sp.History; i++ {
 			if _, err := fs.Upsert(ctx, sub, focus.Write{Title: fmt.Sprintf("Earlier focus %02d", i),

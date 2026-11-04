@@ -48,7 +48,11 @@ type Store interface {
 	// written at or after since, for live sessions only (history_search.go).
 	SearchHistory(ctx context.Context, query string, live Live, since time.Time, limit int) ([]HistoryHit, error)
 	MatchHistory(ctx context.Context, text string, live Live, since time.Time, minTerms, limit int) ([]Match, error)
-	RecentTitles(ctx context.Context, live Live, since time.Time) (map[Subject][]TitleAt, error)
+	// RecentTitles takes a row bound per session too (maxRows, <= 0 none).
+	RecentTitles(ctx context.Context, live Live, since time.Time, maxRows int) (map[Subject][]TitleAt, error)
+	// SearchTitles is the command palette's whole-window title search: a
+	// substring of the title, newest matching title per session.
+	SearchTitles(ctx context.Context, query string, live Live, since time.Time, limit int) ([]HistoryHit, error)
 	// WindowHistory reads the caller's sessions with focus activity in
 	// [since, until], live or not (history_window.go).
 	WindowHistory(ctx context.Context, since, until time.Time, limit int) (WindowReport, error)
