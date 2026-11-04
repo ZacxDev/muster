@@ -144,6 +144,7 @@ var apiExempt = map[string]exemption{
 	"passkeys.go Server.handleAdminUserPasskeysDelete u.DisplayName": {1, whyPerson},
 	"plugins.go Server.renderPluginsPage p.Label":                    {1, "a plugin's configured label (its name), not a title"},
 	"push_routes.go Server.pushPreferencesForm e.Label":              {1, whyStatic},
+	"features.go featureRow f.Description":                           {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
 }
 
 // pushEmitters are the only functions that may hand a notification to a push

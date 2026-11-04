@@ -173,9 +173,13 @@ var isolationClasses = map[string]routeClass{
 	// routes act on the caller's OWN passkeys at GoTrue with the caller's own
 	// access token, so GoTrue — not muster's database — scopes them; delete
 	// names a passkey by id (param: A's passkey id).
-	"POST /auth/passkey/options":         classPublic,
-	"POST /auth/passkey/verify":          classPublic,
-	"GET /account/passkeys":              classList,
+	"POST /auth/passkey/options": classPublic,
+	"POST /auth/passkey/verify":  classPublic,
+	"GET /account/passkeys":      classList,
+	// The feature registry: server configuration, the same for every user;
+	// the only per-user part is the caller's own mirrored hosts' sightings.
+	"GET /account/features":              classList,
+	"GET /api/features":                  classList,
 	"POST /account/passkeys/options":     classList,
 	"POST /account/passkeys/verify":      classList,
 	"POST /account/passkeys/{id}/delete": classParam,

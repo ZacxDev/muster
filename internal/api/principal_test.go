@@ -161,6 +161,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/devices/live",
 		// Passkeys: the caller's own, acted on AS the caller at GoTrue.
 		"GET /account/passkeys",
+		// The feature registry (features.go): the session's own view of it.
+		"GET /account/features",
+		"GET /api/features",
 		"POST /account/passkeys/options",
 		"POST /account/passkeys/verify",
 		"POST /account/passkeys/{id}/delete",
