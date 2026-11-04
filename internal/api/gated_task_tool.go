@@ -41,7 +41,8 @@ func gatedTaskToolDef() agents.ToolDef {
 		Description: "File a task on your owner's board that NOTHING will run until your owner approves it. " +
 			"Use it when a plugin message asks for work: the task is created gated (the server adds the " +
 			"gate:<reason> tag), your owner is notified, and only your owner releases it: on the board, or by telling you in " +
-			"your chat to do it — then call task_dispatch with owner_asked: true, which muster checks against their own message. " +
+			"your chat to do it — then call agent_dispatch with the task's id, the target they named and owner_asked: true, which " +
+			"muster checks against their own message. " +
 			"Do not try to set gate: or auto: tags yourself — they are refused. " +
 			"Cite the plugin message with message_id when the task comes from one. " +
 			"At most " + strconv.Itoa(plugins.MaxGatedTasksPerDay) + " a day.",
@@ -176,7 +177,7 @@ func (s *Server) toolTaskCreateGated(ctx context.Context, a agents.Agent, argume
 		s.logger.Printf("plugins: agent %d gated task: create: %v", a.ID, err)
 		return toolErr("the task could not be filed")
 	}
-	// 🔴 WHICH GATE THIS TOOL SET, ON WHICH TASK: the record task_dispatch's
+	// 🔴 WHICH GATE THIS TOOL SET, ON WHICH TASK: the record agent_dispatch's
 	// owner_asked releases against (chief_owner_release.go chiefsGate), so it
 	// never releases a gate the owner set. Not recorded: the task stays gated
 	// and only the board releases it (the safe direction).
@@ -190,7 +191,8 @@ func (s *Server) toolTaskCreateGated(ctx context.Context, a agents.Agent, argume
 	return toolJSON(map[string]any{
 		"id": note.ID, "tags": note.Tags,
 		"next": "Filed gated. Your owner has been notified; nothing runs until they release it. If your owner told you, " +
-			"typing in your chat, to do this work, call task_dispatch now with this id and owner_asked: true. Do not file it again.",
+			"typing in your chat, to do this work, call agent_dispatch now with this id, the target they named and owner_asked: true. " +
+			"Do not file it again.",
 	})
 }
 

@@ -40,7 +40,7 @@ import (
 // refuses every caller that is not a mirrored session (mirroredSession), and the
 // store refuses an ask raised by any mirrored session on the caller's HOST
 // (attention.ErrSameHost: the host is what the token proves; the session is a
-// pane the caller names). An MCP answer IS accepted as task_dispatch
+// pane the caller names). An MCP answer IS accepted as agent_dispatch
 // instructions, by operator decision ("Just remove the filter"; the accepted
 // risk is in docs/attention.md); the kickoff names it as given over MCP.
 //

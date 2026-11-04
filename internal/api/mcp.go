@@ -103,7 +103,7 @@ func isToolErr(text string) bool {
 	}
 	// toolErr's {error}, plus only the keys a structured refusal adds:
 	// `refused` (session_routes.go's routeRefusal), `budget`
-	// (task_dispatch's dispatchRefusal) and `candidates`
+	// (agent_dispatch's dispatchRefusal) and `candidates`
 	// (plugin_message_route's subject refusals), and `current_definition`
 	// (serveMCP's, on any of them) — nothing else.
 	for k := range m {

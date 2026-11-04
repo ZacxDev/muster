@@ -167,18 +167,18 @@ func TestTheChiefDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
 	// fail: fewer would leave the caller a slot even if they were counted.
 	for i := 0; i < MaxChiefLiveAgents; i++ {
 		task := shared + int64(i)
-		if _, err := s.ReserveChiefDispatch(session(3), task, nil, nil); err != nil {
+		if _, err := s.ReserveChiefDispatch(session(3), NoteObject(task), nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		a := mustAgent(t, dsn, 3, "plg-led-"+strconv.Itoa(i))
-		if err := s.RecordChiefDispatchAgent(session(3), task, a.ID); err != nil {
+		if err := s.RecordChiefDispatchAgent(session(3), NoteObject(task), a.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	dbtest.OwnerExec(t, dsn, `INSERT INTO audit_log (user_id, action, object)
 		SELECT 3, $1, 'note:' || (700 + g) FROM generate_series(1, $2) g`, ActionChiefDispatch, MaxChiefDispatchesPerDay)
 	rlsOffForTest(t, pool, dsn, true)
-	r, err := s.ReserveChiefDispatch(session(2), shared, nil, nil)
+	r, err := s.ReserveChiefDispatch(session(2), NoteObject(shared), nil, nil)
 	if err != nil || r.Prior {
 		t.Fatalf("owner 2's first start for task %d with RLS off: %+v %v; want a fresh reservation", shared, r, err)
 	}
@@ -190,17 +190,17 @@ func TestTheChiefDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
 func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
-	if err := s.RecordChiefDispatchAgent(session(3), 620, mustAgent(t, dsn, 3, "plg-led-x").ID); err != nil {
+	if err := s.RecordChiefDispatchAgent(session(3), NoteObject(620), mustAgent(t, dsn, 3, "plg-led-x").ID); err != nil {
 		t.Fatal(err)
 	}
 	rlsOffForTest(t, pool, dsn, true)
 	// Fill the caller's cap, 620 (the task the other owner's agent shares) first.
 	for task := int64(620); task < 620+MaxChiefLiveAgents; task++ {
-		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
+		if r, err := s.ReserveChiefDispatch(session(2), NoteObject(task), nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 620+MaxChiefLiveAgents, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
+	if _, err := s.ReserveChiefDispatch(session(2), NoteObject(620+MaxChiefLiveAgents), nil, nil); !errors.Is(err, ErrChiefLiveCap) {
 		t.Fatalf("one more start with the caller's cap in flight: %v; want ErrChiefLiveCap", err)
 	}
 }
@@ -211,14 +211,14 @@ func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T)
 func TestAPriorStartNamesOnlyTheCallersAgent(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
-	if _, err := s.ReserveChiefDispatch(session(2), 630, nil, nil); err != nil {
+	if _, err := s.ReserveChiefDispatch(session(2), NoteObject(630), nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordChiefDispatchAgent(session(3), 630, mustAgent(t, dsn, 3, "plg-led-y").ID); err != nil {
+	if err := s.RecordChiefDispatchAgent(session(3), NoteObject(630), mustAgent(t, dsn, 3, "plg-led-y").ID); err != nil {
 		t.Fatal(err)
 	}
 	rlsOffForTest(t, pool, dsn, true)
-	r, err := s.ReserveChiefDispatch(session(2), 630, nil, nil)
+	r, err := s.ReserveChiefDispatch(session(2), NoteObject(630), nil, nil)
 	if err != nil || !r.Prior || r.AgentID != nil {
 		t.Fatalf("the caller's repeat: %+v %v; want Prior with no agent", r, err)
 	}

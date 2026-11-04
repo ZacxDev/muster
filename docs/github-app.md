@@ -49,7 +49,7 @@ With the App configured:
 - **The installation's repositories are the connected ones** (for an admin):
   the dispatch dialog's repository picker lists them, and they are what the
   "connected repository" check that every claude-code dispatch and
-  `task_dispatch` applies accepts.
+  `agent_dispatch` applies accepts.
 - **Only installations on `MUSTER_GITHUB_APP_ACCOUNTS` count, matched by the
   account's numeric id.** The App has to be installable on "Any account", so
   anyone can install it on their own repositories. An installation on an

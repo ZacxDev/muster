@@ -24,7 +24,7 @@ func TestATaskEventTheChiefActedOnIsNotRetryable(t *testing.T) {
 				if act == ActionTaskRouted {
 					err = s.RecordTaskRouted(session(2), task, "task_forward")
 				} else {
-					err = s.RecordChiefDispatchAgent(session(2), task, chief.ID)
+					err = s.RecordChiefDispatchAgent(session(2), NoteObject(task), chief.ID)
 				}
 				if err != nil {
 					t.Fatal(err)

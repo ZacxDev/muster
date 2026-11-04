@@ -21,7 +21,7 @@ import (
 // buttons are the offered actions, in order.
 func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 	type tally struct{ offered, withheld int }
-	seen := map[string]*tally{taskForwardTool: {}, taskDispatchTool: {}}
+	seen := map[string]*tally{taskForwardTool: {}, agentDispatchTool: {}}
 	type taskCase struct {
 		name string
 		tags []string
@@ -64,14 +64,29 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if len(ask.Options) != len(out.Offered) {
-						t.Fatalf("buttons %q for actions %q", ask.Options, out.Offered)
-					}
+					// Every button names one offered action — agent_dispatch once
+					// per target ("agent_dispatch on <target>: …") — and every
+					// offered action has a button.
 					offered := map[string]bool{}
-					for i, tool := range out.Offered {
+					for _, tool := range out.Offered {
 						offered[tool] = true
-						if !strings.HasPrefix(ask.Options[i], tool+": ") {
-							t.Errorf("button %d %q does not name action %s", i, ask.Options[i], tool)
+					}
+					buttoned := map[string]bool{}
+					for i, opt := range ask.Options {
+						named := ""
+						for tool := range offered {
+							if strings.HasPrefix(opt, tool+": ") || strings.HasPrefix(opt, tool+" on pod/") {
+								named = tool
+							}
+						}
+						if named == "" {
+							t.Errorf("button %d %q names no offered action (%v)", i, opt, out.Offered)
+						}
+						buttoned[named] = true
+					}
+					for tool := range offered {
+						if !buttoned[tool] {
+							t.Errorf("action %s is offered with no button: %q", tool, ask.Options)
 						}
 					}
 					if offered[routeToSessionToolName] {
@@ -79,13 +94,13 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 					}
 					fwd := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "over to you"})
 					forwarded := !strings.Contains(fwd, `"error"`)
-					disp := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+					disp := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID})
 					started := !strings.Contains(disp, `"error"`) && strings.Contains(disp, `"agent_id"`)
 					if offered[taskForwardTool] != forwarded {
 						t.Errorf("task_forward offered=%v, but the tool forwarded=%v: %s", offered[taskForwardTool], forwarded, fwd)
 					}
-					if offered[taskDispatchTool] != started {
-						t.Errorf("task_dispatch offered=%v, but the tool started an agent=%v: %s", offered[taskDispatchTool], started, disp)
+					if offered[agentDispatchTool] != started {
+						t.Errorf("task_dispatch offered=%v, but the tool started an agent=%v: %s", offered[agentDispatchTool], started, disp)
 					}
 					for tool, tl := range seen {
 						if offered[tool] {

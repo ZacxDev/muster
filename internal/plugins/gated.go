@@ -101,7 +101,7 @@ func (s *PGStore) ReserveGatedTask(ctx context.Context, agentID int64, messageID
 
 // ActionGatedTaskFiled records WHICH task task_create_gated filed and the exact
 // gate tag the server set on it (object NoteObject(task), detail {gate,
-// agent_id}). It is what lets task_dispatch's owner_asked release ONLY the gate
+// agent_id}). It is what lets agent_dispatch's owner_asked release ONLY the gate
 // the chief filed (internal/api chief_owner_release.go) and never a hold the
 // owner put on a task themselves, which is spelled in the same tag namespace.
 const ActionGatedTaskFiled = "plugin.task_gated_filed"
