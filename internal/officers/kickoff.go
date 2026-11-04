@@ -23,11 +23,12 @@ Start now:
 1. Call %[6]s. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
 2. Work the queue one item at a time: %[8]s{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and %[8]s{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); %[7]s shows the queue. %[9]s{item_id} at least every few minutes while you work it, and %[10]s{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, %[11]s{item_id} so another instance can.
 3. Anything that needs a human: follow your charter. By default, finish the item with %[10]s{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
+   If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with %[13]s{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `+"`ccd ask-image <path>`"+` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When %[8]s{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
 
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o)) + tierNote(o) + repoNote(o) + connectorsNote(o) + releaseNote(o)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + tierNote(o) + repoNote(o) + connectorsNote(o) + releaseNote(o)
 }
 
 // tierNote tells an instance of a tiered officer which tier it works: its
@@ -167,6 +168,9 @@ const (
 	// failed Tekton TaskRuns' failing tests and error lines). Offered to a
 	// shipping officer with a `ci_logs` block only; read-only.
 	ToolCILogs = "officer_ci_logs"
+	// ToolAskPerson asks a named HQ member a question about an item (HQ's
+	// asks route); asking ends the instance's lease on it. Every officer's.
+	ToolAskPerson = "officer_ask_person"
 	// ToolObsQueries and ToolObsQuery read HQ's NAMED observability queries
 	// through HQ's officer obs route (obs.go): the registry, and one entry
 	// run with its declared arguments — never a raw query. Every officer's;
@@ -185,12 +189,12 @@ func (o Officer) Type() string {
 }
 
 // ToolOffered is THE rule for which officer tools officer o's instances get:
-// the six queue tools and the two obs tools for every officer, and the
+// the six queue tools, officer_ask_person and the two obs tools for every officer, and the
 // captain route's tool for a release officer only. internal/api's listing and
 // dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
 	switch tool {
-	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolObsQueries, ToolObsQuery:
+	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolAskPerson, ToolObsQueries, ToolObsQuery:
 		return true
 	case ToolReleaseEvaluation:
 		return o.Type() == ReleaseOfficerType

@@ -112,8 +112,10 @@ func run(args []string) int {
 		return runConnectGit(args, os.Stdout, os.Stderr)
 	case "approve":
 		return runApprove(args, os.Stdin, os.Stdout, os.Stderr)
+	case "ask-image":
+		return runAskImage(args, os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve)\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path>)\n", cmd)
 		return 2
 	}
 }

@@ -28,7 +28,8 @@ type Store interface {
 	// decision for streak.
 	Decided(ctx context.Context, kind, key, streak string) (bool, error)
 	// Insert records d for the caller, with its audit row; inserted false (and
-	// nothing written) when another decision for the same streak won.
+	// nothing written) when another decision for the same streak — or, with
+	// d.EpisodeID set, the same episode — won.
 	Insert(ctx context.Context, d Decision, action string) (Decision, bool, error)
 	// NudgesForAnchor counts the caller's nudges (would_send, queued, sent) to
 	// (kind, key) since the owner message anchor.
@@ -59,6 +60,10 @@ type Store interface {
 	Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error)
 	// List is the caller's newest decisions.
 	List(ctx context.Context, limit int) ([]Decision, error)
+	// ForEpisode is the caller's decision taken in session-state episode id,
+	// ok false when it has none (the sweep judges an episode at most once; the
+	// 0078 unique index is the guarantee).
+	ForEpisode(ctx context.Context, episodeID int64) (Decision, bool, error)
 }
 
 // Move is what Store.Move writes.
@@ -85,7 +90,8 @@ const cols = `id, owner_id, session_kind, session_key, mirror_host, mirror_sessi
 	title, streak_key, anchor_key, coalesce(idle_since, 'epoch'::timestamptz), decided_at, decision, message, quote_id,
 	coalesce(quote_at, 'epoch'::timestamptz), quote_text, covered_action, question, options, reason, mode, outcome, detail,
 	coalesce(ask_id, 0), coalesce(send_queue_id, 0), relay_text, updated_at,
-	jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error`
+	jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error,
+	coalesce(episode_id, 0)`
 
 func scan(row pgx.Row) (Decision, error) {
 	var d Decision
@@ -94,7 +100,8 @@ func scan(row pgx.Row) (Decision, error) {
 		&d.Title, &d.StreakKey, &d.AnchorKey, &d.IdleSince, &d.DecidedAt, &d.Decision, &d.Message, &d.QuoteID,
 		&d.QuoteAt, &d.QuoteText, &d.Covered, &d.Question, &opts, &d.Reason, &d.Mode, &d.Outcome, &d.Detail,
 		&d.AskID, &d.SendQueueID, &d.RelayText, &d.UpdatedAt,
-		&d.JevLabel, &d.JevNeedsInput, &d.JevAsksPermission, &d.JevNeither, &d.JevAskScore, &d.JevModel, &d.JevLatencyMS, &d.JevError)
+		&d.JevLabel, &d.JevNeedsInput, &d.JevAsksPermission, &d.JevNeither, &d.JevAskScore, &d.JevModel, &d.JevLatencyMS, &d.JevError,
+		&d.EpisodeID)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -163,6 +170,9 @@ func auditDetail(d Decision) map[string]any {
 	}
 	if d.SendQueueID > 0 {
 		m["send_queue_id"] = d.SendQueueID
+	}
+	if d.EpisodeID > 0 {
+		m["episode_id"] = d.EpisodeID
 	}
 	if d.Detail != "" {
 		m["detail"] = d.Detail
@@ -238,6 +248,21 @@ func (p *PG) ForStreak(ctx context.Context, kind, key, streak string) (Decision,
 	return d, true, nil
 }
 
+// ForEpisode is the caller's decision taken in session-state episode id: ok
+// false when the episode has none yet. The sweep reads it so an episode is put
+// to the chief at most once (docs/design/session-state.md, "The Chief: nudge,
+// leave or notify").
+func (p *PG) ForEpisode(ctx context.Context, episodeID int64) (Decision, bool, error) {
+	d, err := scan(p.pool.QueryRow(ctx, `SELECT `+cols+` FROM chief_nudges WHERE episode_id = $1`, episodeID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Decision{}, false, nil
+	}
+	if err != nil {
+		return Decision{}, false, err
+	}
+	return d, true, nil
+}
+
 // Insert implements Store.
 func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, bool, error) {
 	d = Clean(d)
@@ -251,15 +276,20 @@ func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, b
 		row := tx.QueryRow(ctx, `INSERT INTO chief_nudges (session_kind, session_key, mirror_host, mirror_session, mirror_window, agent_id,
 				title, streak_key, anchor_key, idle_since, decision, message, quote_id, quote_at, quote_text, covered_action,
 				question, options, reason, mode, outcome, detail, ask_id, send_queue_id, relay_text, chat_session_id,
-				jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error)
+				jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error,
+				episode_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-				$27, $28, $29, $30, $31, $32, $33, $34)
-			ON CONFLICT ON CONSTRAINT chief_nudges_one_per_streak DO NOTHING
+				$27, $28, $29, $30, $31, $32, $33, $34, $35)
+			-- Either claim: one decision per streak (chief_nudges_one_per_streak)
+			-- and, with session state on, one per episode
+			-- (chief_nudges_one_per_episode, migration 0078).
+			ON CONFLICT DO NOTHING
 			RETURNING `+cols,
 			d.Kind, d.Key, d.Host, d.TmuxSession, d.Window, nullID(d.AgentID), d.Title, d.StreakKey, d.AnchorKey, nullTime(d.IdleSince),
 			d.Decision, d.Message, d.QuoteID, nullTime(d.QuoteAt), d.QuoteText, d.Covered, d.Question, opts, d.Reason, d.Mode,
 			d.Outcome, d.Detail, nullID(d.AskID), nullID(d.SendQueueID), d.RelayText, nullID(d.ChatSessionID),
-			d.JevLabel, d.JevNeedsInput, d.JevAsksPermission, d.JevNeither, d.JevAskScore, d.JevModel, d.JevLatencyMS, d.JevError)
+			d.JevLabel, d.JevNeedsInput, d.JevAsksPermission, d.JevNeither, d.JevAskScore, d.JevModel, d.JevLatencyMS, d.JevError,
+			nullID(d.EpisodeID))
 		var err error
 		out, err = scan(row)
 		if errors.Is(err, pgx.ErrNoRows) {

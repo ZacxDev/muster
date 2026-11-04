@@ -35,6 +35,23 @@ func renderString(t *testing.T, n g.Node) string {
 	return expandStaticScripts(t, renderRaw(t, n))
 }
 
+// withoutDock is html with the switcher dock's dialog (switcher_dock.go, drawn
+// once in every document with the sidebar) cut out: for a test about the
+// page's OWN tabs, which the dock's tablist is not. Fails when html has no
+// dock, so a test that relies on the cut cannot go on cutting nothing.
+func withoutDock(t *testing.T, html string) string {
+	t.Helper()
+	i := strings.Index(html, `<dialog id="`+DockID+`"`)
+	if i < 0 {
+		t.Fatal("withoutDock: the document draws no switcher dock")
+	}
+	j := strings.Index(html[i:], "</dialog>")
+	if j < 0 {
+		t.Fatal("withoutDock: the switcher dock is not closed")
+	}
+	return html[:i] + html[i+j+len("</dialog>"):]
+}
+
 // renderNode is renderString under the name some tests call it by.
 func renderNode(t *testing.T, n g.Node) string {
 	t.Helper()

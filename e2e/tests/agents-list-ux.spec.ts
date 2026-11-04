@@ -10,6 +10,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 import { mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 import { agentLink } from '../lib/agent-link';
+import { coarse, pickView } from '../lib/switcher';
 
 // THE AGENTS LIST UX BATCH, WHERE IT IS NOW (the Agents list page is retired:
 // its entries are the sidebar's rows, and the session switcher's bar is on
@@ -340,11 +341,11 @@ for (const vp of [
       ).map(key);
       expect(marked.length, "instrument check: the sidebar marks the spec's waiting rows").toBeGreaterThanOrEqual(WAITING.length);
       if (vp.use.viewport.width < 1024) await page.locator('#sidebar-close').click();
-      // The view, from the bar's menu.
-      await press(page.locator('#switcher-toggle'));
-      const pick = page.locator('#switcher-views [data-switcher-pick="waiting"]');
-      await expect(pick).toContainText('Waiting on you');
-      await press(pick);
+      // The view, from the bar's menu (the mouse layout) or the dock (the
+      // touch layout, a coarse pointer): lib/switcher.ts pickView.
+      expect(await coarse(page), 'the layout this context emulates').toBe(vp.use.hasTouch);
+      await expect(page.locator('#switcher-views [data-switcher-pick="waiting"]')).toContainText('Waiting on you');
+      await pickView(page, 'waiting');
       await expect(page.locator('#switcher-toggle').locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'waiting');
       const viewRow = page.locator('#session-switcher [data-switcher-list="waiting"]');
       await expect(viewRow).toBeVisible();

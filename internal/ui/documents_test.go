@@ -408,7 +408,9 @@ func TestTheShellRendersOneTabpanelPerRegisteredTab(t *testing.T) {
 	for _, shape := range featureShapes() {
 		shape := shape
 		t.Run(shape.name, func(t *testing.T) {
-			html := renderString(t, Page(defaultTab, shape.feat))
+			// The switcher dock's own tablist (switcher_dock.go, on every page with
+			// the sidebar) is not the shell's: taken out, it alone.
+			html := withoutDock(t, renderString(t, Page(defaultTab, shape.feat)))
 
 			visible := visibleTabs(shape.feat)
 			want := make([]string, 0, len(visible))

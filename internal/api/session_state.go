@@ -259,7 +259,7 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			// it stays a stop, unclassified.
 			f.Stalled = lastOwn
 		}
-		f.AskStall = f.Stalled && chiefnudge.AskStall(jev, s.chiefNudgeAskThreshold())
+		f.AskStall = f.Stalled && s.needsYouStall(jev)
 	}
 	state, wants := sessionstate.StateOf(f)
 	busy := c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusBusy

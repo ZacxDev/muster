@@ -450,9 +450,18 @@ func TestAnOfficerToolReleaseEndsTheItemMeter(t *testing.T) {
 	llmEndSeam(t, "routine:llm-releases", "llm-releases-agent-token-0123456", officers.ToolRelease, ``)
 }
 
+// TestAnOfficerToolAskEndsTheItemMeter: a successful officer_ask_person ends
+// the instance's lease (HQ sets the item waiting with no holder), so it ends
+// the held item too, as complete and release do.
+func TestAnOfficerToolAskEndsTheItemMeter(t *testing.T) {
+	llmEndSeam(t, "routine:llm-asks", "llm-asks-agent-token-0123456789ab", officers.ToolAskPerson,
+		`,"to":"design-lead","question":"is the header right?"`)
+}
+
 func llmEndSeam(t *testing.T, id, tok, tool, extra string) {
 	t.Helper()
 	r := newLLMItemsRig(t, id, tok)
+	r.hq.AddMember("design-lead")
 	item := r.hq.AddTieredItem(id, "routine.check", "a", officers.TierRoutine)
 	r.call(officers.ToolClaim, `{"item_id":"`+item+`"}`)
 	r.expect(t, "on item "+item, http.StatusOK, http.StatusOK, http.StatusBadRequest)

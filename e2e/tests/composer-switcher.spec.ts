@@ -4,6 +4,7 @@ import { test, expect } from '../lib/fixtures';
 import { baseURL, dsn, repoRoot } from '../lib/env';
 import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 import { mkchat } from '../lib/mirrorhost';
+import { coarse, pickView } from '../lib/switcher';
 
 // THE SESSION PAGE'S COMPOSER CHANGES, on the shared server's dispatched agent
 // pages (a real browser, the seeded agents):
@@ -37,13 +38,8 @@ const row = (page: Page, view: string) => bar(page).locator(`[data-switcher-list
 const hrefs = (page: Page, view: string) =>
   row(page, view).locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => new URL(e.getAttribute('href')!, location.href).pathname));
 
-// pickView opens the view menu (the bar's left button) and picks a view.
-async function pickView(page: Page, view: string) {
-  await page.locator('#switcher-toggle').click();
-  await expect(page.locator('#switcher-views')).toBeVisible();
-  await page.locator(`#switcher-views [data-switcher-pick="${view}"]`).click();
-  await expect(page.locator('#switcher-views')).toBeHidden();
-}
+// pickView (lib/switcher.ts) picks a view from the bar's left button: the view
+// menu in the mouse layout, the dock in the touch layout.
 
 async function openAgent(page: Page, name: string) {
   await page.goto('/agents/' + name);
@@ -347,11 +343,12 @@ test.describe('phone 390×844, the compact bar', () => {
     await expect(shown).toHaveAttribute('data-switcher-icon', 'recent');
     await expect(toggle).toHaveAccessibleName('Showing Recent sessions; choose a view');
     const tb = (await toggle.boundingBox())!;
+    // A phone's context: the touch layout, where the view button opens the
+    // dock (lib/switcher.ts pickView) and the menu, with its icons, is the
+    // mouse layout's.
+    expect(await coarse(page), 'the touch layout').toBe(true);
     for (const [key, name] of [['all', 'All'], ['waiting', 'Waiting'], ['pins', 'Pins']]) {
-      await toggle.tap();
-      await expect(page.locator(`#switcher-views [data-switcher-pick="${key}"] [data-switcher-menu-icon="${key}"]`), 'the menu draws the icon beside the words').toBeVisible();
-      await page.locator(`#switcher-views [data-switcher-pick="${key}"]`).tap();
-      await expect(page.locator('#switcher-views')).toBeHidden();
+      await pickView(page, key);
       await expect(shown).toHaveCount(1);
       await expect(shown).toHaveAttribute('data-switcher-icon', key);
       await expect(toggle).toHaveAccessibleName(`Showing ${name} sessions; choose a view`);

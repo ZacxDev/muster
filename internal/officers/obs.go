@@ -85,10 +85,14 @@ var obsDecisionCodes = []string{"obs_unconfigured", "wrong_shape", "upstream"}
 
 // ObsQueries is GET /officers/{id}/obs/queries with the officer token.
 func (c *Client) ObsQueries(ctx context.Context) ([]byte, error) {
-	return c.do(ctx, http.MethodGet, c.officerPath()+"/obs/queries", nil, obsDecisionCodes)
+	return c.doCoded(ctx, http.MethodGet, c.officerPath()+"/obs/queries", "", nil, obsDecisionCodes)
 }
 
 // ObsQuery is POST /officers/{id}/obs/query with the officer token: q as is.
 func (c *Client) ObsQuery(ctx context.Context, q ObsQuery) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, c.officerPath()+"/obs/query", q, obsDecisionCodes)
+	b, err := json.Marshal(q)
+	if err != nil {
+		return nil, fmt.Errorf("officers: encode request: %w", err)
+	}
+	return c.doCoded(ctx, http.MethodPost, c.officerPath()+"/obs/query", "application/json", b, obsDecisionCodes)
 }

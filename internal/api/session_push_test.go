@@ -36,6 +36,17 @@ func TestEpisodeVerdict(t *testing.T) {
 		{"capped pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardHourlyCap))}, verdictPush},
 		{"moved on pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardMovedOn))}, verdictPush},
 		{"notify pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardEpisode))}, verdictPush},
+		// Step 3a: a notify, and every failure, pushes — never a leave.
+		{"a 3a notify pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live("notified")}, verdictPush},
+		{"a shadow notify pushes", episodeFacts{ChiefJudges: true, Decided: true,
+			D: chiefnudge.Decision{Mode: chiefnudge.ModeShadow, Outcome: "notified"}}, verdictPush},
+		{"a dropped nudge pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardSuperseded))}, verdictPush},
+		{"a failed call pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardChiefError))}, verdictPush},
+		{"an unreadable answer pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardInvalid))}, verdictPush},
+		{"lanes full past the bound pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardLanesFull))}, verdictPush},
+		{"chief not ready past the bound pushes", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.Suppressed(chiefnudge.GuardChiefNotReady))}, verdictPush},
+		{"a shadow would_send pushes", episodeFacts{ChiefJudges: true, Decided: true,
+			D: chiefnudge.Decision{Mode: chiefnudge.ModeShadow, Outcome: chiefnudge.OutcomeWouldSend}}, verdictPush},
 		{"leave, asked nothing, is quiet", episodeFacts{ChiefJudges: true, Decided: true, D: live(chiefnudge.OutcomeLeft)}, sessionstate.QuietLeft},
 		{"leave on a stop that asked pushes", episodeFacts{Asked: true, ChiefJudges: true, Decided: true, D: live(chiefnudge.OutcomeLeft)}, verdictPush},
 	} {
