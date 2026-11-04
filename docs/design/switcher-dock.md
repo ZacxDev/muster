@@ -1,8 +1,8 @@
 # Design: the switcher dock (a vertical session list from the bottom bar)
 
 **Status: proposed. Nothing here is implemented.** The operator decisions
-below, including the three answers to this page's first open questions
-(decisions 5–7), are **decided**. Every other section is the recommended design. Where
+below, including the answers to this page's open questions (decisions 5–7,
+and the amendment to decision 3), are **decided**. Every other section is the recommended design. Where
 this page says how muster works today, it cites `file:line` at `main`
 `723832da` (session-state cites at `6897dcdc`, after #430), and the code is the
 authority (see [decisions.md](../decisions.md)).
@@ -47,9 +47,11 @@ phase below.
    using the palette's matching (names, current and previous focus titles).
    Rows are vertical: session name, host, current focus title, waiting/stalled
    badge. A row tap opens the session exactly as the pill does today.
-3. **Where.** Touch/mobile only: below the `lg` breakpoint or on a touch
-   device. Desktop keeps today's horizontal bar, plus a small chevron that
-   opens the same dock by click.
+3. **Where.** Touch devices only: the touch layout is chosen by
+   `(pointer: coarse)` alone, at any width. *(Amended by the owner after round
+   1; it first read "below the `lg` breakpoint or on a touch device".)* A
+   fine-pointer window, however narrow, keeps today's horizontal bar, plus a
+   small chevron that opens the same dock by click.
 4. **Gestures.** A swipe starts only on the bar or the grab handle, never in
    the terminal (xterm) or the message box, and is ignored while the
    on-screen keyboard is up.
@@ -663,7 +665,7 @@ options were rejected on that source:
 |---|---|---|
 | Any browser | Escape, the backdrop, ×, the header drag | built with the dock |
 | Chrome on Android (tab or installed app) | the modal `<dialog>`'s own close watcher: Android back fires `cancel` on an open modal dialog, which closes through the same path as Escape (Chrome 120 shipped `CloseWatcher` and its `<dialog>` integration). It needs a user activation to open, which both a tap and a swipe's `pointerup` give | **UNVERIFIED** here; Phase 1 check on a phone browser |
-| The Android shell | a `back-claim` bridge message ([below](#the-shell-change-muster-android)): the shell offers the press to the page first while the page holds a claim | needs a muster-android PR |
+| The Android shell | a `back-claim` bridge message ([below](#the-shell-change-muster-android)): the shell offers the press to the page first while the page holds a claim | a muster-android PR shipped alongside Phase 1 |
 | iOS | no system back exists; Escape-equivalents only | — |
 
 **A row tap is the pill's link, unchanged**: a real load, no `replace`, so
@@ -679,8 +681,9 @@ to clean up, and the "one Back press that does nothing visible" case is gone.
 #### The shell change (muster-android)
 
 `ShellBack` today (`feature/shell/…/ShellBack.kt`) is enabled exactly while
-`webView.canGoBack()`, and its handler calls `goBack()`. The contract, one
-small PR in that repo:
+`webView.canGoBack()`, and its handler calls `goBack()`. The contract is one
+small PR in that repo, **in the plan and shipped alongside Phase 1**
+([Phase 1](#phase-1-the-dock-opened-by-tap) lists its files and checks):
 
 1. **The message.** The page posts
    `{"type":"back-claim","open":true}` when the dock opens and
@@ -759,9 +762,7 @@ there. No snap points, no drag.
 
 **Which layout applies** is one media query, used by both the CSS and the
 script (`matchMedia`): **touch layout when `(pointer: coarse)`, mouse layout
-otherwise**, at any width. This narrows decision 3's "below the `lg`
-breakpoint" clause to devices whose primary pointer is coarse (see
-[open question 1](#open-questions)): a narrow window driven by a mouse gets the
+otherwise**, at any width (decision 3, as amended): a narrow window driven by a mouse gets the
 mouse layout (view menu plus chevron, centred panel), which works at 390px
 too. The reason is concrete: the default e2e project is Desktop Chrome at
 390px with a fine pointer, and a width rule would switch eight existing specs
@@ -907,8 +908,9 @@ with its own assertion.
 
 ## Phases
 
-Each phase is one PR, ships alone, and leaves the bar working as today for
-anything it does not touch.
+Each phase is one muster PR, ships alone, and leaves the bar working as today
+for anything it does not touch. Phase 1 also has one companion PR in
+muster-android.
 
 ### Phase 1: the dock, opened by tap
 
@@ -924,14 +926,31 @@ the dialog's close watcher for browser back, the `back-claim` /
 existing specs listed under [Desktop chevron](#desktop-chevron) need no change**
 under the pointer rule; their run is part of the acceptance.
 
+**The companion muster-android PR** ([the contract](#the-shell-change-muster-android)),
+all under `feature/shell/` and `app/` in [ZacxDev/muster-android][android]:
+
+| File | Change |
+|---|---|
+| `feature/shell/src/main/kotlin/…/feature/shell/BridgeMessage.kt` | `BackClaim(open: Boolean)`; `"back-claim"` parsed, `open` a JSON boolean or refused; the KDoc's message list gains it |
+| `feature/shell/src/main/kotlin/…/feature/shell/ShellBack.kt` | `claimed`; `isEnabled = claimed \|\| canGoBack()`; the claimed press evaluates `window.musterBack`, falling back to `goBack()` or the system |
+| `app/src/main/kotlin/…/MainActivity.kt` | `onBridgeMessage` routes `BackClaim` to `back` (`:236-243`); the claim cleared where `back.sync()` already runs (`:229`, `:264`, `:305`, `:535`) and on `PageEvent.STARTED` in `onPageEvent` (`:293`), which `ShellWebView` already reports from `onPageStarted` (`ShellWebView.kt:145-154`), so that file needs no change |
+| `feature/shell/src/test/kotlin/…/feature/shell/ShellBackTest.kt` | the claim cases: enabled with `canGoBack()` false, evaluates and does not `goBack()`, a `"false"` answer falls back, a page start clears it |
+| `feature/shell/src/test/kotlin/…/feature/shell/BridgeAndNavigationTest.kt` | `back-claim` parsed; refused from a subframe, with `"open":"yes"`, and over 1024 characters |
+
+The two PRs can land in either order: without the app change the page's
+`back-claim` is refused as an unknown message and Back leaves the page as
+today; without the page change the app never sees a claim and behaves as
+today.
+
 Acceptance: cases 2, 5, 9, 9a, 9b, 15, 16, 17, 18, 19, 20 green in the phone
 project, and the narrow-mouse and desktop projects unchanged (the view menu
 still opens); the eight specs above green untouched; the waiting badge only
-(decision 7). **With the muster-android `back-claim` PR on an emulator: open,
-press Back, the dock closes and the page stays; press Back again, the page
-goes back as before.** Until that PR ships, Back in the shell leaves the page
-as it does today, dock and all; nothing breaks. Screen-reader pass: the
-dialog's name, the tabs, the grip, the current row.
+(decision 7). The muster-android PR's unit tests above green in its CI. **On
+an emulator with both PRs: open the dock, press Back, the dock closes and the
+page stays; press Back again, the page goes back as before; open the dock on
+the first page of history (`canGoBack()` false, from a push tap), press Back,
+the dock closes and the app stays open.** Screen-reader pass: the dialog's
+name, the tabs, the grip, the current row.
 
 ### Phase 2: gestures
 
@@ -987,14 +1006,5 @@ error.
 
 ## Open questions
 
-The three this page first asked (the handle, Recent's length, the waiting
-definition) are decided as [decisions 5–7](#operator-decisions). One is new,
-from round 1:
-
-1. **Touch layout by pointer alone?** This page decides the layout by
-   `(pointer: coarse)` at any width ([Desktop chevron](#desktop-chevron)),
-   which narrows decision 3's "below the `lg` breakpoint" clause: a narrow
-   **mouse** window gets the chevron and the centred panel instead of the
-   sheet. It keeps eight existing specs unchanged and gives a mouse no gesture
-   it could not use. The alternative, keeping the width clause, means updating
-   those eight specs to the dock in Phase 1. Owner to confirm.
+None. The handle, Recent's length and the waiting definition are decided as
+[decisions 5–7](#operator-decisions); the layout rule as decision 3, amended.
