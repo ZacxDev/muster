@@ -44,6 +44,7 @@ GET /.well-known/assetlinks.json
 GET /account
 GET /account/credentials
 GET /account/devices/live
+GET /account/features
 GET /account/passkeys
 GET /account/tokens
 GET /admin/invites
@@ -67,6 +68,7 @@ GET /api/attention/summary
 GET /api/device/config
 GET /api/directories
 GET /api/doctor
+GET /api/features
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
 GET /api/jobs/{id}

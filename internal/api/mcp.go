@@ -137,6 +137,8 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
 		call:         func(name, args string) string { return s.dispatchAgentTool(r.Context(), a, name, args) },
 		instructions: s.mcpInstructionsFor(r.Context(), a),
+		disabled:     s.mcpDisabledTool,
+		offFeatures:  s.mcpOffFeatures,
 	})
 }
 
@@ -148,6 +150,21 @@ type mcpSurface struct {
 	tools        func() []agents.ToolDef
 	call         func(name, args string) string
 	instructions string
+	// disabled explains a name the door does not list because its feature is
+	// off ("disabled: <feature> — set … (docs/…)"), or "" (features.go's
+	// mcpDisabledTool). nil: every unlisted name is unknown.
+	disabled func(name string) string
+	// offFeatures is the features that gate muster tools and are off, which
+	// muster_help lists (features.go's mcpOffFeatures). nil: none listed.
+	offFeatures func() []mcpOffFeature
+}
+
+// explainUnlisted is surface.disabled's answer for name, or "".
+func (m mcpSurface) explainUnlisted(name string) string {
+	if m.disabled == nil {
+		return ""
+	}
+	return m.disabled(name)
 }
 
 // serveMCP speaks MCP's streamable-HTTP transport for one surface.
@@ -208,12 +225,20 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 		catalog := newMCPCatalog(surface.tools())
 		def, listed := catalog.lookup(p.Name)
 		if !listed {
+			// 🔴 HIDDEN, BUT EXPLAINED: a tool left out because its FEATURE is off
+			// answers which feature and how to turn it on, as a tool error the
+			// model reads — not "unknown tool", which reads as a typo and names
+			// nothing to fix. Any other unlisted name is still unknown.
+			if why := surface.explainUnlisted(p.Name); why != "" {
+				s.writeMCP(w, req.ID, toolResult(toolErr("%s", why)), nil)
+				return
+			}
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
 			return
 		}
 		s.writeMCPToolResult(w, req.ID, def, func() string {
 			if p.Name == mcpHelpTool {
-				return catalog.help(string(p.Arguments))
+				return catalog.help(string(p.Arguments), surface)
 			}
 			return surface.call(p.Name, string(p.Arguments))
 		})

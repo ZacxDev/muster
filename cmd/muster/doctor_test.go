@@ -131,9 +131,15 @@ func healthyMuster() *fakeMuster {
 			"auth_mode": "password", "hook_token_armed": true,
 			"push": true, "dictation": true, "public_url": "",
 			"mirror": map[string]any{"enabled": true, "hosts": []any{
-				map[string]any{"host": "alpha", "token": true, "online": true, "interactive": true},
-				map[string]any{"host": "beta", "token": true, "online": true, "interactive": false},
+				map[string]any{"host": "alpha", "token": true, "online": true, "interactive": true, "mcp_seen": true, "ask_hook_seen": true},
+				map[string]any{"host": "beta", "token": true, "online": true, "interactive": false, "mcp_seen": true},
 			}},
+			"features": []any{
+				map[string]any{"id": "mirror", "name": "Mirrored sessions", "core": true, "state": "on"},
+				map[string]any{"id": "dictation", "name": "Dictation", "state": "on"},
+				map[string]any{"id": "attachments", "name": "File attachments", "state": "off", "reason": "none of the required variables is set",
+					"enable_hint": "set MUSTER_S3_ENDPOINT and MUSTER_S3_BUCKET in .env and restart (docs/features.md#attachments)"},
+			},
 		},
 		transcribeCode: http.StatusOK,
 		transcribeText: "testing muster dictation",
@@ -396,7 +402,7 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 }
 
 // TestDoctorHealthyIsAllPass is the positive control for every red case below:
-// the same fake, unbroken, passes all ten checks and exits 0 — so a FAIL in a
+// the same fake, unbroken, passes every check and exits 0 — so a FAIL in a
 // case is the breakage, not the fixture.
 func TestDoctorHealthyIsAllPass(t *testing.T) {
 	m := healthyMuster()
@@ -418,7 +424,7 @@ func TestDoctorHealthyIsAllPass(t *testing.T) {
 	if !strings.Contains(r.check("dictation").Detail, "testing muster dictation") {
 		t.Fatalf("dictation detail %q does not carry the transcript", r.check("dictation").Detail)
 	}
-	if !strings.Contains(r.stderr, "10 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(r.stderr, "12 passed, 0 failed, 0 skipped") {
 		t.Fatalf("stderr summary missing:\n%s", r.stderr)
 	}
 	// The human report is on stderr and nowhere on stdout.
@@ -776,7 +782,7 @@ func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 		t.Cleanup(func() { f.Close() })
 		return f
 	}
-	const report, doc = "10 passed, 0 failed, 0 skipped", `"checks": [`
+	const report, doc = "12 passed, 0 failed, 0 skipped", `"checks": [`
 
 	both := open("both")
 	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: both, stderr: both})
@@ -795,5 +801,25 @@ func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 	}
 	if got := read(errf); strings.Count(got, report) != 1 || strings.Contains(got, doc) {
 		t.Fatalf("separate files: stderr must be the report alone:\n%s", got)
+	}
+}
+
+// TestDoctorSessionToolsSkipsAHostTheServerHasNotSeen: a connected host that
+// has not called the server's MCP door is a SKIP naming it — never a FAIL — with
+// the setup as the fix; the healthy fixture (every host seen) is the PASS.
+func TestDoctorSessionToolsSkipsAHostTheServerHasNotSeen(t *testing.T) {
+	m := healthyMuster()
+	hosts := m.report["mirror"].(map[string]any)["hosts"].([]any)
+	hosts[1].(map[string]any)["mcp_seen"] = false
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	c := r.check("session-tools")
+	if c.Status != statusSkip || !strings.Contains(c.Detail, "NOT seen from: beta") || !strings.Contains(c.Fix, "-mcp-listen") {
+		t.Fatalf("session-tools = %+v", c)
+	}
+	if r.code != exitOK {
+		t.Fatalf("an unseen host failed the run: exit %d", r.code)
+	}
+	if !strings.Contains(r.stderr, "features on this server:") || !strings.Contains(r.stderr, "enable: set MUSTER_S3_ENDPOINT") {
+		t.Fatalf("the feature list is not printed:\n%s", r.stderr)
 	}
 }

@@ -53,6 +53,12 @@ const (
 	// A key binding branches on it to stay quiet instead of reporting an error.
 	// It is new in this binary; the upstream table has no 11.
 	exitNoneWaiting = 11 // nothing is waiting (`nudge next`): not an error
+
+	// exitFeatureDisabled: the route exists but its feature is off on this
+	// server (a typed 404, {"error":"feature_disabled"}). The message names the
+	// feature and the line that turns it on. Distinct from exitRouteAbsent (7),
+	// which is a server that predates the route.
+	exitFeatureDisabled = 12
 )
 
 // cliError carries the exit code alongside the message. Every failure path in
@@ -127,6 +133,8 @@ const exitCodeHelp = `Exit codes:
      retrying blindly, because a write that already landed would be repeated
  11  nothing is waiting — ` + "`nudge next`" + ` found no chief-nudge notice to jump to on that
      host. Not a failure: stdout is empty
+ 12  feature disabled — the route exists but its feature is off on that server (a typed
+     404). The message names the feature and the .env line that enables it
 
 Output discipline: JSON goes to stdout and NOTHING else ever goes to stdout.
 Diagnostics, warnings and version-skew notices go to stderr, so piping stdout

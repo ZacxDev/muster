@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/prroute"
@@ -159,7 +160,7 @@ const prSessionBadRequest = `the body is {"repo": "<owner>/<repo>", "pr": <posit
 // with pull-request routing off. No response body on success.
 func (s *Server) handlePRSessionBind(w http.ResponseWriter, r *http.Request) {
 	if !s.prRouteOn() {
-		http.NotFound(w, r)
+		s.writeFeatureDisabled(w, r, features.PRMailRouting)
 		return
 	}
 	var in struct {

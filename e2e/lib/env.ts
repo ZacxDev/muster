@@ -289,6 +289,9 @@ export const agentActionsPort = port + 251;
 // that can dispatch a claude-code agent, for the agent page's Terminal frame)
 // and one mirrored host with enough windows to fill the dock's Recent tab.
 export const dockPort = port + 255;
+// The feature registry spec (features.spec.ts): its own server with a mirrored
+// host and no dictation, attachments or connectors, so their hints show.
+export const featuresPort = port + 256;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

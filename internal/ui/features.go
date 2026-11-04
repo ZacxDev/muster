@@ -51,6 +51,13 @@ type Features struct {
 	// compose install ships with no agent runtime, and a "+" over a 503 is a
 	// button that can only fail.
 	Dispatch bool
+	// Plugins is true when the plugin interface is on (MUSTER_PLUGINS=1 with a
+	// database): More draws a Plugins link to /plugins. False draws none — the
+	// page answers 404 then.
+	Plugins bool
+	// Flows is true when browser flows are served (a database): More draws a
+	// Browser flows link to /flows.
+	Flows bool
 	// SnapUser and SnapBuild are the signed-in user and the running build: the
 	// key, and the check, of the mirrored view's snapshot store
 	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.
@@ -67,6 +74,20 @@ type Features struct {
 // directions: a link with no panel shows nothing when clicked, and a panel with
 // no link is unreachable. ui.TabKeys() deliberately does NOT go through here; it
 // feeds route registration, which is unconditional.
+// FeaturesPagePath is the Features page (internal/api features.go): every
+// feature this server runs or does not, with the line(s) that turn each on.
+const FeaturesPagePath = "/account/features"
+
+// FeatureHref is a feature's row on the Features page — where every hint
+// beside a control that is hidden because its feature is off links to.
+func FeatureHref(id string) string { return FeaturesPagePath + "#" + id }
+
+// The paths of the two pages More links to when their feature is on.
+const (
+	PluginsPath = "/plugins"
+	FlowsPath   = "/flows"
+)
+
 func visibleTabs(f Features) []tab {
 	out := make([]tab, 0, len(musterTabs))
 	for _, t := range musterTabs {

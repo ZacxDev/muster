@@ -8,6 +8,7 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
 
@@ -73,6 +74,27 @@ func attachField(path string, input func(pad string) g.Node) g.Node {
 		return input("")
 	}
 	return Div(Class("relative flex min-w-0 flex-1"), attachControl(path), input(attachInputPad))
+}
+
+// attachFieldOrOff is attachField, or — when attachments are off on this
+// server (off) — the input with a MUTED paperclip in the paperclip's place,
+// linking to the feature's row on the Features page.
+func attachFieldOrOff(path string, off bool, input func(pad string) g.Node) g.Node {
+	if path != "" || !off {
+		return attachField(path, input)
+	}
+	return Div(Class("relative flex min-w-0 flex-1"), attachOffControl(), input(attachInputPad))
+}
+
+// AttachOffLabel is the muted paperclip's accessible name.
+const AttachOffLabel = "File attachments are off on this server — how to turn them on"
+
+// attachOffControl is the muted paperclip: a link, not a button.
+func attachOffControl() g.Node {
+	return A(ID("mv-attach-off"), Href(FeatureHref(features.Attachments)), g.Attr("data-feature-off", features.Attachments),
+		g.Attr("aria-label", AttachOffLabel), g.Attr("title", AttachOffLabel),
+		Class(attachButtonClass+" opacity-40 hover:opacity-100"),
+		g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`))
 }
 
 // attachControl is the paperclip and its hidden file input. Nothing when path

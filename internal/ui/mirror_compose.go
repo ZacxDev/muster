@@ -106,6 +106,13 @@ type ComposerView struct {
 	// attachments — uploads are not configured. A disabled composer draws none
 	// either way. See attach.go.
 	Upload string
+	// DictateOff and UploadOff say the server has no dictation / no
+	// attachments (the feature is off, not merely this composer disabled): an
+	// enabled composer then draws a MUTED mic / paperclip in the same place,
+	// linking to that feature's row on the Features page (FeatureHref), so the
+	// control does not vanish without a word. False draws nothing — the zero
+	// value is the composer as it was.
+	DictateOff, UploadOff bool
 	// Pinned draws the composer position:fixed to the bottom of the VISIBLE
 	// viewport instead of as the last in-flow child of the page's column, and
 	// adds composerPinScript. The page must reserve the room it takes
@@ -232,6 +239,8 @@ func mirrorComposer(v ComposerView) g.Node {
 	if off {
 		dictate, upload = "", ""
 	}
+	dictateOff := !off && dictate == "" && v.DictateOff
+	uploadOff := !off && upload == "" && v.UploadOff
 	placeholder := v.Placeholder
 	if off {
 		placeholder = v.DisabledPlaceholder
@@ -331,7 +340,7 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
 			// The paperclip sits INSIDE the input, on its left (attach.go).
-			attachField(upload, func(pad string) g.Node {
+			attachFieldOrOff(upload, uploadOff, func(pad string) g.Node {
 				return Textarea(
 					ID("mv-input"),
 					Name("text"),
@@ -346,6 +355,7 @@ func mirrorComposer(v ComposerView) g.Node {
 				)
 			}),
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
+			g.If(dictateOff, dictateOffControl()),
 			sendSplit(v.Queue, off),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),

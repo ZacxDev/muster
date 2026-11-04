@@ -158,7 +158,13 @@ INSTALL.md's Step 10 passes `--api-url` there.
 | `sign-in` | the operator password signs in, and the session opens the board | `POST /login`, then `GET /tasks` |
 | `push` | the VAPID keys are set | `GET /api/push/vapid-public-key` (signed in), else `GET /api/doctor` |
 | `dictation` | a bundled 1.7 s spoken sample comes back as text through `POST /transcribe` | the server and its speech-to-text service |
+| `features` | the server reports its feature registry (always PASS when it does: an optional feature that is off is not a failure). Every feature is then listed below the checks, with its state and the `.env` line that turns it on | `GET /api/doctor` |
+| `session-tools` | every connected host has called the server's MCP door since the server started, so its Claude Code sessions have muster's tools (`attention_ask`, the task tools). A host not seen is a SKIP, never a FAIL: the server cannot tell "not set up" from "no session has started there since the restart" | `GET /api/doctor` |
 
+- **Feature off:** a route whose feature is off on the server (session routing for
+  `route reply`, plugins for `plugins retry`, …) answers a typed 404, and the CLI
+  prints `feature <id> is disabled on this server — enable with: …` and exits 12.
+  A plain 404 from a server that predates the route is still exit 7.
 - **Exit status:** 0 when no check FAILs, 1 when any does. A `SKIP` (a check
   that cannot be made from this machine, or `--skip`) never fails the run.
 - **Output:** the report and the QR code go to **stderr**; stdout is one JSON

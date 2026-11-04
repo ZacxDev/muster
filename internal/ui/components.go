@@ -18,6 +18,7 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -1001,6 +1002,10 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				g.Map(visibleTabs(feat), func(t tab) g.Node {
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
+				// The Connectors tab, when its feature is off: not dropped
+				// silently, but a muted entry saying so, linking to its row on
+				// the Features page.
+				g.If(!feat.Connectors, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
 				// The attention queue (attention.go): a standalone page, not a tab.
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
 				// The install button (shown only where the browser offers one) and
@@ -1052,9 +1057,23 @@ func accountLinks(feat Features, activeTab, currentTab string) g.Node {
 			Span(Class("text-base"), g.Text(icon)), Span(g.Text(label)))
 	}
 	return g.Group([]g.Node{
+		g.If(feat.Plugins, link("sidebar-plugins", PluginsPath, "Plugins", "🧩", NavPlugins)),
+		g.If(feat.Flows, link("sidebar-flows", FlowsPath, "Browser flows", "🌐", NavFlows)),
 		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️", NavAdmin)),
 		link("sidebar-account", "/account", "Account", "👤", NavAccount),
+		link("sidebar-features", FeaturesPagePath, "Features", "🧰", NavFeatures),
 	})
+}
+
+// featureOffNavLink is a nav entry for a page whose feature is off: muted, and
+// labelled as off, linking to that feature's row on the Features page (where
+// the line that turns it on is) instead of to the page itself.
+func featureOffNavLink(id, feature, label, icon string) g.Node {
+	return A(ID(id), Href(FeatureHref(feature)), hx("hx-boost", "false"), g.Attr("data-feature-off", feature),
+		g.Attr("aria-label", label+" — off on this server; how to turn it on"),
+		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-muted opacity-60 transition hover:bg-s2 hover:opacity-100"),
+		Span(Class("text-base"), g.Attr("aria-hidden", "true"), g.Text(icon)), Span(g.Text(label)),
+		Span(Class("ml-auto text-xs"), g.Text("off")))
 }
 
 // navEntryTone is a nav link's colour: the accent highlight for the entry the

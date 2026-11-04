@@ -6,6 +6,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/features"
 )
 
 // DICTATION: a microphone on every message box.
@@ -151,6 +153,19 @@ func dictateControl(path, inputID, noteID, buttonID string) g.Node {
 		g.Raw(`<svg class="hidden h-4 w-4 group-data-[state=recording]:block" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>`),
 		g.Raw(`<svg class="hidden h-5 w-5 animate-spin group-data-[state=busy]:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>`),
 	)
+}
+
+// DictateOffLabel is the muted mic's accessible name.
+const DictateOffLabel = "Dictation is off on this server — how to turn it on"
+
+// dictateOffControl is the mic's place when the server has no dictation: a
+// muted mic that links to the feature's row on the Features page. Shown
+// without script (it is a plain link), unlike the real mic.
+func dictateOffControl() g.Node {
+	return A(ID("mv-dictate-off"), Href(FeatureHref(features.Dictation)), g.Attr("data-feature-off", features.Dictation),
+		g.Attr("aria-label", DictateOffLabel), g.Attr("title", DictateOffLabel),
+		Class("press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-muted opacity-50 ring-1 ring-inset ring-line transition hover:opacity-100"),
+		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/><path d="M3 3l18 18"/></svg>`))
 }
 
 // dictateNote is the mic's status line: the recording timer, "Transcribing…",

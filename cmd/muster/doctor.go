@@ -91,7 +91,7 @@ type doctorCheck struct {
 // what --skip takes.
 var doctorChecks = []string{
 	"server", "manifest", "hook-token", "mirror-hosts", "this-host",
-	"mirror-service", "tmux", "sign-in", "push", "dictation",
+	"mirror-service", "tmux", "sign-in", "push", "dictation", "features", "session-tools",
 }
 
 // doctorSystem is everything doctor reads from THIS machine, injected so each
@@ -157,9 +157,24 @@ type serverReport struct {
 			Token       bool   `json:"token"`
 			Online      bool   `json:"online"`
 			Interactive bool   `json:"interactive"`
+			MCPSeen     bool   `json:"mcp_seen"`
+			AskHookSeen bool   `json:"ask_hook_seen"`
 		} `json:"hosts"`
 		HostsError string `json:"hosts_error"`
 	} `json:"mirror"`
+	// Features is the server's feature registry (internal/api.FeatureView):
+	// absent from a server that predates it.
+	Features []serverFeature `json:"features"`
+}
+
+// serverFeature is the part of one registry entry this client prints.
+type serverFeature struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Core       bool   `json:"core"`
+	State      string `json:"state"`
+	Reason     string `json:"reason"`
+	EnableHint string `json:"enable_hint"`
 }
 
 func newDoctorCmd(a *app) *cobra.Command {
@@ -234,8 +249,11 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv s
 	d.checkSignIn(ctx)
 	d.checkPush(ctx)
 	d.checkDictation(ctx)
+	d.checkFeatures()
+	d.checkSessionTools()
 
 	failed := d.print()
+	d.printFeatures()
 	d.printQR(ctx)
 	doc, _ := json.Marshal(map[string]any{"url": d.base, "ok": failed == 0, "checks": d.checks})
 	if err := a.emit(doc); err != nil {
@@ -942,4 +960,106 @@ func (d *doctorRun) printQR(ctx context.Context) {
 		return
 	}
 	fmt.Fprint(w, out)
+}
+
+// --- the feature registry ----------------------------------------------------
+
+// checkFeatures reports the server's feature registry: how many features are
+// on, off and misconfigured, naming the misconfigured ones. It never FAILs —
+// an optional feature that is off is not a broken install, and a misconfigured
+// one (suggested replies with no OpenRouter key, the documented install's
+// default) is a choice the operator may not have made yet. printFeatures lists
+// every feature below the checks with the line that turns it on.
+func (d *doctorRun) checkFeatures() {
+	const name = "features"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	fs := d.report.Features
+	if len(fs) == 0 {
+		d.add(name, statusSkip, "this server does not report its features (it predates the feature registry)", "")
+		return
+	}
+	n := map[string]int{}
+	var bad []string
+	for _, f := range fs {
+		n[f.State]++
+		if f.State == "misconfigured" {
+			bad = append(bad, f.ID)
+		}
+	}
+	detail := fmt.Sprintf("%d on, %d off, %d misconfigured", n["on"], n["off"], n["misconfigured"])
+	if len(bad) > 0 {
+		detail += " (" + strings.Join(bad, ", ") + ")"
+	}
+	d.add(name, statusPass, detail+"; listed below", "")
+}
+
+// checkSessionTools reports what the server has seen of the per-host setup
+// that gives a mirrored Claude Code session muster's tools (attention_ask, the
+// task tools) and AskUserQuestion cards: which connected hosts have called its
+// MCP door and its ask hook since the server started.
+//
+// 🔴 IT SKIPS, NEVER FAILS, ON A HOST NOT SEEN: the server cannot tell "not set
+// up" from "no session there has started or used a tool since the restart",
+// and says so. A PASS is a sighting on every connected host.
+func (d *doctorRun) checkSessionTools() {
+	const name = "session-tools"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	m := d.report.Mirror
+	if !m.Enabled {
+		d.add(name, statusSkip, "mirrored sessions are off on the server", "")
+		return
+	}
+	var seen, unseen []string
+	for _, h := range m.Hosts {
+		if !h.Online {
+			continue
+		}
+		hook := "ask hook seen"
+		if !h.AskHookSeen {
+			hook = "ask hook not seen"
+		}
+		if h.MCPSeen {
+			seen = append(seen, h.Host+" ("+hook+")")
+		} else {
+			unseen = append(unseen, h.Host+" ("+hook+")")
+		}
+	}
+	if len(seen) == 0 && len(unseen) == 0 {
+		d.add(name, statusSkip, "no host is connected", "")
+		return
+	}
+	if len(unseen) > 0 {
+		d.add(name, statusSkip, fmt.Sprintf("MCP calls seen from: %s; NOT seen from: %s — either not set up there, or no session "+
+			"there has started or used a muster tool since the server restarted (it cannot tell which)",
+			listOrNone(seen), strings.Join(unseen, ", ")),
+			"on each such host, run muster-mirror with -mcp-listen 127.0.0.1:<port>, register http://127.0.0.1:<port>/mcp in "+
+				"Claude Code's MCP config, and add the `muster-mirror ask` PreToolUse hook (docs/features.md#agent-ask-tool)")
+		return
+	}
+	d.add(name, statusPass, "MCP calls seen from every connected host: "+strings.Join(seen, ", "), "")
+}
+
+// printFeatures lists the server's features below the checks: each one's
+// state and, when it is not on, the line that turns it on. Nothing when the
+// server reported none.
+func (d *doctorRun) printFeatures() {
+	if d.report == nil || len(d.report.Features) == 0 {
+		return
+	}
+	w := d.a.stderr
+	fmt.Fprintln(w, "\nfeatures on this server:")
+	for _, f := range d.report.Features {
+		fmt.Fprintf(w, "  %-13s %s", strings.ToUpper(f.State), f.ID)
+		if f.Reason != "" {
+			fmt.Fprintf(w, " — %s", f.Reason)
+		}
+		fmt.Fprintln(w)
+		if f.State != "on" && f.EnableHint != "" {
+			fmt.Fprintf(w, "  %-13s enable: %s\n", "", f.EnableHint)
+		}
+	}
 }

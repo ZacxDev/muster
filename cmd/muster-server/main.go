@@ -481,7 +481,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				Classifier: &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
 		}
 	}
-	logger.Print(suggestBootLine(cfg))
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
 		a.Close()
@@ -724,6 +723,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("memo relay: %w", err)
 	}
 
+	// The feature registry (features.go): evaluated once, from what was wired.
+	feats, err := a.buildFeatures(ext, port)
+	if err != nil {
+		a.Close()
+		return nil, err
+	}
+	srv.UseFeatures(feats)
+
 	handler := srv.Handler()
 	a.http = &http.Server{
 		Addr:              net.JoinHostPort("", strconv.Itoa(cfg.Port)),
@@ -746,6 +753,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 
 	a.logBanner(ext, port)
+	a.logFeatures(feats)
 	return a, nil
 }
 
@@ -2020,16 +2028,6 @@ func githubAppAccountList(accs []githubapp.Account) string {
 		parts = append(parts, a.Login+":"+strconv.FormatInt(a.ID, 10))
 	}
 	return strings.Join(parts, ",")
-}
-
-// suggestBootLine is the boot banner's suggested-replies line: off, or on
-// with its model and when a set is generated.
-func suggestBootLine(cfg config) string {
-	if cfg.SuggestOff {
-		return "suggest: suggested replies are OFF (MUSTER_SUGGEST=off): nothing is generated or shown"
-	}
-	return "suggest: suggested replies are ON with " + cfg.SuggestModel + ": generated at a mirrored Claude Code turn end while " +
-		"its Rendered view is open, on the owner's OpenRouter key; each user can turn them off in Account (MUSTER_SUGGEST=off for everyone)"
 }
 
 // chiefChatQuotesLiveCount is how many owners' Chief-chat quotes can be live:

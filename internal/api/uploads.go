@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
@@ -186,7 +187,7 @@ type uploadReply struct {
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	svc := s.ext.Uploads
 	if svc == nil {
-		http.NotFound(w, r)
+		s.writeFeatureDisabled(w, r, features.Attachments)
 		return
 	}
 	owner := requestOwner(r.Context())

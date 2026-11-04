@@ -371,6 +371,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 `+passkeysLink+`
 <a href="/account/credentials" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Credentials (Claude, OpenRouter)</a>
 <a href="`+accountTokensPath+`" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">API tokens</a>
+<a href="`+FeaturesPagePath+`" id="account-features" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Features (what this server runs, and how to turn the rest on)</a>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>
 `+s.accountDevicesSection(r)+`

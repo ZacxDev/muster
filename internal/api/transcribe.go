@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/stt"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -173,9 +174,9 @@ func (rr *readRecorder) Read(p []byte) (int, error) {
 // handleTranscribe is POST /transcribe: the body is the recording.
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Transcriber == nil {
-		// Feature off: as though the route did not exist. Registration stays
+		// Feature off: 404, typed (writeFeatureDisabled). Registration stays
 		// unconditional (see the package doc in server.go).
-		http.NotFound(w, r)
+		s.writeFeatureDisabled(w, r, features.Dictation)
 		return
 	}
 	outcome, size, kind := 0, int64(0), ""

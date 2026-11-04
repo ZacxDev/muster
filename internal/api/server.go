@@ -52,6 +52,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -202,6 +203,11 @@ type Server struct {
 	// mirrorMCPFails counts failed mirror-token checks on /mirror/mcp, per
 	// (address, token hash) (mirror_mcp.go).
 	mirrorMCPFails boundedWindow
+	// features is the evaluated feature registry (features.go; UseFeatures).
+	features features.Set
+	// sessionTools is what this process has seen of each mirrored host's
+	// session tools (features.go, agent-ask-tool).
+	sessionTools sessionToolSeen
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.
@@ -659,6 +665,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerUploadRoutes(mux)
 	// `muster doctor`'s server half (doctor.go): the armed hook token's read.
 	s.registerDoctorRoutes(mux)
+	// The feature registry (features.go): GET /api/features and the Features page.
+	s.registerFeatureRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are
@@ -764,7 +772,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
 	return ui.Features{Connectors: s.ext.Connectors != nil,
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil,
-		Dispatch: s.dispatchServed(),
+		Dispatch: s.dispatchServed(), Plugins: s.ext.Plugins != nil, Flows: s.ext.Flows != nil,
 		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }
 

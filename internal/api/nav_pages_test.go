@@ -28,6 +28,7 @@ import (
 // writeNavDocument — each draws the side nav.
 var apiNavWriters = []string{
 	"handleAccountPage",     // /account
+	"handleFeaturesPage",    // /account/features
 	"renderAccountTokens",   // /account/tokens
 	"renderCredentials",     // /account/credentials
 	"renderAccountPasskeys", // /account/passkeys
@@ -364,6 +365,7 @@ var apiNavSecret = map[string]bool{
 	"renderCredentials":     true,  // takes a Claude OAuth token / an OpenRouter key
 	"renderAccountPasskeys": true,  // runs passkey ceremonies
 	"handleAccountPage":     false, // sign-out forms only
+	"handleFeaturesPage":    false, // variable names and states, never a value
 	"renderAsksPage":        false, // the queue; the shell beside it has Faro already
 	"renderAskPage":         false, // one ask and its answer box
 	"renderNotice":          false, // one sentence

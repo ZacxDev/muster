@@ -1,10 +1,13 @@
 package api
 
 import (
+	"html"
 	"net/http"
 	"strconv"
 
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/suggest"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // accountSuggestSection is the Account page's "Suggested replies" section:
@@ -17,7 +20,7 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 	if eng == nil {
 		return ""
 	}
-	const head = `<section id="suggest" data-testid="suggest-settings" class="flex flex-col gap-3 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	head := `<section id="suggest" data-testid="suggest-settings" class="flex flex-col gap-3 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h2 class="text-base font-semibold text-fg">Suggested replies</h2>
 <p class="text-sm text-fg2">When a mirrored Claude Code session hands control back, up to three AI-suggested replies appear above the message box. A tap fills the box and never sends. Generating them sends your messages, the session's focus and the end of the conversation to OpenRouter on your key.</p>
 `
@@ -42,6 +45,17 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 	if eng.Off {
 		return head + state("server-off", "Off for everyone on this server (MUSTER_SUGGEST=off).") + `</section>`
 	}
+	// 🔴 "On." WITH NO KEY BEHIND IT WAS A FALSE STATE: the engine records "no
+	// OpenRouter key" and makes no call. The registry (features.go) is what
+	// knows the server has no key, so the section says so, above the per-user
+	// toggle (a member who saved their own key on Credentials still gets them).
+	misconfigured := ""
+	if f, ok := s.feature(features.SuggestedReplies); ok && f.State == features.Misconfigured {
+		misconfigured = `<p id="suggest-misconfigured" data-state="misconfigured" class="text-sm font-semibold text-st-warning-fg">Misconfigured: ` +
+			html.EscapeString(f.Reason) + `. <a href="` + ui.FeatureHref(features.SuggestedReplies) + `" class="text-accent underline">How to fix it</a></p>
+`
+	}
+	head += misconfigured
 	owner := requestOwner(r.Context())
 	usage := s.suggestUsageReadout(r, owner)
 	outcome := eng.Enabled(r.Context(), owner)

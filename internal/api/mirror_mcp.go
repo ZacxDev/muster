@@ -251,6 +251,8 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
+	// This host's MCP endpoint is set up (features.go, agent-ask-tool).
+	s.sessionTools.markMCP(t.OwnerID, t.Host, s.now())
 	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
 	instructions := "muster's tools for a mirrored Claude Code session."
 	if s.attentionToolsOn() {
@@ -297,6 +299,8 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			return toolErr("unknown tool %q", name)
 		},
 		instructions: instructions,
+		disabled:     s.mcpDisabledTool,
+		offFeatures:  s.mcpOffFeatures,
 	})
 }
 
