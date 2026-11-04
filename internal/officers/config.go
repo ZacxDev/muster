@@ -124,10 +124,11 @@ type Officer struct {
 	// TierJudgement or TierRoutine (Officer.Pool). Parse returns a tiered
 	// officer as its judgement pool.
 	Tier string `json:"-"`
-	// LLM, when set, lets the officer's routine instances reach a model
-	// through muster's LLM proxy (llm.go, internal/llmproxy): the model pin,
-	// the daily USD budget, the per-item token cap and the allowed agents.
-	// nil (the default) refuses every proxy request for the officer.
+	// LLM, when set, lets the officer's ROUTINE pool reach its model
+	// (tiers.routine.model) through muster's LLM proxy (llm.go,
+	// internal/llmproxy), within the daily USD budget and per-item token cap
+	// it holds. It needs Tiers. nil (the default) refuses every proxy request
+	// for the officer.
 	LLM *LLM `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
@@ -368,6 +369,13 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 	}
+	hasLLM := len(d.LLM) > 0 && string(d.LLM) != "null"
+	// 🔴 NO LLM PROXY FOR A SHIPPING OFFICER, as no tiers: its every instance
+	// holds the merge and release tools.
+	if hasLLM && len(d.Ship) > 0 && string(d.Ship) != "null" {
+		return Officer{}, fmt.Errorf("officer %s: llm is not supported on a shipping officer (one with `ship`): its instances hold "+
+			"its merge and release tools; remove llm", o.ID)
+	}
 	if len(d.Tiers) > 0 && string(d.Tiers) != "null" {
 		// 🔴 ONE SOURCE PER VALUE. With tiers, the judgement pool's model and
 		// max are tiers.judgement's; a top-level one beside it would be a second
@@ -384,7 +392,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		if len(d.Ship) > 0 && string(d.Ship) != "null" {
 			return Officer{}, fmt.Errorf("officer %s: tiers is not supported on a shipping officer (one with `ship`): every instance would hold its merge and release tools; remove tiers", o.ID)
 		}
-		t, err := parseTiers(d.Tiers)
+		t, err := parseTiers(d.Tiers, hasLLM)
 		if err != nil {
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
@@ -481,7 +489,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		}
 		o.Transcript = tr
 	}
-	if len(d.LLM) > 0 && string(d.LLM) != "null" {
+	if hasLLM {
 		l, err := parseLLM(o, d.LLM, getenv)
 		if err != nil {
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)

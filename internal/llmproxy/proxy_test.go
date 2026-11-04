@@ -175,8 +175,8 @@ func newRig(t *testing.T, officer string, h func(http.ResponseWriter, *http.Requ
 	up := newUpstream(t, h)
 	st := newMemStore()
 	logs := &syncBuffer{}
-	r := &rig{store: st, up: up, logs: logs, caller: Caller{Officer: officer, Instance: 1, AgentID: 7,
-		AgentName: "officer-x-y-1", Model: "example/pinned-model", DailyBudgetUSD: 5, MaxTokensPerItem: 1_000_000, Key: testKey}}
+	r := &rig{store: st, up: up, logs: logs, caller: Caller{Officer: officer, Instance: 1, InstanceLabel: "r1", AgentID: 7,
+		AgentName: "officer-x-y-r1", Model: "example/pinned-model", DailyBudgetUSD: 5, MaxTokensPerItem: 1_000_000, Key: testKey}}
 	p, err := New(Config{Upstream: up.URL + "/api", Store: st, Logger: log.New(logs, "", 0), Audit: func(_ context.Context, rec Record) {
 		r.mu.Lock()
 		r.audit = append(r.audit, rec)
@@ -359,13 +359,13 @@ func TestTheBudgetIsMeteredFromTheProvidersCostAndRefusesAtTheCap(t *testing.T) 
 	if len(b) != 2 || b[0].CostUSD != 0.006 || b[0].Estimated || b[0].Input != 1000 || b[0].Output != 7 || b[0].CacheRead != 300 {
 		t.Fatalf("bookings = %+v, want two at the provider's 0.006", b)
 	}
-	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "1", "refused_budget")); got != 1 {
+	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "r1", "refused_budget")); got != 1 {
 		t.Errorf("refused_budget = %v, want 1", got)
 	}
-	if got := testutil.ToFloat64(metrics.OfficerLLMCost.WithLabelValues(officer, "1")); got < 0.0119 || got > 0.0121 {
+	if got := testutil.ToFloat64(metrics.OfficerLLMCost.WithLabelValues(officer, "r1")); got < 0.0119 || got > 0.0121 {
 		t.Errorf("cost counter = %v, want 0.012", got)
 	}
-	if got := testutil.ToFloat64(metrics.OfficerLLMTokens.WithLabelValues(officer, "1", "cache_read")); got != 600 {
+	if got := testutil.ToFloat64(metrics.OfficerLLMTokens.WithLabelValues(officer, "r1", "cache_read")); got != 600 {
 		t.Errorf("cache_read tokens = %v, want 600", got)
 	}
 }
@@ -422,7 +422,7 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 	if r.up.count() != 2 {
 		t.Fatalf("provider got %d, want 2", r.up.count())
 	}
-	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "1", "refused_item_cap")); got != 1 {
+	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "r1", "refused_item_cap")); got != 1 {
 		t.Errorf("refused_item_cap = %v, want 1", got)
 	}
 	// Another instance of the officer is not charged with this one's tokens.
@@ -512,7 +512,7 @@ func TestAnUpstream401IsSurfacedAsAKeyFaultAndLoggedOncePerChange(t *testing.T) 
 	if got := testutil.ToFloat64(metrics.OfficerLLMUpstreamAuthFailing.WithLabelValues(officer)); got != 1 {
 		t.Errorf("failing gauge = %v, want 1", got)
 	}
-	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "1", "upstream_auth")); got != 3 {
+	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "r1", "upstream_auth")); got != 3 {
 		t.Errorf("requests{upstream_auth} = %v, want 3", got)
 	}
 	if n := strings.Count(r.logs.String(), "THE PROVIDER REFUSES OFFICER "+officer); n != 1 {

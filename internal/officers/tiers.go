@@ -124,7 +124,12 @@ func (o Officer) label() string {
 // judgement, each {model, max_instances?}, model required and a model name,
 // max_instances 1..MaxInstancesCap (default 1). An unknown key at either level
 // is a refusal naming it.
-func parseTiers(raw json.RawMessage) (*Tiers, error) {
+//
+// 🔴 withLLM (the officer declares `llm`) is the ONLY way a routine pool's
+// model may be a provider model id (ProviderModel): the LLM proxy is what
+// serves one. Without it, and always for the judgement pool, the model is a
+// Claude model name (podagent.ValidModel).
+func parseTiers(raw json.RawMessage, withLLM bool) (*Tiers, error) {
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &keys); err != nil || keys == nil {
 		return nil, fmt.Errorf(`tiers must be {"routine": {"model", "max_instances"}, "judgement": {"model", "max_instances"}}: %v`, err)
@@ -148,7 +153,7 @@ func parseTiers(raw json.RawMessage) (*Tiers, error) {
 		if !ok || string(v) == "null" {
 			return nil, fmt.Errorf("tiers.%s is required: a tiers block declares both pools, routine and judgement", p.name)
 		}
-		pool, err := parseTierPool(v)
+		pool, err := parseTierPool(v, withLLM && p.name == TierRoutine, p.name == TierRoutine)
 		if err != nil {
 			return nil, fmt.Errorf("tiers.%s: %w", p.name, err)
 		}
@@ -157,7 +162,9 @@ func parseTiers(raw json.RawMessage) (*Tiers, error) {
 	return &t, nil
 }
 
-func parseTierPool(raw json.RawMessage) (TierPool, error) {
+// parseTierPool reads one pool. providerOK admits a provider model id (the
+// routine pool beside `llm`); routine names the pool in that id's refusal.
+func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, error) {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
 	var p TierPool
@@ -168,8 +175,15 @@ func parseTierPool(raw json.RawMessage) (TierPool, error) {
 	if p.Model == "" {
 		return TierPool{}, errors.New("model is required")
 	}
-	if err := podagent.ValidModel(p.Model); err != nil {
-		return TierPool{}, err
+	switch {
+	case providerOK && ProviderModel(p.Model):
+	case routine && ProviderModel(p.Model):
+		return TierPool{}, fmt.Errorf("model %q is a provider model id, which a routine instance reaches only through the "+
+			"LLM proxy: declare the officer's `llm` block, or use a Claude model", p.Model)
+	default:
+		if err := podagent.ValidModel(p.Model); err != nil {
+			return TierPool{}, err
+		}
 	}
 	if p.MaxInstances == 0 {
 		p.MaxInstances = DefaultMaxInstances

@@ -77,8 +77,11 @@ const (
 // Caller is the officer instance a request is made for, with its officer's
 // settings. The route layer builds it after authenticating the instance.
 type Caller struct {
-	Officer          string
+	Officer string
+	// Instance is the routine instance's number in its pool, and
+	// InstanceLabel how it is named in metrics and logs (`r<n>`).
 	Instance         int
+	InstanceLabel    string
 	AgentID          int64
 	AgentName        string
 	Model            string
@@ -113,7 +116,7 @@ type Store interface {
 // credential.
 type Record struct {
 	Officer        string
-	Instance       int
+	Instance       string // the instance's label, `r<n>`
 	AgentID        int64
 	AgentName      string
 	Item           string
@@ -136,7 +139,7 @@ type Record struct {
 // Detail is r as one line of key=value pairs (the audit row's detail and the
 // log line), in a fixed order.
 func (r Record) Detail() string {
-	return fmt.Sprintf("officer=%s instance=%d item=%s model=%s requested_model=%s provider=%s msg=%s status=%d result=%s "+
+	return fmt.Sprintf("officer=%s instance=%s item=%s model=%s requested_model=%s provider=%s msg=%s status=%d result=%s "+
 		"in=%d cache_read=%d cache_write=%d out=%d usd=%.6f estimated=%t stop=%s ms=%d",
 		r.Officer, r.Instance, orDash(r.Item), orDash(r.Model), orDash(r.RequestedModel), orDash(r.Provider), orDash(r.MessageID),
 		r.Status, r.Result, r.Input, r.CacheRead, r.CacheWrite, r.Output, r.CostUSD, r.CostEstimated, orDash(r.StopReason),
@@ -267,9 +270,9 @@ var relayResponseHeaders = []string{"Content-Type", "Cache-Control", "Request-Id
 // ServeMessages proxies one POST /llm/v1/messages for c.
 func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) {
 	start := p.now()
-	inst := strconv.Itoa(c.Instance)
+	inst := c.InstanceLabel
 	k := instanceKey{c.Officer, c.Instance}
-	rec := Record{Officer: c.Officer, Instance: c.Instance, AgentID: c.AgentID, AgentName: c.AgentName, Model: c.Model}
+	rec := Record{Officer: c.Officer, Instance: inst, AgentID: c.AgentID, AgentName: c.AgentName, Model: c.Model}
 	finish := func(result string, status int) {
 		rec.Result, rec.Status, rec.Duration = result, status, p.now().Sub(start)
 		metrics.OfficerLLMRequests.WithLabelValues(c.Officer, inst, result).Inc()
@@ -363,7 +366,11 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		p.upstreamAuthFailed(c.Officer, resp.StatusCode)
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
-		Refuse(w, resp.StatusCode, "authentication_error", fmt.Sprintf(
+		// 🔴 A 400, NOT THE PROVIDER'S STATUS: Claude Code retries a 401 about
+		// ten times with backoff, which on an instance reads as a stall; a 400
+		// ends the turn with this message. The audit and the metrics keep the
+		// provider's own status.
+		Refuse(w, http.StatusBadRequest, "authentication_error", fmt.Sprintf(
 			"the provider refused muster's key for officer %s (HTTP %d). This is a muster configuration fault, not "+
 				"the model: the operator has been told.", c.Officer, resp.StatusCode))
 		finish("upstream_auth", resp.StatusCode)
@@ -477,7 +484,7 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 		cost = float64(reqBytes/3)*EstimateUSDPerInputToken + estimateOutputTokens*EstimateUSDPerOutputToken
 	}
 	rec.CostUSD, rec.CostEstimated = cost, estimated
-	inst := strconv.Itoa(c.Instance)
+	inst := c.InstanceLabel
 	metrics.OfficerLLMTokens.WithLabelValues(c.Officer, inst, "in").Add(float64(rec.Input))
 	metrics.OfficerLLMTokens.WithLabelValues(c.Officer, inst, "out").Add(float64(rec.Output))
 	metrics.OfficerLLMTokens.WithLabelValues(c.Officer, inst, "cache_read").Add(float64(rec.CacheRead))

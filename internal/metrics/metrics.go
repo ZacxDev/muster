@@ -336,9 +336,9 @@ var (
 // an alert on a runaway officer read), and both labels are bounded by
 // configuration rather than minted by a producer: `officer` is an id declared
 // in MUSTER_OFFICERS (an officer with no `llm` block never reaches a label;
-// a caller that is not an officer is "none"), and `instance` is that
-// officer's instance NUMBER, 1..max_instances (at most 8), never the agent
-// name. Nothing a pod sends becomes a label: the provider that served a
+// a caller that is not an officer is "none"), and `instance` is the routine
+// instance's label, `r<n>` for n in 1..tiers.routine.max_instances (at most
+// 8), never the agent name. Nothing a pod sends becomes a label: the provider that served a
 // request (an open set) and the model the client asked for are in the log
 // line and the audit row only.
 var (
@@ -354,7 +354,7 @@ var (
 	//   refused_store  — the budget could not be read, so nothing was sent
 	OfficerLLMRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_requests_total",
-		Help: "Officer LLM proxy requests by officer, instance number and result.",
+		Help: "Officer LLM proxy requests by officer, routine instance (r<n>) and result.",
 	}, []string{"officer", "instance", "result"})
 	// OfficerLLMRefused counts requests refused before any officer could be
 	// charged, by reason: path (not POST /llm/v1/messages), not_routine (the
@@ -369,14 +369,14 @@ var (
 	// (uncached input), cache_read, cache_write, out.
 	OfficerLLMTokens = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_tokens_total",
-		Help: "Tokens the provider reported for officer LLM proxy requests, by officer, instance number and direction.",
+		Help: "Tokens the provider reported for officer LLM proxy requests, by officer, routine instance (r<n>) and direction.",
 	}, []string{"officer", "instance", "dir"})
 	// OfficerLLMCost is the USD booked against the officer's budget: the
 	// provider's own usage.cost, or the proxy's pessimistic estimate when the
 	// response carried none (OfficerLLMCostEstimated counts those).
 	OfficerLLMCost = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_cost_usd_total",
-		Help: "USD booked against officers' LLM budgets, by officer and instance number.",
+		Help: "USD booked against officers' LLM budgets, by officer and routine instance (r<n>).",
 	}, []string{"officer", "instance"})
 	// OfficerLLMCostEstimated counts requests booked from an estimate
 	// because the provider reported no cost (a broken-off stream, a client

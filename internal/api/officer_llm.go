@@ -73,8 +73,11 @@ func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 			"this agent is not a routine-tier instance of an officer that declares `llm`")
 		return
 	}
-	s.officerRT.llm.ServeMessages(w, r, llmproxy.Caller{Officer: o.ID, Instance: n, AgentID: a.ID, AgentName: a.Name,
-		Model: o.LLM.Model, DailyBudgetUSD: o.LLM.DailyBudgetUSD, MaxTokensPerItem: o.LLM.MaxTokensPerItem, Key: o.LLM.Key()})
+	// THE model pin is the routine pool's: tiers.routine.model.
+	p := o.Pool(officers.TierRoutine)
+	s.officerRT.llm.ServeMessages(w, r, llmproxy.Caller{Officer: o.ID, Instance: n, InstanceLabel: p.InstanceLabel(n),
+		AgentID: a.ID, AgentName: a.Name, Model: p.Model, DailyBudgetUSD: o.LLM.DailyBudgetUSD,
+		MaxTokensPerItem: o.LLM.MaxTokensPerItem, Key: o.LLM.Key()})
 }
 
 // newLLMProxy builds the proxy when a declared officer has an `llm` block,
@@ -128,7 +131,7 @@ func (s *Server) llmClaimed(o officers.Officer, instance string, item officers.I
 	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
 		return
 	}
-	if io, n, ok := s.officerRT.reg.ForAgentName(instance); ok && io.ID == o.ID {
+	if n, ok := s.llmRoutineInstance(o, instance); ok {
 		s.officerRT.llm.Claimed(o.ID, n, string(item))
 	}
 }
@@ -137,9 +140,21 @@ func (s *Server) llmEnded(o officers.Officer, instance string, item officers.Ite
 	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
 		return
 	}
-	if io, n, ok := s.officerRT.reg.ForAgentName(instance); ok && io.ID == o.ID {
+	if n, ok := s.llmRoutineInstance(o, instance); ok {
 		s.officerRT.llm.Ended(o.ID, n, string(item))
 	}
+}
+
+// llmRoutineInstance is the routine instance number of agent name, when it is
+// one of o's routine pool (officers.RoutineAgent): the meter counts routine
+// instances only, keyed by their number in that pool — a judgement instance
+// with the same number is not the same instance.
+func (s *Server) llmRoutineInstance(o officers.Officer, name string) (int, bool) {
+	if !officers.RoutineAgent(o, name) {
+		return 0, false
+	}
+	_, n, ok := s.officerRT.reg.ForAgentName(name)
+	return n, ok
 }
 
 // llmSync is the wake loop's view of o's claimed items, for the per-item
@@ -151,7 +166,7 @@ func llmSync(px *llmproxy.Proxy, reg *officers.Registry) func(o officers.Officer
 		}
 		holding := map[int][]string{}
 		for _, it := range claimed {
-			if io, n, ok := reg.ForAgentName(it.ClaimedBy); ok && io.ID == o.ID {
+			if io, n, ok := reg.ForAgentName(it.ClaimedBy); ok && io.ID == o.ID && officers.RoutineAgent(io, it.ClaimedBy) {
 				holding[n] = append(holding[n], string(it.ID))
 			}
 		}

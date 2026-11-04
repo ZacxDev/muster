@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"sort"
 	"strings"
 )
 
 // An officer's `llm` block: the settings muster's LLM proxy (internal/llmproxy,
 // served at POST /llm/v1/messages on the connect listener) applies to the
-// officer's instances. See docs/officers.md "The LLM proxy".
+// officer's ROUTINE pool (tiers.go). See docs/officers.md "Tiers and the LLM
+// proxy".
 //
 // 🔴 THE PROVIDER KEY NEVER LEAVES muster-server, exactly as the HQ token does
 // not: it is read from the server's own environment, held behind an
@@ -42,24 +42,18 @@ const LLMKeyEnvPrefix = "MUSTER_OFFICER_OPENROUTER_KEY_"
 // OpenRouter credential reads (cmd/muster-server).
 const LLMSharedKeyEnv = "MUSTER_AGENT_OPENROUTER_KEY"
 
-// LLM is an officer's `llm` block.
+// LLM is an officer's `llm` block: what the LLM proxy may SPEND for the
+// officer. The model it pins a routine instance to is the routine pool's
+// (tiers.routine.model), and who may use it is the routine pool's instances
+// (RoutineAgent) — one source each, so neither is repeated here.
 type LLM struct {
-	// Model is the provider model id EVERY proxied request is rewritten to,
-	// whatever the client asked for (e.g. `deepseek/deepseek-v4.1-flash-1017`).
-	Model string `json:"model"`
 	// DailyBudgetUSD is the officer's spend cap per UTC day, summed over its
-	// instances and metered from the provider's own reported cost.
+	// routine instances and metered from the provider's own reported cost.
 	DailyBudgetUSD float64 `json:"daily_budget_usd"`
 	// MaxTokensPerItem ends a runaway turn: once an instance has used this
 	// many tokens (input, cache and output together) on the item it holds,
 	// its next request is refused until it holds a different item.
 	MaxTokensPerItem int64 `json:"max_tokens_per_item"`
-	// RoutineAgents are the instance agent names allowed to use the proxy.
-	// 🔴 THIS IS AN ALLOWLIST STANDING IN FOR THE ROUTINE TIER, which is not
-	// in muster yet: when instances carry a tier, "a routine-tier instance of
-	// this officer" replaces it (RoutineAgent is the one predicate to change).
-	// Sorted and unique; every entry is an instance name of this officer.
-	RoutineAgents []string `json:"routine_agents"`
 	// KeySource names where the key came from (LLMKeyEnvPrefix<NAME> or
 	// LLMSharedKeyEnv), never the key.
 	KeySource string `json:"-"`
@@ -81,50 +75,59 @@ func (l LLM) WithKey(key string) *LLM { l.key = key; return &l }
 
 // String describes l without its key.
 func (l LLM) String() string {
-	return fmt.Sprintf("llm %s (budget $%.2f/day, %d tokens/item, %d agents, key from %s)",
-		l.Model, l.DailyBudgetUSD, l.MaxTokensPerItem, len(l.RoutineAgents), l.KeySource)
+	return fmt.Sprintf("llm budget $%.2f/day, %d tokens/item, key from %s", l.DailyBudgetUSD, l.MaxTokensPerItem, l.KeySource)
 }
 
 // GoString is String, so %#v cannot print the key either.
 func (l LLM) GoString() string { return l.String() }
 
 // RoutineAgent is THE rule for whether agent name may use officer o's LLM
-// proxy: o declares `llm` and lists name in its routine_agents.
+// proxy: o declares `llm`, and name is an instance of o's ROUTINE pool — an
+// `-r<n>` within tiers.routine.max_instances, by the registry's own naming
+// rule (parseInstance). o may be either of the officer's pools. A judgement
+// instance, an untiered officer's instance, or any other name is not.
 func RoutineAgent(o Officer, name string) bool {
-	if o.LLM == nil {
+	if o.LLM == nil || o.Tiers == nil {
 		return false
 	}
-	for _, a := range o.LLM.RoutineAgents {
-		if a == name {
-			return true
-		}
-	}
-	return false
+	p, _, ok := parseInstance(o, name)
+	return ok && p.Tier == TierRoutine
 }
+
+// ProviderModel reports whether m is a provider model id (`<vendor>/<model>`,
+// optionally `:variant`): the only kind of model a routine pool may run when
+// its officer declares `llm`, and a kind it may run ONLY then.
+func ProviderModel(m string) bool { return llmModelRE.MatchString(m) }
 
 // llmModelRE is an OpenRouter model id: `<vendor>/<model>`, optionally with a
 // `:variant` suffix.
 var llmModelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}/[a-z0-9][a-z0-9._-]{0,99}(:[a-z0-9-]{1,32})?$`)
 
 type declaredLLM struct {
-	Model            string   `json:"model"`
 	DailyBudgetUSD   *float64 `json:"daily_budget_usd"`
 	MaxTokensPerItem int64    `json:"max_tokens_per_item"`
-	RoutineAgents    []string `json:"routine_agents"`
 }
 
 // parseLLM reads officer o's `llm` block strictly, and its key through getenv.
+// o's tiers are already parsed: `llm` needs a routine pool, and that pool's
+// model must be a provider model id (parseTiers admits one only beside `llm`).
 func parseLLM(o Officer, raw json.RawMessage, getenv func(string) string) (*LLM, error) {
+	if o.Tiers == nil {
+		return nil, errors.New("llm needs tiers.routine: the proxy serves only a routine pool's instances, and pins them to " +
+			"tiers.routine.model; declare tiers")
+	}
+	if m := o.Tiers.Routine.Model; !ProviderModel(m) {
+		return nil, fmt.Errorf("with llm, tiers.routine.model must be a provider model id (<vendor>/<model>, e.g. "+
+			"deepseek/deepseek-v4.1-flash-1017): %q is a Claude model, which the proxy cannot serve", m)
+	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
 	var d declaredLLM
 	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf("llm must be {\"model\", \"daily_budget_usd\", \"max_tokens_per_item\", \"routine_agents\"}: %v", err)
+		return nil, fmt.Errorf("llm must be {\"daily_budget_usd\", \"max_tokens_per_item\"} (the model is tiers.routine.model, "+
+			"and the routine instances are the routine pool's): %v", err)
 	}
-	l := &LLM{Model: strings.TrimSpace(d.Model), MaxTokensPerItem: d.MaxTokensPerItem}
-	if !llmModelRE.MatchString(l.Model) {
-		return nil, fmt.Errorf("llm.model %q is not a provider model id (<vendor>/<model>)", d.Model)
-	}
+	l := &LLM{MaxTokensPerItem: d.MaxTokensPerItem}
 	if d.DailyBudgetUSD == nil {
 		return nil, errors.New("llm.daily_budget_usd is required: the proxy refuses to spend without a cap")
 	}
@@ -139,23 +142,6 @@ func parseLLM(o Officer, raw json.RawMessage, getenv func(string) string) (*LLM,
 	if l.MaxTokensPerItem < MinLLMMaxTokensPerItem || l.MaxTokensPerItem > MaxLLMMaxTokensPerItem {
 		return nil, fmt.Errorf("llm.max_tokens_per_item %d is not %d..%d", d.MaxTokensPerItem, MinLLMMaxTokensPerItem, MaxLLMMaxTokensPerItem)
 	}
-	if len(d.RoutineAgents) == 0 {
-		return nil, errors.New("llm.routine_agents is empty: name the instance agents (e.g. " + InstanceName(o.ID, 1) +
-			") that may use the proxy")
-	}
-	seen := map[string]bool{}
-	for _, a := range d.RoutineAgents {
-		a = strings.TrimSpace(a)
-		if _, _, ok := parseInstance(o, a); !ok {
-			return nil, fmt.Errorf("llm.routine_agents entry %q is not an instance of %s (%s … %s)", a, o.ID,
-				InstanceName(o.ID, 1), InstanceName(o.ID, o.MaxInstances))
-		}
-		if !seen[a] {
-			seen[a] = true
-			l.RoutineAgents = append(l.RoutineAgents, a)
-		}
-	}
-	sort.Strings(l.RoutineAgents)
 	own := LLMKeyEnvPrefix + TokenEnvSuffix(o.ID)
 	if k := strings.TrimSpace(getenv(LLMKeyEnvPrefix + TokenEnvSuffix(o.ID))); k != "" {
 		l.key, l.KeySource = k, own

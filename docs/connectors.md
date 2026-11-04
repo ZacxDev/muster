@@ -182,9 +182,9 @@ routine instances reach a model with **no provider credential in the pod**.
 It is a credential-injecting proxy like `/connect/`, with three differences:
 
 - **It is not a stored connector and needs no grant.** Who may use it is
-  configuration: an instance listed in its officer's `llm.routine_agents` in
-  `MUSTER_OFFICERS`. Every other agent is refused (403). Nothing is
-  requested, approved or shared.
+  configuration: a routine-pool instance (`officer-<slug>-r<n>`) of an
+  officer that declares `tiers` and `llm` in `MUSTER_OFFICERS`. Every other
+  agent is refused (403). Nothing is requested, approved or shared.
 - **Its credential is the officer's OpenRouter key** from muster-server's
   environment (`MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`, else
   `MUSTER_AGENT_OPENROUTER_KEY`), not a sealed secret. It is attached on the
@@ -192,7 +192,7 @@ It is a credential-injecting proxy like `/connect/`, with three differences:
   audited.
 - **It fixes the request.** The upstream is one path
   (`https://openrouter.ai/api/v1/messages`); the body's `model` is rewritten
-  to the officer's pinned model; the officer's daily USD budget and per-item
+  to the officer's `tiers.routine.model`; the officer's daily USD budget and per-item
   token cap are enforced before anything is sent. Any other path under
   `/llm/` is refused 404.
 

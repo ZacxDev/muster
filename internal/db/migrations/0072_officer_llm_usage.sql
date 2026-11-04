@@ -1,7 +1,7 @@
 -- muster 0072 — THE OFFICER LLM PROXY'S USAGE (internal/llmproxy).
 -- docs/officers.md "The LLM proxy".
 --
---   officer_llm_usage   one row per (owner, officer, instance number, UTC day)
+--   officer_llm_usage   one row per (owner, officer, routine instance number, UTC day)
 --       the proxy has served: requests, tokens by direction, the USD booked
 --       (the provider's own reported cost, or the proxy's pessimistic estimate
 --       for a response that carried none — estimated_requests counts those).
