@@ -878,7 +878,17 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			// untiered officer sends no tier key), exactly what claim-by-id
 			// sends: HQ then picks only an item of that tier
 			// (officer_claim_next_tier_test.go)
+			// The judgement session cap holds for claim-next too: HQ picks
+			// the item, so a session is held until HQ says which (or none).
+			done, capErr := s.officerRT.judgement.ReserveNext(o, s.officerRT.clock())
+			if capErr != nil {
+				return toolErr("%v", capErr), true
+			}
 			body, claimed, err = s.officerClaimNext(ctx, c, instance, in.LeaseSeconds, o.Tier)
+			if err != nil {
+				claimed = ""
+			}
+			done(claimed)
 			if errors.Is(err, errNoClaimNext) {
 				return toolErr(noClaimNextNote), true
 			}

@@ -1204,7 +1204,10 @@ An officer may split its instances into two **pools**, one per HQ item tier
   counted that day is not a new one: a restarted instance re-claiming its own
   item, or an item given back and taken again. Once the day's cap is spent:
   - `officer_claim` from a judgement instance refuses any new item **before
-    HQ**, naming the cap. The item stays queued in HQ.
+    HQ**, naming the cap. The item stays queued in HQ. With no `item_id`
+    (claim-next, HQ picks the item) the claim is refused before HQ too.
+    Below the cap a claim-next holds one session until HQ answers, and gives
+    it back when HQ claimed nothing.
   - The wake loop does not wake or re-prompt the judgement pool for new work.
     It still does so for items the pool holds or already counted today.
   - Nothing else changes. The routine pool is not capped by it (its bound is

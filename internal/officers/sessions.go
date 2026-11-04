@@ -46,28 +46,35 @@ func (o Officer) SessionCap() int {
 // zero value is not usable; NewJudgementLedger. Safe for concurrent use.
 type JudgementLedger struct {
 	mu sync.Mutex
-	// days is officer id -> the UTC day counted -> the items counted.
-	days map[string]ledgerDay
+	// days is officer id -> the UTC day counted, its items and its
+	// claim-nexts in flight.
+	days map[string]*ledgerDay
 }
 
 type ledgerDay struct {
 	day   string
 	items map[ItemID]bool
+	// pending counts claim-nexts admitted and not yet answered: each holds a
+	// session until HQ says which item (or none) it took.
+	pending int
 }
+
+// used is the day's sessions, those in flight included.
+func (d *ledgerDay) used() int { return len(d.items) + d.pending }
 
 // NewJudgementLedger returns an empty ledger.
 func NewJudgementLedger() *JudgementLedger {
-	return &JudgementLedger{days: map[string]ledgerDay{}}
+	return &JudgementLedger{days: map[string]*ledgerDay{}}
 }
 
 func utcDay(t time.Time) string { return t.UTC().Format("2006-01-02") }
 
 // today is o's counted items for now's UTC day (a fresh day drops the last).
 // Called with mu held.
-func (l *JudgementLedger) today(o Officer, now time.Time) ledgerDay {
+func (l *JudgementLedger) today(o Officer, now time.Time) *ledgerDay {
 	d, ok := l.days[o.ID]
 	if !ok || d.day != utcDay(now) {
-		d = ledgerDay{day: utcDay(now), items: map[ItemID]bool{}}
+		d = &ledgerDay{day: utcDay(now), items: map[ItemID]bool{}}
 		l.days[o.ID] = d
 	}
 	return d
@@ -90,19 +97,51 @@ func (l *JudgementLedger) Reserve(o Officer, item ItemID, now time.Time) (undo f
 	if d.items[item] {
 		return func() {}, nil
 	}
-	if len(d.items) >= limit {
-		return nil, fmt.Errorf("officer %s has started all %d of its judgement sessions for today (UTC) "+
-			"(tiers.judgement.max_sessions_per_day): item %s stays queued in HQ and is not claimed. Do not retry today; "+
-			"stop working the queue — muster wakes this pool again tomorrow", o.ID, limit, item)
+	if d.used() >= limit {
+		return nil, capRefusal(o, limit, "item "+string(item))
 	}
 	d.items[item] = true
 	return func() {
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		if cur, ok := l.days[o.ID]; ok && cur.day == d.day {
-			delete(cur.items, item)
+		delete(d.items, item)
+	}, nil
+}
+
+// ReserveNext admits a claim-next (officer_claim with no item_id: HQ picks
+// the item) by pool o at now. Uncapped, always. Capped, only while the day's
+// sessions — claim-nexts in flight included — are under the cap; it then
+// holds one session until the caller calls done with the item HQ claimed, or
+// "" when HQ claimed none (nothing to claim, or a refusal), which gives the
+// session back. An item already counted today is not counted twice.
+func (l *JudgementLedger) ReserveNext(o Officer, now time.Time) (done func(ItemID), err error) {
+	limit := o.SessionCap()
+	if l == nil || limit == 0 {
+		return func(ItemID) {}, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	d := l.today(o, now)
+	if d.used() >= limit {
+		return nil, capRefusal(o, limit, "the next item")
+	}
+	d.pending++
+	return func(item ItemID) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		d.pending--
+		if item != "" {
+			d.items[item] = true
 		}
 	}, nil
+}
+
+// capRefusal is the cap's refusal: what was not claimed, and that the item
+// stays queued in HQ.
+func capRefusal(o Officer, limit int, what string) error {
+	return fmt.Errorf("officer %s has started all %d of its judgement sessions for today (UTC) "+
+		"(tiers.judgement.max_sessions_per_day): %s stays queued in HQ and is not claimed. Do not retry today; "+
+		"stop working the queue — muster wakes this pool again tomorrow", o.ID, limit, what)
 }
 
 // Capped reports whether pool o has spent its cap for now's UTC day, and the
@@ -120,5 +159,5 @@ func (l *JudgementLedger) Capped(o Officer, now time.Time) (bool, map[ItemID]boo
 	for k := range d.items {
 		counted[k] = true
 	}
-	return len(d.items) >= limit, counted
+	return d.used() >= limit, counted
 }
