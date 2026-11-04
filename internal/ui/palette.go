@@ -168,6 +168,41 @@ const paletteMatchJS = `  window.musterPaletteMatch = function (e, q) {
     if (low(e.words).indexOf(q) >= 0) return { r: 4, why: 'words' };
     return null;
   };
+  // window.musterPaletteRank is the palette's whole list for query q: each of
+  // entries (in page order) that musterPaletteMatch matches, plus the server
+  // search's hits ({href, title}) for q merged in, best first, ties in page
+  // order — as items {e, r, why, hit}. A hit names an entry by its href; one
+  // whose entry is not in entries (the page's own session) is dropped, and an
+  // entry is listed once. Pure (no DOM): e2e/tests/focus.spec.ts runs it over a
+  // table.
+  window.musterPaletteRank = function (entries, q, hits) {
+    var out = [], byHref = {};
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i], m = window.musterPaletteMatch(e, q);
+      if (!byHref[e.href]) byHref[e.href] = { e: e, n: i, item: null };
+      if (m && !byHref[e.href].item) {
+        var it = { e: e, n: i, r: m.r, why: m.why, hit: m.hit };
+        byHref[e.href].item = it;
+        out.push(it);
+      }
+    }
+    (hits || []).forEach(function (h) {
+      var b = h && byHref[h.href];
+      if (!b) return;
+      var title = String(h.title || '');
+      if (b.item) {
+        // 🔴 A SERVER HIT CAN ONLY RAISE AN ENTRY: one the page matched less
+        // well (by its words alone) moves up to the previous-title rank and
+        // says why; one it matched as well or better keeps its own match.
+        if (b.item.r > 3) { b.item.r = 3; b.item.why = 'previous'; b.item.hit = title; }
+        return;
+      }
+      b.item = { e: b.e, n: b.n, r: 3, why: 'previous', hit: title };
+      out.push(b.item);
+    });
+    out.sort(function (a, b) { return a.r - b.r || a.n - b.n; });
+    return out;
+  };
 `
 
 // paletteJS is the palette's script, part of appScript's static file (every
@@ -202,9 +237,6 @@ const paletteJS = `
     }
     return out;
   }
-  // match is what an entry is found by for query q (window.musterPaletteMatch,
-  // paletteMatchJS), or null.
-  var match = window.musterPaletteMatch;
   function el(tag, cls, text) { var x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }
   function mark() {
     var input = byId(INPUT), opts = byId(RESULTS).children;
@@ -221,10 +253,11 @@ const paletteJS = `
   // THE SERVER SEARCH (internal/api's handlePaletteHistory): once typing
   // pauses for DEBOUNCE ms on a query of MIN or more characters, the server
   // is asked for every focus title in the retention; its hits are merged as
-  // previous-title matches (rank 3) of entries ALREADY on the page — an entry
-  // the page already matched is not listed twice, and a hit whose entry is not
-  // on the page (the page's own session) is dropped. srv is the query the
-  // hits answer and the hits.
+  // previous-title matches (rank 3) of entries ALREADY on the page, by
+  // window.musterPaletteRank — an entry is listed once (a hit raises one the
+  // page matched only by its words, and leaves one it matched better), and a
+  // hit whose entry is not on the page (the page's own session) is dropped.
+  // srv is the query the hits answer and the hits.
   //
   // 🔴 ONLY THE ANSWER TO THE CURRENT QUERY LANDS. Each new query cancels the
   // pending timer and aborts the request in flight, AND an answer is applied
@@ -268,44 +301,29 @@ const paletteJS = `
     var pal = byId(PAL), input = byId(INPUT), list = byId(RESULTS);
     if (!pal || !input || !list) return;
     var q = input.value;
-    var was = keep && active >= 0 && shown[active] ? shown[active].href : null;
-    var found = [], at = {}, byHref = {};
-    entries().forEach(function (e) {
-      byHref[e.href] = e;
-      var m = match(e, q);
-      if (m) { e.r = m.r; e.why = m.why; e.hit = m.hit; found.push(e); at[e.href] = true; }
-    });
-    if (srv.q && srv.q === q.trim()) {
-      srv.hits.forEach(function (h) {
-        var e = h && byHref[h.href];
-        if (!e || at[h.href]) return;
-        at[h.href] = true;
-        e.r = 3; e.why = 'previous'; e.hit = String(h.title || '');
-        found.push(e);
-      });
-    }
-    found.sort(function (a, b) { return a.r - b.r || a.n - b.n; });
-    shown = found.slice(0, 50);
+    var was = keep && active >= 0 && shown[active] ? shown[active].e.href : null;
+    shown = window.musterPaletteRank(entries(), q, srv.q && srv.q === q.trim() ? srv.hits : []).slice(0, 50);
     list.textContent = '';
-    shown.forEach(function (e, i) {
+    shown.forEach(function (it, i) {
+      var e = it.e;
       var li = el('li', 'flex min-h-[44px] cursor-pointer flex-col justify-center px-4 py-1.5');
       li.id = 'switcher-opt-' + i;
       li.setAttribute('role', 'option');
       li.setAttribute('data-index', String(i));
       li.setAttribute('data-href', e.href);
       li.setAttribute('data-kind', e.kind);
-      if (e.why) li.setAttribute('data-match', e.why);
+      if (it.why) li.setAttribute('data-match', it.why);
       li.appendChild(el('span', 'truncate text-sm font-semibold text-fg', e.label));
       // The second line says WHY it matched when that is a previous focus
       // title ("Previously: …", marked data-match-previous); otherwise its
       // title (its display name and current focus), or — when the title is
       // what the first line already says (an agent's display name) — its
       // codename.
-      if (e.why === 'previous') {
+      if (it.why === 'previous') {
         var p = el('span', 'truncate text-xs text-muted');
         p.setAttribute('data-match-previous', '');
         p.appendChild(el('span', 'font-medium', 'Previously: '));
-        p.appendChild(document.createTextNode(e.hit));
+        p.appendChild(document.createTextNode(it.hit));
         li.appendChild(p);
       } else {
         var sub = e.title && e.title !== e.label ? e.title : (e.code !== e.label ? e.code : '');
@@ -314,12 +332,12 @@ const paletteJS = `
       list.appendChild(li);
     });
     active = shown.length ? 0 : -1;
-    if (was) for (var k = 0; k < shown.length; k++) if (shown[k].href === was) { active = k; break; }
+    if (was) for (var k = 0; k < shown.length; k++) if (shown[k].e.href === was) { active = k; break; }
     pal.querySelector('[data-switcher-search-empty]').hidden = shown.length > 0;
     mark();
   }
   function go(i) {
-    var e = shown[i];
+    var e = shown[i] && shown[i].e;
     if (!e || !e.href) return;
     hide(byId(PAL));
     window.location.assign(e.href);

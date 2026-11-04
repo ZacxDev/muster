@@ -30,6 +30,9 @@ const focusSID = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
 type memFocus struct {
 	mu   sync.Mutex
 	rows map[focus.Subject]focus.Focus
+	// titleHits is what SearchTitles answers; titleQueries what it was asked.
+	titleHits    []focus.HistoryHit
+	titleQueries []string
 }
 
 func (m *memFocus) Get(_ context.Context, s focus.Subject) (focus.Focus, bool, error) {
@@ -85,8 +88,11 @@ func (m *memFocus) MatchHistory(context.Context, string, focus.Live, time.Time, 
 func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time, int) (map[focus.Subject][]focus.TitleAt, error) {
 	return nil, nil
 }
-func (m *memFocus) SearchTitles(context.Context, string, focus.Live, time.Time, int) ([]focus.HistoryHit, error) {
-	return nil, nil
+func (m *memFocus) SearchTitles(_ context.Context, q string, _ focus.Live, _ time.Time, _ int) ([]focus.HistoryHit, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.titleQueries = append(m.titleQueries, q)
+	return m.titleHits, nil
 }
 func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time, int) (focus.WindowReport, error) {
 	return focus.WindowReport{}, nil

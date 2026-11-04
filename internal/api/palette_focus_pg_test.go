@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -197,6 +198,13 @@ func TestThePaletteServerSearchFindsATitleOlderThanThePage(t *testing.T) {
 	f := paletteFixture(t)
 	suffix := strconv.FormatInt(f.op.ID, 10)
 	old := f.agentFor(t, 1, "palette-old-"+suffix, "", "palette-old-token-"+suffix)
+	// Two sessions: the row's href names the LATEST (ui.AgentListHref), and the
+	// server's answer must name the same one.
+	for i := 0; i < 2; i++ {
+		if _, err := agents.NewPG(f.pool).CreateSession(asUser(1), old.ID, old.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
 	store := focus.NewPG(f.pool)
 	// Older than the page by the ROW bound (focus.PaletteTitleRows newer rows),
 	// not the title cap: the newer rows hold two titles only.

@@ -279,6 +279,10 @@ for (const vp of [
           await route.fulfill({ json: { hits: [{ href: agentHref, title: 'Stale zzstale answer' }, { href: w5Href, title: 'Stale zzstale answer' }] } }).catch(() => {});
           return;
         }
+        if (q === 'claude code') {
+          await route.fulfill({ json: { hits: [{ href: w5Href, title: 'Old claude code audit' }] } });
+          return;
+        }
         if (q === 'quarterly') {
           await route.fulfill({ json: { hits: [{ href: agentHref, title: 'a duplicate of the page match' }, { href: w5Href, title: 'Old quarterly audit' }] } });
           return;
@@ -317,6 +321,16 @@ for (const vp of [
       await page.waitForTimeout(700);
       expect(pick(await order()), 'the stale answer changed nothing').toEqual(want);
       await expect(page.locator('#switcher-search-results')).not.toContainText('Stale zzstale answer');
+
+      // A server hit RAISES an entry the page matched less well: @5 matches
+      // "claude code" by its words (its kind) alone, and the hit lifts it to
+      // the previous-title rank, with its "Previously:" line.
+      await input.fill('claude code');
+      await expect(ofHref(w5Href!)).toHaveAttribute('data-match', 'previous');
+      await expect(ofHref(w5Href!).locator('[data-match-previous]')).toHaveText('Previously: Old claude code audit');
+      const rows2 = await order();
+      expect(rows2.indexOf(`previous:${w5Href}`), `@5 is listed before the words-only matches: ${rows2}`).toBe(0);
+      expect(rows2.slice(1).every((r) => r.startsWith('words:')), `the rest match by their words: ${rows2}`).toBe(true);
       await page.unroute('**/ui/palette/history?**');
     });
 
@@ -324,6 +338,34 @@ for (const vp of [
     // palette above runs): the original substring ranks — codename prefix,
     // codename substring, title — then ONE rank for a previous title (its
     // newest match), then the words. Values pairwise distinct.
+    // The whole list as a table (window.musterPaletteRank): the page's matches
+    // with the server's hits merged — a hit adds an entry the page did not
+    // match (at the previous-title rank), RAISES one the page matched only by
+    // its words, leaves one the page matched better alone, and names no entry
+    // that is not on the page. Ties in page order.
+    test('the palette list: server hits add, raise, never lower, and name only page entries', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/tasks');
+      const got = await page.evaluate(() => {
+        const rank = (window as unknown as { musterPaletteRank: (es: object[], q: string, hits: object[]) => { e: { href: string }; r: number; why: string; hit?: string }[] }).musterPaletteRank;
+        const es = [
+          { href: '/a', code: 'ag-a', title: '', prev: [], words: 'acme-repo shell' },
+          { href: '/b', code: 'ag-b', title: 'Acme importer', prev: [], words: '' },
+          { href: '/c', code: 'ag-c', title: '', prev: [], words: '' },
+          { href: '/d', code: 'acme-d', title: '', prev: [], words: '' },
+        ];
+        const hits = [
+          { href: '/a', title: 'Old acme audit' },
+          { href: '/b', title: 'not shown: b matched better' },
+          { href: '/c', title: 'Old acme notes' },
+          { href: '/d', title: 'not shown: d matched by name' },
+          { href: '/gone', title: 'not on the page' },
+        ];
+        return rank(es, 'acme', hits).map((it) => `${it.e.href}=${it.r}/${it.why}${it.hit ? '/' + it.hit : ''}`);
+      });
+      expect(got).toEqual(['/d=0/code', '/b=2/title', '/a=3/previous/Old acme audit', '/c=3/previous/Old acme notes']);
+    });
+
     test('the palette rank: name before current title before previous title before words', async ({ page }) => {
       await signIn(page, origin);
       await page.goto(origin + '/tasks');

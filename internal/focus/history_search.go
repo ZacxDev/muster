@@ -52,6 +52,10 @@ const (
 	// MinTitleQueryRunes is the shortest query SearchTitles answers: the
 	// palette asks the server only once a query is this long.
 	MinTitleQueryRunes = 3
+	// MaxTitleQueryRunes is the longest query SearchTitles answers: a stored
+	// title is at most MaxTitleRunes (migration 0023's CHECK), so a longer
+	// query can match nothing — and it is answered without a read.
+	MaxTitleQueryRunes = MaxTitleRunes
 )
 
 // Live is the sessions a history read may return: mirrored sessions by Claude
@@ -394,9 +398,10 @@ func (s *PGStore) RecentTitles(ctx context.Context, live Live, since time.Time, 
 
 // SearchTitles is the command palette's search of the WHOLE window: each live
 // session's newest focus title written at or after since that CONTAINS query
-// (case-folded by Postgres's lower(), on the title only), newest first, at
-// most limit (bounded by MaxSearchResults). A query of fewer than
-// MinTitleQueryRunes runes (trimmed) matches nothing.
+// (case-folded: the query by Go's strings.ToLower, the title by Postgres's
+// lower(); on the title only), newest first, at most limit (bounded by
+// MaxSearchResults). A query (trimmed) of fewer than MinTitleQueryRunes or
+// more than MaxTitleQueryRunes runes matches nothing, and is not read.
 //
 // 🔴 A SUBSTRING OF THE TITLE, NOT SearchHistory's full-text search. The
 // palette matches what is typed as a fragment, in-page, as it is typed: "payout
@@ -412,9 +417,11 @@ func (s *PGStore) RecentTitles(ctx context.Context, live Live, since time.Time, 
 // the query.
 func (s *PGStore) SearchTitles(ctx context.Context, query string, live Live, since time.Time, limit int) ([]HistoryHit, error) {
 	query = strings.TrimSpace(query)
-	if utf8.RuneCountInString(query) < MinTitleQueryRunes {
+	if n := utf8.RuneCountInString(query); n < MinTitleQueryRunes || n > MaxTitleQueryRunes {
 		return []HistoryHit{}, nil
 	}
+	// Folded here, once, rather than by lower($1) in the statement.
+	query = strings.ToLower(query)
 	if since.IsZero() {
 		return nil, errNoWindow
 	}
@@ -428,7 +435,7 @@ func (s *PGStore) SearchTitles(ctx context.Context, query string, live Live, sin
 			FROM agent_focus_history h
 			WHERE h.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
 				AND h.created_at >= $2 AND `+liveHistorySQL("$3", "$4")+`
-				AND strpos(lower(h.title), lower($1)) > 0
+				AND strpos(lower(h.title), $1) > 0
 			ORDER BY h.subject_kind, h.subject_key, h.created_at DESC, h.id DESC) best
 		ORDER BY at DESC, kind, key LIMIT $5`, query, since, m, a, limit)
 	if err != nil {
