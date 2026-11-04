@@ -74,7 +74,7 @@ func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// THE model pin is the routine pool's: tiers.routine.model.
-	p := o.Pool(officers.TierRoutine)
+	p := o.Pool(officers.TierJudgement) /* MUTANT M2b: the pin from the wrong pool */
 	s.officerRT.llm.ServeMessages(w, r, llmproxy.Caller{Officer: o.ID, Instance: n, InstanceLabel: p.InstanceLabel(n),
 		AgentID: a.ID, AgentName: a.Name, Model: p.Model, DailyBudgetUSD: o.LLM.DailyBudgetUSD,
 		MaxTokensPerItem: o.LLM.MaxTokensPerItem, Key: o.LLM.Key()})
