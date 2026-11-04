@@ -588,7 +588,7 @@ type Store interface {
 	// plugin that holds the reference now (attempts 0, error and lease
 	// cleared). No such write on that task → ErrRefWriteNotFound; one that is
 	// not failed, or was dismissed → ErrRefWriteNotFailed; a status write a
-	// later done status write supersedes → ErrRefWriteSuperseded; a task that
+	// later status write already sent upstream supersedes → ErrRefWriteSuperseded; a task that
 	// is no longer a live reference → ErrNotReference. Nothing changes on a
 	// refusal.
 	RetryRefWrite(ctx context.Context, noteID, id int64) (RefWrite, error)

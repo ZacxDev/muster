@@ -114,9 +114,10 @@ type RefWrite struct {
 	// DismissedAt is when the owner dismissed this failed write (0076): it is
 	// then off the task page, and can be neither retried nor dismissed again.
 	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
-	// Superseded: a failed STATUS write with a later status write on the same
-	// task already done (refWriteSuperseded). It cannot be retried (it would
-	// undo the newer status); it can be dismissed. Not part of the plugin's
+	// Superseded: a STATUS write with a later status write on the same task
+	// already sent upstream — done, or pending again after a lapsed lease
+	// (refWriteSuperseded). It cannot be retried, and a claim fails it rather
+	// than hand it out (it would undo the newer status); it can be dismissed. Not part of the plugin's
 	// contract.
 	Superseded bool `json:"-"`
 }
@@ -199,7 +200,7 @@ var (
 	ErrRefWriteNotFailed = errors.New("notes: only a failed write can be retried or dismissed")
 	// ErrRefWriteSuperseded: a retry of a status write a later, done status
 	// write on the same task supersedes.
-	ErrRefWriteSuperseded = errors.New("notes: a later status write on this task is already applied")
+	ErrRefWriteSuperseded = errors.New("notes: a later status write on this task was already sent upstream")
 )
 
 // refScan holds the reference columns as scanned; adoptRef turns them into

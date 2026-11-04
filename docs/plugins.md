@@ -428,9 +428,13 @@ it instead). An unknown task, a write on another task and another owner's
 write are `404`.
 
 A failed `status` write is **not** retried once a later status write on the
-same task is done (`409`, and the page offers only Dismiss): the newer
-status is already upstream, and the older one would undo it. A comment, and
-the latest status write, can always be retried.
+same task was sent upstream — it is done, or it is pending again after its
+lease lapsed (the plugin may have applied it): `409`, and the page offers
+only Dismiss. The older status would undo the newer one. The same rule holds
+at the claim: a status write retried while a newer one was still claimed is
+not handed out once the newer one is sent; it is failed with
+`superseded: a later status write on this task was already sent upstream`.
+A comment, and the latest status write, can always be retried.
 
 A retried write keeps its place in its task's order: it is handed out after
 any earlier write on the task that is still pending, before the writes

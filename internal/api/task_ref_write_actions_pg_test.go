@@ -649,7 +649,7 @@ func TestASupersededStatusWriteIsNotRetried(t *testing.T) {
 
 	before := f.rowText(t, older)
 	code, body, _ := f.do(t, http.MethodPost, refActPath(id, older, "retry"), url.Values{}, f.sessionA())
-	if code != http.StatusConflict || !strings.Contains(body, "already applied upstream") {
+	if code != http.StatusConflict || !strings.Contains(body, "already sent upstream") {
 		t.Errorf("retry of the superseded status write: HTTP %d %q; want 409 naming the newer status upstream", code, truncate(body, 200))
 	}
 	if after := f.rowText(t, older); after != before {
@@ -662,5 +662,56 @@ func TestASupersededStatusWriteIsNotRetried(t *testing.T) {
 	}
 	if code, body, _ := f.do(t, http.MethodPost, refActPath(id, older, "dismiss"), url.Values{}, f.sessionA()); code != http.StatusOK {
 		t.Errorf("dismiss of the superseded status write: HTTP %d %s, want 200", code, truncate(body, 200))
+	}
+}
+
+// TestARetriedStatusWriteSupersededInFlightIsNotHandedOut: the retry-time 409
+// cannot see a newer status write that is still IN FLIGHT. Older status write
+// fails; the newer one is claimed; the owner retries the older one (200: the
+// newer is not done yet); the newer reports ok. The next claim must NOT hand
+// the older status out — applied after the newer one it would undo it — and
+// fails it instead with the superseded reason, so the page offers only
+// Dismiss. Second case, a LAPSED lease: the newer write's lease runs out
+// before it reports (pending again, attempts 1, and the plugin may already
+// have applied it); the next claim fails the older write the same way and
+// hands out only the newer one.
+func TestARetriedStatusWriteSupersededInFlightIsNotHandedOut(t *testing.T) {
+	f := newRefActFixture(t)
+	for _, lapsed := range []bool{false, true} {
+		id, _ := f.reference(t, f.plugTok)
+		older := f.status(t, id, notes.StatusInProgress)
+		f.settle(t, f.plugTok, older, false)
+		newer := f.status(t, id, notes.StatusReadyForReview)
+		if got := f.claim(t, f.plugTok); len(got) != 1 || got[0] != newer {
+			t.Fatalf("lapsed=%v: claim %v, want [%d]", lapsed, got, newer)
+		}
+		if code, body, _ := f.do(t, http.MethodPost, refActPath(id, older, "retry"), url.Values{}, f.sessionA()); code != http.StatusOK {
+			t.Fatalf("lapsed=%v: retry of the older write while the newer is in flight: HTTP %d %s, want 200", lapsed, code, truncate(body, 200))
+		}
+		var want []int64
+		if lapsed {
+			if _, err := f.pool.Exec(authz.System(f.ctx), `UPDATE task_ref_writes SET lease_until = now() - interval '1 second' WHERE id = $1`, newer); err != nil {
+				t.Fatal(err)
+			}
+			want = []int64{newer}
+		} else {
+			f.result(t, f.plugTok, newer, true)
+			want = []int64{}
+		}
+		got := f.claim(t, f.plugTok)
+		if len(got) != len(want) || (len(want) == 1 && got[0] != want[0]) {
+			t.Fatalf("lapsed=%v: the claim handed out %v, want %v (never the superseded older status %d)", lapsed, got, want, older)
+		}
+		r := f.row(t, older)
+		if r["state"] != "failed" || !strings.Contains(r["error"].(string), "superseded") {
+			t.Errorf("lapsed=%v: the older write is %v / %q, want failed with the superseded reason", lapsed, r["state"], r["error"])
+		}
+		_, page, _ := f.do(t, http.MethodGet, "/tasks/"+strconv.FormatInt(id, 10), nil, f.plainForm())
+		olderID := strconv.FormatInt(older, 10)
+		if !lapsed {
+			if strings.Contains(page, `data-ref-write-retry="`+olderID+`"`) || !strings.Contains(page, `data-ref-write-dismiss="`+olderID+`"`) {
+				t.Errorf("the page does not offer the superseded older write Dismiss only")
+			}
+		}
 	}
 }

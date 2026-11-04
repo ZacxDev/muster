@@ -42,8 +42,9 @@ import (
 // hides the row; the answer is the ghost's).
 //
 // 🔴 A SUPERSEDED STATUS WRITE IS NOT RETRIED (409; notes.ErrRefWriteSuperseded):
-// a later status write on the task is already done upstream, and replaying the
-// older one would undo it. It can still be dismissed.
+// a later status write on the task was already sent upstream, and replaying the
+// older one would undo it. It can still be dismissed. A claim enforces the same
+// rule on a write retried while the newer one was still in flight.
 // ---------------------------------------------------------------------------
 
 // refWriteAction is which owner action actOnRefWrite performs.
@@ -84,7 +85,7 @@ func (s *Server) actOnRefWrite(ctx context.Context, action refWriteAction, taskI
 	case errors.Is(err, notes.ErrRefWriteNotFailed):
 		return http.StatusConflict, notes.RefWrite{}, "only a failed write can be retried or dismissed"
 	case errors.Is(err, notes.ErrRefWriteSuperseded):
-		return http.StatusConflict, notes.RefWrite{}, "a later status write on this task is already applied upstream, " +
+		return http.StatusConflict, notes.RefWrite{}, "a later status write on this task was already sent upstream, " +
 			"so retrying this one would undo it; dismiss it instead"
 	case errors.Is(err, notes.ErrNotReference):
 		return http.StatusConflict, notes.RefWrite{}, "the task is no longer a reference, so the write has nowhere to go; dismiss it instead"

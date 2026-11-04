@@ -220,14 +220,25 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 	return out, nil
 }
 
-// refWriteSuperseded is the ONE SQL spelling of "retrying this write would
-// undo a newer status already upstream" (alias w): a STATUS write with a
-// LATER status write on the same task that is done. RetryRefWrite refuses on
-// it, in its UPDATE, and the projection carries it (RefWrite.Superseded) so
-// the task page does not offer the Retry the route would refuse. A comment,
+// refWriteSuperseded is the ONE SQL spelling of "applying this write would
+// undo a newer status that is (or may be) upstream" (alias w): a STATUS write
+// with a LATER status write on the same task that is done, or that was handed
+// out and is pending again after a lapsed lease (attempts > 0: the plugin may
+// have applied it and not reported yet). A later write still CLAIMED does not
+// count — the claim holds this one back until it settles, and it may yet fail.
+//
+// Three places read it: RetryRefWrite refuses on it (409), in its UPDATE;
+// ClaimRefWrites fails a PENDING write it matches instead of handing it out
+// (refWriteSupersededError) — the retry-time check cannot see a newer write
+// that settles after the retry; and the projection carries it
+// (RefWrite.Superseded) so the task page does not offer that Retry. A comment,
 // and the latest status write, are never superseded.
 const refWriteSuperseded = `(w.kind = 'status' AND EXISTS (SELECT 1 FROM task_ref_writes l
-	WHERE l.note_id = w.note_id AND l.id > w.id AND l.kind = 'status' AND l.state = 'done'))`
+	WHERE l.note_id = w.note_id AND l.id > w.id AND l.kind = 'status'
+	  AND (l.state = 'done' OR (l.state = 'pending' AND l.attempts > 0))))`
+
+// refWriteSupersededError is the error a claim fails a superseded write with.
+const refWriteSupersededError = "superseded: a later status write on this task was already sent upstream"
 
 // refWriteCols is the ONE projection of a task_ref_writes row joined to its
 // task (alias w, n), in scanRefWrite's order.
@@ -328,6 +339,15 @@ func (s *PGStore) ClaimRefWrites(ctx context.Context, pluginID int64, limit int,
 		WHERE w.plugin_id = $1 AND w.state = 'pending'
 		  AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = w.note_id AND n.ext_plugin_id = w.plugin_id
 		                    AND n.ext_key IS NOT NULL AND n.deleted_at IS NULL)`, pluginID); err != nil {
+		return nil, err
+	}
+	// 🔴 A SUPERSEDED STATUS WRITE IS FAILED, NEVER HANDED OUT (refWriteSuperseded).
+	// The owner may retry an older status while a newer one is in flight (the
+	// retry-time check sees only what is settled then); handed out once the newer
+	// one is done, the older status would undo it upstream. After the lease
+	// reset above, so a newer write whose lease just lapsed counts too.
+	if _, err := tx.Exec(ctx, `UPDATE task_ref_writes w SET state = 'failed', finished_at = now(), error = $2
+		WHERE w.plugin_id = $1 AND w.state = 'pending' AND `+refWriteSuperseded, pluginID, refWriteSupersededError); err != nil {
 		return nil, err
 	}
 	// 🔴 ONE TASK'S WRITES ARE HANDED OUT IN ORDER, ONE AT A TIME: a write is
