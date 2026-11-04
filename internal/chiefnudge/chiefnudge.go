@@ -42,10 +42,16 @@ const (
 
 // Decisions the chief may return, plus Invalid for an answer muster could not
 // read.
+//
+// With session state on (MUSTER_SESSION_STATE, docs/design/session-state.md
+// step 3a) the chief answers nudge, leave or NOTIFY: the session's episode
+// carries the one text-free push, so the chief writes no question, summary or
+// options. With it off the chief still answers ask (a notice's message).
 const (
 	DecisionNudge   = "nudge"
 	DecisionAsk     = "ask"
 	DecisionLeave   = "leave"
+	DecisionNotify  = "notify"
 	DecisionInvalid = "invalid"
 )
 
@@ -71,6 +77,10 @@ const (
 	OutcomeRelayed     = "relayed"
 	OutcomeFailed      = "failed"     // live: the send did not happen (Detail says why)
 	OutcomeAskClosed   = "ask_closed" // live: the notice (or an older ask) ended (Detail says how)
+	// OutcomeNotified: a notify (session state on). Nothing is sent and no
+	// notice raised: the session's episode carries the push, in either mode
+	// (shadow mode never quiets a stop, so a shadow notify pushes too).
+	OutcomeNotified = "notified"
 	SuppressedPrefix   = "suppressed:"
 )
 
@@ -93,10 +103,10 @@ const (
 	// GuardChiefNotReady: the same for a typed 503 not_ready (CCD_MAX_SESSIONS=0,
 	// or a check CLI that never reaches its prompt).
 	GuardChiefNotReady = "chief_not_ready"
-	// GuardEpisode: a live ask (now "notify") raised NO notice, because
-	// session state is on (MUSTER_SESSION_STATE) and the session's episode
-	// carries the one text-free push for the stop
-	// (docs/design/session-state.md, "Push").
+	// GuardEpisode: a live ask raised NO notice, because session state is on
+	// (MUSTER_SESSION_STATE) and the session's episode carries the one
+	// text-free push for the stop. Older rows only: since migration 0078 that
+	// decision is recorded as a notify (OutcomeNotified).
 	GuardEpisode = "episode_push"
 )
 
@@ -373,7 +383,9 @@ type Proposal struct {
 var ErrUnparseable = errors.New("chiefnudge: the chief's answer is not a decision")
 
 // ParseProposal reads the first JSON object in raw (a model may wrap it in
-// prose or a code fence) and checks its decision is one of nudge, ask, leave.
+// prose or a code fence) and checks its decision is one of nudge, ask, leave,
+// notify. Which of ask and notify the sweep acts on is the sweep's (it maps one
+// onto the other, by whether session state is on).
 func ParseProposal(raw string) (Proposal, error) {
 	i := strings.IndexByte(raw, '{')
 	if i < 0 {
@@ -386,7 +398,7 @@ func ParseProposal(raw string) (Proposal, error) {
 	}
 	p.Decision = strings.ToLower(strings.TrimSpace(p.Decision))
 	switch p.Decision {
-	case DecisionNudge, DecisionAsk, DecisionLeave:
+	case DecisionNudge, DecisionAsk, DecisionLeave, DecisionNotify:
 	default:
 		return Proposal{}, fmt.Errorf("%w: decision %q", ErrUnparseable, p.Decision)
 	}
@@ -604,6 +616,18 @@ type Decision struct {
 	JevModel          string
 	JevLatencyMS      int
 	JevError          string
+	// EpisodeID is the session-state episode (session_episodes) the decision
+	// was taken in, 0 when session state is off: the chief judges an episode at
+	// most once (chief_nudges_one_per_episode, migration 0078), and a queued
+	// nudge whose episode is no longer the session's open one is dropped.
+	EpisodeID int64
+}
+
+// Jev is d's stored classification as a Result (WithJev's inverse; the latency
+// is kept, the probabilities are the three scores).
+func (d Decision) Jev() Result {
+	return Result{Label: d.JevLabel, Model: d.JevModel, LatencyMS: d.JevLatencyMS, Err: d.JevError, AskScore: d.JevAskScore,
+		Scores: map[string]float64{LabelNeedsInput: d.JevNeedsInput, LabelAsksPermission: d.JevAsksPermission, LabelNeither: d.JevNeither}}
 }
 
 // WithJev is d carrying classification r.

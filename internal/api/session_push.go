@@ -40,7 +40,10 @@ import (
 //     a SENT nudge never pushes; a "leave" quiets the stop only when the
 //     session asked nothing; a queued nudge holds the push until it is sent,
 //     and a nudge that failed, was cancelled, capped or moved on pushes;
-//     anything else pushes. No decision within episodeChiefWait pushes.
+//     anything else pushes — a notify, every failure, and any SHADOW
+//     decision (a needs-you nudge off its own live list included). No
+//     decision within episodeChiefWait pushes; a later streak of a stop the
+//     chief already judged (one decision per episode) is such a stop.
 //   - an IDLE stop with no chief judging it (the feature off, the owner in
 //     shadow mode, no chief): at once. 🔴 SHADOW MODE NEVER QUIETS A STOP.
 //   - an agent conversation whose newest message is the OWNER's, with no

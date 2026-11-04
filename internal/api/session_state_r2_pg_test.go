@@ -83,7 +83,9 @@ func TestTheNudgeSweepAloneIsUnchangedWithSessionStateOff(t *testing.T) {
 	if calls != 1 || got != stallClassifierText(stateSecretLast) {
 		t.Fatalf("calls %d, text %q", calls, got)
 	}
-	if d := f.one(t); d.Decision != chiefnudge.DecisionAsk || d.JevLabel != chiefnudge.LabelNeedsInput {
+	// Since step 3a a needs_input stall's nudge with a good quote is a
+	// NEEDS-YOU nudge: shadow here (the owner is on neither live list).
+	if d := f.one(t); d.Decision != chiefnudge.DecisionNudge || d.Mode != chiefnudge.ModeShadow || d.JevLabel != chiefnudge.LabelNeedsInput {
 		t.Fatalf("decision: %+v", d)
 	}
 }

@@ -24,13 +24,16 @@ whatever is still idle after that.
 |---|---|
 | `MUSTER_CHIEF_NUDGES` | `1` runs the sweep, in shadow mode for every owner. Off by default. Needs a database. |
 | `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` | The user ids, comma-separated, whose decisions are **acted on**. Everyone else stays in shadow mode. |
+| `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS` | The user ids, comma-separated, whose [needs-you nudges](#needs-you-nudges) are sent too. A needs-you nudge is sent only for an owner on **both** lists; for everyone else it is shadow. Unset: every needs-you nudge is shadow. |
 | `MUSTER_CHIEF_NUDGE_IDLE` | How long a session must have been idle to count as stalled. Default `10m`, from `2m` to `24h`. |
 | `MUSTER_CHIEF_NUDGE_HOURLY_CAP` | The most live nudges per hour, across every owner. Default `6`. Shadow mode is not capped. |
 
-All four are read at boot; the boot log says which mode the sweep is in.
+All five are read at boot; the boot log says which mode the sweep is in, and
+how many owners are on both live lists.
 
 **The kill switch** is unsetting `MUSTER_CHIEF_NUDGES` (or removing an owner
-from the live list) and restarting. The switch reaches messages already queued:
+from the live list, or from the needs-you list for their needs-you nudges) and
+restarting. The switch reaches messages already queued:
 each one is checked again when it would be pasted, and a nudge whose owner is no
 longer live, or whose feature is off, fails with *Not sent: chief nudges are
 off, or in shadow mode for you, on this server* and is never pasted.
@@ -161,15 +164,24 @@ reads the other's stored answer (this sweep's decision row, the session's
 episode). Where the classifier does not run, session state reads no transcript
 and counts every idle stop as one that asked you.
 
-With `MUSTER_SESSION_STATE=1` a live **ask** raises **no notice** at all: it
-is recorded (`suppressed:episode_push`) and the stop's episode carries the one
-text-free push ([attention.md](attention.md#stalled--waiting-session-state)),
-which also follows this sweep's other decisions: a sent nudge keeps the stop
-quiet, a queued one holds its push, and a `leave` quiets it only when the
-classifier says the session asked nothing. Shadow mode never quiets a stop.
+With `MUSTER_SESSION_STATE=1` the chief answers **`nudge`, `leave` or
+`notify`** (session-state step 3a, [design](design/session-state.md#the-chief-nudge-leave-or-notify)):
+no question, no summary, no options. A `notify` raises **no notice** at all:
+it is recorded (`notified`, in either mode) and the stop's episode carries the
+one text-free push ([attention.md](attention.md#stalled--waiting-session-state)),
+which also follows this sweep's other decisions: a nudge counts as handled only
+once its paste is **sent** (the stop is then quiet), a queued one holds its
+push (for at most 10 minutes), one that failed, was cancelled, capped or
+dropped pushes, and a `leave` quiets the stop only when the classifier says the
+session asked nothing. Shadow mode never quiets a stop. Any failure (the call,
+an unreadable answer, a refusal past its bound) pushes, never quiets. An answer
+of `ask` is read as `notify`. Each **episode** (one stop) is put to the chief
+at most once: a later idle streak of the same stop is pushed, not judged again
+(`chief_nudges.episode_id`, migration 0078), and the sweep waits for the state
+pass to open the stop's episode before it judges it.
 
-In live mode an **ask** decision raises a [notice](#live-mode), not a
-question: "ask" below names the chief's decision, which the Chief nudges tab
+With session state off, in live mode an **ask** decision raises a
+[notice](#live-mode), not a question: "ask" below names the chief's decision, which the Chief nudges tab
 records with its question. The chief is asked for no options: a notice has
 nothing to choose. (Rows from before notices still show the options they hold.)
 
@@ -177,9 +189,10 @@ nothing to choose. (Rows from before notices still show the options they hold.)
 P(`needs_input`) + P(`asks_permission`). At or over
 `MUSTER_CHIEF_NUDGE_ASK_THRESHOLD` (default `0.9`) the stall is an unasked
 question or permission request, and the **default outcome is an ask**: the chief
-is told so and writes the question. A nudge survives it only
-when the label is `asks_permission` **and** the quote guard passes; a "leave", or
-any other nudge, becomes the ask. When the chief gave no question, it is the
+is told so and writes the question (with session state on, the default is a
+`notify`, and no question is written). A "leave" never survives it: it becomes
+the ask (the notify). A nudge survives it only when the quote guard passes —
+a [needs-you nudge](#needs-you-nudges), for either label. When the chief gave no question, it is the
 **generic ask** — "*<focus title>* is waiting on you. Its last turn looks like
 it asked you something." — in which muster puts no session text (its only
 words about the session are the chief's own, below). When the chief's answer
@@ -219,6 +232,34 @@ the classifier on real stalls is what shadow mode is for.
 Every decision records the label, all three probabilities, the ask score, the
 model the response says it served (e.g. `typesafe/jev-1.14-…`) and the call's
 latency, or its error, and the tab shows them.
+
+### Needs-you nudges
+
+A session over the line asked you something (`needs_input`) or asked leave
+for its next step (`asks_permission`). It is **needs-you**, and since
+session-state step 3a it may be nudged (operator decision 11): the chief is
+told that a nudge is accepted only when one of your messages to that session
+already **answers the question it asked**, quoting the words that answer it
+and naming in `covered_action` the answer they give. The quote guard is the
+same code as for any nudge (your own recent words, verbatim); that the words
+answer *this* question is the chief's judgement, which code does not check.
+
+**It has its own live gate** (operator decision 2026-11-04, "Separate shadow
+gate"): a needs-you nudge is sent only for an owner on **both**
+`MUSTER_CHIEF_NUDGE_LIVE_OWNERS` and `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS`.
+For everyone else it is shadow: recorded on the Chief nudges tab as
+`would_send`, never pasted, not counted toward the hourly cap, and the stop is
+pushed. Every other nudge (to a session the classifier says asked nothing, or
+whose classification failed) keeps `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` alone. The
+gate is read again at the paste (and at an agent's turn), from the
+classification stored on the decision, so taking an owner off the needs-you
+list stops a needs-you nudge already queued (*Not sent: chief nudges are off,
+or in shadow mode for you, on this server*).
+
+A **waiting** window (a permission prompt, a question muster cannot answer) is
+never nudged: only an idle session is a candidate, and the send queue does not
+paste into a waiting one. An opencode or Hermes window is never nudged either
+([Limits](#limits)).
 
 ## What the chief is asked
 
@@ -341,7 +382,8 @@ The chief answers with one decision:
 | decision | meaning |
 |---|---|
 | `nudge` | The session stopped short of something one of your messages already authorises. It names that message's id, an exact quote from it, and the pending action the quote covers. |
-| `ask` | The session needs a decision none of your messages covers. It gives the question (live, the notice's message). |
+| `ask` | Session state off: the session needs a decision none of your messages covers. It gives the question (live, the notice's message). |
+| `notify` | Session state on: you should look at the session. No question, no summary, no options; the stop's episode pushes. |
 | `leave` | It finished, is reporting, or is waiting on something that is not you. |
 
 ### A check cannot call tools
@@ -392,7 +434,8 @@ These are code, not instructions to the chief:
   chief's judgement, recorded as the decision's covered action. The code
   guarantees only that the quote is yours, recent and verbatim.
 - **Two nudges per message of yours.** After 2 nudges quoting from the same
-  latest message of yours, the next nudge becomes an ask ("… stopped again
+  latest message of yours, the next nudge becomes an ask (a notify with session
+  state on) ("… stopped again
   after 2 nudges since your last message to it. Should it continue?").
 - **The hourly cap, live only.** Past `MUSTER_CHIEF_NUDGE_HOURLY_CAP` live
   nudges in the last hour, a live nudge is recorded as `suppressed:hourly_cap`.
@@ -402,7 +445,10 @@ These are code, not instructions to the chief:
   session is still in the same idle streak; if it was read and is not (not
   idle, a newer streak, another conversation in the window, a window its
   connected host no longer lists), the decision is recorded as
-  `suppressed:moved_on`.
+  `suppressed:moved_on`. With session state on, the session's open episode must
+  also still be the one the decision was taken in: a nudge queued in a stop
+  that has since ended is dropped at its paste (`suppressed:superseded`) and
+  the new stop pushes.
 - **Unknown is not moved on.** When the session's state cannot be read — its
   host's connection dropped, the host has sent no window list yet (its first
   read failed), or it does not report status — nothing is
@@ -511,6 +557,7 @@ Every decision is a row of `chief_nudges` (migration `0064`, see
 |---|---|
 | `chief_nudge.would_send` | shadow: a nudge that passed every guard |
 | `chief_nudge.would_ask` | shadow: an ask that would have been raised |
+| `chief_nudge.notified` | session state on: a notify (no notice; the stop's episode pushes), in either mode |
 | `chief_nudge.left` | the chief said leave it |
 | `chief_nudge.suppressed` | a guard refused the decision (the row's outcome names which) |
 | `chief_nudge.sent` | live: the nudge reached the session |
@@ -563,7 +610,8 @@ an answer from the chief (its call failed, or it refused) has its why in
 - An **opencode** pane is never nudged: muster cannot type into it. Its
   prompts also carry no time (the host's opencode renderer sets none), so none
   of your messages to it could authorise a nudge anyway. A decision to nudge
-  it becomes a notice, with the reason `view_only`.
+  it becomes a notice (a notify with session state on), with the reason
+  `view_only`, before any other rule.
 - An opencode session that has not changed status since its host's event
   stream connected has no status time, so it is not judged until its next turn
   ends. The smallest fix is for the host to seed that time from the session's

@@ -476,8 +476,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// The stall classifier runs on the owner's OpenRouter key, resolved
 			// exactly as the focus summarizer's (the credential plane).
 			ext.ChiefNudge = &api.ChiefNudges{Idle: cfg.ChiefNudgeIdle, HourlyCap: cfg.ChiefNudgeHourlyCap, Live: cfg.ChiefNudgeLiveOwners,
-				AskThreshold: cfg.ChiefNudgeAskThreshold,
-				Classifier:   &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
+				NeedsYouLive: cfg.ChiefNudgeNeedsYouLiveOwners, AskThreshold: cfg.ChiefNudgeAskThreshold,
+				Classifier: &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
 		}
 	}
 	logger.Print(suggestBootLine(cfg))
@@ -1476,13 +1476,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	switch {
 	case ext.ChiefNudge != nil && len(ext.ChiefNudge.Live) > 0:
 		l.Printf("chief nudges: ON (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall classifier "+
-			"first, ask score %.2f defaults to an ask); LIVE for %d owner(s) (%s), shadow for everyone else; at most %d nudges an hour",
+			"first, ask score %.2f defaults to an ask); LIVE for %d owner(s) (%s), shadow for everyone else; needs-you nudges "+
+			"LIVE for %d of them (%s), shadow for the rest; at most %d nudges an hour",
 			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold,
-			len(ext.ChiefNudge.Live), envChiefNudgeLiveOwners, ext.ChiefNudge.HourlyCap)
+			len(ext.ChiefNudge.Live), envChiefNudgeLiveOwners, needsYouLiveCount(ext.ChiefNudge), envChiefNudgeNeedsYouLiveOwners,
+			ext.ChiefNudge.HourlyCap)
 	case ext.ChiefNudge != nil:
 		l.Printf("chief nudges: ON in SHADOW (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall "+
-			"classifier first, ask score %.2f defaults to an ask) and the decision is recorded; nothing is sent (%s is empty)",
-			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold, envChiefNudgeLiveOwners)
+			"classifier first, ask score %.2f defaults to an ask) and the decision is recorded; nothing is sent (%s is empty, "+
+			"so %s does nothing)",
+			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold, envChiefNudgeLiveOwners,
+			envChiefNudgeNeedsYouLiveOwners)
 	case a.cfg.ChiefNudges:
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:
@@ -2020,4 +2024,18 @@ func suggestBootLine(cfg config) string {
 	}
 	return "suggest: suggested replies are ON with " + cfg.SuggestModel + ": generated at a mirrored Claude Code turn end while " +
 		"its Rendered view is open, on the owner's OpenRouter key; each user can turn them off in Account (MUSTER_SUGGEST=off for everyone)"
+}
+
+// needsYouLiveCount is how many owners' needs-you nudges are live: those in
+// BOTH MUSTER_CHIEF_NUDGE_LIVE_OWNERS and
+// MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS (one listed only in the second is
+// shadow, and is not counted).
+func needsYouLiveCount(c *api.ChiefNudges) int {
+	n := 0
+	for id := range c.NeedsYouLive {
+		if c.Live[id] {
+			n++
+		}
+	}
+	return n
 }
