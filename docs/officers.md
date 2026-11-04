@@ -532,13 +532,25 @@ listing and again at dispatch):
 |---|---|
 | `officer_brief` | `GET /officers/{id}/brief` — the charter, open items, recent outcomes, memory scopes |
 | `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`) |
-| `officer_claim` `{item_id, lease_seconds?}` | `POST …/items/{item}/claim` |
+| `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
+
+**Claiming the next item.** `officer_claim` with no `item_id` asks HQ for the
+next item (HQ's claim-next: the highest priority first, then the earliest due,
+then the oldest; never a blocked item) and answers HQ's `{item,
+lease_expires_at}`. When nothing is claimable it answers `{item: null,
+claimed: false, note}` — not an error: the instance stops and waits. It sends
+the instance's pool `tier` exactly as claim-by-id does (none for an untiered
+officer), so HQ picks only an item of that tier: a routine instance claims
+routine items and a judgement instance judgement items. **An HQ without claim-next** answers 404, and the
+instance gets the tool error "this HQ has no claim-next; call officer_items
+and officer_claim{item_id}" — muster does not pick an item itself. With an
+`item_id` the claim is exactly as before.
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
@@ -573,13 +585,14 @@ in place of the generic attention paragraph every other agent gets
 ```
 You are officer <id>, instance <n> of <max> (<agent name>). …
 1. Call officer_brief. It returns your charter …
-2. Work the queue one item at a time: officer_items, officer_claim{item_id},
+2. Work the queue one item at a time: officer_claim{} with no item_id to take
+   the next item (officer_claim{item_id} only when the charter says so),
    officer_heartbeat{item_id} …, officer_complete{item_id, outcome, summary} …
 3. Anything that needs a human: follow your charter. By default, finish the
    item with officer_complete{item_id, outcome: "escalated", summary} … — HQ
    notifies the officer's owner — rather than attention_ask … Use attention_ask
    only if your charter explicitly says to.
-4. When nothing is open and you hold no claim, stop and wait …
+4. When officer_claim{} answers item null and you hold no claim, stop and wait …
 ```
 
 An officer with a `repo` is also told that it may read that repository through
@@ -1178,9 +1191,10 @@ An officer may split its instances into two **pools**, one per HQ item tier
   A live claim belongs to the pool of the instance holding it, whatever the
   item's tier. Each pool has its **own idle clock**: the routine pool scales to
   zero while the judgement pool keeps working, and the other way round.
-- **Claims.** Each instance's `officer_claim` sends its pool's `tier`. HQ then
-  refuses another tier's item with `409 wrong_tier`, and the instance gets that
-  refusal as it is. `officer_items` lists only the instance's own tier
+- **Claims.** Each instance's `officer_claim` sends its pool's `tier`. With an
+  `item_id`, HQ refuses another tier's item with `409 wrong_tier`, and the
+  instance gets that refusal as it is; without one (claim-next), HQ picks only
+  from the instance's own tier. `officer_items` lists only the instance's own tier
   (`?tier=`). The first message says which tier the instance works.
 - **No `tiers`: exactly as before.** There is one pool and the same names. The
   claim sends no `tier` key and the items list has no tier filter.
