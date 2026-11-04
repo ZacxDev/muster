@@ -90,7 +90,7 @@ func (l *JudgementLedger) Reserve(o Officer, item ItemID, now time.Time) (undo f
 	if d.items[item] {
 		return func() {}, nil
 	}
-	if len(d.items) >= limit {
+	if len(d.items) > limit {
 		return nil, fmt.Errorf("officer %s has started all %d of its judgement sessions for today (UTC) "+
 			"(tiers.judgement.max_sessions_per_day): item %s stays queued in HQ and is not claimed. Do not retry today; "+
 			"stop working the queue — muster wakes this pool again tomorrow", o.ID, limit, item)

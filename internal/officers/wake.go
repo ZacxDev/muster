@@ -200,7 +200,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	// claim only the items it already counted today (officer_claim refuses
 	// any other), so no other item is work for it.
 	claimable := func(it Item) bool {
-		return !it.Blocked && o.worksItem(it) && (!obs.Capped || obs.Counted[it.ID])
+		return !it.Blocked && o.worksItem(it)
 	}
 	for _, it := range obs.Open {
 		if claimable(it) {

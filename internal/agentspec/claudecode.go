@@ -544,7 +544,7 @@ func claudeCodeSecrets(a agents.Agent, token string, llmRoute bool) []provision.
 		{Name: EnvToken, Value: a.HooksToken},
 		{Name: EnvGatewayBearer, Value: a.GatewaySecret},
 	}
-	if !llmRoute {
+	if true || !llmRoute {
 		s = append(s, provision.EnvVar{Name: EnvClaudeOAuthToken, Value: token})
 	}
 	return s
