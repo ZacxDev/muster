@@ -110,6 +110,41 @@ func llmOfficerServer(t *testing.T, f *connFixture, raw, up string, logs io.Writ
 	return s, s.Handler()
 }
 
+// llmTiers is a tiers block whose routine pool runs the provider model the
+// proxy pins (routine max 2, judgement max 1), and llmSpend an `llm` block.
+func llmTiers(routineMax int) string {
+	return fmt.Sprintf(`"tiers":{"routine":{"model":"vendor/pinned-model","max_instances":%d},"judgement":{"model":"opus"}}`, routineMax)
+}
+
+// startPoolInstance is startOfficerInstance for instance n of id's tier pool:
+// the wake loop's own create (officerFleet.Start) of the pool's instance, so a
+// routine instance gets its real `-r<n>` name.
+func startPoolInstance(t *testing.T, f *connFixture, srv *Server, id, tier string, n int, tok string) agents.Agent {
+	t.Helper()
+	ctx := dbtest.AsOperator(context.Background())
+	o, err := srv.officerRT.reg.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := o.Pool(tier)
+	name := p.InstanceName(n)
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE name=$1`, name)
+	})
+	if err := (officerFleet{s: srv}).Start(ctx, p, n, officers.KickoffText(p, n)); err != nil {
+		t.Fatalf("start %s: %v", name, err)
+	}
+	a, err := srv.ext.Agents.GetByName(srv.officerPrincipal(ctx, p.Owner), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ext.Agents.(*agents.PGStore).SetHooksToken(ctx, a.ID, tok); err != nil {
+		t.Fatal(err)
+	}
+	a.HooksToken = tok
+	return a
+}
+
 // llmCleanup deletes the usage rows of the officers these tests declare.
 func llmCleanup(t *testing.T, f *connFixture, ids ...string) {
 	t.Helper()
@@ -135,26 +170,33 @@ func llmPost(t *testing.T, h http.Handler, path string, hdr map[string]string) *
 
 func bearer(tok string) map[string]string { return map[string]string{"Authorization": "Bearer " + tok} }
 
-// TestTheLLMProxyServesOnlyARoutineInstanceOfAnLLMOfficer: a listed routine
-// instance is served (with the officer's key and pinned model); every other
-// caller — the same officer's unlisted instance, an officer without `llm`,
-// an ordinary agent, the shared hook and service tokens, no token — is
-// refused and the provider never hears of it.
+// TestTheLLMProxyServesOnlyARoutineInstanceOfAnLLMOfficer: the routine
+// pool's `-r<n>` instance is served, with the officer's key and the model
+// tiers.routine pins; every other caller — the same officer's JUDGEMENT
+// instance, an `-r<n>` past the routine max, an `-r1` of a tiered officer
+// without `llm`, an untiered officer's instance, an ordinary agent, the
+// shared hook and service tokens, no token — is refused, and the provider
+// never hears of it.
 func TestTheLLMProxyServesOnlyARoutineInstanceOfAnLLMOfficer(t *testing.T) {
 	f := newConnFixture(t)
 	up := newLLMProvider(t, 0.001)
-	const id, plain = "routine:llm-auth", "plain:llm-auth"
-	llmCleanup(t, f, id, plain)
-	raw := `[{"id":"` + id + `","hq_url":"https://hq.example.invalid/api/v1","max_instances":2,
-	          "llm":{"model":"vendor/pinned-model","daily_budget_usd":5,"routine_agents":["officer-routine-llm-auth-1"]}},
-	         {"id":"` + plain + `","hq_url":"https://hq.example.invalid/api/v1"}]`
+	const id, noLLM, untiered = "routine:llm-auth", "nollm:llm-auth", "plain:llm-auth"
+	llmCleanup(t, f, id, noLLM, untiered)
+	raw := `[{"id":"` + id + `","hq_url":"https://hq.example.invalid/api/v1",` + llmTiers(2) + `,"llm":{"daily_budget_usd":5}},
+	         {"id":"` + noLLM + `","hq_url":"https://hq.example.invalid/api/v1","tiers":{"routine":{"model":"haiku"},"judgement":{"model":"opus"}}},
+	         {"id":"` + untiered + `","hq_url":"https://hq.example.invalid/api/v1"}]`
 	logs := &llmLogs{}
 	srv, h := llmOfficerServer(t, f, raw, up.URL, logs)
-	const tokRoutine, tokUnlisted, tokPlain, tokAgent = "llm-routine-agent-token-0123456789", "llm-unlisted-agent-token-0123456789",
-		"llm-plain-officer-token-0123456789", "llm-ordinary-agent-token-0123456789"
-	startOfficerInstance(t, f, srv, id, 1, tokRoutine)
-	startOfficerInstance(t, f, srv, id, 2, tokUnlisted)
-	startOfficerInstance(t, f, srv, plain, 1, tokPlain)
+	const tokRoutine, tokJudgement, tokPastMax, tokNoLLM, tokUntiered, tokAgent = "llm-routine-agent-token-0123456789",
+		"llm-judgement-agent-token-012345678", "llm-pastmax-agent-token-0123456789", "llm-nollm-officer-token-0123456789",
+		"llm-untiered-officer-token-01234567", "llm-ordinary-agent-token-0123456789"
+	startPoolInstance(t, f, srv, id, officers.TierRoutine, 1, tokRoutine)
+	startPoolInstance(t, f, srv, id, officers.TierJudgement, 1, tokJudgement)
+	startPoolInstance(t, f, srv, noLLM, officers.TierRoutine, 1, tokNoLLM)
+	startOfficerInstance(t, f, srv, untiered, 1, tokUntiered)
+	// A row named like the routine pool's third instance, past its max of 2:
+	// no create path mints it, so it is seeded directly.
+	f.seedAgent(t, "officer-routine-llm-auth-r3", tokPastMax)
 	f.seedAgent(t, "llm-ordinary-agent", tokAgent)
 
 	w := llmPost(t, h, "/llm/v1/messages?beta=true", bearer(tokRoutine))
@@ -163,7 +205,7 @@ func TestTheLLMProxyServesOnlyARoutineInstanceOfAnLLMOfficer(t *testing.T) {
 	}
 	up.mu.Lock()
 	if up.auth[0] != "Bearer "+llmPGKey || up.model[0] != "vendor/pinned-model" {
-		t.Errorf("the provider got auth %q model %q, want the officer's key and the pinned model", up.auth[0], up.model[0])
+		t.Errorf("the provider got auth %q model %q, want the officer's key and tiers.routine's model", up.auth[0], up.model[0])
 	}
 	up.mu.Unlock()
 	// X-Muster-Token is the other spelling an agent's token may take.
@@ -177,8 +219,10 @@ func TestTheLLMProxyServesOnlyARoutineInstanceOfAnLLMOfficer(t *testing.T) {
 		hdr  map[string]string
 		code int
 	}{
-		{"the same officer's unlisted instance", bearer(tokUnlisted), http.StatusForbidden},
-		{"an officer without llm", bearer(tokPlain), http.StatusForbidden},
+		{"the same officer's judgement instance", bearer(tokJudgement), http.StatusForbidden},
+		{"an -r<n> past the routine max", bearer(tokPastMax), http.StatusForbidden},
+		{"a tiered officer without llm", bearer(tokNoLLM), http.StatusForbidden},
+		{"an untiered officer", bearer(tokUntiered), http.StatusForbidden},
 		{"an ordinary agent", bearer(tokAgent), http.StatusForbidden},
 		{"the shared hook token", bearer(connTestHookToken), http.StatusForbidden},
 		{"the shared service token", bearer(connTestServiceToken), http.StatusForbidden},
@@ -193,7 +237,7 @@ func TestTheLLMProxyServesOnlyARoutineInstanceOfAnLLMOfficer(t *testing.T) {
 		t.Fatalf("the provider got %d requests, want 2 (the routine instance's only)", n)
 	}
 	if got := testutil.ToFloat64(metrics.OfficerLLMRefused.WithLabelValues(id, "not_routine")) - before; got != 1 {
-		t.Errorf("not_routine for %s moved by %v, want 1 (the unlisted instance)", id, got)
+		t.Errorf("not_routine for %s moved by %v, want 1 (its judgement instance)", id, got)
 	}
 	if strings.Contains(logs.String(), llmPGKey) {
 		t.Fatal("the provider key is in the server log")
@@ -209,11 +253,10 @@ func TestTheLLMProxyServesExactlyOnePath(t *testing.T) {
 	up := newLLMProvider(t, 0.001)
 	const id = "routine:llm-path"
 	llmCleanup(t, f, id)
-	raw := `[{"id":"` + id + `","hq_url":"https://hq.example.invalid/api/v1",
-	          "llm":{"model":"vendor/pinned-model","daily_budget_usd":5,"routine_agents":["officer-routine-llm-path-1"]}}]`
+	raw := `[{"id":"` + id + `","hq_url":"https://hq.example.invalid/api/v1",` + llmTiers(1) + `,"llm":{"daily_budget_usd":5}}]`
 	srv, h := llmOfficerServer(t, f, raw, up.URL, io.Discard)
 	const tok = "llm-path-agent-token-0123456789abcd"
-	startOfficerInstance(t, f, srv, id, 1, tok)
+	startPoolInstance(t, f, srv, id, officers.TierRoutine, 1, tok)
 	connect := OnlyConnectSurface(h)
 
 	before := testutil.ToFloat64(metrics.OfficerLLMRefused.WithLabelValues("none", "path"))
@@ -265,12 +308,11 @@ func TestTheLLMBudgetIsPersistedAndSurvivesARestart(t *testing.T) {
 	up := newLLMProvider(t, 0.006)
 	const id = "routine:llm-budget"
 	llmCleanup(t, f, id)
-	raw := `[{"id":"` + id + `","hq_url":"https://hq.example.invalid/api/v1",
-	          "llm":{"model":"vendor/pinned-model","daily_budget_usd":0.01,"routine_agents":["officer-routine-llm-budget-1"]}}]`
+	raw := `[{"id":"` + id + `","hq_url":"https://hq.example.invalid/api/v1",` + llmTiers(1) + `,"llm":{"daily_budget_usd":0.01}}]`
 	logs := &llmLogs{}
 	srv, h := llmOfficerServer(t, f, raw, up.URL, logs)
 	const tok = "llm-budget-agent-token-0123456789ab"
-	startOfficerInstance(t, f, srv, id, 1, tok)
+	startPoolInstance(t, f, srv, id, officers.TierRoutine, 1, tok)
 
 	for i := 1; i <= 2; i++ {
 		if w := llmPost(t, h, "/llm/v1/messages", bearer(tok)); w.Code != http.StatusOK {
@@ -353,11 +395,9 @@ func newLLMItemsRig(t *testing.T, id, tok string) *llmItemsRig {
 	llmCleanup(t, f, id)
 	hq := hqtest.New(map[string]string{"hq-token-" + officers.TokenEnvPrefix + officers.TokenEnvSuffix(id): id})
 	t.Cleanup(hq.Close)
-	raw := `[{"id":"` + id + `","hq_url":"` + hq.BaseURL() + `",
-	          "llm":{"model":"vendor/pinned-model","daily_budget_usd":5,"max_tokens_per_item":2000,"routine_agents":["` +
-		officers.InstanceName(id, 1) + `"]}}]`
+	raw := `[{"id":"` + id + `","hq_url":"` + hq.BaseURL() + `",` + llmTiers(1) + `,"llm":{"daily_budget_usd":5,"max_tokens_per_item":2000}}]`
 	srv, h := llmOfficerServer(t, f, raw, up.URL, io.Discard)
-	a := startOfficerInstance(t, f, srv, id, 1, tok)
+	a := startPoolInstance(t, f, srv, id, officers.TierRoutine, 1, tok)
 	return &llmItemsRig{h: h, hq: hq, up: up, tok: tok, call: func(tool, args string) {
 		t.Helper()
 		if out := srv.dispatchAgentTool(context.Background(), a, tool, args); isToolErr(out) {
@@ -384,8 +424,8 @@ func (r *llmItemsRig) expect(t *testing.T, what string, want ...int) {
 func TestAnOfficerToolClaimStartsTheItemMeter(t *testing.T) {
 	const id = "routine:llm-claims"
 	r := newLLMItemsRig(t, id, "llm-claims-agent-token-0123456789a")
-	itemA := r.hq.AddItem(id, "routine.check", "a")
-	itemB := r.hq.AddItem(id, "routine.check", "b")
+	itemA := r.hq.AddTieredItem(id, "routine.check", "a", officers.TierRoutine)
+	itemB := r.hq.AddTieredItem(id, "routine.check", "b", officers.TierRoutine)
 
 	r.call(officers.ToolClaim, `{"item_id":"`+itemA+`"}`)
 	r.expect(t, "on item "+itemA, http.StatusOK, http.StatusOK, http.StatusBadRequest)
@@ -413,7 +453,7 @@ func TestAnOfficerToolReleaseEndsTheItemMeter(t *testing.T) {
 func llmEndSeam(t *testing.T, id, tok, tool, extra string) {
 	t.Helper()
 	r := newLLMItemsRig(t, id, tok)
-	item := r.hq.AddItem(id, "routine.check", "a")
+	item := r.hq.AddTieredItem(id, "routine.check", "a", officers.TierRoutine)
 	r.call(officers.ToolClaim, `{"item_id":"`+item+`"}`)
 	r.expect(t, "on item "+item, http.StatusOK, http.StatusOK, http.StatusBadRequest)
 	r.call(tool, `{"item_id":"`+item+`"`+extra+`}`)

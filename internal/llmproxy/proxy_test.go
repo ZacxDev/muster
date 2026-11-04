@@ -477,8 +477,9 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 
 // TestAnUpstream401IsSurfacedAsAKeyFaultAndLoggedOncePerChange: a provider
 // refusal of the key is counted per status, holds the failing gauge at 1, is
-// logged loudly ONCE however many requests hit it, answers the instance with
-// muster's own authentication_error (not the provider's body), and a later
+// logged loudly ONCE however many requests hit it, answers the instance with a
+// 400 carrying muster's own authentication_error (not the provider's status or
+// body, so Claude Code ends the turn instead of retrying), and a later
 // success clears the gauge and logs the recovery once.
 func TestAnUpstream401IsSurfacedAsAKeyFaultAndLoggedOncePerChange(t *testing.T) {
 	const officer = "auth:fault"
@@ -498,7 +499,9 @@ func TestAnUpstream401IsSurfacedAsAKeyFaultAndLoggedOncePerChange(t *testing.T) 
 	})
 	for i := 0; i < 3; i++ {
 		resp, body := r.post(t)
-		if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(body, "authentication_error") ||
+		// A 400, not the provider's 401: Claude Code retries a 401 about ten
+		// times with backoff, and a 400 ends the turn.
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "authentication_error") ||
 			!strings.Contains(body, "refused muster's key") || strings.Contains(body, "User not found") {
 			t.Fatalf("401 #%d: %d %s", i+1, resp.StatusCode, body)
 		}
@@ -519,8 +522,8 @@ func TestAnUpstream401IsSurfacedAsAKeyFaultAndLoggedOncePerChange(t *testing.T) 
 	mu.Lock()
 	status = http.StatusForbidden
 	mu.Unlock()
-	if resp, _ := r.post(t); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("403: %d", resp.StatusCode)
+	if resp, _ := r.post(t); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an upstream 403: %d, want 400", resp.StatusCode)
 	}
 	if n := strings.Count(r.logs.String(), "THE PROVIDER REFUSES OFFICER "+officer); n != 2 {
 		t.Fatalf("401 then 403 logged %d loud lines, want 2", n)
