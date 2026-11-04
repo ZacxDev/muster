@@ -95,6 +95,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO chief_preferences (enabled) VALUES (true)`, func() []any { return nil }, nil},
 		{`INSERT INTO chief_nudges (session_kind, session_key, streak_key, decision, mode, outcome) VALUES ('mirror', $1, 'since:1', 'leave', 'shadow', 'left')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO suggest_usage (shown) VALUES (1)`, func() []any { return nil }, nil},
+		{`INSERT INTO officer_llm_usage (officer, instance, day, requests, cost_usd) VALUES ('triage:example-' || lower($1), 1, '2000-01-01', 1, 0.01)`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
 		{`INSERT INTO mail_resumes (plugin_message_id, claude_session, sender, via) VALUES (7, $1, 'review-gate/pr-check', 'pr')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO session_prs (kind, repo, pr, claude_session, host) VALUES ('gh-pr-create', $1, 7, 'sess', 'host')`, func() []any { return []any{"acme-labs/repo-" + strings.ToLower(tag)} }, nil},
@@ -112,8 +113,10 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO uploads (public_id, object_key, filename, content_type, size_bytes, expires_at) VALUES (substr(md5($1), 1, 22), 'uploads/' || substr(md5($1), 1, 22), 'f.png', 'image/png', 1, now() + interval '1 day')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO attention_asks (agent_id, question, expires_at) VALUES ($1, 'which way?', now() + interval '1 hour')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO jobs (agent_id, agent_name, prompt, timeout_s) VALUES ($1, 'a', 'review it', 60)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO session_episodes (session_kind, session_key, seq, state) VALUES ('mirror', $1, 1, 'stalled')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO cc_account_failovers (agent_id, agent_name, from_account, to_account, reason) VALUES ($1, 'a', 'north', 'south', 'rate_limited')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO session_routes (route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at) VALUES ('rt_' || substr(md5($1), 1, 24), $2, $3, 'mirror', 'sess', now() + interval '1 hour')`, func() []any { return []any{tag, message, agent} }, nil},
+		{`INSERT INTO task_ref_writes (note_id, plugin_id, kind, status) VALUES ($1, $2, 'status', 'in_progress')`, func() []any { return []any{note, plugin} }, nil},
 	}
 	for _, s := range steps {
 		var err error

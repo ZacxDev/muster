@@ -98,7 +98,7 @@ const (
 type hermesAsks struct {
 	ctx      context.Context
 	attacher HermesViewerAttacher // nil: this host does not answer approvals
-	nudge    func()               // asks for a fresh listing (non-blocking)
+	nudge    func()               // asks for a fresh listing (non-blocking, never dropped: hostSide.nudge)
 	// terminal reads the commands of the `terminal` calls pending in a
 	// session (hermeshost.State.PendingTerminalCommands); nil reads none, and
 	// then no approval is offered "once".
@@ -533,11 +533,22 @@ func (h *hostSide) hermesAttacher() HermesViewerAttacher {
 func (h *hostSide) hermesAnswer() bool { return h.hermes != nil && h.hermes.attacher != nil }
 
 // nudge asks the refresh goroutine for a listing now, without waiting: a
-// viewer's news reaches muster at once rather than at the next Refresh.
+// viewer's news, an opencode ask, a resumed window or an idle status reaches
+// muster at once rather than at the next Refresh. THE ONE "a listing is
+// owed" signal every such caller uses.
+//
+// 🔴 IT IS NEVER DROPPED. It sets a one-slot flag (want) that the refresh
+// goroutine takes; a nudge while one is already owed is the same listing.
+// It used to be a non-blocking send on kick, dropped whenever the refresh
+// goroutine was not receiving — which it is not until after the hello and
+// welcome — so a change raised in that gap (after the hello's listing was
+// read) reached muster only at the next Refresh: 5 s by default, never in a
+// test whose Refresh is an hour (main's macOS CI failure, run 41724022997).
 func (h *hostSide) nudge() {
+	h.nudged.Add(1)
 	select {
-	case h.kick <- make(chan struct{}):
-	default:
+	case h.want <- struct{}{}:
+	default: // already owed: the refresh that takes it reads everything since
 	}
 }
 

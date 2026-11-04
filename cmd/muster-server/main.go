@@ -73,6 +73,7 @@ import (
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -83,6 +84,7 @@ import (
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -462,6 +464,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The chief's per-user on/off toggle (migration 0060). Off by default
 		// for a user with no chief agent; see internal/api chief_toggle.go.
 		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
+		// Session state's episodes (migration 0073): off unless
+		// MUSTER_SESSION_STATE=1, and then independent of the chief's nudges.
+		if cfg.SessionState {
+			ext.Episodes = sessionstate.NewPG(a.pool)
+		}
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
@@ -574,6 +581,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			if len(cfg.PRMailSenders) > 0 {
 				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders}
 				ext.PRSessions = pluginStore
+				// A review of a pull request already merged or closed is settled
+				// by muster (api/pr_closed.go) — only with the GitHub App, its
+				// one source of a pull request's state.
+				if gapp, ok := ext.GitHubApp.(*githubapp.App); ok {
+					ext.ClosedPRs = &api.ClosedPRs{States: gapp, Store: pluginStore}
+				}
 			}
 			// Resuming an ended session for its mail (MUSTER_MAIL_RESUME_ALLOW):
 			// off unless senders are listed; the kill switch is read by the
@@ -677,7 +690,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// startBackgroundLoops. Refused at boot, like any contradictory
 	// configuration, when officers are declared without what they need.
 	if len(cfg.Officers) > 0 {
-		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}); err != nil {
+		ocfg := api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}
+		if a.pool != nil {
+			// The LLM proxy's daily budget lives here (migration 0075); an
+			// officer that declares `llm` with no database is refused.
+			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
+		}
+		if a.officers, err = srv.EnableOfficers(ocfg); err != nil {
 			a.Close()
 			return nil, fmt.Errorf("%s: %w", envOfficers, err)
 		}
@@ -985,6 +1004,9 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunAttentionSweep(ctx, 0)
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
+	// Session state: every session's state and its episodes
+	// (MUSTER_SESSION_STATE=1; returns at once when off).
+	go a.srv.RunSessionStateSweep(ctx, api.SessionStateInterval)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for
@@ -1398,6 +1420,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("pull-request routing: ON (%s) — %d agent-mail sender(s) whose VERIFIED review mail goes to the mirrored "+
 			"session that created or pushed its pull request, as its host's hook reported it (POST /api/pr-sessions)",
 			envPRMailSenders, len(ext.PRMail.Senders))
+		if ext.ClosedPRs != nil {
+			l.Printf("pull-request routing: a review of a pull request the GitHub App reports already merged or closed is settled by " +
+				"muster (no paste, no hand-back, no ask); a pull request it cannot read is handled as open")
+		} else {
+			l.Printf("pull-request routing: no GitHub App (%s unset), so a review of a merged or closed pull request is handled as any other", envGitHubAppID)
+		}
 	case len(a.cfg.PRMailSenders) > 0:
 		l.Printf("pull-request routing: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so "+
 			"POST /api/pr-sessions answers 404 and nothing is routed", envPRMailSenders, envSessionRouting)
@@ -1459,6 +1487,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:
 		l.Printf("chief nudges: OFF — %s is unset", envChiefNudges)
+	}
+	switch {
+	case ext.Episodes != nil:
+		l.Printf("session state: ON (%s=1) — every %s each owner's sessions are given a state and every stop an episode "+
+			"(session_episodes); nothing reads them yet, so nothing is pushed or shown", envSessionState, api.SessionStateInterval)
+	case a.cfg.SessionState:
+		l.Printf("session state: INERT — %s=1 but there is no database", envSessionState)
+	default:
+		l.Printf("session state: OFF — %s is unset", envSessionState)
 	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)

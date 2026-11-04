@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
@@ -267,6 +268,12 @@ type Extensions struct {
 	ChiefNudge  *ChiefNudges
 	ChiefNudges chiefnudge.Store
 
+	// Episodes is session state's store (internal/sessionstate, migration
+	// 0073; session_state.go): one row per stop of one of an owner's
+	// sessions. nil (no database): no state pass runs. It does NOT depend on
+	// ChiefNudge — the state, and the episodes, are code-only.
+	Episodes sessionstate.Store
+
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING
 	// unset — is OFF: the chief's route_to_session tool is not offered,
@@ -278,8 +285,8 @@ type Extensions struct {
 	// TaskRouting is task routing's configuration (task_routing.go,
 	// MUSTER_TASK_ROUTING). nil is OFF, the default: POST /plugin/v1/tasks
 	// ignores route_to_chief and the chief's task_route_attention / task_forward
-	// / task_dispatch tools are not offered. ChiefDispatch is the ledger
-	// task_dispatch counts its caps from (the plugin store).
+	// / agent_dispatch tools are not offered. ChiefDispatch is the ledger
+	// agent_dispatch counts its caps from (the plugin store).
 	TaskRouting   *TaskRouting
 	ChiefDispatch plugins.DispatchStore
 
@@ -290,6 +297,11 @@ type Extensions struct {
 	// answers 404 and every message is handed on as before.
 	PRMail     *PRMail
 	PRSessions plugins.PRSessionStore
+	// ClosedPRs settles a review of a pull request already merged or closed
+	// instead of routing it, handing it back or asking about it (pr_closed.go).
+	// nil — no GitHub App, or PR routing off — is OFF: every review is
+	// handled as before.
+	ClosedPRs *ClosedPRs
 
 	// FleetReport is the fleet-report request's configuration
 	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS;

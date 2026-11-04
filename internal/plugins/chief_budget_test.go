@@ -30,17 +30,17 @@ func budgetFixture(t *testing.T, s *PGStore, dsn string) (int64, string) {
 	t.Helper()
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
 	for _, task := range []int64{810, 811, 812} {
-		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
+		if r, err := s.ReserveChiefDispatch(session(2), NoteObject(task), nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
 	running := mustAgent(t, dsn, 2, "plg-budget-running")
 	stopped := mustAgent(t, dsn, 2, "plg-budget-stopped")
 	dbtest.OwnerExec(t, dsn, `UPDATE agents SET status = 'stopped' WHERE id = $1`, stopped.ID)
-	if err := s.RecordChiefDispatchAgent(session(2), 810, running.ID); err != nil {
+	if err := s.RecordChiefDispatchAgent(session(2), NoteObject(810), running.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordChiefDispatchAgent(session(2), 811, stopped.ID); err != nil {
+	if err := s.RecordChiefDispatchAgent(session(2), NoteObject(811), stopped.ID); err != nil {
 		t.Fatal(err)
 	}
 	dbtest.OwnerExec(t, dsn, `INSERT INTO audit_log (user_id, action, object, at) VALUES
@@ -48,15 +48,15 @@ func budgetFixture(t *testing.T, s *PGStore, dsn string) (int64, string) {
 		(2, $1, 'note:814', now() - interval '2 days')`, ActionChiefDispatch)
 	// Owner 3's: must count for nothing of owner 2's.
 	for _, task := range []int64{810, 820} {
-		if _, err := s.ReserveChiefDispatch(session(3), task, nil, nil); err != nil {
+		if _, err := s.ReserveChiefDispatch(session(3), NoteObject(task), nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	theirs := mustAgent(t, dsn, 3, "plg-budget-theirs")
-	if err := s.RecordChiefDispatchAgent(session(3), 810, theirs.ID); err != nil {
+	if err := s.RecordChiefDispatchAgent(session(3), NoteObject(810), theirs.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordChiefDispatchAgent(session(3), 812, theirs.ID); err != nil {
+	if err := s.RecordChiefDispatchAgent(session(3), NoteObject(812), theirs.ID); err != nil {
 		t.Fatal(err)
 	}
 	return running.ID, running.Name
@@ -84,7 +84,7 @@ func TestTheChiefsBudgetCountsItsOwnLedger(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := ChiefBudget{Live: 2, LiveCap: MaxChiefLiveAgents, Today: 4, DailyCap: MaxChiefDispatchesPerDay,
-				LiveAgents: []ChiefLiveAgent{{ID: &agentID, Name: &agentName, Task: 810}, {Task: 812}}}
+				LiveAgents: []ChiefLiveAgent{{ID: &agentID, Name: &agentName, Task: 810, Target: "pod/gateway"}, {Task: 812}}}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("budget\n got %s\nwant %s", budgetString(got), budgetString(want))
 			}
@@ -104,11 +104,11 @@ func TestACapRefusalCarriesTheBudgetItWasDecidedOn(t *testing.T) {
 	// The live cap: a full cap of starts in flight.
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
 	for task := int64(830); task < 830+MaxChiefLiveAgents; task++ {
-		if _, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil {
+		if _, err := s.ReserveChiefDispatch(session(2), NoteObject(task), nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	r, err := s.ReserveChiefDispatch(session(2), 830+MaxChiefLiveAgents, nil, nil)
+	r, err := s.ReserveChiefDispatch(session(2), NoteObject(830+MaxChiefLiveAgents), nil, nil)
 	if !errors.Is(err, ErrChiefLiveCap) || r.Budget == nil {
 		t.Fatalf("one start over the live cap: %+v %v; want ErrChiefLiveCap with its budget", r, err)
 	}
@@ -126,7 +126,7 @@ func TestACapRefusalCarriesTheBudgetItWasDecidedOn(t *testing.T) {
 	dbtest.OwnerExec(t, dsn, `INSERT INTO audit_log (user_id, action, object, at)
 		SELECT 2, $1, 'note:' || (840 + g), now() - interval '1 hour' FROM generate_series(1, $2) g`,
 		ActionChiefDispatch, MaxChiefDispatchesPerDay)
-	r, err = s.ReserveChiefDispatch(session(2), 860, nil, nil)
+	r, err = s.ReserveChiefDispatch(session(2), NoteObject(860), nil, nil)
 	if !errors.Is(err, ErrChiefDailyCap) || r.Budget == nil {
 		t.Fatalf("one start over the daily cap: %+v %v; want ErrChiefDailyCap with its budget", r, err)
 	}
@@ -139,7 +139,7 @@ func TestACapRefusalCarriesTheBudgetItWasDecidedOn(t *testing.T) {
 
 	// A start that passes carries no budget of its own (the caller reads one).
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
-	if r, err := s.ReserveChiefDispatch(session(2), 870, nil, nil); err != nil || r.Budget != nil {
+	if r, err := s.ReserveChiefDispatch(session(2), NoteObject(870), nil, nil); err != nil || r.Budget != nil {
 		t.Fatalf("a fresh start: %+v %v; want no error and no budget", r, err)
 	}
 }
@@ -154,7 +154,7 @@ func budgetString(b ChiefBudget) string {
 		if a.Name != nil {
 			name = *a.Name
 		}
-		s += " {" + id + " " + name + " task " + strconv.FormatInt(a.Task, 10) + "}"
+		s += " {" + id + " " + name + " task " + strconv.FormatInt(a.Task, 10) + " target " + a.Target + "}"
 	}
 	return "live " + strconv.FormatInt(int64(b.Live), 10) + "/" + strconv.FormatInt(int64(b.LiveCap), 10) + " today " + strconv.FormatInt(int64(b.Today), 10) + "/" + strconv.FormatInt(int64(b.DailyCap), 10) + " agents:" + s
 }

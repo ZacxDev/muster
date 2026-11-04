@@ -79,6 +79,14 @@ type MirrorCardView struct {
 	// Focus is what the Claude Code session in the window is working on
 	// (internal/focus, keyed by its Claude session id), nil for none.
 	Focus *FocusView
+	// FocusKey is the key its focus is stored under (mirror.SessionView
+	// .SessionKey: the Claude session id, or "hermes:<id>"), "" when the host
+	// reports none — so it has no focus and no previous titles.
+	FocusKey string
+	// PrevFocus is the session's previous focus titles, newest first, its
+	// current one left out (internal/api's withPreviousTitles); the palette
+	// finds the entry by them after its current title (palette.go).
+	PrevFocus []string
 	// Repo is the short name of the repository the window works in
 	// (mirror.SessionView.Repo: its git top level's name, else its cwd's),
 	// "" when the host did not say (an older muster-mirror). The palette finds

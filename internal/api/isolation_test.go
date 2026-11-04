@@ -239,10 +239,15 @@ var isolationClasses = map[string]routeClass{
 	"GET /events":                classList,
 	// The browser telemetry relay (faro_relay.go): names no object; it
 	// forwards the caller's own batch, rate-limited per user.
-	"POST /telemetry/faro":         classList,
-	"GET /share":                   classList,
-	"GET /tasks":                   classList,
-	"GET /ui/nav/agents":           classList,
+	"POST /telemetry/faro": classList,
+	"GET /share":           classList,
+	"GET /tasks":           classList,
+	"GET /ui/nav/agents":   classList,
+	// The palette's server search (palette.go): a session route naming no
+	// object — its live set is the caller's own entries; owner isolation is
+	// pinned by TestThePaletteServerSearchIsOwnerScoped and focus's
+	// TestSearchTitlesIsPerOwner.
+	"GET /ui/palette/history":      classList,
 	"GET /ui/agents/new":           classList,
 	"GET /ui/agents/notes":         classList,
 	"GET /ui/agents/repos":         classList,
@@ -348,6 +353,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /agent/connectors/{name}":          classConnect,
 	"POST /agent/connectors/{name}/request": classConnect,
 	"POST /mcp":                             classConnect,
+	"POST /llm/v1/messages":                 classConnect,
+	// Refused 404 for every caller, before any credential is read.
+	"/llm/": classPublic,
 
 	// The mirrored terminal names its object in the QUERY (?host=&session=),
 	// and fill() puts A's mirrored host there. The tunnel door is public to
@@ -428,6 +436,13 @@ var isolationClasses = map[string]routeClass{
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
+	// Plugin task references (plugin_task_refs.go): the listing names a
+	// namespace and the claim names nothing — both see only the token owner's
+	// rows (row-level security) and the claim only this plugin's writes; the
+	// result names A's write by id, which B's plugin must not settle (404).
+	"GET /plugin/v1/tasks":                    classPlugin,
+	"POST /plugin/v1/task-writes/claim":       classPlugin,
+	"POST /plugin/v1/task-writes/{id}/result": classPlugin,
 	// A stamped direct reply (owner_replies.go): it names A's message by id,
 	// which B's plugin must not settle (404, as a missing one).
 	"POST /plugin/v1/messages/{id}/owner-answered": classPlugin,
@@ -454,7 +469,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/view/ask/cancel": classMirror,
 	// A Hermes approval's answer (attention_hermes.go): addressed by the
 	// window's host and session in the form, like a send.
-	"POST /attention/hermes/approve": classMirror,
+	"POST /attention/hermes/approve":  classMirror,
+	"POST /attention/opencode/answer": classMirror,
 	// The Rendered view composer's `/` and `:` menu data: the same address in
 	// the query; B asking for A's window's catalog must 404 before the plugin.
 	"GET /mirror/view/complete": classMirror,
@@ -877,6 +893,18 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a plugin message delivered")
 	w.aDraft, _, err = ps.FileDraft(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, aMsg.ID, w.canary+" reply")
 	must(err, "a reply draft")
+	// A's plugin task REFERENCE (0072), owned by A's FIRST plugin, with a write
+	// on it that plugin holds leased: the object POST
+	// /plugin/v1/task-writes/{id}/result names. A's own result settles it (200)
+	// where a ghost's is 404; B's plugin must get the ghost's answer.
+	aRef, err := ns.UpsertReference(ua, notes.RefUpsertIn{Key: "isoref:a" + w.suffix, PluginID: aPlugin1.ID, Create: true,
+		Snapshot: notes.RefSnapshot{Title: w.canary + " reference", Status: notes.StatusOpen, UpdatedAt: time.Now()}})
+	must(err, "a plugin task reference")
+	aRefWrite, _, err := ns.EnqueueRefWrite(ua, notes.RefWrite{NoteID: aRef.Note.ID, Kind: notes.RefWriteComment,
+		Body: w.canary + " queued", Author: "user"})
+	must(err, "a write queued on the reference")
+	_, err = ns.ClaimRefWrites(ua, aPlugin1.ID, 1, time.Hour)
+	must(err, "the reference's write leased to A's plugin")
 	// A's chief routed that message to a mirrored session (0021): the object
 	// POST /api/routes/{id}/reply names.
 	aRoute, err := ps.CreateRoute(ua, w.a.agent.ID, w.a.uid, aMsg.ID,
@@ -926,7 +954,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
-		pluginMsg: aMsg.ID}
+		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -935,7 +963,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
-		device: ghostID}
+		device: ghostID, refWrite: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1266,6 +1294,7 @@ type isoObjs struct {
 	upload                                    string // a file attachment's public id (0024)
 	route                                     string // a session route's id (0021)
 	pluginMsg                                 int64  // a plugin message's id (its retry route)
+	refWrite                                  int64  // a write queued on a plugin task reference (0072)
 	ask                                       int64  // an attention ask's id (0025)
 	standing                                  int64  // a shared approval's id (0043)
 }
@@ -1301,6 +1330,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.plugin, 10)
 	case strings.HasPrefix(path, "/plugins/drafts/{id}") || strings.HasPrefix(path, "/plugin/v1/drafts/{id}"):
 		id = strconv.FormatInt(o.draft, 10)
+	case strings.HasPrefix(path, "/plugin/v1/task-writes/{id}"):
+		id = strconv.FormatInt(o.refWrite, 10)
 	case strings.Contains(path, "/flows/requests/{id}"):
 		id = strconv.FormatInt(o.flowReq, 10)
 	case strings.Contains(path, "flows/jobs/{id}") || strings.HasPrefix(path, "/runner/flows/{id}"):
@@ -1350,7 +1381,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		path = "/static/app.css"
 	}
 	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" ||
-		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/hermes/approve" {
+		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/hermes/approve" || path == "/attention/opencode/answer" {
 		if method == http.MethodPost {
 			// `kind` and `password` are the plain confirm page's own fields.
 			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
@@ -1430,7 +1461,8 @@ func (w *isoWorld) snapshot() map[string]string {
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
-		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage", "chief_preferences"} {
+		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage", "chief_preferences",
+		"task_ref_writes"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions and the owner-keyed tables have no `id` ordering column;
@@ -1515,7 +1547,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" || route == "POST /attention/opencode/answer" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent
@@ -1685,9 +1717,11 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		t.Errorf("CONTROL: B's personal API token was admitted on only %d routes — the leg is not walking", tokAdmitted)
 	}
 	// The plugin-token leg too: B's plugin must have been ADMITTED on its own
-	// door (its message stored as B's, its claim answered "nothing for you"),
-	// or its clean answers everywhere else are only the refusal of an unknown
-	// token. The result route names A's draft, so it is NOT among them.
+	// door (its message stored as B's, its two claims — the drafts' and the
+	// task writes' — answered "nothing for you"), or its clean answers
+	// everywhere else are only the refusal of an unknown token. The result
+	// routes name A's draft and A's write, so they are NOT among them; the
+	// reference listing names no namespace in the walk (400).
 	plugAdmitted := 0
 	for _, res := range bResults {
 		if strings.HasPrefix(res.via, "plugin-token") && is2xx(res.status) && isolationClasses[res.route] != classPublic {
@@ -1697,8 +1731,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 			}
 		}
 	}
-	if plugAdmitted != 2 {
-		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message and claim routes", plugAdmitted)
+	if plugAdmitted != 3 {
+		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message and two claim routes", plugAdmitted)
 	}
 	// The device-credential leg: B's device must have been ADMITTED on its own
 	// tier (its config read, its own unpair) and nowhere else. The push PUT is
@@ -2112,6 +2146,14 @@ func (m *isoMirror) AnswerHermesApproval(ctx context.Context, host, _, _, _, _ s
 		return mirror.ErrHostOffline
 	}
 	return mirror.ErrHermesApprovalGone
+}
+
+// AnswerOpenCodeAsk: as AnswerHermesApproval — A's own host has no such ask.
+func (m *isoMirror) AnswerOpenCodeAsk(ctx context.Context, host, _, _, _, _ string) error {
+	if !m.mine(ctx) || host != m.host {
+		return mirror.ErrHostOffline
+	}
+	return mirror.ErrOpenCodeAskGone
 }
 
 // isoUpstream records the credentials the proxy injected.

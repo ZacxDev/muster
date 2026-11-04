@@ -287,7 +287,7 @@ those agents with a build that still has the kind before upgrading.
 ### A claude-code agent's repository
 
 A claude-code agent can be dispatched with a repository (`owner/name`, and a
-branch), from the dispatch forms, the API or the chief's `task_dispatch`, like a
+branch), from the dispatch forms, the API or the chief's `agent_dispatch`, like a
 gateway agent — but only one of your **connected** GitHub repositories, from
 every door (its session starts pre-trusted in the checkout, so the repository's
 own `.claude/` runs beside the subscription token; see below). An agent without
@@ -343,8 +343,8 @@ same resume (`--resume` of its own conversation by id).
 
 To start one from the chief: the repository must be one of your connected
 repositories (in the GitHub App's installation, [github-app.md](github-app.md)),
-make sure a `github` connector exists, then have the chief call `task_dispatch`
-with `repo`.
+make sure a `github` connector exists, then have the chief call `agent_dispatch`
+with `target: "pod/claude-code"` and `repo`.
 
 ## Talking to an agent
 
@@ -393,7 +393,7 @@ a turn it is running is not stopped first — the pod's teardown ends it.
 
 After a **successful** teardown, on both doors:
 
-- if the agent was the one the chief's `task_dispatch` started on its task, the
+- if the agent was the one the chief's `agent_dispatch` started on its task, the
   chief's one start on that task is **released** (an
   `task.chief_dispatch_released` row in the chief-dispatch ledger; nothing is
   deleted), so the chief may start one new agent there — see
@@ -404,8 +404,9 @@ After a **successful** teardown, on both doors:
 **The task is kept on both doors** (unlike deleting the task, which tears its
 agent down). Only `agent_destroy` also moves it back: a task still
 `in_progress` with no other live agent goes to `open` (status writer
-`agent-destroy-reopen`), which `task_dispatch` needs (open, ungated, no live
-agent). The write is conditional — it moves the task only while it is still
+`agent-destroy-reopen`), which `agent_dispatch` needs (open, ungated, no live
+agent). A plugin task reference is never moved back: its status is the
+upstream's ([plugins.md](plugins.md#task-references)). The write is conditional — it moves the task only while it is still
 `in_progress` — so a status you set meanwhile is kept. After the browser's
 Delete the task stays as it was; reopen it on its card.
 

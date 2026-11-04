@@ -69,6 +69,11 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask))
+	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
+	// the writes people and agents queued on this plugin's references.
+	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(s.handlePluginTaskList))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/claim", s.requirePluginToken(s.handlePluginTaskWritesClaim))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/{id}/result", s.requirePluginToken(s.handlePluginTaskWriteResult))
 	// A reply sent directly, stamped with the message it answers
 	// (owner_replies.go): its waiting route ends owner_answered. 404 with routing off.
 	mux.HandleFunc("POST "+pluginOwnerAnsweredPath, s.requirePluginToken(s.handlePluginOwnerAnswered))
@@ -201,8 +206,9 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 // dispatchPluginMessage hands a NEW message m on: answered by muster itself
 // when it is a fleet-report request from a listed, verified sender
 // (answerFleetReport), else to the session that started its thread
-// (routeByThread), else to the session that authored the pull
-// request it reviews (routeByPR), else — when that session's window is gone
+// (routeByThread), else — a review of a pull request already merged or
+// closed — settled by muster (settleClosedPRReview), else to the session that
+// authored the pull request it reviews (routeByPR), else — when that session's window is gone
 // and the gate allows it — to that session RESUMED (startMailResume, which
 // falls back to the chief itself), or else to the owner's chief. A route is
 // made detached from the request, as the chief's delivery is: a client that
@@ -211,7 +217,8 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 // chief's while the chief never sees it.
 func (s *Server) dispatchPluginMessage(r *http.Request, p plugins.Plugin, m plugins.Message) {
 	ctx := context.WithoutCancel(r.Context())
-	if s.answerFleetReport(ctx, p, m) || s.routeByThread(ctx, p, m) || s.routeByPR(ctx, p, m) || s.startMailResume(ctx, p, m) {
+	if s.answerFleetReport(ctx, p, m) || s.routeByThread(ctx, p, m) || s.settleClosedPRReview(ctx, p, m) ||
+		s.routeByPR(ctx, p, m) || s.startMailResume(ctx, p, m) {
 		return
 	}
 	s.deliverPluginMessage(r, p, m)

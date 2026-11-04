@@ -85,6 +85,11 @@ type attentionSummaryItem struct {
 	Since   int64 `json:"since"`
 	AgeSecs int64 `json:"age_secs"`
 	Offline bool  `json:"offline"`
+	// Target is a notice's mirrored window as tmux takes it,
+	// "<session>:<window index>" (attentionItem.Target), "" for every other
+	// item: with Host, what a host's jump key switches to (`muster nudge
+	// next`).
+	Target string `json:"target,omitempty"`
 	// URL is where the owner acts on it, absolute on MUSTER_PUBLIC_URL; ""
 	// when that is not set (the summary names no origin it was not told).
 	URL string `json:"url"`
@@ -157,7 +162,7 @@ func attentionSummaryHostOf(h mirror.HostView) attentionSummaryHost {
 // origin without a trailing slash, "" for none.
 func attentionSummaryItemOf(it attentionItem, base string, now time.Time) attentionSummaryItem {
 	out := attentionSummaryItem{Key: it.Key, Kind: it.Kind, Host: it.host, Title: textplain.TitleKeeping(it.Source, it.target),
-		Why: firstLine(attentionPushBody(it)), Offline: it.Offline}
+		Why: firstLine(attentionPushBody(it)), Offline: it.Offline, Target: it.Target}
 	if out.Host == "" {
 		out.Host = it.card.ref.Host // an ask from a mirrored session
 	}

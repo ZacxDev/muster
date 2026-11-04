@@ -302,12 +302,12 @@ func AskStall(r Result, threshold float64) bool {
 // (it said leave, or proposed a nudge the rule refuses). Muster puts NO session
 // text in it — only the focus title (the summarizer's, which the Asks page
 // already shows) and its own sentence; its only words about the session are the
-// chief's own reason (GenericAskRead) — and its two options are not an answer:
-// choosing one relays nothing (IsGenericChoice).
-const genericAskBody = "Its last turn looks like it asked you something."
+// chief's own reason (GenericAskRead). Live, it is a notice's message.
 
-// GenericAskOptions are the generic ask's options.
-var GenericAskOptions = []string{"Open session", "Dismiss"}
+// GenericAskBody is muster's own sentence about a session that looks like it
+// asked something, with no question of the chief's (the generic ask; a
+// generic notice's message).
+const GenericAskBody = "Its last turn looks like it asked you something."
 
 // MaxGenericReadRunes caps the chief's reason on the generic ask: a sentence
 // or two.
@@ -320,7 +320,7 @@ func GenericAskQuestion(title, read string) string {
 	if t == "" {
 		t = "A session"
 	}
-	return t + " is waiting on you. " + genericAskBody + GenericAskRead(read)
+	return t + " is waiting on you. " + GenericAskBody + GenericAskRead(read)
 }
 
 // GenericAskRead is the generic ask's line for the chief's read of the
@@ -337,33 +337,4 @@ func GenericAskRead(read string) string {
 		return ""
 	}
 	return "\n\nThe chief's read: " + cut(r, MaxGenericReadRunes)
-}
-
-// IsGenericAsk reports whether options are the generic ask's.
-func IsGenericAsk(options []string) bool {
-	if len(options) != len(GenericAskOptions) {
-		return false
-	}
-	for i := range options {
-		if options[i] != GenericAskOptions[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// IsGenericChoice reports whether answer, to a decision whose options are
-// options, is one of the generic ask's options — which is not an answer to
-// forward to the session.
-func IsGenericChoice(options []string, answer string) bool {
-	if !IsGenericAsk(options) {
-		return false
-	}
-	a := strings.TrimSpace(answer)
-	for _, o := range GenericAskOptions {
-		if a == o {
-			return true
-		}
-	}
-	return false
 }

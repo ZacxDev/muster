@@ -245,6 +245,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 			cards[i].PrimaryChief = cards[i].ID == pc.ID
 		}
 	}
+	// Each entry's previous focus titles, one read for all of them (the
+	// command palette's search: withPreviousTitles).
+	s.withPreviousTitles(ctx, cards, mirrors)
 	s.withCardAttention(ctx, cards, mirrors)
 	// The Idle section (ui.InIdleSection), with the server's clock, after the
 	// pins are marked: decided on every build, so an entry active again leaves
@@ -858,11 +861,23 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 		s.logger.Printf("agents: dispatch status get task %d: %v", noteID, err)
 		return
 	}
-	if n.Status != notes.StatusOpen {
+	// A reference advances (a queued in_progress for its upstream) only from
+	// an open SNAPSHOT: one already in progress upstream (dispatchableStatus
+	// lets the chief start an agent on it) needs no write, and one in review
+	// or complete there must not be pulled back.
+	from := n.Status
+	if n.Ref != nil {
+		from = n.Ref.Snapshot.Status
+	}
+	if from != notes.StatusOpen {
 		return
 	}
 	if _, err := s.setNoteStatus(ctx, writerDispatchAdvance, noteID, notes.StatusInProgress); err != nil {
-		s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		// A reference's advance is queued for its upstream (task_ref_queue.go),
+		// which broadcast already: the row moves when the plugin confirms.
+		if !errors.Is(err, errQueuedUpstream) {
+			s.logger.Printf("agents: dispatch status set task %d in_progress: %v", noteID, err)
+		}
 		return
 	}
 	// 🔴 BROADCAST AFTER THE COMMIT, AND THIS IS THE ONLY POST-COMMIT EVENT THE
@@ -927,6 +942,13 @@ type dispatchParams struct {
 	// pool (agents.Agent.WorkerPool); "" for none. Refused for any other kind
 	// and for a name agents.ValidWorkerPool refuses.
 	WorkerPool string
+	// StartWithoutKickoff brings the new agent up with Provisioner.Start
+	// instead of Dispatch: an instance with no first turn claimed — what the
+	// form's "Save for later, then Start" ended in — WITHOUT the save. The row
+	// is created `provisioning` and Start keeps it so; a save would store
+	// `stopped` first, and in that window the agent would drop out of the
+	// chief's live count (agent_dispatch's worker_pool without a prompt).
+	StartWithoutKickoff bool
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
@@ -939,7 +961,7 @@ var ErrDispatchRefused = errors.New("dispatch refused")
 
 // resolveKind is resolveKindAccount's kind half: the kind a dispatch names,
 // resolved, known, enabled on this deployment and usable by the caller — or the
-// refusal. The chief's task_dispatch asks it BEFORE it spends a reservation, so
+// refusal. The chief's agent_dispatch asks it BEFORE it spends a reservation, so
 // a kind it can never start is refused without one; createAndDispatchAgent asks
 // it again, through resolveKindAccount.
 func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
@@ -1057,10 +1079,10 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		}
 	}
 	// 🔴 A CLAUDE-CODE AGENT'S REPOSITORY MUST BE A CONNECTED ONE, from every
-	// door (the forms, the API, task_dispatch): its session starts PRE-TRUSTED
+	// door (the forms, the API, agent_dispatch): its session starts PRE-TRUSTED
 	// in the checkout (ccd seed), so the repository's .claude/settings.json
 	// (hooks, env) runs beside the subscription token. One predicate,
-	// connectedRepo, the same task_dispatch applies to every kind before it
+	// connectedRepo, the same agent_dispatch applies to every kind before it
 	// reserves. Before the row, so a refusal creates nothing.
 	if agents.RunsPodSupervisor(kind) && p.Repo != "" {
 		if why := s.connectedRepo(ctx, p.Repo); why != "" {
@@ -1129,6 +1151,12 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// adapter makes to it (see Provisioner).
 	opCtx := context.WithoutCancel(ctx)
 	safeGo(s.logger, "dispatch "+rec.Name, func() {
+		if p.StartWithoutKickoff && !p.Kickoff {
+			if err := s.ext.Provisioner.Start(opCtx, rec.ID); err != nil {
+				s.logger.Printf("agents: start %s: %v", rec.Name, err)
+			}
+			return
+		}
 		if err := s.ext.Provisioner.Dispatch(opCtx, rec.ID, p.Kickoff); err != nil {
 			s.logger.Printf("agents: dispatch %s: %v", rec.Name, err)
 			return
@@ -2010,7 +2038,7 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 // (handleAgentWS, handleAgentSend) and notTyped from every other caller. When it
 // is a's owner, the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
 // the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
-// thing task_dispatch's owner_asked releases a gate on (chief_owner_release.go).
+// thing agent_dispatch's owner_asked releases a gate on (chief_owner_release.go).
 // TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn pins who passes what.
 func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit) ([]agents.TurnPart, error) {
 	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})

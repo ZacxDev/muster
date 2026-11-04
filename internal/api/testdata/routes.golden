@@ -26,6 +26,7 @@
 # DELETED from this file is not only a server change; it can make a client verb
 # unreachable, and that test is where it surfaces.
 /connect/{connector}/{host}/{path...}
+/llm/
 DELETE /agent/approvals/{id}
 DELETE /agents/{id}
 DELETE /api/device
@@ -111,6 +112,7 @@ GET /mirror/view/send
 GET /mirror/view/subagent
 GET /mirror/view/suggest
 GET /mirror/view/ws
+GET /plugin/v1/tasks
 GET /plugins
 GET /readyz
 GET /send-queue
@@ -136,6 +138,7 @@ GET /ui/connectors/{name}/rotate
 GET /ui/focus/history
 GET /ui/nav/agents
 GET /ui/notifications
+GET /ui/palette/history
 GET /ui/tags
 GET /ui/tasks
 GET /ui/tasks/new
@@ -208,6 +211,7 @@ POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
 POST /attention/hermes/approve
+POST /attention/opencode/answer
 POST /auth/claim
 POST /auth/confirm
 POST /auth/confirm/passkey/options
@@ -225,6 +229,7 @@ POST /flows/requests/{id}/deny
 POST /flows/runner-tokens
 POST /flows/runner-tokens/{id}/revoke
 POST /invite
+POST /llm/v1/messages
 POST /login
 POST /logout
 POST /mcp
@@ -241,6 +246,8 @@ POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages
 POST /plugin/v1/messages/{id}/owner-answered
+POST /plugin/v1/task-writes/claim
+POST /plugin/v1/task-writes/{id}/result
 POST /plugin/v1/tasks
 POST /plugins
 POST /plugins/drafts/{id}/approve

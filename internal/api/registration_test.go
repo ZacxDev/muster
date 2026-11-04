@@ -29,6 +29,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -101,6 +102,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		ChiefPrefs:      &memChiefPrefs{},
 		ChiefNudge:      &ChiefNudges{},
 		ChiefNudges:     chiefnudge.NewPG(nil),
+		Episodes:        sessionstate.NewPG(nil),
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
 		MirrorTokens:    stubMirrorTokens{},
@@ -111,6 +113,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		// NON-ZERO on purpose: an empty sender list is the feature off.
 		PRMail:     &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
 		PRSessions: stubPRSessions{},
+		ClosedPRs:  &ClosedPRs{},
 		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
 			Paths: plugins.FleetReportPaths{"/srv/example-work"}, Replies: stubMusterReplier{}},
 		// NON-ZERO on purpose: an empty allowlist is the feature off.

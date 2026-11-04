@@ -40,7 +40,7 @@ import (
 // refuses every caller that is not a mirrored session (mirroredSession), and the
 // store refuses an ask raised by any mirrored session on the caller's HOST
 // (attention.ErrSameHost: the host is what the token proves; the session is a
-// pane the caller names). An MCP answer IS accepted as task_dispatch
+// pane the caller names). An MCP answer IS accepted as agent_dispatch
 // instructions, by operator decision ("Just remove the filter"; the accepted
 // risk is in docs/attention.md); the kickoff names it as given over MCP.
 //
@@ -153,6 +153,19 @@ func (c toolCaller) author() string {
 		return c.agent.Name
 	}
 	return c.asker.Label
+}
+
+// refOrigin is the caller as a write queued on a task reference names it: its
+// comment author, the agent, and a mirrored session's id.
+func (c toolCaller) refOrigin() refOrigin {
+	o := refOrigin{Author: c.author()}
+	if c.agent != nil {
+		o.Agent = c.agent.Name
+	}
+	if c.asker.MirrorSession != "" {
+		o.Session = c.asker.MirrorSession
+	}
+	return o
 }
 
 // mirroredSession reports whether c is one of the owner's mirrored Claude Code
@@ -298,6 +311,8 @@ func (s *Server) toolAttentionAnswer(ctx context.Context, c toolCaller, argument
 		return toolErr("no such ask: %d", id)
 	case errors.Is(err, attention.ErrSameHost):
 		return toolErr("ask %d was raised by a mirrored session on this host (%s): no session answers an ask raised on its own host; your owner answers it on the Attention view or from another host", id, src.Host)
+	case errors.Is(err, attention.ErrNotice):
+		return toolErr("ask %d is a notice, not a question: it has no answer (your owner opens its session or dismisses it)", id)
 	case errors.Is(err, attention.ErrNotOpen):
 		return toolErr("ask %d is no longer open (it is %s)", id, a.Status)
 	case errors.Is(err, attention.ErrInvalid):
@@ -783,9 +798,13 @@ func (s *Server) toolTaskComment(ctx context.Context, c toolCaller, arguments st
 	if strings.TrimSpace(in.Body) == "" {
 		return toolErr("body required")
 	}
-	cm, err := s.ext.Notes.AddComment(ctx, notes.Comment{NoteID: in.ID, Author: c.author(), Body: in.Body})
+	cm, queued, err := s.addTaskComment(withRefOrigin(ctx, c.refOrigin()), commentByActor,
+		notes.Comment{NoteID: in.ID, Author: c.author(), Body: in.Body})
 	if err != nil {
 		return s.taskErr(in.ID, err, "comment on")
+	}
+	if queued != nil {
+		return toolJSON(map[string]any{"queued": true, "write_id": queued.ID, "message": refQueuedText})
 	}
 	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(in.ID, 10))
 	return toolJSON(cm)
@@ -807,7 +826,10 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 	if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
 		return toolErr("%s", why)
 	}
-	n, err := s.setNoteStatus(notes.ForAgent(ctx), writerTaskTool, in.ID, in.Status)
+	n, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(ctx, c.refOrigin())), writerTaskTool, in.ID, in.Status)
+	if errors.Is(err, errQueuedUpstream) {
+		return toolJSON(map[string]any{"queued": true, "task_id": n.ID, "message": refQueuedText})
+	}
 	if errors.Is(err, notes.ErrCompleteLocked) {
 		return toolErr("%s", agentStatusRefusal(notes.StatusComplete, in.Status))
 	}

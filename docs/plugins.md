@@ -290,6 +290,185 @@ The task is filed the way `POST /api/tasks` files one, and you get the usual
 "New task" push. It has no `gate:` or `auto:` tag, so nothing dispatches it
 until you do. The comment's author is `plugin:<plugin name>`.
 
+### Task references
+
+A task filed with `create` is a **copy**: from then on it and the upstream
+record drift apart, because a status or comment written on one never reaches
+the other. A **reference** is the alternative. The upstream stays canonical,
+and muster keeps the key, a read-only **snapshot** of the record that it
+renders, and its own links to the task (routes, agents, attention, sessions).
+A status or comment that you or an agent write on a reference is not stored.
+It is **queued** for the plugin, which applies it upstream and then pushes a
+fresh snapshot. muster never calls the plugin: the plugin claims the queue.
+
+```json
+{"key": "tracker:4711",
+ "reference": {
+   "title": "Rotate the build key", "url": "https://tracker.example.invalid/t/4711",
+   "status": "in_progress", "status_label": "in progress", "rev": "5",
+   "updated_at": "2026-11-03T10:00:00Z", "body": "…",
+   "comments": [{"id": "c1", "author": "A. Person", "body": "…", "created_at": "2026-11-02T09:00:00Z"}],
+   "detach": false},
+ "route_to_chief": true, "notice": "assigned", "event_id": "upstream-msg-123"}
+```
+
+| field | rule |
+|---|---|
+| `reference.status` | One of muster's four: `open`, `in_progress`, `ready_for_review`, `complete`. Anything else is a `400`. Mapping the upstream's own statuses onto these is the plugin's job. |
+| `reference.status_label` | Shown verbatim on the card and the task page: one line of plain text, cut at 100 characters. |
+| `reference.updated_at` | Required (RFC 3339). It decides staleness (below). |
+| `reference.title`, `body` | The task's title and body follow them. `body` is cut at 16 KiB. An empty title shows the key. |
+| `reference.url` | Linked from the task page. A link that is not `http(s)`, or is over 2 KiB, is dropped. |
+| `reference.comments` | The upstream's thread, shown read-only. At most 50 are kept: the newest, by `created_at`. Each body is cut at 16 KiB. |
+| `reference.detach` | `true` dismisses the reference (the soft dismissal an owner's dismiss is; an agent on it is left running). A later upsert for the key files a new row. |
+| `event_id` | 1 to 200 bytes, no spaces or control characters. It names the upstream event for routing, as `comment` does for a copy, and it is required with `route_to_chief`. Resending the same `event_id` never routes twice. |
+
+With `reference`, `create` and `comment` are refused (`400`): a reference has
+no relay comment. Text is cut, never refused.
+
+**One row per key.** The upsert works on the live reference for the key (there
+is at most one per owner). If there is none, it **converts** the copy row your
+plugin filed for the key, in place: the same id, so routes, agents and links
+survive. The copy row is the oldest open one, or else the newest complete one.
+Your plugin's own relay comments on it (author `plugin:<name>`) are retracted,
+and every other comment stays on the task as muster-only history. With no row
+at all, a new one is filed, with the usual "New task" push.
+
+**A rotated plugin takes its references over.** A plugin has no token
+rotation: rotating is revoking it and creating a new one, with a new id. A
+reference held by a plugin that has been revoked (or deleted) is **adopted**
+by the next of your plugins to upsert its key: the reference moves to the new
+plugin, and so do its unfinished writes (a write the old plugin had claimed
+but not reported is pending again, `attempts` kept). While the holding plugin
+is still live, another plugin's upsert is a `409`. The listing below shows a
+revoked plugin's references to your other plugins, so a rotated plugin's first
+reconcile adopts them all.
+
+**Stale snapshots apply nothing.** An upsert whose `updated_at` is older than
+the stored snapshot's is accepted (`200`, `"applied": false`) but changes
+nothing. An equal one applies again, so a resend is harmless. A snapshot
+identical to the stored one (title, body, status, label, url, comments, rev
+and `updated_at` all the same) does not rewrite the task, move its
+`updated_at` or notify open pages: only the time it was last synced moves,
+which clears the **stale** badge.
+
+A reference's title and body are the upstream's. Editing either on muster
+(the edit form, `PATCH /api/tasks/{id}`) is refused with `409` ("this task is
+a reference; edit it upstream"), and the edit form shows them read-only. Its
+other fields (tags, directory, model, repository, branch) stay editable.
+
+The status follows the snapshot through the task-status writer
+`plugin_reference`: it is logged like any status write and sends the usual
+pushes. But an upstream close does **not** stop the agent your chief started
+on the task ([below](#completing-a-task-stops-the-chiefs-agent)): an upstream
+close is not you stopping an agent.
+
+| answer | meaning |
+|---|---|
+| `201 {"id", "created": true, "reference": true, "applied": true, …}` | A reference was filed. |
+| `200 {"id", "created": false, "reference": true, "applied", "converted", "detached"}` | The reference (or the copy row it converted) was updated, left alone as stale, or detached. |
+| `200 {"id": null, …}` | A detach found nothing to detach. |
+| `409 {"error"}` | Another of your plugins holds the live reference for this key, and that plugin is live. |
+
+With `route_to_chief` the answer carries `"routed"`, and the routing answers
+(`503`, `429`, `409`) are the copy route's. The chief's task event quotes the
+snapshot's status label and its newest comment.
+
+#### Writes on a reference are queued
+
+Every status write (the card, `PATCH /api/tasks/{id}/status`, `muster task
+status`, the `task_set_status` tool, an agent's own route and tool, the
+dispatch advance, which on a reference is queued only while the snapshot
+is `open`) and every comment from a person or agent (the card,
+`POST /api/tasks/{id}/comments`, the `task_comment` tool, an agent's own
+route and tool, a task route's answer) on a reference:
+
+- does not change the task's status and stores no comment;
+- queues a write for the plugin that owns the reference, with the author the
+  local write would have carried, and the agent and session when known;
+- answers success with `"queued": true` (`202` on HTTP; a tool says the write
+  was sent to the upstream and will show once the plugin confirms).
+
+The usual rules still apply first: an agent may not set `complete`, and may
+not move a task out of it. muster's own comments (the idle reaper's `stale`
+note, a merge record, a gate release) stay on the task as muster-only
+history and are never queued. A reference cannot be the loser of a merge
+(`409`): retiring the loser would close the upstream task. Destroying an
+agent on a reference does not reopen it (on an ordinary task it does), for
+the same reason. Your chief may start an agent on a reference that is `open`
+or `in_progress` (the upstream often has it in progress before muster starts
+one), as long as no live agent is already on it.
+
+The task page shows queued writes in the thread as "sending…" or "failed:
+\<error\>", when the snapshot was last applied, and a **stale** badge once
+that was more than 15 minutes ago. Keeping snapshots fresh is the plugin's
+job: muster never asks for one, so a plugin should push a snapshot for each
+of its live references on a schedule (a reconcile), as well as on each
+upstream notice.
+
+#### `POST /plugin/v1/task-writes/claim`
+
+`{"wait_s": 0-25, "limit": 1-20}` long-polls for your plugin's queued writes
+(out-of-range values are clamped). The answer is always
+`200 {"writes": [...]}`, empty when nothing arrived within `wait_s`. Each
+write is now leased to you for 2 minutes:
+
+```json
+{"id": 7, "task_id": 42, "key": "tracker:4711", "kind": "status",
+ "status": "complete", "author": "user", "agent": "", "session": "",
+ "state": "claimed", "attempts": 1, "lease_until": "…", "created_at": "…"}
+```
+
+`kind` is `status` (with `status`) or `comment` (with `body`). Only
+writes on references your plugin owns are handed to you. A write whose lease
+lapses goes back to pending and is handed out again, with `attempts` one
+higher, so keep your own ledger by write `id`: a crash between applying the
+write upstream and reporting it must not apply it twice. A write handed out
+10 times without a result is failed with `gave up after 10 attempts`. One
+task's writes are handed out **in order, one at a time**: a write is not
+handed out while an earlier write on the same task is still pending or
+claimed, so report each one before the next on that task arrives. A write
+whose task is no longer your live reference (it was dismissed, say) is
+failed with a reason and not handed out. A failed write stays visible on the
+task page; there is no way to dismiss one yet.
+
+#### `POST /plugin/v1/task-writes/{id}/result`
+
+`{"ok": true|false, "error": "…", "conflict": false, "reference": {…}}`
+records the result of a write you claimed: `done`, or `failed` with `error`
+(`conflict: true` marks a failure because the upstream moved under the
+write). Include a fresh `reference` snapshot whenever you have one. It is
+applied exactly like an upsert, except that it never files a new row.
+`200 {"id", "state", "applied"}`. The first result wins: sending it again,
+either way, answers the stored state. A write your plugin was never leased is
+`404`, and a bad snapshot is `400` and records nothing. Your own `complete`,
+once reported done, stops the agent your chief started on the task, just as a
+`complete` stored locally does.
+
+#### `GET /plugin/v1/tasks?namespace=<ns>&live=true`
+
+The live tasks (not dismissed, not merged away) in `ns` that **your plugin**
+may see: the references your plugin holds, the references a revoked (or
+deleted) plugin of yours holds (the ones your next upsert would adopt, so a
+rotated plugin finds them by reconciling or by `key=`), and the copy rows
+(filed with `create`) that carry a key in `ns`. A live plugin's reference is
+never listed to another. Use it to convert your copy rows and to reconcile.
+
+| parameter | meaning |
+|---|---|
+| `namespace` | Required: one of this server's plugin task namespaces. |
+| `live=true` | Required (only live rows are listed). |
+| `key=<key>` | One full key in `namespace`: at most one row, the one an upsert for that key would work on (the reference, else the copy row it would convert). |
+| `open=true` | Leave out `complete` tasks. |
+| `after=<task id>` | Only tasks with an id greater than this. |
+
+Tasks come in ascending id order, at most 500 a page:
+`200 {"tasks": [{"id", "key", "status", "is_reference", "updated_at",
+"comments": [{"id", "author", "body", "created_at", "retracted"}]}],
+"truncated": bool, "next_after": <id or null>}`. When `truncated` is true,
+`next_after` is the last id on the page: pass it as `after` for the next
+one. A bad parameter is a `400`.
+
 ## Routing a task to the chief
 
 With `MUSTER_TASK_ROUTING=1`, a plugin that files a task with
@@ -351,12 +530,12 @@ it. The flow:
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `task_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
+| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `agent_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent — **one button per target**, *"agent_dispatch on pod/claude-code: start a new agent on it"*, since the tool has no default target), returned to the chief as `actions_offered`. Your click reaches the chief as a turn you did not type, so it cannot pass `owner_asked`; instead `agent_dispatch` on that task then takes **exactly the target you clicked** (any other is refused, naming yours). `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `agent_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
-| `task_dispatch {task_id, repo?, kind?, instructions?, owner_asked?}` | Starts a new agent on the task. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 8a](#task_dispatch-the-guards)). `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
+| `agent_dispatch {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?}` | Starts a new agent: on the task, or — without `task_id` — from a prompt alone ([below](#agent_dispatch-the-guards)). `target` is **required and has no default**: today `pod/claude-code` or `pod/gateway` (a `host/<host>/claude` or `host/<host>/opencode` target is refused until host spawning ships, [design](design/chief-dispatch.md)). A call without one is refused with the targets that exist now and the budget, so the chief asks you which. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 13](#agent_dispatch-the-guards)). Either pod kind gets the task's repository and branch (`base` picks another branch); a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent gets the task's model, or `model`. `prompt` (at most 8 KiB) opens the agent's first message. `worker_pool` makes a claude-code agent a [machine-job worker](jobs.md). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. The retired name `task_dispatch` answers *"task_dispatch is replaced by agent_dispatch, which needs a target: ask your owner where to run it"*. | see below |
 
 All three are chief-only, on the agent gateway and over `/mcp`. Handing a task
-to the chief never starts anything by itself: only `task_dispatch` does.
+to the chief never starts anything by itself: only `agent_dispatch` does.
 
 **Until your chief routes the task** the task is listed on `/attention` as
 **Task to route**: while you have no chief or it is not running, busy or
@@ -364,7 +543,7 @@ unreachable (the event stays queued and is retried at each plugin claim), and
 also when the chief took the event and did not act on it (its turn failed, it
 called no tool, or its call was refused). It leaves the list once the chief
 routes the task (`task_route_attention`, `task_forward`, `route_to_session`
-with its `task_id`, or a `task_dispatch` answered `already_dispatched` while an
+with its `task_id`, or an `agent_dispatch` answered `already_dispatched` while an
 agent is running on the task,
 recorded as a `task.chief_routed` audit row) or starts an agent on it, or once the task is
 complete or dismissed. "Routes" is measured per event, from the event's latest
@@ -373,46 +552,104 @@ none: an action before that does not count. So a new event for a task already
 in progress is listed again until the chief routes it, and a queued event can
 reappear on the list after a later failed attempt to hand it over.
 
-### `task_dispatch`: the guards
+### `agent_dispatch`: the guards
 
 Each refusal has its own sentence, in this order:
 
 1. `MUSTER_CHIEF_DISPATCH_OWNERS` is empty: the tool is not offered, and
    refused if called by name.
-2. Your user id is not in `MUSTER_CHIEF_DISPATCH_OWNERS`: you have not opted
+2. The arguments do not decode, or carry a field outside the table above (an
+   old `kind` or `instructions`, a typo): *"arguments are {target, prompt?,
+   task_id?, repo?, base?, model?, worker_pool?, request_key?,
+   owner_asked?}"*. Unknown fields are refused, never ignored.
+3. Your user id is not in `MUSTER_CHIEF_DISPATCH_OWNERS`: you have not opted
    in.
-3. The deployment cannot start agents (no provisioner, or a first message
-   could not be delivered).
-4. `instructions` are over 1 KiB.
-5. `instructions` are given and are not **your own words**: not, verbatim,
-   your answer to an attention ask linked to **this** task. An ask is linked
-   to its task only when muster filed it on the task's behalf
-   (`task_route_attention`, or a mention's route to `/attention`) — never by
-   its question's text, which any asker can write. The answer must be given
-   **through that ask** — on `/attention`, or from one of your mirrored
-   sessions' `attention_answer`, which counts the same (operator decision;
-   the accepted risk is in [attention.md](attention.md#mirrored-claude-code-sessions)) —
-   while a message you write into the
-   chief's chat also settles its open asks, but every one of them at once, on
-   every task, so it counts for none. The comparison is exact
-   after trimming surrounding whitespace and normalising line endings: one
-   word added, a changed letter case or a doubled space is refused. Your
-   answer on another task, another user's answer, the task's own text and
-   the chief's note are all refused. The chief should pass your answer as you
-   typed it; to get one, it calls `task_route_attention` and waits.
-6. `kind` is unknown, not enabled on the deployment (`MUSTER_AGENT_KINDS`), or
-   one you have no credential for.
-7. The **effective** repository — `repo`, or else the task's own — is not
+4. The deployment cannot start agents (no provisioner, or a first message
+   could not be delivered). This refuses a `worker_pool` agent with no prompt
+   too, so every call meets one order.
+5. **The target.** No `target`: *"target is required and has no default: ask
+   your owner where to run this, offering the targets below. Never choose one
+   they did not name."* A target that is not one of the shapes, a pod kind the
+   deployment does not enable (`MUSTER_AGENT_KINDS`), and a host target (no
+   host can start agents yet) each have their own sentence. Every one of them
+   carries `targets` — the pod kinds enabled here that you have a credential
+   for, and the hosts that can spawn now (none yet) — and the `budget`:
+
+   ```json
+   {"error": "target is required and has no default: …",
+    "targets": {"pods": ["pod/claude-code"], "hosts": []},
+    "budget": {"live": 1, "live_cap": 5, "today": 3, "daily_cap": 10, "live_agents": ["…"]}}
+   ```
+6. `request_key` is not 1-64 of `[A-Za-z0-9._:-]`.
+7. `worker_pool`: the target is not `pod/claude-code`, a `task_id` is given (a
+   pool worker serves machine jobs, not a task), or the name is not 1-63 of
+   `[a-z0-9-]` not starting with `-`.
+8. `model` on any target but `pod/gateway` (*"this target takes its model from
+   its own configuration"*).
+9. With **no task**: `owner_asked: true` is missing, `request_key` is missing,
+   or `prompt` is missing (a `worker_pool` agent may have none).
+10. `prompt` is over 8 KiB.
+11. **`request_key`**, when given — decided **first under the lock**
+   (guard 14), so guards 12–13 still run for a retry. A key is the chief's,
+   per request of yours: the same key with the same parameters (target, task, repository
+   ignoring case, base, model, worker pool, the cleaned prompt, owner_asked)
+   within 24 hours **replays** — the first start's result as it stands now,
+   `{"replayed": true, "agent_id", "agent", "status", "budget"}`, starting
+   nothing and spending nothing, and running none of the checks under the lock
+   after it (your turn among them). The same
+   key with any parameter changed is refused (*"request_key %q was used in the
+   last 24 hours for a different dispatch: use a new key for a new request"*).
+   Keys are per owner. A start released because its create was refused does
+   not hold its key; one whose create failed after it was spent does: that
+   failure is recorded (`task.chief_dispatch_failed`, naming the reservation),
+   and its replay answers `{"started": false}`. Each ledger write after the
+   reservation (that marker, and the record of the agent started) is retried
+   once; if it fails again the call answers with an error saying a retry's
+   answer would be wrong — never a silent "starting". A reservation with no agent and
+   no such record replays `"status": "starting"`. The key lives in the reservation's audit row
+   (`detail.request_key`, `detail.request_hash`), looked up through migration
+   0074's index.
+12. Without `owner_asked` (only possible on a task), a `prompt` that is not
+   **your own words**: not, verbatim, your answer to an attention ask linked
+   to **this** task. An ask is linked to its task only when muster filed it on
+   the task's behalf (`task_route_attention`, or a mention's route to
+   `/attention`) — never by its question's text, which any asker can write.
+   The answer must be given **through that ask** — on `/attention`, or from
+   one of your mirrored sessions' `attention_answer`, which counts the same
+   (operator decision; the accepted risk is in
+   [attention.md](attention.md#mirrored-claude-code-sessions)) — while a
+   message you write into the chief's chat also settles its open asks, but
+   every one of them at once, on every task, so it counts for none. The
+   comparison is exact after trimming surrounding whitespace and normalising
+   line endings: one word added, a changed letter case or a doubled space is
+   refused. Your answer on another task, another user's answer, the task's own
+   text and the chief's note are all refused. The chief should pass your
+   answer as you typed it; to get one, it calls `task_route_attention` and
+   waits.
+
+   12a. On a task whose newest answer of yours to an ask about it is one of
+   `task_route_attention`'s per-target buttons, a call without `owner_asked`
+   names another target (*"your owner chose pod/gateway for this task …"*).
+   This only narrows: it lets nothing through the other guards refuse.
+
+   12a′. The pod kind is one you have no credential for.
+
+   12b. The **effective** repository — `repo`, or else the task's own — is not
    `owner/name`, you have no GitHub connection, or it is not one of your
-   connected repositories. This holds for every kind. The chief picks `repo`
+   connected repositories. This holds for every target. The chief picks `repo`
    while reading outside text, and a task's repository may have been written
    by an agent (`task_create_gated`), so either may only be one of your own.
    The task is re-read under the lock below, and a repository changed in
    between is refused.
-8a. `owner_asked: true` on an open **gated** task: muster starts the agent and
-   releases the gate on **a turn you typed** — and only on one — when all of
-   these hold, each refused with its own sentence otherwise (the gate stays on
-   and nothing starts):
+13. **`owner_asked: true` always runs the owner's-turn check**, on a task the
+   chief gated, on an ungated task and with no task. A turn a plugin message,
+   a task event, mail or the chief itself started can therefore never start an
+   agent with no task, nor get its text accepted as your wishes. On an open
+   **gated** task muster starts the agent and releases the gate on **a turn
+   you typed** — and only on one — when all of these hold, each refused with
+   its own sentence otherwise (the gate stays on and nothing starts); on an
+   ungated task or with no task the same conditions apply, worded without "the
+   gate" (and, with no task, without `task_route_attention`, which needs one):
    - the gate is the one the chief set with `task_create_gated` (muster records
      it when the task is filed). A gate you put on a task yourself — even on a
      task the chief filed — is never released here; only the board removes it;
@@ -448,51 +685,59 @@ Each refusal has its own sentence, in this order:
      reach;
    - the call came over MCP, from a Claude Code session. A chief session on
      the gateway runtime runs its tools inside muster and is no CLI, so it
-     never releases a gate.
+     can never pass `owner_asked`.
 
-   The chief names no message: muster takes the one your running turn stored.
-   The checks run after guards 4–7 and again under the lock below; the gate is
-   removed only **after** the agent was created, so a refusal from guard 8 on
-   (a cap, say) leaves the task gated. On a release the task gets a comment by
-   `muster` naming your message and quoting it verbatim, you get a push ("your
-   chief released the gate on task #N on your message: …"), and the start's
-   audit row and result carry `gate_released_by_owner_message`. Muster cannot
-   tell whether your message was **about** this task: the chief decides that,
-   and the push shows you at once if it misread you. Without `owner_asked`, or
-   on an ungated task, nothing here runs. A gated task filed before this
-   release has no record of its gate, so only the board releases it. If the
-   agent starts but the gate tag cannot be removed, the comment, the push and
-   the result (`gate_not_removed`) say so.
-8. Under a per-owner lock: **one start per task** — until you destroy the
-   agent it made. A task the chief already started an agent for answers with
-   that start (`already_dispatched`) and starts nothing, whatever became of the
-   agent, **unless you destroyed that agent** (its page's Delete, or
-   `agent_destroy` from your mirrored session): that destroy records a release
-   (`task.chief_dispatch_released`; nothing is deleted) and the chief may
-   start **one** new agent on the task (operator decision: *"Owner's destroy
-   resets the chief's allowance"*). The chief cannot release its own start,
-   destroying an agent it did not start releases nothing, and a failed
-   teardown releases nothing. A second agent alongside a live one is yours to
-   start, from its card.
-9. The task is not yours, is gated (`gate:` tag), names a different
+   With `owner_asked` passed, the `prompt` is accepted as the chief's relay of
+   that message of yours, without guard 12. The chief names no message: muster
+   takes the one your running turn stored. Your turn is checked **once, under
+   the lock below** (guard 15), on the turn in flight then; on a gated task
+   `verifyGateRelease` also reads it after guard 12b, and the lock then
+   requires the same message. The gate is removed only **after** the agent was
+   created, so a refusal from guard 14 on (a cap, say) leaves the task gated.
+   On a release the task gets a comment by `muster` naming your message and
+   quoting it verbatim, you get a push ("your chief released the gate on task
+   #N on your message: …"), and the start's audit row and result carry
+   `gate_released_by_owner_message`. Muster cannot tell whether your message
+   was **about** this task: the chief decides that, and the push shows you at
+   once if it misread you. A gated task filed before this release has no
+   record of its gate, so only the board releases it. If the agent starts but
+   the gate tag cannot be removed, the comment, the push and the result
+   (`gate_not_removed`) say so.
+14. Under a per-owner lock: the `request_key` again (two concurrent calls with
+   one key start one agent), then — on a task — **one start per task**, until
+   you destroy the agent it made. A task the chief already started an agent
+   for answers with that start (`already_dispatched`) and starts nothing,
+   whatever became of the agent, **unless you destroyed that agent** (its
+   page's Delete, or `agent_destroy` from your mirrored session): that destroy
+   records a release (`task.chief_dispatch_released`; nothing is deleted) and
+   the chief may start **one** new agent on the task (operator decision:
+   *"Owner's destroy resets the chief's allowance"*). The chief cannot release
+   its own start, destroying an agent it did not start releases nothing, and a
+   failed teardown releases nothing. A second agent alongside a live one is
+   yours to start, from its card. A start with no task is its own ledger
+   object (`dispatch:<32 hex>`), so this rule has nothing to bind to; its
+   `request_key` is its retry guard instead.
+15. The task is not yours, is gated (`gate:` tag), names a different
    repository than `repo`, is not `open`, or already has a live agent (use
-   `task_forward`).
-10. **5** of the agents the chief started are still live (pending,
+   `task_forward`). With `owner_asked`, your turn is checked here.
+16. **5** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet. Live is the agent row's **stored** status; a
    stopped agent does not count, and completing a task stops the chief's
-   agent on it ([below](#completing-a-task-stops-the-chiefs-agent)).
-11. The chief started **10** agents in the last 24 hours.
+   agent on it ([below](#completing-a-task-stops-the-chiefs-agent)). Starts
+   with and without a task share the caps, and a `worker_pool` agent holds its
+   slot for as long as it runs.
+17. The chief started **10** agents in the last 24 hours.
 
 #### The chief's dispatch budget
 
-The two caps (guards 10 and 11) are **data the chief reads at the call**, not
-numbers it is told: `task_dispatch`'s description says only that limits on
+The two caps (guards 16 and 17) are **data the chief reads at the call**, not
+numbers it is told: `agent_dispatch`'s description says only that limits on
 live agents and on daily starts apply. The chief's conversation survives
 restarts, so a number in a tool description is a number it remembers — after
 the live cap was raised it kept quoting the old one ("at most 2") from its
-own history. Instead, every `task_dispatch` answer — a start, an
-`already_dispatched`, and every refusal from guard 4 on (the live-cap and
+own history. Instead, every `agent_dispatch` answer — a start, a replay, an
+`already_dispatched`, and every refusal from guard 5 on (the live-cap and
 daily-cap refusals included) — carries the current `budget`, as does
 `task_route_attention`'s result when you opted in:
 
@@ -500,8 +745,8 @@ daily-cap refusals included) — carries the current `budget`, as does
 "budget": {
   "live": 2, "live_cap": 5, "today": 3, "daily_cap": 10,
   "live_agents": [
-    {"id": 41, "name": "quiet-owl", "task": 17},
-    {"id": null, "name": null, "task": 23}
+    {"id": 41, "name": "quiet-owl", "task": 17, "target": "pod/claude-code"},
+    {"id": null, "name": null, "task": 0, "target": "pod/gateway"}
   ]
 }
 ```
@@ -510,25 +755,26 @@ daily-cap refusals included) — carries the current `budget`, as does
   agent the chief started whose stored status is live, by id and name, oldest
   first; then each start from the last 10 minutes whose agent is **not
   recorded yet** — a start in flight, or one that failed before any agent
-  existed and was not released — with `id` and `name` null and only its
-  `task`. A start released because its create was refused holds no slot.
+  existed and was not released — with `id` and `name` null. `task` is `0`
+  for a start with no task, and `target` is where it runs. A start released
+  because its create was refused holds no slot.
 - `today` is the chief's starts in the last 24 hours, recorded or not.
 - A refusal is `{"error": "<its sentence>", "budget": {…}}` and is still a
   failed call (MCP `isError`). A cap refusal carries the budget the reservation
   compared, under its lock; any other answer reads it fresh, so it can be one
   start stale against a concurrent call.
-- Guards 1–3 (the flag, the opt-in, the deployment) refuse before there is
-  a budget the chief could spend, and carry none.
+- Guards 1–4 (the flag, the arguments, the opt-in, the deployment) refuse
+  before there is a budget the chief could spend, and carry none.
 - If the budget cannot be read the answer goes out without it (logged); it
   never fails the call. `task_route_attention` then does not offer
-  `task_dispatch`.
+  `agent_dispatch`.
 
 The count is the audit log, one function for both uses
 (`internal/plugins/chief_dispatch.go`, `chiefBudget`): the caps refuse on the
 same numbers the budget reports.
 
 A start that passed every check is recorded (a `task.chief_dispatch` audit row,
-with the kind, any instructions and the id of the attention ask they are your
+with the kind, the target, any prompt (`instructions`) and the id of the attention ask it is your
 answer to (`instructions_ask`) — and, for an answer given over MCP,
 `instructions_via: "mcp"` and `instructions_from: "<host>/<session>"` — so you
 can read what the chief told the agent and where it came from) **before** the agent is created, so a start that then fails still
@@ -540,16 +786,18 @@ caps are counted from those rows.
 Only a start whose agent was **recorded** (`task.chief_dispatch_agent`) can be
 released, by destroying that agent. ⚠ A start that failed before any agent
 existed stays spent for good — there is nothing to destroy — and
-`task_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
+`agent_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
 that task is yours to start, from its card.
 
-The agent's first message is the chief's `instructions`, if any (control
-characters removed, fenced under a line saying the chief relayed them — and,
-for an MCP answer, that they were your answer given over MCP from
-`<host>`/`<session>` rather than on the Attention view), then
-the task's text, then muster's rules for the run, which come last and win:
-open any pull request as a **draft**, never merge, never mark the task complete
-(set it `ready_for_review` with the pull request's URL in a comment). Marking a
+The agent's first message is the chief's `prompt`, if any (control
+characters removed, fenced under a line saying the chief relayed it — from a
+message you typed in its chat, with `owner_asked`; or, for an MCP answer, as
+your answer given over MCP from `<host>`/`<session>` rather than on the
+Attention view), then the task's text, then muster's rules for the run, which
+come last and win: open any pull request as a **draft**, never merge, never
+mark the task complete (set it `ready_for_review` with the pull request's URL
+in a comment). An agent started with no task is told to report back in the
+chief's chat with `chief_ask`, or through the pull request. Marking a
 task complete is refused to every agent anyway. ⚠ The draft rule is an
 instruction, not enforced by muster: pushing and opening the pull request go
 through the `github` connector, which you approve once per repository
@@ -572,12 +820,12 @@ running), and only while its row is still bound to the task. Left alone: an
 agent you started yourself, an agent already stopped or in `error`, and every
 agent of a task set to `ready_for_review` (it must stay reachable through
 `task_forward`). The task's one start stays **spent**: a stop is not a destroy
-and records no release, so `task_dispatch` on the task still answers
+and records no release, so `agent_dispatch` on the task still answers
 `already_dispatched`. A stopped agent left stopped for
 `MUSTER_AGENT_REAP_STOPPED_AFTER` (14 days by default) is then destroyed by
 the [stopped-agent reaper](provisioner.md#reaping-stopped-agents), which does
 record the release. A stopped agent is not live, so it frees its slot under
-guard 10.
+guard 16.
 
 ⚠ The live cap reads the stored status, so an agent whose instance died while
 its row still says `running` keeps its slot until something writes the row (a
@@ -691,9 +939,10 @@ descriptions and the preface on each message.
 - The task is created **gated**. The server adds `gate:<reason>`, a slug of
   `gate_reason` (`gate:awaiting-approval` when it is empty). Nothing dispatches
   it until you release the gate: remove it on the board, or tell your chief in
-  its chat to do the work — its instructions say to call `task_dispatch` with
-  `owner_asked: true` in its answer, and muster checks that the turn is yours before it
-  releases the gate ([guard 8a](#task_dispatch-the-guards)).
+  its chat to do the work — its instructions say to call `agent_dispatch` with
+  the target you named and `owner_asked: true` in its answer, and muster checks
+  that the turn is yours before it releases the gate
+  ([guard 13](#agent_dispatch-the-guards)).
 - A caller tag in the `gate:` or `auto:` namespace is **refused**, in any
   spelling the tag grammar folds together.
 - You get the usual "New task" push. The tool creates through the same path as
@@ -1214,6 +1463,58 @@ routing is on.
    a resume pointer instead of guessing.
 5. **No author recorded**, or not a review muster reads: the ordinary
    delivery, unchanged.
+
+#### A review of a pull request already merged or closed
+
+With the [GitHub App](configuration.md) configured, muster asks GitHub for the
+pull request's state (`GET /repos/<owner>/<repo>/pulls/<n>`, with a token the
+App mints for that one repository with **Pull requests: read** and metadata
+read — muster's own read, never handed to an agent) at each point a review
+would otherwise reach a person. When GitHub reports it **closed**, merged or
+not, the review needs nothing more, and muster settles its message itself.
+The reason says which:
+
+- `muster: a review of pull request <owner>/<repo>#<n>, which GitHub reports
+  already merged: nothing left to act on`;
+- `… already closed WITHOUT being merged: nothing left to act on there` — and,
+  because such work is sometimes re-filed as another pull request, the chief's
+  conversation also gets a one-line note naming the message (it costs the
+  chief no turn).
+
+Where it is checked:
+
+- **on arrival** — no route, no paste into the session, no chief turn (the
+  message is recorded as handed to the chief, already settled);
+- **when its route would be handed back** — a review timed out or superseded
+  before its paste was sent: settled instead of going back to the chief;
+- **when the ["not acted on" ask](#a-message-the-chief-does-not-act-on) is
+  due** — a review the chief holds, or a superseded round never pasted:
+  settled instead of asked about.
+
+**Only a closed answer settles.** These are all **unknown**, and an unknown
+review is handled exactly as above, so a review of an open pull request is
+never dropped on a guess:
+
+- an open pull request;
+- a repository whose owner has no installation of the App;
+- a GitHub error;
+- no answer within 5 seconds;
+- a token mint already in progress, which the read does not wait for.
+
+Without the App the check is off.
+
+**How often GitHub is asked.** Each answer is cached per pull request:
+
+- a closed one for 24 hours (a reopen is rare);
+- an open or unknown one for 10 minutes.
+
+So the same pull request is read again only after that. One pass of the
+attention sweep (every 30 seconds), and one pass of the route sweep, each make
+**at most 5** reads. A review past that cap is unknown for that pass: its ask
+is raised, or its route handed back, as before. A slow GitHub therefore holds
+a pass up by at most 5 × 5 seconds, and a backlog of reviews cannot exhaust
+the App's rate limit. Arrivals are not capped: each is one read, unless the
+answer is cached.
 
 What is not reported: a pull request created or a branch pushed by anything
 but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a

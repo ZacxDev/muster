@@ -105,6 +105,10 @@ var publicRoutes = []string{
 	// single-use code, minted by a signed-in session, IS the authority
 	// (devices.PGStore.Redeem, under System). Throttled per client address.
 	"POST /api/device/pair",
+	// The officer LLM proxy's catch-all (officer_llm.go): every path under
+	// /llm/ but POST /llm/v1/messages is refused 404 before any credential is
+	// read, so it attaches no Principal and serves nothing.
+	"/llm/",
 }
 
 // routeVias is, for every non-public route, each door that admits it.
@@ -133,6 +137,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /attention/asks/{id}/cancel",
 		"POST /attention/asks/{id}/redeliver",
 		"POST /attention/hermes/approve",
+		"POST /attention/opencode/answer",
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
 		"POST /auth/confirm",
@@ -240,6 +245,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/repos",
 		"GET /ui/agents/{id}/header",
 		"GET /ui/focus/history",
+		"GET /ui/palette/history",
 		"GET /ui/agents/{id}/status",
 		"GET /ui/agents/{name}/chat-log",
 		"GET /ui/agents/{name}/task",
@@ -400,6 +406,9 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
 		"POST /plugin/v1/tasks",
+		"GET /plugin/v1/tasks",
+		"POST /plugin/v1/task-writes/claim",
+		"POST /plugin/v1/task-writes/{id}/result",
 		"POST /plugin/v1/messages/{id}/owner-answered",
 	},
 	authz.ViaAgent: {
@@ -414,6 +423,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /agent/connectors/{name}",
 		"POST /agent/connectors/{name}/request",
 		"POST /mcp",
+		// The officer LLM proxy (officer_llm.go): the calling agent's own token.
+		"POST /llm/v1/messages",
 	},
 	authz.ViaRelay: {
 		"DELETE /agent/approvals/{id}",

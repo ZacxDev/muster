@@ -108,6 +108,13 @@ as **payload v2**:
   ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
   A chip dropped to fit, or left out as secret-shaped, takes its button with
   it. The app as shipped does not draw them yet.
+- A [notice](attention.md#notices) (a live chief nudge) is an `attention` push
+  with **no** `ask` and **no** `actions`: its title names where the session is
+  (`<host> · <session>:<index> may be waiting on you`), its body the session's
+  focus title and the chief's message, its `url` the tap route. Every Android
+  app version draws buttons only from `ask`, so on any of them, including one
+  that predates notices, it is a plain notification on the asks channel whose
+  tap opens the session.
 - **A phone's push is exactly 4096 bytes.** muster pads every encrypted push to
   one 4096-byte record, so a payload v2 may be at most 3993 bytes
   (4096 − 86 header − 16 tag − 1 delimiter); the encryption library itself

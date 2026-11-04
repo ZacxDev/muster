@@ -1,0 +1,572 @@
+# Design: session state (stalls, waiting sessions, nudges and check-ins as one model)
+
+**Status: proposal. Nothing here is built.** The operator settled the shape
+(item, Chief role, states, push, placement, check-ins, phasing, metrics) before
+this was written, then answered the draft's open questions and three more
+raised by its review; all of it is recorded under
+[Operator decisions](#operator-decisions). Three remaining points carry
+coordinator defaults, each open to change, under
+[Defaults](#defaults-open-to-change). No questions remain open.
+
+The ask, verbatim: *"It seems like Chief generates asks for stalled sessions.
+It also generates nudges. And I think there's also a check ins feature that I
+talked about previously. … This feels like all three of these features are
+part of the same concept. Just not sure how to consolidate them. … I also find
+that in the asks that it generates from stalled sessions, I never read its
+summary or its options that it gives me. I just go straight to that session to
+answer. Same thing with the nudges."*
+
+Where this page says how muster works today, the code is the authority (see
+[decisions.md](../decisions.md)). It cites `path:line` at commit `7cbb6b11`
+(`main`, 2026-11-03), which includes #415 (a live stall decision raises a
+notice, not an answerable ask) and #416 (opencode questions reach the
+attention queue).
+
+## Summary
+
+| | Proposal |
+|---|---|
+| The concept | One **session state** per session: `needs-you`, `stalled`, `working`, with `done` as a label only. A stop is an **episode**, keyed on the session; everything the owner sees is a view of states and episodes |
+| Where it comes from | Code over inputs muster already reads (host status, `stallInputs`, `waitingSessions`), plus **one model input**: the stall classifier's score, which splits `needs-you` from `stalled` for an idle session and is persisted on the episode |
+| Waiting windows | Push **at once**, in code, never through the Chief. Questions muster can answer (a held AskUserQuestion, an opencode question) stay **answerable asks** with full text and are not episodes |
+| The Chief | Consulted only for **idle** episodes, and only when it is available. It decides **`nudge`, `leave` or `notify`**. No summary, no options, no notice text. `leave` quiets only a session that asked nothing. Covering words widen to the owner's own typed messages in sessions on the **same repository** plus their typed Chief chat, once muster can attribute them; shadow mode first |
+| Push | **One push per episode**, claimed in the database before it is sent. Text built in code: tmux session, window index, host, state and idle time. **No session text.** Tap opens the session. No push for an episode whose nudge was **sent**, or that was left with no question |
+| Attention | A **"Stalled / waiting"** section of plain rows, no answer box, oldest first, replacing chief-nudge notices. Left sessions are quiet rows. Answerable asks stay above it |
+| Check-ins | Snapshots of the same state at 09:00, 13:00 and 17:00; the Chief narrative on scheduled runs only (an amendment to `check-ins.md` PR 4) |
+| Independence | State, rows and pushes are code-only and run with `MUSTER_CHIEF_NUDGES` unset and with no chief. Only the Chief's call needs them |
+| What retires | The stall notice (`attention.KindNotice`'s only user), `nudgeNoticeText`, the generic ask text, the Chief's `ask` decision; then `KindNotice` itself once nothing uses it |
+| Success | Pushes per day go down; the share of stalled episodes ended by a sent nudge goes up (today: 2 nudges in about 330 decisions over 7 days); zero `needs-you` episodes end unseen |
+
+## Goals
+
+- **The push is the product.** The owner acts from the notification and goes
+  straight to the session. What the push says, and that there is exactly one
+  per stop, matters more than any page.
+- **Facts from code, judgement only where it saves a trip.** Which session,
+  where, its state and how long are read, not written. The classifier's score
+  is the one model input to the state, and is named as one. The Chief's call
+  is spent on the only thing that can spare the owner the trip: a nudge
+  carrying their own words.
+- **One state, many views.** The Attention section, the push, a check-in and
+  the Chief's own tools read the same per-session state, so they cannot
+  disagree about who is stalled.
+- **Never quieter by accident.** A failure anywhere (the Chief, the
+  classifier, a send, GitHub, a host that dropped, the Chief feature turned
+  off) leaves a session visible and pushed, never hidden.
+
+## Non-goals
+
+- **Answering for the owner.** A nudge pastes the owner's own earlier words;
+  the Chief never composes an instruction.
+- **Session text in a push.** The push names the session and its state; it
+  never quotes it (see
+  [The last line](#the-last-line-why-the-push-does-not-carry-it)).
+- **Reading more transcript than today,** with one named exception: once
+  cross-session quotes are on (step 3b), the sweep reads the owner's prompts
+  in other sessions on the same repository, within `OwnerWindow`
+  ([Covering words](#covering-words)).
+- **Other owners' sessions.** Row-level security as everywhere else.
+- **Rewriting the check-ins design.** This page changes what check-ins read
+  from, and amends one PR (PR 4).
+
+## What exists today
+
+### The measurement behind this page
+
+Over the 7 days to 2026-11-03, on the operator's deployment:
+
+- **Chief decisions:** `ask` 187 (144 live, 43 shadow), `leave` 146 (93 live,
+  53 shadow), `nudge` 2 (1 live, 1 shadow).
+- **The stall asks those live decisions raised** (138 joined by `ask_id`): 125
+  were withdrawn because the session moved on, a mean of **102 minutes** after
+  they were raised; 8 expired after 24 hours; 5 were still open. So **133 were
+  resolved, and 0 were answered.**
+- So the owner read none of the Chief's summaries or options, and the one
+  outcome that saved a trip (a nudge) happened twice.
+
+### Stall nudges: the sweep, the streak, the decision
+
+- **Candidates.** Every `ChiefNudgeInterval` (2 minutes,
+  `internal/api/chief_nudge.go:94`), `stallInputs` (`:319`) lists the owner's
+  mirrored Claude Code and opencode windows and dispatched-agent
+  conversations. `chiefnudge.Exclude`
+  (`internal/chiefnudge/chiefnudge.go:204`) keeps one only if its status is
+  `idle` (`:213`), it has been idle for `DefaultIdle` (10m, `:105`), and it
+  has no background work, turn error or open ask, and this streak is not
+  already decided.
+- **The streak.** A mirrored window's `StreakKey` is
+  `"since:" + <the status's since-time>` (`chief_nudge.go:346`); an agent
+  conversation's is `"msg:" + <its last message id>` (`:389`). A new status
+  starts a new streak, so a waiting status and the idle status after it carry
+  **different** keys. Decisions are stored once per
+  `(owner, kind, key, streak)` (`chief_nudges_one_per_streak`, migration
+  `0064:97`), so a streak is judged once, across restarts.
+- **`AnchorKey`** is the owner's latest message id in that session
+  (`chiefnudge.Anchor`, `chiefnudge.go:349`): a nudge budget, at most
+  `MaxNudgesPerAnchor` (2, `:113`) nudges per anchor.
+- **The decision costs two model calls.** `decideNudge` (`chief_nudge.go:475`)
+  reads the transcript (`nudgeTranscript`, `:727`), runs the stall classifier
+  (Jev over OpenRouter, `:507-523`, `internal/chiefnudge/jev.go`), then asks
+  the Chief in a throwaway, tool-less lane (`askChiefForNudge`, `:936`). The
+  classifier's label and scores are stored on the decision
+  (`jev_label`, `jev_needs_input`, `jev_asks_permission`, `0064:86-88`).
+- **The backtested rule** (`chief_nudge.go:572-603`): when the classifier says
+  the session asked (`AskStall`, `jev.go:297`), the outcome defaults to an ask.
+  A Chief `leave` becomes the ask; a nudge survives only on an
+  `asks_permission` stall whose quote passes.
+- **The nudge's guard is code.** `CheckQuote` (`chiefnudge.go:427`) accepts a
+  nudge only if its quote occurs, word-bounded, in one of the owner's own
+  messages to **that session** within `OwnerWindow` (6h, `:115`), selected by
+  `OwnerMessages` (`chief_nudge.go:493`) minus the candidate session's
+  injected set (`:696-709`). Whether the words *cover* the next step is the
+  Chief's judgement (`chiefnudge.go:420-426`). The global `DefaultHourlyCap`
+  is 6 (`:110`).
+- **The stall path is gated on the feature and a chief.** With
+  `MUSTER_CHIEF_NUDGES` unset no stall sweep runs (`cmd/muster-server/main.go:992-993`).
+
+### #415: the live `ask` is now a notice
+
+- `actAsk` (`chief_nudge.go:1220`) creates an `attention.KindNotice` row
+  labelled with where the session is, holding the Chief's message
+  (`nudgeNoticeText`, `:1277`; up to 500 runes). A notice has no options, no
+  answer, no relay, and does not count toward the 50-open-ask cap
+  (`:1243-1250`). The stall path is `KindNotice`'s only user
+  (`internal/attention/attention.go:149`).
+- `reconcileNudge` (`:1288`) withdraws a notice once a *read* state shows the
+  session moved on (`:1347-1356`).
+- The notice is pushed through `askFiled`
+  (`internal/api/attention_suggest.go:50`) → `attentionNotify`. Its body is the
+  focus title and the Chief's message (`internal/api/attention.go:856-866`).
+
+So #415 removed the answer box but kept the Chief-written text, which is the
+part the operator does not read.
+
+### Waiting sessions and their push
+
+- `waitingSessions` (`attention.go:410`) lists windows whose host reports
+  status `waiting`: a permission prompt, an AskUserQuestion, an opencode
+  question or permission request (#416), a Hermes ask. Held AskUserQuestions
+  and opencode questions come back as single **answerable** items
+  (`attention.go:425-429`, `:491-497`), pushed with full text under the
+  operator's "Full text always" decision (`attention.go:820-827`).
+- They push from `attentionMirrorChanged` (`attention.go:960`) **at once**,
+  when a session *starts* waiting. Two dedupes, both **in memory**:
+  - a host's first observation in this process is seeded silently
+    (`seenHosts`, `:119-122`, `:1010-1014`);
+  - a session pushed within `attentionRepushAfter` (2 minutes, `:943`) is not
+    pushed again ("waiting → busy → waiting is one episode", `:942`).
+- A push is cleared through the same in-memory diff (`:1023-1027`), so a
+  session that stopped waiting while muster was down keeps its notification.
+- **A plain waiting session's push body is summary only, by operator
+  decision** (`attention.go:829-835`): `"Waiting: <tool> · <window> @ <host>"`,
+  never the command and never what Claude said. Window names are "often
+  LLM-written" (`:832-833`).
+- The tap route accepts only `ask-N` and `session-<hex16>` keys
+  (`internal/api/attention_push_target.go:62`); a window that stopped waiting
+  falls back to the queue page (`:46-51`).
+
+### Can one session be pushed twice for one stop?
+
+- **Not at the same instant.** The stall rule requires status `idle`
+  (`chiefnudge.go:213`) and the waiting push requires status `waiting`.
+- **Across a stop that changes status, yes.** The two pushes use different
+  keys and tags (`attention-ask-<id>` for a notice, `attention-<session key>`
+  for a waiting session) and different dedupe stores. A session that waits on
+  a permission prompt, is let through, then stops 10 minutes later with a
+  prose question gets one push for each. This page makes that one episode
+  ([Episodes](#episodes)).
+- Measured only by reading the code; the double-push rate on the live
+  deployment was not counted.
+
+### The last line (why the push does not carry it)
+
+- **A waiting Claude Code window carries it.** `mirror.Pending.Last` is "the
+  last thing Claude said", capped at 200 runes, secret-redacted by the host
+  and cleaned again by muster (`internal/mirror/pending.go:12-37`, `:152`,
+  `:170-174`). It is sent only for `StatusWaiting` windows (`pending.go:31-35`)
+  and never for an opencode ask (`:180-182`). The page shows it as the item's
+  `Detail` (`attention.go:176-178`); **by operator decision it never reaches a
+  push** (`pending.go:27-28`).
+- **An idle (stalled) window does not carry it.** Its last assistant message
+  is read only by the stall sweep, from the transcript stream
+  (`nudgeTranscript`, `chief_nudge.go:727`), and muster deliberately puts **no
+  session text** in a stall notice (`jev.go:301-305`).
+
+### Repositories and message provenance
+
+- **A window's repository is a directory name.** The repo chip is "the git
+  top-level directory's name … else that directory's own name"
+  (`internal/mirrorhost/repo.go:13-15`). It reads no remote. A dispatched
+  agent's `Repo` is `owner/name`.
+- **A pane's user messages carry no author.** Claude Code records what was
+  typed into the pane as user-role text. muster knows only its *own* pastes
+  (the send-queue bodies, the candidate session's injected set,
+  `chief_nudge.go:696-709`). Text another agent typed with `tmux send-keys`,
+  or a paste from anywhere else, is indistinguishable from the owner typing.
+- **A Chief chat message carries no sender.** `agents.ChatMessage` is role,
+  content and time (`internal/agents/store.go:215-221`). The Chief chat
+  receives session questions, plugin messages, relayed answers and task events
+  as turns; muster cannot tell from the row which turns the owner typed.
+
+### Check-ins
+
+`docs/design/check-ins.md` is a proposal; only its PR 1 (the fleet collector
+split, #374) and its prerequisite (tool-less lanes, #373) are on `main`. Its
+stall column already reads `stallInputs` ("Anything that classifies a session
+as stalled reads these", `chief_nudge.go:315-317`). Its narrative runs on
+every check-in, manual and Chief ones included (`check-ins.md:752`, PR 4 at
+`:941`).
+
+## Design
+
+### States
+
+| state | means | computed by |
+|---|---|---|
+| `needs-you` | the session waits on the owner: a waiting window (prompt, permission) that is not an answerable ask; or an idle session past the stall threshold that the classifier scores as asking | code, from host status (at once, on the mirror hub's change hook); for an idle session, the **classifier** score at or above the ask threshold (`AskStall`) |
+| `stalled` | idle past the threshold, no background work, no turn error, not `needs-you` | code, on the stall sweep (`stallInputs` + `Exclude`) |
+| `working` | busy, or idle for less than the threshold, or running background work | code, from host status |
+
+**Precedence:** `needs-you` > `stalled` > `working`. **`done` is a label, not
+a state** (round 0 D1): a session that ended, or whose PRs are all merged or
+closed (`session_prs` + #417's `PullRequestState`), is labelled `done` on its
+row and in check-ins, and that label never removes a row or suppresses a
+push. A session waiting on the owner is never hidden as done.
+
+**The classifier is the one model input.** It is not a model's opinion only
+in the sense that it is a single, backtested score, not the Chief's prose. It
+runs on the stall sweep for each idle candidate past the threshold, as today
+(`chief_nudge.go:507-523`), **independent of the Chief**. Its label and scores
+are persisted on the episode row, so the attention section, the push and
+check-ins read the stored score rather than re-classifying. If the classifier
+fails or is not configured, the session is treated as asking for the `leave`
+rule (below), so the failure cannot quiet it.
+
+A session with a turn error, an officer, the chief, and another owner's
+session keep today's exclusions.
+
+### Answerable asks are not episodes
+
+A held AskUserQuestion, an opencode question or permission request muster can
+relay, and a Hermes approval with a prompt id are **answerable asks**, as
+today: they keep their own full-text push ("Full text always",
+`attention.go:820-827`) and their place above the section. Their window does
+not open an episode for that wait, so there is never a second, text-free push
+for it.
+
+### Episodes
+
+An episode is one stop of one session.
+
+- **Key:** the session (`kind`, `key`: the Claude session id, the opencode
+  runtime key, or the agent conversation), not the waiting or idle streak key,
+  plus a sequence number. At most one episode per session is open.
+- **Opens** when the session enters `needs-you` or `stalled`.
+- **Ends** only when the session has been `working` continuously for at least
+  `N` (default 120 s), or a turn completes after at least `N` of work. A busy
+  blip shorter than `N` (a permission let through, a quick tool call, the
+  owner answering at the terminal) never ends it. **One stop is one episode**
+  (default D1): `needs-you` → `stalled` within it updates its state and does
+  not push again.
+- **Repush floor:** a session whose previous episode pushed within 2 minutes
+  is not pushed again for the next one, the same guard as today's
+  `attentionRepushAfter` (`attention.go:943`).
+
+Scenario: three Bash permissions in a row, each approved from tmux within
+seconds. Today that is one push (the 2-minute guard); here it is one episode
+and one push.
+
+### Claiming, pushing and clearing (the episodes table)
+
+One table, `session_episodes`: owner, session kind and key, sequence, state,
+classifier label and scores, opened/ended times, `pushed_at`, `cleared_at`,
+the Chief decision (if any) and the nudge's send-queue id.
+
+- **Claim before push.** Opening an episode is an
+  `INSERT … ON CONFLICT DO NOTHING` on a partial unique index over
+  `(owner, kind, key) WHERE ended_at IS NULL`, the pattern of
+  `chief_nudges_one_per_streak` (`0064:97`). Only the inserting process
+  pushes. That resolves the double rollout's race.
+- **`pushed_at`** is written by the winner after the push is handed to the
+  sink. An open row with `pushed_at` null and no reason to stay quiet is
+  pushed by the next pass, whichever process runs it.
+- **Restart.** Open rows survive a restart, so nothing re-pushes. A session
+  found `needs-you` or `stalled` with no open row, including one that began
+  while muster was down, gets a row and **is pushed**: no row means nobody was
+  notified. (This replaces today's silent seeding for these pushes.)
+- **Clearing** is from the table: ending an episode sets `ended_at`, sends the
+  resolved push for its tag, and sets `cleared_at`. A pass after a restart
+  ends and clears any open row whose session is now working past `N` or gone,
+  so a notification for a session that moved on during downtime is cleared.
+
+This table **replaces `KindNotice`'s use for stalls** (round 0 D4). Once
+nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases
+(`attention.go:856`, `attention_push_target.go:151`) are deleted.
+
+### Who decides what
+
+| episode | decided by | result |
+|---|---|---|
+| a waiting window, not answerable | **code only, at once** | push and row. Never sent to the Chief, never nudged |
+| an idle `needs-you` (classifier: asked) | code; the Chief **if available** | `nudge` (sent) → no push. Anything else, **`leave` included** → push and row |
+| an idle `stalled` (classifier: did not ask) | code; the Chief **if available** | `nudge` (sent) → no push. `leave` → quiet row, no push. `notify` or anything else → push and row |
+
+**`leave` quiets only a session that asked nothing** (operator decision 12).
+A session the classifier says asked always pushes once per episode unless a
+nudge to it was sent. This keeps the backtested rule
+(`chief_nudge.go:572-603`).
+
+**Independence** (F3d): the state, the episodes, the rows and the pushes run
+with `MUSTER_CHIEF_NUDGES` unset and for an owner with no chief. Then every
+idle episode is `notify`. `MUSTER_CHIEF_NUDGES` becomes the switch for the
+Chief's call and nudges only.
+
+### The Chief: nudge, leave or notify
+
+Per **idle** episode, at most once, when the Chief is available:
+
+1. Code builds the candidate as today, with the classifier's stored score.
+2. The Chief returns one of:
+   - `nudge`: with quote, quote source and covered action. For a `needs-you`
+     session, the quote must answer the question the session asked.
+   - `leave`: the session needs nothing from the owner now.
+   - `notify`: the owner should look.
+
+   No question, no summary, no options.
+3. **A nudge is handled only once its paste is sent** (F3b). It is queued
+   through today's send path (the send queue for a mirror, a turn for an
+   agent), the hourly cap and `MaxNudgesPerAnchor`. The episode's push is
+   **held** while the nudge is queued; if the send is held past its bound,
+   fails, is cancelled or is capped, the episode is pushed. A queued nudge is
+   **dropped** if the session's streak or episode changes before it pastes
+   (F4), and the episode is then pushed.
+4. **Shadow mode never suppresses a push** (F3c). A shadow `would_send` is
+   recorded and the episode is pushed as `notify`.
+5. Any failure (the Chief's call, an unparseable answer, a lane refusal past
+   its bound) is `notify`, never `leave`.
+
+**`needs-you` nudges** (decision 11) go only to **idle** sessions the
+classifier marks as asking. A waiting window (`StatusWaiting`) is never
+nudged: the send queue does not paste into one (`sendqueue/dispatcher.go:71-73`),
+so a queued nudge would wait for the owner to answer by hand and then paste
+into the next, different context.
+
+**View-only runtimes** (default D3): opencode and Hermes windows get the same
+push and row, but are **never nudged**; a Chief `nudge` for one is recorded
+and treated as `notify`, as #415 already treats a runtime window.
+
+Shadow first: decisions are recorded on the Chief nudges tab, and nothing is
+sent, until the owner is listed live (`MUSTER_CHIEF_NUDGE_LIVE_OWNERS`).
+
+### Covering words
+
+What a nudge may quote, in two stages.
+
+**Step 3a: unchanged sources.** The owner's messages in the candidate session
+itself, exactly as today: `OwnerMessages` minus that session's injected set,
+with a partial read authorising nothing. Only the `needs-you` nudge and the
+`nudge`/`leave`/`notify` shape are new.
+
+**Step 3b: widened sources** (decisions 10 and 13), on only once muster can
+attribute a message to the owner:
+
+- **Same repository** means the **normalised origin remote** (`owner/name`),
+  not the repo chip's directory name: two unrelated checkouts both named
+  `api` are different repositories, and two worktrees of one repository are
+  the same one. A host reports each window's normalised origin remote; a
+  dispatched agent's `Repo` is already `owner/name`. A session with no
+  resolvable remote **gives and gets no cross-session quotes**.
+- **Owner-typed only.** A quote's source message must be one muster can
+  attribute to the owner:
+  - **Chief chat:** only turns muster records as typed by the owner (web,
+    phone, CLI). Relayed answers, session questions, plugin messages, task
+    events and agent-sent turns never count, fenced or not (decision 13).
+    Today no such record exists (`store.go:215-221`); step 3b adds a sender
+    column written at the point a turn is typed.
+  - **Other sessions' panes:** muster cannot tell today whether a pane's
+    user-role text was typed at the terminal by the owner or sent there by
+    another agent or a paste. Until a host can attribute pane input (a
+    provenance record a host writes for typed input), **cross-session pane
+    quotes stay off**. Every source session's injected set (muster's own
+    pastes) is excluded, and a source with a partial read contributes nothing.
+- **Window:** every source, the Chief chat included, is read within
+  `OwnerWindow` (6h).
+- **The transcript non-goal:** step 3b reads the owner's prompts in other
+  same-repository sessions within `OwnerWindow`. That is the one exception to
+  "no more transcript than today", and it is built only with the attribution
+  above.
+
+### Push
+
+One push per episode, under the existing `attention` toggle:
+
+- **Title:** the tmux session, the window **index** and the host, e.g.
+  `alpha:3 @ host-a needs you` or `alpha:3 @ host-a is stalled`. Never the
+  window's name, which is often LLM-written (`attention.go:832-833`). A
+  dispatched agent is named by its agent name.
+- **Body:** the state and idle time, e.g. `Needs you · idle 12m`. **No session
+  text**: no last line, no tool call, no focus title. This keeps both earlier
+  operator decisions: a plain waiting session's push is summary only
+  (`attention.go:829-835`), and muster puts no session text in a stall item
+  (`jev.go:301-305`).
+- **Tag:** the episode, so a re-push replaces rather than stacks and an ended
+  episode clears it.
+- **Tap:** opens the session. This needs new route work: the tap route takes
+  `ask-N` and `session-<hex16>` only (`attention_push_target.go:62`) and falls
+  back to the queue for a window that stopped waiting (`:46-51`). Step 2 adds
+  an `episode-<id>` key that resolves to the session's current window (or the
+  agent's chat) and falls back to the row on the page.
+- **No push** when the episode's nudge was sent, when it was left with no
+  question, or when it ended before it was pushed.
+
+### Attention: "Stalled / waiting"
+
+A section below the answerable items: one row per open episode, oldest first,
+showing the tmux session and window index, host, state, idle time and the
+`done` label where it applies, with a "View in session" link and no answer
+box. A left episode is a quiet row (drawn muted, counted apart, never pushed).
+The page may still show a waiting window's `Detail` (its last words) as it
+does today; the push never does. Answerable asks stay above it, unchanged.
+
+### Check-ins on the shared state
+
+Check-ins snapshot this state rather than re-deriving it. Against the
+check-ins plan (`docs/design/check-ins.md`, "Phased plan"):
+
+| check-ins PR | effect |
+|---|---|
+| 2 `code-only reports` | its stall and needs-you columns read the session state and episodes instead of `stallInputs` + `attentionItems` separately; the rest stands |
+| 3 `push` | unchanged; its push is a scheduled digest and never duplicates an episode push |
+| 4 `chief narrative` | **amended:** the narrative runs on **scheduled** check-ins only (decision 6). Manual and Chief check-ins (`checkin_now`) are code-only. `check-ins.md` is updated to say so in the PR that builds it |
+| 5 `chief tools` | gains the `session_state` read, which moves here from this design's PR 1 (round 0 D3) |
+| 6 `merged PRs` | **mostly subsumed**: #417 already reads a PR's state with a repo-scoped token and caches it (`internal/api/pr_closed.go:39-43`); check-ins reuse `PullRequestState` instead of a new GraphQL client. Agents' PR attribution remains |
+
+## Risks
+
+- **A wrong nudge types as the owner.** Code guarantees the words are the
+  owner's; it cannot check they cover *this* step. A `needs-you` nudge answers
+  a question on the owner's behalf, and a cross-session quote ("merge it")
+  may have meant something else. Shadow mode, the hourly cap,
+  `MaxNudgesPerAnchor`, dropping a nudge whose episode moved on, and the Chief
+  nudges tab's audit rows (with the quote's source) are the mitigations; none
+  prevents a wrong nudge.
+- **Quote provenance.** Widened quoting is only as safe as the attribution
+  behind it. That is why step 3b waits for an owner-typed record on both the
+  Chief chat and panes, and why a session with no resolvable remote gets no
+  cross-session quotes.
+- **Push dedupe across restarts.** Moving from in-memory seeding to persisted
+  episodes changes behaviour after a restart: a session that began waiting
+  during downtime now pushes (by design), and notifications for sessions that
+  moved on are now cleared.
+- **Push volume.** `leave` (146 of 335 decisions today) still quiets sessions
+  that asked nothing, but no longer quiets one the classifier says asked, and
+  every idle episode pushes when there is no chief. Merging a waiting window
+  and the stall that follows into one episode removes today's second push for
+  one stop.
+- **The classifier is a dependency of the state.** Its failure is handled
+  (treated as asking, so pushed), but its quality now decides which rows can
+  be quieted.
+
+## Rollout
+
+1. **#415 + #416** deployed (in progress separately).
+2. **Session state, episodes, push, tap route and the Attention section.**
+   Code-only, independent of the Chief feature. Stall notices stop being
+   raised; open ones are withdrawn by the existing reconcile. The Chief's
+   `ask` becomes the text-free `notify`, and the backtested rule keeps an
+   asking session pushed.
+3. **a.** `needs-you` nudges and the `nudge`/`leave`/`notify` decision, same
+   session quotes only, shadow first. **b.** Owner-typed provenance (a Chief
+   chat sender column; a host record for typed pane input; normalised origin
+   remotes), then same-repository cross-session quotes, shadow first.
+4. **Check-ins** PRs 2–5 on the shared state with PR 4 amended, PR 6 reduced.
+
+Each is its own PR with tests and the audit ladder. `MUSTER_CHIEF_NUDGES`
+unset turns off the Chief's call and nudges only; the state and pushes stay.
+
+## Open questions
+
+None. The draft's seven questions and the review's three were answered by the
+operator (decisions 4, 9–14) or carry a default below.
+
+## Defaults (open to change)
+
+Taken by the coordinator, not decided by the operator. Each can be changed
+without reworking the rest of the design.
+
+- **D1. One stop is one episode.** A `needs-you` → `stalled` change within a
+  stop does not push again; an episode ends only after `N` (120 s) of work.
+- **D2. Keep the stall classifier,** in the roles above: it splits
+  `needs-you` from `stalled` for an idle session, and gates the `needs-you`
+  nudge.
+- **D3. View-only runtimes.** opencode and Hermes windows get the same push and
+  row, but are never nudged.
+
+## Operator decisions
+
+Recorded 2026-11-03.
+
+1. **Item shape.** The operator acts from the push notification only, never
+   reads the Chief's summary or options on stall asks, and goes straight to
+   the session. Measured over 7 days: of 138 stall asks, 125 were cancelled
+   because the session moved on (average 102 minutes after the ask), 8
+   expired and 5 were still open; 133 resolved, 0 answered.
+2. **Chief role.** It decides whether to nudge, with no summary and no
+   options. Keep nudging and widen it: covering words may be the owner's own
+   typed messages in other sessions, plus their messages to the Chief, quoted
+   verbatim. Nothing is inferred from rules files. Shadow mode first, then
+   live per owner, under the existing hourly cap. (Narrowed by decisions 10
+   and 13.)
+3. **States.** `working` / `needs-you` / `stalled` / `done`, from existing
+   inputs: the stall rule, waiting sessions, `jev_needs_input`, `session_prs`,
+   and PR state from #417. (The review made `done` a label only: round 0 D1.)
+4. **Push.** The operator acts from the push notification alone ("Only the
+   push notification"). One push per `needs-you` or `stalled` episode, text
+   built in code: session, host:window, state and idle time, and **no session
+   text**. This keeps the earlier decisions at `attention.go:829-835` and
+   `jev.go:301-305`. Tap jumps to the session. Stall and waiting collapse into
+   that one push. A nudged session sends no push. (The draft also listed the
+   session's last line here; the operator never asked for it, and it is
+   removed.)
+5. **Placement.** A "Stalled / waiting" section of Attention with plain rows
+   and no answer box, oldest first. It replaces stall asks and #415's notices.
+   Real questions stay as answerable asks above it.
+6. **Check-ins.** Kept, as saved snapshots of the same session state at 09:00,
+   13:00 and 17:00, with the Chief narrative on scheduled runs only.
+7. **Phasing.** (1) deploy #415 + #416; (2) code-built session state, episode
+   push and Attention section, retiring stall asks; (3) widened nudging in
+   shadow mode; (4) check-ins on the shared state.
+8. **Success metrics.** Pushes per day go down; the share of stalled episodes
+   ended by a nudge goes up (today 2 nudges of about 330 decisions in 7 days);
+   **zero `needs-you` episodes end unseen** (no push and no visit). (The draft's
+   "zero stall items expire unread" could not be measured once notices
+   retire.)
+9. **`leave` stays.** The Chief keeps its `leave` decision. A left session
+   shows as a quiet row on the Attention board and never pushes.
+10. **Quote sources: same repository only.** The owner's messages in sessions
+    on the same repository, plus their Chief chat. This supersedes "any
+    session" in decision 2.
+11. **`needs-you` nudges: yes.** A `needs-you` session is eligible for a nudge
+    when quoted words answer its question, shadow mode first.
+12. **`leave` on an asking session: "Push it anyway".** `leave` quiets only a
+    session with no question. A session the classifier says asked always
+    pushes once per episode unless it is nudged. This keeps the backtested
+    rule (`chief_nudge.go:572-603`).
+13. **Chief-chat quotes: owner-typed only.** Only turns muster records as typed
+    by the owner (web, phone, CLI) count. Relayed or agent-sent turns never
+    count, even unfenced ones.
+14. **Verbatim quotes stay.** The owner's words are quoted verbatim in this
+    public doc ("Keep verbatim").
+
+## Effort
+
+Sizes calibrated as in the check-ins plan (#360 nudges +5.3k, #366 lanes
++1.8k), tests included. Rough.
+
+| # | PR | contents | size |
+|---|---|---|---|
+| 1 | `session-state: states and episodes` | the state function with precedence, the classifier run independent of the Chief and stored on the episode, the `session_episodes` table with claim-before-push, restart and clearing rules | M, ~+1.5k |
+| 2 | `session-state: episode push, tap route and the Attention section` | one text-free push per episode, the `episode-<id>` tap route, the "Stalled / waiting" rows (left ones quiet), answerable asks kept apart, notices no longer raised, the Chief's `ask` replaced by `notify`; then `KindNotice` deleted | M, ~+1.8k |
+| 3a | `chief-nudges: needs-you nudges, nudge/leave/notify (shadow)` | idle `needs-you` nudges gated by the classifier, sent-only handling, dropped-on-change, shadow never suppressing a push, view-only runtimes never nudged | M, ~+1k |
+| 3b | `chief-nudges: owner-typed provenance and same-repository quotes (shadow)` | Chief chat sender column, host provenance for typed pane input, normalised origin remotes, per-source injected sets and partial reads | L, ~+2k |
+| 4 | check-ins PRs 2–5 on the shared state (PR 4 amended, PR 5 with `session_state`), PR 6 reduced to agents' PR attribution | as in `check-ins.md` | as there, minus PR 6's GraphQL client |

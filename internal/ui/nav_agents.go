@@ -362,6 +362,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),
 			g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
 			g.If(it.Words != "", g.Attr("data-switcher-words", it.Words)),
+			g.If(it.Prev != "", g.Attr("data-switcher-prev", it.Prev)),
 			Class("press flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-lg border-l-4 px-3 text-left text-sm font-medium transition "+edge+" "+navRowTone(current)),
 			// The dot's box is reserved whether or not a time is known, so the
 			// names line up.

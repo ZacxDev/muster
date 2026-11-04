@@ -238,6 +238,24 @@ BEGIN
         ALTER TABLE public.cc_account_failovers DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.cc_account_failovers ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0072 (task_ref_writes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.task_ref_writes') IS NOT NULL THEN
+        ALTER TABLE public.task_ref_writes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.task_ref_writes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.task_ref_writes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0073 (session_episodes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_episodes') IS NOT NULL THEN
+        ALTER TABLE public.session_episodes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_episodes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_episodes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0075 (officer_llm_usage), when this schema has it; same reason as 0011.
+    IF to_regclass('public.officer_llm_usage') IS NOT NULL THEN
+        ALTER TABLE public.officer_llm_usage NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_llm_usage DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_llm_usage ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

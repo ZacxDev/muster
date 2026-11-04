@@ -20,8 +20,10 @@ import (
 // an opencode TUI on the pane's terminal is an opencode window, and — with an
 // OpenCodeSource — the session its pane title names (opencodehost.MatchTitle)
 // is its rendered view, read from the host's opencode v2 server with the
-// host's pair token. VIEW ONLY: nothing is ever sent to opencode, and the
-// paste guard refuses its panes.
+// host's pair token. No message is ever sent to opencode, and the paste guard
+// refuses its panes; what its session waits on (a permission request, a
+// question) is the window's Pending, and an -interactive host relays an
+// answer to it through the API (opencode_asks.go).
 
 // SourceTitle: an opencode pane whose session was matched by its pane title,
 // a heuristic (view-only).
@@ -218,6 +220,19 @@ type OpenCodeSource struct {
 	changes map[string]uint64
 	// now is the source's clock.
 	now func() time.Time
+
+	// THE ASKS (opencode_asks.go): asks are the pending permission requests
+	// and forms by id; settled the ids settled since the stream opened (a seed
+	// read in flight never brings one back); seeded the root sessions whose
+	// pending lists were read since; parent each child session's parent, as
+	// session.created named it; gen counts the stream's opens; subs the
+	// Changes listeners.
+	asks    map[string]openCodeAsk
+	settled map[string]bool
+	seeded  map[string]bool
+	parent  map[string]string
+	gen     uint64
+	subs    map[chan struct{}]bool
 }
 
 // titleEvents are the events after which the root sessions' titles are read
@@ -236,7 +251,8 @@ func NewOpenCodeSource(ctx context.Context, creds *opencodehost.Credentials, why
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 	return &OpenCodeSource{creds: creds, why: why, ctx: ctx, logger: logger, busy: map[string]bool{}, since: map[string]int64{},
-		changes: map[string]uint64{}, now: time.Now}
+		changes: map[string]uint64{}, now: time.Now, asks: map[string]openCodeAsk{}, settled: map[string]bool{}, seeded: map[string]bool{},
+		parent: map[string]string{}}
 }
 
 // paired reports whether the source has a token to read with: a credential
@@ -277,6 +293,8 @@ func (s *OpenCodeSource) run() {
 		s.mu.Lock()
 		was := s.down
 		s.connected, s.down = false, why
+		// The asks last known are HELD while the stream is down (holdAsks).
+		s.notifyLocked()
 		s.mu.Unlock()
 		if was != why {
 			s.logger.Printf("muster-mirror: opencode: %s (retrying in %s)", why, wait)
@@ -292,12 +310,19 @@ func (s *OpenCodeSource) run() {
 	}
 }
 
-// connect is the stream's open: the running set seeds every status, and the
-// session list is re-read on next use.
+// connect is the stream's open: the running set seeds every status, the root
+// sessions' last-update times seed the status time of each session whose
+// status this source has never timed (an idle session would otherwise have
+// none until its next turn), and the session list is re-read on next use.
 func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	defer cancel()
 	running, err := cl.Running(ctx)
+	var roots []opencodehost.Session
+	if err == nil {
+		// A failure here only leaves those times unknown, as before.
+		roots, _ = cl.Sessions(ctx)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
@@ -315,10 +340,20 @@ func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 			s.busy[id], s.since[id] = true, now
 		}
 	}
+	for _, r := range roots {
+		if _, timed := s.since[r.ID]; !timed && r.Time.Updated > 0 && !running[r.ID] {
+			// Idle since its last update (Unix ms, the server's clock).
+			s.busy[r.ID], s.since[r.ID] = false, int64(r.Time.Updated)
+		}
+	}
 	if s.down != "" {
 		s.logger.Printf("muster-mirror: opencode: reading %s again", cl.URL())
 	}
 	s.connected, s.down, s.stale, s.sessionsErr = true, "", true, nil
+	// The stream had a gap: what was asked or settled in it is unknown. The
+	// asks known before it are HELD until each matched session's pending
+	// lists are read again (seed); only that re-read drops one settled in it.
+	s.holdAsks()
 	for id := range s.changes {
 		s.changes[id]++ // anything may have happened while the stream was closed
 	}
@@ -332,7 +367,21 @@ func (s *OpenCodeSource) event(e opencodehost.Event) {
 	if titleEvents[e.Type] {
 		s.stale = true // the root sessions or their titles may have changed
 	}
-	if id == "" {
+	if e.Type == opencodehost.EventSkipped {
+		// An event too large to read was skipped: treat it as a gap (what it
+		// said is unknown), so the matched sessions are read again.
+		s.holdAsks()
+		for sid := range s.changes {
+			s.changes[sid]++
+		}
+		return
+	}
+	if asked := s.askEvent(e); id == "" {
+		// A form's session is nested in its event (askEvent reads it): its
+		// view re-reads too.
+		if asked != "" {
+			s.changes[asked]++
+		}
 		return
 	}
 	s.changes[id]++
@@ -496,6 +545,13 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) 
 	}
 	ap.Gen, ap.Source = oc.Match.Session, SourceTitle
 	ap.Status, ap.StatusSince = s.status(oc.Match.Session)
+	// What it waits on (opencode_asks.go): a pending permission request or
+	// question of its session, or of a subagent's under it, makes it WAITING
+	// — opencode itself says "busy" while a tool waits on the person.
+	s.seed(oc.Match.Session)
+	if a, ok := s.pendingAsk(oc.Match.Session); ok {
+		ap.Status, ap.StatusSince, ap.Pending = mirror.StatusWaiting, a.since, a.pendingOf()
+	}
 	ap.Busy = ap.Status == mirror.StatusBusy
 }
 

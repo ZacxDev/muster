@@ -35,7 +35,7 @@ and setup are in [github-app.md](github-app.md).
 | variable | meaning |
 |---|---|
 | `MUSTER_CONNECTOR_ENCRYPTION_KEY` | A 32-byte base64 key. Setting it turns the store on. It must differ from the GitHub key. |
-| `MUSTER_CONNECT_PORT` | A second listener that serves **only** the agent-facing routes: `/connect/`, `/agent/connectors`, `/mcp`, `/agent/approvals`, `/agent/blocked` and `/health`. Everything else answers 404 there. |
+| `MUSTER_CONNECT_PORT` | A second listener that serves **only** the agent-facing routes: `/connect/`, `/agent/connectors`, `/mcp`, `/agent/approvals`, `/agent/blocked`, `/agent/work`, the officer [LLM proxy](#the-llm-proxy) under `/llm/`, and `/health`. Everything else answers 404 there. |
 | `MUSTER_AGENT_CONNECT_URL` | The URL agents are given (as `MUSTER_CONNECT_URL`) to reach that listener. It also opens the `claude-code` agents' NetworkPolicy to the connect port. |
 
 While the key is unset, every connector route answers 503, the Connectors tab is
@@ -174,6 +174,39 @@ Secret), and the two `ALTER ROLE … SET` lines run once by hand.
 6. **Check it.** The audit trail on the Connectors tab shows a `query` row per
    call, and a refused write reads `class=read_only`.
 
+## The LLM proxy
+
+The connect listener also serves `POST /llm/v1/messages`: an
+Anthropic-Messages endpoint through which an [officer](officers.md#the-llm-proxy)'s
+routine instances reach a model with **no provider credential in the pod**.
+It is a credential-injecting proxy like `/connect/`, with three differences:
+
+- **It is not a stored connector and needs no grant.** Who may use it is
+  configuration: a routine-pool instance (`officer-<slug>-r<n>`) of an
+  officer that declares `tiers` and `llm` in `MUSTER_OFFICERS` (today refused
+  at boot until the pod side exists: [officers](officers.md#the-llm-proxy)). Every other
+  agent is refused (403). Nothing is requested, approved or shared.
+- **Its credential is the officer's OpenRouter key** from muster-server's
+  environment (`MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`, required; the shared
+  `MUSTER_AGENT_OPENROUTER_KEY` is never used), not a sealed secret. It is attached on the
+  way out and scrubbed from every byte sent back; it is never logged or
+  audited.
+- **It fixes the request.** The upstream is one path
+  (`https://openrouter.ai/api/v1/messages`); the body is rebuilt from an
+  allowlist of Anthropic Messages fields (OpenRouter's routing fields such as
+  `fallbacks`, `models` and `provider` are dropped) and its `model` set to the
+  officer's `tiers.routine.model`; the officer's daily USD budget and per-item
+  token cap are enforced before anything is sent. Any other path under
+  `/llm/` is refused 404.
+
+**Audit.** Each proxied request writes one row to the connector audit trail
+with kind `llm` (migration 0075), connector `llm`, method `POST`, the
+provider's host, path `/api/v1/messages`, the response status, and a detail
+line: officer, instance, item, model, requested model, provider, result,
+tokens in / cache read / cache write / out, USD (and whether it was
+estimated), stop reason and duration. Never a body, a header or the key. The
+same line goes to muster-server's log. The row is the officer owner's.
+
 ## Routes
 
 - **For agents** (with their own per-agent token):
@@ -181,6 +214,8 @@ Secret), and the two `ALTER ROLE … SET` lines run once by hand.
   - `POST /agent/connectors/{name}/request`
   - the proxy at `/connect/…`
   - `POST /mcp`
+  - `POST /llm/v1/messages`, for an officer's routine instances
+    ([above](#the-llm-proxy))
 - **For you:** `/connectors`, plus the request cards at
   `/ui/connector-requests/*`. A pending request also sends a `connector` push
   notification ([push.md](push.md)).

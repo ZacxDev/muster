@@ -32,7 +32,7 @@ func (s *Server) chiefNudgesPanelHTML(ctx context.Context, now time.Time) string
 	var b strings.Builder
 	owner := requestOwner(ctx)
 	if s.chiefNudgeLive(owner) {
-		b.WriteString(`<p class="text-xs text-fg2" data-nudges-mode="live">Live: your chief nudges a stalled session only with a labelled message quoting one of your own messages to it, or asks you here and relays your answer word for word.</p>`)
+		b.WriteString(`<p class="text-xs text-fg2" data-nudges-mode="live">Live: your chief nudges a stalled session only with a labelled message quoting one of your own messages to it, or puts a notice on your Asks list naming where the session is. A notice has nothing to answer: go to the session, or dismiss it.</p>`)
 	} else {
 		b.WriteString(`<p class="text-xs text-fg2" data-nudges-mode="shadow">Shadow mode: your chief's decisions about your stalled sessions are recorded here. Nothing is sent and nothing is asked.</p>`)
 	}
@@ -148,7 +148,7 @@ func nudgeDecisionLabel(decision string) string {
 	case chiefnudge.DecisionNudge:
 		return "Nudge"
 	case chiefnudge.DecisionAsk:
-		return "Ask you"
+		return "Point you at it"
 	case chiefnudge.DecisionLeave:
 		return "Leave it"
 	}
@@ -174,7 +174,7 @@ func nudgeOutcomeLabel(outcome string) string {
 		case chiefnudge.GuardSuperseded:
 			return "Not sent: the session moved on before it was pasted"
 		case chiefnudge.GuardAskFailed:
-			return "Suppressed: the ask could not be raised"
+			return "Suppressed: the notice could not be raised"
 		case chiefnudge.GuardLanesFull:
 			return "Not asked: the chief's lanes stayed full (every one held by your own sessions)"
 		case chiefnudge.GuardChiefNotReady:
@@ -186,7 +186,7 @@ func nudgeOutcomeLabel(outcome string) string {
 	case chiefnudge.OutcomeWouldSend:
 		return "Would have been sent (shadow mode)"
 	case chiefnudge.OutcomeWouldAsk:
-		return "Would have asked you (shadow mode)"
+		return "Would have pointed you at it (shadow mode)"
 	case chiefnudge.OutcomeLeft:
 		return "Left alone"
 	case chiefnudge.OutcomeQueued:
@@ -194,7 +194,7 @@ func nudgeOutcomeLabel(outcome string) string {
 	case chiefnudge.OutcomeSent:
 		return "Sent"
 	case chiefnudge.OutcomeAsked:
-		return "Asked you; waiting for your answer"
+		return "On your Asks page, until the session moves on"
 	case chiefnudge.OutcomeRelayQueued:
 		return "Your answer is queued for the session"
 	case chiefnudge.OutcomeRelayed:
@@ -202,7 +202,7 @@ func nudgeOutcomeLabel(outcome string) string {
 	case chiefnudge.OutcomeFailed:
 		return "Not sent"
 	case chiefnudge.OutcomeAskClosed:
-		return "The ask closed"
+		return "Closed"
 	}
 	return outcome
 }

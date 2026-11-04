@@ -38,17 +38,22 @@ type Store interface {
 	// never holds shadow mode back (system scope).
 	NudgesSince(ctx context.Context, since time.Time) (int, error)
 	// Injected is what the sweep pasted into the caller's session (kind, key):
-	// every live nudge and relay text.
+	// every live nudge, and any relay text a row from before notices holds.
 	Injected(ctx context.Context, kind, key string) ([]string, error)
 	// Pending is every owner's live decision still in flight (queued, asked,
-	// relay_queued), system scope.
+	// a notice still open; relay_queued, which only an older replica can still
+	// write during a rolling deploy, for the sweep to fail), system scope.
 	Pending(ctx context.Context, limit int) ([]Decision, error)
 	// Get is the caller's decision id.
 	Get(ctx context.Context, id int64) (Decision, error)
 	// ByAsk is the caller's decision that raised ask id.
 	ByAsk(ctx context.Context, askID int64) (Decision, error)
+	// ByAsks is ByAsk for several asks in ONE read: the caller's decisions
+	// that raised any of askIDs, by ask id (an id no decision of the caller's
+	// raised is absent). What the attention queue joins its notices to.
+	ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, error)
 	// Move sets the caller's decision id from one of from to outcome, with its
-	// detail and (when non-zero/non-empty) its ask, queued row and relay text,
+	// detail and (when non-zero) its ask and queued row,
 	// writing action's audit row when action is not ""; moved false when the
 	// row was not in one of from.
 	Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error)
@@ -62,7 +67,6 @@ type Move struct {
 	Detail      string
 	AskID       int64
 	SendQueueID int64
-	RelayText   string
 }
 
 // ErrNotFound: no such decision among the caller's.
@@ -198,6 +202,26 @@ func (p *PG) Decided(ctx context.Context, kind, key, streak string) (bool, error
 	return n > 0, err
 }
 
+// JevForStreak is the stall classifier's answer recorded on the caller's
+// decision for (kind, key, streak): ok false when no decision holds a usable
+// one (none recorded, or it failed). Session state reads it so the classifier
+// is billed once per streak whichever pass ran first.
+func (p *PG) JevForStreak(ctx context.Context, kind, key, streak string) (Result, bool, error) {
+	var r Result
+	var ni, ap, ne float64
+	err := p.pool.QueryRow(ctx, `SELECT jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_latency_ms, jev_error
+		FROM chief_nudges WHERE session_kind = $1 AND session_key = $2 AND streak_key = $3`, kind, key, streak).
+		Scan(&r.Label, &ni, &ap, &ne, &r.AskScore, &r.Model, &r.LatencyMS, &r.Err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, false, nil
+	}
+	if err != nil {
+		return Result{}, false, err
+	}
+	r.Scores = map[string]float64{LabelNeedsInput: ni, LabelAsksPermission: ap, LabelNeither: ne}
+	return r, r.OK(), nil
+}
+
 // Insert implements Store.
 func (p *PG) Insert(ctx context.Context, d Decision, action string) (Decision, bool, error) {
 	d = Clean(d)
@@ -304,16 +328,32 @@ func (p *PG) ByAsk(ctx context.Context, askID int64) (Decision, error) {
 	return d, err
 }
 
+// ByAsks implements Store, under row-level security like ByAsk.
+func (p *PG) ByAsks(ctx context.Context, askIDs []int64) (map[int64]Decision, error) {
+	out := map[int64]Decision{}
+	if len(askIDs) == 0 {
+		return out, nil
+	}
+	list, err := collect(p.pool.Query(ctx, `SELECT `+cols+` FROM chief_nudges WHERE ask_id = ANY($1)`, askIDs))
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range list {
+		out[d.AskID] = d
+	}
+	return out, nil
+}
+
 // Move implements Store.
 func (p *PG) Move(ctx context.Context, id int64, from []string, m Move, action string) (bool, error) {
-	clean := Clean(Decision{Detail: m.Detail, RelayText: m.RelayText})
+	clean := Clean(Decision{Detail: m.Detail})
 	moved := false
 	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
 		d, err := scan(tx.QueryRow(ctx, `UPDATE chief_nudges SET outcome = $3, detail = $4,
 				ask_id = coalesce($5, ask_id), send_queue_id = coalesce($6, send_queue_id),
-				relay_text = CASE WHEN $7 = '' THEN relay_text ELSE $7 END, updated_at = now()
+				updated_at = now()
 			WHERE id = $1 AND outcome = ANY($2) RETURNING `+cols,
-			id, from, m.Outcome, clean.Detail, nullID(m.AskID), nullID(m.SendQueueID), clean.RelayText))
+			id, from, m.Outcome, clean.Detail, nullID(m.AskID), nullID(m.SendQueueID)))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
