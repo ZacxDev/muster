@@ -38,15 +38,6 @@ const AskImagePath = "/agent/officer/ask-images"
 // ErrOutsideWorkspace is a path that resolves outside the workspace root.
 var ErrOutsideWorkspace = errors.New("the path is outside your workspace")
 
-// AskImageUpload is HQ's record of the uploaded image, as muster returns it.
-type AskImageUpload struct {
-	ID          string `json:"id"`
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type"`
-	Size        int64  `json:"size"`
-	SHA256      string `json:"sha256"`
-}
-
 // ResolveWorkspaceFile is p resolved inside root, or an error: p relative is
 // joined to root; every symlink on either is resolved; the result must be
 // root itself's descendant (ErrOutsideWorkspace otherwise) and a regular file.
@@ -124,54 +115,54 @@ func (c *capReader) Read(p []byte) (int, error) {
 // HQ's record of it. The type is sniffed from the file's leading bytes and
 // must be one of askimage.Types; the size is capped at askimage.MaxBytes,
 // before the upload (Stat) and while it streams. client nil is NoRedirects.
-func UploadAskImage(ctx context.Context, client *http.Client, base, token, root, p string) (AskImageUpload, error) {
+func UploadAskImage(ctx context.Context, client *http.Client, base, token, root, p string) (askimage.Record, error) {
 	if client == nil {
 		client = NoRedirects
 	}
 	if base == "" || token == "" {
-		return AskImageUpload{}, fmt.Errorf("%s and %s must be set (this pod reaches muster with them)", EnvConnectURL, EnvAgentToken)
+		return askimage.Record{}, fmt.Errorf("%s and %s must be set (this pod reaches muster with them)", EnvConnectURL, EnvAgentToken)
 	}
 	real, err := ResolveWorkspaceFile(root, p)
 	if err != nil {
-		return AskImageUpload{}, err
+		return askimage.Record{}, err
 	}
 	f, err := os.Open(real)
 	if err != nil {
-		return AskImageUpload{}, fmt.Errorf("cannot read %s: %v", p, err)
+		return askimage.Record{}, fmt.Errorf("cannot read %s: %v", p, err)
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return AskImageUpload{}, fmt.Errorf("cannot read %s: %v", p, err)
+		return askimage.Record{}, fmt.Errorf("cannot read %s: %v", p, err)
 	}
 	if st.Size() > askimage.MaxBytes {
-		return AskImageUpload{}, errTooLarge
+		return askimage.Record{}, errTooLarge
 	}
 	head := make([]byte, askimage.SniffLen)
 	n, err := io.ReadFull(f, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return AskImageUpload{}, fmt.Errorf("cannot read %s: %v", p, err)
+		return askimage.Record{}, fmt.Errorf("cannot read %s: %v", p, err)
 	}
 	head = head[:n]
 	ct, ok := askimage.Sniff(head)
 	if !ok {
-		return AskImageUpload{}, fmt.Errorf("%s is %s, not a PNG, JPEG or WebP image", p, ct)
+		return askimage.Record{}, fmt.Errorf("%s is %s, not a PNG, JPEG or WebP image", p, ct)
 	}
 	body := &capReader{r: io.MultiReader(bytes.NewReader(head), f), left: askimage.MaxBytes}
 	u := strings.TrimRight(base, "/") + AskImagePath + "?filename=" + url.QueryEscape(filepath.Base(real))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
 	if err != nil {
-		return AskImageUpload{}, err
+		return askimage.Record{}, err
 	}
 	req.ContentLength = st.Size()
 	req.Header.Set("X-Muster-Token", token)
 	req.Header.Set("Content-Type", ct)
 	resp, err := client.Do(req)
 	if errors.Is(err, errTooLarge) {
-		return AskImageUpload{}, errTooLarge
+		return askimage.Record{}, errTooLarge
 	}
 	if err != nil {
-		return AskImageUpload{}, fmt.Errorf("reaching muster: %w", err)
+		return askimage.Record{}, fmt.Errorf("reaching muster: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -180,13 +171,13 @@ func UploadAskImage(ctx context.Context, client *http.Client, base, token, root,
 			Error string `json:"error"`
 		}
 		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
-			return AskImageUpload{}, fmt.Errorf("muster refused the image (%d): %s", resp.StatusCode, e.Error)
+			return askimage.Record{}, fmt.Errorf("muster refused the image (%d): %s", resp.StatusCode, e.Error)
 		}
-		return AskImageUpload{}, fmt.Errorf("muster refused the image (%d)", resp.StatusCode)
+		return askimage.Record{}, fmt.Errorf("muster refused the image (%d)", resp.StatusCode)
 	}
-	var up AskImageUpload
+	var up askimage.Record
 	if err := json.Unmarshal(raw, &up); err != nil || up.ID == "" {
-		return AskImageUpload{}, errors.New("muster's answer carries no attachment id")
+		return askimage.Record{}, errors.New("muster's answer carries no attachment id")
 	}
 	return up, nil
 }

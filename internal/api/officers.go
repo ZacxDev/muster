@@ -70,8 +70,6 @@ type officerRuntime struct {
 	// fwd forwards instances' transcripts to HQ (internal/officers/transcript);
 	// nil when no declared officer enables `transcript`.
 	fwd *transcript.Forwarder
-	// askHTTP fetches officer_ask_person's image URLs (askImageClient).
-	askHTTP *http.Client
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -108,25 +106,6 @@ type OfficersConfig struct {
 	// (tests drive Tick).
 	TranscriptInterval time.Duration
 	NoTranscriptRun    bool
-	// AskImageHTTP replaces the client officer_ask_person fetches image URLs
-	// with (tests); nil is askImageClient's, which dials public addresses only.
-	AskImageHTTP *http.Client
-}
-
-// askImageClient is the client officer_ask_person fetches an image URL with.
-//
-// 🔴 IT DIALS PUBLIC ADDRESSES ONLY (connectors.Policy's zero value, the
-// proxy's own dialer: every resolved address checked, the checked address
-// dialled, no HTTPS_PROXY). muster-server reaches places an instance's pod
-// cannot — the cluster's services, a metadata endpoint — and the instance
-// chooses the URL, so without this an image URL is a way to have muster read
-// an internal address and hand the bytes to HQ. Redirects are re-dialled
-// through the same check.
-func askImageClient(cfg OfficersConfig) *http.Client {
-	if cfg.AskImageHTTP != nil {
-		return cfg.AskImageHTTP
-	}
-	return &http.Client{Timeout: officers.AskImageFetchTimeout, Transport: connectors.Policy{}.Transport()}
 }
 
 // transcriptReader is the agent gateway's transcript read
@@ -216,7 +195,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, askHTTP: askImageClient(cfg), claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
@@ -738,19 +717,14 @@ func queueToolDefs() []agents.ToolDef {
 			Parameters: objSchema(map[string]any{
 				"item_id":  item,
 				"to":       strProp("The HQ member's GitHub login."),
-				"question": strProp(fmt.Sprintf("The question, 1-%d characters. Say what you need decided and why.", officers.MaxAskQuestion)),
-				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskOptions,
-					"description": fmt.Sprintf("Optional answers to pick from: at most %d short, unique labels of 1-%d characters.", officers.MaxAskOptions, officers.MaxAskOptionChars)},
-				"images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskImages,
-					"description": fmt.Sprintf("Optional PNG, JPEG or WebP images of at most %d MiB each, fetched by muster: each an http(s) URL, or a data:image/<type>;base64,<data> URI "+
-						"(a whole tool call is capped at 64 KiB, so a data: URI suits only a small image). For a file in your workspace use image_ids instead.", officers.MaxAskImageBytes>>20)},
-				"image_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskImages,
-					"description": fmt.Sprintf("Optional ids of images you uploaded from your workspace: run `ccd ask-image <path>` in your shell (PNG, JPEG or WebP, at most %d MiB, inside your workspace) and pass the \"id\" it prints. "+
-						"images and image_ids together hold at most %d; the ask cites images first, then image_ids, in order.", officers.MaxAskImageBytes>>20, officers.MaxAskImages)},
-				"context_url": strProp("Optional http(s) URL with the context (a pull request, a preview, a dashboard)."),
-				// A string in the schema (one type, as every other tool's); a JSON
-				// integer of seconds is accepted at dispatch too.
-				"deadline": strProp("Optional: how long they have to answer, as a duration (\"4h\", \"90m\") or a number of seconds (\"3600\"), 5m to 72h. Default HQ's, 24h."),
+				"question": strProp("The question. Say what you need decided and why."),
+				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "Optional answers to pick from: short, unique labels."},
+				"image_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "Optional images, as the ids `ccd ask-image <path>` prints: run it in your shell on a PNG, JPEG or WebP file in your workspace " +
+						"(at most 5 MiB) and pass the \"id\" it prints. For an image on the web, download it into your workspace first. The ask cites them in order."},
+				"context_url":      strProp("Optional http(s) URL with the context (a pull request, a preview, a dashboard)."),
+				"deadline_seconds": map[string]any{"type": "integer", "description": "Optional: how long they have to answer, in seconds (HQ's default is a day; HQ refuses a value outside its range)."},
 			}, "item_id", "to", "question")},
 		{Type: "function", Name: officers.ToolReleaseEvaluation,
 			Description: "Post to HQ's release captain route (POST /releases/captain): your risk evaluation of a release and/or your post-release report. " +
@@ -831,13 +805,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		Summary      string          `json:"summary"`
 		Links        []string        `json:"links"`
 		// officer_ask_person's.
-		To         string          `json:"to"`
-		Question   string          `json:"question"`
-		Options    []string        `json:"options"`
-		Images     []string        `json:"images"`
-		ImageIDs   []string        `json:"image_ids"`
-		ContextURL string          `json:"context_url"`
-		Deadline   json.RawMessage `json:"deadline"`
+		To              string          `json:"to"`
+		Question        string          `json:"question"`
+		Options         []string        `json:"options"`
+		ImageIDs        []string        `json:"image_ids"`
+		ContextURL      string          `json:"context_url"`
+		DeadlineSeconds json.RawMessage `json:"deadline_seconds"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("invalid arguments for %s: %v", name, err), true
@@ -857,9 +830,6 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		status := in.Status
 		if status == "" {
 			status = officers.StatusOpen
-		}
-		if !officers.ValidItemStatus(status) {
-			return toolErr("status must be one of %s", strings.Join(officers.ItemStatuses, ", ")), true
 		}
 		var page officers.ItemsPage
 		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor})
@@ -910,8 +880,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
-		ask := officers.Ask{To: in.To, Question: in.Question, Options: in.Options, Images: in.Images, ContextURL: in.ContextURL}
-		return s.officerAskPerson(ctx, c, o, instance, in.ItemID, ask, in.ImageIDs, in.Deadline), true
+		ask := officers.Ask{To: in.To, Question: in.Question, Options: in.Options, Images: in.ImageIDs, ContextURL: in.ContextURL, DeadlineSeconds: in.DeadlineSeconds}
+		return s.officerAskPerson(ctx, c, o, instance, in.ItemID, ask), true
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
@@ -928,56 +898,13 @@ const askedNote = "asked. Your lease on this item has ENDED: HQ set it to waitin
 	"and muster wakes an instance for it: claim it then and carry on with the answer. If the deadline passes unanswered, HQ escalates the item to its owner. " +
 	"To ask another question on it meanwhile, call officer_ask_person again with the same item_id."
 
-// asksUnsupportedErr is officer_ask_person's answer from an HQ without the
-// asks routes (officers.AsksUnsupported).
-const asksUnsupportedErr = "this HQ does not support officer_ask_person yet (the asks route is not deployed): escalate the item instead " +
-	"(officer_complete outcome escalated) and say in the summary who you needed to ask and what"
-
-// officerAskPerson is officer_ask_person: check the ask, load every image
-// (all of them, before any upload: a bad fourth image uploads nothing), upload
-// each to HQ, then create the ask with the upload ids, in order.
+// officerAskPerson is officer_ask_person: the ask, as the instance gave it
+// (image_ids become the body's images), sent to HQ. HQ checks every limit.
 //
 // 🔴 A SUCCESS ENDS THE INSTANCE'S LEASE (HQ's contract), so the transcript
 // forwarder stops for the item as on complete/release, and the result says so
-// in words (askedNote) — the instance's next move is to stop working the item.
-func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask, imageIDs []string, deadline json.RawMessage) string {
-	secs, err := officers.ParseAskDeadline(deadline)
-	if err != nil {
-		return toolErr("%v", err)
-	}
-	ask.DeadlineSeconds = secs
-	if n := len(ask.Images) + len(imageIDs); n > officers.MaxAskImages {
-		return toolErr("at most %d images (images and image_ids together; %d given)", officers.MaxAskImages, n)
-	}
-	for i, id := range imageIDs {
-		if !officers.ValidAttachmentID(id) {
-			return toolErr("image_ids[%d] is not an attachment id (the \"id\" `ccd ask-image <path>` printed)", i)
-		}
-	}
-	if err := officers.ValidateAsk(ask); err != nil {
-		return toolErr("%v", err)
-	}
-	imgs := make([]officers.ImageData, 0, len(ask.Images))
-	for i, src := range ask.Images {
-		d, err := officers.LoadAskImage(ctx, s.officerRT.askHTTP, src, i+1)
-		if errors.Is(err, officers.ErrNotAnImageSource) {
-			return toolErr("images[%d] is %s. muster runs outside your pod and cannot read files in your workspace: for a workspace file, run `ccd ask-image <path>` "+
-				"in your shell and pass the \"id\" it prints in image_ids; images takes an http(s) URL muster can fetch, or a small data:image/<type>;base64,<data> URI", i, err)
-		}
-		if err != nil {
-			return toolErr("images[%d]: %v", i, err)
-		}
-		imgs = append(imgs, d)
-	}
-	ask.Images = nil
-	for _, d := range imgs {
-		up, err := c.UploadAskImage(ctx, d.Filename, d.ContentType, d.Data)
-		if err != nil {
-			return askToolResult(nil, err)
-		}
-		ask.Images = append(ask.Images, up.ID)
-	}
-	ask.Images = append(ask.Images, imageIDs...)
+// in words (askedNote): the instance's next move is to stop working the item.
+func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask) string {
 	body, err := c.CreateAsk(ctx, item, instance, ask)
 	if err == nil && s.officerRT.fwd != nil {
 		s.officerRT.fwd.Ended(o, instance, item)
@@ -986,14 +913,11 @@ func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o off
 }
 
 // askToolResult is officer_ask_person's answer: HQ's JSON with askedNote on
-// success; the not-supported error for an HQ without the routes; HQ's status,
-// code and message on any other 4xx (refused.code beside HQ's body, so an
-// instance can branch on lease_lost / unknown_recipient / rate_limited without
-// parsing it); officerToolResult's shapes otherwise.
+// success; HQ's status, code and message on a 4xx (refused.code beside HQ's
+// body, so an instance can branch on lease_lost / unknown_recipient /
+// rate_limited without parsing it); officerToolResult's shapes otherwise.
 func askToolResult(body []byte, err error) string {
-	var hqErr *officers.HQError
-	switch {
-	case err == nil:
+	if err == nil {
 		var out map[string]json.RawMessage
 		if json.Unmarshal(body, &out) != nil || out == nil {
 			return officerToolResult(officers.ToolAskPerson, body, nil)
@@ -1001,33 +925,28 @@ func askToolResult(body []byte, err error) string {
 		note, _ := json.Marshal(askedNote)
 		out["note"] = note
 		return toolJSON(out)
-	case officers.AsksUnsupported(err):
-		return toolErr(asksUnsupportedErr)
-	case errors.As(err, &hqErr):
-		var hq struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		_ = json.Unmarshal(hqErr.Body, &hq)
-		head := strconv.Itoa(hqErr.Status)
-		if hq.Code != "" {
-			head += " " + hq.Code
-		}
-		msg := fmt.Sprintf("HQ refused %s (%s)", officers.ToolAskPerson, head)
-		if hq.Error != "" {
-			msg += ": " + hq.Error
-		}
-		refused := map[string]any{"status": hqErr.Status}
-		if hq.Code != "" {
-			refused["code"] = hq.Code
-		}
-		if json.Valid(hqErr.Body) {
-			refused["hq"] = json.RawMessage(hqErr.Body)
-		}
-		return toolJSON(map[string]any{"error": msg, "refused": refused})
-	default:
+	}
+	status, msg, code, ok := officers.Refusal(err)
+	if !ok {
 		return officerToolResult(officers.ToolAskPerson, nil, err)
 	}
+	head := strconv.Itoa(status)
+	if code != "" {
+		head += " " + code
+	}
+	text := fmt.Sprintf("HQ refused %s (%s)", officers.ToolAskPerson, head)
+	if msg != "" {
+		text += ": " + msg
+	}
+	refused := map[string]any{"status": status}
+	if code != "" {
+		refused["code"] = code
+	}
+	var hqErr *officers.HQError
+	if errors.As(err, &hqErr) && json.Valid(hqErr.Body) {
+		refused["hq"] = json.RawMessage(hqErr.Body)
+	}
+	return toolJSON(map[string]any{"error": text, "refused": refused})
 }
 
 // alreadyYoursNote is what a claim on an item the caller already holds says.
@@ -1198,8 +1117,8 @@ func (s *Server) registerOfficerRoutes(mux Mux) {
 //     PNG, JPEG or WebP, else 415), never by the Content-Type or the name.
 //     The pod checks the same, but anything in the pod can call this route
 //     with the agent's token.
-//   - HQ's refusal comes back with HQ's status and {error, code}; an HQ
-//     without the route answers 404 with code asks_unsupported; an outage, 503.
+//   - HQ's refusal comes back with HQ's status and {error, code}; an outage,
+//     503.
 func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
 	o, _, ok := s.officerOf(a)
@@ -1230,23 +1149,16 @@ func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
 	}
 	name := officers.AskFilename(path.Base(q.Get("filename")), ct, 1)
 	up, err := s.officerRT.hq.Client(o).UploadAskImage(r.Context(), name, ct, data)
-	var hqErr *officers.HQError
-	switch {
-	case err == nil:
+	if err == nil {
 		s.writeJSON(w, http.StatusCreated, up)
-	case officers.AsksUnsupported(err):
-		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": asksUnsupportedErr, "code": "asks_unsupported"})
-	case errors.As(err, &hqErr):
-		var hq struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		_ = json.Unmarshal(hqErr.Body, &hq)
-		if hq.Error == "" {
-			hq.Error = fmt.Sprintf("HQ refused the image (%d)", hqErr.Status)
-		}
-		s.writeJSON(w, hqErr.Status, map[string]any{"error": hq.Error, "code": hq.Code})
-	default:
-		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "HQ is unavailable right now; try again in a minute", "code": "hq_unavailable"})
+		return
 	}
+	if status, msg, code, ok := officers.Refusal(err); ok {
+		if msg == "" {
+			msg = fmt.Sprintf("HQ refused the image (%d)", status)
+		}
+		s.writeJSON(w, status, map[string]any{"error": msg, "code": code})
+		return
+	}
+	s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "HQ is unavailable right now; try again in a minute", "code": "hq_unavailable"})
 }

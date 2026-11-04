@@ -194,8 +194,7 @@ func TestAnUploadActsForTheCallingAgentsOwnOfficerOnly(t *testing.T) {
 // TestTheUploadRouteChecksTheBytesWhateverSentThem: posted straight to the
 // route (anything in the pod holds the token), exactly 5 MiB of PNG is
 // accepted and 5 MiB + 1 refused 413; text, even sent as image/png, is
-// refused 415; neither refusal reaches HQ. An HQ without the route answers
-// 404 asks_unsupported.
+// refused 415; neither refusal reaches HQ.
 func TestTheUploadRouteChecksTheBytesWhateverSentThem(t *testing.T) {
 	r, srv, _, _ := uploadRig(t)
 	for _, tc := range []struct {
@@ -220,53 +219,12 @@ func TestTheUploadRouteChecksTheBytesWhateverSentThem(t *testing.T) {
 	if imgs := r.hq.AskImages(); len(imgs) != 1 || len(imgs[0].Data) != 5<<20 {
 		t.Fatalf("HQ stored %d images, want the one 5 MiB image", len(imgs))
 	}
-	r.hq.SetNoAsks(true)
-	code, out := postAskImage(t, srv.URL, "?filename=x.png", askTokB, askPNG)
-	if msg, _ := out["error"].(string); code != http.StatusNotFound || out["code"] != "asks_unsupported" || !strings.Contains(msg, "does not support officer_ask_person yet") {
-		t.Fatalf("an HQ without asks: %d %v", code, out)
-	}
-}
-
-// TestAWorkspacePathInImagesPointsAtCcdAskImage: a path in images is still
-// not something muster can read, and the refusal names the way that works.
-// image_ids count against the four images, and must look like ids.
-func TestAWorkspacePathInImagesPointsAtCcdAskImage(t *testing.T) {
-	r, inst, item := askRig(t)
-	ctx := context.Background()
-	call := func(m map[string]any) string {
-		m["item_id"], m["to"], m["question"] = item, "design-lead", "q"
-		return r.s.dispatchAgentTool(ctx, inst, officers.ToolAskPerson, askArgs(t, m))
-	}
-	for _, tc := range []struct {
-		name string
-		args map[string]any
-		want string
-	}{
-		{"a path in images", map[string]any{"images": []string{"shots/header.png"}}, "ccd ask-image <path>"},
-		{"five images across both", map[string]any{"images": []string{"data:image/png;base64,iVBORw0KGgo="}, "image_ids": []string{"a1", "a2", "a3", "a4"}}, "at most 4 images"},
-		{"an id that is a path", map[string]any{"image_ids": []string{"../att-1"}}, "image_ids[0] is not an attachment id"},
-		{"an empty id", map[string]any{"image_ids": []string{""}}, "image_ids[0] is not an attachment id"},
-	} {
-		r.hq.ResetRequests()
-		out := call(tc.args)
-		// The error text decoded: JSON escapes the < and > of "<path>".
-		var refusal struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal([]byte(out), &refusal)
-		if !isToolErr(out) || !strings.Contains(refusal.Error, tc.want) {
-			t.Errorf("%s: %s, want a refusal saying %q", tc.name, out, tc.want)
-		}
-		if n := len(r.hq.Requests()); n != 0 {
-			t.Errorf("%s reached HQ (%d requests)", tc.name, n)
-		}
-	}
 }
 
 // TestOfficerItemsFiltersOnWaiting: `waiting` is one of officer_items'
-// statuses — in its schema, and passed to HQ as ?status=waiting, which lists
-// the item an ask left waiting. A status HQ does not know is refused before
-// HQ is called.
+// statuses in its schema, and is passed to HQ as ?status=waiting, which lists
+// the item an ask left waiting. (Which statuses HQ accepts is HQ's to decide;
+// muster passes the filter through.)
 func TestOfficerItemsFiltersOnWaiting(t *testing.T) {
 	r, inst, item := askRig(t)
 	ctx := context.Background()
@@ -291,15 +249,5 @@ func TestOfficerItemsFiltersOnWaiting(t *testing.T) {
 	}
 	if isToolErr(out) || !strings.Contains(out, `"id":"`+item+`"`) || !strings.Contains(out, `"status":"waiting"`) {
 		t.Fatalf("officer_items{waiting}: %s, want the waiting item", out)
-	}
-	for _, bad := range []string{"bogus", "WAITING", "open&x=1"} {
-		r.hq.ResetRequests()
-		out := r.s.dispatchAgentTool(ctx, inst, officers.ToolItems, `{"status":"`+bad+`"}`)
-		if !isToolErr(out) || !strings.Contains(out, "status must be one of open, claimed, waiting, done, escalated") {
-			t.Errorf("status %q: %s, want the status refusal", bad, out)
-		}
-		if n := len(r.hq.Requests()); n != 0 {
-			t.Errorf("status %q reached HQ (%d requests)", bad, n)
-		}
 	}
 }

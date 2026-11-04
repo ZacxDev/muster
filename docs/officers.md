@@ -504,12 +504,12 @@ listing and again at dispatch):
 | tool | HQ call |
 |---|---|
 | `officer_brief` | `GET /officers/{id}/brief` — the charter, open items, recent outcomes, memory scopes |
-| `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; `status` is `open`, `claimed`, `waiting`, `done` or `escalated`, and anything else is refused before HQ) |
+| `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
 | `officer_claim` `{item_id, lease_seconds?}` | `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
-| `officer_ask_person` `{item_id, to, question, options?, images?, image_ids?, context_url?, deadline?}` | `POST /officers/{id}/ask-images` per image, then `POST …/items/{item}/asks` — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
+| `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
@@ -559,22 +559,25 @@ person), it asks them with `officer_ask_person`. HQ notifies them, and:
 - if the deadline passes unanswered, HQ escalates the item to its owner;
 - a second ask on a waiting item is allowed (the same `item_id`).
 
-The arguments, checked by muster before anything is sent:
+The arguments go to HQ **as given**. muster checks none of HQ's limits (the
+login, the question's and options' lengths, the image count, the deadline's
+range); HQ does, and its refusal comes back to the instance:
 
 | argument | |
 |---|---|
 | `to` | the member's GitHub login |
-| `question` | 1–2000 characters |
-| `options` | optional, at most 6 unique labels of 1–40 characters |
-| `images` | optional: each an **http(s) URL** or a **`data:image/<type>;base64,…` URI**, which muster fetches and uploads |
-| `image_ids` | optional: ids of images the instance uploaded from its **workspace** with `ccd ask-image <path>` (below). `images` and `image_ids` hold at most 4 together; the ask cites `images` first, then `image_ids`, in order |
+| `question` | the question |
+| `options` | optional short labels to pick from |
+| `image_ids` | optional: ids of images the instance uploaded with `ccd ask-image <path>` (below), cited in order as the ask's `images` |
 | `context_url` | optional http(s) URL |
-| `deadline` | optional: a Go duration (`"4h"`, `"90m"`) or a number of seconds, 5m–72h, sent as `deadline_seconds` (HQ's default is 24h) |
+| `deadline_seconds` | optional, passed through as is (HQ's default is a day) |
 
-**A workspace file** (a screenshot the instance took, say) is uploaded from the
-instance's own pod, because muster-server runs outside it and cannot read its
-workspace. The instance runs `ccd ask-image <path>` in its shell, then passes
-the `id` that command prints in `image_ids`:
+**Images come from the instance's workspace** (a screenshot it took, say),
+uploaded from its own pod, because muster-server runs outside the pod and
+cannot read its files. The instance runs `ccd ask-image <path>` in its shell,
+then passes the `id` that command prints in `image_ids`. **An image on the
+web** is downloaded into the workspace first (`curl -o shot.png …` in the pod),
+then uploaded the same way: muster never fetches a URL for an ask.
 
 - **ccd confines the path to the workspace.** The root is `CCD_WORKSPACE`, or
   the current directory when that is unset, and a relative path is taken from
@@ -599,31 +602,13 @@ the `id` that command prints in `image_ids`:
   reaches HQ.
 - **muster forwards the image** to HQ's `POST /officers/{id}/ask-images` with
   the officer credential, and answers HQ's `{id, filename, content_type, size,
-  sha256}` with 201. An HQ without the route gives 404 with code
-  `asks_unsupported`; HQ's own refusal is passed on with its status and code.
-
-A workspace path given in `images` is refused, and the error names `ccd
-ask-image`. A whole MCP call is capped at 64 KiB, so a data: URI in `images`
-only suits a small image. Every image is loaded before the first
-upload, so one bad image uploads nothing. Each is at most 5 MiB (muster reads at
-most 5 MiB + 1 byte), and its type is taken from its **bytes**: PNG, JPEG or
-WebP only. A URL is refused when its server names a non-image `Content-Type`.
-A URL fetch is bounded by a 30 s timeout and follows at most 5 redirects, to
-http(s) only. 🔴 **The fetch dials public addresses only.** It uses the
-connector proxy's dialer, so a URL or a redirect that resolves to a loopback,
-private or link-local address is refused. muster-server can reach internal
-services the instance cannot, and the instance chooses the URL. Each image is
-uploaded as its raw bytes, with its sniffed `Content-Type` and a sanitised base
-filename. The ask is then created with the upload ids, in order.
+  sha256}` with 201. HQ's own refusal is passed on with its status and code.
 
 **Refusals** come back with HQ's status and `code`, in the error text and in
-`refused.code`: 409 `lease_lost` (no live lease and not already waiting),
-`officer_disabled` or `too_many_open`; 410 on a finished item; 422
-`unknown_recipient` or `recipient_muted`; 429 `rate_limited`. **An HQ without
-the feature** answers 404 `{"error": "no such route"}`, and the instance is told
-that this HQ does not support `officer_ask_person` yet. It should escalate the
-item instead (`officer_complete` outcome `escalated`) and say what it needed to
-ask. Any other 404, such as an unknown item, is HQ's own message.
+`refused.code`: for example 409 `lease_lost` (no live lease and not already
+waiting), `officer_disabled` or `too_many_open`; 410 on a finished item; 422
+`unknown_recipient`, `recipient_muted` or a limit; 429 `rate_limited`; 404 on
+an unknown item, with HQ's own message.
 
 ### The first message
 
@@ -1267,9 +1252,9 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 /officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
 "failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
 uses `POST /officers/{id}/items/{item}/transcript`
-([Transcript to HQ](#transcript-to-hq)). `officer_ask_person` and `ccd ask-image` use `POST
-/officers/{id}/ask-images?filename=…` (raw image bytes); `officer_ask_person`
-also uses `POST /officers/{id}/items/{item}/asks`. Where the contract leaves a shape open, muster accepts:
+([Transcript to HQ](#transcript-to-hq)). `ccd ask-image` uses `POST
+/officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
+`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;
@@ -1282,7 +1267,7 @@ heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
 across officers), the captain route's body rules, and the transcript route's
 (limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), and
 the asks routes' (the upload's type and size checks, 409 `lease_lost`, 410,
-422 `unknown_recipient`, the item left `waiting`, and an HQ without them).
+422 `unknown_recipient` and `invalid_deadline`, and the item left `waiting`).
 
 ## Deploying
 

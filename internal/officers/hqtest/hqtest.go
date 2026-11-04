@@ -102,11 +102,9 @@ type Server struct {
 	failN, failCode int
 	failCommit      bool
 	// The asks feature (HQ's ask-images and items/{item}/asks routes):
-	// members are the GitHub logins an ask may go to; noAsks makes both
-	// routes answer as an HQ without the feature does (404 "no such route");
-	// askRefusal, when set, is answered by the asks route instead.
+	// members are the GitHub logins an ask may go to; askRefusal, when set,
+	// is answered by the asks route instead.
 	members    map[string]bool
-	noAsks     bool
 	askRefusal *refusal
 	askImages  []AskImage
 	asks       []Ask
@@ -126,9 +124,6 @@ func (s *Server) AddMember(login string) {
 	}
 	s.members[login] = true
 }
-
-// SetNoAsks makes the asks routes answer as an HQ without them (true).
-func (s *Server) SetNoAsks(off bool) { s.mu.Lock(); s.noAsks = off; s.mu.Unlock() }
 
 // RefuseAsks makes the asks route answer status {error, code} (status 0:
 // serve normally).
@@ -598,9 +593,6 @@ func (s *Server) transcript(w http.ResponseWriter, officer string, it *Item, ins
 	s.write(w, http.StatusOK, map[string]any{"stored": stored, "last_seq": last})
 }
 
-// noSuchRoute is what an HQ without a route answers for it.
-var noSuchRoute = map[string]any{"error": "no such route", "code": "not_found"}
-
 // maxAskImageBytes is HQ's bound on one ask image.
 const maxAskImageBytes = 5 << 20
 
@@ -608,10 +600,6 @@ const maxAskImageBytes = 5 << 20
 // Content-Type one of png/jpeg/webp and matching the bytes (415 otherwise),
 // at most 5 MiB (413). 201 {id, filename, content_type, size, sha256}.
 func (s *Server) askImage(w http.ResponseWriter, officer string, r *http.Request, raw []byte) {
-	if s.noAsks {
-		s.write(w, http.StatusNotFound, noSuchRoute)
-		return
-	}
 	ct := r.Header.Get("Content-Type")
 	switch ct {
 	case "image/png", "image/jpeg", "image/webp":
@@ -641,13 +629,9 @@ func (s *Server) askImage(w http.ResponseWriter, officer string, r *http.Request
 // ask is POST /officers/{id}/items/{item}/asks: 410 on a finished item, 409
 // lease_lost unless the instance holds a live lease or the item is already
 // waiting, 422 unknown_recipient for a login that is not a member, 400 on an
-// unknown image id; then the item is WAITING with no holder, and 201
-// {ask, item, delivery}.
+// unknown image id, 422 invalid for a deadline_seconds outside 300..259200;
+// then the item is WAITING with no holder, and 201 {ask, item, delivery}.
 func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance string, live bool, body map[string]any, now time.Time) {
-	if s.noAsks {
-		s.write(w, http.StatusNotFound, noSuchRoute)
-		return
-	}
 	if f := s.askRefusal; f != nil {
 		s.write(w, f.status, map[string]any{"error": f.error, "code": f.code})
 		return
@@ -676,6 +660,12 @@ func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance s
 				s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown image " + id, "code": "invalid"})
 				return
 			}
+		}
+	}
+	if v, ok := body["deadline_seconds"]; ok {
+		if f, isNum := v.(float64); !isNum || f < 300 || f > 259200 || f != float64(int(f)) {
+			s.write(w, http.StatusUnprocessableEntity, map[string]any{"error": "deadline_seconds must be an integer from 300 to 259200", "code": "invalid_deadline"})
+			return
 		}
 	}
 	a := Ask{ID: "ask-" + strconv.Itoa(len(s.asks)+1), Officer: officer, Item: it.ID, Body: body}

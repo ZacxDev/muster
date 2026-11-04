@@ -27,3 +27,13 @@ func Sniff(head []byte) (string, bool) {
 	}
 	return ct, false
 }
+
+// Record is HQ's record of one uploaded ask image, as HQ answers
+// POST /officers/{id}/ask-images and as muster's upload route passes it on.
+type Record struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+	SHA256      string `json:"sha256"`
+}
