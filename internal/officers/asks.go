@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/askimage"
 )
 
 // --- asking an HQ member (officer_ask_person) --------------------------------
@@ -38,7 +40,7 @@ import (
 // Ask bounds, as HQ enforces them (and the deadline as muster checks it).
 const (
 	MaxAskImages      = 4
-	MaxAskImageBytes  = 5 << 20
+	MaxAskImageBytes  = askimage.MaxBytes
 	MaxAskQuestion    = 2000 // characters
 	MaxAskOptions     = 6
 	MaxAskOptionChars = 40
@@ -52,10 +54,30 @@ const (
 )
 
 // AskImageTypes are the image types HQ accepts, as sniffed from the bytes.
-var AskImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+var AskImageTypes = askimage.Types
 
 // StatusWaiting is the status HQ gives an item with an open ask.
 const StatusWaiting = "waiting"
+
+// ItemStatuses are the statuses officer_items may filter on, as HQ names them.
+var ItemStatuses = []string{StatusOpen, StatusClaimed, StatusWaiting, StatusDone, StatusEscalated}
+
+// ValidItemStatus reports whether status is one of ItemStatuses.
+func ValidItemStatus(status string) bool {
+	for _, v := range ItemStatuses {
+		if v == status {
+			return true
+		}
+	}
+	return false
+}
+
+// attachmentID is what an HQ attachment id may look like here: a local
+// sanity bound (HQ decides whether it exists and is this officer's).
+var attachmentID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+// ValidAttachmentID reports whether id can be an HQ attachment id.
+func ValidAttachmentID(id string) bool { return attachmentID.MatchString(id) }
 
 // Ask is POST …/items/{item}/asks's body, less the instance.
 type Ask struct {
@@ -242,15 +264,11 @@ func LoadAskImage(ctx context.Context, hc *http.Client, src string, n int) (Imag
 	if err != nil {
 		return ImageData{}, err
 	}
-	ct := http.DetectContentType(data)
-	ok := false
-	for _, t := range AskImageTypes {
-		ok = ok || t == ct
-	}
+	ct, ok := askimage.Sniff(data)
 	if !ok {
 		return ImageData{}, fmt.Errorf("its bytes are %s, not a PNG, JPEG or WebP image", ct)
 	}
-	return ImageData{Filename: askFilename(name, ct, n), ContentType: ct, Data: data}, nil
+	return ImageData{Filename: AskFilename(name, ct, n), ContentType: ct, Data: data}, nil
 }
 
 func decodeDataURI(src string) ([]byte, error) {
@@ -325,10 +343,10 @@ func fetchAskImage(ctx context.Context, hc *http.Client, src string, n int) ([]b
 // askFilenameUnsafe is everything a filename sent to HQ may not hold.
 var askFilenameUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
-// askFilename is the base name sent to HQ: name with anything but letters,
+// AskFilename is the base name sent to HQ: name with anything but letters,
 // digits, '.', '_' and '-' replaced, at most 100 bytes, ending in an extension
 // of type ct; image-<n> when name gives nothing usable.
-func askFilename(name, ct string, n int) string {
+func AskFilename(name, ct string, n int) string {
 	name = strings.Trim(askFilenameUnsafe.ReplaceAllString(name, "_"), "._")
 	if name == "" {
 		name = fmt.Sprintf("image-%d", n)

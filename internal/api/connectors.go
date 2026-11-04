@@ -51,8 +51,9 @@ const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNE
 // (approvals.go): the pod's PermissionRequest hook reaches the operator's
 // approval queue THROUGH muster, so the pod holds no credential for that queue.
 // /agent/work is the same pod's live work counts (agent_work.go), on the same
-// per-agent token.
-var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp", "/agent/approvals", "/agent/blocked", "/agent/work"}
+// per-agent token. /agent/officer is an officer instance's pod uploading a
+// workspace image for an ask (`ccd ask-image`, officers.go), on the same token.
+var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp", "/agent/approvals", "/agent/blocked", "/agent/work", "/agent/officer"}
 
 // OnlyConnectSurface wraps h so it serves only ConnectSurfacePrefixes (and
 // /health, for a probe), answering 404 for every other path.

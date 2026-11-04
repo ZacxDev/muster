@@ -504,12 +504,12 @@ listing and again at dispatch):
 | tool | HQ call |
 |---|---|
 | `officer_brief` | `GET /officers/{id}/brief` — the charter, open items, recent outcomes, memory scopes |
-| `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`) |
+| `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; `status` is `open`, `claimed`, `waiting`, `done` or `escalated`, and anything else is refused before HQ) |
 | `officer_claim` `{item_id, lease_seconds?}` | `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
-| `officer_ask_person` `{item_id, to, question, options?, images?, context_url?, deadline?}` | `POST /officers/{id}/ask-images` per image, then `POST …/items/{item}/asks` — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
+| `officer_ask_person` `{item_id, to, question, options?, images?, image_ids?, context_url?, deadline?}` | `POST /officers/{id}/ask-images` per image, then `POST …/items/{item}/asks` — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
@@ -566,14 +566,45 @@ The arguments, checked by muster before anything is sent:
 | `to` | the member's GitHub login |
 | `question` | 1–2000 characters |
 | `options` | optional, at most 6 unique labels of 1–40 characters |
-| `images` | optional, at most 4: each an **http(s) URL** or a **`data:image/<type>;base64,…` URI** |
+| `images` | optional: each an **http(s) URL** or a **`data:image/<type>;base64,…` URI**, which muster fetches and uploads |
+| `image_ids` | optional: ids of images the instance uploaded from its **workspace** with `ccd ask-image <path>` (below). `images` and `image_ids` hold at most 4 together; the ask cites `images` first, then `image_ids`, in order |
 | `context_url` | optional http(s) URL |
 | `deadline` | optional: a Go duration (`"4h"`, `"90m"`) or a number of seconds, 5m–72h, sent as `deadline_seconds` (HQ's default is 24h) |
 
-**Images.** muster-server runs outside the instance's pod and cannot read its
-workspace, so an image is a URL muster fetches or a data: URI. A workspace path
-is refused with that explanation. A whole MCP call is capped at 64 KiB, so a
-data: URI only suits a small image. Every image is loaded before the first
+**A workspace file** (a screenshot the instance took, say) is uploaded from the
+instance's own pod, because muster-server runs outside it and cannot read its
+workspace. The instance runs `ccd ask-image <path>` in its shell, then passes
+the `id` that command prints in `image_ids`:
+
+- **ccd confines the path to the workspace.** The root is `CCD_WORKSPACE`, or
+  the current directory when that is unset, and a relative path is taken from
+  the current directory. Every symlink is resolved, the root's own included
+  (`filepath.EvalSymlinks`), and the result must lie inside the resolved root.
+  So `..`, an absolute path elsewhere and a symlink that points out are all
+  refused before the file is opened. It must be a regular file.
+- **ccd checks the bytes.** The type is sniffed from the file's first bytes
+  and must be PNG, JPEG or WebP (never the extension). The size is at most
+  5 MiB, checked against the file's size and again while it streams, so a file
+  that grows mid-upload cannot send more.
+- **ccd streams it** to muster's `POST /agent/officer/ask-images?filename=<base
+  name>`, on the connect surface, with the agent's own token
+  (`X-Muster-Token`). The body is the raw bytes, not JSON, so the MCP call's
+  64 KiB cap does not apply.
+- 🔴 **muster decides the officer from the token**, never from a request field.
+  An agent that is no officer's instance is refused 403, and so is a query
+  naming another officer.
+- **muster checks the bytes again**, whatever sent them, because anything in
+  the pod holds the token. It reads at most 5 MiB + 1 byte (more is a 413) and
+  sniffs the type (anything but PNG, JPEG or WebP is a 415) before anything
+  reaches HQ.
+- **muster forwards the image** to HQ's `POST /officers/{id}/ask-images` with
+  the officer credential, and answers HQ's `{id, filename, content_type, size,
+  sha256}` with 201. An HQ without the route gives 404 with code
+  `asks_unsupported`; HQ's own refusal is passed on with its status and code.
+
+A workspace path given in `images` is refused, and the error names `ccd
+ask-image`. A whole MCP call is capped at 64 KiB, so a data: URI in `images`
+only suits a small image. Every image is loaded before the first
 upload, so one bad image uploads nothing. Each is at most 5 MiB (muster reads at
 most 5 MiB + 1 byte), and its type is taken from its **bytes**: PNG, JPEG or
 WebP only. A URL is refused when its server names a non-image `Content-Type`.
@@ -1236,9 +1267,9 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 /officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
 "failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
 uses `POST /officers/{id}/items/{item}/transcript`
-([Transcript to HQ](#transcript-to-hq)). `officer_ask_person` uses `POST
-/officers/{id}/ask-images?filename=…` (raw image bytes) and `POST
-/officers/{id}/items/{item}/asks`. Where the contract leaves a shape open, muster accepts:
+([Transcript to HQ](#transcript-to-hq)). `officer_ask_person` and `ccd ask-image` use `POST
+/officers/{id}/ask-images?filename=…` (raw image bytes); `officer_ask_person`
+also uses `POST /officers/{id}/items/{item}/asks`. Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;

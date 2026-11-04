@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,12 +18,14 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/askimage"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/transcript"
 	"github.com/ZacxDev/muster/internal/officership"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -701,9 +705,9 @@ func queueToolDefs() []agents.ToolDef {
 			Description: "Load your officer's brief from HQ: your charter (your standing instructions, versioned), your open items, recent outcomes and your memory scopes. Call it first when you wake, instead of looking for an earlier conversation.",
 			Parameters:  objSchema(map[string]any{})},
 		{Type: "function", Name: officers.ToolItems,
-			Description: "List your officer's items in HQ. status: open (default: what you can claim), claimed, done or escalated.",
+			Description: "List your officer's items in HQ. status: open (default: what you can claim), claimed, waiting (an ask on it is open: see officer_ask_person), done or escalated.",
 			Parameters: objSchema(map[string]any{
-				"status": map[string]any{"type": "string", "enum": []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusDone, officers.StatusEscalated}},
+				"status": map[string]any{"type": "string", "enum": officers.ItemStatuses},
 				"limit":  intProp("At most this many (default HQ's).", 1, 100),
 				"cursor": strProp("The `next` value of the previous page (HQ returns it with each page; null on the last)."),
 			})},
@@ -738,8 +742,11 @@ func queueToolDefs() []agents.ToolDef {
 				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskOptions,
 					"description": fmt.Sprintf("Optional answers to pick from: at most %d short, unique labels of 1-%d characters.", officers.MaxAskOptions, officers.MaxAskOptionChars)},
 				"images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskImages,
-					"description": fmt.Sprintf("Optional, at most %d PNG, JPEG or WebP images of at most %d MiB each: each an http(s) URL muster fetches, or a data:image/<type>;base64,<data> URI. "+
-						"muster runs outside your pod and cannot read files in your workspace; a whole tool call is capped at 64 KiB, so a data: URI suits only a small image.", officers.MaxAskImages, officers.MaxAskImageBytes>>20)},
+					"description": fmt.Sprintf("Optional PNG, JPEG or WebP images of at most %d MiB each, fetched by muster: each an http(s) URL, or a data:image/<type>;base64,<data> URI "+
+						"(a whole tool call is capped at 64 KiB, so a data: URI suits only a small image). For a file in your workspace use image_ids instead.", officers.MaxAskImageBytes>>20)},
+				"image_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxAskImages,
+					"description": fmt.Sprintf("Optional ids of images you uploaded from your workspace: run `ccd ask-image <path>` in your shell (PNG, JPEG or WebP, at most %d MiB, inside your workspace) and pass the \"id\" it prints. "+
+						"images and image_ids together hold at most %d; the ask cites images first, then image_ids, in order.", officers.MaxAskImageBytes>>20, officers.MaxAskImages)},
 				"context_url": strProp("Optional http(s) URL with the context (a pull request, a preview, a dashboard)."),
 				// A string in the schema (one type, as every other tool's); a JSON
 				// integer of seconds is accepted at dispatch too.
@@ -828,6 +835,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		Question   string          `json:"question"`
 		Options    []string        `json:"options"`
 		Images     []string        `json:"images"`
+		ImageIDs   []string        `json:"image_ids"`
 		ContextURL string          `json:"context_url"`
 		Deadline   json.RawMessage `json:"deadline"`
 	}
@@ -849,6 +857,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		status := in.Status
 		if status == "" {
 			status = officers.StatusOpen
+		}
+		if !officers.ValidItemStatus(status) {
+			return toolErr("status must be one of %s", strings.Join(officers.ItemStatuses, ", ")), true
 		}
 		var page officers.ItemsPage
 		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor})
@@ -900,7 +911,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return bad, true
 		}
 		ask := officers.Ask{To: in.To, Question: in.Question, Options: in.Options, Images: in.Images, ContextURL: in.ContextURL}
-		return s.officerAskPerson(ctx, c, o, instance, in.ItemID, ask, in.Deadline), true
+		return s.officerAskPerson(ctx, c, o, instance, in.ItemID, ask, in.ImageIDs, in.Deadline), true
 	case officers.ToolReleaseEvaluation:
 		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
@@ -929,12 +940,20 @@ const asksUnsupportedErr = "this HQ does not support officer_ask_person yet (the
 // 🔴 A SUCCESS ENDS THE INSTANCE'S LEASE (HQ's contract), so the transcript
 // forwarder stops for the item as on complete/release, and the result says so
 // in words (askedNote) — the instance's next move is to stop working the item.
-func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask, deadline json.RawMessage) string {
+func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask, imageIDs []string, deadline json.RawMessage) string {
 	secs, err := officers.ParseAskDeadline(deadline)
 	if err != nil {
 		return toolErr("%v", err)
 	}
 	ask.DeadlineSeconds = secs
+	if n := len(ask.Images) + len(imageIDs); n > officers.MaxAskImages {
+		return toolErr("at most %d images (images and image_ids together; %d given)", officers.MaxAskImages, n)
+	}
+	for i, id := range imageIDs {
+		if !officers.ValidAttachmentID(id) {
+			return toolErr("image_ids[%d] is not an attachment id (the \"id\" `ccd ask-image <path>` printed)", i)
+		}
+	}
 	if err := officers.ValidateAsk(ask); err != nil {
 		return toolErr("%v", err)
 	}
@@ -942,8 +961,8 @@ func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o off
 	for i, src := range ask.Images {
 		d, err := officers.LoadAskImage(ctx, s.officerRT.askHTTP, src, i+1)
 		if errors.Is(err, officers.ErrNotAnImageSource) {
-			return toolErr("images[%d] is %s. muster runs outside your pod and cannot read files in your workspace: give an http(s) URL muster can fetch, "+
-				"or a small image as a data:image/<type>;base64,<data> URI (a whole tool call is capped at 64 KiB)", i, err)
+			return toolErr("images[%d] is %s. muster runs outside your pod and cannot read files in your workspace: for a workspace file, run `ccd ask-image <path>` "+
+				"in your shell and pass the \"id\" it prints in image_ids; images takes an http(s) URL muster can fetch, or a small data:image/<type>;base64,<data> URI", i, err)
 		}
 		if err != nil {
 			return toolErr("images[%d]: %v", i, err)
@@ -958,6 +977,7 @@ func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o off
 		}
 		ask.Images = append(ask.Images, up.ID)
 	}
+	ask.Images = append(ask.Images, imageIDs...)
 	body, err := c.CreateAsk(ctx, item, instance, ask)
 	if err == nil && s.officerRT.fwd != nil {
 		s.officerRT.fwd.Ended(o, instance, item)
@@ -1150,5 +1170,83 @@ func officerToolResult(name string, body []byte, err error) string {
 		return toolErr("HQ is unavailable right now; try %s again in a minute", name)
 	default:
 		return toolErr("%s failed", name)
+	}
+}
+
+// --- the ask-image upload route (POST podagent.AskImagePath) -----------------
+
+// registerOfficerRoutes registers the officer instances' own agent-token
+// routes. It runs on every server, so the route set is fixed; without a
+// declared officer every call is refused (officerOf).
+func (s *Server) registerOfficerRoutes(mux Mux) {
+	mux.HandleFunc("POST "+podagent.AskImagePath, s.requireRelayAgent(s.handleOfficerAskImage))
+}
+
+// handleOfficerAskImage is POST /agent/officer/ask-images?filename=<name>. An
+// officer instance's pod (`ccd ask-image`, podagent.UploadAskImage) sends a
+// workspace image as the raw body. muster forwards it to HQ's
+// POST /officers/{id}/ask-images with the officer credential, and answers
+// HQ's {id, filename, content_type, size, sha256} with 201.
+//
+//   - 🔴 THE OFFICER IS THE CALLING AGENT'S, from its own token
+//     (requireRelayAgent, then officerOf), never a request field. A query
+//     naming another officer is refused, not ignored, as the tools refuse it.
+//     An agent that is no officer's instance is refused (403).
+//   - 🔴 THE BYTES ARE CHECKED HERE, WHATEVER SENT THEM. They are read
+//     through a LimitReader of askimage.MaxBytes+1 (more is a 413, before
+//     anything is sent to HQ), and typed by sniffing them (askimage.Sniff:
+//     PNG, JPEG or WebP, else 415), never by the Content-Type or the name.
+//     The pod checks the same, but anything in the pod can call this route
+//     with the agent's token.
+//   - HQ's refusal comes back with HQ's status and {error, code}; an HQ
+//     without the route answers 404 with code asks_unsupported; an outage, 503.
+func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
+	a, _ := agentFromContext(r.Context())
+	o, _, ok := s.officerOf(a)
+	if !ok || !officers.ToolOffered(o, officers.ToolAskPerson) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "only an officer instance may upload an ask image", "code": "not_an_officer"})
+		return
+	}
+	q := r.URL.Query()
+	for _, k := range []string{"officer", "officer_id"} {
+		if v, named := q[k]; named && (len(v) != 1 || v[0] != o.ID) {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "you act for officer " + o.ID + " only; an upload cannot name another officer", "code": "another_officer"})
+			return
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, askimage.MaxBytes+1))
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the image could not be read", "code": "invalid"})
+		return
+	}
+	if len(data) > askimage.MaxBytes {
+		s.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": fmt.Sprintf("the image is over %d MiB", askimage.MaxBytes>>20), "code": "too_large"})
+		return
+	}
+	ct, ok := askimage.Sniff(data)
+	if !ok {
+		s.writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": "the bytes are " + ct + ", not a PNG, JPEG or WebP image", "code": "unsupported_media_type"})
+		return
+	}
+	name := officers.AskFilename(path.Base(q.Get("filename")), ct, 1)
+	up, err := s.officerRT.hq.Client(o).UploadAskImage(r.Context(), name, ct, data)
+	var hqErr *officers.HQError
+	switch {
+	case err == nil:
+		s.writeJSON(w, http.StatusCreated, up)
+	case officers.AsksUnsupported(err):
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": asksUnsupportedErr, "code": "asks_unsupported"})
+	case errors.As(err, &hqErr):
+		var hq struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		_ = json.Unmarshal(hqErr.Body, &hq)
+		if hq.Error == "" {
+			hq.Error = fmt.Sprintf("HQ refused the image (%d)", hqErr.Status)
+		}
+		s.writeJSON(w, hqErr.Status, map[string]any{"error": hq.Error, "code": hq.Code})
+	default:
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "HQ is unavailable right now; try again in a minute", "code": "hq_unavailable"})
 	}
 }
