@@ -1,4 +1,4 @@
--- muster 0074 — WHY AN EPISODE IS QUIET (internal/sessionstate;
+-- muster 0075 — WHY AN EPISODE IS QUIET (internal/sessionstate;
 -- docs/design/session-state.md, "Who decides what" and "Push").
 --
 --   session_episodes.quiet   '' (the episode is, or will be, pushed) or why it
@@ -26,15 +26,15 @@
 -- The partial index serves the restart rule's clear: the ended episodes whose
 -- notification was shown and not yet closed.
 --
--- Must apply after 0073 (the contiguity test refuses a gap). Not re-applied by
+-- Must apply after 0074 (the contiguity test refuses a gap). Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default); the column inherits the
 -- table's row-level security. Idempotent.
 --
--- ROLLBACK. An image from before 0074 never reads or writes the column and can
+-- ROLLBACK. An image from before 0075 never reads or writes the column and can
 -- run against this schema unchanged. To remove it:
 --   DROP INDEX IF EXISTS session_episodes_uncleared;
 --   ALTER TABLE session_episodes DROP COLUMN IF EXISTS quiet;
---   DELETE FROM schema_migrations WHERE version = 74;
+--   DELETE FROM schema_migrations WHERE version = 75;
 
 SET LOCAL lock_timeout = '3s';
 

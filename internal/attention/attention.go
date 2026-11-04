@@ -280,7 +280,7 @@ type New struct {
 	Options  []string
 	// TaskID links the ask to one of the caller's tasks (0: none). Set ONLY by
 	// muster's task path (internal/api askOwnerAboutTask), never from an
-	// agent's arguments: task_dispatch trusts it as the provenance of the
+	// agent's arguments: agent_dispatch trusts it as the provenance of the
 	// owner's answer.
 	TaskID int64
 	// PluginMessageID links the ask to the plugin message it was raised for
@@ -502,7 +502,7 @@ type Store interface {
 	// AnswersForTask is the caller's asks linked to taskID that were answered
 	// THROUGH THE ASK ITSELF (Answered) — on the Attention view or through a
 	// mirrored session's attention_answer (ViaMCP; AnsweredVia says which) —
-	// newest first: task_dispatch's instructions provenance. Left out on
+	// newest first: agent_dispatch's instructions provenance. Left out on
 	// purpose: AnsweredInSession (one message to the asker's session settles
 	// every open ask that asker raised, on every task, so it is not an answer
 	// to any one task's ask).

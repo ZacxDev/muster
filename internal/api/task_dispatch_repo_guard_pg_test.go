@@ -8,6 +8,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // TestTaskDispatchRefusesATaskStoredRepoThatIsNotConnected: the connected-repo
@@ -24,13 +25,13 @@ func TestTaskDispatchRefusesATaskStoredRepoThatIsNotConnected(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": kind}), chiefDispatchRepo, n.ID)
+		f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "target": plugins.PodTarget(kind)}), chiefDispatchRepo, n.ID)
 	}
 	ok, err := f.notes.Create(f.asOwner, notes.Note{Title: "connected repo", Body: "b", Repo: "example/app"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": ok.ID}), ok.ID); got.Repo != "example/app" {
+	if got := f.startedOne(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": ok.ID}), ok.ID); got.Repo != "example/app" {
 		t.Fatalf("agent %+v", got)
 	}
 }
@@ -52,7 +53,7 @@ func TestTaskDispatchRefusesATaskWhoseRepoChangedAfterTheCheck(t *testing.T) {
 		}
 		return []string{"example/app"}
 	}}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), "repository changed while it was being checked", n.ID)
+	f.mustRefuse(t, f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID}), "repository changed while it was being checked", n.ID)
 }
 
 // TestTaskDispatchStillRunsTheTaskRefusalsWithEveryOtherCheckPassing: the
@@ -74,7 +75,7 @@ func TestTaskDispatchStillRunsTheTaskRefusalsWithEveryOtherCheckPassing(t *testi
 		Namespace: "ns-trbusy2", Status: agents.StatusRunning, NoteID: &n.ID}); err != nil {
 		t.Fatal(err)
 	}
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords})
+	text := f.call(f.chief, agentDispatchTool, map[string]any{"task_id": n.ID, "prompt": ownersWords})
 	if !strings.Contains(text, chiefDispatchHasAgent) {
 		t.Fatalf("answer %s; want #152's live-agent refusal", text)
 	}

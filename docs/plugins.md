@@ -530,12 +530,12 @@ it. The flow:
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `task_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
+| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `agent_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent — **one button per target**, *"agent_dispatch on pod/claude-code: start a new agent on it"*, since the tool has no default target), returned to the chief as `actions_offered`. Your click reaches the chief as a turn you did not type, so it cannot pass `owner_asked`; instead `agent_dispatch` on that task then takes **exactly the target you clicked** (any other is refused, naming yours). `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `agent_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
-| `task_dispatch {task_id, repo?, kind?, instructions?, owner_asked?}` | Starts a new agent on the task. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 8a](#task_dispatch-the-guards)). `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
+| `agent_dispatch {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?}` | Starts a new agent: on the task, or — without `task_id` — from a prompt alone ([below](#agent_dispatch-the-guards)). `target` is **required and has no default**: today `pod/claude-code` or `pod/gateway` (a `host/<host>/claude` or `host/<host>/opencode` target is refused until host spawning ships, [design](design/chief-dispatch.md)). A call without one is refused with the targets that exist now and the budget, so the chief asks you which. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 13](#agent_dispatch-the-guards)). Either pod kind gets the task's repository and branch (`base` picks another branch); a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent gets the task's model, or `model`. `prompt` (at most 8 KiB) opens the agent's first message. `worker_pool` makes a claude-code agent a [machine-job worker](jobs.md). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. The retired name `task_dispatch` answers *"task_dispatch is replaced by agent_dispatch, which needs a target: ask your owner where to run it"*. | see below |
 
 All three are chief-only, on the agent gateway and over `/mcp`. Handing a task
-to the chief never starts anything by itself: only `task_dispatch` does.
+to the chief never starts anything by itself: only `agent_dispatch` does.
 
 **Until your chief routes the task** the task is listed on `/attention` as
 **Task to route**: while you have no chief or it is not running, busy or
@@ -543,7 +543,7 @@ unreachable (the event stays queued and is retried at each plugin claim), and
 also when the chief took the event and did not act on it (its turn failed, it
 called no tool, or its call was refused). It leaves the list once the chief
 routes the task (`task_route_attention`, `task_forward`, `route_to_session`
-with its `task_id`, or a `task_dispatch` answered `already_dispatched` while an
+with its `task_id`, or an `agent_dispatch` answered `already_dispatched` while an
 agent is running on the task,
 recorded as a `task.chief_routed` audit row) or starts an agent on it, or once the task is
 complete or dismissed. "Routes" is measured per event, from the event's latest
@@ -552,46 +552,104 @@ none: an action before that does not count. So a new event for a task already
 in progress is listed again until the chief routes it, and a queued event can
 reappear on the list after a later failed attempt to hand it over.
 
-### `task_dispatch`: the guards
+### `agent_dispatch`: the guards
 
 Each refusal has its own sentence, in this order:
 
 1. `MUSTER_CHIEF_DISPATCH_OWNERS` is empty: the tool is not offered, and
    refused if called by name.
-2. Your user id is not in `MUSTER_CHIEF_DISPATCH_OWNERS`: you have not opted
+2. The arguments do not decode, or carry a field outside the table above (an
+   old `kind` or `instructions`, a typo): *"arguments are {target, prompt?,
+   task_id?, repo?, base?, model?, worker_pool?, request_key?,
+   owner_asked?}"*. Unknown fields are refused, never ignored.
+3. Your user id is not in `MUSTER_CHIEF_DISPATCH_OWNERS`: you have not opted
    in.
-3. The deployment cannot start agents (no provisioner, or a first message
-   could not be delivered).
-4. `instructions` are over 1 KiB.
-5. `instructions` are given and are not **your own words**: not, verbatim,
-   your answer to an attention ask linked to **this** task. An ask is linked
-   to its task only when muster filed it on the task's behalf
-   (`task_route_attention`, or a mention's route to `/attention`) — never by
-   its question's text, which any asker can write. The answer must be given
-   **through that ask** — on `/attention`, or from one of your mirrored
-   sessions' `attention_answer`, which counts the same (operator decision;
-   the accepted risk is in [attention.md](attention.md#mirrored-claude-code-sessions)) —
-   while a message you write into the
-   chief's chat also settles its open asks, but every one of them at once, on
-   every task, so it counts for none. The comparison is exact
-   after trimming surrounding whitespace and normalising line endings: one
-   word added, a changed letter case or a doubled space is refused. Your
-   answer on another task, another user's answer, the task's own text and
-   the chief's note are all refused. The chief should pass your answer as you
-   typed it; to get one, it calls `task_route_attention` and waits.
-6. `kind` is unknown, not enabled on the deployment (`MUSTER_AGENT_KINDS`), or
-   one you have no credential for.
-7. The **effective** repository — `repo`, or else the task's own — is not
+4. The deployment cannot start agents (no provisioner, or a first message
+   could not be delivered). This refuses a `worker_pool` agent with no prompt
+   too, so every call meets one order.
+5. **The target.** No `target`: *"target is required and has no default: ask
+   your owner where to run this, offering the targets below. Never choose one
+   they did not name."* A target that is not one of the shapes, a pod kind the
+   deployment does not enable (`MUSTER_AGENT_KINDS`), and a host target (no
+   host can start agents yet) each have their own sentence. Every one of them
+   carries `targets` — the pod kinds enabled here that you have a credential
+   for, and the hosts that can spawn now (none yet) — and the `budget`:
+
+   ```json
+   {"error": "target is required and has no default: …",
+    "targets": {"pods": ["pod/claude-code"], "hosts": []},
+    "budget": {"live": 1, "live_cap": 5, "today": 3, "daily_cap": 10, "live_agents": ["…"]}}
+   ```
+6. `request_key` is not 1-64 of `[A-Za-z0-9._:-]`.
+7. `worker_pool`: the target is not `pod/claude-code`, a `task_id` is given (a
+   pool worker serves machine jobs, not a task), or the name is not 1-63 of
+   `[a-z0-9-]` not starting with `-`.
+8. `model` on any target but `pod/gateway` (*"this target takes its model from
+   its own configuration"*).
+9. With **no task**: `owner_asked: true` is missing, `request_key` is missing,
+   or `prompt` is missing (a `worker_pool` agent may have none).
+10. `prompt` is over 8 KiB.
+11. **`request_key`**, when given — decided **first under the lock**
+   (guard 14), so guards 12–13 still run for a retry. A key is the chief's,
+   per request of yours: the same key with the same parameters (target, task, repository
+   ignoring case, base, model, worker pool, the cleaned prompt, owner_asked)
+   within 24 hours **replays** — the first start's result as it stands now,
+   `{"replayed": true, "agent_id", "agent", "status", "budget"}`, starting
+   nothing and spending nothing, and running none of the checks under the lock
+   after it (your turn among them). The same
+   key with any parameter changed is refused (*"request_key %q was used in the
+   last 24 hours for a different dispatch: use a new key for a new request"*).
+   Keys are per owner. A start released because its create was refused does
+   not hold its key; one whose create failed after it was spent does: that
+   failure is recorded (`task.chief_dispatch_failed`, naming the reservation),
+   and its replay answers `{"started": false}`. Each ledger write after the
+   reservation (that marker, and the record of the agent started) is retried
+   once; if it fails again the call answers with an error saying a retry's
+   answer would be wrong — never a silent "starting". A reservation with no agent and
+   no such record replays `"status": "starting"`. The key lives in the reservation's audit row
+   (`detail.request_key`, `detail.request_hash`), looked up through migration
+   0074's index.
+12. Without `owner_asked` (only possible on a task), a `prompt` that is not
+   **your own words**: not, verbatim, your answer to an attention ask linked
+   to **this** task. An ask is linked to its task only when muster filed it on
+   the task's behalf (`task_route_attention`, or a mention's route to
+   `/attention`) — never by its question's text, which any asker can write.
+   The answer must be given **through that ask** — on `/attention`, or from
+   one of your mirrored sessions' `attention_answer`, which counts the same
+   (operator decision; the accepted risk is in
+   [attention.md](attention.md#mirrored-claude-code-sessions)) — while a
+   message you write into the chief's chat also settles its open asks, but
+   every one of them at once, on every task, so it counts for none. The
+   comparison is exact after trimming surrounding whitespace and normalising
+   line endings: one word added, a changed letter case or a doubled space is
+   refused. Your answer on another task, another user's answer, the task's own
+   text and the chief's note are all refused. The chief should pass your
+   answer as you typed it; to get one, it calls `task_route_attention` and
+   waits.
+
+   12a. On a task whose newest answer of yours to an ask about it is one of
+   `task_route_attention`'s per-target buttons, a call without `owner_asked`
+   names another target (*"your owner chose pod/gateway for this task …"*).
+   This only narrows: it lets nothing through the other guards refuse.
+
+   12a′. The pod kind is one you have no credential for.
+
+   12b. The **effective** repository — `repo`, or else the task's own — is not
    `owner/name`, you have no GitHub connection, or it is not one of your
-   connected repositories. This holds for every kind. The chief picks `repo`
+   connected repositories. This holds for every target. The chief picks `repo`
    while reading outside text, and a task's repository may have been written
    by an agent (`task_create_gated`), so either may only be one of your own.
    The task is re-read under the lock below, and a repository changed in
    between is refused.
-8a. `owner_asked: true` on an open **gated** task: muster starts the agent and
-   releases the gate on **a turn you typed** — and only on one — when all of
-   these hold, each refused with its own sentence otherwise (the gate stays on
-   and nothing starts):
+13. **`owner_asked: true` always runs the owner's-turn check**, on a task the
+   chief gated, on an ungated task and with no task. A turn a plugin message,
+   a task event, mail or the chief itself started can therefore never start an
+   agent with no task, nor get its text accepted as your wishes. On an open
+   **gated** task muster starts the agent and releases the gate on **a turn
+   you typed** — and only on one — when all of these hold, each refused with
+   its own sentence otherwise (the gate stays on and nothing starts); on an
+   ungated task or with no task the same conditions apply, worded without "the
+   gate" (and, with no task, without `task_route_attention`, which needs one):
    - the gate is the one the chief set with `task_create_gated` (muster records
      it when the task is filed). A gate you put on a task yourself — even on a
      task the chief filed — is never released here; only the board removes it;
@@ -627,51 +685,59 @@ Each refusal has its own sentence, in this order:
      reach;
    - the call came over MCP, from a Claude Code session. A chief session on
      the gateway runtime runs its tools inside muster and is no CLI, so it
-     never releases a gate.
+     can never pass `owner_asked`.
 
-   The chief names no message: muster takes the one your running turn stored.
-   The checks run after guards 4–7 and again under the lock below; the gate is
-   removed only **after** the agent was created, so a refusal from guard 8 on
-   (a cap, say) leaves the task gated. On a release the task gets a comment by
-   `muster` naming your message and quoting it verbatim, you get a push ("your
-   chief released the gate on task #N on your message: …"), and the start's
-   audit row and result carry `gate_released_by_owner_message`. Muster cannot
-   tell whether your message was **about** this task: the chief decides that,
-   and the push shows you at once if it misread you. Without `owner_asked`, or
-   on an ungated task, nothing here runs. A gated task filed before this
-   release has no record of its gate, so only the board releases it. If the
-   agent starts but the gate tag cannot be removed, the comment, the push and
-   the result (`gate_not_removed`) say so.
-8. Under a per-owner lock: **one start per task** — until you destroy the
-   agent it made. A task the chief already started an agent for answers with
-   that start (`already_dispatched`) and starts nothing, whatever became of the
-   agent, **unless you destroyed that agent** (its page's Delete, or
-   `agent_destroy` from your mirrored session): that destroy records a release
-   (`task.chief_dispatch_released`; nothing is deleted) and the chief may
-   start **one** new agent on the task (operator decision: *"Owner's destroy
-   resets the chief's allowance"*). The chief cannot release its own start,
-   destroying an agent it did not start releases nothing, and a failed
-   teardown releases nothing. A second agent alongside a live one is yours to
-   start, from its card.
-9. The task is not yours, is gated (`gate:` tag), names a different
+   With `owner_asked` passed, the `prompt` is accepted as the chief's relay of
+   that message of yours, without guard 12. The chief names no message: muster
+   takes the one your running turn stored. Your turn is checked **once, under
+   the lock below** (guard 15), on the turn in flight then; on a gated task
+   `verifyGateRelease` also reads it after guard 12b, and the lock then
+   requires the same message. The gate is removed only **after** the agent was
+   created, so a refusal from guard 14 on (a cap, say) leaves the task gated.
+   On a release the task gets a comment by `muster` naming your message and
+   quoting it verbatim, you get a push ("your chief released the gate on task
+   #N on your message: …"), and the start's audit row and result carry
+   `gate_released_by_owner_message`. Muster cannot tell whether your message
+   was **about** this task: the chief decides that, and the push shows you at
+   once if it misread you. A gated task filed before this release has no
+   record of its gate, so only the board releases it. If the agent starts but
+   the gate tag cannot be removed, the comment, the push and the result
+   (`gate_not_removed`) say so.
+14. Under a per-owner lock: the `request_key` again (two concurrent calls with
+   one key start one agent), then — on a task — **one start per task**, until
+   you destroy the agent it made. A task the chief already started an agent
+   for answers with that start (`already_dispatched`) and starts nothing,
+   whatever became of the agent, **unless you destroyed that agent** (its
+   page's Delete, or `agent_destroy` from your mirrored session): that destroy
+   records a release (`task.chief_dispatch_released`; nothing is deleted) and
+   the chief may start **one** new agent on the task (operator decision:
+   *"Owner's destroy resets the chief's allowance"*). The chief cannot release
+   its own start, destroying an agent it did not start releases nothing, and a
+   failed teardown releases nothing. A second agent alongside a live one is
+   yours to start, from its card. A start with no task is its own ledger
+   object (`dispatch:<32 hex>`), so this rule has nothing to bind to; its
+   `request_key` is its retry guard instead.
+15. The task is not yours, is gated (`gate:` tag), names a different
    repository than `repo`, is not `open`, or already has a live agent (use
-   `task_forward`).
-10. **5** of the agents the chief started are still live (pending,
+   `task_forward`). With `owner_asked`, your turn is checked here.
+16. **5** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet. Live is the agent row's **stored** status; a
    stopped agent does not count, and completing a task stops the chief's
-   agent on it ([below](#completing-a-task-stops-the-chiefs-agent)).
-11. The chief started **10** agents in the last 24 hours.
+   agent on it ([below](#completing-a-task-stops-the-chiefs-agent)). Starts
+   with and without a task share the caps, and a `worker_pool` agent holds its
+   slot for as long as it runs.
+17. The chief started **10** agents in the last 24 hours.
 
 #### The chief's dispatch budget
 
-The two caps (guards 10 and 11) are **data the chief reads at the call**, not
-numbers it is told: `task_dispatch`'s description says only that limits on
+The two caps (guards 16 and 17) are **data the chief reads at the call**, not
+numbers it is told: `agent_dispatch`'s description says only that limits on
 live agents and on daily starts apply. The chief's conversation survives
 restarts, so a number in a tool description is a number it remembers — after
 the live cap was raised it kept quoting the old one ("at most 2") from its
-own history. Instead, every `task_dispatch` answer — a start, an
-`already_dispatched`, and every refusal from guard 4 on (the live-cap and
+own history. Instead, every `agent_dispatch` answer — a start, a replay, an
+`already_dispatched`, and every refusal from guard 5 on (the live-cap and
 daily-cap refusals included) — carries the current `budget`, as does
 `task_route_attention`'s result when you opted in:
 
@@ -679,8 +745,8 @@ daily-cap refusals included) — carries the current `budget`, as does
 "budget": {
   "live": 2, "live_cap": 5, "today": 3, "daily_cap": 10,
   "live_agents": [
-    {"id": 41, "name": "quiet-owl", "task": 17},
-    {"id": null, "name": null, "task": 23}
+    {"id": 41, "name": "quiet-owl", "task": 17, "target": "pod/claude-code"},
+    {"id": null, "name": null, "task": 0, "target": "pod/gateway"}
   ]
 }
 ```
@@ -689,25 +755,26 @@ daily-cap refusals included) — carries the current `budget`, as does
   agent the chief started whose stored status is live, by id and name, oldest
   first; then each start from the last 10 minutes whose agent is **not
   recorded yet** — a start in flight, or one that failed before any agent
-  existed and was not released — with `id` and `name` null and only its
-  `task`. A start released because its create was refused holds no slot.
+  existed and was not released — with `id` and `name` null. `task` is `0`
+  for a start with no task, and `target` is where it runs. A start released
+  because its create was refused holds no slot.
 - `today` is the chief's starts in the last 24 hours, recorded or not.
 - A refusal is `{"error": "<its sentence>", "budget": {…}}` and is still a
   failed call (MCP `isError`). A cap refusal carries the budget the reservation
   compared, under its lock; any other answer reads it fresh, so it can be one
   start stale against a concurrent call.
-- Guards 1–3 (the flag, the opt-in, the deployment) refuse before there is
-  a budget the chief could spend, and carry none.
+- Guards 1–4 (the flag, the arguments, the opt-in, the deployment) refuse
+  before there is a budget the chief could spend, and carry none.
 - If the budget cannot be read the answer goes out without it (logged); it
   never fails the call. `task_route_attention` then does not offer
-  `task_dispatch`.
+  `agent_dispatch`.
 
 The count is the audit log, one function for both uses
 (`internal/plugins/chief_dispatch.go`, `chiefBudget`): the caps refuse on the
 same numbers the budget reports.
 
 A start that passed every check is recorded (a `task.chief_dispatch` audit row,
-with the kind, any instructions and the id of the attention ask they are your
+with the kind, the target, any prompt (`instructions`) and the id of the attention ask it is your
 answer to (`instructions_ask`) — and, for an answer given over MCP,
 `instructions_via: "mcp"` and `instructions_from: "<host>/<session>"` — so you
 can read what the chief told the agent and where it came from) **before** the agent is created, so a start that then fails still
@@ -719,16 +786,18 @@ caps are counted from those rows.
 Only a start whose agent was **recorded** (`task.chief_dispatch_agent`) can be
 released, by destroying that agent. ⚠ A start that failed before any agent
 existed stays spent for good — there is nothing to destroy — and
-`task_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
+`agent_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
 that task is yours to start, from its card.
 
-The agent's first message is the chief's `instructions`, if any (control
-characters removed, fenced under a line saying the chief relayed them — and,
-for an MCP answer, that they were your answer given over MCP from
-`<host>`/`<session>` rather than on the Attention view), then
-the task's text, then muster's rules for the run, which come last and win:
-open any pull request as a **draft**, never merge, never mark the task complete
-(set it `ready_for_review` with the pull request's URL in a comment). Marking a
+The agent's first message is the chief's `prompt`, if any (control
+characters removed, fenced under a line saying the chief relayed it — from a
+message you typed in its chat, with `owner_asked`; or, for an MCP answer, as
+your answer given over MCP from `<host>`/`<session>` rather than on the
+Attention view), then the task's text, then muster's rules for the run, which
+come last and win: open any pull request as a **draft**, never merge, never
+mark the task complete (set it `ready_for_review` with the pull request's URL
+in a comment). An agent started with no task is told to report back in the
+chief's chat with `chief_ask`, or through the pull request. Marking a
 task complete is refused to every agent anyway. ⚠ The draft rule is an
 instruction, not enforced by muster: pushing and opening the pull request go
 through the `github` connector, which you approve once per repository
@@ -751,12 +820,12 @@ running), and only while its row is still bound to the task. Left alone: an
 agent you started yourself, an agent already stopped or in `error`, and every
 agent of a task set to `ready_for_review` (it must stay reachable through
 `task_forward`). The task's one start stays **spent**: a stop is not a destroy
-and records no release, so `task_dispatch` on the task still answers
+and records no release, so `agent_dispatch` on the task still answers
 `already_dispatched`. A stopped agent left stopped for
 `MUSTER_AGENT_REAP_STOPPED_AFTER` (14 days by default) is then destroyed by
 the [stopped-agent reaper](provisioner.md#reaping-stopped-agents), which does
 record the release. A stopped agent is not live, so it frees its slot under
-guard 10.
+guard 16.
 
 ⚠ The live cap reads the stored status, so an agent whose instance died while
 its row still says `running` keeps its slot until something writes the row (a
@@ -870,9 +939,10 @@ descriptions and the preface on each message.
 - The task is created **gated**. The server adds `gate:<reason>`, a slug of
   `gate_reason` (`gate:awaiting-approval` when it is empty). Nothing dispatches
   it until you release the gate: remove it on the board, or tell your chief in
-  its chat to do the work — its instructions say to call `task_dispatch` with
-  `owner_asked: true` in its answer, and muster checks that the turn is yours before it
-  releases the gate ([guard 8a](#task_dispatch-the-guards)).
+  its chat to do the work — its instructions say to call `agent_dispatch` with
+  the target you named and `owner_asked: true` in its answer, and muster checks
+  that the turn is yours before it releases the gate
+  ([guard 13](#agent_dispatch-the-guards)).
 - A caller tag in the `gate:` or `auto:` namespace is **refused**, in any
   spelling the tag grammar folds together.
 - You get the usual "New task" push. The tool creates through the same path as

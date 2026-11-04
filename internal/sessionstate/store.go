@@ -104,7 +104,7 @@ type Store interface {
 	MarkCleared(ctx context.Context, id int64, at time.Time) error
 }
 
-// The reasons an episode is quiet (Episode.Quiet, migration 0074).
+// The reasons an episode is quiet (Episode.Quiet, migration 0075).
 const (
 	QuietLeft        = "left"         // the chief said leave it, and the session asked nothing
 	QuietNudged      = "nudged"       // the chief's nudge to it was sent

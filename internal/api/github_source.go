@@ -14,7 +14,7 @@ import (
 // 🔴 EVERY READER OF "WHICH REPOSITORIES CAN muster SEE" GOES THROUGH HERE: the
 // dispatch dialog's repo picker, the task-directory inference,
 // the default-branch lookup, and connectedRepo — the check behind every
-// claude-code dispatch door and task_dispatch's effective repository. They were
+// claude-code dispatch door and agent_dispatch's effective repository. They were
 // five open-coded copies once; a source added at four of them and missed at the
 // fifth would leave one door checking a different set of repositories.
 //
