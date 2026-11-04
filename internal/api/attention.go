@@ -129,6 +129,10 @@ type attentionState struct {
 	// (episodeWaitingPushes) — the push itself is claimed in the database, so
 	// this only spares the reads.
 	episodeWaiting map[int64]map[string]bool
+	// diffShown is each waiting item (by key) this diff PUSHED and has not
+	// cleared: its notification is showing. A window that gains its session
+	// key mid-wait is seeded as an episode only when it is (session_push.go).
+	diffShown map[string]bool
 	// drafts are the reply drafts whose `plugin` notification may be showing,
 	// by draft id: what an expiry or a supersede clears (attention_drafts.go).
 	drafts       map[int64]draftNote
@@ -979,8 +983,9 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		}
 	}
 	waiting := s.waitingSessionsIn(octx, hs)
-	// episodePushed: the items an episode push already covered at the last
-	// nudge (session state on), so their stop was pushed.
+	// episodePushed: the items the episode path covered at the last nudge
+	// (session state on) — handed to an episode then, so the diff does not
+	// push them as new now.
 	var episodePushed map[string]bool
 	if s.sessionStateOn() {
 		// 🔴 SESSION STATE ON: A WAITING WINDOW MUSTER CANNOT ANSWER, AND THAT
@@ -989,7 +994,7 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		// this diff, which would push it a second time and clear it the moment
 		// it stops waiting. Answerable asks, and a window session state cannot
 		// key, stay here, with today's push.
-		kept, fresh := waiting[:0:0], []attentionItem(nil)
+		kept, fresh, seed := waiting[:0:0], []attentionItem(nil), []attentionItem(nil)
 		cur := map[string]bool{}
 		s.attention.mu.Lock()
 		if s.attention.episodeWaiting == nil {
@@ -1002,6 +1007,18 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 				kept = append(kept, it)
 				continue
 			}
+			if s.attention.diffShown[it.Key] {
+				// 🔴 A WINDOW THAT GAINED ITS KEY MID-WAIT (its session id
+				// arrived while it waited): today's path already PUSHED this
+				// stop, and that notification is showing. It stays in today's
+				// diff until it stops waiting — which closes that notification
+				// as today — and its episode is SEEDED (claimed, nothing sent),
+				// so neither path pushes it a second time. (One today's path
+				// only SEEDED — a host's first sight, offline — was never
+				// shown, so it is the episode's to push.)
+				kept, seed = append(kept, it), append(seed, it)
+				continue
+			}
 			cur[it.Key] = true
 			if !prev[it.Key] {
 				fresh = append(fresh, it) // started waiting since the last nudge (or first seen by this process)
@@ -1009,7 +1026,8 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		}
 		s.attention.episodeWaiting[owner] = cur
 		s.attention.mu.Unlock()
-		s.episodeWaitingPushes(octx, owner, fresh, hs)
+		s.episodeWaitingPushes(octx, owner, fresh, hs, true)
+		s.episodeWaitingPushes(octx, owner, seed, hs, false)
 		waiting = kept
 	}
 	for _, it := range waiting {
@@ -1026,6 +1044,9 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		s.attention.waiting = map[int64]map[string]attentionItem{}
 		s.attention.seenHosts = map[int64]map[string]bool{}
 		s.attention.pushedAt = map[string]time.Time{}
+	}
+	if s.attention.diffShown == nil {
+		s.attention.diffShown = map[string]bool{}
 	}
 	before := s.attention.waiting[owner]
 	seen := s.attention.seenHosts[owner]
@@ -1062,12 +1083,14 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 			continue // the same episode, back again
 		}
 		s.attention.pushedAt[k] = at
+		s.attention.diffShown[k] = true
 		push = append(push, it)
 	}
 	moved := false // an item still waiting whose substance changed
 	for k, old := range before {
 		cur, ok := now[k]
 		if !ok {
+			delete(s.attention.diffShown, k)
 			clear = append(clear, k)
 		} else if cur.Text != old.Text || cur.Detail != old.Detail || cur.Offline != old.Offline {
 			moved = true

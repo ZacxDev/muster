@@ -156,7 +156,7 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 	// The restart rule's clear first: an ended stop's notification is closed
 	// whether it ended in a pass, or while muster was down.
 	defer s.clearEndedEpisodes(octx, owner)
-	read := s.stallFacts(octx, nil, hs, true)
+	read := s.stallFacts(octx, nil, hs, sessionStateListsHermes)
 	seen := map[string]bool{}
 	agentsSeen := map[int64]bool{}
 	for _, c := range read.sessions {

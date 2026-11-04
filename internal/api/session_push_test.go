@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // TestEpisodeVerdict pins the push rule (session_push.go) case by case, with
@@ -55,6 +57,32 @@ func TestEpisodeBody(t *testing.T) {
 	} {
 		if got := episodeBody(c.state, c.idle); got != c.want {
 			t.Errorf("%s %v: %q, want %q", c.state, c.idle, got, c.want)
+		}
+	}
+}
+
+// TestEpisodeCover pins the hook's half of the shared rule case by case: only a
+// plain waiting window on a host the state pass reads (online AND reporting
+// status) whose window the stall facts list (Hermes included) is covered.
+func TestEpisodeCover(t *testing.T) {
+	claude := mirror.Window{Session: "main", ID: "@1", Index: 1, Claude: true, ClaudeSession: "0b6e9c7c-9d0d-4a8e-9c62-3f1b2a4d5e6f", Status: mirror.StatusWaiting}
+	hermes := mirror.Window{Session: "main", ID: "@1", Index: 1, Runtime: mirror.RuntimeHermes, AgentSession: "hermes-synthetic-1", Status: mirror.StatusWaiting}
+	item := attentionItem{Kind: attentionKindSession, card: attentionCard{ref: ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}}}
+	host := func(w mirror.Window, online, report bool) []mirror.HostView {
+		return []mirror.HostView{{Host: "ws", Online: online, StatusReport: report, Windows: []mirror.Window{w}}}
+	}
+	for _, c := range []struct {
+		name string
+		hs   []mirror.HostView
+		want bool
+	}{
+		{"a keyed window on a healthy host", host(claude, true, true), true},
+		{"a Hermes window naming its conversation", host(hermes, true, true), true},
+		{"an offline host", host(claude, false, true), false},
+		{"an online host that reports no status", host(claude, true, false), false},
+	} {
+		if _, _, _, ok := episodeCover(c.hs, item); ok != c.want {
+			t.Errorf("%s: covered %v, want %v", c.name, ok, c.want)
 		}
 	}
 }

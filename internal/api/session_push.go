@@ -339,7 +339,7 @@ func episodeCover(hs []mirror.HostView, it attentionItem) (key, runtime string, 
 		}
 		for _, x := range h.Windows {
 			if x.Session == it.card.ref.Session && x.ID == it.card.ref.Window {
-				key, runtime, _ = stateWindowKey(x, true)
+				key, runtime, _ = stateWindowKey(x, sessionStateListsHermes)
 				return key, runtime, x, key != ""
 			}
 		}
@@ -347,10 +347,19 @@ func episodeCover(hs []mirror.HostView, it attentionItem) (key, runtime string, 
 	return "", "", mirror.Window{}, false
 }
 
+// sessionStateListsHermes: session state lists Hermes windows (design default
+// D3). 🔴 ONE CONSTANT FOR BOTH SIDES of the shared rule — the state pass's
+// stall facts and the hook's episodeCover — so they cannot drift apart and
+// leave a window the hook covers that the pass never sees, or the reverse.
+const sessionStateListsHermes = true
+
 // episodeWaitingPushes opens (or finds) the episode of each covered waiting
 // window in items (episodeCover) and pushes it at once: the waiting push, from
-// the mirror hub's change hook.
-func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items []attentionItem, hs []mirror.HostView) {
+// the mirror hub's change hook. With send false it SEEDS instead: the episode
+// is claimed as pushed and nothing is sent — for a window today's path already
+// pushed in this stop (it gained its key mid-wait), so the stop is not pushed
+// a second time.
+func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items []attentionItem, hs []mirror.HostView, send bool) {
 	for _, it := range items {
 		key, runtime, w, ok := episodeCover(hs, it)
 		if !ok {
@@ -375,9 +384,15 @@ func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items [
 			}
 			ep = opened
 		}
-		if ep.PushedAt.IsZero() {
+		switch {
+		case !ep.PushedAt.IsZero():
+		case send:
 			ep.State = sessionstate.StateNeedsYou
 			s.pushEpisode(octx, ep, 0)
+		default:
+			if _, err := s.ext.Episodes.ClaimPush(octx, ep.ID, s.now()); err != nil {
+				s.logger.Printf("session state: waiting %s: seed: %v", it.Key, err)
+			}
 		}
 	}
 }

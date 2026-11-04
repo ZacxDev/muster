@@ -534,6 +534,91 @@ func TestAWaitingWindowWithNoSessionKeyKeepsTodaysPush(t *testing.T) {
 	if list := f.episodes(t); len(list) != 0 {
 		t.Fatalf("episodes: %+v", list)
 	}
+	// …and it stays a list item on the page: no episode row stands in for it.
+	if body := f.page(t, "/attention"); !strings.Contains(body, `data-kind="session"`) {
+		t.Fatalf("the keyless window is not on the list:\n%s", body)
+	}
+}
+
+// TestAWindowThatGainsItsKeyMidWaitPushesOnce (regression; round 2): a
+// keyless waiting window gets today's push; its Claude session id then
+// arrives while it still waits. The stop is pushed once — not again as an
+// episode, by the hook or by the pass.
+func TestAWindowThatGainsItsKeyMidWaitPushesOnce(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.mirror.mu.Lock()
+	f.mirror.windows[0].ClaudeSession = ""
+	f.mirror.mu.Unlock()
+	f.seenIdleThenWaiting()
+	f.mirror.mu.Lock()
+	f.mirror.windows[0].ClaudeSession = nudgeSID
+	f.mirror.mu.Unlock()
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.statePass(t)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.statePass(t)
+	if got := f.pushes(); len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-session-") {
+		t.Fatalf("pushes: %v", got)
+	}
+}
+
+// TestOneStopIsOnePushAcrossTheHookAndThePass (regression; round 2, the
+// shared rule): the hook (episodeCover) and the state pass (stall facts) key
+// windows by ONE rule, so for each kind of window the stop is pushed exactly
+// once across both — never twice, never not at all.
+func TestOneStopIsOnePushAcrossTheHookAndThePass(t *testing.T) {
+	run := func(t *testing.T, f *stateFixture) {
+		for i := 0; i < 3; i++ {
+			f.statePass(t)
+			f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+			f.advance(30 * time.Second)
+		}
+	}
+	t.Run("a plain waiting Hermes window", func(t *testing.T) {
+		f := newStateFixture(t, false)
+		f.mirror.mu.Lock()
+		f.mirror.windows[0] = mirror.Window{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeHermes,
+			AgentSession: "hermes-synthetic-1", Status: mirror.StatusIdle, StatusSince: nudgeSince}
+		f.mirror.mu.Unlock()
+		f.seenIdleThenWaiting()
+		run(t, f)
+		if got := f.pushes(); len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-episode-") {
+			t.Fatalf("pushes: %v", got)
+		}
+	})
+	t.Run("a host offline, then back", func(t *testing.T) {
+		// Its window is first seen waiting while the host is offline (inside
+		// the grace that keeps its items): nothing pushes until it is back and
+		// reporting — then the stop pushes once.
+		f := newStateFixture(t, false)
+		f.mirror.mu.Lock()
+		f.mirror.online, f.mirror.offlineSince = false, f.clock.Add(-time.Minute)
+		f.mirror.mu.Unlock()
+		f.status(mirror.StatusWaiting, time.Second)
+		f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+		run(t, f)
+		if got := f.pushes(); len(got) != 0 {
+			t.Fatalf("pushes while offline: %v", got)
+		}
+		f.mirror.mu.Lock()
+		f.mirror.online = true
+		f.mirror.mu.Unlock()
+		f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+		run(t, f)
+		// (A "resolved" for the diff's never-shown seeded item may follow, as
+		// today when a seeded window stops waiting: it closes nothing.)
+		if got := alerts(f.pushes()); len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-episode-") {
+			t.Fatalf("pushes once back: %v", f.pushes())
+		}
+	})
+	t.Run("a keyed window on a healthy host", func(t *testing.T) {
+		f := newStateFixture(t, false)
+		f.seenIdleThenWaiting()
+		run(t, f)
+		if got := f.pushes(); len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-episode-") {
+			t.Fatalf("pushes: %v", got)
+		}
+	})
 }
 
 // TestAKeyedWaitingWindowPushesOnlyItsEpisode (regression; audit F1's control
@@ -627,4 +712,15 @@ func TestATapOnAnotherOwnersRealEpisodeFallsBack(t *testing.T) {
 	if loc := w.Header().Get("Location"); w.Code != http.StatusSeeOther || loc != "/attention#"+key {
 		t.Fatalf("tap: %d %q", w.Code, loc)
 	}
+}
+
+// alerts is pushes without the "resolved" ones: what alerted the owner.
+func alerts(pushes []string) []string {
+	var out []string
+	for _, p := range pushes {
+		if strings.HasPrefix(p, "attention ") {
+			out = append(out, p)
+		}
+	}
+	return out
 }
