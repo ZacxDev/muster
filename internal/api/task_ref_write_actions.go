@@ -25,24 +25,25 @@ import (
 //     task's order (notes.PGStore.RetryRefWrite, ClaimRefWrites);
 //   - DISMISS it: off the task page (dismissed_at; the row is kept).
 //
-// Two doors per action onto ONE body (actOnRefWrite):
+// ONE door per action: POST /tasks/{id}/ref-writes/{wid}/retry|dismiss, the
+// task page's buttons, behind requireOperatorWrite (a session and
+// same-origin), like the plugin message retry's form. htmx gets the
+// re-rendered card; a plain form post a 303 back to the task page. There is
+// deliberately NO machine (/api) twin: the decision is made looking at the
+// task, its upstream and its other writes.
 //
-//   - POST /tasks/{id}/ref-writes/{wid}/retry|dismiss — the task page's
-//     buttons, behind requireOperatorWrite (a session and same-origin), like
-//     the plugin message retry's form. htmx gets the re-rendered card; a plain
-//     form post a 303 back to the task page.
-//   - POST /api/tasks/{id}/ref-writes/{wid}/retry|dismiss — the machine API,
-//     behind requireHookToken like the task's other /api sub-resources (a
-//     personal token acts as its owner). JSON: the write as it now stands.
-//
-// 🔴 NOT AN AGENT'S, NOT A PLUGIN'S. Neither door admits an agent's own token,
-// the chief's service identity, or a plugin token, and no agent tool calls
+// 🔴 NOT AN AGENT'S, NOT A PLUGIN'S. The door admits no agent token, no
+// service credential (the chief) and no plugin token, and no agent tool calls
 // actOnRefWrite (TestRefWriteRetryAndDismissAreTheOwnersOnly): retrying what the
 // upstream refused is the owner's decision, not the writer's.
 //
 // 🔴 ONLY A FAILED WRITE: anything else is 409 and nothing changes. A missing
 // task, a write on another task, and another owner's write are all 404 (RLS
 // hides the row; the answer is the ghost's).
+//
+// 🔴 A SUPERSEDED STATUS WRITE IS NOT RETRIED (409; notes.ErrRefWriteSuperseded):
+// a later status write on the task is already done upstream, and replaying the
+// older one would undo it. It can still be dismissed.
 // ---------------------------------------------------------------------------
 
 // refWriteAction is which owner action actOnRefWrite performs.
@@ -82,6 +83,9 @@ func (s *Server) actOnRefWrite(ctx context.Context, action refWriteAction, taskI
 		return http.StatusNotFound, notes.RefWrite{}, "no such write on this task"
 	case errors.Is(err, notes.ErrRefWriteNotFailed):
 		return http.StatusConflict, notes.RefWrite{}, "only a failed write can be retried or dismissed"
+	case errors.Is(err, notes.ErrRefWriteSuperseded):
+		return http.StatusConflict, notes.RefWrite{}, "a later status write on this task is already applied upstream, " +
+			"so retrying this one would undo it; dismiss it instead"
 	case errors.Is(err, notes.ErrNotReference):
 		return http.StatusConflict, notes.RefWrite{}, "the task is no longer a reference, so the write has nowhere to go; dismiss it instead"
 	default:
@@ -117,14 +121,6 @@ func (s *Server) handleTaskRefWriteDismiss(w http.ResponseWriter, r *http.Reques
 	s.serveRefWriteForm(w, r, refWriteDismiss)
 }
 
-func (s *Server) handleAPITaskRefWriteRetry(w http.ResponseWriter, r *http.Request) {
-	s.serveRefWriteAPI(w, r, refWriteRetry)
-}
-
-func (s *Server) handleAPITaskRefWriteDismiss(w http.ResponseWriter, r *http.Request) {
-	s.serveRefWriteAPI(w, r, refWriteDismiss)
-}
-
 // serveRefWriteForm is the task page's door: the re-rendered card for htmx, a
 // 303 back to the task page for a plain form post, the refusal as text.
 func (s *Server) serveRefWriteForm(w http.ResponseWriter, r *http.Request, action refWriteAction) {
@@ -149,20 +145,4 @@ func (s *Server) serveRefWriteForm(w http.ResponseWriter, r *http.Request, actio
 		return
 	}
 	s.renderNoteCard(w, r, note)
-}
-
-// serveRefWriteAPI is the machine door: 200 with the write as it now stands,
-// or {"error"} with the refusal's code.
-func (s *Server) serveRefWriteAPI(w http.ResponseWriter, r *http.Request, action refWriteAction) {
-	taskID, writeID, ok := refWriteIDs(r)
-	if !ok {
-		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such write on this task"})
-		return
-	}
-	code, wr, problem := s.actOnRefWrite(r.Context(), action, taskID, writeID)
-	if problem != "" {
-		s.writeJSON(w, code, map[string]any{"error": problem})
-		return
-	}
-	s.writeJSON(w, code, wr)
 }

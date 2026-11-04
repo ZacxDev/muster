@@ -408,20 +408,18 @@ upstream notice.
 
 A **failed** write (the plugin reported a failure, it was handed out 10 times
 without a result, or its task stopped being the plugin's reference) stays on
-the task page with **Retry** and **Dismiss**, and is listed with its id in
-`refWrites` on `GET /api/tasks/{id}`. Only the task's owner can use them:
-the page's buttons (a signed-in session, from muster's own page) and the
-machine API (the hook token or a personal token). An agent's token, the
-chief and a plugin token are refused (`401`).
+the task page with **Retry** and **Dismiss**. Only the task's owner can use
+them, from the task page (a signed-in session, from muster's own page). There
+is no machine API for them. An agent's token, the chief and a plugin token are
+refused (`401`).
 
 | route | what it does |
 |---|---|
-| `POST /api/tasks/{id}/ref-writes/{wid}/retry` | Puts the write back to `pending` with `attempts` 0, no error and no lease, for the plugin that holds the reference **now** (after a rotation, the adopting plugin). `200` with the write. |
-| `POST /api/tasks/{id}/ref-writes/{wid}/dismiss` | Takes it off the task page and out of `refWrites`. The write is kept, still `failed`, and is never sent. `200` with the write (`dismissed_at` set). |
+| `POST /tasks/{id}/ref-writes/{wid}/retry` | Puts the write back to `pending` with `attempts` 0, no error and no lease, for the plugin that holds the reference **now** (after a rotation, the adopting plugin). |
+| `POST /tasks/{id}/ref-writes/{wid}/dismiss` | Takes it off the task page. The write is kept, still `failed`, and is never sent. |
 
-The page's forms are `POST /tasks/{id}/ref-writes/{wid}/retry` and
-`…/dismiss`: htmx re-renders the card in place, and a plain form post
-answers `303` back to the task page.
+With htmx the card is re-rendered in place; a plain form post answers `303`
+back to the task page.
 
 Only a failed write that has not been dismissed can be retried or dismissed:
 anything else (pending, claimed, done, dismissed) is `409`, and nothing
@@ -429,12 +427,14 @@ changes. A retry on a task that is no longer a reference is `409` (dismiss
 it instead). An unknown task, a write on another task and another owner's
 write are `404`.
 
+A failed `status` write is **not** retried once a later status write on the
+same task is done (`409`, and the page offers only Dismiss): the newer
+status is already upstream, and the older one would undo it. A comment, and
+the latest status write, can always be retried.
+
 A retried write keeps its place in its task's order: it is handed out after
 any earlier write on the task that is still pending, before the writes
-queued after it, and never while another write on the task is claimed. So
-the upstream receives it **after** any later write that was already applied:
-a retried `status` write can undo a later one. Check the upstream before you
-retry a status.
+queued after it, and never while another write on the task is claimed.
 
 #### `POST /plugin/v1/task-writes/claim`
 

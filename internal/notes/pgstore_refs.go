@@ -220,14 +220,24 @@ func (s *PGStore) UpsertReference(ctx context.Context, in RefUpsertIn) (RefUpser
 	return out, nil
 }
 
+// refWriteSuperseded is the ONE SQL spelling of "retrying this write would
+// undo a newer status already upstream" (alias w): a STATUS write with a
+// LATER status write on the same task that is done. RetryRefWrite refuses on
+// it, in its UPDATE, and the projection carries it (RefWrite.Superseded) so
+// the task page does not offer the Retry the route would refuse. A comment,
+// and the latest status write, are never superseded.
+const refWriteSuperseded = `(w.kind = 'status' AND EXISTS (SELECT 1 FROM task_ref_writes l
+	WHERE l.note_id = w.note_id AND l.id > w.id AND l.kind = 'status' AND l.state = 'done'))`
+
 // refWriteCols is the ONE projection of a task_ref_writes row joined to its
 // task (alias w, n), in scanRefWrite's order.
 const refWriteCols = `w.id, w.note_id, COALESCE(n.ext_key, ''), w.plugin_id, w.kind, w.status, w.body, w.author, w.agent, w.session,
-	w.writer, COALESCE(w.dedupe_key, ''), w.state, w.error, w.attempts, w.lease_until, w.created_at, w.finished_at, w.dismissed_at`
+	w.writer, COALESCE(w.dedupe_key, ''), w.state, w.error, w.attempts, w.lease_until, w.created_at, w.finished_at, w.dismissed_at,
+	` + refWriteSuperseded
 
 func scanRefWrite(row pgx.Row, w *RefWrite) error {
 	return row.Scan(&w.ID, &w.NoteID, &w.Key, &w.PluginID, &w.Kind, &w.Status, &w.Body, &w.Author, &w.Agent, &w.Session,
-		&w.Writer, &w.DedupeKey, &w.State, &w.Error, &w.Attempts, &w.LeaseUntil, &w.CreatedAt, &w.FinishedAt, &w.DismissedAt)
+		&w.Writer, &w.DedupeKey, &w.State, &w.Error, &w.Attempts, &w.LeaseUntil, &w.CreatedAt, &w.FinishedAt, &w.DismissedAt, &w.Superseded)
 }
 
 // EnqueueRefWrite: see the Store interface.
@@ -439,6 +449,10 @@ const refWriteActionable = `w.state = 'failed' AND w.dismissed_at IS NULL`
 // unfinished writes, and a failed one left on the revoked plugin would sit
 // pending for a plugin that can never claim it.
 //
+// 🔴 NOR A SUPERSEDED STATUS WRITE (refWriteSuperseded): a later status write
+// on the task is done upstream, and this older one, applied after it, would
+// put the upstream back to a status nobody now wants.
+//
 // It goes back to pending at its OWN id, so per-task order holds: it waits for
 // any earlier pending write, and ClaimRefWrites hands nothing out while any
 // other write on the task is claimed. Writes queued after it that are still
@@ -448,6 +462,7 @@ func (s *PGStore) RetryRefWrite(ctx context.Context, noteID, id int64) (RefWrite
 			lease_until = NULL, finished_at = NULL, plugin_id = n.ext_plugin_id
 		  FROM notes n
 		 WHERE w.id = $2 AND w.note_id = $1 AND n.id = w.note_id AND `+refWriteActionable+`
+		   AND NOT `+refWriteSuperseded+`
 		   AND n.ext_key IS NOT NULL AND n.ext_plugin_id IS NOT NULL AND n.deleted_at IS NULL`, noteID, id)
 	if err != nil {
 		return RefWrite{}, err
@@ -483,6 +498,8 @@ func (s *PGStore) refWriteAfterOwnerAction(ctx context.Context, noteID, id int64
 		return w, nil
 	case w.State != RefWriteFailed || w.DismissedAt != nil:
 		return RefWrite{}, ErrRefWriteNotFailed
+	case needRef && w.Superseded:
+		return RefWrite{}, ErrRefWriteSuperseded
 	case needRef:
 		return RefWrite{}, ErrNotReference
 	}

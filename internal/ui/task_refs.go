@@ -119,7 +119,11 @@ func refWriteRow(w notes.RefWrite) g.Node {
 		g.If(w.State == notes.RefWriteFailed, Div(
 			g.Attr("data-ref-write-actions", ""),
 			Class("mt-1 flex items-center gap-2"),
-			refWriteActionForm(w, "retry", "Retry", "Send this write to the upstream again, in its place in this task's order"),
+			// No Retry on a superseded status write: the route refuses it (a
+			// newer status is already upstream), so the page does not offer it.
+			g.If(!w.Superseded, refWriteActionForm(w, "retry", "Retry", "Send this write to the upstream again, in its place in this task's order")),
+			g.If(w.Superseded, Span(g.Attr("data-ref-write-superseded", ""), Class("text-xs italic text-muted"),
+				g.Text("a newer status is already upstream"))),
 			refWriteActionForm(w, "dismiss", "Dismiss", "Take this failed write off the task page; it is not sent"),
 		)),
 	)

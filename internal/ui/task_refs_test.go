@@ -64,6 +64,16 @@ func TestAReferenceCardShowsItsUpstream(t *testing.T) {
 			t.Errorf("the PENDING write carries %s", absent)
 		}
 	}
+	// A SUPERSEDED failed status write: Dismiss and the reason, never Retry.
+	sup := []notes.RefWrite{{ID: 9, NoteID: 42, Kind: notes.RefWriteStatus, Status: notes.StatusInProgress, Author: "user",
+		State: notes.RefWriteFailed, Error: "x", Superseded: true}}
+	supOut := render(TaskCardView{Note: n, Detail: true, RefWrites: sup})
+	if strings.Contains(supOut, `data-ref-write-retry="9"`) || strings.Contains(supOut, `/ref-writes/9/retry`) {
+		t.Error("a superseded status write is offered Retry")
+	}
+	if !strings.Contains(supOut, `data-ref-write-dismiss="9"`) || !strings.Contains(supOut, `data-ref-write-superseded`) {
+		t.Error("a superseded status write lacks Dismiss or the reason Retry is not offered")
+	}
 	// Fresh: no stale badge.
 	fresh := n
 	fresh.Ref = &notes.Reference{Key: n.Ref.Key, SyncedAt: now, Snapshot: n.Ref.Snapshot}

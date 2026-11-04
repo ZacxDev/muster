@@ -312,9 +312,6 @@ var isolationClasses = map[string]routeClass{
 
 	"DELETE /api/tasks/{id}":                   classAdmin,
 	"DELETE /api/tasks/{id}/comments/{cid}":    classAdmin,
-	// Their machine spelling, hook tier, acting as the caller.
-	"POST /api/tasks/{id}/ref-writes/{wid}/retry":   classAdmin,
-	"POST /api/tasks/{id}/ref-writes/{wid}/dismiss": classAdmin,
 	"GET /api/agents":                          classAdmin,
 	"GET /api/agents/{name}/account-failovers": classAdmin,
 	"GET /api/agents/{name}/messages":          classAdmin,
@@ -1300,7 +1297,7 @@ type isoObjs struct {
 	pluginMsg                                 int64  // a plugin message's id (its retry route)
 	refWrite                                  int64  // a write queued on a plugin task reference (0072)
 	refTask                                   int64  // the reference refWrite is on (its retry/dismiss routes' {id})
-	ask                                      int64  // an attention ask's id (0025)
+	ask                                       int64  // an attention ask's id (0025)
 	standing                                  int64  // a shared approval's id (0043)
 }
 

@@ -34,14 +34,14 @@ import (
 
 type refActFixture struct {
 	*connFixture
-	a, b             int64
-	asA, asB         context.Context
-	tokA, tokB       string // personal tokens
+	a, b              int64
+	asA, asB          context.Context
+	tokA, tokB        string // personal tokens
 	plugTok, plugTok2 string
-	plugin, plugin2  int64
-	plugins          *plugins.PGStore
-	agentTok         string
-	chiefName        string
+	plugin, plugin2   int64
+	plugins           *plugins.PGStore
+	agentTok          string
+	chiefName         string
 }
 
 func newRefActFixture(t *testing.T) *refActFixture {
@@ -238,12 +238,9 @@ func (f *refActFixture) rowText(t *testing.T, wid int64) string {
 	return string(raw)
 }
 
-func refActPath(api bool, task, wid int64, action string) string {
-	p := "/tasks/" + strconv.FormatInt(task, 10) + "/ref-writes/" + strconv.FormatInt(wid, 10) + "/" + action
-	if api {
-		return "/api" + p
-	}
-	return p
+// refActPath is the task page's action route (there is no /api twin).
+func refActPath(task, wid int64, action string) string {
+	return "/tasks/" + strconv.FormatInt(task, 10) + "/ref-writes/" + strconv.FormatInt(wid, 10) + "/" + action
 }
 
 // TestAnOwnerRetriesAFailedReferenceWrite: a failed write is listed with its
@@ -262,23 +259,18 @@ func TestAnOwnerRetriesAFailedReferenceWrite(t *testing.T) {
 		!strings.Contains(page, `data-ref-write-dismiss="`+wids+`"`) {
 		t.Errorf("the task page (HTTP %d) does not offer Retry and Dismiss on failed write %d", code, wid)
 	}
-	code, body, _ := f.do(t, http.MethodGet, "/api/tasks/"+ids, nil, bearer(f.tokA))
-	var got struct {
-		RefWrites []struct {
-			ID    int64  `json:"id"`
-			State string `json:"state"`
-			Error string `json:"error"`
-		} `json:"refWrites"`
+	if !strings.Contains(page, "failed: refused upstream") {
+		t.Errorf("the task page does not show failed write %d with its error", wid)
 	}
-	_ = json.Unmarshal([]byte(body), &got)
-	if code != http.StatusOK || len(got.RefWrites) != 1 || got.RefWrites[0].ID != wid || got.RefWrites[0].State != "failed" ||
-		got.RefWrites[0].Error != "refused upstream" {
-		t.Errorf("GET /api/tasks/%d refWrites: HTTP %d %+v; want the failed write %d with its error", id, code, got.RefWrites, wid)
+	// There is no machine door (D1): the /api spelling is unrouted.
+	if code, _, _ := f.do(t, http.MethodPost, "/api"+refActPath(id, wid, "retry"), nil, bearer(f.tokA)); code != http.StatusNotFound &&
+		code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api%s: HTTP %d, want it unrouted", refActPath(id, wid, "retry"), code)
 	}
 
-	code, body, _ = f.do(t, http.MethodPost, refActPath(true, id, wid, "retry"), nil, bearer(f.tokA))
-	if code != http.StatusOK || !strings.Contains(body, `"state":"pending"`) {
-		t.Fatalf("machine retry: HTTP %d %s; want 200 and the write pending", code, body)
+	code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, "retry"), url.Values{}, f.sessionA())
+	if code != http.StatusOK || !strings.Contains(body, `id="task-`+ids+`"`) {
+		t.Fatalf("page retry (htmx): HTTP %d %s; want 200 and the card", code, truncate(body, 200))
 	}
 	r := f.row(t, wid)
 	if r["state"] != "pending" || r["attempts"] != float64(0) || r["error"] != "" || r["lease_until"] != nil || r["finished_at"] != nil {
@@ -293,7 +285,7 @@ func TestAnOwnerRetriesAFailedReferenceWrite(t *testing.T) {
 
 	// The task page's plain form (no JavaScript): 303 back to the task page.
 	f.result(t, f.plugTok, wid, false)
-	code, _, hdr := f.do(t, http.MethodPost, refActPath(false, id, wid, "retry"), url.Values{}, f.plainForm())
+	code, _, hdr := f.do(t, http.MethodPost, refActPath(id, wid, "retry"), url.Values{}, f.plainForm())
 	if code != http.StatusSeeOther || hdr.Get("Location") != "/tasks/"+ids {
 		t.Fatalf("the page's retry form: HTTP %d → %q; want 303 → /tasks/%d", code, hdr.Get("Location"), id)
 	}
@@ -304,7 +296,7 @@ func TestAnOwnerRetriesAFailedReferenceWrite(t *testing.T) {
 	f.claim(t, f.plugTok)
 	f.result(t, f.plugTok, wid, false)
 	before := f.rowText(t, wid)
-	if code, _, _ := f.do(t, http.MethodPost, refActPath(false, id, wid, "retry"), url.Values{},
+	if code, _, _ := f.do(t, http.MethodPost, refActPath(id, wid, "retry"), url.Values{},
 		map[string]string{"Cookie": sessionCookieFor(f.srv), "Origin": "https://evil.example"}); code != http.StatusForbidden {
 		t.Errorf("a cross-origin retry: HTTP %d, want 403", code)
 	}
@@ -326,7 +318,7 @@ func TestAnOwnerDismissesAFailedReferenceWrite(t *testing.T) {
 
 	// From the task page itself (htmx names it), so the card comes back in the
 	// detail shape that carries the writes.
-	code, card, _ := f.do(t, http.MethodPost, refActPath(false, id, wid, "dismiss"), url.Values{},
+	code, card, _ := f.do(t, http.MethodPost, refActPath(id, wid, "dismiss"), url.Values{},
 		merge(f.sessionA(), map[string]string{"HX-Current-URL": "http://example.com/tasks/" + ids}))
 	if code != http.StatusOK || !strings.Contains(card, `data-task-ref-section`) || strings.Contains(card, `data-ref-write="`+wids+`"`) {
 		t.Fatalf("the page's dismiss: HTTP %d; want 200 and the card without write %d\n%s", code, wid, truncate(card, 400))
@@ -338,12 +330,9 @@ func TestAnOwnerDismissesAFailedReferenceWrite(t *testing.T) {
 	if _, page, _ := f.do(t, http.MethodGet, "/tasks/"+ids, nil, f.plainForm()); strings.Contains(page, `data-ref-write="`+wids+`"`) {
 		t.Errorf("the task page still shows dismissed write %d", wid)
 	}
-	if _, body, _ := f.do(t, http.MethodGet, "/api/tasks/"+ids, nil, bearer(f.tokA)); strings.Contains(body, `"id":`+wids+`,"task_id"`) {
-		t.Errorf("GET /api/tasks/%d still lists dismissed write %d: %s", id, wid, truncate(body, 400))
-	}
 	before := f.rowText(t, wid)
 	for _, action := range []string{"retry", "dismiss"} {
-		if code, body, _ := f.do(t, http.MethodPost, refActPath(true, id, wid, action), nil, bearer(f.tokA)); code != http.StatusConflict {
+		if code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, action), url.Values{}, f.sessionA()); code != http.StatusConflict {
 			t.Errorf("%s of a DISMISSED write: HTTP %d %s, want 409", action, code, body)
 		}
 	}
@@ -352,9 +341,10 @@ func TestAnOwnerDismissesAFailedReferenceWrite(t *testing.T) {
 	}
 
 	wid2 := f.failed(t, f.plugTok, id, "dismiss me by machine")
-	code, body, _ := f.do(t, http.MethodPost, refActPath(true, id, wid2, "dismiss"), nil, bearer(f.tokA))
-	if code != http.StatusOK || !strings.Contains(body, `"dismissed_at"`) || !strings.Contains(body, `"state":"failed"`) {
-		t.Fatalf("machine dismiss: HTTP %d %s; want 200, the write failed with dismissed_at", code, body)
+	// The plain form (no JavaScript): 303 back to the task page.
+	code, _, hdr := f.do(t, http.MethodPost, refActPath(id, wid2, "dismiss"), url.Values{}, f.plainForm())
+	if r := f.row(t, wid2); code != http.StatusSeeOther || hdr.Get("Location") != "/tasks/"+ids || r["state"] != "failed" || r["dismissed_at"] == nil {
+		t.Fatalf("the page's dismiss form: HTTP %d → %q, write %v; want 303 → /tasks/%d, failed with dismissed_at", code, hdr.Get("Location"), r, id)
 	}
 }
 
@@ -387,11 +377,11 @@ func TestOnlyAFailedReferenceWriteCanBeRetriedOrDismissed(t *testing.T) {
 		}
 		before := f.rowText(t, c.wid)
 		for _, action := range []string{"retry", "dismiss"} {
-			if code, body, _ := f.do(t, http.MethodPost, refActPath(true, c.task, c.wid, action), nil, bearer(f.tokA)); code != http.StatusConflict {
-				t.Errorf("machine %s of a %s write: HTTP %d %s, want 409", action, c.name, code, body)
+			if code, body, _ := f.do(t, http.MethodPost, refActPath(c.task, c.wid, action), url.Values{}, f.sessionA()); code != http.StatusConflict {
+				t.Errorf("htmx %s of a %s write: HTTP %d %s, want 409", action, c.name, code, body)
 			}
-			if code, body, _ := f.do(t, http.MethodPost, refActPath(false, c.task, c.wid, action), url.Values{}, f.sessionA()); code != http.StatusConflict {
-				t.Errorf("page %s of a %s write: HTTP %d %s, want 409", action, c.name, code, truncate(body, 200))
+			if code, body, _ := f.do(t, http.MethodPost, refActPath(c.task, c.wid, action), url.Values{}, f.plainForm()); code != http.StatusConflict {
+				t.Errorf("plain-form %s of a %s write: HTTP %d %s, want 409", action, c.name, code, truncate(body, 200))
 			}
 		}
 		if after := f.rowText(t, c.wid); after != before {
@@ -435,7 +425,7 @@ func TestARetryKeepsTheTasksWriteOrder(t *testing.T) {
 	f := newRefActFixture(t)
 	retry := func(task, wid int64) {
 		t.Helper()
-		if code, body, _ := f.do(t, http.MethodPost, refActPath(true, task, wid, "retry"), nil, bearer(f.tokA)); code != http.StatusOK {
+		if code, body, _ := f.do(t, http.MethodPost, refActPath(task, wid, "retry"), url.Values{}, f.sessionA()); code != http.StatusOK {
 			t.Fatalf("retry of write %d: HTTP %d %s", wid, code, body)
 		}
 	}
@@ -506,7 +496,7 @@ func TestARetriedWriteGoesToThePluginHoldingTheReferenceNow(t *testing.T) {
 	if again := f.upsert(t, f.plugTok2, key); again != id {
 		t.Fatalf("the adopting upsert named task %d, want %d", again, id)
 	}
-	if code, body, _ := f.do(t, http.MethodPost, refActPath(true, id, wid, "retry"), nil, bearer(f.tokA)); code != http.StatusOK {
+	if code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, "retry"), url.Values{}, f.sessionA()); code != http.StatusOK {
 		t.Fatalf("retry: HTTP %d %s", code, body)
 	}
 	if p := f.row(t, wid)["plugin_id"]; p != float64(f.plugin2) {
@@ -537,11 +527,12 @@ func TestRefWriteRetryAndDismissAreTheOwnersOnly(t *testing.T) {
 	}
 	for _, action := range []string{"retry", "dismiss"} {
 		for _, c := range creds {
-			if code, body, _ := f.do(t, http.MethodPost, refActPath(true, id, wid, action), nil, c.hdr); code != http.StatusUnauthorized {
-				t.Errorf("machine %s with %s: HTTP %d %s, want 401", action, c.name, code, truncate(body, 200))
+			if code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, action), url.Values{},
+				merge(c.hdr, map[string]string{"HX-Request": "true", "Origin": "http://example.com"})); code != http.StatusUnauthorized {
+				t.Errorf("%s with %s: HTTP %d %s, want 401", action, c.name, code, truncate(body, 200))
 			}
 		}
-		if code, body, _ := f.do(t, http.MethodPost, refActPath(false, id, wid, action), url.Values{},
+		if code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, action), url.Values{},
 			merge(bearer(f.agentTok), map[string]string{"HX-Request": "true", "Origin": "http://example.com"})); code != http.StatusUnauthorized {
 			t.Errorf("page %s with the agent's token: HTTP %d %s, want 401", action, code, truncate(body, 200))
 		}
@@ -550,7 +541,7 @@ func TestRefWriteRetryAndDismissAreTheOwnersOnly(t *testing.T) {
 		t.Errorf("a refused caller changed the write:\n before %s\n after  %s", before, after)
 	}
 	// The control: the owner's own token on the same route does reach it.
-	if code, body, _ := f.do(t, http.MethodPost, refActPath(true, id, wid, "retry"), nil, bearer(f.tokA)); code != http.StatusOK {
+	if code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, "retry"), url.Values{}, f.sessionA()); code != http.StatusOK {
 		t.Fatalf("CONTROL: the owner's retry: HTTP %d %s", code, body)
 	}
 }
@@ -576,21 +567,21 @@ func TestRefWriteRetryAndDismissAreOwnerIsolated(t *testing.T) {
 	for _, action := range []string{"retry", "dismiss"} {
 		for _, door := range []struct {
 			name string
-			api  bool
 			hdr  map[string]string
 			body any
-		}{{"B's token", true, bearer(f.tokB), nil}, {"B's session", false, f.sessionB(), url.Values{}}} {
-			code, body, _ := f.do(t, http.MethodPost, refActPath(door.api, id, wid, action), door.body, door.hdr)
-			gcode, gbody, _ := f.do(t, http.MethodPost, refActPath(door.api, ghost, ghost, action), door.body, door.hdr)
+		}{{"B's session (htmx)", f.sessionB(), url.Values{}},
+			{"B's plain form", merge(f.plainForm(), map[string]string{"X-Test-User": "b"}), url.Values{}}} {
+			code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, action), door.body, door.hdr)
+			gcode, gbody, _ := f.do(t, http.MethodPost, refActPath(ghost, ghost, action), door.body, door.hdr)
 			if code != http.StatusNotFound || code != gcode || body != gbody {
 				t.Errorf("%s %s of A's write: HTTP %d %q; the ghost's is %d %q (want the same 404)", door.name, action, code,
 					truncate(body, 120), gcode, truncate(gbody, 120))
 			}
-			if code, body, _ := f.do(t, http.MethodPost, refActPath(door.api, bTask.ID, wid, action), door.body, door.hdr); code != http.StatusNotFound {
+			if code, body, _ := f.do(t, http.MethodPost, refActPath(bTask.ID, wid, action), door.body, door.hdr); code != http.StatusNotFound {
 				t.Errorf("%s %s of A's write under B's own task: HTTP %d %s, want 404", door.name, action, code, truncate(body, 120))
 			}
 		}
-		if code, body, _ := f.do(t, http.MethodPost, refActPath(true, otherA, wid, action), nil, bearer(f.tokA)); code != http.StatusNotFound {
+		if code, body, _ := f.do(t, http.MethodPost, refActPath(otherA, wid, action), url.Values{}, f.sessionA()); code != http.StatusNotFound {
 			t.Errorf("A's %s of its write under ANOTHER of A's tasks: HTTP %d %s, want 404", action, code, body)
 		}
 	}
@@ -598,7 +589,80 @@ func TestRefWriteRetryAndDismissAreOwnerIsolated(t *testing.T) {
 		t.Errorf("another owner's (or another task's) action changed A's write:\n before %s\n after  %s", before, after)
 	}
 	// The control: A's own retry of it is a 200.
-	if code, body, _ := f.do(t, http.MethodPost, refActPath(true, id, wid, "retry"), nil, bearer(f.tokA)); code != http.StatusOK {
+	if code, body, _ := f.do(t, http.MethodPost, refActPath(id, wid, "retry"), url.Values{}, f.sessionA()); code != http.StatusOK {
 		t.Fatalf("CONTROL: A's own retry: HTTP %d %s", code, body)
+	}
+}
+
+// status queues a status write on reference id as A; the write's id.
+func (f *refActFixture) status(t *testing.T, id int64, status string) int64 {
+	t.Helper()
+	code, body, _ := f.do(t, http.MethodPatch, "/api/tasks/"+strconv.FormatInt(id, 10)+"/status",
+		map[string]any{"status": status}, bearer(f.tokA))
+	if code != http.StatusAccepted {
+		t.Fatalf("status %s on reference %d: HTTP %d %s; want 202 queued", status, id, code, body)
+	}
+	var wid int64
+	if err := f.pool.QueryRow(authz.System(f.ctx), `SELECT max(id) FROM task_ref_writes WHERE note_id = $1 AND kind = 'status' AND status = $2`,
+		id, status).Scan(&wid); err != nil {
+		t.Fatal(err)
+	}
+	return wid
+}
+
+// settle has plugin tok claim exactly wid and report ok.
+func (f *refActFixture) settle(t *testing.T, tok string, wid int64, ok bool) {
+	t.Helper()
+	if got := f.claim(t, tok); len(got) != 1 || got[0] != wid {
+		t.Fatalf("claim: %v, want [%d]", got, wid)
+	}
+	f.result(t, tok, wid, ok)
+}
+
+// TestASupersededStatusWriteIsNotRetried: a failed STATUS write with a LATER
+// status write on the same task already done upstream is refused a retry
+// (409, unchanged) — it would undo the newer status — and the page offers it
+// Dismiss but not Retry. A failed comment queued before that done status, and
+// a failed status write that is the latest, stay retryable; the superseded
+// one can still be dismissed.
+func TestASupersededStatusWriteIsNotRetried(t *testing.T) {
+	f := newRefActFixture(t)
+	id, _ := f.reference(t, f.plugTok)
+	ids := strconv.FormatInt(id, 10)
+	older := f.status(t, id, notes.StatusInProgress)
+	f.settle(t, f.plugTok, older, false)
+	comment := f.failed(t, f.plugTok, id, "a comment before the newer status")
+	newer := f.status(t, id, notes.StatusReadyForReview)
+	f.settle(t, f.plugTok, newer, true)
+	latest := f.status(t, id, notes.StatusOpen)
+	f.settle(t, f.plugTok, latest, false)
+	olderID, commentID, latestID := strconv.FormatInt(older, 10), strconv.FormatInt(comment, 10), strconv.FormatInt(latest, 10)
+
+	_, page, _ := f.do(t, http.MethodGet, "/tasks/"+ids, nil, f.plainForm())
+	if strings.Contains(page, `data-ref-write-retry="`+olderID+`"`) {
+		t.Errorf("the page offers Retry on superseded status write %d", older)
+	}
+	for _, want := range []string{`data-ref-write-dismiss="` + olderID + `"`, `data-ref-write-retry="` + commentID + `"`,
+		`data-ref-write-retry="` + latestID + `"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the task page lacks %s", want)
+		}
+	}
+
+	before := f.rowText(t, older)
+	code, body, _ := f.do(t, http.MethodPost, refActPath(id, older, "retry"), url.Values{}, f.sessionA())
+	if code != http.StatusConflict || !strings.Contains(body, "already applied upstream") {
+		t.Errorf("retry of the superseded status write: HTTP %d %q; want 409 naming the newer status upstream", code, truncate(body, 200))
+	}
+	if after := f.rowText(t, older); after != before {
+		t.Errorf("a refused retry changed the superseded write:\n before %s\n after  %s", before, after)
+	}
+	for _, w := range []int64{comment, latest} {
+		if code, body, _ := f.do(t, http.MethodPost, refActPath(id, w, "retry"), url.Values{}, f.sessionA()); code != http.StatusOK {
+			t.Errorf("retry of write %d (not superseded): HTTP %d %s, want 200", w, code, truncate(body, 200))
+		}
+	}
+	if code, body, _ := f.do(t, http.MethodPost, refActPath(id, older, "dismiss"), url.Values{}, f.sessionA()); code != http.StatusOK {
+		t.Errorf("dismiss of the superseded status write: HTTP %d %s, want 200", code, truncate(body, 200))
 	}
 }

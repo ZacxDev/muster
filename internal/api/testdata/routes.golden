@@ -206,8 +206,6 @@ POST /api/push/unsubscribe
 POST /api/routes/{id}/reply
 POST /api/tasks
 POST /api/tasks/{id}/comments
-POST /api/tasks/{id}/ref-writes/{wid}/dismiss
-POST /api/tasks/{id}/ref-writes/{wid}/retry
 POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
