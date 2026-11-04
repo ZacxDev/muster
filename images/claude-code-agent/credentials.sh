@@ -17,10 +17,10 @@
 # model through muster's LLM proxy, on the connect URL the pod already uses,
 # authenticated by the pod's own muster token. muster attaches the provider
 # key upstream; the pod holds none. Under the route, and only under it:
-#   - ANTHROPIC_BASE_URL is set to EXACTLY $MUSTER_CONNECT_URL/llm (a value
-#     already present must be that, or the pod is refused);
-#   - ANTHROPIC_AUTH_TOKEN is set to the pod's MUSTER_HOOK_TOKEN (a value
-#     already present must be that);
+#   - ANTHROPIC_BASE_URL is set to EXACTLY $MUSTER_CONNECT_URL/llm, and
+#     ANTHROPIC_AUTH_TOKEN to the pod's MUSTER_HOOK_TOKEN. Either one already
+#     present is refused, even when it equals that value: nothing produces
+#     one, so one present was set by something else;
 #   - CLAUDE_CODE_OAUTH_TOKEN must be ABSENT: a routed pod that also held a
 #     subscription would have two credentials and one would be unused;
 #   - ANTHROPIC_API_KEY, Bedrock and Vertex stay refused;
@@ -73,14 +73,12 @@ cc_check_credentials() {
   if [[ -z "${MUSTER_HOOK_TOKEN:-}" ]]; then
     cc_refuse "CCD_LLM_ROUTE=muster but MUSTER_HOOK_TOKEN is not set; the proxy authenticates the pod by it." || return 1
   fi
-  local want_url="${MUSTER_CONNECT_URL}/llm"
-  if [[ -n "${ANTHROPIC_BASE_URL:-}" && "$ANTHROPIC_BASE_URL" != "$want_url" ]]; then
-    cc_refuse "ANTHROPIC_BASE_URL is set to something other than \$MUSTER_CONNECT_URL/llm under CCD_LLM_ROUTE=muster." || return 1
-  fi
-  if [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" && "$ANTHROPIC_AUTH_TOKEN" != "$MUSTER_HOOK_TOKEN" ]]; then
-    cc_refuse "ANTHROPIC_AUTH_TOKEN is set to something other than the pod's MUSTER_HOOK_TOKEN under CCD_LLM_ROUTE=muster." || return 1
-  fi
-  export ANTHROPIC_BASE_URL="$want_url"
+  for v in ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN; do
+    if [[ -n "${!v:-}" ]]; then
+      cc_refuse "$v is set under CCD_LLM_ROUTE=muster; the route sets it itself, and nothing else may." || return 1
+    fi
+  done
+  export ANTHROPIC_BASE_URL="${MUSTER_CONNECT_URL}/llm"
   export ANTHROPIC_AUTH_TOKEN="$MUSTER_HOOK_TOKEN"
 
   # The muster host: MUSTER_CONNECT_URL without its scheme, path, user info

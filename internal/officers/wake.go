@@ -387,7 +387,8 @@ type Config struct {
 	Observed func(o Officer, claimed []Item, at time.Time)
 	// Judgement is the judgement-session ledger officer_claim keeps
 	// (sessions.go): a judgement pool whose day's cap is spent is not woken
-	// for new work. nil caps nothing.
+	// for new work, and a ledger that cannot be read fails the pass, as any
+	// failed read does. nil caps nothing.
 	Judgement *JudgementLedger
 }
 
@@ -654,8 +655,11 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 		if err != nil {
 			return nil, err
 		}
-		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts}
-		out[i].Capped, out[i].Counted = r.judgement.Capped(p, r.now())
+		capped, counted, err := r.judgement.Capped(ctx, p, r.now())
+		if err != nil {
+			return nil, err
+		}
+		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted}
 	}
 	return out, nil
 }

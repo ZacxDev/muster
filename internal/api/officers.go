@@ -126,7 +126,11 @@ type OfficersConfig struct {
 	// LLMStore keeps the LLM proxy's per-day usage (the budget); REQUIRED
 	// when an officer declares `llm`. LLMUpstream replaces the provider's API
 	// base and LLMHTTP its transport (tests); ""/nil is production.
-	LLMStore    llmproxy.Store
+	LLMStore llmproxy.Store
+	// Sessions keeps the judgement session cap's count
+	// (officers.PGSessionStore); REQUIRED when an officer declares
+	// tiers.judgement.max_sessions_per_day.
+	Sessions    officers.SessionStore
 	LLMUpstream string
 	LLMHTTP     *http.Client
 }
@@ -217,7 +221,22 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if now == nil {
 		now = time.Now
 	}
-	judgement := officers.NewJudgementLedger()
+	// The judgement session cap's ledger is persisted (officers.
+	// PGSessionStore, migration 0079), read and written as the officer's
+	// owner. An officer that declares a cap with no store is refused: a cap
+	// that cannot be kept is no cap.
+	var judgement *officers.JudgementLedger
+	if cfg.Sessions != nil {
+		judgement = officers.NewJudgementLedger(cfg.Sessions, func(ctx context.Context, o officers.Officer) context.Context {
+			return s.officerPrincipal(ctx, o.Owner)
+		})
+	} else {
+		for _, o := range cfg.Officers {
+			if o.HasSessionCap() {
+				return nil, fmt.Errorf("officers: %s declares tiers.judgement.max_sessions_per_day, but there is no session store to keep the count in (it needs the database)", o.ID)
+			}
+		}
+	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement}
 	switch {
 	case fwd != nil && px != nil:
@@ -910,9 +929,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			// (officer_claim_next_tier_test.go)
 			// The judgement session cap holds for claim-next too: HQ picks
 			// the item, so a session is held until HQ says which (or none).
-			done, capErr := s.officerRT.judgement.ReserveNext(o, s.officerRT.clock())
+			done, capErr := s.officerRT.judgement.ReserveNext(ctx, o, s.officerRT.clock())
 			if capErr != nil {
-				return toolErr("%v", capErr), true
+				return s.sessionCapRefusal(o, name, capErr), true
 			}
 			body, claimed, err = s.officerClaimNext(ctx, c, instance, in.LeaseSeconds, o.Tier)
 			if err != nil {
@@ -934,9 +953,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// IS RESERVED AT ONCE: the N+1th distinct item of the day never reaches
 		// HQ (it stays queued there), and two claims racing for the last
 		// session cannot both pass. A claim HQ refuses gives its session back.
-		undo, capErr := s.officerRT.judgement.Reserve(o, in.ItemID, s.officerRT.clock())
+		undo, capErr := s.officerRT.judgement.Reserve(ctx, o, in.ItemID, s.officerRT.clock())
 		if capErr != nil {
-			return toolErr("%v", capErr), true
+			return s.sessionCapRefusal(o, name, capErr), true
 		}
 		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds, o.Tier)
 		if err != nil {
@@ -1108,6 +1127,18 @@ func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, insta
 func nothingToClaim() []byte {
 	b, _ := json.Marshal(map[string]any{"item": nil, "claimed": false, "note": nothingToClaimNote})
 	return b
+}
+
+// sessionCapRefusal is a claim the judgement session ledger did not admit:
+// the cap's own refusal as it is, or — when the ledger could not be read or
+// written — a refusal that fails CLOSED (no claim without the count) and keeps
+// the database's error in the log, not in the instance's transcript.
+func (s *Server) sessionCapRefusal(o officers.Officer, name string, err error) string {
+	if errors.Is(err, officers.ErrSessionCap) {
+		return toolErr("%v", err)
+	}
+	s.logger.Printf("officers: %s: %s refused, the judgement session ledger failed: %v", o.ID, name, err)
+	return toolErr("the judgement session count could not be read, so nothing was claimed; try %s again in a minute", name)
 }
 
 // alreadyYoursNote is what a claim on an item the caller already holds says.

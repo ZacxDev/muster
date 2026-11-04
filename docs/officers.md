@@ -190,7 +190,9 @@ route it sets `ANTHROPIC_BASE_URL` to exactly `$MUSTER_CONNECT_URL/llm` and
 muster host to `NO_PROXY` and `no_proxy`, so a proxy in the pod's environment
 never carries the token. And it refuses the pod when any of these holds:
 `CLAUDE_CODE_OAUTH_TOKEN` is set; `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN`
-is already set to anything else; `ANTHROPIC_API_KEY`, Bedrock or Vertex is set;
+is already set at all, even to the value the check would set (nothing produces
+one, so one present came from somewhere else); `ANTHROPIC_API_KEY`, Bedrock
+or Vertex is set;
 `MUSTER_CONNECT_URL` or `MUSTER_HOOK_TOKEN` is missing; or `CCD_LLM_ROUTE` has
 any other value. The pod holds no provider key. The proxy authenticates it by
 its muster token and attaches the officer's key upstream. Each condition has a
@@ -1294,11 +1296,18 @@ An officer may split its instances into two **pools**, one per HQ item tier
   - Nothing else changes. The routine pool is not capped by it (its bound is
     the [`llm`](#the-llm-proxy) budget), and neither is an untiered officer.
 
-  A claim HQ refuses gives its session back. Two claims racing for the last
-  session cannot both pass: the session is reserved before the claim is sent.
-  ⚠ The count is held in muster-server's **memory**. A restart starts the
-  day's count again, so each restart can admit at most one more cap's worth
-  that day. The routine pool's USD budget is persisted; this cap is not.
+  A claim HQ refuses gives its session back. The count is **persisted**
+  (`officer_judgement_sessions`, migration 0079): one row per officer and UTC
+  day holding the admitted item ids, shared by every muster-server replica,
+  so a restart or a rollout overlap neither resets nor splits it. A session is
+  admitted by ONE statement (`INSERT … ON CONFLICT DO UPDATE` whose `WHERE`
+  re-checks the cap under the row lock), so two claims racing for the last
+  session — from one server or two — cannot both pass. A declared cap needs
+  the database: without it the server refuses to start. If the ledger cannot
+  be read or written, the claim is refused (nothing is claimed without the
+  count), and the wake pass fails as on any failed read. ⚠ A claim-next whose
+  server dies between its admission and HQ's answer leaves its `pending:`
+  entry holding a session until the day ends.
 
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;

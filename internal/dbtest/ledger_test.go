@@ -149,6 +149,11 @@ var pgBackedPackages = []string{
 	"internal/memorelay",
 	"internal/mirror",
 	"internal/notes",
+	// The judgement session cap's ledger (migration 0079). "Two replicas at
+	// cap-1 admit exactly one" and "the count survives a new server" are
+	// claims about one SQL statement's row lock and about the table, not
+	// about Go: only a real Postgres can make them.
+	"internal/officers",
 	// Pins (migration 0017). "Another user cannot see, delete or make a pin of
 	// yours" and "deleting an agent deletes its pin" are claims about row-level
 	// security and a foreign key cascade.
