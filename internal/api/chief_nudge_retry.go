@@ -79,6 +79,14 @@ type nudgeRetry struct {
 	// since the owner's chief last answered a check (zero: none).
 	refusedSince time.Time
 	logged       bool // the first refusal was logged
+	// ownerLast: the session state pass read this streak's transcript and the
+	// owner spoke last (session_state.go), so it is not read again for it.
+	ownerLast bool
+	// readFails and readAfter back off a transcript read that keeps failing
+	// for the session state pass (readFailed): it is not retried before
+	// readAfter.
+	readFails int
+	readAfter time.Time
 }
 
 // nudgeRetries is the ledger (the zero value is ready).
@@ -131,6 +139,52 @@ func (r *nudgeRetries) cachedJev(key string, now time.Time) (chiefnudge.Result, 
 		return chiefnudge.Result{}, false
 	}
 	return e.jev, true
+}
+
+// markOwnerLast notes that key's streak ends on the owner's own message.
+func (r *nudgeRetries) markOwnerLast(key string, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entryLocked(key, now).ownerLast = true
+}
+
+// isOwnerLast reports markOwnerLast for key's streak (and not expired).
+func (r *nudgeRetries) isOwnerLast(key string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.m[key]
+	return ok && now.Sub(e.created) < chiefNudgeRetryTTL && e.ownerLast
+}
+
+// Session state's transcript-read backoff: the first retry after
+// stateReadBackoff, doubling each failure, capped at stateReadBackoffMax.
+const (
+	stateReadBackoff    = 30 * time.Second
+	stateReadBackoffMax = 30 * time.Minute
+)
+
+// readDue reports whether key's streak may be read now (no failure pending).
+func (r *nudgeRetries) readDue(key string, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.m[key]
+	return !ok || now.Sub(e.created) >= chiefNudgeRetryTTL || !now.Before(e.readAfter)
+}
+
+// readFailed notes a failed read of key's streak, and when the next may run.
+func (r *nudgeRetries) readFailed(key string, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entryLocked(key, now)
+	d := stateReadBackoff
+	for i := 0; i < e.readFails && d < stateReadBackoffMax; i++ {
+		d *= 2
+	}
+	if d > stateReadBackoffMax {
+		d = stateReadBackoffMax
+	}
+	e.readFails++
+	e.readAfter = now.Add(d)
 }
 
 // keepJev keeps jev for key's streak, whose call sent nothing.

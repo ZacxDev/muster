@@ -216,6 +216,7 @@ const (
 	// session must be idle, the global hourly cap, and the owners whose nudges
 	// are sent (live).
 	envChiefNudges          = "MUSTER_CHIEF_NUDGES"
+	envSessionState         = "MUSTER_SESSION_STATE"
 	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
 	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
 	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
@@ -697,10 +698,13 @@ type config struct {
 	// ChiefNudges is MUSTER_CHIEF_NUDGES=1; ChiefNudgeIdle, ChiefNudgeHourlyCap
 	// and ChiefNudgeLiveOwners its settings (loadConfig refuses a value that
 	// does not parse).
-	ChiefNudges            bool
-	ChiefNudgeIdle         time.Duration
-	ChiefNudgeHourlyCap    int
-	ChiefNudgeLiveOwners   map[int64]bool
+	ChiefNudges          bool
+	ChiefNudgeIdle       time.Duration
+	ChiefNudgeHourlyCap  int
+	ChiefNudgeLiveOwners map[int64]bool
+	// SessionState runs session state's pass (MUSTER_SESSION_STATE=1; off by
+	// default): every session's state and its episodes (internal/sessionstate).
+	SessionState           bool
 	ChiefNudgeAskThreshold float64
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
 	// (validateSessionRuntimes refuses an unknown or repeated entry), without
@@ -1517,6 +1521,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	c.ChiefDispatchOwners = owners
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
+	c.SessionState = envFlag(getenv, envSessionState)
 	c.ChiefNudgeIdle = chiefnudge.DefaultIdle
 	if v := strings.TrimSpace(getenv(envChiefNudgeIdle)); v != "" {
 		d, err := time.ParseDuration(v)

@@ -84,6 +84,7 @@ import (
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -463,6 +464,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The chief's per-user on/off toggle (migration 0060). Off by default
 		// for a user with no chief agent; see internal/api chief_toggle.go.
 		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
+		// Session state's episodes (migration 0073): off unless
+		// MUSTER_SESSION_STATE=1, and then independent of the chief's nudges.
+		if cfg.SessionState {
+			ext.Episodes = sessionstate.NewPG(a.pool)
+		}
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
@@ -686,7 +692,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if len(cfg.Officers) > 0 {
 		ocfg := api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}
 		if a.pool != nil {
-			// The LLM proxy's daily budget lives here (migration 0073); an
+			// The LLM proxy's daily budget lives here (migration 0074); an
 			// officer that declares `llm` with no database is refused.
 			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
 		}
@@ -998,6 +1004,9 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunAttentionSweep(ctx, 0)
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
+	// Session state: every session's state and its episodes
+	// (MUSTER_SESSION_STATE=1; returns at once when off).
+	go a.srv.RunSessionStateSweep(ctx, api.SessionStateInterval)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for
@@ -1478,6 +1487,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:
 		l.Printf("chief nudges: OFF — %s is unset", envChiefNudges)
+	}
+	switch {
+	case ext.Episodes != nil:
+		l.Printf("session state: ON (%s=1) — every %s each owner's sessions are given a state and every stop an episode "+
+			"(session_episodes); nothing reads them yet, so nothing is pushed or shown", envSessionState, api.SessionStateInterval)
+	case a.cfg.SessionState:
+		l.Printf("session state: INERT — %s=1 but there is no database", envSessionState)
+	default:
+		l.Printf("session state: OFF — %s is unset", envSessionState)
 	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)

@@ -109,11 +109,12 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - chief_preferences (0060, the chief's per-user on/off toggle).
 //   - chief_nudges (0064, the chief's stall-nudge decisions).
 //   - cc_account_failovers (0066, a claude-code agent's account rebinds).
-//   - officer_llm_usage (0073, the officer LLM proxy's per-day usage).
 //   - task_ref_writes (0072, the writes queued on a plugin task reference).
+//   - session_episodes (0073, one row per stop of one of the owner's sessions).
+//   - officer_llm_usage (0074, the officer LLM proxy's per-day usage).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -182,6 +183,7 @@ var wantForeignKeys = []string{
 	"officer_llm_usage|officer_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_prs|session_prs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"session_episodes|session_episodes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// (github_connection|github_connection_owner_id_fkey went with its table in 0059.)
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",

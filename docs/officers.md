@@ -1248,7 +1248,7 @@ any credential is read. For an admitted request, in order:
 2. The body must be a JSON object (at most 32 MiB); `model` is rewritten to
    `tiers.routine.model`.
 3. **The budget.** The officer's booked spend for the UTC day is read from the
-   database (`officer_llm_usage`, migration 0073). At or over
+   database (`officer_llm_usage`, migration 0074). At or over
    `daily_budget_usd`, the request is refused with **400** and nothing is
    sent. If the spend cannot be read, the request is refused (503) and
    nothing is sent: the proxy never spends blind.
@@ -1325,7 +1325,7 @@ number and UTC day with requests, tokens by direction, USD and estimated request
 
 **Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
 rolling muster-server back to an image that predates it (an older image
-refuses the unknown field and does not boot). Migration 0073's own rollback is
+refuses the unknown field and does not boot). Migration 0074's own rollback is
 in its header.
 
 ## Security model
