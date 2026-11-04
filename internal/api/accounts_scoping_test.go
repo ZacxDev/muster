@@ -102,7 +102,7 @@ func TestOnlyAnAdminsEventsReachTheRouter(t *testing.T) {
 	s.UseRouter(rr)
 
 	s.broadcastTo(2, EventTaskChanged, "41") // a member's
-	s.notifyTaskDone(notes.Note{ID: 41, OwnerID: 2, Status: notes.StatusReadyForReview, Title: "member's"})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 41, OwnerID: 2, Status: notes.StatusReadyForReview, Title: "member's"})
 	s.notifyTaskCreated(notes.Note{ID: 42, OwnerID: 2, Title: "member's"})
 	s.WaitForPushes()
 	select {
@@ -113,7 +113,7 @@ func TestOnlyAnAdminsEventsReachTheRouter(t *testing.T) {
 
 	// Control: the admin's do.
 	s.broadcastTo(1, EventTaskChanged, "43")
-	s.notifyTaskDone(notes.Note{ID: 43, OwnerID: 1, Status: notes.StatusReadyForReview, Title: "admin's"})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 43, OwnerID: 1, Status: notes.StatusReadyForReview, Title: "admin's"})
 	s.WaitForPushes()
 	var got []string
 	for len(got) < 2 {

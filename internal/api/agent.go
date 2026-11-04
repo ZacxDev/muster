@@ -194,8 +194,6 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
-	// Background push when the agent marks its task ready_for_review (deduped).
-	s.notifyTaskDone(note)
 	s.writeJSON(w, http.StatusOK, note)
 }
 
@@ -703,8 +701,6 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 			return toolErr("could not set status: %v", err)
 		}
 		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
-		// Background push when the agent's own tool marks the task ready_for_review.
-		s.notifyTaskDone(n)
 		return toolJSON(n)
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)

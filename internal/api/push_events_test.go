@@ -151,7 +151,7 @@ func TestAMembersEventReachesOnlyTheMembersDevices(t *testing.T) {
 	pusher := &payloadPusher{}
 	s := eventServer(store, pusher)
 
-	s.notifyTaskDone(notes.Note{ID: 501, OwnerID: m, Status: notes.StatusReadyForReview, Body: "member's task"})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 501, OwnerID: m, Status: notes.StatusReadyForReview, Body: "member's task"})
 	s.WaitForPushes()
 	if got := pusher.endpoints(); len(got) != 1 || got[0] != mine {
 		t.Fatalf("a member's ready-for-review reached %v; want only the member's device", got)
@@ -161,7 +161,7 @@ func TestAMembersEventReachesOnlyTheMembersDevices(t *testing.T) {
 	}
 
 	pusher.reset()
-	s.notifyTaskDone(notes.Note{ID: 501, OwnerID: m, Status: notes.StatusComplete})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 501, OwnerID: m, Status: notes.StatusComplete})
 	s.WaitForPushes()
 	if got := pusher.endpoints(); len(got) != 1 || got[0] != mine || pusher.to(mine)[0].Type != push.TypeResolved {
 		t.Fatalf("leaving review: %v %+v", got, pusher.to(mine))
@@ -177,7 +177,7 @@ func TestAMembersEventReachesOnlyTheMembersDevices(t *testing.T) {
 
 	// Control: the admin's own event reaches the admin's device.
 	pusher.reset()
-	s.notifyTaskDone(notes.Note{ID: 502, OwnerID: authz.OperatorUserID, Status: notes.StatusReadyForReview})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 502, OwnerID: authz.OperatorUserID, Status: notes.StatusReadyForReview})
 	s.WaitForPushes()
 	if got := pusher.endpoints(); len(got) != 1 || got[0] != admin {
 		t.Fatalf("the admin's event reached %v", got)
@@ -240,11 +240,11 @@ func TestLeavingReviewSendsExactlyOneResolved(t *testing.T) {
 	pusher := &payloadPusher{}
 	s := eventServer(store, pusher)
 
-	s.notifyTaskDone(notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusReadyForReview})
-	s.notifyTaskDone(notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusReadyForReview}) // re-save: deduped
-	s.notifyTaskDone(notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusComplete})
-	s.notifyTaskDone(notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusComplete}) // re-save: nothing
-	s.notifyTaskDone(notes.Note{ID: 31, OwnerID: 7, Status: notes.StatusComplete}) // never buzzed
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusReadyForReview})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusReadyForReview}) // re-save: deduped
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusComplete})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 30, OwnerID: 7, Status: notes.StatusComplete}) // re-save: nothing
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 31, OwnerID: 7, Status: notes.StatusComplete}) // never buzzed
 	s.WaitForPushes()
 
 	var resolved, shown int
@@ -288,7 +288,7 @@ func TestMutedEventsAndTheRateCap(t *testing.T) {
 	if err := store.SetMuted(as7, []string{push.EventReview}); err != nil {
 		t.Fatal(err)
 	}
-	s.notifyTaskDone(notes.Note{ID: 40, OwnerID: 7, Status: notes.StatusReadyForReview})
+	s.notifyTaskDone(context.Background(), notes.Note{ID: 40, OwnerID: 7, Status: notes.StatusReadyForReview})
 	s.pushTask(7, push.EventComment, RouterNotification{Type: "task", ID: "40", Title: "c", Tag: "c"})
 	s.WaitForPushes()
 	if got := pusher.to(ep("seven")); len(got) != 1 || got[0].Title != "c" {

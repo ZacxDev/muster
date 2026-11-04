@@ -359,7 +359,30 @@ other fields (tags, directory, model, repository, branch) stay editable.
 
 The status follows the snapshot through the task-status writer
 `plugin_reference`: it is logged like any status write and sends the usual
-pushes. But an upstream close does **not** stop the agent your chief started
+pushes. The ready-for-review push names who moved the task
+([push.md](push.md)):
+
+- `· agent <name> via <namespace>` when the snapshot reports a write an agent
+  queued on the reference (`· agent via <namespace>` when the write names no
+  agent; `· machine via <namespace>` for `PATCH /api/tasks/{id}/status` by a
+  caller that is not known to be an agent);
+- no label when it reports your own queued write;
+- `· upstream (<namespace>)` when it reports a change made in the upstream
+  itself.
+
+A snapshot reports a queued write when it moves the task to the status that
+write asked for, and the write has not reported a move before. The newest such
+write is used, as long as it has not failed. A write still pending or claimed
+counts, because the snapshot may arrive before your result does. So an agent
+that queued `in_progress` is not named when the upstream then sets
+`ready_for_review`. Once a write has reported a move it never reports another.
+A write already done upstream is also used up by the next move, whatever its
+status, unless it was queued after the write that move reports: that later
+write's own snapshot is still to come. A later upstream move back to a used-up
+write's status therefore reads as the upstream's. A snapshot that leaves the
+status as it was reports no write.
+
+But an upstream close does **not** stop the agent your chief started
 on the task ([below](#completing-a-task-stops-the-chiefs-agent)): an upstream
 close is not you stopping an agent.
 
