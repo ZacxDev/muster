@@ -312,12 +312,20 @@ An episode is one stop of one session.
   **A handled stop opened again anyway is ended again**
   (`sessionstate.PG.EndRepeat`): an open episode whose session is on the
   streak its previous episode ended handled on is ended for that same reason,
-  with that streak, and its push withdrawn, on the next pass. Only a process
-  without the reopen guard writes one: the image before 0079, still running
-  during a rolling update, opens and pushes a session still stopped after the
-  reset (its waiting hook with no streak at all). So the reset needs no manual
-  deploy step; at worst a push the older image sends is withdrawn within one
-  pass, and the repush floor holds its next one.
+  with that streak, and its push withdrawn, on the next pass. The reopen
+  guard (`PG.Open`) cannot refuse every one, so this is a permanent repair,
+  not a rollout step. Three writers produce one:
+  - the image before 0079, still running during a rolling update, opens and
+    pushes a session still stopped after the reset;
+  - the waiting hook (the older image's, and this one's whenever
+    `windowStreakKey` returns `""` because the host reports no status time)
+    opens with no streak, and a streak of `""` never matches the guard;
+  - a pass whose facts were read before a concurrent view opens on the
+    streak it read, which is not the one the view ended on.
+
+  The streak compared is the session's current one, so each is ended within
+  one pass, and the repush floor holds the next push. The reset therefore
+  needs no manual deploy step.
 
   **One stop of a session that carries on by itself is one episode**
   (default D1): `needs-you` → `stalled` within it updates its state and does
@@ -363,7 +371,8 @@ the Chief decision (if any) and the nudge's send-queue id.
   `reset`, once), and the next pass sent each pushed one's resolved push and
   set its `cleared_at`; a session still on the same streak is not reopened
   (handled), and a reopen by the older image mid-rollout is ended again
-  (`EndRepeat`, above).
+  (`EndRepeat`, above, which also repairs the repeats this image's own
+  waiting hook and racing passes write).
 
 This table **replaces `KindNotice`'s use for stalls** (round 0 D4). Once
 nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases

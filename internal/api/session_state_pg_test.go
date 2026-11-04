@@ -127,13 +127,13 @@ func (f *stateFixture) episodes(t *testing.T) []sessionstate.Episode {
 	return out
 }
 
-// endedEpisode reads one ended episode's identity and end.
+// endedEpisode reads one ended episode's identity, streak and end.
 func (f *stateFixture) endedEpisode(t *testing.T, id int64) sessionstate.Episode {
 	t.Helper()
 	var e sessionstate.Episode
 	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT id, session_kind, session_key, seq, state, coalesce(agent_id, 0),
-			coalesce(chat_session_id, 0), ended_at, end_reason FROM session_episodes WHERE id = $1`, id).
-		Scan(&e.ID, &e.Kind, &e.Key, &e.Seq, &e.State, &e.AgentID, &e.ChatSessionID, &e.EndedAt, &e.EndReason); err != nil {
+			coalesce(chat_session_id, 0), coalesce(streak_key, ''), ended_at, end_reason FROM session_episodes WHERE id = $1`, id).
+		Scan(&e.ID, &e.Kind, &e.Key, &e.Seq, &e.State, &e.AgentID, &e.ChatSessionID, &e.StreakKey, &e.EndedAt, &e.EndReason); err != nil {
 		t.Fatal(err)
 	}
 	return e

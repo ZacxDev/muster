@@ -336,11 +336,15 @@ func (p *PG) EndViewed(ctx context.Context, id int64, streak string, at time.Tim
 // write an episode while the session's latest one ended Handled on the streak
 // being opened; EndRepeat ends one that was written anyway, by the same
 // predicate (handledReasons, a non-empty streak equal to the previous
-// episode's). An image from before migration 0079 has no such guard: during
-// a rolling update its pass, after the reset, opens and pushes a still-stopped
-// session again, and its waiting hook does so with no streak at all — so the
-// streak compared is the session's CURRENT one (the caller's), never the
-// repeat's stored one — and that streak is written onto the repeat as it ends,
+// episode's). A PERMANENT repair, not a rollout step — the guard cannot refuse
+// every repeat: an image from before migration 0079 has no guard (during a
+// rolling update its pass, after the reset, opens and pushes a still-stopped
+// session again); a waiting hook opens with no streak at all (the older
+// image's, and this one's whenever the host reports no status time), and ""
+// never matches; and a pass whose facts were read before a concurrent view
+// opens on the streak it read, not the one the view ended on. So the streak
+// compared is the session's CURRENT one (the caller's), never the repeat's
+// stored one — and that streak is written onto the repeat as it ends,
 // so it becomes the latest episode ended handled on it and Open's guard keeps
 // holding (a repeat from the old waiting hook stores no streak, and ending it
 // on "" would let the very next pass open the stop a third time). The repeat's

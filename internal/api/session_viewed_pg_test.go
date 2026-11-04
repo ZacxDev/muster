@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -170,6 +171,56 @@ func TestOpeningAnAgentConversationEndsItsStop(t *testing.T) {
 	if e := f.episodeByID(t, ep); e.EndedAt.IsZero() || e.EndReason != endViewed {
 		t.Fatalf("after the owner opened the conversation: ended %v reason %q", e.EndedAt, e.EndReason)
 	}
+}
+
+// TestOpeningAnAgentConversationRecordsTheStreakItShowed (regression, the
+// agent half of the view-streak rule): a pass opens the conversation's stop
+// on its newest message; the agent then stops AGAIN (a newer message) before
+// any pass sees it, so the stored streak lags; the owner opens the
+// conversation, which shows the newer stop. The episode ends 'viewed' on the
+// streak the pass keys that newer message by, so the passes after it neither
+// open nor push it. An unreadable streak (keeping the lagging one) or a wrong
+// one (any id but the newest message's) leaves the stop the owner just looked
+// at unhandled, and the next pass opens it again.
+func TestOpeningAnAgentConversationRecordsTheStreakItShowed(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.srv.nudgeReadHook = nil
+	f.mirror.mu.Lock()
+	f.mirror.windows = nil
+	f.mirror.mu.Unlock()
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	worker := f.agentFor(t, authz.OperatorUserID, "stateview2-"+suffix, "worker", "state-view2-tok-"+suffix)
+	sess, _ := f.stallAgent(t, worker, authz.OperatorUserID)
+	f.statePass(t)
+	list := f.episodes(t)
+	if len(list) != 1 || list[0].AgentID != worker.ID || !list[0].Open() {
+		t.Fatalf("the agent's stop did not open as the only episode: %+v", list)
+	}
+	ep, stored := list[0].ID, list[0].StreakKey
+	// The agent stops again, long enough ago to count as a stop, before any
+	// pass reads it.
+	store := agents.NewPG(f.pool)
+	newer, err := store.AddChatMessage(asUser(authz.OperatorUserID), agents.ChatMessage{AgentID: worker.ID, SessionID: sess.ID,
+		Role: "assistant", Content: "Also: tag the release now or after the soak?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE chat_messages SET created_at = now() - interval '19 minutes' WHERE id = $1`, newer.ID); err != nil {
+		t.Fatal(err)
+	}
+	want := "msg:" + strconv.FormatInt(newer.ID, 10)
+	if stored == want || stored == "" {
+		t.Fatalf("fixture: the stored streak %q must lag the newer message's %q", stored, want)
+	}
+	if code := f.get(t, ui.AgentSessionHref(worker.Name, sess.ID), nil); code != http.StatusOK {
+		t.Fatalf("GET the conversation: %d", code)
+	}
+	e := f.episodeByID(t, ep)
+	if e.EndedAt.IsZero() || e.EndReason != endViewed || e.StreakKey != want {
+		t.Fatalf("after the owner opened the conversation: ended %v reason %q streak %q, want %q on %q",
+			e.EndedAt, e.EndReason, e.StreakKey, endViewed, want)
+	}
+	f.handledTwoPassesLater(t, ep, endViewed, len(f.episodePushes()))
 }
 
 // TestRenderingListsPrefetchesAndTheTapAloneDoNotEndIt — the view rule's other

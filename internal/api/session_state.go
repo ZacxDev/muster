@@ -221,12 +221,18 @@ func (s *Server) stateClassifier(octx context.Context) *chiefnudge.Classifier {
 func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCandidate, ep sessionstate.Episode, has, answerable bool) {
 	now := sp.now
 	if has {
-		// 🔴 A HANDLED STOP OPENED AGAIN BY ANOTHER PROCESS ENDS AGAIN (PG.EndRepeat):
-		// an image without PG.Open's guard (one from before 0079, still running
-		// during a rolling update) opens and pushes a session still stopped on
-		// the streak its previous episode ended 'reset' or 'viewed' on. Ended
-		// here for that same reason, its push is withdrawn by this pass's
-		// clearEndedEpisodes; the Open below then refuses it (the same rule).
+		// 🔴 A HANDLED STOP OPENED AGAIN ENDS AGAIN (PG.EndRepeat): an open
+		// episode on the streak its previous episode ended 'reset' or 'viewed'
+		// on. PG.Open's guard cannot refuse every such write, so this is a
+		// PERMANENT repair, not a rollout step. Three writers: an image from
+		// before 0079 (no guard), still running during a rolling update; the
+		// waiting hook — the older image's, and this one's whenever
+		// windowStreakKey returns "" — which opens with no streak, and "" never
+		// matches the guard; and a pass whose facts were read before a
+		// concurrent view, which opens on the streak it read, not the one the
+		// view ended on. Compared on c's CURRENT streak, it is ended here for
+		// that same reason, its push is withdrawn by this pass's
+		// clearEndedEpisodes, and the Open below then refuses it (the same rule).
 		reason, ended, err := s.ext.Episodes.EndRepeat(octx, ep.ID, c.StreakKey, now)
 		if err != nil {
 			s.logger.Printf("session state: episode %d: repeat: %v", ep.ID, err)

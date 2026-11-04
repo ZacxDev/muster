@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -82,8 +81,8 @@ func (s *Server) episodeViewedAgent(ctx context.Context, r *http.Request, agentI
 		return
 	}
 	s.episodeViewed(ctx, sessionstate.KindAgent, chiefnudge.AgentKey(agentID, chatSessionID), func() string {
-		// The conversation's streak now, as the pass keys it (stallFacts): its
-		// newest message.
+		// The conversation's streak now, as the pass keys it (agentStreakKey,
+		// one rule with stallFacts): its newest message.
 		if s.ext.Agents == nil {
 			return ""
 		}
@@ -91,7 +90,7 @@ func (s *Server) episodeViewedAgent(ctx context.Context, r *http.Request, agentI
 		if err != nil || len(last) == 0 {
 			return ""
 		}
-		return "msg:" + strconv.FormatInt(last[len(last)-1].ID, 10)
+		return agentStreakKey(last[len(last)-1])
 	})
 }
 
