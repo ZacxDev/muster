@@ -409,14 +409,28 @@ func (s *Server) list(officer, status string, now time.Time) []Item {
 }
 
 // claimNext is HQ's claim-next: the first claimable item (open or a lapsed
-// claim, not blocked, of the body's tier when named — the fake has no tiers,
-// so any) by priority, then id; 200 {item, lease_expires_at}, or {item: null}.
+// claim, not blocked, and — when the body names a tier — of that tier as the
+// item reads, tierOf; no tier key takes any tier) by priority, then id;
+// 200 {item, lease_expires_at}, or {item: null}. A tier other than routine or
+// judgement is 400, as on HQ.
 func (s *Server) claimNext(w http.ResponseWriter, officer string, body map[string]any, now time.Time) {
+	tier, named := "", false
+	if v, ok := body["tier"]; ok {
+		tier, _ = v.(string)
+		named = true
+		if tier != "routine" && tier != "judgement" {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "tier must be routine or judgement", "code": "bad_request"})
+			return
+		}
+	}
 	rank := map[string]int{"urgent": 0, "high": 1, "": 2, "normal": 2, "low": 3}
 	var best *Item
 	for _, it := range s.items {
 		live := it.Status == "claimed" && it.LeaseExpiresAt != nil && it.LeaseExpiresAt.After(now)
 		if it.OfficerID != officer || it.Blocked || live || (it.Status != "open" && it.Status != "claimed") {
+			continue
+		}
+		if named && tierOf(it) != tier {
 			continue
 		}
 		if best == nil || rank[it.Priority] < rank[best.Priority] || (rank[it.Priority] == rank[best.Priority] && numID(it.ID) < numID(best.ID)) {
