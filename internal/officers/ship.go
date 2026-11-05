@@ -227,13 +227,14 @@ type declaredShip struct {
 		ID      int64  `json:"id"`
 		Account string `json:"account"`
 	} `json:"github_app"`
-	RequiredChecks []string `json:"required_checks"`
-	ReviewCheck    string   `json:"review_check"`
-	ReviewApp      string   `json:"review_app"`
-	Migrations     string   `json:"migrations"`
-	SensitivePaths []string `json:"sensitive_paths"`
-	ForbiddenPaths []string `json:"forbidden_paths"`
-	Notice         *struct {
+	RequiredChecks     []string `json:"required_checks"`
+	ReviewCheck        string   `json:"review_check"`
+	ReviewApp          string   `json:"review_app"`
+	Migrations         string   `json:"migrations"`
+	SensitivePaths     []string `json:"sensitive_paths"`
+	ForbiddenPaths     []string `json:"forbidden_paths"`
+	ForbiddenPathsFile string   `json:"forbidden_paths_file"`
+	Notice             *struct {
 		Path    string `json:"path"`
 		Channel string `json:"channel"`
 	} `json:"notice"`

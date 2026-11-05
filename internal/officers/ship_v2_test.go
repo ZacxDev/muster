@@ -323,3 +323,34 @@ func TestBranchItem(t *testing.T) {
 		}
 	}
 }
+
+// TestParseReadsAForbiddenPathsFile: `forbidden_paths_file` is kept per
+// repository beside the inline list; a path that is absolute, climbs, or is
+// empty after trimming is refused, and so is the key outside the draft stage.
+func TestParseReadsAForbiddenPathsFile(t *testing.T) {
+	m := draftShip()
+	repos := m["repos"].([]any)
+	repos[0].(map[string]any)["forbidden_paths_file"] = "scripts/ci/officer-forbidden-paths.txt"
+	list, err := parseDecl(t, draftDecl(m), shipEnv(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := list[0].Ship.Repos[0]; r.ForbiddenPathsFile != "scripts/ci/officer-forbidden-paths.txt" || len(r.ForbiddenPaths) != 3 {
+		t.Fatalf("repo 0 = %+v, want the file beside the three inline globs", r)
+	}
+	if list[0].Ship.Repos[1].ForbiddenPathsFile != "" {
+		t.Fatal("the other repository got the file")
+	}
+	for _, bad := range []string{"/etc/list.txt", "../list.txt", "a/../b.txt", "  ", "dir/"} {
+		m := draftShip()
+		m["repos"].([]any)[0].(map[string]any)["forbidden_paths_file"] = bad
+		if _, err := parseDecl(t, draftDecl(m), shipEnv(t)); err == nil || !strings.Contains(err.Error(), "forbidden_paths_file") {
+			t.Errorf("forbidden_paths_file %q: err = %v, want a refusal naming it", bad, err)
+		}
+	}
+	rel := fullShip()
+	rel["forbidden_paths_file"] = "scripts/ci/list.txt"
+	if _, err := parseShip(t, rel, shipEnv(t)); err == nil || !strings.Contains(err.Error(), "draft stage only") {
+		t.Errorf("forbidden_paths_file on a release officer: %v", err)
+	}
+}

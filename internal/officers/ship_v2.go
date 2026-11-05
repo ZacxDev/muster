@@ -82,6 +82,10 @@ type ShipRepo struct {
 	// ForbiddenPaths are globs (MatchForbidden) no pull request of the officer
 	// may change, add, remove or rename from. Draft stage only.
 	ForbiddenPaths []string
+	// ForbiddenPathsFile, when set, is a repository file listing more
+	// forbidden globs, one per line; the draft gate reads it from the pull
+	// request's TARGET branch at every check (draftgate.go).
+	ForbiddenPathsFile string
 }
 
 // RepoList is the officer's ship repositories: Repos when parsed, else the one
@@ -133,7 +137,8 @@ type declaredShipRepo struct {
 		ID      int64  `json:"id"`
 		Account string `json:"account"`
 	} `json:"github_app"`
-	ForbiddenPaths []string `json:"forbidden_paths"`
+	ForbiddenPaths     []string `json:"forbidden_paths"`
+	ForbiddenPathsFile string   `json:"forbidden_paths_file"`
 }
 
 // parseShipRepo validates one repository's base, prefix, App and forbidden
