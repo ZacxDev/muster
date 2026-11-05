@@ -84,8 +84,22 @@ func (r *capRig) check(t *testing.T) officers.PassResult {
 }
 
 // hold puts item id in holder's live claim for ten more minutes, as the
-// instance's heartbeat would.
+// instance's heartbeat would (a claim, if holder has no live lease on it).
 func (r *capRig) hold(id, holder string) { r.hq.SetClaim(id, holder, r.clk.Now().Add(10*time.Minute)) }
+
+// heldFor advances the clock by d with each (item, holder) pair of pairs
+// renewing its 10-minute lease every 5 minutes, as a working instance's
+// heartbeats do: the lease never lapses, so HQ keeps claimed_at. No pass runs.
+func (r *capRig) heldFor(d time.Duration, pairs ...string) {
+	for d > 0 {
+		step := min(5*time.Minute, d)
+		r.clk.Advance(step)
+		d -= step
+		for i := 0; i+1 < len(pairs); i += 2 {
+			r.hold(pairs[i], pairs[i+1])
+		}
+	}
+}
 
 // completes is the complete requests HQ received, as "item:instance:outcome".
 func (r *capRig) completes() []string {
@@ -124,9 +138,7 @@ func TestAJudgementItemIsStoppedAndEscalatedAtItsWallTimeCap(t *testing.T) {
 	r.hold(ro, routineStem+"1")
 	r.check(t) // both claims first seen now
 
-	r.clk.Advance(29 * time.Minute)
-	r.hold(j, judgeStem+"1")
-	r.hold(ro, routineStem+"1")
+	r.heldFor(29*time.Minute, j, judgeStem+"1", ro, routineStem+"1")
 	r.check(t)
 	if _, stops := r.fleet.take(); len(stops) != 0 {
 		t.Fatalf("29 minutes into a 30-minute cap: stopped %v, want nothing", stops)
@@ -135,9 +147,7 @@ func TestAJudgementItemIsStoppedAndEscalatedAtItsWallTimeCap(t *testing.T) {
 		t.Fatalf("29 minutes into a 30-minute cap: item is %q, want still claimed", got)
 	}
 
-	r.clk.Advance(2 * time.Minute)
-	r.hold(j, judgeStem+"1")
-	r.hold(ro, routineStem+"1")
+	r.heldFor(2*time.Minute, j, judgeStem+"1", ro, routineStem+"1")
 	r.check(t)
 	if _, stops := r.fleet.take(); fmt.Sprint(stops) != fmt.Sprint([]string{judgeStem + "1"}) {
 		t.Fatalf("31 minutes into a 30-minute cap: stopped %v, want judgement instance 1 only", stops)
@@ -169,8 +179,8 @@ func TestACappedItemWhoseHolderIsDownIsEscalatedNotReleased(t *testing.T) {
 	r.check(t)
 	r.hold(j, judgeStem+"1")
 	r.check(t)
-	r.clk.Advance(31 * time.Minute)
-	r.hold(j, judgeStem+"1")
+	// The instance heartbeats for 31 minutes, then dies with its lease live.
+	r.heldFor(31*time.Minute, j, judgeStem+"1")
 	r.fleet.mu.Lock()
 	r.fleet.up[judgeStem+"1"] = false // the instance died holding the item
 	r.fleet.mu.Unlock()
@@ -195,8 +205,7 @@ func TestNoCapLeavesALongItemAlone(t *testing.T) {
 	r.hold(j, judgeStem+"1")
 	r.check(t)
 	r.fleet.take()
-	r.clk.Advance(90 * time.Minute)
-	r.hold(j, judgeStem+"1")
+	r.heldFor(90*time.Minute, j, judgeStem+"1")
 	r.check(t)
 	if _, stops := r.fleet.take(); len(stops) != 0 {
 		t.Fatalf("no cap: stopped %v after 90 minutes", stops)
@@ -257,13 +266,11 @@ func TestARestartedMusterStillCapsAnItemClaimedBeforeIt(t *testing.T) {
 	r.check(t)
 	r.hold(j, judgeStem+"1")
 	r.check(t)
-	r.clk.Advance(20 * time.Minute)
-	r.hold(j, judgeStem+"1")
+	r.heldFor(20*time.Minute, j, judgeStem+"1")
 	r.check(t)
 	r.fleet.take()
 
-	r.clk.Advance(11 * time.Minute)
-	r.hold(j, judgeStem+"1")
+	r.heldFor(11*time.Minute, j, judgeStem+"1")
 	r.restart(t)
 	r.check(t)
 	if _, stops := r.fleet.take(); fmt.Sprint(stops) != fmt.Sprint([]string{judgeStem + "1"}) {
@@ -322,8 +329,7 @@ func (r *capRig) capped(t *testing.T) string {
 	r.hold(j, judgeStem+"1")
 	r.check(t)
 	r.fleet.take()
-	r.clk.Advance(31 * time.Minute)
-	r.hold(j, judgeStem+"1")
+	r.heldFor(31*time.Minute, j, judgeStem+"1")
 	return j
 }
 
@@ -410,10 +416,11 @@ func TestARefusedCapEscalationKeepsTheItemHeldNotReclaimed(t *testing.T) {
 	}
 }
 
-// TestAnHQBeforeTheInvestigationBlockStillTakesTheCapEscalation is an
-// INVARIANT GUARD (green on the base too, which never sends the block): an HQ
-// that predates the block refuses it as an unknown field, and the cap's
-// escalation still lands, without it.
+// TestAnHQBeforeTheInvestigationBlockStillTakesTheCapEscalation: an HQ that
+// predates the block refuses it as an unknown field (400), and the cap's
+// escalation still lands, without it. Regression coverage, not an invariant
+// guard: red on the base (which refuses max_item_minutes at Parse), and the
+// only test that fails when stopOverrun's 400 retry is removed.
 func TestAnHQBeforeTheInvestigationBlockStillTakesTheCapEscalation(t *testing.T) {
 	r := newCapRig(t, cappedTiers)
 	r.hq.PreInvestigation = true
@@ -421,5 +428,73 @@ func TestAnHQBeforeTheInvestigationBlockStillTakesTheCapEscalation(t *testing.T)
 	r.check(t)
 	if it := r.hq.Item(j); it.Status != "escalated" {
 		t.Fatalf("on an HQ before the investigation block the capped item is %q, want escalated", it.Status)
+	}
+}
+
+// TestACappedHolderIsNeverStartedForOtherWork: HQ keeps refusing the cap's
+// escalation, so the capped item A stays held in judgement instance 1's NAME
+// (muster heartbeats it) while another judgement item B is open. Instance 1
+// must never be started again: a new session under that name claims B, and
+// the next pass stops it for A's cap, killing B's work, every few polls and
+// without bound (a re-claim is free under max_sessions_per_day). With a
+// second instance number free B goes to it; at max_instances 1 B waits.
+// Nothing is stopped after the cap's own stop.
+func TestACappedHolderIsNeverStartedForOtherWork(t *testing.T) {
+	for _, tc := range []struct{ name, tiers, holderOfB string }{
+		{"a second instance number free", cappedTiers, judgeStem + "2"},
+		{"max_instances 1", `"tiers":{"routine":{"model":"haiku","max_instances":3},"judgement":{"model":"opus","max_instances":1,"max_item_minutes":30}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCapRig(t, tc.tiers)
+			r.hq.RefuseCompletes(400, "invalid", "investigation.root_cause must be at most 300 characters")
+			a := r.capped(t)
+			b := r.hq.AddTieredItem(tierID, "gpu.alert", "node-d", officers.TierJudgement)
+			r.check(t) // the cap: instance 1 stopped, the escalation refused, A kept held
+			starts, stops := r.fleet.take()
+			if fmt.Sprint(stops) != fmt.Sprint([]string{judgeStem + "1"}) {
+				t.Fatalf("at the cap: stopped %v, want judgement instance 1", stops)
+			}
+			up := func(name string) bool {
+				r.fleet.mu.Lock()
+				defer r.fleet.mu.Unlock()
+				return r.fleet.up[name]
+			}
+			started := append([]string(nil), starts...)
+			// 30 minutes of passes: three times the 10-minute lease A's holder
+			// last took, so A lives only by muster's hold.
+			for i := 0; i < 6; i++ {
+				r.clk.Advance(5 * time.Minute)
+				if it := r.hq.Item(b); it.Status == "claimed" && up(it.ClaimedBy) {
+					r.hold(b, it.ClaimedBy) // B's holder heartbeats it
+				}
+				r.check(t)
+				starts, stops := r.fleet.take()
+				if len(stops) != 0 {
+					t.Fatalf("pass %d after a refused cap escalation: stopped %v, want nothing (B, which is nowhere near its cap, was being worked)", i+1, stops)
+				}
+				for _, s := range starts {
+					started = append(started, s)
+					if r.hq.Item(b).Status == "open" {
+						r.hold(b, s) // a started instance claims B at once
+					}
+				}
+			}
+			for _, s := range started {
+				if s == judgeStem+"1" {
+					t.Fatalf("started %v after a refused cap escalation: instance 1 holds capped item %s and must never be started", started, a)
+				}
+			}
+			if it := r.hq.Item(a); it.Status != "claimed" || it.ClaimedBy != judgeStem+"1" {
+				t.Errorf("capped item A is %q by %q, want still held by instance 1 (its escalation is refused)", it.Status, it.ClaimedBy)
+			}
+			it := r.hq.Item(b)
+			if tc.holderOfB == "" {
+				if it.Status != "open" || len(started) != 0 {
+					t.Errorf("max_instances 1: B is %q by %q and %v started, want B open and nothing started (it waits for instance 1's slot)", it.Status, it.ClaimedBy, started)
+				}
+			} else if it.Status != "claimed" || it.ClaimedBy != tc.holderOfB {
+				t.Errorf("B is %q by %q, want claimed by %s", it.Status, it.ClaimedBy, tc.holderOfB)
+			}
+		})
 	}
 }
