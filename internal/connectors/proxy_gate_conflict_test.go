@@ -3,9 +3,11 @@ package connectors_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,11 +139,15 @@ func TestAGatesAfterForwardHookRunsWhenTheClientGoesAway(t *testing.T) {
 	f, caller, _ := gatedFixture(t)
 	results := make(chan afterCall, 4)
 	caller.Gate = afterGate{host: f.host, up: f.up, results: results}
-	release := make(chan struct{})
+	release, answered := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
 	f.up.handle = func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("0030\x02Counting objects: 100% (3/3), done.\n"))
 		w.(http.Flusher).Flush()
+		close(answered)
 		<-release
 		_, _ = w.Write([]byte("000eunpack ok\n0000"))
 	}
@@ -150,19 +156,28 @@ func TestAGatesAfterForwardHookRunsWhenTheClientGoesAway(t *testing.T) {
 		f.proxy.Serve(w, r.WithContext(dbtest.AsOperator(r.Context())), caller, parts[0], parts[1], parts[2])
 	}))
 	defer srv.Close()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/connect/github/"+f.host+"/example-org/example-web.git/git-receive-pack",
 		strings.NewReader("0000"))
-	resp, err := srv.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := srv.Client().Do(req); err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body) // ends when the client cancels
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-answered: // the upstream answered its head and the first bytes
+	case <-time.After(10 * time.Second):
+		t.Fatal("the upstream never answered")
 	}
-	buf := make([]byte, 8)
-	_, _ = resp.Body.Read(buf) // the head and the first bytes arrived
-	cancel()
-	_ = resp.Body.Close()
 	time.Sleep(50 * time.Millisecond)
-	close(release)
+	cancel() // the client goes away mid-body
+	<-done
+	time.Sleep(50 * time.Millisecond)
+	unblock()
 	select {
 	case c := <-results:
 		if !c.res.Forwarded || c.res.Status != http.StatusOK || c.res.Complete || !strings.Contains(string(c.res.Body), "Counting objects") ||

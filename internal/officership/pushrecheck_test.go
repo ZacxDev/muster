@@ -23,6 +23,10 @@ import (
 func pushRig() *draftRig {
 	r := newDraftRig()
 	r.infra.all = []PR{r.infra.prs[dPR]}
+	// listed too (a newest-N window that holds it), so a test that needs the
+	// pull request FOUND is red only for its own reason;
+	// TestAPushRecheckFindsAPullRequestOutsideTheNewest300 empties it.
+	r.infra.listed = []PR{r.infra.prs[dPR]}
 	r.infra.compares["trunk..."+oidB] = r.infra.compares["trunk..."+dBranch]
 	r.infra.branches[dBranch] = oidB // the push landed
 	return r
