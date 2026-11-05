@@ -543,6 +543,27 @@
 }
 
 /*
+ * The session switcher's row FADES AT AN EDGE THAT HAS MORE (internal/ui/
+ * switcher.go, switcherFadeJS): data-fade-end while there is more to scroll
+ * to on the right, data-fade-start once scrolled away from the left. A pill
+ * cut by the edge then reads as "more to scroll", not as broken. A mask, so
+ * it fades over any background and moves no layout; a row with neither
+ * attribute (it fits) is not masked at all.
+ */
+[data-switcher-list][data-fade-end] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 1.75rem), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 1.75rem), transparent);
+}
+[data-switcher-list][data-fade-start] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 1.75rem);
+  mask-image: linear-gradient(to right, transparent, #000 1.75rem);
+}
+[data-switcher-list][data-fade-start][data-fade-end] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 1.75rem, #000 calc(100% - 1.75rem), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 1.75rem, #000 calc(100% - 1.75rem), transparent);
+}
+
+/*
  * The session switcher at a screen's foot STEPS ASIDE (internal/ui/
  * switcher.go, switcherRoomMark): hidden, its room given back down to the
  * safe-area inset, while a soft keyboard is up (html[data-keyboard], set by
