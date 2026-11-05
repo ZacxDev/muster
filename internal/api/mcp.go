@@ -104,11 +104,12 @@ func isToolErr(text string) bool {
 	// toolErr's {error}, plus only the keys a structured refusal adds:
 	// `refused` (session_routes.go's routeRefusal), `budget`
 	// (agent_dispatch's dispatchRefusal) and `candidates`
-	// (plugin_message_route's subject refusals), and `current_definition`
-	// (serveMCP's, on any of them) — nothing else.
+	// (plugin_message_route's subject refusals), `retryable` (an officer
+	// tool's HQ failure HQ says to retry, officerToolResult), and
+	// `current_definition` (serveMCP's, on any of them) — nothing else.
 	for k := range m {
 		switch k {
-		case "error", "refused", "budget", "candidates", "current_definition":
+		case "error", "refused", "budget", "candidates", "retryable", "current_definition":
 		default:
 			return false
 		}

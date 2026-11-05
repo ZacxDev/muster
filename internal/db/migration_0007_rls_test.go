@@ -96,6 +96,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO chief_nudges (session_kind, session_key, streak_key, decision, mode, outcome) VALUES ('mirror', $1, 'since:1', 'leave', 'shadow', 'left')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO suggest_usage (shown) VALUES (1)`, func() []any { return nil }, nil},
 		{`INSERT INTO officer_llm_usage (officer, instance, day, requests, cost_usd) VALUES ('triage:example-' || lower($1), 1, '2000-01-01', 1, 0.01)`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_judgement_sessions (officer, day, items) VALUES ('triage:example-' || lower($1), '2000-01-01', '{a}')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
 		{`INSERT INTO mail_resumes (plugin_message_id, claude_session, sender, via) VALUES (7, $1, 'review-gate/pr-check', 'pr')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO session_prs (kind, repo, pr, claude_session, host) VALUES ('gh-pr-create', $1, 7, 'sess', 'host')`, func() []any { return []any{"acme-labs/repo-" + strings.ToLower(tag)} }, nil},

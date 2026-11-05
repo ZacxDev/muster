@@ -272,6 +272,13 @@ func newOfficerRig(t *testing.T) *officerRig {
 // token -> officer map.
 func newOfficerRigWith(t *testing.T, tokens map[string]string, build func(hqURL string) []officers.Officer) *officerRig {
 	t.Helper()
+	return newOfficerRigCfg(t, tokens, build, nil)
+}
+
+// newOfficerRigCfg is newOfficerRigWith, with cfg (when set) adjusting the
+// OfficersConfig EnableOfficers is given.
+func newOfficerRigCfg(t *testing.T, tokens map[string]string, build func(hqURL string) []officers.Officer, cfg func(*OfficersConfig)) *officerRig {
+	t.Helper()
 	hq := hqtest.New(tokens)
 	t.Cleanup(hq.Close)
 	logs := &bytes.Buffer{}
@@ -290,7 +297,11 @@ func newOfficerRigWith(t *testing.T, tokens map[string]string, build func(hqURL 
 	a, b := list[0], list[1]
 	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, chat: chat, clock: time.Now()}
 	hq.Now = r.now
-	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now, InstallSession: r.installSession})
+	ocfg := OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now, InstallSession: r.installSession}
+	if cfg != nil {
+		cfg(&ocfg)
+	}
+	rec, err := s.EnableOfficers(ocfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,8 +900,8 @@ func TestAnIdleUpInstanceIsRepromptedAsItsOwnTurn(t *testing.T) {
 
 // TestAnOfficerInstancePreAllowsExactlyItsOwnTools: the session settings the
 // officer runtime hands the provisioner are, for each officer's instance,
-// EXACTLY the officer tools it is offered (the release officer's eight, the
-// triage officer's seven — never another tool, never a built-in) and its
+// EXACTLY the officer tools it is offered (the release officer's ten, the
+// triage officer's nine — never another tool, never a built-in) and its
 // configured model; a non-officer agent gets nothing.
 func TestAnOfficerInstancePreAllowsExactlyItsOwnTools(t *testing.T) {
 	r := newOfficerRig(t)
@@ -898,12 +909,12 @@ func TestAnOfficerInstancePreAllowsExactlyItsOwnTools(t *testing.T) {
 	tri := r.addInstance(r.b, 1, 872)
 	sess, ok := r.s.OfficerClaudeCodeSession(rel)
 	allow := sess.AllowMCPTools
-	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_ask_person,officer_release_evaluation"; !ok || strings.Join(allow, ",") != want {
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_ask_person,officer_release_evaluation,officer_obs_queries,officer_obs_query"; !ok || strings.Join(allow, ",") != want {
 		t.Fatalf("release officer allow = %v (ok %v), want %s", allow, ok, want)
 	}
 	sess, ok = r.s.OfficerClaudeCodeSession(tri)
 	allow = sess.AllowMCPTools
-	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_ask_person"; !ok || strings.Join(allow, ",") != want {
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_ask_person,officer_obs_queries,officer_obs_query"; !ok || strings.Join(allow, ",") != want {
 		t.Fatalf("triage officer allow = %v (ok %v), want %s", allow, ok, want)
 	}
 	if sess, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerOrdinaryID)); ok || sess.AllowMCPTools != nil || sess.Model != "" {
@@ -961,13 +972,13 @@ func TestAnOfficerInstancePreAllowsTheConnectorToolsWhenOffered(t *testing.T) {
 	sess, ok := r.s.OfficerClaudeCodeSession(rel)
 	allow := sess.AllowMCPTools
 	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_ask_person,officer_release_evaluation," +
-		"connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
+		"officer_obs_queries,officer_obs_query,connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
 		t.Fatalf("release officer allow = %v (ok %v), want %s", allow, ok, want)
 	}
 	sess, ok = r.s.OfficerClaudeCodeSession(tri)
 	allow = sess.AllowMCPTools
 	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_ask_person," +
-		"connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
+		"officer_obs_queries,officer_obs_query,connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
 		t.Fatalf("triage officer allow = %v (ok %v), want %s", allow, ok, want)
 	}
 	// Each allowed connector tool is one the instance is really offered over MCP.
@@ -995,7 +1006,7 @@ func TestEnableOfficersInstallsTheSessionSourceOrRefuses(t *testing.T) {
 	if r.installed == nil {
 		t.Fatal("EnableOfficers installed no session source")
 	}
-	if sess, ok := r.installed(inst); !ok || len(sess.AllowMCPTools) != 8 {
+	if sess, ok := r.installed(inst); !ok || len(sess.AllowMCPTools) != 10 {
 		t.Fatalf("installed source answered %v %v for a release instance", sess, ok)
 	}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))

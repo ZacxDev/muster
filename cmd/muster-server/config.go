@@ -1960,9 +1960,6 @@ func (c config) validate() error {
 			"MCP server on the connect listener, so they would boot with no officer tools. Set %s, %s and %s",
 			envOfficers, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
 	}
-	if err := refuseLLMOfficersBeforeThePodRoute(c.Officers); err != nil {
-		return err
-	}
 	if err := c.validateConnectors(); err != nil {
 		return err
 	}
@@ -2578,25 +2575,4 @@ func hookTokenRefusal(token string) string {
 			"machine route. Set it to a secret (openssl rand -hex 32)", envHookToken, minHookTokenLen)
 	}
 	return ""
-}
-
-// refuseLLMOfficersBeforeThePodRoute refuses an officer that declares `llm`.
-//
-// 🔴 A STRUCTURAL REFUSAL, NOT A PROSE RULE. The proxy (internal/llmproxy) is
-// built, but the pod side is not: the claude-code entrypoint still refuses
-// ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN (the scoped exception under
-// CCD_LLM_ROUTE=muster does not exist yet), and the session settings pass the
-// routine pool's provider model id as the session model, which the pod spec
-// refuses. Every routine Start of such an officer would fail, the instance
-// holding its slot in error and retried every wake pass. The change that adds
-// CCD_LLM_ROUTE removes this check.
-func refuseLLMOfficersBeforeThePodRoute(list []officers.Officer) error {
-	for _, o := range list {
-		if o.LLM != nil {
-			return fmt.Errorf("%s: officer %s declares llm, but this build cannot provision its routine instances: the "+
-				"pod side that routes their Claude Code to muster's LLM proxy (CCD_LLM_ROUTE=muster) is not built yet. "+
-				"Remove llm (and the provider routine model) until it is", envOfficers, o.ID)
-		}
-	}
-	return nil
 }

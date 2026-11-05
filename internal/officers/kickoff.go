@@ -171,6 +171,12 @@ const (
 	// ToolAskPerson asks a named HQ member a question about an item (HQ's
 	// asks route); asking ends the instance's lease on it. Every officer's.
 	ToolAskPerson = "officer_ask_person"
+	// ToolObsQueries and ToolObsQuery read HQ's NAMED observability queries
+	// through HQ's officer obs route (obs.go): the registry, and one entry
+	// run with its declared arguments — never a raw query. Every officer's;
+	// HQ decides whether its route is on (503 obs_unconfigured when off).
+	ToolObsQueries = "officer_obs_queries"
+	ToolObsQuery   = "officer_obs_query"
 )
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
@@ -183,12 +189,12 @@ func (o Officer) Type() string {
 }
 
 // ToolOffered is THE rule for which officer tools officer o's instances get:
-// the six queue tools and officer_ask_person for every officer, and the
+// the six queue tools, officer_ask_person and the two obs tools for every officer, and the
 // captain route's tool for a release officer only. internal/api's listing and
 // dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
 	switch tool {
-	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolAskPerson:
+	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolAskPerson, ToolObsQueries, ToolObsQuery:
 		return true
 	case ToolReleaseEvaluation:
 		return o.Type() == ReleaseOfficerType
