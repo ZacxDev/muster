@@ -127,7 +127,8 @@ func draftAttrs(key, note string) g.Node {
 // the order pressed, then what is in the box, a blank line between — so a
 // reload, a navigation or a failed browser submit mid-send puts the text back
 // in the box, and a message the server took (OK) never comes back as a draft.
-// A "Not confirmed" one does, after a reload: whether it landed is the
+// A "Not confirmed" one does, after a reload, until it is dismissed (Dismiss
+// forgets it, box and draft — composer_pending.go dismiss): whether it landed is the
 // person's to check, and for 15 minutes the server refuses a plain Send of
 // the same text, offering Send again (internal/api sendNonces.hold).
 //

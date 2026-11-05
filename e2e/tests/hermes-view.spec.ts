@@ -437,6 +437,12 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
     tool_calls: JSON.stringify([{ id: 'call_build_rm', type: 'function', function: { name: 'terminal', arguments: JSON.stringify({ command: 'rm -r ./build' }) } }]),
   });
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
+  const approvalFor = (width: number) => JSON.stringify({ prompt_id: `p${width}`, command: 'rm -r ./build', description: 'recursive delete' });
+  // 🔴 The first approval is written BEFORE the host starts: the window is
+  // already waiting, so the host attaches its viewer at once and reads the
+  // approval then. Written later, the viewer attached with none (this case
+  // was red alone, PR #450 round 5 🟢) and the next one waits for a re-attach.
+  writeFileAtomic(path.join(home, 'approval.json'), approvalFor(390));
   writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
   await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_ANSWER: '1' });
   hostMode = 'answer';
@@ -445,7 +451,7 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
   for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(vp);
     const promptId = `p${vp.width}`;
-    writeFileAtomic(path.join(home, 'approval.json'), JSON.stringify({ prompt_id: promptId, command: 'rm -r ./build', description: 'recursive delete' }));
+    writeFileAtomic(path.join(home, 'approval.json'), approvalFor(vp.width));
     writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
     const approval = page.locator('[data-attention-item]').filter({ has: page.locator('[data-hermes-approval]') });
     // The host lists the approval once its viewer has attached (a refresh or two).

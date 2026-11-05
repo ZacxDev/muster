@@ -467,8 +467,20 @@ var mirrorComposerJS = `
     if (blocker === p) unblock();
   }
   // dismiss: the person let a refused message go. What waited behind it is
-  // posted now. (Its text stays where it is: the box, if it went back there.)
-  function dismiss(p) { release(p); clearFor(p); settle(p); offer(); }
+  // posted now. 🔴 A "NOT CONFIRMED" MESSAGE IS FORGOTTEN: it may have been
+  // delivered, so its text leaves the box (while the box is still exactly
+  // that text) and the draft — a reload must not bring it back for a later
+  // Send to paste twice. Dismiss is the person's "done with it", after
+  // checking the terminal. A FAILED one (the server said it did not go) keeps
+  // its text where it is, the box if it went back there: it cannot be a
+  // duplicate, and the words are the person's to edit or send.
+  function dismiss(p) {
+    var forget = p.state === 'unknown' && input.value === p.text;
+    if (forget) clearBox();
+    release(p);
+    if (forget) saveBox();
+    clearFor(p); settle(p); offer();
+  }
   function retry(p) {
     if (input.value === p.text) clearBox();
     // A message that may have landed is sent again ON PURPOSE (again=1).

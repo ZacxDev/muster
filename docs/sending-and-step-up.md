@@ -134,9 +134,13 @@ never sent twice.**
   is matched by its text, and the same words can be an earlier message's, a
   later one's that begins with them, or a copy you retyped. So nothing takes
   it away for you, not even a row that looks like it. Check the terminal (or
-  the transcript) to see whether it landed: if it did, **Dismiss** it; if not,
-  **Send again**. Until then its text stays (in the box, or the draft after a
-  reload).
+  the transcript) first to see whether it landed: if it did, **Dismiss** it;
+  if not, **Send again**. Until then its text stays (in the box, or the draft
+  after a reload). **Dismiss forgets the text**: it leaves the box (if the box
+  still holds just that message) and the draft, so a reload does not bring it
+  back and a later Send cannot deliver it twice. (Dismissing a *failed*
+  message — one the server said it did not take — keeps its text in the box:
+  it cannot be a duplicate.)
 - **Step-up**: a send refused because the sign-in is stale stays pending,
   "Confirm it's you to send", while the dialog asks, and is sent once you
   confirm. Cancelling the dialog turns it failed, with the text back in the
@@ -147,7 +151,8 @@ never sent twice.**
 - **A reload, a navigation, or a send the browser could not make either**
   does not lose it. The message stays in the box's
   [draft](#drafts-kept-on-this-device) from the press until the server says
-  it has it (or you Dismiss it or Send it again), so the page you come back
+  it has it (or you Send it again, or Dismiss it — a Not confirmed message's
+  text then goes, a failed one's stays in the box), so the page you come back
   to has the text in the box. It is not drawn again
   as a bubble and is never sent again by itself: you decide whether to send
   it.

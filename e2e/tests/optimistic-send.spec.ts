@@ -603,6 +603,64 @@ for (const vp of [
       expect(pasted(), 'Dismiss sends nothing').toEqual([`${pane} ${text}`]);
     });
 
+    // 🟡 PR #450 round 5 (probe R5-A): Dismiss of a Not confirmed message
+    // that DID land left its text in the box and the draft, so a reload
+    // brought it back (with no Not confirmed marker) and a later plain Send —
+    // past the server's 15-minute hold, or after a restart — pasted it twice.
+    // Dismiss is the person's "done with it": the box and the draft forget it.
+    test('Dismiss of a Not confirmed message that landed forgets its text: box and draft empty, a reload brings nothing back', async ({ page }) => {
+      await openView(page);
+      const text = `dismissed after it landed ${vp.how} ${stamp}`;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          // It reaches the server (pasted) — but the page is told it may have
+          // been delivered.
+          await r.fetch();
+          return r.fulfill({ status: 502, headers: { 'Content-Type': 'text/plain', 'X-Muster-Send-Again': '1' }, body: 'it may have been delivered' });
+        },
+      );
+      await sendTimed(page, text, vp.how);
+      const p = pendingOf(page, text);
+      await expect(p).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      await expect(page.locator('#mv-input'), 'its text is back in the box').toHaveValue(text);
+      await expect.poll(pasted, { timeout: 10_000 }).toEqual([`${pane} ${text}`]);
+      await press(p.getByRole('button', { name: 'Dismiss' }), vp.how === 'tap');
+      await expect(page.locator('#mv-log [data-pending-send]'), 'Dismiss takes it away').toHaveCount(0);
+      await expect(page.locator('#mv-input'), 'Dismiss empties the box').toHaveValue('');
+      expect(await draftsHolding(page, text), 'and the draft lets it go').toEqual([]);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await page.reload();
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+      await expect(page.locator('#mv-input'), 'a reload brings nothing back').toHaveValue('');
+      expect(await draftsHolding(page, text), 'no draft holds it after the reload').toEqual([]);
+      await sleep(1_000);
+      expect(pasted(), 'pasted once: nothing can paste it a second time').toEqual([`${pane} ${text}`]);
+    });
+
+    // The other half of the round-5 decision: a FAILED message (the server
+    // said it did not take it) cannot be a duplicate, so Dismiss leaves its
+    // text in the box — the person's words to edit or send.
+    test('Dismiss of a failed message keeps its text in the box', async ({ page }) => {
+      await openView(page);
+      const text = `dismissed after a refusal ${vp.how} ${stamp}`;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'it is busy' });
+        },
+      );
+      await sendTimed(page, text, vp.how);
+      const p = pendingOf(page, text);
+      await expect(p).toHaveAttribute('data-pending-send', 'failed', { timeout: 10_000 });
+      await press(p.getByRole('button', { name: 'Dismiss' }), vp.how === 'tap');
+      await expect(page.locator('#mv-log [data-pending-send]')).toHaveCount(0);
+      await expect(page.locator('#mv-input'), 'its text stays in the box').toHaveValue(text);
+      expect(pasted(), 'nothing was pasted').toEqual([]);
+    });
+
     // 🟢 Round 2 #3: the draft is saved in pressed order. Before, a refused
     // message back in the box and one held behind it were saved held-first.
     test('a refused message and one held behind it are saved in the order pressed: a reload brings them back refused first', async ({ page }) => {
