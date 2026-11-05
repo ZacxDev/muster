@@ -89,7 +89,11 @@ type pluginRefIn struct {
 	Rev         string `json:"rev"`
 	UpdatedAt   string `json:"updated_at"`
 	Body        string `json:"body"`
-	Comments    []struct {
+	// Creator is OPTIONAL: the upstream's display name for whoever created the
+	// record. One line of plain text, cut at maxRefAuthorRunes like a comment
+	// author; the task notifications name it (taskRefFragment).
+	Creator  string `json:"creator"`
+	Comments []struct {
 		ID        string `json:"id"`
 		Author    string `json:"author"`
 		Body      string `json:"body"`
@@ -193,6 +197,7 @@ func (ref pluginRefIn) snapshot(key string) notes.RefSnapshot {
 		Rev:         plainLabel(ref.Rev, maxRefRevRunes),
 		UpdatedAt:   at.UTC(),
 		Body:        truncBytes(cleanText(ref.Body), plugins.MaxBodyBytes),
+		Creator:     plainLabel(ref.Creator, maxRefAuthorRunes),
 	}
 	if snap.Title == "" {
 		snap.Title = key

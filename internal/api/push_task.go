@@ -78,6 +78,7 @@ func realAfterFunc(d time.Duration, f func()) resettableTimer { return time.Afte
 type createdTaskRef struct {
 	id    int64
 	title string
+	ref   string // taskRefFragment, captured at create
 }
 
 // commentedTaskRef is one buffered EXTERNAL comment awaiting the coalesced push:
@@ -87,6 +88,7 @@ type commentedTaskRef struct {
 	noteID int64
 	author string
 	text   string
+	ref    string // the task's taskRefFragment
 }
 
 // pushTask sends a task-lifecycle payload to owner, as event (the /account
@@ -198,7 +200,7 @@ func (s *Server) notifyTaskCreated(n notes.Note) {
 	if !s.notifiable() || n.OwnerID <= 0 {
 		return
 	}
-	s.createdBuf.add(n.OwnerID, createdTaskRef{id: n.ID, title: taskTitle(n)}, s.taskCreateAfter,
+	s.createdBuf.add(n.OwnerID, createdTaskRef{id: n.ID, title: taskTitle(n), ref: taskRefFragment(n)}, s.taskCreateAfter,
 		taskCreateDebounce, s.flushCreatedTasks)
 }
 
@@ -216,7 +218,7 @@ func (s *Server) flushCreatedTasks(owner int64) {
 	var title, body string
 	if len(buf) == 1 {
 		title = "New task"
-		body = buf[0].title
+		body = withTaskRef(buf[0].title, buf[0].ref)
 	} else {
 		title = fmt.Sprintf("%d new tasks", len(buf))
 		body = truncate(createdTasksSummary(buf), taskBodyMax)
@@ -236,7 +238,7 @@ func createdTasksSummary(buf []createdTaskRef) string {
 	titles := make([]string, 0, len(buf))
 	for _, t := range buf {
 		if s := strings.TrimSpace(t.title); s != "" {
-			titles = append(titles, s)
+			titles = append(titles, withTaskRef(s, t.ref))
 		}
 	}
 	if len(titles) == 0 {
@@ -265,7 +267,8 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	// silently never fire. The row is used here only to decide whether to
 	// notify; nothing read under System is returned to any caller. Listed in
 	// the System ledger (internal/authz/ledger_test.go).
-	a, err := s.ext.Agents.GetByName(authz.System(context.Background()), agentName)
+	sysCtx := authz.System(context.Background())
+	a, err := s.ext.Agents.GetByName(sysCtx, agentName)
 	if err != nil {
 		return // unknown agent (or DB blip) — best-effort, skip
 	}
@@ -285,11 +288,20 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	}
 
 	noteID := *a.NoteID
+	// The task's reference and creator (taskRefFragment), read under the same
+	// System context as the agent above and for the same reason; only the
+	// fragment leaves this function. A failed read sends the push without it.
+	ref := ""
+	if s.ext.Notes != nil {
+		if n, err := s.ext.Notes.Get(sysCtx, noteID); err == nil {
+			ref = taskRefFragment(n)
+		}
+	}
 	s.pushTask(a.OwnerID, push.EventAgent, RouterNotification{
 		Type:  taskNotificationType,
 		ID:    strconv.FormatInt(noteID, 10),
 		Title: fmt.Sprintf("Task #%d: agent ready", noteID),
-		Body:  "The agent is now working on it.",
+		Body:  withTaskRef("The agent is now working on it.", ref),
 		Tag:   fmt.Sprintf("task-%d-provisioned", noteID),
 		// The BARE page, on purpose (#237): it resolves the agent's latest session
 		// at TAP time, which is what a notification opened later must land on.
@@ -354,7 +366,7 @@ func (s *Server) notifyTaskDone(ctx context.Context, n notes.Note) {
 		Type:  taskNotificationType,
 		ID:    strconv.FormatInt(n.ID, 10),
 		Title: reviewPushTitle(n.ID, reviewSourceLabel(statusWriter(notes.WriterFrom(ctx)), refOriginFrom(ctx), confirmedRefWriteFrom(ctx), n)),
-		Body:  taskTitle(n),
+		Body:  withTaskRef(taskTitle(n), taskRefFragment(n)),
 		Tag:   fmt.Sprintf("task-%d-done", n.ID),
 	})
 }
@@ -454,6 +466,7 @@ func (s *Server) notifyTaskCommented(n notes.Note, c notes.Comment) {
 		// every platform, so flatten it HERE — the phone would otherwise show
 		// literal `**`/backticks (the 0.7.60 bug class).
 		text: commentNotificationText(c.Body),
+		ref:  taskRefFragment(n),
 	}, s.taskCommentAfter, taskCommentDebounce, s.flushCommentedTasks)
 }
 
@@ -473,7 +486,7 @@ func (s *Server) flushCommentedTasks(owner int64) {
 	if len(buf) == 1 {
 		c := buf[0]
 		title = fmt.Sprintf("New comment on task #%d", c.noteID)
-		body = truncate(strings.TrimSpace(c.author+": "+c.text), taskBodyMax)
+		body = withTaskRef(truncate(strings.TrimSpace(c.author+": "+c.text), taskBodyMax), c.ref)
 		tag = fmt.Sprintf("task-%d-comment", c.noteID)
 		id = strconv.FormatInt(c.noteID, 10)
 	} else {
@@ -500,7 +513,7 @@ func commentedTasksSummary(buf []commentedTaskRef) string {
 		if author == "" {
 			author = "api"
 		}
-		parts = append(parts, fmt.Sprintf("%s on #%d", author, c.noteID))
+		parts = append(parts, withTaskRef(fmt.Sprintf("%s on #%d", author, c.noteID), c.ref))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -570,4 +583,119 @@ func taskTitle(n notes.Note) string {
 		return truncate(s, taskBodyMax)
 	}
 	return "New task"
+}
+
+// --- the task's external reference and creator, as every task push names them ---
+
+const (
+	// taskRefMax and taskCreatorMax bound the two halves of taskRefFragment, so
+	// the fragment can never crowd out the body it is appended to.
+	taskRefMax     = 60
+	taskCreatorMax = 40
+)
+
+// taskRefFragment is THE rule for how a task push names the task's external
+// reference and its creator (one rule, one place): "<ns> <id> · by <creator>",
+// either half alone when only one is known, "" when neither is. Every push that
+// names one task appends it to its body through withTaskRef — the BODY, not the
+// title: a phone cuts a title at roughly 40 characters, and "Task #N …" and the
+// review push's source label own that space.
+//
+//   - The reference (taskExternalRef): "hq 868ktt574" for key "hq:868ktt574".
+//   - The creator (taskCreator): who filed the task, as muster recorded it.
+//
+// 🔴 IT CARRIES NO TASK TEXT. A reference id and a creator's display name are
+// all it adds; never the body, the description or a comment. Both are
+// flattened to one line and capped.
+func taskRefFragment(n notes.Note) string {
+	parts := make([]string, 0, 2)
+	if ref := taskExternalRef(n); ref != "" {
+		parts = append(parts, ref)
+	}
+	if who := taskCreator(n); who != "" {
+		parts = append(parts, "by "+who)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// withTaskRef appends taskRefFragment's fragment to a push body as
+// "<body> (<fragment>)", and leaves body alone when the fragment is "" — so an
+// unknown reference or creator adds no empty separator.
+func withTaskRef(body, fragment string) string {
+	if fragment == "" {
+		return body
+	}
+	if body == "" {
+		return fragment
+	}
+	return body + " (" + fragment + ")"
+}
+
+// taskExternalRef is the task's upstream record as the upstream names it:
+// "<namespace> <id>". A plugin task REFERENCE's key (notes.ext_key) wins; else
+// a COPY row's key — its first tag in a namespace that names one upstream
+// record (a configured plugin task namespace, or clickup). "" when none.
+func taskExternalRef(n notes.Note) string {
+	key := ""
+	if n.Ref != nil {
+		key = n.Ref.Key
+	} else {
+		for _, t := range n.Tags {
+			if ns, _ := notes.ParseTag(t); ns == notes.NSClickUp || notes.IsPluginTaskNamespace(ns) {
+				key = t
+				break
+			}
+		}
+	}
+	ns, id := notes.ParseTag(key)
+	id = plainLabel(id, taskRefMax)
+	if id == "" {
+		return ""
+	}
+	if ns == "" {
+		return id
+	}
+	return truncate(ns+" "+id, taskRefMax)
+}
+
+// taskCreator is who filed the task, as a push names them, or "":
+//
+//   - a plugin task REFERENCE: the upstream's creator, when the plugin's
+//     snapshot carries one (reference.creator, docs/plugins.md). Nothing else:
+//     the row was filed by the plugin only as muster's copy of a record someone
+//     else made upstream.
+//   - otherwise Note.CreatedBy: "you" (the owner — the push's recipient — on
+//     the board), "chief", "agent <name>", "plugin <name>";
+//   - else the named producer that filed it (source_type, in the card's words:
+//     "Task drafter", "Claude Code", …);
+//   - else "" — not recorded, and never printed as "unknown".
+func taskCreator(n notes.Note) string {
+	who := ""
+	switch {
+	case n.Ref != nil:
+		who = n.Ref.Snapshot.Creator
+	case n.CreatedBy != nil:
+		v := *n.CreatedBy
+		switch {
+		case v == notes.CreatedByOwner:
+			who = "you"
+		case v == notes.CreatedByChief:
+			who = "chief"
+		case strings.HasPrefix(v, notes.CreatedByAgentPrefix):
+			if name := strings.TrimSpace(strings.TrimPrefix(v, notes.CreatedByAgentPrefix)); name != "" {
+				who = "agent " + name
+			}
+		case strings.HasPrefix(v, notes.CreatedByPluginPrefix):
+			if name := strings.TrimSpace(strings.TrimPrefix(v, notes.CreatedByPluginPrefix)); name != "" {
+				who = "plugin " + name
+			}
+		}
+	case n.SourceType != nil:
+		who = ui.SourceTypeLabel(*n.SourceType)
+	}
+	who = plainLabel(who, maxRefAuthorRunes)
+	if who == "" {
+		return ""
+	}
+	return truncate(who, taskCreatorMax)
 }

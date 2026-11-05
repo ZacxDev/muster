@@ -387,6 +387,8 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 	// Optional dispatch config from the create form (mirrors handleAgentCreate's
 	// parse of the same field names): model + repo + repo_branch.
 	note, err := s.ext.Notes.Create(ctx, notes.Note{
+		// The board's own create: the signed-in owner filed it.
+		CreatedBy:  nilIfEmpty(notes.CreatedByOwner),
 		Directory:  directory,
 		Body:       body,
 		Model:      strings.TrimSpace(r.FormValue("model")),
@@ -482,6 +484,11 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		Directory: body.Directory, Title: body.Title, Body: body.Body,
 		Model: body.Model, Repo: body.Repo, Branch: body.Branch, Tags: body.Tags,
 		Source: source, SessionID: sessionID,
+		// Who: an agent only when the caller IS one — a service caller whose
+		// asserted actor is one of the owner's agents, the line handleAPITaskStatus
+		// draws. The shared hook token and a personal token name no one, so they
+		// record nothing (the push falls back to the producer, source_type).
+		CreatedBy: s.serviceAgentCreatedBy(r.Context()),
 	}, func(id int64) {
 		// Task thread (migration 0023): the creating session joins its own task's
 		// thread with the TERMINAL `created` role. This is the live twin of the 0023
@@ -520,6 +527,9 @@ type taskCreateInput struct {
 	Model, Repo, Branch    string
 	Tags                   []string
 	Source, SessionID      string
+	// CreatedBy is who files it (notes.Note.CreatedBy), when the door knows:
+	// nil records nothing.
+	CreatedBy *string
 }
 
 // errTaskBodyRequired: the create carried no body (a 400).
@@ -582,6 +592,7 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 		Tags:            tags,
 		SourceType:      storedSourceType(in.Source),
 		SourceSessionID: nilIfEmpty(in.SessionID),
+		CreatedBy:       in.CreatedBy,
 	}
 	var note notes.Note
 	created, commented := true, false
@@ -2230,9 +2241,47 @@ func (s *Server) actorIsAgent(ctx context.Context, actor string) bool {
 		return true
 	}
 	for _, a := range list {
-		if strings.EqualFold(a.Name, actor) || (a.DisplayName != "" && strings.EqualFold(strings.TrimSpace(a.DisplayName), strings.TrimSpace(actor))) {
+		if actorNamesAgent(actor, a) {
 			return true
 		}
 	}
 	return false
+}
+
+// actorNamesAgent is THE rule for whether an asserted service actor names agent
+// a: its name, or its display name, ignoring case.
+func actorNamesAgent(actor string, a agents.Agent) bool {
+	return strings.EqualFold(a.Name, actor) || (a.DisplayName != "" && strings.EqualFold(strings.TrimSpace(a.DisplayName), strings.TrimSpace(actor)))
+}
+
+// serviceAgentCreatedBy is the notes.Note.CreatedBy for a task filed by ctx's
+// caller when that caller is a service whose asserted actor is one of the
+// owner's agents (chief, or the agent by name); nil otherwise.
+//
+// 🔴 IT FAILS TO NIL, NOT TO "AGENT". actorIsAgent fails to true on a read
+// error because it gates a REFUSAL; this only labels a notification, and a
+// label it cannot check is one it must not print.
+func (s *Server) serviceAgentCreatedBy(ctx context.Context) *string {
+	actor, ok := serviceActorFromContext(ctx)
+	if !ok || s.ext.Agents == nil || strings.TrimSpace(actor) == "" {
+		return nil
+	}
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, a := range list {
+		if actorNamesAgent(actor, a) {
+			return agentCreatedBy(a, isChiefAmong(a, list))
+		}
+	}
+	return nil
+}
+
+// agentCreatedBy is the notes.Note.CreatedBy for a task agent a filed.
+func agentCreatedBy(a agents.Agent, chief bool) *string {
+	if chief {
+		return nilIfEmpty(notes.CreatedByChief)
+	}
+	return notes.CreatedByAgent(a.Name)
 }
