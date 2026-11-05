@@ -89,6 +89,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	ctx := op.begin("view")
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
+		DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == "",
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx),
 		LiveCopy: e.LiveCopyWarning(),
 		// What the retired list's card said: "offline", and the host's note.

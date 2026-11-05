@@ -1549,7 +1549,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		// (agent_send.go): its nonce, and the outcome of such a send.
 		SendNonce: newSendNonce(),
 		// The chat form's microphone (transcribe.go); "" when there is none.
-		Dictate: s.dictatePath(),
+		Dictate: s.dictatePath(), DictateOff: s.dictateOff(),
 		// The agent's focus history (focus_history.go); "" without a store.
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}

@@ -130,7 +130,8 @@
       "tests/chief-toggle.spec.ts",
       "tests/switcher-dock.spec.ts",
       "tests/chief-mobile.spec.ts",
-      "tests/dock-fade.spec.ts"
+      "tests/dock-fade.spec.ts",
+      "tests/features.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",

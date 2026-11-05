@@ -50,6 +50,8 @@ const (
 	NavAttention = "attention"
 	NavAccount   = "account"
 	NavAdmin     = "admin"
+	// NavFeatures is More's link to the Features page.
+	NavFeatures = "features"
 )
 
 // NavChrome is what a page outside the shell needs to draw the navigation:

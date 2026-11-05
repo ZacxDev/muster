@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -44,9 +45,15 @@ func healthySystem() *fakeSystem {
 	return &fakeSystem{goos: "linux", unitState: "active", tmux: true}
 }
 
+// doctorCwd is the directory the doctor's fake system reports it runs in
+// (Claude Code's project-scoped MCP servers are looked up for it). Set per
+// run by runDoctorAgainst.
+var doctorCwd string
+
 func (f *fakeSystem) sys() doctorSystem {
 	return doctorSystem{
 		goos: f.goos, uid: 1000,
+		getwd: func() (string, error) { return doctorCwd, nil },
 		lookPath: func(name string) (string, error) {
 			switch {
 			case name == "tmux" && f.tmux:
@@ -134,6 +141,12 @@ func healthyMuster() *fakeMuster {
 				map[string]any{"host": "alpha", "token": true, "online": true, "interactive": true},
 				map[string]any{"host": "beta", "token": true, "online": true, "interactive": false},
 			}},
+			"features": []any{
+				map[string]any{"id": "mirror", "name": "Mirrored sessions", "core": true, "state": "on"},
+				map[string]any{"id": "dictation", "name": "Dictation", "state": "on"},
+				map[string]any{"id": "attachments", "name": "File attachments", "state": "off", "reason": "none of the required variables is set",
+					"enable_hint": "set MUSTER_S3_ENDPOINT and MUSTER_S3_BUCKET in .env and restart (docs/features.md#attachments)"},
+			},
 		},
 		transcribeCode: http.StatusOK,
 		transcribeText: "testing muster dictation",
@@ -297,7 +310,19 @@ type doctorOpts struct {
 	noMirror  bool
 	// mirrorURL is the settings file's MUSTER_MIRROR_URL ("" = this server).
 	mirrorURL string
-	extra     []string
+	// The agent ask tool's local setup, all present unless one of these says
+	// otherwise: the MCP listen line (and its secret file), Claude Code's
+	// user-scope registration of it, and the ask PreToolUse hook.
+	noMCPListen, noMCPSecret, noMCPRegistration, noAskHook bool
+	// mcpRegisteredURL is the url Claude Code's registration names ("" =
+	// the endpoint's own, http://127.0.0.1:47823/mcp).
+	mcpRegisteredURL string
+	// mcpScope is where it is registered: "user" (default), "local"
+	// (~/.claude.json's projects[cwd]) or "project" (cwd/.mcp.json).
+	mcpScope string
+	// askMatcher is the ask hook's matcher ("" = "AskUserQuestion").
+	askMatcher string
+	extra      []string
 	// stdout and stderr, when set, are the streams instead of buffers (the
 	// result's stdout/stderr are then empty: the caller reads its files).
 	stdout, stderr io.Writer
@@ -339,6 +364,11 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		args = append(args, "doctor")
 	}
 	mirrorEnv := filepath.Join(dir, "mirror", "env")
+	// muster-mirror's config directory, as os.UserConfigDir resolves it here
+	// (internal/mirrorpath): a synthetic XDG_CONFIG_HOME under the test dir.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	doctorCwd = filepath.Join(dir, "work")
+	_ = os.MkdirAll(doctorCwd, 0o700)
 	if !o.noMirror {
 		tok := fakeMirrorToken
 		if o.tokenFile != "" {
@@ -356,8 +386,40 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		if o.mirrorURL != "" {
 			murl = o.mirrorURL
 		}
-		if err := os.WriteFile(mirrorEnv, []byte("MUSTER_MIRROR_URL="+murl+"\nMUSTER_MIRROR_TOKEN_FILE="+tokPath+"\n"), 0o600); err != nil {
+		envBody := "MUSTER_MIRROR_URL=" + murl + "\nMUSTER_MIRROR_TOKEN_FILE=" + tokPath + "\n"
+		if !o.noMCPListen {
+			envBody += "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823\n"
+		}
+		if err := os.WriteFile(mirrorEnv, []byte(envBody), 0o600); err != nil {
 			t.Fatal(err)
+		}
+		if !o.noMCPSecret {
+			_ = os.MkdirAll(filepath.Join(dir, "xdg", "muster-mirror"), 0o700)
+			_ = os.WriteFile(filepath.Join(dir, "xdg", "muster-mirror", "mcp-secret"), []byte("a-synthetic-mcp-secret\n"), 0o600)
+		}
+		if !o.noMCPRegistration {
+			u := o.mcpRegisteredURL
+			if u == "" {
+				u = "http://127.0.0.1:47823/mcp"
+			}
+			srv := `{"muster":{"type":"http","url":"` + u + `","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}"}}}`
+			switch o.mcpScope {
+			case "local":
+				_ = os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"projects":{`+strconv.Quote(doctorCwd)+`:{"mcpServers":`+srv+`}}}`), 0o600)
+			case "project":
+				_ = os.WriteFile(filepath.Join(doctorCwd, ".mcp.json"), []byte(`{"mcpServers":`+srv+`}`), 0o600)
+			default:
+				_ = os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"mcpServers":`+srv+`}`), 0o600)
+			}
+		}
+		if !o.noAskHook {
+			m := o.askMatcher
+			if m == "" {
+				m = "AskUserQuestion"
+			}
+			_ = os.MkdirAll(filepath.Join(dir, ".claude"), 0o700)
+			_ = os.WriteFile(filepath.Join(dir, ".claude", "settings.json"),
+				[]byte(`{"hooks":{"PreToolUse":[{"matcher":`+strconv.Quote(m)+`,"hooks":[{"type":"command","command":"muster-mirror ask","timeout":10}]}]}}`), 0o600)
 		}
 	}
 	args = append(args, "--mirror-env", mirrorEnv)
@@ -396,7 +458,7 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 }
 
 // TestDoctorHealthyIsAllPass is the positive control for every red case below:
-// the same fake, unbroken, passes all ten checks and exits 0 — so a FAIL in a
+// the same fake, unbroken, passes every check and exits 0 — so a FAIL in a
 // case is the breakage, not the fixture.
 func TestDoctorHealthyIsAllPass(t *testing.T) {
 	m := healthyMuster()
@@ -418,7 +480,7 @@ func TestDoctorHealthyIsAllPass(t *testing.T) {
 	if !strings.Contains(r.check("dictation").Detail, "testing muster dictation") {
 		t.Fatalf("dictation detail %q does not carry the transcript", r.check("dictation").Detail)
 	}
-	if !strings.Contains(r.stderr, "10 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(r.stderr, "14 passed, 0 failed, 0 skipped") {
 		t.Fatalf("stderr summary missing:\n%s", r.stderr)
 	}
 	// The human report is on stderr and nowhere on stdout.
@@ -776,7 +838,7 @@ func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 		t.Cleanup(func() { f.Close() })
 		return f
 	}
-	const report, doc = "10 passed, 0 failed, 0 skipped", `"checks": [`
+	const report, doc = "14 passed, 0 failed, 0 skipped", `"checks": [`
 
 	both := open("both")
 	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: both, stderr: both})
@@ -795,5 +857,80 @@ func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 	}
 	if got := read(errf); strings.Count(got, report) != 1 || strings.Contains(got, doc) {
 		t.Fatalf("separate files: stderr must be the report alone:\n%s", got)
+	}
+}
+
+// TestDoctorChecksThisHostsSessionToolsLocally: the agent ask tool's setup on
+// THIS machine. Off (no listen line) is a SKIP naming the line; asked for (a
+// listen line) with no secret, or with no Claude Code registration, is a FAIL
+// with the exact fix; no ask hook is a SKIP with the hook to add. The healthy
+// fixture (all three set up) is the PASS (TestDoctorHealthyIsAllPass). No
+// secret reaches the output.
+func TestDoctorChecksThisHostsSessionToolsLocally(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		o      doctorOpts
+		check  string
+		status doctorStatus
+		detail string
+		fix    string
+	}{
+		{"no listen line", doctorOpts{noMCPListen: true}, "mcp-endpoint", statusSkip, "MUSTER_MIRROR_MCP_LISTEN is not set", "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823"},
+		{"no listen line, registration skipped", doctorOpts{noMCPListen: true}, "mcp-registration", statusSkip, "serves no MCP endpoint", ""},
+		{"listen but no secret", doctorOpts{noMCPSecret: true}, "mcp-endpoint", statusFail, "has not started with it yet", "restart muster-mirror"},
+		{"listen but not registered", doctorOpts{noMCPRegistration: true}, "mcp-registration", statusFail, "registers an MCP server at it",
+			`claude mcp add-json --scope user muster '{"type":"http","url":"http://127.0.0.1:47823/mcp"`},
+		// The secret is where muster-mirror writes it: os.UserConfigDir, which
+		// honours XDG_CONFIG_HOME (internal/mirrorpath) — not beside the settings.
+		{"secret under XDG_CONFIG_HOME", doctorOpts{}, "mcp-endpoint", statusPass, "/xdg/muster-mirror/mcp-secret", ""},
+		// The same endpoint spelled with another loopback name is the endpoint.
+		{"registered as localhost", doctorOpts{mcpRegisteredURL: "http://localhost:47823/mcp"}, "mcp-registration", statusPass, "registered: user", ""},
+		{"registered as [::1]", doctorOpts{mcpRegisteredURL: "http://[::1]:47823/mcp/"}, "mcp-registration", statusPass, "registered: user", ""},
+		// Claude Code's other scopes count, and say they are this directory's only.
+		{"registered in the local scope", doctorOpts{mcpScope: "local"}, "mcp-registration", statusPass, "registered for this directory only: local", ""},
+		{"registered in the project's .mcp.json", doctorOpts{mcpScope: "project"}, "mcp-registration", statusPass, "registered for this directory only: project", ""},
+		// The ask hook's matcher is a regular expression.
+		{"ask hook matcher is a regex", doctorOpts{askMatcher: "AskUserQuestion|Bash"}, "ask-hook", statusPass, "runs `muster-mirror ask`", ""},
+		{"ask hook matcher for another tool", doctorOpts{askMatcher: "Bash"}, "ask-hook", statusSkip, "no PreToolUse hook", ""},
+		// A server registered at ANOTHER address is not this endpoint.
+		{"registered at another address", doctorOpts{mcpRegisteredURL: "http://127.0.0.1:9999/mcp"}, "mcp-registration", statusFail,
+			"registers an MCP server at it", "claude mcp add-json"},
+		{"no ask hook", doctorOpts{noAskHook: true}, "ask-hook", statusSkip, "no PreToolUse hook runs `muster-mirror ask`", `"command": "muster-mirror ask"`},
+		{"not a mirrored machine", doctorOpts{noMirror: true}, "mcp-endpoint", statusSkip, "it is not connected", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := runDoctorAgainst(t, healthyMuster(), healthySystem(), c.o)
+			got := r.check(c.check)
+			if got.Status != c.status || !strings.Contains(got.Detail, c.detail) || !strings.Contains(got.Fix, c.fix) {
+				t.Fatalf("%s = %+v, want %s with %q / fix %q", c.check, got, c.status, c.detail, c.fix)
+			}
+			if strings.Contains(r.stderr+r.stdout, "a-synthetic-mcp-secret") {
+				t.Fatal("the MCP secret's content reached the output")
+			}
+		})
+	}
+}
+
+// TestDoctorFailsOnAMisconfiguredFeatureOnly: the features check FAILs on a
+// misconfigured feature (asked for, a dependency missing), naming it and its
+// fix, and passes with features merely off — the default install's state.
+func TestDoctorFailsOnAMisconfiguredFeatureOnly(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	if c := r.check("features"); c.Status != statusPass {
+		t.Fatalf("features off only: %+v", c)
+	}
+	if !strings.Contains(r.stderr, "features on this server:") || !strings.Contains(r.stderr, "enable: set MUSTER_S3_ENDPOINT") {
+		t.Fatalf("the feature list is not printed:\n%s", r.stderr)
+	}
+	m.report["features"] = append(m.report["features"].([]any), map[string]any{"id": "plugins", "name": "Plugins", "state": "misconfigured",
+		"reason": "plugin messages reach your chief through the agent gateway", "enable_hint": "set MUSTER_PLUGINS=1 in .env and restart (docs/features.md#plugins)"})
+	r = runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	c := r.check("features")
+	if c.Status != statusFail || !strings.Contains(c.Detail, "plugins (plugin messages reach your chief") || !strings.Contains(c.Fix, "plugins: set MUSTER_PLUGINS=1") {
+		t.Fatalf("misconfigured: %+v", c)
+	}
+	if r.code == exitOK {
+		t.Fatal("a misconfigured feature did not fail the run")
 	}
 }

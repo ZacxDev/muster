@@ -87,6 +87,9 @@ type MirrorViewView struct {
 	Dictate string
 	// Upload is the composer's (ComposerView.Upload).
 	Upload string
+	// DictateOff and UploadOff are the composer's (ComposerView.DictateOff,
+	// ComposerView.UploadOff).
+	DictateOff, UploadOff bool
 	// Queue is the composer's send queue (ComposerView.Queue); nil for none.
 	Queue *ComposerQueue
 	// FocusHistory is the session's focus history, the newest page
@@ -145,6 +148,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
 		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Upload: v.Upload, Queue: v.Queue,
+		DictateOff: v.DictateOff, UploadOff: v.UploadOff,
 		DraftKey: MirrorDraftKey(v.DraftUser, "view", v.Host, v.Session, v.Window),
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
