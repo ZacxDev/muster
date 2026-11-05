@@ -324,11 +324,12 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 
 // episodePlaceEntry is the place stored on ep (its host, tmux session and
 // window) as hosts list it NOW, for episodeWho's fallback: the stored window
-// itself when its host still lists it (its label and its index now), else the
-// stored window under its session's label — the label the host gives the
-// session's active window (HostView.Find), "<codename>:<active index>". ok is
-// false when the host does not list the session, or gives it no label: the
-// caller then names the bare stored target.
+// itself when its host still lists it with a label (its "<codename>:<index>"
+// and its index now), else the stored window under its session's CODENAME
+// with no index (sessionCodename: "mango · tmux scratch13:1 @ ws") — an index
+// taken from another window's label would name that window, not the stored
+// one. ok is false when the host does not list the session, or gives it no
+// codename: the caller then names the bare stored target.
 //
 // 🔴 ONE RULE: the words are entryWhere's over the entry (mirror.Where's label
 // rule, the offline mark), never a second spelling of the label.
@@ -343,14 +344,30 @@ func episodePlaceEntry(hosts []mirror.HostView, ep sessionstate.Episode) (mirror
 			}
 		}
 		a, ok := h.Find(ep.TmuxSession, "")
-		if !ok || a.Label == "" {
+		if !ok {
+			return mirror.SessionView{}, false
+		}
+		name, ok := sessionCodename(a)
+		if !ok {
 			return mirror.SessionView{}, false
 		}
 		e := a
-		e.Window, e.Index = ep.Window, ep.Index
+		e.Window, e.Index, e.Label = ep.Window, ep.Index, name
 		return e, true
 	}
 	return mirror.SessionView{}, false
+}
+
+// sessionCodename is the codename in entry e's label, without its index: the
+// host labels a window "<codename>:<its index>" (mirrorhost.WireWindows), so
+// the codename is the label with ":<e.Index>" cut off. ok is false for no
+// label, or one not of that shape — no codename muster can vouch for.
+func sessionCodename(e mirror.SessionView) (string, bool) {
+	name, ok := strings.CutSuffix(e.Label, ":"+strconv.Itoa(e.Index))
+	if !ok || strings.TrimSpace(name) == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // episodeHosts is ctx's owner's windows, read once for episodes (episodeWho),

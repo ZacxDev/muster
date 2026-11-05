@@ -77,7 +77,7 @@ func TestAnEpisodePushNamesItsWindowByItsLabelResolvedNow(t *testing.T) {
 			name:    "no window holds the conversation now: the place stored on the episode, under its session's codename",
 			windows: []mirror.Window{{Session: "scratch11", ID: "@9", Index: 8, Label: "mango:8", Claude: true, ClaudeSession: labelSID2}},
 			ep:      needs(sessionstate.Episode{Key: labelSID, TmuxSession: "scratch11", Window: "@3", Index: 8}),
-			title:   "mango:8 · tmux scratch11:8 @ ws needs you", titleKeep: "tmux scratch11:8 @ ws",
+			title:   "mango · tmux scratch11:8 @ ws needs you", titleKeep: "tmux scratch11:8 @ ws",
 		},
 		{
 			name:    "a host offline but still listed (its grace period) is marked, as a notice is",

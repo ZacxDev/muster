@@ -53,13 +53,32 @@ func TestAFallenBackEpisodePushKeepsItsSessionsCodename(t *testing.T) {
 		},
 		{
 			// The stored window is gone; its session is still listed and
-			// labelled: the session's label (its active window's), the stored
-			// target.
+			// labelled: the session's CODENAME with no index (an index would
+			// name the active window, not the stored one), the stored target.
 			name: "the stored window is gone, its session labelled: the session's codename and the stored target",
 			windows: []mirror.Window{{Session: "scratch13", ID: "@7", Index: 4, Active: true, Label: "mango:4"},
 				{Session: "scratch13", ID: "@8", Index: 6, Label: "mango:6"}},
 			ep:    fallbackEpisode("scratch13", "@3", 1),
-			title: "mango:4 · tmux scratch13:1 @ ws needs you", keep: "tmux scratch13:1 @ ws",
+			title: "mango · tmux scratch13:1 @ ws needs you", keep: "tmux scratch13:1 @ ws",
+		},
+		{
+			// The active window's index (2) differs from the stored one (7),
+			// and from every other listed index: no index from the label may
+			// leak into the name.
+			name: "the stored window is gone, the active index differs from the stored one: no index on the codename",
+			windows: []mirror.Window{{Session: "scratch11", ID: "@20", Index: 2, Active: true, Label: "wheat:2"},
+				{Session: "scratch11", ID: "@21", Index: 3, Label: "wheat:3"}},
+			ep:    fallbackEpisode("scratch11", "@19", 7),
+			title: "wheat · tmux scratch11:7 @ ws needs you", keep: "tmux scratch11:7 @ ws",
+		},
+		{
+			// A label not of the "<codename>:<its own index>" shape the host
+			// builds names no codename the fallback can vouch for: the bare
+			// stored target.
+			name:    "the stored window is gone, a label not of the codename:index shape: the bare stored target",
+			windows: []mirror.Window{{Session: "scratch11", ID: "@20", Index: 2, Active: true, Label: "wheat"}},
+			ep:      fallbackEpisode("scratch11", "@19", 7),
+			title:   "tmux scratch11:7 @ ws needs you", keep: "tmux scratch11:7 @ ws",
 		},
 		{
 			name:    "an unlabelled session: the bare stored target, unchanged",
