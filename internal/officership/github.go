@@ -49,6 +49,7 @@ type PR struct {
 	BaseRepo       string
 	Title          string
 	MergeCommitSHA string
+	CreatedAt      time.Time
 }
 
 // Compare is GET compare/{base}...{head}.
@@ -65,6 +66,18 @@ type File struct {
 	Path     string
 	Previous string // a rename's old path
 	Status   string // added | modified | removed | renamed | copied | changed | unchanged
+	// Patch is the file's unified diff hunks as GitHub reports them, and
+	// Changes its added+removed line count. GitHub OMITS the patch of a binary
+	// or very large file: Changes > 0 with an empty Patch is a diff nobody can
+	// read (the draft gate refuses it).
+	Patch   string
+	Changes int
+}
+
+// Branch is one branch: its name (without refs/heads/) and head commit.
+type Branch struct {
+	Name string
+	SHA  string
 }
 
 // CheckRun is one check run on a commit.
@@ -138,6 +151,13 @@ type GitHub interface {
 	CreateCommit(ctx context.Context, message, tree string, parents []string) (string, error)
 	MergeInto(ctx context.Context, base, head, message string) (string, error)
 	OpenPR(ctx context.Context, title, head, base, body string) (int, error)
+	// ListPRs is the repository's pull requests in every state, newest
+	// created first, at most maxListedPRs (the draft gate's rate limits).
+	ListPRs(ctx context.Context) ([]PR, error)
+	// Branches is every branch whose name starts with prefix.
+	Branches(ctx context.Context, prefix string) ([]Branch, error)
+	// CommitTime is sha's committer date.
+	CommitTime(ctx context.Context, sha string) (time.Time, error)
 	// MarkReady converts draft pull request n (GraphQL node nodeID) to ready
 	// for review. 🔴 REST cannot: PATCH pulls takes no `draft` field (only
 	// POST pulls does), so this is the GraphQL markPullRequestReadyForReview
@@ -282,13 +302,14 @@ type restPR struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`
 	} `json:"base"`
-	MergeCommitSHA string `json:"merge_commit_sha"`
+	MergeCommitSHA string    `json:"merge_commit_sha"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 func (r restPR) pr() PR {
 	p := PR{Number: r.Number, NodeID: r.NodeID, State: r.State, Draft: r.Draft, Merged: r.Merged, Mergeable: r.Mergeable, Title: r.Title,
 		Author: r.User.Login, AuthorType: r.User.Type, HeadRef: r.Head.Ref, HeadSHA: r.Head.SHA, BaseRef: r.Base.Ref,
-		MergeCommitSHA: r.MergeCommitSHA}
+		MergeCommitSHA: r.MergeCommitSHA, CreatedAt: r.CreatedAt}
 	if r.Head.Repo != nil {
 		p.HeadRepo = r.Head.Repo.FullName
 	}
@@ -312,6 +333,8 @@ type restFile struct {
 	Filename         string `json:"filename"`
 	PreviousFilename string `json:"previous_filename"`
 	Status           string `json:"status"`
+	Patch            string `json:"patch"`
+	Changes          int    `json:"changes"`
 }
 
 // PRFiles implements GitHub.
@@ -357,7 +380,7 @@ func (g *REST) Compare(ctx context.Context, base, head string) (Compare, error) 
 	}
 	c := Compare{Status: r.Status, AheadBy: r.AheadBy, BehindBy: r.BehindBy}
 	for _, f := range r.Files {
-		c.Files = append(c.Files, File{Path: f.Filename, Previous: f.PreviousFilename, Status: f.Status})
+		c.Files = append(c.Files, File{Path: f.Filename, Previous: f.PreviousFilename, Status: f.Status, Patch: f.Patch, Changes: f.Changes})
 	}
 	for _, x := range r.Commits {
 		c.Commits = append(c.Commits, x.SHA)
@@ -688,4 +711,63 @@ func (g *REST) MarkReady(ctx context.Context, n int, nodeID string) error {
 		return fmt.Errorf("GitHub answered pull request #%d (draft %v) while %s", pr.Number, pr.IsDraft, op)
 	}
 	return nil
+}
+
+// maxListedPRs bounds ListPRs: the newest 300 pull requests.
+const maxListedPRs = 300
+
+// ListPRs implements GitHub.
+func (g *REST) ListPRs(ctx context.Context) ([]PR, error) {
+	var out []PR
+	for page := 1; page*100 <= maxListedPRs; page++ {
+		var batch []restPR
+		if err := g.do(ctx, http.MethodGet, fmt.Sprintf("%s/pulls?state=all&sort=created&direction=desc&per_page=100&page=%d", g.repoPath(), page),
+			"", nil, &batch, "listing pull requests"); err != nil {
+			return nil, err
+		}
+		for _, r := range batch {
+			out = append(out, r.pr())
+		}
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return out, nil
+}
+
+// Branches implements GitHub (git/matching-refs, every page).
+func (g *REST) Branches(ctx context.Context, prefix string) ([]Branch, error) {
+	var out []Branch
+	for page := 1; page <= maxPages; page++ {
+		var refs []struct {
+			Ref    string `json:"ref"`
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := g.do(ctx, http.MethodGet, fmt.Sprintf("%s/git/matching-refs/heads/%s?per_page=100&page=%d", g.repoPath(), escapeRef(prefix), page),
+			"", nil, &refs, "listing branches under "+prefix); err != nil {
+			return nil, err
+		}
+		for _, r := range refs {
+			out = append(out, Branch{Name: strings.TrimPrefix(r.Ref, "refs/heads/"), SHA: r.Object.SHA})
+		}
+		if len(refs) < 100 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("more than %d branches under %s", maxPages*100, prefix)
+}
+
+// CommitTime implements GitHub.
+func (g *REST) CommitTime(ctx context.Context, sha string) (time.Time, error) {
+	var r struct {
+		Commit struct {
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+	err := g.do(ctx, http.MethodGet, g.repoPath()+"/commits/"+url.PathEscape(sha), "", nil, &r, "reading commit "+sha)
+	return r.Commit.Committer.Date, err
 }

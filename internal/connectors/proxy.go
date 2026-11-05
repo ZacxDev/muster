@@ -229,6 +229,9 @@ type Gate interface {
 // ErrGateRefused is a [Gate]'s refusal of one request.
 var ErrGateRefused = errors.New("connectors: refused by this agent's write policy")
 
+// ErrGateConflict is a [Gate]'s content refusal (SCAFFOLD: not yet answered 409).
+var ErrGateConflict = fmt.Errorf("%w: the change conflicts with it", ErrGateRefused)
+
 // Proxy forwards an agent's request to a connector's upstream with the
 // credential injected.
 type Proxy struct {

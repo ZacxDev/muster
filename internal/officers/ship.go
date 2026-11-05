@@ -125,6 +125,8 @@ type Ship struct {
 	Quiet *QuietHours
 	// Rollout, when set, is how a release is watched. Required for StageRelease.
 	Rollout *Rollout
+	// Repos are the repositories the officer ships to (ship_v2.go).
+	Repos []ShipRepo
 
 	appKey          *rsa.PrivateKey
 	escalateWebhook string

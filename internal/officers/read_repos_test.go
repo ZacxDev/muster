@@ -75,21 +75,20 @@ func TestParseRefusesABadReadRepos(t *testing.T) {
 	}
 }
 
-// TestParseRefusesReadReposOnAShippingOfficer: a shipping officer's requests
-// carry only its own App's token behind its push gate, so `read_repos` on one
-// is a boot refusal naming the officer. Control: the same ship block without
-// read_repos parses.
-func TestParseRefusesReadReposOnAShippingOfficer(t *testing.T) {
-	decl := map[string]any{"id": shipID, "hq_url": "https://hq.example.com/api/v1", "repo": "example-org/example-web", "ship": fullShip()}
+// TestParseAcceptsReadReposOnAShippingOfficer: since ship v2 a shipping
+// officer may declare read_repos (its push gate admits only reads there, served
+// with the deployment App's read-only token; TestReadReposMayStandBesideShip
+// pins the overlap refusal). Before v2 this was a boot refusal.
+func TestParseAcceptsReadReposOnAShippingOfficer(t *testing.T) {
+	decl := map[string]any{"id": shipID, "hq_url": "https://hq.example.com/api/v1", "repo": "example-org/example-web", "ship": fullShip(),
+		"read_repos": []string{"example-org/flags-state"}}
 	raw, _ := json.Marshal([]any{decl})
-	if _, err := officers.Parse(string(raw), env(shipEnv(t)), "muster-agent-"); err != nil {
-		t.Fatalf("control: the ship block without read_repos: %v", err)
+	list, err := officers.Parse(string(raw), env(shipEnv(t)), "muster-agent-")
+	if err != nil {
+		t.Fatalf("read_repos on a shipping officer: %v", err)
 	}
-	decl["read_repos"] = []string{"example-org/flags-state"}
-	raw, _ = json.Marshal([]any{decl})
-	_, err := officers.Parse(string(raw), env(shipEnv(t)), "muster-agent-")
-	if err == nil || !strings.HasPrefix(err.Error(), "MUSTER_OFFICERS[0]: officer "+shipID+": read_repos is not supported on a shipping officer") {
-		t.Fatalf("read_repos on a shipping officer: err = %v, want a refusal naming the officer", err)
+	if len(list[0].ReadRepos) != 1 || list[0].Ship == nil {
+		t.Fatalf("parsed read_repos %v, ship %v", list[0].ReadRepos, list[0].Ship)
 	}
 }
 

@@ -39,6 +39,11 @@ type fakeGH struct {
 	// readied is every node id MarkReady was called with; readyErr fails it.
 	readied  []string
 	readyErr error
+	// listed is what ListPRs answers (listCalls counts its calls);
+	// commitTimes what CommitTime does.
+	listed      []PR
+	listCalls   int
+	commitTimes map[string]time.Time
 }
 
 type commitInfo struct {
@@ -50,7 +55,7 @@ func newFakeGH() *fakeGH {
 	return &fakeGH{slug: "ship-officer", prs: map[int]PR{}, files: map[int][]File{}, contents: map[string]string{},
 		compares: map[string]Compare{}, statuses: map[string]map[string]string{}, checkRuns: map[string][]CheckRun{},
 		comments: map[int][]Comment{}, branches: map[string]string{}, tagObjects: map[string]TagObject{},
-		commits: map[string]commitInfo{}, prsFor: map[string][]PR{}}
+		commits: map[string]commitInfo{}, prsFor: map[string][]PR{}, commitTimes: map[string]time.Time{}}
 }
 
 var errNotFound = errors.New("fake: not found")
@@ -172,6 +177,29 @@ func (f *fakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
 		f.prs[n] = p
 	}
 	return nil
+}
+
+func (f *fakeGH) ListPRs(context.Context) ([]PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCalls++
+	return append([]PR(nil), f.listed...), nil
+}
+func (f *fakeGH) Branches(_ context.Context, prefix string) ([]Branch, error) {
+	var out []Branch
+	for name, sha := range f.branches {
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			out = append(out, Branch{Name: name, SHA: sha})
+		}
+	}
+	return out, nil
+}
+func (f *fakeGH) CommitTime(_ context.Context, sha string) (time.Time, error) {
+	t, ok := f.commitTimes[sha]
+	if !ok {
+		return time.Time{}, errNotFound
+	}
+	return t, nil
 }
 
 // fakeHQ is the HQ side of the gates.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -154,6 +155,11 @@ func (s *Server) enableShips(cfg OfficersConfig) error {
 		}
 	}
 	return nil
+}
+
+// reportOrphans is the daily orphan-branch report. SCAFFOLD: not implemented.
+func (s *Server) reportOrphans(ctx context.Context, o officers.Officer, rt *shipRuntime, now time.Time) ([]officership.Orphan, error) {
+	return nil, nil
 }
 
 // shipOf is officer instance a's ship runtime, or nil.

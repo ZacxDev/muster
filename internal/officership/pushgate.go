@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -55,6 +56,21 @@ type PushGate struct {
 	OnRejected func(caller connectors.Caller)
 	// GH reads a pull request (PATCH's own-PR check) and the App's slug.
 	GH GitHub
+	// SCAFFOLD (ship v2): not read yet.
+	OfficerID string
+	ReadCred  func(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error)
+	GHFor     map[string]GitHub
+	Notify    func(ctx context.Context, n officers.Notice) error
+	Logf      func(format string, args ...any)
+	Now       func() time.Time
+}
+
+// ghFor is the GitHub of ship repository repo.
+func (g *PushGate) ghFor(repo string) GitHub {
+	if gh, ok := g.GHFor[strings.ToLower(repo)]; ok {
+		return gh
+	}
+	return g.GH
 }
 
 var _ connectors.Gate = (*PushGate)(nil)

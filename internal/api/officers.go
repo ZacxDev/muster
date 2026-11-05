@@ -107,8 +107,10 @@ type OfficersConfig struct {
 	// side (its App, the REST client and the hosts the push gate serves) and
 	// the rollout watch's HTTP client. For tests; nil/zero is production.
 	ShipGitHub func(officers.Officer) officership.GitHub
-	ShipHosts  [2]string
-	ShipHTTP   *http.Client
+	// ShipGitHubRepo (SCAFFOLD, ship v2): not read yet.
+	ShipGitHubRepo func(o officers.Officer, repo string) officership.GitHub
+	ShipHosts      [2]string
+	ShipHTTP       *http.Client
 	// ShipCI replaces a ci_logs officer's cluster reader (tests); nil is the
 	// in-cluster API with a token minted per call for its service_account.
 	ShipCI func(officers.Officer) officership.CIReader

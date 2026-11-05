@@ -83,6 +83,10 @@ var (
 // «redacted» (see the comment above for the shapes).
 func Secrets(s string) string { return secrets(s, true) }
 
+// HasSecret reports whether s holds anything Secrets would replace.
+// SCAFFOLD: not implemented yet.
+func HasSecret(s string) bool { return false }
+
 // secrets is Secrets; with filter false every pattern runs, which is what the
 // test compares the filtered path against.
 //
