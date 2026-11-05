@@ -69,7 +69,7 @@ type RouteStore interface {
 	CreateRequestRouteFrom(ctx context.Context, chiefID, ownerID int64, req RouteRequest, target RouteTarget, timeout time.Duration) (Route, error)
 	// FinishRequestRoute ends an answered request route relayed, owing the
 	// chief the answer's delivery (RouteRequestAnswerOwed) in the same
-	// transaction, so the sweep delivers it exactly once.
+	// transaction; the sweep delivers it, at least once.
 	FinishRequestRoute(ctx context.Context, routeID string) (Route, error)
 	// FinishTaskRoute ends an answered task route relayed, once its answer is
 	// on the task as a comment.
@@ -85,6 +85,9 @@ type RouteStore interface {
 	// TakeHandBack clears and returns the hand-back routeID owes its chief,
 	// exactly once: ok is false when none is owed (or another taker won).
 	TakeHandBack(ctx context.Context, routeID string) (r Route, reason string, ok bool, err error)
+	// OwesHandBack reports whether routeID owes its chief a hand-back, without
+	// taking it: a request route's answer is taken only once delivered.
+	OwesHandBack(ctx context.Context, routeID string) (bool, error)
 	AnswerRoute(ctx context.Context, routeID, body string) (Route, bool, error)
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
@@ -210,8 +213,9 @@ const MaxRouteRequestBytes = 16384
 
 // RouteRequestAnswerOwed is the hand-back a relayed request route owes its
 // chief (FinishRequestRoute): not a route that ended without an answer, but
-// its answer, which the sweep delivers exactly once to the chief session the
-// owner asked in (internal/api's deliverHandBack reads the route's reply).
+// its answer, which the sweep delivers AT LEAST ONCE to the chief session the
+// owner asked in, taking this hand-back only once the answer is on record
+// (internal/api's deliverRequestAnswer, which reads OwesHandBack first).
 const RouteRequestAnswerOwed = "the session answered your owner's request"
 
 // SentToMirrorSession reports whether r was routed to the mirrored Claude Code
@@ -663,15 +667,16 @@ func failRouteTx(ctx context.Context, tx pgx.Tx, cur Route, why, handBack string
 // was ALREADY answered with exactly this body (a retried reply: the stored
 // route is the answer, and nothing changes); any other answer to a route that
 // is no longer routed is ErrRouteClosed. body is screened as a reply draft is
-// (ScreenDraft), since it becomes one.
+// (ScreenDraft), since a message route's answer becomes one — with the
+// deployment's deny words for every route but a REQUEST route's, whose answer
+// goes only to the owner's own chief, never outward (answerDenyWords).
 func (s *PGStore) AnswerRoute(ctx context.Context, routeID, body string) (r Route, fresh bool, err error) {
-	body, err = ScreenDraft(body, s.denyWords)
-	if err != nil {
-		return Route{}, false, err
-	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockRoute(ctx, tx, routeID)
 		if err != nil {
+			return err
+		}
+		if body, err = ScreenDraft(body, s.answerDenyWords(cur)); err != nil {
 			return err
 		}
 		r = cur
@@ -693,6 +698,19 @@ func (s *PGStore) AnswerRoute(ctx context.Context, routeID, body string) (r Rout
 		return audit(ctx, tx, "session_route.answered", RouteObject(routeID), map[string]any{"bytes": len(body)})
 	})
 	return r, fresh, err
+}
+
+// answerDenyWords is the deny words route r's answer is screened against: the
+// deployment's own names for a route whose answer may leave muster (a message
+// route's reply draft; a task route's comment, which a task reference may queue
+// to its upstream), none for a request route, whose answer reaches only the
+// owner's chief. The rest of ScreenDraft (hidden characters, the agent-text
+// patterns such as a credential, the size cap) applies to every route.
+func (s *PGStore) answerDenyWords(r Route) []string {
+	if r.IsRequest() {
+		return nil
+	}
+	return s.denyWords
 }
 
 // RelayRoute turns routeID's answer into the reply draft for its message,
@@ -1098,6 +1116,19 @@ func clampHandBack(s string) string {
 		return s
 	}
 	return strings.ToValidUTF8(s[:MaxHandBack], "")
+}
+
+// OwesHandBack: see RouteStore. A route the principal cannot see owes nothing.
+func (s *PGStore) OwesHandBack(ctx context.Context, routeID string) (bool, error) {
+	if !ValidRouteID(routeID) {
+		return false, nil
+	}
+	var owed bool
+	err := s.pool.QueryRow(ctx, `SELECT handback IS NOT NULL FROM session_routes WHERE route_id = $1`, routeID).Scan(&owed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return owed, err
 }
 
 // TakeHandBack clears routeID's owed hand-back and returns it with the route,

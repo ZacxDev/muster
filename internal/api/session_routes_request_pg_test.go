@@ -202,6 +202,14 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 					t.Errorf("the queued block lacks %q:\n%s", want, body)
 				}
 			}
+			// The owner's own words are quoted beside the chief's relay, so the
+			// session can compare them.
+			for _, want := range []string{"|   your owner typed: Send this to whoever is on the changelog: " + ownersIdea,
+				"|   the chief relays it as:", "compare the two"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("the queued block lacks the owner's own message (%q):\n%s", want, body)
+				}
+			}
 			if strings.Contains(body, "UNTRUSTED external message") {
 				t.Errorf("the owner's request is labelled an external sender's message:\n%s", body)
 			}
@@ -465,5 +473,175 @@ func TestARequestRouteNobodyAnsweredGoesBackToTheOwnersChat(t *testing.T) {
 	}
 	if back != 1 {
 		t.Fatalf("%d hand-back(s) in the owner's chief chat, want 1", back)
+	}
+}
+
+// routeRequest routes ownersIdea as the chief over /mcp on an owner-typed turn
+// in chief session sessID and returns the route id.
+func (f *routeFixture) routeRequest(t *testing.T, sessID int64) (string, agents.ChatMessage) {
+	t.Helper()
+	said := f.typedIn(t, f.owner, sessID, ownersIdea)
+	text, isErr := f.chiefMCP(t, routeToSessionToolName, requestArgs(ownersIdea, "mirror:"+routeSID))
+	var res struct {
+		RouteID string `json:"route_id"`
+	}
+	if err := json.Unmarshal([]byte(text), &res); isErr || err != nil || !plugins.ValidRouteID(res.RouteID) {
+		t.Fatalf("route_to_session: %s", text)
+	}
+	return res.RouteID, said
+}
+
+// answerAndSweep answers route id from the target session and runs the sweep twice.
+func (f *routeFixture) answerAndSweep(t *testing.T, tok, id, answer string) {
+	t.Helper()
+	if out, isErr := f.routeReplyCall(t, tok, routeSID, map[string]any{"route_id": id, "body": answer}); isErr {
+		t.Fatalf("route_reply: %s", out)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// countContaining is how many of msgs contain sub.
+func countContaining(msgs []string, sub string) int {
+	n := 0
+	for _, m := range msgs {
+		if strings.Contains(m, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestARequestAnswerWhoseChatSessionWasDeletedReachesTheDefaultSession: the
+// answer is the payload, so it is never dropped for want of the chat session
+// the owner asked in. That session deleted after the route was made, the
+// answer lands in the chief's DEFAULT session, once, and the route owes nothing
+// more. (At 05124e9b the hand-back was taken first and the answer lost.)
+func TestARequestAnswerWhoseChatSessionWasDeletedReachesTheDefaultSession(t *testing.T) {
+	f, _ := newRequestRouteFixture(t, false)
+	tok := f.withRouteReply(t)
+	def, err := f.srv.defaultSession(f.asOwner, f.chief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked, err := agents.NewPG(f.pool).CreateSession(f.asOwner, f.chief.ID, f.chief.Name)
+	if err != nil || asked.ID == def.ID {
+		t.Fatalf("control: a second chief session: %+v %v (default %d)", asked, err, def.ID)
+	}
+	id, _ := f.routeRequest(t, asked.ID)
+	if _, err := f.pool.Exec(authz.System(context.Background()), `DELETE FROM chat_sessions WHERE id = $1`, asked.ID); err != nil {
+		t.Fatal(err)
+	}
+	const answer = "Answered after the owner's chat session was deleted."
+	f.answerAndSweep(t, tok, id, answer)
+	if n := countContaining(f.chatText(t, def.ID), answer); n != 1 {
+		t.Fatalf("the answer reached the chief's default session %d time(s), want 1: %q", n, f.chatText(t, def.ID))
+	}
+	if owed, err := f.plugins.OwesHandBack(f.asOwner, id); err != nil || owed {
+		t.Fatalf("after delivery the route still owes a hand-back: %v %v", owed, err)
+	}
+}
+
+// TestARequestAnswerNeverGoesToAnotherChiefsSession: a request route whose
+// chief_session_id names a session of ANOTHER agent of the same owner (the
+// agent-match check in routeChiefSession) delivers to its own chief's default
+// session, and nothing to the other agent's.
+func TestARequestAnswerNeverGoesToAnotherChiefsSession(t *testing.T) {
+	f, _ := newRequestRouteFixture(t, false)
+	tok := f.withRouteReply(t)
+	def, err := f.srv.defaultSession(f.asOwner, f.chief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := f.routeRequest(t, def.ID)
+	other := f.newAgent(t, f.owner, "rtother-"+strconv.FormatInt(time.Now().UnixNano(), 36), "", "route-other-token-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	otherSess, err := agents.NewPG(f.pool).LatestOrCreateSession(f.asOwner, other.ID, other.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE session_routes SET chief_session_id = $2 WHERE route_id = $1`,
+		id, otherSess.ID); err != nil {
+		t.Fatal(err)
+	}
+	const answer = "Answered for a route pointed at another agent's session."
+	f.answerAndSweep(t, tok, id, answer)
+	if n := countContaining(f.chatText(t, otherSess.ID), answer); n != 0 {
+		t.Fatalf("the answer reached ANOTHER agent's session %d time(s)", n)
+	}
+	if n := countContaining(f.chatText(t, def.ID), answer); n != 1 {
+		t.Fatalf("the answer reached its own chief's default session %d time(s), want 1", n)
+	}
+}
+
+// TestOnlyAClaudeCodeChiefIsOfferedTheRequestForm: route_to_session's text and
+// owner_asked are served over MCP (a Claude Code CLI, which owner_asked can
+// pass) and left out of the definition a gateway-runtime chief is given
+// in-process, which ownerTurnFor always refuses.
+func TestOnlyAClaudeCodeChiefIsOfferedTheRequestForm(t *testing.T) {
+	f, _ := newRequestRouteFixture(t, false)
+	find := func(defs []agents.ToolDef) agents.ToolDef {
+		t.Helper()
+		for _, d := range defs {
+			if d.Name == routeToSessionToolName {
+				return d
+			}
+		}
+		t.Fatalf("route_to_session not offered: %d tools", len(defs))
+		return agents.ToolDef{}
+	}
+	encoded := func(d agents.ToolDef) string { b, _ := json.Marshal(d); return string(b) }
+	mcp := encoded(find(f.srv.MCPToolDefsFor(f.asOwner, f.chief)))
+	gw := encoded(find(f.srv.AgentToolDefsFor(f.asOwner, f.chief)))
+	for _, want := range []string{`"text"`, `"owner_asked"`, "TYPED to you in this chat"} {
+		if !strings.Contains(mcp, want) {
+			t.Errorf("the MCP definition lacks %s:\n%s", want, mcp)
+		}
+		if strings.Contains(gw, want) {
+			t.Errorf("the gateway (in-process) definition offers %s, which it can never pass:\n%s", want, gw)
+		}
+	}
+	if !strings.Contains(gw, `"task_id"`) || !strings.Contains(gw, `"message_id"`) {
+		t.Errorf("the gateway definition lost its message and task forms:\n%s", gw)
+	}
+	// And the real /mcp door serves the full form.
+	r, _ := f.mcp(t, f.chiefTok, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
+	if r == nil || r.Error != nil || !strings.Contains(string(r.Result), `"owner_asked"`) {
+		t.Fatalf("/mcp tools/list does not serve owner_asked: %+v", r)
+	}
+}
+
+// TestARequestAnswerSkipsTheDenyWordScreenAMessageAnswerKeeps: a request
+// route's answer goes only to the owner's chief, so the deployment's deny words
+// do not refuse it; a message route's answer, which becomes a reply to an
+// outside sender, is still refused for one.
+func TestARequestAnswerSkipsTheDenyWordScreenAMessageAnswerKeeps(t *testing.T) {
+	const deny = "zebrahost"
+	f, _ := newRequestRouteFixture(t, true)
+	f.plugins.WithAgentDenyWords([]string{deny})
+	tok := f.withRouteReply(t)
+	body := "Checked it on " + deny + ": the build is green."
+
+	id, _ := f.routeRequest(t, f.chiefChat(t).ID)
+	if out, isErr := f.routeReplyCall(t, tok, routeSID, map[string]any{"route_id": id, "body": body}); isErr || !strings.Contains(out, `"relayed"`) {
+		t.Fatalf("a request route's answer naming a deny word was refused: %s", out)
+	}
+
+	m := f.deliveredMessage(t, f.owner, f.chief.ID, "deny-word-msg-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)(routeToSessionToolName, routeArgs(m, "mirror:"+routeSID))
+	var res struct {
+		RouteID string `json:"route_id"`
+	}
+	if err := json.Unmarshal([]byte(text), &res); err != nil || !plugins.ValidRouteID(res.RouteID) {
+		t.Fatalf("route the message: %s", text)
+	}
+	out, isErr := f.routeReplyCall(t, tok, routeSID, map[string]any{"route_id": res.RouteID, "body": body})
+	if !isErr || !strings.Contains(out, "infrastructure name") {
+		t.Fatalf("a message route's answer naming a deny word was not refused: %s", out)
+	}
+	if r := f.routeState(t, res.RouteID); r.State != plugins.RouteRouted {
+		t.Fatalf("the refused message answer changed the route: %+v", r)
 	}
 }

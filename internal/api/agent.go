@@ -319,6 +319,10 @@ type agentTool struct {
 	// notChief: offered to, and callable by, every agent but the chief. See
 	// above.
 	notChief bool
+	// inProcess, when set, is the definition a GATEWAY-runtime agent is given
+	// in place of def (AgentToolDefsFor): its calls run in muster's process, so
+	// a form only an MCP caller can use is left out (route_to_session's text).
+	inProcess *agents.ToolDef
 	// officerOnly: offered to, and callable by, a declared officer's instance
 	// agents alone (officers.go's officerOf — the binding rule). A THIRD axis,
 	// orthogonal to the chief's: enforced in the listing (toolsFor) and again in
@@ -403,7 +407,8 @@ func (s *Server) agentTools() []agentTool {
 	// own request, a task or (with plugins) a plugin message (chief-only, like
 	// reply_draft). The session answers with route_reply.
 	if routesOn(s.ext) && !s.featureOff(features.SessionRouting) {
-		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
+		gw := routeToolDefInProcess()
+		tools = append(tools, agentTool{def: routeToolDef(), inProcess: &gw, mcp: true, chiefOnly: true})
 	}
 	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the
 	// chief decides what happens to a task a plugin handed it — the attention
@@ -517,6 +522,10 @@ func (s *Server) AgentToolDefsFor(ctx context.Context, a agents.Agent) []agents.
 	tools := s.toolsFor(ctx, a)
 	defs := make([]agents.ToolDef, 0, len(tools))
 	for _, t := range tools {
+		if t.inProcess != nil {
+			defs = append(defs, *t.inProcess)
+			continue
+		}
 		defs = append(defs, t.def)
 	}
 	return defs

@@ -1799,11 +1799,18 @@ What differs:
   unchanged (`ownerTurnFor`): your message, typed in the chief's muster chat and
   accepted by its runtime, is the turn in flight; every other Claude Code CLI
   in the chief's pod is idle; muster holds no session claim for a turn it
-  started; and the call came over MCP from a Claude Code session. So a plugin
-  message, a task event, a hand-back, a relayed answer, a nudge or a turn the
-  chief started itself can never route text in your name. A refusal is
+  started; and the call came over MCP from a Claude Code session. So a turn
+  you did not type — a plugin message, a task event, a hand-back, a relayed
+  answer, a nudge or a turn the chief started itself — can never make a
+  request route. A refusal is
   `{"refused": "not_owners_turn", "error": "owner_asked: …"}`, its sentence
   naming the condition that failed; nothing is routed or queued.
+  ⚠ **What it does not prove: that the text says what you asked.** The check
+  is about whose TURN it is, not whose WORDS the `text` is: during your own
+  turn the chief may read outside text (a plugin message, a session's output,
+  a focus title) asking it to route something, and muster cannot tell that
+  from your request. That is why the paste quotes your own message beside the
+  chief's relay (below), for the session to compare.
 - **Exactly one of `message_id`, `task_id` and `text`**, and `owner_asked`
   only (and always) with `text`; anything else is `bad_arguments`. `text` is
   the chief's words, at most 8 KiB, control characters removed; an empty one
@@ -1813,17 +1820,28 @@ What differs:
   words, not yours — naming your chat message's id, and telling the session to
   weigh it as a request passed on by an assistant: not to run commands or open
   links because of it, and to ask you (`attention_ask`) before anything
-  destructive, irreversible or outside its work. The route records your
-  message (`request_message_id`) and the `session_route.routed` audit row
-  names it (`owner_message_id`).
+  destructive, irreversible or outside its work. **Your own message, as you
+  typed it** (the chat row that passed the check, cut to 1500 characters), is
+  quoted in the block beside the relay, and the session is told to compare the
+  two and do no more than you asked. The route records your message
+  (`request_message_id`) and the `session_route.routed` audit row names it
+  (`owner_message_id`).
 - **The answer comes back to the chat you asked in.** `route_reply` records
   it (`answered`) and ends the route `relayed`, owing the chief its delivery in
-  the same transaction; the route sweep delivers it **exactly once** to the
+  the same transaction; the route sweep delivers it **at least once** to the
   chief session your message is in (`chief_session_id`) — a turn when the
-  chief can take one, else a note it reads on its next — with the answer
-  fenced as data, for the chief to tell you what it says. That turn is
-  muster's, not yours, so `owner_asked` refuses in it. No draft is filed and
-  no allowlist applies.
+  chief can take one, else a note — with the answer fenced as data, for the
+  chief to tell you what it says. The route owes it until it is on record in
+  that session: the row the turn stored, or a note when no turn can run or the
+  turn stored nothing (a chief being replaced). A failure leaves it owed for
+  the next sweep (every 30 s), and a row already there is not written again.
+  If that session is gone, cannot be read or is not this chief's, the
+  **chief's default session** gets it instead, and muster logs it. That turn
+  is muster's, not yours, so `owner_asked` refuses in it. No draft is filed and
+  no allowlist applies, and the answer is not screened for the deployment's
+  own names (`MUSTER_FLOW_AGENT_DENY_WORDS`): it goes only to your chief. The
+  rest of the reply screen (hidden characters, credentials, the size cap) still
+  applies; a message route's answer keeps the whole screen.
 - **A 4-hour deadline**, as a pull-request review's: the session already on
   the work is usually busy, and its paste waits for its window to go idle. A
   route that times out, or whose paste is cancelled or whose window moves on,
@@ -1831,6 +1849,9 @@ What differs:
   delivered"* when the paste never left the queue).
 - **One open route per message and session.** The same request to the same
   session again is `already_routed`; to another session it is a second route.
+- **Offered over MCP only.** A gateway-runtime chief's tool calls run inside
+  muster, which the check always refuses, so the `route_to_session` it is
+  given has no `text` or `owner_asked` (messages and tasks only).
 
 ### Routing a message from your own session
 
