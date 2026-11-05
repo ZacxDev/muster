@@ -52,10 +52,29 @@
 //	                             leading slash (files/etc/claude-code/CLAUDE.md)
 //	<root>/<name>/driver.json    this driver's own bookkeeping; not the contract
 //
-// Directories are created 02750 and files written 0640, so the container (uid
-// 1000, group 1000) can read what muster (another uid, group 1000 through the
-// setgid directory the Compose file's one-shot prepares) wrote, and nothing
-// else on the volume can be written by it: its mount is read-only.
+// Directories are created setgid 0750 and files written 0640, each with the
+// group "Who can read what" below gives it; the container's mount is
+// read-only, so nothing on the volume can be written from it.
+//
+// # Who can read what
+//
+// 🔴 spec.json HOLDS THE AGENT'S SECRETS — its muster token, its turn bearer
+// and (on a subscription) its Claude token — AND THE AGENT'S OWN SESSION MUST
+// NOT READ IT. The turn bearer is what drives the agent's turn API, and the
+// claude-code image keeps it out of the session's reach on Kubernetes
+// (cmd/ccd/turncred.go). So the Compose file runs the container's supervisor
+// as a different identity from the agent (uid 0 with primary group
+// [Config.SpecGroup], no capability but changing uid and signalling), and the
+// supervisor starts the agent as uid 1000 group 1000 and nothing else:
+//
+//   - spec.json, driver.json and every directory outside files/ get
+//     SpecGroup: the supervisor can read them, the agent cannot;
+//   - everything under files/ gets [Config.FilesGroup], the agent's group: the
+//     managed CLAUDE.md reaches it through the Compose file's subpath mount of
+//     files/etc/claude-code at /etc/claude-code, read-only.
+//
+// muster writes as its own uid with both groups as supplementary groups (the
+// Compose file's group_add), which is what lets it give each path its group.
 //
 // 🔴 DIRECTORIES ARE NEVER REMOVED, only files. The Compose file bind-mounts a
 // subdirectory of files/ (volume `subpath`) at /etc/claude-code; a removed and
@@ -194,17 +213,28 @@ type Config struct {
 	// Hint is appended to the reason an unreachable container is reported
 	// with, telling the operator how to start it.
 	Hint string
+	// SpecGroup and FilesGroup are the group ids the driver gives what it
+	// writes (see the package doc's "Who can read what"): SpecGroup to
+	// spec.json, driver.json and every directory outside files/, FilesGroup to
+	// everything under files/. Zero leaves a path's group as the filesystem
+	// gives it (the setgid parent's): no deployment wants either to be root's.
+	SpecGroup, FilesGroup int
+	// Chown replaces the group change (tests). nil is os.Lchown(path, -1, gid).
+	Chown func(path string, gid int) error
 }
 
 // Driver is the compose provisioner.
 type Driver struct {
-	root  string
-	admit func(provision.Ref) error
-	tmpl  provision.EndpointTemplate
-	probe Prober
-	caps  provision.Capabilities
-	hint  string
-	mu    sync.Mutex
+	root       string
+	admit      func(provision.Ref) error
+	tmpl       provision.EndpointTemplate
+	probe      Prober
+	caps       provision.Capabilities
+	hint       string
+	specGroup  int
+	filesGroup int
+	chown      func(path string, gid int) error
+	mu         sync.Mutex
 }
 
 var _ provision.Provisioner = (*Driver)(nil)
@@ -230,7 +260,14 @@ func New(cfg Config) (*Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compose: %w", err)
 	}
-	d := &Driver{root: filepath.Clean(cfg.Root), admit: cfg.Admit, tmpl: tmpl, probe: cfg.Probe, caps: Capabilities, hint: cfg.Hint}
+	if cfg.SpecGroup < 0 || cfg.FilesGroup < 0 {
+		return nil, fmt.Errorf("compose: SpecGroup %d and FilesGroup %d must be group ids (0: leave as inherited)", cfg.SpecGroup, cfg.FilesGroup)
+	}
+	d := &Driver{root: filepath.Clean(cfg.Root), admit: cfg.Admit, tmpl: tmpl, probe: cfg.Probe, caps: Capabilities, hint: cfg.Hint,
+		specGroup: cfg.SpecGroup, filesGroup: cfg.FilesGroup, chown: cfg.Chown}
+	if d.chown == nil {
+		d.chown = func(p string, gid int) error { return os.Lchown(p, -1, gid) }
+	}
 	if d.probe == nil {
 		d.probe = HTTPProbe(nil, DefaultProbeTimeout)
 	}
@@ -257,6 +294,32 @@ func (d *Driver) statePath(name string) string { return filepath.Join(d.dir(name
 func (d *Driver) filesDir(name string) string  { return filepath.Join(d.dir(name), "files") }
 func (d *Driver) filePath(name, p string) string {
 	return filepath.Join(d.filesDir(name), filepath.FromSlash(strings.TrimPrefix(path.Clean(p), "/")))
+}
+
+// groupFor is the group a path the driver writes gets: FilesGroup for files/
+// and everything under it, SpecGroup for the rest.
+func (d *Driver) groupFor(p string) int {
+	rel, err := filepath.Rel(d.root, p)
+	if err != nil {
+		return d.specGroup
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) >= 2 && parts[1] == "files" {
+		return d.filesGroup
+	}
+	return d.specGroup
+}
+
+// setGroup gives p its group (groupFor), when one is configured.
+func (d *Driver) setGroup(p string) error {
+	gid := d.groupFor(p)
+	if gid == 0 {
+		return nil
+	}
+	if err := d.chown(p, gid); err != nil {
+		return fmt.Errorf("compose: give %s group %d: %w", p, gid, err)
+	}
+	return nil
 }
 
 // see checks the root is a readable directory: everything else reads under it,
@@ -366,6 +429,10 @@ func (d *Driver) mkdirs(dir string) error {
 		if err := os.Mkdir(cur, DirMode); err != nil && !errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("compose: create %s: %w", cur, err)
 		}
+		// The group BEFORE the mode: a group change can clear the setgid bit.
+		if err := d.setGroup(cur); err != nil {
+			return err
+		}
 		// Mkdir's mode is filtered by the umask, and Linux applies the setgid
 		// bit only from a setgid parent: set it explicitly, on a directory that
 		// already existed too. A chmod that fails (a directory muster does not
@@ -396,6 +463,12 @@ func (d *Driver) writeFile(p string, content []byte) error {
 	if _, err := tmp.Write(content); err != nil {
 		tmp.Close()
 		return fmt.Errorf("compose: write %s: %w", p, err)
+	}
+	// The group before the mode and the rename: spec.json is readable by its
+	// group only from the moment it has its name.
+	if err := d.setGroup(name); err != nil {
+		tmp.Close()
+		return err
 	}
 	if err := tmp.Chmod(FileMode); err != nil {
 		tmp.Close()
