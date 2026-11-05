@@ -484,15 +484,17 @@ func (s *Server) SetTier(id, tier string) {
 	s.items[id].Tier = tier
 }
 
-// SetClaim puts item id in status claimed by holder until expires. As on HQ,
-// a new claim sets claimed_at to now, and the holder of a live lease
-// extending it (a heartbeat) keeps it.
+// SetClaim puts item id in status claimed by holder until expires. A new
+// holder (or an unclaimed item) gets claimed_at = now, as an HQ claim sets it;
+// the SAME holder of a claimed item keeps it, lapsed or not — SetClaim is a
+// test's stand-in for the heartbeats between two passes, which keep it on HQ.
+// Model a re-claim by the same holder with SetClaimedAt.
 func (s *Server) SetClaim(id, holder string, expires time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	it := s.items[id]
 	now := s.Now()
-	renew := it.Status == "claimed" && it.ClaimedBy == holder && it.LeaseExpiresAt != nil && it.LeaseExpiresAt.After(now)
+	renew := it.Status == "claimed" && it.ClaimedBy == holder
 	if !renew || it.ClaimedAt == nil {
 		it.ClaimedAt = &now
 	}
