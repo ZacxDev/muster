@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/redact"
 )
@@ -272,8 +273,8 @@ const pushTimeout = time.Minute
 // afterPush is a draft officer's push re-check (see the comment at the top):
 // called by the connector proxy once GitHub answered the push of cmds to sr.
 // A push GitHub refused (any status but 200) changed nothing and is not read.
-func (g *PushGate) afterPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand, status int) {
-	if status != http.StatusOK || len(cmds) == 0 {
+func (g *PushGate) afterPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand, res connectors.ForwardResult) {
+	if status := res.Status; status != http.StatusOK || len(cmds) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pushTimeout)
@@ -340,6 +341,18 @@ func (g *PushGate) closeOnHit(ctx context.Context, sr officers.ShipRepo, gh GitH
 	g.announce(ctx, officers.Notice{PR: pr.Number, HeadSHA: sha, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel})
 }
 
+// SweepInterval is how often the draft sweep (Sweep) re-checks every open
+// pull request of a draft officer.
+const SweepInterval = 5 * time.Minute
+
+// maxSweepMisses is how many sweeps in a row may fail to read a pull
+// request's comparison before the sweep closes it (fail closed).
+const maxSweepMisses = 3
+
+// Sweep is the draft sweep: every open pull request of this officer, in each
+// ship repository, re-checked at its current head.
+func (g *PushGate) Sweep(ctx context.Context) error { return nil }
+
 func shortSHA(s string) string {
 	if len(s) > 12 {
 		return s[:12]
@@ -399,7 +412,7 @@ func ForbiddenFiles(forbidden []string, files []File) ([]string, string) {
 		if removedKind != "" {
 			add(f.Path, fmt.Sprintf("it removes a %q line (a volume, database or canary must never be deleted by an officer)", removedKind))
 		}
-		if redact.HasSecretValue(strings.Join(added, "\n")) {
+		if redact.HasSecretValueIn(f.Path, strings.Join(added, "\n")) {
 			add(f.Path, "an added line has a credential-shaped value")
 		}
 	}

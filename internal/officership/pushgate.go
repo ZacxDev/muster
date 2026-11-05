@@ -80,6 +80,14 @@ type PushGate struct {
 	Logf     func(format string, args ...any)
 	// Now is the clock the daily limit reads (time.Now when nil).
 	Now func() time.Time
+	// ItemClaimed answers whether HQ shows instance (the agent's name)
+	// holding item of this officer under a live lease: a draft officer's new
+	// pull request names its item in its branch, and the item must be one the
+	// instance claimed. nil: every new pull request is refused (fail closed).
+	ItemClaimed func(ctx context.Context, instance string, item int) error
+	// CreateWait bounds how long a draft officer's new pull request waits for
+	// another one of its creates to finish (DefaultCreateWait when 0).
+	CreateWait time.Duration
 }
 
 // ghFor is the GitHub of ship repository repo.
@@ -306,7 +314,7 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 	if g.Ship.IsDraft() && len(cmds) > 0 {
 		// 🔴 THE PUSH RE-CHECK (draftgate.go): once GitHub has the push, every
 		// open pull request from a pushed branch is checked again.
-		out = connectors.WithAfterForward(out, func(ctx context.Context, status int) { g.afterPush(ctx, sr, cmds, status) })
+		out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) { g.afterPush(ctx, sr, cmds, res) })
 	}
 	return out, nil
 }

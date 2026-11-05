@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,8 @@ const (
 	dBranch  = "bot/engineering-example-web/17-fix-oom" // infra, item 17
 	dWebBr   = "officer/engineering-example-web/18-fix-ui"
 	dPR      = 31
+	// dInstance is the officer instance (the agent name) making the requests.
+	dInstance = "officer-engineering-example-web-1"
 )
 
 // dSecret is a YAML credential line the redactor knows (internal/redact's
@@ -45,6 +48,8 @@ type draftRig struct {
 	notices    []officers.Notice
 	creds      []connectors.Caller
 	readCreds  []connectors.Caller
+	// claims is HQ's view: item -> the instance holding it (ItemClaimed).
+	claims map[int]string
 }
 
 func draftShipFx() *officers.Ship {
@@ -56,7 +61,7 @@ func draftShipFx() *officers.Ship {
 }
 
 func newDraftRig() *draftRig {
-	r := &draftRig{web: newFakeGH(), infra: newFakeGH()}
+	r := &draftRig{web: newFakeGH(), infra: newFakeGH(), claims: map[int]string{17: dInstance, 18: dInstance}}
 	r.g = &PushGate{Repo: fxRepo, Ship: draftShipFx(), OfficerID: dOfficer, GitHost: "github.com", APIHost: "api.github.com",
 		GH: r.web, GHFor: map[string]GitHub{fxRepo: r.web, dInfra: r.infra},
 		Cred: func(_ context.Context, c connectors.Caller, _, _ string) (string, bool, error) {
@@ -68,7 +73,13 @@ func newDraftRig() *draftRig {
 			return "deployment-read", false, nil
 		},
 		Announce: func(_ context.Context, n officers.Notice) error { r.notices = append(r.notices, n); return nil },
-		Now:      func() time.Time { return dNow }}
+		Now:      func() time.Time { return dNow },
+		ItemClaimed: func(_ context.Context, instance string, item int) error {
+			if r.claims[item] != instance {
+				return fmt.Errorf("fake HQ: item %d is not claimed by %s", item, instance)
+			}
+			return nil
+		}}
 	// A clean comparison for the infra branch, and the infra pull request #31.
 	r.infra.compares["trunk..."+dBranch] = Compare{Status: "ahead", AheadBy: 1, Commits: []string{fxHead},
 		Files: []File{{Path: "clusters/prod/apps/x/deploy.yaml", Status: "modified", Changes: 2,
@@ -76,6 +87,7 @@ func newDraftRig() *draftRig {
 	r.infra.prs[dPR] = PR{Number: dPR, State: "open", Draft: true, Author: BotLogin(r.infra.slug), AuthorType: "Bot", HeadRef: dBranch,
 		HeadSHA: fxHead, HeadRepo: dInfra, BaseRef: "trunk", BaseRepo: dInfra}
 	r.infra.compares["trunk..."+fxHead] = r.infra.compares["trunk..."+dBranch]
+	r.infra.branches[dBranch] = fxHead
 	return r
 }
 
@@ -89,14 +101,30 @@ func goodCreate() map[string]any {
 }
 
 func apiWrite(g *PushGate, method, rest string, body map[string]any) error {
-	raw, _ := json.Marshal(body)
-	r := httptest.NewRequest(method, "/connect/github/api.github.com/"+rest, strings.NewReader(string(raw)))
-	_, err := g.Admit(r, "api.github.com", rest)
+	_, err := apiAdmit(g, method, rest, body)
 	return err
 }
 
+// apiAdmit is Admit of a REST write by dInstance (the caller in the request's
+// context, as connectors.Proxy.Serve puts it), returning the admitted request.
+func apiAdmit(g *PushGate, method, rest string, body map[string]any) (*http.Request, error) {
+	raw, _ := json.Marshal(body)
+	r := httptest.NewRequest(method, "/connect/github/api.github.com/"+rest, strings.NewReader(string(raw)))
+	r = r.WithContext(connectors.WithCaller(r.Context(), connectors.Caller{AgentName: dInstance}))
+	return g.Admit(r, "api.github.com", rest)
+}
+
+// create is a POST pulls; an admitted one's after-forward hook (when the gate
+// attached one) is run as a request the proxy never forwarded, which is what
+// releases the officer's create lock.
 func (r *draftRig) create(body map[string]any) error {
-	return apiWrite(r.g, http.MethodPost, "repos/"+dInfra+"/pulls", body)
+	out, err := apiAdmit(r.g, http.MethodPost, "repos/"+dInfra+"/pulls", body)
+	if err == nil {
+		if after := connectors.AfterForwardOf(out); after != nil {
+			after(context.Background(), connectors.ForwardResult{})
+		}
+	}
+	return err
 }
 
 func (r *draftRig) patch(body map[string]any) error {
@@ -165,7 +193,7 @@ func TestTheForbiddenPathsBlockAtCreateAndAtEveryPatch(t *testing.T) {
 		"changed":      {Path: "clusters/prod/apps/db/secrets/creds.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a: 1\n+a: 2"},
 		"added":        {Path: "nodes/cp-1/patch.yaml", Status: "added", Changes: 1, Patch: "@@ -0,0 +1 @@\n+a: 1"},
 		"removed":      {Path: ".sops.yaml", Status: "removed", Changes: 1, Patch: "@@ -1 +0,0 @@\n-creation_rules: []"},
-		"renamed from": {Path: "docs/old.yaml", Previous: "nodes/cp-1/old.yaml", Status: "renamed"},
+		"renamed from": {Path: "docs/old.yaml", Previous: "nodes/cp-1/old.yaml", Status: "renamed", Changes: 2, Patch: "@@ -1 +1 @@\n-a: 1\n+a: 2"},
 	} {
 		for _, at := range []string{"create", "patch"} {
 			r := newDraftRig()
@@ -275,22 +303,14 @@ func TestASecretShapeInTheDiffOrBodyIsRefused(t *testing.T) {
 	}
 }
 
-// TestAWithheldDiffIsRefused: GitHub omits the patch of a binary or very
-// large file; such a file cannot be checked, so it is a 409. A pure rename
-// (no changes, no patch) is admitted (control).
+// TestAWithheldDiffIsRefused: GitHub omits the patch of a very large file
+// (changes > 0, no patch); such a file cannot be checked, so it is a 409.
+// The binary shape (changes 0) is TestABinaryFileIsRefusedAsUnverifiable.
 func TestAWithheldDiffIsRefused(t *testing.T) {
 	r := newDraftRig()
-	cmp := r.infra.compares["trunk..."+dBranch]
-	cmp.Files = []File{{Path: "tools/blob.bin", Status: "added", Changes: 40}}
-	r.infra.compares["trunk..."+dBranch] = cmp
+	r.withFiles(File{Path: "tools/big.yaml", Status: "added", Changes: 40000})
 	if err := r.create(goodCreate()); !isConflict(err) || !strings.Contains(err.Error(), "withholds its diff") {
 		t.Fatalf("a withheld diff: err = %v, want a 409", err)
-	}
-	r = newDraftRig()
-	cmp.Files = []File{{Path: "docs/new.md", Previous: "docs/old.md", Status: "renamed"}}
-	r.infra.compares["trunk..."+dBranch] = cmp
-	if err := r.create(goodCreate()); err != nil {
-		t.Fatalf("control: a pure rename: %v", err)
 	}
 }
 
@@ -332,7 +352,7 @@ func TestTheBodyContract(t *testing.T) {
 func TestTheRateLimits(t *testing.T) {
 	own := func(r *draftRig, gh *fakeGH, prefix string, item int, state string, created time.Time) PR {
 		return PR{Number: 100 + item, State: state, Author: BotLogin(gh.slug), AuthorType: "Bot",
-			HeadRef: prefix + "engineering-example-web/" + itoa(item) + "-x", CreatedAt: created}
+			HeadRef: prefix + "engineering-example-web/" + itoa(item) + "-x", CreatedAt: created, Body: goodBody(item)}
 	}
 	yesterday := dNow.Add(-16 * time.Hour) // 23:00 the day before
 	today := dNow.Add(-time.Hour)
@@ -341,14 +361,14 @@ func TestTheRateLimits(t *testing.T) {
 		want  string
 	}{
 		"two open here": {func(r *draftRig) {
-			r.infra.listed = []PR{own(r, r.infra, "bot/", 1, "open", yesterday), own(r, r.infra, "bot/", 2, "open", yesterday)}
+			r.infra.all = []PR{own(r, r.infra, "bot/", 1, "open", yesterday), own(r, r.infra, "bot/", 2, "open", yesterday)}
 		}, "are open in " + dInfra},
 		"three today across repos": {func(r *draftRig) {
-			r.web.listed = []PR{own(r, r.web, "officer/", 3, "closed", today), own(r, r.web, "officer/", 4, "closed", today)}
-			r.infra.listed = []PR{own(r, r.infra, "bot/", 5, "closed", today)}
+			r.web.all = []PR{own(r, r.web, "officer/", 3, "closed", today), own(r, r.web, "officer/", 4, "closed", today)}
+			r.infra.all = []PR{own(r, r.infra, "bot/", 5, "closed", today)}
 		}, "opened 3 pull request(s) today"},
 		"the item already has one (closed, other repo)": {func(r *draftRig) {
-			r.web.listed = []PR{own(r, r.web, "officer/", 17, "closed", yesterday.Add(-72*time.Hour))}
+			r.web.all = []PR{own(r, r.web, "officer/", 17, "closed", yesterday.Add(-72*time.Hour))}
 		}, "item 17 already has 1"},
 	} {
 		r := newDraftRig()
@@ -362,15 +382,26 @@ func TestTheRateLimits(t *testing.T) {
 	other := PR{Number: 7, State: "open", Author: "someone[bot]", AuthorType: "Bot", HeadRef: dBranch, CreatedAt: today}
 	human := own(r, r.infra, "bot/", 17, "open", today)
 	human.Author, human.AuthorType = BotLogin(r.infra.slug), "User"
-	r.infra.listed = []PR{other, other, other, human, own(r, r.infra, "bot/", 1, "open", yesterday),
+	r.infra.all = []PR{other, other, other, human, own(r, r.infra, "bot/", 1, "open", yesterday),
 		{Number: 8, State: "open", Author: BotLogin(r.infra.slug), AuthorType: "Bot", HeadRef: "bot/engineering-other/17-x", CreatedAt: today}}
-	r.web.listed = []PR{own(r, r.web, "officer/", 2, "open", yesterday), own(r, r.web, "officer/", 3, "open", yesterday),
+	r.infra.prs[8] = r.infra.all[len(r.infra.all)-1] // its body names no item: its branch is read
+	r.web.all = []PR{own(r, r.web, "officer/", 2, "open", yesterday), own(r, r.web, "officer/", 3, "open", yesterday),
 		own(r, r.web, "officer/", 4, "closed", today), own(r, r.web, "officer/", 5, "closed", today)}
 	if err := r.create(goodCreate()); err != nil {
 		t.Fatalf("control: within every limit: %v", err)
 	}
 	if r.web.listCalls != 1 || r.infra.listCalls != 1 {
 		t.Fatalf("listed web %d, infra %d times; want each repository read once", r.web.listCalls, r.infra.listCalls)
+	}
+	// An own pull request whose body no longer names an item (a human edited
+	// it) is counted by its branch, read from the pull request itself.
+	r = newDraftRig()
+	edited := own(r, r.web, "officer/", 17, "closed", yesterday.Add(-72*time.Hour))
+	edited.Body = "rewritten by a human"
+	r.web.all = []PR{edited}
+	r.web.prs[edited.Number] = edited
+	if err := r.create(goodCreate()); !isGateRefusal(err) || !strings.Contains(err.Error(), "item 17 already has 1") {
+		t.Fatalf("an item's pull request with an edited body: err = %v, want the per-item refusal", err)
 	}
 }
 
@@ -461,10 +492,14 @@ func TestADraftOfficersCredentialIsPerRepository(t *testing.T) {
 // never reads the comparison.
 func TestTheOtherStagesAreUnchanged(t *testing.T) {
 	g, gh := testGate()
-	if err := apiWrite(g, http.MethodPost, "repos/"+fxRepo+"/pulls", map[string]any{"title": "t", "head": "officer/x", "base": "main"}); err != nil {
+	out, err := apiAdmit(g, http.MethodPost, "repos/"+fxRepo+"/pulls", map[string]any{"title": "t", "head": "officer/x", "base": "main"})
+	if err != nil {
 		t.Fatalf("a release-stage pull request: %v", err)
 	}
-	if gh.listCalls != 0 {
+	if connectors.AfterForwardOf(out) != nil {
+		t.Fatal("a release-stage pull request carries an after-create check")
+	}
+	if gh.listCalls+gh.byBranch != 0 {
 		t.Fatalf("a release-stage gate listed pull requests %d times", gh.listCalls)
 	}
 }
@@ -500,7 +535,8 @@ func TestTheOrphanReportListsOnlyOldBranchesWithNoPullRequest(t *testing.T) {
 		"s-other": 30 * 24 * time.Hour, "s-trunk": 30 * 24 * time.Hour} {
 		r.infra.commitTimes[sha] = dNow.Add(-age)
 	}
-	r.infra.listed = []PR{{Number: 4, State: "closed", HeadRef: "bot/engineering-example-web/19-haspr", HeadRepo: dInfra}}
+	r.infra.all = []PR{{Number: 4, State: "closed", HeadRef: "bot/engineering-example-web/19-haspr", HeadRepo: dInfra}}
+	r.infra.listed = nil // 🔴 not in any newest-N window: found by its branch
 	r.web.branches = map[string]string{}
 	got, err := OrphanBranches(context.Background(), dOfficer, fxRepo, r.g.Ship, r.g.ghFor, dNow)
 	if err != nil {

@@ -31,7 +31,6 @@ var manifestLines = []string{
 	"existingSecret: my-release-postgresql",
 	"passwordSecret: db-credentials",
 	"  passwordSecret: x",
-	"  secret: app-tls",
 	"    token: \"\"",
 	"apiKey: ${API_KEY}",
 	"password: '${DB_PASSWORD}'",
@@ -49,7 +48,6 @@ var manifestLines = []string{
 	`  "token": ""`,
 	"url: postgres://app:${DB_PASSWORD}@db:5432/app",
 	"the password is required",
-	"secret: ClusterSecretRef # see the store",
 	"    secretName: tls-2024-renewal",
 	"--token \"$TOKEN\"",
 }
@@ -70,6 +68,88 @@ var secretLines = []string{
 	"aws_secret_access_key: " + awsFake,
 	"value: eyJFAKEhdr0.eyJFAKEbody0.FAKEsignature0",
 	"x: ghp_" + "FAKE0000example0000",
+}
+
+// keyLiterals hold a LITERAL string under a credential-like KEY: refused
+// whatever the value looks like (short, letters only, a passphrase, a
+// resource-style name), in YAML, JSON, an assignment and a flag.
+var keyLiterals = []string{
+	"password: hunter2",
+	"  password: correct-horse-battery-staple",
+	"password: SuperSecretPassword",
+	"  secret: app-tls",
+	"secret: ClusterSecretRef # see the store",
+	"client_secret: abc",
+	"api_key: 'k1'",
+	"private_key: xyz",
+	"credentials: admin:admin",
+	"passphrase: open sesame",
+	`{"password": "hunter2"}`,
+	`  "token": "abc"`,
+	"DB_PASSWORD=hunter2",
+	"export ADMIN_TOKEN='abc'",
+	"--password hunter2",
+	"--token=abc",
+	"password: |",
+}
+
+// keyNonLiterals are credential-like keys holding NO literal: a boolean, a
+// number, an empty or null value, a reference, an encrypted value, a path, or
+// a key that itself names a reference. Each passes.
+var keyNonLiterals = []string{
+	"automountServiceAccountToken: false",
+	"existingSecret: x",
+	"passwordSecret: x",
+	"password: ${DB_PASSWORD}",
+	"  token: 3600",
+	"  token: 3600s",
+	"password: \"\"",
+	"secret: ~",
+	"secretKeyRef: db-credentials",
+	"existingSecretPasswordKey: admin-password",
+	"tlsSecretName: app-tls",
+	"credentialsSecretRef: cloud",
+	"password: ENC[AES256_GCM,data:Zm9v,iv:YmFy,tag:YmF6,type:str]",
+	"tokenFile: /var/run/secrets/token",
+	"credentials:",
+	"--password=$(cat /run/pw)",
+}
+
+// TestTheKeyRuleRefusesEveryLiteralUnderACredentialKey (Y1): each literal is
+// refused, each non-literal passes.
+func TestTheKeyRuleRefusesEveryLiteralUnderACredentialKey(t *testing.T) {
+	for _, l := range keyLiterals {
+		if !HasSecretValue(l) {
+			t.Errorf("HasSecretValue(%q) = false: a literal under a credential key", l)
+		}
+	}
+	for _, l := range keyNonLiterals {
+		if HasSecretValue(l) {
+			t.Errorf("HasSecretValue(%q) = true: no literal under the key", l)
+		}
+	}
+}
+
+// TestTheKeyRuleInSourceCodeNeedsAQuotedLiteral: in a source file an
+// unquoted value is an expression (Password: cfg.Password), so only a quoted
+// string literal under a credential key is refused there; the same unquoted
+// line in a YAML file is a literal (control).
+func TestTheKeyRuleInSourceCodeNeedsAQuotedLiteral(t *testing.T) {
+	for _, c := range []struct {
+		path, line string
+		want       bool
+	}{
+		{"internal/db/config.go", "\tPassword: cfg.Password,", false},
+		{"internal/db/config.go", "\tToken:    tok,", false},
+		{"internal/db/config.go", "\tPassword: \"hunter2\",", true},
+		{"web/src/api.ts", "  apiKey: process.env.API_KEY,", false},
+		{"web/src/api.ts", "  apiKey: 'k1',", true},
+		{"values.yaml", "Password: cfg.Password", true},
+	} {
+		if got := HasSecretValueIn(c.path, c.line); got != c.want {
+			t.Errorf("HasSecretValueIn(%q, %q) = %v, want %v", c.path, c.line, got, c.want)
+		}
+	}
 }
 
 // TestHasSecretValueAdmitsManifestKeysAndRefusesSecretValues: every

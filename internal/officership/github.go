@@ -50,6 +50,9 @@ type PR struct {
 	Title          string
 	MergeCommitSHA string
 	CreatedAt      time.Time
+	// Body is the pull request's description (OfficerPRs fills it: the draft
+	// gate reads its item from the first line).
+	Body string
 }
 
 // Compare is GET compare/{base}...{head}.
@@ -68,8 +71,11 @@ type File struct {
 	Status   string // added | modified | removed | renamed | copied | changed | unchanged
 	// Patch is the file's unified diff hunks as GitHub reports them, and
 	// Changes its added+removed line count. GitHub OMITS the patch of a binary
-	// or very large file: Changes > 0 with an empty Patch is a diff nobody can
-	// read (the draft gate refuses it).
+	// file (reported with changes 0, MEASURED on a read-only comparison: every
+	// added, modified and removed PNG came back changes 0, additions 0,
+	// deletions 0, no patch), of a very large one (changes > 0), and of a pure
+	// rename or mode change. An empty Patch is therefore a diff nobody can
+	// read whatever Changes says (the draft gate's ForbiddenFiles).
 	Patch   string
 	Changes int
 }
@@ -154,6 +160,20 @@ type GitHub interface {
 	// ListPRs is the repository's pull requests in every state, newest
 	// created first, at most maxListedPRs (the draft gate's rate limits).
 	ListPRs(ctx context.Context) ([]PR, error)
+	// PRsForBranch is every pull request whose head is branch in this
+	// repository (GitHub's head=<owner>:<branch> filter, which finds a closed
+	// pull request whose branch was deleted too), in state "open", "closed"
+	// or "all". Every page is read; more than maxPages pages is an error,
+	// never a truncated answer.
+	PRsForBranch(ctx context.Context, branch, state string) ([]PR, error)
+	// OfficerPRs is every pull request login opened in this repository
+	// (GitHub's issues list filtered by creator, every page, newest created
+	// first), in state "open", "closed" or "all", with its Body. More than
+	// maxPages pages is an error, never a truncated answer.
+	OfficerPRs(ctx context.Context, login, state string) ([]PR, error)
+	// DeleteBranch deletes refs/heads/<branch> (the draft gate, after it
+	// closed a pull request whose branch holds a refused change).
+	DeleteBranch(ctx context.Context, branch string) error
 	// Branches is every branch whose name starts with prefix.
 	Branches(ctx context.Context, prefix string) ([]Branch, error)
 	// CommitTime is sha's committer date.
@@ -308,12 +328,13 @@ type restPR struct {
 	} `json:"base"`
 	MergeCommitSHA string    `json:"merge_commit_sha"`
 	CreatedAt      time.Time `json:"created_at"`
+	Body           string    `json:"body"`
 }
 
 func (r restPR) pr() PR {
 	p := PR{Number: r.Number, NodeID: r.NodeID, State: r.State, Draft: r.Draft, Merged: r.Merged, Mergeable: r.Mergeable, Title: r.Title,
 		Author: r.User.Login, AuthorType: r.User.Type, HeadRef: r.Head.Ref, HeadSHA: r.Head.SHA, BaseRef: r.Base.Ref,
-		MergeCommitSHA: r.MergeCommitSHA, CreatedAt: r.CreatedAt}
+		MergeCommitSHA: r.MergeCommitSHA, CreatedAt: r.CreatedAt, Body: r.Body}
 	if r.Head.Repo != nil {
 		p.HeadRepo = r.Head.Repo.FullName
 	}
@@ -780,4 +801,65 @@ func (g *REST) CommitTime(ctx context.Context, sha string) (time.Time, error) {
 	}
 	err := g.do(ctx, http.MethodGet, g.repoPath()+"/commits/"+url.PathEscape(sha), "", nil, &r, "reading commit "+sha)
 	return r.Commit.Committer.Date, err
+}
+
+// PRsForBranch implements GitHub.
+func (g *REST) PRsForBranch(ctx context.Context, branch, state string) ([]PR, error) {
+	owner, _, _ := strings.Cut(g.Repo, "/")
+	q := url.Values{"head": {owner + ":" + branch}, "state": {state}, "per_page": {"100"}}
+	var out []PR
+	for page := 1; page <= maxPages; page++ {
+		q.Set("page", strconv.Itoa(page))
+		var batch []restPR
+		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/pulls?"+q.Encode(), "", nil, &batch, "listing the pull requests from "+branch); err != nil {
+			return nil, err
+		}
+		for _, r := range batch {
+			out = append(out, r.pr())
+		}
+		if len(batch) < 100 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("more than %d pull requests from %s: too many to vouch for", maxPages*100, branch)
+}
+
+// OfficerPRs implements GitHub.
+func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error) {
+	q := url.Values{"creator": {login}, "state": {state}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
+	var out []PR
+	for page := 1; page <= maxPages; page++ {
+		q.Set("page", strconv.Itoa(page))
+		var batch []struct {
+			Number    int       `json:"number"`
+			State     string    `json:"state"`
+			Title     string    `json:"title"`
+			Body      string    `json:"body"`
+			CreatedAt time.Time `json:"created_at"`
+			User      struct {
+				Login string `json:"login"`
+				Type  string `json:"type"`
+			} `json:"user"`
+			PullRequest *struct{} `json:"pull_request"`
+		}
+		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/issues?"+q.Encode(), "", nil, &batch, "listing "+login+"'s pull requests"); err != nil {
+			return nil, err
+		}
+		for _, r := range batch {
+			if r.PullRequest == nil {
+				continue // an issue, not a pull request
+			}
+			out = append(out, PR{Number: r.Number, State: r.State, Title: r.Title, Body: r.Body, CreatedAt: r.CreatedAt,
+				Author: r.User.Login, AuthorType: r.User.Type})
+		}
+		if len(batch) < 100 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("more than %d issues and pull requests by %s: too many to vouch for", maxPages*100, login)
+}
+
+// DeleteBranch implements GitHub.
+func (g *REST) DeleteBranch(ctx context.Context, branch string) error {
+	return g.do(ctx, http.MethodDelete, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", nil, nil, "deleting branch "+branch)
 }

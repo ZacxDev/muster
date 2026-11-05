@@ -22,10 +22,32 @@ import (
 // pushRig is the draft rig with example-infra's #31 listed open on dBranch.
 func pushRig() *draftRig {
 	r := newDraftRig()
-	r.infra.listed = []PR{r.infra.prs[dPR]}
+	r.infra.all = []PR{r.infra.prs[dPR]}
 	r.infra.compares["trunk..."+oidB] = r.infra.compares["trunk..."+dBranch]
 	r.infra.branches[dBranch] = oidB // the push landed
 	return r
+}
+
+// report is a receive-pack report-status body: each line a pkt-line, then a
+// flush-pkt (no side band).
+func report(lines ...string) []byte {
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(pkt(l + "\n"))
+	}
+	b.WriteString("0000")
+	return []byte(b.String())
+}
+
+// sideBand is body multiplexed on side-band-64k: band 1 carries it, band 2 a
+// progress line, then a flush-pkt.
+func sideBand(body []byte) []byte {
+	return []byte(pkt("\x02Resolving deltas: 100% (1/1)\n") + pkt("\x01"+string(body)) + "0000")
+}
+
+// applied is GitHub's 200 answer to a push whose update of ref it applied.
+func applied(ref string) connectors.ForwardResult {
+	return connectors.ForwardResult{Forwarded: true, Status: http.StatusOK, Body: report("unpack ok", "ok "+ref), Complete: true}
 }
 
 // pushedFiles sets the comparison of the pushed commit oidB.
@@ -37,7 +59,7 @@ func (r *draftRig) pushedFiles(files ...File) {
 
 // push admits a push of ref to oidB in repo and returns the hook the gate
 // attached for after the upstream's answer (nil: none).
-func (r *draftRig) push(t *testing.T, repo, ref string) func(context.Context, int) {
+func (r *draftRig) push(t *testing.T, repo, ref string) func(context.Context, connectors.ForwardResult) {
 	t.Helper()
 	body := pkt(oidA+" "+oidB+" "+ref+"\x00report-status\n") + "0000"
 	rq := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(body))
@@ -49,7 +71,7 @@ func (r *draftRig) push(t *testing.T, repo, ref string) func(context.Context, in
 }
 
 // mustPush is push, failing the test when no hook was attached.
-func (r *draftRig) mustPush(t *testing.T, repo, ref string) func(context.Context, int) {
+func (r *draftRig) mustPush(t *testing.T, repo, ref string) func(context.Context, connectors.ForwardResult) {
 	t.Helper()
 	after := r.push(t, repo, ref)
 	if after == nil {
@@ -75,7 +97,9 @@ func TestAPushIntoAnOpenPullRequestIsRecheckedAndClosedOnAHit(t *testing.T) {
 		"listed forbidden": {file: modified("overlays/site-a/read-role/patch.yaml"), list: "overlays/*/read-role/**\n", says: "a forbidden path"},
 		"removed canary":   {file: File{Path: "apps/x/canary.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +0,0 @@\n-kind: Canary"}, says: "removes a"},
 		"added secret":     {file: File{Path: "apps/x/values.yaml", Status: "modified", Changes: 1, Patch: "@@ -0,0 +1 @@\n+" + secret}, says: "credential-shaped"},
-		"withheld diff":    {file: File{Path: "tools/blob.bin", Status: "added", Changes: 40}, says: "withholds its diff"},
+		"withheld diff":    {file: File{Path: "tools/big.yaml", Status: "added", Changes: 40000}, says: "withholds its diff"},
+		// GitHub's REAL binary shape: changes 0, no patch.
+		"binary file": {file: File{Path: "tools/creds.txt", Status: "added"}, says: "cannot be checked"},
 	} {
 		r := pushRig()
 		if c.list != "" {
@@ -87,7 +111,7 @@ func TestAPushIntoAnOpenPullRequestIsRecheckedAndClosedOnAHit(t *testing.T) {
 		if after == nil {
 			t.Fatalf("%s: the gate attached no after-push check to a push into an open pull request's branch", name)
 		}
-		after(context.Background(), http.StatusOK)
+		after(context.Background(), applied("refs/heads/"+dBranch))
 		if len(r.infra.closed) != 1 || r.infra.closed[0] != dPR {
 			t.Errorf("%s: closed %v, want [%d]", name, r.infra.closed, dPR)
 		}
@@ -112,16 +136,16 @@ func TestAPushIntoAnOpenPullRequestIsRecheckedAndClosedOnAHit(t *testing.T) {
 func TestAPushRecheckClosesNothingItMustNot(t *testing.T) {
 	r := pushRig()
 	r.pushedFiles(modified("clusters/prod/apps/x/deploy.yaml"))
-	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusOK)
+	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
 	if len(r.infra.closed)+len(r.notices) != 0 {
 		t.Fatalf("a clean push closed %v and posted %d notice(s)", r.infra.closed, len(r.notices))
 	}
 
 	r = pushRig()
 	r.pushedFiles(modified(".sops.yaml"))
-	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusForbidden)
-	if r.infra.listCalls != 0 || len(r.infra.closed) != 0 {
-		t.Fatalf("a push the upstream refused: listed %d times, closed %v; want neither", r.infra.listCalls, r.infra.closed)
+	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), connectors.ForwardResult{Forwarded: true, Status: http.StatusForbidden})
+	if r.infra.byBranch+r.infra.listCalls != 0 || len(r.infra.closed) != 0 {
+		t.Fatalf("a push the upstream refused: looked up %d+%d times, closed %v; want neither", r.infra.byBranch, r.infra.listCalls, r.infra.closed)
 	}
 
 	r = pushRig()
@@ -130,24 +154,48 @@ func TestAPushRecheckClosesNothingItMustNot(t *testing.T) {
 	closed.State = "closed"
 	other := r.infra.prs[dPR]
 	other.Number, other.HeadRef = 32, "bot/engineering-example-web/19-other"
-	r.infra.listed = []PR{closed, other}
-	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusOK)
+	r.infra.all = []PR{closed, other}
+	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
 	if len(r.infra.closed)+len(r.notices) != 0 {
 		t.Fatalf("closed %v, notices %d; want nothing (no OPEN pull request on the pushed branch)", r.infra.closed, len(r.notices))
 	}
 }
 
 // TestAPushGitHubDidNotApplyIsNotRechecked: GitHub answers 200 to a push
-// whose ref update it refused; the branch is then not at the pushed commit,
-// and the pull request (which the push did not change) is left open even
-// though the pushed commit's comparison cannot be read.
+// whose ref update it refused, saying so in the report-status ("ng"), plain
+// and on side band 1. 🔴 THE REPORT IS THE AUTHORITY, not a branch read: the
+// branch here (an eventually-consistent read) even claims the pushed commit,
+// and the pull request is still left open although the pushed commit's
+// comparison cannot be read.
 func TestAPushGitHubDidNotApplyIsNotRechecked(t *testing.T) {
-	r := pushRig()
-	r.infra.branches[dBranch] = oidA
-	delete(r.infra.compares, "trunk..."+oidB)
-	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusOK)
-	if len(r.infra.closed)+len(r.notices) != 0 {
-		t.Fatalf("a push GitHub did not apply: closed %v, notices %+v; want nothing", r.infra.closed, r.notices)
+	ng := report("unpack ok", "ng refs/heads/"+dBranch+" non-fast-forward")
+	for name, body := range map[string][]byte{"plain": ng, "side band": sideBand(ng)} {
+		r := pushRig()
+		r.infra.branches[dBranch] = oidB
+		delete(r.infra.compares, "trunk..."+oidB)
+		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(),
+			connectors.ForwardResult{Forwarded: true, Status: http.StatusOK, Body: body, Complete: true})
+		if len(r.infra.closed)+len(r.notices) != 0 {
+			t.Errorf("%s: a push GitHub did not apply: closed %v, notices %+v; want nothing", name, r.infra.closed, r.notices)
+		}
+	}
+}
+
+// TestAPushGitHubAppliedIsRecheckedWhateverTheBranchReadSays (Y4): the report
+// says "ok" (plain and on side band 1) while the branch read still answers
+// the OLD commit, as an eventually-consistent read right after a push does;
+// the pushed change is checked and the pull request closed.
+func TestAPushGitHubAppliedIsRecheckedWhateverTheBranchReadSays(t *testing.T) {
+	ok := report("unpack ok", "ok refs/heads/"+dBranch)
+	for name, body := range map[string][]byte{"plain": ok, "side band": sideBand(ok)} {
+		r := pushRig()
+		r.infra.branches[dBranch] = oidA // stale
+		r.pushedFiles(modified(".sops.yaml"))
+		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(),
+			connectors.ForwardResult{Forwarded: true, Status: http.StatusOK, Body: body, Complete: true})
+		if len(r.infra.closed) != 1 || r.infra.closed[0] != dPR {
+			t.Errorf("%s: a push the report says applied: closed %v, want [%d]", name, r.infra.closed, dPR)
+		}
 	}
 }
 
@@ -156,7 +204,7 @@ func TestAPushGitHubDidNotApplyIsNotRechecked(t *testing.T) {
 func TestAPushRecheckFailsClosed(t *testing.T) {
 	r := pushRig()
 	delete(r.infra.compares, "trunk..."+oidB)
-	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusOK)
+	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
 	if len(r.infra.closed) != 1 || len(r.notices) != 1 || !strings.Contains(r.notices[0].Summary, "could not compare") {
 		t.Fatalf("an unreadable comparison: closed %v, notices %+v; want #31 closed and a notice", r.infra.closed, r.notices)
 	}
@@ -164,7 +212,7 @@ func TestAPushRecheckFailsClosed(t *testing.T) {
 	r = pushRig()
 	r.pushedFiles(modified(".sops.yaml"))
 	r.infra.closeErr = errors.New("fake: 502")
-	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusOK)
+	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
 	if len(r.notices) != 1 || !strings.Contains(r.notices[0].Summary, "could NOT close") {
 		t.Fatalf("a failed close: notices %+v; want one saying it could not close", r.notices)
 	}
@@ -178,7 +226,7 @@ func TestAClosedPullRequestCannotBeReopenedByTheOfficer(t *testing.T) {
 	r := pushRig()
 	r.pushedFiles(modified(".sops.yaml"))
 	if after := r.push(t, dInfra, "refs/heads/"+dBranch); after != nil {
-		after(context.Background(), http.StatusOK)
+		after(context.Background(), applied("refs/heads/"+dBranch))
 	}
 	if err := r.patch(map[string]any{"state": "open"}); !isGateRefusal(err) || !strings.Contains(err.Error(), "never reopens") {
 		t.Fatalf("a reopen: err = %v, want the refusal", err)

@@ -53,6 +53,12 @@ func (f *draftFakeGH) Compare(context.Context, string, string) (officership.Comp
 	return f.compare, nil
 }
 func (f *draftFakeGH) ListPRs(context.Context) ([]officership.PR, error) { return nil, nil }
+func (f *draftFakeGH) PRsForBranch(context.Context, string, string) ([]officership.PR, error) {
+	return nil, nil
+}
+func (f *draftFakeGH) OfficerPRs(context.Context, string, string) ([]officership.PR, error) {
+	return nil, nil
+}
 func (f *draftFakeGH) Branches(context.Context, string) ([]officership.Branch, error) {
 	return f.branches, nil
 }
@@ -134,17 +140,63 @@ func TestOnlyTheJudgementInstanceOfATieredDraftOfficerShips(t *testing.T) {
 	}
 }
 
+// claimItem12 adds HQ items up to id 12 (draftBranch's item) and claims 12
+// for holder.
+func (r *draftRigAPI) claimItem12(holder string) {
+	for id := ""; id != "12"; {
+		id = r.hq.AddItem(offDraft, "fix", "subject-"+id)
+	}
+	if holder != "" {
+		r.hq.SetClaim("12", holder, time.Now().Add(time.Hour))
+	}
+}
+
+// draftCreate is the judgement instance's POST pulls from draftBranch,
+// admitted through its gate with the caller in the request's context.
+func (r *draftRigAPI) draftCreate() error {
+	pg := r.s.callerOf(r.judge).Gate.(*officership.PushGate)
+	body := officers.BodyFirstLine(offDraft, 12) + "\n## Root cause\n## Evidence\n## Test\n## Rollback\n"
+	raw := `{"title":"t","head":"` + draftBranch + `","base":"trunk","draft":true,"body":` + string(mustJSON(body)) + `}`
+	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(raw))
+	req = req.WithContext(connectors.WithCaller(req.Context(), r.s.callerOf(r.judge)))
+	out, err := pg.Admit(req, "api.github.com", "repos/"+draftInfra+"/pulls")
+	if err == nil {
+		if after := connectors.AfterForwardOf(out); after != nil {
+			after(context.Background(), connectors.ForwardResult{})
+		}
+	}
+	return err
+}
+
+// TestADraftOfficersNewPullRequestNeedsItsHQClaim (Y2, wired): the gate asks
+// HQ, with the officer's own token, whether THIS instance holds the branch's
+// item; unclaimed, or claimed by another instance, is a 403 before any
+// comparison; claimed by it, the request reaches the content check.
+func TestADraftOfficersNewPullRequestNeedsItsHQClaim(t *testing.T) {
+	r := newDraftAPIRig(t)
+	r.claimItem12("")
+	r.infra.compare = officership.Compare{Commits: []string{"abc"}, Files: []officership.File{{Path: "nodes/cp-1/x.yaml", Status: "added", Changes: 1, Patch: "@@ -0,0 +1 @@\n+a: 1"}}}
+	if err := r.draftCreate(); !errors.Is(err, connectors.ErrGateRefused) || errors.Is(err, connectors.ErrGateConflict) || !strings.Contains(err.Error(), "item 12") {
+		t.Fatalf("an unclaimed item: err = %v, want a 403 naming item 12", err)
+	}
+	r.hq.SetClaim("12", r.rout.Name, time.Now().Add(time.Hour))
+	if err := r.draftCreate(); !errors.Is(err, connectors.ErrGateRefused) || errors.Is(err, connectors.ErrGateConflict) {
+		t.Fatalf("an item another instance holds: err = %v, want a 403", err)
+	}
+	r.hq.SetClaim("12", r.judge.Name, time.Now().Add(time.Hour))
+	if err := r.draftCreate(); !errors.Is(err, connectors.ErrGateConflict) {
+		t.Fatalf("its own claim: err = %v, want the content check's 409 (it got past the claim)", err)
+	}
+}
+
 // TestADraftOfficersContentRefusalReachesHQ: a pull request whose comparison
 // changes a forbidden path is answered 409 by the gate, and HQ's notices route
 // receives the notice with the officer's own token.
 func TestADraftOfficersContentRefusalReachesHQ(t *testing.T) {
 	r := newDraftAPIRig(t)
-	pg := r.s.callerOf(r.judge).Gate.(*officership.PushGate)
+	r.claimItem12(r.judge.Name)
 	r.infra.compare = officership.Compare{Commits: []string{"abc"}, Files: []officership.File{{Path: "nodes/cp-1/x.yaml", Status: "added", Changes: 1, Patch: "@@ -0,0 +1 @@\n+a: 1"}}}
-	body := officers.BodyFirstLine(offDraft, 12) + "\n## Root cause\n## Evidence\n## Test\n## Rollback\n"
-	raw := `{"title":"t","head":"` + draftBranch + `","base":"trunk","draft":true,"body":` + string(mustJSON(body)) + `}`
-	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(raw))
-	_, err := pg.Admit(req, "api.github.com", "repos/"+draftInfra+"/pulls")
+	err := r.draftCreate()
 	if !errors.Is(err, connectors.ErrGateConflict) {
 		t.Fatalf("a forbidden path: err = %v, want the 409 conflict", err)
 	}

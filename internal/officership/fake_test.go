@@ -47,6 +47,15 @@ type fakeGH struct {
 	// closed is every pull request ClosePR closed; closeErr fails it.
 	closed   []int
 	closeErr error
+	// all is EVERY pull request of the repository (PRsForBranch and
+	// OfficerPRs read it; listed is only the old newest-300 window).
+	// byBranch counts PRsForBranch calls, compareCalls Compare's.
+	all          []PR
+	byBranch     int
+	compareCalls int
+	// deleted is every branch DeleteBranch deleted; deleteErr fails it.
+	deleted   []string
+	deleteErr error
 }
 
 type commitInfo struct {
@@ -75,6 +84,9 @@ func (f *fakeGH) PR(_ context.Context, n int) (PR, error) {
 }
 func (f *fakeGH) PRFiles(_ context.Context, n int) ([]File, error) { return f.files[n], nil }
 func (f *fakeGH) Compare(_ context.Context, base, head string) (Compare, error) {
+	f.mu.Lock()
+	f.compareCalls++
+	f.mu.Unlock()
 	c, ok := f.compares[base+"..."+head]
 	if !ok {
 		return Compare{}, fmt.Errorf("fake: no comparison %s...%s", base, head)
@@ -194,6 +206,54 @@ func (f *fakeGH) ClosePR(_ context.Context, n int) error {
 			f.listed[i].State = "closed"
 		}
 	}
+	for i := range f.all {
+		if f.all[i].Number == n {
+			f.all[i].State = "closed"
+		}
+	}
+	if p, ok := f.prs[n]; ok {
+		p.State = "closed"
+		f.prs[n] = p
+	}
+	return nil
+}
+
+func stateIs(want, have string) bool { return want == "all" || want == have }
+
+func (f *fakeGH) PRsForBranch(_ context.Context, branch, state string) ([]PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byBranch++
+	var out []PR
+	for _, p := range f.all {
+		if p.HeadRef == branch && stateIs(state, p.State) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeGH) OfficerPRs(_ context.Context, login, state string) ([]PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCalls++
+	var out []PR
+	for _, p := range f.all {
+		if p.Author == login && stateIs(state, p.State) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeGH) DeleteBranch(_ context.Context, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, branch)
+	delete(f.branches, branch)
 	return nil
 }
 

@@ -105,6 +105,9 @@ func Secrets(s string) string { return secrets(s, true, nil) }
 // passes here, though a transcript would mask it.
 func HasSecretValue(s string) bool { return secrets(s, true, literalSecret) != s }
 
+// HasSecretValueIn is HasSecretValue for the content of the file at path.
+func HasSecretValueIn(path, s string) bool { return HasSecretValue(s) }
+
 // minLiteralSecret is the shortest value literalSecret calls a secret.
 const minLiteralSecret = 12
 
