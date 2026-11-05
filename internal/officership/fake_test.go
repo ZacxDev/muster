@@ -58,6 +58,9 @@ type fakeGH struct {
 	// deleted is every branch DeleteBranch deleted; deleteErr fails it.
 	deleted   []string
 	deleteErr error
+	// creatorBlind makes OfficerPRs answer an empty list, as GitHub's issues
+	// list does (200 []) for a creator login it does not match (measured).
+	creatorBlind bool
 }
 
 type commitInfo struct {
@@ -239,6 +242,9 @@ func (f *fakeGH) OfficerPRs(_ context.Context, login, state string) ([]PR, error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listCalls++
+	if f.creatorBlind {
+		return nil, nil
+	}
 	var out []PR
 	for _, p := range f.all {
 		if p.Author == login && stateIs(state, p.State) {

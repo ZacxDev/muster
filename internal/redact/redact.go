@@ -120,6 +120,11 @@ func HasSecretValueIn(path, s string) bool {
 	return secrets(s, true, literalSecret) != s || keyLiteral(s, isSource(path))
 }
 
+// HasSecretPairIn reports whether lines (a manifest's lines, in order) hold a
+// list item whose credential-like `name:` has a sibling `value:` literal,
+// either line marked in changed (nil: every line). Not implemented yet.
+func HasSecretPairIn(path string, lines []string, changed []bool) bool { return false }
+
 // credKeyWords are the endings of a credential-like key, compared with the
 // key lowercased and its _ - . separators removed.
 var credKeyWords = []string{"password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "privatekey", "secretkey",

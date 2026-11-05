@@ -62,6 +62,9 @@ type Compare struct {
 	BehindBy int
 	Files    []File
 	Commits  []string // shas, oldest first
+	// MergeBase is the comparison's merge base commit: what a removed file
+	// is read at when GitHub shows no diff for it (the draft gate).
+	MergeBase string
 }
 
 // File is one changed file of a pull request or a comparison.
