@@ -278,6 +278,15 @@ func TestMatchForbidden(t *testing.T) {
 		{".githooks/", ".githooks/pre-push", true},
 		{"scripts/gitops-delta-gate.sh", "scripts/gitops-delta-gate.sh", true},
 		{"scripts/gitops-delta-gate.sh", "scripts/gitops-delta-gate.shx", false},
+		// The shapes a second repository's list needs (an overlay or a Flux
+		// file can widen a role without touching the app's own directory).
+		{"overlays/*/read-role/**", "overlays/site-a/read-role/patch.yaml", true},
+		{"overlays/*/read-role/**", "overlays/site-a/sub/read-role/patch.yaml", false},
+		{"clusters/*-overlay/*read-role*", "clusters/site-a-overlay/apps-read-role.yaml", true},
+		{"clusters/*-overlay/*read-role*", "clusters/site-a-overlay/apps.yaml", false},
+		{".github/**", ".github/workflows/ci.yml", true},
+		{"scripts/ci/**", "scripts/ci/check.sh", true},
+		{"scripts/ci/**", "scripts/cid/check.sh", false},
 		{"?.yaml", "a.yaml", true},
 		{"?.yaml", "ab.yaml", false},
 	} {
