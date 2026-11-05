@@ -751,3 +751,15 @@ body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status
   line-clamp: 4;
   overflow: hidden;
 }
+/*
+ * While the block shows ONE card (a collapsed list, or a list of one) its cap
+ * rises from the max-h-[45vh] utility to 65dvh, so a real card — long
+ * options, the mic — fits whole and the conversation's scroller shrinks
+ * instead of the card being cut at the block's scroll edge (AskerAsksBlock).
+ * The id outranks the utility by specificity.
+ */
+#asker-asks:has(> [data-asks-collapsed]),
+#asker-asks:has(> ul > [data-attention-item]:only-child) {
+  max-height: 65vh;
+  max-height: 65dvh;
+}

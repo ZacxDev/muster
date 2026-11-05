@@ -35,6 +35,8 @@ func TestTheAsksShowOneCardAtATimeEachClampedInPlace(t *testing.T) {
 		`#` + AskerAsksID + ` [data-asks-collapsed] > [data-attention-item]:not(:first-child) {`,
 		`#` + AskerAsksID + ` [data-attention-item] [data-attention-text]:not([data-ask-open]) {`,
 		`-webkit-line-clamp: 4;`,
+		// One card shows: the cap rises so a real card fits whole (AskerAsksBlock).
+		`#` + AskerAsksID + `:has(> [data-asks-collapsed]),`, `#` + AskerAsksID + `:has(> ul > [data-attention-item]:only-child) {`, `max-height: 65dvh;`,
 	} {
 		if !strings.Contains(string(css), want) {
 			t.Errorf("web/css/input.css lacks %q", want)
