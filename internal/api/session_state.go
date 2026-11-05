@@ -132,6 +132,9 @@ type statePass struct {
 	// judges: the owner's chief judges idle stops live (episodeChiefJudges),
 	// so an idle stop's push waits on its decision.
 	judges bool
+	// hs is the owner's windows, the pass's one read: an episode's push names
+	// its window from it (settleEpisode, episodeNotification).
+	hs []mirror.HostView
 }
 
 // sessionStateOwner is one owner's part of the pass, as that owner.
@@ -147,7 +150,8 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		byKey[e.Kind+":"+e.Key] = e
 	}
 	// ONE read of the owner's hosts for everything below: the stall facts,
-	// the answerable asks and which hosts can say a window is gone.
+	// the answerable asks, which hosts can say a window is gone and the window
+	// an episode's push names (statePass.hs).
 	var hs []mirror.HostView
 	if s.ext.Mirror != nil {
 		hs = s.ext.Mirror.Hosts(octx)
@@ -163,7 +167,7 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		}
 	}
 	answerable := answerableWaits(s.waitingSessionsIn(octx, hs))
-	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now(), judges: s.episodeChiefJudges(octx, owner)}
+	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now(), judges: s.episodeChiefJudges(octx, owner), hs: hs}
 	// The restart rule's clear first: an ended stop's notification is closed
 	// whether it ended in a pass, or while muster was down.
 	defer s.clearEndedEpisodes(octx, owner)
@@ -360,7 +364,7 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		ChiefJudges: sp.judges,
 		OpenFor:     now.Sub(ep.OpenedAt),
 		Now:         now,
-	}, c.IdleFor)
+	}, c.IdleFor, sp.hs)
 }
 
 // agentTurnWork is how long the reply turn that moved c's conversation past
