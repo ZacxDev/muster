@@ -187,7 +187,8 @@ for (const vp of [
         if (r.url().includes('/api/openrouter/')) openrouter.push(r.url());
       });
       await page.goto(origin + '/agents/' + cc.name);
-      await expect(page.getByText(/Claude Code · (alpha|beta)/).first()).toBeVisible();
+      await expect(page.locator('header [data-cc-account]')).toHaveText(/^(alpha|beta)$/);
+      await expect(page.locator('header [data-cc-account]')).toBeVisible();
       await expect(page.locator('#model-input')).toHaveCount(0);
       await expect(page.locator('[data-combobox-remote]')).toHaveCount(0);
       await page.waitForTimeout(1000);

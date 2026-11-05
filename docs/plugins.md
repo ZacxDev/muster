@@ -306,7 +306,7 @@ fresh snapshot. muster never calls the plugin: the plugin claims the queue.
  "reference": {
    "title": "Rotate the build key", "url": "https://tracker.example.invalid/t/4711",
    "status": "in_progress", "status_label": "in progress", "rev": "5",
-   "updated_at": "2026-11-03T10:00:00Z", "body": "…",
+   "updated_at": "2026-11-03T10:00:00Z", "body": "…", "creator": "A. Person",
    "comments": [{"id": "c1", "author": "A. Person", "body": "…", "created_at": "2026-11-02T09:00:00Z"}],
    "detach": false},
  "route_to_chief": true, "notice": "assigned", "event_id": "upstream-msg-123"}
@@ -319,6 +319,7 @@ fresh snapshot. muster never calls the plugin: the plugin claims the queue.
 | `reference.updated_at` | Required (RFC 3339). It decides staleness (below). |
 | `reference.title`, `body` | The task's title and body follow them. `body` is cut at 16 KiB. An empty title shows the key. |
 | `reference.url` | Linked from the task page. A link that is not `http(s)`, or is over 2 KiB, is dropped. |
+| `reference.creator` | Optional. The upstream's display name for whoever created the record. The task's [notifications](push.md) name it (`by A. Person`). One line of plain text, cut at 200 characters. Leave it out when the upstream has none. A muster from before this field refuses it like any unknown field (`400`), so send it only to a muster that documents it. |
 | `reference.comments` | The upstream's thread, shown read-only. At most 50 are kept: the newest, by `created_at`. Each body is cut at 16 KiB. |
 | `reference.detach` | `true` dismisses the reference (the soft dismissal an owner's dismiss is; an agent on it is left running). A later upsert for the key files a new row. |
 | `event_id` | 1 to 200 bytes, no spaces or control characters. It names the upstream event for routing, as `comment` does for a copy, and it is required with `route_to_chief`. Resending the same `event_id` never routes twice. |
