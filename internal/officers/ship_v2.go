@@ -217,6 +217,9 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := draftPrefixPinned(stage, "", r); err != nil {
+			return nil, err
+		}
 		return []ShipRepo{r}, nil
 	}
 	for name, set := range map[string]bool{"base": strings.TrimSpace(d.Base) != "", "branch_prefix": strings.TrimSpace(d.BranchPrefix) != "",
@@ -245,6 +248,9 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := draftPrefixPinned(stage, fmt.Sprintf("repos[%d].", i), r); err != nil {
+			return nil, err
+		}
 		if (len(r.ForbiddenPaths) > 0 || r.ForbiddenPathsFile != "") && stage != StageDraft {
 			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s stage only; stage %s would ignore it — remove it", StageDraft, stage)
 		}
@@ -266,6 +272,21 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		return nil, fmt.Errorf("ship: repos does not list the officer's `repo` %q: it is the repository a request naming none is served for", repo)
 	}
 	return out, nil
+}
+
+// draftPrefixPinned refuses a draft-stage repository whose branch prefix is
+// not exactly DefaultBranchPrefix.
+//
+// 🔴 PINNED, NOT DEFAULTED: the target repositories' own walls (their CI's
+// officer-pull-request checks) select the officer's pull requests by that
+// literal prefix, so another prefix would make every one of them skip
+// silently. Other stages keep a configurable prefix.
+func draftPrefixPinned(stage, what string, r ShipRepo) error {
+	if stage == StageDraft && r.BranchPrefix != DefaultBranchPrefix {
+		return fmt.Errorf("ship: %sbranch_prefix %q must be exactly %q on the %s stage (the target repositories' checks select officer pull requests by that prefix); remove it or set it to %q",
+			what, r.BranchPrefix, DefaultBranchPrefix, StageDraft, DefaultBranchPrefix)
+	}
+	return nil
 }
 
 // branchItemRE is the draft-stage branch shape after the prefix and the

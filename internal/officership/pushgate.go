@@ -257,6 +257,9 @@ func (g *PushGate) admitGit(r *http.Request, segs []string) (*http.Request, erro
 // refs/heads/<prefix>, and forwards the request with the bytes it read put
 // back in front of the rest of the body.
 //
+// A draft officer's push also carries the push re-check (afterPush), which
+// the connector proxy runs once GitHub has answered it.
+//
 // A gzip-encoded body is decoded and forwarded decoded (git accepts either);
 // any other encoding is refused, since the commands could not be read.
 func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*http.Request, error) {
@@ -300,6 +303,11 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(pre.Bytes()), br), body}
+	if g.Ship.IsDraft() && len(cmds) > 0 {
+		// 🔴 THE PUSH RE-CHECK (draftgate.go): once GitHub has the push, every
+		// open pull request from a pushed branch is checked again.
+		out = connectors.WithAfterForward(out, func(ctx context.Context, status int) { g.afterPush(ctx, sr, cmds, status) })
+	}
 	return out, nil
 }
 

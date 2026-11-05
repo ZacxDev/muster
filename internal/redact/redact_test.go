@@ -110,10 +110,10 @@ func TestTheFilterNeverChangesWhatIsRedacted(t *testing.T) {
 	}
 	differ := 0
 	for _, c := range corpus {
-		if got, want := Secrets(c), secrets(c, false); got != want {
+		if got, want := Secrets(c), secrets(c, false, nil); got != want {
 			t.Errorf("filtered %q\n got %q\nwant %q", c, got, want)
 		}
-		if secrets(c, false) != c {
+		if secrets(c, false, nil) != c {
 			differ++
 		}
 	}

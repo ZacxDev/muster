@@ -803,7 +803,7 @@ A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
 | `forbidden_paths` | none | `draft` only (refused on another stage, which would ignore it): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
 | `forbidden_paths_file` | none | `draft` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
 | `base` | `main` | The branch merges land on and releases are cut from. |
-| `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. |
+| `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. On the `draft` stage it is **pinned**: any value but `officer/` is refused at boot, because the target repositories' own checks select officer pull requests by that prefix. |
 | `github_app` | **required** | The officer's OWN App: `id`, and `account` as `<login>:<numeric id>` (matched by id; the login must be the repository's owner). Never the deployment's App, so suspending it stops this officer and nothing else. |
 | `required_checks` | **required** (not on `draft`) | 1–20 commit-status contexts (or check-run names) that must be `success` on the head commit. A status's `success` counts whatever its description says (a CI job that reports "success: skipped" passes). Missing is not passed. |
 | `review_check` | **required** (not on `draft`) | The check run that must be `completed`/`success` on the head. `neutral` does not pass. |
@@ -878,16 +878,30 @@ each one from there. It is offered none of `officer_mark_ready`,
 | `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
 | The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item, and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
 | At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state (read from each repository's newest 300 pull requests: its App's bot, typed `Bot`, from its branch shape). | 403 |
-| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read: a changed, added, removed or renamed-from path matching the repository's `forbidden_paths`; a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; an **added** line with a credential shape; or a file whose diff GitHub withholds (binary or very large). The title, body and comments are checked for a credential shape too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
+| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read: a changed, added, removed or renamed-from path matching the repository's `forbidden_paths`; a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; an **added** line with a credential-shaped value; or a file whose diff GitHub withholds (binary or very large). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
+| After every push GitHub accepts to a branch with an **open** pull request, the same comparison check runs on `compare/{base}...{pushed commit}`. | the pull request is **closed**, and a notice to HQ naming the paths; the officer cannot reopen it (`state` `open` is refused above) |
 
-The credential shapes are `internal/redact`'s (`redact.HasSecret`), the one
-redactor every other muster surface uses. A comparison muster cannot read is
-a 502: the policy could not decide.
+The credential shapes are `internal/redact`'s (`redact.HasSecretValue`): the
+transcript redactor's shapes, with one narrowing. A shape known by its value
+(a token prefix, a private key block, a JWT, a cloud key) always counts; a
+shape known only by a credential-like NAME (`password:`, `token:`, `NAME=…`,
+`--token`) counts only when the value is itself secret-shaped: at least 12
+characters with no space, letters with a digit or a base64 symbol, not a
+`${…}`/`$(…)`/`{{…}}`/`valueFrom` reference, a path, a lowercase resource
+name or an `UPPER_SNAKE` variable name. So `automountServiceAccountToken:
+false`, `existingSecret: db-credentials` and `apiKey: ${API_KEY}` pass, and a
+short literal password under such a name passes too. A comparison muster
+cannot read at create or `PATCH` is a 502: the policy could not decide.
 
-⚠ **What the gate cannot see.** A push to a branch that already has a pull
-request changes that pull request's diff without a `PATCH`. The next `PATCH`
-reads the comparison again; the target repository's own CI is the wall for
-the rest.
+**Pushes.** A pack cannot be diffed before GitHub has it (it is a thin pack
+whose objects are deltas against objects only GitHub holds), so a push is
+admitted and checked **after** GitHub answers it 200: for each pushed branch
+that is now at the pushed commit, every open pull request from it is run
+through the same comparison check as create and `PATCH`. A hit, or a
+comparison muster cannot read (fail closed), closes the pull request and posts
+an HQ notice naming the paths, the pull request and the pushed commit. Until
+that one read finishes, the pull request shows the pushed diff; a close GitHub
+refuses is posted to HQ as "could NOT close".
 
 **The orphan report.** Once a UTC day (first an hour after boot) muster lists
 each draft officer's branches, older than 7 days by their head commit, that no

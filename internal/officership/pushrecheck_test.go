@@ -24,6 +24,7 @@ func pushRig() *draftRig {
 	r := newDraftRig()
 	r.infra.listed = []PR{r.infra.prs[dPR]}
 	r.infra.compares["trunk..."+oidB] = r.infra.compares["trunk..."+dBranch]
+	r.infra.branches[dBranch] = oidB // the push landed
 	return r
 }
 
@@ -133,6 +134,20 @@ func TestAPushRecheckClosesNothingItMustNot(t *testing.T) {
 	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusOK)
 	if len(r.infra.closed)+len(r.notices) != 0 {
 		t.Fatalf("closed %v, notices %d; want nothing (no OPEN pull request on the pushed branch)", r.infra.closed, len(r.notices))
+	}
+}
+
+// TestAPushGitHubDidNotApplyIsNotRechecked: GitHub answers 200 to a push
+// whose ref update it refused; the branch is then not at the pushed commit,
+// and the pull request (which the push did not change) is left open even
+// though the pushed commit's comparison cannot be read.
+func TestAPushGitHubDidNotApplyIsNotRechecked(t *testing.T) {
+	r := pushRig()
+	r.infra.branches[dBranch] = oidA
+	delete(r.infra.compares, "trunk..."+oidB)
+	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), http.StatusOK)
+	if len(r.infra.closed)+len(r.notices) != 0 {
+		t.Fatalf("a push GitHub did not apply: closed %v, notices %+v; want nothing", r.infra.closed, r.notices)
 	}
 }
 

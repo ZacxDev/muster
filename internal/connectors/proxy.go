@@ -234,14 +234,25 @@ var ErrGateRefused = errors.New("connectors: refused by this agent's write polic
 // wraps [ErrGateRefused], so every check for a refusal still sees one.
 var ErrGateConflict = fmt.Errorf("%w: the change conflicts with it", ErrGateRefused)
 
-// WithAfterForward (SCAFFOLD: not yet wired) returns r carrying f, which the
-// proxy will call once the upstream's answer to r has been relayed.
+// afterForwardKey carries a gate's after-forward hook in an admitted
+// request's context.
+type afterForwardKey struct{}
+
+// WithAfterForward returns r carrying f: a [Gate]'s Admit returns it so that,
+// once the upstream has answered r and the answer has been relayed, the proxy
+// calls f with the upstream's status (0: no answer arrived). f runs in the
+// handler, after the response body is written and before the handler returns;
+// it must bound its own work. A push gate's re-check of a push GitHub accepted
+// is the user (internal/officership's afterPush).
 func WithAfterForward(r *http.Request, f func(ctx context.Context, status int)) *http.Request {
-	return r
+	return r.WithContext(context.WithValue(r.Context(), afterForwardKey{}, f))
 }
 
-// AfterForwardOf (SCAFFOLD) is the function WithAfterForward attached to r.
-func AfterForwardOf(r *http.Request) func(ctx context.Context, status int) { return nil }
+// AfterForwardOf is the function WithAfterForward attached to r, nil when none.
+func AfterForwardOf(r *http.Request) func(ctx context.Context, status int) {
+	f, _ := r.Context().Value(afterForwardKey{}).(func(ctx context.Context, status int))
+	return f
+}
 
 // Proxy forwards an agent's request to a connector's upstream with the
 // credential injected.
@@ -546,6 +557,9 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			}
 		}
 		p.forward(w, admitted, caller, acc, c, secret, anonymous, onStatus, connector, host, rest, &status, &detail, refuse)
+		if after := AfterForwardOf(admitted); after != nil {
+			after(ctx, status)
+		}
 		return
 	}
 
