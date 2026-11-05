@@ -19,14 +19,15 @@ func TestAKubeAuditRowIsStoredAndSurvivesRLSOn(t *testing.T) {
 	e := connectors.AuditEntry{Kind: "kube", AgentName: "officer-anomaly-prod-a-1", Connector: connectors.KubeReadName,
 		Method: "list", Host: "prod-a", Path: "/api/v1/namespaces/web/pods", Status: 200,
 		Detail: `{"officer":"anomaly:prod-a","item":"41","jti":"jti-1","count":3,"bytes":512,"ms":12}`}
-	if err := s.Audit(ctx, e); err != nil {
-		t.Fatalf("a kube audit row was refused: %v", err)
+	id, err := connectors.AuditWithID(ctx, connectors.WithVirtual(s, connectors.KubeReadVirtual(), allowAll), e)
+	if err != nil || id <= 0 {
+		t.Fatalf("a kube audit row: id %d, err %v; want it stored with a positive id", id, err)
 	}
 	got, err := s.ListAudit(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Kind != "kube" || got[0].Path != e.Path || got[0].Detail != e.Detail {
+	if len(got) != 1 || got[0].ID != id || got[0].Kind != "kube" || got[0].Path != e.Path || got[0].Detail != e.Detail {
 		t.Fatalf("audit rows %+v, want the one kube row", got)
 	}
 	if err := db.RLSOff(ctx, pool); err != nil {

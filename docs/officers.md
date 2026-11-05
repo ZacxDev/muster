@@ -1614,7 +1614,9 @@ kind `kube` (migration 0084): the instance, the cluster, the verb, the path,
 the status, and in `detail` the officer, item, group/version/resource,
 namespace, name, selectors, the minted token's jti, the object count, bytes,
 duration and any refusal. **Never the answer.** The API servers do not log
-reads, so this row is the read audit. The instance cites a read by its jti.
+reads, so this row is the read audit. The tool's result carries the row's id
+(`audit_id`, a positive integer: `connector_audit.id`) and the jti; the
+instance cites a read by its `audit_id`.
 
 ## Security model
 

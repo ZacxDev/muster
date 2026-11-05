@@ -58,6 +58,14 @@ func (s *kubeConnStub) Audit(_ context.Context, e connectors.AuditEntry) error {
 	return nil
 }
 
+// AuditID is Audit returning the row's id (1, 2, …), as PGStore's does.
+func (s *kubeConnStub) AuditID(ctx context.Context, e connectors.AuditEntry) (int64, error) {
+	_ = s.Audit(ctx, e)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int64(len(s.audit)), nil
+}
+
 func (s *kubeConnStub) rows() []connectors.AuditEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,8 +191,8 @@ func TestOfficerKubeReadEndToEnd(t *testing.T) {
 	item := hq.AddTieredItem(offK, "anomaly.alert", "node-a", officers.TierJudgement)
 	hq.SetClaim(item, judge.Name, time.Now().Add(10*time.Minute))
 	out := s.dispatchAgentTool(ctx, judge, officers.ToolKubeRead, args)
-	if isToolErr(out) || !strings.Contains(out, canary) || !strings.Contains(out, "seam-jti-1") {
-		t.Fatalf("an approved instance holding an item: %s, want the list and its jti", out)
+	if isToolErr(out) || !strings.Contains(out, canary) || !strings.Contains(out, "seam-jti-1") || !strings.Contains(out, `"audit_id":1`) {
+		t.Fatalf("an approved instance holding an item: %s, want the list, its jti and audit_id 1 (the row's id, to cite)", out)
 	}
 	if m, r := api.counts(); m != 1 || r != 1 {
 		t.Fatalf("%d mints and %d reads, want 1 and 1", m, r)

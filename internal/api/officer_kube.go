@@ -182,7 +182,7 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 	audit := kuberead.Audit{Cluster: req.Cluster, Verb: req.Verb, Group: req.Group, Version: req.Version, Resource: req.Resource,
 		Namespace: req.Namespace, Name: req.Name, LabelSelector: req.LabelSelector, FieldSelector: req.FieldSelector}
 	item := itemArg
-	write := func(au kuberead.Audit) { s.auditKubeRead(ctx, a, o, item, au) }
+	write := func(au kuberead.Audit) int64 { return s.auditKubeRead(ctx, a, o, item, au) }
 
 	// The grant: this instance's own, approved by hand.
 	if s.ext.Connectors == nil || s.connectProxy == nil {
@@ -225,14 +225,16 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 		return toolErr("%v", err)
 	}
 	ans, au, err := kr.reader.Read(ctx, cluster, kubeSA(kc), req)
-	write(au)
+	auditID := write(au)
 	if err != nil {
 		if !errors.Is(err, kuberead.ErrRefused) {
 			s.logger.Printf("officers: %s: %s read of %s: %v", o.ID, a.Name, req.Cluster, err)
 		}
 		return toolErr("%v", err)
 	}
-	out, _ := json.Marshal(map[string]any{"cluster": req.Cluster, "path": au.Path, "jti": au.JTI, "item": item, "answer": ans})
+	// audit_id is the connector-audit row's id (a positive integer): what the
+	// instance cites as evidence. 0 when the store cannot say it.
+	out, _ := json.Marshal(map[string]any{"cluster": req.Cluster, "path": au.Path, "jti": au.JTI, "item": item, "audit_id": auditID, "answer": ans})
 	return string(out)
 }
 
@@ -275,21 +277,44 @@ func (s *Server) kubeHeldItem(ctx context.Context, c *officers.Client, instance 
 // auditKubeRead writes one connector-audit row of kind `kube`: what was read,
 // by whom, for which item — never the answer (kuberead.Audit has no field for
 // it).
-func (s *Server) auditKubeRead(ctx context.Context, a agents.Agent, o officers.Officer, item officers.ItemID, au kuberead.Audit) {
+//
+// The cluster, verb, path and status are columns; detail (the store keeps 500
+// characters of it) carries the rest, the refusal cut short so the record's
+// identifying fields come first and survive.
+func (s *Server) auditKubeRead(ctx context.Context, a agents.Agent, o officers.Officer, item officers.ItemID, au kuberead.Audit) int64 {
 	if s.ext.Connectors == nil {
-		return
+		return 0
+	}
+	refusal := au.Refusal
+	if r := []rune(refusal); len(r) > 120 {
+		refusal = string(r[:120]) + "…"
 	}
 	detail, _ := json.Marshal(struct {
-		Officer string `json:"officer"`
-		Item    string `json:"item,omitempty"`
-		kuberead.Audit
-	}{o.ID, string(item), au})
+		Officer       string `json:"officer"`
+		Item          string `json:"item,omitempty"`
+		JTI           string `json:"jti,omitempty"`
+		Group         string `json:"group"`
+		Version       string `json:"version,omitempty"`
+		Resource      string `json:"resource,omitempty"`
+		Namespace     string `json:"namespace,omitempty"`
+		Name          string `json:"name,omitempty"`
+		LabelSelector string `json:"label_selector,omitempty"`
+		FieldSelector string `json:"field_selector,omitempty"`
+		Count         int    `json:"count"`
+		Bytes         int    `json:"bytes"`
+		Millis        int64  `json:"ms"`
+		Refusal       string `json:"refusal,omitempty"`
+	}{o.ID, string(item), au.JTI, au.Group, au.Version, au.Resource, au.Namespace, au.Name, au.LabelSelector, au.FieldSelector,
+		au.Count, au.Bytes, au.Millis, refusal})
 	method := au.Verb
 	if method == "" {
 		method = "read"
 	}
-	if err := s.ext.Connectors.Audit(context.WithoutCancel(ctx), connectors.AuditEntry{Kind: "kube", AgentID: a.ID, AgentName: a.Name,
-		Connector: officers.KubeConnector, Method: method, Host: au.Cluster, Path: au.Path, Status: au.Status, Detail: string(detail)}); err != nil {
+	id, err := connectors.AuditWithID(context.WithoutCancel(ctx), s.ext.Connectors, connectors.AuditEntry{Kind: "kube", AgentID: a.ID,
+		AgentName: a.Name, Connector: officers.KubeConnector, Method: method, Host: au.Cluster, Path: au.Path, Status: au.Status, Detail: string(detail)})
+	if err != nil {
 		s.logger.Printf("officers: %s: audit of %s's cluster read: %v", o.ID, a.Name, err)
+		return 0
 	}
+	return id
 }

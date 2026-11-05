@@ -48,3 +48,25 @@ func (kubeReadVirtual) Problem(int64) string { return "" }
 // IsKubeRead reports whether v is the kube-read connector. The callers that
 // describe a virtual connector as the GitHub App branch on it first.
 func IsKubeRead(v Virtual) bool { return v != nil && v.Describe().Scheme == SchemeKubeRead }
+
+// AuditIDer is a store that returns an appended audit row's id (PGStore).
+type AuditIDer interface {
+	AuditID(ctx context.Context, e AuditEntry) (int64, error)
+}
+
+// AuditWithID appends e to s and returns its row id when s (or the store a
+// virtual connector wraps) can say it, else 0 after a plain Audit. Kept off
+// the Store interface on purpose: only officer_kube_read needs the id.
+func AuditWithID(ctx context.Context, s Store, e AuditEntry) (int64, error) {
+	for inner := s; ; {
+		if a, ok := inner.(AuditIDer); ok {
+			return a.AuditID(ctx, e)
+		}
+		vs, ok := inner.(*virtualStore)
+		if !ok {
+			break
+		}
+		inner = vs.Store
+	}
+	return 0, s.Audit(ctx, e)
+}
