@@ -233,8 +233,9 @@ var (
 		// person, read as that owner after the hub's nudge named them, through
 		// authz.ViaAttention.
 		"internal/api.(*Server).attentionPrincipal",
-		// The AskUserQuestion watcher: the transcript of the window showing a
-		// question, read as the question's owner (its host's token's), through
+		// The AskUserQuestion watcher and open-question scan: the transcript of
+		// the window showing a question, or of a waiting window, read as the
+		// question's or the window's owner (its host's token's), through
 		// authz.ViaAsk.
 		"internal/api.(*Server).askPrincipal",
 		// The stopped-agent reaper: each due agent is claimed and destroyed as

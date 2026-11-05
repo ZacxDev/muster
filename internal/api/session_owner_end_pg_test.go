@@ -138,8 +138,8 @@ func TestTheOwnerAnsweringAStallAtTheTerminalEndsItAndClearsThePush(t *testing.T
 }
 
 // TestTheOwnerAnsweringAWaitingPromptEndsItsEpisode (regression): a window
-// waiting on a permission prompt is pushed from the hook; the owner approves
-// it at the terminal and Claude works 40 s. The episode ends "owner" and its
+// waiting on a permission prompt is pushed once its grace has passed; the
+// owner approves it at the terminal and Claude works 40 s. The episode ends "owner" and its
 // push is withdrawn. Red at the base: a permission let through was a blip
 // that never ended one.
 func TestTheOwnerAnsweringAWaitingPromptEndsItsEpisode(t *testing.T) {
@@ -148,7 +148,7 @@ func TestTheOwnerAnsweringAWaitingPromptEndsItsEpisode(t *testing.T) {
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	e := f.oneEpisode(t)
 	tag := "attention-episode-" + strconv.FormatInt(e.ID, 10)
-	f.statePass(t)
+	f.pastGrace(t)
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention "+tag {
 		t.Fatalf("the waiting push: %v", got)
 	}

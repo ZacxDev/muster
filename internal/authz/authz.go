@@ -115,9 +115,10 @@ const (
 	ViaAttention Via = "attention"
 	// ViaAsk is the AskUserQuestion watcher (internal/api's question watch)
 	// acting as one owner: reading that owner's mirrored window's transcript
-	// for how a question it shows was answered. One site mints it —
-	// internal/api's askPrincipal — handed the owner of the question its host's
-	// hook registered.
+	// for how a question it shows was answered — or, the open-question scan,
+	// for a question a waiting window still shows open. One site mints it —
+	// internal/api's askPrincipal — handed the owner of a registered question,
+	// or the owner the mirror hub's nudge named.
 	ViaAsk Via = "ask"
 	// ViaReap is the STOPPED-AGENT REAPER (internal/api's reapStoppedAgents)
 	// destroying one owner's agent that has been stopped for
