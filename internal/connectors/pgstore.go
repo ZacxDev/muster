@@ -523,6 +523,22 @@ func (s *PGStore) Audit(ctx context.Context, e AuditEntry) error {
 	return err
 }
 
+// AuditID appends one entry and returns its id (connector_audit.id, a
+// BIGINT identity): what officer_kube_read hands the instance to cite.
+func (s *PGStore) AuditID(ctx context.Context, e AuditEntry) (int64, error) {
+	var agentID *int64
+	if e.AgentID != 0 {
+		agentID = &e.AgentID
+	}
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO connector_audit (kind, agent_id, owner_id, agent_name, connector_name, method, host, path, status, detail)
+		VALUES ($1, $2, COALESCE((SELECT owner_id FROM agents WHERE id = $2), nullif(current_setting('muster.uid', true), '')::bigint),
+		        $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, MaxAuditDetailBytes)).Scan(&id)
+	return id, err
+}
+
 // ListAudit returns the newest entries first.
 func (s *PGStore) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
 	if limit <= 0 || limit > 500 {

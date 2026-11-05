@@ -91,12 +91,24 @@ func WithVirtual(s Store, v Virtual, allow func(context.Context) bool) Store {
 // principal, if any. The proxy uses it to take the credential from the
 // connector rather than from the sealed-secret table; the UI uses it to mark the
 // connector as managed.
+//
+// Wrappers nest (the GitHub App's, then kube-read's: KubeReadVirtual), so it
+// looks through each in turn: the outer one answering for its own name only,
+// as every virtualStore method does.
 func VirtualOf(ctx context.Context, s Store, name string) (Virtual, bool) {
-	vs, ok := s.(*virtualStore)
-	if !ok || vs.name != name || !vs.allow(ctx) {
-		return nil, false
+	for {
+		vs, ok := s.(*virtualStore)
+		if !ok {
+			return nil, false
+		}
+		if vs.name == name {
+			if !vs.allow(ctx) {
+				return nil, false
+			}
+			return vs.v, true
+		}
+		s = vs.Store
 	}
-	return vs.v, true
 }
 
 // SourceFor is the credential source connector name has for ctx's principal:
@@ -121,7 +133,10 @@ func SourceFor(ctx context.Context, s Store, name string) string {
 //     repository and then pointed at another, or approved with none and then
 //     given one, asks its owner again. For an officer with `read_repos`, repo
 //     is the whole set as RepoScope writes it, so a change to either `repo`
-//     or `read_repos` re-opens the grant and a reordering does not.
+//     or `read_repos` re-opens the grant and a reordering does not. NOT for
+//     kube-read (KubeReadVirtual): what officer_kube_read may read is the
+//     officer's `kube` block, never a repository, so a repository change
+//     leaves its grant as it is (its credential source is still compared).
 //
 // reason is "" when the grant is returned unchanged, else the audit line's
 // why. The caller prompts the owner.
@@ -149,7 +164,7 @@ func ReconcileGrant(ctx context.Context, s Store, g Grant, repo string) (Grant, 
 	switch {
 	case src != SourceFor(ctx, s, g.Connector):
 		reason = ReopenedSourceChanged
-	case !SameRepo(g.Repo, repo):
+	case !SameRepo(g.Repo, repo) && !isKubeRead(ctx, s, g.Connector):
 		reason = reopenedRepoChanged(g.Repo, repo)
 	default:
 		return g, "", nil
@@ -159,6 +174,13 @@ func ReconcileGrant(ctx context.Context, s Store, g Grant, repo string) (Grant, 
 		return ng, "", err
 	}
 	return ng, reason, nil
+}
+
+// isKubeRead reports whether connector name is, for ctx's principal, the
+// kube-read virtual connector.
+func isKubeRead(ctx context.Context, s Store, name string) bool {
+	v, ok := VirtualOf(ctx, s, name)
+	return ok && IsKubeRead(v)
 }
 
 // ReopenedSourceChanged is ReconcileGrant's reason for a changed credential

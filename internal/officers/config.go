@@ -130,6 +130,10 @@ type Officer struct {
 	// it holds. It needs Tiers. nil (the default) refuses every proxy request
 	// for the officer.
 	LLM *LLM `json:"-"`
+	// Kube, when set, offers the officer's JUDGEMENT instances
+	// officer_kube_read over the clusters it names (kube.go). It needs Tiers.
+	// nil (the default) offers no cluster read.
+	Kube *Kube `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -179,6 +183,9 @@ type declared struct {
 	Tiers json.RawMessage `json:"tiers"`
 	// LLM is parsed by parseLLM (llm.go), which reads its own key.
 	LLM json.RawMessage `json:"llm"`
+	// Kube is parsed by parseKube (kube.go), which reads each cluster's
+	// sealed environment.
+	Kube json.RawMessage `json:"kube"`
 }
 
 // Transcript is an officer's `transcript` block: whether its instances' live
@@ -219,6 +226,11 @@ var connectorNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 func MayRequestConnector(o Officer, name string) bool {
 	if name == GitHubConnector {
 		return true
+	}
+	// kube-read: the judgement pool of an officer with a `kube` block only
+	// (kube.go). Never by declaring it in `connectors`, which is refused.
+	if name == KubeConnector {
+		return len(o.KubeClusters()) > 0
 	}
 	for _, c := range o.Connectors {
 		if c == name {
@@ -411,6 +423,9 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		if c == GitHubConnector {
 			return Officer{}, fmt.Errorf("officer %s: connectors lists %q, which every officer may already request; remove it", o.ID, c)
 		}
+		if c == KubeConnector {
+			return Officer{}, fmt.Errorf("officer %s: connectors lists %q, which only a `kube` block grants (to the judgement pool); remove it", o.ID, c)
+		}
 		if !seenConn[c] {
 			seenConn[c] = true
 			o.Connectors = append(o.Connectors, c)
@@ -482,6 +497,13 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.Transcript = tr
+	}
+	if len(d.Kube) > 0 && string(d.Kube) != "null" {
+		k, err := parseKube(d.Kube, o.Tiers != nil, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Kube = k
 	}
 	if hasLLM {
 		l, err := parseLLM(o, d.LLM, getenv)
