@@ -80,7 +80,7 @@ func TestAPausedComposerSaysSoInOneLine(t *testing.T) {
 func TestATapFillsAndNeverSubmits(t *testing.T) {
 	js := renderString(t, suggestRowScript())
 	for _, want := range []string{`b.type = 'button'`, `execCommand('insertText', false, add)`, `(/\n$/.test(cur) ? '' : '\n') + text`,
-		`chips.appendChild(b)`, `p.textContent = s.text`} {
+		`item.appendChild(b)`, `chips.appendChild(item)`, `p.textContent = s.text`} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("the script lacks %s", want)
 		}
@@ -89,5 +89,16 @@ func TestATapFillsAndNeverSubmits(t *testing.T) {
 		if strings.Contains(js, never) {
 			t.Fatalf("the script has %s", never)
 		}
+	}
+}
+
+// TestALongChipsExpandButtonIsTheChipsActionInAPopover: the page that draws
+// the row also loads floatingMenuScript, which places the expand popover (the
+// button and popover themselves are driven in a browser by the e2e suite).
+func TestALongChipsExpandButtonIsTheChipsActionInAPopover(t *testing.T) {
+	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@3", Interactive: true,
+		StepUp: stepUpFixture(), Suggest: suggestSrc}))
+	if !strings.Contains(page, floatingMenuScriptSrc) {
+		t.Fatal("the Rendered view does not load floatingMenuScript, so the expand popover is never placed (it stays invisible)")
 	}
 }
