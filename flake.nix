@@ -145,6 +145,11 @@
           # `nix build .#muster-cli` dies with `pattern doctor_sample.wav: no
           # matching files found`.
           || rel == "cmd/muster/doctor_sample.wav"
+          # 🔴 ONE FILE, NOT A SUFFIX: `internal/kuberead/allowlist.go` embeds
+          # officer_kube_read's allowlist, and the CLI compiles `internal/kuberead`
+          # through `internal/api`. Without this row `nix build .#muster-cli` dies
+          # with `pattern allowlist.json: no matching files found`.
+          || rel == "internal/kuberead/allowlist.json"
           # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
           # NOT AN EXTENSION. ONE file under it is read by a test a `checkPhase` here
           # RUNS: `cmd/muster/one_service_test.go` opens
