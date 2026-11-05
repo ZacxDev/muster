@@ -1,7 +1,8 @@
 # muster compared with other ways to reach coding agents from your phone
 
 This page compares muster with Happy, Claude Code's own Remote Control, and
-plain SSH plus tmux from a phone terminal app. Each claim about another
+plain SSH plus tmux from a phone terminal app, and names
+[herdr and Paseo](#herdr-and-paseo) briefly. Each claim about another
 product comes from that product's own README, docs or site, listed under
 [Sources](#sources) with the date it was read. A cell reads **not stated** when
 those sources do not say. Products change quickly; check their pages before you
@@ -59,7 +60,7 @@ Where others are better:
   viewed ([limits.md](limits.md)). Windows is not listed. Happy's desktop app
   runs on macOS, Windows and Linux.
 - **Non-Claude agents.** Codex and Gemini CLI are terminal views only, and the
-  message box does not send to opencode yet ([README](../README.md#core)).
+  message box does not send to opencode yet ([mirroring.md](mirroring.md#muster-does-not-send-to-opencode-yet)).
 - **Voice.** muster's mic is dictation into the message box. Happy's voice
   agent holds a spoken conversation, reports back and takes approvals by voice.
 
@@ -82,8 +83,8 @@ at once.
 
 Where Remote Control is better than muster: nothing to install or host if you
 already use Claude Code and the Claude app, a native app, first-party support,
-deep Claude Code integration (subagent progress, compaction), and organization
-controls such as Trusted Devices. Where it differs: it is for Claude Code only,
+deep Claude Code integration (subagent progress, compaction), and Trusted
+Devices. Where it differs: it is for Claude Code only,
 it routes the transcript through Anthropic's servers, and it does not work with
 a custom `ANTHROPIC_BASE_URL`, Amazon Bedrock, Google Cloud or Microsoft
 Foundry.
@@ -100,6 +101,29 @@ operating system, full terminal control, and no service in between. Where it
 differs: the phone has to reach the machine (a port forward or a VPN), you work
 in a terminal on a small screen, alerts arrive only while the connection is
 alive, and there is no ask/answer queue.
+
+## herdr and Paseo
+
+Readers ask about these two, so here is one line each, from their own READMEs
+(read 2026-11-04); neither is in the table above.
+
+- **herdr** is "the runtime your coding agents live on": one Rust binary
+  (Apache-2.0) that runs in the terminal you already use, marks every pane
+  working, blocked or idle, keeps agents running when you detach or lose SSH,
+  and puts saved SSH machines in one agent list. It fits better if you want everything in a
+  terminal with nothing to host, a Windows installer, and agents that drive it
+  (spawn panes, wait on each other). Where muster differs: muster is a phone
+  web app with push that mirrors sessions you already run in plain tmux; herdr
+  owns its panes' terminals, and its README names no phone client or push.
+- **Paseo** is an open-source (Apache-2.0) agentic development environment: a
+  daemon on your machine runs Claude Code, Codex, Copilot, OpenCode and other
+  agents, each in its own worktree, with desktop, web, CLI and native iOS and
+  Android apps, connected directly (TCP, Tailscale, a VPN) or through an
+  end-to-end encrypted relay. It fits better if you want native phone apps, an
+  editor, diffs, pull requests and a browser in one app, voice mode, and one
+  interface across agents. Where muster differs: Paseo's daemon starts and
+  manages the agents; muster mirrors sessions you started yourself in tmux.
+  Whether Paseo picks up a session already running in a terminal: not stated.
 
 ## Sources
 
@@ -133,6 +157,10 @@ data-usage page on **2026-10-30**.
   - <https://github.com/blinksh/blink> (licence GPL-3.0 per the repository)
   - <https://termius.com/> (platforms)
   - <https://termius.com/pricing>
+- **herdr** (read 2026-11-04):
+  - <https://github.com/herdrdev/herdr> (README; licence Apache-2.0 per the repository)
+- **Paseo** (read 2026-11-04):
+  - <https://github.com/getpaseo/paseo> (README; licence Apache-2.0 per its README)
 - **Omnara** (out of scope; see the note under the table):
   - <https://github.com/omnara-ai/omnara> (README; licence Apache-2.0 per the repository)
   - <https://www.omnara.com/>

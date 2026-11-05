@@ -16,19 +16,20 @@ agent you run in tmux shows up; Claude Code gets the most.
 
 - **A push when a session needs you, and one queue for everything waiting.**
   Every session on every machine is in one list, with the ones waiting on you
-  first, and the **Asks** page gathers everything blocked on you. Each stop is
-  pushed once and the push never quotes the session
-  ([details below](#notifications-only-when-you-are-needed)).
+  first, and the **Asks** page gathers everything blocked on you. A session's
+  stop is pushed once and never quoted; an agent's own question is pushed with
+  its text ([below](#notifications-only-when-you-are-needed)). This needs
+  Push, which INSTALL.md turns on; on iOS, Add to Home Screen first.
 - **A chat on your phone, not a terminal.** A Claude Code session opens as a
   chat with a message box at the bottom, within reach of your thumb. With
-  dictation on, tap the mic and speak: the transcript lands in the box, and you read it before you
-  press Send.
-- **What Remote Control leaves out.** muster picks up every session already
-  running in tmux, with nothing to turn on per session; lists all your
-  machines side by side; shows Codex, opencode, Gemini CLI and shells next to
-  Claude Code; and reads the session on your own machine, so it works with an
-  API key, Amazon Bedrock or a custom `ANTHROPIC_BASE_URL`, which Remote
-  Control does not support.
+  dictation on, tap the mic and speak: the transcript lands in the box, and
+  you read it before you press Send.
+- **What Remote Control leaves out.** muster picks up sessions already running
+  in tmux, including ones started before or without Remote Control, with no
+  restart; lists non-Claude panes and every machine in one waiting-first list;
+  and reads the session on your own machine, so it works with an API key,
+  Amazon Bedrock or a custom `ANTHROPIC_BASE_URL`, which Remote Control does
+  not support.
 - **Everything stays on your machines and your tailnet.** The server runs on
   one of your machines and is reached only over Tailscale. Each machine dials
   out to it, so muster opens no network port on them (the optional MCP
@@ -41,6 +42,8 @@ agent you run in tmux shows up; Claude Code gets the most.
   question with options and wait for your answer, and Claude Code's own
   multiple-choice questions become a form you answer from your phone. Each
   needs a one-time setup per machine.
+
+<p align="center"><img src="docs/img/ask-flow.gif" width="270" alt="On a phone: the sidebar lists sessions on two machines; one asks whether to tag and publish a release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"></p>
 
 ## How it works
 
@@ -60,22 +63,12 @@ The components and what each trusts: [docs/architecture.md](docs/architecture.md
 
 ## Notifications: only when you are needed
 
-In the Compose stack (from the first release after v0.144.0), a session is
-pushed **once per stop**:
-
-- at once, when it waits on you (a permission prompt, a question);
-- or once, when it has sat idle past the stall threshold (10 minutes by
-  default), as **stalled**.
-
-The push names the session, as `<window> needs you` or `is stalled`, and
-**never quotes it**: no tool, command or anything the session said. It closes
-when you act in the session or open it in muster, and a stop you dealt with is
-not pushed again. **The exception:** an agent's ask, and a Claude Code
-multiple-choice question held by the ask hook, are pushed with the question's text, so you can see what is
-asked. Task events, such as a task ready for review, have their own switches
-under **Account → Notifications**. Details:
-[docs/attention.md](docs/attention.md#stalled--waiting-session-state) and
-[docs/push.md](docs/push.md); turning it off:
+From v0.146.0 the Compose stack pushes each stop of a session **once**: when it
+waits on you, or when it has sat idle 10 minutes (stalled). The push names the
+session and never quotes it; only an agent's ask, or a Claude Code question held
+by the ask hook, carries its text. Task events have their own switches under
+**Account → Notifications**. When a push closes, and how to turn this off:
+[docs/attention.md](docs/attention.md#stalled--waiting-session-state),
 [docs/features.md](docs/features.md#session-state).
 
 ## Quickstart
@@ -153,7 +146,7 @@ turned on with a few lines in `.env` (and, for some, a Compose profile).
 |---|---|---|
 | [Core](docs/features.md#core): mirrored sessions, chat and Terminal views, typing into sessions, sidebar and search, the Asks page, tasks, the installable app, the CLI and `muster doctor` | Compose and its Postgres; `muster-mirror` and tmux on each machine; Tailscale | on |
 | [Push](docs/features.md#push) | HTTPS, which Tailscale gives you; keys INSTALL.md generates | on in INSTALL.md |
-| [One push per stop](docs/features.md#session-state) | nothing beyond the core | on in the Compose stack |
+| [One push per stop](docs/features.md#session-state) | Push (above) | on in the Compose stack, from v0.146.0 |
 | [Dictation](docs/features.md#dictation) | `--profile stt` (bundled, CPU), `--profile stt-cohere` (GPU), or your own OpenAI-compatible speech-to-text | off (INSTALL.md asks) |
 | [Attachments](docs/features.md#attachments) | `--profile s3`, or your own S3-compatible store | off |
 | [Suggested replies](docs/features.md#suggested-replies) and [focus](docs/features.md#focus) | an OpenRouter key | off until the key is set |
@@ -171,10 +164,10 @@ ends with how to check that feature is on.
 ## muster vs Remote Control
 
 If you use only Claude Code on a paid Claude plan, **Remote Control is less
-work**: nothing to install or host, a native app, first-party support, deeper
-Claude Code integration (subagent progress, compaction), organization controls
-such as Trusted Devices, and permission prompts and questions answered in the
-app.
+work**: nothing to install or host, a native app with its own push for
+permission prompts and questions, those prompts answered in the app,
+first-party support, deeper Claude Code integration (subagent progress,
+compaction), and Trusted Devices.
 
 muster is for what it does not cover: agents other than Claude Code, Claude
 Code on an API key, Bedrock, Google Cloud, Microsoft Foundry or a custom
@@ -182,8 +175,8 @@ Code on an API key, Bedrock, Google Cloud, Microsoft Foundry or a custom
 session that stays on your own machines and tailnet instead of going through
 Anthropic's servers.
 
-The full comparison, with Happy and SSH + tmux too, and the sources for every
-cell: [docs/comparison.md](docs/comparison.md).
+The full comparison, with Happy, herdr, Paseo and SSH + tmux too, and the
+sources for every cell: [docs/comparison.md](docs/comparison.md).
 
 ## Limits
 
@@ -212,112 +205,12 @@ The full list is in [docs/limits.md](docs/limits.md).
 
 ## Features
 
-Each feature in more detail, with its own page. What each optional one needs:
-[docs/features.md](docs/features.md).
+Every feature, what it needs and how to turn it on: [docs/features.md](docs/features.md).
+The full documentation index: [docs/README.md](docs/README.md).
 
 <p align="center">
   <img src="docs/img/desktop.png" width="820" alt="A mirrored Claude Code session at a desktop size, with its tool calls, context badges and the session switcher">
 </p>
-
-### Core
-
-- **Mirrored sessions.** Each tmux window on your machines is shown live. A
-  Claude Code window renders as a chat (the **Rendered** view), and the
-  **Terminal** view is one tap away (on a Linux host; see [Limits](#limits)). A
-  window that has only the Terminal view says why. Viewing a window never moves
-  your own terminal. → [docs/mirroring.md](docs/mirroring.md)
-- **Session switcher, sidebar and search.** A bottom bar with Recent, Waiting,
-  Pins and All, picked by an icon (and a ⋯ menu to pin the session you are on), and a sidebar
-  that lists every session like channels in a chat app: the chief first (if
-  you turned one on), then the sessions waiting on you, then the rest by
-  recency, the long-idle ones folded under **Idle**. The search opens with the
-  magnifier on the bar or in the sidebar, or `/`, and finds a session by its
-  codename, title, repository, kind or machine. Home opens the chief's chat, or
-  the session you opened last. → [docs/mirroring.md](docs/mirroring.md)
-- **Message box and step-up.** Send text into a Claude Code session, a plain
-  terminal pane (Codex, Gemini CLI, a shell) or a dispatched agent. The message
-  box does not send to opencode yet, and sends to Hermes only through the
-  host's gated `-hermes-send`; type into either from the Terminal view. Typing
-  into a mirrored session needs that machine opted in (read-only is the
-  default) and a recent sign-in: you confirm your password again (or a
-  passkey, with per-user accounts). → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
-- **Asks.** A single queue of everything waiting on you: sessions at a prompt,
-  their questions, and agents' asks. → [docs/attention.md](docs/attention.md)
-
-  <p align="center"><img src="docs/img/ask-flow.gif" width="270" alt="On a phone: the sidebar lists sessions on two machines; one asks whether to tag and publish a release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"></p>
-- **Context badges.** Each tool call in a Claude Code session shows how much
-  context it added. → [docs/mirroring.md](docs/mirroring.md)
-- **Task board.** Tasks have statuses, comments, attachments, tags and a review
-  queue. People and agents share the board. → [docs/tasks.md](docs/tasks.md)
-- **PWA.** An installable app with a share target, shortcuts and a badge.
-  → [docs/push.md](docs/push.md#installable-app-pwa)
-- **CLI.** `muster`, a client for agents and scripts, and `muster doctor`.
-  → [docs/cli.md](docs/cli.md)
-
-### Optional
-
-- **Push.** Web Push notifications, one per stop of a session
-  ([above](#notifications-only-when-you-are-needed)). → [docs/push.md](docs/push.md)
-- **Dictation.** A mic on every message box, transcribed by a speech-to-text
-  service you choose: the installer offers a local model on the server (GPU or
-  CPU) or your own OpenAI-compatible API key. The transcript is never sent by
-  itself. → [docs/dictation.md](docs/dictation.md)
-- **Agent asks.** An agent asks you a question and waits for your answer
-  instead of stopping (for a mirrored Claude Code session, after a one-time
-  setup on its machine: [docs/features.md](docs/features.md#agent-ask-tool)).
-  Claude Code's multiple-choice questions show as a form you can answer from
-  your phone, with a hook on each machine
-  ([docs/features.md](docs/features.md#ask-cards)).
-  → [docs/attention.md](docs/attention.md#the-agent-tools)
-- **Suggested replies and focus.** Reply chips when a session hands back to
-  you, and a short title and summary per session that search can find. Both
-  need an OpenRouter key. → [docs/suggested-replies.md](docs/suggested-replies.md),
-  [docs/focus.md](docs/focus.md)
-- **File attachments.** Attach files in the message box. They are stored in
-  S3-compatible storage. → [docs/uploads.md](docs/uploads.md)
-- **Accounts.** Per-user accounts through GoTrue, with passkeys, invites, roles
-  and API tokens, kept apart by row-level security. → [docs/auth.md](docs/auth.md)
-- **Connectors.** Agents use your stored HTTP credentials through muster's
-  proxy, and never see the secret. → [docs/connectors.md](docs/connectors.md)
-- **GitHub App.** muster's own GitHub identity, and tokens scoped to one
-  repository for agents. → [docs/github-app.md](docs/github-app.md)
-- **Browser flows.** A queue of scripted browser jobs, run by a runner you host,
-  each approved by its owner. → [docs/browser-flows.md](docs/browser-flows.md)
-
-### Advanced: Kubernetes
-
-- **Agent dispatch.** Start an agent on a task in its own pod.
-  → [docs/provisioner.md](docs/provisioner.md)
-- **Agent actions.** A dispatched agent's page shows its live status and has a
-  **⋯** menu to rename, start, stop or delete it; the **+** beside **Agents** in
-  the sidebar dispatches a new one (or saves it for later).
-  → [docs/provisioner.md](docs/provisioner.md#an-agents-page)
-- **Chief (off by default).** An optional agent that reports on and manages
-  the rest of the fleet. It runs in its own Kubernetes pod, so it needs the
-  agent provisioner. Turn it on or off under **Account → Chief**. While it is
-  on, home opens its chat and the sidebar lists it first; off (the default for
-  a new install or user), home opens the session you opened last and nothing
-  is sent to it.
-  → [docs/chief.md](docs/chief.md)
-- **Memo relay.** Delivers [cairn](https://github.com/ZacxDev/cairn) memos to
-  dispatched agents. → [docs/memo-relay.md](docs/memo-relay.md)
-
-## Architecture
-
-```mermaid
-flowchart LR
-  browser["Phone / browser (PWA)"] -->|HTTPS| server["muster-server"]
-  cli["muster CLI · agents · scripts"] -->|JSON API + tokens| server
-  server --> pg[("Postgres<br/>(row-level security)")]
-  host["muster-mirror<br/>on each of your machines<br/>(tmux, Claude Code, …)"] -->|"outbound WebSocket tunnel"| server
-  server -.->|optional| stt["speech-to-text"]
-  server -.->|optional| push["Web Push"]
-  server -.->|"optional"| k8s["Kubernetes<br/>agent pods"]
-```
-
-[docs/architecture.md](docs/architecture.md) covers the binaries, the
-listeners, and what each component trusts. The full documentation index is
-[docs/README.md](docs/README.md).
 
 ## The name
 
