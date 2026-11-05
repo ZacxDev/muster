@@ -314,6 +314,17 @@ var (
 		Name: "muster_officer_hq_faults",
 		Help: "Officers whose HQ refuses them permanently (401/403/404); their instances are scaled to zero.",
 	})
+	// OfficerCapRefusalWithheld counts judgement instance numbers withheld
+	// from their pool because HQ refuses the wall-time cap's escalation of the
+	// item they held (tiers.judgement.max_item_minutes): muster keeps the item
+	// held and never starts that number until the escalation lands (fail
+	// closed). At the default max_instances 1 one is the whole pool, and every
+	// other judgement item waits. Nonzero is worth an alert; the owner is
+	// also notified once per episode, and the log line names the officer.
+	OfficerCapRefusalWithheld = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_cap_refusal_withheld",
+		Help: "Judgement instances withheld from their pool because HQ refuses the wall-time cap's escalation of the item they held.",
+	})
 	// OfficerTranscriptEvents counts officer transcript events by what became
 	// of them (internal/officers/transcript): posted (HQ answered 2xx),
 	// dropped_buffer (an instance's buffer was full: the oldest went),

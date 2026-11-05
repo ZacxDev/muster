@@ -240,7 +240,8 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 			}
 		}
 	}
-	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement}
+	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
+		CapHold: s.officerCapHoldNotice}
 	switch {
 	case fwd != nil && px != nil:
 		sync := llmSync(px, reg)

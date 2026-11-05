@@ -422,10 +422,13 @@ type officerState struct {
 	// unclockedLogged: a capped pool's claim without HQ's claimed_at has been
 	// logged (once per officer per process).
 	unclockedLogged bool
-	// capRefused is the last refusal logged for each capped item whose
-	// escalation HQ refused (logged on change, not every pass); an item no
-	// longer over its cap is forgotten. Only the log depends on it.
-	capRefused map[ItemID]string
+	// capRefused is each capped item whose escalation HQ is refusing: the
+	// last refusal logged (logged on change, not every pass) and the episode
+	// Config.CapHold was told of. An entry is one withheld instance number
+	// (muster_officer_cap_refusal_withheld); it is dropped, and the episode
+	// ended, when the escalation lands, HQ answers 409, or the item is no
+	// longer over its cap.
+	capRefused map[ItemID]refusedCap
 	// fault is the CONFIRMED permanent HQ refusal (the status, e.g. "404"; ""
 	// = none). It is set once a refusal has been seen on FaultStrikes
 	// consecutive passes and cleared ONLY by a successful answer — a 5xx in
@@ -434,6 +437,31 @@ type officerState struct {
 	// strikes counts consecutive passes that saw a permanent refusal; a
 	// successful answer and an outage (5xx, network) both reset it.
 	strikes int
+}
+
+// refusedCap is one refused cap escalation the loop remembers.
+type refusedCap struct {
+	msg  string
+	pool Officer
+	hold CapHold
+}
+
+// CapHold is one episode of a refused wall-time cap escalation (Config.
+// CapHold): HQ refuses to take capped item Item, so muster keeps it held as
+// its stopped holder and never starts that instance number (N) again until
+// the escalation lands. The pool is withheld that instance meanwhile; at
+// max_instances 1, the whole pool.
+type CapHold struct {
+	Item ItemID
+	// N is the holder's instance number, withheld from the pool.
+	N int
+	// Refusal is HQ's refusal, as muster got it, when the episode began.
+	Refusal string
+	// Waiting is the pool's claimable items when the episode began.
+	Waiting int
+	// Ended: the episode is over (the escalation landed, HQ answered 409, or
+	// the item is no longer held over its cap).
+	Ended bool
 }
 
 // Reconciler runs the wake loop.
@@ -447,6 +475,8 @@ type Reconciler struct {
 	observed func(o Officer, claimed []Item, at time.Time)
 	// judgement is Config.Judgement (nil: no pool is capped).
 	judgement *JudgementLedger
+	// capHold is Config.CapHold (nil: none).
+	capHold func(o Officer, h CapHold)
 
 	mu    sync.Mutex
 	state map[string]*officerState
@@ -471,6 +501,14 @@ type Config struct {
 	// for new work; a ledger that cannot be read leaves that pool as capped
 	// for the pass (logged) and the other pool unaffected. nil caps nothing.
 	Judgement *JudgementLedger
+	// CapHold, when set, is told once when an episode of a refused cap
+	// escalation begins (a capped item HQ will not take, whose instance
+	// number is withheld from its pool) and once when it ends (h.Ended), with
+	// o the item's pool. It is how a withheld pool reaches a human: nothing
+	// else says the judgement pool is waiting. Called outside the loop's
+	// lock, from the pass; it must not block. A restarted muster begins a
+	// new episode for a refusal still in force.
+	CapHold func(o Officer, h CapHold)
 }
 
 // NewReconciler returns a loop over cfg's officers.
@@ -485,7 +523,7 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		cfg.Now = time.Now
 	}
 	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
-		judgement: cfg.Judgement, state: map[string]*officerState{}, done: make(chan struct{})}, nil
+		judgement: cfg.Judgement, capHold: cfg.CapHold, state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
 // erroredSlot is how an instance in error is named in the log.
@@ -495,7 +533,7 @@ func (r *Reconciler) st(id string) *officerState {
 	s, ok := r.state[id]
 	if !ok {
 		s = &officerState{idleSince: map[string]time.Time{}, promptedAt: map[string]time.Time{}, errored: map[string]erroredSlot{},
-			capRefused: map[ItemID]string{}}
+			capRefused: map[ItemID]refusedCap{}}
 		r.state[id] = s
 	}
 	return s
@@ -614,9 +652,11 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 			r.log.Printf("officers: %s: HQ gave item %s no claimed_at, so max_item_minutes cannot time it: such items are NOT capped (logged once)", o.ID, d.Unclocked[0])
 		}
 	}
-	for id := range s.capRefused {
+	var ended []refusedCap
+	for id, c := range s.capRefused {
 		if !over[id] {
 			delete(s.capRefused, id)
+			ended = append(ended, c)
 		}
 	}
 	for i, p := range pools {
@@ -634,6 +674,9 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	}
 	r.mu.Unlock()
 	r.publish()
+	for _, c := range ended {
+		r.endCapHold(c)
+	}
 	return r.actAll(ctx, pools, ds, nil)
 }
 
@@ -718,15 +761,17 @@ func (r *Reconciler) noteErrors(o Officer, pools []Officer, obs []Observation) {
 func (r *Reconciler) publish() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	slots, faults := 0, 0
+	slots, faults, withheld := 0, 0, 0
 	for _, s := range r.state {
 		slots += len(s.errored)
 		if s.fault != "" {
 			faults++
 		}
+		withheld += len(s.capRefused)
 	}
 	metrics.OfficerErrorSlots.Set(float64(slots))
 	metrics.OfficerHQFaults.Set(float64(faults))
+	metrics.OfficerCapRefusalWithheld.Set(float64(withheld))
 	published.Lock()
 	published.slots, published.faults = float64(slots), float64(faults)
 	published.Unlock()
@@ -769,7 +814,7 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 	var errs []error
 	for _, ov := range d.Overrun {
-		errs = append(errs, r.stopOverrun(ctx, o, ov)...)
+		errs = append(errs, r.stopOverrun(ctx, o, ov, d.Claimable)...)
 	}
 	for _, it := range d.Release {
 		if err := r.hq.Release(ctx, o, it.ID, it.ClaimedBy); err != nil {
@@ -835,7 +880,12 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 //     next pass sees it over the cap again (claimed_at is HQ's, a heartbeat
 //     keeps it) and tries the escalation again. HQ's error is logged once per
 //     change. Releasing it instead would re-run the session the cap stopped.
-func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun) []error {
+//     The holder's number stays withheld from the pool (Decide), so the
+//     first such refusal begins a CapHold episode (Config.CapHold: the
+//     owner is told the pool is waiting); it ends when the escalation lands
+//     or HQ answers 409. waiting is the pool's claimable items, for the
+//     episode.
+func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun, waiting int) []error {
 	var errs []error
 	if ov.Up {
 		if err := r.fleet.Stop(ctx, o, ov.N); err != nil {
@@ -859,11 +909,13 @@ func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun) []e
 	}
 	if err == nil {
 		r.log.Printf("officers: %s: escalated item %s: held by %s past the wall-time cap", o.label(), ov.Item.ID, ov.Item.ClaimedBy)
+		r.forgetCapRefusal(o, ov.Item.ID)
 		return errs
 	}
 	errs = append(errs, err)
 	if hqStatus(err) == http.StatusConflict {
 		r.log.Printf("officers: %s: escalate item %s at the wall-time cap: %v (no longer held by %s)", o.label(), ov.Item.ID, err, ov.Item.ClaimedBy)
+		r.forgetCapRefusal(o, ov.Item.ID)
 		return errs
 	}
 	hbErr := r.hq.Heartbeat(ctx, o, ov.Item.ID, ov.Item.ClaimedBy, overrunHoldSeconds(o))
@@ -873,9 +925,22 @@ func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun) []e
 	msg := err.Error()
 	r.mu.Lock()
 	s := r.st(o.ID)
-	changed := s.capRefused[ov.Item.ID] != msg
-	s.capRefused[ov.Item.ID] = msg
+	c, had := s.capRefused[ov.Item.ID]
+	changed := c.msg != msg
+	if !had {
+		c = refusedCap{pool: o, hold: CapHold{Item: ov.Item.ID, N: ov.N, Refusal: msg, Waiting: waiting}}
+	}
+	c.msg = msg
+	s.capRefused[ov.Item.ID] = c
 	r.mu.Unlock()
+	if !had {
+		r.publish()
+		r.log.Printf("officers: %s: instance %s is WITHHELD from the pool while HQ refuses the escalation of capped item %s (%d claimable item(s) waiting)",
+			o.label(), o.InstanceLabel(ov.N), ov.Item.ID, waiting)
+		if r.capHold != nil {
+			r.capHold(o, c.hold)
+		}
+	}
 	if changed || hbErr != nil {
 		held := "kept it held by " + ov.Item.ClaimedBy + " (heartbeat) so it is not re-claimed; retrying the escalation every pass"
 		if hbErr != nil {
@@ -884,6 +949,31 @@ func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun) []e
 		r.log.Printf("officers: %s: HQ refused the wall-time cap's escalation of item %s: %v; %s", o.label(), ov.Item.ID, err, held)
 	}
 	return errs
+}
+
+// forgetCapRefusal drops capped item id's refused escalation, if any, and
+// ends its episode.
+func (r *Reconciler) forgetCapRefusal(o Officer, id ItemID) {
+	r.mu.Lock()
+	s := r.st(o.ID)
+	c, had := s.capRefused[id]
+	delete(s.capRefused, id)
+	r.mu.Unlock()
+	if had {
+		r.publish()
+		r.endCapHold(c)
+	}
+}
+
+// endCapHold ends c's episode: logged, and told to Config.CapHold.
+func (r *Reconciler) endCapHold(c refusedCap) {
+	r.log.Printf("officers: %s: instance %s is no longer withheld: capped item %s's escalation landed or the item is no longer held over its cap",
+		c.pool.label(), c.pool.InstanceLabel(c.hold.N), c.hold.Item)
+	if r.capHold != nil {
+		h := c.hold
+		h.Ended = true
+		r.capHold(c.pool, h)
+	}
 }
 
 // hqStatus is the HQ status of a refusal (an *HQError), else 0.
