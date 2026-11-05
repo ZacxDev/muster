@@ -1,0 +1,21 @@
+{
+  "_comment": "The fleet clusters' officer-read ClusterRole rules (officers plan §2.1), copied verbatim. Its infrastructure repository pins the live ClusterRole to a byte-identical copy of this file, and TestTheAllowlistIsTheRBACLedger pins muster's allowlist.json to the union of the fixtures here: the cross-repo ledger is enforced by fixture equality. Edit both sides together, never one.",
+  "verbs": ["get", "list", "watch"],
+  "rules": [
+    {"apiGroups": [""], "resources": ["pods", "pods/log", "pods/status", "events", "nodes", "nodes/status", "namespaces", "services", "endpoints", "configmaps", "persistentvolumes", "persistentvolumeclaims", "resourcequotas", "limitranges", "replicationcontrollers"]},
+    {"apiGroups": ["apps"], "resources": ["deployments", "deployments/status", "replicasets", "replicasets/status", "statefulsets", "statefulsets/status", "daemonsets", "daemonsets/status"]},
+    {"apiGroups": ["batch"], "resources": ["jobs", "cronjobs"]},
+    {"apiGroups": ["autoscaling"], "resources": ["horizontalpodautoscalers"]},
+    {"apiGroups": ["policy"], "resources": ["poddisruptionbudgets"]},
+    {"apiGroups": ["discovery.k8s.io"], "resources": ["endpointslices"]},
+    {"apiGroups": ["events.k8s.io"], "resources": ["events"]},
+    {"apiGroups": ["networking.k8s.io"], "resources": ["ingresses", "networkpolicies"]},
+    {"apiGroups": ["storage.k8s.io"], "resources": ["storageclasses"]},
+    {"apiGroups": ["metrics.k8s.io"], "resources": ["pods", "nodes"]},
+    {"apiGroups": ["apiextensions.k8s.io"], "resources": ["customresourcedefinitions"]},
+    {"apiGroups": ["kustomize.toolkit.fluxcd.io", "helm.toolkit.fluxcd.io", "source.toolkit.fluxcd.io", "image.toolkit.fluxcd.io"], "resources": ["*"]},
+    {"apiGroups": ["monitoring.coreos.com"], "resources": ["prometheusrules", "servicemonitors", "podmonitors"]},
+    {"apiGroups": ["kyverno.io"], "resources": ["clusterpolicies", "policies"]},
+    {"apiGroups": ["nvidia.com"], "resources": ["clusterpolicies"]}
+  ]
+}
