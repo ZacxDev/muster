@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -44,9 +45,15 @@ func healthySystem() *fakeSystem {
 	return &fakeSystem{goos: "linux", unitState: "active", tmux: true}
 }
 
+// doctorCwd is the directory the doctor's fake system reports it runs in
+// (Claude Code's project-scoped MCP servers are looked up for it). Set per
+// run by runDoctorAgainst.
+var doctorCwd string
+
 func (f *fakeSystem) sys() doctorSystem {
 	return doctorSystem{
 		goos: f.goos, uid: 1000,
+		getwd: func() (string, error) { return doctorCwd, nil },
 		lookPath: func(name string) (string, error) {
 			switch {
 			case name == "tmux" && f.tmux:
@@ -310,7 +317,12 @@ type doctorOpts struct {
 	// mcpRegisteredURL is the url Claude Code's registration names ("" =
 	// the endpoint's own, http://127.0.0.1:47823/mcp).
 	mcpRegisteredURL string
-	extra            []string
+	// mcpScope is where it is registered: "user" (default), "local"
+	// (~/.claude.json's projects[cwd]) or "project" (cwd/.mcp.json).
+	mcpScope string
+	// askMatcher is the ask hook's matcher ("" = "AskUserQuestion").
+	askMatcher string
+	extra      []string
 	// stdout and stderr, when set, are the streams instead of buffers (the
 	// result's stdout/stderr are then empty: the caller reads its files).
 	stdout, stderr io.Writer
@@ -352,6 +364,11 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		args = append(args, "doctor")
 	}
 	mirrorEnv := filepath.Join(dir, "mirror", "env")
+	// muster-mirror's config directory, as os.UserConfigDir resolves it here
+	// (internal/mirrorpath): a synthetic XDG_CONFIG_HOME under the test dir.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	doctorCwd = filepath.Join(dir, "work")
+	_ = os.MkdirAll(doctorCwd, 0o700)
 	if !o.noMirror {
 		tok := fakeMirrorToken
 		if o.tokenFile != "" {
@@ -377,20 +394,32 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 			t.Fatal(err)
 		}
 		if !o.noMCPSecret {
-			_ = os.WriteFile(filepath.Join(dir, "mirror", "mcp-secret"), []byte("a-synthetic-mcp-secret\n"), 0o600)
+			_ = os.MkdirAll(filepath.Join(dir, "xdg", "muster-mirror"), 0o700)
+			_ = os.WriteFile(filepath.Join(dir, "xdg", "muster-mirror", "mcp-secret"), []byte("a-synthetic-mcp-secret\n"), 0o600)
 		}
 		if !o.noMCPRegistration {
 			u := o.mcpRegisteredURL
 			if u == "" {
 				u = "http://127.0.0.1:47823/mcp"
 			}
-			_ = os.WriteFile(filepath.Join(dir, ".claude.json"),
-				[]byte(`{"mcpServers":{"muster":{"type":"http","url":"`+u+`","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}"}}}}`), 0o600)
+			srv := `{"muster":{"type":"http","url":"` + u + `","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}"}}}`
+			switch o.mcpScope {
+			case "local":
+				_ = os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"projects":{`+strconv.Quote(doctorCwd)+`:{"mcpServers":`+srv+`}}}`), 0o600)
+			case "project":
+				_ = os.WriteFile(filepath.Join(doctorCwd, ".mcp.json"), []byte(`{"mcpServers":`+srv+`}`), 0o600)
+			default:
+				_ = os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"mcpServers":`+srv+`}`), 0o600)
+			}
 		}
 		if !o.noAskHook {
+			m := o.askMatcher
+			if m == "" {
+				m = "AskUserQuestion"
+			}
 			_ = os.MkdirAll(filepath.Join(dir, ".claude"), 0o700)
 			_ = os.WriteFile(filepath.Join(dir, ".claude", "settings.json"),
-				[]byte(`{"hooks":{"PreToolUse":[{"matcher":"AskUserQuestion","hooks":[{"type":"command","command":"muster-mirror ask","timeout":10}]}]}}`), 0o600)
+				[]byte(`{"hooks":{"PreToolUse":[{"matcher":`+strconv.Quote(m)+`,"hooks":[{"type":"command","command":"muster-mirror ask","timeout":10}]}]}}`), 0o600)
 		}
 	}
 	args = append(args, "--mirror-env", mirrorEnv)
@@ -849,11 +878,23 @@ func TestDoctorChecksThisHostsSessionToolsLocally(t *testing.T) {
 		{"no listen line", doctorOpts{noMCPListen: true}, "mcp-endpoint", statusSkip, "MUSTER_MIRROR_MCP_LISTEN is not set", "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823"},
 		{"no listen line, registration skipped", doctorOpts{noMCPListen: true}, "mcp-registration", statusSkip, "serves no MCP endpoint", ""},
 		{"listen but no secret", doctorOpts{noMCPSecret: true}, "mcp-endpoint", statusFail, "has not started with it yet", "restart muster-mirror"},
-		{"listen but not registered", doctorOpts{noMCPRegistration: true}, "mcp-registration", statusFail, "registers no MCP server at it",
+		{"listen but not registered", doctorOpts{noMCPRegistration: true}, "mcp-registration", statusFail, "registers an MCP server at it",
 			`claude mcp add-json --scope user muster '{"type":"http","url":"http://127.0.0.1:47823/mcp"`},
+		// The secret is where muster-mirror writes it: os.UserConfigDir, which
+		// honours XDG_CONFIG_HOME (internal/mirrorpath) — not beside the settings.
+		{"secret under XDG_CONFIG_HOME", doctorOpts{}, "mcp-endpoint", statusPass, "/xdg/muster-mirror/mcp-secret", ""},
+		// The same endpoint spelled with another loopback name is the endpoint.
+		{"registered as localhost", doctorOpts{mcpRegisteredURL: "http://localhost:47823/mcp"}, "mcp-registration", statusPass, "registered: user", ""},
+		{"registered as [::1]", doctorOpts{mcpRegisteredURL: "http://[::1]:47823/mcp/"}, "mcp-registration", statusPass, "registered: user", ""},
+		// Claude Code's other scopes count, and say they are this directory's only.
+		{"registered in the local scope", doctorOpts{mcpScope: "local"}, "mcp-registration", statusPass, "registered for this directory only: local", ""},
+		{"registered in the project's .mcp.json", doctorOpts{mcpScope: "project"}, "mcp-registration", statusPass, "registered for this directory only: project", ""},
+		// The ask hook's matcher is a regular expression.
+		{"ask hook matcher is a regex", doctorOpts{askMatcher: "AskUserQuestion|Bash"}, "ask-hook", statusPass, "runs `muster-mirror ask`", ""},
+		{"ask hook matcher for another tool", doctorOpts{askMatcher: "Bash"}, "ask-hook", statusSkip, "no PreToolUse hook", ""},
 		// A server registered at ANOTHER address is not this endpoint.
 		{"registered at another address", doctorOpts{mcpRegisteredURL: "http://127.0.0.1:9999/mcp"}, "mcp-registration", statusFail,
-			"registers no MCP server at it", "claude mcp add-json"},
+			"registers an MCP server at it", "claude mcp add-json"},
 		{"no ask hook", doctorOpts{noAskHook: true}, "ask-hook", statusSkip, "no PreToolUse hook runs `muster-mirror ask`", `"command": "muster-mirror ask"`},
 		{"not a mirrored machine", doctorOpts{noMirror: true}, "mcp-endpoint", statusSkip, "it is not connected", ""},
 	} {

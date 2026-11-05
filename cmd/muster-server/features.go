@@ -116,17 +116,17 @@ func featureCatalog() []features.Feature {
 		{ID: features.SessionState, Name: "Session state",
 			Description: "One push per stop, and the Asks page's Stalled / waiting section.",
 			Enable:      []features.Var{is(envSessionState, "1")}},
-		{ID: features.Plugins, Name: "Plugins",
+		{ID: features.Plugins, NeedsChief: true, Name: "Plugins",
 			Description: "External bots post messages to your chief; it drafts replies you approve.",
 			Enable:      []features.Var{is(envPlugins, "1")}},
 		{ID: features.PluginTasks, Name: "Plugin tasks",
 			Description: "A plugin files one task per upstream record.",
 			Enable:      []features.Var{v(envPluginTaskNamespaces, "tag namespaces")}},
-		{ID: features.SessionRouting, Name: "Session routing",
+		{ID: features.SessionRouting, NeedsChief: true, Name: "Session routing",
 			Description: "The chief hands a plugin message to one of your sessions; the session's answer becomes the reply.",
 			Enable:      []features.Var{is(envSessionRouting, "1")},
 			Settings:    []string{envRouteRelayAllow}},
-		{ID: features.TaskRouting, Name: "Task routing",
+		{ID: features.TaskRouting, NeedsChief: true, Name: "Task routing",
 			Description: "A plugin hands a task to the chief, which routes it (and may start an agent on it).",
 			Enable:      []features.Var{is(envTaskRouting, "1")},
 			Settings:    []string{envChiefDispatchOwners}},
@@ -202,12 +202,19 @@ func openRouterReason(what string, ext api.Extensions) string {
 // 0, Q1): the keyless Compose install is the documented default, nothing was
 // asked for, and MISCONFIGURED means only "asked for, a dependency missing" —
 // which `muster doctor` FAILs on. A default install must not fail its doctor.
-func needsOpenRouterKey(ext api.Extensions) string {
-	r := "needs " + envAgentOpenRouterKey
+func needsOpenRouterKey() string { return "needs " + envAgentOpenRouterKey }
+
+// openRouterStatus is the state of a feature that spends the owner's
+// OpenRouter key (suggested replies, focus), with no environment key: OFF
+// when nobody can have a key, ON when members can store their own — a
+// credential store exists — which is the only state in which it does
+// anything for anyone, and the reason says for whom (#441 round 1).
+func openRouterStatus(ext api.Extensions) features.Status {
 	if ext.Credentials != nil {
-		return r + " (members who saved their own OpenRouter key on Credentials have it)"
+		return features.Status{State: features.On, Reason: "for members who saved their own OpenRouter key on Credentials; " +
+			"the admin (and anyone without one) " + needsOpenRouterKey()}
 	}
-	return r
+	return features.Status{State: features.Off, Reason: needsOpenRouterKey()}
 }
 
 // chiefMissing is why a feature that acts through the chief cannot, or "": the
@@ -293,7 +300,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	case ext.Suggest.Off:
 		st[features.SuggestedReplies] = off(envSuggest + "=off turns them off for everyone")
 	case c.openRouterKeyMissing():
-		st[features.SuggestedReplies] = off(needsOpenRouterKey(ext))
+		st[features.SuggestedReplies] = openRouterStatus(ext)
 	default:
 		st[features.SuggestedReplies] = on("")
 	}
@@ -303,7 +310,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	case c.FocusInterval <= 0:
 		st[features.Focus] = off(envFocusInterval + "=0 turns the refresh off")
 	case c.openRouterKeyMissing():
-		st[features.Focus] = off(needsOpenRouterKey(ext))
+		st[features.Focus] = openRouterStatus(ext)
 	default:
 		st[features.Focus] = on("")
 	}

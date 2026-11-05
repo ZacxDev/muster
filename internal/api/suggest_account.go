@@ -46,16 +46,15 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 		return head + state("server-off", "Off for everyone on this server (MUSTER_SUGGEST=off).") + `</section>`
 	}
 	// 🔴 "On." WITH NO KEY BEHIND IT WAS A FALSE STATE: the engine records "no
-	// OpenRouter key" and makes no call. The registry (features.go) is what
-	// knows the server has no key, so the section says so, above the per-user
-	// toggle (a member who saved their own key on Credentials still gets them).
-	misconfigured := ""
-	if f, ok := s.feature(features.SuggestedReplies); ok && f.State == features.Misconfigured {
-		misconfigured = `<p id="suggest-misconfigured" data-state="misconfigured" class="text-sm font-semibold text-st-warning-fg">Misconfigured: ` +
-			html.EscapeString(f.Reason) + `. <a href="` + ui.FeatureHref(features.SuggestedReplies) + `" class="text-accent underline">How to fix it</a></p>
-`
+	// OpenRouter key" and makes no call. The registry (cmd/muster-server
+	// features.go) is what knows the server has no key, and on a keyless
+	// install with no credential store it says OFF — so this section says Off,
+	// with the registry's reason, and offers no switch that would do nothing.
+	if f, ok := s.feature(features.SuggestedReplies); ok && f.State == features.Off {
+		return head + state("off-needs-key", "Off: "+html.EscapeString(f.Reason)+". ") +
+			`<a href="` + ui.FeatureHref(features.SuggestedReplies) + `" class="text-sm text-accent underline">How to turn them on</a>
+</section>`
 	}
-	head += misconfigured
 	owner := requestOwner(r.Context())
 	usage := s.suggestUsageReadout(r, owner)
 	outcome := eng.Enabled(r.Context(), owner)

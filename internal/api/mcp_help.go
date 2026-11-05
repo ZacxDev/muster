@@ -131,9 +131,14 @@ func (c mcpCatalog) help(args string, surface mcpSurface) string {
 	out := map[string]any{"tools": rows,
 		"note": "call " + mcpHelpTool + "{tool} for one tool's full current definition"}
 	if surface.offFeatures != nil {
-		if off := surface.offFeatures(); len(off) > 0 {
+		off, degraded := surface.offFeatures()
+		if len(off) > 0 {
 			out["disabled_features"] = off
 			out["disabled_note"] = "these muster features are off on this server, so their tools are not offered; each says how the operator turns it on"
+		}
+		if len(degraded) > 0 {
+			out["degraded_features"] = degraded
+			out["degraded_note"] = "these muster features' tools ARE offered, but something the feature needs is missing (reason); what depends on it does not happen"
 		}
 	}
 	return toolJSON(out)

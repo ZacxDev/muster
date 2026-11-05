@@ -159,9 +159,9 @@ INSTALL.md's Step 10 passes `--api-url` there.
 | `push` | the VAPID keys are set | `GET /api/push/vapid-public-key` (signed in), else `GET /api/doctor` |
 | `dictation` | a bundled 1.7 s spoken sample comes back as text through `POST /transcribe` | the server and its speech-to-text service |
 | `features` | no feature the server reports is **misconfigured** (asked for, with a dependency missing); a feature that is merely off is not a failure. Every feature is listed below the checks, with its state and the line that turns it on | `GET /api/doctor` |
-| `mcp-endpoint` | this machine's `muster-mirror` serves its local MCP endpoint (`MUSTER_MIRROR_MCP_LISTEN` in its settings) and has written its secret. Unset is a SKIP: the agent ask tool is optional | this machine's muster-mirror settings |
-| `mcp-registration` | Claude Code's user config registers that endpoint, so sessions here have muster's tools. A FAIL prints the exact `claude mcp add-json` command | `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) |
-| `ask-hook` | Claude Code runs `muster-mirror ask` before `AskUserQuestion` (ask cards). Absent is a SKIP with the hook to add | `~/.claude/settings.json` |
+| `mcp-endpoint` | this machine's `muster-mirror` serves its local MCP endpoint (`MUSTER_MIRROR_MCP_LISTEN` in its settings) and has written its secret where muster-mirror keeps it (`MUSTER_MIRROR_MCP_SECRET_FILE`, else the user config directory: `$XDG_CONFIG_HOME` or `~/.config` on Linux, `~/Library/Application Support` on macOS). Unset is a SKIP: the agent ask tool is optional | this machine's muster-mirror settings |
+| `mcp-registration` | one of Claude Code's scopes for this directory registers that endpoint (any loopback spelling: `localhost`, `127.0.0.1`, `::1`; same port, path `/mcp`), so sessions here have muster's tools. A registration in only the local or project scope passes and says sessions elsewhere have none. A FAIL prints the exact `claude mcp add-json` command | `~/.claude.json` (user scope, and `projects[<this directory>]`), `./.mcp.json` |
+| `ask-hook` | Claude Code runs `muster-mirror ask` before `AskUserQuestion` (ask cards; the hook's matcher is a regular expression, so `AskUserQuestion\|Bash` counts). Absent is a SKIP with the hook to add | `~/.claude/settings.json` |
 
 - **Feature off:** a route whose feature is off on the server (session routing for
   `route reply`, plugins for `plugins retry`, …) answers a typed 404, and the CLI

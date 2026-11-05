@@ -164,8 +164,6 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.Connectors, connectorToolDefs()...)
 		add(features.BrowserFlows, flowToolDefs()...)
 		add(features.Plugins, gatedTaskToolDef(), replyDraftToolDef(), pluginMessageSettleToolDef())
-		add(features.Focus, focusToolDefs()...)
-		add(features.Focus, sessionsOverviewToolDef(), fleetReportToolDef())
 		add(features.SessionRouting, routeToolDef())
 		add(features.TaskRouting, taskRoutingToolDefs(true)...)
 		add(features.Officers, officerToolDefs()...)
@@ -180,39 +178,50 @@ func toolFeatures(door mcpDoor) map[string]string {
 }
 
 // mcpDisabledTool is the explanation for a call on door to a tool it does not
-// list because its feature is off: "disabled: <feature> — set … (docs/…)". ""
+// list because its feature is OFF: "disabled: <feature> — set … (docs/…)". ""
 // when the tool is not gated by a feature on this door, when its feature is
-// on (it is then unlisted for another reason — the caller is not the chief,
-// say — and stays an unknown name), or when no registry is installed.
+// not off (a misconfigured feature keeps its wired tools, so an unlisted one
+// is unlisted for another reason — the caller is not the chief, say — and
+// stays an unknown name), or when no registry is installed.
+//
+// 🔴 THE SAME TEST AS THE LISTINGS (featureOff), so a name is explained as
+// disabled exactly when the listing left it out for that reason.
 func (s *Server) mcpDisabledTool(door mcpDoor, name string) string {
 	id, gated := toolFeatures(door)[name]
-	if !gated {
-		return ""
-	}
-	if f, ok := s.feature(id); !ok || f.State == features.On {
+	if !gated || !s.featureOff(id) {
 		return ""
 	}
 	f, _ := s.feature(id)
 	return f.DisabledMessage()
 }
 
-// mcpOffFeatures is every feature that gates one of door's tools and is not
-// on: what that door's muster_help lists.
-func (s *Server) mcpOffFeatures(door mcpDoor) []mcpOffFeature {
+// mcpOffFeatures is what door's muster_help says about its features: the ones
+// that are OFF (their tools are not offered here), and — separately — the ones
+// that are MISCONFIGURED (their tools ARE offered, but something they need is
+// missing, said in the reason).
+//
+// 🔴 OFF IS featureOff, THE LISTINGS' OWN TEST: a feature is never reported
+// "not offered" while its tools are listed (#441 round 1).
+func (s *Server) mcpOffFeatures(door mcpDoor) (off, degraded []mcpOffFeature) {
 	gating := map[string][]string{}
 	for tool, id := range toolFeatures(door) {
 		gating[id] = append(gating[id], tool)
 	}
-	var out []mcpOffFeature
 	for _, f := range s.features.NotOn() {
 		tools, ok := gating[f.ID]
 		if !ok {
 			continue
 		}
 		sort.Strings(tools)
-		out = append(out, mcpOffFeature{Feature: f.ID, State: string(f.State), Tools: tools, Enable: f.DisabledMessage()})
+		row := mcpOffFeature{Feature: f.ID, State: string(f.State), Tools: tools, Enable: f.DisabledMessage()}
+		if s.featureOff(f.ID) {
+			off = append(off, row)
+		} else {
+			row.Reason = f.Reason
+			degraded = append(degraded, row)
+		}
 	}
-	return out
+	return off, degraded
 }
 
 // mcpOffFeature is one row of muster_help's `disabled_features`.
@@ -221,12 +230,14 @@ type mcpOffFeature struct {
 	State   string   `json:"state"`
 	Tools   []string `json:"tools"`
 	Enable  string   `json:"enable"`
+	// Reason is a degraded (misconfigured) feature's missing dependency.
+	Reason string `json:"reason,omitempty"`
 }
 
 // mcpFeatureHooks are a door's surface hooks for the registry.
-func (s *Server) mcpFeatureHooks(door mcpDoor) (func(string) string, func() []mcpOffFeature) {
+func (s *Server) mcpFeatureHooks(door mcpDoor) (func(string) string, func() ([]mcpOffFeature, []mcpOffFeature)) {
 	return func(name string) string { return s.mcpDisabledTool(door, name) },
-		func() []mcpOffFeature { return s.mcpOffFeatures(door) }
+		func() ([]mcpOffFeature, []mcpOffFeature) { return s.mcpOffFeatures(door) }
 }
 
 // --- the page ------------------------------------------------------------------

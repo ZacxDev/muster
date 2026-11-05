@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,12 +134,13 @@ func disabledOn(t *testing.T, rpc func(string) *mcpReply) map[string]bool {
 
 // TestMusterHelpListsOnlyItsOwnDoorsFeatures: the mirror door's muster_help
 // lists the features ITS tools need (session routing here) and never one only
-// the agent door's tools need (focus, officers); the agent door lists focus
-// (#441 round 1, R10).
+// the agent door's tools need (browser flows); the agent door lists browser
+// flows (#441 round 1, R10).
 func TestMusterHelpListsOnlyItsOwnDoorsFeatures(t *testing.T) {
-	off := map[string]features.Status{features.Focus: {State: features.Off, Reason: "needs EXAMPLE_OPENROUTER_KEY"}}
+	off := map[string]features.Status{features.BrowserFlows: {State: features.Off, Reason: "there is no database"}}
+	set := testFeatureSetWith(t, off, features.Feature{ID: features.BrowserFlows, Name: "Browser flows", Description: "Jobs.", Note: "host a runner"})
 	f, ws, _, _ := newMirrorMCPFixture(t)
-	f.srv.UseFeatures(testFeatureSet(t, off))
+	f.srv.UseFeatures(set)
 	mirror := disabledOn(t, func(body string) *mcpReply {
 		_, r, raw := f.mirrorRPC(t, mirrorAs(ws, focusSID), body)
 		if r == nil {
@@ -146,44 +148,111 @@ func TestMusterHelpListsOnlyItsOwnDoorsFeatures(t *testing.T) {
 		}
 		return r
 	})
-	if !mirror[features.SessionRouting] || mirror[features.Focus] {
-		t.Fatalf("mirror door disabled_features = %v, want session-routing and not focus", mirror)
+	if !mirror[features.SessionRouting] || mirror[features.BrowserFlows] {
+		t.Fatalf("mirror door disabled_features = %v, want session-routing and not browser-flows", mirror)
 	}
 	g := newGatedFixture(t)
-	g.srv.UseFeatures(testFeatureSet(t, off))
+	g.srv.UseFeatures(set)
 	agent := disabledOn(t, func(body string) *mcpReply { r, _ := g.mcp(t, g.chiefTok, body, nil); return r })
-	if !agent[features.Focus] {
-		t.Fatalf("agent door disabled_features = %v, want focus", agent)
+	if !agent[features.BrowserFlows] {
+		t.Fatalf("agent door disabled_features = %v, want browser-flows", agent)
 	}
 }
 
-// TestAToolIsOfferedExactlyWhenItsFeatureIsOn: the chief's focus tools, with
-// the focus store wired, are listed when the registry says focus is on and
-// not listed (a call explains) when it says off — the listing and the
-// registry agree (#441 round 1, R10).
-func TestAToolIsOfferedExactlyWhenItsFeatureIsOn(t *testing.T) {
+// chiefTools is the chief's tools/list on g, by name.
+func chiefTools(t *testing.T, g *gatedFixture) []string {
+	t.Helper()
+	r, _ := g.mcp(t, g.chiefTok, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
+	return toolNamesOf(servedTools(t, r))
+}
+
+// TestFocusOffKeepsTheChiefsReadOnlyTools: with focus OFF in the registry —
+// no OpenRouter key, or MUSTER_FOCUS_INTERVAL=0 — the chief's tool list is
+// EXACTLY the list with no registry at all (the base behaviour): focus_*,
+// sessions_overview and fleet_report read what is stored and call no model,
+// so "nothing new is summarized" takes none of them away (#441 round 1).
+func TestFocusOffKeepsTheChiefsReadOnlyTools(t *testing.T) {
 	g := newGatedFixture(t)
-	rpc := func(body string) *mcpReply { r, _ := g.mcp(t, g.chiefTok, body, nil); return r }
-	focusTool := focusToolDefs()[0].Name
-	listed := func() bool {
-		for _, n := range toolNamesOf(servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))) {
-			if n == focusTool {
-				return true
-			}
+	base := chiefTools(t, g)
+	for _, name := range []string{focusToolDefs()[0].Name, sessionsOverviewToolDef().Name, fleetReportToolDef().Name} {
+		if !slices.Contains(base, name) {
+			t.Fatalf("positive control: %s is not on the base list %v", name, base)
 		}
-		return false
 	}
-	g.srv.UseFeatures(testFeatureSet(t, nil)) // focus on
+	for _, reason := range []string{"needs EXAMPLE_OPENROUTER_KEY", "EXAMPLE_FOCUS_INTERVAL=0 turns the refresh off"} {
+		// Everything else this fixture wires is on, so only focus differs.
+		g.srv.UseFeatures(testFeatureSet(t, map[string]features.Status{features.Focus: {State: features.Off, Reason: reason},
+			features.Connectors: {State: features.On}, features.Plugins: {State: features.On}}))
+		if got := chiefTools(t, g); !slices.Equal(got, base) {
+			t.Errorf("focus off (%s): the chief's tools\n %v\nwant the base list\n %v", reason, got, base)
+		}
+	}
+}
+
+// TestAToolIsOfferedExactlyWhenItsFeatureIsOn: a worker's connector tools,
+// with the connector store wired, are listed when the registry says
+// connectors are on and not listed (a call explains) when it says off — the
+// listing and the registry agree (#441 round 1, R10).
+func TestAToolIsOfferedExactlyWhenItsFeatureIsOn(t *testing.T) {
+	f := newConnFixture(t)
+	tok := "features-conn-token-0123456789"
+	f.seedAgent(t, "features-conn", tok)
+	rpc := func(body string) *mcpReply { r, _ := f.mcp(t, tok, body, nil); return r }
+	tool := connectorToolDefs()[0].Name
+	listed := func() bool {
+		return slices.Contains(toolNamesOf(servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))), tool)
+	}
+	f.srv.UseFeatures(testFeatureSet(t, map[string]features.Status{features.Connectors: {State: features.On}}))
 	if !listed() {
-		t.Fatalf("focus on: %s is not listed", focusTool)
+		t.Fatalf("connectors on: %s is not listed", tool)
 	}
-	g.srv.UseFeatures(testFeatureSet(t, map[string]features.Status{features.Focus: {State: features.Off, Reason: "needs EXAMPLE_OPENROUTER_KEY"}}))
+	f.srv.UseFeatures(testFeatureSet(t, nil)) // connectors off
 	if listed() {
-		t.Fatalf("focus off in the registry: %s is still listed", focusTool)
+		t.Fatalf("connectors off in the registry: %s is still listed", tool)
 	}
-	text, isErr := toolTextRaw(t, rpc(mcpToolCall(focusTool, map[string]any{})))
-	if !isErr || !strings.Contains(text, "disabled: focus") {
-		t.Fatalf("a call with focus off: %v %s", isErr, text)
+	text, isErr := toolTextRaw(t, rpc(mcpToolCall(tool, map[string]any{})))
+	if !isErr || !strings.Contains(text, "disabled: connectors") {
+		t.Fatalf("a call with connectors off: %v %s", isErr, text)
+	}
+}
+
+// TestMusterHelpNeverCallsAnOfferedToolNotOffered: plugins MISCONFIGURED with
+// the store wired keep reply_draft listed — so muster_help must not put plugins
+// under disabled_features ("not offered"); it lists them as degraded, with the
+// reason. And a worker (not the chief) calling the chief-only tool gets
+// "unknown tool", not a misconfiguration message (#441 round 1).
+func TestMusterHelpNeverCallsAnOfferedToolNotOffered(t *testing.T) {
+	g := newGatedFixture(t)
+	g.srv.UseFeatures(testFeatureSet(t, map[string]features.Status{features.Plugins: {State: features.Misconfigured, Reason: "no agent gateway"}}))
+	if !slices.Contains(chiefTools(t, g), replyDraftToolDef().Name) {
+		t.Fatal("positive control: reply_draft is not listed")
+	}
+	text, isErr := toolTextRaw(t, func() *mcpReply {
+		r, _ := g.mcp(t, g.chiefTok, mcpToolCall("muster_help", map[string]any{}), nil)
+		return r
+	}())
+	var help struct {
+		Disabled []mcpOffFeature `json:"disabled_features"`
+		Degraded []mcpOffFeature `json:"degraded_features"`
+	}
+	if isErr || json.Unmarshal([]byte(text), &help) != nil {
+		t.Fatalf("muster_help{}: %s", text)
+	}
+	for _, d := range help.Disabled {
+		if d.Feature == features.Plugins {
+			t.Fatalf("muster_help says plugins' tools are not offered while reply_draft is listed: %+v", d)
+		}
+	}
+	found := false
+	for _, d := range help.Degraded {
+		found = found || (d.Feature == features.Plugins && d.Reason == "no agent gateway")
+	}
+	if !found {
+		t.Fatalf("plugins is not listed as degraded with its reason: %+v", help.Degraded)
+	}
+	r, _ := g.mcp(t, g.workerTok, mcpToolCall(gatedTaskToolDef().Name, map[string]any{}), nil)
+	if r == nil || r.Error == nil || !strings.Contains(r.Error.Message, "unknown tool") {
+		t.Fatalf("a worker calling a chief-only tool of a misconfigured feature: %+v", r)
 	}
 }
 

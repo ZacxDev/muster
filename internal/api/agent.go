@@ -379,7 +379,13 @@ func (s *Server) agentTools() []agentTool {
 	// Session focus (focus_tools.go): the chief lists and searches its owner's
 	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
 	// chief-only: they reach the owner's whole fleet.
-	if s.ext.Focus != nil && !s.featureOff(features.Focus) {
+	//
+	// ⚠ GATED ON THE STORE ONLY, NOT ON THE FOCUS FEATURE (#441 round 1): every
+	// tool here READS what is stored — focus already written, live transcripts,
+	// session history — and calls no model. "Focus off" (no OpenRouter key,
+	// MUSTER_FOCUS_INTERVAL=0) means nothing NEW is summarized; the stored
+	// history and the overview still work, so they stay offered.
+	if s.ext.Focus != nil {
 		for _, d := range focusToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}

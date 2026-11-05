@@ -21,6 +21,13 @@ import (
 // features the consumers under test look up. Variable names are synthetic.
 func testFeatureSet(t *testing.T, states map[string]features.Status) features.Set {
 	t.Helper()
+	return testFeatureSetWith(t, states)
+}
+
+// testFeatureSetWith is testFeatureSet with more catalog entries (each needs
+// its state in states).
+func testFeatureSetWith(t *testing.T, states map[string]features.Status, more ...features.Feature) features.Set {
+	t.Helper()
 	v := func(name string) []features.Var { return []features.Var{{Name: name, Placeholder: "value"}} }
 	catalog := []features.Feature{
 		{ID: features.Mirror, Name: "Mirrored sessions", Description: "Sessions.", Core: true, Enable: []features.Var{{Name: "EXAMPLE_MIRROR", Value: "1"}}},
@@ -34,6 +41,7 @@ func testFeatureSet(t *testing.T, states map[string]features.Status) features.Se
 		{ID: features.AgentAskTool, Name: "Muster tools in sessions", Description: "Tools.", HostSide: true, Note: "run muster-mirror with -mcp-listen"},
 		{ID: features.Chief, Name: "Chief", Description: "A fleet agent.", Kubernetes: true, Enable: []features.Var{{Name: "EXAMPLE_PROVISIONER", Value: "kubernetes"}}},
 	}
+	catalog = append(catalog, more...)
 	st := map[string]features.Status{
 		features.Mirror: {State: features.On}, features.Dictation: {State: features.Off, Reason: "EXAMPLE_STT_TOKEN is unset"},
 		features.Attachments: {State: features.Off, Reason: "none set"}, features.SuggestedReplies: {State: features.Misconfigured, Reason: "EXAMPLE_OPENROUTER_KEY is unset"},
@@ -75,7 +83,7 @@ func sessionGet(h http.Handler, s *Server, target string, document bool) *httpte
 // with its state (on, off, misconfigured), reason and enable line, exactly as
 // FeatureViews serialises it — the serialisation whose leak scan is
 // cmd/muster-server's TestTheFeatureRegistryLeaksNoConfiguredValue. (GET
-// /api/features was dropped, #441 round 0 D3: the doctor serves the list.)
+// GET /api/features was dropped, #441 round 0 D3: the doctor serves the list.)
 func TestTheDoctorServesTheRegistry(t *testing.T) {
 	set := testFeatureSet(t, nil)
 	_, h := featureServer(t, Extensions{}, set)
@@ -122,7 +130,7 @@ func TestTheDoctorServesTheRegistry(t *testing.T) {
 	if string(raw.Features) != string(views) {
 		t.Fatalf("served features differ from FeatureViews:\n%s\n%s", raw.Features, views)
 	}
-	// The JSON route is gone.
+	// The removed JSON route (D3) answers 404.
 	gone := httptest.NewRecorder()
 	h.ServeHTTP(gone, httptest.NewRequest(http.MethodGet, "/api/features", nil))
 	if gone.Code != http.StatusNotFound {
@@ -183,17 +191,19 @@ func TestTheFeaturesPageRendersEachRowWithItsState(t *testing.T) {
 	}
 }
 
-// TestTheSuggestedRepliesSectionSaysMisconfigured: with the registry saying
-// suggested replies are misconfigured (no OpenRouter key), the Account page no
-// longer says only "On." — it says misconfigured, why, and links to the fix.
-// The control: the same page with the feature on says no such thing.
-func TestTheSuggestedRepliesSectionSaysMisconfigured(t *testing.T) {
+// TestTheSuggestedRepliesSectionFollowsTheRegistry: with the registry saying
+// suggested replies are OFF (a keyless server with no credential store), the
+// Account page says Off with its reason and offers no switch; with them on,
+// the section is as before. (cmd/muster-server's
+// TestAKeylessAccountPageSaysSuggestedRepliesAreOff drives the same page with
+// the real evaluator.)
+func TestTheSuggestedRepliesSectionFollowsTheRegistry(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		state features.Status
-		want  bool
+		off   bool
 	}{
-		{"misconfigured", features.Status{State: features.Misconfigured, Reason: "EXAMPLE_OPENROUTER_KEY is unset"}, true},
+		{"off", features.Status{State: features.Off, Reason: "needs EXAMPLE_OPENROUTER_KEY"}, true},
 		{"on", features.Status{State: features.On}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -203,10 +213,13 @@ func TestTheSuggestedRepliesSectionSaysMisconfigured(t *testing.T) {
 			if !strings.Contains(body, `data-testid="suggest-settings"`) {
 				t.Fatalf("no suggested-replies section:\n%s", body)
 			}
-			got := strings.Contains(body, `id="suggest-misconfigured" data-state="misconfigured"`) &&
-				strings.Contains(body, "EXAMPLE_OPENROUTER_KEY is unset") && strings.Contains(body, `#suggested-replies`)
-			if got != c.want {
-				t.Fatalf("misconfigured note drawn = %v, want %v", got, c.want)
+			got := strings.Contains(body, `data-state="off-needs-key"`) && strings.Contains(body, "Off: needs EXAMPLE_OPENROUTER_KEY") &&
+				strings.Contains(body, `#suggested-replies`)
+			if got != c.off {
+				t.Fatalf("off note drawn = %v, want %v", got, c.off)
+			}
+			if c.off && strings.Contains(body, `id="suggest-toggle"`) {
+				t.Fatal("off: a switch that would do nothing is drawn")
 			}
 		})
 	}

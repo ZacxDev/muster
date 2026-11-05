@@ -155,9 +155,10 @@ type mcpSurface struct {
 	// off ("disabled: <feature> — set … (docs/…)"), or "" (features.go's
 	// mcpDisabledTool). nil: every unlisted name is unknown.
 	disabled func(name string) string
-	// offFeatures is the features that gate muster tools and are off, which
-	// muster_help lists (features.go's mcpOffFeatures). nil: none listed.
-	offFeatures func() []mcpOffFeature
+	// offFeatures is the features that gate this door's tools and are off (not
+	// offered) and misconfigured (offered, degraded), which muster_help lists
+	// (features.go's mcpOffFeatures). nil: none listed.
+	offFeatures func() (off, degraded []mcpOffFeature)
 }
 
 // explainUnlisted is surface.disabled's answer for name, or "".

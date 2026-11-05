@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
@@ -468,14 +469,9 @@ func ServeMCP(ctx context.Context, l net.Listener, h http.Handler) error {
 	return nil
 }
 
-// DefaultMCPSecretFile is where the local MCP secret is kept by default.
-func DefaultMCPSecretFile() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "muster-mirror", "mcp-secret")
-}
+// DefaultMCPSecretFile is where the local MCP secret is kept by default: the
+// ONE rule in internal/mirrorpath, which `muster doctor` calls too.
+func DefaultMCPSecretFile() string { return mirrorpath.DefaultMCPSecretFile() }
 
 // EnsureMCPSecret reads the secret from path, creating it (32 random bytes,
 // hex; the file 0600, its directory 0700) when it does not exist. A file

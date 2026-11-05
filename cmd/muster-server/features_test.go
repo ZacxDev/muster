@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -254,6 +255,15 @@ func TestAKeylessInstallReportsSuggestAndFocusOffNotMisconfigured(t *testing.T) 
 			t.Errorf("with a key %s = %s %q, want on", id, f.State, f.Reason)
 		}
 	}
+	// With a credential store, members can bring their own key: both are ON,
+	// and the reason says for whom (#441 round 1).
+	withStore := api.Extensions{Suggest: &suggest.Engine{}, Focus: focus.NewPG(nil), Credentials: credentialPage{}}
+	members := featureSet(t, config{FocusInterval: time.Minute}, withStore, true)
+	for _, id := range []string{features.SuggestedReplies, features.Focus} {
+		if f, _ := members.Get(id); f.State != features.On || !strings.Contains(f.Reason, "for members who saved their own OpenRouter key") {
+			t.Errorf("keyless with a credential store %s = %s %q, want on for members", id, f.State, f.Reason)
+		}
+	}
 	killed := featureSet(t, config{}, api.Extensions{Suggest: &suggest.Engine{Off: true}}, true)
 	if f, _ := killed.Get(features.SuggestedReplies); f.State != features.Off || !strings.HasPrefix(f.Reason, envSuggest+"=off") {
 		t.Errorf("kill switch: %s %q", f.State, f.Reason)
@@ -408,9 +418,9 @@ func leakedValues(body string) []string {
 }
 
 // TestTheFeatureRegistryLeaksNoConfiguredValue: with every variable set to a
-// distinctive value, what GET /api/features and /api/doctor serve
-// (api.FeatureViews, the one serialisation both use) names variables and
-// quotes none of the values.
+// distinctive value, what /api/doctor serves (api.FeatureViews, its one
+// serialisation; the Features page renders the same entries) names variables
+// and quotes none of the values.
 //
 // 🔴 TWO POSITIVE CONTROLS, so a clean scan means something: the scanner finds
 // a value planted in the body, and the configuration really does produce a
@@ -642,5 +652,74 @@ func TestEveryHintWorksOnTheComposeInstall(t *testing.T) {
 	}
 	if checked < 40 {
 		t.Fatalf("instrument check FAILED: only %d enable variable(s) checked", checked)
+	}
+}
+
+// TestChiefDependentHintsSayTheChiefFirst: plugins, session routing and task
+// routing are forwarded by the Compose stack but act through the chief, so
+// their hint — and the doctor's fix line, which is the hint — says that first:
+// setting MUSTER_PLUGINS=1 alone leaves them misconfigured (#441 round 1).
+func TestChiefDependentHintsSayTheChiefFirst(t *testing.T) {
+	set := featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, true)
+	f, _ := set.Get(features.Plugins)
+	want := "needs the chief, which needs Kubernetes (in-cluster dispatch) — see docs/features.md#chief; then set " +
+		envPlugins + "=1 in .env and restart (docs/features.md#plugins)"
+	if f.EnableHint() != want {
+		t.Fatalf("plugins hint\n got %q\nwant %q", f.EnableHint(), want)
+	}
+	if f.State != features.Misconfigured || !strings.HasPrefix(f.DisabledMessage(), "misconfigured: plugins — ") ||
+		!strings.Contains(f.DisabledMessage(), "; needs the chief") {
+		t.Fatalf("plugins on Compose: %s %q", f.State, f.DisabledMessage())
+	}
+	for _, id := range []string{features.SessionRouting, features.TaskRouting} {
+		if g, _ := set.Get(id); !strings.HasPrefix(g.EnableHint(), features.NeedsChiefHint+"; then set ") {
+			t.Errorf("%s hint %q does not lead with the chief", id, g.EnableHint())
+		}
+	}
+	if g, _ := set.Get(features.PluginTasks); strings.Contains(g.EnableHint(), "chief") {
+		t.Errorf("plugin tasks need no chief, and the hint says so: %q", g.EnableHint())
+	}
+}
+
+// TestAKeylessAccountPageSaysSuggestedRepliesAreOff: the real Account page of a
+// keyless server with no credential store, built by buildApp with the real
+// evaluator, says suggested replies are Off with the registry's reason and
+// never "On." (#441 round 1: the note the registry fed was unreachable).
+func TestAKeylessAccountPageSaysSuggestedRepliesAreOff(t *testing.T) {
+	const pw = "a-synthetic-operator-password"
+	var buf bytes.Buffer
+	a, err := buildApp(context.Background(), config{UIPassword: pw, SuggestModel: "example/model-x"}, log.New(&buf, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	h := a.srv.Handler()
+	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"password": {pw}, "next": {"/"}}.Encode()))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	lw := httptest.NewRecorder()
+	h.ServeHTTP(lw, login)
+	var cookie *http.Cookie
+	for _, c := range lw.Result().Cookies() {
+		if c.Value != "" {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("no session from POST /login: %d %s", lw.Code, lw.Body)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/account", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, `data-testid="suggest-settings"`) {
+		t.Fatalf("no suggested-replies section (%d):\n%.2000s", w.Code, body)
+	}
+	if !strings.Contains(body, `data-state="off-needs-key"`) || !strings.Contains(body, "Off: needs "+envAgentOpenRouterKey) {
+		t.Fatalf("the keyless Account page does not say Off with the needs-key reason")
+	}
+	if strings.Contains(body, `data-state="on"`) || strings.Contains(body, ">On.") {
+		t.Fatalf("the keyless Account page says suggested replies are On")
 	}
 }

@@ -163,6 +163,11 @@ type Feature struct {
 	// then says so instead of "set X in .env", which would not work there.
 	// Enable still lists the variables, for a Kubernetes deployment.
 	Kubernetes bool `json:"kubernetes,omitempty"`
+	// NeedsChief: the feature's variables are forwarded by the Compose stack,
+	// but what it does goes through the chief, which needs Kubernetes. Its
+	// hint says that FIRST, so following it on Compose is not a dead end
+	// (setting the variable alone leaves the feature misconfigured).
+	NeedsChief bool `json:"needs_chief,omitempty"`
 
 	State State `json:"state"`
 	// Reason is why the feature is off or misconfigured ("" when on), or, for
@@ -201,6 +206,9 @@ func (f Feature) EnableHint() string {
 		names = append(names, v.hintName())
 	}
 	var b strings.Builder
+	if f.NeedsChief {
+		b.WriteString(NeedsChiefHint + "; then ")
+	}
 	switch {
 	case len(names) > 0 && f.HostSide:
 		b.WriteString("on each host, set " + joinAnd(names) + " in muster-mirror's environment and restart it")
@@ -238,6 +246,9 @@ func (f Feature) DisabledMessage() string {
 
 // KubernetesHint is what a feature the Compose stack cannot run needs.
 const KubernetesHint = "needs Kubernetes (in-cluster dispatch)"
+
+// NeedsChiefHint leads the hint of a feature that acts through the chief.
+const NeedsChiefHint = "needs the chief, which " + KubernetesHint + " — see " + DocsPage + "#chief"
 
 func joinAnd(xs []string) string {
 	switch len(xs) {
