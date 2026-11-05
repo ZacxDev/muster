@@ -121,6 +121,9 @@ type AgentDetailView struct {
 	// Dictate is where the chat form's microphone posts a recording
 	// (TranscribePath), or "" for none. See dictate.go.
 	Dictate string
+	// DictateOff: the server has no dictation, so the chat form draws the
+	// muted mic linking to its Features row (dictateOffControl) instead.
+	DictateOff bool
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.
 	FocusHistory string
@@ -1034,6 +1037,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 					Class(composerInputClass),
 				),
 				dictateControl(v.Dictate, "chat-input", "chat-dictate-note", "chat-dictate"),
+				g.If(v.Dictate == "" && v.DictateOff, dictateOffControl("chat-dictate-off")),
 				Button(
 					Type("submit"),
 					ID("chat-send"),

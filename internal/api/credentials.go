@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/credentials"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -166,7 +167,9 @@ func (s *Server) renderCredentials(w http.ResponseWriter, r *http.Request, code 
 	b.WriteString(problemNode(problem))
 	switch {
 	case s.ext.Credentials == nil:
-		b.WriteString(`<p class="text-sm text-fg2">This server has no credential store configured, so credentials cannot be added here.</p></section>`)
+		b.WriteString(`<p class="text-sm text-fg2" data-credentials-off>This server has no credential store configured, so credentials cannot be added here. ` +
+			`The operator turns it on by setting ` + credentialStoreVariable(s) + ` in .env and restarting muster — ` +
+			`<a href="` + ui.FeatureHref(features.Connectors) + `" class="text-accent underline">Features → Connectors and credentials</a>.</p></section>`)
 	case s.ext.Credentials.UsesEnvironment(r.Context(), callerID(r.Context())):
 		b.WriteString(`<p class="text-sm text-fg2" data-credentials-environment>Your agents use the credentials this server is configured with (its Claude accounts and OpenRouter key). There is nothing to add here.</p></section>`)
 	default:
@@ -228,4 +231,14 @@ func (s *Server) writeCredentialSections(b *strings.Builder, r *http.Request) {
 <input id="cred-openrouter-key" name="key" type="password" required autocomplete="off" spellcheck="false" placeholder="` + credentials.OpenRouterKeyPrefix + `…" ` + credInput + `>
 <p class="text-xs text-muted">An ordinary OpenRouter API key, billed to your OpenRouter account. Your agents use it as entered. Saving again replaces it; stop and start a running agent to give it the new one.</p>
 <button type="submit" ` + credButton + `>Save OpenRouter API key</button></form></section>`)
+}
+
+// credentialStoreVariable names the variable that turns the credential store
+// on, from the feature registry (the connectors entry, whose key also seals
+// members' credentials); the bare name when no registry is installed.
+func credentialStoreVariable(s *Server) string {
+	if f, ok := s.feature(features.Connectors); ok && len(f.Enable) > 0 {
+		return html.EscapeString(f.Enable[0].Name)
+	}
+	return "the connector encryption key"
 }

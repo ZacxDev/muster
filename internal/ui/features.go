@@ -67,6 +67,14 @@ type Features struct {
 // directions: a link with no panel shows nothing when clicked, and a panel with
 // no link is unreachable. ui.TabKeys() deliberately does NOT go through here; it
 // feeds route registration, which is unconditional.
+// FeaturesPagePath is the Features page (internal/api features.go): every
+// feature this server runs or does not, with the line(s) that turn each on.
+const FeaturesPagePath = "/account/features"
+
+// FeatureHref is a feature's row on the Features page — where every hint
+// beside a control that is hidden because its feature is off links to.
+func FeatureHref(id string) string { return FeaturesPagePath + "#" + id }
+
 func visibleTabs(f Features) []tab {
 	out := make([]tab, 0, len(musterTabs))
 	for _, t := range musterTabs {

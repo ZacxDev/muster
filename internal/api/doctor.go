@@ -41,6 +41,10 @@ type DoctorReport struct {
 	// sends a sample through POST /transcribe.
 	Dictation bool         `json:"dictation"`
 	Mirror    DoctorMirror `json:"mirror"`
+	// Features is every feature in the registry (features.go): its state, why,
+	// and how to turn it on — variable NAMES, never values. Empty, not null,
+	// when no registry is installed.
+	Features []FeatureView `json:"features"`
 }
 
 // DoctorMirror is the mirror plugin as the viewing principal sees it.
@@ -126,6 +130,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 		Push:           s.pushServed(),
 		Dictation:      s.dictatePath() != "",
 		Mirror:         DoctorMirror{Hosts: []DoctorHost{}},
+		Features:       FeatureViews(s.features),
 	}
 	if s.auth.goTrueMode() {
 		rep.AuthMode = "gotrue"

@@ -362,7 +362,18 @@ func classify(req request, resp *http.Response, body []byte, envFile string) ([]
 		// 404 is text/plain "404 page not found". That difference is how a missing
 		// RESOURCE (exit 4) is told apart from a missing ROUTE (exit 7, this CLI
 		// being newer than the server).
+		//
+		// 🔴 AND A THIRD KIND: the route exists and its FEATURE is off on this
+		// server. The server says so with a typed body ({"error":
+		// "feature_disabled", "feature", "enable"}; internal/api
+		// writeFeatureDisabled), and that is reported as what it is — with the
+		// line that turns the feature on — not as version skew (exit 12). A
+		// server that predates the typed body answered text/plain here and still
+		// gets the route-absent message below.
 		if isJSON {
+			if fd, ok := featureDisabled(body); ok {
+				return nil, failf(exitFeatureDisabled, "%s %s: %s", req.method, req.path, fd)
+			}
 			return nil, failf(exitNotFound, "%s %s: not found — %s", req.method, req.path, serverError(body))
 		}
 		// 🔴 cliVersion(), NOT buildVersion. This is the surface the file's own
@@ -520,4 +531,40 @@ func (c *client) warnSkew(ctx context.Context) {
 		}
 		fmt.Fprintf(c.stderr, "note: server %s, %s built for %s\n", h.Version, name, cliVersion())
 	})
+}
+
+// featureDisabledError is the server's typed "this route's feature is off"
+// error (internal/api.FeatureDisabledError).
+const featureDisabledError = "feature_disabled"
+
+// featureDisabled reads a typed feature-off 404 body and returns the sentence
+// to print — "feature dictation is disabled on this server — enable with: set …"
+// — and whether body was one.
+func featureDisabled(body []byte) (string, bool) {
+	var b struct {
+		Error   string `json:"error"`
+		Feature string `json:"feature"`
+		Enable  string `json:"enable"`
+		Reason  string `json:"reason"`
+		State   string `json:"state"`
+		Docs    string `json:"docs"`
+	}
+	if json.Unmarshal(body, &b) != nil || b.Error != featureDisabledError || b.Feature == "" {
+		return "", false
+	}
+	word := "disabled"
+	if b.State == "misconfigured" {
+		word = "misconfigured"
+	}
+	msg := "feature " + b.Feature + " is " + word + " on this server"
+	if b.Reason != "" {
+		msg += " (" + b.Reason + ")"
+	}
+	switch {
+	case b.Enable != "":
+		msg += " — enable with: " + b.Enable
+	case b.Docs != "":
+		msg += " — see " + b.Docs
+	}
+	return msg, true
 }

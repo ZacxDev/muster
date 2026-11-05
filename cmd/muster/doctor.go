@@ -5,21 +5,26 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/tmuxver"
 )
 
@@ -91,7 +96,8 @@ type doctorCheck struct {
 // what --skip takes.
 var doctorChecks = []string{
 	"server", "manifest", "hook-token", "mirror-hosts", "this-host",
-	"mirror-service", "tmux", "sign-in", "push", "dictation",
+	"mirror-service", "tmux", "sign-in", "push", "dictation", "features",
+	"mcp-endpoint", "mcp-registration", "ask-hook",
 }
 
 // doctorSystem is everything doctor reads from THIS machine, injected so each
@@ -103,6 +109,9 @@ type doctorSystem struct {
 	// run runs a command and returns its stdout; err is non-nil for a non-zero
 	// exit (an *exec.ExitError) or a command that could not start.
 	run func(ctx context.Context, name string, args ...string) (string, error)
+	// getwd is the directory doctor runs in: Claude Code's project-scoped MCP
+	// servers are looked up for it. nil is os.Getwd.
+	getwd func() (string, error)
 }
 
 // newDoctorSystem is this machine, for run(). A variable so the package's
@@ -160,6 +169,19 @@ type serverReport struct {
 		} `json:"hosts"`
 		HostsError string `json:"hosts_error"`
 	} `json:"mirror"`
+	// Features is the server's feature registry (internal/api.FeatureView):
+	// absent from a server that predates it.
+	Features []serverFeature `json:"features"`
+}
+
+// serverFeature is the part of one registry entry this client prints.
+type serverFeature struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Core       bool   `json:"core"`
+	State      string `json:"state"`
+	Reason     string `json:"reason"`
+	EnableHint string `json:"enable_hint"`
 }
 
 func newDoctorCmd(a *app) *cobra.Command {
@@ -234,8 +256,13 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv s
 	d.checkSignIn(ctx)
 	d.checkPush(ctx)
 	d.checkDictation(ctx)
+	d.checkFeatures()
+	d.checkMCPEndpoint()
+	d.checkMCPRegistration()
+	d.checkAskHook()
 
 	failed := d.print()
+	d.printFeatures()
 	d.printQR(ctx)
 	doc, _ := json.Marshal(map[string]any{"url": d.base, "ok": failed == 0, "checks": d.checks})
 	if err := a.emit(doc); err != nil {
@@ -942,4 +969,340 @@ func (d *doctorRun) printQR(ctx context.Context) {
 		return
 	}
 	fmt.Fprint(w, out)
+}
+
+// --- the feature registry ----------------------------------------------------
+
+// checkFeatures reports the server's feature registry: how many features are
+// on, off and misconfigured. It FAILs on a misconfigured one — a feature that
+// was asked for and is missing a dependency (#441 round 0, Q1): an optional
+// feature that is simply off is not a failure, and a default install has none
+// misconfigured (suggested replies and focus without an OpenRouter key are
+// OFF, "needs MUSTER_AGENT_OPENROUTER_KEY"). printFeatures lists every
+// feature below the checks with the line that turns it on.
+func (d *doctorRun) checkFeatures() {
+	const name = "features"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	fs := d.report.Features
+	if len(fs) == 0 {
+		d.add(name, statusSkip, "this server does not report its features (it predates the feature registry)", "")
+		return
+	}
+	n := map[string]int{}
+	var bad, fixes []string
+	for _, f := range fs {
+		n[f.State]++
+		if f.State == "misconfigured" {
+			bad = append(bad, f.ID+" ("+f.Reason+")")
+			fixes = append(fixes, f.ID+": "+f.EnableHint)
+		}
+	}
+	detail := fmt.Sprintf("%d on, %d off, %d misconfigured", n["on"], n["off"], n["misconfigured"])
+	if len(bad) > 0 {
+		d.add(name, statusFail, detail+": "+strings.Join(bad, "; "), strings.Join(fixes, "; "))
+		return
+	}
+	d.add(name, statusPass, detail+"; listed below", "")
+}
+
+// --- this host's session tools ----------------------------------------------
+//
+// What gives a mirrored Claude Code session muster's tools (attention_ask, the
+// task tools) and AskUserQuestion cards is set up on each machine, where the
+// server cannot see it (docs/features.md#agent-ask-tool, #ask-cards). These
+// three checks read THIS machine's files — muster-mirror's settings, Claude
+// Code's user config and settings — and nothing else. Read-only; they print
+// no secret (the MCP secret's presence is checked, never its content).
+
+// The agent ask tool's defaults (docs/features.md#agent-ask-tool).
+const (
+	envMirrorMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
+	envMirrorMCPSecretFile = "MUSTER_MIRROR_MCP_SECRET_FILE"
+	defaultMCPListen       = "127.0.0.1:47823"
+)
+
+// mirrorEnvValues is this machine's muster-mirror settings file, parsed, or nil
+// when there is none (the machine is not connected).
+func (d *doctorRun) mirrorEnvValues() (string, map[string]string) {
+	env := expandHome(d.mirrorEnv, d.a.homeDir)
+	vals, err := parseEnvFile(env)
+	if err != nil || len(vals) == 0 {
+		return env, nil
+	}
+	return env, vals
+}
+
+// mcpListen is this machine's muster-mirror MCP address ("" = off).
+func (d *doctorRun) mcpListen() string {
+	_, vals := d.mirrorEnvValues()
+	return strings.TrimSpace(vals[envMirrorMCPListen])
+}
+
+// claudeConfigDir is where Claude Code keeps its user settings: $CLAUDE_CONFIG_DIR,
+// else ~/.claude. Its user-scope MCP servers are in claudeUserConfig.
+func (d *doctorRun) claudeConfigDir() string {
+	if v := strings.TrimSpace(d.a.getenv("CLAUDE_CONFIG_DIR")); v != "" {
+		return expandHome(v, d.a.homeDir)
+	}
+	return filepath.Join(d.a.homeDir, ".claude")
+}
+
+// claudeUserConfig is the file `claude mcp add --scope user` writes:
+// $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json.
+func (d *doctorRun) claudeUserConfig() string {
+	if v := strings.TrimSpace(d.a.getenv("CLAUDE_CONFIG_DIR")); v != "" {
+		return filepath.Join(expandHome(v, d.a.homeDir), ".claude.json")
+	}
+	return filepath.Join(d.a.homeDir, ".claude.json")
+}
+
+func mcpAddCommand(listen string) string {
+	return `claude mcp add-json --scope user muster '{"type":"http","url":"http://` + listen + `/mcp","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}","X-Muster-Pane":"${TMUX_PANE:-}","X-Muster-Tmux":"${TMUX:-}"}}'`
+}
+
+// checkMCPEndpoint: muster-mirror serves its local MCP endpoint here
+// (MUSTER_MIRROR_MCP_LISTEN in its settings) and has written its secret.
+func (d *doctorRun) checkMCPEndpoint() {
+	const name = "mcp-endpoint"
+	if d.skipped(name) {
+		return
+	}
+	_, vals := d.mirrorEnvValues()
+	if vals == nil {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "connect it: INSTALL.md, step 7")
+		return
+	}
+	listen := strings.TrimSpace(vals[envMirrorMCPListen])
+	if listen == "" {
+		d.add(name, statusSkip, "the agent ask tool is off on this machine: "+envMirrorMCPListen+" is not set in "+d.mirrorEnv,
+			"add "+envMirrorMCPListen+"="+defaultMCPListen+" to "+d.mirrorEnv+" and restart muster-mirror (`"+mirrorRestartHint(d.sys.goos)+"`); "+
+				"see docs/features.md#agent-ask-tool")
+		return
+	}
+	// muster-mirror's own rule: its settings' MUSTER_MIRROR_MCP_SECRET_FILE,
+	// else the default it computes itself (internal/mirrorpath, the code
+	// muster-mirror calls) — never a guess beside the settings file.
+	secret := expandHome(strings.TrimSpace(vals[envMirrorMCPSecretFile]), d.a.homeDir)
+	if secret == "" {
+		secret = mirrorpath.DefaultMCPSecretFile()
+	}
+	if fi, err := os.Stat(secret); err != nil || fi.Size() == 0 {
+		d.add(name, statusFail, envMirrorMCPListen+"="+listen+" is set, but the endpoint's secret "+secret+" is missing or empty: "+
+			"muster-mirror has not started with it yet", "restart muster-mirror (`"+mirrorRestartHint(d.sys.goos)+"`), which writes it")
+		return
+	}
+	d.add(name, statusPass, "muster-mirror serves its MCP endpoint at http://"+listen+"/mcp (its secret is in "+secret+")", "")
+}
+
+// mcpURLMatches reports whether a configured MCP server url reaches the
+// endpoint muster-mirror serves on listen: http, a loopback host (localhost,
+// 127.0.0.1, ::1 — whichever listen names, they are the one machine), the
+// same port and the /mcp path.
+func mcpURLMatches(raw, listen string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "http" || strings.TrimSuffix(u.Path, "/") != "/mcp" {
+		return false
+	}
+	_, wantPort, err := net.SplitHostPort(listen)
+	if err != nil || u.Port() != wantPort {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// claudeMCPScopes is every place Claude Code reads MCP servers from for a
+// session started in dir, with the servers each names: the user scope
+// (~/.claude.json's mcpServers), the local scope (~/.claude.json's
+// projects[dir].mcpServers) and the project scope (dir/.mcp.json).
+type mcpScope struct {
+	name, where string
+	servers     map[string]string // name -> url
+	err         error
+}
+
+func (d *doctorRun) claudeMCPScopes(dir string) []mcpScope {
+	type servers = map[string]struct {
+		URL string `json:"url"`
+	}
+	urls := func(s servers) map[string]string {
+		out := map[string]string{}
+		for n, v := range s {
+			out[n] = v.URL
+		}
+		return out
+	}
+	readJSON := func(path string, v any) error {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(raw, v)
+	}
+	user := d.claudeUserConfig()
+	var cfg struct {
+		MCPServers servers `json:"mcpServers"`
+		Projects   map[string]struct {
+			MCPServers servers `json:"mcpServers"`
+		} `json:"projects"`
+	}
+	uerr := readJSON(user, &cfg)
+	if errors.Is(uerr, os.ErrNotExist) {
+		uerr = nil
+	}
+	out := []mcpScope{{name: "user", where: user, servers: urls(cfg.MCPServers), err: uerr}}
+	if dir != "" {
+		out = append(out, mcpScope{name: "local", where: user + " (projects[" + dir + "])", servers: urls(cfg.Projects[dir].MCPServers), err: uerr})
+		var proj struct {
+			MCPServers servers `json:"mcpServers"`
+		}
+		path := filepath.Join(dir, ".mcp.json")
+		perr := readJSON(path, &proj)
+		if errors.Is(perr, os.ErrNotExist) {
+			perr = nil
+		}
+		out = append(out, mcpScope{name: "project", where: path, servers: urls(proj.MCPServers), err: perr})
+	}
+	return out
+}
+
+// checkMCPRegistration: Claude Code is configured to use that endpoint, in
+// any of its scopes for this directory (user, local, project), at any
+// loopback spelling of the address.
+func (d *doctorRun) checkMCPRegistration() {
+	const name = "mcp-registration"
+	if d.skipped(name) {
+		return
+	}
+	listen := d.mcpListen()
+	if listen == "" {
+		d.add(name, statusSkip, "this machine's muster-mirror serves no MCP endpoint (see mcp-endpoint)", "")
+		return
+	}
+	getwd := d.sys.getwd
+	if getwd == nil {
+		getwd = os.Getwd
+	}
+	dir, _ := getwd()
+	want := "http://" + listen + "/mcp"
+	var found, unreadable []string
+	for _, sc := range d.claudeMCPScopes(dir) {
+		if sc.err != nil {
+			unreadable = append(unreadable, sc.where)
+			continue
+		}
+		for n, u := range sc.servers {
+			if mcpURLMatches(u, listen) {
+				found = append(found, sc.name+" ("+strconv.Quote(n)+" in "+sc.where+")")
+				break
+			}
+		}
+	}
+	unreadable = slices.Compact(unreadable)
+	fix := mcpAddCommand(listen) + "; then export MUSTER_MIRROR_MCP_SECRET=\"$(cat " + mirrorpath.DefaultMCPSecretFile() +
+		" 2>/dev/null)\" in the shell tmux starts (docs/features.md#agent-ask-tool)"
+	switch {
+	case len(found) == 0 && len(unreadable) > 0:
+		d.add(name, statusFail, "Claude Code's config could not be read as JSON: "+strings.Join(unreadable, ", "), "check the file; then "+fix)
+	case len(found) == 0:
+		d.add(name, statusFail, "muster-mirror serves "+want+", but no Claude Code scope for "+dir+" (user, local or project) registers an MCP server at it, "+
+			"so sessions here have no muster tools", fix)
+	case !strings.HasPrefix(found[0], "user "):
+		d.add(name, statusPass, "registered for this directory only: "+strings.Join(found, "; ")+
+			". Sessions started in other directories have no muster tools; the user scope covers them all (`"+mcpAddCommand(listen)+"`)", "")
+	default:
+		d.add(name, statusPass, "registered: "+strings.Join(found, "; ")+
+			" (that a session's shell exports MUSTER_MIRROR_MCP_SECRET is not checked here)", "")
+	}
+}
+
+// checkAskHook: Claude Code runs `muster-mirror ask` before AskUserQuestion
+// (a PreToolUse hook in its user settings), which draws ask cards.
+func (d *doctorRun) checkAskHook() {
+	const name = "ask-hook"
+	if d.skipped(name) {
+		return
+	}
+	if _, vals := d.mirrorEnvValues(); vals == nil {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "")
+		return
+	}
+	path := filepath.Join(d.claudeConfigDir(), "settings.json")
+	raw, err := os.ReadFile(path)
+	var st struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &st)
+	}
+	const snippet = `{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}`
+	fix := "add " + snippet + " to the hooks.PreToolUse list in " + path + " (docs/features.md#ask-cards)"
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.add(name, statusFail, "Claude Code's settings "+path+" could not be read as JSON", fix)
+		return
+	}
+	for _, h := range st.Hooks.PreToolUse {
+		if !hookMatcherMatches(h.Matcher, "AskUserQuestion") {
+			continue
+		}
+		for _, c := range h.Hooks {
+			if f := strings.Fields(c.Command); len(f) >= 2 && filepath.Base(f[0]) == "muster-mirror" && f[1] == "ask" {
+				d.add(name, statusPass, "Claude Code runs `muster-mirror ask` before AskUserQuestion ("+path+")", "")
+				return
+			}
+		}
+	}
+	d.add(name, statusSkip, "ask cards are off on this machine: no PreToolUse hook runs `muster-mirror ask` ("+path+")", fix)
+}
+
+// mirrorRestartHint restarts this machine's muster-mirror service.
+func mirrorRestartHint(goos string) string {
+	if goos == "darwin" {
+		return "launchctl kickstart -k gui/$(id -u)/" + defaultMirrorLabel
+	}
+	return "systemctl --user restart " + defaultMirrorUnit
+}
+
+// printFeatures lists the server's features below the checks: each one's
+// state and, when it is not on, the line that turns it on. Nothing when the
+// server reported none.
+func (d *doctorRun) printFeatures() {
+	if d.report == nil || len(d.report.Features) == 0 {
+		return
+	}
+	w := d.a.stderr
+	fmt.Fprintln(w, "\nfeatures on this server:")
+	for _, f := range d.report.Features {
+		fmt.Fprintf(w, "  %-13s %s", strings.ToUpper(f.State), f.ID)
+		if f.Reason != "" {
+			fmt.Fprintf(w, " — %s", f.Reason)
+		}
+		fmt.Fprintln(w)
+		if f.State != "on" && f.EnableHint != "" {
+			fmt.Fprintf(w, "  %-13s enable: %s\n", "", f.EnableHint)
+		}
+	}
+}
+
+// hookMatcherMatches is Claude Code's PreToolUse matcher rule: "" and "*"
+// match every tool; anything else is a regular expression tested against the
+// tool name ("AskUserQuestion|Bash" matches AskUserQuestion).
+func hookMatcherMatches(matcher, tool string) bool {
+	if matcher == "" || matcher == "*" {
+		return true
+	}
+	re, err := regexp.Compile(matcher)
+	return err == nil && re.MatchString(tool)
 }

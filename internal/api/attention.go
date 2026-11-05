@@ -240,6 +240,9 @@ type attentionItem struct {
 	// withAskBoxes for the pages that draw them, never by askItem: the item is
 	// built where no server is in reach (a push, attention_list).
 	dictate, sessionLink string
+	// dictateOff: the server has no dictation, so the box draws the muted mic
+	// linking to its Features row (answerMic). Set with dictate.
+	dictateOff bool
 	// systemAsk: an ask muster raised itself (attention.Asker.System) — a task
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
 	// nudge's is found through its decision (nudgeSessionPath).
@@ -751,7 +754,7 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		if items[i].Kind != attentionKindAsk {
 			continue
 		}
-		items[i].dictate = dict
+		items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
 		if links && owner > 0 {
 			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
 		}
@@ -1420,7 +1423,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			// reader; the box's placeholder says the same to the eye.
 			b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-				ui.DictateControlHTML(it.dictate, input, input+"-dictate-note", input+"-dictate") + `</div>
+				answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
 ` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "") + `<div class="` + ui.AskFormActionsClass + `"><button type="submit" class="` + ui.AskFormAnswerClass + `">Answer</button><button type="submit" form="` + dismiss + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AskFormDismissClass + `">Dismiss</button></div>
 </form>
 <form id="` + dismiss + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>

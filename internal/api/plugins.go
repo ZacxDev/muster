@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -91,11 +92,14 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 }
 
 // requirePluginsOn answers 404 for a plugin route on a server with plugins off,
-// before any credential is examined: "off" must look like "no such route".
+// before any credential is examined — the typed feature_disabled 404
+// (writeFeatureDisabled), which names the feature and how to turn it on rather
+// than reading as a route this server never had. Whether plugins are on is no
+// secret: the Features page lists it.
 func (s *Server) requirePluginsOn(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.ext.Plugins == nil {
-			http.NotFound(w, r)
+			s.writeFeatureDisabled(w, r, features.Plugins)
 			return
 		}
 		next(w, r)

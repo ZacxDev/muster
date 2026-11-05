@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -616,7 +617,7 @@ func cutBytes(s string, n int) string {
 // missing one.
 func (s *Server) handleRouteReply(w http.ResponseWriter, r *http.Request) {
 	if !routingOn(s.ext) {
-		http.NotFound(w, r)
+		s.writeFeatureDisabled(w, r, features.SessionRouting)
 		return
 	}
 	// The route first: another owner's (or no) route is 404 whatever the body.

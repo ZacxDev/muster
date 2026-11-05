@@ -5,10 +5,12 @@
 
 Static, no Docker. What it pins:
 
-* ANCHORS. docs/features.md has a heading for every anchor in REQUIRED_ANCHORS,
-  by GitHub's slug rule, each exactly once. Other code links to
-  `docs/features.md#<id>` (the feature registry's "set X in .env and restart"
-  hints), so removing or renaming one of these headings breaks those links.
+* ANCHORS. docs/features.md has a heading for each of this page's own anchors
+  (REQUIRED_ANCHORS), by GitHub's slug rule, each exactly once. The feature
+  registry's ids are NOT listed here: the Go registry owns them, and
+  cmd/muster-server's TestEveryRegistryIDIsAFeaturesHeading checks every one is
+  a heading of this page (and every link a hint writes resolves), reading the
+  ids from the registry itself — so there is one id list, not two.
 * LINKS. Every `docs/features.md#<id>` written in the compose file, the env
   template and INSTALL.md names one of its headings.
 * TWO DIRECTIONS between the template and the compose file: every variable
@@ -42,24 +44,11 @@ CONFIG_GO = ROOT / "cmd/muster-server/config.go"
 CONFIG_MD = ROOT / "docs/configuration.md"
 INSTALL = ROOT / "INSTALL.md"
 
-# The anchors other code links to: EVERY id of the feature registry
-# (internal/features/features.go on the registry branch, whose hints link to
-# docs/features.md#<id>), spelled exactly as it spells them. Add one when the
-# registry gains an id; never remove one without moving its links.
-# ⚠ A HAND COPY, taken from origin/feat/feature-registry while neither PR had
-# merged. Once both have, the registry PR should replace it with a
-# cross-check that reads the ids from internal/features itself, so the two
-# cannot drift.
-REGISTRY_IDS = [
-    "database", "mirror", "password-sign-in", "machine-token", "push", "dictation", "attachments",
-    "suggested-replies", "focus", "accounts", "connectors", "github-app", "dispatch", "agent-gateway",
-    "claude-code-agents", "chief", "chief-session-runtimes", "chief-nudges", "session-state", "plugins",
-    "plugin-tasks", "session-routing", "task-routing", "pr-mail-routing", "fleet-reports", "mail-resume",
-    "memo-relay", "approval-router", "browser-flows", "agent-ask-tool", "service-token", "android",
-    "telemetry", "officers",
-]
-# This page's own additions.
-REQUIRED_ANCHORS = REGISTRY_IDS + ["core", "ask-cards", "other-settings"]
+# This page's own anchors that other files link to. The feature registry's ids
+# are checked by the Go side (cmd/muster-server features_test.go,
+# TestEveryRegistryIDIsAFeaturesHeading), which reads them from the registry:
+# a second, hand-copied list here could only drift from it (#441 round 0, D7).
+REQUIRED_ANCHORS = ["core", "ask-cards", "other-settings"]
 
 # Server variables the compose file does NOT forward, each with why. The agent
 # plane is the one group: its provisioner uses Kubernetes in-cluster
@@ -191,14 +180,13 @@ class FeaturesConfig(unittest.TestCase):
         self.example = EXAMPLE.read_text()
 
     def test_every_required_anchor_is_a_heading_once(self) -> None:
-        self.assertEqual(len(REGISTRY_IDS), 34, "the registry's id list changed: re-read it")
         self.assertEqual(missing_anchors(self.features), [])
         # Negative controls: a removed heading, and a second one with the same
         # text (GitHub renames it to `-1`, the link still lands on the first).
-        cut = re.sub(r"(?m)^### Memo relay$", "### Cairn relay", self.features)
-        self.assertEqual(missing_anchors(cut), ["memo-relay"], "control: a removed anchor went unseen")
-        dup = self.features + "\n### Dictation\n"
-        self.assertEqual(missing_anchors(dup), ["dictation"], "control: a duplicated anchor went unseen")
+        cut = re.sub(r"(?m)^### Ask cards$", "### Question cards", self.features)
+        self.assertEqual(missing_anchors(cut), ["ask-cards"], "control: a removed anchor went unseen")
+        dup = self.features + "\n### Ask cards\n"
+        self.assertEqual(missing_anchors(dup), ["ask-cards"], "control: a duplicated anchor went unseen")
 
     def test_every_features_link_resolves(self) -> None:
         slugs = set(headings(self.features))

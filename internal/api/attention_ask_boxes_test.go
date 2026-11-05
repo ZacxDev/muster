@@ -244,7 +244,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 	for name, html := range map[string]string{
 		"the list":      attentionItemsHTML(items, time.Now()),
 		"a block":       askerAsksHTML(items, "/agents/ptworker-7", time.Now()),
-		"the composer":  askComposerHTML(r, attention.Ask{ID: boxNudgeMirror}, s.dictatePath()),
+		"the composer":  askComposerHTML(r, attention.Ask{ID: boxNudgeMirror}, s.dictatePath(), false),
 		"the page's js": ui.DictateScriptHTML(s.dictatePath()),
 	} {
 		if strings.Contains(html, "data-dictate") || strings.Contains(html, "__musterDictate") || strings.Contains(html, "-dictate-note") {
@@ -262,7 +262,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 // mics already parsed). RED at origin/main: no mic.
 func TestTheAskComposerCarriesTheMicBesideAnswer(t *testing.T) {
 	r := httptest.NewRequest("GET", askPagePath(9), nil)
-	html := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath)
+	html := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false)
 	m := dictateTag.FindStringSubmatch(html)
 	if m == nil || m[1] != "ask-dictate" || m[2] != "ask-input" || m[3] != "ask-dictate-note" {
 		t.Fatalf("the composer's mic: %v\n%s", m, html)

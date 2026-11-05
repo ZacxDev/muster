@@ -44,6 +44,7 @@ GET /.well-known/assetlinks.json
 GET /account
 GET /account/credentials
 GET /account/devices/live
+GET /account/features
 GET /account/passkeys
 GET /account/tokens
 GET /admin/invites

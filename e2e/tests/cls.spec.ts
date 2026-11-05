@@ -53,6 +53,7 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /account': { where: 'shared', url: '/account', ready: '#notifications' },
   'GET /account/credentials': { where: 'shared', url: '/account/credentials', ready: 'main :is(form, section)' },
   'GET /account/tokens': { where: 'shared', url: '/account/tokens', ready: '#token-name' },
+  'GET /account/features': { where: 'shared', url: '/account/features', ready: 'section[data-feature]' },
   'GET /tasks/{id}': { where: 'shared', url: '/tasks/1', ready: '#task-1' },
   'GET /agents/{name}': { where: 'shared', url: '/agents/docs-sweeper', ready: '#chat-log [data-tool-group]' },
   'GET /login': { where: 'login', url: '/login', ready: '#muster-password' },

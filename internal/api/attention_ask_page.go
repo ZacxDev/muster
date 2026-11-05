@@ -131,7 +131,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 
 	app := &ui.NavApp{Back: attentionPath, BackLabel: "Back to Asks", Heading: heading}
 	if a.Status == attention.Open && !notice {
-		app.Composer = askComposerHTML(r, a, s.dictatePath())
+		app.Composer = askComposerHTML(r, a, s.dictatePath(), s.dictateOff())
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Question", ui.NavAttention, false, b.String(), app)
 }
@@ -214,7 +214,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 // not "". The mic FILLS the box at the caret; only Answer sends. Its script is
 // the composer's LAST child: the composer is drawn after the page's content,
 // and the script's first run reveals only the mics already parsed.
-func askComposerHTML(r *http.Request, a attention.Ask, dictate string) string {
+func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOff bool) string {
 	esc := html.EscapeString
 	id := strconv.FormatInt(a.ID, 10)
 	note, ok := composerNotice(r)
@@ -231,7 +231,7 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string) string {
 <label for="ask-input" class="sr-only">Your answer</label>
 <textarea id="ask-input" name="answer" rows="1" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" enterkeyhint="send" placeholder="` +
 		"Your answer…" + `" class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl bg-s1 px-4 py-2.5 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-fg2 focus:outline-none focus:ring-2 focus:ring-focus"></textarea>
-` + ui.DictateControlHTML(dictate, "ask-input", "ask-dictate-note", "ask-dictate") + `<button type="submit" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90" data-ask-send>Answer</button>
+` + answerMic(dictate, dictateOff, "ask-input", "ask-dictate-note", "ask-dictate") + `<button type="submit" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90" data-ask-send>Answer</button>
 </form>` + ui.DictateScriptHTML(dictate)
 }
 
@@ -256,3 +256,14 @@ const askPageScript = `<script>
   });
 })();
 </script>`
+
+// answerMic is an answer box's microphone: the real one (button, for the box
+// input, reporting into note), or — when the server has no dictation — the
+// muted one linking to its Features row, id button+"-off". The ask page and
+// every Asks answer box draw it, so the two cannot differ.
+func answerMic(dictate string, off bool, input, note, button string) string {
+	if dictate == "" && off {
+		return ui.DictateOffControlHTML(button + "-off")
+	}
+	return ui.DictateControlHTML(dictate, input, note, button)
+}
