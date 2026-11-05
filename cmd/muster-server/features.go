@@ -174,7 +174,8 @@ func featureCatalog() []features.Feature {
 		{ID: features.Officers, Kubernetes: true, Name: "Officers",
 			Description: "Long-running workers that take items from an HQ queue.",
 			Enable:      []features.Var{v(envOfficers, "JSON array"), v(officers.TokenEnvPrefix+"<NAME>", "HQ token")},
-			Settings:    []string{officers.AppKeyEnvPrefix + "<NAME>", officers.EscalateWebhookEnvPrefix + "<NAME>", officers.LLMKeyEnvPrefix + "<NAME>"}},
+			Settings: []string{officers.AppKeyEnvPrefix + "<NAME>", officers.EscalateWebhookEnvPrefix + "<NAME>", officers.LLMKeyEnvPrefix + "<NAME>",
+				officers.KubeEndpointEnvPrefix + "<CLUSTER>", officers.KubeCAEnvPrefix + "<CLUSTER>", officers.KubeMinterEnvPrefix + "<CLUSTER>"}},
 	}
 }
 
