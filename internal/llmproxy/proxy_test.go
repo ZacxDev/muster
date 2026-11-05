@@ -122,6 +122,7 @@ func newUpstream(t *testing.T, h func(w http.ResponseWriter, r *http.Request, n 
 		u.body = append(u.body, b)
 		n := len(u.reqs)
 		u.mu.Unlock()
+		r.Body = io.NopCloser(bytes.NewReader(b)) // so h can read it too
 		h(w, r, n)
 	}))
 	t.Cleanup(u.Close)
