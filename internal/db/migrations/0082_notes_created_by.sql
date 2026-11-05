@@ -10,11 +10,14 @@
 --   notes.created_by   "owner"           the owner filed it on the board
 --                                        (recorded, but a push names no
 --                                        creator for it: it goes to the owner)
---                      "chief"           the owner's chief agent filed it
---                      "agent:<name>"    one of the owner's agents filed it
+--                      "chief"           the owner's chief filed it
+--                                        (task_create_gated)
+--                      "agent:<name>"    task_create_gated, when the filer
+--                                        could not be confirmed as the chief
 --                      "plugin:<name>"   a plugin filed it as a copy task
 --                      NULL              not recorded (every row before 0082,
---                                        a caller muster cannot identify, and
+--                                        every POST /api/tasks, whose hook or
+--                                        personal token names no caller, and
 --                                        a plugin task REFERENCE, whose
 --                                        creator is the upstream's own and
 --                                        lives in ext_snapshot.creator)

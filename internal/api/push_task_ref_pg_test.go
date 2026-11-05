@@ -3,17 +3,18 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -21,8 +22,7 @@ import (
 // Task pushes carry the task's external reference and its creator, driven end
 // to end over Postgres through the REAL doors: a plugin's reference snapshot
 // (with the optional creator) filed and moved by the plugin route, and the
-// muster-native creates — the owner's board create, an agent's machine create,
-// a producer's hook-token create.
+// muster-native create doors (TestNoCreateDoorNamesACreatorItCannotKnow).
 
 // taskPushes is every push (not a resolved control message) the device got
 // under tag, as "title | body".
@@ -93,91 +93,160 @@ func TestAReferenceSnapshotsCreatorReachesThePushEndToEnd(t *testing.T) {
 		fmt.Sprintf("Task #%d ready for review · upstream (tracker) | Upstream task (tracker %s)", id2, upID2))
 }
 
-func TestANativeTasksCreatorReachesThePushEndToEnd(t *testing.T) {
+// TestNoCreateDoorNamesACreatorItCannotKnow drives every muster-native create
+// door that records a creator THROUGH THE REAL ROUTER (s.Handler, i.e.
+// registerAll and each route's own auth wrapper), with that door's own
+// credential, and pins what is stored in notes.created_by and what the task's
+// push says:
+//
+//   - the board (POST /tasks, the owner's session): stored "owner", and the
+//     push names no creator (it goes to the owner);
+//   - the chief's task_create_gated (POST /mcp, the chief's own token): "chief";
+//   - a plugin's create (POST /plugin/v1/tasks, the plugin's token): "plugin:<label>";
+//   - POST /api/tasks on the shared hook token: NOTHING, even when the request
+//     carries X-Muster-Actor naming the chief. requireHookToken never resolves
+//     an actor, so no agent may be recorded from that header; the push names
+//     the producer when X-Muster-Source gives one, else no one.
+//
+// The hook token acts as the operator (machineUserID), so the operator has a
+// device too; every other door acts as the fixture's owner.
+func TestNoCreateDoorNamesACreatorItCannotKnow(t *testing.T) {
 	f := newViaUpstreamFixture(t)
 	timers := &manualTimers{}
 	f.srv.taskCreateAfter = timers.after
+	opDev := ep("operator-phone")
+	store := &memPush{}
+	claim(t, store, f.owner, f.dev)
+	claim(t, store, authz.OperatorUserID, opDev)
+	f.srv.ext.Push = push.NewService(store, f.pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))
+	// The board's session acts as the fixture's owner, not the operator.
+	f.srv.sessionUserOverride = func(*http.Request) int64 { return f.owner }
 
-	// apiCreate posts POST /api/tasks as ctx's caller and returns the new id.
-	apiCreate := func(t *testing.T, ctx context.Context, title string, hdr map[string]string) int64 {
+	createdBy := func(t *testing.T, id int64) string {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, "/api/tasks",
-			strings.NewReader(`{"title":`+strconv.Quote(title)+`,"body":"b"}`)).WithContext(ctx)
-		for k, v := range hdr {
-			req.Header.Set(k, v)
+		var v *string
+		if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT created_by FROM notes WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
 		}
-		rec := httptest.NewRecorder()
-		f.srv.handleAPITaskCreate(rec, req)
-		var out struct{ ID int64 }
-		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.ID <= 0 {
-			t.Fatalf("POST /api/tasks: HTTP %d %s", rec.Code, rec.Body)
+		if v == nil {
+			return "<NULL>"
 		}
-		return out.ID
+		return *v
 	}
-	created := func(t *testing.T, want string) {
+	idByTitle := func(t *testing.T, title string) int64 {
 		t.Helper()
+		var id int64
+		if err := f.pool.QueryRow(authz.System(context.Background()),
+			`SELECT id FROM notes WHERE title = $1 OR body = $1 ORDER BY id DESC LIMIT 1`, title).Scan(&id); err != nil {
+			t.Fatalf("no task %q: %v", title, err)
+		}
+		t.Cleanup(func() {
+			_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notes WHERE id = $1`, id)
+		})
+		return id
+	}
+	// fresh drains whatever an earlier subtest left pending, so each subtest
+	// counts only its own create's push, pass or fail.
+	fresh := func() {
+		timers.fireAll()
+		f.srv.WaitForPushes()
 		f.pusher.reset()
+	}
+	createdPush := func(t *testing.T, dev, want string) {
+		t.Helper()
 		if n := timers.fireAll(); n != 1 {
 			t.Fatalf("%d created-push timers, want 1", n)
 		}
 		f.srv.WaitForPushes()
-		expectPushes(t, taskPushes(f.pusher, f.dev, "tasks-new"), want)
+		expectPushes(t, taskPushes(f.pusher, dev, "tasks-new"), want)
+	}
+	hookCreate := func(t *testing.T, title string, hdr map[string]string) int64 {
+		t.Helper()
+		h := map[string]string{"X-Muster-Token": connTestHookToken, "Content-Type": "application/json"}
+		for k, v := range hdr {
+			h[k] = v
+		}
+		rec := f.connFixture.call(t, http.MethodPost, "/api/tasks",
+			strings.NewReader(`{"title":`+strconv.Quote(title)+`,"body":"b"}`), h)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST /api/tasks: HTTP %d %s", rec.Code, rec.Body)
+		}
+		return idByTitle(t, title)
 	}
 
-	t.Run("the chief, as a service caller", func(t *testing.T) {
-		apiCreate(t, context.WithValue(f.asOwner, serviceActorCtxKey{}, f.chief.Name), "Chief's task", nil)
-		created(t, "New task | Chief's task (by chief)")
-	})
-	t.Run("a worker agent, as a service caller", func(t *testing.T) {
-		w := f.byHand(t, f.task(t, "anchor"), "maker")
-		apiCreate(t, context.WithValue(f.asOwner, serviceActorCtxKey{}, w.Name), "Worker's task", nil)
-		created(t, "New task | Worker's task (by agent "+w.Name+")")
-	})
-	t.Run("a producer on the hook token", func(t *testing.T) {
-		apiCreate(t, f.asOwner, "Drafted task", map[string]string{headerSource: "drafter"})
-		created(t, "New task | Drafted task (by Task drafter)")
-	})
-	t.Run("an unidentified hook-token caller names no one", func(t *testing.T) {
-		apiCreate(t, f.asOwner, "Anonymous task", nil)
-		created(t, "New task | Anonymous task")
-	})
-	// A service actor that is not one of the owner's agents is not named one.
-	t.Run("a service caller that is not an agent names no one", func(t *testing.T) {
-		apiCreate(t, context.WithValue(f.asOwner, serviceActorCtxKey{}, "some-service"), "Service task", nil)
-		created(t, "New task | Service task")
-	})
-
-	// The owner's board create is RECORDED (created_by = owner) but named in no
-	// push: the push goes to the owner, so "by you" would be noise.
-	t.Run("the owner's board create names no creator on its review push", func(t *testing.T) {
+	t.Run("the board: owner recorded, no creator named", func(t *testing.T) {
+		fresh()
 		var buf bytes.Buffer
 		mw := multipart.NewWriter(&buf)
 		_ = mw.WriteField("body", "Owner-filed task")
 		_ = mw.Close()
-		req := httptest.NewRequest(http.MethodPost, "/notes", &buf)
-		req.Header.Set("Content-Type", mw.FormDataContentType())
-		if rec := f.serve(f.srv.handleNoteCreate, req, nil); rec.Code != http.StatusOK {
-			t.Fatalf("POST /notes: HTTP %d %s", rec.Code, rec.Body)
+		rec := f.connFixture.call(t, http.MethodPost, "/tasks", &buf, merge(f.operator(),
+			map[string]string{"Content-Type": mw.FormDataContentType()}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST /tasks: HTTP %d %s", rec.Code, rec.Body)
 		}
-		var id int64
-		if err := f.pool.QueryRow(f.asOwner, `SELECT id FROM notes WHERE body = 'Owner-filed task' ORDER BY id DESC LIMIT 1`).Scan(&id); err != nil {
-			t.Fatal(err)
+		id := idByTitle(t, "Owner-filed task")
+		if got := createdBy(t, id); got != "owner" {
+			t.Fatalf("created_by = %s, want owner", got)
 		}
-		req = httptest.NewRequest(http.MethodPatch, "/tasks/"+strconv.FormatInt(id, 10)+"/status",
-			strings.NewReader(url.Values{"status": {"ready_for_review"}}.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if rec := f.serve(f.srv.handleNoteStatus, req, pv(id)); rec.Code/100 != 2 {
+		r, h := form(url.Values{"status": {"ready_for_review"}})
+		if rec := f.connFixture.call(t, http.MethodPatch, "/tasks/"+strconv.FormatInt(id, 10)+"/status", r,
+			merge(f.operator(), h)); rec.Code/100 != 2 {
 			t.Fatalf("PATCH /tasks/%d/status: HTTP %d %s", id, rec.Code, rec.Body)
 		}
 		f.srv.WaitForPushes()
 		expectPushes(t, taskPushes(f.pusher, f.dev, fmt.Sprintf("task-%d-done", id)),
 			fmt.Sprintf("Task #%d ready for review | Owner-filed task", id))
-		var createdBy *string
-		if err := f.pool.QueryRow(f.asOwner, `SELECT created_by FROM notes WHERE id = $1`, id).Scan(&createdBy); err != nil {
-			t.Fatal(err)
+	})
+
+	t.Run("the chief's task_create_gated over /mcp: chief", func(t *testing.T) {
+		fresh()
+		m := f.deliveredMessage(t, f.owner, f.chief.ID, "creator-door-1")
+		text, isErr, rpc := f.mcpCall(t, f.chiefTok, "task_create_gated",
+			map[string]any{"title": "Gated by the chief", "body": "do it", "gate_reason": "approval", "message_id": m.ID})
+		if rpc != nil || isErr {
+			t.Fatalf("task_create_gated: rpc=%+v %s", rpc, text)
 		}
-		if createdBy == nil || *createdBy != notes.CreatedByOwner {
-			t.Fatalf("created_by = %v, want %q stored for the owner's create", createdBy, notes.CreatedByOwner)
+		id := idByTitle(t, "Gated by the chief")
+		if got := createdBy(t, id); got != "chief" {
+			t.Fatalf("created_by = %s, want chief", got)
 		}
+		createdPush(t, f.dev, "New task | Gated by the chief (by chief)")
+	})
+
+	t.Run("a plugin's create: plugin:<label>", func(t *testing.T) {
+		fresh()
+		key := f.key(t)
+		_, upID := notes.ParseTag(key)
+		if code, out := f.post(t, f.tok, "/plugin/v1/tasks", map[string]any{"key": key,
+			"create": map[string]any{"title": "Plugin-filed task", "body": "b"}}); code != http.StatusCreated {
+			t.Fatalf("plugin create: HTTP %d %v", code, out["_raw"])
+		}
+		id := idByTitle(t, "Plugin-filed task")
+		if got := createdBy(t, id); got != "plugin:Example tracker" {
+			t.Fatalf("created_by = %s, want plugin:Example tracker", got)
+		}
+		createdPush(t, f.dev, "New task | Plugin-filed task (tracker "+upID+" · by plugin Example tracker)")
+	})
+
+	t.Run("the hook token with X-Muster-Actor naming the chief: nothing recorded", func(t *testing.T) {
+		fresh()
+		id := hookCreate(t, "Hook task claiming the chief", map[string]string{"X-Muster-Actor": f.chief.Name})
+		if got := createdBy(t, id); got != "<NULL>" {
+			t.Fatalf("created_by = %s, want NULL: the hook token names no caller", got)
+		}
+		createdPush(t, opDev, "New task | Hook task claiming the chief")
+	})
+
+	// The positive control for the case above: the same door, the same device,
+	// and a producer it CAN name, so an empty fragment there is the door
+	// recording nothing, not a push that cannot carry one.
+	t.Run("the hook token with a producer: the producer, nothing recorded", func(t *testing.T) {
+		fresh()
+		id := hookCreate(t, "Drafted hook task", map[string]string{"X-Muster-Actor": f.chief.Name, headerSource: "drafter"})
+		if got := createdBy(t, id); got != "<NULL>" {
+			t.Fatalf("created_by = %s, want NULL", got)
+		}
+		createdPush(t, opDev, "New task | Drafted hook task (by Task drafter)")
 	})
 }

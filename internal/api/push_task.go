@@ -290,10 +290,13 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	noteID := *a.NoteID
 	// The task's reference and creator (taskRefFragment), read under the same
 	// System context as the agent above and for the same reason; only the
-	// fragment leaves this function. A failed read sends the push without it.
+	// fragment leaves this function. A failed read sends the push without it,
+	// and so does a task that is not the agent's owner's own: the System read
+	// crosses owners, so the fragment is sent only when the push's recipient
+	// (a.OwnerID) owns the task it describes.
 	ref := ""
 	if s.ext.Notes != nil {
-		if n, err := s.ext.Notes.Get(sysCtx, noteID); err == nil {
+		if n, err := s.ext.Notes.Get(sysCtx, noteID); err == nil && n.OwnerID == a.OwnerID {
 			ref = taskRefFragment(n)
 		}
 	}

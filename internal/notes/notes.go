@@ -151,7 +151,7 @@ type Note struct {
 	SourceSessionID *string `json:"sourceSessionId,omitempty"`
 	// CreatedBy is WHO filed the task (migration 0082): CreatedByOwner,
 	// CreatedByChief, CreatedByAgent(name) or CreatedByPlugin(name); nil when not
-	// recorded (a pre-0082 row, a caller muster cannot identify, a plugin task
+	// recorded (a pre-0082 row, a POST /api/tasks that names no caller, a plugin task
 	// reference — whose creator is the upstream's, Ref.Snapshot.Creator). Written
 	// once at create, never edited. Not serialised: the machine API's shape is
 	// unchanged; the task notifications read it (api.taskRefFragment).

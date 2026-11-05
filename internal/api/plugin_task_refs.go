@@ -108,11 +108,18 @@ func cleanText(s string) string {
 	return strings.ReplaceAll(strings.ToValidUTF8(s, "�"), "\x00", "")
 }
 
-// plainLabel is s as one line of plain text, capped at n runes.
+// plainLabel is s as one line of plain text, capped at n runes. A control
+// character (Cc) becomes a space; a format character (Cf: a bidi override or
+// isolate such as U+202E or U+2066–U+2069, a zero-width space U+200B, a soft
+// hyphen) is dropped, so an upstream's label cannot reorder or hide the text
+// a push or a card shows around it.
 func plainLabel(s string, n int) string {
 	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		switch {
+		case unicode.IsControl(r):
 			return ' '
+		case unicode.Is(unicode.Cf, r):
+			return -1
 		}
 		return r
 	}, cleanText(s))

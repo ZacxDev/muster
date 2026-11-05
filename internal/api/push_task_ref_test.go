@@ -253,3 +253,47 @@ func TestAgentReadyPushCarriesTheRefAndCreator(t *testing.T) {
 		})
 	}
 }
+
+// TestAgentReadyPushNamesNoFragmentForAnotherOwnersTask: notifyAgentRunning
+// reads the task under authz.System, so the fragment is added only when the
+// push's recipient (the agent's owner) owns the task. A task that is someone
+// else's gets the plain body, never its reference or creator.
+func TestAgentReadyPushNamesNoFragmentForAnotherOwnersTask(t *testing.T) {
+	withHQ(t)
+	s, p, _ := refServer(t)
+	n := fourShapes()[0].note // hq 868ktt574 · by Pat Example
+	n.OwnerID = 8             // not the agent's owner (7)
+	id := n.ID
+	s.ext.Agents = runningAgentStore{a: agents.Agent{ID: 77, Name: "runner", OwnerID: 7,
+		Status: agents.StatusRunning, NoteID: &id}}
+	s.ext.Notes = oneTaskStore{n: n}
+	s.notifyAgentRunning("runner")
+	title, body := onePush(t, s, p)
+	expectPush(t, title, body, "Task #"+itoa(id)+": agent ready", "The agent is now working on it.")
+}
+
+// TestPlainLabelDropsFormatCharacters: a bidi override or isolate, or a
+// zero-width character, in an upstream label (reference.creator, a comment
+// author, a status label) never reaches a push or a card. Each case's input
+// differs from its output only by the format characters.
+func TestPlainLabelDropsFormatCharacters(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Pat\u202Egnp.exe", "Patgnp.exe"},       // RIGHT-TO-LEFT OVERRIDE
+		{"Pat\u200BExample", "PatExample"},       // ZERO WIDTH SPACE
+		{"\u2066Sam\u2069 Doe", "Sam Doe"},       // LEFT-TO-RIGHT ISOLATE / POP
+		{"\u2067Ana\u2068 Lee\u2069", "Ana Lee"}, // RLI, FSI, PDI
+		{"Kim\uFEFF Park\u00AD", "Kim Park"},     // BOM, SOFT HYPHEN
+		{"A\nB\tC", "A B C"},                     // controls still become spaces
+	}
+	for _, c := range cases {
+		if got := plainLabel(c.in, maxRefAuthorRunes); got != c.want {
+			t.Errorf("plainLabel(%+q) = %+q, want %+q", c.in, got, c.want)
+		}
+	}
+	// End to end through the fragment: the snapshot's creator.
+	withHQ(t)
+	n := notes.Note{Ref: &notes.Reference{Key: "hq:f1", Snapshot: notes.RefSnapshot{Creator: "Eve\u202E\u200B Mallory"}}}
+	if got, want := taskRefFragment(n), "hq f1 · by Eve Mallory"; got != want {
+		t.Fatalf("taskRefFragment = %+q, want %+q", got, want)
+	}
+}
