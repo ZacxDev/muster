@@ -17,7 +17,7 @@ const pluginThreadsPath = "/api/plugin-threads"
 
 // handlePluginThreadBind is POST /api/plugin-threads {thread, claude_session}.
 func (s *Server) handlePluginThreadBind(w http.ResponseWriter, r *http.Request) {
-	if !routingOn(s.ext) {
+	if !messageRoutingOn(s.ext) {
 		http.NotFound(w, r)
 		return
 	}
@@ -83,7 +83,7 @@ type musterRoute struct {
 // its thread. false when there is none (routing off, not a thread plugin, no
 // thread, or an unbound one).
 func (s *Server) threadRoute(ctx context.Context, p plugins.Plugin, m plugins.Message) (musterRoute, bool) {
-	if !routingOn(s.ext) || s.pluginDeliverer == nil || !plugins.IsThreadPlugin(p.Name) || m.Thread == nil {
+	if !messageRoutingOn(s.ext) || s.pluginDeliverer == nil || !plugins.IsThreadPlugin(p.Name) || m.Thread == nil {
 		return musterRoute{}, false
 	}
 	thread := *m.Thread

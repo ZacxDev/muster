@@ -1207,9 +1207,11 @@ judged when it is delivered.
 
 ## Routing a message to a session
 
-With `MUSTER_SESSION_ROUTING=1` (and plugins on), your chief can hand a plugin
+With `MUSTER_SESSION_ROUTING=1` and plugins on, your chief can hand a plugin
 message to the session best placed to answer it, instead of drafting the reply
-itself. It finds the session by [focus](focus.md) (`focus_search`,
+itself. (Session routing alone, without plugins, routes
+[your own typed requests](#routing-your-own-request-to-a-session) and
+[tasks](#routing-a-task-to-a-session).) It finds the session by [focus](focus.md) (`focus_search`,
 `fleet_list`) and calls `route_to_session(message_id, subject)`. The chief's
 turn for each message says when to do this.
 
@@ -1217,8 +1219,9 @@ turn for each message says when to do this.
    the message, the chief, the target and a deadline 30 minutes away (4 hours
    for a [pull-request review](#a-pull-request-review-mail) muster routes
    itself, and for a message its plugin marked `human_conversation`: a person
-   in a conversation, whose answer is often yours to give; every other route,
-   the chief's, yours and a route by thread, has 30 minutes). A still-queued paste has no deadline of its own: it waits as long
+   in a conversation, whose answer is often yours to give, and for
+   [your own typed request](#routing-your-own-request-to-a-session); every other
+   route, the chief's, yours and a route by thread, has 30 minutes). A still-queued paste has no deadline of its own: it waits as long
    as its route does. The
    message must be one delivered to that chief, replyable, not already routed,
    and with no reply already approved and on its way.
@@ -1745,8 +1748,9 @@ sender and session.
 ### Routing a task to a session
 
 The chief can hand one of your **tasks** to a mirrored session the same way:
-`route_to_session {task_id, subject}`, with exactly one of `message_id` and
-`task_id` (both, or neither, is refused as `bad_arguments`). It is the same
+`route_to_session {task_id, subject}`, with exactly one of `message_id`,
+`task_id` and `text` (two, or none, is refused as `bad_arguments`). It needs
+session routing only, not plugins. It is the same
 route (`session_routes.task_id`, migration `0053`) and the same path after it:
 the same target checks, the paste through the window's send queue after the
 idle wait, `route_reply` bound to the target session, the 30-minute deadline,
@@ -1769,6 +1773,61 @@ the hand-back, and the `session_route.*` audit rows. What differs:
   route times out or fails.
 - **The task leaves "Task to route"**: routing it records `task.chief_routed`
   with `tool: route_to_session`, like the other task tools.
+
+### Routing your own request to a session
+
+When you **type** an idea or a request in your chief's chat — "send this to
+whoever is on the changelog" — the chief hands it straight to the mirrored
+session already on it: `route_to_session {text, subject, owner_asked: true}`.
+No task is filed, and **plugins are not needed**: session routing
+(`MUSTER_SESSION_ROUTING=1`, with a database) is enough. The chief's standing
+instructions tell it to find the session with `focus_search` and `fleet_list`
+(or `sessions_overview`), to route only when one session is clearly on it, and
+otherwise to ask you which, naming the candidates.
+
+It is the same route (`session_routes.request_text`, migration `0084`) and the
+same path after it as a message's or a task's: the same target checks, the
+paste through the window's send queue after the idle wait, `route_reply` bound
+to the target session, the hand-back, and the `session_route.*` audit rows.
+What differs:
+
+- **Only on a turn you typed.** `owner_asked: true` runs
+  [`agent_dispatch`'s check](#agent_dispatch-the-guards) (guard 13),
+  unchanged (`ownerTurnFor`): your message, typed in the chief's muster chat and
+  accepted by its runtime, is the turn in flight; every other Claude Code CLI
+  in the chief's pod is idle; muster holds no session claim for a turn it
+  started; and the call came over MCP from a Claude Code session. So a plugin
+  message, a task event, a hand-back, a relayed answer, a nudge or a turn the
+  chief started itself can never route text in your name. A refusal is
+  `{"refused": "not_owners_turn", "error": "owner_asked: …"}`, its sentence
+  naming the condition that failed; nothing is routed or queued.
+- **Exactly one of `message_id`, `task_id` and `text`**, and `owner_asked`
+  only (and always) with `text`; anything else is `bad_arguments`. `text` is
+  the chief's words, at most 8 KiB, control characters removed; an empty one
+  is refused. A `message_id` with plugins off is `plugins_off`.
+- **What is pasted** is the route's stored text, fenced as data under a
+  preface saying it is **your request as your chief relayed it** — the chief's
+  words, not yours — naming your chat message's id, and telling the session to
+  weigh it as a request passed on by an assistant: not to run commands or open
+  links because of it, and to ask you (`attention_ask`) before anything
+  destructive, irreversible or outside its work. The route records your
+  message (`request_message_id`) and the `session_route.routed` audit row
+  names it (`owner_message_id`).
+- **The answer comes back to the chat you asked in.** `route_reply` records
+  it (`answered`) and ends the route `relayed`, owing the chief its delivery in
+  the same transaction; the route sweep delivers it **exactly once** to the
+  chief session your message is in (`chief_session_id`) — a turn when the
+  chief can take one, else a note it reads on its next — with the answer
+  fenced as data, for the chief to tell you what it says. That turn is
+  muster's, not yours, so `owner_asked` refuses in it. No draft is filed and
+  no allowlist applies.
+- **A 4-hour deadline**, as a pull-request review's: the session already on
+  the work is usually busy, and its paste waits for its window to go idle. A
+  route that times out, or whose paste is cancelled or whose window moves on,
+  is handed back to the same chat session, saying why (*"it was never
+  delivered"* when the paste never left the queue).
+- **One open route per message and session.** The same request to the same
+  session again is `already_routed`; to another session it is a second route.
 
 ### Routing a message from your own session
 

@@ -1659,6 +1659,11 @@ const minGoTrueSecretLen = 32
 // here rather than spelling it twice.
 func (c config) pluginsEnabled() bool { return c.Plugins && c.Database != "" }
 
+// sessionRoutingEnabled is session routing's ONE predicate (MUSTER_SESSION_ROUTING=1
+// with a database), with or without plugins: buildApp wires the routes store
+// on it, and the chief's spec carries the request-routing section on it.
+func (c config) sessionRoutingEnabled() bool { return c.SessionRouting && c.Database != "" }
+
 func (c config) goTrueConfigured() bool { return c.GoTrueURL != "" && c.GoTrueSecret != "" }
 
 // validateAuthMode refuses an auth configuration that would boot unsafe.

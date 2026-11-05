@@ -44,12 +44,13 @@ func ccRow(name string) agents.Agent {
 func TestAClaudeCodeChiefGetsTheChiefProseAsItsManagedClaudeMD(t *testing.T) {
 	for _, chief := range []bool{true, false} {
 		for _, store := range []bool{true, false} {
-			for _, plugins := range []bool{true, false} {
+			for _, combo := range []struct{ plugins, routing bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
+				plugins, routing := combo.plugins, combo.routing
 				cfg := ccSpecConfig()
 				if store {
 					cfg.CairnURL, cfg.CairnToken = "https://store.example.test:19001", "seam-fixture-store-credential-51ac9d"
 				}
-				cfg.Plugins = plugins
+				cfg.Plugins, cfg.SessionRouting = plugins, routing
 				row := ccRow("plain-worker")
 				if chief {
 					row = ccRow(agents.ChiefName)
@@ -74,8 +75,13 @@ func TestAClaudeCodeChiefGetsTheChiefProseAsItsManagedClaudeMD(t *testing.T) {
 						store, plugins, filePaths(spec))
 				}
 				got := string(spec.Files[0].Content)
-				if got != agentspec.ChiefInstructionsClaudeCode(plugins) {
-					t.Errorf("store=%v plugins=%v: the CLAUDE.md is not the claude-code chief prose for this plugins state", store, plugins)
+				if got != agentspec.ChiefInstructionsClaudeCode(plugins, routing) {
+					t.Errorf("store=%v plugins=%v routing=%v: the CLAUDE.md is not the claude-code chief prose for this state", store, plugins, routing)
+				}
+				// Independent of the constant: the request-routing section rides on
+				// cfg.SessionRouting alone, with or without plugins.
+				if strings.Contains(got, "`owner_asked: true`. muster checks that the turn you are in is their own message, pastes") != routing {
+					t.Errorf("plugins=%v routing=%v: the request-routing section is in the prose = %v", plugins, routing, !routing)
 				}
 				// Independent of the constant: the claims that decide whether the
 				// prose is TRUE in this image.

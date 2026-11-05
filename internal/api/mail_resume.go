@@ -82,7 +82,7 @@ type mirrorResumer interface {
 // mailResumeOn reports whether the mail resume can run at all.
 func (s *Server) mailResumeOn() bool {
 	mr := s.ext.MailResume
-	if mr == nil || mr.Off || mr.Allow.Owners() == 0 || s.ext.MailResumes == nil || s.ext.Mirror == nil || !routingOn(s.ext) {
+	if mr == nil || mr.Off || mr.Allow.Owners() == 0 || s.ext.MailResumes == nil || s.ext.Mirror == nil || !messageRoutingOn(s.ext) {
 		return false
 	}
 	_, ok := s.ext.Mirror.(mirrorResumer)

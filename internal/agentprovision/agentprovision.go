@@ -1182,7 +1182,7 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	}
 	store := cfg.CairnConfigured()
 	return agentspec.Build(ag, cfg, agentspec.Options{
-		Instructions:  agentspec.ChiefInstructions(store, cfg.Plugins),
+		Instructions:  agentspec.ChiefInstructions(store, cfg.Plugins, cfg.SessionRouting),
 		CairnEligible: true,
 	})
 }
@@ -1232,7 +1232,7 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	}
 	// HQMCP: the chief, and no other agent, is offered the HQ MCP server with
 	// every tool allowed (internal/podagent/hqmcp.go).
-	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins),
+	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting),
 		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: true}})
 }
 

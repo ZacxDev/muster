@@ -398,10 +398,11 @@ func (s *Server) agentTools() []agentTool {
 		// reasons; it reads the owner's whole fleet.
 		tools = append(tools, agentTool{def: fleetReportToolDef(), mcp: true, chiefOnly: true})
 	}
-	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on:
-	// the chief hands a plugin message to a mirrored session (chief-only, like
-	// reply_draft). The session answers through POST /api/routes/{id}/reply.
-	if routingOn(s.ext) && !s.featureOff(features.SessionRouting) {
+	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on,
+	// with or without plugins: the chief hands a mirrored session the owner's
+	// own request, a task or (with plugins) a plugin message (chief-only, like
+	// reply_draft). The session answers with route_reply.
+	if routesOn(s.ext) && !s.featureOff(features.SessionRouting) {
 		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
 	}
 	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the

@@ -55,7 +55,7 @@ const pluginOwnerAnsweredPath = pluginAPIPrefix + "/messages/{id}/owner-answered
 const routeStateNone = "none"
 
 func (s *Server) handlePluginOwnerAnswered(w http.ResponseWriter, r *http.Request) {
-	if !routingOn(s.ext) {
+	if !messageRoutingOn(s.ext) {
 		http.NotFound(w, r)
 		return
 	}

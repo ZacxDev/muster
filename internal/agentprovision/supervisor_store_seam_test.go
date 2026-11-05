@@ -333,3 +333,47 @@ func TestOnlyTheSupervisorIsToldAboutPluginsAndOnlyWhenTheyAreOn(t *testing.T) {
 		})
 	}
 }
+
+// TestOnlyTheSupervisorIsToldToRouteItsOwnersRequestsAndOnlyWithRouting is the
+// request-routing section's seam on the gateway kind: the prose the INSTANCE
+// receives tells it to route the owner's typed request with route_to_session's
+// text exactly when the row is the supervisor AND session routing is on —
+// whether or not plugins are (plugins on alone must not carry it).
+func TestOnlyTheSupervisorIsToldToRouteItsOwnersRequestsAndOnlyWithRouting(t *testing.T) {
+	worker := fixtureAgent()
+	routing := fixtureSpecConfig()
+	routing.SessionRouting = true
+	pluginsOnly := fixtureSpecConfig()
+	pluginsOnly.Plugins = true
+	const marker = "## Your owner's ideas — send them to the session already on it"
+	for _, c := range []struct {
+		name  string
+		agent agents.Agent
+		spec  agentspec.Config
+		want  bool
+	}{
+		{"supervisor, routing on, plugins off", supervisorRow(), routing, true},
+		{"supervisor, plugins on, routing off", supervisorRow(), pluginsOnly, false},
+		{"supervisor, both off", supervisorRow(), fixtureSpecConfig(), false},
+		{"worker, routing on", worker, routing, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			spec, err := adapterWith(t, c.spec, c.agent).buildSpec(context.Background(), c.agent)
+			if err != nil {
+				t.Fatalf("buildSpec: %v", err)
+			}
+			found := false
+			for _, f := range spec.Files {
+				if strings.HasSuffix(f.Path, agentspec.InstructionsFileName) {
+					found = true
+					if got := strings.Contains(string(f.Content), marker); got != c.want {
+						t.Errorf("the instance's prose carries the routing section = %v, want %v", got, c.want)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("no %s in the built spec; files: %v", agentspec.InstructionsFileName, filePaths(spec))
+			}
+		})
+	}
+}

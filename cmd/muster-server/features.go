@@ -123,7 +123,7 @@ func featureCatalog() []features.Feature {
 			Description: "A plugin files one task per upstream record.",
 			Enable:      []features.Var{v(envPluginTaskNamespaces, "tag namespaces")}},
 		{ID: features.SessionRouting, NeedsChief: true, Name: "Session routing",
-			Description: "The chief hands a plugin message to one of your sessions; the session's answer becomes the reply.",
+			Description: "The chief hands one of your sessions an idea you typed in its chat, a task, or (with plugins) a plugin message; the session's answer comes back.",
 			Enable:      []features.Var{is(envSessionRouting, "1")},
 			Settings:    []string{envRouteRelayAllow}},
 		{ID: features.TaskRouting, NeedsChief: true, Name: "Task routing",
@@ -378,7 +378,20 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 		}
 		return pick(wired, asked, "", name+"=1 but "+pluginsOff, name+" is unset")
 	}
-	st[features.SessionRouting] = routed(ext.Routing != nil, c.SessionRouting, envSessionRouting)
+	// Session routing does NOT need plugins: without them the chief still routes
+	// the owner's own request and tasks, and only a plugin message is not routed.
+	switch {
+	case ext.Routing != nil && chiefMissing(c, ext) != "":
+		st[features.SessionRouting] = bad(envSessionRouting + "=1 but " + chiefMissing(c, ext))
+	case ext.Routing != nil && ext.Plugins == nil:
+		st[features.SessionRouting] = on("your typed requests and tasks only: a plugin message is not routed (" + pluginsOff + ")")
+	case ext.Routing != nil:
+		st[features.SessionRouting] = on("")
+	case c.SessionRouting:
+		st[features.SessionRouting] = bad(envSessionRouting + "=1 but " + noDB)
+	default:
+		st[features.SessionRouting] = off(envSessionRouting + " is unset")
+	}
 	st[features.TaskRouting] = routed(ext.TaskRouting != nil, c.TaskRouting, envTaskRouting)
 	st[features.PRMailRouting] = pick(ext.PRMail != nil, len(c.PRMailSenders) > 0, "",
 		envPRMailSenders+" is set but session routing ("+envSessionRouting+"=1, with plugins) is off", envPRMailSenders+" is unset")

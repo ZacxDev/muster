@@ -52,7 +52,7 @@ const routedByPR = "muster, because this session created or pushed the pull requ
 // prRouteOn reports whether pull-request routing is on: a sender list, its
 // store, and session routing (the route it makes).
 func (s *Server) prRouteOn() bool {
-	return s.ext.PRMail != nil && len(s.ext.PRMail.Senders) > 0 && s.ext.PRSessions != nil && routingOn(s.ext)
+	return s.ext.PRMail != nil && len(s.ext.PRMail.Senders) > 0 && s.ext.PRSessions != nil && messageRoutingOn(s.ext)
 }
 
 // prMailRef is the pull request message m of plugin p reviews: only with
