@@ -27,7 +27,7 @@ Each claim about muster links to the page of this repository it comes from.
 | Voice | Dictation into the message box: a local speech-to-text model on your server, or your own OpenAI-compatible API key. You read it, then press Send | A voice agent (ElevenLabs) that relays requests and approvals. Paid beyond a free allowance, or bring your own ElevenLabs agent | Not stated | Not stated |
 | Sessions: wrapper or existing | Picks up any session already in tmux; nothing to wrap. Sessions outside tmux are not seen | Started through `happy claude` / `happy codex`, or run by Happy Desktop. Attaching to an already-running session: not stated | `/remote-control` connects a session already running; or start with `claude remote-control` / `claude --remote-control` | `tmux attach` to any existing session |
 | Install | One prompt pasted into your coding agent, the Claude Code plugin (`/plugin marketplace add ZacxDev/muster`), or [INSTALL.md](../INSTALL.md) by hand. Needs Docker, Tailscale and tmux | `npm install -g happy`; the desktop app (download or Homebrew cask); App Store / Google Play | Built into Claude Code | Install the app; run an SSH server |
-| Cost | Free; you run the server | Free; voice is the one paid feature | Included with a paid Claude plan (Pro, Max, Team, Enterprise); API keys not supported | Blink: paid, after a free trial. Termius: free tier with SSH and Mosh, and paid tiers |
+| Cost | Free; you run the server | Free; voice is the one paid feature | Included with a paid Claude plan (Pro, Max, Ultra, Team, Enterprise); API keys not supported | Blink: paid, after a free trial. Termius: free tier with SSH and Mosh, and paid tiers |
 | Telemetry | Nothing is sent unless you configure it: OTLP tracing and Faro front-end monitoring are both off by default | The app sends product analytics to PostHog; it can be turned off | Claude Code sends usage metrics (never code, prompts or file paths) by default; `DISABLE_TELEMETRY=1` turns them off, and Remote Control keeps working (on recent versions) unless Trusted Devices is required for your account. Error reports are separate and are turned off with `DISABLE_ERROR_REPORTING=1` | Not stated |
 
 Omnara now describes
@@ -111,7 +111,7 @@ Readers ask about these two, so here is one line each, from their own READMEs
   (Apache-2.0) that runs in the terminal you already use, marks every pane
   working, blocked or idle, keeps agents running when you detach or lose SSH,
   and puts saved SSH machines in one agent list. It fits better if you want everything in a
-  terminal with nothing to host, a Windows installer, and agents that drive it
+  terminal with nothing to host, a Windows install script (beta), and agents that drive it
   (spawn panes, wait on each other). Where muster differs: muster is a phone
   web app with push that mirrors sessions you already run in plain tmux; herdr
   owns its panes' terminals, and its README names no phone client or push.

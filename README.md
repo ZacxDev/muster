@@ -17,21 +17,22 @@ agent you run in tmux shows up; Claude Code gets the most.
 - **A push when a session needs you, and one queue for everything waiting.**
   Every session on every machine is in one list, with the ones waiting on you
   first, and the **Asks** page gathers everything blocked on you. A session's
-  stop is pushed once and never quoted; an agent's own question is pushed with
-  its text ([below](#notifications-only-when-you-are-needed)). This needs
+  stop is pushed once and never quoted; asks are pushed with their text
+  ([below](#notifications-only-when-you-are-needed)). This needs
   Push, which INSTALL.md turns on; on iOS, Add to Home Screen first.
 - **A chat on your phone, not a terminal.** A Claude Code session opens as a
   chat with a message box at the bottom, within reach of your thumb. With
   dictation on, tap the mic and speak: the transcript lands in the box, and
   you read it before you press Send.
-- **What Remote Control leaves out.** muster picks up sessions already running
-  in tmux, including ones started before or without Remote Control, with no
-  restart; lists non-Claude panes and every machine in one waiting-first list;
-  and reads the session on your own machine, so it works with an API key,
+- **What Remote Control leaves out.** muster picks up every session already in
+  tmux on its own, with nothing to run inside each one; lists non-Claude panes
+  and every machine in one waiting-first list; and reads the session on your own machine, so it works with an API key,
   Amazon Bedrock or a custom `ANTHROPIC_BASE_URL`, which Remote Control does
   not support.
-- **Everything stays on your machines and your tailnet.** The server runs on
-  one of your machines and is reached only over Tailscale. Each machine dials
+- **Everything stays on your machines and your tailnet** (unless you turn on
+  an optional feature that calls an outside API, such as suggested replies,
+  focus or a hosted speech-to-text). The server runs on one of your machines
+  and is reached only over Tailscale. Each machine dials
   out to it, so muster opens no network port on them (the optional MCP
   endpoint listens on loopback only). Machines are read-only until you let
   muster type into them, one machine at a time.
@@ -65,11 +66,12 @@ The components and what each trusts: [docs/architecture.md](docs/architecture.md
 
 From v0.146.0 the Compose stack pushes each stop of a session **once**: when it
 waits on you, or when it has sat idle 10 minutes (stalled). The push names the
-session and never quotes it; only an agent's ask, or a Claude Code question held
-by the ask hook, carries its text. Task events have their own switches under
-**Account → Notifications**. When a push closes, and how to turn this off:
-[docs/attention.md](docs/attention.md#stalled--waiting-session-state),
-[docs/features.md](docs/features.md#session-state).
+session and never quotes it. Asks are pushed with their text: an agent's or the
+chief's question, muster's own, a Claude Code question held by the ask hook, and
+opencode questions, permission requests and Hermes approvals
+([docs/attention.md](docs/attention.md#stalled--waiting-session-state)). Task
+events have their own switches under **Account → Notifications**. Turning
+this off: [docs/features.md](docs/features.md#session-state).
 
 ## Quickstart
 
@@ -175,8 +177,9 @@ Code on an API key, Bedrock, Google Cloud, Microsoft Foundry or a custom
 session that stays on your own machines and tailnet instead of going through
 Anthropic's servers.
 
-The full comparison, with Happy, herdr, Paseo and SSH + tmux too, and the
-sources for every cell: [docs/comparison.md](docs/comparison.md).
+The full comparison, with Happy and SSH + tmux too and the sources for every
+cell, plus a line each on herdr and Paseo citing their READMEs:
+[docs/comparison.md](docs/comparison.md).
 
 ## Limits
 
