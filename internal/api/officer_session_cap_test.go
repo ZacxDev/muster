@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -279,5 +280,90 @@ func TestTheJudgementSessionCapSurvivesARestart(t *testing.T) {
 	}
 	if len(second.store.created) != 0 {
 		t.Fatalf("a restarted server woke the capped judgement pool: created %v", second.store.created)
+	}
+}
+
+// TestAClaimHQMayHaveTakenKeepsItsSession (round 1 Y2): when HQ's answer to
+// a claim is lost (HQ committed it, then answered 503), the outcome is
+// unknown, so the session is KEPT — never undone blindly: at a cap of 2, after
+// one such claim and one plain claim, a third item is refused. The same for a
+// claim-next whose answer is lost.
+func TestAClaimHQMayHaveTakenKeepsItsSession(t *testing.T) {
+	for _, next := range []bool{false, true} {
+		r := newCappedOfficerRig(t)
+		r.hq.ClaimNext = true
+		ctx := context.Background()
+		j1 := agents.Agent{Name: offTJudge + "1"}
+		i1 := r.hq.AddTieredItem(offT, "gpu.alert", "node-a", officers.TierJudgement)
+		args := `{"item_id":"` + i1 + `"}`
+		if next {
+			args = `{}`
+		}
+		r.hq.CommitThenFail = 503
+		if out := r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, args); !isToolErr(out) || !strings.Contains(out, "unavailable") {
+			t.Fatalf("next=%v: a lost answer: %s, want HQ unavailable", next, out)
+		}
+		r.hq.CommitThenFail = 0
+		i2 := r.hq.AddTieredItem(offT, "gpu.alert", "node-b", officers.TierJudgement)
+		if out := r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{"item_id":"`+i2+`"}`); isToolErr(out) {
+			t.Fatalf("next=%v: session 2: %s", next, out)
+		}
+		i3 := r.hq.AddTieredItem(offT, "gpu.alert", "node-c", officers.TierJudgement)
+		if out := r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{"item_id":"`+i3+`"}`); !isToolErr(out) || !strings.Contains(out, "max_sessions_per_day") {
+			t.Fatalf("next=%v: session 3 after a lost answer: %s, want the cap's refusal (the lost one kept its session)", next, out)
+		}
+	}
+}
+
+// failingSessions is a SessionStore whose every call fails.
+type failingSessions struct{}
+
+func (failingSessions) AdmitSession(context.Context, string, string, string, int, time.Time) (officers.Admission, error) {
+	return officers.Admission{}, errors.New("ledger down")
+}
+func (failingSessions) ReleaseSession(context.Context, string, string, string) error { return errors.New("ledger down") }
+func (failingSessions) ResolveSession(context.Context, string, string, string, string) error {
+	return errors.New("ledger down")
+}
+func (failingSessions) Sessions(context.Context, string, string) ([]string, error) {
+	return nil, errors.New("ledger down")
+}
+
+// TestTheRoutinePoolRunsWhenTheJudgementLedgerFails (round 1): a session
+// ledger that cannot be read stops only the CAPPED pool from waking for new
+// work; the routine pool's pass goes on and wakes for its item.
+func TestTheRoutinePoolRunsWhenTheJudgementLedgerFails(t *testing.T) {
+	r := newOfficerRigCfg(t, map[string]string{offATok: offA, offTTok: offT}, func(hqURL string) []officers.Officer {
+		raw := `[{"id":"` + offA + `","hq_url":"` + hqURL + `","max_instances":2},` +
+			`{"id":"` + offT + `","hq_url":"` + hqURL + `","tiers":{"routine":{"model":"haiku","max_instances":1},` +
+			`"judgement":{"model":"opus","max_instances":2,"max_sessions_per_day":2}}}]`
+		list, err := officers.Parse(raw, func(k string) string {
+			return map[string]string{
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offA): offATok,
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offT): offTTok,
+			}[k]
+		}, "muster-agent-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return list
+	}, func(c *OfficersConfig) { c.Sessions = failingSessions{} })
+	ctx := context.Background()
+	r.hq.AddTieredItem(offT, "gpu.check", "node-r", officers.TierRoutine)
+	r.hq.AddTieredItem(offT, "gpu.alert", "node-j", officers.TierJudgement)
+	if res := r.rec.Check(ctx, offT, true); res.Err != nil {
+		t.Fatalf("the pass failed with the ledger down: %v", res.Err)
+	}
+	var routine, judge int
+	for _, a := range r.store.created {
+		switch {
+		case strings.HasPrefix(a.Name, offTRoutine):
+			routine++
+		case strings.HasPrefix(a.Name, offTJudge):
+			judge++
+		}
+	}
+	if routine != 1 || judge != 0 {
+		t.Fatalf("with the ledger down: started %d routine and %d judgement instances, want 1 and 0", routine, judge)
 	}
 }

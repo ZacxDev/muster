@@ -107,6 +107,10 @@ type Server struct {
 	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
 	// "Priority"); false — the default — is an HQ from before it: 404.
 	ClaimNext bool
+	// CommitThenFail, when non-zero, makes a claim (by id or claim-next)
+	// that succeeds COMMIT it and then answer this status instead: an HQ
+	// that took the claim but whose answer was lost (a timeout, a 5xx).
+	CommitThenFail int
 	// Before, when set, runs ahead of every request, OUTSIDE the fake's lock
 	// (so it may call SetClaim, SetBlocked, …): a test changes HQ's state at
 	// an exact point in a multi-request exchange. Set it before any request.
@@ -521,6 +525,10 @@ func (s *Server) claimNext(w http.ResponseWriter, officer string, body map[strin
 	exp := now.Add(time.Duration(lease) * time.Second)
 	best.Status, best.ClaimedBy, best.LeaseExpiresAt, best.UpdatedAt = "claimed", instance, &exp, now
 	best.Attempts++
+	if s.CommitThenFail != 0 {
+		s.write(w, s.CommitThenFail, map[string]any{"error": "committed, then failed to answer"})
+		return
+	}
 	s.write(w, http.StatusOK, map[string]any{"item": *best, "lease_expires_at": exp})
 }
 
@@ -591,6 +599,10 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		exp := now.Add(time.Duration(lease) * time.Second)
 		it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = "claimed", instance, &exp, now
 		it.Attempts++
+		if s.CommitThenFail != 0 {
+			s.write(w, s.CommitThenFail, map[string]any{"error": "committed, then failed to answer"})
+			return
+		}
 		s.write(w, http.StatusOK, map[string]any{"item": *it, "lease_expires_at": exp})
 	case "heartbeat":
 		if !live || it.ClaimedBy != instance {
