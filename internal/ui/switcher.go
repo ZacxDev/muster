@@ -838,7 +838,65 @@ func switcherEntry(it SwitcherItem) g.Node {
 // view) — the only pages that draw the bar now — as it was measured there. (The app shell, whose
 // retired Agents panel docked the bar, carried it as a static file instead.)
 // One text, switcherJS.
-func switcherScript() g.Node { return Script(g.Raw(switcherJS)) }
+func switcherScript() g.Node { return Script(g.Raw(switcherJS + switcherFadeJS)) }
+
+// The row's edge fades (switcherFadeJS), as the attributes web/css/input.css
+// keys its masks off.
+const (
+	switcherFadeStartAttr = "data-fade-start"
+	switcherFadeEndAttr   = "data-fade-end"
+)
+
+// switcherFadeJS: A PILL CUT BY THE ROW'S EDGE READS AS "MORE TO SCROLL", NOT
+// AS BROKEN (an operator report: the bar's last pill read "mango:1 · lap",
+// cut mid-word by the edge). Operator decision: the row keeps scrolling
+// sideways and every title stays whole (TestTitleEntriesAreWider; title-room
+// and agents-switcher pin it) — so the edge FADES instead: a row with more to
+// its right carries data-fade-end, one scrolled away from its start carries
+// data-fade-start, and input.css masks that side to transparent. A row that
+// fits carries neither and is drawn exactly as before.
+//
+// It only READS the row's scroll position (scrollLeft, scrollWidth,
+// clientWidth) — it never writes it, so the offset the pin toggle's answer and
+// a background refresh keep (host-icons.spec) is untouched. It re-reads on
+// the row's own scroll, on a resize, when a row's entries are replaced (the
+// out-of-band copy, a back/forward restore) or it is shown (a view switch),
+// once the web font has loaded, and on pageshow. It runs in the bar's own
+// script, so the first paint already has the right edges. A mask moves no
+// layout.
+const switcherFadeJS = `
+(function () {
+  var bar = document.getElementById('` + SwitcherID + `');
+  if (!bar || bar.__musterSwitcherFade) return;
+  bar.__musterSwitcherFade = true;
+  function mark(row, attr, on) {
+    if (on === row.hasAttribute(attr)) return;
+    if (on) row.setAttribute(attr, ''); else row.removeAttribute(attr);
+  }
+  function fade(row) {
+    if (!row || row.hidden) return;
+    var max = row.scrollWidth - row.clientWidth;
+    mark(row, '` + switcherFadeStartAttr + `', max > 1 && row.scrollLeft > 1);
+    mark(row, '` + switcherFadeEndAttr + `', max > 1 && row.scrollLeft < max - 1);
+  }
+  var rows = bar.querySelectorAll('[data-switcher-list]');
+  function all() { for (var i = 0; i < rows.length; i++) fade(rows[i]); }
+  for (var i = 0; i < rows.length; i++) {
+    (function (row) { row.addEventListener('scroll', function () { fade(row); }, { passive: true }); })(rows[i]);
+  }
+  if (typeof MutationObserver !== 'undefined') {
+    var mo = new MutationObserver(function (ms) {
+      var seen = [];
+      ms.forEach(function (m) { if (seen.indexOf(m.target) < 0) { seen.push(m.target); fade(m.target); } });
+    });
+    for (var j = 0; j < rows.length; j++) mo.observe(rows[j], { childList: true, attributes: true, attributeFilter: ['hidden'] });
+  }
+  window.addEventListener('resize', all);
+  window.addEventListener('pageshow', all);
+  try { if (document.fonts) document.fonts.ready.then(all); } catch (e) {}
+  all();
+})();
+`
 
 // switcherOOBHandler takes the out-of-band copies of the bar's rows and
 // counts (switcherRefresh, in the pin toggle's answer) and swaps them ITSELF, not htmx: the
