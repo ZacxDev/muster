@@ -5,10 +5,10 @@ import { hookToken, kindsPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 
-// kindChip is the agent page header's kind chip (ui.chip: a muted "kind" label,
-// then the value), matched whole — "kind" then exactly value.
-const kindChip = (page: Page, value: string) =>
-  page.locator('header span:has(> span.text-muted)').filter({ hasText: new RegExp(`^kind${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) });
+// ccAccount is the agent page header's Claude account (the second row's plain
+// account name, data-cc-account; the Terminal switch beside it is what says
+// the kind).
+const ccAccount = (page: Page, account: string) => page.locator(`header [data-cc-account="${account}"]`);
 
 
 // The dispatch form's agent-kind picker and the Claude account pin, at a phone
@@ -164,12 +164,14 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   //    header's second row) says which kind and account, and nothing on the
   //    page carries a token.
   await page.goto(origin + '/agents/' + pinned.name);
-  await expect(kindChip(page, 'Claude Code · beta')).toBeVisible();
+  await expect(ccAccount(page, 'beta')).toHaveText('beta');
+  await expect(ccAccount(page, 'beta')).toBeVisible();
   await expect(page.locator('header [data-worker-pool]'), 'a worker pinned to no pool shows no pool chip').toHaveCount(0);
   expect(await page.content()).not.toContain('sk-ant-oat01');
   // …and a pool worker's page says which pool.
   await page.goto(origin + '/agents/' + worker.name);
-  await expect(kindChip(page, 'Claude Code · alpha')).toBeVisible();
+  await expect(ccAccount(page, 'alpha')).toHaveText('alpha');
+  await expect(ccAccount(page, 'alpha')).toBeVisible();
   await expect(page.locator('header [data-worker-pool="reviewers"]')).toBeVisible();
   expect(await page.content()).not.toContain('sk-ant-oat01');
 });

@@ -496,6 +496,22 @@
 }
 
 /*
+ * An ask's answer box (internal/ui/attention.go, THE COMPACT ANSWER FORM):
+ * one line to start, as tall as its text as it is typed, capped at 8rem and
+ * scrolling inside past that. Without field-sizing it stays one line and
+ * scrolls. A plain class outside every @layer: Tailwind keeps it as written.
+ */
+.answer-fit {
+  max-height: 8rem;
+  overflow-y: auto;
+}
+@supports (field-sizing: content) {
+  .answer-fit {
+    field-sizing: content;
+  }
+}
+
+/*
  * A run of consecutive tool calls collapsed into one row (internal/ui/
  * tool_groups.go). Opening it reveals the individual rows with a short
  * fade-and-drop; reduced motion shows them at once.
@@ -696,4 +712,21 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
 body:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"])) #agent-actions [data-lifecycle="idle"],
 body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"]))) #agent-actions [data-lifecycle="live"] {
   display: none;
+}
+
+/*
+ * The asker block (internal/ui/attention.go, ONE AT A TIME, CLAMPED): a
+ * collapsed list shows its first card only, and a question's text is four
+ * lines until its in-card "Show more" opens it. Outside every @layer, so the
+ * cards' own `flex` and the text's `whitespace-pre-wrap` cannot outrank it.
+ */
+#asker-asks [data-asks-collapsed] > [data-attention-item]:not(:first-child) {
+  display: none;
+}
+#asker-asks [data-attention-item] [data-attention-text]:not([data-ask-open]) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
 }

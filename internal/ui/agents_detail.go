@@ -365,20 +365,75 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// Terminal — the same Rendered | Terminal switch a mirrored Claude Code
 			// window has (viewToggle), on both of its pages. An agent of a kind
 			// with no terminal has one view and no switch.
+			//
+			// 🔴 AND THE ROW IS ONE LINE AT EVERY WIDTH (an operator report: "looks
+			// broken on mobile"). It used to carry a "kind Claude Code · <account>"
+			// chip and a "failed over from … · <reason> · resets …" chip, and at
+			// 412px each wrapped inside its rounded pill into a 3–5 line blob that
+			// grew the row to ~5 lines and pushed the switch to the edge. Now: the
+			// account NAME as plain text (the Terminal switch already says what
+			// kind of agent this is), a one-word failover marker whose detail is
+			// one TAP away (agentFailoverMarker — a title= tooltip never shows on a
+			// touch screen), and the pool as text. Every item is nowrap; the text
+			// ones are the only ones that can shrink (min-w-0 + truncate), so a
+			// long account or pool name ends in "…" instead of growing the row,
+			// and nothing here is taller than the ⋯'s 44px (menuRowMin). e2e
+			// chief-mobile.spec.ts measures the row at 412px and 1280px.
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"+menuRowMin(v.Card)),
+				Div(Class("flex min-w-0 items-center gap-2"+menuRowMin(v.Card)),
 					g.If(v.Card.ID != 0, agentStrip(v.Card)),
 					agentMenuSlot(v.Card),
-					chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
-					g.If(v.LastFailover != "", chip("failed over", v.LastFailover)),
-					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
-					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
+					Span(g.Attr("data-cc-account", v.CCAccount), g.Attr("title", "Claude account: "+v.CCAccount),
+						Class("min-w-0 truncate text-xs font-medium text-fg2"), g.Text(v.CCAccount)),
+					g.If(v.LastFailover != "", agentFailoverMarker(v.LastFailover)),
+					g.If(v.WorkerPool != "", Span(g.Attr("data-worker-pool", v.WorkerPool), g.Attr("title", "Worker pool: "+v.WorkerPool),
+						Class("min-w-0 truncate text-xs text-muted"), g.Text("pool "+v.WorkerPool))),
+					Div(Class("ml-auto shrink-0"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 		),
 		// A restore's "Updating…" (restore.go): hung just below the header (a
 		// sticky box, so it is the chip's containing block), over the top of
 		// the transcript, taking no room in either.
 		updatingChip("agent-updating", "right-3 top-full mt-1"),
 	)
+}
+
+// agentFailoverPopoverID is the failover detail's popover (agentFailoverMarker).
+const agentFailoverPopoverID = "agent-failover"
+
+// agentFailoverMarker is the header's account-failover marker: a one-line
+// "↻ switched" button, the ⋯'s height (h-11, so it never grows the row), that
+// opens the failover's whole line ("from <account> · <reason> · resets …") in
+// a popover. It is the title "…"'s pair (titleMoreButton/fullTitlePopover): a
+// native popover="auto" (top layer; an outside tap or Escape closes it),
+// placed under its trigger and kept inside the viewport by floatingMenuScript
+// (data-menu-align="start": the marker sits at its row's start side).
+func agentFailoverMarker(line string) g.Node {
+	return g.Group{
+		Button(
+			Type("button"),
+			g.Attr("data-failover", ""),
+			g.Attr("popovertarget", agentFailoverPopoverID),
+			g.Attr("aria-haspopup", "dialog"),
+			g.Attr("aria-controls", agentFailoverPopoverID),
+			g.Attr("aria-expanded", "false"),
+			g.Attr("aria-label", "Account switched: show why"),
+			Class("press inline-flex h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-1.5 text-xs font-medium text-st-warning-fg transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
+			Span(g.Attr("aria-hidden", "true"), g.Text("↻")),
+			g.Text("switched"),
+		),
+		Div(
+			ID(agentFailoverPopoverID),
+			g.Attr("popover", "auto"),
+			g.Attr("role", "dialog"),
+			g.Attr("aria-label", "Account failover"),
+			g.Attr("data-floating-menu", ""),
+			g.Attr("data-menu-align", "start"),
+			g.Attr("data-failover-detail", ""),
+			Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
+			Span(Class("text-xs font-semibold text-fg2"), g.Text("This agent's Claude account was switched")),
+			Span(Class("[overflow-wrap:anywhere] text-sm"), g.Text(line)),
+		),
+	}
 }
 
 // agentHeaderTools is the first header row's controls right of the title: new
