@@ -31,7 +31,11 @@ func TestAnAskCallIsACardNotAToolRow(t *testing.T) {
 		t.Fatalf("ops %+v", ops)
 	}
 	card := ops[1].HTML
-	for _, want := range []string{`data-ask=""`, `data-ask-state="waiting"`, "Which color do you prefer?", "Choose any number", "warm", "Waiting for the answer in the terminal."} {
+	for _, want := range []string{`data-ask=""`, `data-ask-state="waiting"`, "Which color do you prefer?", "Choose any number", "warm",
+		// The fallback's whole note, pinned literally: it says why muster cannot
+		// answer and where to (the page shows it only with no live card).
+		`<p data-ask-nocard="" class="text-xs text-muted">` + html.EscapeString("Muster isn't tracking this question, so it can't answer it from here — answer it in the terminal. "+
+			"(It may no longer be on the terminal's screen, or its host may not report that the session is waiting.)") + `</p>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the call card lacks %q:\n%s", want, card)
 		}

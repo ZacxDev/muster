@@ -997,15 +997,22 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 			hosts[h.Host] = true
 		}
 	}
+	// The same nudges — a host connected, a window started waiting — are when
+	// muster reads a waiting window's transcript for the AskUserQuestion it
+	// shows open (mirror_ask_scan.go): a question outlives a restart.
+	s.scanOpenAsks(owner, hs)
 	waiting := s.waitingSessionsIn(octx, hs)
 	// episodePushed: the items the episode path covered at the last nudge
 	// (session state on) — handed to an episode then, so the diff does not
-	// push them as new now.
+	// push them as new now — except one whose episode is still HELD
+	// (episodeHandedOver).
 	var episodePushed map[string]bool
 	if s.sessionStateOn() {
 		// 🔴 SESSION STATE ON: A WAITING WINDOW MUSTER CANNOT ANSWER, AND THAT
-		// SESSION STATE KEYS (episodeCover), IS AN EPISODE, pushed (once per
-		// stop, claimed) from here at once (session_push.go) — and left out of
+		// SESSION STATE KEYS (episodeCover), IS AN EPISODE, opened from here
+		// and pushed once per stop, claimed — held for its grace and then
+		// pushed by the state pass (session_push.go, EpisodeWaitingGrace) —
+		// and left out of
 		// this diff, which would push it a second time and clear it the moment
 		// it stops waiting. Answerable asks, and a window session state cannot
 		// key, stay here, with today's push.
@@ -1016,7 +1023,6 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 			s.attention.episodeWaiting = map[int64]map[string]bool{}
 		}
 		prev := s.attention.episodeWaiting[owner]
-		episodePushed = prev
 		for _, it := range waiting {
 			if _, _, _, ok := episodeCover(hs, it); !ok {
 				kept = append(kept, it)
@@ -1043,6 +1049,9 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		s.attention.mu.Unlock()
 		s.episodeWaitingPushes(octx, owner, fresh, hs, true)
 		s.episodeWaitingPushes(octx, owner, seed, hs, false)
+		// prev is never written again (cur replaced it), so it is read
+		// unlocked here.
+		episodePushed = s.episodeHandedOver(octx, hs, kept, prev)
 		waiting = kept
 	}
 	for _, it := range waiting {
