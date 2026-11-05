@@ -89,6 +89,10 @@ func Secrets(s string) string { return secrets(s, true) }
 // a redaction can never disagree about what a credential looks like.
 func HasSecret(s string) bool { return Secrets(s) != s }
 
+// HasSecretValue (SCAFFOLD: not yet narrowed) reports whether s holds a
+// secret-shaped VALUE.
+func HasSecretValue(s string) bool { return HasSecret(s) }
+
 // secrets is Secrets; with filter false every pattern runs, which is what the
 // test compares the filtered path against.
 //

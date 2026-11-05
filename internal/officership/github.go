@@ -163,6 +163,10 @@ type GitHub interface {
 	// POST pulls does), so this is the GraphQL markPullRequestReadyForReview
 	// mutation, and it errs unless GitHub answers pull request n, not a draft.
 	MarkReady(ctx context.Context, n int, nodeID string) error
+	// ClosePR closes pull request n (PATCH pulls/<n> state "closed"): the
+	// draft gate's answer to a push that put a refused change into an open
+	// pull request.
+	ClosePR(ctx context.Context, n int) error
 }
 
 // REST is [GitHub] over GitHub's REST API for Repo, authenticated by Token
@@ -668,6 +672,12 @@ func (g *REST) OpenPR(ctx context.Context, title, head, base, body string) (int,
 	err := g.do(ctx, http.MethodPost, g.repoPath()+"/pulls", "", map[string]string{"title": title, "head": head, "base": base, "body": body},
 		&r, "opening a pull request")
 	return r.Number, err
+}
+
+// ClosePR implements GitHub.
+func (g *REST) ClosePR(ctx context.Context, n int) error {
+	return g.do(ctx, http.MethodPatch, g.repoPath()+"/pulls/"+strconv.Itoa(n), "", map[string]string{"state": "closed"}, nil,
+		"closing pull request #"+strconv.Itoa(n))
 }
 
 // graphqlURL is the GraphQL endpoint beside Base (api.github.com/graphql; a

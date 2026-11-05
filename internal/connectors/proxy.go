@@ -234,6 +234,15 @@ var ErrGateRefused = errors.New("connectors: refused by this agent's write polic
 // wraps [ErrGateRefused], so every check for a refusal still sees one.
 var ErrGateConflict = fmt.Errorf("%w: the change conflicts with it", ErrGateRefused)
 
+// WithAfterForward (SCAFFOLD: not yet wired) returns r carrying f, which the
+// proxy will call once the upstream's answer to r has been relayed.
+func WithAfterForward(r *http.Request, f func(ctx context.Context, status int)) *http.Request {
+	return r
+}
+
+// AfterForwardOf (SCAFFOLD) is the function WithAfterForward attached to r.
+func AfterForwardOf(r *http.Request) func(ctx context.Context, status int) { return nil }
+
 // Proxy forwards an agent's request to a connector's upstream with the
 // credential injected.
 type Proxy struct {

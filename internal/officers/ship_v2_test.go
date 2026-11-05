@@ -11,9 +11,10 @@ import (
 
 // ---------------------------------------------------------------------------
 // SHIP v2: `ship.repos` and the `draft` stage. Fixture values are pairwise
-// distinct: two repositories with different owners' accounts (4242, 5353),
-// different bases (main, trunk) and prefixes (officer/, bot/), so a rule that
-// read the wrong entry cannot pass.
+// distinct where the config lets them be: two repositories with different
+// bases (main, trunk) and forbidden lists, so a rule that read the wrong entry
+// cannot pass. The branch prefix cannot differ: the draft stage pins it to
+// officer/ (TestADraftShipsBranchPrefixIsPinned).
 // ---------------------------------------------------------------------------
 
 const (
@@ -26,7 +27,7 @@ func draftShip() map[string]any {
 	return map[string]any{
 		"stage": "draft",
 		"repos": []any{
-			map[string]any{"repo": v2Infra, "base": "trunk", "branch_prefix": "bot/",
+			map[string]any{"repo": v2Infra, "base": "trunk", "branch_prefix": "officer/",
 				"github_app":      map[string]any{"id": 9001, "account": "example-org:4242"},
 				"forbidden_paths": []string{"**/secrets/**", ".sops.yaml", "clusters/prod/apps/{agent-identity,officer-identity}/**"}},
 			map[string]any{"repo": v2Web, "github_app": map[string]any{"id": 9001, "account": "example-org:4242"}},
@@ -58,7 +59,7 @@ func TestParseReadsADraftShipWithSeveralRepos(t *testing.T) {
 	if s == nil || s.Stage != officers.StageDraft || !s.IsDraft() || s.MayMerge() || s.MayRelease() || s.MayMarkReady() {
 		t.Fatalf("parsed %v (draft %v merge %v release %v ready %v)", s, s.IsDraft(), s.MayMerge(), s.MayRelease(), s.MayMarkReady())
 	}
-	if len(s.Repos) != 2 || s.Repos[0].Repo != v2Infra || s.Repos[0].Base != "trunk" || s.Repos[0].BranchPrefix != "bot/" ||
+	if len(s.Repos) != 2 || s.Repos[0].Repo != v2Infra || s.Repos[0].Base != "trunk" || s.Repos[0].BranchPrefix != "officer/" ||
 		len(s.Repos[0].ForbiddenPaths) != 3 || s.Repos[1].Repo != v2Web || s.Repos[1].Base != "main" || s.Repos[1].BranchPrefix != "officer/" ||
 		len(s.Repos[1].ForbiddenPaths) != 0 {
 		t.Fatalf("repos = %+v", s.Repos)
@@ -145,6 +146,43 @@ func TestParseRefusesABadDraftShip(t *testing.T) {
 	}
 }
 
+// TestADraftShipsBranchPrefixIsPinned: a draft-stage officer's branches are
+// exactly officer/…, in both the repos and the single-repository form,
+// because the target repositories' own walls (their CI) key on that literal:
+// any other prefix is refused at boot, naming the key and the value it must
+// be. Controls: officer/ spelled out, and the default, parse; another stage
+// keeps its configurable prefix.
+func TestADraftShipsBranchPrefixIsPinned(t *testing.T) {
+	const want = `branch_prefix "bot/" must be exactly "officer/" on the draft stage`
+	m := draftShip()
+	m["repos"].([]any)[0].(map[string]any)["branch_prefix"] = "bot/"
+	if _, err := parseDecl(t, draftDecl(m), shipEnv(t)); err == nil || !strings.Contains(err.Error(), want) ||
+		!strings.Contains(err.Error(), "repos[0].") {
+		t.Errorf("repos form: err = %v, want it to name repos[0]. and %q", err, want)
+	}
+	single := map[string]any{"stage": "draft", "branch_prefix": "bot/", "github_app": map[string]any{"id": 9001, "account": "example-org:4242"},
+		"notice": map[string]any{"channel": "ch/example-alerts"}}
+	if _, err := parseDecl(t, draftDecl(single), shipEnv(t)); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("single form: err = %v, want %q", err, want)
+	}
+	for _, p := range []string{"officer/", ""} {
+		s := map[string]any{"stage": "draft", "github_app": map[string]any{"id": 9001, "account": "example-org:4242"},
+			"notice": map[string]any{"channel": "ch/example-alerts"}}
+		if p != "" {
+			s["branch_prefix"] = p
+		}
+		list, err := parseDecl(t, draftDecl(s), shipEnv(t))
+		if err != nil || list[0].Ship.BranchPrefix != "officer/" {
+			t.Errorf("control %q: err = %v", p, err)
+		}
+	}
+	rel := fullShip()
+	rel["branch_prefix"] = "bot/"
+	if list, err := parseShip(t, rel, shipEnv(t)); err != nil || list[0].Ship.BranchPrefix != "bot/" {
+		t.Errorf("control: a release-stage prefix bot/ no longer parses: %v", err)
+	}
+}
+
 // TestTheV2KeysAreRefusedOutsideTheDraftStage: forbidden_paths and several
 // repositories would be ignored by a shadow/merge/release officer (its rules
 // are unchanged), so each is a refusal, not an inert key. Control: the same
@@ -190,7 +228,9 @@ func TestADraftOfficerIsOfferedNoMergeReadyTagOrRolloutTool(t *testing.T) {
 	}
 	text := officers.KickoffText(list[0], 1)
 	for _, want := range []string{"DRAFT pull requests", officers.BodyFirstLine(shipID, 0)[:len("Officer: "+shipID+" · item ")],
-		"## Root cause, ## Evidence, ## Test, ## Rollback", "bot/engineering-example-web/<item>-<slug>", "officer/engineering-example-web/<item>-<slug>"} {
+		"## Root cause, ## Evidence, ## Test, ## Rollback", v2Infra + " (branches officer/engineering-example-web/<item>-<slug> off origin/trunk)",
+		v2Web + " (branches officer/engineering-example-web/<item>-<slug> off origin/main)",
+		"after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the draft officer's kickoff does not say %q:\n%s", want, text)
 		}

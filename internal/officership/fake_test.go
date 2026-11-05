@@ -44,6 +44,9 @@ type fakeGH struct {
 	listed      []PR
 	listCalls   int
 	commitTimes map[string]time.Time
+	// closed is every pull request ClosePR closed; closeErr fails it.
+	closed   []int
+	closeErr error
 }
 
 type commitInfo struct {
@@ -175,6 +178,21 @@ func (f *fakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
 	if p, ok := f.prs[n]; ok && p.NodeID == nodeID {
 		p.Draft = false
 		f.prs[n] = p
+	}
+	return nil
+}
+
+func (f *fakeGH) ClosePR(_ context.Context, n int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	f.closed = append(f.closed, n)
+	for i := range f.listed {
+		if f.listed[i].Number == n {
+			f.listed[i].State = "closed"
+		}
 	}
 	return nil
 }
