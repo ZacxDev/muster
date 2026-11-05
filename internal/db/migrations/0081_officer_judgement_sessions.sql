@@ -8,11 +8,10 @@
 --       (tiers.judgement.max_sessions_per_day, at most 100) is checked
 --       against it.
 --
--- 🔴 SHARED BY EVERY REPLICA, ADMITTED BY ONE STATEMENT. A session is
--- admitted by an INSERT … ON CONFLICT DO UPDATE whose WHERE re-checks the cap
--- on the row's latest version under its row lock, so two muster-servers side
--- by side in a rollout cannot both admit the N+1th, and a restart resets
--- nothing.
+-- 🔴 SHARED BY EVERY REPLICA, ADMITTED UNDER THE ROW LOCK. A session is
+-- admitted in one transaction that locks the day's row (SELECT … FOR UPDATE)
+-- and decides on its latest version, so two muster-servers side by side in a
+-- rollout cannot both admit the N+1th, and a restart resets nothing.
 --
 -- 🔴 OWNED AND UNDER FORCED ROW-LEVEL SECURITY, in 0049's shape: the row's
 -- owner is the officer's owner, and owner_isolation keeps one user from
@@ -22,10 +21,14 @@
 --
 -- Must apply after 0080 (the contiguity test refuses a gap).
 --
--- ROLLBACK (after rolling the image back; an older image never reads the
--- table, and keeps its count in memory):
+-- ROLLBACK. 🔴 FIRST edit MUSTER_OFFICERS: an older image has no session
+-- cap at all and refuses to boot on a config that names
+-- `max_sessions_per_day` (its tiers parser refuses unknown fields), and it
+-- refuses ANY officer with `llm` (the pod route did not exist). So remove
+-- both from every officer, THEN roll the image back, then (optionally):
 --   DROP TABLE public.officer_judgement_sessions;
 --   DELETE FROM schema_migrations WHERE version = 81;
+-- An older image never reads the table, so leaving it is harmless.
 
 SET LOCAL lock_timeout = '3s';
 

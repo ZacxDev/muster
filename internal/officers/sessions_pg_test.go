@@ -57,15 +57,15 @@ func TestTheSessionCountSurvivesANewServer(t *testing.T) {
 	first := sessionStore(t, dsn)
 	for _, item := range []string{"a", "b"} {
 		if a, err := first.AdmitSession(ctx, capOfficer, day, item, 2, t0); err != nil || !a.Admitted {
-			t.Fatalf("admit %s: %v %v", item, ok, err)
+			t.Fatalf("admit %s: %+v %v", item, a, err)
 		}
 	}
 	second := sessionStore(t, dsn)
 	if a, err := second.AdmitSession(ctx, capOfficer, day, "c", 2, t0); err != nil || a.Admitted {
-		t.Fatalf("a new server admitted the third session of a cap of 2: %v %v", ok, err)
+		t.Fatalf("a new server admitted the third session of a cap of 2: %+v %v", a, err)
 	}
 	if a, err := second.AdmitSession(ctx, capOfficer, day, "a", 2, t0); err != nil || !a.Admitted {
-		t.Fatalf("a new server refused re-claiming counted item a: %v %v", ok, err)
+		t.Fatalf("a new server refused re-claiming counted item a: %+v %v", a, err)
 	}
 	if got, err := second.Sessions(ctx, capOfficer, day); err != nil || len(got) != 2 {
 		t.Fatalf("sessions = %v (%v), want [a b]", got, err)
@@ -84,7 +84,7 @@ func TestConcurrentAdmitsAtCapMinusOneAdmitExactlyOne(t *testing.T) {
 		s := sessionStore(t, dsn)
 		for _, item := range prefill {
 			if a, err := s.AdmitSession(ctx, capOfficer, day, item, limit, t0); err != nil || !a.Admitted {
-				t.Fatalf("prefill %s: %v %v", item, ok, err)
+				t.Fatalf("prefill %s: %+v %v", item, a, err)
 			}
 		}
 		stores := make([]*officers.PGSessionStore, n)
@@ -140,10 +140,10 @@ func TestAReleasedSessionFreesItsSlotAndTheDayRollsOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a, err := s.AdmitSession(ctx, capOfficer, day, "b", 1, t0); err != nil || !a.Admitted {
-		t.Fatalf("after releasing a, b: %v %v", ok, err)
+		t.Fatalf("after releasing a, b: %+v %v", a, err)
 	}
 	if a, err := s.AdmitSession(ctx, capOfficer, "2000-01-05", "c", 1, t0); err != nil || !a.Admitted {
-		t.Fatalf("the next day, c: %v %v", ok, err)
+		t.Fatalf("the next day, c: %+v %v", a, err)
 	}
 }
 

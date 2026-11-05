@@ -229,7 +229,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if cfg.Sessions != nil {
 		judgement = officers.NewJudgementLedger(cfg.Sessions, func(ctx context.Context, o officers.Officer) context.Context {
 			return s.officerPrincipal(ctx, o.Owner)
-		})
+		}, s.logger.Printf)
 	} else {
 		for _, o := range cfg.Officers {
 			if o.HasSessionCap() {
@@ -937,7 +937,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			if err != nil {
 				claimed = ""
 			}
-			done(claimed)
+			// An answer HQ lost (outcome unknown) keeps the session.
+			done(claimed, claimOutcomeKnown(err))
 			if errors.Is(err, errNoClaimNext) {
 				return toolErr(noClaimNextNote), true
 			}
@@ -958,7 +959,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return s.sessionCapRefusal(o, name, capErr), true
 		}
 		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds, o.Tier)
-		if err != nil {
+		// Undo only a claim that DEFINITELY did not happen: when HQ's answer
+		// was lost, HQ may have claimed it, and the session is kept.
+		if err != nil && claimOutcomeKnown(err) {
 			undo()
 		}
 		if err == nil && s.officerRT.fwd != nil {
@@ -1127,6 +1130,16 @@ func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, insta
 func nothingToClaim() []byte {
 	b, _ := json.Marshal(map[string]any{"item": nil, "claimed": false, "note": nothingToClaimNote})
 	return b
+}
+
+// claimOutcomeKnown reports whether a claim's result says for sure what HQ
+// did: success, or HQ's own refusal (a 4xx, a blocked item, no claim-next
+// route). A transport failure, a timeout or a 5xx is UNKNOWN — HQ may have
+// committed the claim and lost the answer.
+func claimOutcomeKnown(err error) bool {
+	var hqErr *officers.HQError
+	var blocked *claimBlockedError
+	return err == nil || errors.As(err, &hqErr) || errors.As(err, &blocked) || errors.Is(err, errNoClaimNext)
 }
 
 // sessionCapRefusal is a claim the judgement session ledger did not admit:
