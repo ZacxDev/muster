@@ -104,8 +104,14 @@ was down has its notification closed.
   scratch3:5 @ laptop needs you`), found by the stop's session key when the
   push is sent, so a renumbered window names its new index, and a window
   whose host has just dropped is followed by `(host offline)`, as an ask's
-  and a notice's are; only when no window holds the session then, the place
-  the stop opened at, in the same shape without the label
+  and a notice's are. When no window holds the session then (a `/clear` or a
+  resume gave the window a new conversation), the place the stop opened at,
+  still under its codename whenever the host labels that tmux session: the
+  stored window as it is listed now (`mango:5 · tmux scratch3:5 @ laptop`), or,
+  if it is gone, the stored target under the session's codename with no index,
+  since an index would name another window (`mango · tmux scratch3:5 @ laptop
+  needs you`);
+  only with no label for that session, the bare stored target
   (`tmux scratch3:5 @ laptop needs you`). An agent is named by its name. Body:
   `Needs you · idle 12m` (`just now` under a minute). **No session text**:
   no tool, command, focus title or anything the session said (the codename
