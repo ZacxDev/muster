@@ -205,9 +205,6 @@ type Server struct {
 	mirrorMCPFails boundedWindow
 	// features is the evaluated feature registry (features.go; UseFeatures).
 	features features.Set
-	// sessionTools is what this process has seen of each mirrored host's
-	// session tools (features.go, agent-ask-tool).
-	sessionTools sessionToolSeen
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.
@@ -665,7 +662,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerUploadRoutes(mux)
 	// `muster doctor`'s server half (doctor.go): the armed hook token's read.
 	s.registerDoctorRoutes(mux)
-	// The feature registry (features.go): GET /api/features and the Features page.
+	// The feature registry (features.go): the Features page.
 	s.registerFeatureRoutes(mux)
 }
 
@@ -770,9 +767,11 @@ func staticCacheControl(path, v string) string {
 // LINK only — requireAdmin is what refuses a member, whatever the nav drew.
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
-	return ui.Features{Connectors: s.ext.Connectors != nil,
-		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil,
-		Dispatch: s.dispatchServed(), Plugins: s.ext.Plugins != nil, Flows: s.ext.Flows != nil,
+	// Connectors, Push and Dispatch also read the feature registry: it can
+	// only take a control away (featureOff), never draw one over nothing.
+	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
+		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
+		Attention: s.ext.Attention != nil, Dispatch: s.dispatchServed() && !s.featureOff(features.Dispatch),
 		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }
 

@@ -1487,6 +1487,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("task routing: OFF — %s is unset, so route_to_chief is ignored and the chief has no task-routing tools", envTaskRouting)
 	}
 	switch {
+	case ext.ChiefNudge != nil && chiefNudgesProblem(a.cfg, ext) != "":
+		// The registry's verdict, from the same predicate (features.go).
+		l.Printf("chief nudges: MISCONFIGURED — %s; nothing is judged or sent", chiefNudgesProblem(a.cfg, ext))
 	case ext.ChiefNudge != nil && len(ext.ChiefNudge.Live) > 0:
 		l.Printf("chief nudges: ON (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall classifier "+
 			"first, ask score %.2f defaults to an ask); LIVE for %d owner(s) (%s), shadow for everyone else; needs-you nudges "+

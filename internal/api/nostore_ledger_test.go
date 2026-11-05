@@ -60,7 +60,6 @@ var noStoreLiterals = map[string]string{
 	"handleDeviceConfig":       "a paired phone's config",
 	"handleDeviceChallenge":    "a signed action's one-time nonce",
 	"handleDoctor":             "`muster doctor`'s report: live state (which hosts are connected now)",
-	"handleFeatures":           "the feature list, with the live per-host session-tools readout (which hosts called in since boot)",
 	"handleMirrorHost":         "a machine's own connection state, live",
 	"handleDevicePair":         "a pairing, with its one-time secret",
 	"handleDevicePairCode":     "a pairing code",

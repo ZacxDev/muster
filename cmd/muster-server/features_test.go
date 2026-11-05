@@ -6,25 +6,32 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/features"
+	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/router"
+	"github.com/ZacxDev/muster/internal/suggest"
 )
 
 // featureIDs is the registry's id set, pinned. Adding, removing or renaming a
 // feature changes docs/features.md's anchors, which other pages and the
 // install guide link to — so it is a decision this list makes visible.
 var featureIDs = []string{
-	"database", "mirror", "password-sign-in", "machine-token", "push", "dictation", "attachments",
+	"mirror", "password-sign-in", "push", "dictation", "attachments",
 	"suggested-replies", "focus", "accounts", "connectors", "github-app", "dispatch", "agent-gateway",
 	"claude-code-agents", "chief", "chief-session-runtimes", "chief-nudges", "session-state", "plugins",
 	"plugin-tasks", "session-routing", "task-routing", "pr-mail-routing", "fleet-reports", "mail-resume",
@@ -49,6 +56,8 @@ func TestTheFeatureRegistryPinsItsIDs(t *testing.T) {
 // Every other documented muster-server variable must be named by a registry
 // entry (as one that turns it on, or one of its settings).
 var featureLedgerExempt = map[string]string{
+	envDatabase:               "the database is required (config.validate refuses a boot without it), so it can never be off: not a feature (#441 round 0, D2)",
+	envHookToken:              "the machine token is core and `muster doctor`'s hook-token check owns its state (#441 round 0, D2)",
 	envPort:                   "the listen port: no feature is on or off with it",
 	envStandalone:             "a deployment declaration (no permission router), set by the Compose stack; the approval-router entry reports the router side",
 	envTaskReapAfter:          "a housekeeping interval of the task board, which is always on",
@@ -94,11 +103,17 @@ func documentedServerVars(t *testing.T) (server, all map[string]bool) {
 	return server, all
 }
 
-// registryVars is every variable the catalog names, with the feature(s) naming it.
+// registryVars is every muster-server variable the catalog names, with the
+// feature(s) naming it. A Compose-stack line (COMPOSE_PROFILES,
+// S3_STORE_SECRET_KEY: features.Var.Compose) is not muster-server's and not in
+// docs/configuration.md, so it is left out here.
 func registryVars() map[string][]string {
 	out := map[string][]string{}
 	for _, f := range featureCatalog() {
 		for _, v := range f.Enable {
+			if v.Compose {
+				continue
+			}
 			out[v.Name] = append(out[v.Name], f.ID)
 		}
 		for _, s := range f.Settings {
@@ -216,57 +231,137 @@ func logLineFor(out, prefix string) string {
 	return ""
 }
 
-// TestSuggestedRepliesWithNoOpenRouterKeyBootAsMisconfigured is the
-// regression for the ON-lie: with suggested replies on (the default) and no
-// OpenRouter key, the boot log said "suggested replies are ON with <model>"
-// while the engine records "no OpenRouter key" and makes no call. Red on the
-// base (no such line; the ON line instead), green here. The key and kill-switch
-// arms are the controls: the same boot with a key says ON, and with
-// MUSTER_SUGGEST=off says OFF.
-func TestSuggestedRepliesWithNoOpenRouterKeyBootAsMisconfigured(t *testing.T) {
-	const prefix = "feature suggested-replies: "
-	noKey := bootLog(t, config{SuggestModel: "example/model-x"})
-	if line := logLineFor(noKey, prefix); !strings.HasPrefix(line, prefix+"MISCONFIGURED — "+envAgentOpenRouterKey+" is unset") {
-		t.Fatalf("no key: the suggested-replies line is %q, want MISCONFIGURED naming %s.\nlog:\n%s", line, envAgentOpenRouterKey, noKey)
+// TestAKeylessInstallReportsSuggestAndFocusOffNotMisconfigured is the
+// regression for the ON-lie, as the operator settled it (#441 round 0, Q1):
+// with suggested replies on (the default) and no OpenRouter key, the boot log
+// said "suggested replies are ON with <model>" while the engine records "no
+// OpenRouter key" and makes no call. Now both suggested replies and focus are
+// OFF, "needs MUSTER_AGENT_OPENROUTER_KEY" — not misconfigured, which is for a
+// feature that was asked for. Controls: with a key they are on; with
+// MUSTER_SUGGEST=off, off for that reason.
+func TestAKeylessInstallReportsSuggestAndFocusOffNotMisconfigured(t *testing.T) {
+	ext := api.Extensions{Suggest: &suggest.Engine{}, Focus: focus.NewPG(nil)}
+	keyless := featureSet(t, config{FocusInterval: time.Minute}, ext, true)
+	for _, id := range []string{features.SuggestedReplies, features.Focus} {
+		f, _ := keyless.Get(id)
+		if f.State != features.Off || f.Reason != "needs "+envAgentOpenRouterKey {
+			t.Errorf("keyless %s = %s %q, want off %q", id, f.State, f.Reason, "needs "+envAgentOpenRouterKey)
+		}
 	}
-	if strings.Contains(noKey, "suggested replies are ON") {
-		t.Fatalf("no key: the log still claims suggested replies are ON:\n%s", noKey)
+	keyed := featureSet(t, config{FocusInterval: time.Minute, AgentOpenRouterKey: "or-key-for-a-test-0123456789"}, ext, true)
+	for _, id := range []string{features.SuggestedReplies, features.Focus} {
+		if f, _ := keyed.Get(id); f.State != features.On {
+			t.Errorf("with a key %s = %s %q, want on", id, f.State, f.Reason)
+		}
 	}
-	withKey := bootLog(t, config{SuggestModel: "example/model-x", AgentOpenRouterKey: "or-key-for-a-test-0123456789"})
-	if line := logLineFor(withKey, prefix); line != prefix+"ON" {
-		t.Fatalf("with a key: %q, want %q", line, prefix+"ON")
+	killed := featureSet(t, config{}, api.Extensions{Suggest: &suggest.Engine{Off: true}}, true)
+	if f, _ := killed.Get(features.SuggestedReplies); f.State != features.Off || !strings.HasPrefix(f.Reason, envSuggest+"=off") {
+		t.Errorf("kill switch: %s %q", f.State, f.Reason)
 	}
-	off := bootLog(t, config{SuggestOff: true})
-	if line := logLineFor(off, prefix); !strings.HasPrefix(line, prefix+"OFF — "+envSuggest+"=off") {
-		t.Fatalf("kill switch: %q", line)
-	}
-	// Focus logged nowhere at boot before the registry; it has a line now.
-	if line := logLineFor(noKey, "feature focus: "); line == "" {
-		t.Fatalf("no focus line in the boot log:\n%s", noKey)
+	// The boot log no longer claims suggested replies are ON with no key.
+	if out := bootLog(t, config{SuggestModel: "example/model-x"}); strings.Contains(out, "suggested replies are ON") {
+		t.Fatalf("the log still claims suggested replies are ON:\n%s", out)
 	}
 }
 
-// TestTheBootLogHasOneRegistryLinePerFeature: logFeatures prints exactly one
-// line per catalog entry, in catalog order, after its header, and a pinned
-// line reads exactly as LogLine renders it.
-func TestTheBootLogHasOneRegistryLinePerFeature(t *testing.T) {
-	out := bootLog(t, config{})
-	var ids []string
+// TestAskedForWithADependencyMissingIsMisconfiguredAndTheBannerAgrees: the
+// chief's stall nudges, asked for (MUSTER_CHIEF_NUDGES=1, wired) with no chief
+// and no OpenRouter key, are MISCONFIGURED in the registry, and the banner's
+// own `chief nudges:` line says MISCONFIGURED too — it used to say ON (#441
+// round 0, D1). Control: the same nudges with a chief runtime and a key are on.
+func TestAskedForWithADependencyMissingIsMisconfiguredAndTheBannerAgrees(t *testing.T) {
+	ext := api.Extensions{ChiefNudge: &api.ChiefNudges{Idle: 10 * time.Minute, HourlyCap: 6}}
+	set := featureSet(t, config{ChiefNudges: true}, ext, true)
+	f, _ := set.Get(features.ChiefNudges)
+	if f.State != features.Misconfigured || !strings.Contains(f.Reason, "acts through the chief") {
+		t.Fatalf("nudges with no chief: %s %q", f.State, f.Reason)
+	}
+	banner := renderBannerWithPool(t, config{ChiefNudges: true}, ext, &pgxpool.Pool{})
+	if line := lineWith(banner, "chief nudges:"); !strings.HasPrefix(line, "chief nudges: MISCONFIGURED — "+f.Reason) {
+		t.Fatalf("the banner's nudges line disagrees with the registry: %q (registry: %s %q)", line, f.State, f.Reason)
+	}
+	// A chief nobody asked for is OFF, not misconfigured.
+	if c, _ := set.Get(features.Chief); c.State != features.Off {
+		t.Fatalf("chief with no provisioner = %s", c.State)
+	}
+}
+
+func lineWith(out, needle string) string {
 	for _, l := range strings.Split(out, "\n") {
-		if rest, ok := strings.CutPrefix(l, "feature "); ok {
-			ids = append(ids, rest[:strings.Index(rest, ":")])
+		if strings.Contains(l, needle) {
+			return l
 		}
 	}
-	if !slices.Equal(ids, featureIDs) {
-		t.Fatalf("registry lines for %v, want %v", ids, featureIDs)
+	return ""
+}
+
+// TestADefaultComposeInstallHasNoMisconfiguredFeature: the documented install
+// — the Compose stack's own .env (password, hook token, mirror, standalone,
+// public URL, session state on) and no optional line — boots with NOTHING
+// misconfigured, so `muster doctor`'s features check (which FAILs on
+// misconfigured) passes on it. Built through loadConfig and buildApp against a
+// real database, and read off /api/doctor as the CLI reads it.
+func TestADefaultComposeInstallHasNoMisconfiguredFeature(t *testing.T) {
+	env := map[string]string{
+		envDatabase: dbtest.DSN(t), envUIPassword: "a-synthetic-operator-password", envHookToken: "a-synthetic-hook-token-0123456789",
+		envMirror: "1", envStandalone: "1", envPublicURL: "https://muster.example.invalid", envSessionState: "1",
 	}
-	if !strings.Contains(out, "features: ") {
-		t.Fatalf("no registry header line:\n%s", out)
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
 	}
-	want := "feature dictation: OFF — " + envSTTToken + " is unset. Enable: set " + envSTTURL + " and " + envSTTToken +
-		" in .env and restart (docs/features.md#dictation)"
-	if got := logLineFor(out, "feature dictation: "); got != want {
-		t.Fatalf("dictation line\n got %q\nwant %q", got, want)
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	a, err := buildApp(context.Background(), cfg, log.New(&buf, "", 0))
+	if err != nil {
+		t.Fatalf("buildApp: %v", err)
+	}
+	defer a.Close()
+	req := httptest.NewRequest(http.MethodGet, api.DoctorPath, nil)
+	req.Header.Set("Authorization", "Bearer "+env[envHookToken])
+	w := httptest.NewRecorder()
+	a.srv.Handler().ServeHTTP(w, req)
+	var rep struct {
+		Features []struct{ ID, State, Reason string } `json:"features"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &rep) != nil {
+		t.Fatalf("/api/doctor: %d %s", w.Code, w.Body)
+	}
+	// Positive control: the report is the registry, with the default's states.
+	states := map[string]string{}
+	for _, f := range rep.Features {
+		states[f.ID] = f.State
+		if f.State == string(features.Misconfigured) {
+			t.Errorf("a default install reports %s misconfigured: %s", f.ID, f.Reason)
+		}
+	}
+	if len(rep.Features) != len(featureIDs) || states[features.Mirror] != "on" || states[features.SessionState] != "on" ||
+		states[features.SuggestedReplies] != "off" || states[features.Focus] != "off" {
+		t.Fatalf("not the default install's registry: %v", states)
+	}
+	if !strings.Contains(buf.String(), "features: ") || !strings.Contains(buf.String(), "misconfigured: none — see /account/features") {
+		t.Fatalf("the boot summary line:\n%s", buf.String())
+	}
+}
+
+// TestTheBootLogHasOneRegistrySummaryLine: the registry prints ONE line (#441
+// round 0, D1), pinned exactly, and no per-feature line.
+func TestTheBootLogHasOneRegistrySummaryLine(t *testing.T) {
+	out := bootLog(t, config{})
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "features: ") || strings.HasPrefix(l, "feature ") {
+			lines = append(lines, l)
+		}
+	}
+	want := "features: 0 on; off: mirror, push, dictation, attachments, suggested-replies, focus, accounts, connectors, github-app, " +
+		"dispatch, agent-gateway, claude-code-agents, chief, chief-session-runtimes, chief-nudges, session-state, plugins, plugin-tasks, " +
+		"session-routing, task-routing, pr-mail-routing, fleet-reports, mail-resume, memo-relay, approval-router, browser-flows, " +
+		"agent-ask-tool, service-token, android, telemetry, officers; misconfigured: password-sign-in — see /account/features"
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("registry lines:\n%s\nwant exactly\n%s", strings.Join(lines, "\n"), want)
 	}
 }
 
@@ -363,5 +458,189 @@ func TestTheEvaluatorReadsWhatWasWired(t *testing.T) {
 		if f, _ := unwired.Get(c.id); f.State != c.want {
 			t.Errorf("unwired %s = %s (%s), want %s", c.id, f.State, f.Reason, c.want)
 		}
+	}
+}
+
+// TestTheDictationHintIsTheComposeOne: the hints are the documented install's
+// (#441 round 1, R16) — dictation and attachments name their Compose profile
+// and the lines docs/features.md gives, and no feature the Compose stack
+// cannot run says "set X in .env": it says it needs Kubernetes.
+func TestTheDictationHintIsTheComposeOne(t *testing.T) {
+	set := featureSet(t, config{}, api.Extensions{}, true)
+	get := func(id string) features.Feature { f, _ := set.Get(id); return f }
+	for _, c := range []struct{ id, want string }{
+		{features.Dictation, "set COMPOSE_PROFILES=stt and " + envSTTToken + " in .env and restart (docs/features.md#dictation)"},
+		{features.Attachments, "set COMPOSE_PROFILES=s3, S3_STORE_SECRET_KEY and " + envUploadSigningKey + " in .env and restart (docs/features.md#attachments)"},
+		{features.Chief, "needs Kubernetes (in-cluster dispatch) — see docs/features.md#chief"},
+	} {
+		if got := get(c.id).EnableHint(); got != c.want {
+			t.Errorf("%s hint\n got %q\nwant %q", c.id, got, c.want)
+		}
+	}
+	// The set #440's Compose file does not forward, pinned: every one says
+	// Kubernetes, and no other does.
+	want := []string{features.Dispatch, features.AgentGateway, features.ClaudeCodeAgents, features.Chief,
+		features.ChiefSessionRuntimes, features.ChiefNudges, features.MemoRelay, features.Officers}
+	var got []string
+	for _, f := range set.All() {
+		if f.Kubernetes {
+			got = append(got, f.ID)
+			if h := f.EnableHint(); strings.Contains(h, ".env") {
+				t.Errorf("%s needs Kubernetes and its hint says .env: %q", f.ID, h)
+			}
+		}
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("Kubernetes features %v, want %v", got, want)
+	}
+}
+
+// TestAChiefNobodyAskedForIsOff: with a provisioner and no runtime a chief can
+// run on, the chief is OFF — nothing asked for it — not misconfigured, which
+// would FAIL `muster doctor` on a deployment that never wanted a chief.
+func TestAChiefNobodyAskedForIsOff(t *testing.T) {
+	cfg := config{AgentProvisioner: provisionerNoop, AgentImageRepo: "registry.example.test/muster/agent-runtime",
+		AgentAPIURL: "http://muster.example.test:8105"}
+	set := featureSet(t, cfg, api.Extensions{Provisioner: bannerProvisioner(t, cfg)}, true)
+	if f, _ := set.Get(features.Chief); f.State != features.Off || !strings.Contains(f.Reason, "no runtime a chief can run on") {
+		t.Fatalf("chief with a provisioner and no runtime = %s %q, want off", f.State, f.Reason)
+	}
+}
+
+// featuresHeadingSlug is GitHub's heading anchor rule, as
+// tests/features_config_test.py spells it: lower-case, everything but word
+// characters, '-' and ' ' dropped, spaces to '-'.
+var featuresSlugDrop = regexp.MustCompile(`[^\w\- ]`)
+
+func featuresHeadingSlug(h string) string {
+	return strings.ReplaceAll(featuresSlugDrop.ReplaceAllString(strings.ToLower(strings.TrimSpace(h)), ""), " ", "-")
+}
+
+// featuresHeadings is every heading slug of docs/features.md, fenced code skipped.
+func featuresHeadings(md string) map[string]int {
+	out := map[string]int{}
+	fenced := false
+	head := regexp.MustCompile(`^#{1,6}\s+(.*?)\s*#*\s*$`)
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " "), "```") {
+			fenced = !fenced
+			continue
+		}
+		if m := head.FindStringSubmatch(line); m != nil && !fenced {
+			out[featuresHeadingSlug(m[1])]++
+		}
+	}
+	return out
+}
+
+var featuresLink = regexp.MustCompile(`docs/features\.md#([a-z0-9-]+)`)
+
+// TestEveryRegistryIDIsAFeaturesHeading is THE id cross-check between the
+// registry and docs/features.md (#441 round 0, D7): every registry id is a
+// heading there exactly once, and every docs/features.md#<anchor> any hint,
+// reason or note of the registry writes names a heading. It reads the ids from
+// the registry itself; tests/features_config_test.py no longer keeps a hand
+// copy (it checks only that page's own anchors).
+func TestEveryRegistryIDIsAFeaturesHeading(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/features.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slugs := featuresHeadings(string(raw))
+	// Positive controls: the parser sees headings, and a known one.
+	if len(slugs) < 30 || slugs["dictation"] != 1 || slugs["core"] != 1 {
+		t.Fatalf("instrument check FAILED: %d heading(s) parsed from docs/features.md", len(slugs))
+	}
+	// Three servers, so the reasons that only some states write are seen too:
+	// an empty one, nudges and routing wired with no chief, and plugins wired
+	// with no gateway (the evaluator only reads whether these are nil).
+	sets := []features.Set{
+		featureSet(t, leakyConfig(), api.Extensions{}, true),
+		featureSet(t, config{ChiefNudges: true, SessionRouting: true}, api.Extensions{ChiefNudge: &api.ChiefNudges{},
+			Routing: &api.Routing{}}, true),
+		featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, true),
+	}
+	var texts []string
+	for i, set := range sets {
+		for _, f := range set.All() {
+			if n := slugs[f.ID]; i == 0 && n != 1 {
+				t.Errorf("registry id %q is a docs/features.md heading %d times, want exactly once", f.ID, n)
+			}
+			texts = append(texts, f.EnableHint(), f.DisabledMessage(), f.Reason, f.Note)
+		}
+	}
+	links := 0
+	for _, txt := range texts {
+		for _, m := range featuresLink.FindAllStringSubmatch(txt, -1) {
+			links++
+			if slugs[m[1]] != 1 {
+				t.Errorf("a registry hint links docs/features.md#%s, which is not a heading: %q", m[1], txt)
+			}
+		}
+	}
+	if links < len(featureIDs) {
+		t.Fatalf("instrument check FAILED: only %d docs/features.md link(s) found in the hints", links)
+	}
+	// Negative control: an id that is no heading is caught.
+	if slugs["not-a-feature"] != 0 || featuresHeadingSlug("PR mail routing") != "pr-mail-routing" {
+		t.Fatal("control: the slug rule or the lookup is wrong")
+	}
+}
+
+// TestEveryHintWorksOnTheComposeInstall: a hint never tells the operator to set
+// something the documented install cannot pass on (#441 round 1, R16). Every
+// variable a non-Kubernetes feature's enable line names is forwarded into
+// muster by deploy/docker-compose.yml (or is a Compose line the file itself
+// reads: a profile it defines, a variable it interpolates); every Kubernetes
+// feature's enable variables are NOT forwarded — the Compose file's own
+// verdict that they cannot work there.
+func TestEveryHintWorksOnTheComposeInstall(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := string(raw)
+	forwarded := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s+((?:MUSTER_|DATABASE_URL)[A-Z0-9_]*):`).FindAllStringSubmatch(compose, -1) {
+		forwarded[m[1]] = true
+	}
+	if !forwarded[envSTTToken] || !forwarded[envMirror] || forwarded[envAgentProvisioner] {
+		t.Fatalf("instrument check FAILED: forwarded set %d variable(s); the compose parse is wrong", len(forwarded))
+	}
+	profiles := map[string]bool{}
+	for _, m := range regexp.MustCompile(`profiles:\s*\[([^\]]*)\]`).FindAllStringSubmatch(compose, -1) {
+		for _, p := range strings.Split(m[1], ",") {
+			profiles[strings.Trim(strings.TrimSpace(p), `"'`)] = true
+		}
+	}
+	checked := 0
+	for _, f := range featureCatalog() {
+		for _, v := range f.Enable {
+			name := strings.TrimSuffix(v.Name, "<NAME>")
+			switch {
+			case v.Profile != "":
+				if !profiles[v.Profile] {
+					t.Errorf("%s: profile %q is not defined in deploy/docker-compose.yml", f.ID, v.Profile)
+				}
+			case v.Compose:
+				if !strings.Contains(compose, "${"+name) {
+					t.Errorf("%s: %s is not read by deploy/docker-compose.yml", f.ID, name)
+				}
+			case f.Kubernetes:
+				if forwarded[name] {
+					t.Errorf("%s says it needs Kubernetes, but deploy/docker-compose.yml forwards %s", f.ID, name)
+				}
+			default:
+				if !forwarded[name] {
+					t.Errorf("%s's hint says set %s in .env, which deploy/docker-compose.yml does not forward", f.ID, name)
+				}
+			}
+			checked++
+		}
+	}
+	if checked < 40 {
+		t.Fatalf("instrument check FAILED: only %d enable variable(s) checked", checked)
 	}
 }

@@ -133,12 +133,13 @@ func (s *Server) writeMCP(w http.ResponseWriter, id json.RawMessage, result any,
 // handleMCP serves POST /mcp: the calling agent's tools.
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
+	disabled, off := s.mcpFeatureHooks(agentDoor)
 	s.serveMCP(w, r, mcpSurface{
 		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
 		call:         func(name, args string) string { return s.dispatchAgentTool(r.Context(), a, name, args) },
 		instructions: s.mcpInstructionsFor(r.Context(), a),
-		disabled:     s.mcpDisabledTool,
-		offFeatures:  s.mcpOffFeatures,
+		disabled:     disabled,
+		offFeatures:  off,
 	})
 }
 

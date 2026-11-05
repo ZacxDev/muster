@@ -156,8 +156,6 @@ func (s *Server) handleMirrorAskOpen(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// This host's AskUserQuestion hook is installed (features.go, agent-ask-tool).
-	s.sessionTools.markHook(owner, host, s.now())
 	var req mirrorAskOpenRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, mirrorAskBodyMax)).Decode(&req); err != nil {
 		http.Error(w, "the registration is not JSON within its size bound", http.StatusBadRequest)

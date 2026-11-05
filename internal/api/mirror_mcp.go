@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -220,26 +221,26 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	}
 	// chief_restart — the operator restarting their own chief through their own
 	// session (chief_restart_tool.go) — with the agent store and a provisioner.
-	if s.chiefRestartOn() {
+	if s.chiefRestartOn() && !s.featureOff(features.Dispatch) {
 		out = append(out, chiefRestartToolDef())
 	}
-	if s.connectorDecideToolsOn() {
+	if s.connectorDecideToolsOn() && !s.featureOff(features.Connectors) {
 		out = append(out, connectorDecideToolDefs()...)
 	}
 	// plugin_drafts_list / plugin_draft_decide — the operator deciding a reply
 	// draft through their own session — with the plugin store.
-	if s.pluginDraftToolsOn() {
+	if s.pluginDraftToolsOn() && !s.featureOff(features.Plugins) {
 		out = append(out, pluginDraftToolDefs()...)
 	}
 	// route_reply — a routed session's answer (route_reply_tool.go) — with
 	// session routing on.
-	if routingOn(s.ext) {
+	if routingOn(s.ext) && !s.featureOff(features.SessionRouting) {
 		out = append(out, routeReplyToolDef())
 	}
 	// plugin_messages_list / plugin_message_route — the owner routing a plugin
 	// message from their own session (plugin_message_route_tools.go) — with
 	// session routing on.
-	if s.pluginMessageRouteToolsOn() {
+	if s.pluginMessageRouteToolsOn() && !s.featureOff(features.SessionRouting) {
 		out = append(out, pluginMessageRouteToolDefs()...)
 	}
 	return out
@@ -251,8 +252,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
-	// This host's MCP endpoint is set up (features.go, agent-ask-tool).
-	s.sessionTools.markMCP(t.OwnerID, t.Host, s.now())
+	disabled, off := s.mcpFeatureHooks(mirrorDoor)
 	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
 	instructions := "muster's tools for a mirrored Claude Code session."
 	if s.attentionToolsOn() {
@@ -299,8 +299,8 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			return toolErr("unknown tool %q", name)
 		},
 		instructions: instructions,
-		disabled:     s.mcpDisabledTool,
-		offFeatures:  s.mcpOffFeatures,
+		disabled:     disabled,
+		offFeatures:  off,
 	})
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -113,48 +114,130 @@ func TestTheMirrorDoorExplainsAToolWhoseFeatureIsOff(t *testing.T) {
 	}
 }
 
-// TestTheMirrorDoorRecordsTheHostForTheSessionToolsReadout: a call on a
-// host's MCP door is what /api/doctor and GET /api/features report as
-// mcp_seen — and a host that never called is not.
-func TestTheMirrorDoorRecordsTheHostForTheSessionToolsReadout(t *testing.T) {
-	f, ws, _, _ := newMirrorMCPFixture(t)
-	if mcp, _ := f.srv.sessionTools.seen(1, "ws"); mcp {
-		t.Fatal("seen before any call")
+// disabledOn is the features one door's muster_help{} lists as disabled.
+func disabledOn(t *testing.T, rpc func(string) *mcpReply) map[string]bool {
+	t.Helper()
+	text, isErr := toolTextRaw(t, rpc(mcpToolCall("muster_help", map[string]any{})))
+	var list struct {
+		Disabled []mcpOffFeature `json:"disabled_features"`
 	}
-	_, r, raw := f.mirrorRPC(t, mirrorAs(ws, focusSID), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if r == nil {
-		t.Fatal(raw)
+	if isErr || json.Unmarshal([]byte(text), &list) != nil {
+		t.Fatalf("muster_help{}: %s", text)
 	}
-	if mcp, hook := f.srv.sessionTools.seen(1, "ws"); !mcp || hook {
-		t.Fatalf("after a call: mcp=%v hook=%v, want true false", mcp, hook)
+	out := map[string]bool{}
+	for _, d := range list.Disabled {
+		out[d.Feature] = true
 	}
-	if mcp, _ := f.srv.sessionTools.seen(1, "laptop"); mcp {
-		t.Fatal("a host that never called is reported seen")
-	}
+	return out
+}
 
-	// What the doctor and GET /api/features serve from it.
-	w := f.call(t, "GET", DoctorPath, nil, map[string]string{"Authorization": "Bearer " + connTestHookToken})
-	var rep DoctorReport
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &rep) != nil {
-		t.Fatalf("doctor: %d %s", w.Code, w.Body)
+// TestMusterHelpListsOnlyItsOwnDoorsFeatures: the mirror door's muster_help
+// lists the features ITS tools need (session routing here) and never one only
+// the agent door's tools need (focus, officers); the agent door lists focus
+// (#441 round 1, R10).
+func TestMusterHelpListsOnlyItsOwnDoorsFeatures(t *testing.T) {
+	off := map[string]features.Status{features.Focus: {State: features.Off, Reason: "needs EXAMPLE_OPENROUTER_KEY"}}
+	f, ws, _, _ := newMirrorMCPFixture(t)
+	f.srv.UseFeatures(testFeatureSet(t, off))
+	mirror := disabledOn(t, func(body string) *mcpReply {
+		_, r, raw := f.mirrorRPC(t, mirrorAs(ws, focusSID), body)
+		if r == nil {
+			t.Fatalf("/mirror/mcp: %s", raw)
+		}
+		return r
+	})
+	if !mirror[features.SessionRouting] || mirror[features.Focus] {
+		t.Fatalf("mirror door disabled_features = %v, want session-routing and not focus", mirror)
 	}
-	seen := map[string]bool{}
-	for _, h := range rep.Mirror.Hosts {
-		seen[h.Host] = h.MCPSeen
+	g := newGatedFixture(t)
+	g.srv.UseFeatures(testFeatureSet(t, off))
+	agent := disabledOn(t, func(body string) *mcpReply { r, _ := g.mcp(t, g.chiefTok, body, nil); return r })
+	if !agent[features.Focus] {
+		t.Fatalf("agent door disabled_features = %v, want focus", agent)
 	}
-	if _, listed := seen["ws"]; !listed || !seen["ws"] {
-		t.Fatalf("doctor: ws not reported mcp_seen: %+v", rep.Mirror.Hosts)
+}
+
+// TestAToolIsOfferedExactlyWhenItsFeatureIsOn: the chief's focus tools, with
+// the focus store wired, are listed when the registry says focus is on and
+// not listed (a call explains) when it says off — the listing and the
+// registry agree (#441 round 1, R10).
+func TestAToolIsOfferedExactlyWhenItsFeatureIsOn(t *testing.T) {
+	g := newGatedFixture(t)
+	rpc := func(body string) *mcpReply { r, _ := g.mcp(t, g.chiefTok, body, nil); return r }
+	focusTool := focusToolDefs()[0].Name
+	listed := func() bool {
+		for _, n := range toolNamesOf(servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))) {
+			if n == focusTool {
+				return true
+			}
+		}
+		return false
 	}
-	w = f.call(t, "GET", FeaturesPath, nil, f.operator())
-	var fr featuresReport
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &fr) != nil {
-		t.Fatalf("features: %d %s", w.Code, w.Body)
+	g.srv.UseFeatures(testFeatureSet(t, nil)) // focus on
+	if !listed() {
+		t.Fatalf("focus on: %s is not listed", focusTool)
 	}
-	got := map[string]bool{}
-	for _, h := range fr.SessionTools {
-		got[h.Host] = h.MCPSeen
+	g.srv.UseFeatures(testFeatureSet(t, map[string]features.Status{features.Focus: {State: features.Off, Reason: "needs EXAMPLE_OPENROUTER_KEY"}}))
+	if listed() {
+		t.Fatalf("focus off in the registry: %s is still listed", focusTool)
 	}
-	if !got["ws"] || fr.SessionToolsNote == "" {
-		t.Fatalf("GET /api/features: session tools %+v", fr.SessionTools)
+	text, isErr := toolTextRaw(t, rpc(mcpToolCall(focusTool, map[string]any{})))
+	if !isErr || !strings.Contains(text, "disabled: focus") {
+		t.Fatalf("a call with focus off: %v %s", isErr, text)
+	}
+}
+
+// TestTheAgentPageAndChiefPanelShowTheMutedMic: the agent page's chat and the
+// chief panel draw the muted mic on a server with no dictation (#441 round 1,
+// R7) — wired in agents.go and chief_panel_ui.go.
+func TestTheAgentPageAndChiefPanelShowTheMutedMic(t *testing.T) {
+	f := newConnFixture(t)
+	id := f.seedAgent(t, "mic-agent", "mic-agent-token-0123456789")
+	// The chat form (and its mic) is drawn for a running agent.
+	if _, err := f.pool.Exec(f.ctx, `UPDATE agents SET status = 'running' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	// The bare agent URL redirects to its active chat session; follow it.
+	target := "/agents/mic-agent"
+	if loc := f.call(t, "GET", target, nil, f.operator()).Header().Get("Location"); loc != "" {
+		target = loc
+	}
+	page := f.call(t, "GET", target, nil, f.operator()).Body.String()
+	if !strings.Contains(page, `id="chat-dictate-off"`) {
+		t.Fatalf("the agent page draws no muted mic:\n%.3000s", page)
+	}
+	g := newGatedFixture(t)
+	// The session acts as the chief's owner (the isolation walk's seam).
+	g.srv.sessionUserOverride = func(*http.Request) int64 { return g.owner }
+	panel := g.call(t, "GET", "/ui/chief/panel", nil, g.operator()).Body.String()
+	if !strings.Contains(panel, `id="chat-dictate-off"`) {
+		t.Fatalf("the chief panel draws no muted mic:\n%.600s", panel)
+	}
+}
+
+// TestAMisconfiguredFeatureKeepsItsWiredTools: plugins asked for with no
+// agent gateway are MISCONFIGURED (messages never reach the chief) — and the
+// plugin store's tools still work, so they stay listed: the plugins e2e spec's
+// claude-code chief drafts a reply over MCP on exactly that server. Only an
+// OFF feature's tools are taken away (featureOff).
+func TestAMisconfiguredFeatureKeepsItsWiredTools(t *testing.T) {
+	g := newGatedFixture(t)
+	rpc := func(body string) *mcpReply { r, _ := g.mcp(t, g.chiefTok, body, nil); return r }
+	draft := replyDraftToolDef().Name
+	listed := func() bool {
+		for _, n := range toolNamesOf(servedTools(t, rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))) {
+			if n == draft {
+				return true
+			}
+		}
+		return false
+	}
+	g.srv.UseFeatures(testFeatureSet(t, map[string]features.Status{features.Plugins: {State: features.Misconfigured, Reason: "no agent gateway"}}))
+	if !listed() {
+		t.Fatalf("plugins misconfigured, store wired: %s is not listed", draft)
+	}
+	g.srv.UseFeatures(testFeatureSet(t, map[string]features.Status{features.Plugins: {State: features.Off, Reason: "EXAMPLE_PLUGINS is unset"}}))
+	if listed() {
+		t.Fatalf("plugins off: %s is listed", draft)
 	}
 }

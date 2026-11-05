@@ -355,7 +355,7 @@ func mirrorComposer(v ComposerView) g.Node {
 				)
 			}),
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
-			g.If(dictateOff, dictateOffControl()),
+			g.If(dictateOff, dictateOffControl("mv-dictate-off")),
 			sendSplit(v.Queue, off),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),

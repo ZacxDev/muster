@@ -68,7 +68,6 @@ GET /api/attention/summary
 GET /api/device/config
 GET /api/directories
 GET /api/doctor
-GET /api/features
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
 GET /api/jobs/{id}

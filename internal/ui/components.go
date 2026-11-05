@@ -1057,8 +1057,6 @@ func accountLinks(feat Features, activeTab, currentTab string) g.Node {
 			Span(Class("text-base"), g.Text(icon)), Span(g.Text(label)))
 	}
 	return g.Group([]g.Node{
-		g.If(feat.Plugins, link("sidebar-plugins", PluginsPath, "Plugins", "🧩", NavPlugins)),
-		g.If(feat.Flows, link("sidebar-flows", FlowsPath, "Browser flows", "🌐", NavFlows)),
 		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️", NavAdmin)),
 		link("sidebar-account", "/account", "Account", "👤", NavAccount),
 		link("sidebar-features", FeaturesPagePath, "Features", "🧰", NavFeatures),

@@ -240,6 +240,9 @@ type attentionItem struct {
 	// withAskBoxes for the pages that draw them, never by askItem: the item is
 	// built where no server is in reach (a push, attention_list).
 	dictate, sessionLink string
+	// dictateOff: the server has no dictation, so the box draws the muted mic
+	// linking to its Features row (answerMic). Set with dictate.
+	dictateOff bool
 	// systemAsk: an ask muster raised itself (attention.Asker.System) — a task
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
 	// nudge's is found through its decision (nudgeSessionPath).
@@ -751,7 +754,7 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		if items[i].Kind != attentionKindAsk {
 			continue
 		}
-		items[i].dictate = dict
+		items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
 		if links && owner > 0 {
 			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
 		}
@@ -1405,7 +1408,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			// message box; its note is under the row.
 			b.WriteString(`<label for="` + input + `" class="text-xs text-fg2">Your answer</label>
 <div class="flex items-end gap-2"><textarea id="` + input + `" name="answer" rows="2" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + flowsInputClass + ` min-w-0 flex-1"></textarea>` +
-				ui.DictateControlHTML(it.dictate, input, input+"-dictate-note", input+"-dictate") + `</div>
+				answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
 ` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "") + `<button type="submit" class="` + flowsButtonClass + `">Answer</button>
 </form>
 <form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"` + formAttrs + `>` + back + `<button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>

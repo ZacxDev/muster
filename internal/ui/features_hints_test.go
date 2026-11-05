@@ -50,7 +50,7 @@ func TestTheComposerShowsMutedHintsWhenDictationAndAttachmentsAreOff(t *testing.
 	}
 }
 
-func TestTheNavShowsConnectorsAsOffAndLinksPluginsAndFlowsWhenOn(t *testing.T) {
+func TestTheNavShowsConnectorsAsOff(t *testing.T) {
 	doc := func(f Features) string {
 		return sidebarPanel(t, documentSource(t, NavDocument(NavDocumentView{Title: "x", Entry: NavAccount, Feat: f, Main: "<h1>x</h1>"})))
 	}
@@ -58,17 +58,31 @@ func TestTheNavShowsConnectorsAsOffAndLinksPluginsAndFlowsWhenOn(t *testing.T) {
 	if !strings.Contains(off, `id="sidebar-connectors-off" href="/account/features#connectors"`) {
 		t.Error("connectors off: no muted Connectors entry linking to its Features row")
 	}
-	if strings.Contains(off, `id="sidebar-plugins"`) || strings.Contains(off, `id="sidebar-flows"`) {
-		t.Error("plugins/flows off: their links are drawn")
-	}
 	if !strings.Contains(off, `id="sidebar-features" href="/account/features"`) {
 		t.Error("no Features link")
 	}
-	on := doc(Features{Connectors: true, Plugins: true, Flows: true})
-	if strings.Contains(on, "sidebar-connectors-off") {
+	// The /plugins and /flows links were dropped (#441 round 0, D6).
+	if strings.Contains(off, `href="/plugins"`) || strings.Contains(off, `href="/flows"`) {
+		t.Error("the nav links to /plugins or /flows")
+	}
+	if on := doc(Features{Connectors: true}); strings.Contains(on, "sidebar-connectors-off") {
 		t.Error("connectors on: the off entry is drawn")
 	}
-	if !strings.Contains(on, `id="sidebar-plugins" href="/plugins"`) || !strings.Contains(on, `id="sidebar-flows" href="/flows"`) {
-		t.Error("plugins/flows on: no link")
+}
+
+// TestTheAgentChatShowsTheMutedMicWhenDictationIsOff: the agent chat form (and
+// the chief panel, which draws the same pane) draws the muted mic when the
+// server has no dictation, and the real one when it does.
+func TestTheAgentChatShowsTheMutedMicWhenDictationIsOff(t *testing.T) {
+	off := renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1, DictateOff: true}))
+	if !strings.Contains(off, `id="chat-dictate-off" href="/account/features#dictation"`) || strings.Contains(off, `id="chat-dictate"`) {
+		t.Error("dictation off: no muted mic in the agent chat")
+	}
+	on := renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1, Dictate: TranscribePath}))
+	if !strings.Contains(on, `id="chat-dictate"`) || strings.Contains(on, "chat-dictate-off") {
+		t.Error("dictation on: the real mic is missing or the hint is drawn")
+	}
+	if zero := renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1})); strings.Contains(zero, "chat-dictate-off") {
+		t.Error("the zero value draws the hint")
 	}
 }

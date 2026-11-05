@@ -1,15 +1,27 @@
 // Package features is muster's feature registry: every optional (and core)
 // feature, whether this server runs it, why not, and the exact .env line(s)
-// that turn it on.
+// that turn it on — written for the documented install, the Compose stack
+// (docs/features.md).
 //
 // 🔴 THIS PACKAGE HOLDS THE SHAPE AND THE IDS, NOT THE PREDICATES. Whether a
 // feature is on is decided by cmd/muster-server from the SAME wired extensions
 // and the SAME parsed config the server itself runs on (its features.go), and
-// handed to internal/api once, at boot, as a Set. Every consumer — the boot
-// log, GET /api/features, /api/doctor and `muster doctor`, the Features page,
-// the hints beside hidden controls, the MCP doors' "disabled" answers and the
-// CLI's typed 404 — reads that one Set, so no two of them can disagree about a
-// feature's state.
+// handed to internal/api once, at boot, as a Set.
+//
+// ⚠ WHAT READS THE SET, EXACTLY (internal/api features.go has the list beside
+// the code): the boot log's summary line, /api/doctor's `features` (and so
+// `muster doctor`), the Features page, the Account page's suggested-replies
+// note, the Credentials page's variable name, the MCP doors' "disabled"
+// answers and muster_help's disabled_features, and the typed feature_disabled
+// 404. The GATES — whether a microphone or paperclip is drawn, whether the
+// Connectors tab, the push button and the dispatch "+" are drawn, and which
+// MCP tools are listed — read their extension AND the Set (Server.featureOff):
+// the Set can only take a feature away, so a feature the registry calls OFF is
+// never offered. A MISCONFIGURED one keeps what is wired (its store and tools
+// work as far as they go) and is reported where its gap is true: `muster
+// doctor` FAILs on it, and the Features page and the banner say so. Route handlers still gate on
+// their own extension (each answers its own unwired case); the ones the CLI
+// and the composer reach answer the typed 404.
 //
 // The variable names are spelled in cmd/muster-server's config.go and nowhere
 // else; this package never names a variable.
@@ -24,10 +36,8 @@ import (
 // The feature ids. They are also the anchors of docs/features.md
 // (DocsRef), so renaming one breaks every link to it: don't.
 const (
-	Database             = "database"
 	Mirror               = "mirror"
 	PasswordSignIn       = "password-sign-in"
-	MachineToken         = "machine-token"
 	Push                 = "push"
 	Dictation            = "dictation"
 	Attachments          = "attachments"
@@ -80,13 +90,28 @@ const (
 	Misconfigured State = "misconfigured"
 )
 
-// Var is one variable a feature needs. Value is a fixed value the variable
+// Var is one .env line a feature needs. Value is a fixed value the variable
 // must have ("1", "gotrue"); Placeholder describes a value the operator
 // supplies ("a 32-byte base64 key"). At most one is set.
+//
+// Profile names a Compose profile instead: the line is COMPOSE_PROFILES=<it>
+// (Name is then "COMPOSE_PROFILES"). Compose marks a variable the Compose
+// stack reads and muster-server does not (S3_STORE_SECRET_KEY): it is a real
+// .env line, and the registry's ledger against docs/configuration.md skips it.
 type Var struct {
 	Name        string `json:"name"`
 	Value       string `json:"value,omitempty"`
 	Placeholder string `json:"placeholder,omitempty"`
+	Profile     string `json:"profile,omitempty"`
+	Compose     bool   `json:"compose,omitempty"`
+}
+
+// ComposeProfilesVar is the variable a profile line sets.
+const ComposeProfilesVar = "COMPOSE_PROFILES"
+
+// ProfileVar is the .env line that turns a Compose profile on.
+func ProfileVar(profile string) Var {
+	return Var{Name: ComposeProfilesVar, Value: profile, Profile: profile, Compose: true}
 }
 
 // Line is the variable as one .env line: NAME=value, or NAME=<placeholder>.
@@ -133,6 +158,11 @@ type Feature struct {
 	// HostSide: the feature is set up on each machine running muster-mirror,
 	// not in the hub's .env.
 	HostSide bool `json:"host_side,omitempty"`
+	// Kubernetes: the feature needs in-cluster dispatch, which the Compose
+	// stack cannot provide (it does not forward these variables). Its hint
+	// then says so instead of "set X in .env", which would not work there.
+	// Enable still lists the variables, for a Kubernetes deployment.
+	Kubernetes bool `json:"kubernetes,omitempty"`
 
 	State State `json:"state"`
 	// Reason is why the feature is off or misconfigured ("" when on), or, for
@@ -158,7 +188,14 @@ func (f Feature) EnableLines() []string {
 // EnableHint is the one sentence that says how to turn the feature on:
 //
 //	set MUSTER_STT_URL and MUSTER_STT_TOKEN in .env and restart (docs/features.md#dictation)
+//
+// A Kubernetes feature's hint never says "set X in .env":
+//
+//	needs Kubernetes (in-cluster dispatch) — see docs/features.md#chief
 func (f Feature) EnableHint() string {
+	if f.Kubernetes {
+		return KubernetesHint + " — see " + f.Docs()
+	}
 	names := make([]string, 0, len(f.Enable))
 	for _, v := range f.Enable {
 		names = append(names, v.hintName())
@@ -198,6 +235,9 @@ func (f Feature) DisabledMessage() string {
 	}
 	return msg + f.EnableHint()
 }
+
+// KubernetesHint is what a feature the Compose stack cannot run needs.
+const KubernetesHint = "needs Kubernetes (in-cluster dispatch)"
 
 func joinAnd(xs []string) string {
 	switch len(xs) {
@@ -308,19 +348,30 @@ func (s Set) Counts() map[State]int {
 	return out
 }
 
-// LogLine is the boot log's line for f:
+// Summary is the boot log's one registry line:
 //
-//	feature dictation: OFF — MUSTER_STT_TOKEN is unset. Enable: set … (docs/features.md#dictation)
-func LogLine(f Feature) string {
-	line := "feature " + f.ID + ": " + strings.ToUpper(string(f.State))
-	if f.Core {
-		line += " (core)"
+//	features: 9 on; off: dictation, attachments; misconfigured: none — see /account/features
+//
+// The per-feature detail is on the Features page and in `muster doctor`; the
+// banner's own posture lines say the rest.
+func (s Set) Summary(pagePath string) string {
+	var off, bad []string
+	on := 0
+	for _, f := range s.list {
+		switch f.State {
+		case On:
+			on++
+		case Off:
+			off = append(off, f.ID)
+		case Misconfigured:
+			bad = append(bad, f.ID)
+		}
 	}
-	if f.Reason != "" {
-		line += " — " + f.Reason
+	list := func(xs []string) string {
+		if len(xs) == 0 {
+			return "none"
+		}
+		return strings.Join(xs, ", ")
 	}
-	if f.State != On {
-		line += ". Enable: " + f.EnableHint()
-	}
-	return line
+	return fmt.Sprintf("features: %d on; off: %s; misconfigured: %s — see %s", on, list(off), list(bad), pagePath)
 }

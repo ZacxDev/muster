@@ -68,12 +68,6 @@ type DoctorHost struct {
 	Online bool `json:"online"`
 	// Interactive: it advertised -interactive.
 	Interactive bool `json:"interactive"`
-	// MCPSeen / AskHookSeen: this server process has received a call from
-	// this host on its MCP door / its AskUserQuestion hook since it started —
-	// what it can see of the per-host setup that gives a session muster's
-	// tools (SessionToolsNote says what it cannot).
-	MCPSeen     bool `json:"mcp_seen"`
-	AskHookSeen bool `json:"ask_hook_seen"`
 }
 
 // MirrorHostPath is a machine's OWN view of itself, on its mirror token: is
@@ -177,12 +171,9 @@ func (s *Server) doctorHosts(ctx context.Context) ([]DoctorHost, string) {
 		d.Interactive = hv.Interactive
 	}
 	sort.Strings(order)
-	owner := requestOwner(ctx)
 	out := make([]DoctorHost, 0, len(order))
 	for _, h := range order {
-		d := byHost[h]
-		d.MCPSeen, d.AskHookSeen = s.sessionTools.seen(owner, h)
-		out = append(out, *d)
+		out = append(out, *byHost[h])
 	}
 	return out, why
 }

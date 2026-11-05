@@ -158,8 +158,10 @@ INSTALL.md's Step 10 passes `--api-url` there.
 | `sign-in` | the operator password signs in, and the session opens the board | `POST /login`, then `GET /tasks` |
 | `push` | the VAPID keys are set | `GET /api/push/vapid-public-key` (signed in), else `GET /api/doctor` |
 | `dictation` | a bundled 1.7 s spoken sample comes back as text through `POST /transcribe` | the server and its speech-to-text service |
-| `features` | the server reports its feature registry (always PASS when it does: an optional feature that is off is not a failure). Every feature is then listed below the checks, with its state and the `.env` line that turns it on | `GET /api/doctor` |
-| `session-tools` | every connected host has called the server's MCP door since the server started, so its Claude Code sessions have muster's tools (`attention_ask`, the task tools). A host not seen is a SKIP, never a FAIL: the server cannot tell "not set up" from "no session has started there since the restart" | `GET /api/doctor` |
+| `features` | no feature the server reports is **misconfigured** (asked for, with a dependency missing); a feature that is merely off is not a failure. Every feature is listed below the checks, with its state and the line that turns it on | `GET /api/doctor` |
+| `mcp-endpoint` | this machine's `muster-mirror` serves its local MCP endpoint (`MUSTER_MIRROR_MCP_LISTEN` in its settings) and has written its secret. Unset is a SKIP: the agent ask tool is optional | this machine's muster-mirror settings |
+| `mcp-registration` | Claude Code's user config registers that endpoint, so sessions here have muster's tools. A FAIL prints the exact `claude mcp add-json` command | `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) |
+| `ask-hook` | Claude Code runs `muster-mirror ask` before `AskUserQuestion` (ask cards). Absent is a SKIP with the hook to add | `~/.claude/settings.json` |
 
 - **Feature off:** a route whose feature is off on the server (session routing for
   `route reply`, plugins for `plugins retry`, …) answers a typed 404, and the CLI

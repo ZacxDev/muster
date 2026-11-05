@@ -26,6 +26,11 @@ import (
 // "asked for and not wired" (misconfigured), and for the one dependency no
 // extension records: whether an OpenRouter key exists.
 
+// composeS3StoreSecret is the Compose stack's own variable for the bundled S3
+// store's secret (deploy/docker-compose.yml): an .env line muster-server never
+// reads, so it is not in config.go's const block.
+const composeS3StoreSecret = "S3_STORE_SECRET_KEY"
+
 // featureCatalog is every feature the registry knows, in the order the Features
 // page lists them: the core first, then the optional ones.
 func featureCatalog() []features.Feature {
@@ -34,9 +39,6 @@ func featureCatalog() []features.Feature {
 	provisioner := []features.Var{is(envAgentProvisioner, provisionerK8s), v(envAgentImageRepo, "agent image repository"),
 		v(envAgentAPIURL, "the URL agents reach muster on")}
 	return []features.Feature{
-		{ID: features.Database, Name: "Database", Core: true,
-			Description: "Postgres: every task, token and row muster keeps. The Compose stack ships one.",
-			Enable:      []features.Var{v(envDatabase, "postgres DSN")}},
 		{ID: features.Mirror, Name: "Mirrored sessions", Core: true,
 			Description: "Every tmux window on every machine running muster-mirror, as a card; Claude Code as chat.",
 			Enable:      []features.Var{is(envMirror, "1")},
@@ -45,9 +47,6 @@ func featureCatalog() []features.Feature {
 			Description: "One shared operator password for the web UI.",
 			Enable:      []features.Var{v(envUIPassword, "at least 12 characters")},
 			Settings:    []string{envSecureCookies}},
-		{ID: features.MachineToken, Name: "Machine token", Core: true,
-			Description: "The shared secret the muster CLI, muster doctor and the host hooks present.",
-			Enable:      []features.Var{v(envHookToken, "a long random string")}},
 		{ID: features.Push, Name: "Push notifications",
 			Description: "Phone and desktop notifications through Web Push.",
 			Enable: []features.Var{v(envVAPIDPublicKey, "from muster-server vapid generate"), v(envVAPIDPrivateKey, "from muster-server vapid generate"),
@@ -55,13 +54,17 @@ func featureCatalog() []features.Feature {
 			Settings: []string{envPushExtraHosts}},
 		{ID: features.Dictation, Name: "Dictation",
 			Description: "A microphone on every message box; speech is transcribed into the box.",
-			Enable:      []features.Var{v(envSTTURL, "speech-to-text base URL"), v(envSTTToken, "speech-to-text token")},
-			Settings:    []string{envSTTModel}},
+			// The documented install: the bundled `stt` profile, whose URL the
+			// Compose file fills in when only the token is set (docs/features.md).
+			Enable:   []features.Var{features.ProfileVar("stt"), v(envSTTToken, "a random secret")},
+			Settings: []string{envSTTURL, envSTTModel}},
 		{ID: features.Attachments, Name: "File attachments",
 			Description: "Attach files in the message box; agents get signed links to them.",
-			Enable: []features.Var{v(envS3Endpoint, "http(s)://host[:port]"), v(envS3Bucket, "bucket"), v(envS3AccessKey, "access key"),
-				v(envS3SecretKey, "secret key"), v(envUploadSigningKey, "at least 32 bytes"), v(envPublicURL, "muster's external URL")},
-			Settings: []string{envS3Region, envUploadMaxBytes, envUploadLinkTTL}},
+			// The documented install: the bundled `s3` profile, whose store
+			// the Compose file wires from its one secret (docs/features.md).
+			Enable: []features.Var{features.ProfileVar("s3"), {Name: composeS3StoreSecret, Placeholder: "a random secret, 8+ characters", Compose: true},
+				v(envUploadSigningKey, "32+ random bytes")},
+			Settings: []string{envS3Endpoint, envS3Bucket, envS3AccessKey, envS3SecretKey, envPublicURL, envS3Region, envUploadMaxBytes, envUploadLinkTTL}},
 		{ID: features.SuggestedReplies, Name: "Suggested replies",
 			Description: "Up to three suggested replies when a Claude Code session hands back control. On by default; needs an OpenRouter key.",
 			Enable:      []features.Var{v(envAgentOpenRouterKey, "OpenRouter key")},
@@ -83,33 +86,33 @@ func featureCatalog() []features.Feature {
 			Enable: []features.Var{v(envGitHubAppID, "App ID"), v(envGitHubAppKey, "App private key (PEM)"),
 				v(envGitHubAppAccounts, "login:id,…")},
 			Settings: []string{envGitHubAppAccess}},
-		{ID: features.Dispatch, Name: "Agent dispatch",
+		{ID: features.Dispatch, Kubernetes: true, Name: "Agent dispatch",
 			Description: "Start, stop and destroy agents in their own Kubernetes pods.",
 			Enable:      provisioner,
 			Settings: []string{envAgentImageTag, envAgentModel, envAgentOpenRouterKey, envAgentNSPrefix, envAgentNSShared, envAgentNamespace,
 				envAgentNSClusterRole, envAgentWorkspaceKeep, envAgentStorageClass, envAgentEndpointTmpl, envAgentCairnURL, envAgentCairnToken}},
-		{ID: features.AgentGateway, Name: "Agent chat",
+		{ID: features.AgentGateway, Kubernetes: true, Name: "Agent chat",
 			Description: "Talk to dispatched agents, and deliver their first turn, through the agent runtime's gateway.",
 			Enable: []features.Var{is(envAgentGateway, gatewayHooksSHA256), v(envAgentGatewayModel, "the runtime's model value"),
 				v(envAgentRuntimeConfig, "runtime config file"), v(envAgentRuntimeInstall, "install script")},
 			Settings: []string{envAgentGatewayPort}},
-		{ID: features.ClaudeCodeAgents, Name: "Claude Code agents",
+		{ID: features.ClaudeCodeAgents, Kubernetes: true, Name: "Claude Code agents",
 			Description: "Agents that run the Claude Code CLI in a pod, on your Claude subscription accounts.",
 			Enable: []features.Var{is(envAgentKinds, "gateway,claude-code"), v(envAgentCCImage, "claude-code agent image"),
 				v(envAgentCCAccounts, "account names"), v(envAgentCCTokenPrefix+"<NAME>", "claude setup-token")},
 			Settings: []string{envAgentCCStorage, envAgentCCCooldown, envAgentCCMaxJobs, envAgentCCFailover, envAgentCCBypassPools,
 				envAgentCCPoolDeployKeys, envAgentCCEgressLockedPools, envAgentNetpolFromNS, envAgentNetpolFromLabels, envCheckoutWaitTimeout}},
-		{ID: features.Chief, Name: "Chief",
+		{ID: features.Chief, Kubernetes: true, Name: "Chief",
 			Description: "An agent that manages your other agents; each user turns it on under Account. Needs agent dispatch.",
 			Enable:      provisioner},
-		{ID: features.ChiefSessionRuntimes, Name: "Chief session runtimes",
+		{ID: features.ChiefSessionRuntimes, Kubernetes: true, Name: "Chief session runtimes",
 			Description: "Start a chief chat session on Claude Code, with its own model.",
 			Enable:      []features.Var{is(envChiefSessionRuntimes, "claude-code")}},
-		{ID: features.ChiefNudges, Name: "Chief stall nudges",
+		{ID: features.ChiefNudges, Kubernetes: true, Name: "Chief stall nudges",
 			Description: "The chief judges idle sessions and nudges or asks (shadow mode by default).",
 			Enable:      []features.Var{is(envChiefNudges, "1")},
-			Settings: []string{envChiefNudgeLiveOwners, envChiefNudgeNeedsYouLiveOwners, envChiefNudgeIdle, envChiefNudgeHourlyCap,
-				envChiefNudgeAskThreshold}},
+			Settings: []string{envChiefNudgeLiveOwners, envChiefNudgeNeedsYouLiveOwners, envChiefNudgeChiefChatQuotesLiveOwners, envChiefNudgeIdle,
+				envChiefNudgeHourlyCap, envChiefNudgeAskThreshold}},
 		{ID: features.SessionState, Name: "Session state",
 			Description: "One push per stop, and the Asks page's Stalled / waiting section.",
 			Enable:      []features.Var{is(envSessionState, "1")}},
@@ -137,7 +140,7 @@ func featureCatalog() []features.Feature {
 			Description: "Mail for an ended session resumes it on its host.",
 			Enable:      []features.Var{v(envMailResumeAllow, "user:plugin:owner/handle,…")},
 			Settings:    []string{envMailResumeOff}},
-		{ID: features.MemoRelay, Name: "Memo relay",
+		{ID: features.MemoRelay, Kubernetes: true, Name: "Memo relay",
 			Description: "cairn memos delivered to the operator's running agents.",
 			Enable:      []features.Var{v(envMemoURL, "cairn memo listener URL"), v(envMemoToken, "read-only cairn credential")},
 			Settings:    []string{envMemoScopeMap}},
@@ -154,6 +157,9 @@ func featureCatalog() []features.Feature {
 			HostSide:    true,
 			Note: "on each host, run muster-mirror with -mcp-listen 127.0.0.1:<port>, register http://127.0.0.1:<port>/mcp " +
 				"in Claude Code's MCP config, and add the `muster-mirror ask` PreToolUse hook"},
+		// A real optional door (another service writes as the admin), off
+		// until set, and no other check owns it — unlike the hook token, which
+		// `muster doctor`'s hook-token check owns.
 		{ID: features.ServiceToken, Name: "Service token",
 			Description: "Service-to-service writes that assert an actor name.",
 			Enable:      []features.Var{v(envServiceToken, "at least 32 characters")}},
@@ -165,7 +171,7 @@ func featureCatalog() []features.Feature {
 			Description: "Grafana Faro real-user monitoring from the web UI.",
 			Enable:      []features.Var{v(envFaroUpstream, "Faro receiver collect URL")},
 			Settings:    []string{envFaroURL, envFaroKey, envFaroTracing}},
-		{ID: features.Officers, Name: "Officers",
+		{ID: features.Officers, Kubernetes: true, Name: "Officers",
 			Description: "Long-running workers that take items from an HQ queue.",
 			Enable:      []features.Var{v(envOfficers, "JSON array"), v(officers.TokenEnvPrefix+"<NAME>", "HQ token")},
 			Settings:    []string{officers.AppKeyEnvPrefix + "<NAME>", officers.EscalateWebhookEnvPrefix + "<NAME>", officers.LLMKeyEnvPrefix + "<NAME>"}},
@@ -189,6 +195,49 @@ func openRouterReason(what string, ext api.Extensions) string {
 	return r + " for anyone (no member can store a key either: " + envConnectorEncKey + " is unset)"
 }
 
+// needsOpenRouterKey is the OFF reason of a feature that is on by default and
+// does nothing without an OpenRouter key (suggested replies, focus).
+//
+// 🔴 OFF, NOT MISCONFIGURED, AND THAT IS THE OPERATOR'S DECISION (#441 round
+// 0, Q1): the keyless Compose install is the documented default, nothing was
+// asked for, and MISCONFIGURED means only "asked for, a dependency missing" —
+// which `muster doctor` FAILs on. A default install must not fail its doctor.
+func needsOpenRouterKey(ext api.Extensions) string {
+	r := "needs " + envAgentOpenRouterKey
+	if ext.Credentials != nil {
+		return r + " (members who saved their own OpenRouter key on Credentials have it)"
+	}
+	return r
+}
+
+// chiefMissing is why a feature that acts through the chief cannot, or "": the
+// chief needs an agent provisioner and a runtime to run on (the Chief entry's
+// own predicate, chiefRuntimeMissing).
+func chiefMissing(c config, ext api.Extensions) string {
+	if ext.Provisioner == nil || chiefRuntimeMissing(c, ext) {
+		return "it acts through the chief, which " + features.KubernetesHint + " — see docs/features.md#chief"
+	}
+	return ""
+}
+
+// chiefNudgesProblem is why the wired stall nudges cannot work, or "": the ONE
+// answer, read by the registry and by the banner's `chief nudges:` line, so
+// the two cannot disagree (#441 round 0, D1).
+func chiefNudgesProblem(c config, ext api.Extensions) string {
+	if why := chiefMissing(c, ext); why != "" {
+		return envChiefNudges + "=1 but " + why
+	}
+	if c.openRouterKeyMissing() {
+		return envChiefNudges + "=1 but " + openRouterReason("the stall classifier cannot run", ext)
+	}
+	return ""
+}
+
+// chiefRuntimeMissing: a provisioner, but nothing a chief can run on.
+func chiefRuntimeMissing(c config, ext api.Extensions) bool {
+	return ext.Gateway == nil && !c.claudeCodeEnabled()
+}
+
 // featureStatuses evaluates every catalog entry against this process.
 func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]features.Status {
 	c := a.cfg
@@ -210,7 +259,6 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	gotrue := api.AuthMode(c.AuthMode) == api.AuthModeGoTrue
 	st := map[string]features.Status{}
 
-	st[features.Database] = pick(a.pool != nil, false, "", "", envDatabase+" is unset")
 	st[features.Mirror] = pick(ext.Mirror != nil, c.Mirror, "", noDB, envMirror+" is unset")
 	switch reason := c.browserAuthRefusal(); {
 	case gotrue:
@@ -220,8 +268,6 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	default:
 		st[features.PasswordSignIn] = on("")
 	}
-	st[features.MachineToken] = pick(c.HookToken != "", false, "", "",
-		envHookToken+" is unset, so the machine routes are open and the routes that need it refuse")
 
 	push := ext.Push != nil
 	st[features.Push] = pick(push, c.pushConfigured(), "", noDB, "the VAPID keys are unset")
@@ -247,7 +293,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	case ext.Suggest.Off:
 		st[features.SuggestedReplies] = off(envSuggest + "=off turns them off for everyone")
 	case c.openRouterKeyMissing():
-		st[features.SuggestedReplies] = bad(openRouterReason("no suggestion is generated", ext))
+		st[features.SuggestedReplies] = off(needsOpenRouterKey(ext))
 	default:
 		st[features.SuggestedReplies] = on("")
 	}
@@ -257,7 +303,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	case c.FocusInterval <= 0:
 		st[features.Focus] = off(envFocusInterval + "=0 turns the refresh off")
 	case c.openRouterKeyMissing():
-		st[features.Focus] = bad(openRouterReason("no session gets a focus", ext))
+		st[features.Focus] = off(needsOpenRouterKey(ext))
 	default:
 		st[features.Focus] = on("")
 	}
@@ -270,19 +316,24 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	st[features.AgentGateway] = pick(ext.Gateway != nil, false, "", "", envAgentGateway+" is unset")
 	st[features.ClaudeCodeAgents] = pick(c.claudeCodeEnabled() && ext.Provisioner != nil, c.claudeCodeEnabled(),
 		"", "the claude-code kind is enabled but there is no agent provisioner", envAgentKinds+" does not list claude-code")
+	// The chief has no variable of its own, so it is never "asked for": with
+	// what it needs missing it is OFF, never MISCONFIGURED.
 	switch {
 	case ext.Provisioner == nil:
 		st[features.Chief] = off("there is no agent provisioner (" + envAgentProvisioner + ")")
-	case ext.Gateway == nil && !c.claudeCodeEnabled():
-		st[features.Chief] = bad("there is an agent provisioner but no runtime a chief can run on (" + envAgentGateway +
+	case chiefRuntimeMissing(c, ext):
+		st[features.Chief] = off("there is no runtime a chief can run on (" + envAgentGateway +
 			" is unset and " + envAgentKinds + " does not list claude-code)")
 	default:
 		st[features.Chief] = on("each user turns it on under Account")
 	}
 	st[features.ChiefSessionRuntimes] = pick(len(ext.SessionRuntimes) > 0, false, "", "", envChiefSessionRuntimes+" is unset")
+	// MUSTER_CHIEF_NUDGES=1 is an explicit ask, so a missing dependency here
+	// IS misconfigured: the chief (an owner with none has nothing decided,
+	// chief_nudge.go) and the stall classifier's key.
 	switch {
-	case ext.ChiefNudge != nil && c.openRouterKeyMissing():
-		st[features.ChiefNudges] = bad(openRouterReason("the stall classifier cannot run", ext))
+	case ext.ChiefNudge != nil && chiefNudgesProblem(c, ext) != "":
+		st[features.ChiefNudges] = bad(chiefNudgesProblem(c, ext))
 	case ext.ChiefNudge != nil && len(ext.ChiefNudge.Live) == 0:
 		st[features.ChiefNudges] = on("shadow for every owner (" + envChiefNudgeLiveOwners + " is empty): decisions are recorded, nothing is sent")
 	case ext.ChiefNudge != nil:
@@ -298,7 +349,8 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	case ext.Plugins != nil && ext.PluginGateway != nil:
 		st[features.Plugins] = on("")
 	case ext.Plugins != nil:
-		st[features.Plugins] = bad("there is no agent gateway (" + envAgentGateway + "), so plugin messages are stored and stay queued")
+		st[features.Plugins] = bad("plugin messages reach your chief through the agent gateway (" + envAgentGateway + "), which " +
+			features.KubernetesHint + " — see docs/features.md#agent-gateway; until then they are stored and stay queued")
 	case c.Plugins:
 		st[features.Plugins] = bad(envPlugins + "=1 but " + noDB)
 	default:
@@ -307,10 +359,18 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	pluginsOff := "the plugin interface is off (" + envPlugins + ")"
 	st[features.PluginTasks] = pick(len(c.PluginTaskNamespaces) > 0 && ext.Plugins != nil, len(c.PluginTaskNamespaces) > 0,
 		"", envPluginTaskNamespaces+" is set but "+pluginsOff, envPluginTaskNamespaces+" is unset")
-	st[features.SessionRouting] = pick(ext.Routing != nil, c.SessionRouting, "",
-		envSessionRouting+"=1 but "+pluginsOff, envSessionRouting+" is unset")
-	st[features.TaskRouting] = pick(ext.TaskRouting != nil, c.TaskRouting, "",
-		envTaskRouting+"=1 but "+pluginsOff, envTaskRouting+" is unset")
+	// Session and task routing are the chief's decisions: wired, they still do
+	// nothing without one, and both were asked for.
+	routed := func(wired, asked bool, name string) features.Status {
+		if wired {
+			if why := chiefMissing(c, ext); why != "" {
+				return bad(name + "=1 but " + why)
+			}
+		}
+		return pick(wired, asked, "", name+"=1 but "+pluginsOff, name+" is unset")
+	}
+	st[features.SessionRouting] = routed(ext.Routing != nil, c.SessionRouting, envSessionRouting)
+	st[features.TaskRouting] = routed(ext.TaskRouting != nil, c.TaskRouting, envTaskRouting)
 	st[features.PRMailRouting] = pick(ext.PRMail != nil, len(c.PRMailSenders) > 0, "",
 		envPRMailSenders+" is set but session routing ("+envSessionRouting+"=1, with plugins) is off", envPRMailSenders+" is unset")
 	st[features.FleetReports] = pick(ext.FleetReport != nil, len(c.FleetReportSenders) > 0, "",
@@ -345,7 +405,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	st[features.BrowserFlows] = pick(ext.Flows != nil, false,
 		"jobs run only on a runner you host; with none, a job expires unclaimed", "", noDB)
 	st[features.AgentAskTool] = pick(ext.Mirror != nil, false,
-		"set up per host, which this server cannot see at boot; muster doctor and the Features page list the hosts that have called it since this server started",
+		"set up on each machine, which this server cannot see: `muster doctor` on that machine checks it",
 		"", "mirrored sessions are off ("+envMirror+")")
 	st[features.ServiceToken] = pick(c.serviceWriteRefusal() == "", false, "", "", c.serviceWriteRefusal())
 	st[features.Android] = pick(len(ext.AssetLinks) > 0, false, "", "", envAndroidPackage+" and "+envAndroidCertSHA256+" are unset")
@@ -367,20 +427,17 @@ func (a *app) buildFeatures(ext api.Extensions, port router.Port) (features.Set,
 	return features.Evaluate(featureCatalog(), a.featureStatuses(ext, port))
 }
 
-// logFeatures prints one line per feature, from the registry.
+// logFeatures prints the registry's one summary line. The per-feature detail
+// is on the Features page and in `muster doctor`; the banner's posture lines
+// above it say the rest (and agree with it: see the chief-nudges line).
 func (a *app) logFeatures(set features.Set) {
-	n := set.Counts()
-	a.logger.Printf("features: %d on, %d off, %d misconfigured — one line each below; GET /api/features and "+
-		"Account → Features list them with the line that turns each on", n[features.On], n[features.Off], n[features.Misconfigured])
-	for _, f := range set.All() {
-		a.logger.Print(features.LogLine(f))
-	}
+	a.logger.Print(set.Summary(api.FeaturesPagePath))
 }
 
 // redact replaces any configured secret or address that a reason might have
 // picked up (a parse error quoting its input) with "<redacted>".
 //
-// 🔴 A REASON IS SERVED TO EVERY SIGNED-IN USER (GET /api/features), SO IT MAY
+// 🔴 A REASON IS SERVED TO EVERY SIGNED-IN USER (the Features page, /api/doctor), SO IT MAY
 // NAME VARIABLES AND NEVER QUOTE THEM. The evaluator's own sentences quote
 // nothing; this is the guard for the ones it borrows (parseUploads' reasons
 // carry the S3 client's error text). TestTheFeatureRegistryLeaksNoConfiguredValue

@@ -80,6 +80,10 @@ func DictateNoteHTML(path, noteID, class string) string {
 	return nodeString(dictateNote(path, noteID, class))
 }
 
+// DictateOffControlHTML is dictateOffControl rendered to a string: the muted
+// mic of an answer box built as HTML in internal/api.
+func DictateOffControlHTML(id string) string { return nodeString(dictateOffControl(id)) }
+
 // DictateScriptHTML is dictateScript rendered to a string: once per page,
 // AFTER every mic the page draws at load (its first run reveals the mics then
 // on the page; a later one is shown by htmx:load or DictateRevealEvent).
@@ -160,9 +164,14 @@ const DictateOffLabel = "Dictation is off on this server — how to turn it on"
 
 // dictateOffControl is the mic's place when the server has no dictation: a
 // muted mic that links to the feature's row on the Features page. Shown
-// without script (it is a plain link), unlike the real mic.
-func dictateOffControl() g.Node {
-	return A(ID("mv-dictate-off"), Href(FeatureHref(features.Dictation)), g.Attr("data-feature-off", features.Dictation),
+// without script (it is a plain link), unlike the real mic. id is the box's
+// own (one per answer box on the Asks list).
+//
+// 🔴 EVERY MESSAGE BOX THAT DRAWS A MIC DRAWS THIS WHEN DICTATION IS OFF: the
+// mirrored composer, the agent chat, the chief panel, the ask page and every
+// Asks answer box (#441 round 1, R7).
+func dictateOffControl(id string) g.Node {
+	return A(ID(id), Href(FeatureHref(features.Dictation)), g.Attr("data-feature-off", features.Dictation),
 		g.Attr("aria-label", DictateOffLabel), g.Attr("title", DictateOffLabel),
 		Class("press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-muted opacity-50 ring-1 ring-inset ring-line transition hover:opacity-100"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/><path d="M3 3l18 18"/></svg>`))

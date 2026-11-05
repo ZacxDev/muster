@@ -75,7 +75,7 @@ func TestTheHintAndTheDisabledMessageArePinned(t *testing.T) {
 		{get(AgentAskTool).EnableHint(), "run it with -mcp-listen (docs/features.md#agent-ask-tool)"},
 		{strings.Join(get(Dictation).EnableLines(), "|"), "EXAMPLE_STT_URL=<url>|EXAMPLE_STT_TOKEN=<token>"},
 		{strings.Join(get(Plugins).EnableLines(), "|"), "EXAMPLE_PLUGINS=1"},
-		{LogLine(get(Dictation)), "feature dictation: OFF — EXAMPLE_STT_TOKEN is unset. Enable: set EXAMPLE_STT_URL and EXAMPLE_STT_TOKEN in .env and restart (docs/features.md#dictation)"},
+		{set.Summary("/account/features"), "features: 0 on; off: dictation, agent-ask-tool; misconfigured: plugins — see /account/features"},
 		{get(Dictation).DocsLink(), "https://github.com/ZacxDev/muster/blob/main/docs/features.md#dictation"},
 	} {
 		if c.got != c.want {
@@ -85,6 +85,21 @@ func TestTheHintAndTheDisabledMessageArePinned(t *testing.T) {
 	hosted := Feature{ID: "h", HostSide: true, Enable: []Var{{Name: "EXAMPLE_HOST_VAR", Value: "1"}}}
 	if got, want := hosted.EnableHint(), "on each host, set EXAMPLE_HOST_VAR=1 in muster-mirror's environment and restart it (docs/features.md#h)"; got != want {
 		t.Errorf("host-side hint %q, want %q", got, want)
+	}
+	profiled := Feature{ID: "p", Enable: []Var{ProfileVar("stt"), {Name: "EXAMPLE_TOKEN", Placeholder: "a secret"}}}
+	if got, want := profiled.EnableHint(), "set COMPOSE_PROFILES=stt and EXAMPLE_TOKEN in .env and restart (docs/features.md#p)"; got != want {
+		t.Errorf("profile hint %q, want %q", got, want)
+	}
+	if got, want := strings.Join(profiled.EnableLines(), "|"), "COMPOSE_PROFILES=stt|EXAMPLE_TOKEN=<a secret>"; got != want {
+		t.Errorf("profile lines %q, want %q", got, want)
+	}
+	// A Kubernetes feature never tells the operator to set a variable in .env.
+	k8s := Feature{ID: "chief", Kubernetes: true, State: Off, Enable: []Var{{Name: "EXAMPLE_PROVISIONER", Value: "kubernetes"}}}
+	if got, want := k8s.EnableHint(), "needs Kubernetes (in-cluster dispatch) — see docs/features.md#chief"; got != want {
+		t.Errorf("kubernetes hint %q, want %q", got, want)
+	}
+	if got, want := k8s.DisabledMessage(), "disabled: chief — needs Kubernetes (in-cluster dispatch) — see docs/features.md#chief"; got != want {
+		t.Errorf("kubernetes disabled %q, want %q", got, want)
 	}
 	if n := set.Counts(); n[On] != 0 || n[Off] != 2 || n[Misconfigured] != 1 {
 		t.Errorf("counts %v", n)

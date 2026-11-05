@@ -176,10 +176,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /auth/passkey/options": classPublic,
 	"POST /auth/passkey/verify":  classPublic,
 	"GET /account/passkeys":      classList,
-	// The feature registry: server configuration, the same for every user;
-	// the only per-user part is the caller's own mirrored hosts' sightings.
+	// The feature registry's page: server configuration, the same for every user.
 	"GET /account/features":              classList,
-	"GET /api/features":                  classList,
 	"POST /account/passkeys/options":     classList,
 	"POST /account/passkeys/verify":      classList,
 	"POST /account/passkeys/{id}/delete": classParam,

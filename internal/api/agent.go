@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
@@ -345,14 +346,18 @@ func (s *Server) agentTools() []agentTool {
 			"state": map[string]any{"type": "string", "description": "which PRs to list", "enum": []string{"open", "closed", "all"}},
 		})),
 	}
-	if s.ext.Connectors != nil {
+	// 🔴 EACH GATE BELOW ALSO READS THE FEATURE REGISTRY (featureOff): a
+	// feature it calls off has no tool offered, and a call to one explains
+	// instead (features.go's toolFeatures, mcpDisabledTool). The two agree by
+	// construction: same features, same predicate, same definitions.
+	if s.ext.Connectors != nil && !s.featureOff(features.Connectors) {
 		for _, d := range connectorToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, notChief: d.Name != "connectors_list"})
 		}
 	}
 	// Browser flows (flow_tools.go): MCP too — any agent may ASK; only its
 	// owner's approval on /flows makes anything run.
-	if s.ext.Flows != nil {
+	if s.ext.Flows != nil && !s.featureOff(features.BrowserFlows) {
 		for _, d := range flowToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, notChief: true})
 		}
@@ -360,7 +365,7 @@ func (s *Server) agentTools() []agentTool {
 	// The plugin interface (gated_task_tool.go): the chief may FILE a task its
 	// owner must approve. MCP too, so a claude-code chief reaches it; chief-only,
 	// because the chief is the one agent plugin messages are delivered to.
-	if s.ext.Plugins != nil {
+	if s.ext.Plugins != nil && !s.featureOff(features.Plugins) {
 		tools = append(tools, agentTool{def: gatedTaskToolDef(), mcp: true, chiefOnly: true})
 		// reply_draft (reply_draft_tool.go): the chief may DRAFT a reply its
 		// owner must approve before the plugin sends it. MCP and chief-only for
@@ -374,7 +379,7 @@ func (s *Server) agentTools() []agentTool {
 	// Session focus (focus_tools.go): the chief lists and searches its owner's
 	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
 	// chief-only: they reach the owner's whole fleet.
-	if s.ext.Focus != nil {
+	if s.ext.Focus != nil && !s.featureOff(features.Focus) {
 		for _, d := range focusToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
@@ -390,14 +395,14 @@ func (s *Server) agentTools() []agentTool {
 	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on:
 	// the chief hands a plugin message to a mirrored session (chief-only, like
 	// reply_draft). The session answers through POST /api/routes/{id}/reply.
-	if routingOn(s.ext) {
+	if routingOn(s.ext) && !s.featureOff(features.SessionRouting) {
 		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
 	}
 	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the
 	// chief decides what happens to a task a plugin handed it — the attention
 	// queue, a forward, or (MUSTER_CHIEF_DISPATCH_OWNERS) a new agent. Chief-only and
 	// on MCP, like route_to_session.
-	if taskRoutingOn(s.ext) {
+	if taskRoutingOn(s.ext) && !s.featureOff(features.TaskRouting) {
 		for _, d := range taskRoutingToolDefs(chiefDispatchOn(s.ext)) {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
@@ -427,7 +432,7 @@ func (s *Server) agentTools() []agentTool {
 	// an officer's instances reach their HQ queue through muster, which holds
 	// the officer's token. On MCP (officer instances are claude-code agents);
 	// officer-only.
-	if s.officerRT != nil {
+	if s.officerRT != nil && !s.featureOff(features.Officers) {
 		for _, d := range officerToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, officerOnly: true})
 		}

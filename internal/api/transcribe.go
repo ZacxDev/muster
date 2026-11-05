@@ -146,12 +146,20 @@ func (s *Server) registerTranscribeRoutes(mux Mux) {
 // when this server has a transcriber, "" (no microphone drawn) when it has
 // none. It is the ONE predicate every view reads, so a page and the route can
 // never disagree about whether dictation exists.
+//
+// It reads the feature registry too (featureOff): a registry that calls
+// dictation off draws no microphone even with a client wired.
 func (s *Server) dictatePath() string {
-	if s.ext.Transcriber == nil {
+	if s.ext.Transcriber == nil || s.featureOff(features.Dictation) {
 		return ""
 	}
 	return ui.TranscribePath
 }
+
+// dictateOff reports that this server has no dictation at all, so a message
+// box draws the muted microphone that links to its Features row
+// (ui.DictateOffControlHTML) in place of the real one.
+func (s *Server) dictateOff() bool { return s.dictatePath() == "" }
 
 // readRecorder wraps the request body and keeps the first error a read met, so
 // the handler can tell the size cap (http.MaxBytesError) from a client that

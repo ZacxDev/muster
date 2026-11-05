@@ -13,9 +13,12 @@ import { openMore } from '../lib/nav';
 //     real ones would be, and the mic's hint opens the Features page at the
 //     dictation row, which says Off and shows the .env lines;
 //   - the Features page lists the registry: mirrored sessions On (core),
-//     suggested replies Misconfigured (no OpenRouter key), dictation Off;
+//     suggested replies Off ("needs MUSTER_AGENT_OPENROUTER_KEY" — off, not
+//     misconfigured, on a keyless install), dictation Off with the Compose
+//     profile line, the chief Off with "needs Kubernetes" and no .env block,
+//     and NOTHING misconfigured (the default install's doctor passes);
 //   - the nav's More carries a muted, labelled Connectors entry (linking to its
-//     row) and the Browser flows link (flows are on with a database).
+//     row), and no /plugins or /flows link.
 //
 // At a phone's size and a desktop's.
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -62,7 +65,7 @@ for (const size of [
       const dictation = row(page, 'dictation');
       await expect(dictation).toHaveAttribute('data-state', 'off');
       await expect(dictation.locator('[data-feature-state]')).toHaveText('Off');
-      await expect(dictation.locator('[data-feature-enable]')).toContainText('MUSTER_STT_URL=');
+      await expect(dictation.locator('[data-feature-enable]')).toContainText('COMPOSE_PROFILES=stt');
       await expect(dictation.locator('[data-feature-enable]')).toContainText('MUSTER_STT_TOKEN=');
       await expect(dictation).toBeInViewport();
 
@@ -75,8 +78,13 @@ for (const size of [
       await rig.login(page);
       await page.goto(origin + '/account/features');
       await expect(row(page, 'mirror')).toHaveAttribute('data-state', 'on');
-      await expect(row(page, 'suggested-replies')).toHaveAttribute('data-state', 'misconfigured');
-      await expect(row(page, 'suggested-replies').locator('[data-feature-reason]')).toContainText('MUSTER_AGENT_OPENROUTER_KEY is unset');
+      await expect(row(page, 'suggested-replies')).toHaveAttribute('data-state', 'off');
+      await expect(row(page, 'suggested-replies').locator('[data-feature-reason]')).toContainText('needs MUSTER_AGENT_OPENROUTER_KEY');
+      await expect(page.locator('section[data-feature][data-state="misconfigured"]')).toHaveCount(0);
+      await expect(page.locator('[data-features-counts]')).toContainText('0 misconfigured');
+      const chief = row(page, 'chief');
+      await expect(chief.locator('[data-feature-kubernetes]')).toContainText('needs Kubernetes (in-cluster dispatch)');
+      await expect(chief.locator('[data-feature-enable]')).toHaveCount(0);
       await expect(row(page, 'attachments')).toHaveAttribute('data-state', 'off');
       await expect(row(page, 'connectors')).toHaveAttribute('data-state', 'off');
 
@@ -90,8 +98,7 @@ for (const size of [
       const off = page.locator('#sidebar-connectors-off');
       await expect(off).toBeVisible();
       await expect(off).toHaveAttribute('href', '/account/features#connectors');
-      await expect(page.locator('#sidebar-flows')).toBeVisible();
-      await expect(page.locator('#sidebar-plugins')).toHaveCount(0);
+      await expect(page.locator('#sidebar a[href="/flows"], #sidebar a[href="/plugins"]')).toHaveCount(0);
       await expect(page.locator('#sidebar-features')).toHaveAttribute('aria-current', 'page');
     });
   });

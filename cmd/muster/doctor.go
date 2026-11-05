@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,7 +92,8 @@ type doctorCheck struct {
 // what --skip takes.
 var doctorChecks = []string{
 	"server", "manifest", "hook-token", "mirror-hosts", "this-host",
-	"mirror-service", "tmux", "sign-in", "push", "dictation", "features", "session-tools",
+	"mirror-service", "tmux", "sign-in", "push", "dictation", "features",
+	"mcp-endpoint", "mcp-registration", "ask-hook",
 }
 
 // doctorSystem is everything doctor reads from THIS machine, injected so each
@@ -157,8 +159,6 @@ type serverReport struct {
 			Token       bool   `json:"token"`
 			Online      bool   `json:"online"`
 			Interactive bool   `json:"interactive"`
-			MCPSeen     bool   `json:"mcp_seen"`
-			AskHookSeen bool   `json:"ask_hook_seen"`
 		} `json:"hosts"`
 		HostsError string `json:"hosts_error"`
 	} `json:"mirror"`
@@ -250,7 +250,9 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv s
 	d.checkPush(ctx)
 	d.checkDictation(ctx)
 	d.checkFeatures()
-	d.checkSessionTools()
+	d.checkMCPEndpoint()
+	d.checkMCPRegistration()
+	d.checkAskHook()
 
 	failed := d.print()
 	d.printFeatures()
@@ -965,11 +967,12 @@ func (d *doctorRun) printQR(ctx context.Context) {
 // --- the feature registry ----------------------------------------------------
 
 // checkFeatures reports the server's feature registry: how many features are
-// on, off and misconfigured, naming the misconfigured ones. It never FAILs —
-// an optional feature that is off is not a broken install, and a misconfigured
-// one (suggested replies with no OpenRouter key, the documented install's
-// default) is a choice the operator may not have made yet. printFeatures lists
-// every feature below the checks with the line that turns it on.
+// on, off and misconfigured. It FAILs on a misconfigured one — a feature that
+// was asked for and is missing a dependency (#441 round 0, Q1): an optional
+// feature that is simply off is not a failure, and a default install has none
+// misconfigured (suggested replies and focus without an OpenRouter key are
+// OFF, "needs MUSTER_AGENT_OPENROUTER_KEY"). printFeatures lists every
+// feature below the checks with the line that turns it on.
 func (d *doctorRun) checkFeatures() {
 	const name = "features"
 	if d.skipped(name) || d.needsReport(name) {
@@ -981,66 +984,201 @@ func (d *doctorRun) checkFeatures() {
 		return
 	}
 	n := map[string]int{}
-	var bad []string
+	var bad, fixes []string
 	for _, f := range fs {
 		n[f.State]++
 		if f.State == "misconfigured" {
-			bad = append(bad, f.ID)
+			bad = append(bad, f.ID+" ("+f.Reason+")")
+			fixes = append(fixes, f.ID+": "+f.EnableHint)
 		}
 	}
 	detail := fmt.Sprintf("%d on, %d off, %d misconfigured", n["on"], n["off"], n["misconfigured"])
 	if len(bad) > 0 {
-		detail += " (" + strings.Join(bad, ", ") + ")"
+		d.add(name, statusFail, detail+": "+strings.Join(bad, "; "), strings.Join(fixes, "; "))
+		return
 	}
 	d.add(name, statusPass, detail+"; listed below", "")
 }
 
-// checkSessionTools reports what the server has seen of the per-host setup
-// that gives a mirrored Claude Code session muster's tools (attention_ask, the
-// task tools) and AskUserQuestion cards: which connected hosts have called its
-// MCP door and its ask hook since the server started.
+// --- this host's session tools ----------------------------------------------
 //
-// 🔴 IT SKIPS, NEVER FAILS, ON A HOST NOT SEEN: the server cannot tell "not set
-// up" from "no session there has started or used a tool since the restart",
-// and says so. A PASS is a sighting on every connected host.
-func (d *doctorRun) checkSessionTools() {
-	const name = "session-tools"
-	if d.skipped(name) || d.needsReport(name) {
+// What gives a mirrored Claude Code session muster's tools (attention_ask, the
+// task tools) and AskUserQuestion cards is set up on each machine, where the
+// server cannot see it (docs/features.md#agent-ask-tool, #ask-cards). These
+// three checks read THIS machine's files — muster-mirror's settings, Claude
+// Code's user config and settings — and nothing else. Read-only; they print
+// no secret (the MCP secret's presence is checked, never its content).
+
+// The agent ask tool's defaults (docs/features.md#agent-ask-tool).
+const (
+	envMirrorMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
+	envMirrorMCPSecretFile = "MUSTER_MIRROR_MCP_SECRET_FILE"
+	defaultMCPListen       = "127.0.0.1:47823"
+	mcpSecretFileName      = "mcp-secret"
+)
+
+// mirrorEnvValues is this machine's muster-mirror settings file, parsed, or nil
+// when there is none (the machine is not connected).
+func (d *doctorRun) mirrorEnvValues() (string, map[string]string) {
+	env := expandHome(d.mirrorEnv, d.a.homeDir)
+	vals, err := parseEnvFile(env)
+	if err != nil || len(vals) == 0 {
+		return env, nil
+	}
+	return env, vals
+}
+
+// mcpListen is this machine's muster-mirror MCP address ("" = off).
+func (d *doctorRun) mcpListen() string {
+	_, vals := d.mirrorEnvValues()
+	return strings.TrimSpace(vals[envMirrorMCPListen])
+}
+
+// claudeConfigDir is where Claude Code keeps its user settings: $CLAUDE_CONFIG_DIR,
+// else ~/.claude. Its user-scope MCP servers are in claudeUserConfig.
+func (d *doctorRun) claudeConfigDir() string {
+	if v := strings.TrimSpace(d.a.getenv("CLAUDE_CONFIG_DIR")); v != "" {
+		return expandHome(v, d.a.homeDir)
+	}
+	return filepath.Join(d.a.homeDir, ".claude")
+}
+
+// claudeUserConfig is the file `claude mcp add --scope user` writes:
+// $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json.
+func (d *doctorRun) claudeUserConfig() string {
+	if v := strings.TrimSpace(d.a.getenv("CLAUDE_CONFIG_DIR")); v != "" {
+		return filepath.Join(expandHome(v, d.a.homeDir), ".claude.json")
+	}
+	return filepath.Join(d.a.homeDir, ".claude.json")
+}
+
+func mcpAddCommand(listen string) string {
+	return `claude mcp add-json --scope user muster '{"type":"http","url":"http://` + listen + `/mcp","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}","X-Muster-Pane":"${TMUX_PANE:-}","X-Muster-Tmux":"${TMUX:-}"}}'`
+}
+
+// checkMCPEndpoint: muster-mirror serves its local MCP endpoint here
+// (MUSTER_MIRROR_MCP_LISTEN in its settings) and has written its secret.
+func (d *doctorRun) checkMCPEndpoint() {
+	const name = "mcp-endpoint"
+	if d.skipped(name) {
 		return
 	}
-	m := d.report.Mirror
-	if !m.Enabled {
-		d.add(name, statusSkip, "mirrored sessions are off on the server", "")
+	env, vals := d.mirrorEnvValues()
+	if vals == nil {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "connect it: INSTALL.md, step 7")
 		return
 	}
-	var seen, unseen []string
-	for _, h := range m.Hosts {
-		if !h.Online {
+	listen := strings.TrimSpace(vals[envMirrorMCPListen])
+	if listen == "" {
+		d.add(name, statusSkip, "the agent ask tool is off on this machine: "+envMirrorMCPListen+" is not set in "+d.mirrorEnv,
+			"add "+envMirrorMCPListen+"="+defaultMCPListen+" to "+d.mirrorEnv+" and restart muster-mirror (`"+mirrorRestartHint(d.sys.goos)+"`); "+
+				"see docs/features.md#agent-ask-tool")
+		return
+	}
+	secret := expandHome(strings.TrimSpace(vals[envMirrorMCPSecretFile]), d.a.homeDir)
+	if secret == "" {
+		secret = filepath.Join(filepath.Dir(env), mcpSecretFileName)
+	}
+	if fi, err := os.Stat(secret); err != nil || fi.Size() == 0 {
+		d.add(name, statusFail, envMirrorMCPListen+"="+listen+" is set, but the endpoint's secret "+secret+" is missing or empty: "+
+			"muster-mirror has not started with it yet", "restart muster-mirror (`"+mirrorRestartHint(d.sys.goos)+"`), which writes it")
+		return
+	}
+	d.add(name, statusPass, "muster-mirror serves its MCP endpoint at http://"+listen+"/mcp (its secret is in "+secret+")", "")
+}
+
+// checkMCPRegistration: Claude Code is configured to use that endpoint (a
+// user-scope MCP server whose url is http://<listen>/mcp).
+func (d *doctorRun) checkMCPRegistration() {
+	const name = "mcp-registration"
+	if d.skipped(name) {
+		return
+	}
+	listen := d.mcpListen()
+	if listen == "" {
+		d.add(name, statusSkip, "this machine's muster-mirror serves no MCP endpoint (see mcp-endpoint)", "")
+		return
+	}
+	want := "http://" + listen + "/mcp"
+	path := d.claudeUserConfig()
+	raw, err := os.ReadFile(path)
+	var cfg struct {
+		MCPServers map[string]struct {
+			URL string `json:"url"`
+		} `json:"mcpServers"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &cfg)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.add(name, statusFail, "Claude Code's user config "+path+" could not be read as JSON", "check the file; then "+mcpAddCommand(listen))
+		return
+	}
+	for n, srv := range cfg.MCPServers {
+		if strings.TrimSuffix(strings.TrimSpace(srv.URL), "/") == want {
+			d.add(name, statusPass, "Claude Code's user config registers "+want+" as MCP server "+strconv.Quote(n)+
+				" (that a session's shell exports MUSTER_MIRROR_MCP_SECRET is not checked here)", "")
+			return
+		}
+	}
+	d.add(name, statusFail, "muster-mirror serves "+want+", but Claude Code's user config ("+path+") registers no MCP server at it, "+
+		"so sessions here have no muster tools",
+		mcpAddCommand(listen)+"; then export MUSTER_MIRROR_MCP_SECRET=\"$(cat ~/.config/muster-mirror/mcp-secret 2>/dev/null)\" in the shell tmux starts "+
+			"(docs/features.md#agent-ask-tool)")
+}
+
+// checkAskHook: Claude Code runs `muster-mirror ask` before AskUserQuestion
+// (a PreToolUse hook in its user settings), which draws ask cards.
+func (d *doctorRun) checkAskHook() {
+	const name = "ask-hook"
+	if d.skipped(name) {
+		return
+	}
+	if _, vals := d.mirrorEnvValues(); vals == nil {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "")
+		return
+	}
+	path := filepath.Join(d.claudeConfigDir(), "settings.json")
+	raw, err := os.ReadFile(path)
+	var st struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &st)
+	}
+	const snippet = `{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}`
+	fix := "add " + snippet + " to the hooks.PreToolUse list in " + path + " (docs/features.md#ask-cards)"
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.add(name, statusFail, "Claude Code's settings "+path+" could not be read as JSON", fix)
+		return
+	}
+	for _, h := range st.Hooks.PreToolUse {
+		if h.Matcher != "AskUserQuestion" && h.Matcher != "*" && h.Matcher != "" {
 			continue
 		}
-		hook := "ask hook seen"
-		if !h.AskHookSeen {
-			hook = "ask hook not seen"
-		}
-		if h.MCPSeen {
-			seen = append(seen, h.Host+" ("+hook+")")
-		} else {
-			unseen = append(unseen, h.Host+" ("+hook+")")
+		for _, c := range h.Hooks {
+			if f := strings.Fields(c.Command); len(f) >= 2 && filepath.Base(f[0]) == "muster-mirror" && f[1] == "ask" {
+				d.add(name, statusPass, "Claude Code runs `muster-mirror ask` before AskUserQuestion ("+path+")", "")
+				return
+			}
 		}
 	}
-	if len(seen) == 0 && len(unseen) == 0 {
-		d.add(name, statusSkip, "no host is connected", "")
-		return
+	d.add(name, statusSkip, "ask cards are off on this machine: no PreToolUse hook runs `muster-mirror ask` ("+path+")", fix)
+}
+
+// mirrorRestartHint restarts this machine's muster-mirror service.
+func mirrorRestartHint(goos string) string {
+	if goos == "darwin" {
+		return "launchctl kickstart -k gui/$(id -u)/" + defaultMirrorLabel
 	}
-	if len(unseen) > 0 {
-		d.add(name, statusSkip, fmt.Sprintf("MCP calls seen from: %s; NOT seen from: %s — either not set up there, or no session "+
-			"there has started or used a muster tool since the server restarted (it cannot tell which)",
-			listOrNone(seen), strings.Join(unseen, ", ")),
-			"on each such host, run muster-mirror with -mcp-listen 127.0.0.1:<port>, register http://127.0.0.1:<port>/mcp in "+
-				"Claude Code's MCP config, and add the `muster-mirror ask` PreToolUse hook (docs/features.md#agent-ask-tool)")
-		return
-	}
-	d.add(name, statusPass, "MCP calls seen from every connected host: "+strings.Join(seen, ", "), "")
+	return "systemctl --user restart " + defaultMirrorUnit
 }
 
 // printFeatures lists the server's features below the checks: each one's

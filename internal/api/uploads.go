@@ -159,8 +159,10 @@ func (s *Server) registerUploadRoutes(mux Mux) {
 // uploadPath is what a composer's attach button posts to: ui.UploadPath when
 // uploads are configured, "" (no button drawn) when they are not. The ONE
 // predicate every view reads, so a page and the route cannot disagree.
+//
+// It reads the feature registry too (featureOff), as dictatePath does.
 func (s *Server) uploadPath() string {
-	if s.ext.Uploads == nil {
+	if s.ext.Uploads == nil || s.featureOff(features.Attachments) {
 		return ""
 	}
 	return ui.UploadPath

@@ -50,12 +50,8 @@ const (
 	NavAttention = "attention"
 	NavAccount   = "account"
 	NavAdmin     = "admin"
-	// NavFeatures, NavPlugins and NavFlows are More's links to the Features
-	// page and, when their features are on, the Plugins and Browser flows
-	// pages.
+	// NavFeatures is More's link to the Features page.
 	NavFeatures = "features"
-	NavPlugins  = "plugins"
-	NavFlows    = "flows"
 )
 
 // NavChrome is what a page outside the shell needs to draw the navigation:

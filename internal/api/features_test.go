@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -8,9 +9,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/suggest"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // testFeatureSet is a registry with one feature in each state, plus the
@@ -28,6 +32,7 @@ func testFeatureSet(t *testing.T, states map[string]features.Status) features.Se
 		{ID: features.SessionRouting, Name: "Session routing", Description: "Routes.", Enable: []features.Var{{Name: "EXAMPLE_ROUTING", Value: "1"}}},
 		{ID: features.Focus, Name: "Session focus", Description: "Focus.", Enable: v("EXAMPLE_OPENROUTER_KEY")},
 		{ID: features.AgentAskTool, Name: "Muster tools in sessions", Description: "Tools.", HostSide: true, Note: "run muster-mirror with -mcp-listen"},
+		{ID: features.Chief, Name: "Chief", Description: "A fleet agent.", Kubernetes: true, Enable: []features.Var{{Name: "EXAMPLE_PROVISIONER", Value: "kubernetes"}}},
 	}
 	st := map[string]features.Status{
 		features.Mirror: {State: features.On}, features.Dictation: {State: features.Off, Reason: "EXAMPLE_STT_TOKEN is unset"},
@@ -35,6 +40,7 @@ func testFeatureSet(t *testing.T, states map[string]features.Status) features.Se
 		features.Connectors: {State: features.Off, Reason: "EXAMPLE_CONNECTOR_KEY is unset"}, features.Plugins: {State: features.Off, Reason: "EXAMPLE_PLUGINS is unset"},
 		features.SessionRouting: {State: features.Off, Reason: "EXAMPLE_ROUTING is unset"}, features.Focus: {State: features.On},
 		features.AgentAskTool: {State: features.On, Reason: "set up per host"},
+		features.Chief:        {State: features.Off, Reason: "there is no agent provisioner"},
 	}
 	for k, s := range states {
 		st[k] = s
@@ -65,24 +71,20 @@ func sessionGet(h http.Handler, s *Server, target string, document bool) *httpte
 	return w
 }
 
-// TestTheFeaturesEndpointServesEveryStateAndNeedsASession: GET /api/features
-// lists each feature with its state (on, off, misconfigured), reason and enable
-// line, exactly as FeatureViews serialises it — the serialisation whose leak
-// scan is cmd/muster-server's TestTheFeatureRegistryLeaksNoConfiguredValue — and
-// refuses a caller with no session.
-func TestTheFeaturesEndpointServesEveryStateAndNeedsASession(t *testing.T) {
+// TestTheDoctorServesTheRegistry: /api/doctor's `features` lists each feature
+// with its state (on, off, misconfigured), reason and enable line, exactly as
+// FeatureViews serialises it — the serialisation whose leak scan is
+// cmd/muster-server's TestTheFeatureRegistryLeaksNoConfiguredValue. (GET
+// /api/features was dropped, #441 round 0 D3: the doctor serves the list.)
+func TestTheDoctorServesTheRegistry(t *testing.T) {
 	set := testFeatureSet(t, nil)
-	s, h := featureServer(t, Extensions{}, set)
-
-	anon := httptest.NewRecorder()
-	h.ServeHTTP(anon, httptest.NewRequest(http.MethodGet, FeaturesPath, nil))
-	if anon.Code == http.StatusOK || strings.Contains(anon.Body.String(), "EXAMPLE_") {
-		t.Fatalf("no session: %d %s", anon.Code, anon.Body)
-	}
-
-	w := sessionGet(h, s, FeaturesPath, false)
+	_, h := featureServer(t, Extensions{}, set)
+	req := httptest.NewRequest(http.MethodGet, DoctorPath, nil)
+	req.Header.Set("Authorization", "Bearer "+testHookToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET %s: %d %s", FeaturesPath, w.Code, w.Body)
+		t.Fatalf("GET %s: %d %s", DoctorPath, w.Code, w.Body)
 	}
 	var got struct {
 		Features []struct {
@@ -93,7 +95,6 @@ func TestTheFeaturesEndpointServesEveryStateAndNeedsASession(t *testing.T) {
 			EnableLines []string `json:"enable_lines"`
 			Docs        string   `json:"docs"`
 		} `json:"features"`
-		Counts map[string]int `json:"counts"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -102,14 +103,10 @@ func TestTheFeaturesEndpointServesEveryStateAndNeedsASession(t *testing.T) {
 	for i, f := range got.Features {
 		byID[f.ID] = i
 	}
-	want := map[string]string{features.Mirror: "on", features.Dictation: "off", features.SuggestedReplies: "misconfigured"}
-	for id, st := range want {
+	for id, st := range map[string]string{features.Mirror: "on", features.Dictation: "off", features.SuggestedReplies: "misconfigured"} {
 		i, ok := byID[id]
-		if !ok {
-			t.Fatalf("%s missing from %s", id, w.Body)
-		}
-		if got.Features[i].State != st {
-			t.Errorf("%s state %q, want %q", id, got.Features[i].State, st)
+		if !ok || got.Features[i].State != st {
+			t.Errorf("%s: %+v, want state %s", id, got.Features, st)
 		}
 	}
 	d := got.Features[byID[features.Dictation]]
@@ -117,10 +114,6 @@ func TestTheFeaturesEndpointServesEveryStateAndNeedsASession(t *testing.T) {
 		d.Docs != "docs/features.md#dictation" || d.EnableHint != "set EXAMPLE_STT_TOKEN in .env and restart (docs/features.md#dictation)" {
 		t.Errorf("dictation row: %+v", d)
 	}
-	if got.Counts["on"] != 3 || got.Counts["off"] != 5 || got.Counts["misconfigured"] != 1 {
-		t.Errorf("counts %v", got.Counts)
-	}
-	// The served list IS FeatureViews, byte for byte.
 	var raw struct {
 		Features json.RawMessage `json:"features"`
 	}
@@ -128,6 +121,32 @@ func TestTheFeaturesEndpointServesEveryStateAndNeedsASession(t *testing.T) {
 	views, _ := json.Marshal(FeatureViews(set))
 	if string(raw.Features) != string(views) {
 		t.Fatalf("served features differ from FeatureViews:\n%s\n%s", raw.Features, views)
+	}
+	// The JSON route is gone.
+	gone := httptest.NewRecorder()
+	h.ServeHTTP(gone, httptest.NewRequest(http.MethodGet, "/api/features", nil))
+	if gone.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/features: %d", gone.Code)
+	}
+}
+
+// TestTheGatesReadTheRegistry: a feature the registry calls off or
+// misconfigured is not drawn as working, even with its extension wired — the
+// microphone, the paperclip, the Connectors tab — and with no registry the
+// gate is the extension alone.
+func TestTheGatesReadTheRegistry(t *testing.T) {
+	ext := Extensions{Transcriber: fakeTranscriberForFeatures{}}
+	s, _ := featureServer(t, ext, testFeatureSet(t, nil)) // dictation: off in the registry
+	if s.dictatePath() != "" || !s.dictateOff() {
+		t.Fatal("the registry says dictation is off, and a microphone is still drawn")
+	}
+	s, _ = featureServer(t, ext, testFeatureSet(t, map[string]features.Status{features.Dictation: {State: features.On}}))
+	if s.dictatePath() == "" {
+		t.Fatal("dictation on in the registry and wired: no microphone")
+	}
+	s, _ = featureServer(t, ext, features.Set{})
+	if s.dictatePath() == "" {
+		t.Fatal("no registry: the wired transcriber draws no microphone")
 	}
 }
 
@@ -152,6 +171,10 @@ func TestTheFeaturesPageRendersEachRowWithItsState(t *testing.T) {
 	}
 	if !strings.Contains(body, "data-features-counts") {
 		t.Error("no counts line")
+	}
+	// A Kubernetes feature shows no .env block, only what it needs.
+	if !strings.Contains(body, "data-feature-kubernetes") {
+		t.Error("the chief row does not say it needs Kubernetes")
 	}
 	// The Account page links here.
 	acct := sessionGet(h, s, "/account", true).Body.String()
@@ -248,5 +271,36 @@ func TestAFeatureOffRouteAnswersATypedNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"error":"feature_disabled"`) ||
 		!strings.Contains(w.Body.String(), `"docs":"docs/features.md#session-routing"`) {
 		t.Fatalf("no registry: %d %s", w.Code, w.Body)
+	}
+}
+
+type fakeTranscriberForFeatures struct{}
+
+func (fakeTranscriberForFeatures) Transcribe(context.Context, io.Reader, string) (string, error) {
+	return "", nil
+}
+
+// TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff: the ask page's composer
+// and every Asks answer box draw the muted mic when the server has no
+// dictation, and the real one when it does (#441 round 1, R7).
+func TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/attention/asks/9", nil)
+	off := askComposerHTML(r, attention.Ask{ID: 9}, "", true)
+	if !strings.Contains(off, `id="ask-dictate-off" href="/account/features#dictation"`) || strings.Contains(off, `id="ask-dictate"`) {
+		t.Errorf("ask page, dictation off: %s", off)
+	}
+	on := askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false)
+	if !strings.Contains(on, `id="ask-dictate"`) || strings.Contains(on, "ask-dictate-off") {
+		t.Errorf("ask page, dictation on: %s", on)
+	}
+	item := attentionItem{Kind: attentionKindAsk, AskID: 12, dictateOff: true}
+	list := attentionItemsHTMLTo([]attentionItem{item}, time.Now(), "")
+	if !strings.Contains(list, `id="answer-12-dictate-off" href="/account/features#dictation"`) {
+		t.Errorf("Asks list, dictation off: no muted mic in the answer box")
+	}
+	item.dictate, item.dictateOff = ui.TranscribePath, false
+	list = attentionItemsHTMLTo([]attentionItem{item}, time.Now(), "")
+	if !strings.Contains(list, `id="answer-12-dictate"`) || strings.Contains(list, "answer-12-dictate-off") {
+		t.Errorf("Asks list, dictation on: the real mic is missing or the hint is drawn")
 	}
 }

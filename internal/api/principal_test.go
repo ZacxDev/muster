@@ -163,7 +163,6 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/passkeys",
 		// The feature registry (features.go): the session's own view of it.
 		"GET /account/features",
-		"GET /api/features",
 		"POST /account/passkeys/options",
 		"POST /account/passkeys/verify",
 		"POST /account/passkeys/{id}/delete",
