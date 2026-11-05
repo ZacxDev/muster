@@ -191,6 +191,14 @@ func parseShipRepo(what string, d declaredShipRepo) (ShipRepo, error) {
 			r.ForbiddenPaths = append(r.ForbiddenPaths, p)
 		}
 	}
+	if d.ForbiddenPathsFile != "" {
+		f := strings.TrimSpace(d.ForbiddenPathsFile)
+		if !ValidListFile(f) {
+			return ShipRepo{}, fmt.Errorf("ship: %sforbidden_paths_file %q must be a repository-relative file path (no leading '/', no '.' or '..' segment, no glob characters)",
+				what, d.ForbiddenPathsFile)
+		}
+		r.ForbiddenPathsFile = f
+	}
 	return r, nil
 }
 
@@ -201,18 +209,18 @@ func parseShipRepo(what string, d declaredShipRepo) (ShipRepo, error) {
 // no entry first: the Ship's own fields are filled from the one named repo.
 func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 	if len(d.Repos) == 0 || string(d.Repos) == "null" {
-		if len(d.ForbiddenPaths) > 0 && stage != StageDraft {
+		if (len(d.ForbiddenPaths) > 0 || d.ForbiddenPathsFile != "") && stage != StageDraft {
 			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s stage only; stage %s would ignore it — remove it", StageDraft, stage)
 		}
 		r, err := parseShipRepo("", declaredShipRepo{Repo: repo, Base: d.Base, BranchPrefix: d.BranchPrefix, GitHubApp: d.GitHubApp,
-			ForbiddenPaths: d.ForbiddenPaths})
+			ForbiddenPaths: d.ForbiddenPaths, ForbiddenPathsFile: d.ForbiddenPathsFile})
 		if err != nil {
 			return nil, err
 		}
 		return []ShipRepo{r}, nil
 	}
 	for name, set := range map[string]bool{"base": strings.TrimSpace(d.Base) != "", "branch_prefix": strings.TrimSpace(d.BranchPrefix) != "",
-		"github_app": d.GitHubApp != nil, "forbidden_paths": d.ForbiddenPaths != nil} {
+		"github_app": d.GitHubApp != nil, "forbidden_paths": d.ForbiddenPaths != nil, "forbidden_paths_file": d.ForbiddenPathsFile != ""} {
 		if set {
 			return nil, fmt.Errorf("ship: with repos, set %s on each entry; remove the top-level %s", name, name)
 		}
@@ -237,7 +245,7 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(r.ForbiddenPaths) > 0 && stage != StageDraft {
+		if (len(r.ForbiddenPaths) > 0 || r.ForbiddenPathsFile != "") && stage != StageDraft {
 			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s stage only; stage %s would ignore it — remove it", StageDraft, stage)
 		}
 		lr := strings.ToLower(r.Repo)
@@ -392,4 +400,39 @@ func segmentRegex(seg string) (string, error) {
 		}
 	}
 	return b.String(), nil
+}
+
+// ValidListFile reports whether f may name a forbidden_paths_file: a
+// repository-relative file path with no empty, '.' or '..' segment, no
+// trailing '/', and no glob character (it is forbidden itself, by its exact
+// path).
+func ValidListFile(f string) bool {
+	if f == "" || strings.HasPrefix(f, "/") || strings.HasSuffix(f, "/") || strings.ContainsAny(f, "*?{}[]\\") {
+		return false
+	}
+	for _, seg := range strings.Split(f, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseForbiddenList reads a forbidden_paths_file's content: one glob per
+// line, surrounding space trimmed, blank lines and lines starting with '#'
+// skipped. Any line that is not a valid glob (MatchForbidden) is an error
+// naming its line number: the caller refuses rather than guesses.
+func ParseForbiddenList(content string) ([]string, error) {
+	var out []string
+	for i, l := range strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		if _, err := compileGlob(l); err != nil {
+			return nil, fmt.Errorf("line %d %q: %v", i+1, l, err)
+		}
+		out = append(out, l)
+	}
+	return out, nil
 }

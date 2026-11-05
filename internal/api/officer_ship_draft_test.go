@@ -113,7 +113,7 @@ func TestOnlyTheJudgementInstanceOfATieredDraftOfficerShips(t *testing.T) {
 	r := newDraftAPIRig(t)
 	pg, ok := r.s.callerOf(r.judge).Gate.(*officership.PushGate)
 	if !ok || pg.OfficerID != offDraft || pg.GHFor[draftInfra] != officership.GitHub(r.infra) || pg.GHFor[draftWeb] != officership.GitHub(r.web) ||
-		pg.Notify == nil {
+		pg.Announce == nil {
 		t.Fatalf("judgement caller gate = %#v", r.s.callerOf(r.judge).Gate)
 	}
 	rc := r.s.callerOf(r.rout)

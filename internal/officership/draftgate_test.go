@@ -67,8 +67,8 @@ func newDraftRig() *draftRig {
 			r.readCreds = append(r.readCreds, c)
 			return "deployment-read", false, nil
 		},
-		Notify: func(_ context.Context, n officers.Notice) error { r.notices = append(r.notices, n); return nil },
-		Now:    func() time.Time { return dNow }}
+		Announce: func(_ context.Context, n officers.Notice) error { r.notices = append(r.notices, n); return nil },
+		Now:      func() time.Time { return dNow }}
 	// A clean comparison for the infra branch, and the infra pull request #31.
 	r.infra.compares["trunk..."+dBranch] = Compare{Status: "ahead", AheadBy: 1, Commits: []string{fxHead},
 		Files: []File{{Path: "clusters/prod/apps/x/deploy.yaml", Status: "modified", Changes: 2,

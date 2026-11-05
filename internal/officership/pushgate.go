@@ -73,11 +73,11 @@ type PushGate struct {
 	// when missing, is GH.
 	GH    GitHub
 	GHFor map[string]GitHub
-	// Notify posts a draft officer's content refusal (a forbidden path, a
+	// Announce posts a draft officer's content refusal (a forbidden path, a
 	// removed manifest kind, a secret shape) to HQ. A failure is logged by
 	// Logf; the refusal stands either way.
-	Notify func(ctx context.Context, n officers.Notice) error
-	Logf   func(format string, args ...any)
+	Announce func(ctx context.Context, n officers.Notice) error
+	Logf     func(format string, args ...any)
 	// Now is the clock the daily limit reads (time.Now when nil).
 	Now func() time.Time
 }
@@ -407,10 +407,7 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 	if !ok {
 		return nil, refused("%s api.github.com/%s", r.Method, path)
 	}
-	gh := g.ghFor(sr.Repo)
-	if gh == nil {
-		return nil, fmt.Errorf("no GitHub reader for %s", sr.Repo)
-	}
+	gh := g.ghFor(sr.Repo) // nil until a rule needs a read (ownPR, the draft gate)
 	tail := make([]string, len(segs)-3)
 	for i, s := range segs[3:] {
 		tail[i] = strings.ToLower(s)
@@ -499,6 +496,9 @@ func jsonString(raw json.RawMessage) string {
 // refusal (the proxy answers 502: the policy could not decide). Pushes never
 // come here: a branch is pushed before any pull request exists.
 func (g *PushGate) ownPR(ctx context.Context, sr officers.ShipRepo, gh GitHub, n int) (PR, error) {
+	if gh == nil {
+		return PR{}, fmt.Errorf("no GitHub reader for %s", sr.Repo)
+	}
 	pr, err := gh.PR(ctx, n)
 	if err != nil {
 		return PR{}, fmt.Errorf("could not read pull request #%d: %v", n, err)

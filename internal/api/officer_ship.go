@@ -124,7 +124,7 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 	rt := &shipRuntime{}
 	rt.gate = &officership.PushGate{Repo: o.Repo, Ship: sp, OfficerID: o.ID, GitHost: gitHost, APIHost: apiHost, Cred: cred,
 		ReadCred: s.deploymentReadCred(), OnRejected: reject, GH: gh, GHFor: ghFor, Now: cfg.Now, Logf: s.logger.Printf,
-		Notify: func(ctx context.Context, n officers.Notice) error {
+		Announce: func(ctx context.Context, n officers.Notice) error {
 			return hq.PostNotice(ctx, sp.NoticeURLPath(o.ID), n)
 		}}
 	rt.gates = &officership.Gates{OfficerID: o.ID, Repo: o.Repo, Ship: sp, GH: gh, HQ: hq, Now: cfg.Now,
@@ -237,7 +237,7 @@ func (s *Server) reportOrphans(ctx context.Context, o officers.Officer, rt *ship
 	}
 	n := officership.OrphanNotice(o.ID, o.Ship.NoticeChannel, orphans)
 	s.logger.Printf("officers: %s: %s: %s", o.ID, n.Summary, strings.Join(n.Paths, " "))
-	if err := rt.gate.Notify(ctx, n); err != nil {
+	if err := rt.gate.Announce(ctx, n); err != nil {
 		return orphans, fmt.Errorf("posting the report to HQ: %w", err)
 	}
 	return orphans, nil

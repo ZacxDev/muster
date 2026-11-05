@@ -56,6 +56,9 @@ var removedKindRE = []*regexp.Regexp{
 // draftCreate is the draft gate of POST pulls: head is the branch (no owner
 // prefix), m the request body.
 func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh GitHub, head string, m map[string]json.RawMessage) error {
+	if gh == nil {
+		return fmt.Errorf("no GitHub reader for %s", sr.Repo)
+	}
 	var draft bool
 	if raw, ok := m["draft"]; !ok || json.Unmarshal(raw, &draft) != nil || !draft {
 		return refused(`a pull request that is not a draft: a draft officer opens every pull request with "draft": true`)
@@ -196,7 +199,26 @@ func (g *PushGate) compareCheck(ctx context.Context, sr officers.ShipRepo, gh Gi
 	if len(cmp.Commits) > 0 {
 		headSHA = cmp.Commits[len(cmp.Commits)-1]
 	}
-	if bad, why := ForbiddenFiles(sr.ForbiddenPaths, cmp.Files); len(bad) > 0 {
+	forbidden := sr.ForbiddenPaths
+	if f := sr.ForbiddenPathsFile; f != "" {
+		// 🔴 ONE SOURCE, READ FRESH, FAIL CLOSED: the list is read from the
+		// TARGET branch at every check (never the head, which the officer
+		// writes), muster keeps no copy, and a list it cannot read or parse
+		// refuses the pull request. The file itself is forbidden, so an
+		// officer cannot widen its own wall.
+		raw, err := gh.FileAt(ctx, f, base)
+		if err != nil {
+			return g.contentRefusal(ctx, sr, n, headSHA, branch, []string{f},
+				fmt.Sprintf("its forbidden-path list %s could not be read at %s, so nothing can be checked: %v", f, base, err))
+		}
+		list, err := officers.ParseForbiddenList(string(raw))
+		if err != nil {
+			return g.contentRefusal(ctx, sr, n, headSHA, branch, []string{f},
+				fmt.Sprintf("its forbidden-path list %s at %s does not parse (%v), so nothing can be checked", f, base, err))
+		}
+		forbidden = append(append(append([]string(nil), forbidden...), list...), f)
+	}
+	if bad, why := ForbiddenFiles(forbidden, cmp.Files); len(bad) > 0 {
 		return g.contentRefusal(ctx, sr, n, headSHA, branch, bad, why)
 	}
 	return nil
@@ -273,13 +295,13 @@ func (g *PushGate) contentRefusal(ctx context.Context, sr officers.ShipRepo, n i
 		what = fmt.Sprintf("an edit of pull request #%d (%s)", n, branch)
 	}
 	summary := fmt.Sprintf("officer %s: muster refused %s in %s: %s", g.OfficerID, what, sr.Repo, why)
-	if g.Notify != nil {
+	if g.Announce != nil {
 		ps := paths
 		if len(ps) > officers.MaxNoticePaths {
 			summary += fmt.Sprintf(" (+%d more paths)", len(ps)-officers.MaxNoticePaths)
 			ps = ps[:officers.MaxNoticePaths]
 		}
-		if err := g.Notify(ctx, officers.Notice{PR: n, HeadSHA: headSHA, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel}); err != nil && g.Logf != nil {
+		if err := g.Announce(ctx, officers.Notice{PR: n, HeadSHA: headSHA, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel}); err != nil && g.Logf != nil {
 			g.Logf("officers: %s: the refusal notice did not reach HQ: %v", g.OfficerID, err)
 		}
 	}
