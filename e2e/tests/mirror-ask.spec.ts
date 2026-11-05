@@ -646,6 +646,67 @@ test.describe('phone 412×915 touch', () => {
     await expect(hc).toContainText('Answer: Alpha');
     await expect(hc.locator('input, textarea, button, form')).toHaveCount(0);
   });
+
+  // 🔴 A PENDING QUESTION SURVIVES A MUSTER RESTART (the operator's report: the
+  // question "expires and then it just goes to waiting for answer in
+  // terminal"). The question store is in memory and the hook registers a call
+  // once, so before the fix a restart (every deploy) lost the card for good.
+  // Now muster itself, when the host reconnects, reads each waiting window's
+  // transcript through it (the CLI writes the call when its picker opens) and
+  // registers the call it shows open — no host change: the SAME question is a
+  // pending card again, the conversation's no-card row is hidden behind it,
+  // and an answer from here is typed into the terminal's picker as before.
+  test('a pending question survives a muster restart and is answered here', async ({ page }) => {
+    const toolID = 'toolu_e2e_restart_' + stamp;
+    const waiting = tr + '.waiting';
+    try {
+      await openView(page);
+      await registered(toolID);
+      await expect(card(page, toolID)).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+      // The CLI has the call in its transcript while the picker shows, and its
+      // session reports waiting.
+      fs.appendFileSync(tr, askUse(toolID));
+      fs.writeFileSync(waiting, '');
+
+      const connects = () => (mirrorLog.match(/muster-mirror: connected to /g) ?? []).length;
+      const connected = connects();
+      await server!.stop();
+      server = await startServer(versionTerm, mirrorAskPort, {
+        MUSTER_MIRROR: '1',
+        MUSTER_AGENT_PROVISIONER: 'noop',
+        MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
+        MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
+      });
+      // The host reconnects on its own (its backoff starts at a second).
+      await expect.poll(connects, { message: `the host reconnected (log:\n${mirrorLog})`, timeout: 30_000 }).toBeGreaterThan(connected);
+      await openView(page);
+      const c = card(page, toolID);
+      await expect(c, `the question is back after the restart (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 30_000 });
+      expect(server.log(), 'muster read it open').toContain(`is asking an AskUserQuestion (3 question(s)) in session ${claudeSession}, read open from its transcript: registered`);
+      const rowID = await c.getAttribute('data-ask-row');
+      const row = page.locator(`#mv-log [id="${rowID}"]`);
+      await expect(row, 'the conversation draws the open call').toHaveAttribute('data-ask-state', 'waiting', { timeout: 20_000 });
+      await expect(row, 'the no-card row is hidden behind the live card').toBeHidden();
+      await expect(c).toBeVisible();
+
+      const before = fs.readFileSync(tr, 'utf8').length;
+      await c.locator('fieldset').nth(0).getByText('Blue', { exact: true }).tap();
+      await c.locator('fieldset').nth(1).getByText('Cat', { exact: true }).tap();
+      await c.locator('fieldset').nth(2).getByText('Alpha', { exact: true }).tap();
+      await c.getByRole('button', { name: 'Submit answers' }).tap();
+      await expect(c).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
+      await expect(c).toContainText('Answered here');
+      const added = fs.readFileSync(tr, 'utf8').slice(before).trim().split('\n').map((l) => JSON.parse(l));
+      const result = added.find((l) => l.toolUseResult && l.message?.content?.[0]?.tool_use_id === toolID);
+      expect(result?.toolUseResult?.answers).toEqual({
+        'Which color do you prefer?': 'Blue',
+        'Which pets do you have?': 'Cat',
+        'What should the project be called?': 'Alpha',
+      });
+    } finally {
+      fs.rmSync(waiting, { force: true });
+    }
+  });
 });
 
 // 🔴 QUEUED MESSAGES NEVER COVER THE QUESTION'S SUBMIT (the operator's report:

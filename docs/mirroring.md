@@ -1176,8 +1176,16 @@ How it works:
   window closes before the question is answered, the card says so once the
   host has been connected for 30 seconds without listing the session, and the
   question leaves the attention queue. Time the host is disconnected does not
-  count. If the transcript later shows the question answered (the session came
-  back), the card still changes to that answer.
+  count. If the listing only missed the session for a while (Claude Code
+  restarting in the pane, a window moved) and it is listed waiting on the same
+  question again, the same card is reopened and can be answered
+  ([below](#a-question-survives-a-muster-restart-and-a-host-reconnect)); if the
+  transcript shows it answered (the session came back), the card changes to
+  that answer.
+- **No time limit while the session runs.** A question stays open for as long
+  as its host lists the session asking it. Only a question whose session has
+  not been listed for 6 hours (a host that went away for good) expires on its
+  own.
 - **When Claude Code changes its picker.** If the host cannot read the picker
   — including one showing this question with its rows drawn in a layout muster
   does not know, which is never blamed on someone in the terminal —
@@ -1202,8 +1210,40 @@ How it works:
 - Afterwards the conversation also shows the call read-only, with the answers it
   was given, wherever they were given.
 
-Questions live in muster's memory only. A restart forgets them; the terminal's
-picker is unaffected.
+### A question survives a muster restart and a host reconnect
+
+muster keeps questions in memory, and the hook registers each one once, when
+Claude asks it. The **transcript** is what says a question is still open:
+Claude Code writes the call to it when its picker opens, and writes its result
+only when it is answered or dismissed (measured, Claude Code 2.1.289). So for
+every window whose Claude Code session the host reports **waiting**, muster
+reads the transcript's tail through the host — the same stream the rendered
+view reads — and, when the newest unanswered call is an `AskUserQuestion`,
+registers it:
+
+- when a host connects — after a muster restart, such as a deploy, or after
+  the host's own network gap;
+- when a window starts waiting (including one that disappeared from its
+  host's listing and came back).
+
+Each waiting window is read once while it waits; it is not read while its
+session already has an open question, nor when the host says the session waits
+on another tool. A read that fails is tried again on the next change.
+
+muster registers what it reads under the same key the hook used (owner, host,
+Claude session, `tool_use` id), so it is the same card, answered the same way:
+never a second card, never reopened once Claude Code recorded it answered,
+dismissed or replaced. A question that expired because its session looked
+gone is reopened. A call whose result is already in the transcript is never
+registered, and a question past muster's size limits stays in the terminal
+only. Nothing changes on the host: this works with every `muster-mirror` that
+reports its windows' status.
+
+When muster has no card for an open call, the conversation still shows it,
+with *Muster isn't tracking this question, so it can't answer it from here —
+answer it in the terminal.* That line appears only when muster has no card for
+the call; while it has one, the card takes its place and says itself why it
+cannot be answered here, if it cannot (a read-only, offline or older host).
 
 ## Scrolling history
 

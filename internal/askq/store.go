@@ -18,7 +18,17 @@ import (
 // 🔴 IN MEMORY, AND NOTHING HERE IS NEEDED TO ANSWER. The terminal's picker is
 // always there; the store is what lets muster show the question and type an
 // answer into that picker. A muster restart forgets the open questions: their
-// pickers stay on screen, unaffected. The transcript is the history.
+// pickers stay on screen, unaffected, and muster registers them again
+// (Restore) when it reads them open in their waiting sessions' transcripts
+// (internal/api's open-question scan) — the TRANSCRIPT is the source of truth
+// for what is open, and the history.
+//
+// 🔴 AN OPEN QUESTION ENDS ONLY BY ITS SESSION: a result recorded (Resolve), a
+// newer question in the session (Superseded), or the session gone from its
+// host (Gone; the watcher decides that, after a grace). There is no age limit
+// on a question whose session is still listed: the watcher marks it Seen while
+// it is, and only a question NOT SEEN for MaxOpen expires (a host that went
+// away for good). An expired question read open again is reopened (Restore).
 //
 // 🔴 HOW A QUESTION ENDS IS THE CLI'S WORD, NOT MUSTER'S. Resolve records what
 // the transcript says the call returned (its toolUseResult); an answer typed
@@ -42,8 +52,9 @@ const (
 	// Declined: the CLI recorded the call ended with no answers (the picker
 	// was dismissed in the terminal).
 	Declined State = "declined"
-	// Expired: no result was seen within MaxOpen, or the session went away
-	// (Gone; Note says so).
+	// Expired: the session went away (Gone; Note says so), or the question was
+	// not seen in a listed session for MaxOpen. Read open again in its
+	// transcript, it is reopened (Restore).
 	Expired State = "expired"
 	// Superseded: a newer question was asked in the same Claude session, so
 	// this one's picker is no longer on screen; it is never typed into.
@@ -94,6 +105,9 @@ type Entry struct {
 	Left     *Progress
 	Created  time.Time
 	Resolved time.Time
+	// Seen is when the question's session was last seen listed by its host
+	// (Store.Seen); zero until then — Created counts instead.
+	Seen time.Time
 }
 
 // Progress is how far muster's typing of an answer got into the terminal's
@@ -118,7 +132,10 @@ func (p *Progress) clone() *Progress {
 
 // The store's bounds and clocks.
 const (
-	// MaxOpen is how long a question stays open with no result seen.
+	// MaxOpen is how long an open question stays open while its session is NOT
+	// SEEN listed (Store.Seen; from Created until it first is). A question
+	// whose session is listed never reaches it: the watcher marks it seen. It
+	// bounds what a host that went away for good leaves open.
 	MaxOpen = 6 * time.Hour
 	// Retain is how long a resolved question is kept, so a page that loads
 	// after it still shows how it went.
@@ -228,13 +245,22 @@ func (s *Store) notify(fire []Entry) {
 	}
 }
 
-// sweepLocked expires open questions past MaxOpen and forgets resolved ones
-// past Retain.
+// lastSeen is when e's session was last known to be listed: Seen, or Created
+// before it ever was.
+func (e *entry) lastSeen() time.Time {
+	if e.Seen.After(e.Created) {
+		return e.Seen
+	}
+	return e.Created
+}
+
+// sweepLocked expires open questions not seen for MaxOpen and forgets
+// resolved ones past Retain.
 func (s *Store) sweepLocked(fire *[]Entry) {
 	now := s.now()
 	for id, e := range s.byID {
 		switch {
-		case e.State.Open() && now.Sub(e.Created) > MaxOpen:
+		case e.State.Open() && now.Sub(e.lastSeen()) > MaxOpen:
 			e.State, e.Resolved = Expired, now
 			s.touch(e, fire)
 		case !e.State.Open() && now.Sub(e.Resolved) > Retain:
@@ -330,29 +356,113 @@ func (s *Store) Open(key Key, qs []Question, id string) (Entry, error) {
 			return e.snapshot(), nil
 		}
 	}
+	return s.openLocked(key, qs, id, &fire)
+}
+
+// openLocked opens a new Pending entry for key under id ("" lets the store
+// choose), superseding the session's other open questions.
+func (s *Store) openLocked(key Key, qs []Question, id string, fire *[]Entry) (Entry, error) {
 	if err := s.evictLocked(key.Owner); err != nil {
 		return Entry{}, err
 	}
 	if id == "" {
 		id = NewID()
 	}
-	// 🔴 A NEWER QUESTION IN THE SESSION REPLACES THE OLDER ONES: Claude Code
-	// shows one picker at a time, so theirs is gone — and the driver matches a
-	// picker by its text, so an older card must never type into a newer
-	// picker that asks the same thing.
-	for _, o := range s.byID {
-		if o.Key.Owner == key.Owner && o.Key.Source == key.Source && o.Key.Scope == key.Scope && o.Key.Session == key.Session &&
-			o.Key.ToolUseID != key.ToolUseID && o.State.Open() {
-			o.State, o.Resolved = Superseded, s.now()
-			s.touch(o, &fire)
-		}
-	}
+	s.supersedeLocked(key, fire)
 	e := &entry{Entry: Entry{ID: id, Key: key, Questions: append([]Question(nil), qs...), State: Pending,
 		Created: s.now()}}
 	s.byID[e.ID] = e
 	s.byKey[key] = e.ID
-	fire = append(fire, e.snapshot())
+	*fire = append(*fire, e.snapshot())
 	return e.snapshot(), nil
+}
+
+// supersedeLocked marks every OTHER open question of key's session
+// Superseded.
+//
+// 🔴 A NEWER QUESTION IN THE SESSION REPLACES THE OLDER ONES: Claude Code
+// shows one picker at a time, so theirs is gone — and the driver matches a
+// picker by its text, so an older card must never type into a newer picker
+// that asks the same thing.
+func (s *Store) supersedeLocked(key Key, fire *[]Entry) {
+	for _, o := range s.byID {
+		if o.Key.Owner == key.Owner && o.Key.Source == key.Source && o.Key.Scope == key.Scope && o.Key.Session == key.Session &&
+			o.Key.ToolUseID != key.ToolUseID && o.State.Open() {
+			o.State, o.Resolved = Superseded, s.now()
+			s.touch(o, fire)
+		}
+	}
+}
+
+// Restore registers qs for key because the session's TRANSCRIPT shows the
+// call open now — the session waiting, the call the newest unanswered one
+// with no result (cctranscript.OpenAskOf; internal/api's open-question scan) —
+// IDEMPOTENTLY, whatever was registered before:
+//
+//   - no entry for key (a restarted muster, a hook that never reached it):
+//     a new Pending one, as Open would make;
+//   - an OPEN entry: left exactly as it is — never a second card, and an
+//     answer being typed is not disturbed;
+//   - an EXPIRED one (its session looked gone, or it was not seen for
+//     MaxOpen): REOPENED, Pending, under the same id — the transcript says
+//     its picker is there;
+//   - an ANSWERED, DECLINED or SUPERSEDED one: left as it is. The CLI's
+//     record (or a newer question) ended it; a late or stale read never
+//     reopens it.
+//
+// changed reports whether it opened or reopened the question.
+func (s *Store) Restore(key Key, qs []Question) (e Entry, changed bool, err error) {
+	if key.Owner <= 0 || key.Source == "" || key.Session == "" || key.ToolUseID == "" {
+		return Entry{}, false, invalid("a question needs an owner, a source, a session and a tool_use id")
+	}
+	if len(qs) == 0 {
+		return Entry{}, false, invalid("no questions")
+	}
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	if en, ok := s.byID[s.byKey[key]]; ok {
+		if en.State != Expired {
+			return en.snapshot(), false, nil
+		}
+		if s.openCountLocked(key.Owner) >= MaxPendingPerOwner {
+			return en.snapshot(), false, ErrFull
+		}
+		s.supersedeLocked(key, &fire)
+		now := s.now()
+		en.State, en.Note, en.Retry, en.Resolved, en.Seen = Pending, "", false, time.Time{}, now
+		en.Typed, en.Left, en.driveUntil = nil, nil, time.Time{}
+		s.touch(en, &fire)
+		return en.snapshot(), true, nil
+	}
+	got, err := s.openLocked(key, qs, "", &fire)
+	return got, err == nil, err
+}
+
+// openCountLocked is how many of owner's questions are open.
+func (s *Store) openCountLocked(owner int64) int {
+	n := 0
+	for _, e := range s.byID {
+		if e.Key.Owner == owner && e.State.Open() {
+			n++
+		}
+	}
+	return n
+}
+
+// Seen records that the session (owner, source, scope, session) is listed by
+// its host now: its open questions do not age towards MaxOpen.
+func (s *Store) Seen(owner int64, source, scope, session string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	for _, e := range s.byID {
+		if e.Key.Owner == owner && e.Key.Source == source && e.Key.Scope == scope && e.Key.Session == session && e.State.Open() {
+			e.Seen = now
+		}
+	}
 }
 
 // Get is entry id, if the store has it.

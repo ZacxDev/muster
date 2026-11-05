@@ -31,6 +31,13 @@ import (
 //     machine) — POST /mirror/ask — registers the call's questions and returns
 //     at once, authenticated by its host's MIRROR TOKEN (the same door as
 //     /mirror/connect). It never holds the call: the picker shows at once.
+//   - THE OPEN-QUESTION SCAN (mirror_ask_scan.go) registers the same call
+//     again whenever muster reads it open in a WAITING window's transcript —
+//     when a host connects (a muster restart, every deploy; a host's
+//     reconnect) and whenever a window starts waiting — so a question outlives
+//     both. Idempotent on the same askq.Key (askq.Store.Restore): never a
+//     second card, never a resolved question reopened; an expired one
+//     reopened. No host change: it reads through the same transcript stream.
 //   - THE WATCHER (askWatch) reads the window's transcript, through the host,
 //     for the call's result — the CLI's own record of which answer it took —
 //     and resolves the question: answered here, answered in the terminal, or
@@ -594,8 +601,15 @@ type askWatchKey struct {
 const askWatchRetry = 2 * time.Second
 
 // askGoneGrace is how long a session with open questions may be missing from
-// its host's windows (the host reconnecting, Claude restarting) before its
-// questions are expired as gone.
+// its host's windows, while the host is online, before its questions are
+// expired as gone.
+//
+// A listing can drop a session for a while that has not ended (Claude Code
+// restarting in the pane, a window moved): such a FALSELY gone question is
+// reopened when the session is listed waiting again and the open-question
+// scan reads the call still open (askq.Store.Restore) — so the grace stays
+// short, and decides only how soon a really-ended session's card stops
+// offering an answer.
 const askGoneGrace = 30 * time.Second
 
 // askGoneNote is the card's note for a question whose session went away.
@@ -631,9 +645,10 @@ func (w *askWatchers) retryEvery() time.Duration {
 }
 
 // askPrincipal is ctx acting as owner, through authz.ViaAsk: how the watcher
-// reads that owner's window's transcript. Its one caller is watchAsks, handed
-// the owner of the question a host's hook registered; internal/authz's
-// withPrincipalLedger lists it.
+// and the open-question scan read that owner's window's transcript. Its
+// callers are watchAsks, handed the owner of a registered question, and
+// scanOpenAsk, handed the owner the mirror hub's nudge named;
+// internal/authz's withPrincipalLedger lists it.
 func (s *Server) askPrincipal(ctx context.Context, owner int64) context.Context {
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaAsk))
 }
@@ -671,10 +686,15 @@ func (s *Server) watchAsks(owner int64, host, claudeSession string) {
 // 🔴 A SESSION THAT GOES AWAY TAKES ITS QUESTIONS WITH IT: once the host has
 // been ONLINE and not listed the Claude session for askGoneGrace in all
 // (Claude exited, the window closed), its open questions are expired with
-// askGoneNote — not left "asking" until MaxOpen. Time the host is OFFLINE does
-// not count: a host reconnecting (its backoff reaches a minute) is not a
-// session ending. And an expired question is still watched while retained: a
-// result that turns up later (the session came back) still resolves it.
+// askGoneNote. Time the host is OFFLINE does not count: a host reconnecting
+// (its backoff reaches a minute) is not a session ending. And an expired
+// question is still watched while retained: a result that turns up later (the
+// session came back) still resolves it, and the scan reading it open again
+// reopens it.
+//
+// 🔴 A LISTED SESSION'S QUESTION NEVER AGES OUT: every look that finds the
+// session listed marks its questions Seen (askq.Store.Seen), so MaxOpen only
+// ever expires a question whose session has not been seen for that long.
 func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 	open := func() bool { return len(s.asks.OpenIn(k.owner, askSourceMirror, k.host, k.session)) > 0 }
 	watched := func() bool { return len(s.asks.Watched(k.owner, askSourceMirror, k.host, k.session)) > 0 }
@@ -686,6 +706,7 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 		switch {
 		case found:
 			missing, missingAt = 0, time.Time{}
+			s.asks.Seen(k.owner, askSourceMirror, k.host, k.session)
 		case !s.askHostOnline(ctx, k.host):
 			missingAt = time.Time{} // paused while the host is away
 		default:
@@ -713,10 +734,12 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 					case <-t.C:
 						// Nothing open any more, or the session left its
 						// window: end this watch (the loop above decides).
-						if _, listed := s.askSessionWindow(ctx, k); !watched() || !listed {
+						_, listed := s.askSessionWindow(ctx, k)
+						if !watched() || !listed {
 							cancel()
 							return
 						}
+						s.asks.Seen(k.owner, askSourceMirror, k.host, k.session)
 					}
 				}
 			})
