@@ -147,7 +147,9 @@ func TestANativeTasksCreatorReachesThePushEndToEnd(t *testing.T) {
 		created(t, "New task | Service task")
 	})
 
-	t.Run("the owner's board create reads 'by you' on its review push", func(t *testing.T) {
+	// The owner's board create is RECORDED (created_by = owner) but named in no
+	// push: the push goes to the owner, so "by you" would be noise.
+	t.Run("the owner's board create names no creator on its review push", func(t *testing.T) {
 		var buf bytes.Buffer
 		mw := multipart.NewWriter(&buf)
 		_ = mw.WriteField("body", "Owner-filed task")
@@ -169,6 +171,13 @@ func TestANativeTasksCreatorReachesThePushEndToEnd(t *testing.T) {
 		}
 		f.srv.WaitForPushes()
 		expectPushes(t, taskPushes(f.pusher, f.dev, fmt.Sprintf("task-%d-done", id)),
-			fmt.Sprintf("Task #%d ready for review | Owner-filed task (by you)", id))
+			fmt.Sprintf("Task #%d ready for review | Owner-filed task", id))
+		var createdBy *string
+		if err := f.pool.QueryRow(f.asOwner, `SELECT created_by FROM notes WHERE id = $1`, id).Scan(&createdBy); err != nil {
+			t.Fatal(err)
+		}
+		if createdBy == nil || *createdBy != notes.CreatedByOwner {
+			t.Fatalf("created_by = %v, want %q stored for the owner's create", createdBy, notes.CreatedByOwner)
+		}
 	})
 }

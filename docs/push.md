@@ -45,12 +45,14 @@ because a phone cuts it short.
   (or a `clickup:<id>` tag).
 - **The creator** is, for a task reference, the upstream's creator when the
   plugin's snapshot sends one (`reference.creator`). For any other task it is
-  who muster recorded filing it: `you` (on the board), `chief`, `agent <name>`
-  (a service caller that is one of your agents, or an agent's
-  `task_create_gated`), `plugin <label>`. When none was recorded it is the
-  producer that filed it, as the card names it (`Task drafter`, `Claude Code`,
-  …). Tasks created before this was recorded, and a caller muster cannot
-  identify (the shared hook token with no `X-Muster-Source`), name no creator.
+  who muster recorded filing it: `chief`, `agent <name>` (a service caller
+  that is one of your agents, or an agent's `task_create_gated`),
+  `plugin <label>`. When none was recorded it is the producer that filed it,
+  as the card names it (`Task drafter`, `Claude Code`, …). A task you filed
+  yourself on the board names no creator: the notification is yours, so it
+  would only tell you that you made it. Tasks created before this was
+  recorded, and a caller muster cannot identify (the shared hook token with no
+  `X-Muster-Source`), name no creator either.
 
 Either part is left out when unknown, and both when neither is known. The
 notification never adds the task's description or a comment's text beyond

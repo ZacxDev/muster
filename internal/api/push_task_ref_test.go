@@ -72,7 +72,13 @@ func TestTaskRefFragmentIsLiteral(t *testing.T) {
 			CreatedBy: notes.CreatedByPlugin("bridge")}, "hq q55 · by plugin bridge"},
 		{"clickup back-reference", notes.Note{Tags: []string{"clickup:cu9"}}, "clickup cu9"},
 		{"an ordinary namespaced tag is not a reference", notes.Note{Tags: []string{"area:infra", "superseded-by:12"}}, ""},
-		{"owner", notes.Note{CreatedBy: strp(notes.CreatedByOwner)}, "by you"},
+		// The owner's own create names no one (the push goes to the owner), and
+		// the producer fallback does not speak for it; a reference still shows.
+		{"owner names no one", notes.Note{CreatedBy: strp(notes.CreatedByOwner)}, ""},
+		{"owner is not replaced by the producer", notes.Note{SourceType: strp("drafter"),
+			CreatedBy: strp(notes.CreatedByOwner)}, ""},
+		{"owner keeps the reference", notes.Note{Tags: []string{"hq:q56"},
+			CreatedBy: strp(notes.CreatedByOwner)}, "hq q56"},
 		{"chief", notes.Note{CreatedBy: strp(notes.CreatedByChief)}, "by chief"},
 		{"agent", notes.Note{CreatedBy: notes.CreatedByAgent("fixer-3")}, "by agent fixer-3"},
 		{"plugin", notes.Note{CreatedBy: notes.CreatedByPlugin("inbox")}, "by plugin inbox"},

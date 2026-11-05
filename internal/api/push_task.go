@@ -664,8 +664,10 @@ func taskExternalRef(n notes.Note) string {
 //     snapshot carries one (reference.creator, docs/plugins.md). Nothing else:
 //     the row was filed by the plugin only as muster's copy of a record someone
 //     else made upstream.
-//   - otherwise Note.CreatedBy: "you" (the owner — the push's recipient — on
-//     the board), "chief", "agent <name>", "plugin <name>";
+//   - otherwise Note.CreatedBy: "chief", "agent <name>", "plugin <name>". The
+//     OWNER's own create (the board, CreatedByOwner) names NO ONE: the push's
+//     recipient is the owner, and telling them they filed it is noise. It still
+//     ends the lookup — the producer fallback below never speaks for it;
 //   - else the named producer that filed it (source_type, in the card's words:
 //     "Task drafter", "Claude Code", …);
 //   - else "" — not recorded, and never printed as "unknown".
@@ -678,7 +680,7 @@ func taskCreator(n notes.Note) string {
 		v := *n.CreatedBy
 		switch {
 		case v == notes.CreatedByOwner:
-			who = "you"
+			// Recorded, but deliberately unnamed (see above).
 		case v == notes.CreatedByChief:
 			who = "chief"
 		case strings.HasPrefix(v, notes.CreatedByAgentPrefix):

@@ -8,6 +8,8 @@
 -- line of body text and an audit row.
 --
 --   notes.created_by   "owner"           the owner filed it on the board
+--                                        (recorded, but a push names no
+--                                        creator for it: it goes to the owner)
 --                      "chief"           the owner's chief agent filed it
 --                      "agent:<name>"    one of the owner's agents filed it
 --                      "plugin:<name>"   a plugin filed it as a copy task
