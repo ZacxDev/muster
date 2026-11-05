@@ -158,7 +158,7 @@ func TestAPushRecheckClosesNothingItMustNot(t *testing.T) {
 	closed.State = "closed"
 	other := r.infra.prs[dPR]
 	other.Number, other.HeadRef = 32, "bot/engineering-example-web/19-other"
-	r.infra.all = []PR{closed, other}
+	r.infra.all, r.infra.listed = []PR{closed, other}, []PR{closed, other}
 	r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
 	if len(r.infra.closed)+len(r.notices) != 0 {
 		t.Fatalf("closed %v, notices %d; want nothing (no OPEN pull request on the pushed branch)", r.infra.closed, len(r.notices))

@@ -761,6 +761,9 @@ read repository. An entry that is also a ship repository is a boot refusal.
 routine pool (`Officer.Pool(routine)`) carries no ship policy, so a routine
 instance gets no ship tool, no push gate and no officer App token, and reads
 like any other officer instance. `llm` serves the routine pool only.
+`tiers`, `llm` and `read_repos` are accepted beside **every** stage — shadow,
+merge and release included, not only `draft` — where they were boot refusals
+on any shipping officer before. Those stages' gates are unchanged.
 
 🔴 **Use it only where the repository enforces nothing else, and know that
 muster is then the branch protection.** On a private repository without
@@ -877,36 +880,79 @@ each one from there. It is offered none of `officer_mark_ready`,
 | A branch is `<prefix><officer slug>/<item>-<slug>` (`officer/cluster-watch-example/134-fix-limit`); a push of any other branch, or a branch **deletion**, is refused. | 403 |
 | `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
 | The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item, and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
-| At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state (read from each repository's newest 300 pull requests: its App's bot, typed `Bot`, from its branch shape). | 403 |
-| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read: a changed, added, removed or renamed-from path matching the repository's `forbidden_paths`; a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; an **added** line with a credential-shaped value; or a file whose diff GitHub withholds (binary or very large). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
-| After every push GitHub accepts to a branch with an **open** pull request, the same comparison check runs on `compare/{base}...{pushed commit}`. | the pull request is **closed**, and a notice to HQ naming the paths; the officer cannot reopen it (`state` `open` is refused above) |
+| At create, HQ (read with the officer's own token) must show the **requesting instance** holding the branch's item under a live lease. Another holder, an expired lease, no such claimed item, or HQ unreadable is a refusal. | 403 |
+| At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's issues list filtered by its bot, every page; more than 3,000 is a refusal, never a truncated count), each by the item its body's first line names, or else by its branch. | 403 |
+| One create per officer at a time: a second create waits for the first to be forwarded and re-checked, and is refused after 2 minutes. | 403 |
+| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read, and refused when it has: a changed, added, removed or renamed-from path matching the repository's forbidden paths; a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; a removed `name:` line in a diff that shows one of those kinds (a rename deletes the old resource); an **added** kustomize `$patch: delete`; an entry dropped from a `kustomization.yaml`'s `resources:`/`bases:`/`components:` whose file at the base declares one of those kinds, or that is not a single YAML file muster can read (a directory, a remote base); an **added** line with a credential-shaped value (below); an added `kind: Secret` with a literal `data:`/`stringData:` value; or a file GitHub shows **no diff** for (an empty patch: a binary file, which GitHub reports with `changes: 0`, a very large file, a pure rename or copy, a mode change — except a removed file with `changes: 0`, a binary or empty file). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
+| After a push to a branch with an **open** pull request, after a create, and on every sweep, the same comparison check runs (below). | the pull request is **closed**, its branch deleted (on a content hit), and a notice to HQ naming the paths; the officer cannot reopen it (`state` `open` is refused above) |
 
-The credential shapes are `internal/redact`'s (`redact.HasSecretValue`): the
-transcript redactor's shapes, with one narrowing. A shape known by its value
-(a token prefix, a private key block, a JWT, a cloud key) always counts; a
-shape known only by a credential-like NAME (`password:`, `token:`, `NAME=…`,
-`--token`) counts only when the value is itself secret-shaped: at least 12
-characters with no space, letters with a digit or a base64 symbol, not a
-`${…}`/`$(…)`/`{{…}}`/`valueFrom` reference, a path, a lowercase resource
-name or an `UPPER_SNAKE` variable name. So `automountServiceAccountToken:
-false`, `existingSecret: db-credentials` and `apiKey: ${API_KEY}` pass, and a
-short literal password under such a name passes too. A comparison muster
-cannot read at create or `PATCH` is a 502: the policy could not decide.
+**Credential shapes** (`redact.HasSecretValue`, and `HasSecretValueIn` for a
+file) refuse on either of two rules:
 
-**Pushes.** A pack cannot be diffed before GitHub has it (it is a thin pack
-whose objects are deltas against objects only GitHub holds), so a push is
-admitted and checked **after** GitHub answers it 200: for each pushed branch
-that is now at the pushed commit, every open pull request from it is run
-through the same comparison check as create and `PATCH`. A hit, or a
-comparison muster cannot read (fail closed), closes the pull request and posts
-an HQ notice naming the paths, the pull request and the pushed commit. Until
-that one read finishes, the pull request shows the pushed diff; a close GitHub
-refuses is posted to HQ as "could NOT close".
+- **The value.** A shape known by its value (a token prefix, a private key
+  block, a JWT, a cloud key) always counts.
+- **The key.** A credential-like key — one whose name ends in `password`,
+  `passwd`, `passphrase`, `pwd`, `secret`, `token`, `api_key`/`apikey`,
+  `private_key`, `secret_key`, `credential` or `credentials`, in YAML, JSON,
+  `NAME=…` or a `--password`/`--token`-style flag — holding a **literal**
+  string refuses, however short or plain: `password: hunter2` and `password:
+  correct-horse-battery-staple` are refused. Not a literal: an empty or null
+  value, a boolean, a number (with a duration or size unit too), a reference
+  (`${…}`, `$(…)`, `$VAR`, `{{…}}`, `valueFrom`, a flow mapping, a YAML alias,
+  a `<placeholder>`), a SOPS `ENC[…]` value, a path or a URL. A key that itself
+  names a reference passes whatever it holds: `existingSecret…`,
+  `passwordSecret`, `tokenSecret`, `…SecretName`, `…SecretRef`,
+  `…secretKeyRef`. So `automountServiceAccountToken: false`, `existingSecret:
+  x`, `passwordSecret: x` and `password: ${DB_PASSWORD}` pass. In a source file
+  (`.go`, `.ts`, `.py`, …) an unquoted value is an expression, so only a quoted
+  string literal is judged there (`Password: cfg.Password` passes, `Password:
+  "hunter2"` does not).
+
+A SOPS-encrypted Secret (its values `ENC[…]`, a `sops:` block) passes the
+`kind: Secret` rule. A comparison muster cannot read at create or `PATCH` is a
+502: the policy could not decide. ⚠ The manifest rules read the **diff**: a
+hunk shows three lines of context, so a rule that needs the document's kind
+(the rename rule, the `kind: Secret` rule on a modified file) sees it only when
+the hunk does. They are a wall against an officer's ordinary proposals, not a
+renderer.
+
+**After the change lands.** Three re-checks run the comparison check again
+once GitHub has a change, on a context detached from the officer's connection.
+A hit, or a comparison that cannot be read (fail closed), **closes** the pull
+request and posts an HQ notice naming the paths, the pull request and the
+commit; on a content hit muster also **deletes the branch** with the officer
+App's token, server-side (the officer itself still cannot delete one), and the
+notice says whether it did. A close or a delete GitHub refuses is posted as
+"could NOT close" / "could NOT delete".
+
+- **A push.** A pack cannot be diffed before GitHub has it (a thin pack whose
+  objects are deltas against objects only GitHub holds), so a push is admitted
+  and checked after it is forwarded — whatever the client does: muster runs the
+  check even when the officer drops its connection mid-push. GitHub's
+  report-status is the authority on what applied: an `ng` ref is skipped, an
+  `ok` one is checked at the pushed commit, and a ref the answer does not name
+  (no answer, or none requested) is checked anyway — at the pushed commit, or,
+  when GitHub cannot compare it (the push never landed), at the head the pull
+  request shows. Each open pull request from the pushed branch is found by the
+  branch (GitHub's `head=` filter), however old it is. Another HTTP status
+  means GitHub refused the push.
+- **A create.** The new pull request is checked again at the head GitHub
+  created it on, so a push that lands between the create's check and GitHub's
+  create is caught.
+- **The sweep**, every 5 minutes: every open pull request of the officer, at its
+  current head. A head already checked clean is not read again (muster keeps
+  the last clean head per pull request, in memory: a restart re-reads each
+  once). A comparison that cannot be read is retried, and closes the pull
+  request after 3 sweeps in a row.
+
+Until a re-check finishes (or, at worst, the next sweep), the pull request
+shows the change.
 
 **The orphan report.** Once a UTC day (first an hour after boot) muster lists
 each draft officer's branches, older than 7 days by their head commit, that no
-pull request (in any state) was opened from — a refused proposal leaves one —
-logs them and posts them to HQ's notices route. It never deletes one.
+pull request (in any state, found by the branch) was opened from — a refused
+proposal leaves one — logs them and posts them to HQ's notices route. The
+report deletes nothing.
 
 ### `officer_merge_pr {pr}`
 

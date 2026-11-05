@@ -157,9 +157,6 @@ type GitHub interface {
 	CreateCommit(ctx context.Context, message, tree string, parents []string) (string, error)
 	MergeInto(ctx context.Context, base, head, message string) (string, error)
 	OpenPR(ctx context.Context, title, head, base, body string) (int, error)
-	// ListPRs is the repository's pull requests in every state, newest
-	// created first, at most maxListedPRs (the draft gate's rate limits).
-	ListPRs(ctx context.Context) ([]PR, error)
 	// PRsForBranch is every pull request whose head is branch in this
 	// repository (GitHub's head=<owner>:<branch> filter, which finds a closed
 	// pull request whose branch was deleted too), in state "open", "closed"
@@ -742,28 +739,6 @@ func (g *REST) MarkReady(ctx context.Context, n int, nodeID string) error {
 		return fmt.Errorf("GitHub answered pull request #%d (draft %v) while %s", pr.Number, pr.IsDraft, op)
 	}
 	return nil
-}
-
-// maxListedPRs bounds ListPRs: the newest 300 pull requests.
-const maxListedPRs = 300
-
-// ListPRs implements GitHub.
-func (g *REST) ListPRs(ctx context.Context) ([]PR, error) {
-	var out []PR
-	for page := 1; page*100 <= maxListedPRs; page++ {
-		var batch []restPR
-		if err := g.do(ctx, http.MethodGet, fmt.Sprintf("%s/pulls?state=all&sort=created&direction=desc&per_page=100&page=%d", g.repoPath(), page),
-			"", nil, &batch, "listing pull requests"); err != nil {
-			return nil, err
-		}
-		for _, r := range batch {
-			out = append(out, r.pr())
-		}
-		if len(batch) < 100 {
-			break
-		}
-	}
-	return out, nil
 }
 
 // Branches implements GitHub (git/matching-refs, every page).

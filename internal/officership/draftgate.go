@@ -3,10 +3,10 @@ package officership
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,45 +28,54 @@ import (
 //     officers.BodyFirstLine(officer, item) — the item is the branch's — and
 //     every officers.BodySections heading on a line of its own;
 //   - its title and body carry no secret-shaped value (redact.HasSecretValue);
-//   - the rate limits (POST only): officers.MaxOpenPRsPerRepo open in this
-//     repository, officers.MaxNewPRsPerDay opened this UTC day across the
-//     officer's repositories, officers.MaxPRsPerItem for the item, in any
-//     state;
-//   - GitHub's comparison base...head: no changed, added, removed or renamed
-//     path (old or new) matches the repository's forbidden_paths; no removed
-//     line declares a PersistentVolumeClaim, a PersistentVolume, a CloudNative
-//     PG resource or a Flagger Canary; no added line has a secret-shaped
-//     value; and no file's diff is withheld by GitHub (a binary or very large
-//     file). checkComparison is that check, the ONE every entry point runs.
+//   - (POST only) the branch's item is one HQ shows THIS instance holding
+//     (ItemClaimed), and the rate limits hold: officers.MaxOpenPRsPerRepo open
+//     in this repository, officers.MaxNewPRsPerDay opened this UTC day across
+//     the officer's repositories, officers.MaxPRsPerItem for the item, in any
+//     state — counted from EVERY pull request the officer's App opened
+//     (GitHub.OfficerPRs, every page; too many pages is a refusal, never a
+//     truncated count). One create of an officer runs at a time (createSem);
+//   - GitHub's comparison base...head passes ForbiddenFiles (forbidden paths,
+//     removed or renamed volume/database/canary manifests, secret shapes,
+//     unverifiable files) and checkComparison's kustomization rule.
+//     checkComparison is that check, the ONE every entry point runs.
 //
 // A content refusal (the comparison, or a secret shape) is answered 409 and
 // posted to HQ as a notice. A comment (POST issues/<n>/comments) is checked
 // for a secret shape too. A PATCH that only closes the pull request is not
 // read further: closing never needs a wall.
 //
-// 🔴 A PUSH IS CHECKED TOO, AFTER GitHub HAS IT. A push to a branch that
-// already has an open pull request changes that pull request's diff without
-// any PATCH. The pack cannot be diffed before it is forwarded (it is a THIN
-// pack: its objects are deltas against objects only GitHub holds), so the
-// push is admitted, and once GitHub answers it 200 (afterPush) the comparison
-// base...<the pushed commit> of every open pull request from that branch is
-// run through checkComparison. On a hit — or when the comparison cannot be
-// read — the pull request is CLOSED and HQ told (paths only). The officer
-// cannot reopen it: a draft officer's PATCH state "open" is refused before
-// any read (pushgate.go), and a new pull request for the item is over the
-// per-item limit. Between the push and the close (one comparison read) the
-// pull request shows the pushed diff.
+// 🔴 A CHANGE THAT REACHES A PULL REQUEST WITHOUT A PATCH IS CHECKED AFTER
+// GitHub HAS IT, THREE WAYS, and on a hit (or an unreadable comparison) the
+// pull request is CLOSED, its branch deleted (a content hit only), and HQ told
+// — paths, never content:
+//
+//   - afterPush: a push to a branch with an open pull request. The pack cannot
+//     be diffed before it is forwarded (a THIN pack), so the push is admitted
+//     and re-checked once the proxy has GitHub's answer — whatever the client
+//     did (the proxy runs the hook deferred, on a detached context). GitHub's
+//     report-status ("ok"/"ng" per ref) decides whether the push applied; an
+//     answer that cannot be read is checked anyway (fail closed).
+//   - afterCreate: a new pull request is checked again at the head GitHub
+//     created it on, so a push landing between the create's check and
+//     GitHub's create is caught.
+//   - Sweep, every SweepInterval: every open pull request of the officer at
+//     its current head — the backstop for anything the two hooks missed
+//     (a muster restart mid-push included). A head already checked clean is
+//     not read again.
+//
+// The officer cannot reopen a closed pull request (PATCH state "open" is
+// refused) nor open another for the item (the per-item limit). Between a
+// change landing and the close, the pull request shows it.
 // ---------------------------------------------------------------------------
 
-// removedKindRE are the manifest lines whose REMOVAL a draft officer may never
-// propose: deleting one deletes data or a running service's rollout state.
-var removedKindRE = []*regexp.Regexp{
-	regexp.MustCompile(`["']?\bkind["']?\s*:\s*["']?(PersistentVolumeClaim|PersistentVolume|Canary)\b`),
-	regexp.MustCompile(`["']?\bapiVersion["']?\s*:\s*["']?postgresql\.cnpg\.io/`),
-}
+// DefaultCreateWait is how long a create waits for the officer's previous
+// one to finish before it is refused.
+const DefaultCreateWait = 2 * time.Minute
 
 // draftCreate is the draft gate of POST pulls: head is the branch (no owner
-// prefix), m the request body.
+// prefix), m the request body. 🔴 On nil it HOLDS the officer's create lock:
+// the caller releases it (afterCreate, or releaseCreate on its own failure).
 func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh GitHub, head string, m map[string]json.RawMessage) error {
 	if gh == nil {
 		return fmt.Errorf("no GitHub reader for %s", sr.Repo)
@@ -83,10 +92,67 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 	if redact.HasSecretValue(title) || redact.HasSecretValue(body) {
 		return g.contentRefusal(ctx, sr, 0, "", head, nil, "its title or body has a credential-shaped value")
 	}
-	if err := g.rateLimits(ctx, sr, item); err != nil {
+	if err := g.claimed(ctx, item); err != nil {
 		return err
 	}
-	return g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
+	if err := g.acquireCreate(ctx); err != nil {
+		return err
+	}
+	err := g.rateLimits(ctx, sr, item)
+	if err == nil {
+		err = g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
+	}
+	if err != nil {
+		g.releaseCreate()
+	}
+	return err
+}
+
+// claimed refuses a new pull request for item unless HQ shows the requesting
+// instance holding it (fail closed: no caller, no checker, or HQ's answer
+// unreadable is a refusal).
+func (g *PushGate) claimed(ctx context.Context, item int) error {
+	c, ok := connectors.CallerOf(ctx)
+	if !ok || c.AgentName == "" {
+		return refused("a pull request for item %d from an unknown instance: its claim on the item cannot be checked", item)
+	}
+	if g.ItemClaimed == nil {
+		return refused("a pull request for item %d: muster cannot check HQ's claim on it", item)
+	}
+	if err := g.ItemClaimed(ctx, c.AgentName, item); err != nil {
+		return refused("a pull request for item %d, which HQ does not show %s holding (claim it with %s first): %v", item, c.AgentName,
+			officers.ToolClaim, err)
+	}
+	return nil
+}
+
+// acquireCreate takes the officer's create lock, waiting at most CreateWait.
+// ⚠ One muster process: replicas would each hold their own.
+func (g *PushGate) acquireCreate(ctx context.Context) error {
+	g.createOnce.Do(func() { g.createSem = make(chan struct{}, 1) })
+	wait := g.CreateWait
+	if wait <= 0 {
+		wait = DefaultCreateWait
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case g.createSem <- struct{}{}:
+		return nil
+	case <-t.C:
+		return refused("another pull request of this officer is being created; retry once it is done")
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for this officer's previous create: %w", ctx.Err())
+	}
+}
+
+// releaseCreate gives the create lock back (a no-op when it is free).
+func (g *PushGate) releaseCreate() {
+	g.createOnce.Do(func() { g.createSem = make(chan struct{}, 1) })
+	select {
+	case <-g.createSem:
+	default:
+	}
 }
 
 // draftEdit is the draft gate of PATCH pulls/<n> of the officer's own pr.
@@ -148,9 +214,14 @@ func (g *PushGate) bodyContract(body string, item int) error {
 	return nil
 }
 
-// rateLimits refuses a new pull request for item in sr over a limit. Every
-// ship repository's pull requests are read; only the officer's own count (its
-// App's bot, typed Bot, from its branch shape).
+// rateLimits refuses a new pull request for item in sr over a limit. EVERY
+// pull request the officer's App opened in each ship repository is read
+// (OfficerPRs: GitHub's creator filter, every page). Only the officer's own
+// count (its App's bot, typed Bot), each by its item: the body's first line
+// when it names one for this officer (the gate enforces that line on every
+// create and body edit), else the branch, read from the pull request itself
+// (a human may have edited the body); a pull request whose item resolves
+// neither way is not the officer's shape and is not counted.
 func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item int) error {
 	now := time.Now
 	if g.Now != nil {
@@ -168,13 +239,16 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 		if err != nil {
 			return fmt.Errorf("could not read the officer App's identity: %v", err)
 		}
-		prs, err := gh.ListPRs(ctx)
+		prs, err := gh.OfficerPRs(ctx, BotLogin(slug), "all")
 		if err != nil {
-			return fmt.Errorf("could not list %s's pull requests: %v", r.Repo, err)
+			return fmt.Errorf("could not list %s's pull requests by this officer: %v", r.Repo, err)
 		}
 		for _, p := range prs {
-			n, ok := officers.BranchItem(r.BranchPrefix, g.OfficerID, p.HeadRef)
-			if !ok || !strings.EqualFold(p.Author, BotLogin(slug)) || p.AuthorType != "Bot" {
+			if !strings.EqualFold(p.Author, BotLogin(slug)) || p.AuthorType != "Bot" {
+				continue
+			}
+			n, ok := g.itemOf(ctx, r, gh, p)
+			if !ok {
 				continue
 			}
 			if strings.EqualFold(r.Repo, sr.Repo) && p.State == "open" {
@@ -199,23 +273,67 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 	return nil
 }
 
+// itemOf is the item of the officer's pull request p in r: from its body's
+// first line, else its branch (read from GitHub; a failed read is not
+// guessed: it counts nowhere, and is logged).
+func (g *PushGate) itemOf(ctx context.Context, r officers.ShipRepo, gh GitHub, p PR) (int, bool) {
+	first, _, _ := strings.Cut(strings.ReplaceAll(p.Body, "\r\n", "\n"), "\n")
+	if n, ok := bodyItem(g.OfficerID, strings.TrimSpace(first)); ok {
+		return n, true
+	}
+	head := p.HeadRef
+	if head == "" {
+		full, err := gh.PR(ctx, p.Number)
+		if err != nil {
+			g.logf("officers: %s: pull request #%d in %s could not be read for its item: %v", g.OfficerID, p.Number, r.Repo, err)
+			return 0, false
+		}
+		head = full.HeadRef
+	}
+	return officers.BranchItem(r.BranchPrefix, g.OfficerID, head)
+}
+
+// bodyItem is the item a body's first line names, when it is exactly
+// officers.BodyFirstLine(officer, item).
+func bodyItem(officerID, first string) (int, bool) {
+	prefix, suffix, ok := strings.Cut(officers.BodyFirstLine(officerID, 1), " 1 ")
+	if !ok || !strings.HasPrefix(first, prefix+" ") || !strings.HasSuffix(first, " "+suffix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(first, prefix+" "), " "+suffix))
+	if err != nil || n <= 0 || officers.BodyFirstLine(officerID, n) != first {
+		return 0, false
+	}
+	return n, true
+}
+
+func (g *PushGate) logf(format string, args ...any) {
+	if g.Logf != nil {
+		g.Logf(format, args...)
+	}
+}
+
 // comparisonVerdict is checkComparison's answer. Paths empty and Err nil:
 // admitted. Err set: the comparison could not be read (the policy could not
-// decide). Paths set: refused, for Why.
+// decide). Paths set: refused, for Why; Unverified marks a refusal that names
+// no wrong content (the forbidden-path list could not be read or parsed), so
+// a close on it deletes no branch and the sweep retries it.
 type comparisonVerdict struct {
-	HeadSHA string
-	Paths   []string
-	Why     string
-	Err     error
+	HeadSHA    string
+	Paths      []string
+	Why        string
+	Err        error
+	Unverified bool
 }
 
 // checkComparison is THE content check of a draft officer's change, the ONE
-// all three entry points run — POST pulls (draftCreate), PATCH pulls/<n>
-// (draftEdit) and a push into an open pull request's branch (afterPush):
-// GitHub's comparison base...head in sr through ForbiddenFiles, with sr's
-// forbidden globs and, when set, its forbidden_paths_file read fresh from
-// base. It decides; each caller answers the verdict its own way (a 409, or a
-// close).
+// every entry point runs — POST pulls (draftCreate), PATCH pulls/<n>
+// (draftEdit), a push into an open pull request's branch (afterPush), a new
+// pull request (afterCreate) and the sweep (Sweep): GitHub's comparison
+// base...head in sr through ForbiddenFiles, with sr's forbidden globs and,
+// when set, its forbidden_paths_file read fresh from base, then the
+// kustomization rule (removedKustomizeEntries). It decides; each caller
+// answers the verdict its own way (a 409, or a close).
 func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh GitHub, base, head string) comparisonVerdict {
 	if gh == nil {
 		return comparisonVerdict{Err: fmt.Errorf("no GitHub reader for %s", sr.Repo)}
@@ -237,20 +355,55 @@ func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh
 		// officer cannot widen its own wall.
 		raw, err := gh.FileAt(ctx, f, base)
 		if err != nil {
-			v.Paths = []string{f}
+			v.Paths, v.Unverified = []string{f}, true
 			v.Why = fmt.Sprintf("its forbidden-path list %s could not be read at %s, so nothing can be checked: %v", f, base, err)
 			return v
 		}
 		list, err := officers.ParseForbiddenList(string(raw))
 		if err != nil {
-			v.Paths = []string{f}
+			v.Paths, v.Unverified = []string{f}, true
 			v.Why = fmt.Sprintf("its forbidden-path list %s at %s does not parse (%v), so nothing can be checked", f, base, err)
 			return v
 		}
 		forbidden = append(append(append([]string(nil), forbidden...), list...), f)
 	}
+	var whys []string
 	v.Paths, v.Why = ForbiddenFiles(forbidden, cmp.Files)
+	if v.Why != "" {
+		whys = append(whys, v.Why)
+	}
+	for _, f := range cmp.Files {
+		for _, entry := range removedKustomizeEntries(f) {
+			if why := g.removedEntryWhy(ctx, gh, base, entry); why != "" {
+				v.Paths = append(v.Paths, f.Path)
+				whys = append(whys, f.Path+": "+why)
+			}
+		}
+	}
+	v.Paths, v.Why = sortedUnique(v.Paths), strings.Join(whys, "; ")
 	return v
+}
+
+// removedEntryWhy is why dropping kustomization entry (a repository path) is
+// refused, "" when it is not: an entry that is not a single YAML file (a
+// directory, a remote base) cannot be read whole, and is refused; a file that
+// cannot be read at base is refused; a file that declares a protected kind
+// (protectedKindRE) is refused.
+func (g *PushGate) removedEntryWhy(ctx context.Context, gh GitHub, base, entry string) string {
+	if !strings.HasSuffix(entry, ".yaml") && !strings.HasSuffix(entry, ".yml") {
+		return fmt.Sprintf("it drops the kustomization entry %s, which is not a single YAML file muster can read whole, "+
+			"so what it stops applying cannot be checked", entry)
+	}
+	raw, err := gh.FileAt(ctx, entry, base)
+	if err != nil {
+		return fmt.Sprintf("it drops the kustomization entry %s, which could not be read at %s to check what it declares: %v", entry, base, err)
+	}
+	for _, l := range strings.Split(string(raw), "\n") {
+		if m := protectedKind(l); m != "" {
+			return fmt.Sprintf("it drops the kustomization entry %s, which declares %q (a volume, database or canary must never be deleted by an officer)", entry, m)
+		}
+	}
+	return ""
 }
 
 // refuseOnHit is a create's or a PATCH's answer to a verdict: an unreadable
@@ -266,79 +419,227 @@ func (g *PushGate) refuseOnHit(ctx context.Context, sr officers.ShipRepo, n int,
 	return nil
 }
 
-// pushTimeout bounds afterPush: it runs after the upstream answered, in the
-// handler, so the agent's push returns once it is done.
-const pushTimeout = time.Minute
+// recheckTimeout bounds afterPush and afterCreate: they run in the handler
+// once the upstream answered (on a context detached from the client's).
+const recheckTimeout = time.Minute
 
-// afterPush is a draft officer's push re-check (see the comment at the top):
-// called by the connector proxy once GitHub answered the push of cmds to sr.
-// A push GitHub refused (any status but 200) changed nothing and is not read.
+// afterPush is a draft officer's push re-check (see the comment at the top),
+// called by the connector proxy with what it saw of GitHub's answer to the
+// push of cmds to sr — on every path out of the proxy, so it decides itself
+// whether anything could have changed:
+//
+//   - not forwarded: GitHub never saw the push; nothing to read;
+//   - an HTTP status other than 200: GitHub refused the request; nothing
+//     changed;
+//   - otherwise GitHub's report-status is the authority, per ref: "ng" was
+//     not applied; "ok" was, and is checked at the pushed commit; a ref the
+//     report does not name (no report: the client went away, or asked for
+//     none) is checked anyway — at the pushed commit, and, when GitHub cannot
+//     compare that commit (the push never landed), at the head the pull
+//     request shows.
 func (g *PushGate) afterPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand, res connectors.ForwardResult) {
-	if status := res.Status; status != http.StatusOK || len(cmds) == 0 {
+	if !res.Forwarded || len(cmds) == 0 || (res.Status != 0 && res.Status != http.StatusOK) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pushTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recheckTimeout)
 	defer cancel()
-	logf := func(format string, args ...any) {
-		if g.Logf != nil {
-			g.Logf(format, args...)
-		}
-	}
 	gh := g.ghFor(sr.Repo)
 	if gh == nil {
-		logf("officers: %s: a push to %s cannot be re-checked: no GitHub reader", g.OfficerID, sr.Repo)
+		g.logf("officers: %s: a push to %s cannot be re-checked: no GitHub reader", g.OfficerID, sr.Repo)
 		return
 	}
-	prs, err := gh.ListPRs(ctx)
-	if err != nil {
-		// 🔴 NOTHING TO CLOSE IS KNOWN, so this is told, not acted on: HQ
-		// hears that a push went unchecked.
-		g.announce(ctx, officers.Notice{Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
-			"officer %s: muster could not list %s's pull requests after a push, so the push was NOT re-checked: %v", g.OfficerID, sr.Repo, err)})
-		return
-	}
+	report := parseReportStatus(res.Body)
 	for _, c := range cmds {
 		branch := strings.TrimPrefix(c.ref, "refs/heads/")
-		// GitHub answers 200 to a push whose ref update it REFUSED (a
-		// non-fast-forward is an "ng" line in the body). A branch that is
-		// readable and not at the pushed commit was not changed by it.
-		if at, err := gh.BranchSHA(ctx, branch); err == nil && at != c.newOID {
-			logf("officers: %s: %s in %s is at %s, not the pushed %s: the push did not update it", g.OfficerID, branch, sr.Repo,
-				shortSHA(at), shortSHA(c.newOID))
+		applied, known := report[c.ref]
+		if known && !applied {
+			g.logf("officers: %s: GitHub did not apply the push of %s to %s in %s (its report says ng): not re-checked", g.OfficerID,
+				shortSHA(c.newOID), branch, sr.Repo)
+			continue
+		}
+		prs, err := g.openPRsFrom(ctx, sr, gh, branch)
+		if err != nil {
+			// 🔴 NOTHING TO CLOSE IS KNOWN, so this is told, not acted on: HQ
+			// hears that a push went unchecked (the sweep reads it next).
+			g.announce(ctx, officers.Notice{Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+				"officer %s: muster could not look up the pull requests from %s in %s after a push, so the push was NOT re-checked "+
+					"(the next sweep reads it): %v", g.OfficerID, branch, sr.Repo, err)})
 			continue
 		}
 		for _, pr := range prs {
-			if pr.State != "open" || pr.HeadRef != branch || (pr.HeadRepo != "" && !strings.EqualFold(pr.HeadRepo, sr.Repo)) {
-				continue
+			sha := c.newOID
+			v := g.checkComparison(ctx, sr, gh, baseOf(sr, pr), sha)
+			if v.Err != nil && !known {
+				// The push may never have landed: what the pull request shows
+				// is its head.
+				if cur, err := gh.PR(ctx, pr.Number); err == nil && cur.HeadSHA != "" && cur.HeadSHA != c.newOID {
+					sha, v = cur.HeadSHA, g.checkComparison(ctx, sr, gh, baseOf(sr, cur), cur.HeadSHA)
+				}
 			}
-			v := g.checkComparison(ctx, sr, gh, pr.BaseRef, c.newOID)
-			paths, why := v.Paths, v.Why
-			if v.Err != nil {
-				// FAIL CLOSED: an unreadable comparison is an unchecked one.
-				why = v.Err.Error() + ", so the pushed change could not be checked"
-			} else if len(paths) == 0 {
-				continue
-			}
-			g.closeOnHit(ctx, sr, gh, pr, c.newOID, paths, why)
+			g.answer(ctx, sr, gh, pr, sha, v, "a push of "+shortSHA(sha))
 		}
 	}
 }
 
-// closeOnHit closes pull request pr after a push put a refused change (or an
-// uncheckable one) into it, and tells HQ: paths, never content.
-func (g *PushGate) closeOnHit(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, sha string, paths []string, why string) {
-	what := fmt.Sprintf("closed pull request #%d (%s) in %s after a push of %s", pr.Number, pr.HeadRef, sr.Repo, shortSHA(sha))
-	if err := gh.ClosePR(ctx, pr.Number); err != nil {
-		what = fmt.Sprintf("could NOT close pull request #%d (%s) in %s after a push of %s (%v); a human must", pr.Number, pr.HeadRef, sr.Repo,
-			shortSHA(sha), err)
+// afterCreate is a draft officer's create re-check, called by the connector
+// proxy with what it saw of GitHub's answer to POST pulls from branch in sr.
+// It releases the create lock draftCreate took. A 201 names the pull request
+// and the head GitHub created it on, which is checked; any other answer
+// GitHub could have created one under (no status, a 2xx it could not read) is
+// looked up by the branch and each open one checked at its head. A refusal
+// (another status) created nothing.
+func (g *PushGate) afterCreate(ctx context.Context, sr officers.ShipRepo, branch string, res connectors.ForwardResult) {
+	defer g.releaseCreate()
+	if !res.Forwarded || (res.Status != 0 && res.Status/100 != 2) {
+		return
 	}
-	summary := fmt.Sprintf("officer %s: muster %s: %s", g.OfficerID, what, why)
-	ps := paths
-	if len(ps) > officers.MaxNoticePaths {
-		summary += fmt.Sprintf(" (+%d more paths)", len(ps)-officers.MaxNoticePaths)
-		ps = ps[:officers.MaxNoticePaths]
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recheckTimeout)
+	defer cancel()
+	gh := g.ghFor(sr.Repo)
+	if gh == nil {
+		g.logf("officers: %s: a new pull request in %s cannot be re-checked: no GitHub reader", g.OfficerID, sr.Repo)
+		return
 	}
-	g.announce(ctx, officers.Notice{PR: pr.Number, HeadSHA: sha, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel})
+	var prs []PR
+	var r restPR
+	if res.Status == http.StatusCreated && res.Complete && json.Unmarshal(res.Body, &r) == nil && r.Number > 0 && r.Head.SHA != "" {
+		prs = []PR{r.pr()}
+	} else {
+		var err error
+		if prs, err = g.openPRsFrom(ctx, sr, gh, branch); err != nil {
+			g.announce(ctx, officers.Notice{Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+				"officer %s: muster could not look up the pull requests from %s in %s after a create, so it was NOT re-checked "+
+					"(the next sweep reads it): %v", g.OfficerID, branch, sr.Repo, err)})
+			return
+		}
+	}
+	for _, pr := range prs {
+		g.answer(ctx, sr, gh, pr, pr.HeadSHA, g.checkComparison(ctx, sr, gh, baseOf(sr, pr), pr.HeadSHA), "its creation at "+shortSHA(pr.HeadSHA))
+	}
+}
+
+// openPRsFrom is every open pull request from branch in sr (not a fork's).
+func (g *PushGate) openPRsFrom(ctx context.Context, sr officers.ShipRepo, gh GitHub, branch string) ([]PR, error) {
+	prs, err := gh.PRsForBranch(ctx, branch, "open")
+	if err != nil {
+		return nil, err
+	}
+	var out []PR
+	for _, pr := range prs {
+		if pr.State == "open" && pr.HeadRef == branch && (pr.HeadRepo == "" || strings.EqualFold(pr.HeadRepo, sr.Repo)) {
+			out = append(out, pr)
+		}
+	}
+	return out, nil
+}
+
+func baseOf(sr officers.ShipRepo, pr PR) string {
+	if pr.BaseRef != "" {
+		return pr.BaseRef
+	}
+	return sr.Base
+}
+
+// answer is a re-check's answer to verdict v of open pull request pr at sha:
+// a clean one is recorded (the sweep does not read sha again); a hit, or an
+// unreadable comparison, closes the pull request (FAIL CLOSED).
+func (g *PushGate) answer(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, sha string, v comparisonVerdict, after string) {
+	key := sr.Repo + "#" + strconv.Itoa(pr.Number)
+	switch {
+	case v.Err != nil:
+		g.closeOnHit(ctx, sr, gh, pr, sha, nil, v.Err.Error()+", so the change could not be checked", false, after)
+	case len(v.Paths) > 0:
+		g.closeOnHit(ctx, sr, gh, pr, sha, v.Paths, v.Why, !v.Unverified, after)
+	default:
+		g.mu.Lock()
+		if g.checked == nil {
+			g.checked = map[string]string{}
+		}
+		g.checked[key] = sha
+		delete(g.misses, key)
+		g.mu.Unlock()
+		return
+	}
+	g.mu.Lock()
+	delete(g.checked, key)
+	delete(g.misses, key)
+	g.mu.Unlock()
+}
+
+// Sweep is the draft sweep: every open pull request the officer's App opened
+// in each ship repository (OfficerPRs, every page), re-read for its current
+// head and, unless that head was already checked clean, checked through
+// checkComparison and answered like a push. 🔴 An unreadable comparison (or
+// forbidden-path list) is retried on the next sweep, and closes the pull
+// request once it has failed maxSweepMisses sweeps in a row: a GitHub blip
+// closes nothing, a comparison that stays unreadable is not left open.
+func (g *PushGate) Sweep(ctx context.Context) error {
+	var errs []error
+	for _, sr := range g.Ship.RepoList(g.Repo) {
+		gh := g.ghFor(sr.Repo)
+		if gh == nil {
+			errs = append(errs, fmt.Errorf("no GitHub reader for %s", sr.Repo))
+			continue
+		}
+		slug, err := gh.AppSlug(ctx)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: the officer App's identity: %v", sr.Repo, err))
+			continue
+		}
+		prs, err := gh.OfficerPRs(ctx, BotLogin(slug), "open")
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: listing this officer's open pull requests: %v", sr.Repo, err))
+			continue
+		}
+		seen := map[string]bool{}
+		for _, p := range prs {
+			key := sr.Repo + "#" + strconv.Itoa(p.Number)
+			seen[key] = true
+			pr, err := gh.PR(ctx, p.Number)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: reading pull request #%d: %v", sr.Repo, p.Number, err))
+				continue
+			}
+			if pr.State != "open" || pr.HeadSHA == "" || (pr.HeadRepo != "" && !strings.EqualFold(pr.HeadRepo, sr.Repo)) {
+				continue
+			}
+			g.mu.Lock()
+			done := g.checked[key] == pr.HeadSHA
+			g.mu.Unlock()
+			if done {
+				continue
+			}
+			v := g.checkComparison(ctx, sr, gh, baseOf(sr, pr), pr.HeadSHA)
+			if v.Err != nil || v.Unverified {
+				g.mu.Lock()
+				if g.misses == nil {
+					g.misses = map[string]int{}
+				}
+				g.misses[key]++
+				n := g.misses[key]
+				g.mu.Unlock()
+				if n < maxSweepMisses {
+					g.logf("officers: %s: the sweep could not check pull request #%d in %s (%d of %d): %v %s", g.OfficerID, pr.Number, sr.Repo,
+						n, maxSweepMisses, v.Err, v.Why)
+					continue
+				}
+			}
+			g.answer(ctx, sr, gh, pr, pr.HeadSHA, v, "the sweep's read of "+shortSHA(pr.HeadSHA))
+		}
+		g.mu.Lock()
+		for key := range g.checked {
+			if strings.HasPrefix(key, sr.Repo+"#") && !seen[key] {
+				delete(g.checked, key)
+			}
+		}
+		for key := range g.misses {
+			if strings.HasPrefix(key, sr.Repo+"#") && !seen[key] {
+				delete(g.misses, key)
+			}
+		}
+		g.mu.Unlock()
+	}
+	return errors.Join(errs...)
 }
 
 // SweepInterval is how often the draft sweep (Sweep) re-checks every open
@@ -349,9 +650,37 @@ const SweepInterval = 5 * time.Minute
 // request's comparison before the sweep closes it (fail closed).
 const maxSweepMisses = 3
 
-// Sweep is the draft sweep: every open pull request of this officer, in each
-// ship repository, re-checked at its current head.
-func (g *PushGate) Sweep(ctx context.Context) error { return nil }
+// closeOnHit closes pull request pr after a change put a refused (or an
+// uncheckable) diff into it, deletes its branch when deleteBranch (a content
+// hit: the branch holds the refused change) and the branch is the officer's
+// own shape in sr, and tells HQ: paths, never content.
+//
+// 🔴 muster deletes the branch with the officer App's token, server-side; the
+// OFFICER still cannot delete one (the push gate refuses its deletions).
+func (g *PushGate) closeOnHit(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, sha string, paths []string, why string,
+	deleteBranch bool, after string) {
+	what := fmt.Sprintf("closed pull request #%d (%s) in %s after %s", pr.Number, pr.HeadRef, sr.Repo, after)
+	closed := true
+	if err := gh.ClosePR(ctx, pr.Number); err != nil {
+		closed = false
+		what = fmt.Sprintf("could NOT close pull request #%d (%s) in %s after %s (%v); a human must", pr.Number, pr.HeadRef, sr.Repo, after, err)
+	}
+	if _, own := officers.BranchItem(sr.BranchPrefix, g.OfficerID, pr.HeadRef); closed && deleteBranch && own &&
+		(pr.HeadRepo == "" || strings.EqualFold(pr.HeadRepo, sr.Repo)) {
+		if err := gh.DeleteBranch(ctx, pr.HeadRef); err != nil {
+			what += fmt.Sprintf(", and could NOT delete branch %s, which holds the refused change (%v); a human must", pr.HeadRef, err)
+		} else {
+			what += fmt.Sprintf(", and deleted branch %s, which held the refused change", pr.HeadRef)
+		}
+	}
+	summary := fmt.Sprintf("officer %s: muster %s: %s", g.OfficerID, what, why)
+	ps := paths
+	if len(ps) > officers.MaxNoticePaths {
+		summary += fmt.Sprintf(" (+%d more paths)", len(ps)-officers.MaxNoticePaths)
+		ps = ps[:officers.MaxNoticePaths]
+	}
+	g.announce(ctx, officers.Notice{PR: pr.Number, HeadSHA: sha, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel})
+}
 
 func shortSHA(s string) string {
 	if len(s) > 12 {
@@ -365,72 +694,9 @@ func (g *PushGate) announce(ctx context.Context, n officers.Notice) {
 	if g.Announce == nil {
 		return
 	}
-	if err := g.Announce(ctx, n); err != nil && g.Logf != nil {
-		g.Logf("officers: %s: the notice did not reach HQ: %v", g.OfficerID, err)
+	if err := g.Announce(ctx, n); err != nil {
+		g.logf("officers: %s: the notice did not reach HQ: %v", g.OfficerID, err)
 	}
-}
-
-// ForbiddenFiles is THE content rule of a draft officer's comparison: the
-// paths that make it refused and why (none: admitted).
-func ForbiddenFiles(forbidden []string, files []File) ([]string, string) {
-	var hit []string
-	var why []string
-	add := func(p, reason string) {
-		hit = append(hit, p)
-		why = append(why, p+": "+reason)
-	}
-	for _, f := range files {
-		for _, p := range []string{f.Path, f.Previous} {
-			if p == "" {
-				continue
-			}
-			for _, pat := range forbidden {
-				if officers.MatchForbidden(pat, p) {
-					add(p, fmt.Sprintf("a forbidden path (%s)", pat))
-					break
-				}
-			}
-		}
-		if f.Patch == "" && f.Changes > 0 {
-			add(f.Path, "GitHub withholds its diff (binary or too large), so it cannot be checked")
-			continue
-		}
-		var added []string
-		removedKind := ""
-		for _, l := range strings.Split(f.Patch, "\n") {
-			switch {
-			case strings.HasPrefix(l, "+"):
-				added = append(added, l[1:])
-			case strings.HasPrefix(l, "-") && removedKind == "":
-				for _, re := range removedKindRE {
-					if m := re.FindString(l[1:]); m != "" {
-						removedKind = strings.TrimSpace(m)
-					}
-				}
-			}
-		}
-		if removedKind != "" {
-			add(f.Path, fmt.Sprintf("it removes a %q line (a volume, database or canary must never be deleted by an officer)", removedKind))
-		}
-		if redact.HasSecretValueIn(f.Path, strings.Join(added, "\n")) {
-			add(f.Path, "an added line has a credential-shaped value")
-		}
-	}
-	if len(hit) == 0 {
-		return nil, ""
-	}
-	sort.Strings(hit)
-	return dedupe(hit), strings.Join(why, "; ")
-}
-
-func dedupe(in []string) []string {
-	out := in[:0]
-	for i, s := range in {
-		if i == 0 || s != in[i-1] {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // contentRefusal is a 409 refusal posted to HQ as a notice (paths may be

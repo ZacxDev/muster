@@ -88,25 +88,186 @@ func Secrets(s string) string { return secrets(s, true, nil) }
 // secret-shape test for a refusal of an officer's SHIP content (its pull
 // request diff, title, body and comments; internal/officership's draft gate).
 //
-// 🔴 IT IS Secrets WITH ONE NARROWING, NOT A SECOND REDACTOR. Every shape
-// Secrets knows by its VALUE (a token prefix, a PEM block, a JWT, a Stripe,
-// age, Google, Hugging Face or Discord key, an AWS secret) refuses as it
-// redacts. A shape Secrets knows only by a credential NAME (a YAML or JSON
-// password:/token:/secret: key, NAME=…, a --token flag, an Authorization or
-// X-Api-Key header, "the password is …", a URL query parameter) refuses only
-// when the value it names is itself secret-shaped (literalSecret): never a
-// boolean, a short or resource-shaped reference name, an UPPER_SNAKE variable
-// name, a path, or a ${…} / $(…) / {{…}} / {valueFrom…} reference — the values
-// an ordinary manifest gives `automountServiceAccountToken`, `existingSecret`
-// or `passwordSecret`. A URL's userinfo refuses when it holds a password that
-// is not a reference.
+// It refuses on EITHER of two rules:
 //
-// ⚠ The price: a SHORT literal under a credential name (`password: hunter2`)
-// passes here, though a transcript would mask it.
-func HasSecretValue(s string) bool { return secrets(s, true, literalSecret) != s }
+//   - THE VALUE (Secrets, with one narrowing). Every shape Secrets knows by its
+//     VALUE (a token prefix, a PEM block, a JWT, a Stripe, age, Google,
+//     Hugging Face or Discord key, an AWS secret) refuses as it redacts. A
+//     shape Secrets knows only by a credential NAME (a header, "the password
+//     is …", a URL query parameter, and the key forms below) refuses on this
+//     rule when the value is itself secret-shaped (literalSecret). A URL's
+//     userinfo refuses when it holds a password that is not a reference.
+//   - 🔴 THE KEY (keyLiteral). A credential-like KEY (one ending in password,
+//     passwd, passphrase, pwd, secret, token, api_key/apikey, private_key,
+//     secret_key, credential or credentials) holding a LITERAL refuses,
+//     whatever the literal looks like: `password: hunter2`, a diceware
+//     passphrase, a letters-only word, a block scalar. Not a literal: an empty
+//     or null value, a boolean, a number, a reference (${…}, $(…), $VAR,
+//     {{…}}, valueFrom, a flow mapping, an alias, a <placeholder>), a SOPS
+//     ENC[…] value, a path or a URL — and a key that itself NAMES a reference
+//     (existingSecret…, passwordSecret, tokenSecret, …SecretName, …SecretRef,
+//     …secretKeyRef). So `automountServiceAccountToken: false`,
+//     `existingSecret: x`, `passwordSecret: x` and `password: ${DB_PASSWORD}`
+//     pass.
+func HasSecretValue(s string) bool { return HasSecretValueIn("", s) }
 
-// HasSecretValueIn is HasSecretValue for the content of the file at path.
-func HasSecretValueIn(path, s string) bool { return HasSecretValue(s) }
+// HasSecretValueIn is HasSecretValue for content of the file at path. In a
+// SOURCE file (sourceExts: Go, TypeScript, Python, …) an unquoted value is an
+// expression (`Password: cfg.Password,`), so the key rule judges only a
+// QUOTED string literal there; anywhere else (YAML, JSON, shell, .env, prose)
+// every value is.
+func HasSecretValueIn(path, s string) bool {
+	return secrets(s, true, literalSecret) != s || keyLiteral(s, isSource(path))
+}
+
+// credKeyWords are the endings of a credential-like key, compared with the
+// key lowercased and its _ - . separators removed.
+var credKeyWords = []string{"password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "privatekey", "secretkey",
+	"credential", "credentials"}
+
+// refKeyEndings are keys that NAME a reference to a secret held elsewhere
+// (a Secret's name, a key selector), compared the same way; a key starting
+// with "existingsecret" is one too.
+var refKeyEndings = []string{"existingsecret", "passwordsecret", "tokensecret", "credentialssecret", "credentialsecret", "secretname",
+	"secretref", "secretkeyref", "keyref", "secretrefname"}
+
+// sourceExts are the source-code file extensions (HasSecretValueIn).
+var sourceExts = []string{".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rb", ".java", ".kt", ".kts", ".rs", ".c", ".h",
+	".cc", ".cpp", ".hpp", ".cs", ".swift", ".php", ".scala", ".lua", ".dart", ".ex", ".exs"}
+
+func isSource(path string) bool {
+	for _, e := range sourceExts {
+		if strings.HasSuffix(path, e) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// reKeyColon: a YAML or JSON `key: value` line (key optionally quoted,
+	// optionally a list item).
+	reKeyColon = regexp.MustCompile(`^\s*(?:-\s+)?["']?([A-Za-z0-9_.$-]+)["']?\s*:(?:\s+(.*)|\s*)$`)
+	// reJSONPair: every "key": value pair of a JSON object on one line.
+	reJSONPair = regexp.MustCompile(`"([A-Za-z0-9_.$-]+)"\s*:\s*("(?:[^"\\]|\\.)*"|[^,}\s]+)`)
+	// reKeyAssign: NAME=value / NAME = 'value' / name := "value" (export
+	// optional).
+	reKeyAssign = regexp.MustCompile(`(?:^|[\s;(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:?=\s*("[^"]*"|'[^']*'|` + "`[^`]*`" + `|[^\s;&]+)`)
+	// reKeyFlag: a credential flag and its value.
+	reKeyFlag = regexp.MustCompile(`(?:^|\s)--(password|passwd|pass|token|access-token|auth-token|api-key|apikey|secret|client-secret|private-key)(?:=|\s+)("[^"]*"|'[^']*'|\S+)`)
+	// reNumber: a number, optionally with a duration or size unit.
+	reNumber = regexp.MustCompile(`^[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?(?:ns|us|ms|s|m|h|d|w|Ki|Mi|Gi|Ti|K|M|G|T|k)?$`)
+	// reAnchor: a YAML anchor before a value (&name value).
+	reAnchor = regexp.MustCompile(`^&[^\s]+\s+`)
+)
+
+// credKey reports whether key is credential-like and does not name a
+// reference.
+func credKey(key string) bool {
+	k := strings.NewReplacer("_", "", "-", "", ".", "", "$", "").Replace(strings.ToLower(key))
+	if strings.HasPrefix(k, "existingsecret") {
+		return false
+	}
+	for _, e := range refKeyEndings {
+		if strings.HasSuffix(k, e) {
+			return false
+		}
+	}
+	for _, w := range credKeyWords {
+		if strings.HasSuffix(k, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// keyLiteral reports whether s has a credential-like key (credKey) holding a
+// LITERAL: any value except an empty or null one, a boolean, a number (with a
+// duration or size unit), a reference (${…}, $(…), $VAR, {{…}}, %{…}, a
+// <placeholder>, a YAML alias or flow mapping, anything mentioning
+// valueFrom), a SOPS ENC[…] value, a path (/…, ./…, ~/…) or a URL. A YAML
+// block scalar (| or >) is a literal. In code, only a quoted value is judged.
+func keyLiteral(s string, code bool) bool {
+	judge := func(key, v string) bool {
+		if !credKey(key) {
+			return false
+		}
+		v = strings.TrimSpace(v)
+		quoted := len(v) >= 2 && strings.ContainsRune(`"'`+"`", rune(v[0])) && v[len(v)-1] == v[0]
+		if !quoted {
+			v = strings.TrimSuffix(strings.TrimSpace(v), ",")
+			quoted = len(v) >= 2 && strings.ContainsRune(`"'`+"`", rune(v[0])) && v[len(v)-1] == v[0]
+		}
+		if code && !quoted {
+			return false
+		}
+		if !quoted {
+			if i := strings.Index(v, " #"); i >= 0 {
+				v = strings.TrimSpace(v[:i])
+			}
+		} else {
+			v = v[1 : len(v)-1]
+		}
+		return isLiteral(v, quoted)
+	}
+	for _, line := range strings.Split(s, "\n") {
+		for _, m := range reJSONPair.FindAllStringSubmatch(line, -1) {
+			if judge(m[1], m[2]) {
+				return true
+			}
+		}
+		if m := reKeyColon.FindStringSubmatch(line); m != nil && judge(m[1], m[2]) {
+			return true
+		}
+		for _, m := range reKeyAssign.FindAllStringSubmatch(line, -1) {
+			if judge(m[1], m[2]) {
+				return true
+			}
+		}
+		for _, m := range reKeyFlag.FindAllStringSubmatch(line, -1) {
+			if judge(m[1], m[2]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isLiteral reports whether v (unquoted already) is a literal value; a
+// quoted one is never a boolean, a null or a block scalar.
+func isLiteral(v string, quoted bool) bool {
+	v = reAnchor.ReplaceAllString(strings.TrimSpace(v), "")
+	if v == "" {
+		return false
+	}
+	if !quoted {
+		switch strings.ToLower(v) {
+		case "null", "~", "true", "false", "yes", "no", "on", "off":
+			return false
+		}
+		if v == "|" || v == ">" || strings.HasPrefix(v, "|") || strings.HasPrefix(v, ">") {
+			return true // a block scalar: its literal is on the next lines
+		}
+		if reNumber.MatchString(v) {
+			return false
+		}
+	}
+	for _, p := range []string{"${", "$(", "{{", "%{", "{", "*", "<", "ENC["} {
+		if strings.HasPrefix(v, p) {
+			return false
+		}
+	}
+	if len(v) > 1 && v[0] == '$' && (v[1] == '_' || v[1] >= 'A' && v[1] <= 'Z' || v[1] >= 'a' && v[1] <= 'z') {
+		return false
+	}
+	if strings.Contains(v, "valueFrom") || strings.HasPrefix(v, "/") || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "~/") {
+		return false
+	}
+	if i := strings.Index(v, "://"); i > 0 && !strings.ContainsAny(v[:i], " \t:@") {
+		return false // a URL (a password in its userinfo is the userinfo rule's)
+	}
+	return true
+}
 
 // minLiteralSecret is the shortest value literalSecret calls a secret.
 const minLiteralSecret = 12
@@ -122,7 +283,8 @@ var (
 
 // literalSecret reports whether v, the value a credential-NAMED pattern
 // captured, is itself secret-shaped: at least minLiteralSecret characters
-// with no whitespace; not a reference, a path or a URL; not a resource or
+// with no whitespace; not a reference, a SOPS ENC[…] value, a path or a URL;
+// not a resource or
 // variable name (reRefName, a UUID excepted); letters and a digit or a base64
 // symbol (+ / =); and at least 2.5 bits of entropy per character.
 func literalSecret(v string) bool {
@@ -134,6 +296,9 @@ func literalSecret(v string) bool {
 	v = strings.Trim(v, `"'`)
 	if reUUID.MatchString(v) {
 		return true
+	}
+	if strings.HasPrefix(v, "ENC[") {
+		return false // a SOPS-encrypted value
 	}
 	if len(v) < minLiteralSecret || strings.ContainsAny(v, ws) || isReference(v) || reRefName.MatchString(v) {
 		return false

@@ -52,7 +52,6 @@ func (f *draftFakeGH) Compare(context.Context, string, string) (officership.Comp
 	defer f.mu.Unlock()
 	return f.compare, nil
 }
-func (f *draftFakeGH) ListPRs(context.Context) ([]officership.PR, error) { return nil, nil }
 func (f *draftFakeGH) PRsForBranch(context.Context, string, string) ([]officership.PR, error) {
 	return nil, nil
 }

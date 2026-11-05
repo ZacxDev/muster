@@ -22,8 +22,11 @@ type Orphan struct {
 // OrphanBranches is the daily orphan report of a draft officer: every branch
 // under each ship repository's prefix and the officer's slug that has no pull
 // request in any state, whose head commit is older than
-// officers.OrphanBranchAge at now. 🔴 IT ONLY LISTS: nothing here deletes a
-// branch, and the push gate refuses a draft officer's branch deletion.
+// officers.OrphanBranchAge at now (each branch's pull requests found by the
+// branch, GitHub's head filter, never in a newest-N window). 🔴 IT ONLY LISTS:
+// nothing here deletes a branch, and the push gate refuses a draft officer's
+// branch deletion. (muster deletes a branch only after closing its pull
+// request on a content hit: draftgate.go closeOnHit.)
 // ghFor is the GitHub of each repository (PushGate.ghFor).
 func OrphanBranches(ctx context.Context, officerID, primary string, ship *officers.Ship, ghFor func(string) GitHub, now time.Time) ([]Orphan, error) {
 	var out []Orphan
@@ -40,18 +43,22 @@ func OrphanBranches(ctx context.Context, officerID, primary string, ship *office
 		if len(branches) == 0 {
 			continue
 		}
-		prs, err := gh.ListPRs(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("listing %s's pull requests: %v", r.Repo, err)
-		}
-		hasPR := map[string]bool{}
-		for _, p := range prs {
-			if p.HeadRepo == "" || strings.EqualFold(p.HeadRepo, r.Repo) {
-				hasPR[p.HeadRef] = true
-			}
-		}
 		for _, b := range branches {
-			if hasPR[b.Name] || !strings.HasPrefix(b.Name, prefix) {
+			if !strings.HasPrefix(b.Name, prefix) {
+				continue
+			}
+			// 🔴 BY THE BRANCH, NOT IN A WINDOW: GitHub's head filter finds a
+			// pull request from it in any state however old (a newest-N list
+			// aged a live draft's branch into "delete it by hand").
+			prs, err := gh.PRsForBranch(ctx, b.Name, "all")
+			if err != nil {
+				return nil, fmt.Errorf("looking up %s's pull requests from %s: %v", r.Repo, b.Name, err)
+			}
+			hasPR := false
+			for _, p := range prs {
+				hasPR = hasPR || p.HeadRepo == "" || strings.EqualFold(p.HeadRepo, r.Repo)
+			}
+			if hasPR {
 				continue
 			}
 			at, err := gh.CommitTime(ctx, b.SHA)
@@ -80,7 +87,7 @@ func OrphanNotice(officerID, channel string, orphans []Orphan) officers.Notice {
 		paths = append(paths, o.Repo+":"+o.Branch)
 	}
 	summary := fmt.Sprintf("officer %s has %d branch(es) older than %s with no pull request (a refused or abandoned proposal); "+
-		"muster never deletes them — delete each by hand once read", officerID, len(orphans), officers.OrphanBranchAge)
+		"the report never deletes them — delete each by hand once read", officerID, len(orphans), officers.OrphanBranchAge)
 	if len(paths) > officers.MaxNoticePaths {
 		summary += fmt.Sprintf(" (+%d more)", len(paths)-officers.MaxNoticePaths)
 		paths = paths[:officers.MaxNoticePaths]

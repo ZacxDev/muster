@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,6 +127,9 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		ReadCred: s.deploymentReadCred(), OnRejected: reject, GH: gh, GHFor: ghFor, Now: cfg.Now, Logf: s.logger.Printf,
 		Announce: func(ctx context.Context, n officers.Notice) error {
 			return hq.PostNotice(ctx, sp.NoticeURLPath(o.ID), n)
+		},
+		ItemClaimed: func(ctx context.Context, instance string, item int) error {
+			return itemClaimedBy(ctx, hq.c, o.ID, instance, item, cfg.Now)
 		}}
 	rt.gates = &officership.Gates{OfficerID: o.ID, Repo: o.Repo, Ship: sp, GH: gh, HQ: hq, Now: cfg.Now,
 		InFlight: func() (string, bool) { return "", false }}
@@ -181,6 +185,7 @@ func (s *Server) enableShips(cfg OfficersConfig) error {
 		if o.Ship.IsDraft() && !cfg.NoShipResume {
 			o, rt := o, rt
 			safeGo(s.logger, "officer orphan report "+o.ID, func() { s.orphanReportLoop(s.streams.context(), o, rt) })
+			safeGo(s.logger, "officer draft sweep "+o.ID, func() { s.draftSweepLoop(s.streams.context(), o, rt) })
 		}
 	}
 	return nil
@@ -201,6 +206,56 @@ func (s *Server) deploymentReadCred() func(ctx context.Context, caller connector
 	return func(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error) {
 		caller.ReadOnly, caller.ReadRepos, caller.Gate = true, nil, nil
 		return c.Credential(ctx, caller, host, rest)
+	}
+}
+
+// itemClaimedBy is the draft gate's claim check (PushGate.ItemClaimed): nil
+// when HQ (read with officer officerID's own token) shows instance holding
+// item under a live lease at now. Anything else — another holder, an expired
+// lease, no such claimed item, HQ unreadable — is an error, and the new pull
+// request is refused.
+func itemClaimedBy(ctx context.Context, c *officers.Client, officerID, instance string, item int, now func() time.Time) error {
+	items, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		return fmt.Errorf("HQ's claimed items could not be read: %v", err)
+	}
+	at := time.Now()
+	if now != nil {
+		at = now()
+	}
+	want := strconv.Itoa(item)
+	for _, it := range items {
+		if string(it.ID) != want {
+			continue
+		}
+		switch {
+		case it.OfficerID != "" && it.OfficerID != officerID:
+			return fmt.Errorf("item %d belongs to officer %s", item, it.OfficerID)
+		case it.ClaimedBy != instance:
+			return fmt.Errorf("item %d is claimed by %s", item, it.ClaimedBy)
+		case !it.LeaseLive(at):
+			return fmt.Errorf("the lease on item %d has expired", item)
+		}
+		return nil
+	}
+	return fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
+}
+
+// draftSweepLoop runs draft officer o's sweep (officership.PushGate.Sweep)
+// every officership.SweepInterval until ctx ends: the backstop that re-checks
+// every open pull request at its current head.
+func (s *Server) draftSweepLoop(ctx context.Context, o officers.Officer, rt *shipRuntime) {
+	t := time.NewTicker(officership.SweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := rt.gate.Sweep(ctx); err != nil {
+			s.logger.Printf("officers: %s: the draft sweep: %v", o.ID, err)
+		}
 	}
 }
 

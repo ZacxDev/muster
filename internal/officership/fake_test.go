@@ -39,8 +39,10 @@ type fakeGH struct {
 	// readied is every node id MarkReady was called with; readyErr fails it.
 	readied  []string
 	readyErr error
-	// listed is what ListPRs answers (listCalls counts its calls);
-	// commitTimes what CommitTime does.
+	// listed is what a newest-N window of the repository's pull requests
+	// would hold (nothing reads it any more: a test sets it to show the gate
+	// no longer depends on one); listCalls counts OfficerPRs calls;
+	// commitTimes is what CommitTime answers.
 	listed      []PR
 	listCalls   int
 	commitTimes map[string]time.Time
@@ -48,7 +50,7 @@ type fakeGH struct {
 	closed   []int
 	closeErr error
 	// all is EVERY pull request of the repository (PRsForBranch and
-	// OfficerPRs read it; listed is only the old newest-300 window).
+	// OfficerPRs read it).
 	// byBranch counts PRsForBranch calls, compareCalls Compare's.
 	all          []PR
 	byBranch     int
@@ -257,12 +259,6 @@ func (f *fakeGH) DeleteBranch(_ context.Context, branch string) error {
 	return nil
 }
 
-func (f *fakeGH) ListPRs(context.Context) ([]PR, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.listCalls++
-	return append([]PR(nil), f.listed...), nil
-}
 func (f *fakeGH) Branches(_ context.Context, prefix string) ([]Branch, error) {
 	var out []Branch
 	for name, sha := range f.branches {

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -88,6 +89,15 @@ type PushGate struct {
 	// CreateWait bounds how long a draft officer's new pull request waits for
 	// another one of its creates to finish (DefaultCreateWait when 0).
 	CreateWait time.Duration
+
+	// createSem serialises a draft officer's creates (draftCreate holds it
+	// from the rate-limit read until afterCreate); built once by createOnce.
+	createOnce sync.Once
+	createSem  chan struct{}
+	// mu guards checked and misses, the re-check state (draftgate.go).
+	mu      sync.Mutex
+	checked map[string]string
+	misses  map[string]int
 }
 
 // ghFor is the GitHub of ship repository repo.
@@ -430,7 +440,8 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 	}
 	switch {
 	case r.Method == http.MethodPost && len(tail) == 1 && tail[0] == "pulls":
-		return g.admitJSON(r, map[string]bool{"title": true, "body": true, "head": true, "base": true, "draft": true,
+		draftHead := "" // set once a draft officer's create holds its create lock
+		out, err := g.admitJSON(r, map[string]bool{"title": true, "body": true, "head": true, "base": true, "draft": true,
 			"maintainer_can_modify": true}, func(m map[string]json.RawMessage) error {
 			head, base := jsonString(m["head"]), jsonString(m["base"])
 			owner, _, _ := strings.Cut(sr.Repo, "/")
@@ -447,10 +458,25 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 				return refused("a pull request into %q: the base must be %s", base, sr.Base)
 			}
 			if g.Ship.IsDraft() {
-				return g.draftCreate(r.Context(), sr, gh, head, m)
+				if err := g.draftCreate(r.Context(), sr, gh, head, m); err != nil {
+					return err
+				}
+				draftHead = head
 			}
 			return nil
 		})
+		if draftHead != "" && err != nil {
+			g.releaseCreate()
+		}
+		if draftHead != "" && err == nil {
+			// 🔴 THE CREATE RE-CHECK (draftgate.go afterCreate): once GitHub has
+			// created the pull request, its comparison is read again at the head
+			// GitHub created it on. The hook also releases the create lock.
+			out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) {
+				g.afterCreate(ctx, sr, draftHead, res)
+			})
+		}
+		return out, err
 	case r.Method == http.MethodPatch && len(tail) == 2 && tail[0] == "pulls" && isNumber(tail[1]):
 		n, _ := strconv.Atoi(tail[1])
 		return g.admitJSON(r, map[string]bool{"title": true, "body": true, "state": true, "draft": true}, func(m map[string]json.RawMessage) error {

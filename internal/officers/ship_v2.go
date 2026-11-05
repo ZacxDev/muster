@@ -27,10 +27,17 @@ import (
 // kinds a merge must never delete, secret shapes), a body contract and rate
 // limits (internal/officership's draft gate).
 //
-// 🔴 EVERY v2 RULE IS THE `draft` STAGE'S. A shadow, merge or release officer
-// parses and behaves exactly as before; the keys only `draft` honours
-// (`forbidden_paths`, several `repos`) are refused on the other stages rather
-// than accepted and ignored.
+// 🔴 EVERY v2 GATE RULE IS THE `draft` STAGE'S: the push gate's draft rules,
+// the re-checks and the sweep run for `draft` only, and the keys only `draft`
+// honours (`forbidden_paths`, `forbidden_paths_file`, several `repos`) are
+// refused on the other stages rather than accepted and ignored. What is NOT
+// draft-only is the CONFIG beside `ship`: `tiers`, `llm` and `read_repos`
+// were refusals on every shipping officer and are now accepted beside any
+// stage, shadow, merge and release included — only the judgement pool ships
+// (the routine pool gets no ship tool, gate or App token), `llm` serves the
+// routine pool, and a `read_repos` read goes through the gate with the
+// deployment App's read-only token. So a shadow, merge or release officer's
+// gates behave as before, and it may now be configured with those three keys.
 // ---------------------------------------------------------------------------
 
 // StageDraft: open DRAFT pull requests only (in one to MaxShipRepos

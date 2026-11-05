@@ -620,7 +620,14 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
 			return
 		}
-		admitted, err := g.Admit(r, strings.ToLower(host), rest)
+		admitted, err := g.Admit(r.WithContext(WithCaller(r.Context(), caller)), strings.ToLower(host), rest)
+		if err == nil {
+			if af := afterForwardOf(admitted); af != nil {
+				// 🔴 DEFERRED: it runs on every path out of here, a client
+				// abort's panic included (WithAfterForward).
+				defer af.run(ctx, p.logf)
+			}
+		}
 		switch {
 		case errors.Is(err, ErrGateConflict):
 			refuse(http.StatusConflict, RefusalBody{Error: err.Error()}, "gate refused: conflict")
@@ -654,10 +661,6 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			}
 		}
 		p.forward(w, admitted, caller, acc, c, secret, anonymous, onStatus, connector, host, rest, &status, &detail, refuse)
-		if af := afterForwardOf(admitted); af != nil {
-			af.res.Forwarded, af.res.Status = true, status
-			af.run(ctx, p.logf)
-		}
 		return
 	}
 
@@ -765,6 +768,13 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		red = newRedactor(secretForms(c, secret))
 	}
 	prefix := "/connect/" + connector + "/"
+	// A gate's after-forward hook sees what the upstream answered (WithAfterForward).
+	af := afterForwardOf(r)
+	if af != nil {
+		af.mu.Lock()
+		af.res.Forwarded = true
+		af.mu.Unlock()
+	}
 
 	// The upstream request runs on outCtx, which only an event stream's shutdown
 	// end cancels (ModifyResponse below); r.Context() still cancels it as before.
@@ -800,6 +810,14 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		Transport: p.upstreamTransport(),
 		ModifyResponse: func(resp *http.Response) error {
 			*status = resp.StatusCode
+			if af != nil {
+				af.mu.Lock()
+				af.res.Status = resp.StatusCode
+				af.mu.Unlock()
+				// Innermost: the hook sees the upstream's bytes as they were
+				// read, before any wrap below changes them.
+				resp.Body = teeBody{ReadCloser: resp.Body, af: af}
+			}
 			if onStatus != nil {
 				onStatus(resp.StatusCode)
 			}
