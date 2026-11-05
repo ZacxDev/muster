@@ -70,7 +70,7 @@ func ValidStatus(s string) bool { return taskstatus.Valid(s) }
 // not declare it complete.
 func StatusAllowedForAgent(s string) bool { return taskstatus.AllowedForAgent(s) }
 
-// Note.CreatedBy values (migration 0082). The two prefixed forms carry a name
+// Note.CreatedBy values (migration 0083). The two prefixed forms carry a name
 // after the colon; CreatedByAgent and CreatedByPlugin build them.
 const (
 	CreatedByOwner        = "owner"
@@ -149,9 +149,9 @@ type Note struct {
 	// stored as NULL); SourceSessionID is opaque here (a label, not a document id).
 	SourceType      *string `json:"sourceType,omitempty"`
 	SourceSessionID *string `json:"sourceSessionId,omitempty"`
-	// CreatedBy is WHO filed the task (migration 0082): CreatedByOwner,
+	// CreatedBy is WHO filed the task (migration 0083): CreatedByOwner,
 	// CreatedByChief, CreatedByAgent(name) or CreatedByPlugin(name); nil when not
-	// recorded (a pre-0082 row, a POST /api/tasks that names no caller, a plugin task
+	// recorded (a pre-0083 row, a POST /api/tasks that names no caller, a plugin task
 	// reference — whose creator is the upstream's, Ref.Snapshot.Creator). Written
 	// once at create, never edited. Not serialised: the machine API's shape is
 	// unchanged; the task notifications read it (api.taskRefFragment).

@@ -1,4 +1,4 @@
--- muster 0082 — WHO CREATED A TASK (internal/notes Note.CreatedBy;
+-- muster 0083 — WHO CREATED A TASK (internal/notes Note.CreatedBy;
 -- internal/api/push_task.go taskRefFragment; docs/push.md).
 --
 -- A task notification names the task's creator. Before this, muster stored
@@ -15,7 +15,7 @@
 --                      "agent:<name>"    task_create_gated, when the filer
 --                                        could not be confirmed as the chief
 --                      "plugin:<name>"   a plugin filed it as a copy task
---                      NULL              not recorded (every row before 0082,
+--                      NULL              not recorded (every row before 0083,
 --                                        every POST /api/tasks, whose hook or
 --                                        personal token names no caller, and
 --                                        a plugin task REFERENCE, whose
@@ -26,13 +26,13 @@
 -- PGStore.Update does not name it). A nullable column with no default: no
 -- rewrite, every existing row reads as "not recorded". Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default); the column inherits the
--- table's row-level security. Idempotent. Must apply after 0081 (the contiguity
+-- table's row-level security. Idempotent. Must apply after 0082 (the contiguity
 -- test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it, and
 -- its notifications name no native creator, which is what they did before):
 --   ALTER TABLE notes DROP COLUMN IF EXISTS created_by;
---   DELETE FROM schema_migrations WHERE version = 82;
+--   DELETE FROM schema_migrations WHERE version = 83;
 
 SET LOCAL lock_timeout = '3s';
 

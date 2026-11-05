@@ -273,21 +273,37 @@ func TestAgentReadyPushNamesNoFragmentForAnotherOwnersTask(t *testing.T) {
 }
 
 // TestPlainLabelDropsFormatCharacters: a bidi override or isolate, or a
-// zero-width character, in an upstream label (reference.creator, a comment
+// zero-width space or BOM, in an upstream label (reference.creator, a comment
 // author, a status label) never reaches a push or a card. Each case's input
-// differs from its output only by the format characters.
+// differs from its output only by the dropped characters. The format
+// characters names need \u2014 ZWJ in an emoji sequence, ZWNJ in a Persian name,
+// LRM/RLM/ALM, the tag characters of a subdivision flag, a soft hyphen \u2014
+// pass through unchanged.
 func TestPlainLabelDropsFormatCharacters(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"Pat\u202Egnp.exe", "Patgnp.exe"},       // RIGHT-TO-LEFT OVERRIDE
-		{"Pat\u200BExample", "PatExample"},       // ZERO WIDTH SPACE
-		{"\u2066Sam\u2069 Doe", "Sam Doe"},       // LEFT-TO-RIGHT ISOLATE / POP
-		{"\u2067Ana\u2068 Lee\u2069", "Ana Lee"}, // RLI, FSI, PDI
-		{"Kim\uFEFF Park\u00AD", "Kim Park"},     // BOM, SOFT HYPHEN
-		{"A\nB\tC", "A B C"},                     // controls still become spaces
+		{"Pat\u202Egnp.exe", "Patgnp.exe"},             // RIGHT-TO-LEFT OVERRIDE
+		{"\u202ADa\u202Bn\u202C Ro\u202Dy", "Dan Roy"}, // LRE, RLE, PDF, LRO
+		{"Pat\u200BExample", "PatExample"},             // ZERO WIDTH SPACE
+		{"\u2066Sam\u2069 Doe", "Sam Doe"},             // LEFT-TO-RIGHT ISOLATE / POP
+		{"\u2067Ana\u2068 Lee\u2069", "Ana Lee"},       // RLI, FSI, PDI
+		{"Kim\uFEFF Park", "Kim Park"},                 // BOM
+		{"A\nB\tC", "A B C"},                           // controls still become spaces
 	}
 	for _, c := range cases {
 		if got := plainLabel(c.in, maxRefAuthorRunes); got != c.want {
 			t.Errorf("plainLabel(%+q) = %+q, want %+q", c.in, got, c.want)
+		}
+	}
+	keep := []string{
+		"Lee \U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466",             // family emoji: ZWJ
+		"\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",                           // Persian "mi-khaham": ZWNJ
+		"\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F Ali", // Scotland flag: tag characters
+		"Noa\u200E \u05E0\u05D5\u05E2\u05D4\u200F \u0639\u0644\u064A\u061C",          // LRM, RLM, ALM
+		"Kim\u00ADberly", // SOFT HYPHEN
+	}
+	for _, s := range keep {
+		if got := plainLabel(s, maxRefAuthorRunes); got != s {
+			t.Errorf("plainLabel(%+q) = %+q, want it unchanged", s, got)
 		}
 	}
 	// End to end through the fragment: the snapshot's creator.

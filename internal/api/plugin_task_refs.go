@@ -109,21 +109,35 @@ func cleanText(s string) string {
 }
 
 // plainLabel is s as one line of plain text, capped at n runes. A control
-// character (Cc) becomes a space; a format character (Cf: a bidi override or
-// isolate such as U+202E or U+2066–U+2069, a zero-width space U+200B, a soft
-// hyphen) is dropped, so an upstream's label cannot reorder or hide the text
-// a push or a card shows around it.
+// character (Cc) becomes a space; a hiding format character (hidingFormatChar)
+// is dropped, so an upstream's label cannot reorder or hide the text a push or
+// a card shows around it.
 func plainLabel(s string, n int) string {
 	s = strings.Map(func(r rune) rune {
 		switch {
 		case unicode.IsControl(r):
 			return ' '
-		case unicode.Is(unicode.Cf, r):
+		case hidingFormatChar(r):
 			return -1
 		}
 		return r
 	}, cleanText(s))
 	return capRunes(strings.Join(strings.Fields(s), " "), n)
+}
+
+// hidingFormatChar reports the format characters that can reorder or hide
+// the text around a label: the bidi embeddings and overrides U+202A–U+202E
+// (LRE, RLE, PDF, LRO, RLO), the bidi isolates U+2066–U+2069 (LRI, RLI, FSI,
+// PDI), ZERO WIDTH SPACE U+200B and the BOM U+FEFF. Every other format
+// character is kept, because names need them: ZWJ U+200D (emoji sequences
+// such as a family), ZWNJ U+200C (Persian and Indic spellings), the marks
+// LRM/RLM U+200E/U+200F and ALM U+061C (a mark sets direction for neutral
+// characters next to it and cannot carry text past the label's end the way an
+// unterminated override or isolate does), the tag characters U+E0020–U+E007F
+// (subdivision flags) and SOFT HYPHEN U+00AD (invisible except as a hyphen at
+// a line break; it hides nothing).
+func hidingFormatChar(r rune) bool {
+	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) || r == 0x200B || r == 0xFEFF
 }
 
 // refURL keeps an http(s) link of bounded length, and drops anything else.
