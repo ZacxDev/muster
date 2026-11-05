@@ -82,6 +82,9 @@ type officerRuntime struct {
 	// kube is officer_kube_read's state (officer_kube.go); nil when no
 	// declared officer has a `kube` block.
 	kube *kubeRuntime
+	// reads is THE per-item read budget, one counter per (officer, item)
+	// shared by every tool officers.CountsRead names (officer_reads.go).
+	reads *officers.ReadBudget
 }
 
 // clock is the runtime's now (time.Now when unset).
@@ -263,6 +266,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	host, _ := os.Hostname()
 	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, judgement: judgement, now: now, kube: kube,
+		reads:      officers.NewReadBudget(officers.ReadsPerItem, now),
 		claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
@@ -760,7 +764,7 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officerToolDefs are the tools an officer instance is offered. None takes an
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
-	return append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef())
+	return append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef())
 }
 
 // queueToolDefs are every officer's queue tools and obs tools (and the
@@ -848,7 +852,9 @@ func queueToolDefs() []agents.ToolDef {
 				"the `args` " + officers.ToolObsQueries + " lists for it, and no others. There is no raw PromQL or LogQL: HQ builds the query from its reviewed registry. " +
 				"The answer says what it `claims`; quote only that. `empty: true` is NOT a zero: run the positive control its `hint` names before you report none. " +
 				"Log lines come back redacted, a sample, never a count. HQ allows a few dozen queries a minute per officer (a 429 means wait a minute); " +
-				"an error carrying `retryable` (502 upstream: the backend read failed) may be retried in a minute; any other refusal names the argument or limit to fix and the same call will not succeed. Read-only.",
+				"an error carrying `retryable` (502 upstream: the backend read failed) may be retried in a minute; any other refusal names the argument or limit to fix and the same call will not succeed. " +
+				"On a judgement instance each call is one read of the item you hold (item_id picks it when you hold several; muster removes it before HQ sees the call). Read budget: " +
+				officers.ReadBudgetNote + ". Read-only.",
 			// 🔴 AN OPEN OBJECT DESCRIBING query_id ONLY: HQ's decoder is the
 			// one schema (officers.ObsQueryArgs), and the arguments each query
 			// takes are the `args` officer_obs_queries lists — a closed schema
@@ -907,11 +913,15 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return s.dispatchShipTool(ctx, a, o, name, arguments), true
 	}
 	c := s.officerRT.hq.Client(o)
-	if name == officers.ToolKubeRead {
+	switch name {
+	case officers.ToolKubeRead:
 		return s.officerKubeRead(ctx, a, o, c, arguments), true
+	case officers.ToolObsRaw:
+		return s.officerObsRaw(ctx, a, o, c, arguments), true
 	}
 	// The obs tools pass their arguments to HQ unchanged (officers.
-	// ObsQueryArgs): they are not decoded into the queue tools' struct below,
+	// ObsQueryArgs) — but for a judgement instance's item_id, which is
+	// muster's: they are not decoded into the queue tools' struct below,
 	// whose field types would otherwise be a second, local schema.
 	switch name {
 	case officers.ToolObsQueries:
@@ -921,6 +931,28 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		args, perr := officers.ObsQueryArgs([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
 			return toolErr("%v", perr), true
+		}
+		if officers.CountsRead(o, name) {
+			// a judgement instance's named query is one of its item's reads
+			// (officer_reads.go): item_id, muster's and never HQ's, is split
+			// off, and the read is charged to the item it holds — none
+			// held, none charged
+			rest, named, present, err := splitItemID(args)
+			if err != nil {
+				return toolErr("%v", err), true
+			}
+			if present {
+				args = rest
+			}
+			item, err := s.heldItem(ctx, c, a.Name, named, false)
+			if err != nil {
+				return heldItemRefusal(name, err), true
+			}
+			if item != "" {
+				if err := s.spendRead(o, item); err != nil {
+					return toolErr("%v", err), true
+				}
+			}
 		}
 		body, err := c.ObsQuery(ctx, args)
 		return officerToolResult(name, body, err), true

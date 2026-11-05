@@ -30,9 +30,9 @@ import (
 //     reconciliation and implicit request on first use as /connect/;
 //  4. the item: the instance must hold one live claim in HQ (or name which
 //     of its claims, item_id), which the read is counted against;
-//  5. the caps: 30 calls a minute per officer (kuberead.Limiter), and 200
-//     officer_kube_read calls per item (officers.ReadBudget; only this tool
-//     spends it today — the obs tools do not count, MU2 is future work);
+//  5. the caps: 30 calls a minute per officer (kuberead.Limiter), and the
+//     item's read budget (officers.ReadsPerItem reads per item, ONE count
+//     shared with officer_obs_raw and officer_obs_query: officer_reads.go);
 //  6. the read (kuberead.Reader.Read): path built from the cluster's
 //     allowlist (the deployment's MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>), a token
 //     minted for this call, the answer shaped and capped.
@@ -50,7 +50,6 @@ import (
 // officer has a `kube` block.
 type kubeRuntime struct {
 	limiter *kuberead.Limiter
-	budget  *officers.ReadBudget
 	// clusters are the built cluster readers, by officer id then cluster
 	// name: only clusters with an allowlist (officers.KubeCluster.Allow).
 	clusters map[string]map[string]kubeTarget
@@ -92,7 +91,6 @@ func newKubeRuntime(list []officers.Officer, now func() time.Time) (*kubeRuntime
 		return nil, nil
 	}
 	rt.limiter = kuberead.NewLimiter(kuberead.CallsPerMinute, time.Minute, now)
-	rt.budget = officers.NewReadBudget(officers.ReadsPerItem, now)
 	return rt, nil
 }
 
@@ -107,7 +105,7 @@ func kubeReadToolDef() agents.ToolDef {
 			"{cluster, log: {namespace, pod, container?, previous?, since_seconds? (≤86400), tail_lines? (≤2000)}}. " +
 			"Secrets, exec, port-forward, proxies, ServiceAccount tokens and RBAC are never readable; watch is not offered; a list " +
 			"across all namespaces needs a selector. An answer over 1 MiB or a list over 500 objects is REFUSED (narrow it), never cut. " +
-			"Log lines pass a best-effort scrub of the secret and personal-data shapes muster knows (a secret in another shape can pass). 30 calls a minute; 200 of these calls per item (other tools' reads do not count). Needs an approved grant for the " +
+			"Log lines pass a best-effort scrub of the secret and personal-data shapes muster knows (a secret in another shape can pass). 30 calls a minute. Read budget: " + officers.ReadBudgetNote + ". Needs an approved grant for the " +
 			"kube-read connector (connector_request) and a claimed item. NEVER quote a credential-shaped value you read.",
 		Parameters: objSchema(map[string]any{
 			"cluster":        str("The cluster's name, as your officer declares it."),
@@ -169,18 +167,10 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 	}
 	// item_id is the dispatcher's, not the read's: split it off before the
 	// strict parse, which refuses every key it does not know.
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &obj); err != nil {
-		return toolErr("arguments must be a JSON object")
+	rest, itemArg, _, err := splitItemID([]byte(orEmptyJSON(arguments)))
+	if err != nil {
+		return toolErr("%v", err)
 	}
-	var itemArg officers.ItemID
-	if v, ok := obj["item_id"]; ok {
-		if err := json.Unmarshal(v, &itemArg); err != nil {
-			return toolErr("item_id must be an item id")
-		}
-		delete(obj, "item_id")
-	}
-	rest, _ := json.Marshal(obj)
 	req, err := kuberead.ParseRequest(rest)
 	if err != nil {
 		return toolErr("%v", err)
@@ -219,13 +209,9 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 	}
 
 	// The item the read counts against: one live claim of this instance.
-	held, err := s.kubeHeldItem(ctx, c, a.Name, itemArg)
+	held, err := s.heldItem(ctx, c, a.Name, itemArg, true)
 	if err != nil {
-		var hq *officers.HQError
-		if errors.As(err, &hq) || errors.Is(err, officers.ErrHQUnavailable) {
-			return officerToolResult(officers.ToolKubeRead, nil, err)
-		}
-		return toolErr("%v", err)
+		return heldItemRefusal(officers.ToolKubeRead, err)
 	}
 	item = held
 
@@ -234,7 +220,7 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 		write(audit)
 		return toolErr("officer %s has made %d cluster reads in the last minute, the cap: wait a minute", o.ID, kuberead.CallsPerMinute)
 	}
-	if _, err := kr.budget.Spend(o.ID, item); err != nil {
+	if err := s.spendRead(o, item); err != nil {
 		audit.Refusal = "budget: " + err.Error()
 		write(audit)
 		return toolErr("%v", err)
@@ -257,36 +243,6 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 func kubeSA(kc officers.KubeCluster) kuberead.ServiceAccount {
 	ns, name, _ := strings.Cut(kc.ServiceAccount, "/")
 	return kuberead.ServiceAccount{Namespace: ns, Name: name}
-}
-
-// kubeHeldItem is the item instance holds a LIVE claim on in HQ: the one it
-// names (which must be among them), or its only one.
-func (s *Server) kubeHeldItem(ctx context.Context, c *officers.Client, instance string, named officers.ItemID) (officers.ItemID, error) {
-	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
-	if err != nil {
-		return "", err
-	}
-	now := s.officerRT.clock()
-	var held []officers.ItemID
-	for _, it := range claimed {
-		if it.ClaimedBy == instance && it.LeaseLive(now) {
-			held = append(held, it.ID)
-		}
-	}
-	switch {
-	case named != "":
-		for _, id := range held {
-			if id == named {
-				return id, nil
-			}
-		}
-		return "", fmt.Errorf("you hold no live claim on item %s: a cluster read is counted against an item you hold", named)
-	case len(held) == 1:
-		return held[0], nil
-	case len(held) == 0:
-		return "", errors.New("you hold no claimed item: claim one first (officer_claim) — every cluster read is counted against the item it is for")
-	}
-	return "", fmt.Errorf("you hold %d items: name the one this read is for with item_id", len(held))
 }
 
 // auditKubeRead writes one connector-audit row of kind `query` (as

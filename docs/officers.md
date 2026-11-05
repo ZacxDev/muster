@@ -545,6 +545,7 @@ listing and again at dispatch):
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_obs_queries` | `GET /officers/{id}/obs/queries` — HQ's named observability queries (each one's id, what its answer may claim, the arguments it takes) and HQ's caps. See [Observability queries](#observability-queries) |
 | `officer_obs_query` `{query_id, …}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes (the `args` `officer_obs_queries` lists; the tool's schema describes `query_id` only and is open, so HQ's decoder is the one schema). Never a raw query |
+| `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **judgement instances only**: `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
@@ -622,6 +623,53 @@ is **retryable**, as HQ's guide says: the answer is an error with
 `retryable: {status, code, hq}` in place of `refused`, and says to retry in a
 minute. Any other 5xx is "HQ
 is unavailable, try again". A `429 rate_limited` means wait a minute.
+
+On a **judgement** instance each `officer_obs_query` call is also one read of
+the item it holds, against [the read budget](#the-read-budget): muster looks
+up its live claim, and `item_id` (muster's own key, removed before HQ sees
+the arguments) picks one when it holds several. While it holds no item the
+call is not counted. A routine instance's calls are never counted.
+
+### Raw metrics and logs (`officer_obs_raw`)
+
+The one exception to "no raw query": an **investigating** officer's
+judgement instance may send its own PromQL or LogQL for the item it holds,
+through HQ's `POST /officers/{id}/obs/raw`. HQ owns every check on it — the
+officer's type must set `investigation: true` and the item must be the
+officer's judgement item claimed by that instance (else `403
+not_investigating`); the window, step, series and line caps; a Loki stream
+selector, with the apiserver audit stream refused; every log line redacted;
+an audit row carrying the query text; the same 30-a-minute rate limit as
+`/obs/query`, the two routes together. muster re-checks none of it.
+
+One call, each step refusing before the next:
+
+1. **Binding.** Only a judgement pool's instances are offered the tool. A
+   routine instance, or any other agent, is refused at dispatch.
+2. **Item.** The instance must hold a live claim in HQ — the same gate as
+   [`officer_kube_read`](#reading-a-cluster-officer_kube_read) — and
+   `item_id` picks one when it holds several.
+3. **Body.** The arguments object is passed through, each value as sent,
+   with `item_id` (HQ's integer) and `instance` (the caller's own name) added.
+   An argument spelling either key, in any case, is refused: muster names
+   them, never the model.
+4. **Budget.** One read of that item ([the read budget](#the-read-budget)).
+5. **HQ.** With the officer's own HQ token, the one every officer tool
+   already uses: there is no other credential. HQ's answer comes back as HQ
+   sent it, and its refusals with HQ's status and body, as for
+   `officer_obs_query`.
+
+### The read budget
+
+**200 reads per item, ONE count** shared by `officer_kube_read`,
+`officer_obs_raw` and a judgement instance's `officer_obs_query`
+(`officers.ReadBudget`, kept by the server for every tool;
+`officers.CountsRead` is the one rule for which calls spend it). 100 named
+queries, 99 raw queries and 1 cluster read are an item's 200; the 201st is
+refused whichever tool makes it, and names the budget. Another item has its
+own 200. A call spends its unit after the item is resolved and before the
+read is sent, so a read the backend then refuses still counts. The count is
+in memory: a restart can only allow more reads, never refuse one early.
 
 ### Asking an HQ member (`officer_ask_person`)
 
@@ -1587,11 +1635,10 @@ allowlist the **deployment's configuration**, never the declaration
    admins only, so the officer's owner must be one.
 4. **Item.** The instance must hold a live claim in HQ. The read is counted
    against it (`item_id` picks one when it holds several).
-5. **Caps.** 30 calls a minute per officer; **200 `officer_kube_read` calls
-   per item** (`officers.ReadBudget`). Today only `officer_kube_read` spends
-   that budget: the observability tools do not count against it, and sharing
-   it with them is future work (MU2). Both are in memory: a restart can only
-   allow more.
+5. **Caps.** 30 calls a minute per officer; then one read of the item from
+   [the read budget](#the-read-budget) — 200 reads per item, one count
+   shared with `officer_obs_raw` and `officer_obs_query`. Both are in memory:
+   a restart can only allow more.
 6. **Read.** muster mints a **600 s TokenRequest** for the officer's
    ServiceAccount with the minter token, then GETs the path with that token
    alone. TLS trusts the cluster's CA bundle only and verifies the name

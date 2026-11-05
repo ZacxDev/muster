@@ -28,7 +28,7 @@ Start now:
 
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + tierNote(o) + repoNote(o) + connectorsNote(o) + kubeNote(o) + releaseNote(o)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + tierNote(o) + repoNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o) + releaseNote(o)
 }
 
 // kubeNote tells a judgement instance of an officer with a `kube` block how to
@@ -47,8 +47,20 @@ func kubeNote(o Officer) string {
 Cluster reads: %[1]s reads the clusters %[2]s, read-only, as your officer's own ServiceAccount. Ask once with connector_request{name: %[3]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[3]q, wait_seconds: 50}, repeated while it says pending. Then call it with typed arguments — never a URL:
 - {cluster, verb: "get"|"list", group ("" for core), version, resource (a plural name, e.g. "deployments"; no subresources — status is on the object), namespace?, name? (get), label_selector?, field_selector?, limit?}
 - {cluster, log: {namespace, pod, container?, previous?, since_seconds? (at most 86400), tail_lines? (at most 2000)}}
-Secrets, exec, port-forward, proxies, ServiceAccount tokens and RBAC are never readable, and watch is not offered. A list across all namespaces needs a selector. An answer over 1 MiB or a list of more than 500 objects is refused, not cut: narrow it. Log lines come back through a best-effort scrub of the secret and personal-data shapes muster knows (a secret in another shape can pass) and capped at 1000 characters. 30 calls a minute, and 200 %[1]s calls per item (only %[1]s calls count; observability reads do not). Each call is audited (the answer is not); cite a read by the audit_id its result carries. A ConfigMap comes back whole and may hold a credential: NEVER quote a credential-shaped value anywhere — summary, ask, pull request or log.`,
-		ToolKubeRead, strings.Join(names, ", "), KubeConnector)
+Secrets, exec, port-forward, proxies, ServiceAccount tokens and RBAC are never readable, and watch is not offered. A list across all namespaces needs a selector. An answer over 1 MiB or a list of more than 500 objects is refused, not cut: narrow it. Log lines come back through a best-effort scrub of the secret and personal-data shapes muster knows (a secret in another shape can pass) and capped at 1000 characters. 30 calls a minute. The read budget: %[4]s. Each call is audited (the answer is not); cite a read by the audit_id its result carries. A ConfigMap comes back whole and may hold a credential: NEVER quote a credential-shaped value anywhere — summary, ask, pull request or log.`,
+		ToolKubeRead, strings.Join(names, ", "), KubeConnector, ReadBudgetNote)
+}
+
+// obsRawNote tells a judgement instance how to run its own PromQL / LogQL for
+// the item it holds, and the read budget. Nothing for every other instance.
+func obsRawNote(o Officer) string {
+	if !ToolOffered(o, ToolObsRaw) {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+Raw metrics and logs: %[1]s{backend: "prometheus"|"loki", query, start, end, step? (Prometheus: required, at least 1m), limit? (a Loki log query: 1-1000), item_id?} runs your own PromQL or LogQL through HQ for the item you hold (item_id picks one when you hold several). HQ answers it only when your officer's type investigates (otherwise 403 not_investigating: use %[2]s instead), checks the query and its window, refuses the apiserver audit stream, redacts every log line, and audits the query text; muster passes its answer back as HQ sent it. Prometheus is not pinned to a cluster: filter by cluster yourself. A Loki query needs a stream selector. empty: true is NOT a zero nor an absence of logs: run the positive control its hint names before you report none. The read budget: %[3]s.`,
+		ToolObsRaw, ToolObsQuery, ReadBudgetNote)
 }
 
 // tierNote tells an instance of a tiered officer which tier it works: its
@@ -197,6 +209,11 @@ const (
 	// HQ decides whether its route is on (503 obs_unconfigured when off).
 	ToolObsQueries = "officer_obs_queries"
 	ToolObsQuery   = "officer_obs_query"
+	// ToolObsRaw runs the instance's OWN PromQL / LogQL through HQ's raw obs
+	// route (POST /officers/{id}/obs/raw, obs.go) for the item it holds:
+	// offered to the judgement pool only, refused by HQ unless the officer's
+	// type investigates. Read-only; it spends the item's read budget (reads.go).
+	ToolObsRaw = "officer_obs_raw"
 )
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
@@ -210,7 +227,9 @@ func (o Officer) Type() string {
 
 // ToolOffered is THE rule for which officer tools officer o's instances get:
 // the six queue tools, officer_ask_person and the two obs tools for every officer, and the
-// captain route's tool for a release officer only. internal/api's listing and
+// captain route's tool for a release officer only; officer_obs_raw for a
+// judgement pool, officer_kube_read for one whose officer declares a
+// readable cluster. internal/api's listing and
 // dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
 	switch tool {
@@ -224,6 +243,8 @@ func ToolOffered(o Officer, tool string) bool {
 		return o.Ship != nil && o.CILogs != nil
 	case ToolKubeRead:
 		return len(o.KubeClusters()) > 0
+	case ToolObsRaw:
+		return o.Tier == TierJudgement
 	}
 	return false
 }
