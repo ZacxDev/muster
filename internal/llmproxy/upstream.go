@@ -3,7 +3,6 @@ package llmproxy
 import (
 	"bytes"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -161,20 +160,16 @@ func toolResultsFirst(blocks []json.RawMessage) []json.RawMessage {
 	return append(results, rest...)
 }
 
-// maxUpstreamErrorBytes bounds Record.UpstreamError (before the ellipsis).
-const maxUpstreamErrorBytes = 300
-
-// keyShaped matches what looks like a credential: an `sk-…` key of any
-// provider, and a bearer token.
-var (
-	keyShaped    = regexp.MustCompile(`sk-[A-Za-z0-9][A-Za-z0-9_-]{15,}`)
-	authSchemeToken = regexp.MustCompile(`(?i)\b(bearer)\s+[^\s"',;]+`)
-)
+// maxUpstreamErrorBytes bounds Record.UpstreamError (before the ellipsis). It
+// is sized so that a record's whole Detail, with realistic names, fits the
+// connector audit row's connectors.MaxAuditDetailBytes
+// (TestTheLongestUpstreamErrorFitsTheAuditRow).
+const maxUpstreamErrorBytes = 200
 
 // upstreamError is a non-2xx provider body as one line for the audit record
 // and the log: "<type>: <message>" from an Anthropic- or OpenAI-shaped error
-// object, else the body's own text; whitespace collapsed; the officer's key
-// and anything key-shaped redacted; then truncated to maxUpstreamErrorBytes
+// object, else the body's own text; whitespace collapsed; redactError; then
+// truncated to maxUpstreamErrorBytes
 // (on a rune boundary). Redaction comes first, so a truncation can never leave
 // part of a key behind.
 func upstreamError(body []byte, key string) string {
@@ -200,12 +195,7 @@ func upstreamError(body []byte, key string) string {
 	} else {
 		s = string(body)
 	}
-	s = strings.Join(strings.Fields(s), " ")
-	if key != "" {
-		s = strings.ReplaceAll(s, key, "[redacted]")
-	}
-	s = keyShaped.ReplaceAllString(s, "[redacted]")
-	s = authSchemeToken.ReplaceAllString(s, "${1} [redacted]")
+	s = string(redactError([]byte(strings.Join(strings.Fields(s), " ")), key))
 	if len(s) > maxUpstreamErrorBytes {
 		cut := maxUpstreamErrorBytes
 		for cut > 0 && !utf8.RuneStart(s[cut]) {

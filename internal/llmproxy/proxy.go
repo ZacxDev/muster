@@ -46,6 +46,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptrace"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -124,8 +125,9 @@ type Store interface {
 	Book(ctx context.Context, u Usage) error
 }
 
-// Record is one request's audit record. It carries no body, no header and no
-// credential.
+// Record is one request's audit record. It carries no request or response
+// body, no header and no credential; on a provider error, only the provider's
+// error type and message (UpstreamError), redacted and truncated.
 type Record struct {
 	Officer        string
 	Instance       string // the instance's label, `r<n>`
@@ -455,7 +457,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		rec.UpstreamError = upstreamError(b, c.Key)
 		relayHeaders(w, resp)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(redact(b, c.Key))
+		_, _ = w.Write(redactError(b, c.Key))
 		finish("upstream_status", resp.StatusCode)
 		return
 	}
@@ -527,12 +529,30 @@ func relayHeaders(w http.ResponseWriter, resp *http.Response) {
 }
 
 // redact replaces every occurrence of key in b. A provider has no reason to
-// echo the key, and this makes sure an echo never reaches the instance.
+// echo the key, and this makes sure an echo never reaches the instance. It is
+// the one rule for a 2xx body (the model's own output), which is otherwise
+// relayed unchanged.
 func redact(b []byte, key string) []byte {
 	if key == "" || !bytes.Contains(b, []byte(key)) {
 		return b
 	}
 	return bytes.ReplaceAll(b, []byte(key), []byte("[redacted]"))
+}
+
+// keyShaped is an `sk-…` key of any provider; authSchemeToken a token after a
+// bearer scheme word.
+var (
+	keyShaped       = regexp.MustCompile(`sk-[A-Za-z0-9][A-Za-z0-9_-]{15,}`)
+	authSchemeToken = regexp.MustCompile(`(?i)\b(bearer)\s+[^\s"',;]+`)
+)
+
+// redactError is redact, then anything key-shaped, for a provider's non-2xx
+// body: both the body relayed to the instance and the record's upstream_error
+// go through it, so the two never disagree. It is not applied to a 2xx body,
+// where the model may legitimately write `Bearer ${token}` in code.
+func redactError(b []byte, key string) []byte {
+	b = keyShaped.ReplaceAll(redact(b, key), []byte("[redacted]"))
+	return authSchemeToken.ReplaceAll(b, []byte("${1} [redacted]"))
 }
 
 // book meters one request's usage: metrics, the per-item count, the store.

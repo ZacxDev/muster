@@ -204,7 +204,9 @@ with kind `llm` (migration 0075), connector `llm`, method `POST`, the
 provider's host, path `/api/v1/messages`, the response status, and a detail
 line: officer, instance, item, model, requested model, provider, result,
 tokens in / cache read / cache write / out, USD (and whether it was
-estimated), stop reason and duration. Never a body, a header or the key. The
+estimated), stop reason and duration, plus, on a provider error, the
+provider's error type and message (`upstream_error=`, redacted and truncated
+to 200 bytes). Never a request or response body, a header or the key. The
 same line goes to muster-server's log. The row is the officer owner's.
 
 ## Routes
