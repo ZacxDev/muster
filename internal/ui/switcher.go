@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -216,6 +217,10 @@ type SwitcherItem struct {
 	// dock's row draws it as its second line (data-switcher-focus): Title
 	// joins it with the display name, so it cannot be split back out.
 	Focus string
+	// FocusAge is how old Focus is (FocusAgeOf, at render time): the dock and
+	// the palette draw it beside the title (data-switcher-focus-age,
+	// data-switcher-focus-stale).
+	FocusAge FocusAge
 }
 
 // switcherName is an entry's WHOLE name, what its pill shows:
@@ -332,17 +337,22 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 	// The bar's row is the first switcherRecentMax, labelled against each
 	// other as before; the rest are hrefs (the dock draws them from All).
 	var more []string
+	// One clock for every item's focus age (FocusAgeOf); NavAgentsList,
+	// which has the page's own, passes that one.
+	now := time.Now()
 	if len(recent) > switcherRecentMax {
-		for _, it := range switcherItems(recent[switcherRecentMax:], cur) {
+		for _, it := range switcherItems(recent[switcherRecentMax:], cur, now) {
 			more = append(more, it.Href)
 		}
 		recent = recent[:switcherRecentMax]
 	}
-	return &Switcher{Recent: switcherItems(recent, cur), RecentMore: more, Waiting: switcherItems(waiting, cur), Pins: switcherItems(pins, cur), All: switcherItems(entries, cur), pin: pin}
+	return &Switcher{Recent: switcherItems(recent, cur, now), RecentMore: more, Waiting: switcherItems(waiting, cur, now),
+		Pins: switcherItems(pins, cur, now), All: switcherItems(entries, cur, now), pin: pin}
 }
 
-// switcherItems is es as one view's items, labelled against each other.
-func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
+// switcherItems is es as one view's items, labelled against each other, with
+// each focus title's age at now.
+func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []SwitcherItem {
 	labels := sessionSwitcherLabels(es)
 	out := make([]SwitcherItem, len(es))
 	for i, e := range es {
@@ -358,6 +368,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost)
 			it.Prev = switcherPrevTitles(a.PrevFocus)
 			it.Focus = focusTitle(a.Focus)
+			it.FocusAge = focusAgeOf(a.Focus, now)
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
@@ -368,10 +379,24 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host)
 			it.Prev = switcherPrevTitles(m.PrevFocus)
 			it.Focus = focusTitle(m.Focus)
+			it.FocusAge = focusAgeOf(m.Focus, now)
 		}
 		out[i] = it
 	}
 	return out
+}
+
+// focusAgeAttrs is it's focus age as the attributes the dock and the palette
+// draw it from (FocusAgeOf decided it; the scripts only draw it): none when
+// the age is not shown.
+func focusAgeAttrs(it SwitcherItem) g.Node {
+	if it.Focus == "" || it.FocusAge.Text == "" {
+		return nil
+	}
+	return g.Group{
+		g.Attr("data-switcher-focus-age", it.FocusAge.Text),
+		g.If(it.FocusAge.Stale, g.Attr("data-switcher-focus-stale", "")),
+	}
 }
 
 // focusTitle is f's title, plained; "" for none.
@@ -802,6 +827,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 		// the icon only names it), and the current focus title alone.
 		g.If(it.Host != "", g.Attr("data-switcher-host", it.Host)),
 		g.If(it.Focus != "", g.Attr("data-switcher-focus", it.Focus)),
+		focusAgeAttrs(it),
 	}
 	if it.Current {
 		return Span(

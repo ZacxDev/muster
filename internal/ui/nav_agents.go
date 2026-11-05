@@ -233,7 +233,7 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	cur := navCurrent(currentURL, list)
 	// The switcher's items for the same entries: each row's label, and what
 	// the command palette finds it by on a page with no switcher (palette.go).
-	items := switcherItems(es, cur)
+	items := switcherItems(es, cur, now)
 	var rows, idle []g.Node
 	for i, e := range es {
 		if navInIdleGroup(e, items[i]) {
@@ -363,6 +363,9 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
 			g.If(it.Words != "", g.Attr("data-switcher-words", it.Words)),
 			g.If(it.Prev != "", g.Attr("data-switcher-prev", it.Prev)),
+			// The current focus title's age, which the palette's result
+			// draws beside it (switcherEntry's).
+			focusAgeAttrs(it),
 			Class("press flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-lg border-l-4 px-3 text-left text-sm font-medium transition "+edge+" "+navRowTone(current)),
 			// The dot's box is reserved whether or not a time is known, so the
 			// names line up.

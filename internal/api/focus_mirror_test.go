@@ -152,7 +152,8 @@ type recordingSummarizer struct {
 	tails []string
 }
 
-func (r *recordingSummarizer) Summarize(_ context.Context, _ int64, tail string) (focus.Summary, error) {
+func (r *recordingSummarizer) Summarize(_ context.Context, _ int64, req focus.Request) (focus.Summary, error) {
+	tail := req.Tail
 	r.mu.Lock()
 	r.tails = append(r.tails, tail)
 	r.mu.Unlock()
@@ -262,7 +263,7 @@ func (noAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil 
 
 type failingSummarizer struct{ err error }
 
-func (f failingSummarizer) Summarize(context.Context, int64, string) (focus.Summary, error) {
+func (f failingSummarizer) Summarize(context.Context, int64, focus.Request) (focus.Summary, error) {
 	return focus.Summary{}, f.err
 }
 

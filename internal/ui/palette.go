@@ -233,11 +233,13 @@ const paletteJS = `
       out.push({ href: a.getAttribute('href'), label: label, code: a.getAttribute('data-switcher-code') || label,
         title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
         prev: (a.getAttribute('data-switcher-prev') || '').split('\n').filter(Boolean),
+        age: a.getAttribute('data-switcher-focus-age') || '', stale: a.hasAttribute('data-switcher-focus-stale'),
         kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: i });
     }
     return out;
   }
   function el(tag, cls, text) { var x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }
+` + focusAgeLineJS + `
   function mark() {
     var input = byId(INPUT), opts = byId(RESULTS).children;
     for (var i = 0; i < opts.length; i++) {
@@ -318,7 +320,9 @@ const paletteJS = `
       // title ("Previously: …", marked data-match-previous); otherwise its
       // title (its display name and current focus), or — when the title is
       // what the first line already says (an agent's display name) — its
-      // codename.
+      // codename. The title carries the current focus, so its age follows it
+      // (focusAgeLineJS: shown past a day, muted past four, as the server
+      // decided); a previous title or a codename has none.
       if (it.why === 'previous') {
         var p = el('span', 'truncate text-xs text-muted');
         p.setAttribute('data-match-previous', '');
@@ -326,8 +330,9 @@ const paletteJS = `
         p.appendChild(document.createTextNode(it.hit));
         li.appendChild(p);
       } else {
-        var sub = e.title && e.title !== e.label ? e.title : (e.code !== e.label ? e.code : '');
-        if (sub) li.appendChild(el('span', 'truncate text-xs text-muted', sub));
+        var isTitle = !!e.title && e.title !== e.label;
+        var sub = isTitle ? e.title : (e.code !== e.label ? e.code : '');
+        if (sub) li.appendChild(focusAgeLine(isTitle ? e.age : '', e.stale, el('span', 'truncate text-xs text-muted', sub)));
       }
       list.appendChild(li);
     });
