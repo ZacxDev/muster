@@ -278,10 +278,18 @@ func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episo
 // (sessionKeyWhere: "mango:1 · tmux main:1 @ ws", "(host offline)" after it
 // when its host has dropped and the hub still lists it — entryWhere; keep,
 // its tmux target, kept verbatim by the title rule) — so a window renumbered
-// since names its new index. Only when no window holds the conversation now,
-// the place stored on the episode in the same shape without the label
+// since names its new index. When no window holds the conversation now (a
+// /clear or a resume gave the window a new conversation, the host lists no
+// key for it), the place stored on the episode, still NAMED BY ITS HOST'S
+// LABEL whenever the host gives one (episodePlaceEntry: "mango:1 · tmux
+// main:1 @ ws"); only with no label for that session, the bare target
 // (mirror.WhereTarget: "tmux main:1 @ ws"). An agent conversation is named by
 // its agent.
+//
+// 🔴 THE LABEL IS NEVER LOST ON THE FALLBACK. As first built the fallback was
+// mirror.WhereTarget alone, so a stop whose conversation no window held any
+// more was pushed and drawn under its raw tmux session even while its host
+// still labelled that session.
 func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep string) {
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
@@ -297,6 +305,9 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		}
 	}
 	if ep.TmuxSession != "" && ep.Host != "" {
+		if e, ok := episodePlaceEntry(hosts, ep); ok {
+			return entryWhere(e), e.WhereTarget()
+		}
 		where := mirror.WhereTarget(ep.Host, ep.TmuxSession, ep.Window, ep.Index)
 		return where, where
 	}
@@ -309,6 +320,37 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		return target, target
 	}
 	return target + " @ " + ep.Host, target
+}
+
+// episodePlaceEntry is the place stored on ep (its host, tmux session and
+// window) as hosts list it NOW, for episodeWho's fallback: the stored window
+// itself when its host still lists it (its label and its index now), else the
+// stored window under its session's label — the label the host gives the
+// session's active window (HostView.Find), "<codename>:<active index>". ok is
+// false when the host does not list the session, or gives it no label: the
+// caller then names the bare stored target.
+//
+// 🔴 ONE RULE: the words are entryWhere's over the entry (mirror.Where's label
+// rule, the offline mark), never a second spelling of the label.
+func episodePlaceEntry(hosts []mirror.HostView, ep sessionstate.Episode) (mirror.SessionView, bool) {
+	for _, h := range hosts {
+		if h.Host != ep.Host {
+			continue
+		}
+		if ep.Window != "" {
+			if e, ok := h.Find(ep.TmuxSession, ep.Window); ok && e.Label != "" {
+				return e, true
+			}
+		}
+		a, ok := h.Find(ep.TmuxSession, "")
+		if !ok || a.Label == "" {
+			return mirror.SessionView{}, false
+		}
+		e := a
+		e.Window, e.Index = ep.Window, ep.Index
+		return e, true
+	}
+	return mirror.SessionView{}, false
 }
 
 // episodeHosts is ctx's owner's windows, read once for episodes (episodeWho),

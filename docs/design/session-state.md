@@ -517,10 +517,16 @@ One push per episode, under the existing `attention` toggle:
   the host's label for it, then its tmux session, window **index** and host,
   e.g. `gold:3 · tmux alpha:3 @ host-a needs you` or `… is stalled` — resolved
   by the episode's session key when the push is sent, so a renumbered window
-  names its new index. Only when no window holds the session then does it fall
-  back to the place stored on the episode, in the same shape without the
-  label (`tmux alpha:3 @ host-a needs you`); a window whose host has just
-  dropped is followed by `(host offline)`, as a notice's is. A
+  names its new index. When no window holds the session then (a `/clear` or a
+  resume gave the window a new conversation), it falls back to the place
+  stored on the episode, **still under the host's codename** whenever the host
+  labels that tmux session — the stored window as it is listed now, or the
+  stored target under the session's label (`gold:1 · tmux alpha:3 @ host-a
+  needs you`) — and only with no label for that session the bare target
+  (`tmux alpha:3 @ host-a needs you`); a window whose host has just
+  dropped is followed by `(host offline)`, as a notice's is. *(As first built
+  the fallback dropped the label even while the host still gave one; fixed
+  2026-11-05, #453.)* A
   dispatched agent is named by its agent name. *(As first built, the title was
   only the stored tmux session and index — the one surface not naming the
   window by its label, which the operator could not place; the label is the
