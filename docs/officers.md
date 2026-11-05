@@ -881,9 +881,9 @@ each one from there. It is offered none of `officer_mark_ready`,
 | `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
 | The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item, and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
 | At create, HQ (read with the officer's own token) must show the **requesting instance** holding the branch's item under a live lease. Another holder, an expired lease, no such claimed item, or HQ unreadable is a refusal. | 403 |
-| At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's issues list filtered by its bot, every page; more than 3,000 is a refusal, never a truncated count), each by the item its body's first line names, or else by its branch. | 403 |
+| At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's issues list filtered by its bot, every page; more than 3,000 is a refusal, never a truncated count), each by the item its body's first line names, or else by its branch. GitHub answers that filter with an empty list, not an error, for a login it does not match, so it is cross-checked: every branch under the officer's prefix is looked up by the branch, and a pull request of the officer's App found that way but not listed by the filter is an error (the limits refuse; the sweep reports it and still checks what the branches found). | 403 |
 | One create per officer at a time: a second create waits for the first to be forwarded and re-checked, and is refused after 2 minutes. | 403 |
-| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read, and refused when it has: a changed, added, removed or renamed-from path matching the repository's forbidden paths; a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; a removed `name:` line in a diff that shows one of those kinds (a rename deletes the old resource); an **added** kustomize `$patch: delete`; an entry dropped from a `kustomization.yaml`'s `resources:`/`bases:`/`components:` whose file at the base declares one of those kinds, or that is not a single YAML file muster can read (a directory, a remote base); an **added** line with a credential-shaped value (below); an added `kind: Secret` with a literal `data:`/`stringData:` value; or a file GitHub shows **no diff** for (an empty patch: a binary file, which GitHub reports with `changes: 0`, a very large file, a pure rename or copy, a mode change — except a removed file with `changes: 0`, a binary or empty file). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
+| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read, and refused when it has: a changed, added, removed or renamed-from path matching the repository's forbidden paths; a `.gitattributes` file in any directory (an attribute can mark files `-diff` or `binary` and so hide their diff); a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; a removed `name:` line in a diff that shows one of those kinds (a rename deletes the old resource); an **added** kustomize `$patch: delete`; an entry dropped from a `kustomization.yaml`'s `resources:`/`bases:`/`components:` whose file at the base declares one of those kinds, or that is not a single YAML file muster can read (a directory, a remote base); an **added** line with a credential-shaped value (below), or an env entry whose credential-like `name:` gets a literal `value:` (the unchanged `name:` line counts as context); an added `kind: Secret` with a literal `data:`/`stringData:` value; or a file GitHub shows **no diff** for (an empty patch: a binary file, which GitHub reports with `changes: 0`, a very large file, a pure rename or copy, a mode change — except a removed file with `changes: 0`, a binary or empty file, which is read at the comparison's merge base instead and refused when it declares one of those kinds, holds a credential-shaped value, or cannot be read). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
 | After a push to a branch with an **open** pull request, after a create, and on every sweep, the same comparison check runs (below). | the pull request is **closed**, its branch deleted (on a content hit), and a notice to HQ naming the paths; the officer cannot reopen it (`state` `open` is refused above) |
 
 **Credential shapes** (`redact.HasSecretValue`, and `HasSecretValueIn` for a
@@ -907,14 +907,30 @@ file) refuse on either of two rules:
   (`.go`, `.ts`, `.py`, …) an unquoted value is an expression, so only a quoted
   string literal is judged there (`Password: cfg.Password` passes, `Password:
   "hunter2"` does not).
+- **The env pair.** A list item whose `name:` is credential-like (the same
+  endings: `- name: DB_PASSWORD`) and whose sibling `value:` holds a literal
+  refuses, in either order and as a flow mapping (`- {name: X, value: y}`).
+  The literal rules are the key rule's, except that a quoted boolean or number
+  (`"true"`, `"5432"`, an env value being a string) is not a literal either;
+  `valueFrom`, `$(VAR)`, `{{…}}` and `ENC[…]` pass.
 
 A SOPS-encrypted Secret (its values `ENC[…]`, a `sops:` block) passes the
 `kind: Secret` rule. A comparison muster cannot read at create or `PATCH` is a
 502: the policy could not decide. ⚠ The manifest rules read the **diff**: a
 hunk shows three lines of context, so a rule that needs the document's kind
 (the rename rule, the `kind: Secret` rule on a modified file) sees it only when
-the hunk does. They are a wall against an officer's ordinary proposals, not a
+the hunk does. They check an officer's ordinary proposals; they are not a
 renderer.
+
+🔴 **The deletion rules are a best-effort EARLY refusal, not the wall.** They
+catch the shapes named above and miss others that delete or rename the same
+resources: a dropped Flux `Kustomization` or `HelmRelease` that prunes them, a
+kustomize `namespace:`/`namePrefix:`/`nameSuffix:` transformer, a JSON6902
+patch of `metadata.name`, a flow-style `resources:` list. The **authoritative**
+wall against deleting or renaming a stateful resource is the **target
+repository's own CI**: a render diff gating every `officer/*` pull request,
+comparing what the base and the head render to. A repository that a draft
+officer ships to needs that gate; muster's rules do not replace it.
 
 **After the change lands.** Three re-checks run the comparison check again
 once GitHub has a change, on a context detached from the officer's connection.

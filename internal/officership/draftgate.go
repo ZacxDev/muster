@@ -239,7 +239,7 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 		if err != nil {
 			return fmt.Errorf("could not read the officer App's identity: %v", err)
 		}
-		prs, err := gh.OfficerPRs(ctx, BotLogin(slug), "all")
+		prs, err := g.officerPRs(ctx, r, gh, BotLogin(slug), "all")
 		if err != nil {
 			return fmt.Errorf("could not list %s's pull requests by this officer: %v", r.Repo, err)
 		}
@@ -373,6 +373,12 @@ func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh
 		whys = append(whys, v.Why)
 	}
 	for _, f := range cmp.Files {
+		if f.Status == "removed" && f.Patch == "" && f.Changes == 0 {
+			if why := removedNoDiffWhy(ctx, gh, cmp, base, f.Path); why != "" {
+				v.Paths = append(v.Paths, f.Path)
+				whys = append(whys, f.Path+": "+why)
+			}
+		}
 		for _, entry := range removedKustomizeEntries(f) {
 			if why := g.removedEntryWhy(ctx, gh, base, entry); why != "" {
 				v.Paths = append(v.Paths, f.Path)
@@ -382,6 +388,33 @@ func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh
 	}
 	v.Paths, v.Why = sortedUnique(v.Paths), strings.Join(whys, "; ")
 	return v
+}
+
+// removedNoDiffWhy is why removing p, a file GitHub shows no diff for
+// (removed, changes 0: a binary or empty file — or a manifest an attribute
+// made look like one), is refused, "" when it is not: its content is read at
+// the comparison's merge base (base when GitHub names none) and refused when
+// it cannot be read, when a line declares a protected kind (protectedKind), or
+// when it holds a credential (redact.HasSecretValueIn). FAIL CLOSED: what
+// cannot be read is not admitted.
+func removedNoDiffWhy(ctx context.Context, gh GitHub, cmp Compare, base, p string) string {
+	at := cmp.MergeBase
+	if at == "" {
+		at = base
+	}
+	raw, err := gh.FileAt(ctx, p, at)
+	if err != nil {
+		return fmt.Sprintf("it removes a file GitHub shows no diff for, which could not be read at %s to check what it declares: %v", shortSHA(at), err)
+	}
+	for _, l := range strings.Split(string(raw), "\n") {
+		if m := protectedKind(l); m != "" {
+			return fmt.Sprintf("it removes a file GitHub shows no diff for, which declares %q (a volume, database or canary must never be deleted by an officer)", m)
+		}
+	}
+	if redact.HasSecretValueIn(p, string(raw)) {
+		return "it removes a file GitHub shows no diff for, which holds a credential-shaped value"
+	}
+	return ""
 }
 
 // removedEntryWhy is why dropping kustomization entry (a repository path) is
@@ -518,6 +551,58 @@ func (g *PushGate) afterCreate(ctx context.Context, sr officers.ShipRepo, branch
 	}
 }
 
+// officerPRs is OfficerPRs(login, state) of sr, CROSS-CHECKED by the
+// officer's branches. 🔴 GitHub answers the issues list's creator filter with
+// an EMPTY list (200 []), not an error, for a login it does not match
+// (measured live: creator=dependabot[bot] lists dependabot's pull requests;
+// creator=dependabot and an unknown <x>[bot] list nothing, 200), so a filter
+// that stopped matching the officer's App would read as "no pull requests"
+// and void the rate limits and the sweep. Every branch under the officer's
+// prefix in sr is looked up by its branch (PRsForBranch, in state); a pull
+// request of login from this repository that the filter did not list is
+// added to the answer AND makes it an error (fail closed: rateLimits refuses;
+// Sweep reports it and checks what was found). A branch already deleted
+// (a merged or closed pull request's) cannot be cross-checked, so this is a
+// positive control while the officer has a branch, not a proof.
+func (g *PushGate) officerPRs(ctx context.Context, sr officers.ShipRepo, gh GitHub, login, state string) ([]PR, error) {
+	prs, err := gh.OfficerPRs(ctx, login, state)
+	if err != nil {
+		return nil, err
+	}
+	listed := map[int]bool{}
+	for _, p := range prs {
+		listed[p.Number] = true
+	}
+	prefix := sr.BranchPrefix + officers.Slug(g.OfficerID) + "/"
+	branches, err := gh.Branches(ctx, prefix)
+	if err != nil {
+		return prs, fmt.Errorf("could not list the officer's branches to cross-check GitHub's creator filter: %v", err)
+	}
+	var missed []string
+	for _, b := range branches {
+		if !strings.HasPrefix(b.Name, prefix) {
+			continue
+		}
+		found, err := gh.PRsForBranch(ctx, b.Name, state)
+		if err != nil {
+			return prs, fmt.Errorf("could not look up the pull requests from %s to cross-check GitHub's creator filter: %v", b.Name, err)
+		}
+		for _, p := range found {
+			if listed[p.Number] || !strings.EqualFold(p.Author, login) || (p.HeadRepo != "" && !strings.EqualFold(p.HeadRepo, sr.Repo)) {
+				continue
+			}
+			listed[p.Number] = true
+			prs = append(prs, p)
+			missed = append(missed, "#"+strconv.Itoa(p.Number))
+		}
+	}
+	if len(missed) > 0 {
+		return prs, fmt.Errorf("GitHub's creator filter (creator=%s) did not list the officer's pull request(s) %s, found by their branches, "+
+			"so it cannot be trusted to list them all", login, strings.Join(missed, ", "))
+	}
+	return prs, nil
+}
+
 // openPRsFrom is every open pull request from branch in sr (not a fork's).
 func (g *PushGate) openPRsFrom(ctx context.Context, sr officers.ShipRepo, gh GitHub, branch string) ([]PR, error) {
 	prs, err := gh.PRsForBranch(ctx, branch, "open")
@@ -586,10 +671,13 @@ func (g *PushGate) Sweep(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("%s: the officer App's identity: %v", sr.Repo, err))
 			continue
 		}
-		prs, err := gh.OfficerPRs(ctx, BotLogin(slug), "open")
+		prs, err := g.officerPRs(ctx, sr, gh, BotLogin(slug), "open")
 		if err != nil {
+			// The pull requests the branches found are still checked.
 			errs = append(errs, fmt.Errorf("%s: listing this officer's open pull requests: %v", sr.Repo, err))
-			continue
+			if len(prs) == 0 {
+				continue
+			}
 		}
 		seen := map[string]bool{}
 		for _, p := range prs {

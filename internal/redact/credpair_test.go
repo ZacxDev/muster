@@ -32,7 +32,7 @@ func TestACredentialNamedEnvEntryWithALiteralValueIsASecret(t *testing.T) {
 		"a quoted literal": "            - name: \"REDIS_PASSWORD\"\n              value: \"plainword\"\n",
 		"a flow mapping":   "            - {name: SMTP_PASSWORD, value: " + fakeEnvPass + "}\n",
 		"a block scalar":   "            - name: CLIENT_SECRET\n              value: |\n                " + fakeEnvPass + "\n",
-		"behind a harmless entry": "            - name: DB_HOST\n              value: db.example.internal\n" +
+		"behind a harmless entry": "            - name: DB_HOST\n              value: db.example.com\n" +
 			"            - name: DB_PASSWORD\n              value: plainword\n",
 	} {
 		if !HasSecretValueIn("clusters/prod/apps/web/deploy.yaml", envDoc(env)) {

@@ -21,6 +21,16 @@ import (
 
 // removedKindRE are the manifest lines whose REMOVAL a draft officer may never
 // propose: deleting one deletes data or a running service's rollout state.
+//
+// 🔴 BEST EFFORT, AN EARLY REFUSAL — NOT THE WALL. These rules read GitHub's
+// diff, so they catch the shapes they name and miss others that delete or
+// rename the same resources (a dropped Flux Kustomization or HelmRelease that
+// prunes them, a kustomize namespace:/namePrefix:/nameSuffix: transformer, a
+// JSON6902 patch of metadata.name, a flow-style resources: list). The
+// AUTHORITATIVE wall against deleting or renaming a stateful resource is the
+// TARGET repository's own CI: a render diff, gating every officer/* pull
+// request, that compares what the base and the head render to. muster's rule
+// refuses the plain cases early; it never replaces that gate.
 var removedKindRE = []*regexp.Regexp{
 	regexp.MustCompile(`["']?\bkind["']?\s*:\s*["']?(PersistentVolumeClaim|PersistentVolume|Canary)\b`),
 	regexp.MustCompile(`["']?\bapiVersion["']?\s*:\s*["']?postgresql\.cnpg\.io/`),
@@ -83,11 +93,16 @@ func patchLines(patch string) []patchLine {
 // paths that make it refused and why (none: admitted). A file is refused when
 //
 //   - its path or its old path matches a forbidden glob;
+//   - it is a .gitattributes file, in any directory, added, modified, removed
+//     or renamed (one can mark manifests -diff or binary, and GitHub then
+//     shows their changes as no diff);
 //   - GitHub shows no diff for it (an empty patch): a binary file (GitHub
 //     reports changes 0), a large file (changes > 0), a pure rename or copy,
 //     a mode change — none can be checked. The one exception is a REMOVED
-//     file with changes 0 (a binary or empty file), whose removal cannot
-//     delete a manifest; its path rule still applies;
+//     file with changes 0 (a binary or empty file — or a manifest an
+//     attribute made look like one), which passes HERE and is judged by
+//     checkComparison from its content at the merge base (removedNoDiffWhy);
+//     its path rule still applies;
 //   - a removed line declares a PersistentVolumeClaim, a PersistentVolume, a
 //     CloudNativePG resource or a Flagger Canary (removedKindRE);
 //   - an added line is a kustomize `$patch: delete` (whatever it targets: its
@@ -95,13 +110,17 @@ func patchLines(patch string) []patchLine {
 //   - a removed `name:` line in a diff that shows a protected kind (renaming a
 //     volume, database or canary deletes it and creates another);
 //   - an added line has a secret-shaped value (redact.HasSecretValueIn, which
-//     judges a credential-like KEY as well as a value);
+//     judges a credential-like KEY as well as a value), or a list item's
+//     credential-like name: has a literal value: (an env entry,
+//     redact.HasSecretPairIn, judged with the hunk's context lines so an
+//     unchanged name line counts);
 //   - an added kind: Secret holds a literal data/stringData value (plainSecret).
 //
 // ⚠ BEST EFFORT, BY THE DIFF: a hunk shows three lines of context, so a rule
 // that needs the document's kind sees it only when the hunk does. The
 // kustomization rule (an entry dropped from resources:) needs the base, and is
-// checkComparison's.
+// checkComparison's. The deletion rules are an early refusal; the wall is the
+// target repository's render-diff CI gate (removedKindRE).
 func ForbiddenFiles(forbidden []string, files []File) ([]string, string) {
 	var hit []string
 	var why []string
@@ -113,6 +132,9 @@ func ForbiddenFiles(forbidden []string, files []File) ([]string, string) {
 		for _, p := range []string{f.Path, f.Previous} {
 			if p == "" {
 				continue
+			}
+			if path.Base(p) == ".gitattributes" {
+				add(p, "a .gitattributes change (an attribute can mark files -diff or binary and so hide a file's diff from the check)")
 			}
 			for _, pat := range forbidden {
 				if officers.MatchForbidden(pat, p) {
@@ -158,7 +180,7 @@ func ForbiddenFiles(forbidden []string, files []File) ([]string, string) {
 		if patchDelete {
 			add(f.Path, "an added line is a kustomize `$patch: delete` (an officer never deletes a resource)")
 		}
-		if redact.HasSecretValueIn(f.Path, strings.Join(added, "\n")) {
+		if redact.HasSecretValueIn(f.Path, strings.Join(added, "\n")) || secretPair(f.Path, lines) {
 			add(f.Path, "an added line has a credential-shaped value")
 		}
 		if plainSecret(lines) {
@@ -169,6 +191,30 @@ func ForbiddenFiles(forbidden []string, files []File) ([]string, string) {
 		return nil, ""
 	}
 	return sortedUnique(hit), strings.Join(why, "; ")
+}
+
+// secretPair reports whether the post-image of a file's diff (its context and
+// added lines) holds a credential env pair one of whose lines is added
+// (redact.HasSecretPairIn), each hunk judged on its own.
+func secretPair(p string, lines []patchLine) bool {
+	var post []string
+	var changed []bool
+	flush := func() bool {
+		hit := redact.HasSecretPairIn(p, post, changed)
+		post, changed = post[:0], changed[:0]
+		return hit
+	}
+	for _, l := range lines {
+		switch l.op {
+		case '@':
+			if flush() {
+				return true
+			}
+		case '+', ' ':
+			post, changed = append(post, l.text), append(changed, l.op == '+')
+		}
+	}
+	return flush()
 }
 
 func orUnknown(s string) string {

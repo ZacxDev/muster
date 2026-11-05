@@ -112,7 +112,7 @@ func TestAnEnvCredentialPairIsRefused(t *testing.T) {
 	}{
 		"a literal password":        {patch: hunk("DB_PASSWORD", "plainword")},
 		"a long literal token":      {patch: hunk("API_TOKEN", "S0me"+"Passw0rd"+"Example")},
-		"a harmless name (control)": {patch: hunk("DB_HOST", "db.example.internal"), ok: true},
+		"a harmless name (control)": {patch: hunk("DB_HOST", "db.example.com"), ok: true},
 		"a dependent var (control)": {patch: hunk("DB_PASSWORD", "$(PG_PASSWORD)"), ok: true},
 	} {
 		r := newDraftRig()

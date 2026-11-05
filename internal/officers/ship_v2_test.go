@@ -230,7 +230,8 @@ func TestADraftOfficerIsOfferedNoMergeReadyTagOrRolloutTool(t *testing.T) {
 	for _, want := range []string{"DRAFT pull requests", officers.BodyFirstLine(shipID, 0)[:len("Officer: "+shipID+" · item ")],
 		"## Root cause, ## Evidence, ## Test, ## Rollback", v2Infra + " (branches officer/engineering-example-web/<item>-<slug> off origin/trunk)",
 		v2Web + " (branches officer/engineering-example-web/<item>-<slug> off origin/main)",
-		"after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request"} {
+		"after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request",
+		"That manifest rule is only a best-effort early refusal: the authoritative check is the repository's own CI, a render-diff gate on every officer/* pull request"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the draft officer's kickoff does not say %q:\n%s", want, text)
 		}

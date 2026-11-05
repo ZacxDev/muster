@@ -394,6 +394,9 @@ func (g *REST) Compare(ctx context.Context, base, head string) (Compare, error) 
 			SHA string `json:"sha"`
 		} `json:"commits"`
 		TotalCommits int `json:"total_commits"`
+		MergeBase    struct {
+			SHA string `json:"sha"`
+		} `json:"merge_base_commit"`
 	}
 	if err := g.do(ctx, http.MethodGet, g.repoPath()+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head), "",
 		nil, &r, "comparing "+base+"..."+head); err != nil {
@@ -403,7 +406,7 @@ func (g *REST) Compare(ctx context.Context, base, head string) (Compare, error) 
 		return Compare{}, fmt.Errorf("the comparison %s...%s is larger than GitHub lists in one answer (%d commits, %d files)",
 			base, head, r.TotalCommits, len(r.Files))
 	}
-	c := Compare{Status: r.Status, AheadBy: r.AheadBy, BehindBy: r.BehindBy}
+	c := Compare{Status: r.Status, AheadBy: r.AheadBy, BehindBy: r.BehindBy, MergeBase: r.MergeBase.SHA}
 	for _, f := range r.Files {
 		c.Files = append(c.Files, File{Path: f.Filename, Previous: f.PreviousFilename, Status: f.Status, Patch: f.Patch, Changes: f.Changes})
 	}
