@@ -1085,9 +1085,11 @@ one line to stderr, which appears in Claude Code's debug log.
 
 How it works:
 
-- The window's Rendered view shows a card above the message box as soon as the
-  hook registers the question (the view's connection is told; it does not wait
-  for a poll). It has one section per question: the question's header, its
+- The window's Rendered view shows a card at the end of the conversation as
+  soon as the hook registers the question (the view's connection is told; it
+  does not wait for a poll), and scrolls it into view. It is part of the
+  conversation, not a box over it: scroll up to read what led to the question.
+  It has one section per question: the question's header, its
   options with their descriptions (radio buttons, or checkboxes for a
   multi-select question), and an **Other** box for your own answer. One
   **Submit** sends every answer. The question is also one item in the

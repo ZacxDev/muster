@@ -31,6 +31,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 **Running it**
 
 - [architecture.md](architecture.md) — binaries, listeners, packages, trust
+- [features.md](features.md) — every optional feature: what it needs, the `.env` lines that turn it on, and how to check it is on
 - [configuration.md](configuration.md) — every environment variable, checked by a test
 - [telemetry.md](telemetry.md) — tracing an open from the browser to the host: the hops, the spans, the metrics, the log line, and what to set
 - [auth.md](auth.md) — password or GoTrue sign-in, passkeys, invites, API tokens

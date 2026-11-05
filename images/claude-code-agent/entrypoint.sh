@@ -28,28 +28,16 @@ fi
 : "${CCD_WORKSPACE:?CCD_WORKSPACE must be set}"
 CCD_TMUX_TARGET="${CCD_TMUX_TARGET:-cc}"
 
-# A subscription token is the ONLY credential this image is meant to carry. The
-# entrypoint refuses to start when any of these is set (non-empty) in ITS
-# environment:
-#   ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN — outrank CLAUDE_CODE_OAUTH_TOKEN in
-#     the CLI's precedence and would silently move the session onto API billing;
-#   CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX — move the session onto a
-#     cloud provider's credentials and billing;
-#   ANTHROPIC_BASE_URL — sends every request, the subscription token included, to
-#     another endpoint. No deployment of this image documents a gateway, so there
-#     is no reason here to allow it.
-# The same variables set through settings.json's `env` are covered by removing
-# `env` and `apiKeyHelper` from <CLAUDE_CONFIG_DIR>/settings.json: here by `ccd
-# seed`, and by ccd's supervisor again before every in-pod restart of the CLI
-# (cmd/ccd/seed.go settingsForbidden). NOT covered: a .claude/settings*.json in
-# the workspace, a key written while a CLI is running (until its next start), and
-# any other variable the CLI may read.
-for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL; do
-  if [[ -n "${!v:-}" ]]; then
-    echo "cc-entrypoint: $v is set; only CLAUDE_CODE_OAUTH_TOKEN may select the session's credential and endpoint. Refusing." >&2
-    exit 1
-  fi
-done
+# The credential check (credentials.sh, installed beside this script's image
+# at /usr/local/lib/cc/credentials.sh): a subscription token is the session's
+# only credential, and ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+# CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX and ANTHROPIC_BASE_URL are
+# refused — except under the scoped CCD_LLM_ROUTE=muster (an officer's routine
+# instance reaching its model through muster's LLM proxy), where it sets the
+# base URL and token itself. It runs before anything is seeded or started.
+# shellcheck source=images/claude-code-agent/credentials.sh
+source /usr/local/lib/cc/credentials.sh
+cc_check_credentials || exit 1
 
 ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
   --settings-template /etc/ccd/settings.json

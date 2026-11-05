@@ -248,12 +248,15 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					g.Attr("data-subagent-src", ref.SubagentPath()),
 					g.Attr("aria-label", "Conversation"),
 					Class("flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3"),
+					// The questions the window's ask hook is holding
+					// (mirror_ask.go): the conversation's LAST child, a card at
+					// its end, so a question never takes the screen from what
+					// preceded it. The script below keeps it last (tail).
+					mirrorAsksRegion(ref),
 				),
 				// What Claude Code has queued itself (cc_queued.go): OUTSIDE the
 				// conversation, so it never moves what is being read there.
 				CCQueued(nil),
-				// The questions the window's ask hook is holding (mirror_ask.go).
-				mirrorAsksRegion(ref),
 				// The window's sessions' attention asks (attention_ask), answered here.
 				g.If(v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, false)),
 				Div(
@@ -1030,7 +1033,7 @@ func mirrorViewScript() g.Node {
   // next socket starts from the beginning.
   function discard() {
     settled();
-    log.innerHTML = '';
+    clearLog();
     clearQueued();
     window.muMirrorIndex = null;
     ctxEl.hidden = true; ctxEl.textContent = '';
@@ -1051,7 +1054,7 @@ func mirrorViewScript() g.Node {
     // is scrolled once.
     bulk = true;
     try { rec.batches.forEach(function (b) { apply(b); }); } finally { bulk = false; }
-    log.scrollTop = log.scrollHeight;
+    toEnd();
     if (opening) opening.mark('snapshot_painted');
     gen = rec.gen; offset = rec.offset;
     opLog = rec.batches.slice(); opBytes = rec.bytes || 0; firstAt = rec.firstAt;
@@ -1063,6 +1066,19 @@ func mirrorViewScript() g.Node {
     chipTimer = setTimeout(function () { if (provisional) showChip(true); }, 1000);
   }
 
+  // 🔴 THE QUESTION CARDS' REGION (#mv-asks, mirror_ask.go) IS THE LOG'S LAST
+  // CHILD AND STAYS LAST: rows go in before it, and a reset keeps it. It is
+  // askScript's, not the transcript's — a reset is no claim that a question
+  // the hook holds has gone. tail() is it while it is in the log.
+  function tail() { var t = document.getElementById('` + mirrorAsksID + `'); return t && t.parentNode === log ? t : null; }
+  function clearLog() { var t = tail(); log.innerHTML = ''; if (t) log.appendChild(t); }
+  function rowCount() { return log.children.length - (tail() ? 1 : 0); }
+  // toEnd scrolls the conversation to its end — unless a question card that
+  // has just shown holds it (askScript's musterAskHold): then to the card,
+  // from its first line when it is taller than the screen. Every stick to the
+  // end goes through here (a batch, a snapshot's paint, a resize), so a reset
+  // drawn after the card arrived does not scroll the question away.
+  function toEnd() { log.scrollTop = log.scrollHeight; if (window.musterAskHold) window.musterAskHold(); }
   function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
   function clearError() { errEl.hidden = true; errText.textContent = ''; }
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
@@ -1087,7 +1103,7 @@ func mirrorViewScript() g.Node {
     // The prompt index (chatIndexScript reads it): a Reset starts a transcript
     // over, so its index is gone until the host sends the new one — and a host
     // that predates it never does.
-    if (m.reset) { log.innerHTML = ''; window.muMirrorIndex = null; ctxEl.hidden = true; ctxEl.textContent = ''; }
+    if (m.reset) { clearLog(); window.muMirrorIndex = null; ctxEl.hidden = true; ctxEl.textContent = ''; }
     if (m.index) { window.muMirrorIndex = m.index; }
     if (m.reset || m.index) document.dispatchEvent(new CustomEvent('muster:chat-index'));
     // Context usage: only a batch whose usage changed carries it; an older
@@ -1148,20 +1164,22 @@ func mirrorViewScript() g.Node {
         }
       }
       if (op.id) { var dup = document.getElementById(op.id); if (dup) dup.remove(); }
-      // Into a group's body when it is on the page; else at the end, as before.
-      ((op.into && document.getElementById(op.into)) || log).appendChild(frag(op.html));
+      // Into a group's body when it is on the page; else at the end of the
+      // conversation — before the question cards' region (tail).
+      var into = op.into && document.getElementById(op.into);
+      if (into) into.appendChild(frag(op.html)); else log.insertBefore(frag(op.html), tail());
     });
     if (m.gen) gen = m.gen;
     if (typeof m.offset === 'number') offset = m.offset;
     working.hidden = !m.busy;
     // A turn is running: no suggestion is for it (suggest_row.go).
     if (m.busy && window.musterSuggest) window.musterSuggest({ state: 'busy' });
-    if (!log.firstElementChild) {
-      log.innerHTML = '<p data-mirror-empty class="m-auto text-sm text-muted">No conversation yet.</p>';
+    if (!rowCount()) {
+      log.insertBefore(frag('<p data-mirror-empty class="m-auto text-sm text-muted">No conversation yet.</p>'), tail());
     } else {
-      var empty = log.querySelector('[data-mirror-empty]'); if (empty && log.children.length > 1) empty.remove();
+      var empty = log.querySelector('[data-mirror-empty]'); if (empty && rowCount() > 1) empty.remove();
     }
-    if (stick) log.scrollTop = log.scrollHeight;
+    if (stick) toEnd();
   }
 
   // painted calls fn once the browser has painted what was just drawn: the
@@ -1348,7 +1366,7 @@ func mirrorViewScript() g.Node {
   var atEnd = true;
   log.addEventListener('scroll', function () { atEnd = nearBottom(); }, { passive: true });
   if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
+    new ResizeObserver(function () { if (atEnd) toEnd(); }).observe(log);
   }
   // 🔴 NO STORAGE WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
   // CACHE. A save is a chain of storage transactions, and one still running

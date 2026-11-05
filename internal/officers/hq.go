@@ -33,6 +33,27 @@ func (e *HQError) Error() string {
 	return fmt.Sprintf("officers: HQ answered %d: %s", e.Status, truncate(string(e.Body), 200))
 }
 
+// RetryableError is HQ answering a 5xx that its route documents as
+// retryable (e.g. the obs route's 502 upstream): HQ's own JSON body, passed
+// back so the instance sees the code, with "retry" — never a final refusal.
+type RetryableError struct {
+	Status int
+	Body   []byte
+}
+
+func (e *RetryableError) Error() string {
+	return fmt.Sprintf("officers: HQ answered %d (retryable): %s", e.Status, truncate(string(e.Body), 200))
+}
+
+// Code is HQ's `code` in the body ("" when it has none).
+func (e *RetryableError) Code() string {
+	var b struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(e.Body, &b)
+	return b.Code
+}
+
 // ItemID is an item id as HQ spells it. The contract does not say whether ids
 // are numbers or strings, so both decode; it is always used as a path segment.
 type ItemID string
@@ -142,6 +163,14 @@ func (c *Client) Do(ctx context.Context, method, path string, body any) ([]byte,
 // do is Do with a body already encoded as contentType ("" and nil: no body),
 // e.g. an image's raw bytes (UploadAskImage).
 func (c *Client) do(ctx context.Context, method, path, contentType string, body []byte) ([]byte, error) {
+	return c.doCoded(ctx, method, path, contentType, body, nil, nil)
+}
+
+// doCoded is do, except that a 5xx whose body is HQ's JSON error with a
+// `code` in decisions is *HQError too (a route's stated, final refusal, not
+// an outage), and one with a `code` in retryable is *RetryableError (a
+// failure the route says to retry).
+func (c *Client) doCoded(ctx context.Context, method, path, contentType string, body []byte, decisions, retryable []string) ([]byte, error) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -167,9 +196,29 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 		return raw, nil
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		return nil, &HQError{Status: resp.StatusCode, Body: raw}
+	case resp.StatusCode >= 500 && len(decisions) > 0 && hqCodeIn(raw, decisions):
+		return nil, &HQError{Status: resp.StatusCode, Body: raw}
+	case resp.StatusCode >= 500 && len(retryable) > 0 && hqCodeIn(raw, retryable):
+		return nil, &RetryableError{Status: resp.StatusCode, Body: raw}
 	default:
 		return nil, fmt.Errorf("%w: %s %s answered %d", ErrHQUnavailable, method, path, resp.StatusCode)
 	}
+}
+
+// hqCodeIn reports whether raw is a JSON object whose `code` is one of codes.
+func hqCodeIn(raw []byte, codes []string) bool {
+	var b struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(raw, &b) != nil || b.Code == "" {
+		return false
+	}
+	for _, c := range codes {
+		if b.Code == c {
+			return true
+		}
+	}
+	return false
 }
 
 func scrubURLError(err error) string {

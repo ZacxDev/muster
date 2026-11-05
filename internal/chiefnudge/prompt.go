@@ -22,6 +22,13 @@ type Hint struct {
 	// and writes no question (docs/design/session-state.md, step 3a). Off, it
 	// answers nudge, ask (with the notice's question) or leave, as before.
 	Notify bool
+	// ChiefChat is the owner's TYPED Chief-chat turns in the window (step
+	// 3b-1: chat_messages.typed_by), each with its "chief:<id>" id, already
+	// redacted and cut like owner — the exact bytes CheckQuoteFrom matches. The
+	// chief may quote them, naming quote_source "chief_chat". Read only with
+	// Notify: with session state off the prompt is the one from before 3b-1,
+	// byte for byte, whatever this holds.
+	ChiefChat []Msg
 }
 
 // Prompt is the chief's turn for one stalled session: muster's instructions
@@ -37,8 +44,8 @@ func Prompt(s Session, last Msg, owner []Msg, idle time.Duration, hint Hint, non
 	pre := "muster: stall check. One of your owner's sessions has been idle for " + idle.Round(time.Minute).String() +
 		" and its last message is its own. Decide what to do and answer with ONE JSON object and nothing else:\n"
 	if hint.Notify {
-		pre += `{"decision":"nudge"|"leave"|"notify","reason":"<one short line>","quote_id":"<id>","quote":"<exact text>",` +
-			`"covered_action":"<the pending action>"}` + "\n" + nudgeRule +
+		pre += `{"decision":"nudge"|"leave"|"notify","reason":"<one short line>","quote_source":"session"|"chief_chat",` +
+			`"quote_id":"<id>","quote":"<exact text>","covered_action":"<the pending action>"}` + "\n" + nudgeRule + chiefChatRule +
 			"- leave: it finished, is reporting, or is waiting on something that is not the owner: it needs nothing from the owner now.\n" +
 			"- notify: the owner should look at the session. muster tells them where it is, so write no question and no summary.\n" +
 			"- reason: one short line in your own words, for the owner's audit. It never pastes the session's text.\n"
@@ -72,19 +79,42 @@ func Prompt(s Session, last Msg, owner []Msg, idle time.Duration, hint Hint, non
 	if len(owner) == 0 {
 		lines = append(lines, "  (none in the window muster can read)")
 	}
-	for _, m := range owner {
+	lines = appendOwnerMessages(lines, owner)
+	if hint.Notify {
+		lines = append(lines, "", "the owner's own messages to you in their Chief chat (quote_source chief_chat), oldest first:")
+		if len(hint.ChiefChat) == 0 {
+			lines = append(lines, "  (none in the window muster can read)")
+		}
+		lines = appendOwnerMessages(lines, hint.ChiefChat)
+	}
+	return fence.Block{Preface: pre, Marker: promptMarker, Count: 1, Lines: lines}.Render(nonce)
+}
+
+// appendOwnerMessages is lines with each of msgs as the prompt shows an owner
+// message: its id (and time), then its text as Shown — exactly the form
+// CheckQuote matches a quote against.
+func appendOwnerMessages(lines []string, msgs []Msg) []string {
+	for _, m := range msgs {
 		head := "  [id " + fence.Sanitize(m.ID)
 		if !m.At.IsZero() {
 			head += " · " + m.At.UTC().Format(time.RFC3339)
 		}
 		lines = append(lines, head+"]")
-		// Shown: exactly the form CheckQuote matches a quote against.
 		for _, l := range strings.Split(Shown(m.Text), "\n") {
 			lines = append(lines, "    "+l)
 		}
 	}
-	return fence.Block{Preface: pre, Marker: promptMarker, Count: 1, Lines: lines}.Render(nonce)
+	return lines
 }
+
+// chiefChatRule is the quote's source (step 3b-1), with session state on only:
+// the owner's words may also be what they TYPED to the chief in its chat. Code
+// checks the quote is verbatim in the source named; which source covers THIS
+// session's step is the chief's judgement, as for any quote.
+const chiefChatRule = "- quote_source: \"session\" when the quote is from one of the owner's messages to this session, " +
+	"\"chief_chat\" when it is from one of the owner's own messages to you in their Chief chat, also below. A Chief-chat " +
+	"message counts only when it plainly covers this session's pending action. muster checks the quote in the source " +
+	"you name and nowhere else.\n"
 
 // askSeveralItems is the ask-stall's guidance for a turn that ends with several
 // things pending on the owner (a to-do list, not one question). Only an

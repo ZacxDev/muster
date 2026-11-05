@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/net/html"
+
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 )
@@ -171,6 +173,46 @@ func TestTheRenderedViewHasTheLiveRegion(t *testing.T) {
 	}
 	if !strings.Contains(html, "form[data-ask-form]") {
 		t.Fatalf("no ask script")
+	}
+}
+
+// TestTheLiveRegionIsTheConversationsLastChild: the question cards' region is
+// the LAST child of the conversation (main#mv-log, the one scroll region) and
+// in its flow — not a box of its own between the conversation and the
+// composer, which took up to 70% of the screen and left the conversation a
+// strip (the operator's "an overlay ... impossible to see the conversation
+// preceding the question"), and not positioned over it. The script keeps it
+// last (mirrorViewScript's tail): rows are inserted before it, and a reset
+// keeps it. That behaviour is guarded in a browser, not by the script's text
+// here: e2e/tests/mirror-ask.spec.ts "opened on a tall question" asserts the
+// region is the log's last child, once, after the reset batch and after rows
+// stream in. This pins the server-rendered structure it starts from.
+func TestTheLiveRegionIsTheConversationsLastChild(t *testing.T) {
+	page := render(MirrorViewPage(MirrorViewView{Host: "lap", Session: "work", Window: "@3", Interactive: true, StepUp: &StepUpView{ConfirmPath: "/auth/confirm"}}))
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	region := byID(doc, "mv-asks")
+	if region == nil {
+		t.Fatal("no #mv-asks")
+	}
+	if p := region.Parent; p == nil || attrOf(p, "id") != "mv-log" || p.Data != "main" {
+		t.Fatalf("#mv-asks is not in the conversation (main#mv-log): parent %v", region.Parent)
+	}
+	for n := region.NextSibling; n != nil; n = n.NextSibling {
+		if n.Type == html.ElementNode {
+			t.Fatalf("#mv-asks is not the conversation's last child: <%s id=%q> follows it", n.Data, attrOf(n, "id"))
+		}
+	}
+	cls := " " + attrOf(region, "class") + " "
+	for _, bad := range []string{" fixed ", " absolute ", " sticky ", " overflow-y-auto ", " max-h-"} {
+		if strings.Contains(cls, bad) {
+			t.Errorf("#mv-asks has %q: a box over or beside the conversation, not a card in its flow (class %q)", strings.TrimSpace(bad), cls)
+		}
+	}
+	if st := attrOf(region, "style"); st != "" {
+		t.Errorf("#mv-asks has an inline style %q: its place is the conversation's flow, set by its classes", st)
 	}
 }
 

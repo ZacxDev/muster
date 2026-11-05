@@ -174,6 +174,32 @@ three things in that session's `settings.json` at provision time (the pod's
   takes effect at the instance's next pod start: seed removes the model it set
   itself (the instance keeps its volume, so it would otherwise persist), back to
   the account default. A model changed by hand inside the pod is left alone.
+  A routine instance of an officer with an [`llm` block](#the-llm-proxy) gets
+  no model here: the proxy pins it.
+
+**The LLM route (`CCD_LLM_ROUTE=muster`).** A routine instance of an officer
+with an `llm` block — and no other pod — is put on the route: its pod is given
+`CCD_LLM_ROUTE=muster` and **no** `CLAUDE_CODE_OAUTH_TOKEN`. The image's
+entrypoint runs its credential check (`images/claude-code-agent/credentials.sh`,
+installed at `/usr/local/lib/cc/credentials.sh`) before it seeds or starts
+anything. Without the route, the check refuses `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` and
+`ANTHROPIC_BASE_URL`, each naming the variable, as it always has. Under the
+route it sets `ANTHROPIC_BASE_URL` to exactly `$MUSTER_CONNECT_URL/llm` and
+`ANTHROPIC_AUTH_TOKEN` to the pod's own `MUSTER_HOOK_TOKEN`. It appends the
+muster host to `NO_PROXY` and `no_proxy`, so a proxy in the pod's environment
+never carries the token. And it refuses the pod when any of these holds:
+`CLAUDE_CODE_OAUTH_TOKEN` is set; `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN`
+is already set at all, even to the value the check would set (nothing produces
+one, so one present came from somewhere else); `ANTHROPIC_API_KEY`, Bedrock
+or Vertex is set;
+`MUSTER_CONNECT_URL` or `MUSTER_HOOK_TOKEN` is missing; or `CCD_LLM_ROUTE` has
+any other value. The pod holds no provider key. The proxy authenticates it by
+its muster token and attaches the officer's key upstream. Each condition has a
+positive and a negative case in the Go suite (`cmd/ccd`,
+`internal/agentspec`) and in the image smoke (`cc-smoke`). A routed pod
+still needs a `claude-code-agent` image built from this version: an older
+entrypoint refuses the route's variables, and its pod does not start.
 
 No other agent gets any of them (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
@@ -515,6 +541,8 @@ listing and again at dispatch):
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
+| `officer_obs_queries` | `GET /officers/{id}/obs/queries` — HQ's named observability queries (each one's id, what its answer may claim, the arguments it takes) and HQ's caps. See [Observability queries](#observability-queries) |
+| `officer_obs_query` `{query_id, …}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes (the `args` `officer_obs_queries` lists; the tool's schema describes `query_id` only and is open, so HQ's decoder is the one schema). Never a raw query |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
@@ -557,6 +585,41 @@ charter says to — an officers muster usually runs headless, so an attention
 ask there reaches nobody. Its MCP instructions and system prompt say the same,
 in place of the generic attention paragraph every other agent gets
 ([attention.md](attention.md#what-agents-are-told)).
+
+### Observability queries
+
+`officer_obs_queries` and `officer_obs_query` read metrics and logs through
+HQ's officer obs route, with the officer's own HQ token: no new credential,
+and no network path from the pod to a metrics or log store. Every officer's
+instances are offered both; whether the route is on is HQ's switch.
+
+🔴 **There is no raw query, and muster keeps no copy of HQ's request schema.**
+HQ keeps a registry of NAMED queries, each a reviewed template with typed
+arguments. `officer_obs_queries` lists them: an id, what its answer may be
+used to claim (`claims`), the `args` the query takes, and HQ's caps (window
+length, series, lines, queries per minute). `officer_obs_query` sends its
+arguments object to HQ **unchanged** — `{query_id, start, end}` plus the
+arguments that query takes. HQ's decoder is the one place the request schema
+lives: it refuses an unknown field (a `promql`, `expr` or `instance` key
+included) or a field of the wrong type (`400 invalid`), an id it does not have
+(`400 unknown_query`), a missing or malformed window and an argument the query
+does not take or needs (`400 invalid`), and the officer gets HQ's refusal with
+its code. muster never decodes the arguments into a struct of its own, which
+would silently drop an unknown key. What muster checks itself is what it owns:
+the officer (naming another is refused), its token, that the arguments are
+one JSON object, and their size (at most 256 KiB, HQ's cap on an officer
+route's body).
+
+HQ's answer is returned as is. An `empty: true` answer is **not a zero**: its
+`hint` names the positive control to run first. Log lines come back redacted
+by HQ, as a sample, never a count. HQ's refusals reach the instance with HQ's
+status and body, including two 5xx answers that are final decisions, not
+outages: `503 obs_unconfigured` (the route is switched off on that HQ) and
+`502 wrong_shape` (HQ's own defect). `502 upstream` (the backend read failed)
+is **retryable**, as HQ's guide says: the answer is an error with
+`retryable: {status, code, hq}` in place of `refused`, and says to retry in a
+minute. Any other 5xx is "HQ
+is unavailable, try again". A `429 rate_limited` means wait a minute.
 
 ### Asking an HQ member (`officer_ask_person`)
 
@@ -1255,6 +1318,39 @@ An officer may split its instances into two **pools**, one per HQ item tier
   (`?tier=`). The first message says which tier the instance works.
 - **No `tiers`: exactly as before.** There is one pool and the same names. The
   claim sends no `tier` key and the items list has no tier filter.
+- **The judgement session cap: `tiers.judgement.max_sessions_per_day`**
+  (1–100; leave it out for no cap). A judgement **session** is one distinct
+  item the judgement pool claims in a UTC day. Re-claiming an item already
+  counted that day is not a new one: a restarted instance re-claiming its own
+  item, or an item given back and taken again. Once the day's cap is spent:
+  - `officer_claim` from a judgement instance refuses any new item **before
+    HQ**, naming the cap. The item stays queued in HQ. With no `item_id`
+    (claim-next, HQ picks the item) the claim is refused before HQ too.
+    Below the cap a claim-next holds one session until HQ answers, and gives
+    it back when HQ claimed nothing.
+  - The wake loop does not wake or re-prompt the judgement pool for new work.
+    It still does so for items the pool holds or already counted today.
+  - Nothing else changes. The routine pool is not capped by it (its bound is
+    the [`llm`](#the-llm-proxy) budget), and neither is an untiered officer.
+
+  The count is **persisted** (`officer_judgement_sessions`, migration
+  0082): one row per officer and UTC day holding the admitted entries,
+  shared by every muster-server replica, so a restart or a rollout overlap
+  neither resets nor splits it. A session is admitted in one transaction
+  holding the day's row lock, deciding on the row's latest version: two claims
+  racing for the last session — from one server or two — cannot both pass,
+  and two claims of the SAME item take one session (the second is a free
+  re-claim, never the cap's refusal). Only the claim that inserted an item may
+  give it back, and only when HQ **refused** the claim: when HQ's answer is
+  lost (a timeout, a 5xx), HQ may have claimed it, so the session is kept. A
+  claim-next holds a `pending:` entry until HQ answers; one older than two HQ
+  request timeouts (`officers.PendingTTL`, a server that died mid-claim) stops
+  counting, and a claim-next whose answer was lost keeps its session as an
+  `unknown:` entry for the day. A release or resolve that fails is logged. A
+  declared cap needs the database: without it the server refuses to start. If
+  the ledger cannot be read or written, the claim is refused (nothing is
+  claimed without the count), and the wake loop treats that judgement pool as
+  capped for the pass (logged); the routine pool is unaffected.
 
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;
@@ -1262,6 +1358,8 @@ Refused at boot, each naming the problem:
 - a pool without a `model`, or with a model that is not a model name;
 - an unknown key inside a pool;
 - a pool `max_instances` outside 1–8 (the default is 1);
+- `max_sessions_per_day` on the routine pool, or outside 1–100 on the
+  judgement pool;
 - a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
   values are `tiers.judgement`'s, and two sources for one value are refused
   rather than ranked);
@@ -1323,14 +1421,12 @@ an unknown key in `llm` (`model` and an agent list included: they live in
 server with no database (the budget is persisted) or no connector store (the
 proxy's door and audit trail).
 
-🔴 **Today every `llm` officer is refused at boot.** The pod side is not in
-muster yet: the claude-code image's entrypoint still refuses
-`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (see [The instance's Claude
-Code session](#the-instances-claude-code-session)), with no scoped exception
-under `CCD_LLM_ROUTE=muster`, and the pod spec refuses a provider model id as
-the session's model. A routine instance of such an officer could not be
-provisioned, so muster-server refuses to start with one, naming the officer
-and the reason. The change that adds `CCD_LLM_ROUTE` lifts the refusal.
+**The pod side** is the [LLM route](#the-instances-claude-code-session):
+each routine instance's pod is given `CCD_LLM_ROUTE=muster` and no
+subscription token. Its entrypoint then points Claude Code at exactly
+`$MUSTER_CONNECT_URL/llm`, with the pod's own muster token as the bearer. The
+session takes no model of its own, because the proxy pins it. The judgement
+pool's instances are not routed: they run on their Claude accounts as before.
 
 #### What one request does
 
@@ -1503,7 +1599,9 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 uses `POST /officers/{id}/items/{item}/transcript`
 ([Transcript to HQ](#transcript-to-hq)). `ccd ask-image` uses `POST
 /officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
-`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Where the contract leaves a shape open, muster accepts:
+`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Every
+officer may use `GET /officers/{id}/obs/queries` and `POST
+/officers/{id}/obs/query` ([Observability queries](#observability-queries)). Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;
@@ -1513,12 +1611,15 @@ uses `POST /officers/{id}/items/{item}/transcript`
 implements the claim/lease rules as HQ does (409 to ANY claim while the lease
 is live — the holder's own included, which `officer_claim` turns into a
 heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
-across officers), the captain route's body rules, and the transcript route's
-(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), and
-the asks routes' (the upload's type and size checks, 400 `invalid` for HQ's
+across officers), the captain route's body rules, the transcript route's
+(limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), the
+asks routes' (the upload's type and size checks, 400 `invalid` for HQ's
 input limits — deadline, image and option counts, option and question length —
 before the item is looked up, 409 `lease_lost`, 410, 422 `unknown_recipient`,
-and the item left `waiting`).
+and the item left `waiting`), and the obs routes' (a two-entry registry; HQ's
+refusals in HQ's order — the decoder's unknown fields and wrong types, unknown
+ids, the window, undeclared or missing arguments; `503 obs_unconfigured` when
+switched off; `502 upstream` / `wrong_shape` on demand).
 
 ## Deploying
 

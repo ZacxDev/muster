@@ -104,9 +104,22 @@ type Server struct {
 	NoticeStatus int
 	// Preflight is POST /officers/{id}/preflight's answer (404 when nil).
 	Preflight map[string]any
+	// ObsCalls is every POST /officers/{id}/obs/query the fake ran, in order.
+	// ObsOff makes both obs routes answer 503 obs_unconfigured (an HQ with
+	// the route switched off); ObsEmpty makes a query answer empty.
+	ObsCalls []ObsCall
+	ObsOff   bool
+	ObsEmpty bool
+	// ObsFail makes a query that passes validation answer HQ's backend
+	// failure instead of running (502 upstream / wrong_shape).
+	ObsFail ObsFail
 	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
 	// "Priority"); false — the default — is an HQ from before it: 404.
 	ClaimNext bool
+	// CommitThenFail, when non-zero, makes a claim (by id or claim-next)
+	// that succeeds COMMIT it and then answer this status instead: an HQ
+	// that took the claim but whose answer was lost (a timeout, a 5xx).
+	CommitThenFail int
 	// Before, when set, runs ahead of every request, OUTSIDE the fake's lock
 	// (so it may call SetClaim, SetBlocked, …): a test changes HQ's state at
 	// an exact point in a multi-request exchange. Set it before any request.
@@ -218,6 +231,165 @@ type Notice struct {
 type Evaluation struct {
 	Officer string
 	Body    map[string]any
+}
+
+// ObsCall is one obs query the fake ran: the officer HQ resolved from the
+// token, and the body.
+type ObsCall struct {
+	Officer string
+	Body    map[string]any
+}
+
+// ObsRegistry is the fake's named-query registry, in the shape of HQ's
+// GET /officers/{id}/obs/queries entries (civ-hq internal/api/officer_obs.go
+// ObsQueryInfo): each entry's `args` are the only request fields it takes,
+// besides query_id. Two entries — a series one and a lines one — so a test
+// can send an argument one takes and the other refuses.
+var ObsRegistry = []map[string]any{
+	{"id": "fixture_calls_by_procedure", "backend": "prometheus", "title": "calls by procedure", "claims": "how many calls each procedure served in the window",
+		"args": []string{"start", "end", "step", "procedures"}, "group_by": []string{"procedure"}, "single_step": false, "lines": false},
+	{"id": "fixture_error_lines", "backend": "loki", "title": "error lines", "claims": "a redacted sample of error lines, never a count",
+		"args": []string{"start", "end", "limit"}, "group_by": []string{}, "single_step": false, "lines": true},
+}
+
+// obsStringFields and obsOtherFields are HQ's POST /obs/query body fields
+// (civ-hq internal/api/officer_obs.go OfficerObsQueryRequest) by JSON type.
+var (
+	obsStringFields = map[string]bool{"query_id": true, "start": true, "end": true, "step": true, "tag": true, "name": true, "path": true}
+	obsIntFields    = map[string]bool{"min_calls": true, "limit": true}
+)
+
+// obsBodyShape is HQ's 400 invalid text for a body its decoder refuses.
+const obsBodyShape = `body must be one JSON object {"query_id", "start", "end", "step"?, "tag"?, "procedures"?, "min_calls"?, "name"?, "path"?, "limit"?}`
+
+// ObsFail, when Code is set, is the answer a query that passes validation
+// gets instead of running: HQ's 502 upstream (the backend read failed) or
+// 502 wrong_shape (the backend answered in the wrong shape).
+type ObsFail struct {
+	Status int
+	Code   string
+}
+
+// obsDecodes reports whether body would pass HQ's decoder: one JSON object
+// of the known fields (unknown ones refused), each of its type.
+func obsDecodes(body map[string]any) bool {
+	if body == nil {
+		return false
+	}
+	for k, v := range body {
+		switch {
+		case obsStringFields[k]:
+			if _, ok := v.(string); !ok {
+				return false
+			}
+		case obsIntFields[k]:
+			if f, ok := v.(float64); !ok || f != float64(int(f)) {
+				return false
+			}
+		case k == "procedures":
+			list, ok := v.([]any)
+			if !ok {
+				return false
+			}
+			for _, e := range list {
+				if _, ok := e.(string); !ok {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// obsTime is HQ's obsTime: required, RFC 3339, whole seconds.
+func obsTime(field string, body map[string]any) string {
+	v, _ := body[field].(string)
+	if v == "" {
+		return field + " is required (RFC 3339)"
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return field + " " + strconv.Quote(v) + " is not an RFC 3339 time"
+	}
+	if t.Nanosecond() != 0 {
+		return field + " " + strconv.Quote(v) + " is not a whole second"
+	}
+	return ""
+}
+
+// obs serves the two obs routes as HQ does (civ-hq internal/api/
+// officer_obs.go), refusals in HQ's order and with HQ's codes: the decoder
+// (400 invalid: not one object of the known fields, a field of the wrong
+// type), the registry (400 unknown_query), then the entry's arguments (400
+// invalid: start/end required, RFC 3339, whole seconds; an argument the
+// entry does not take; one it needs and lacks).
+func (s *Server) obs(w http.ResponseWriter, officer, verb, method string, body map[string]any) {
+	if s.ObsOff {
+		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "the obs query route is off on this HQ (CIVHQ_OFFICER_OBS)", "code": "obs_unconfigured"})
+		return
+	}
+	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
+	switch {
+	case verb == "queries" && method == http.MethodGet:
+		s.write(w, http.StatusOK, map[string]any{"queries": ObsRegistry, "limits": map[string]any{"max_range_seconds": 604800, "max_lines": 1000, "per_minute": 30}})
+	case verb == "query" && method == http.MethodPost:
+		if !obsDecodes(body) {
+			invalid(obsBodyShape)
+			return
+		}
+		id, _ := body["query_id"].(string)
+		var entry map[string]any
+		var ids []string
+		for _, e := range ObsRegistry {
+			ids = append(ids, e["id"].(string))
+			if e["id"] == id {
+				entry = e
+			}
+		}
+		if entry == nil {
+			sort.Strings(ids)
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "no registry entry " + strconv.Quote(id) + "; the entries are: " + strings.Join(ids, ", "), "code": "unknown_query"})
+			return
+		}
+		for _, f := range []string{"start", "end"} {
+			if msg := obsTime(f, body); msg != "" {
+				invalid(msg)
+				return
+			}
+		}
+		takes := map[string]bool{}
+		for _, a := range entry["args"].([]string) {
+			takes[a] = true
+		}
+		for _, f := range []string{"step", "min_calls"} {
+			if takes[f] && body[f] == nil {
+				invalid("query " + id + " needs " + f)
+				return
+			}
+		}
+		for _, f := range []string{"step", "tag", "procedures", "name", "path", "limit", "min_calls"} {
+			if _, given := body[f]; given && !takes[f] {
+				invalid("query " + id + " takes no " + f)
+				return
+			}
+		}
+		if s.ObsFail.Code != "" {
+			s.write(w, s.ObsFail.Status, map[string]any{"error": "the backend read failed in the fake", "code": s.ObsFail.Code})
+			return
+		}
+		s.ObsCalls = append(s.ObsCalls, ObsCall{Officer: officer, Body: body})
+		ans := map[string]any{"audit_id": len(s.ObsCalls), "query_id": id, "backend": entry["backend"], "claims": entry["claims"],
+			"status": "ok", "empty": false, "result_count": 1, "series": []any{map[string]any{"key": "fixture.procedure", "total": 42}}, "lines": []any{}}
+		if s.ObsEmpty {
+			ans["status"], ans["empty"], ans["result_count"], ans["series"] = "empty", true, 0, []any{}
+			ans["hint"] = "an empty answer is not a zero: run the positive control first"
+		}
+		s.write(w, http.StatusOK, ans)
+	default:
+		s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
+	}
 }
 
 // New starts a fake. tokens maps each officer token to the officer it acts
@@ -448,6 +620,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Notices = append(s.Notices, Notice{Officer: officer, Body: body})
 		s.write(w, http.StatusCreated, map[string]any{"posted": true})
+	case len(parts) == 3 && parts[1] == "obs":
+		s.obs(w, officer, parts[2], r.Method, body)
 	case len(parts) == 2 && parts[1] == "ask-images" && r.Method == http.MethodPost:
 		s.askImage(w, officer, r, raw)
 	case len(parts) == 2 && parts[1] == "claim-next" && r.Method == http.MethodPost && s.ClaimNext:
@@ -521,6 +695,10 @@ func (s *Server) claimNext(w http.ResponseWriter, officer string, body map[strin
 	exp := now.Add(time.Duration(lease) * time.Second)
 	best.Status, best.ClaimedBy, best.LeaseExpiresAt, best.UpdatedAt = "claimed", instance, &exp, now
 	best.Attempts++
+	if s.CommitThenFail != 0 {
+		s.write(w, s.CommitThenFail, map[string]any{"error": "committed, then failed to answer"})
+		return
+	}
 	s.write(w, http.StatusOK, map[string]any{"item": *best, "lease_expires_at": exp})
 }
 
@@ -591,6 +769,10 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		exp := now.Add(time.Duration(lease) * time.Second)
 		it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = "claimed", instance, &exp, now
 		it.Attempts++
+		if s.CommitThenFail != 0 {
+			s.write(w, s.CommitThenFail, map[string]any{"error": "committed, then failed to answer"})
+			return
+		}
 		s.write(w, http.StatusOK, map[string]any{"item": *it, "lease_expires_at": exp})
 	case "heartbeat":
 		if !live || it.ClaimedBy != instance {
