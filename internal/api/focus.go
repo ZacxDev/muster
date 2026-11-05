@@ -136,6 +136,9 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 			continue
 		}
 		seen[e.SessionKey()] = true
+		// ActiveAt is the window's CardActivity: a Claude window's transcript
+		// LAST MESSAGE (the time the cards show), else — an opencode or Hermes
+		// window, an older host that reports none — tmux's window activity.
 		out = append(out, focus.Candidate{Subject: focus.MirrorSubject(e.SessionKey()), ActiveAt: e.ActiveAt()})
 	}
 	return out, nil
