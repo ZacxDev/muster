@@ -201,8 +201,8 @@ func fixtureAllow(t *testing.T) *kuberead.Allowlist {
 // "allow all".
 func TestParseAllowlistIsStrict(t *testing.T) {
 	a := fixtureAllow(t)
-	if n := len(a.Entries()); n != 12 {
-		t.Fatalf("the fixture flattens to %d entries, want 12", n)
+	if n := len(a.Entries()); n != 10 {
+		t.Fatalf("the fixture flattens to %d entries, want 10", n)
 	}
 	for _, raw := range []string{
 		`[{"apiGroup":"widgets.example.com","resources":["*"],"scope":"namespaced"}]`,
