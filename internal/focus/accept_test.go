@@ -132,6 +132,7 @@ func TestTheNewReasonsAreFixedAndDistinct(t *testing.T) {
 		{ErrFormat, "the summarizer ignored the format"},
 		{errors.Join(errors.New("ctx"), ErrFormat), "the summarizer ignored the format"},
 		{ErrTranscriptText, "the summarizer repeated the session's text"},
+		{ErrMarkdown, "the summarizer answered in markdown"},
 	} {
 		if got := Reason(c.err); got != c.want {
 			t.Errorf("Reason(%v) = %q, want %q", c.err, got, c.want)
@@ -143,7 +144,7 @@ func TestTheNewReasonsAreFixedAndDistinct(t *testing.T) {
 // answer is never refused as a copy — a short title can share the phrase that
 // asked for the work. Fixture: a five-word title found whole in the tail.
 func TestShortAnswersAreNotJudgedVerbatim(t *testing.T) {
-	tail := "user: fix the nightly export job please"
+	tail := "assistant: fix the nightly export job please"
 	if _, err := Accept(Summary{Title: "Fix the nightly export job"}, tail, ""); err != nil {
 		t.Errorf("a five-word title was refused: %v", err)
 	}

@@ -105,10 +105,12 @@ var (
 	// fallback stored such an answer's first line as the title, which is how a
 	// sentence of transcript prose became a session's name.
 	ErrFormat = errors.New("focus: the summarizer's answer is not in the asked-for format")
-	// ErrTranscriptText is an answer that is the session's own text rather than
-	// a summary of it: markdown or a code fence, or mostly word-for-word the
-	// transcript (Accept).
+	// ErrTranscriptText is a title that is the session's own reply echoed
+	// back: mostly word for word the tail's assistant lines (Accept).
 	ErrTranscriptText = errors.New("focus: the summarizer's answer repeats the session's own text")
+	// ErrMarkdown is an answer in markdown: a code fence, or a title that is a
+	// heading, **bold** or a [link](…) (Accept).
+	ErrMarkdown = errors.New("focus: the summarizer's answer is markdown")
 )
 
 // HTTPError is a non-2xx answer.

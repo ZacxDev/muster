@@ -117,6 +117,11 @@ type Refresher struct {
 	// (checkedSkip). In memory only: lost on restart, which costs one extra
 	// tail read per session on the first pass after it — no migration.
 	checked map[int64]map[Subject]check
+	// refused is, per owner, the tail fingerprint whose answer was REFUSED for
+	// its content (refusedForContent), by subject: that tail is not sent again
+	// until it changes (Refresh). In memory only — after a restart a refused
+	// tail costs one more call — and pruned to each pass's candidates.
+	refused map[int64]map[Subject]string
 	// Calls counts summarizer calls made (a test reads it).
 	Calls int
 }
@@ -211,6 +216,16 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 		r.markChecked(owner, sub, readAt, fp)
 		return OutcomeUnchanged, nil
 	}
+	// 🔴 A TAIL WHOSE ANSWER WAS REFUSED IS NOT SENT AGAIN. A refusal for the
+	// answer's CONTENT (format, markdown, a copy) is the model's verdict on this
+	// tail and would very likely repeat; and a failure writes no fingerprint, so
+	// without this an idle session would cost a call on every pass, against the
+	// owner's PerOwnerPerHour budget every other session shares. A transport or
+	// HTTP failure is NOT recorded here: it says nothing about the tail, and is
+	// retried on the next pass.
+	if r.refusedFP(owner, sub) == fp {
+		return OutcomeUnchanged, nil
+	}
 	if !r.take(owner) {
 		r.record(ctx, sub, ErrCapped)
 		return OutcomeFailed, ErrCapped
@@ -232,9 +247,13 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 		sum, err = Accept(sum, tail, prev)
 	}
 	if err != nil {
+		if refusedForContent(err) {
+			r.setRefused(owner, sub, fp)
+		}
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err
 	}
+	r.setRefused(owner, sub, "")
 	cwd, named := LatestCwd(entries)
 	if _, err := r.Store.Upsert(ctx, sub, Write{Title: sum.Title, Description: sum.Description, Source: SourceSummarizer, Cwd: cwd, CwdNamed: named,
 		Fingerprint: fp}); err != nil {
@@ -316,6 +335,57 @@ func (r *Refresher) pruneChecked(owner int64, cands []Candidate) {
 	}
 }
 
+// refusedForContent reports whether err refused an answer for what it SAID —
+// its shape, markdown, or a copy of the transcript — rather than for how the
+// call went.
+func refusedForContent(err error) bool {
+	return errors.Is(err, ErrFormat) || errors.Is(err, ErrMarkdown) || errors.Is(err, ErrTranscriptText)
+}
+
+// refusedFP is the tail fingerprint owner's sub last had refused for content,
+// "" for none.
+func (r *Refresher) refusedFP(owner int64, sub Subject) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refused[owner][sub]
+}
+
+// setRefused records fp as sub's refused tail ("" clears it).
+func (r *Refresher) setRefused(owner int64, sub Subject, fp string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if fp == "" {
+		delete(r.refused[owner], sub)
+		return
+	}
+	if r.refused == nil {
+		r.refused = map[int64]map[Subject]string{}
+	}
+	if r.refused[owner] == nil {
+		r.refused[owner] = map[Subject]string{}
+	}
+	r.refused[owner][sub] = fp
+}
+
+// pruneRefused keeps owner's refused records for cands' subjects only.
+func (r *Refresher) pruneRefused(owner int64, cands []Candidate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.refused[owner]
+	if len(m) == 0 {
+		return
+	}
+	live := make(map[Subject]bool, len(cands))
+	for _, c := range cands {
+		live[c.Subject] = true
+	}
+	for s := range m {
+		if !live[s] {
+			delete(m, s)
+		}
+	}
+}
+
 // record stores cause's Reason — never its text, which can carry a provider's
 // error body — and logs the full cause.
 func (r *Refresher) record(ctx context.Context, sub Subject, cause error) {
@@ -372,6 +442,7 @@ func (r *Refresher) refreshOwner(ctx context.Context, owner int64) (PassCounts, 
 	if err != nil {
 		return pc, err
 	}
+	r.pruneRefused(owner, cands)
 	have, err := r.Store.List(ctx)
 	if err != nil {
 		return pc, err

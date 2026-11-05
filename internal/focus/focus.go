@@ -183,11 +183,14 @@ const (
 	// ReasonFormat: the answer was not the asked-for Title/Description lines
 	// (ErrFormat); the title the session had is kept.
 	ReasonFormat = "the summarizer ignored the format"
-	// ReasonTranscriptText: the answer was the session's own text — markdown,
-	// a code fence, or mostly word for word (ErrTranscriptText).
+	// ReasonTranscriptText: the title was the session's own reply, mostly
+	// word for word (ErrTranscriptText).
 	ReasonTranscriptText = "the summarizer repeated the session's text"
-	ReasonUnreachable    = "the summarizer could not be reached"
-	ReasonFailed         = "the refresh failed"
+	// ReasonMarkdown: the answer was markdown — a code fence, or a title that
+	// is a heading, **bold** or a link (ErrMarkdown).
+	ReasonMarkdown    = "the summarizer answered in markdown"
+	ReasonUnreachable = "the summarizer could not be reached"
+	ReasonFailed      = "the refresh failed"
 )
 
 // Reason is err as a short, non-secret reason (the Reason* constants, or
@@ -209,6 +212,8 @@ func Reason(err error) string {
 		return ReasonFormat
 	case errors.Is(err, ErrTranscriptText):
 		return ReasonTranscriptText
+	case errors.Is(err, ErrMarkdown):
+		return ReasonMarkdown
 	case errors.Is(err, ErrMalformed), errors.Is(err, ErrOversized), errors.Is(err, ErrEmpty):
 		return ReasonUnusable
 	case errors.Is(err, ErrUnreachable):

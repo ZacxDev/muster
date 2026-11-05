@@ -23,47 +23,89 @@ const TitleCapRunes = 60
 
 // The verbatim-text test (verbatim): an answer of at least verbatimMinWords
 // words, of whose word verbatimN-grams at least verbatimShare also occur in
-// the tail, is the transcript's own text. Shorter answers are not judged: a
-// title of a few words can share a phrase with the prompt that asked for the
-// work without being a copy of it.
+// the tail's ASSISTANT lines, is the session's own reply echoed back. Shorter
+// answers are not judged, and neither are the person's own lines: a title that
+// names the job in the words the person asked for it with is what the prompt
+// wants, not a copy.
+//
+// ⚠ A QUALITY GUARD AGAINST ECHOED TEXT, NOT A PRIVACY GUARD. It catches long
+// prose copied from a reply — the runaway titles this was written for. A short
+// title that carries a host name or a token copied from the transcript passes
+// it; nothing here redacts, and nothing should be read as if it did.
 const (
 	verbatimN        = 4
 	verbatimMinWords = 6
 	verbatimShare    = 0.6
 )
 
-// markdownTitle matches what makes a title markdown rather than a name: a code
-// span or fence, bold/underline emphasis, a heading, a list item or a quote at
-// its start. "C#", "#123" and "a*b" are NOT matched — they are ordinary title
-// text (TestCleanStripsNoMarkdown).
-var markdownTitle = regexp.MustCompile("`|\\*\\*|__|^#+\\s|^[-*+>]\\s")
+// markdownTitle matches what makes a title MARKDOWN rather than a name: a
+// heading at its start, **bold**, or a [link](…). "C#", "#123", "a*b" and
+// "__init__" are NOT matched — they are ordinary title text
+// (TestCleanStripsNoMarkdown). Backticks and a leading list or quote marker are
+// not refused but removed (plainTitle): they wrap or lead a name, they do not
+// replace it.
+var markdownTitle = regexp.MustCompile(`^#+\s|\*\*\S|\[[^\]]*\]\([^)]*\)`)
+
+// listMarker is a leading list item or quote marker, removed by plainTitle.
+var listMarker = regexp.MustCompile(`^(?:[-*+>]\s+)+`)
+
+// plainTitle is title with its backticks and any leading list or quote marker
+// removed.
+func plainTitle(title string) string {
+	return strings.TrimSpace(listMarker.ReplaceAllString(strings.ReplaceAll(title, "`", ""), ""))
+}
 
 // Accept is sum as it may be stored for a session whose tail is tail and whose
-// current title is prev ("" = none), or why it may not:
-//   - ErrTranscriptText when the title is markdown (markdownTitle), when either
-//     part carries a code fence, or when either part is mostly the tail word for
-//     word (verbatim);
-//   - otherwise the title cut to TitleCapRunes at a word boundary (CapTitle),
-//     and — when it names prev in another case or spacing — prev itself, so a
-//     kept title is stored byte-identical and writes no new history row.
+// current title is prev ("" = none), or why it may not. In order:
+//   - a code fence in either part, or a title that is markdown (markdownTitle,
+//     after plainTitle), is ErrMarkdown;
+//   - a title that names prev — the same words, ignoring case, spacing and
+//     punctuation — is prev itself, byte-identical, so the session's name does
+//     not flicker; and a KEPT title is never judged a copy (it was asked for
+//     word for word);
+//   - any other title that is mostly the tail's assistant lines word for word
+//     (verbatim) is ErrTranscriptText;
+//   - a description that is mostly the assistant lines word for word is
+//     DROPPED, and the title kept;
+//   - the title is cut to TitleCapRunes at a word boundary (CapTitle).
 //
 // A refusal stores nothing: the refresh records the reason and the session
 // keeps the focus it had.
 func Accept(sum Summary, tail, prev string) (Summary, error) {
-	if markdownTitle.MatchString(sum.Title) || strings.Contains(sum.Title+sum.Description, "```") {
+	if strings.Contains(sum.Title+sum.Description, "```") {
+		return Summary{}, ErrMarkdown
+	}
+	sum.Title = plainTitle(sum.Title)
+	if markdownTitle.MatchString(sum.Title) {
+		return Summary{}, ErrMarkdown
+	}
+	replies := assistantText(tail)
+	if prev != "" && sameTitle(sum.Title, prev) {
+		sum.Title = prev
+	} else if verbatim(sum.Title, replies) {
 		return Summary{}, ErrTranscriptText
 	}
-	if verbatim(sum.Title, tail) || verbatim(sum.Description, tail) {
-		return Summary{}, ErrTranscriptText
+	if verbatim(sum.Description, replies) {
+		sum.Description = ""
 	}
 	sum.Title = CapTitle(sum.Title)
 	if sum.Title == "" {
 		return Summary{}, ErrEmpty
 	}
-	if prev != "" && sameTitle(sum.Title, prev) {
-		sum.Title = prev
-	}
 	return sum, nil
+}
+
+// assistantText is the text of tail's assistant lines (RenderTail writes one
+// "assistant: …" line per reply).
+func assistantText(tail string) string {
+	var b strings.Builder
+	for _, l := range strings.Split(tail, "\n") {
+		if t, ok := strings.CutPrefix(l, "assistant: "); ok {
+			b.WriteString(t)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // CapTitle is title at most TitleCapRunes runes: cut at the last word
@@ -92,7 +134,8 @@ func CapTitle(title string) string {
 // (up to the 300-rune guard, or transcript prose) is not fed back, so the
 // summarizer is never told to keep a runaway.
 func FeedableTitle(title string) bool {
-	return title != "" && utf8.RuneCountInString(title) <= TitleCapRunes && !markdownTitle.MatchString(title)
+	return title != "" && utf8.RuneCountInString(title) <= TitleCapRunes && plainTitle(title) == title &&
+		!markdownTitle.MatchString(title)
 }
 
 // sameTitle reports whether a and b are one title written differently: the

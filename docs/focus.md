@@ -60,8 +60,9 @@ default `15m`), which for each session:
   short fixed reason: `no OpenRouter key`, `the OpenRouter key could not be
   read` (a credential-store failure, not a missing key), `rate-limited`,
   `summarizer error (HTTP <status>)`, `the summarizer's answer was
-  unusable`, `the summarizer ignored the format`, `the summarizer repeated the
-  session's text`, `the summarizer could not be reached`. Nothing from the transcript, the key or the provider's error
+  unusable`, `the summarizer ignored the format`, `the summarizer answered in
+  markdown`, `the summarizer repeated the session's text`, `the summarizer
+  could not be reached`. Nothing from the transcript, the key or the provider's error
   text is stored or shown. The card's popover says it ("No focus: …", or
   "Last refresh failed: …" on a focus that is now stale, whose title is also
   marked `stale`), and so does
@@ -179,8 +180,9 @@ characters, plain text, in the summarizer's own words — and, when the session
 already has a title, it is sent with the transcript (in the instructions, not
 as transcript) with the instruction to **keep it word for word unless the
 session's overall goal has changed**. A kept title that comes back in another
-case or punctuation is stored exactly as before, so the name does not flicker
-and no history row is written for it.
+case or punctuation is stored exactly as before, so the name does not
+flicker. (A history row is still written when the description changes:
+history keeps every change of title *or* description.)
 
 The answer must be exactly a `Title: …` line and, optionally, a
 `Description: …` line. The code enforces what the prompt asks:
@@ -189,11 +191,25 @@ The answer must be exactly a `Title: …` line and, optionally, a
   markdown (`**Title:**`, `- Title:`), an extra line before or after. Nothing
   is read out of an off-format answer: the session keeps its title, and the
   row records `the summarizer ignored the format`;
-- **the session's own text is refused**: a title in markdown (a code span,
-  `**bold**`, a heading or list marker), a code fence anywhere, or a title or
-  description that is mostly the transcript word for word (at least 6 words,
-  60% of whose 4-word runs appear in the tail). The session keeps its title,
-  and the row records `the summarizer repeated the session's text`;
+- **markdown is refused**: a code fence anywhere, or a title that is a
+  heading, `**bold**` or a markdown link. The session keeps its title, and the
+  row records `the summarizer answered in markdown`. Backticks around a name
+  and a leading list marker are removed rather than refused, and `__init__` or
+  `C#` are ordinary title text;
+- **a reply echoed back is refused**: a title that is mostly the session's
+  own replies word for word (at least 6 words, 60% of whose 4-word runs appear
+  in the tail's assistant lines). The session keeps its title, and the row
+  records `the summarizer repeated the session's text`. A title kept as asked
+  is never judged a copy, and neither are your own words: a title that names
+  the job as you asked for it is what the prompt wants. A **description** that
+  is mostly a reply is dropped, and the title kept. This is a quality guard
+  against echoed prose — it is **not** a privacy guard: a short title that
+  carries a host name or a token from the transcript passes it;
+- **a refused tail is not sent again until it changes**: after an answer is
+  refused for its content (format, markdown or a copy), that tail's
+  fingerprint is remembered (in memory, so a restart costs one more call), and
+  the next pass makes no call for it. A failure to reach the summarizer, or an
+  HTTP error, is retried on the next pass;
 - **a title longer than 60 characters is cut** at the last whole word, with
   no ellipsis.
 
