@@ -708,8 +708,8 @@ func officerToolDefs() []agents.ToolDef {
 	return append(queueToolDefs(), shipToolDefs()...)
 }
 
-// queueToolDefs are every officer's queue tools (and the release officer's
-// captain tool).
+// queueToolDefs are every officer's queue tools and obs tools (and the
+// release officer's captain tool).
 func queueToolDefs() []agents.ToolDef {
 	item := strProp("The item's id, as officer_items or officer_brief returned it.")
 	lease := intProp(fmt.Sprintf("How long the lease runs, in seconds (default %d, %d to %d).", officers.DefaultLeaseSeconds, officers.MinLeaseSeconds, officers.MaxLeaseSeconds),
@@ -784,6 +784,25 @@ func queueToolDefs() []agents.ToolDef {
 				}, "level", "summary"),
 				"report": strProp(fmt.Sprintf("The post-release report, as text (1-%d characters).", officers.MaxCaptainReport)),
 			}, "service", "tag")},
+		{Type: "function", Name: officers.ToolObsQueries,
+			Description: "List the observability queries HQ lets your officer run (GET /officers/{id}/obs/queries): each query's id, what its answer may be used to claim, " +
+				"the arguments it takes (`args`), and HQ's caps (window, series, lines, queries per minute). Call it before " + officers.ToolObsQuery + ". Read-only.",
+			Parameters: objSchema(map[string]any{})},
+		{Type: "function", Name: officers.ToolObsQuery,
+			Description: "Run ONE of HQ's named observability queries (POST /officers/{id}/obs/query) over a window, with the arguments that query takes — " +
+				"the `args` " + officers.ToolObsQueries + " lists for it, and no others. There is no raw PromQL or LogQL: HQ builds the query from its reviewed registry. " +
+				"The answer says what it `claims`; quote only that. `empty: true` is NOT a zero: run the positive control its `hint` names before you report none. " +
+				"Log lines come back redacted, a sample, never a count. HQ allows a few dozen queries a minute per officer (a 429 means wait a minute); " +
+				"an error carrying `retryable` (502 upstream: the backend read failed) may be retried in a minute; any other refusal names the argument or limit to fix and the same call will not succeed. Read-only.",
+			// 🔴 AN OPEN OBJECT DESCRIBING query_id ONLY: HQ's decoder is the
+			// one schema (officers.ObsQueryArgs), and the arguments each query
+			// takes are the `args` officer_obs_queries lists — a closed schema
+			// repeating them here would drift from HQ's and hide a new one.
+			Parameters: map[string]any{"type": "object", "additionalProperties": true, "required": []string{"query_id"},
+				"properties": map[string]any{
+					"query_id": strProp("The query's id, as " + officers.ToolObsQueries + " lists it. Send with it exactly the arguments that query's `args` list " +
+						"(start and end are RFC 3339 in whole seconds, e.g. 2006-01-02T15:04:05Z; the window is (start, end]); HQ checks every one."),
+				}}},
 	}
 }
 
@@ -817,19 +836,37 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	// 🔴 NAMING ANOTHER OFFICER IS REFUSED, NOT IGNORED. No schema offers an
 	// officer argument, but a runtime can send any keys; silently acting for
 	// the caller's own officer would hide an attempt to act for another.
-	for _, k := range []string{"officer", "officer_id"} {
-		if v, ok := raw[k]; ok {
-			var named string
-			_ = json.Unmarshal(v, &named)
-			if named != o.ID {
-				return toolErr("you act for officer %s only; %s cannot name another officer", o.ID, name), true
-			}
+	// The key is matched case-insensitively, as HQ's Go decoder matches field
+	// names: `Officer_ID` names an officer as surely as `officer_id`.
+	for k, v := range raw {
+		if !strings.EqualFold(k, "officer") && !strings.EqualFold(k, "officer_id") {
+			continue
+		}
+		var named string
+		_ = json.Unmarshal(v, &named)
+		if named != o.ID {
+			return toolErr("you act for officer %s only; %s cannot name another officer", o.ID, name), true
 		}
 	}
 	if isShipTool(name) {
 		return s.dispatchShipTool(ctx, a, o, name, arguments), true
 	}
 	c := s.officerRT.hq.Client(o)
+	// The obs tools pass their arguments to HQ unchanged (officers.
+	// ObsQueryArgs): they are not decoded into the queue tools' struct below,
+	// whose field types would otherwise be a second, local schema.
+	switch name {
+	case officers.ToolObsQueries:
+		body, err := c.ObsQueries(ctx)
+		return officerToolResult(name, body, err), true
+	case officers.ToolObsQuery:
+		args, perr := officers.ObsQueryArgs([]byte(orEmptyJSON(arguments)))
+		if perr != nil {
+			return toolErr("%v", perr), true
+		}
+		body, err := c.ObsQuery(ctx, args)
+		return officerToolResult(name, body, err), true
+	}
 	instance := a.Name
 	var in struct {
 		ItemID       officers.ItemID `json:"item_id"`
@@ -1187,7 +1224,16 @@ func (e *claimBlockedError) result() string {
 func officerToolResult(name string, body []byte, err error) string {
 	var hqErr *officers.HQError
 	var blocked *claimBlockedError
+	var retry *officers.RetryableError
 	switch {
+	case errors.As(err, &retry):
+		// Not `refused` (a final answer): `retryable`, still an error to MCP.
+		again := map[string]any{"status": retry.Status, "code": retry.Code()}
+		if json.Valid(retry.Body) {
+			again["hq"] = json.RawMessage(retry.Body)
+		}
+		return toolJSON(map[string]any{"error": fmt.Sprintf("HQ answered %d %s to %s: a transient failure — retry it in a minute", retry.Status, retry.Code(), name),
+			"retryable": again})
 	case errors.As(err, &blocked):
 		return blocked.result()
 	case err == nil:
