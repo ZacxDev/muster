@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -37,13 +38,40 @@ import (
 // window starting to wait.
 //
 // 🔴 BOUNDED: one read per waiting window per waiting spell. A window is read
-// once (askScans.done) until it stops being a candidate — stops waiting, its
-// conversation changes, it leaves the listing, its host drops — and then
-// again the next time it is one; never twice at once (askScans.busy); never
-// while its session already has an open question (its watch covers it); and
-// not when the host already says it waits on another tool (Window.Pending).
-// A read that failed is not counted, so the next nudge tries again.
+// until one COMPLETE read of it (the backfill and the prompt index after it)
+// succeeds in its current waiting spell — then not again until it stops being
+// a candidate (stops waiting, its conversation changes, it leaves the listing,
+// its host drops) and is one anew; never twice at once; never while its
+// session already has an open question (its watch covers it); and not when
+// the host already says it waits on another tool (Window.Pending).
+//
+// 🔴 A HOST'S READS SHARE ITS WATCH SLOTS: every read is a WatchWindow, and a
+// host serves at most mirror.MaxWatchesPerHost (8) at once — the rendered
+// views' and the question watches' too. A host connecting with many waiting
+// windows would otherwise open a read for each AT ONCE, refuse the rest
+// (ErrTooManyWatches), and starve a view being opened. So at most
+// askScanPerHost (2) of one host's reads run at a time, the rest queued,
+// leaving 6 slots for everything else.
+//
+// 🔴 A READ THAT FAILED IS RETRIED ON A TIMER — refused (ErrTooManyWatches,
+// the host busy), failed, or PARTIAL (cut by the quiet timer or the deadline
+// before the prompt index: its tail may lack a newer result, so nothing is
+// restored from it): after askScanRetry, doubling to askScanRetryMax, at most
+// askScanAttempts reads in all; a nudge meanwhile does not cut it short. The
+// retry is cancelled when the window stops being a candidate (its spell
+// ends, the host goes). A read still in flight when its window's spell ended
+// counts for nothing: it restores nothing and marks nothing read.
 // ---------------------------------------------------------------------------
+
+const (
+	// askScanPerHost bounds one host's concurrent scan reads.
+	askScanPerHost = 2
+	// askScanRetry is the first retry's delay; it doubles, to askScanRetryMax.
+	askScanRetry    = 2 * time.Second
+	askScanRetryMax = 30 * time.Second
+	// askScanAttempts bounds the reads of one window in one waiting spell.
+	askScanAttempts = 6
+)
 
 // askScanKey is one waiting window, in one conversation, of owner's host.
 type askScanKey struct {
@@ -52,14 +80,35 @@ type askScanKey struct {
 	claude                string
 }
 
+// askScanHost is one host of one owner (its reads share its watch slots).
+type askScanHost struct {
+	owner int64
+	host  string
+}
+
+// askScanSpell is one candidate's current waiting spell.
+type askScanSpell struct {
+	id uint64 // unique per spell: a read of an ended spell counts for nothing
+	e  mirror.SessionView
+	// done: a complete read of this spell succeeded; queued: waiting for a
+	// slot of its host; attempts: reads started.
+	done, queued bool
+	attempts     int
+	timer        *time.Timer // a pending retry
+}
+
 // askScans is the scan's bookkeeping.
 type askScans struct {
 	mu sync.Mutex
-	// done is the candidates read in their current waiting spell; busy those
-	// being read now.
-	done, busy map[askScanKey]bool
-	// reads counts the reads started (tests).
-	reads int
+	// spells is the current candidates; spellSeq numbers them.
+	spells   map[askScanKey]*askScanSpell
+	spellSeq uint64
+	// busy is the windows being read now (of any spell); running is each
+	// host's reads now.
+	busy    map[askScanKey]bool
+	running map[askScanHost]int
+	// retry replaces askScanRetry (tests; 0 = default).
+	retry time.Duration
 }
 
 // askScanCandidate reports whether w is a window the scan reads: a Claude
@@ -73,9 +122,17 @@ func askScanCandidate(w mirror.Window) bool {
 	return w.Pending == nil || w.Pending.Tool == "" || w.Pending.Tool == askq.ToolName
 }
 
-// scanOpenAsks starts a read of every candidate window of owner's ONLINE hosts
-// in hs (one read of the hub, the caller's) not read in its waiting spell yet,
-// and forgets every one that is no longer a candidate. It returns at once.
+// askScanRead is one read to start.
+type askScanRead struct {
+	k     askScanKey
+	spell uint64
+	e     mirror.SessionView
+}
+
+// scanOpenAsks queues a read of every candidate window of owner's ONLINE
+// hosts in hs (one read of the hub, the caller's) not read in its waiting
+// spell yet, forgets every one that is no longer a candidate (and its retry),
+// and starts what its hosts' slots allow. It returns at once.
 func (s *Server) scanOpenAsks(owner int64, hs []mirror.HostView) {
 	if s.asks == nil || owner <= 0 || s.ext.Mirror == nil {
 		return
@@ -94,51 +151,143 @@ func (s *Server) scanOpenAsks(owner int64, hs []mirror.HostView) {
 			}
 		}
 	}
-	var start []askScanKey
-	s.askScan.mu.Lock()
-	if s.askScan.done == nil {
-		s.askScan.done, s.askScan.busy = map[askScanKey]bool{}, map[askScanKey]bool{}
+	sc := &s.askScan
+	sc.mu.Lock()
+	if sc.spells == nil {
+		sc.spells, sc.busy, sc.running = map[askScanKey]*askScanSpell{}, map[askScanKey]bool{}, map[askScanHost]int{}
 	}
-	for k := range s.askScan.done {
+	for k, sp := range sc.spells {
 		if _, still := now[k]; k.owner == owner && !still {
-			delete(s.askScan.done, k)
+			if sp.timer != nil {
+				sp.timer.Stop()
+			}
+			delete(sc.spells, k)
 		}
 	}
-	for k := range now {
-		if !s.askScan.done[k] && !s.askScan.busy[k] {
-			start = append(start, k)
+	hosts := map[askScanHost]bool{}
+	for k, e := range now {
+		sp := sc.spells[k]
+		if sp == nil {
+			sc.spellSeq++
+			sp = &askScanSpell{id: sc.spellSeq}
+			sc.spells[k] = sp
 		}
+		sp.e = e
+		if !sp.done && sp.timer == nil && sp.attempts < askScanAttempts {
+			sp.queued = true
+		}
+		hosts[askScanHost{owner, k.host}] = true
 	}
-	s.askScan.mu.Unlock()
-	for _, k := range start {
-		// Its watch already covers a session with an open question.
-		if len(s.asks.OpenIn(owner, askSourceMirror, k.host, k.claude)) > 0 {
+	var start []askScanRead
+	for h := range hosts {
+		start = append(start, s.askScanPumpLocked(h)...)
+	}
+	sc.mu.Unlock()
+	s.askScanStart(start)
+}
+
+// askScanPumpLocked takes the reads h's free slots allow off the queue.
+func (s *Server) askScanPumpLocked(h askScanHost) []askScanRead {
+	sc := &s.askScan
+	var out []askScanRead
+	for k, sp := range sc.spells {
+		if sc.running[h] >= askScanPerHost {
+			break
+		}
+		if k.owner != h.owner || k.host != h.host || !sp.queued || sc.busy[k] {
 			continue
 		}
-		s.askScan.mu.Lock()
-		if s.askScan.busy[k] || s.askScan.done[k] {
-			s.askScan.mu.Unlock()
-			continue
-		}
-		s.askScan.busy[k] = true
-		s.askScan.reads++
-		s.askScan.mu.Unlock()
-		e := now[k]
-		safeGo(s.logger, "mirror: read a waiting window for an open question", func() { s.scanOpenAsk(k, e) })
+		sp.queued = false
+		sp.attempts++
+		sc.busy[k] = true
+		sc.running[h]++
+		out = append(out, askScanRead{k, sp.id, sp.e})
+	}
+	return out
+}
+
+func (s *Server) askScanStart(reads []askScanRead) {
+	for _, r := range reads {
+		safeGo(s.logger, "mirror: read a waiting window for an open question", func() { s.scanOpenAsk(r) })
 	}
 }
 
-// scanOpenAsk reads k's window's transcript tail and restores the question it
-// shows open, if any.
-func (s *Server) scanOpenAsk(k askScanKey, e mirror.SessionView) {
-	evs, _, err := s.mirrorRead(s.askPrincipal(s.streams.context(), k.owner), e, k.claude)
-	s.askScan.mu.Lock()
-	delete(s.askScan.busy, k)
-	if err == nil && len(evs) > 0 {
-		s.askScan.done[k] = true
+// retryAfterLocked is the delay before the retry that follows attempts reads.
+func (sc *askScans) retryAfterLocked(attempts int) time.Duration {
+	d := askScanRetry
+	if sc.retry > 0 {
+		d = sc.retry
 	}
-	s.askScan.mu.Unlock()
-	if err != nil {
+	for i := 1; i < attempts && d < askScanRetryMax; i++ {
+		d *= 2
+	}
+	return min(d, askScanRetryMax)
+}
+
+// askScanEnd records r's outcome — complete (ok), failed (retry), or neither
+// (skipped: its session has an open question) — frees its slot and starts
+// what that allows. It reports whether r's spell is still the window's.
+func (s *Server) askScanEnd(r askScanRead, ok, retry bool) bool {
+	sc := &s.askScan
+	h := askScanHost{r.k.owner, r.k.host}
+	sc.mu.Lock()
+	delete(sc.busy, r.k)
+	if sc.running[h]--; sc.running[h] <= 0 {
+		delete(sc.running, h)
+	}
+	sp := sc.spells[r.k]
+	current := sp != nil && sp.id == r.spell
+	switch {
+	case !current:
+	case ok:
+		sp.done = true
+	case !retry:
+		sp.attempts-- // skipped, not read: the next nudge looks again
+	case sp.attempts < askScanAttempts:
+		k, id := r.k, r.spell
+		sp.timer = time.AfterFunc(sc.retryAfterLocked(sp.attempts), func() { s.askScanRetry(k, id) })
+	default:
+		s.logger.Printf("mirror: %s/%s%s not read for an open question after %d attempts; it is read again once it waits anew",
+			r.k.host, r.k.session, r.k.window, sp.attempts)
+	}
+	start := s.askScanPumpLocked(h)
+	sc.mu.Unlock()
+	s.askScanStart(start)
+	return current
+}
+
+// askScanRetry queues k's read again, if its spell id is still the window's.
+func (s *Server) askScanRetry(k askScanKey, id uint64) {
+	if s.streams.context().Err() != nil {
+		return // muster is shutting down
+	}
+	sc := &s.askScan
+	sc.mu.Lock()
+	sp := sc.spells[k]
+	if sp == nil || sp.id != id {
+		sc.mu.Unlock()
+		return
+	}
+	sp.timer, sp.queued = nil, true
+	start := s.askScanPumpLocked(askScanHost{k.owner, k.host})
+	sc.mu.Unlock()
+	s.askScanStart(start)
+}
+
+// scanOpenAsk reads r's window's transcript tail and restores the question it
+// shows open, if any — unless the read was partial or its spell has ended.
+func (s *Server) scanOpenAsk(r askScanRead) {
+	k := r.k
+	// Its watch already covers a session with an open question.
+	if len(s.asks.OpenIn(k.owner, askSourceMirror, k.host, k.claude)) > 0 {
+		s.askScanEnd(r, false, false)
+		return
+	}
+	evs, idx, err := s.mirrorRead(s.askPrincipal(s.streams.context(), k.owner), r.e, k.claude)
+	// Complete: the backfill and the prompt index after it. A read cut by
+	// the quiet timer or the deadline returns no error but no index.
+	ok := err == nil && idx.Got
+	if !s.askScanEnd(r, ok, !ok) || !ok {
 		return
 	}
 	a := cctranscript.OpenAskOf(evs)

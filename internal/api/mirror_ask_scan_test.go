@@ -115,6 +115,7 @@ func scanServer(t *testing.T, evs ...cctranscript.Event) (*scanMirror, *Server, 
 	s.askWatch.mu.Lock()
 	s.askWatch.retry = 20 * time.Millisecond
 	s.askWatch.mu.Unlock()
+	fastScanRetry(s)
 	t.Cleanup(s.EndStreams)
 	return sm, s, ts
 }

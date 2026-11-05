@@ -410,6 +410,13 @@ func (s *Store) supersedeLocked(key Key, fire *[]Entry) {
 //     record (or a newer question) ended it; a late or stale read never
 //     reopens it.
 //
+// 🔴 A READ NEVER REPLACES A NEWER QUESTION: when key is missing or Expired
+// and its session already has ANOTHER open question, Restore does nothing
+// (key's entry as it is, or a zero Entry; unchanged). The read began before Restore runs, and whatever
+// is open by then was registered during it — by the hook, from the picker on
+// screen now — so it is the newer call; opening key would supersede it, and
+// key's card (same text) would type into ITS picker.
+//
 // changed reports whether it opened or reopened the question.
 func (s *Store) Restore(key Key, qs []Question) (e Entry, changed bool, err error) {
 	if key.Owner <= 0 || key.Source == "" || key.Session == "" || key.ToolUseID == "" {
@@ -423,14 +430,20 @@ func (s *Store) Restore(key Key, qs []Question) (e Entry, changed bool, err erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(&fire)
-	if en, ok := s.byID[s.byKey[key]]; ok {
-		if en.State != Expired {
+	en, ok := s.byID[s.byKey[key]]
+	if ok && en.State != Expired {
+		return en.snapshot(), false, nil
+	}
+	if s.otherOpenLocked(key) {
+		if ok {
 			return en.snapshot(), false, nil
 		}
+		return Entry{}, false, nil
+	}
+	if ok {
 		if s.openCountLocked(key.Owner) >= MaxPendingPerOwner {
 			return en.snapshot(), false, ErrFull
 		}
-		s.supersedeLocked(key, &fire)
 		now := s.now()
 		en.State, en.Note, en.Retry, en.Resolved, en.Seen = Pending, "", false, time.Time{}, now
 		en.Typed, en.Left, en.driveUntil = nil, nil, time.Time{}
@@ -439,6 +452,18 @@ func (s *Store) Restore(key Key, qs []Question) (e Entry, changed bool, err erro
 	}
 	got, err := s.openLocked(key, qs, "", &fire)
 	return got, err == nil, err
+}
+
+// otherOpenLocked reports whether key's session has an open question other
+// than key's.
+func (s *Store) otherOpenLocked(key Key) bool {
+	for _, o := range s.byID {
+		if o.Key.Owner == key.Owner && o.Key.Source == key.Source && o.Key.Scope == key.Scope && o.Key.Session == key.Session &&
+			o.Key.ToolUseID != key.ToolUseID && o.State.Open() {
+			return true
+		}
+	}
+	return false
 }
 
 // openCountLocked is how many of owner's questions are open.

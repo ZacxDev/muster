@@ -44,15 +44,22 @@ func TestRestoreIsIdempotent(t *testing.T) {
 		t.Fatalf("a repeated restore fired %d changes", fired)
 	}
 	// Restored first, then the hook's registration (a hook slower than
-	// muster's scan): the hook's Open returns the same entry.
+	// muster's scan): the hook's Open returns the same entry. (Another
+	// session: in s-1 the open key(1) would make this restore a no-op —
+	// TestAStaleRestoreNeverReplacesANewerQuestion.)
 	k2 := key(1)
-	k2.ToolUseID = "toolu_2"
-	a, _, _ := s.Restore(k2, twoQs)
+	k2.Session, k2.ToolUseID = "s-2", "toolu_2"
+	a, changed, err := s.Restore(k2, twoQs)
+	if err != nil || !changed {
+		t.Fatalf("restore in s-2: %+v %v %v", a, changed, err)
+	}
 	if h, err := s.Open(k2, twoQs, NewID()); err != nil || h.ID != a.ID {
 		t.Fatalf("the hook after a restore: %+v %v (restored %s)", h, err, a.ID)
 	}
-	if got := s.ForSession(1, "mirror", "laptop", "s-1", time.Hour); len(got) != 2 {
-		t.Fatalf("%d entries for two calls: %+v", len(got), got)
+	for _, sess := range []string{"s-1", "s-2"} {
+		if got := s.ForSession(1, "mirror", "laptop", sess, time.Hour); len(got) != 1 {
+			t.Fatalf("%d entries for one call in %s: %+v", len(got), sess, got)
+		}
 	}
 }
 
@@ -161,4 +168,54 @@ func TestASeenSessionsQuestionNeverAgesOut(t *testing.T) {
 	if got, _ := s.Find(key(1)); got.State != Expired {
 		t.Fatalf("unseen for MaxOpen: %s", got.State)
 	}
+}
+
+// TestAStaleRestoreNeverReplacesANewerQuestion: the scan's read of Q1 began
+// before the hook registered Q2 in the same session (Q1 answered in the
+// terminal meanwhile, Q2 on screen now). Whatever is open when the read lands
+// is newer than what it read: restoring Q1 — missing, or expired — changes
+// nothing, Q2 stays pending and the only card, and Q1 is never reopened.
+func TestAStaleRestoreNeverReplacesANewerQuestion(t *testing.T) {
+	q2key := key(1)
+	q2key.ToolUseID = "toolu_newer"
+	check := func(t *testing.T, s *Store, q2 Entry, q1 Entry, changed bool, err error) {
+		t.Helper()
+		if err != nil || changed || q1.State.Open() {
+			t.Fatalf("the stale restore of Q1: %+v changed=%v err=%v", q1, changed, err)
+		}
+		if got, _ := s.Get(q2.ID); got.State != Pending {
+			t.Fatalf("the newer Q2 after the stale restore: %s", got.State)
+		}
+		if got := s.Pending(1); len(got) != 1 || got[0].ID != q2.ID {
+			t.Fatalf("open questions %+v, want Q2 (%s) alone", got, q2.ID)
+		}
+	}
+	t.Run("missing", func(t *testing.T) { // a restarted muster never saw Q1
+		s, _ := testStore(t)
+		q2, err := s.Open(q2key, twoQs, NewID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		q1, changed, err := s.Restore(key(1), twoQs)
+		check(t, s, q2, q1, changed, err)
+		if _, found := s.Find(key(1)); found {
+			t.Fatal("the stale read registered Q1")
+		}
+	})
+	t.Run("expired", func(t *testing.T) { // Q1 expired (gone), then Q2 asked
+		s, _ := testStore(t)
+		first, _ := s.Open(key(1), twoQs, "")
+		if n := s.Gone(1, "mirror", "laptop", "s-1", "gone"); n != 1 {
+			t.Fatalf("gone expired %d", n)
+		}
+		q2, err := s.Open(q2key, twoQs, NewID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		q1, changed, err := s.Restore(key(1), twoQs)
+		check(t, s, q2, q1, changed, err)
+		if q1.ID != first.ID || q1.State != Expired {
+			t.Fatalf("Q1 after the stale restore: %+v (was %s)", q1, first.ID)
+		}
+	})
 }

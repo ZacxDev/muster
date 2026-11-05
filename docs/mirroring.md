@@ -1228,7 +1228,18 @@ registers it:
 
 Each waiting window is read once while it waits; it is not read while its
 session already has an open question, nor when the host says the session waits
-on another tool. A read that fails is tried again on the next change.
+on another tool. These reads use the same host slots as rendered views (8 per
+host), so muster runs at most **2 of one host's reads at a time** and queues
+the rest. That leaves room to open a view while a host with many waiting
+windows connects. A read counts only when it is complete. If a read fails, is
+refused because the host's slots are full, or is cut short, muster tries again
+after 2 s, then 4, 8, 16 and 30 s, up to 6 reads in all. The retries stop when
+the window stops waiting or its host goes. A read that was still running when
+its window stopped waiting does not count, and nothing is registered from it.
+
+A read never replaces a newer question. If the window's session has another
+open question by the time the read finishes, the read registers nothing. That
+question was registered while the read ran, from the picker on screen now.
 
 muster registers what it reads under the same key the hook used (owner, host,
 Claude session, `tool_use` id), so it is the same card, answered the same way:
