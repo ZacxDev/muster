@@ -75,6 +75,7 @@
     "tests/agents-idle.spec.ts": 25.0,
     "tests/sidenav.spec.ts": 35.0,
     "tests/suggested-replies.spec.ts": 72.0,
+    "tests/optimistic-send.spec.ts": 95.0,
     "tests/title-room.spec.ts": 24.1,
     "tests/switcher-search.spec.ts": 30.0,
     "tests/reconnect.spec.ts": 60.0,
@@ -131,7 +132,8 @@
       "tests/switcher-dock.spec.ts",
       "tests/chief-mobile.spec.ts",
       "tests/dock-fade.spec.ts",
-      "tests/features.spec.ts"
+      "tests/features.spec.ts",
+      "tests/optimistic-send.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",

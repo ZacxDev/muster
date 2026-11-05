@@ -732,7 +732,9 @@ func sendQueueScript() g.Node {
   function load() {
     if (typeof fetch !== 'function') return;
     if (loading) return;
-    if (document.hidden || menuOpen() || editing()) { schedule(); return; }
+    // A Queue still on its way (composer_pending.go's "Queuing…" row): a
+    // list read now would draw without it and then with it.
+    if (document.hidden || menuOpen() || editing() || box.querySelector('[data-pending-send="queuing"]')) { schedule(); return; }
     loading = true;
     var g = gen;
     fetch(src, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -740,7 +742,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         loading = false;
         if (g !== gen) { load(); return; }
-        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; drawn(); }
+        if (t !== null && !menuOpen() && !editing() && !box.querySelector('[data-pending-send="queuing"]')) { box.innerHTML = t; drawn(); }
         schedule();
       }, function () { loading = false; schedule(); });
   }
@@ -1105,7 +1107,10 @@ func sendQueueScript() g.Node {
       })
       .then(load, load);
   });
-  document.addEventListener('mv-queued', load);
+  // A Queue was taken: a list read already in flight predates it, so its
+  // answer is dropped (gen) and the list read again — drawn, it would take the
+  // pending row away before the server's row is there to replace it.
+  document.addEventListener('mv-queued', function () { gen++; load(); });
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
   drawn();
   // A page drawn with a row open for editing (a no-script Edit came back here,

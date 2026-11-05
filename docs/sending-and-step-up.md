@@ -11,7 +11,8 @@
 
 Each box can also have a microphone; see [dictation.md](dictation.md). Each
 box also keeps what you type as a draft on this device; see
-[Drafts](#drafts-kept-on-this-device).
+[Drafts](#drafts-kept-on-this-device). What a message looks like on its way
+is in [A sent message shows at once](#a-sent-message-shows-at-once).
 
 **Mirrored sends:**
 
@@ -53,8 +54,8 @@ box also keeps what you type as a draft on this device; see
     answered (or the box is cleared). When the host refused it on what it read
     at the moment of typing, the queue shows the host's reason and tries again
     after 4 s, 8 s, 16 s, then every 30 s, until the window's status changes.
-  - **A Send or Send now that is refused is not held.** A Send says why and
-    keeps its text in the box. A Send now that the host refuses at the moment
+  - **A Send or Send now that is refused is not held.** A Send says why, its
+    bubble turns failed with **Retry**, and its text is put back in the box. A Send now that the host refuses at the moment
     of typing ends its row failed, saying why; Retry queues it again.
 
   The Terminal view's box is not gated: it is you typing into the pane you are
@@ -78,6 +79,64 @@ box also keeps what you type as a draft on this device; see
 - A message reaches only a running agent. Otherwise the box is disabled and says
   why.
 - A failed turn is stored in the conversation, where the reply would have been.
+
+## A sent message shows at once
+
+Send does not wait for the host. The moment you press Send (or Enter), the
+box empties and the message is drawn, then the request goes out:
+
+- **On the Rendered view** the message is drawn at the end of the
+  conversation as a **pending bubble**: muted, with a status line under it
+  ("Sending…", read out to screen readers). When the host confirms the paste
+  it says "Sent", and when the conversation's own row for it arrives the
+  bubble is replaced by that row in the same moment: never both, never a gap.
+  If Claude Code is busy and holds it, its "Queued in Claude Code" row
+  replaces the bubble instead. A message that was sent but whose row never
+  arrives (a command Claude Code records differently) is taken off after
+  30 seconds; the host confirmed it.
+- **Queue** draws the message as a **Queuing…** row in the queue list, not
+  in the conversation (it is not sent yet), and the server's row replaces it.
+- **On a Terminal view** (no conversation) the status line under the box
+  says "Sending…", and the message shows in the pane when it is typed.
+- **Several messages** sent quickly are drawn at once and posted one at a
+  time, in the order you sent them.
+- **Refused** (Claude is waiting on a prompt, the window is gone, a rate
+  limit, a server error, offline): the bubble turns red, says why, and offers
+  **Retry** and **Dismiss**. The text goes back in the box if the box is
+  empty, so nothing is lost. A refusal that says the message **may have been
+  delivered** turns the bubble **Not confirmed** instead, and its button is
+  the [Send again](#it-works-without-javascript-and-a-message-is-delivered-once).
+  Sending the same text yourself replaces a failed or unconfirmed bubble of it.
+  On a Queue or a Terminal view there is no bubble: the reason is under the
+  box, with the text back in it (and Send again beside it when it may have
+  been delivered).
+- **Leaving the page** right after Send does not cancel the message: it is
+  posted as a request that outlives the page (`keepalive`), and the page you
+  come back to settles its bubble.
+- **Step-up**: a send refused because the sign-in is stale stays pending,
+  "Confirm it's you to send", while the dialog asks, and is sent once you
+  confirm. Cancelling the dialog turns it failed, with the text back in the
+  box.
+- **A reload or navigation mid-send** does not lose it. A message still on
+  its way is kept in this tab (`sessionStorage`, under the same account and
+  window key as the [draft](#drafts-kept-on-this-device), so no other
+  window or account sees it) and drawn again as "Checking…". If the
+  conversation shows it arrived, the bubble goes. If nothing confirms it
+  within 10 seconds it turns **Not confirmed: it may or may not have been
+  sent.**, with **Send again** and Dismiss. Nothing older than
+  10 minutes is drawn again. A browser that refuses storage keeps none, and
+  the bubble goes with the page.
+
+⚠ The bubble is matched to its row by its text (letters and digits only,
+lower-cased, since the row is rendered markdown): the row must begin with what
+you typed (attachments are drawn as chips in the row, so they are not
+compared). Only a row drawn after the message was sent can match it, and each
+row settles one bubble. After the conversation is redrawn from the start (a
+reconnect that could not resume, a reload), every row is new, so only the
+newest rows are compared.
+
+The chief panel and an agent's chat page send over their socket and already
+drew your message at once; they are unchanged.
 
 ## Queue: send when Claude Code is idle
 
@@ -318,8 +377,11 @@ Cancel the message instead.
 
 What you type into a message box is kept in this browser as you type
 (`localStorage`), and put back when you come back to the same box: after a
-navigation away, a reload, or a closed tab. It is removed once the message is
-sent or queued, and when you empty the box. It is kept per device: another
+navigation away, a reload, or a closed tab. It is removed when you send or
+queue the message (a mirrored window's box then keeps the text with the
+[pending message](#a-sent-message-shows-at-once) instead, and puts it back,
+draft and all, if the message is refused), and when you empty the box. It is
+kept per device: another
 device, or another browser, does not see it.
 
 | box | kept for |

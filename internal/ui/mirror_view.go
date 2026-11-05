@@ -1075,7 +1075,15 @@ func mirrorViewScript() g.Node {
   // askScript's, not the transcript's — a reset is no claim that a question
   // the hook holds has gone. tail() is it while it is in the log.
   function tail() { var t = document.getElementById('` + mirrorAsksID + `'); return t && t.parentNode === log ? t : null; }
-  function clearLog() { var t = tail(); log.innerHTML = ''; if (t) log.appendChild(t); }
+  // 🔴 A RESET KEEPS THE PENDING SENDS (composer_pending.go): a message on its
+  // way is not part of the transcript being redrawn, and its bubble is
+  // settled by the row that arrives for it (reconcile, below).
+  function clearLog() {
+    var t = tail(), ps = window.musterPendingSends ? window.musterPendingSends.kept() : [];
+    log.innerHTML = '';
+    ps.forEach(function (el) { log.appendChild(el); });
+    if (t) log.appendChild(t);
+  }
   function rowCount() { return log.children.length - (tail() ? 1 : 0); }
   // toEnd scrolls the conversation to its end — unless a question card that
   // has just shown holds it (askScript's musterAskHold): then to the card,
@@ -1173,6 +1181,10 @@ func mirrorViewScript() g.Node {
       var into = op.into && document.getElementById(op.into);
       if (into) into.appendChild(frag(op.html)); else log.insertBefore(frag(op.html), tail());
     });
+    // A message sent from this page whose row has just been drawn: its
+    // pending bubble goes in this same task, so the two are never on screen
+    // together (composer_pending.go).
+    if (window.musterPendingSends) window.musterPendingSends.reconcile();
     if (m.gen) gen = m.gen;
     if (typeof m.offset === 'number') offset = m.offset;
     working.hidden = !m.busy;

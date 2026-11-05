@@ -296,6 +296,9 @@ export const featuresPort = port + 256;
 // server with the claude-code kind on (noop driver), so the header draws the
 // account and the failover marker.
 export const chiefMobilePort = port + 260;
+// tests/optimistic-send.spec.ts: a sent message shows at once as pending — its
+// own server (mirror plugin on, a 1 s send-queue idle) and its own fake host.
+export const optimisticSendPort = port + 256;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
