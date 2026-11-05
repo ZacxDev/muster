@@ -28,17 +28,17 @@ func (s *PGStore) Create(ctx context.Context, n Note) (Note, error) {
 	// source_type / source_session_id are nullable (*string); a nil pointer encodes
 	// as SQL NULL (a pre-0017 / header-less task), which reads back as NULL.
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING `+noteCols,
-		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID)
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID, n.CreatedBy)
 	err := scanNote(row, &n)
 	return n, err
 }
 
 // noteCols is the SINGLE column list every full-note read uses, so Create/Get/
 // List/ListByTags can never drift out of sync with scanNoteInto's target order.
-const noteCols = `id, directory, title, body, status, model, repo, repo_branch, tags, source_type, source_session_id, created_at, updated_at, owner_id, ext_key, ext_plugin_id, ext_snapshot, ext_synced_at`
+const noteCols = `id, directory, title, body, status, model, repo, repo_branch, tags, source_type, source_session_id, created_by, created_at, updated_at, owner_id, ext_key, ext_plugin_id, ext_snapshot, ext_synced_at`
 
 // liveOnly is the SINGLE soft-delete predicate, spelled once so no read or write
 // path can quietly opt out of it. It now covers BOTH soft-deleted tables — notes
@@ -114,7 +114,7 @@ func scanCommentInto(c *Comment) []any {
 func scanNoteInto(n *Note) []any {
 	return []any{
 		&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch,
-		&n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedAt, &n.UpdatedAt, &n.OwnerID,
+		&n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt, &n.OwnerID,
 		&n.refRaw.key, &n.refRaw.pluginID, &n.refRaw.snapshot, &n.refRaw.syncedAt,
 	}
 }
@@ -160,7 +160,7 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Note, error) {
 
 // qualifyCols prefixes every column in a comma-joined projection with a table
 // alias. It is DERIVED rather than a second hand-written list, for exactly the
-// reason noteCols exists at all: a second spelling of the same 18 columns would
+// reason noteCols exists at all: a second spelling of the same 19 columns would
 // be a second thing to keep in sync with scanNoteInto's target order, and the
 // drift would be a silent mis-scan rather than a compile error.
 func qualifyCols(alias, cols string) string {
@@ -780,10 +780,10 @@ func (s *PGStore) CreateOnceByTag(ctx context.Context, key string, n Note, c *Co
 	if ok {
 		n = found
 	} else if err := scanNote(tx.QueryRow(ctx, `
-		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING `+noteCols,
-		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID), &n); err != nil {
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID, n.CreatedBy), &n); err != nil {
 		return Note{}, false, false, err
 	}
 	// 🔴 THE COMMENT IS IN THIS TRANSACTION ON BOTH PATHS. Written after the

@@ -167,7 +167,8 @@ func (s *Server) toolTaskCreateGated(ctx context.Context, a agents.Agent, argume
 		s.logger.Printf("plugins: agent %d gated task: reserve: %v", a.ID, err)
 		return toolErr("the task could not be filed")
 	}
-	note, err := s.createTask(ctx, taskCreateInput{Title: in.Title, Body: body, Repo: in.Repo, Tags: tags, Source: "api"}, nil)
+	note, err := s.createTask(ctx, taskCreateInput{Title: in.Title, Body: body, Repo: in.Repo, Tags: tags, Source: "api",
+		CreatedBy: agentCreatedBy(a, s.isChiefAgent(ctx, a))}, nil)
 	var ve errTagValidation
 	switch {
 	case err == nil:

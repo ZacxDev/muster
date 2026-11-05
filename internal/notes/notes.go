@@ -17,6 +17,7 @@ package notes
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/taskstatus"
@@ -69,6 +70,32 @@ func ValidStatus(s string) bool { return taskstatus.Valid(s) }
 // not declare it complete.
 func StatusAllowedForAgent(s string) bool { return taskstatus.AllowedForAgent(s) }
 
+// Note.CreatedBy values (migration 0083). The two prefixed forms carry a name
+// after the colon; CreatedByAgent and CreatedByPlugin build them.
+const (
+	CreatedByOwner        = "owner"
+	CreatedByChief        = "chief"
+	CreatedByAgentPrefix  = "agent:"
+	CreatedByPluginPrefix = "plugin:"
+)
+
+// CreatedByAgent is the CreatedBy value for a task agent name filed; nil for a
+// blank name (nothing to record).
+func CreatedByAgent(name string) *string { return createdByNamed(CreatedByAgentPrefix, name) }
+
+// CreatedByPlugin is the CreatedBy value for a copy task plugin name filed;
+// nil for a blank name.
+func CreatedByPlugin(name string) *string { return createdByNamed(CreatedByPluginPrefix, name) }
+
+func createdByNamed(prefix, name string) *string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	v := prefix + name
+	return &v
+}
+
 // Note is a freeform note filed against a working directory.
 type Note struct {
 	ID        int64  `json:"id"`
@@ -120,10 +147,17 @@ type Note struct {
 	// then omits the field, and the card renders no provenance chip). SourceType is
 	// one of the taskSource allowlist producers (never the default "api", which is
 	// stored as NULL); SourceSessionID is opaque here (a label, not a document id).
-	SourceType      *string      `json:"sourceType,omitempty"`
-	SourceSessionID *string      `json:"sourceSessionId,omitempty"`
-	Attachments     []Attachment `json:"attachments,omitempty"`
-	Comments        []Comment    `json:"comments,omitempty"`
+	SourceType      *string `json:"sourceType,omitempty"`
+	SourceSessionID *string `json:"sourceSessionId,omitempty"`
+	// CreatedBy is WHO filed the task (migration 0083): CreatedByOwner,
+	// CreatedByChief, CreatedByAgent(name) or CreatedByPlugin(name); nil when not
+	// recorded (a pre-0083 row, a POST /api/tasks that names no caller, a plugin task
+	// reference — whose creator is the upstream's, Ref.Snapshot.Creator). Written
+	// once at create, never edited. Not serialised: the machine API's shape is
+	// unchanged; the task notifications read it (api.taskRefFragment).
+	CreatedBy   *string      `json:"-"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	Comments    []Comment    `json:"comments,omitempty"`
 	// Sessions is the task's THREAD : every coding-agent session
 	// that created, worked or read this task, oldest-joined first. It is embedded
 	// on the full reads exactly as Comments and Attachments are — there is

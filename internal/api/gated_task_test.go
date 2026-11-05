@@ -238,7 +238,9 @@ func TestAGatedTaskNotifiesTheOwner(t *testing.T) {
 	}
 	f.srv.WaitForPushes()
 	got := f.pusher.to(ep("gated-owner"))
-	if len(got) != 1 || got[0].Title != "New task" || got[0].Body != taskTitle(f.notes.last()) || got[0].Body == "" {
+	// The body names the task and, since the chief filed it, its creator
+	// (taskRefFragment): a literal, so a creator the tool stopped recording reads red.
+	if len(got) != 1 || got[0].Title != "New task" || got[0].Body != "Reply to the inbox (by chief)" {
 		t.Fatalf("the owner's device got %+v, want one \"New task\" push naming the task", got)
 	}
 }

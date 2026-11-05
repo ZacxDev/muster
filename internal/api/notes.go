@@ -387,6 +387,8 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 	// Optional dispatch config from the create form (mirrors handleAgentCreate's
 	// parse of the same field names): model + repo + repo_branch.
 	note, err := s.ext.Notes.Create(ctx, notes.Note{
+		// The board's own create: the signed-in owner filed it.
+		CreatedBy:  nilIfEmpty(notes.CreatedByOwner),
 		Directory:  directory,
 		Body:       body,
 		Model:      strings.TrimSpace(r.FormValue("model")),
@@ -482,6 +484,10 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		Directory: body.Directory, Title: body.Title, Body: body.Body,
 		Model: body.Model, Repo: body.Repo, Branch: body.Branch, Tags: body.Tags,
 		Source: source, SessionID: sessionID,
+		// No CreatedBy: this route is behind requireHookToken, whose callers (the
+		// shared hook token, a personal token) name no one — an X-Muster-Actor
+		// header is never read here. The push falls back to the producer
+		// (source_type); TestNoCreateDoorNamesACreatorItCannotKnow pins it.
 	}, func(id int64) {
 		// Task thread (migration 0023): the creating session joins its own task's
 		// thread with the TERMINAL `created` role. This is the live twin of the 0023
@@ -520,6 +526,9 @@ type taskCreateInput struct {
 	Model, Repo, Branch    string
 	Tags                   []string
 	Source, SessionID      string
+	// CreatedBy is who files it (notes.Note.CreatedBy), when the door knows:
+	// nil records nothing.
+	CreatedBy *string
 }
 
 // errTaskBodyRequired: the create carried no body (a 400).
@@ -582,6 +591,7 @@ func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key str
 		Tags:            tags,
 		SourceType:      storedSourceType(in.Source),
 		SourceSessionID: nilIfEmpty(in.SessionID),
+		CreatedBy:       in.CreatedBy,
 	}
 	var note notes.Note
 	created, commented := true, false
@@ -2235,4 +2245,12 @@ func (s *Server) actorIsAgent(ctx context.Context, actor string) bool {
 		}
 	}
 	return false
+}
+
+// agentCreatedBy is the notes.Note.CreatedBy for a task agent a filed.
+func agentCreatedBy(a agents.Agent, chief bool) *string {
+	if chief {
+		return nilIfEmpty(notes.CreatedByChief)
+	}
+	return notes.CreatedByAgent(a.Name)
 }

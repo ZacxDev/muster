@@ -33,6 +33,38 @@ has its own toggle, and all are on by default:
 | `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on the Asks page's Reply drafts tab (`/attention?tab=drafts#draft-<id>`). |
 | `attention` | Something new in your [attention queue](attention.md): an agent asked you a question (the notification shows the asker and the question's first line), or a mirrored Claude Code session started waiting at a prompt. One notification per item; it is withdrawn when the item is answered, dismissed, expires or stops waiting. A tap opens the item's session when it has one (a waiting window's or a held question's rendered view, an asking agent's page, an asking mirrored session's window) and its item on `/attention` otherwise, decided when tapped (`/attention/open/<key>`; [attention.md](attention.md)). A decided reply draft's `plugin` notification is withdrawn the same way. With `MUSTER_SESSION_STATE=1`, a waiting window or a stalled session is pushed instead as its **episode**: one notification per stop, titled by its window as every attention text names it, `<label> · tmux <session>:<window index> @ <host> needs you` (or `is stalled`; [attention.md](attention.md#how-a-window-is-named)), resolved when sent, its body only the state and idle time — never the session's text — tagged `attention-episode-<id>`, and withdrawn when the stop ends ([attention.md](attention.md#stalled--waiting-session-state)). |
 
+**The task's reference and creator.** A `review`, `agent`, `created` or
+`comment` notification about a task ends its body with the task's external
+reference and who created it, in parentheses: `Rotate the build key (hq
+868ktt574 · by A. Person)`. The batched "N new tasks" and "N new comments"
+notifications do the same for each task they list. The title is unchanged,
+because a phone cuts it short. The fragment is appended after the body is cut
+to its length cap, so a long title or comment can run past that cap by up to
+the fragment's length (at most about 110 characters); in a batched
+notification the fragments count toward the summary's cap, so fewer tasks are
+listed by name.
+
+- **The reference** is `<namespace> <id>`: a [plugin](plugins.md#task-references)
+  task reference's key, or the key tag of a task a plugin filed with `create`
+  (or a `clickup:<id>` tag).
+- **The creator** is, for a task reference, the upstream's creator when the
+  plugin's snapshot sends one (`reference.creator`). For any other task it is
+  who muster recorded filing it: `chief` (your chief's `task_create_gated`;
+  `agent <name>` if muster could not confirm at filing that the filer is your
+  chief) or `plugin <label>` (a plugin's `create`). `POST /api/tasks` (the
+  CLI's task create, hook scripts) records no one: it takes the shared hook
+  token or a personal token, which name no caller, and an `X-Muster-Actor`
+  header on it is ignored. Such a task, and any other with nothing recorded,
+  names the producer that filed it, as the card names it (`Task drafter`,
+  `Claude Code`, …). A task you filed yourself on the board names no creator:
+  the notification is yours, so it would only tell you that you made it. Tasks
+  created before this was recorded, and a `POST /api/tasks` with no
+  `X-Muster-Source`, name no creator either.
+
+Either part is left out when unknown, and both when neither is known. The
+notification never adds the task's description or a comment's text beyond
+what it already carried.
+
 Push routes are session-authenticated and same-origin:
 `/api/push/{vapid-public-key,subscribe,unsubscribe}` and
 `/account/push/{test,preferences,{id}/remove}`.

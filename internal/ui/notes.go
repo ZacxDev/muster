@@ -1210,7 +1210,7 @@ func taskProvenanceChip(n notes.Note) g.Node {
 	if n.SourceType == nil {
 		return g.Text("")
 	}
-	label := sourceTypeLabel(*n.SourceType)
+	label := SourceTypeLabel(*n.SourceType)
 	text := "from " + label
 	if n.SourceSessionID != nil {
 		// truncate appends the ellipsis itself when it cuts (a real session id is a
@@ -1226,10 +1226,10 @@ func taskProvenanceChip(n notes.Note) g.Node {
 	)
 }
 
-// sourceTypeLabel maps a stored source_type producer id to a friendly display
+// SourceTypeLabel maps a stored source_type producer id to a friendly display
 // label. An unrecognized value falls back to the raw id (still escaped by g.Text
 // at the call site), so a future producer isn't hidden.
-func sourceTypeLabel(source string) string {
+func SourceTypeLabel(source string) string {
 	switch source {
 	case "claude-code":
 		return "Claude Code"
