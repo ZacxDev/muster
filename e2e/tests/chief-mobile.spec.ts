@@ -162,6 +162,23 @@ test.describe('on a phone', () => {
     expect.soft(Math.abs(hb.y + hb.height / 2 - (hide.y + hide.height / 2)), 'the hide sits on the heading\'s line').toBeLessThanOrEqual(4);
     await asksLeaveTheComposer(page, 200);
 
+    // One card fits the block WHOLE: no scrolling inside the block, and the
+    // card's border and the "Show N more" under it are inside the block's box
+    // (the compact answer form: a one-line box, Answer and Dismiss on one row).
+    const [bsh, bch] = await block.evaluate((el) => [el.scrollHeight, el.clientHeight]);
+    expect.soft(bsh, 'the asks block does not scroll inside').toBeLessThanOrEqual(bch + 1);
+    const bb = (await block.boundingBox())!;
+    const card = (await block.locator('[data-attention-item]').first().boundingBox())!;
+    expect.soft(card.y + card.height, 'the card\'s bottom border is inside the block').toBeLessThanOrEqual(bb.y + bb.height + 0.5);
+    const moreBox = (await block.locator('[data-asks-more]').boundingBox())!;
+    expect.soft(moreBox.y + moreBox.height, '"Show N more" is inside the block').toBeLessThanOrEqual(bb.y + bb.height + 0.5);
+    // Answer and Dismiss share one row.
+    const first0 = block.locator('[data-attention-item]').first();
+    const ans = (await first0.getByRole('button', { name: 'Answer', exact: true }).boundingBox())!;
+    const dis = (await first0.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;
+    expect.soft(Math.abs(ans.y - dis.y), 'Answer and Dismiss are on one row').toBeLessThanOrEqual(2);
+    await wordsAreWhole(first0);
+
     // The first question: its body clamped, "Show more" INSIDE its card, and
     // a tap opens it in place.
     const items = block.locator('[data-attention-item]');
@@ -190,6 +207,24 @@ test.describe('on a phone', () => {
     await asksLeaveTheComposer(page, 200);
     await noSideScroll(page);
   });
+
+  test('the Asks queue draws the same compact answer form', async ({ page }) => {
+    await signIn(page, origin);
+    await theQueueDrawsTheCompactForm(page, 'attention-phone.png');
+  });
+
+  test('the answer box grows as it is typed into, up to its cap', async ({ page }) => {
+    await open(page);
+    const box = page.locator('#asker-asks [data-attention-item]').first().locator('textarea[name="answer"]');
+    const h0 = (await box.boundingBox())!.height;
+    await box.fill('one\ntwo\nthree');
+    await expect.poll(async () => (await box.boundingBox())!.height, 'three lines are taller than one').toBeGreaterThan(h0 + 20);
+    await box.fill(Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'));
+    const capped = (await box.boundingBox())!.height;
+    expect(capped, 'capped at 8rem').toBeLessThanOrEqual(128 + 1);
+    await box.fill('');
+    await expect.poll(async () => (await box.boundingBox())!.height, 'and back to one line').toBeLessThanOrEqual(h0 + 1);
+  });
 });
 
 test.describe('on a desktop', () => {
@@ -207,5 +242,32 @@ test.describe('on a desktop', () => {
     await expect(page.locator('[data-failover-detail]')).toBeHidden();
     await expect(page.locator('#asker-asks [data-asker-asks-heading]')).toHaveText(`${ASKS} questions waiting`);
     await asksLeaveTheComposer(page, 200);
+    await theQueueDrawsTheCompactForm(page, 'attention-desktop.png');
   });
 });
+
+// wordsAreWhole: neither button of a card's answer row clips its own words.
+async function wordsAreWhole(card: ReturnType<Page['locator']>) {
+  for (const name of ['Answer', 'Dismiss without answering']) {
+    const [sw, cw] = await card.getByRole('button', { name, exact: true }).evaluate((el) => [el.scrollWidth, el.clientWidth]);
+    expect.soft(sw, `"${name}" is drawn whole`).toBeLessThanOrEqual(cw);
+  }
+}
+
+// theQueueDrawsTheCompactForm: the Asks queue (/attention) draws the SAME
+// answer form as the session page's block (internal/api attentionItemsHTMLTo):
+// a one-line box, Answer and Dismiss on one row, nothing wider than the page.
+async function theQueueDrawsTheCompactForm(page: Page, name: string) {
+  await page.goto(origin + '/attention');
+  const card = page.locator('[data-attention-item]').filter({ hasText: 'Question 1:' });
+  await expect(card).toHaveCount(1);
+  await card.scrollIntoViewIfNeeded();
+  await shot(page, name);
+  const ans = (await card.getByRole('button', { name: 'Answer', exact: true }).boundingBox())!;
+  const dis = (await card.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;
+  expect.soft(Math.abs(ans.y - dis.y), 'Answer and Dismiss are on one row').toBeLessThanOrEqual(2);
+  await wordsAreWhole(card);
+  const box = (await card.locator('textarea[name="answer"]').boundingBox())!;
+  expect.soft(box.height, 'the answer box starts one line').toBeLessThanOrEqual(46);
+  await noSideScroll(page);
+}

@@ -192,8 +192,13 @@ const askerAsksEvent = "attention_queue.changed"
 // shows the first ask and keeps the rest behind one "Show N more"; each
 // question's text is clamped to four lines (web/css/input.css, "The asker
 // block") and its "Show more" is drawn INSIDE its card, opening it in place —
-// see ONE AT A TIME, CLAMPED below. The cap is 40vh (was 45vh) so a phone
-// keeps a real piece of the conversation (e2e chief-mobile.spec.ts).
+// see ONE AT A TIME, CLAMPED below. With the compact answer form (THE COMPACT
+// ANSWER FORM) one card, its "Show N more" and the heading measure 378px at
+// 412×915 — inside the 45vh cap (412px there), so the block does not scroll
+// inside and no card is cut by its edge; at 40vh (366px) it did. The block is
+// as tall as what it holds; the cap only bounds a card opened by "Show more"
+// or a long typed answer (e2e chief-mobile.spec.ts measures both the fit and
+// the conversation's room).
 //
 // It carries "Hide until next ask" (AskerAsksHeading) and, after it, the chip
 // that reopens it (askerAsksChip) — see HIDE UNTIL NEXT ASK below.
@@ -206,7 +211,7 @@ func AskerAsksBlock(inner, src string, viaHTMX bool) g.Node {
 			g.Attr("data-src", src),
 			g.If(viaHTMX, g.Group([]g.Node{hx("hx-get", src), hx("hx-trigger", askerAsksTrigger), hx("hx-swap", "innerHTML"),
 				hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy)})),
-			Class("flex max-h-[40vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
+			Class("flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
 			g.Raw(inner),
 		),
 		askerAsksChip(),
@@ -265,6 +270,31 @@ func AskerAsksList(items string, n int) string {
 		`<button type="button" data-asks-more class="press inline-flex min-h-[44px] shrink-0 items-center self-start whitespace-nowrap rounded-lg px-2 text-xs font-semibold text-accent transition hover:bg-s2">Show ` +
 		strconv.Itoa(n-1) + ` more</button>`
 }
+
+// THE COMPACT ANSWER FORM's classes: an ask's card (internal/api's
+// attentionItemsHTMLTo — the Asks queue's AND a session page's asks block, one
+// form for both) draws its options, its answer box and its Answer / Dismiss
+// row with these. They live here, not in internal/api, because the stylesheet
+// scans internal/ui: a class written only in internal/api is never emitted.
+//
+// The box starts ONE line and grows with what is typed (AskFormFitClass,
+// web/css/input.css: field-sizing, capped, scrolling inside past the cap; a
+// browser without field-sizing keeps the one line and scrolls). The options
+// are as wide as their words and wrap; Answer (primary) and Dismiss (quiet)
+// share one row. Dismiss SAYS "Dismiss" and is NAMED "Dismiss without
+// answering" (aria-label, title): the long words on the button squeezed
+// Answer to "Answe" in the queue's 286px card. Every target stays 44px (e2e layout.spec.ts).
+const (
+	AskFormFitClass     = "answer-fit"
+	AskFormClass        = "flex flex-col gap-1.5"
+	AskFormOptionsClass = "flex flex-wrap gap-2"
+	AskFormOptionClass  = "press min-h-[44px] rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge"
+	AskFormBoxRowClass  = "flex items-end gap-2"
+	AskFormInputClass   = AskFormFitClass + " min-h-[44px] min-w-0 flex-1 resize-none rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
+	AskFormActionsClass = "flex items-center gap-2"
+	AskFormAnswerClass  = "press min-h-[44px] flex-1 rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90"
+	AskFormDismissClass = "press min-h-[44px] shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"
+)
 
 // ONE AT A TIME, CLAMPED (AskerAsksBlock's layout; the rules are in
 // web/css/input.css under "The asker block", outside every @layer so the

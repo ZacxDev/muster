@@ -496,6 +496,22 @@
 }
 
 /*
+ * An ask's answer box (internal/ui/attention.go, THE COMPACT ANSWER FORM):
+ * one line to start, as tall as its text as it is typed, capped at 8rem and
+ * scrolling inside past that. Without field-sizing it stays one line and
+ * scrolls. A plain class outside every @layer: Tailwind keeps it as written.
+ */
+.answer-fit {
+  max-height: 8rem;
+  overflow-y: auto;
+}
+@supports (field-sizing: content) {
+  .answer-fit {
+    field-sizing: content;
+  }
+}
+
+/*
  * A run of consecutive tool calls collapsed into one row (internal/ui/
  * tool_groups.go). Opening it reveals the individual rows with a short
  * fade-and-drop; reduced motion shows them at once.
