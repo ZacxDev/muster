@@ -128,6 +128,10 @@ type Server struct {
 
 	startedAt time.Time
 	now       func() time.Time
+	// waitingGrace is how long a waiting window's push is held
+	// (session_push.go): EpisodeWaitingGrace, set by New; a test may set
+	// another, 0 for none.
+	waitingGrace time.Duration
 
 	// nudgeReadHook, when set (a test), replaces the chief nudge sweep's
 	// transcript read (chief_nudge.go nudgeTranscript).
@@ -471,6 +475,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		auth:                    authCfg,
 		startedAt:               time.Now(),
 		now:                     time.Now,
+		waitingGrace:            EpisodeWaitingGrace,
 		agentCLIPath:            defaultAgentCLIPath,
 		activeAgents:            make(map[string]agentPhase),
 		activeAgentsNow:         time.Now,

@@ -31,7 +31,7 @@ attention queue).
 |---|---|
 | The concept | One **session state** per session: `needs-you`, `stalled`, `working`, with `done` as a label only. A stop is an **episode**, keyed on the session; everything the owner sees is a view of states and episodes |
 | Where it comes from | Code over inputs muster already reads (host status, `stallInputs`, `waitingSessions`), plus **one model input**: the stall classifier's score, which splits `needs-you` from `stalled` for an idle session and is persisted on the episode |
-| Waiting windows | Push **at once**, in code, never through the Chief. Questions muster can answer (a held AskUserQuestion, an opencode question) stay **answerable asks** with full text and are not episodes |
+| Waiting windows | Push in code, never through the Chief, **after a 60 s grace** and only if the window is still waiting then — a prompt answered at the terminal never buzzes ([Push](#push)). Questions muster can answer (a held AskUserQuestion, an opencode question) stay **answerable asks** with full text and are not episodes |
 | The Chief | Consulted only for **idle** episodes, and only when it is available. It decides **`nudge`, `leave` or `notify`**. No summary, no options, no notice text. `leave` quiets only a session that asked nothing. Covering words widen to the owner's own typed messages in sessions on the **same repository** plus their typed Chief chat, once muster can attribute them; shadow mode first |
 | Push | **One push per episode**, claimed in the database before it is sent (at most once; a graceful shutdown drains it). Text built in code: tmux session, window index, host, state and idle time. **No session text.** Tap opens the session. No push for an episode whose nudge was **sent**, or that was left with no question |
 | Attention | A **"Stalled / waiting"** section of plain rows, no answer box, oldest first, replacing chief-nudge notices. Left sessions are quiet rows. Answerable asks stay above it |
@@ -384,7 +384,7 @@ nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases
 
 | episode | decided by | result |
 |---|---|---|
-| a waiting window, not answerable | **code only, at once** | push and row. Never sent to the Chief, never nudged |
+| a waiting window, not answerable | **code only, after its grace** | row at once (a plain waiting row while in its grace); push only if still open once the grace has passed. Never sent to the Chief, never nudged |
 | an idle `needs-you` (classifier: asked) | code; the Chief **if available** | `nudge` (sent) → no push. Anything else, **`leave` included** → push and row |
 | an idle `stalled` (classifier: did not ask) | code; the Chief **if available** | `nudge` (sent) → no push. `leave` → quiet row, no push. `notify` or anything else → push and row |
 
@@ -548,6 +548,25 @@ One push per episode, under the existing `attention` toggle:
   agent's chat) and falls back to the row on the page.
 - **No push** when the episode's nudge was sent, when it was left with no
   question, or when it ended before it was pushed.
+- **When a waiting window pushes: after its grace, not at once.** As first
+  built (PR 2, #430) a waiting window muster cannot answer was pushed the
+  moment the hub's change hook saw it. Measured on a live fleet over 12 hours,
+  that buzzed the phone for nearly every permission prompt the owner was about
+  to answer at the terminal: of the waiting episodes that ended with the owner
+  answering, the median answer came about 20 seconds after the episode opened,
+  and all but a handful within 60 seconds. So the hook now opens the episode
+  and **holds** it (the verdict `hold`, as an idle stop waiting on the chief
+  is held: nothing is written, and its row is a plain waiting row), and the
+  state pass pushes it once the grace has passed (60 s, a constant:
+  `EpisodeWaitingGrace`; live data, 165 of 169 owner-answered waits inside
+  60 s, showed no need to tune it) — **only if the episode is still open**:
+  one the owner answered, viewed, worked past, or whose window went, ended in
+  between and is never pushed. The pass runs every 30 s, so the push lands
+  60..90 s after the window started waiting. The grace runs from the
+  episode's opening, recomputed from `opened_at` on every pass; nothing new
+  keeps the hold, so a restart mid-hold pushes it on the next pass, and the
+  `pushed_at` claim still sends it once across the hook, the pass and
+  replicas. Answerable asks are not episodes and are not held.
 
 ### Attention: "Stalled / waiting"
 

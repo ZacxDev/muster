@@ -117,7 +117,16 @@ was down has its notification closed.
   no tool, command, focus title or anything the session said (the codename
   is the host's, from its labels file, not the session's). Tapping it opens the
   session (`/attention/open/episode-<id>`, resolved when tapped), else the row.
-- A waiting window is pushed **at once**, never through the chief.
+- A waiting window is **held for 60 seconds** (not configurable) and pushed
+  only if it is still waiting when they have passed: a permission prompt you
+  answer at the terminal inside them never buzzes your phone, and its row
+  never shows it pushed. The push is sent by the state pass that runs every
+  30 seconds, so it lands 60 to 90 seconds after the window started waiting.
+  While held, its row is an ordinary waiting row. The hold is worked out
+  afresh on every pass from when the stop opened, not kept in a timer: a
+  restart mid-hold still pushes it, once. Never
+  through the chief. Answerable asks (an AskUserQuestion card, an opencode or
+  Hermes prompt) are not held: they keep their own push, at once.
 - An idle stop is pushed at once when no chief judges it live (the feature
   off, you in shadow mode, no chief). When your chief judges it live, the
   push follows its decision for the stop: a **sent** nudge never pushes; a

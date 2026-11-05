@@ -433,7 +433,8 @@ func TestAViewOnlyRuntimeIsNeverNudged(t *testing.T) {
 
 // TestAWaitingWindowIsNeverNudged — an INVARIANT GUARD: a window waiting on
 // a prompt (StatusWaiting), the owner on both lists and the classifier saying
-// it asked, is pushed at once and never put to the chief or nudged.
+// it asked, is pushed (after its waiting grace) and never put to the chief or
+// nudged.
 func TestAWaitingWindowIsNeverNudged(t *testing.T) {
 	f, _ := newNeedsYouFixture(t, jevAsked, true)
 	needsYouLive(f.nudgeFixture, authz.OperatorUserID)
@@ -441,6 +442,7 @@ func TestAWaitingWindowIsNeverNudged(t *testing.T) {
 	queued0 := f.queuedRows(t)
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	f.judge(t)
+	f.pastGrace(t)
 	if n := f.checks(); n != 0 {
 		t.Fatalf("a waiting window was put to the chief %d time(s)", n)
 	}

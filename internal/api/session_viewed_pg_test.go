@@ -116,6 +116,7 @@ func TestOpeningTheSessionsTerminalEndsItsEpisode(t *testing.T) {
 // stop.
 func TestOpeningAWaitingWindowEndsItAndTheHookDoesNotReopenIt(t *testing.T) {
 	f := newStateFixture(t, false)
+	f.noGrace() // the subject is the reopen, after a push that was sent
 	f.statusSince(mirror.StatusWaiting, nudgeSince+500_000, 5*time.Second)
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	e := f.oneEpisode(t)

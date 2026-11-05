@@ -52,9 +52,11 @@ import (
 // stallClassifierText — redacted and cut — the SAME text the nudge sweep sends,
 // and its answer is billed once per streak whichever pass runs first.
 //
-// 🔴 THIS PASS POLLS (every 30 s). A waiting window is pushed AT ONCE, from the
-// mirror hub's change hook (attentionMirrorChanged → episodeWaitingPushes);
-// this pass pushes a waiting stop only when the hook missed it, and pushes an
+// 🔴 THIS PASS POLLS (every 30 s). A waiting window's episode is opened from
+// the mirror hub's change hook (attentionMirrorChanged → episodeWaitingPushes)
+// and HELD for its grace (EpisodeWaitingGrace, 60 s); this pass pushes it
+// once the grace has passed — 60..90 s after it started waiting — if the
+// owner has not answered it by then, opens one the hook missed, and pushes an
 // idle stop (session_push.go) — a stall is 10 minutes old by then.
 // ---------------------------------------------------------------------------
 
