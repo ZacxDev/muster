@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: release-dry-run release-logic-test compose-check compose-up-test build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: release-dry-run release-logic-test compose-check compose-up-test features-config-test install-guide-test build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -110,7 +110,9 @@ help:
 	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
 	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
 	@echo "  make compose-check    deploy/docker-compose.yml is valid, every profile, every healthcheck"
-	@echo "  make compose-up-test  bring the compose stack up from a local image (IMAGE, VERSION) and probe it"
+	@echo "  make compose-up-test  bring the compose stack up from a local image (IMAGE, VERSION) and probe it,"
+	@echo "                        then the s3 and stt profiles (COMPOSE_UP_PROFILES; stt needs espeak-ng)"
+	@echo "  make features-config-test  docs/features.md, .env.example and the compose file agree"
 	@echo "  make test-liveclaude  answer a REAL Claude Code's AskUserQuestion pickers (run on every Claude Code upgrade)"
 	@echo "  make test-livehermes  drive the PINNED Hermes CLI: screen check, Escape, timings, gated send (every pin bump; before -hermes-send)"
 
@@ -371,7 +373,12 @@ screenshots:
 install-guide-test:
 	python3 tests/install_guide_test.py
 
-check: vet test leakscan css-check verb-ledger install-guide-test
+# docs/features.md's anchors, and deploy/.env.example, the compose file and the
+# server's variables agreeing (tests/features_config_test.py). Static.
+features-config-test:
+	python3 tests/features_config_test.py
+
+check: vet test leakscan css-check verb-ledger install-guide-test features-config-test
 
 # The release pipeline, without a tag: the exact asset set the `release` job in
 # .github/workflows/ci.yml publishes, built and self-verified into dist/

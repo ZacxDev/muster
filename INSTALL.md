@@ -112,6 +112,21 @@ env_secret() {
   cur=$(env_get "$1")
   if [ -z "$cur" ] || [ "$cur" = "$(env_example "$1")" ]; then env_set "$1" "$(mi_rand "${2:-24}")"; fi
 }
+# mi_stt_profile: the dictation profile in .env's COMPOSE_PROFILES (stt…), or nothing.
+mi_stt_profile() { env_get COMPOSE_PROFILES | tr ',' '\n' | grep '^stt' | head -n 1; }
+# mi_profiles ADD [DROP]: .env's COMPOSE_PROFILES with ADD in it once (none
+# when empty) and every entry starting with DROP taken out; every other
+# profile is kept, so choosing dictation never drops attachments' s3.
+mi_profiles() {
+  out=""
+  for p in $(env_get COMPOSE_PROFILES | tr ',' ' '); do
+    [ "$p" = "$1" ] && continue
+    [ -n "${2:-}" ] && case "$p" in "$2"*) continue ;; esac
+    out="${out:+$out,}$p"
+  done
+  [ -n "$1" ] && out="${out:+$out,}$1"
+  printf '%s\n' "$out"
+}
 # mi_foreign [PROJECT]: print every sign of a muster this guide did NOT make —
 # containers or volumes of the compose project PROJECT (default muster) that
 # are not this guide's, or something answering on 127.0.0.1:8105 before this
@@ -460,14 +475,15 @@ grep -c '^[A-Z_]*=CHANGE-ME$' .env | sed 's/^/placeholders left: /'
 count, because they start with `#`). Then dictation, by the answer saved in
 Step 1. This block is also how to **switch** options later: `mi_save STT <new>`
 (and, for `api`, write the key file first), then re-run it and Step 5. Each
-option sets the profile, URL and model together, and never writes an empty
-value over a token or key that is already there.
+option sets the profile, URL and model together, never writes an empty
+value over a token or key that is already there, and keeps any other profile
+in `COMPOSE_PROFILES` (attachments' `s3`, Step 11).
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
 cd "$MUSTER_DIR"
-prev=$(env_get COMPOSE_PROFILES); url=$(env_get MUSTER_STT_URL)
-# Is the API option in effect now? (No profile, and a URL that is not a local service.)
+prev=$(mi_stt_profile); url=$(env_get MUSTER_STT_URL)
+# Is the API option in effect now? (No dictation profile, and a URL that is not a local service.)
 was_api=0
 case "$url" in ""|http://stt-*) ;; *) [ -n "$prev" ] || was_api=1 ;; esac
 # Leaving the API option: .env holds the key's only copy, so keep it aside.
@@ -477,14 +493,15 @@ fi
 case "$STT" in
   local-gpu)
     [ "$prev" = stt-cohere ] || env_set MUSTER_STT_TOKEN "$(mi_rand 32)"
-    env_set COMPOSE_PROFILES stt-cohere
+    env_set COMPOSE_PROFILES "$(mi_profiles stt-cohere stt)"
     env_set MUSTER_STT_URL http://stt-cohere:8000
-    env_set MUSTER_STT_MODEL ""
+    # The server ignores the model field; naming its model keeps muster's log line true.
+    env_set MUSTER_STT_MODEL CohereLabs/cohere-transcribe-03-2026
     if [ -s "$MI_DIR/hf-token" ]; then env_set HF_TOKEN "$(cat "$MI_DIR/hf-token")" && rm -f "$MI_DIR/hf-token"; fi
     case "$(env_get HF_TOKEN)" in ""|CHANGE-ME) echo "MISSING: the Hugging Face token (Step 1, question 2)" ;; esac ;;
   local-cpu)
-    [ "$prev" = stt-whisper ] || env_set MUSTER_STT_TOKEN "$(mi_rand 32)"
-    env_set COMPOSE_PROFILES stt-whisper
+    case "$prev" in stt|stt-whisper) ;; *) env_set MUSTER_STT_TOKEN "$(mi_rand 32)" ;; esac
+    env_set COMPOSE_PROFILES "$(mi_profiles stt stt)"
     env_set MUSTER_STT_URL http://stt-whisper:8000
     # A faster-whisper model is kept (someone chose a larger one); anything else is reset.
     case "$(env_get MUSTER_STT_MODEL)" in Systran/faster-whisper-*) ;; *) env_set MUSTER_STT_MODEL Systran/faster-whisper-small ;; esac ;;
@@ -497,13 +514,13 @@ case "$STT" in
     elif [ -z "$api_model" ]; then echo "MISSING: the API's model (mi_save STT_API_MODEL …); nothing changed"
     elif [ "$key" = 0 ]; then echo "MISSING: the API key (write it as Step 1, question 2 shows); nothing changed"
     else
-      env_set COMPOSE_PROFILES ""
+      env_set COMPOSE_PROFILES "$(mi_profiles "" stt)"
       env_set MUSTER_STT_URL "$api_url"
       env_set MUSTER_STT_MODEL "$api_model"
       if [ -s "$MI_DIR/stt-api-key" ]; then env_set MUSTER_STT_TOKEN "$(cat "$MI_DIR/stt-api-key")" && rm -f "$MI_DIR/stt-api-key"; fi
     fi ;;
   none)
-    env_set COMPOSE_PROFILES ""; env_set MUSTER_STT_URL ""; env_set MUSTER_STT_TOKEN ""; env_set MUSTER_STT_MODEL "" ;;
+    env_set COMPOSE_PROFILES "$(mi_profiles "" stt)"; env_set MUSTER_STT_URL ""; env_set MUSTER_STT_TOKEN ""; env_set MUSTER_STT_MODEL "" ;;
 esac
 echo "dictation: $STT"
 ```
@@ -706,6 +723,8 @@ tmux_dir=$(dirname "$(command -v tmux)")
   echo "MUSTER_MIRROR_HOST=$MIRROR_HOST"
   echo "MUSTER_MIRROR_INTERACTIVE=${INTERACTIVE:-0}"
   echo "MUSTER_MIRROR_WRITE_HOOK_CONFIG=1"
+  # Optional (Step 11): the local MCP endpoint behind the agent ask tool.
+  [ "${ASK_TOOLS:-}" = yes ] && echo "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823"
   echo "PATH=$tmux_dir:$MUSTER_BIN:/usr/local/bin:/usr/bin:/bin"
 } > "$cfg/env"
 chmod 600 "$cfg/env"
@@ -1108,7 +1127,74 @@ Then tell the person, briefly:
   there is no Terminal view yet: only Claude Code windows whose Rendered view
   resolves can be viewed; shells, Codex and unresolved windows cannot;
 - that `muster doctor` re-checks everything;
-- that the chief is optional and not part of this install (step 9.9).
+- that the chief is optional and not part of this install (step 9.9);
+- that more is optional (Step 11): file attachments, suggested replies, letting
+  sessions ask them questions, and the rest of
+  <https://github.com/ZacxDev/muster/blob/main/docs/features.md>.
+
+---
+
+## Step 11: Optional features (only what the person asks for)
+
+Everything above is muster's core, plus notifications and the dictation option
+from Step 1. Every other feature is optional and off.
+**<https://github.com/ZacxDev/muster/blob/main/docs/features.md>** is the one
+page that lists them, with what each needs (an extra service, a key, your own
+infrastructure) and the exact lines. Tell the person it exists; turn nothing on
+that they did not ask for.
+
+Turning a feature on is the same every time: its lines go into
+`~/muster/.env`, its compose profile (if it has one) into `COMPOSE_PROFILES`
+there, and then **Step 5's block** brings the server up with them. Check it with
+`muster doctor` (Step 10) or, where the release has it, muster's Features page
+(`/account/features`); the examples below also name the feature's own start-up
+line. The compose
+file forwards every optional setting from `.env`, so it is never edited.
+
+**Dictation** is Step 1's question and Step 4's block; to switch options later,
+`mi_save STT <option>` and re-run both, then Step 5.
+
+**Example: file attachments (profile `s3`).** The profile adds an S3 store (Silo, a MinIO fork)
+for attached files, its bucket created on start. It needs two secrets, which
+this generates (existing ones are kept), and `MUSTER_PUBLIC_URL`, which Step 4
+already set:
+
+```sh
+. "$HOME/.config/muster-install/lib.sh"
+cd "$MUSTER_DIR"
+env_secret S3_STORE_SECRET_KEY 24        # the store's root password, and muster's key
+env_secret MUSTER_UPLOAD_SIGNING_KEY 48  # signs the links agents are given
+env_set COMPOSE_PROFILES "$(mi_profiles s3)"
+echo "profiles: $(env_get COMPOSE_PROFILES)"
+```
+
+Then run Step 5's block. Check:
+`docker compose logs muster | grep 'file attachments:'` must say
+`file attachments: ON`.
+
+**Per machine: the agent ask tool and ask cards.** They let a Claude Code
+session ask the person a question and wait for the answer, and show Claude's
+multiple-choice questions as forms in muster. They are **not** part of the core
+install because they change the person's own Claude Code configuration on that
+machine: ask before doing them. On each machine where the person wants them:
+
+1. `. "$HOME/.config/muster-install/lib.sh" && mi_save ASK_TOOLS yes`, then
+   re-run Step 7's last block. It adds `MUSTER_MIRROR_MCP_LISTEN` to the
+   service's settings and restarts it; its log then names the MCP endpoint.
+2. Register the endpoint with Claude Code and export its secret: the exact
+   commands are under "Agent ask tool" in docs/features.md
+   (<https://github.com/ZacxDev/muster/blob/main/docs/features.md#agent-ask-tool>).
+3. Add the `muster-mirror ask` hook to `~/.claude/settings.json`, keeping the
+   hooks already there: "Ask cards" in the same page
+   (<https://github.com/ZacxDev/muster/blob/main/docs/features.md#ask-cards>).
+
+They take effect in Claude Code sessions started afterwards.
+
+**If this fails:**
+- `up --wait` fails with the new profile: `docker compose logs --tail=80 <service>`
+  (`s3`, `stt-whisper`). Each one names the `.env` line it is missing.
+- The feature's log line says `OFF` or `MISCONFIGURED`: it names the variable.
+  Fix it in `.env` and re-run Step 5.
 
 ---
 
@@ -1124,6 +1210,16 @@ Then tell the person, briefly:
   `.env`, pulls the new image and restarts the server), and on every machine
   re-run that `mi_set_version`, Step 6, and Step 7's last block (which
   restarts muster-mirror). Re-run Step 10 to check.
+  **Notifications change on the first upgrade to a compose file with session
+  state on by default:** a session then sends **one push per stop** instead
+  of the separate waiting-window and stall notifications. To keep the old
+  ones, put `MUSTER_SESSION_STATE=0` in `~/muster/.env` before Step 5
+  (<https://github.com/ZacxDev/muster/blob/main/docs/features.md#session-state>).
+  **GPU dictation (`local-gpu`) installed before this release:** re-run Step 4's
+  dictation block once (or set `MUSTER_STT_MODEL=CohereLabs/cohere-transcribe-03-2026`
+  in `.env`), else muster's `dictation:` line names the CPU model
+  `Systran/faster-whisper-small`; dictation itself works either way, as the
+  GPU server ignores the field.
 - **Remove a machine:** stop its service (`systemctl --user disable --now
   muster-mirror.service`, or `launchctl bootout gui/$(id -u)/io.github.zacxdev.muster-mirror`),
   and revoke its token on the hub (`docker compose exec -T muster /muster-server

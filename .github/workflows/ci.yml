@@ -168,6 +168,11 @@ jobs:
       - name: INSTALL.md's blocks do what they say
         run: python3 tests/install_guide_test.py
 
+      # docs/features.md's anchors (the feature hints link to them), and the
+      # compose file, .env.example and the server's variables agreeing.
+      - name: docs/features.md, .env.example and the compose file agree
+        run: python3 tests/features_config_test.py
+
       # The Claude Code plugin marketplace: names, source path, skill
       # frontmatter, and the setup skill pointing at INSTALL.md's URL.
       - name: the Claude Code plugin is what the README installs
@@ -857,8 +862,11 @@ jobs:
           tests/release-publish-test.sh
           tests/stt-cohere-source-test.sh
 
+      # The default stack, then the s3 and stt profiles with the .env lines
+      # docs/features.md gives. espeak-ng speaks the stt phase's test clips.
       - name: bring the compose stack up from this run's image
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng >/dev/null
           make image IMAGE=muster-local VERSION=0.0.0
           tests/compose-up.sh muster-local 0.0.0
 
