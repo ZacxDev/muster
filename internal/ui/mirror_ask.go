@@ -124,10 +124,24 @@ func askReadOnly(qs []askq.Question, answers map[string]string) g.Node {
 	return Div(Class("flex flex-col gap-3"), g.Group(items))
 }
 
+// AskNoCardNote is what a call the transcript holds with no result says
+// (MirrorAskCall). The page shows it only while muster has NO live card for
+// the call (askScript hides it behind one), so it says why muster cannot
+// answer it here and where to. muster tracks a call it reads open in a
+// WAITING session's transcript (internal/api's open-question scan), so a call
+// it does not track is one no longer on screen (an interrupted call, an ended
+// session) or one in a session its host does not report as waiting.
+const AskNoCardNote = "Muster isn't tracking this question, so it can't answer it from here — answer it in the terminal. " +
+	"(It may no longer be on the terminal's screen, or its host may not report that the session is waiting.)"
+
 // MirrorAskCall is a call the transcript holds with no result yet: its
-// questions, read-only. Claude Code 2.1.289 writes the call together with its
-// result (measured: neither is in the transcript while the picker shows), so
-// this is drawn only for a transcript cut between the two.
+// questions, read-only. Claude Code writes the call when its picker opens and
+// its result once it is answered or dismissed (measured on 2.1.289), so this
+// is drawn for every open question. 🔴 IT IS A FALLBACK, NOT THE QUESTION'S
+// CARD: while the live region holds a card for the call (data-ask-row naming
+// this row), the page hides this row (askScript), so the question is on the
+// page once — answerable, or saying why not (a read-only, offline or older
+// host). Only a call muster tracks nothing of shows it, with AskNoCardNote.
 func MirrorAskCall(rowID string, qs []askq.Question, extra ...g.Node) g.Node {
 	return Section(
 		g.If(rowID != "", ID(rowID)),
@@ -138,7 +152,7 @@ func MirrorAskCall(rowID string, qs []askq.Question, extra ...g.Node) g.Node {
 		askCardHead("asking…", extra...),
 		Div(Class("flex flex-col gap-3 px-3 pb-3"),
 			askReadOnly(qs, nil),
-			P(Class("text-xs text-muted"), g.Text("Waiting for the answer in the terminal.")),
+			P(g.Attr("data-ask-nocard", ""), Class("text-xs text-muted"), g.Text(AskNoCardNote)),
 		),
 	)
 }
@@ -528,12 +542,17 @@ func askScript() g.Node {
   ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(function (t) {
     document.addEventListener(t, function () { held = null; }, { capture: true, passive: true });
   });
+  // 🔴 A CALL WITH NO RESULT IS SHOWN BY ITS LIVE CARD WHEN THERE IS ONE: the
+  // conversation's "asking…" row (data-ask-state waiting) is the fallback for
+  // a question muster tracks nothing of, so it is hidden while a live card
+  // names it (data-ask-row) — and shows again if the card goes.
   function tidy() {
-    var any = false, fresh = null;
+    var any = false, fresh = null, carded = {};
     region.querySelectorAll('[data-ask-live]').forEach(function (c) {
       var hide = drawn(c);
       if (c.hidden !== hide) c.hidden = hide;
       if (hide) return;
+      carded[c.getAttribute('data-ask-row')] = true;
       any = true;
       var tool = c.getAttribute('data-ask-tool');
       if (revealed[tool]) return;
@@ -541,6 +560,10 @@ func askScript() g.Node {
       if (!fresh || (!pending(fresh) && pending(c))) fresh = c;
     });
     region.hidden = !any;
+    if (log) log.querySelectorAll('[data-ask][data-ask-state="`+AskStateWaiting+`"]').forEach(function (row) {
+      var hide = !!carded[row.id];
+      if (row.hidden !== hide) row.hidden = hide;
+    });
     if (fresh) { held = fresh; reveal(fresh); }
   }
   // The conversation draws (and redraws) its rows on its own socket, before or
