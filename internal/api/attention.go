@@ -188,6 +188,9 @@ type attentionItem struct {
 	Detail string `json:"detail,omitempty"`
 	// Focus is a mirrored session's focus title (internal/focus), "" for none.
 	Focus string `json:"focus,omitempty"`
+	// focusAt is when Focus was written (withFocus), for its age on the Asks
+	// list (ui.FocusAgeOf); zero for none or unknown.
+	focusAt time.Time
 	// Since is when the item started waiting: an ask's or a draft's creation, a
 	// session's status time (when it went waiting), a held question's creation.
 	// The queue is NEWEST FIRST by it (sortAttentionItems).
@@ -719,20 +722,57 @@ func sortAttentionItems(items []attentionItem) {
 // withFocus sets each mirrored item's focus title (its Claude session's
 // focus, internal/focus): read once, only when an item has a session, and
 // only for the surfaces that show it (the page, the list, attention_list).
+//
+// A chief NOTICE already carries a title — the decision's snapshot of its
+// session's focus (noticeItem) — and is given that focus's age when the
+// session's stored focus still has that very title. A notice whose session has
+// moved on to another title since shows its snapshot with no age: the stored
+// time is the newer title's, not the snapshot's.
 func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 	need := false
 	for _, it := range items {
-		need = need || it.claudeSession != ""
+		need = need || it.claudeSession != "" || noticeFocus(it)
 	}
 	if !need {
 		return
 	}
 	fi := s.focusIndex(ctx)
 	for i := range items {
+		if noticeFocus(items[i]) {
+			if v, ok := fi[items[i].subject]; ok && v.Title == items[i].Focus {
+				items[i].focusAt = v.UpdatedAt
+			}
+			continue
+		}
 		if v := fi.mirrorFocus(items[i].claudeSession); v != nil {
-			items[i].Focus = v.Title
+			items[i].Focus, items[i].focusAt = v.Title, v.UpdatedAt
 		}
 	}
+}
+
+// noticeFocus reports whether it is a chief notice that carries its session's
+// focus title (noticeItem).
+func noticeFocus(it attentionItem) bool {
+	return it.Kind == attentionKindNotice && it.Focus != "" && it.subject.Valid() == nil
+}
+
+// attentionFocusHTML is an Asks list row's focus line: the title (plained),
+// then its age when ui.FocusAgeOf shows one (" · 2d"), and muted when it is
+// stale. The age is its own element, so the title's text is the title.
+func attentionFocusHTML(title string, age ui.FocusAge) string {
+	esc := html.EscapeString
+	cls, stale, after := "break-words text-xs font-semibold text-fg2", "", ""
+	if age.Stale {
+		cls, stale = cls+" "+ui.FocusStaleClass, ` data-focus-stale`
+	}
+	if age.Text != "" {
+		// Labelled: the card's header already ends in how long it has waited,
+		// in the same "· 3m" shape; this one is how old the title is.
+		after = `<span class="font-normal" data-focus-age title="` + esc(ui.FocusAgeLabel(age)) + `" aria-label="` +
+			esc(ui.FocusAgeLabel(age)) + `"> · ` + esc(age.Text) + `</span>`
+	}
+	return `<span class="` + cls + `"` + stale + `><span data-attention-focus>` + esc(title) + `</span>` + after + `</span>
+`
 }
 
 // withAskBoxes sets what each ask's answer card draws besides its form (in
@@ -1367,8 +1407,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 		// Source (an agent's or window's name) and Focus (an LLM summary) are
 		// titles, so they read as their plain text (textplain).
 		if focus := textplain.Title(it.Focus); focus != "" {
-			b.WriteString(`<span class="break-words text-xs font-semibold text-fg2" data-attention-focus>` + esc(focus) + `</span>
-`)
+			b.WriteString(attentionFocusHTML(focus, ui.FocusAgeOf(it.focusAt, now)))
 		}
 		text, detail := esc(it.Text), esc(it.Detail)
 		if it.hermes != nil || it.openCode != nil {

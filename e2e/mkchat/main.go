@@ -185,6 +185,10 @@ type focusSpec struct {
 	// HistoryTitles, when set, are written BEFORE the History ones, oldest
 	// first, each a change: earlier focuses with titles a spec can search by.
 	HistoryTitles []string `json:"historyTitles"`
+	// AgeHours, when > 0, backdates the focus that many hours (its
+	// agent_focus.updated_at; its history is left as written), so a spec can
+	// see a title's age ("· 2d") and a stale one.
+	AgeHours float64 `json:"ageHours"`
 }
 
 func focusSpecs() ([]focusSpec, error) {
@@ -236,6 +240,15 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 		}
 		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer}); err != nil {
 			return fmt.Errorf("focus %s: %w", sub, err)
+		}
+		if sp.AgeHours > 0 {
+			// Exactly one row moves, or the spec would test a fresh focus and
+			// pass for the wrong reason.
+			tag, err := pool.Exec(ctx, `UPDATE agent_focus SET updated_at = now() - make_interval(secs => $1)
+				WHERE subject_kind = $2 AND subject_key = $3`, sp.AgeHours*3600, string(sub.Kind), sub.Key)
+			if err != nil || tag.RowsAffected() != 1 {
+				return fmt.Errorf("backdate focus %s: %d rows, %v", sub, tag.RowsAffected(), err)
+			}
 		}
 	}
 	return nil

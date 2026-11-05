@@ -72,7 +72,7 @@ func featureCatalog() []features.Feature {
 		{ID: features.Focus, Name: "Session focus",
 			Description: "A short title and summary for every session, and the chief's fleet tools. Needs an OpenRouter key.",
 			Enable:      []features.Var{v(envAgentOpenRouterKey, "OpenRouter key")},
-			Settings:    []string{envFocusInterval, envFocusRetention}},
+			Settings:    []string{envFocusInterval, envFocusRetention, envFocusModel}},
 		{ID: features.Accounts, Name: "Per-user accounts",
 			Description: "Users, passkeys, invites and roles through a GoTrue server you run.",
 			Enable: []features.Var{is(envAuthMode, "gotrue"), v(envGoTrueURL, "GoTrue base URL"), v(envGoTrueSecret, "GoTrue JWT secret"),

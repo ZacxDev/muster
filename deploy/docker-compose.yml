@@ -145,6 +145,7 @@ services:
       MUSTER_SUGGEST_MODEL: ${MUSTER_SUGGEST_MODEL:-}
       MUSTER_FOCUS_INTERVAL: ${MUSTER_FOCUS_INTERVAL:-}
       MUSTER_FOCUS_RETENTION: ${MUSTER_FOCUS_RETENTION:-}
+      MUSTER_FOCUS_MODEL: ${MUSTER_FOCUS_MODEL:-}
 
       # Per-user accounts through a GoTrue you run (docs/features.md#accounts).
       MUSTER_AUTH_MODE: ${MUSTER_AUTH_MODE:-}
