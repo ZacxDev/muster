@@ -292,6 +292,10 @@ export const dockPort = port + 255;
 // The feature registry spec (features.spec.ts): its own server with a mirrored
 // host and no dictation, attachments or connectors, so their hints show.
 export const featuresPort = port + 256;
+// tests/chief-mobile.spec.ts: a claude-code agent's page on a phone — its own
+// server with the claude-code kind on (noop driver), so the header draws the
+// account and the failover marker.
+export const chiefMobilePort = port + 260;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

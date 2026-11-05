@@ -1391,12 +1391,26 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 `)
 		case attentionKindAsk:
 			id := strconv.FormatInt(it.AskID, 10)
-			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="flex flex-col gap-2" data-attention-answer` + formAttrs + `>
+			// THE COMPACT ANSWER FORM (operator decision: one card must fit a
+			// session page's asks block on a phone with no inner scroll). The
+			// classes are ui's (ui.AskForm*: the stylesheet scans internal/ui,
+			// not this file), drawn here once for both the Asks queue and a
+			// session page's block. The options wrap as their own width; the box
+			// starts one line and grows as it is typed into (ui.AskFormInputClass,
+			// capped); Answer and Dismiss share one row.
+			//
+			// 🔴 DISMISS IS STILL ITS OWN FORM, posting to /cancel — the button
+			// only SITS in the answer form's row, joined to its form by the
+			// form= attribute. A formaction on the answer form would also send
+			// the typed answer and run through whatever binds the answer form's
+			// submit; this way the two posts are exactly what they were.
+			dismiss := "ask-" + id + "-dismiss"
+			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + formAttrs + `>
 ` + back)
 			if len(it.Options) > 0 {
-				b.WriteString(`<div class="flex flex-wrap gap-2">`)
+				b.WriteString(`<div class="` + ui.AskFormOptionsClass + `">`)
 				for _, o := range it.Options {
-					b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + flowsQuietButton + `" data-attention-option>` + esc(o) + `</button>`)
+					b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + ui.AskFormOptionClass + `" data-attention-option>` + esc(o) + `</button>`)
 				}
 				b.WriteString("</div>\n")
 			}
@@ -1405,13 +1419,14 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			// FILLS the box at the caret; Answer is still the only send.
 			input := "answer-" + id
 			// The mic sits on the box's row, at its bottom edge, as on every other
-			// message box; its note is under the row.
-			b.WriteString(`<label for="` + input + `" class="text-xs text-fg2">Your answer</label>
-<div class="flex items-end gap-2"><textarea id="` + input + `" name="answer" rows="2" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + flowsInputClass + ` min-w-0 flex-1"></textarea>` +
+			// message box; its note is under the row. The label is for a screen
+			// reader; the box's placeholder says the same to the eye.
+			b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
+<div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
 				answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
-` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "") + `<button type="submit" class="` + flowsButtonClass + `">Answer</button>
+` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "") + `<div class="` + ui.AskFormActionsClass + `"><button type="submit" class="` + ui.AskFormAnswerClass + `">Answer</button><button type="submit" form="` + dismiss + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AskFormDismissClass + `">Dismiss</button></div>
 </form>
-<form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"` + formAttrs + `>` + back + `<button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>
+<form id="` + dismiss + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)
 			if it.sessionLink != "" {
 				b.WriteString(`<a href="` + esc(it.sessionLink) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-attention-session>` + askViewInSession + `</a>

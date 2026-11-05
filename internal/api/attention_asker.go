@@ -151,8 +151,10 @@ func askerAsksHTML(items []attentionItem, returnTo string, now time.Time) string
 	if len(items) > 1 {
 		n = strconv.Itoa(len(items)) + " questions"
 	}
-	// The heading row carries "Hide until next ask" (ui.AskerAsksHeading).
-	return ui.AskerAsksHeading(n) + `<ul class="flex flex-col gap-2" data-testid="asker-asks">` + attentionItemsHTMLTo(items, now, returnTo) + `</ul>`
+	// The heading row carries "Hide until next ask" (ui.AskerAsksHeading); the
+	// list shows the first ask and keeps the rest behind "Show N more"
+	// (ui.AskerAsksList).
+	return ui.AskerAsksHeading(n) + ui.AskerAsksList(attentionItemsHTMLTo(items, now, returnTo), len(items))
 }
 
 // askerAsksBlock is ctx's principal's block for r: its content and its

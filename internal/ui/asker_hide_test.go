@@ -1,10 +1,60 @@
 package ui
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+// TestTheAsksShowOneCardAtATimeEachClampedInPlace pins ONE AT A TIME, CLAMPED
+// as a RELATIONSHIP across its three places: the list's markup (AskerAsksList),
+// the stylesheet's rules (web/css/input.css) and the script that flips them
+// (askerAsksHideScript). Each names the same attributes; a rename in one that
+// the others miss would leave every card shown, or every text clamped with no
+// way to open it, and no single file's test would see it. e2e
+// chief-mobile.spec.ts drives the behaviour at 412px.
+func TestTheAsksShowOneCardAtATimeEachClampedInPlace(t *testing.T) {
+	one := AskerAsksList(`<li id="ask-1" data-attention-item></li>`, 1)
+	if strings.Contains(one, "data-asks-collapsed") || strings.Contains(one, "data-asks-more") {
+		t.Errorf("one ask is collapsed behind a \"more\": %s", one)
+	}
+	three := AskerAsksList(`<li id="ask-3" data-attention-item></li><li id="ask-2" data-attention-item></li><li id="ask-1" data-attention-item></li>`, 3)
+	if !strings.Contains(three, `data-testid="asker-asks" data-asks-collapsed>`) {
+		t.Errorf("three asks are not collapsed: %s", three)
+	}
+	if !regexp.MustCompile(`<button type="button" data-asks-more class="[^"]*min-h-\[44px\][^"]*">Show 2 more</button>$`).MatchString(three) {
+		t.Errorf("no \"Show 2 more\" after the list: %s", three)
+	}
+
+	css, err := os.ReadFile("../../web/css/input.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`#` + AskerAsksID + ` [data-asks-collapsed] > [data-attention-item]:not(:first-child) {`,
+		`#` + AskerAsksID + ` [data-attention-item] [data-attention-text]:not([data-ask-open]) {`,
+		`-webkit-line-clamp: 4;`,
+	} {
+		if !strings.Contains(string(css), want) {
+			t.Errorf("web/css/input.css lacks %q", want)
+		}
+	}
+
+	js := renderString(t, askerAsksHideScript())
+	for _, want := range []string{
+		`'[data-asks-collapsed]'`, `removeAttribute('data-asks-collapsed')`, `closest('[data-asks-more]')`,
+		`'[data-attention-item] [data-attention-text]'`, `setAttribute('data-ask-open', '')`, `removeAttribute('data-ask-open')`,
+		// "Show more" goes right after the text, so inside its card.
+		`t.after(b)`, `'Show less' : 'Show more'`,
+		// apply() fits the block whenever it shows it: first parse, every refresh.
+		"else fit();",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the script lacks %q", want)
+		}
+	}
+}
 
 // TestTheAsksHeadingCarriesAHideThatSendsNothing: the heading row's "Hide until
 // next ask" is a plain type="button" — not a submit, not inside any form, no
@@ -22,7 +72,7 @@ func TestTheAsksHeadingCarriesAHideThatSendsNothing(t *testing.T) {
 			t.Errorf("the heading carries %q", banned)
 		}
 	}
-	if !strings.Contains(head, `data-asker-asks-heading>Waiting on your answer: 2 questions</h2>`) {
+	if !strings.Contains(head, `data-asker-asks-heading>2 questions waiting</h2>`) {
 		t.Errorf("the count is not in the heading:\n%s", head)
 	}
 	if !strings.Contains(AskerAsksHeading("<b>"), "&lt;b&gt;") {

@@ -218,9 +218,3 @@ func unavailableNotice(k KindChoices) g.Node {
 		A(Href(CredentialsPath), Class("inline-flex min-h-[44px] items-center font-semibold underline"), g.Text("Open Account → Credentials")),
 	)
 }
-
-// workerPoolChip marks a pool worker on its card and its detail page, so the
-// operator can see which agents the machine job API may pick.
-func workerPoolChip(pool string) g.Node {
-	return Span(g.Attr("data-worker-pool", pool), chip("pool", pool))
-}
