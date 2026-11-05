@@ -242,13 +242,16 @@ var dockJS = func() string {
     r.appendChild(l1);
     var f = p.getAttribute('data-switcher-focus');
     if (f) {
+      // The title, cut to one line, and its age after it, never cut
+      // (focusAgeLineJS; the server decided the age: FocusAgeOf).
       var l2 = el('span', 'truncate text-xs text-muted', f);
       l2.setAttribute('data-dock-focus', '');
-      r.appendChild(l2);
+      r.appendChild(focusAgeLine(p.getAttribute('data-switcher-focus-age'), p.hasAttribute('data-switcher-focus-stale'), l2));
     }
     li.appendChild(r);
     return li;
   }
+` + focusAgeLineJS + `
   function tabOf(view) { return document.getElementById('dock-tab-' + view); }
 
   // render draws the shown tab's rows, every tab's count and the tabs' state.
