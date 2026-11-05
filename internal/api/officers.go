@@ -794,18 +794,15 @@ func queueToolDefs() []agents.ToolDef {
 				"The answer says what it `claims`; quote only that. `empty: true` is NOT a zero: run the positive control its `hint` names before you report none. " +
 				"Log lines come back redacted, a sample, never a count. HQ allows a few dozen queries a minute per officer (a 429 means wait a minute); " +
 				"an error carrying `retryable` (502 upstream: the backend read failed) may be retried in a minute; any other refusal names the argument or limit to fix and the same call will not succeed. Read-only.",
-			Parameters: objSchema(map[string]any{
-				"query_id":   strProp("The query's id, as " + officers.ToolObsQueries + " lists it."),
-				"start":      strProp("The window's start, RFC 3339 in whole seconds (e.g. 2006-01-02T15:04:05Z); the window is (start, end]."),
-				"end":        strProp("The window's end, RFC 3339 in whole seconds."),
-				"step":       strProp("Only for a query whose args include step: a duration in whole seconds, at least 1m (e.g. \"300s\")."),
-				"tag":        strProp("Only for a query whose args include tag: the release tag (image) to read."),
-				"procedures": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Only for a query whose args include procedures: the procedure names to read."},
-				"min_calls":  map[string]any{"type": "integer", "description": "Only for a query whose args include min_calls."},
-				"name":       strProp("Only for a query whose args include name."),
-				"path":       strProp("Only for a query whose args include path: a procedure or route."),
-				"limit":      map[string]any{"type": "integer", "minimum": 1, "description": "Only for a lines query (args include limit): at most this many lines (HQ's default when omitted)."},
-			}, "query_id", "start", "end")},
+			// 🔴 AN OPEN OBJECT DESCRIBING query_id ONLY: HQ's decoder is the
+			// one schema (officers.ObsQueryArgs), and the arguments each query
+			// takes are the `args` officer_obs_queries lists — a closed schema
+			// repeating them here would drift from HQ's and hide a new one.
+			Parameters: map[string]any{"type": "object", "additionalProperties": true, "required": []string{"query_id"},
+				"properties": map[string]any{
+					"query_id": strProp("The query's id, as " + officers.ToolObsQueries + " lists it. Send with it exactly the arguments that query's `args` list " +
+						"(start and end are RFC 3339 in whole seconds, e.g. 2006-01-02T15:04:05Z; the window is (start, end]); HQ checks every one."),
+				}}},
 	}
 }
 
@@ -839,13 +836,16 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	// 🔴 NAMING ANOTHER OFFICER IS REFUSED, NOT IGNORED. No schema offers an
 	// officer argument, but a runtime can send any keys; silently acting for
 	// the caller's own officer would hide an attempt to act for another.
-	for _, k := range []string{"officer", "officer_id"} {
-		if v, ok := raw[k]; ok {
-			var named string
-			_ = json.Unmarshal(v, &named)
-			if named != o.ID {
-				return toolErr("you act for officer %s only; %s cannot name another officer", o.ID, name), true
-			}
+	// The key is matched case-insensitively, as HQ's Go decoder matches field
+	// names: `Officer_ID` names an officer as surely as `officer_id`.
+	for k, v := range raw {
+		if !strings.EqualFold(k, "officer") && !strings.EqualFold(k, "officer_id") {
+			continue
+		}
+		var named string
+		_ = json.Unmarshal(v, &named)
+		if named != o.ID {
+			return toolErr("you act for officer %s only; %s cannot name another officer", o.ID, name), true
 		}
 	}
 	if isShipTool(name) {
