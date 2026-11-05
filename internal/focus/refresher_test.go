@@ -105,13 +105,15 @@ func (f *fakeSource) Tail(_ context.Context, s Subject) ([]Entry, error) {
 }
 
 type fakeSummarizer struct {
+	reqs  []Request
 	calls int
 	err   error
 	sum   Summary
 }
 
-func (f *fakeSummarizer) Summarize(context.Context, int64, string) (Summary, error) {
+func (f *fakeSummarizer) Summarize(_ context.Context, _ int64, req Request) (Summary, error) {
 	f.calls++
+	f.reqs = append(f.reqs, req)
 	return f.sum, f.err
 }
 

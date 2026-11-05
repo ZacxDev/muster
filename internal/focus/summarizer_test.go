@@ -69,7 +69,7 @@ func client(url string) *ScaleDown {
 func TestAKeyThatCannotBeReadIsNotAMissingKey(t *testing.T) {
 	srv, c := server(t, 200, completion("m", "Title: x"))
 	sd := client(srv.URL)
-	if _, err := sd.Summarize(context.Background(), 9, "tail"); !errors.Is(err, ErrKeyLookup) || errors.Is(err, ErrNoKey) {
+	if _, err := sd.Summarize(context.Background(), 9, Request{Tail: "tail"}); !errors.Is(err, ErrKeyLookup) || errors.Is(err, ErrNoKey) {
 		t.Fatalf("lookup failure: %v", err)
 	}
 	if err := sd.CanSummarize(context.Background(), 9); Reason(err) != ReasonKeyLookup {
@@ -99,7 +99,7 @@ func TestThePromptTellsTheSummarizerToIgnoreTranscriptInstructions(t *testing.T)
 func TestScaleDownHappyPathJSONStringContent(t *testing.T) {
 	srv, c := server(t, 200, completion("scaledown/summarize",
 		scaledownContent("Title: Wire session focus into the agent cards\nDescription: Adding a popover to each card. Tests are next.")))
-	s, err := client(srv.URL).Summarize(context.Background(), 7, "user: add focus\nassistant: on it")
+	s, err := client(srv.URL).Summarize(context.Background(), 7, Request{Tail: "user: add focus\nassistant: on it"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestScaleDownHappyPathJSONStringContent(t *testing.T) {
 // text (not ScaleDown's JSON string) still yields a focus.
 func TestScaleDownPlainTextContent(t *testing.T) {
 	srv, _ := server(t, 200, completion("scaledown/summarize", "Title: Rotate the build key\nDescription: Waiting on review."))
-	s, err := client(srv.URL).Summarize(context.Background(), 7, "tail")
+	s, err := client(srv.URL).Summarize(context.Background(), 7, Request{Tail: "tail"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestScaleDownErrorAnswers(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			srv, _ := server(t, c.status, c.body)
-			_, err := client(srv.URL).Summarize(context.Background(), 7, "tail")
+			_, err := client(srv.URL).Summarize(context.Background(), 7, Request{Tail: "tail"})
 			if c.want != nil && !errors.Is(err, c.want) {
 				t.Fatalf("err = %v, want %v", err, c.want)
 			}
@@ -178,7 +178,7 @@ func TestScaleDownErrorAnswers(t *testing.T) {
 // before any request leaves.
 func TestScaleDownNoKeyCallsNothing(t *testing.T) {
 	srv, c := server(t, 200, completion("m", "Title: x"))
-	if _, err := client(srv.URL).Summarize(context.Background(), 8, "tail"); !errors.Is(err, ErrNoKey) {
+	if _, err := client(srv.URL).Summarize(context.Background(), 8, Request{Tail: "tail"}); !errors.Is(err, ErrNoKey) {
 		t.Fatalf("err = %v, want ErrNoKey", err)
 	}
 	if c.calls != 0 {
@@ -192,15 +192,16 @@ func TestScaleDownNoKeyCallsNothing(t *testing.T) {
 	}
 }
 
-func TestParseSummaryShapes(t *testing.T) {
+// TestParseSummaryAcceptsOnlyTheLabelledLines: the asked-for "Title:" /
+// "Description:" lines are read; an answer in ANY other shape is ErrFormat —
+// never read some other way. Red before: the unlabelled, one-sentence,
+// bulleted and markdown-label shapes were all read, the first line (or first
+// sentence) becoming the title.
+func TestParseSummaryAcceptsOnlyTheLabelledLines(t *testing.T) {
 	for _, c := range []struct{ name, in, title, desc string }{
 		{"labelled", "Title: Fix the login loop\nDescription: The cookie expires early. A patch is up.", "Fix the login loop", "The cookie expires early. A patch is up."},
-		{"labelled any case, bullets", "- TITLE: Ship 0.4\n* description: Tagging the release.", "Ship 0.4", "Tagging the release."},
-		{"unlabelled lines", "Migrate the queue\nMoving rows to 0019. Half done.", "Migrate the queue", "Moving rows to 0019. Half done."},
-		{"one line", "Debugging the mirror tunnel. It drops after 30 s.", "Debugging the mirror tunnel", "Debugging the mirror tunnel. It drops after 30 s."},
-		// Kept as written: the parse result is STORED, and markdown is removed
-		// at render time (internal/textplain), which tells C# and #123 from markup.
-		{"markdown kept for the renderer", "Title: **Bold** `code` title\nDescription: ok", "**Bold** `code` title", "ok"},
+		{"any case, blank lines", "\nTITLE: Ship 0.4\n\n description: Tagging the release.\n", "Ship 0.4", "Tagging the release."},
+		{"no description", "Title: Rotate the build key", "Rotate the build key", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			title, desc, err := ParseSummary(c.in)
@@ -209,6 +210,23 @@ func TestParseSummaryShapes(t *testing.T) {
 			}
 			if title != c.title || desc != c.desc {
 				t.Fatalf("got (%q, %q), want (%q, %q)", title, desc, c.title, c.desc)
+			}
+		})
+	}
+	for _, c := range []struct{ name, in string }{
+		{"unlabelled lines", "Migrate the queue\nMoving rows to the new table. Half done."},
+		{"one sentence", "The session is working on migrating the queue. It is half done."},
+		{"bulleted labels", "- Title: Ship 0.4\n* Description: Tagging the release."},
+		{"bold labels", "**Title:** Ship 0.4\n**Description:** Tagging the release."},
+		{"a preface line", "Here is the summary:\nTitle: Ship 0.4\nDescription: Tagging."},
+		{"a trailing line", "Title: Ship 0.4\nDescription: Tagging.\nLet me know if you need more."},
+		{"two titles", "Title: Ship 0.4\nTitle: Ship 0.5"},
+		{"a blank title", "Title:   \nDescription: Tagging the release."},
+		{"description only", "Description: Tagging the release."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if title, desc, err := ParseSummary(c.in); !errors.Is(err, ErrFormat) {
+				t.Fatalf("got (%q, %q, %v), want ErrFormat", title, desc, err)
 			}
 		})
 	}
@@ -241,18 +259,21 @@ func TestCleanKeepsALongTitleWhole(t *testing.T) {
 	}
 }
 
-// TestThePromptAsksForAShortWholeTitle pins the title line of the prompt
-// WHOLE: with no display clamp left, keeping titles short is the prompt's job,
-// and a reworded line that drops "shown in full" or the length would pass a
-// keyword check.
-func TestThePromptAsksForAShortWholeTitle(t *testing.T) {
-	const want = "\nLine 1: \"Title: \" then a short title of 3 to 8 words (under 60 characters), complete in itself: " +
-		"it is shown in full, so never trail off, abbreviate or end it with an ellipsis.\n"
+// TestThePromptAsksForAStableShortPlainTitle pins the title line of the
+// prompt WHOLE: a stable name for the task, at most 60 characters, plain text —
+// a reworded line that dropped any of those would pass a keyword check.
+func TestThePromptAsksForAStableShortPlainTitle(t *testing.T) {
+	const want = "\nLine 1: \"Title: \" then a stable name for the session's overall task: 3 to 8 words, at most 60 characters, " +
+		"plain text with no markdown. It is shown in full, so never trail off, abbreviate or end it with an ellipsis. " +
+		"Name the job, not the latest step.\n"
 	if !strings.Contains(SummaryInstructions, want) {
 		t.Errorf("the title line of SummaryInstructions changed:\n%s", SummaryInstructions)
 	}
-	if strings.Contains(SummaryInstructions, "80 characters") {
-		t.Error("the prompt still names the old 80-character bound")
+	if !strings.Contains(SummaryInstructions, "\nWrite in your own words: never copy sentences from the transcript. ") {
+		t.Errorf("the prompt no longer asks for the summarizer's own words:\n%s", SummaryInstructions)
+	}
+	if strings.Contains(SummaryInstructions, "80 characters") || strings.Contains(SummaryInstructions, "right now") {
+		t.Error("the prompt still names the old 80-character bound or asks for what the session does right now")
 	}
 }
 
