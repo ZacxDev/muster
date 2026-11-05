@@ -2,7 +2,7 @@ import { Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
-import { chiefMobilePort, dsn, repoRoot, versionA } from '../lib/env';
+import { chiefMobilePort, dsn, repoRoot, sttToken, versionA } from '../lib/env';
 import { Running, startServer } from '../lib/server';
 import { signIn } from '../lib/signin';
 
@@ -44,6 +44,15 @@ const question = (i: number) =>
   `with a note to confirm before any shutdown. It was first seen four minutes before the check and has rebooted once this week; ` +
   `its zone is otherwise healthy and its metrics came back after the earlier telemetry gap. Two sessions are working in that area ` +
   `right now (one rolling out node updates, one draining a pool). Should I cordon it and page the owner, or leave it for the rollout?`;
+// Every question offers two long options, as a real chief's does (a live card
+// with these is what clipped at 0.148.0: the fixture had none).
+// The conversation's floor while the asks block shows one REAL card. Operator
+// decision (fix/asks-block-real-card): the block grows to fit its one card and
+// the conversation's scroller shrinks — never the card cut by an inner scroll
+// edge. It was 200 for the fixture's smaller card; the real one leaves 158 at
+// 412×915 and 150 at 1280×800 — a strip of conversation, not none.
+const MIN_LOG = 120;
+const OPTIONS = ['agent_dispatch on pod/gateway: start a new agent on it', 'agent_dispatch on pod/claude-code: start a new agent on it'];
 
 let server: Running | undefined;
 
@@ -58,10 +67,14 @@ test.beforeAll(async () => {
     MUSTER_AGENT_CC_ACCOUNTS: 'alpha,beta',
     MUSTER_AGENT_CC_TOKEN_ALPHA: 'sk-ant-oat01-FAKE-e2e-alpha',
     MUSTER_AGENT_CC_TOKEN_BETA: 'sk-ant-oat01-FAKE-e2e-beta',
+    // Dictation on, as on a real deployment: every answer box carries its mic
+    // (nothing is ever sent to this address — no test records).
+    MUSTER_STT_URL: 'http://127.0.0.1:9',
+    MUSTER_STT_TOKEN: sttToken,
   });
   go('./e2e/ccfix', 'agent', OWNER, NAME, 'beta', `e2e-ccm-token-${stamp}`);
   go('./e2e/ccfix', 'failover', OWNER, NAME, 'alpha', 'rate_limited', '2026-11-06T22:00:00Z');
-  for (let i = 0; i < ASKS; i++) go('./e2e/pluginfix', 'ask', OWNER, NAME, question(i));
+  for (let i = 0; i < ASKS; i++) go('./e2e/ccfix', 'ask', OWNER, NAME, question(i), ...OPTIONS);
 });
 
 test.afterAll(async () => {
@@ -122,7 +135,7 @@ async function asksLeaveTheComposer(page: Page, minLog: number) {
 }
 
 test.describe('on a phone', () => {
-  test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
+  test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, permissions: ['microphone'], storageState: { cookies: [], origins: [] } });
 
   test('the header is one line and the failover detail opens on a tap', async ({ page }) => {
     await open(page);
@@ -160,7 +173,7 @@ test.describe('on a phone', () => {
     const hide = (await block.getByRole('button', { name: 'Hide until next ask' }).boundingBox())!;
     expect.soft(hb.height, 'the heading is one line').toBeLessThanOrEqual(24);
     expect.soft(Math.abs(hb.y + hb.height / 2 - (hide.y + hide.height / 2)), 'the hide sits on the heading\'s line').toBeLessThanOrEqual(4);
-    await asksLeaveTheComposer(page, 200);
+    await asksLeaveTheComposer(page, MIN_LOG);
 
     // One card fits the block WHOLE: no scrolling inside the block, and the
     // card's border and the "Show N more" under it are inside the block's box
@@ -178,6 +191,30 @@ test.describe('on a phone', () => {
     const dis = (await first0.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;
     expect.soft(Math.abs(ans.y - dis.y), 'Answer and Dismiss are on one row').toBeLessThanOrEqual(2);
     await wordsAreWhole(first0);
+    // THE REAL CARD (what clipped live): two long options and the answer box's
+    // mic are in it — the positive control that this card is production's size.
+    await expect(first0.locator('[data-attention-option]')).toHaveCount(OPTIONS.length);
+    await expect(first0.locator('[id^="answer-"][id$="-dictate"]')).toBeVisible();
+    // Answer and Dismiss are wholly on screen and nothing covers them (the
+    // block's own scroll edge, the conversation, the composer), and the card's
+    // bottom border is on screen too.
+    const vp = page.viewportSize()!;
+    for (const [name, b] of [['Answer', ans], ['Dismiss', dis]] as const) {
+      expect.soft(b.y >= 0 && b.y + b.height <= vp.height && b.x >= 0 && b.x + b.width <= vp.width, `${name} is wholly inside the viewport`).toBe(true);
+    }
+    const hits = await first0.evaluate((li) => {
+      const out: Record<string, boolean> = {};
+      for (const b of Array.from(li.querySelectorAll<HTMLElement>('button'))) {
+        const name = b.getAttribute('aria-label') || (b.textContent || '').trim();
+        if (name !== 'Answer' && name !== 'Dismiss without answering') continue;
+        const r = b.getBoundingClientRect();
+        const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        out[name] = !!at && (at === b || b.contains(at));
+      }
+      return out;
+    });
+    expect.soft(hits, 'a tap on each lands on it (nothing covers them)').toEqual({ Answer: true, 'Dismiss without answering': true });
+    expect.soft(card.y + card.height, 'the card\'s bottom border is on screen').toBeLessThanOrEqual(vp.height);
 
     // The first question: its body clamped, "Show more" INSIDE its card, and
     // a tap opens it in place.
@@ -204,7 +241,7 @@ test.describe('on a phone', () => {
     await expect(rest).toHaveText(`Show ${ASKS - 1} more`);
     await rest.tap();
     for (let i = 0; i < ASKS; i++) await expect(items.nth(i)).toBeVisible();
-    await asksLeaveTheComposer(page, 200);
+    await asksLeaveTheComposer(page, MIN_LOG);
     await noSideScroll(page);
   });
 
@@ -241,7 +278,7 @@ test.describe('on a desktop', () => {
     await marker.click();
     await expect(page.locator('[data-failover-detail]')).toBeHidden();
     await expect(page.locator('#asker-asks [data-asker-asks-heading]')).toHaveText(`${ASKS} questions waiting`);
-    await asksLeaveTheComposer(page, 200);
+    await asksLeaveTheComposer(page, MIN_LOG);
     await theQueueDrawsTheCompactForm(page, 'attention-desktop.png');
   });
 });

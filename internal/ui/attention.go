@@ -194,11 +194,19 @@ const askerAsksEvent = "attention_queue.changed"
 // block") and its "Show more" is drawn INSIDE its card, opening it in place —
 // see ONE AT A TIME, CLAMPED below. With the compact answer form (THE COMPACT
 // ANSWER FORM) one card, its "Show N more" and the heading measure 378px at
-// 412×915 — inside the 45vh cap (412px there), so the block does not scroll
-// inside and no card is cut by its edge; at 40vh (366px) it did. The block is
-// as tall as what it holds; the cap only bounds a card opened by "Show more"
-// or a long typed answer (e2e chief-mobile.spec.ts measures both the fit and
-// the conversation's room).
+// 412×915 — inside the 45vh cap (412px there); at 40vh (366px) it did not.
+//
+// 🔴 BUT A REAL CARD IS BIGGER THAN THAT FIXTURE'S, SO WHILE ONE CARD SHOWS THE
+// BLOCK GROWS TO FIT IT (web/css/input.css, "The asker block": the cap rises
+// to 65dvh) and the conversation's scroller shrinks instead. Live at 0.148.0 a
+// chief's card with two long options and dictation's mic needed 504px at
+// 412×915, the 45vh cap cut Answer and Dismiss at the block's scroll edge, and
+// the spec — whose fixture had neither — stayed green. 65dvh still leaves the
+// header, a strip of conversation and the composer on screen; a card taller
+// even than that (a text opened by "Show more", a long typed answer, many
+// options) scrolls inside, the one case left to the scroller. Once "Show N
+// more" opens the list the cap is 45vh again: a list of cards scrolls.
+// e2e chief-mobile.spec.ts measures the real card's fit at 412×915.
 //
 // It carries "Hide until next ask" (AskerAsksHeading) and, after it, the chip
 // that reopens it (askerAsksChip) — see HIDE UNTIL NEXT ASK below.
@@ -280,15 +288,18 @@ func AskerAsksList(items string, n int) string {
 // The box starts ONE line and grows with what is typed (AskFormFitClass,
 // web/css/input.css: field-sizing, capped, scrolling inside past the cap; a
 // browser without field-sizing keeps the one line and scrolls). The options
-// are as wide as their words and wrap; Answer (primary) and Dismiss (quiet)
+// are ANSWERS, not calls to action: as wide as their words, left-aligned, in
+// normal-weight small text, wrapping naturally (a live card's two
+// "agent_dispatch on pod/…: start a new agent on it" options were bold,
+// centred, full-width two-line buttons that pushed Answer below the fold); Answer (primary) and Dismiss (quiet)
 // share one row. Dismiss SAYS "Dismiss" and is NAMED "Dismiss without
 // answering" (aria-label, title): the long words on the button squeezed
 // Answer to "Answe" in the queue's 286px card. Every target stays 44px (e2e layout.spec.ts).
 const (
 	AskFormFitClass     = "answer-fit"
 	AskFormClass        = "flex flex-col gap-1.5"
-	AskFormOptionsClass = "flex flex-wrap gap-2"
-	AskFormOptionClass  = "press min-h-[44px] rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge"
+	AskFormOptionsClass = "flex flex-wrap gap-1.5"
+	AskFormOptionClass  = "press min-h-[44px] rounded-md bg-bg px-2.5 py-1.5 text-left text-sm font-normal leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
 	AskFormBoxRowClass  = "flex items-end gap-2"
 	AskFormInputClass   = AskFormFitClass + " min-h-[44px] min-w-0 flex-1 resize-none rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
 	AskFormActionsClass = "flex items-center gap-2"

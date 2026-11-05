@@ -6,11 +6,14 @@
 //
 //		DATABASE_URL=…_e2e go run ./e2e/ccfix agent <owner-id> <name> <account> <token>   → prints the agent id
 //		DATABASE_URL=…_e2e go run ./e2e/ccfix failover <owner-id> <name> <from> <reason> <resets-RFC3339>
+//		DATABASE_URL=…_e2e go run ./e2e/ccfix ask <owner-id> <name> <question> <option>…   → prints the ask id
 //		DATABASE_URL=…_e2e go run ./e2e/ccfix rmagent <owner-id> <name>
 //
 //	  - agent: a RUNNING claude-code agent on <account>, as a dispatch leaves it.
 //	  - failover: one cc_account_failovers row (internal/ccfailover PGStore.Record
 //	    writes the same columns) from <from> to the agent's own account.
+//	  - ask: an OPEN attention_ask from the agent WITH its options — the row its
+//	    /mcp attention_ask call stores (pluginfix ask stores none).
 //	  - rmagent: deletes the agent's asks, then the agent (its failovers cascade).
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
@@ -20,6 +23,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -43,7 +47,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) < 3 {
-		return fmt.Errorf("usage: ccfix agent|failover|rmagent <owner-id> <name> …")
+		return fmt.Errorf("usage: ccfix agent|failover|ask|rmagent <owner-id> <name> …")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil {
@@ -88,6 +92,21 @@ func run(args []string) error {
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("no agent %q of owner %d", args[2], owner)
 		}
+	case "ask":
+		if len(args) < 5 {
+			return fmt.Errorf("usage: ask <owner-id> <name> <question> <option>…")
+		}
+		opts, err := json.Marshal(args[4:])
+		if err != nil {
+			return err
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, asker_label, question, options, expires_at)
+			SELECT $1, id, name, $3, $4::jsonb, now() + interval '1 hour' FROM agents WHERE owner_id = $1 AND name = $2 RETURNING id`,
+			owner, args[2], args[3], string(opts)).Scan(&id); err != nil {
+			return fmt.Errorf("ask from %s: %w", args[2], err)
+		}
+		fmt.Println(id)
 	case "rmagent":
 		// Its asks first, by name: the queue is shared by the whole suite.
 		if _, err := conn.Exec(ctx, `DELETE FROM attention_asks WHERE owner_id = $1
