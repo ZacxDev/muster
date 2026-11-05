@@ -118,16 +118,24 @@ never sent twice.**
   (unless you have changed it since) and the draft. On a Queue or a
   Terminal view there is no bubble: the reason is in the status line under
   the box, with the text back in the box, and **Retry** (or **Send again**,
-  when it may have been delivered) beside it.
+  when it may have been delivered) and **Dismiss** beside it.
 - **A refusal holds what you sent after it.** Messages sent after the refused
   one that have not gone out yet wait, marked "Waiting — an earlier message
   wasn't sent", until you **Retry** the refused one (it then goes first, and
   they follow in order) or **Dismiss** it (they go). Without this, a later
-  message would reach Claude Code before an earlier one. With no bubble, the
-  status line's buttons include Dismiss while anything waits. A **new**
-  message you send once the refusal is showing is you moving on: what waited
-  goes, in order, then it, and the refused message keeps its Retry and
-  Dismiss.
+  message would reach Claude Code before an earlier one. A **new** message
+  you send once the refusal is showing is you moving on: what waited goes,
+  in order, then it, and the refused message keeps its Retry (or Send again)
+  and Dismiss; retried later, it goes after them. With no bubble (a Queue, a
+  Terminal view) the refused message's Retry and **Dismiss** stay beside the
+  status line until you use one. The status line says the newest message's
+  progress ("Sending…", "Queued."); while it does, the refusal's reason is
+  shown beside its buttons, and once that message is done the line shows the
+  refusal again.
+- **A "Not confirmed" message is never settled by a later message.** If
+  you send "yes, go ahead" after "yes" was not confirmed, the row for "yes,
+  go ahead" settles only "yes, go ahead": "yes" stays Not confirmed, with
+  Send again, unless its own row arrives (ahead of the later one's).
 - **Step-up**: a send refused because the sign-in is stale stays pending,
   "Confirm it's you to send", while the dialog asks, and is sent once you
   confirm. Cancelling the dialog turns it failed, with the text back in the

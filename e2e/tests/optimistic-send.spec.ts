@@ -727,6 +727,259 @@ for (const vp of [
       await expect(t.locator('#mv-note')).toBeHidden({ timeout: 10_000 });
     });
 
+    // 🔴 Round 3 #1 (probe P3): a "Not confirmed" message that did NOT land,
+    // then a later message whose text BEGINS with it. Before, the later
+    // message's row settled the earlier one as delivered — bubble, Send again
+    // and draft gone — though it was never pasted: silently lost. The later
+    // message's answer is held until its row is drawn, so at the batch that
+    // draws the row it is still "Sending…" and nothing but the earlier
+    // message is a candidate for it.
+    test('a "Not confirmed" message is not settled by the row of a later message that begins with its text: it keeps Send again', async ({ page }) => {
+      await openView(page);
+      const m1 = `yes p3 ${vp.how} ${stamp}`;
+      const m3 = `${m1}, go ahead`;
+      let refusedOnce = false;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const text = new URLSearchParams(r.request().postData() || '').get('text') || '';
+          await sleep(300);
+          if (text === m1 && !refusedOnce) {
+            refusedOnce = true;
+            return r.fulfill({ status: 502, headers: { 'Content-Type': 'text/plain', 'X-Muster-Send-Again': '1' }, body: 'p3 may have been delivered' });
+          }
+          const resp = await r.fetch();
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline && (await page.locator('#mv-log [data-bubble="user"]', { hasText: text }).count()) === 0) await sleep(100);
+          return r.fulfill({ response: resp }).catch(() => {});
+        },
+      );
+      await sendTimed(page, m1, vp.how);
+      await expect(pendingOf(page, m1).first()).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      await expect(page.locator('#mv-send-again')).toBeVisible();
+      await sendTimed(page, m3, vp.how);
+      await expect.poll(pasted, { message: 'the later message is pasted', timeout: 10_000 }).toEqual([`${pane} ${m3}`]);
+      await expect(page.locator('#mv-log [data-bubble="user"]', { hasText: m3 })).toHaveCount(1, { timeout: 10_000 });
+      await sleep(1_000);
+      const u = page.locator('#mv-log [data-pending-send="unknown"]');
+      await expect(u, 'the earlier one is still Not confirmed').toHaveCount(1);
+      await expect(u).toHaveText(new RegExp('^' + m1.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*Not confirmed'));
+      await expect(u.locator('#mv-send-again'), 'and still offers Send again').toBeVisible();
+      await expect(page.locator('#mv-log [data-pending-send]', { hasText: m3 }), 'the later message settles on its row').toHaveCount(0, { timeout: 10_000 });
+      expect(pasted(), 'it never landed').toEqual([`${pane} ${m3}`]);
+      await press(page.locator('#mv-send-again'), vp.how === 'tap');
+      await expect.poll(pasted, { message: 'Send again delivers it, once', timeout: 15_000 }).toEqual([`${pane} ${m3}`, `${pane} ${m1}`]);
+      await expect(page.locator('#mv-log [data-pending-send]'), 'both settled').toHaveCount(0, { timeout: 10_000 });
+    });
+
+    // 🔴 The rule above must not cost a message that DID land: its row came
+    // late, after a later message was already posted — but ahead of that
+    // message's own row (posts go one at a time; the transcript keeps paste
+    // order). Both texts orders: the later one beginning with the earlier, and
+    // the earlier beginning with the later (there a row that IS the text is
+    // taken before one that only begins with it).
+    for (const order of ['later-longer', 'earlier-longer'] as const) {
+      test(`a "Not confirmed" message whose row arrives late, ahead of a later message's row, is settled (${order})`, async ({ page }) => {
+        await openView(page);
+        const base = `late row ${order} ${vp.how} ${stamp}`;
+        const m1 = order === 'later-longer' ? base : `${base}, go ahead`;
+        const m3 = order === 'later-longer' ? `${base}, go ahead` : base;
+        let refusedOnce = false;
+        await page.route(
+          (u) => u.pathname === '/mirror/view/send',
+          async (r: Route) => {
+            if (r.request().method() !== 'POST') return r.continue();
+            const text = new URLSearchParams(r.request().postData() || '').get('text') || '';
+            await sleep(300);
+            if (text === m1 && !refusedOnce) {
+              refusedOnce = true;
+              return r.fulfill({ status: 502, headers: { 'Content-Type': 'text/plain', 'X-Muster-Send-Again': '1' }, body: 'late may have been delivered' });
+            }
+            // M1 did land: its row arrives only now, once M3 is posted.
+            fs.appendFileSync(tr, prompt(m1));
+            const deadline = Date.now() + 10_000;
+            while (Date.now() < deadline && (await page.locator('#mv-log [data-bubble="user"]', { hasText: m1 }).count()) === 0) await sleep(100);
+            return r.continue().catch(() => {});
+          },
+        );
+        await sendTimed(page, m1, vp.how);
+        await expect(pendingOf(page, m1).first()).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+        await sendTimed(page, m3, vp.how);
+        await expect.poll(pasted, { timeout: 10_000 }).toEqual([`${pane} ${m3}`]);
+        await expect(page.locator('#mv-log [data-pending-send]'), 'both settle, each on its own row').toHaveCount(0, { timeout: 10_000 });
+        await expect(page.locator('#mv-send-again'), 'no Send again for a delivered message').toHaveCount(0);
+        await expect(page.locator('#mv-input')).toHaveValue('');
+      });
+    }
+
+    // 🟢 Round 3 #3 (probe P1): M2 pressed BEFORE M1's refusal waits; M3
+    // pressed AFTER it is the person moving on — M2 then M3 go, in order,
+    // and M1 keeps its Retry and Dismiss, and goes last when retried.
+    test('a message held behind a refusal goes before one sent past the refusal, and the refused one, retried, goes last', async ({ page }) => {
+      await openView(page);
+      const m1 = `p1 one ${vp.how} ${stamp}`, m2 = `p1 two ${vp.how} ${stamp}`, m3 = `p1 three ${vp.how} ${stamp}`;
+      let refusedOnce = false;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const text = new URLSearchParams(r.request().postData() || '').get('text') || '';
+          await sleep(800);
+          if (text === m1 && !refusedOnce) {
+            refusedOnce = true;
+            return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'p1 refusal' });
+          }
+          return r.continue().catch(() => {});
+        },
+      );
+      await sendTimed(page, m1, vp.how);
+      await sendTimed(page, m2, vp.how);
+      await expect(pendingOf(page, m1)).toHaveAttribute('data-pending-send', 'failed', { timeout: 10_000 });
+      await expect(pendingOf(page, m2)).toHaveAttribute('data-pending-send', 'held');
+      await sleep(500);
+      expect(pasted()).toEqual([]);
+      await expect(page.locator('#mv-input'), 'the refused text is back in the box').toHaveValue(m1);
+      await sendTimed(page, m3, vp.how);
+      await expect.poll(pasted, { message: 'M2 then M3', timeout: 15_000 }).toEqual([`${pane} ${m2}`, `${pane} ${m3}`]);
+      await expect(pendingOf(page, m1), 'M1 still refused').toHaveAttribute('data-pending-send', 'failed');
+      await expect(pendingOf(page, m1).getByRole('button', { name: 'Dismiss' })).toBeVisible();
+      await press(pendingOf(page, m1).getByRole('button', { name: 'Retry' }), vp.how === 'tap');
+      await expect.poll(pasted, { message: 'M1, retried, goes last', timeout: 15_000 }).toEqual([`${pane} ${m2}`, `${pane} ${m3}`, `${pane} ${m1}`]);
+      await sleep(1_000);
+      expect(pasted(), 'once each').toEqual([`${pane} ${m2}`, `${pane} ${m3}`, `${pane} ${m1}`]);
+    });
+
+    // 🟡 Round 3 #2 (probe P2): with no bubble, a refused message's Dismiss
+    // stays offered after a later message is sent past it, and the later
+    // message's "Sending…" is said — the refusal's reason moves beside its
+    // buttons, and the line is the refusal's again once the later one is
+    // done. Before, Dismiss was hidden as soon as nothing waited, and the
+    // stale refusal line hid "Sending…".
+    test('in the Terminal view a refused message keeps Retry and Dismiss past later sends, and their "Sending…" is said', async ({ page }) => {
+      const t = await openTerminal(page);
+      const posted: string[] = [];
+      let first = true;
+      await page.route(
+        (u) => u.pathname === '/mirror/terminal/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const text = new URLSearchParams(r.request().postData() || '').get('text') || '';
+          await sleep(800);
+          if (first) {
+            first = false;
+            return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'p2 refusal' });
+          }
+          posted.push(text);
+          return r.continue().catch(() => {});
+        },
+      );
+      const m1 = `p2 one ${vp.how} ${stamp}`, m2 = `p2 two ${vp.how} ${stamp}`;
+      const dismiss = t.locator('[data-send-offer] button', { hasText: 'Dismiss' });
+      const beside = t.locator('[data-send-offer] [data-pending-held]');
+      await t.locator('#mv-input').fill(m1);
+      await press(t.locator('#mv-send'), vp.how === 'tap');
+      await expect(t.locator('#mv-note')).toHaveText('p2 refusal', { timeout: 10_000 });
+      await expect(t.locator('#mv-send-retry')).toBeVisible();
+      await expect(dismiss, 'Dismiss with nothing waiting').toBeVisible();
+      await expect(beside, 'the reason is said once: on the line').toBeHidden();
+      await t.locator('#mv-input').fill(m2);
+      await press(t.locator('#mv-send'), vp.how === 'tap');
+      await expect(t.locator('#mv-note'), 'the later send is said').toHaveText('Sending…');
+      await expect(beside, 'the refusal, beside its buttons').toHaveText('Not sent: p2 refusal');
+      await expect(dismiss).toBeVisible();
+      await expect(t.locator('#mv-send-retry')).toBeVisible();
+      await expect.poll(() => posted, { timeout: 10_000 }).toEqual([m2]);
+      await expect(t.locator('#mv-note'), 'once it went, the line is the refusal\'s again').toHaveText('p2 refusal', { timeout: 10_000 });
+      await expect(beside).toBeHidden();
+      await expect(dismiss, 'Dismiss still offered').toBeVisible();
+      await press(dismiss, vp.how === 'tap');
+      await expect(t.locator('#mv-note')).toBeHidden();
+      await expect(t.locator('#mv-send-retry')).toHaveCount(0);
+      await expect(t.locator('[data-send-offer]')).toBeHidden();
+      await sleep(500);
+      expect(posted, 'Dismiss sends nothing').toEqual([m2]);
+    });
+
+    // 🟢 Round 3 #3: the no-bubble HELD path — a message pressed before the
+    // refusal came waits, said beside the refused one's Retry and Dismiss.
+    test('in the Terminal view a message pressed before a refusal waits beside it, and goes after it on Retry', async ({ page }) => {
+      const t = await openTerminal(page);
+      const posted: string[] = [];
+      let first = true;
+      await page.route(
+        (u) => u.pathname === '/mirror/terminal/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const text = new URLSearchParams(r.request().postData() || '').get('text') || '';
+          await sleep(800);
+          if (first) {
+            first = false;
+            return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'held refusal' });
+          }
+          posted.push(text);
+          return r.continue().catch(() => {});
+        },
+      );
+      const m1 = `held one ${vp.how} ${stamp}`, m2 = `held two ${vp.how} ${stamp}`;
+      await t.locator('#mv-input').fill(m1);
+      await press(t.locator('#mv-send'), vp.how === 'tap');
+      await t.locator('#mv-input').fill(m2);
+      await press(t.locator('#mv-send'), vp.how === 'tap');
+      await expect(t.locator('#mv-note')).toHaveText('held refusal', { timeout: 10_000 });
+      await expect(t.locator('[data-send-offer] [data-pending-held]')).toHaveText("Waiting — an earlier message wasn't sent");
+      await expect(t.locator('[data-send-offer] button', { hasText: 'Dismiss' })).toBeVisible();
+      await expect(t.locator('#mv-input'), 'the refused text is back').toHaveValue(m1);
+      await sleep(1_500);
+      expect(posted, 'the later message waits').toEqual([]);
+      await press(t.locator('#mv-send-retry'), vp.how === 'tap');
+      await expect.poll(() => posted, { message: 'retried first, then the one that waited', timeout: 15_000 }).toEqual([m1, m2]);
+      await expect(t.locator('#mv-note')).toBeHidden({ timeout: 10_000 });
+      await expect(t.locator('[data-send-offer]')).toBeHidden();
+    });
+
+    // 🟢 Round 3 #3: a Queue past a refused Queue. Before, the refusal line
+    // swallowed the later "Queuing…" and "Queued.".
+    test('a Queue sent past a refused one says "Queuing…" then "Queued.", and the refused one keeps Retry and Dismiss', async ({ page }) => {
+      setStatus('busy');
+      await sleep(1_500);
+      await openView(page);
+      let first = true;
+      await page.route(
+        (u) => u.pathname === '/send-queue',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          await sleep(800);
+          if (first) {
+            first = false;
+            return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'queue refusal' });
+          }
+          return r.continue().catch(() => {});
+        },
+      );
+      const q1 = `queue refused ${vp.how} ${stamp}`, q2 = `queue past it ${vp.how} ${stamp}`;
+      const queue = async (text: string) => {
+        await page.locator('#mv-input').fill(text);
+        await press(page.locator('#mv-send-more'), vp.how === 'tap');
+        await press(page.locator('#mv-queue-send'), vp.how === 'tap');
+      };
+      await queue(q1);
+      await expect(page.locator('#mv-note')).toHaveText('queue refusal', { timeout: 10_000 });
+      await queue(q2);
+      await expect(page.locator('#mv-note'), 'the later Queue is said').toHaveText('Queuing…');
+      await expect(page.locator('#mv-note')).toHaveText('Queued.', { timeout: 10_000 });
+      await expect(page.locator('[data-send-offer] [data-pending-held]'), 'the refusal, beside its buttons').toHaveText('Not sent: queue refusal');
+      await expect(page.locator('#mv-send-retry')).toBeVisible();
+      await expect(page.locator('[data-send-offer] button', { hasText: 'Dismiss' })).toBeVisible();
+      await expect(page.locator(`#mv-queue [data-queue-state="queued"]`, { hasText: q2 })).toHaveCount(1, { timeout: 10_000 });
+      await expect(page.locator(`#mv-queue [data-queue-state="queued"]`, { hasText: q1 })).toHaveCount(0);
+      await press(page.locator('[data-send-offer] button', { hasText: 'Dismiss' }), vp.how === 'tap');
+      await expect(page.locator('[data-send-offer]')).toBeHidden();
+      // Tidy: Claude goes idle, the queue sends the one that was queued.
+      setStatus('idle');
+      await expect.poll(pasted, { timeout: 20_000 }).toEqual([`${pane} ${q2}`]);
+    });
+
     // 🟢 An older top window's ask takes no cancel callback. Before, closing
     // its dialog left the framed composer — and everything behind it —
     // waiting for good, "Confirm it's you to send".

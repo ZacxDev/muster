@@ -64,6 +64,27 @@ test.afterAll(async () => {
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
+// hostMode: what the running fake host was started as. A worker starts with
+// the read-only host (beforeAll); a case that needs another starts it.
+let hostMode: 'readonly' | 'send' | 'answer' = 'readonly';
+
+// ensureSendHost: the host running with -hermes-send (and -interactive), its
+// window idle. 🔴 EVERY SEND CASE CALLS IT, so each runs alone (`-g`) and none
+// depends on the one before it having started this host — or on it having
+// left the window idle. A failed case restarts the worker (beforeAll's
+// read-only host), and the next case starts this one again.
+async function ensureSendHost(): Promise<void> {
+  writeFileAtomic(path.join(rig.dir, 'hermes-windows'), `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  if (hostMode === 'send') return;
+  // A fresh Hermes home: the fake creates state.db once per home.
+  home = fs.mkdtempSync(path.join(rig.dir, 'hermes-send-'));
+  rows = path.join(home, 'rows.jsonl');
+  row({ role: 'user', content: 'an earlier prompt' });
+  row({ role: 'assistant', content: 'An earlier reply.' });
+  await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_SEND: '1' });
+  hostMode = 'send';
+}
+
 // refusalOn: what the Rendered view says of the newest refused message — on
 // its bubble (composer_pending.go). 🔴 Not #mv-note: the operator accepted
 // (PR #450, audit round 0, D1) that a refusal's reason is said ONCE, on the
@@ -127,12 +148,7 @@ test('a Hermes window opens a read-only rendered view of its conversation, live'
 // 🔴 REGRESSION TEST. On origin/main the composer stays disabled whatever the
 // host runs, and the hub refuses every paste into a Hermes window.
 test('on a host with -hermes-send, a Hermes window sends from its rendered view, and is refused while busy', async ({ page }) => {
-  // A fresh Hermes home: the fake creates state.db once per home.
-  home = fs.mkdtempSync(path.join(rig.dir, 'hermes-send-'));
-  rows = path.join(home, 'rows.jsonl');
-  row({ role: 'user', content: 'an earlier prompt' });
-  row({ role: 'assistant', content: 'An earlier reply.' });
-  await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_SEND: '1' });
+  await ensureSendHost();
   await rig.login(page);
   // The stopped host's listing outlives it for a while (offline retention),
   // so "listed" is not "the new host is connected": wait for the view itself.
@@ -203,6 +219,7 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
 // same message (the same nonce) is refused and delivers nothing; the
 // explicit "Send again" mints a new nonce and is delivered.
 test('a send that may have been submitted offers Send again, and the same nonce is refused', async ({ page }) => {
+  await ensureSendHost();
   await rig.login(page);
   await expect
     .poll(async () => {
@@ -262,6 +279,7 @@ test('a send that may have been submitted is still refused after Back restores t
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
     await ctx.addInitScript(`addEventListener('pageshow', (e) => { if (e.persisted) window.__restored = (window.__restored || 0) + 1; })`);
     const page = await ctx.newPage();
+    await ensureSendHost();
     await rig.login(page);
     await expect
       .poll(async () => {
@@ -325,9 +343,10 @@ const deliveries = (text: string) =>
   fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8').split('\n').filter((l) => l && JSON.parse(l).content === text).length;
 
 async function sendMayHaveLanded(page: Page, text: string): Promise<void> {
-  // Idle FIRST: a case before this one that failed part-way may have left
-  // the window reported busy, and the view's box stays disabled until idle.
-  writeFileAtomic(path.join(rig.dir, 'hermes-windows'), `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  // The send host, idle FIRST: a case before this one that failed part-way
+  // may have left the window reported busy, and the view's box stays
+  // disabled until idle.
+  await ensureSendHost();
   await rig.login(page);
   await expect
     .poll(async () => {
@@ -420,6 +439,7 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
   writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
   await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_ANSWER: '1' });
+  hostMode = 'answer';
   await rig.login(page);
   const answers = path.join(home, 'answers.jsonl');
   for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {

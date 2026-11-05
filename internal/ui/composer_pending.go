@@ -49,7 +49,12 @@ import "strconv"
 //     prompt) or offline: the bubble turns failed with the reason and Retry
 //     and Dismiss, and its text is put back in the box if the box is empty.
 //     The reason is said ONCE: on the bubble, or — where there is no bubble
-//     (a Terminal view, a Queue) — in #mv-note, with Retry beside it. Text
+//     (a Terminal view, a Queue) — in #mv-note, with Retry (or Send again)
+//     and Dismiss beside it. #mv-note says the NEWEST message's status: a
+//     later "Sending…" or "Queued." takes it, and the refusal's reason moves
+//     beside its Retry and Dismiss, which stay until it is retried or
+//     dismissed; when the later message is done, the line is the refusal's
+//     again. Text
 //     typed since is never overwritten: the message's Retry and the draft
 //     still have it. A refusal that MAY
 //     have been delivered (X-Muster-Send-Again) turns the bubble UNKNOWN
@@ -62,7 +67,9 @@ import "strconv"
 //     or Dismisses it. Posting them anyway would deliver a later message
 //     before an earlier one. A NEW message sent once the refusal is shown is
 //     the person moving on: what waited goes, in order, then it; the refused
-//     message keeps its Retry and Dismiss.
+//     message keeps its Retry (or Send again) and Dismiss — on its bubble,
+//     or, with no bubble, beside the status line with its reason — and,
+//     retried later, goes after them.
 //   - no answer while online: the browser submits the form itself (native),
 //     as before, with the text put back for it. Shown again from the
 //     back/forward cache after that, the page settles that message by the
@@ -77,6 +84,17 @@ import "strconv"
 // message still waiting its turn is never a candidate: an old row of the same
 // text, redrawn by a reset of the conversation, must not take it for sent.
 // And a waiting message is always posted: nothing marks it done before then.
+//
+// 🔴 AN UNKNOWN MESSAGE IS NEVER SETTLED BY A LATER MESSAGE'S ROW. Sent
+// messages claim their rows first (never, by its beginning, a row that IS
+// another open message's text), and once a later message is posted past an
+// unknown one, only a row on the page at that moment — or one drawn ahead of
+// the later message's own row — can settle it: posts go one at a time and
+// the transcript keeps paste order. Otherwise "yes" (not confirmed, never
+// landed) would be settled by "yes, go ahead", and silently lost. The
+// price: an unknown message whose row arrives after a later message was
+// posted, and whose later message's row never matches it (a `/command`), is
+// left Not confirmed, with Send again — the safe side: shown, not lost.
 //
 // 🔴 HOW A BUBBLE IS MATCHED TO ITS ROW. Nothing the page sends survives into
 // Claude Code's transcript — the host pastes the text as typed — so the
@@ -152,12 +170,21 @@ var mirrorComposerJS = `
   var log = document.getElementById('mv-log');
   function say(msg) { note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
   function sayOK(msg) { say(msg); note.setAttribute('data-ok', ''); }
-  // noteBy: the message the status line is about, when it is about one. A
-  // message only clears its OWN line: a later one's "Sent" never wipes an
-  // earlier one's refusal.
+  // noteBy: the message the status line is about, when it is about one. The
+  // line says the NEWEST message's status ("Sending…", "Queued.", a refusal),
+  // so a later message's progress is never hidden. A message only clears its
+  // OWN line, and when it does the line goes back to the open refusal, if
+  // there is one: a later one's "Sent" never wipes an earlier one's refusal.
+  // While the line is about another message, the refusal's reason is said
+  // beside its own buttons instead (offer) — still once.
   var noteBy = null;
-  function sayFor(p, msg, ok) { noteBy = p; if (ok) sayOK(msg); else say(msg); }
-  function clearFor(p) { if (noteBy === p) { noteBy = null; say(''); } }
+  function sayFor(p, msg, ok) { noteBy = p; if (ok) sayOK(msg); else say(msg); offer(); }
+  function clearFor(p) {
+    if (noteBy !== p) return;
+    noteBy = null;
+    var r = openRefusal(p);
+    if (r) sayFor(r, r.reason || ''); else { say(''); offer(); }
+  }
   function hex(n) {
     if (!window.crypto || !crypto.getRandomValues) return '';
     var b = new Uint8Array(n), s = '';
@@ -304,9 +331,9 @@ var mirrorComposerJS = `
       if (p.state === 'failed' || p.state === 'unknown') { sayFor(p, p.reason || ''); offer(); return; }
       if (p.state === 'held') return;
       if (p.state === 'sent') { clearFor(p); return; }
-      // An earlier refusal's reason stays on the line until that message is
-      // retried or dismissed: a later message's progress does not wipe it.
-      if (noteHeld() && noteBy !== p) return;
+      // A later message's progress takes the line; an earlier refusal keeps
+      // its reason and buttons beside it (offer) until it is retried or
+      // dismissed.
       sayFor(p, LABEL[p.state] || '', true);
       return;
     }
@@ -359,21 +386,30 @@ var mirrorComposerJS = `
   // ---- With no bubble (a Terminal view, a Queue): the refused message's
   // own buttons, beside the status line. Retry (#mv-send-retry) — or Send
   // again when it may have been delivered (the one such button on the page,
-  // #mv-send-again) — and, when later messages wait behind it, Dismiss and
-  // the word that they wait.
+  // #mv-send-again) — and Dismiss, ALWAYS: the refused message is the
+  // person's to retry or let go for as long as it is offered, whether or not
+  // anything waits behind it. When later messages wait, the word that they
+  // wait; when the status line is about a later message, the refusal's own
+  // reason.
   var againBtn = null, offerBox = null, dismissBtn = null, heldNote = null;
   // openRefusal: the newest refused message with no bubble that is still
   // the person's to Retry or Dismiss (it no longer holds anything once a new
-  // message was sent past it, but its offer stays).
-  function openRefusal() {
+  // message was sent past it, but its offer stays). except: one that is
+  // going (dismissed, or replaced by a send of it).
+  function openRefusal(except) {
     for (var i = live.length - 1; i >= 0; i--) {
       var x = live[i];
-      if (!x.el && !x.done && (x.state === 'failed' || x.state === 'unknown')) return x;
+      if (x !== except && !x.el && !x.done && (x.state === 'failed' || x.state === 'unknown')) return x;
     }
     return null;
   }
-  // noteHeld: the status line is a refused message's reason, which stays
-  // until that message is retried or dismissed.
+  function refusalText(p) {
+    return p.state === 'unknown' ? ` + strconv.Quote(PendingUnknownPrefix) + ` + (p.reason || '')
+      : ` + strconv.Quote(PendingFailedText) + ` + (p.reason ? ': ' + p.reason : '');
+  }
+  // noteHeld: the status line is a refused message's reason. A new press or
+  // typing does not wipe it (a later message's own status replaces it, and
+  // it comes back when that one is done).
   function noteHeld() { var x = noteBy; return !!(x && !x.el && !x.done && (x.state === 'failed' || x.state === 'unknown')); }
   function offer() {
     var p = blocker && !blocker.el ? blocker : openRefusal();
@@ -403,10 +439,14 @@ var mirrorComposerJS = `
     againBtn.id = p.again ? 'mv-send-again' : 'mv-send-retry';
     againBtn.textContent = p.again ? 'Send again' : 'Retry';
     againBtn.onclick = function () { retry(p); };
-    dismissBtn.hidden = !waiting;
+    dismissBtn.hidden = false;
     dismissBtn.onclick = function () { dismiss(p); };
-    heldNote.hidden = !waiting;
-    heldNote.textContent = waiting ? LABEL.held : '';
+    // The reason is said once: on the status line while that is about p,
+    // else here, beside p's buttons.
+    var words = noteBy === p ? '' : refusalText(p);
+    if (waiting) words = words ? words + ' · ' + LABEL.held : LABEL.held;
+    heldNote.hidden = !words;
+    heldNote.textContent = words;
   }
   function hideOffer() {
     if (!offerBox) return;
@@ -426,7 +466,7 @@ var mirrorComposerJS = `
   }
   // dismiss: the person let a refused message go. What waited behind it is
   // posted now. (Its text stays where it is: the box, if it went back there.)
-  function dismiss(p) { release(p); clearFor(p); settle(p); }
+  function dismiss(p) { release(p); clearFor(p); settle(p); offer(); }
   function retry(p) {
     if (input.value === p.text) clearBox();
     // A message that may have landed is sent again ON PURPOSE (again=1).
@@ -458,6 +498,22 @@ var mirrorComposerJS = `
   // what it draws.
   function rowText(r) { var raw = r.getAttribute('data-prompt'); return raw !== null ? raw : r.textContent; }
   function begins(a, text) { return norm(text).indexOf(a) === 0; }
+  // before: row r is drawn ahead of row b (b still in the conversation; a
+  // reset redraws every row, and then nothing is ahead of a gone one).
+  function before(r, b) {
+    return !!(b && log.contains(b) && r !== b && (r.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING));
+  }
+  // passing: q is about to be posted. Every unknown message still open is
+  // posted PAST: what can settle it is cut at the rows (and the "Queued in
+  // Claude Code" rows) on the page now. A Queue is not posted to the pane,
+  // and does not cut.
+  function passing(q) {
+    if (q.queued) return;
+    live.forEach(function (u) {
+      if (u === q || u.done || !u.el || u.state !== 'unknown' || u.passed) return;
+      u.passed = true; u.passedBy = q; u.cut = seenRows(); u.cutCC = ccItems();
+    });
+  }
   // reconcile settles every SENT (or unknown) bubble whose row is now on the
   // page, then keeps the rest at the conversation's end. mirrorViewScript
   // calls it after each batch it draws — in the SAME task, so the row and its
@@ -467,26 +523,54 @@ var mirrorComposerJS = `
     // 🔴 Only a message whose post came back: one still waiting its turn,
     // asking for a step-up or refused is never settled by a row.
     var open = live.filter(function (p) { return p.el && !p.done && (p.state === 'sent' || p.state === 'unknown'); });
+    // 🔴 THE SENT ONES CLAIM THEIR ROWS FIRST, then the unknown ones (each in
+    // pressed order). A "Not confirmed" message must never take the row of a
+    // message posted after it — "yes", then "yes, go ahead": the later row
+    // begins with the earlier text.
+    open = open.filter(function (p) { return p.state === 'sent'; }).concat(open.filter(function (p) { return p.state === 'unknown'; }));
     if (open.length) {
       var rows = Array.prototype.slice.call(log.querySelectorAll('[data-bubble="user"]'));
       var cc = null, ccTaken = {};
+      var whole = function (r) { return norm(rowText(r)).slice(0, ` + strconv.Itoa(pendingMatchChars) + `); };
+      var owned = function (r, p) { var t = whole(r); return open.some(function (q) { return q !== p && !q.done && key(q) === t; }); };
       open.forEach(function (p) {
         var cand = rows.filter(function (r) { return !(used && used.has(r)) && !(p.before && p.before.has(r)); });
+        // 🔴 An unknown message a later one was POSTED PAST (pump) can only be
+        // settled by a row that was on the page by then (cut) — or one drawn
+        // before the row of that later message (bound): posts go one at a
+        // time and the transcript keeps paste order, so its row, if it
+        // landed, comes before the later message's. Anything after is not
+        // its row. (After a reset of the conversation neither holds a row
+        // that is drawn now, so it stays Not confirmed, with Send again.)
+        if (p.state === 'unknown' && p.passed) cand = cand.filter(function (r) { return (p.cut && p.cut.has(r)) || before(r, p.bound); });
         if (!p.before) cand = cand.slice(-open.length);
         var a = key(p), hit = null;
         // Nothing to compare: by position — the first new row that has
         // nothing to compare either (an emoji's, an attachment's), never just
         // whatever row comes next.
         if (!a) { for (var k = 0; k < cand.length && !hit; k++) { if (!norm(rowText(cand[k]))) hit = cand[k]; } }
-        else for (var i = 0; i < cand.length && !hit; i++) { if (begins(a, rowText(cand[i]))) hit = cand[i]; }
-        if (hit) { if (used) used.add(hit); landed(p); return; }
+        else {
+          // 🔴 A row that IS another open message's text is never taken as
+          // only beginning with this one's: "yes" (sent) must not take the
+          // late row of "yes, go ahead" (not confirmed) — its OK can come
+          // before its own row does.
+          for (var i = 0; i < cand.length && !hit; i++) { if (begins(a, rowText(cand[i])) && !owned(cand[i], p)) hit = cand[i]; }
+        }
+        if (hit) {
+          if (used) used.add(hit);
+          // The unknown messages p was posted past are bounded by p's row.
+          live.forEach(function (u) { if (u.passedBy === p && !u.bound) u.bound = hit; });
+          landed(p);
+          return;
+        }
         // Held by Claude Code itself: the queued region shows it — one row
         // beyond as many of that text as it showed at the press, each row
-        // for one bubble.
+        // for one bubble. (An unknown message posted past counts only what
+        // the region showed at the cut.)
         if (!a) return;
         if (!cc) cc = ccItems();
         var n = 0;
-        cc.forEach(function (t) { if (t.indexOf(a) === 0) n++; });
+        (p.state === 'unknown' && p.passed ? p.cutCC || [] : cc).forEach(function (t) { if (t.indexOf(a) === 0) n++; });
         var had = 0;
         (p.beforeCC || []).forEach(function (t) { if (t.indexOf(a) === 0) had++; });
         var taken = ccTaken[a] || 0;
@@ -594,6 +678,7 @@ var mirrorComposerJS = `
     if (current || blocker || handedOff || !queue.length) return;
     var p = queue.shift();
     current = p;
+    passing(p);
     var next = function () { if (current === p) current = null; pump(); };
     var r;
     try { r = post(p); } catch (e) { r = null; try { console.error('composer: a send failed', e); } catch (e2) {} }
@@ -615,9 +700,10 @@ var mirrorComposerJS = `
     });
     // 🔴 A NEW MESSAGE SENT AFTER A REFUSAL WAS SHOWN IS THE PERSON MOVING
     // ON: what waited behind the refused message goes, in order, then this
-    // one. The refused message keeps its Retry and Dismiss (it is not lost;
-    // retried later, it goes after these). Only messages pressed BEFORE the
-    // refusal came wait for the person's answer to it.
+    // one. The refused message keeps its Retry (or Send again) and Dismiss —
+    // on its bubble, or beside the status line with its reason (offer) — so
+    // it is not lost; retried later, it goes after these. Only messages
+    // pressed BEFORE the refusal came wait for the person's answer to it.
     if (blocker && !first) blocker = null;
     var p = { id: hex(8) || String(Date.now()) + String(Math.random()).slice(2), text: o.text, typed: o.typed, queued: !!o.queued, to: o.to, again: !!o.again,
       seq: seq, nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems() };
@@ -666,7 +752,7 @@ var mirrorComposerJS = `
       release(p);
       if (p.queued) {
         p.state = 'queued';
-        if (!(noteHeld() && noteBy !== p)) sayFor(p, 'Queued.', true);
+        sayFor(p, 'Queued.', true);
         live = live.filter(function (x) { return x !== p; });
         document.dispatchEvent(new Event('mv-queued'));
       } else if (!p.el) {
@@ -706,8 +792,8 @@ var mirrorComposerJS = `
   // refused: p did not go. Its text goes back, and it waits for the person:
   // a failed bubble with the reason, Retry and Dismiss — or, with no bubble,
   // the reason on the status line, the text in the box, and Send again (it
-  // may have landed) or Retry and Dismiss (messages wait behind it). 🔴 What
-  // was sent after it waits too (blocker).
+  // may have landed) or Retry, and Dismiss. 🔴 What was pressed before this
+  // answer and not posted yet waits (blocker).
   function refused(p, reason, again) {
     p.again = again;
     if (p.done) {
