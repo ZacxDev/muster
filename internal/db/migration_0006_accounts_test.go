@@ -112,8 +112,9 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - task_ref_writes (0072, the writes queued on a plugin task reference).
 //   - session_episodes (0073, one row per stop of one of the owner's sessions).
 //   - officer_llm_usage (0075, the officer LLM proxy's per-day usage).
+//   - officer_judgement_sessions (0082, the judgement session cap's ledger).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mail_resumes", "mirror_tokens", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
+	"jobs", "mail_resumes", "mirror_tokens", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
@@ -181,6 +182,7 @@ var wantForeignKeys = []string{
 	"chief_nudges|chief_nudges_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"suggest_usage|suggest_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_llm_usage|officer_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_judgement_sessions|officer_judgement_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_prs|session_prs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_episodes|session_episodes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
