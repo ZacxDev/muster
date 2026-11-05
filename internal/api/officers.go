@@ -967,8 +967,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			// The wake loop enforces max_item_minutes by stopping the holder's
 			// whole instance, so a second item it held would lose its work.
 			// Serialised per instance, so two parallel calls cannot both pass.
-			unlock := s.officerRT.lockClaims(instance)
-			defer unlock()
+			// MUTATION (temporary, reverted in the next commit): no per-instance claim lock.
 			if refusal := s.oneClaimRefusal(ctx, c, o, instance, in.ItemID); refusal != "" {
 				return refusal, true
 			}
