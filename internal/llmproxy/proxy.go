@@ -25,7 +25,9 @@
 // routing fields in the body (fallbacks, models, provider, route, plugins,
 // transforms) that can serve a request from a model other than the pinned
 // one. Only the Anthropic Messages fields in forwardBodyFields go upstream;
-// every other key is dropped.
+// every other key is dropped. Inside `messages`, a mid-conversation `system`
+// entry (which the provider refuses) is folded into the user turn
+// (foldSystemMessages); nothing else in a message is changed.
 //
 // 🔴 COST IS THE PROVIDER'S, NOT A PRICE LIST'S. OpenRouter reports what it
 // billed in the stream (`usage.cost` in message_delta). Billed prices have run
@@ -144,16 +146,24 @@ type Record struct {
 	CostEstimated  bool
 	StopReason     string
 	Duration       time.Duration
+	// UpstreamError is a non-2xx provider answer's error, "<type>: <message>",
+	// redacted and truncated by upstreamError; "" on a 2xx.
+	UpstreamError string
 }
 
 // Detail is r as one line of key=value pairs (the audit row's detail and the
-// log line), in a fixed order.
+// log line), in a fixed order. upstream_error, quoted, ends the line when the
+// provider answered with an error.
 func (r Record) Detail() string {
-	return fmt.Sprintf("officer=%s instance=%s item=%s model=%s requested_model=%s provider=%s msg=%s status=%d result=%s "+
+	d := fmt.Sprintf("officer=%s instance=%s item=%s model=%s requested_model=%s provider=%s msg=%s status=%d result=%s "+
 		"in=%d cache_read=%d cache_write=%d out=%d usd=%.6f estimated=%t stop=%s ms=%d",
 		r.Officer, r.Instance, orDash(r.Item), orDash(r.Model), orDash(r.RequestedModel), orDash(r.Provider), orDash(r.MessageID),
 		r.Status, r.Result, r.Input, r.CacheRead, r.CacheWrite, r.Output, r.CostUSD, r.CostEstimated, orDash(r.StopReason),
 		r.Duration.Milliseconds())
+	if r.UpstreamError != "" {
+		d += fmt.Sprintf(" upstream_error=%q", r.UpstreamError)
+	}
+	return d
 }
 
 func orDash(s string) string {
@@ -325,6 +335,13 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 			dropped = append(dropped, key)
 		}
 	}
+	if raw, ok := fwd["messages"]; ok {
+		if folded, n := foldSystemMessages(raw); n > 0 {
+			fwd["messages"] = folded
+			p.log.Printf("llm proxy: agent=%q officer=%s: folded %d mid-conversation system message(s) into the user turn",
+				c.AgentName, c.Officer, n)
+		}
+	}
 	pinned, _ := json.Marshal(c.Model)
 	fwd["model"] = pinned
 	if len(dropped) > 0 {
@@ -421,7 +438,8 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		p.upstreamAuthFailed(c.Officer, resp.StatusCode)
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		rec.UpstreamError = upstreamError(b, c.Key)
 		// 🔴 A 400, NOT THE PROVIDER'S STATUS: Claude Code retries a 401 about
 		// ten times with backoff, which on an instance reads as a stall; a 400
 		// ends the turn with this message. The audit and the metrics keep the
@@ -434,6 +452,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		rec.UpstreamError = upstreamError(b, c.Key)
 		relayHeaders(w, resp)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(redact(b, c.Key))
