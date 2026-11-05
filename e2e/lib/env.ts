@@ -289,6 +289,10 @@ export const agentActionsPort = port + 251;
 // that can dispatch a claude-code agent, for the agent page's Terminal frame)
 // and one mirrored host with enough windows to fill the dock's Recent tab.
 export const dockPort = port + 255;
+// tests/chief-mobile.spec.ts: a claude-code agent's page on a phone — its own
+// server with the claude-code kind on (noop driver), so the header draws the
+// account and the failover marker.
+export const chiefMobilePort = port + 260;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

@@ -8,10 +8,10 @@ import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 import { landedHome } from '../lib/nav';
 
-// kindChip is the agent page header's kind chip (ui.chip: a muted "kind" label,
-// then the value), matched whole — "kind" then exactly value.
-const kindChip = (page: Page, value: string) =>
-  page.locator('header span:has(> span.text-muted)').filter({ hasText: new RegExp(`^kind${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) });
+// ccAccount is the agent page header's Claude account (the second row's plain
+// account name, data-cc-account; the Terminal switch beside it is what says
+// the kind).
+const ccAccount = (page: Page, account: string) => page.locator(`header [data-cc-account="${account}"]`);
 
 
 // Bring-your-own credentials, end to end at 412 px against the REAL GoTrue
@@ -180,7 +180,8 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
   const to = saved.headers()['hx-redirect'] ?? '';
   expect(to, 'the answer sends the page to the new agent').toMatch(/^\/agents\/[^/?]+(\?session=\d+)?$/);
   await page.waitForURL((u) => u.pathname === to.split('?')[0]);
-  await expect(kindChip(page, `Claude Code · ${MEMBER_ACCOUNT}`)).toBeVisible();
+  await expect(ccAccount(page, MEMBER_ACCOUNT)).toHaveText(MEMBER_ACCOUNT);
+  await expect(ccAccount(page, MEMBER_ACCOUNT)).toBeVisible();
   const agentsPage = await page.content();
   expect(agentsPage).not.toContain(ADMIN_POOL);
   expect(agentsPage).not.toContain('sk-ant-oat01');

@@ -103,6 +103,9 @@ var notLinkedLedger = map[string]string{
 		"turn the kickoff deliverer holds for its github grant, written as the login role with row-level " +
 		"security's scope set to all, so it must never be reachable from a shipped binary; it refuses any " +
 		"database not ending in _e2e.",
+	"e2e/ccfix": "the chief-mobile browser spec's fixture (`go run ./e2e/ccfix`): a running claude-code agent and an " +
+		"account failover row, written as the login role with row-level security's scope set to all, so it must never " +
+		"be reachable from a shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/devicefix": "the push browser spec's fixture (`go run ./e2e/devicefix`): registers a paired phone's push " +
 		"endpoint through the push store, reading the device's owner as the login role with row-level security's " +
 		"scope set to all, so it must never be reachable from a shipped binary; it refuses any database not " +

@@ -429,6 +429,17 @@ for (const vp of [
       // A second ask, raised while the view is open, arrives without a reload.
       const id2 = await askLocal(`And the changelog on the ${vp.name}?`);
       await expect(block.locator(`#ask-${id2}`)).toBeVisible({ timeout: 15_000 });
+      // One card at a time (ui.AskerAsksList): the newest is on show and the
+      // first waits behind "Show N more", which opens it in place — and keeps
+      // it open across the block's live refreshes. N counts what the block
+      // holds: the window may hold an earlier test's open ask too (the split
+      // pane's).
+      await expect(item).toBeHidden();
+      const held = await block.locator('[data-attention-item]').count();
+      expect(held).toBeGreaterThanOrEqual(2);
+      await expect(block.locator('[data-asks-more]')).toHaveText(`Show ${held - 1} more`);
+      await block.locator('[data-asks-more]').click();
+      await expect(item).toBeVisible();
 
       // The layout holds: the block sits above the pinned composer, which is
       // still inside the visible viewport, and the conversation keeps room.
@@ -516,10 +527,12 @@ test('the rendered view\'s asks hide until the next ask, without answering or se
   await expect(chip).toBeHidden();
   expect(sent.filter((s) => !s.startsWith('GET ')), 'still no POST').toEqual([]);
 
-  // Cleanup by the block's own answer forms (the queue is shared by the spec).
-  await Promise.all([page.waitForURL(view), block.locator(`#ask-${id}`).getByRole('button', { name: 'later', exact: true }).click()]);
+  // Cleanup by the block's own answer forms (the queue is shared by the spec),
+  // newest first: the block shows one card at a time, the newest on top
+  // (ui.AskerAsksList), so each answer brings the next one into view.
   const second = block.locator(`#ask-${id2}`);
   await second.locator('textarea').fill('not now');
   await Promise.all([page.waitForURL(view), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
   expect(await status(id2)).toBe('answered');
+  await Promise.all([page.waitForURL(view), block.locator(`#ask-${id}`).getByRole('button', { name: 'later', exact: true }).click()]);
 });
