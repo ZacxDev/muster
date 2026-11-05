@@ -33,11 +33,15 @@ import (
 //
 // WHEN IT PUSHES (episodeVerdict):
 //   - a WAITING window (a prompt muster cannot answer): once it has waited
-//     out its GRACE (EpisodeWaitingGrace, 60 s), and only if its episode is
-//     still open then. The hub's change hook (attentionMirrorChanged) opens
-//     the episode and HOLDS it (verdictHold: nothing is written, the row is a
-//     plain waiting row); the first 30 s pass after the grace pushes it, so
-//     the push lands 60..90 s after the window started waiting. 🔴 A PROMPT
+//     out its GRACE (EpisodeWaitingGrace, 60 s), unless its episode ended
+//     first. The hub's change hook (attentionMirrorChanged) opens the
+//     episode and HOLDS it (verdictHold: nothing is written, the row is a
+//     plain waiting row); the first 30 s pass after the grace pushes it —
+//     normally 60..90 s after the window started waiting, one pass more for
+//     a stop the pass opened, longer under the repush floor. 🔴 THE HOLD
+//     DELAYS, IT NEVER SILENCES: the pass pushes a held wait whose state it
+//     cannot read (the host lists it waiting, AgentState Unknown) and one
+//     whose host dropped mid-hold (session_state.go, heldWaitFacts). 🔴 A PROMPT
 //     THE OWNER ANSWERS AT THE TERMINAL INSIDE THE GRACE NEVER BUZZES: the
 //     pass ends that episode (owner) and an ended episode is never pushed.
 //     Measured on a live fleet, nearly every waiting window was answered at
@@ -153,7 +157,7 @@ const (
 // that asked nothing, and the owner having spoken last are quiet; everything
 // unknown pushes, at once or after its bound. A waiting window inside its
 // grace is HELD (verdictHold), never quiet: the first pass after the grace
-// pushes it, if it is still open.
+// pushes it, unless it ended first.
 func episodeVerdict(f episodeFacts) string {
 	switch {
 	case f.Waiting:
@@ -570,8 +574,7 @@ func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items [
 		case !ep.PushedAt.IsZero():
 		case send:
 			ep.State = sessionstate.StateNeedsYou
-			now := s.now()
-			s.settleEpisode(octx, ep, episodeFacts{Waiting: true, Asked: true, OpenFor: now.Sub(ep.OpenedAt), Now: now}, 0, hs)
+			s.settleEpisode(octx, ep, heldWaitFacts(ep, s.now()), 0, hs)
 		default:
 			if _, err := s.ext.Episodes.ClaimPush(octx, ep.ID, s.now()); err != nil {
 				s.logger.Printf("session state: waiting %s: seed: %v", it.Key, err)

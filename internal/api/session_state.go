@@ -55,9 +55,11 @@ import (
 // 🔴 THIS PASS POLLS (every 30 s). A waiting window's episode is opened from
 // the mirror hub's change hook (attentionMirrorChanged → episodeWaitingPushes)
 // and HELD for its grace (EpisodeWaitingGrace, 60 s); this pass pushes it
-// once the grace has passed — 60..90 s after it started waiting — if the
-// owner has not answered it by then, opens one the hook missed, and pushes an
-// idle stop (session_push.go) — a stall is 10 minutes old by then.
+// once the grace has passed — normally 60..90 s after it started waiting —
+// unless the stop ended first (the owner answered it, say). A wait it cannot
+// read (an unknown state, a host that dropped) is pushed too: the hold delays,
+// it never silences. It also opens one the hook missed, and pushes an idle
+// stop (session_push.go) — a stall is 10 minutes old by then.
 // ---------------------------------------------------------------------------
 
 // SessionStateInterval is how often the state pass runs.
@@ -205,8 +207,44 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		}
 		if gone {
 			s.endEpisode(octx, ep, sessionstate.EndGone, sp.now)
+			continue
+		}
+		// 🔴 A HOST THAT DROPS NEVER SILENCES A HELD WAIT (audit round 1 F2):
+		// its window was waiting when last seen and nothing ended the stop, so
+		// once the grace has passed it is pushed as if still waiting — at most
+		// the grace and one pass after it opened (later only under the repush
+		// floor), however long the host stays away. Claimed on pushed_at: the
+		// host coming back does not push it again. Accepted edge: a held wait
+		// that named its answerable ask before the drop already pushed as the
+		// ask (episodeHandedOver), so it buzzes twice — never silence.
+		if ep.Kind == sessionstate.KindMirror && ep.Waiting {
+			s.settleEpisode(octx, ep, heldWaitFacts(ep, sp.now), sp.now.Sub(ep.OpenedAt), sp.hs)
 		}
 	}
+}
+
+// heldWaitFacts is what open waiting episode ep is settled on when no status
+// is read for it — by the waiting hook, and by the pass for a window it cannot
+// read (an unknown state, a host that dropped): a waiting stop that asked,
+// open since ep.OpenedAt. One rule, so all three hold and push it alike.
+func heldWaitFacts(ep sessionstate.Episode, now time.Time) episodeFacts {
+	return episodeFacts{Waiting: true, Asked: true, OpenFor: now.Sub(ep.OpenedAt), Now: now}
+}
+
+// listedWaiting reports whether hs lists window (host, session, window)
+// waiting: the host's own listing, whatever the hub's AgentState says of it.
+func listedWaiting(hs []mirror.HostView, host, session, window string) bool {
+	for _, h := range hs {
+		if h.Host != host {
+			continue
+		}
+		for _, w := range h.Windows {
+			if w.Session == session && w.ID == window {
+				return w.Status == mirror.StatusWaiting
+			}
+		}
+	}
+	return false
 }
 
 // stateClassifier is octx's owner's stall classifier for the state pass, nil
@@ -326,6 +364,17 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		}
 	}
 	if !wants {
+		// 🔴 A WAIT THE PASS CANNOT READ IS STILL PUSHED (audit round 1 F1): a
+		// window whose host reports no StatusSince has no status here
+		// (stallFacts: AgentState Unknown), so it never "wants" an episode —
+		// but the hook opened and HELD one from the host's own listing of it
+		// waiting. While that listing still shows it waiting, this pass settles
+		// the held wait as the hook would (heldWaitFacts), so it pushes once
+		// its grace has passed; claimed on pushed_at, so never twice. Not for
+		// an answerable ask: that keeps its own push.
+		if has && ep.Waiting && !answerable && listedWaiting(sp.hs, c.Host, c.TmuxSession, c.Window) {
+			s.settleEpisode(octx, ep, heldWaitFacts(ep, now), now.Sub(ep.OpenedAt), sp.hs)
+		}
 		return
 	}
 	if !has {
