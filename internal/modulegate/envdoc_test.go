@@ -73,6 +73,9 @@ const configDoc = "docs/configuration.md"
 var environCallSites = map[string]string{
 	"internal/mirrorhost/tmux.go": "copies the whole environment to the tmux child minus TMUX, TMUX_PANE " +
 		"and TERM (a nested-client guard); it reads no variable by name",
+	"cmd/ccd/compose.go": "copies the whole environment to the entrypoint it runs as a child, minus " +
+		"CCD_SPEC_DIR, CCD_COMPOSE_LISTEN and CCD_LISTEN, plus the spec's env and secrets and its own " +
+		"CCD_LISTEN; the one variable it reads back from that list by name, CCD_TMUX_SOCKET, is documented",
 }
 
 // TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa is the gate.

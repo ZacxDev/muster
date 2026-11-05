@@ -20,8 +20,8 @@ name: ci
 # gets no CI — run the `make` targets locally (see above).
 #
 # A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too, and then
-# publishes the muster image under that release version (the `image-*` jobs at
-# the end). A downstream release tool may version its own releases outside
+# publishes the muster and claude-code-agent images under that release version
+# (the `image-*` jobs at the end). A downstream release tool may version its own releases outside
 # this repository and push the matching vX.Y.Z tag here on each of them, so a
 # tag usually lands on a commit `main` already built: every
 # tag-only job is idempotent for that (see `image-muster`, `image-stt-cohere`
@@ -623,6 +623,13 @@ jobs:
             sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume claude-code-agent:ci cc-smoke
 
+      # The image as a `docker compose` service (CCD_SPEC_DIR, `ccd compose`):
+      # the spec volume laid out as the compose install lays it out, the real
+      # ccd and CLI started, restarted, stopped and wiped through spec.json.
+      # Runs on the runner, not in the image: it drives `docker compose`.
+      - name: compose-smoke (ccd compose, real ccd and CLI)
+        run: images/claude-code-agent/compose-smoke.sh claude-code-agent:ci
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -1027,12 +1034,25 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: the tag this run publishes
+      # The short-sha tag on every run, and on a vX.Y.Z tag push ALSO the
+      # release version (X.Y.Z), derived and checked as `image-muster` does.
+      - name: the tags this run publishes
         id: tag
         run: |
+          ns="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           short="${GITHUB_SHA::7}"
           echo "short=$short" >> "$GITHUB_OUTPUT"
-          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/claude-code-agent:$short" >> "$GITHUB_OUTPUT"
+          echo "ref=$ns/claude-code-agent:$short" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>; no claude-code-agent image is published for it"
+              exit 1
+            fi
+            echo "release_ref=$ns/claude-code-agent:${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "claude-code-agent image: $ns/claude-code-agent:$short and :${GITHUB_REF_NAME#v}"
+          else
+            echo "claude-code-agent image: $ns/claude-code-agent:$short"
+          fi
 
       # The build, with its revision label (the provenance ghcr-push.sh checks
       # before reusing a tag) and the source label.
@@ -1076,6 +1096,18 @@ jobs:
       - name: push
         if: ${{ github.event_name == 'push' }}
         run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse
+
+      # 🔴 THE RELEASE VERSION IS A REGISTRY-SIDE COPY OF THE SHORT-SHA IMAGE,
+      # NOT A SECOND BUILD. A tag usually lands on a commit `main` already
+      # published, and the `push` above then KEEPS that image (`reuse`): the
+      # version must name the same digest, which a rebuild would not. `retag`
+      # keeps a version already pointing at that digest (a re-run, a re-pushed
+      # tag), and refuses one built from another commit (ghcr-push.sh).
+      - name: tag the release version (vX.Y.Z tag push only)
+        if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh retag '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.release_ref }}'
 
   # ---------------------------------------------------------------------------
   # THE DICTATION SERVER IMAGE (ghcr.io/<owner>/muster-stt-cohere:<X.Y.Z>).
@@ -1228,7 +1260,8 @@ jobs:
   #     (.github/scripts/release-publish.sh)
   #
   # 🔴 LAST, AND GATED ON THE IMAGES. The release's docker-compose.yml names
-  # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z>; publishing
+  # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z> (and, once the
+  # chief runs in it, claude-code-agent:<X.Y.Z>, which gates it too); publishing
   # the release before them would hand people a compose file that cannot pull.
   #
   # RELEASE NOTES: GitHub's generated notes — the pull requests merged since
@@ -1239,7 +1272,7 @@ jobs:
   release:
     name: GitHub release (tags only)
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
-    needs: [image-muster, image-stt-cohere]
+    needs: [image-muster, image-claude-code-agent, image-stt-cohere]
     runs-on: ubuntu-latest
     concurrency:
       group: github-release-${{ github.ref_name }}

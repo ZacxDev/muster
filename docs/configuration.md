@@ -320,6 +320,8 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `MUSTER_CONNECT_URL` | none | no | muster's connect listener. `ccd approve`, `ccd connect-git` and `ccd ask-image` use it. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | none | this or a `/login` file | The Claude credential, taken from the agent's Secret. `ccd` treats either one as "has a credential". |
 | `CCD_LISTEN` | `:18789` | no | The gateway address. |
+| `CCD_SPEC_DIR` | none | no | Set: the container is a `docker compose` service. The entrypoint runs `ccd compose` instead of `ccd serve`, which reads the spec muster writes in this directory and runs the normal entrypoint as its child when the spec says so ([provisioner.md](provisioner.md#the-image-as-a-docker-compose-service)). Kubernetes never sets it. |
+| `CCD_COMPOSE_LISTEN` | `:18789` | no | The address `ccd compose` listens on. It proxies to the child, which it starts with `CCD_LISTEN=127.0.0.1:18790`. |
 | `CCD_HOOK_SOCKET` | none | no | Set by `ccd` itself in the environment of each Claude Code CLI it starts: the unix socket its hook listener is on, in a directory only `ccd`'s user can enter. `ccd hook` posts each hook event there. Not for an operator to set. |
 | `CCD_HOOK_SECRET` | none | no | Set by `ccd` itself beside `CCD_HOOK_SOCKET`: the per-process credential every hook must carry. A hook without it is refused and changes nothing. It keeps other containers in the pod out; it does not stop a process of `ccd`'s own user (every tool the CLI runs inherits it). Not for an operator to set. |
 | `CCD_HOOK_DISABLED` | off | no | With `1`, `ccd hook` does nothing. |
