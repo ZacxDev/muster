@@ -188,6 +188,9 @@ type attentionItem struct {
 	Detail string `json:"detail,omitempty"`
 	// Focus is a mirrored session's focus title (internal/focus), "" for none.
 	Focus string `json:"focus,omitempty"`
+	// focusAt is when Focus was written (withFocus), for its age on the Asks
+	// list (ui.FocusAgeOf); zero for none or unknown.
+	focusAt time.Time
 	// Since is when the item started waiting: an ask's or a draft's creation, a
 	// session's status time (when it went waiting), a held question's creation.
 	// The queue is NEWEST FIRST by it (sortAttentionItems).
@@ -730,9 +733,25 @@ func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 	fi := s.focusIndex(ctx)
 	for i := range items {
 		if v := fi.mirrorFocus(items[i].claudeSession); v != nil {
-			items[i].Focus = v.Title
+			items[i].Focus, items[i].focusAt = v.Title, v.UpdatedAt
 		}
 	}
+}
+
+// attentionFocusHTML is an Asks list row's focus line: the title (plained),
+// then its age when ui.FocusAgeOf shows one (" · 2d"), and muted when it is
+// stale. The age is its own element, so the title's text is the title.
+func attentionFocusHTML(title string, age ui.FocusAge) string {
+	esc := html.EscapeString
+	cls, stale, after := "break-words text-xs font-semibold text-fg2", "", ""
+	if age.Stale {
+		cls, stale = cls+" "+ui.FocusStaleClass, ` data-focus-stale`
+	}
+	if age.Text != "" {
+		after = `<span class="font-normal" data-focus-age> · ` + esc(age.Text) + `</span>`
+	}
+	return `<span class="` + cls + `"` + stale + `><span data-attention-focus>` + esc(title) + `</span>` + after + `</span>
+`
 }
 
 // withAskBoxes sets what each ask's answer card draws besides its form (in
@@ -1367,8 +1386,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 		// Source (an agent's or window's name) and Focus (an LLM summary) are
 		// titles, so they read as their plain text (textplain).
 		if focus := textplain.Title(it.Focus); focus != "" {
-			b.WriteString(`<span class="break-words text-xs font-semibold text-fg2" data-attention-focus>` + esc(focus) + `</span>
-`)
+			b.WriteString(attentionFocusHTML(focus, ui.FocusAgeOf(it.focusAt, now)))
 		}
 		text, detail := esc(it.Text), esc(it.Detail)
 		if it.hermes != nil || it.openCode != nil {

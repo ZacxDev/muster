@@ -9,6 +9,7 @@ import { binDir, dsn, focusPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
+import { coarse } from '../lib/switcher';
 
 // SESSION FOCUS, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, its own port) and a real muster-mirror over the tunnel (the
@@ -47,6 +48,12 @@ const transcript2 = path.join(dir, sid2 + '.jsonl');
 const sid3 = '0b2c3d4e-5f60-4718-8a9d-' + stamp.padStart(12, '0').slice(-12);
 const transcript3 = path.join(dir, sid3 + '.jsonl');
 const PREVIOUS_TITLE = 'Reconciling the payout zephyr';
+// A fourth Claude window (@6), WAITING (so it is on the Asks list), whose focus
+// was written five days ago: its age is shown and it is stale. @5's focus is
+// two days old (an age, not stale); the agent's and @1's are fresh (no age).
+const sid4 = '0b2c3d4e-5f60-4718-8a9e-' + stamp.padStart(12, '0').slice(-12);
+const transcript4 = path.join(dir, sid4 + '.jsonl');
+const STALE_TITLE = 'Charting the heron migration';
 // A title @5 had LONG ago: older than the page's recent previous titles (it
 // is followed by more than the in-page bound of newer distinct titles), so
 // only the palette's server search can find it.
@@ -60,7 +67,8 @@ const focusEnv = JSON.stringify([
   { subject: 'self', title: 'Reconciling the quarterly ledgers', description: 'Matching payouts to the bank export. Two left.', history: AGENT_HISTORY },
   { subject: 'mirror:' + sid, title: 'Bisecting the flaky tunnel test', description: 'The backoff resets too early.', history: MIRROR_HISTORY },
   { subject: 'mirror:' + sid2, error: 'no OpenRouter key' },
-  { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [OLD_TITLE, ...FILLERS, PREVIOUS_TITLE] },
+  { subject: 'mirror:' + sid3, title: 'Tuning the cache eviction', description: 'Halving the TTL.', historyTitles: [OLD_TITLE, ...FILLERS, PREVIOUS_TITLE], ageHours: 50 },
+  { subject: 'mirror:' + sid4, title: STALE_TITLE, description: 'Plotting the flyway.', ageHours: 5 * 24 + 3 },
 ]);
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
@@ -93,9 +101,11 @@ test.beforeAll(async () => {
   fs.writeFileSync(transcript, '');
   fs.writeFileSync(transcript2, '');
   fs.writeFileSync(transcript3, '');
+  fs.writeFileSync(transcript4, JSON.stringify({ type: 'user', message: { role: 'user', content: 'Chart the flyway.' } }) + '\n');
+  writeFileAtomic(transcript4 + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
   const now = Math.floor(Date.now() / 1000);
   // session|id|index|active|command|activity|claude-transcript
-  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\nfocuswin|@5|5|0|claude|${now - 300}|${transcript3}\n`);
+  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\nfocuswin|@5|5|0|claude|${now - 300}|${transcript3}\nfocuswin|@6|6|0|claude|${now - 360}|${transcript4}\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -121,6 +131,17 @@ test.afterAll(async () => {
   if (agentCleanup) mkchat({ MUSTER_E2E_DELETE: '1' });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// expectAgeInside: the line's age is drawn whole and inside the line's box
+// (at a phone's width too: the title cuts, the age never does).
+async function expectAgeInside(line: import('@playwright/test').Locator) {
+  const age = line.locator('[data-focus-age]');
+  await expect(age).toBeVisible();
+  const [a, l] = [await age.boundingBox(), await line.boundingBox()];
+  expect(a && l, 'both are laid out').toBeTruthy();
+  expect(a!.x + a!.width, 'the age ends inside its line').toBeLessThanOrEqual(l!.x + l!.width + 0.5);
+  expect(await age.evaluate((e) => e.scrollWidth <= e.clientWidth + 0.5), 'the age is not cut').toBe(true);
+}
 
 const viewURL = origin + '/mirror/view?' + new URLSearchParams({ host, session: 'focuswin', window: '@1' }).toString();
 
@@ -511,6 +532,90 @@ for (const vp of [
       await expect(dialog).toBeHidden();
     });
 
+    // 🔴 A FOCUS TITLE SAYS HOW OLD IT IS (internal/ui FocusAgeOf, decided by
+    // the server at render time): past a day " · <n>d" follows it, past four
+    // days it is also marked stale and drawn muted — in the search palette's
+    // results and on the Asks list. CONTROL: the agent's fresh focus has no
+    // age. The stale mark is checked as COMPUTED style, so a class missing
+    // from the stylesheet fails. Red at origin/main: no age anywhere.
+    test("the palette's results and the Asks list show a focus title's age, and mute a stale one", async ({ page }) => {
+      await listed(page);
+      await page.goto(origin + '/tasks');
+      if (await page.locator('#sidebar-open').isVisible()) await page.locator('#sidebar-open').click();
+      await expect(page.locator('#sidebar-agents-list a[data-switcher-code="focuswin:6"]')).toHaveAttribute('data-switcher-focus-age', '5d');
+      await page.locator('#sidebar-search').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+
+      await input.fill('heron migration');
+      await expect(options).toHaveCount(1);
+      const stale = options.first().locator('[data-focus-line]');
+      await expect(stale).toHaveText(STALE_TITLE + '· 5d');
+      await expect(stale.locator('[data-focus-age]')).toHaveText('· 5d');
+      await expect(stale).toHaveAttribute('data-focus-stale', '');
+      expect(await stale.evaluate((e) => [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity])).toEqual(['italic', '0.6']);
+      await expectAgeInside(stale);
+
+      await input.fill('cache eviction');
+      await expect(options).toHaveCount(1);
+      const aged = options.first().locator('[data-focus-line]');
+      await expect(aged.locator('[data-focus-age]')).toHaveText('· 2d');
+      await expect(aged).not.toHaveAttribute('data-focus-stale');
+      expect(await aged.evaluate((e) => getComputedStyle(e).fontStyle)).toBe('normal');
+
+      // CONTROL: the agent's focus is fresh — its title, and no age.
+      await input.fill('quarterly ledgers');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toContainText('Reconciling the quarterly ledgers');
+      await expect(options.first().locator('[data-focus-age]')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+
+      // The Asks list: @6 is waiting, its row's focus line has the age and is muted.
+      await page.goto(origin + '/attention');
+      const row = page.locator('[data-attention-item][data-kind="session"]').filter({ hasText: STALE_TITLE });
+      await expect(row).toHaveCount(1, { timeout: 15_000 });
+      await expect(row.locator('[data-attention-focus]')).toHaveText(STALE_TITLE);
+      await expect(row.locator('[data-focus-age]')).toHaveText('· 5d');
+      const line = row.locator('[data-focus-stale]');
+      await expect(line).toHaveCount(1);
+      expect(await line.evaluate((e) => [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity])).toEqual(['italic', '0.6']);
+      await expectAgeInside(line);
+    });
+
+    // THE DOCK (the touch layout's bottom sheet: a coarse pointer opens it;
+    // a mouse opens the view menu instead, switcher-dock.spec.ts, so this case
+    // is declared for the phone only). Its row's second line is the focus
+    // title with its age after it, the age never cut; the stale one muted;
+    // CONTROL: the fresh agent's line has no age. Red at origin/main.
+    if (vp.use.hasTouch) {
+      test("the switcher dock's second line shows a focus title's age, and mutes a stale one", async ({ page }) => {
+        await listed(page);
+        await page.goto(viewURL);
+        await expect(page.locator('#session-switcher')).toBeVisible();
+        expect(await coarse(page), 'this context is the touch layout').toBe(true);
+        await page.locator('#switcher-toggle').tap();
+        const dock = page.locator('#switcher-dock');
+        await expect.poll(() => dock.evaluate((d) => (d as HTMLDialogElement).open)).toBe(true);
+        await dock.locator('[data-dock-tab="all"]').tap();
+        const rowOfLabel = (l: string) => dock.locator('#dock-list [data-dock-row]').filter({ has: page.locator('[data-dock-label]', { hasText: l }) });
+        const w6 = rowOfLabel('focuswin:6');
+        await expect(w6).toHaveCount(1);
+        await expect(w6.locator('[data-dock-focus]')).toHaveText(STALE_TITLE);
+        await expect(w6.locator('[data-focus-age]')).toHaveText('· 5d');
+        const line = w6.locator('[data-focus-line]');
+        await expect(line).toHaveAttribute('data-focus-stale', '');
+        expect(await line.evaluate((e) => [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity])).toEqual(['italic', '0.6']);
+        await expectAgeInside(line);
+        const w5 = rowOfLabel('focuswin:5');
+        await expect(w5.locator('[data-focus-age]')).toHaveText('· 2d');
+        await expect(w5.locator('[data-focus-line]')).not.toHaveAttribute('data-focus-stale');
+        // CONTROL: a fresh focus, no age.
+        const ag = rowOfLabel(agentName);
+        await expect(ag.locator('[data-dock-focus]')).toHaveText('Reconciling the quarterly ledgers');
+        await expect(ag.locator('[data-focus-age]')).toHaveCount(0);
+      });
+    }
+
     test('the rendered view and the agent page shift the layout less than 0.01', async ({ page }) => {
       await signIn(page, origin);
       await page.addInitScript(clsInit);
@@ -518,6 +623,8 @@ for (const vp of [
       for (const [label, url, ready] of [
         ['rendered view', viewURL, '#mv-log'],
         ['agent page', origin + '/agents/' + agentName, '#focus-history-open'],
+        // The Asks list, whose row carries a focus title's age.
+        ['asks list', origin + '/attention', '[data-attention-item] [data-focus-age]'],
       ] as const) {
         await page.goto(url);
         await settle(page);
