@@ -555,6 +555,8 @@ var bannerExempt = map[string]string{
 		"a value it refuses stops the boot",
 	envSuggestModel: "a tuning value with no OFF state, listed among suggested replies' settings on the Features page; " +
 		"an unknown model shows up as a failed generation, not at boot",
+	envFocusModel: "a tuning value with no OFF state, listed among session focus's settings on the Features page; " +
+		"an unknown model shows up as a failed refresh recorded on each session's focus, not at boot",
 	envFocusInterval: "the focus refresher announces its own state with the VALUE when it starts " +
 		"(internal/api/focus.go: \"focus: refresh every %s …\"); with no database or no " +
 		"summarizer nothing reads it, and an out-of-bounds value refuses to boot",

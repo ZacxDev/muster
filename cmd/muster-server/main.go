@@ -441,7 +441,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// OpenRouter key exactly as that owner's gateway pods get it (the plane: the
 	// environment's for an admin, the member's own otherwise, none refused).
 	if ext.Focus != nil {
-		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}
+		ext.FocusSummarizer = focusSummarizer(cfg, plane)
 		ext.FocusRetention = cfg.FocusRetention
 	}
 	// Suggested replies: the same per-owner OpenRouter key as focus, through
@@ -2060,4 +2060,11 @@ func needsYouLiveCount(c *api.ChiefNudges) int {
 		}
 	}
 	return n
+}
+
+// focusSummarizer is the focus summarizer for cfg: ScaleDown's client on
+// OpenRouter, spending each owner's key from plane, with MUSTER_FOCUS_MODEL's
+// model (cfg.FocusModel).
+func focusSummarizer(cfg config, plane *credentials.Plane) *focus.ScaleDown {
+	return &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.FocusModel}
 }

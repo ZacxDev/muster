@@ -28,7 +28,8 @@ type fakeFocusSummarizer struct {
 	tails []string
 }
 
-func (f *fakeFocusSummarizer) Summarize(_ context.Context, _ int64, tail string) (focus.Summary, error) {
+func (f *fakeFocusSummarizer) Summarize(_ context.Context, _ int64, req focus.Request) (focus.Summary, error) {
+	tail := req.Tail
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

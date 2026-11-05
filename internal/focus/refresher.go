@@ -26,9 +26,12 @@ import (
 //     the focus was computed, so neither would the focus. This is what keeps a
 //     periodic pass over an idle fleet free;
 //  4. the per-owner and global rate caps and the concurrency bound are taken;
-//  5. the summarizer is called; its answer is parsed and Cleaned
-//     (ParseSummary), and stored with the fingerprint — or, on any failure, the
-//     error is RECORDED beside the focus the subject already had, which stays.
+//  5. the summarizer is called with the tail and the session's current title
+//     (Request.PrevTitle, which it is told to keep unless the goal changed);
+//     its answer is parsed in the one accepted shape (ParseSummary), checked
+//     and cut to TitleCapRunes (Accept), and stored with the fingerprint — or,
+//     on any failure, including an off-format or verbatim answer, the error is
+//     RECORDED beside the focus the subject already had, which stays.
 
 // KeyChecker is a Summarizer that can say, without being called, that it
 // cannot serve owner (ScaleDown: the owner has no OpenRouter key).
@@ -215,8 +218,19 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 	if err := r.acquire(ctx); err != nil {
 		return OutcomeFailed, err
 	}
-	sum, err := r.Summarizer.Summarize(ctx, owner, tail)
+	var prev string
+	if has && cur.Has() {
+		prev = cur.Title
+	}
+	req := Request{Tail: tail}
+	if FeedableTitle(prev) {
+		req.PrevTitle = prev
+	}
+	sum, err := r.Summarizer.Summarize(ctx, owner, req)
 	r.release()
+	if err == nil {
+		sum, err = Accept(sum, tail, prev)
+	}
 	if err != nil {
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err

@@ -141,6 +141,9 @@ const (
 	// session on any host. A Go duration, 168h when unset, refused outside
 	// 1h–2160h (90 days).
 	envFocusRetention = "MUSTER_FOCUS_RETENTION"
+	// The OpenRouter model focus is computed with (focus.DefaultModel when
+	// unset), spelled as OpenRouter's model list names it.
+	envFocusModel = "MUSTER_FOCUS_MODEL"
 	// Suggested replies (internal/suggest): "off" is the kill switch — no set
 	// is generated or served. Anything else, or unset, is ON (operator
 	// decision); each user can still turn them off for themselves.
@@ -662,6 +665,8 @@ type config struct {
 	FocusInterval time.Duration
 	// FocusRetention is MUSTER_FOCUS_RETENTION (focus.DefaultRetention unset).
 	FocusRetention time.Duration
+	// FocusModel is MUSTER_FOCUS_MODEL (focus.DefaultModel unset).
+	FocusModel string
 	// SuggestOff is MUSTER_SUGGEST=off: the suggested-replies kill switch.
 	SuggestOff bool
 	// SuggestModel is MUSTER_SUGGEST_MODEL (suggest.DefaultModel unset).
@@ -1475,6 +1480,10 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.SuggestOff = true
 	default:
 		return config{}, fmt.Errorf("invalid %s %q: want off (the kill switch) or on", envSuggest, v)
+	}
+	c.FocusModel = strings.TrimSpace(getenv(envFocusModel))
+	if c.FocusModel == "" {
+		c.FocusModel = focus.DefaultModel
 	}
 	c.SuggestModel = strings.TrimSpace(getenv(envSuggestModel))
 	if c.SuggestModel == "" {
