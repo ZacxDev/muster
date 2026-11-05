@@ -219,7 +219,7 @@ func TestTheAuditRowCarriesNoAnswer(t *testing.T) {
 }
 
 // TestPodLogLinesAreScrubbedAndCapped: a pod's log comes back line by line,
-// each through the scrub (a port of HQ's obs.RedactLine) and capped at 1000
+// each through the scrub (internal/redact, then the log-only rules) and capped at 1000
 // characters; ordinary text is kept.
 func TestPodLogLinesAreScrubbedAndCapped(t *testing.T) {
 	const bearerFixture = "fixtureBearerCredential0123" // a fixture, nobody's credential

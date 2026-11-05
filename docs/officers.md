@@ -386,7 +386,9 @@ the whole set in one canonical form (`connectors.RepoScope`:
 `owner/repo (+ read: a/x, b/y)`, the read repositories lowercased and sorted),
 so adding, removing or changing a read repository re-opens the grant the same
 way, while declaring the same set in another order or case does not. An
-officer without `read_repos` records exactly `repo`, as before.
+officer without `read_repos` records exactly `repo`, as before. A `kube-read`
+grant is the exception: `repo` and `read_repos` do not change what
+`officer_kube_read` may read, so changing them leaves that grant approved.
 
 **Approving the grant.** Nothing is pre-granted: there is no automatic grant
 for officers, and none for any other configured agent. The instance asks once
@@ -1640,10 +1642,20 @@ lives in the infrastructure repositories, not in muster.
   **ConfigMaps in full** (operator decision), pod `env` values and inline Helm
   values included. The kickoff tells the instance never to quote a
   credential-shaped value.
-- A pod log as `{lines, line_count, redactions}`: each line through a port of
-  HQ's `obs.RedactLine` (structured first; JWTs, bearer and URL credentials,
-  `key=value` secrets, e-mails, IPs, 32+ character tokens), capped at 1000
-  characters.
+- A pod log as `{lines, line_count, redactions}`, each line capped at 1000
+  characters. A line that is one JSON object keeps only a closed set of fields
+  (`msg`, `message`, `error`, `code`, `path` and a few more); the other
+  fields are dropped by name. What is left goes through a heuristic scrub:
+  - first `internal/redact`'s `Secrets`, the repo's one secret redactor (the
+    shapes it knows are listed in its header: credential headers,
+    `NAME_PASSWORD=` / `PGPASSWORD=`-style assignments, URL credentials,
+    prefixed tokens such as `AKIA…`, JWTs, "the password is …" and more);
+  - then the rules only pod logs need: a URL's whole query string, e-mail
+    and IP addresses, any run of 32 or more token characters, a `cookie` /
+    `session` / `sig` field, and a credential name followed by `:` in the
+    middle of a line.
+
+  A secret in a shape neither set knows passes.
 - **Refused, not cut:** an answer over 1 MiB, or a list of more than 500
   objects. A list the caller limited (`limit`) says `more` when there are more.
 

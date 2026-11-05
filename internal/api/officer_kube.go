@@ -107,7 +107,7 @@ func kubeReadToolDef() agents.ToolDef {
 			"{cluster, log: {namespace, pod, container?, previous?, since_seconds? (≤86400), tail_lines? (≤2000)}}. " +
 			"Secrets, exec, port-forward, proxies, ServiceAccount tokens and RBAC are never readable; watch is not offered; a list " +
 			"across all namespaces needs a selector. An answer over 1 MiB or a list over 500 objects is REFUSED (narrow it), never cut. " +
-			"Log lines are scrubbed of credential shapes. 30 calls a minute; 200 of these calls per item (other tools' reads do not count). Needs an approved grant for the " +
+			"Log lines pass a best-effort scrub of the secret and personal-data shapes muster knows (a secret in another shape can pass). 30 calls a minute; 200 of these calls per item (other tools' reads do not count). Needs an approved grant for the " +
 			"kube-read connector (connector_request) and a claimed item. NEVER quote a credential-shaped value you read.",
 		Parameters: objSchema(map[string]any{
 			"cluster":        str("The cluster's name, as your officer declares it."),
