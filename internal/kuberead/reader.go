@@ -59,7 +59,7 @@ type ServiceAccount struct{ Namespace, Name string }
 
 // Audit is one call's audit record: what was read, as whom, and how it went —
 // NEVER what the API answered. internal/api writes it as the connector-audit
-// row of kind `kube`, with the officer, instance and item.
+// row of kind `query` (connector kube-read), with the officer, instance and item.
 type Audit struct {
 	Cluster       string `json:"cluster"`
 	Verb          string `json:"verb"`
@@ -85,7 +85,8 @@ type Audit struct {
 	Refusal string `json:"refusal,omitempty"`
 }
 
-// Reader runs reads. It holds no per-call state; one serves every officer.
+// Reader runs reads over one allowlist (one cluster's). It holds no per-call
+// state.
 type Reader struct {
 	allow *Allowlist
 	now   func() time.Time

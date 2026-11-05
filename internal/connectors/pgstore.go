@@ -535,7 +535,7 @@ func (s *PGStore) AuditID(ctx context.Context, e AuditEntry) (int64, error) {
 		INSERT INTO connector_audit (kind, agent_id, owner_id, agent_name, connector_name, method, host, path, status, detail)
 		VALUES ($1, $2, COALESCE((SELECT owner_id FROM agents WHERE id = $2), nullif(current_setting('muster.uid', true), '')::bigint),
 		        $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, 500)).Scan(&id)
+		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, MaxAuditDetailBytes)).Scan(&id)
 	return id, err
 }
 

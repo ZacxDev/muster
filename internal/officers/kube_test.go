@@ -194,6 +194,15 @@ func TestAMissingOrEmptyAllowlistDisablesTheCluster(t *testing.T) {
 	if !officers.ToolOffered(judge, officers.ToolKubeRead) {
 		t.Fatal("positive control: prod-a has an allowlist, and the tool is not offered")
 	}
+	// The startup log names exactly the disabled cluster and its variable.
+	got := officers.KubeReadDisabled(list)
+	if len(got) != 1 || !strings.Contains(got[0], "prod-b") || !strings.Contains(got[0], "MUSTER_KUBE_READ_ALLOWLIST_PROD_B") ||
+		!strings.Contains(got[0], "DISABLED") || strings.Contains(got[0], "prod-a ") {
+		t.Fatalf("KubeReadDisabled = %q, want one line naming prod-b and MUSTER_KUBE_READ_ALLOWLIST_PROD_B", got)
+	}
+	if lines := officers.KubeReadDisabled(func() []officers.Officer { l, _ := parseKube(t, ","+tiersBlock+kubeBlock, kubeEnv(t)); return l }()); len(lines) != 0 {
+		t.Fatalf("every cluster has an allowlist, and KubeReadDisabled says %q", lines)
+	}
 }
 
 func ptr(s string) *string { return &s }

@@ -31,11 +31,14 @@ import (
 //  4. the item: the instance must hold one live claim in HQ (or name which
 //     of its claims, item_id), which the read is counted against;
 //  5. the caps: 30 calls a minute per officer (kuberead.Limiter), and 200
-//     reads per item (officers.ReadBudget, the one per-item counter);
-//  6. the read (kuberead.Reader.Read): path built from the allowlist, a token
+//     officer_kube_read calls per item (officers.ReadBudget; only this tool
+//     spends it today — the obs tools do not count, MU2 is future work);
+//  6. the read (kuberead.Reader.Read): path built from the cluster's
+//     allowlist (the deployment's MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>), a token
 //     minted for this call, the answer shaped and capped.
 //
-// Every call that reaches step 5 writes ONE connector-audit row of kind `kube`
+// Every call that reaches step 5 writes ONE connector-audit row of kind `query`
+// (as postgres_query's; connector kube-read tells the rows apart)
 // (officer, instance, item, cluster, verb, GVR, namespace, name, selectors,
 // jti, status, count, bytes, ms, and the refusal when muster refused it —
 // never the answer). That row is the read audit: the API servers do not log
@@ -46,36 +49,48 @@ import (
 // kubeRuntime is officer_kube_read's server state; nil when no declared
 // officer has a `kube` block.
 type kubeRuntime struct {
-	reader  *kuberead.Reader
 	limiter *kuberead.Limiter
 	budget  *officers.ReadBudget
-	// clusters are the built cluster readers' configuration, by officer id
-	// then cluster name.
-	clusters map[string]map[string]kuberead.Cluster
+	// clusters are the built cluster readers, by officer id then cluster
+	// name: only clusters with an allowlist (officers.KubeCluster.Allow).
+	clusters map[string]map[string]kubeTarget
+}
+
+// kubeTarget is one readable cluster: its connection and a reader over ITS
+// allowlist (each cluster's comes from the deployment's configuration).
+type kubeTarget struct {
+	cluster kuberead.Cluster
+	reader  *kuberead.Reader
 }
 
 // newKubeRuntime builds the runtime for every officer with a `kube` block,
 // validating each cluster's sealed configuration, or nil when none has one.
 func newKubeRuntime(list []officers.Officer, now func() time.Time) (*kubeRuntime, error) {
-	rt := &kubeRuntime{clusters: map[string]map[string]kuberead.Cluster{}}
+	rt := &kubeRuntime{clusters: map[string]map[string]kubeTarget{}}
 	for _, o := range list {
 		if o.Kube == nil {
 			continue
 		}
-		byName := map[string]kuberead.Cluster{}
+		byName := map[string]kubeTarget{}
 		for _, kc := range o.Kube.Clusters {
+			// No allowlist: the cluster's kube-read is disabled (fail closed;
+			// logged at startup, officers.KubeReadDisabled). Nothing is built.
+			if kc.Allow == nil {
+				continue
+			}
 			c, err := kuberead.NewCluster(kc.Name, kc.Endpoint, kc.CA, kc.MinterToken())
 			if err != nil {
 				return nil, fmt.Errorf("officers: %s: %w", o.ID, err)
 			}
-			byName[kc.Name] = c
+			byName[kc.Name] = kubeTarget{cluster: c, reader: kuberead.NewReader(kc.Allow)}
 		}
-		rt.clusters[o.ID] = byName
+		if len(byName) > 0 {
+			rt.clusters[o.ID] = byName
+		}
 	}
 	if len(rt.clusters) == 0 {
 		return nil, nil
 	}
-	rt.reader = kuberead.NewReader(kuberead.Default())
 	rt.limiter = kuberead.NewLimiter(kuberead.CallsPerMinute, time.Minute, now)
 	rt.budget = officers.NewReadBudget(officers.ReadsPerItem, now)
 	return rt, nil
@@ -92,7 +107,7 @@ func kubeReadToolDef() agents.ToolDef {
 			"{cluster, log: {namespace, pod, container?, previous?, since_seconds? (≤86400), tail_lines? (≤2000)}}. " +
 			"Secrets, exec, port-forward, proxies, ServiceAccount tokens and RBAC are never readable; watch is not offered; a list " +
 			"across all namespaces needs a selector. An answer over 1 MiB or a list over 500 objects is REFUSED (narrow it), never cut. " +
-			"Log lines are scrubbed of credential shapes. 30 calls a minute; 200 reads per item. Needs an approved grant for the " +
+			"Log lines are scrubbed of credential shapes. 30 calls a minute; 200 of these calls per item (other tools' reads do not count). Needs an approved grant for the " +
 			"kube-read connector (connector_request) and a claimed item. NEVER quote a credential-shaped value you read.",
 		Parameters: objSchema(map[string]any{
 			"cluster":        str("The cluster's name, as your officer declares it."),
@@ -171,7 +186,7 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 		return toolErr("%v", err)
 	}
 	kc, ok := o.KubeCluster(req.Cluster)
-	cluster, built := kr.clusters[o.ID][req.Cluster]
+	target, built := kr.clusters[o.ID][req.Cluster]
 	if !ok || !built {
 		names := make([]string, 0, len(o.KubeClusters()))
 		for _, k := range o.KubeClusters() {
@@ -224,7 +239,7 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 		write(audit)
 		return toolErr("%v", err)
 	}
-	ans, au, err := kr.reader.Read(ctx, cluster, kubeSA(kc), req)
+	ans, au, err := target.reader.Read(ctx, target.cluster, kubeSA(kc), req)
 	auditID := write(au)
 	if err != nil {
 		if !errors.Is(err, kuberead.ErrRefused) {
@@ -274,12 +289,13 @@ func (s *Server) kubeHeldItem(ctx context.Context, c *officers.Client, instance 
 	return "", fmt.Errorf("you hold %d items: name the one this read is for with item_id", len(held))
 }
 
-// auditKubeRead writes one connector-audit row of kind `kube`: what was read,
+// auditKubeRead writes one connector-audit row of kind `query` (as
+// postgres_query does; the connector, kube-read, identifies it): what was read,
 // by whom, for which item — never the answer (kuberead.Audit has no field for
 // it).
 //
-// The cluster, verb, path and status are columns; detail (the store keeps 500
-// characters of it) carries the rest, the refusal cut short so the record's
+// The cluster, verb, path and status are columns; detail (the store keeps
+// connectors.MaxAuditDetailBytes of it) carries the rest, the refusal cut short so the record's
 // identifying fields come first and survive.
 func (s *Server) auditKubeRead(ctx context.Context, a agents.Agent, o officers.Officer, item officers.ItemID, au kuberead.Audit) int64 {
 	if s.ext.Connectors == nil {
@@ -310,7 +326,7 @@ func (s *Server) auditKubeRead(ctx context.Context, a agents.Agent, o officers.O
 	if method == "" {
 		method = "read"
 	}
-	id, err := connectors.AuditWithID(context.WithoutCancel(ctx), s.ext.Connectors, connectors.AuditEntry{Kind: "kube", AgentID: a.ID,
+	id, err := connectors.AuditWithID(context.WithoutCancel(ctx), s.ext.Connectors, connectors.AuditEntry{Kind: "query", AgentID: a.ID,
 		AgentName: a.Name, Connector: officers.KubeConnector, Method: method, Host: au.Cluster, Path: au.Path, Status: au.Status, Detail: string(detail)})
 	if err != nil {
 		s.logger.Printf("officers: %s: audit of %s's cluster read: %v", o.ID, a.Name, err)

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/kuberead"
 )
 
 // ---------------------------------------------------------------------------
@@ -26,12 +28,21 @@ import (
 //	"kube": {"clusters": [{"name": "prod-a", "service_account": "officers/officer-anomaly-prod-a"}]}
 //
 // Each cluster's endpoint (host:port), CA bundle (PEM) and minter token are
-// the server's SEALED environment, never the declaration:
+// the server's SEALED environment, and its read allowlist the deployment's
+// configuration, never the declaration:
 //
 //	MUSTER_KUBE_READ_ENDPOINT_<CLUSTER>, MUSTER_KUBE_READ_CA_<CLUSTER>,
-//	MUSTER_KUBE_READ_MINTER_TOKEN_<CLUSTER>
+//	MUSTER_KUBE_READ_MINTER_TOKEN_<CLUSTER>, MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>
 //
 // (<CLUSTER> is the name as TokenEnvSuffix spells an id: prod-a -> PROD_A).
+//
+// 🔴 THE ALLOWLIST IS THE DEPLOYMENT'S, AND ITS ABSENCE FAILS CLOSED. muster
+// compiles in no resource list: MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER> is a JSON
+// list of {"apiGroup", "resources", "scope"} (get and list implied), parsed
+// strictly by kuberead.ParseAllowlist — a malformed one refuses the boot. One
+// that is unset, blank or empty DISABLES that cluster's kube-read: the officer
+// still loads, the cluster is not offered (KubeClusters leaves it out), and
+// the server logs it at startup (KubeReadDisabled). Never "allow all".
 //
 // 🔴 JUDGEMENT ONLY. The block needs `tiers`, and only the judgement pool is
 // offered the tool or may request the kube-read connector: a routine instance
@@ -47,15 +58,18 @@ const (
 	// (connectors.KubeReadName).
 	KubeConnector = "kube-read"
 	// The sealed environment each declared cluster is read from.
-	KubeEndpointEnvPrefix = "MUSTER_KUBE_READ_ENDPOINT_"
-	KubeCAEnvPrefix       = "MUSTER_KUBE_READ_CA_"
-	KubeMinterEnvPrefix   = "MUSTER_KUBE_READ_MINTER_TOKEN_"
+	KubeEndpointEnvPrefix  = "MUSTER_KUBE_READ_ENDPOINT_"
+	KubeCAEnvPrefix        = "MUSTER_KUBE_READ_CA_"
+	KubeMinterEnvPrefix    = "MUSTER_KUBE_READ_MINTER_TOKEN_"
+	KubeAllowlistEnvPrefix = "MUSTER_KUBE_READ_ALLOWLIST_"
 	// MaxKubeClusters bounds kube.clusters.
 	MaxKubeClusters = 8
 )
 
 // Kube is an officer's `kube` block.
 type Kube struct {
+	// Clusters is every declared cluster, an allowlist-less one included
+	// (Allow nil); KubeClusters is the readable ones.
 	Clusters []KubeCluster
 }
 
@@ -71,6 +85,9 @@ type KubeCluster struct {
 	// CA is the PEM bundle its certificate chains to, from the sealed
 	// environment.
 	CA []byte
+	// Allow is the cluster's read allowlist, from the deployment's
+	// configuration; nil when none is set, which disables the cluster.
+	Allow *kuberead.Allowlist
 	// minter is the minter token, from the sealed environment. Unexported:
 	// encoding/json and fmt never print it; MinterToken is the one read.
 	minter string
@@ -88,13 +105,43 @@ func (k KubeCluster) String() string {
 // GoString is String.
 func (k KubeCluster) GoString() string { return k.String() }
 
-// KubeClusters is the clusters o's instances may read: the `kube` block's,
-// for the judgement pool of an officer that declares one; nil otherwise.
+// KubeClusters is the clusters o's instances may read: the `kube` block's
+// clusters that have an allowlist, for the judgement pool of an officer that
+// declares one; nil otherwise.
 func (o Officer) KubeClusters() []KubeCluster {
 	if o.Kube == nil || o.Tier != TierJudgement {
 		return nil
 	}
-	return append([]KubeCluster(nil), o.Kube.Clusters...)
+	var out []KubeCluster
+	for _, c := range o.Kube.Clusters {
+		if c.Allow != nil {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// KubeReadDisabled is one line per declared cluster whose kube-read is
+// disabled because the deployment set no allowlist for it, for the server to
+// log at startup. An officer is named once, whatever its pools.
+func KubeReadDisabled(list []Officer) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, o := range list {
+		if o.Kube == nil {
+			continue
+		}
+		for _, c := range o.Kube.Clusters {
+			k := o.ID + "|" + c.Name
+			if c.Allow != nil || seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, fmt.Sprintf("officer %s: kube-read DISABLED for cluster %s: %s%s is unset or empty (fail closed: nothing on it is readable)",
+				o.ID, c.Name, KubeAllowlistEnvPrefix, TokenEnvSuffix(c.Name)))
+		}
+	}
+	return out
 }
 
 // KubeCluster is the declared cluster named name, for o's instances.
@@ -161,7 +208,12 @@ func parseKube(raw json.RawMessage, tiered bool, getenv func(string) string) (*K
 		if !x509.NewCertPool().AppendCertsFromPEM([]byte(ca)) {
 			return nil, fmt.Errorf("kube.clusters[%s]: %s%s holds no PEM certificate (the cluster's CA bundle)", name, KubeCAEnvPrefix, suffix)
 		}
-		k.Clusters = append(k.Clusters, KubeCluster{Name: name, ServiceAccount: ns + "/" + sa, Endpoint: ep, CA: []byte(ca), minter: mt})
+		// nil (unset, blank or empty) disables the cluster; malformed refuses.
+		allow, err := kuberead.ParseAllowlist([]byte(getenv(KubeAllowlistEnvPrefix + suffix)))
+		if err != nil {
+			return nil, fmt.Errorf("kube.clusters[%s]: %s%s: %v", name, KubeAllowlistEnvPrefix, suffix, err)
+		}
+		k.Clusters = append(k.Clusters, KubeCluster{Name: name, ServiceAccount: ns + "/" + sa, Endpoint: ep, CA: []byte(ca), Allow: allow, minter: mt})
 	}
 	return k, nil
 }
@@ -169,10 +221,10 @@ func parseKube(raw json.RawMessage, tiered bool, getenv func(string) string) (*K
 // ---------------------------------------------------------------------------
 // THE PER-ITEM READ BUDGET (officers plan §4: 200 reads per item).
 //
-// ONE counter per (officer, item), spent by every read tool that names it —
-// officer_kube_read today; the obs tools are meant to share it (the plan's
-// MU2), which is why it lives here, beside them, and is keyed on the item and
-// not on the tool.
+// ONE counter per (officer, item). Today ONLY officer_kube_read spends it:
+// the obs tools do not count against it. Sharing it with them is future work
+// (the plan's MU2), which is why it lives here, beside them, and is keyed on
+// the item and not on the tool.
 //
 // In memory: a restart forgets the counts, which can only allow more reads,
 // never refuse one early. Entries untouched for a day are dropped.
@@ -229,7 +281,7 @@ func (b *ReadBudget) Spend(officer string, item ItemID) (int, error) {
 		b.m[k] = c
 	}
 	if c.n >= b.perItem {
-		return c.n, fmt.Errorf("%w: officer %s has made all %d of item %s's reads (cluster and observability reads together); "+
+		return c.n, fmt.Errorf("%w: officer %s has made all %d of item %s's cluster reads (officer_kube_read calls; observability reads are not counted); "+
 			"conclude from what you have, and list what you could not check", ErrReadBudget, officer, b.perItem, item)
 	}
 	c.n++

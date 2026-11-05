@@ -8,8 +8,9 @@
 // name?, label_selector?, field_selector?, limit?} or {log: {namespace, pod,
 // container?, previous?, since_seconds?, tail_lines?}} — and [Allowlist.Build]
 // is the ONE place a request becomes a path: a GET under /api or /apis for a
-// resource on the allowlist (allowlist.json), or a pod's /log. watch is never
-// offered.
+// resource on that cluster's allowlist, or a pod's /log. watch is never
+// offered. The allowlist is the deployment's configuration (ParseAllowlist):
+// muster compiles in no resource list.
 //
 // 🔴 A FRESH, SHORT-LIVED IDENTITY PER CALL. Each Read mints a TokenSeconds
 // TokenRequest for the officer's ServiceAccount with the cluster's minter

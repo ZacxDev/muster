@@ -714,6 +714,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			a.Close()
 			return nil, fmt.Errorf("%s: %w", envOfficers, err)
 		}
+		// A declared cluster with no allowlist reads nothing (fail closed):
+		// say so at startup, so a missing setting is not a silent "off".
+		for _, line := range officers.KubeReadDisabled(cfg.Officers) {
+			logger.Printf("officers: %s", line)
+		}
 	}
 
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S

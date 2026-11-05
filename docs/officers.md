@@ -1558,15 +1558,16 @@ credential and never names an address.
 "kube": {"clusters": [{"name": "prod-a", "service_account": "officers/officer-anomaly-prod-a"}]}
 ```
 
-Each cluster's connection is the server's **sealed environment**, never the
-declaration (`<CLUSTER>` is the name as a token suffix spells an id:
-`prod-a` → `PROD_A`):
+Each cluster's connection is the server's **sealed environment**, and its read
+allowlist the **deployment's configuration**, never the declaration
+(`<CLUSTER>` is the name as a token suffix spells an id: `prod-a` → `PROD_A`):
 
 | variable | holds |
 |---|---|
 | `MUSTER_KUBE_READ_ENDPOINT_<CLUSTER>` | the API server's `host:port` (no scheme, no path) |
 | `MUSTER_KUBE_READ_CA_<CLUSTER>` | the PEM bundle its certificate chains to |
 | `MUSTER_KUBE_READ_MINTER_TOKEN_<CLUSTER>` | a token whose ONLY right is `create` on `serviceaccounts/token` for the officer's ServiceAccount |
+| `MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>` | the resources officer_kube_read may read on that cluster (below). Unset or empty **disables** the cluster |
 
 **One call:**
 
@@ -1584,25 +1585,53 @@ declaration (`<CLUSTER>` is the name as a token suffix spells an id:
    admins only, so the officer's owner must be one.
 4. **Item.** The instance must hold a live claim in HQ. The read is counted
    against it (`item_id` picks one when it holds several).
-5. **Caps.** 30 calls a minute per officer; **200 reads per item**
-   (`officers.ReadBudget`, the one per-item counter, meant to be shared by the
-   observability tools). Both are in memory: a restart can only allow more.
+5. **Caps.** 30 calls a minute per officer; **200 `officer_kube_read` calls
+   per item** (`officers.ReadBudget`). Today only `officer_kube_read` spends
+   that budget: the observability tools do not count against it, and sharing
+   it with them is future work (MU2). Both are in memory: a restart can only
+   allow more.
 6. **Read.** muster mints a **600 s TokenRequest** for the officer's
    ServiceAccount with the minter token, then GETs the path with that token
    alone. TLS trusts the cluster's CA bundle only and verifies the name
    `kubernetes.default.svc`; muster dials the declared endpoint and nothing
    else, and follows no redirect.
 
-**What can be read.** The allowlist is ONE file,
-`internal/kuberead/allowlist.json`. A test pins it equal to the union of the
-officer-read ClusterRoles' rules (`internal/kuberead/testdata/`), and each
-infrastructure repository pins its ClusterRole to a byte-identical copy of its
-fixture: the ledger is enforced by fixture equality on both sides. The roles grant `get` and
-`list` only. Secrets, `pods/exec`, `attach`, `portforward`, every proxy,
-ServiceAccounts and their tokens, CSRs and RBAC are never on the list (and are
-refused in any group as a belt). No subresource is offered except a pod's log,
-through the log form: status is read on the object. `watch` is never offered. A list across all namespaces needs a label or
-field selector.
+**What can be read.** The deployment supplies the allowlist, per cluster, in
+`MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>`; muster compiles in no resource list.
+It is a JSON list of rules, `get` and `list` implied (there is no verbs field):
+
+```json
+[
+  {"apiGroup": "", "resources": ["pods", "pods/log", "events", "configmaps"], "scope": "namespaced"},
+  {"apiGroup": "", "resources": ["nodes", "namespaces"], "scope": "cluster"},
+  {"apiGroup": "widgets.example.com", "resources": ["widgets"], "scope": "namespaced"}
+]
+```
+
+- `apiGroup` is the group (`""` for core). `resources` are plural resource
+  names. `scope` is `namespaced` or `cluster`: a cluster-scoped resource takes
+  no namespace, and an all-namespace list of a namespaced one needs a selector.
+- **Validated strictly at boot**, and a malformed list refuses the boot naming
+  the variable: an unknown field, a `"*"` resource or group, any subresource
+  other than core `pods/log` (`deployments/status`, `*/status` …), a
+  never-granted resource, an RBAC group, a missing or unknown scope, and a
+  duplicate are each refused.
+- **Unset, blank, `null` or `[]` DISABLES that cluster's kube-read** (fail
+  closed): the officer still loads, the cluster is not offered to its
+  instances (with no other cluster, neither is the tool nor the `kube-read`
+  connector), and the server logs `kube-read DISABLED for cluster …` at
+  startup. It never means "allow all".
+- Secrets, `pods/exec`, `attach`, `portforward`, every proxy, ServiceAccounts
+  and their tokens, CSRs and RBAC are refused in any group as a belt, whatever
+  the list says. No subresource is offered except a pod's log, through the log
+  form: status is read on the object. `watch` is never offered.
+
+The cluster's RBAC (the officer's ClusterRole, `get` and `list` only) is the
+authoritative wall: a resource on the allowlist that the role does not grant
+is a 403, not a leak. Keep the two equal from the infrastructure side: each
+infrastructure repository should pin its officer-read ClusterRole's rules
+against the allowlist it ships in this variable, in its own tests. That pin
+lives in the infrastructure repositories, not in muster.
 
 **What comes back.**
 - An object, or `{kind, count, items, more, resource_version}` for a list.
@@ -1619,7 +1648,8 @@ field selector.
   objects. A list the caller limited (`limit`) says `more` when there are more.
 
 **Audit.** Every call that reaches the caps writes one connector-audit row of
-kind `kube` (migration 0084): the instance, the cluster, the verb, the path,
+kind `query`, as `postgres_query` does; its connector, `kube-read`, is what
+identifies it. The row holds the instance, the cluster, the verb, the path,
 the status, and in `detail` the officer, item, group/version/resource,
 namespace, name, selectors, the minted token's jti, the object count, bytes,
 duration and any refusal. **Never the answer.** The API servers do not log
