@@ -185,6 +185,16 @@ const askerAsksEvent = "attention_queue.changed"
 // Bounded and scrolling on its own (max-h, overflow-y-auto, flex-none), so on
 // a phone it never pushes the conversation or the pinned composer off screen.
 //
+// 🔴 ONE QUESTION AT A TIME, EACH CLAMPED IN ITS OWN CARD (an operator report:
+// the block "looks broken on mobile"). Seven long questions filled the block's
+// scroll box with the first one's text, cut off mid-sentence at the box's
+// edge, and left the conversation a sliver. Now the list (AskerAsksList)
+// shows the first ask and keeps the rest behind one "Show N more"; each
+// question's text is clamped to four lines (web/css/input.css, "The asker
+// block") and its "Show more" is drawn INSIDE its card, opening it in place —
+// see ONE AT A TIME, CLAMPED below. The cap is 40vh (was 45vh) so a phone
+// keeps a real piece of the conversation (e2e chief-mobile.spec.ts).
+//
 // It carries "Hide until next ask" (AskerAsksHeading) and, after it, the chip
 // that reopens it (askerAsksChip) — see HIDE UNTIL NEXT ASK below.
 func AskerAsksBlock(inner, src string, viaHTMX bool) g.Node {
@@ -196,7 +206,7 @@ func AskerAsksBlock(inner, src string, viaHTMX bool) g.Node {
 			g.Attr("data-src", src),
 			g.If(viaHTMX, g.Group([]g.Node{hx("hx-get", src), hx("hx-trigger", askerAsksTrigger), hx("hx-swap", "innerHTML"),
 				hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy)})),
-			Class("flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
+			Class("flex max-h-[40vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
 			g.Raw(inner),
 		),
 		askerAsksChip(),
@@ -231,13 +241,45 @@ const askerAsksHideLabel = "Hide until next ask"
 // askerAsksHiddenKey is where the hidden ask ids are kept (localStorage).
 const askerAsksHiddenKey = "muster.asks.hidden.v1"
 
-// AskerAsksHeading is the block's heading row: the count (n, "1 question") and
-// the hide button. internal/api's askerAsksHTML draws it above the items.
+// AskerAsksHeading is the block's heading row: the count (n, "1 question"),
+// as "<n> waiting", and the hide button. internal/api's askerAsksHTML draws it
+// above the items.
+//
+// 🔴 ONE LINE: the heading truncates and the hide is a quiet nowrap text
+// button (a 44px tap target, no border). It was an uppercase "WAITING ON YOUR
+// ANSWER: 7 QUESTIONS" that wrapped to two lines beside a bordered button.
 func AskerAsksHeading(n string) string {
-	return `<div class="flex min-w-0 items-center gap-2"><h2 class="min-w-0 flex-1 break-words text-xs font-semibold uppercase tracking-wide text-fg2" data-asker-asks-heading>Waiting on your answer: ` +
-		html.EscapeString(n) + `</h2><button type="button" data-asker-asks-hide class="press inline-flex min-h-[44px] shrink-0 items-center rounded-lg px-3 text-xs font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg">` +
+	return `<div class="flex min-w-0 items-center gap-2"><h2 class="min-w-0 flex-1 truncate text-sm font-semibold text-fg" data-asker-asks-heading>` +
+		html.EscapeString(n) + ` waiting</h2><button type="button" data-asker-asks-hide class="press -mr-2 inline-flex min-h-[44px] shrink-0 items-center whitespace-nowrap rounded-lg px-2 text-xs font-medium text-muted transition hover:bg-s2 hover:text-fg">` +
 		askerAsksHideLabel + `</button></div>`
 }
+
+// AskerAsksList is the block's list: items, the queue's own <li> cards for n
+// asks (internal/api's attentionItemsHTMLTo), and — when there is more than
+// one — the "Show N more" that reveals the rest (ONE AT A TIME, CLAMPED).
+func AskerAsksList(items string, n int) string {
+	if n < 2 {
+		return `<ul class="flex flex-col gap-2" data-testid="asker-asks">` + items + `</ul>`
+	}
+	return `<ul class="flex flex-col gap-2" data-testid="asker-asks" data-asks-collapsed>` + items + `</ul>` +
+		`<button type="button" data-asks-more class="press inline-flex min-h-[44px] shrink-0 items-center self-start whitespace-nowrap rounded-lg px-2 text-xs font-semibold text-accent transition hover:bg-s2">Show ` +
+		strconv.Itoa(n-1) + ` more</button>`
+}
+
+// ONE AT A TIME, CLAMPED (AskerAsksBlock's layout; the rules are in
+// web/css/input.css under "The asker block", outside every @layer so the
+// cards' own `flex` cannot outrank them):
+//   - a list with data-asks-collapsed shows its FIRST card only; "Show N more"
+//     (data-asks-more) drops the attribute and itself. The choice outlives the
+//     block's refreshes (the script keeps it), not a reload.
+//   - each question's text ([data-attention-text]) is clamped to four lines
+//     until it carries data-ask-open. The script adds a "Show more" button
+//     (data-ask-more-text) right after a text that IS clipped — inside its
+//     <li>, so inside the card's ring — and it toggles data-ask-open in place
+//     ("Show less" closes it). Which cards are open outlives a refresh too,
+//     by the card's id.
+// Both are applied by askerAsksHideScript, which already runs before the block
+// is first painted and on every refresh of its content.
 
 // askerAsksChip reopens a hidden block: drawn hidden, shown by
 // askerAsksHideScript while the block is hidden, saying how many wait.
@@ -289,15 +331,60 @@ func askerAsksHideScript() g.Node {
     for (var i = 0; i < items.length; i++) out.push(items[i].id);
     return out;
   }
+  // ONE AT A TIME, CLAMPED: whether "Show N more" was used, and which cards'
+  // text is open (by the card's id) — both outlive a refresh of the content.
+  var all = false, opened = {};
+  function fit() {
+    if (all) {
+      var ul = block.querySelector('[data-asks-collapsed]');
+      if (ul) ul.removeAttribute('data-asks-collapsed');
+      var m = block.querySelector('[data-asks-more]');
+      if (m) m.remove();
+    }
+    var ts = block.querySelectorAll('[data-attention-item] [data-attention-text]');
+    for (var i = 0; i < ts.length; i++) {
+      var t = ts[i], li = t.closest('[data-attention-item]');
+      if (li && opened[li.id]) t.setAttribute('data-ask-open', '');
+      var b = t.nextElementSibling && t.nextElementSibling.hasAttribute('data-ask-more-text') ? t.nextElementSibling : null;
+      var open = t.hasAttribute('data-ask-open');
+      // A card that is not laid out (hidden, collapsed) is measured when it is.
+      if (!open && t.clientHeight === 0) continue;
+      var clipped = open || t.scrollHeight > t.clientHeight + 1;
+      if (!clipped) { if (b) b.remove(); continue; }
+      if (!b) {
+        b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('data-ask-more-text', '');
+        // 44px: a thumb target (e2e/tests/layout.spec.ts), drawn under the text.
+        b.className = 'press -mt-1 inline-flex min-h-[44px] items-center self-start rounded-lg px-1 text-xs font-medium text-accent';
+        t.after(b);
+      }
+      b.textContent = open ? 'Show less' : 'Show more';
+      b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  }
   function apply() {
     var k = keys(), d = load(), hide = k.length > 0;
     for (var i = 0; i < k.length && hide; i++) if (d.indexOf(k[i]) < 0) hide = false;
     block.hidden = hide;
     chip.hidden = !hide;
     if (hide) chip.querySelector('[data-asker-asks-count]').textContent = k.length + ' waiting';
+    else fit();
   }
   block.addEventListener('click', function (e) {
-    var b = e.target && e.target.closest ? e.target.closest('[data-asker-asks-hide]') : null;
+    var t = e.target && e.target.closest ? e.target : null;
+    var more = t && t.closest('[data-asks-more]');
+    if (more) { all = true; fit(); return; }
+    var mt = t && t.closest('[data-ask-more-text]');
+    if (mt) {
+      var txt = mt.previousElementSibling, li = mt.closest('[data-attention-item]');
+      if (!txt) return;
+      if (txt.hasAttribute('data-ask-open')) txt.removeAttribute('data-ask-open'); else txt.setAttribute('data-ask-open', '');
+      if (li && li.id) { if (txt.hasAttribute('data-ask-open')) opened[li.id] = true; else delete opened[li.id]; }
+      fit();
+      return;
+    }
+    var b = t ? t.closest('[data-asker-asks-hide]') : null;
     if (!b) return;
     e.preventDefault();
     var d = load(), k = keys();
@@ -316,6 +403,8 @@ func askerAsksHideScript() g.Node {
   if (typeof MutationObserver !== 'undefined') new MutationObserver(apply).observe(block, { childList: true });
   // A hide (or a reopen) in another tab applies here at once.
   window.addEventListener('storage', function (e) { if (e.key === KEY && block.isConnected) apply(); });
+  // A rotation or a resize changes which texts are clipped.
+  window.addEventListener('resize', function () { if (block.isConnected && !block.hidden) fit(); });
   apply();
 })();
 `))

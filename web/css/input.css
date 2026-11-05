@@ -697,3 +697,20 @@ body:has(#agent-status:is([data-agent-status="running"], [data-agent-status="pro
 body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status="provisioning"]))) #agent-actions [data-lifecycle="live"] {
   display: none;
 }
+
+/*
+ * The asker block (internal/ui/attention.go, ONE AT A TIME, CLAMPED): a
+ * collapsed list shows its first card only, and a question's text is four
+ * lines until its in-card "Show more" opens it. Outside every @layer, so the
+ * cards' own `flex` and the text's `whitespace-pre-wrap` cannot outrank it.
+ */
+#asker-asks [data-asks-collapsed] > [data-attention-item]:not(:first-child) {
+  display: none;
+}
+#asker-asks [data-attention-item] [data-attention-text]:not([data-ask-open]) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
