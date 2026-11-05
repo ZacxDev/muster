@@ -1780,10 +1780,13 @@ When you **type** an idea or a request in your chief's chat — "send this to
 whoever is on the changelog" — the chief hands it straight to the mirrored
 session already on it: `route_to_session {text, subject, owner_asked: true}`.
 No task is filed, and **plugins are not needed**: session routing
-(`MUSTER_SESSION_ROUTING=1`, with a database) is enough. The chief's standing
-instructions tell it to find the session with `focus_search` and `fleet_list`
-(or `sessions_overview`), to route only when one session is clearly on it, and
-otherwise to ask you which, naming the candidates.
+(`MUSTER_SESSION_ROUTING=1`, with a database) is enough. A **claude-code**
+chief's standing instructions tell it to find the session with `focus_search`
+and `fleet_list` (or `sessions_overview`), to route only when one session is
+clearly on it, and otherwise to ask you which, naming the candidates. A
+**gateway** chief is not told to: its tool calls run inside muster, which the
+check below always refuses. A chief already running loads the new instructions
+on its next Stop → Start.
 
 It is the same route (`session_routes.request_text`, migration `0084`) and the
 same path after it as a message's or a task's: the same target checks, the

@@ -1182,7 +1182,7 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	}
 	store := cfg.CairnConfigured()
 	return agentspec.Build(ag, cfg, agentspec.Options{
-		Instructions:  agentspec.ChiefInstructions(store, cfg.Plugins, cfg.SessionRouting),
+		Instructions:  agentspec.ChiefInstructions(store, cfg.Plugins),
 		CairnEligible: true,
 	})
 }
