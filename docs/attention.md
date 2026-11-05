@@ -119,11 +119,18 @@ was down has its notification closed.
   session (`/attention/open/episode-<id>`, resolved when tapped), else the row.
 - A waiting window is **held for 60 seconds** (not configurable) and pushed
   once they have passed, unless the stop has ended by then: a permission
-  prompt you answer at the terminal inside them never buzzes your phone, and
-  its row never shows it pushed. The hold only delays a push, it never drops
-  one: a window whose host drops during the hold is still pushed (it was
-  waiting when last seen), and so is one whose host lists it waiting without
-  saying since when. The push is sent by the state pass that runs every
+  prompt you answer at the terminal inside them, while its host stays
+  connected, does not buzz your phone, and its row never shows it pushed. The
+  hold only delays a push, it never drops one: a window whose host lists it
+  waiting without saying since when is pushed from that listing, and a held
+  window whose host drops is pushed once muster has known the host offline
+  for 60 seconds too (it was waiting when last seen) — so a short blip you
+  answered through does not buzz, and neither does a restart of muster before
+  your hosts reconnect. Two exceptions: a connected host that lists no
+  windows at all (its last window closed) is not a drop, so nothing is pushed
+  for it until it lists a window still waiting; and a window whose host never
+  said since when is not pushed on a drop, only from its host listing it
+  still waiting; it ends once that listing shows it not waiting. The push is sent by the state pass that runs every
   30 seconds, normally 60 to 90 seconds after the window started waiting; a
   stop the pass opened rather than the hub's change hook can take one pass
   longer, and the 2-minute repush floor can hold it past that.

@@ -57,8 +57,9 @@ import (
 // and HELD for its grace (EpisodeWaitingGrace, 60 s); this pass pushes it
 // once the grace has passed — normally 60..90 s after it started waiting —
 // unless the stop ended first (the owner answered it, say). A wait it cannot
-// read (an unknown state, a host that dropped) is pushed too: the hold delays,
-// it never silences. It also opens one the hook missed, and pushes an idle
+// read is pushed too — an unknown state while its host still lists it waiting,
+// a host this process has known offline for the grace — the hold delays, it
+// never silences. It also opens one the hook missed, and pushes an idle
 // stop (session_push.go) — a stall is 10 minutes old by then.
 // ---------------------------------------------------------------------------
 
@@ -164,10 +165,27 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 	// with a window list read. 🔴 A host that reports status but has sent no
 	// window list has not been read (mirror.Hub.AgentState) — an empty
 	// listing is unknown, never "every window gone".
+	//
+	// 🔴 BUT IT IS CONNECTED, SO IT IS NOT A DROP (audit round 2 🟡-1): the
+	// wire sends "no windows" as no list (Msg.Windows is omitempty), so a host
+	// whose last window closed looks exactly like one whose first windows read
+	// failed. Neither reading may push a held wait as if its host had dropped:
+	// a connected host resets the drop push's clock (hostUnreads) every pass,
+	// so it never pushes, while ending nothing. If the window really closed,
+	// the host's next non-empty list ends it 'gone'; if the list was a failed
+	// read and the window still waits, that next list shows it waiting and the
+	// pass pushes it — a delay, never a silence.
 	reporting := map[string]bool{}
+	dropped := map[string]time.Time{}
 	for _, h := range hs {
-		if h.Online && h.StatusReport && len(h.Windows) > 0 {
-			reporting[h.Host] = true
+		switch {
+		case h.Online && h.StatusReport:
+			s.hostsUnread.read(owner, h.Host)
+			if len(h.Windows) > 0 {
+				reporting[h.Host] = true
+			}
+		case !h.Online:
+			dropped[h.Host] = h.OfflineSince
 		}
 	}
 	answerable := answerableWaits(s.waitingSessionsIn(octx, hs))
@@ -211,13 +229,24 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		}
 		// 🔴 A HOST THAT DROPS NEVER SILENCES A HELD WAIT (audit round 1 F2):
 		// its window was waiting when last seen and nothing ended the stop, so
-		// once the grace has passed it is pushed as if still waiting — at most
-		// the grace and one pass after it opened (later only under the repush
-		// floor), however long the host stays away. Claimed on pushed_at: the
-		// host coming back does not push it again. Accepted edge: a held wait
-		// that named its answerable ask before the drop already pushed as the
-		// ask (episodeHandedOver), so it buzzes twice — never silence.
-		if ep.Kind == sessionstate.KindMirror && ep.Waiting {
+		// it is pushed as if still waiting once BOTH its own grace has passed
+		// AND this process has known the host unreadable for the grace too
+		// (hostUnreads; audit round 2 🟡-1) — so a blip the owner answered
+		// through, or a fresh process whose hosts have not reconnected yet,
+		// buzzes nothing. Claimed on pushed_at: the host coming back does not
+		// push it again. Accepted edge: a held wait that named its answerable
+		// ask before the drop already pushed as the ask (episodeHandedOver), so
+		// it buzzes twice — never silence.
+		//
+		// 🔴 NOT FOR A WAIT WHOSE STATE WAS NEVER READ (audit round 2 🟡-2): an
+		// episode with no streak is a window whose host reports no StatusSince,
+		// so the pass never saw its turn and cannot tell an old answered stop
+		// from a live one. Its push comes only from the host's own listing of it
+		// still waiting (sessionStateStep), and the episode ends when that
+		// listing shows it not waiting — so a drop cannot push a stop answered
+		// long ago, nor leave a later real prompt without its push.
+		if ep.Kind == sessionstate.KindMirror && ep.Waiting && ep.StreakKey != "" &&
+			s.hostsUnread.unreadFor(owner, ep.Host, dropped[ep.Host], sp.now) >= s.waitingGrace {
 			s.settleEpisode(octx, ep, heldWaitFacts(ep, sp.now), sp.now.Sub(ep.OpenedAt), sp.hs)
 		}
 	}
@@ -372,8 +401,20 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		// the held wait as the hook would (heldWaitFacts), so it pushes once
 		// its grace has passed; claimed on pushed_at, so never twice. Not for
 		// an answerable ask: that keeps its own push.
-		if has && ep.Waiting && !answerable && listedWaiting(sp.hs, c.Host, c.TmuxSession, c.Window) {
+		//
+		// 🔴 AND ONCE THAT LISTING SHOWS IT NOT WAITING, THE STOP IS OVER (audit
+		// round 2 🟡-2): with no status time the pass sees no turn, so nothing
+		// else (OwnerActed needs Known, Advance needs busy) would ever end it —
+		// it would stay open, pushed by a later host drop long after it was
+		// answered, and holding the one open episode a later real prompt needs
+		// for its own push. A prompt muster cannot answer was answered at the
+		// terminal: ended 'owner'.
+		listed := listedWaiting(sp.hs, c.Host, c.TmuxSession, c.Window)
+		switch {
+		case has && ep.Waiting && !answerable && listed:
 			s.settleEpisode(octx, ep, heldWaitFacts(ep, now), now.Sub(ep.OpenedAt), sp.hs)
+		case has && ep.Waiting && !listed && c.Kind == chiefnudge.KindMirror && c.StreakKey == "":
+			s.endEpisode(octx, ep, sessionstate.EndOwner, now)
 		}
 		return
 	}
@@ -645,6 +686,51 @@ func (o *episodeChecks) settle(id int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.m, id)
+}
+
+// hostUnreads is, per owner and host, since when THIS process has known the
+// host to be unreadable (not online and reporting status): the first state
+// pass that found it so, or the hub's own drop stamp (HostView.OfflineSince)
+// when that is earlier. Forgotten the moment a pass reads the host again. In
+// memory ON PURPOSE: a fresh process (a rollout) knows nothing of a host its
+// hub has not seen, so it waits the grace from its own first pass rather than
+// pushing every held wait whose host has not reconnected yet.
+type hostUnreads struct {
+	mu sync.Mutex
+	m  map[hostUnreadKey]time.Time
+}
+
+type hostUnreadKey struct {
+	owner int64
+	host  string
+}
+
+// read forgets owner's host: a pass read it.
+func (u *hostUnreads) read(owner int64, host string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	delete(u.m, hostUnreadKey{owner, host})
+}
+
+// unreadFor is how long this process has known owner's host unreadable as of
+// now, starting the clock now when it did not know; dropped is the hub's drop
+// stamp for it (zero for none).
+func (u *hostUnreads) unreadFor(owner int64, host string, dropped, now time.Time) time.Duration {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.m == nil {
+		u.m = map[hostUnreadKey]time.Time{}
+	}
+	k := hostUnreadKey{owner, host}
+	since, ok := u.m[k]
+	if !ok || !dropped.IsZero() && dropped.Before(since) {
+		since = now
+		if !dropped.IsZero() && dropped.Before(now) {
+			since = dropped
+		}
+		u.m[k] = since
+	}
+	return now.Sub(since)
 }
 
 // answerableWaits is the session keys (an item's claudeSession: the Claude

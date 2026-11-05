@@ -145,6 +145,10 @@ type Server struct {
 	// ownerChecked is, per open episode, the streak its owner-acted read last
 	// succeeded on (session_state.go episodeOwnerActed).
 	ownerChecked episodeChecks
+	// hostsUnread is, per owner and host, since when THIS process has known
+	// the host unreadable (session_state.go hostUnreads): a held wait on it is
+	// pushed only once that has lasted the waiting grace.
+	hostsUnread hostUnreads
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's

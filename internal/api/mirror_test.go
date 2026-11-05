@@ -130,6 +130,9 @@ type fakeMirror struct {
 	hostTok map[string]int64
 	// work is the host's per-window work counts (HostView.Work); nil = none.
 	work map[string]mirror.WindowWork
+	// noHosts: Hosts lists nothing — a hub that has not seen the host (a
+	// fresh process before the host reconnects).
+	noHosts bool
 }
 
 // HostToken answers f.hostTok for the host's owner.
@@ -181,6 +184,9 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.noHosts {
+		return nil
+	}
 	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
 	hv.StatusReport = f.statusReport && f.online
 	if !f.online {

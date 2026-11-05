@@ -278,3 +278,250 @@ func (f *stateFixture) setOnline(on bool) {
 	defer f.mirror.mu.Unlock()
 	f.mirror.online, f.mirror.offlineSince = on, now
 }
+
+// TestAHostBlipAnsweredThroughNeverPushes (regression, audit round 2 🟡-1):
+// the window waits; its host drops 50 s in, the owner answers the prompt at
+// the terminal while it is away, and it reconnects 25 s later. The first pass
+// past the episode's own grace (61 s) finds the host offline for only 11 s, so
+// it pushes nothing; once the host is back the stop ends 'owner'. Before the
+// fix that pass pushed it: an offline host's held wait was pushed as soon as
+// the EPISODE's grace had passed, however briefly the host had been away.
+func TestAHostBlipAnsweredThroughNeverPushes(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.statusSince(mirror.StatusWaiting, nudgeSince+500_000, 2*time.Second)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	e := f.oneEpisode(t)
+	f.advance(50 * time.Second)
+	f.setOnline(false)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.advance(11 * time.Second) // 61 s: past the episode's grace, the host away 11 s
+	f.statePass(t)
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("pushed 11 s into a host blip: %v", got)
+	}
+	f.advance(14 * time.Second) // 75 s: back, the prompt answered meanwhile
+	f.statusSince(mirror.StatusBusy, nudgeSince+600_000, 0)
+	f.setOnline(true)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.statePass(t)
+	f.advance(30 * time.Second)
+	f.statusSince(mirror.StatusIdle, nudgeSince+640_000, 0)
+	f.statePass(t)
+	if got := f.episodeByID(t, e.ID); got.EndedAt.IsZero() || got.EndReason != endOwner {
+		t.Fatalf("after the blip: ended %v reason %q, want %q", got.EndedAt, got.EndReason, endOwner)
+	}
+	for i := 0; i < 4; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("buzzes for a prompt answered through a host blip: %v, want none", got)
+	}
+}
+
+// TestALastWindowClosedInsideTheHoldNeverPushes (regression, audit round 2
+// 🟡-1): the window waits, and 20 s in it is closed — the last one on its
+// host, which stays connected and reporting status but now lists no windows
+// at all. The host is connected, so this is no drop: no pass pushes the held
+// wait. (Nor does the empty list end it — it is indistinguishable from a
+// failed first read, TestAHostThatHasSentNoWindowListEndsNothing.) Before the
+// fix an empty list counted as unread, so the held wait was pushed as if its
+// host had dropped.
+func TestALastWindowClosedInsideTheHoldNeverPushes(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.status(mirror.StatusWaiting, 2*time.Second)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	e := f.oneEpisode(t)
+	f.advance(20 * time.Second)
+	f.mirror.mu.Lock()
+	f.mirror.windows = nil
+	f.mirror.mu.Unlock()
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	for i := 0; i < 4; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("pushed a window closed inside its hold: %v", got)
+	}
+	if got := f.episodeByID(t, e.ID); !got.PushedAt.IsZero() {
+		t.Fatalf("the closed window's episode was recorded pushed at %v", got.PushedAt)
+	}
+}
+
+// TestAnEmptyListThatWasAFailedReadOnlyDelaysThePush (control for holding the
+// drop push on a connected host with an empty list): the list was in fact a
+// failed read — the window is still waiting when the host's next list arrives
+// 90 s in. Nothing is pushed while the list is empty, and the wait is pushed
+// once, on its own episode, once the host lists it again: a delay, never a
+// silence.
+func TestAnEmptyListThatWasAFailedReadOnlyDelaysThePush(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.status(mirror.StatusWaiting, 2*time.Second)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	e := f.oneEpisode(t)
+	f.mirror.mu.Lock()
+	kept := f.mirror.windows
+	f.mirror.windows = nil
+	f.mirror.mu.Unlock()
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	for i := 0; i < 3; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("pushed while its connected host listed no windows: %v", got)
+	}
+	f.mirror.mu.Lock()
+	f.mirror.windows = kept
+	f.mirror.mu.Unlock()
+	f.status(mirror.StatusWaiting, 2*time.Second)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	for i := 0; i < 4; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	want := "attention attention-episode-" + strconv.FormatInt(e.ID, 10)
+	if got := f.buzzes(); len(got) != 1 || got[0] != want {
+		t.Fatalf("buzzes once the still-waiting window was listed again: %v, want [%s]", got, want)
+	}
+}
+
+// TestAFreshProcessWaitsTheGraceForAHostItHasNotSeen (regression, audit round
+// 2 🟡-1): the hook holds a wait; muster restarts, and the fresh process's hub
+// has no hosts yet (they have not reconnected). Its first pass, past the
+// episode's grace, pushes nothing — it has never seen the host, so it has not
+// known it offline for any time at all — and the wait is pushed once that
+// process has gone the grace without reading the host: a delay, never a
+// silence. Before the fix the fresh process pushed it on its first pass.
+func TestAFreshProcessWaitsTheGraceForAHostItHasNotSeen(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.status(mirror.StatusWaiting, 2*time.Second)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	e := f.oneEpisode(t)
+	f.restart()
+	f.mirror.mu.Lock()
+	f.mirror.noHosts = true
+	f.mirror.mu.Unlock()
+	f.advance(61 * time.Second)
+	f.statePass(t)
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("a fresh process pushed for a host it has not seen: %v", got)
+	}
+	f.advance(30 * time.Second)
+	f.statePass(t)
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("pushed 30 s after the fresh process first missed the host: %v", got)
+	}
+	f.advance(31 * time.Second)
+	f.statePass(t)
+	want := "attention attention-episode-" + strconv.FormatInt(e.ID, 10)
+	if got := f.buzzes(); len(got) != 1 || got[0] != want {
+		t.Fatalf("pushes once the fresh process went the grace without the host: %v, want [%s]", got, want)
+	}
+	for i := 0; i < 4; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.buzzes(); len(got) != 1 {
+		t.Fatalf("buzzes after more passes: %v, want one", got)
+	}
+}
+
+// TestAnAnsweredUnknownStateWaitIsNotPushedOnADropAndTheNextOneIs
+// (regression, audit round 2 🟡-2): a window whose host reports no StatusSince
+// waits, and the owner answers it 20 s in. Half an hour later the host drops:
+// nothing buzzes — the stop ended when the pass read it busy. The host comes
+// back with the window waiting on a NEW prompt nobody answers: it buzzes once,
+// within five minutes. Before the fix the answered stop never ended, so the
+// drop pushed it, and the new prompt found that episode still open and got no
+// push of its own.
+func TestAnAnsweredUnknownStateWaitIsNotPushedOnADropAndTheNextOneIs(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.unknownStatus(mirror.StatusWaiting)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	first := f.oneEpisode(t)
+	f.advance(20 * time.Second)
+	f.unknownStatus(mirror.StatusBusy)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.advance(30 * time.Second)
+	f.statePass(t)
+	f.advance(30 * time.Second)
+	f.unknownStatus(mirror.StatusIdle)
+	f.statePass(t)
+	f.advance(30 * time.Minute)
+	f.setOnline(false)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	for i := 0; i < 6; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("buzzes on a drop half an hour after the prompt was answered: %v, want none", got)
+	}
+	if got := f.episodeByID(t, first.ID); got.EndedAt.IsZero() || got.EndReason != endOwner {
+		t.Fatalf("the answered unknown-state stop: ended %v reason %q, want %q", got.EndedAt, got.EndReason, endOwner)
+	}
+	f.setOnline(true)
+	f.unknownStatus(mirror.StatusWaiting)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	for i := 0; i < 10; i++ { // five minutes, unanswered
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.buzzes(); len(got) != 1 {
+		t.Fatalf("buzzes for a new prompt left unanswered for five minutes: %v, want exactly one", got)
+	}
+}
+
+// TestAnUnknownStateWaitAnsweredJustBeforeItsHostDropsIsNotPushed (guard for
+// the streak check in the drop push, audit round 2 🟡-2): the window's host
+// reports no StatusSince; the owner answers 20 s in and the host drops before
+// any pass reads it busy. The episode is still open and was waiting when last
+// seen, but its turn was never read, so the drop does not push it: such a wait
+// is pushed only from its host listing it waiting. The accepted cost: an
+// unknown-state wait left UNanswered when its host drops is not pushed until
+// the host lists it again.
+func TestAnUnknownStateWaitAnsweredJustBeforeItsHostDropsIsNotPushed(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.unknownStatus(mirror.StatusWaiting)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.oneEpisode(t)
+	f.advance(20 * time.Second)
+	f.unknownStatus(mirror.StatusBusy)
+	f.setOnline(false)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	for i := 0; i < 6; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.buzzes(); len(got) != 0 {
+		t.Fatalf("pushed an unknown-state wait on its host's drop: %v", got)
+	}
+}
+
+// TestAHeldIdleStopWhoseHostDropsIsNotPushedAsAWait (guard for the ep.Waiting
+// check in the drop push, audit round 2 🟢): an idle stall held for the live
+// chief's decision, whose host then drops for two minutes. The drop push is
+// for a WAITING stop only: it must not settle this idle one on waiting facts
+// (which would push it as "needs you" past the grace).
+func TestAHeldIdleStopWhoseHostDropsIsNotPushedAsAWait(t *testing.T) {
+	f := newStateFixture(t, true)
+	f.live()
+	f.statePass(t)
+	e := f.oneEpisode(t)
+	if e.Waiting {
+		t.Fatal("the fixture's idle stop opened as waiting")
+	}
+	if got := f.episodePushes(); len(got) != 0 {
+		t.Fatalf("the held idle stop pushed before the drop: %v", got)
+	}
+	f.setOnline(false)
+	for i := 0; i < 4; i++ {
+		f.advance(30 * time.Second)
+		f.statePass(t)
+	}
+	if got := f.episodePushes(); len(got) != 0 {
+		t.Fatalf("an idle stop whose host dropped was pushed as a wait: %v", got)
+	}
+}

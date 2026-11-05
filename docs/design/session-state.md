@@ -384,7 +384,7 @@ nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases
 
 | episode | decided by | result |
 |---|---|---|
-| a waiting window, not answerable | **code only, after its grace** | row at once (a plain waiting row while in its grace); pushed once the grace has passed unless it ended first (a host that dropped meanwhile ends nothing). Never sent to the Chief, never nudged |
+| a waiting window, not answerable | **code only, after its grace** | row at once (a plain waiting row while in its grace); pushed once the grace has passed unless it ended first (a host that dropped meanwhile ends nothing; it pushes once known offline for the grace too). Never sent to the Chief, never nudged |
 | an idle `needs-you` (classifier: asked) | code; the Chief **if available** | `nudge` (sent) → no push. Anything else, **`leave` included** → push and row |
 | an idle `stalled` (classifier: did not ask) | code; the Chief **if available** | `nudge` (sent) → no push. `leave` → quiet row, no push. `notify` or anything else → push and row |
 
@@ -564,9 +564,19 @@ One push per episode, under the existing `attention` toggle:
   ended in between and is never pushed. 🔴 The hold may DELAY a push, never
   silence one: the pass also pushes a held wait it cannot read a status for —
   a window its host lists waiting with no `StatusSince` (the hub's
-  `AgentState` is Unknown), while the host still lists it waiting — and one
-  whose host dropped during the hold (it was waiting when last seen, and an
-  offline host ends nothing). The pass runs every 30 s, so the push normally
+  `AgentState` is Unknown), while the host still lists it waiting (and ends
+  it 'owner' once that listing shows it not waiting: nothing else can) — and
+  one whose host dropped during the hold (it was waiting when last seen, and
+  an offline host ends nothing), once this process has also known the host
+  unreadable for the grace (`hostUnreads`, in memory: a blip answered through
+  buzzes nothing, and a fresh process waits the grace from its own first pass
+  rather than pushing for hosts not yet reconnected). Not on a drop: a wait
+  whose state was never read (no streak), which only its host's listing can
+  push. A host that is online and reporting status with an EMPTY window list
+  is connected, so it is no drop: nothing is pushed for it and nothing ended
+  (an empty list may be a failed first read); its next non-empty list ends
+  a closed window 'gone' or shows a still-waiting one, which is then pushed —
+  delayed, not silenced. The pass runs every 30 s, so the push normally
   lands 60..90 s after the window started waiting; a stop the pass opened
   (the hook missed it) can take one pass more, and the repush floor can hold
   it longer. The grace runs from the

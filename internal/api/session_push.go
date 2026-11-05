@@ -41,7 +41,9 @@ import (
 //     a stop the pass opened, longer under the repush floor. 🔴 THE HOLD
 //     DELAYS, IT NEVER SILENCES: the pass pushes a held wait whose state it
 //     cannot read (the host lists it waiting, AgentState Unknown) and one
-//     whose host dropped mid-hold (session_state.go, heldWaitFacts). 🔴 A PROMPT
+//     whose host dropped mid-hold, once this process has known the host
+//     offline for the grace too (session_state.go, heldWaitFacts,
+//     hostUnreads). 🔴 A PROMPT
 //     THE OWNER ANSWERS AT THE TERMINAL INSIDE THE GRACE NEVER BUZZES: the
 //     pass ends that episode (owner) and an ended episode is never pushed.
 //     Measured on a live fleet, nearly every waiting window was answered at
