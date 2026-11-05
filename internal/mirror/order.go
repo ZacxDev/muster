@@ -73,6 +73,12 @@ type SessionView struct {
 	// Color is the entry's tmux identity colour, lowercase #rrggbb
 	// (HostView.Colors, work.go), "" when its host did not say.
 	Color string
+	// Status and StatusSince are the window's Window.Status / StatusSince —
+	// only from a host that advertised StatusReport (the wire's rule: no other
+	// host is believed about status); "" and 0 otherwise, and always for a
+	// per-session host's entry.
+	Status      string
+	StatusSince int64
 }
 
 // QualifierSep joins a Title and its Qualifier: "mango:1 · laptop".
@@ -386,6 +392,9 @@ func (h HostView) Entries() []SessionView {
 			e.Runtime, e.AgentSession, e.AgentNote, e.LiveCopy = w.Runtime, w.AgentSession, w.AgentNote, w.LiveCopy
 			e.Repo = h.Repos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
+			if h.StatusReport {
+				e.Status, e.StatusSince = w.Status, w.StatusSince
+			}
 			out = append(out, e)
 		}
 		return out

@@ -139,7 +139,22 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 		// ActiveAt is the window's CardActivity: a Claude window's transcript
 		// LAST MESSAGE (the time the cards show), else — an opencode or Hermes
 		// window, an older host that reports none — tmux's window activity.
-		out = append(out, focus.Candidate{Subject: focus.MirrorSubject(e.SessionKey()), ActiveAt: e.ActiveAt()})
+		// ⚠ EXCEPT while a Claude window is busy or waiting: its host then
+		// reports its last message as the host's NOW (mirrorhost.WireWindows),
+		// so its activity moves every minute. A waiting one is skipped through
+		// WaitingSince below; a BUSY one is a candidate, and read, on every
+		// pass — and 20 or more busy windows, sorted newest first, fill
+		// focus.MaxPerPass ahead of an idle window whose tail did move.
+		c := focus.Candidate{Subject: focus.MirrorSubject(e.SessionKey()), ActiveAt: e.ActiveAt()}
+		// A Claude window waiting on the person (a permission prompt, an
+		// AskUserQuestion picker) writes no transcript row a focus tail
+		// renders until it is answered, so when it began waiting is when its
+		// tail last could have moved (focus.Candidate.WaitingSince). Claude
+		// windows only: the measurement behind it is Claude Code's.
+		if e.Claude && e.Status == mirror.StatusWaiting && e.StatusSince > 0 {
+			c.WaitingSince = time.UnixMilli(e.StatusSince)
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }

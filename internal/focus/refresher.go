@@ -41,6 +41,15 @@ type KeyChecker interface {
 type Candidate struct {
 	Subject  Subject
 	ActiveAt time.Time
+	// WaitingSince is when a mirrored Claude window began waiting on the
+	// person (its host's StatusWaiting, StatusSince), zero when it is not
+	// waiting or its host does not say. Its host reports a waiting window's
+	// activity as "now" (mirrorhost.WireWindows), so ActiveAt alone always
+	// reads as moved; but Claude Code writes no row a focus tail renders
+	// while it waits, so a window waiting since before a read that found its
+	// tail unchanged has nothing new (checkedSkip). A BUSY window has no such
+	// signal and is never skipped by it.
+	WaitingSince time.Time
 }
 
 // Sessions is where subjects and their transcripts come from (internal/api: the
@@ -244,10 +253,11 @@ func (r *Refresher) markChecked(owner int64, sub Subject, at time.Time, fp strin
 // checkedSkip reports whether c needs no tail read because one already read
 // everything it can have said: a read began a whole ActivityBucket after c's
 // last activity (ActiveAt is floored to the bucket, so a message inside the
-// bucket may postdate a read that began within it), and that read found the
-// fingerprint the stored focus still carries (storedFP; "" with no focus, as
-// an empty tail records). A read that FAILED records nothing, so a failure is
-// retried on the next pass.
+// bucket may postdate a read that began within it) — or a whole bucket after
+// c began WAITING on the person (Candidate.WaitingSince) — and that read found
+// the fingerprint the stored focus still carries (storedFP; "" with no focus),
+// or found an empty tail (an empty read matches an empty read). A read that
+// FAILED records nothing, so a failure is retried on the next pass.
 //
 // 🔴 THIS IS WHAT STOPS AN UNCHANGED SESSION BEING A CANDIDATE FOREVER. The
 // unchanged outcome writes nothing to the store, so updated_at alone never
@@ -255,13 +265,21 @@ func (r *Refresher) markChecked(owner int64, sub Subject, at time.Time, fp strin
 // session was re-read on every pass, filled MaxPerPass, and pushed sessions
 // that had really moved past the cap.
 func (r *Refresher) checkedSkip(owner int64, c Candidate, storedFP string) bool {
-	if c.ActiveAt.IsZero() {
-		return false
-	}
 	r.mu.Lock()
 	ck, ok := r.checked[owner][c.Subject]
 	r.mu.Unlock()
-	return ok && ck.fp == storedFP && !c.ActiveAt.Add(mirror.ActivityBucket*time.Second).After(ck.at)
+	// An empty read matches an empty read: an empty tail stores nothing, so
+	// the stored focus (from an earlier, non-empty tail) never carries "".
+	if !ok || (ck.fp != storedFP && ck.fp != "") {
+		return false
+	}
+	bucket := mirror.ActivityBucket * time.Second
+	quiet := !c.ActiveAt.IsZero() && !c.ActiveAt.Add(bucket).After(ck.at)
+	// Waiting since a whole bucket before the read began: StatusSince is the
+	// CLI's clock, the read's is the server's, and the bucket is the slack
+	// the activity rule already allows for.
+	waiting := !c.WaitingSince.IsZero() && !c.WaitingSince.Add(bucket).After(ck.at)
+	return quiet || waiting
 }
 
 // pruneChecked keeps owner's check records for the subjects in cands only, so

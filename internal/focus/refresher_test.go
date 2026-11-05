@@ -208,7 +208,7 @@ func TestRefreshOwnerSkipsSubjectsThatHaveNotMoved(t *testing.T) {
 	a, b, c := AgentSubject(1), AgentSubject(2), MirrorSubject("sess-c")
 	st.rows[b] = Focus{Subject: b, Title: "old", Source: SourceSummarizer, UpdatedAt: now.Add(-time.Hour), Fingerprint: "x"}
 	st.rows[c] = Focus{Subject: c, Title: "fresh", Source: SourceSummarizer, UpdatedAt: now, Fingerprint: "y"}
-	src.cands = []Candidate{{a, now}, {b, now.Add(-time.Minute)}, {c, now.Add(-time.Hour)}}
+	src.cands = []Candidate{{Subject: a, ActiveAt: now}, {Subject: b, ActiveAt: now.Add(-time.Minute)}, {Subject: c, ActiveAt: now.Add(-time.Hour)}}
 	for _, s := range []Subject{a, b, c} {
 		src.tails[s] = []Entry{{Role: "user", Text: s.String()}}
 	}
