@@ -74,6 +74,19 @@ type officerRuntime struct {
 	// llm is the officer LLM proxy (officer_llm.go, internal/llmproxy); nil
 	// when no declared officer has an `llm` block.
 	llm *llmproxy.Proxy
+	// judgement counts each tiered officer's judgement sessions per UTC day
+	// (officers.JudgementLedger): officer_claim reserves in it, and the wake
+	// loop reads it. now is the clock both use (OfficersConfig.Now).
+	judgement *officers.JudgementLedger
+	now       func() time.Time
+}
+
+// clock is the runtime's now (time.Now when unset).
+func (rt *officerRuntime) clock() time.Time {
+	if rt.now == nil {
+		return time.Now()
+	}
+	return rt.now()
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -113,7 +126,11 @@ type OfficersConfig struct {
 	// LLMStore keeps the LLM proxy's per-day usage (the budget); REQUIRED
 	// when an officer declares `llm`. LLMUpstream replaces the provider's API
 	// base and LLMHTTP its transport (tests); ""/nil is production.
-	LLMStore    llmproxy.Store
+	LLMStore llmproxy.Store
+	// Sessions keeps the judgement session cap's count
+	// (officers.PGSessionStore); REQUIRED when an officer declares
+	// tiers.judgement.max_sessions_per_day.
+	Sessions    officers.SessionStore
 	LLMUpstream string
 	LLMHTTP     *http.Client
 }
@@ -200,7 +217,27 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
-	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: cfg.Now}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	// The judgement session cap's ledger is persisted (officers.
+	// PGSessionStore, migration 0082), read and written as the officer's
+	// owner. An officer that declares a cap with no store is refused: a cap
+	// that cannot be kept is no cap.
+	var judgement *officers.JudgementLedger
+	if cfg.Sessions != nil {
+		judgement = officers.NewJudgementLedger(cfg.Sessions, func(ctx context.Context, o officers.Officer) context.Context {
+			return s.officerPrincipal(ctx, o.Owner)
+		}, s.logger.Printf)
+	} else {
+		for _, o := range cfg.Officers {
+			if o.HasSessionCap() {
+				return nil, fmt.Errorf("officers: %s declares tiers.judgement.max_sessions_per_day, but there is no session store to keep the count in (it needs the database)", o.ID)
+			}
+		}
+	}
+	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement}
 	switch {
 	case fwd != nil && px != nil:
 		sync := llmSync(px, reg)
@@ -218,7 +255,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, judgement: judgement, now: now, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
@@ -621,7 +658,9 @@ func (s *Server) WaitForOfficerReprompts() {
 //     postgres_query when the officer declares `connectors`. Redundant
 //     under bypass, and kept: it names exactly the muster tools the instance
 //     is for, and holds if bypass is ever lifted.
-//   - Model: the officer's configured model.
+//   - Model: the officer's configured model (its pool's, for a tiered officer).
+//   - LLMRoute, with no Model: a routine instance of an officer that declares
+//     `llm` (below).
 func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeSession, bool) {
 	o, _, ok := s.officerOf(a)
 	if !ok {
@@ -642,6 +681,14 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 			}
 			allow = append(allow, d.Name)
 		}
+	}
+	// 🔴 A ROUTINE INSTANCE OF AN `llm` OFFICER IS ON THE LLM ROUTE, AND ONLY
+	// IT (officers.RoutineAgent, the proxy's own membership rule): its pod
+	// reaches its model through muster's proxy with its own muster token and
+	// carries no subscription token. It takes no session model: the proxy
+	// pins tiers.routine.model, and the pod spec refuses a provider id.
+	if officers.RoutineAgent(o, a.Name) {
+		return agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, LLMRoute: true}, true
 	}
 	return agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: o.Model, BypassPermissions: true}, true
 }
@@ -917,7 +964,18 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			// untiered officer sends no tier key), exactly what claim-by-id
 			// sends: HQ then picks only an item of that tier
 			// (officer_claim_next_tier_test.go)
+			// The judgement session cap holds for claim-next too: HQ picks
+			// the item, so a session is held until HQ says which (or none).
+			done, capErr := s.officerRT.judgement.ReserveNext(ctx, o, s.officerRT.clock())
+			if capErr != nil {
+				return s.sessionCapRefusal(o, name, capErr), true
+			}
 			body, claimed, err = s.officerClaimNext(ctx, c, instance, in.LeaseSeconds, o.Tier)
+			if err != nil {
+				claimed = ""
+			}
+			// An answer HQ lost (outcome unknown) keeps the session.
+			done(claimed, claimOutcomeKnown(err))
 			if errors.Is(err, errNoClaimNext) {
 				return toolErr(noClaimNextNote), true
 			}
@@ -929,7 +987,20 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
+		// 🔴 THE JUDGEMENT SESSION CAP IS CHECKED BEFORE HQ, AND THE SESSION
+		// IS RESERVED AT ONCE: the N+1th distinct item of the day never reaches
+		// HQ (it stays queued there), and two claims racing for the last
+		// session cannot both pass. A claim HQ refuses gives its session back.
+		undo, capErr := s.officerRT.judgement.Reserve(ctx, o, in.ItemID, s.officerRT.clock())
+		if capErr != nil {
+			return s.sessionCapRefusal(o, name, capErr), true
+		}
 		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds, o.Tier)
+		// Undo only a claim that DEFINITELY did not happen: when HQ's answer
+		// was lost, HQ may have claimed it, and the session is kept.
+		if err != nil && claimOutcomeKnown(err) {
+			undo()
+		}
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Claimed(o, instance, in.ItemID)
 		}
@@ -1096,6 +1167,28 @@ func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, insta
 func nothingToClaim() []byte {
 	b, _ := json.Marshal(map[string]any{"item": nil, "claimed": false, "note": nothingToClaimNote})
 	return b
+}
+
+// claimOutcomeKnown reports whether a claim's result says for sure what HQ
+// did: success, or HQ's own refusal (a 4xx, a blocked item, no claim-next
+// route). A transport failure, a timeout or a 5xx is UNKNOWN — HQ may have
+// committed the claim and lost the answer.
+func claimOutcomeKnown(err error) bool {
+	var hqErr *officers.HQError
+	var blocked *claimBlockedError
+	return err == nil || errors.As(err, &hqErr) || errors.As(err, &blocked) || errors.Is(err, errNoClaimNext)
+}
+
+// sessionCapRefusal is a claim the judgement session ledger did not admit:
+// the cap's own refusal as it is, or — when the ledger could not be read or
+// written — a refusal that fails CLOSED (no claim without the count) and keeps
+// the database's error in the log, not in the instance's transcript.
+func (s *Server) sessionCapRefusal(o officers.Officer, name string, err error) string {
+	if errors.Is(err, officers.ErrSessionCap) {
+		return toolErr("%v", err)
+	}
+	s.logger.Printf("officers: %s: %s refused, the judgement session ledger failed: %v", o.ID, name, err)
+	return toolErr("the judgement session count could not be read, so nothing was claimed; try %s again in a minute", name)
 }
 
 // alreadyYoursNote is what a claim on an item the caller already holds says.

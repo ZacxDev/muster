@@ -696,6 +696,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// The LLM proxy's daily budget lives here (migration 0075); an
 			// officer that declares `llm` with no database is refused.
 			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
+			// The judgement session cap's count lives here too (migration
+			// 0082), shared by every replica; a cap with no database is
+			// refused.
+			ocfg.Sessions = officers.NewPGSessionStore(a.pool)
 		}
 		if a.officers, err = srv.EnableOfficers(ocfg); err != nil {
 			a.Close()
