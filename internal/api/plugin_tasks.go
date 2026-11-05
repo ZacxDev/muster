@@ -208,7 +208,8 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 
 	if in.Create != nil {
 		n, created, commented, err := s.createTaskOnce(ctx,
-			taskCreateInput{Title: in.Create.Title, Body: in.Create.Body, Source: "api"}, in.Key, comment, nil)
+			taskCreateInput{Title: in.Create.Title, Body: in.Create.Body, Source: "api",
+				CreatedBy: notes.CreatedByPlugin(firstNonBlank(p.Label, p.Name))}, in.Key, comment, nil)
 		var ve errTagValidation
 		switch {
 		case err == nil:

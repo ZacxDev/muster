@@ -46,14 +46,18 @@ type Reference struct {
 // RefSnapshot is the upstream's view of one task, as the plugin pushed it,
 // after the route's caps (truncate, never reject).
 type RefSnapshot struct {
-	Title       string       `json:"title"`
-	URL         string       `json:"url,omitempty"`
-	Status      string       `json:"status"`
-	StatusLabel string       `json:"status_label,omitempty"`
-	Rev         string       `json:"rev,omitempty"`
-	UpdatedAt   time.Time    `json:"updated_at"`
-	Body        string       `json:"body,omitempty"`
-	Comments    []RefComment `json:"comments,omitempty"`
+	Title       string    `json:"title"`
+	URL         string    `json:"url,omitempty"`
+	Status      string    `json:"status"`
+	StatusLabel string    `json:"status_label,omitempty"`
+	Rev         string    `json:"rev,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Body        string    `json:"body,omitempty"`
+	// Creator is the upstream's display name for whoever created the record:
+	// OPTIONAL (a plugin that sends none leaves it ""), one line of plain text,
+	// capped at the route. DATA, like every other field here.
+	Creator  string       `json:"creator,omitempty"`
+	Comments []RefComment `json:"comments,omitempty"`
 }
 
 // RefComment is one upstream comment in a snapshot. Every field came from
