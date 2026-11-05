@@ -33,7 +33,7 @@ attention queue).
 | Where it comes from | Code over inputs muster already reads (host status, `stallInputs`, `waitingSessions`), plus **one model input**: the stall classifier's score, which splits `needs-you` from `stalled` for an idle session and is persisted on the episode |
 | Waiting windows | Push in code, never through the Chief, **after a 60 s grace**, unless the stop ended inside it — a prompt answered at the terminal never buzzes ([Push](#push)). Questions muster can answer (a held AskUserQuestion, an opencode question) keep their **answer card** at once and their full-text push, but since the follow-up to #463 their stop **is** an episode and that push waits the same grace ([below](#answerable-asks-are-episodes-too)) |
 | The Chief | Consulted only for **idle** episodes, and only when it is available. It decides **`nudge`, `leave` or `notify`**. No summary, no options, no notice text. `leave` quiets only a session that asked nothing. Covering words widen to the owner's own typed messages in sessions on the **same repository** plus their typed Chief chat, once muster can attribute them; shadow mode first |
-| Push | **One push per episode**, claimed in the database before it is sent (at most once; a graceful shutdown drains it). Text built in code: tmux session, window index, host, state and idle time. **No session text.** Tap opens the session. No push for an episode whose nudge was **sent**, or that was left with no question |
+| Push | **One push per episode**, claimed in the database before it is sent (at most once; a graceful shutdown drains it). Text built in code: tmux session, window index, host, state and idle time. **No session text** — except a stop waiting on a question muster can answer, whose push is that question's own full-text notification ("Full text always" for asks; [below](#answerable-asks-are-episodes-too)). Tap opens the session. No push for an episode whose nudge was **sent**, or that was left with no question |
 | Attention | A **"Stalled / waiting"** section of plain rows, no answer box, oldest first, replacing chief-nudge notices. Left sessions are quiet rows. Answerable asks stay above it |
 | Check-ins | Snapshots of the same state at 09:00, 13:00 and 17:00; the Chief narrative on scheduled runs only (an amendment to `check-ins.md` PR 4) |
 | Independence | State, rows and pushes are code-only and run with `MUSTER_CHIEF_NUDGES` unset and with no chief. Only the Chief's call needs them |
@@ -277,7 +277,15 @@ previous image (which claimed no episode) can buzz once more after its grace.
 
 An opencode question muster **cannot** relay (no prompt id, host offline, or
 no relay) was counted answerable by its question Kind alone; it is a plain
-wait now (`answerableItem`): a row, and the episode's text-free push.
+wait now (`answerableItem`) for its push — the episode's text-free one — but
+keeps its question card, which says why, with no second row (`cardedItem`).
+
+A question asked right after one the owner answered gets its own grace: the
+hub's change hook ends a covered window's episode ('owner') the moment the
+host lists the window in a known status other than waiting
+(`episodeWaitsAnswered`, `OwnerActed`'s waiting rule applied at the nudge),
+so the next question opens a new episode rather than joining the answered
+one's and being timed from its opening.
 
 ### Episodes
 

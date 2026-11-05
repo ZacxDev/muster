@@ -73,7 +73,11 @@ import (
 //     classifier: a quiet row, never a push (coordinator default N5 — the
 //     owner spoke last).
 //
-// 🔴 NO SESSION TEXT. The notification names the session the way every
+// 🔴 NO SESSION TEXT — EXCEPT A STOP WAITING ON AN ANSWERABLE ASK, whose push
+// is that ask's own notification, its question in full (episodeAsk; the
+// operator's earlier "Full text always" decision for asks, which an
+// answerable ask kept when its push moved here). Every other episode's
+// notification names the session the way every
 // attention surface names a mirrored window (sessionKeyWhere, mirror.Where:
 // the host's label for it — a codename from the host's labels file, never
 // anything the session wrote — then its tmux session and window INDEX and its
@@ -304,7 +308,8 @@ func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle
 }
 
 // episodeNotification is ep's notification: WHO and WHERE in the title, the
-// state and how long in the body — 🔴 NO SESSION TEXT (the file's header).
+// state and how long in the body — 🔴 NO SESSION TEXT (the file's header,
+// and its one exception below).
 // hosts is the owner's windows as the caller already read them (the state
 // pass's one read, the hub hook's); nil reads them once here (episodeHosts).
 //
@@ -545,18 +550,21 @@ func episodeWindowOf(hs []mirror.HostView, it attentionItem) (key, runtime strin
 // stop was never pushed, so it is the diff's to push (after the same grace,
 // insideGrace) — suppressing it would leave it SILENT. A failed read is not
 // "pushed": the diff pushes it (a double push, never silence).
-func (s *Server) episodeHandedOver(octx context.Context, hs []mirror.HostView, items []attentionItem, prev map[string]bool) map[string]bool {
+//
+// 🔴 ITS EPISODE IS LOOKED UP BY THE KEY THE LAST NUDGE SAW (prev), not the
+// window's now: a window that left the cover because it LOST its session key
+// names no episode any more, and was taken as pushed — a held wait silenced
+// (audit round 1 F3). No open episode under it is taken as handed over, as
+// before: its stop ended already (the owner viewed it, say).
+func (s *Server) episodeHandedOver(octx context.Context, items []attentionItem, prev map[string]coveredWait) map[string]bool {
 	out := map[string]bool{}
 	for _, it := range items {
-		if !prev[it.Key] {
+		cw, was := prev[it.Key]
+		if !was {
 			continue
 		}
 		out[it.Key] = true
-		key, _, _, ok := episodeWindowOf(hs, it)
-		if !ok {
-			continue
-		}
-		ep, has, err := s.ext.Episodes.OpenFor(octx, sessionstate.KindMirror, key)
+		ep, has, err := s.ext.Episodes.OpenFor(octx, sessionstate.KindMirror, cw.key)
 		switch {
 		case err != nil:
 			s.logger.Printf("session state: %s: its episode: %v (pushing it as an ask)", it.Key, err)
@@ -566,6 +574,49 @@ func (s *Server) episodeHandedOver(octx context.Context, hs []mirror.HostView, i
 		}
 	}
 	return out
+}
+
+// episodeWaitsAnswered ends the open waiting episode of each covered window in
+// left — a window the last nudge saw waiting that waits on nothing now — whose
+// host (online, reporting status) lists it in a known status that is not
+// waiting, under the same episode key: its prompt was answered
+// (sessionstate.OwnerActed's waiting rule, the pass's own, applied at the
+// nudge instead of up to a pass later). Its notification, if it was pushed, is
+// closed by the next pass (clearEndedEpisodes). A window not listed, or listed
+// with no status, is left to the pass (its gone and unknown-state rules).
+func (s *Server) episodeWaitsAnswered(octx context.Context, hs []mirror.HostView, left []coveredWait) {
+	for _, cw := range left {
+		if !answeredWindow(hs, cw) {
+			continue
+		}
+		ep, has, err := s.ext.Episodes.OpenFor(octx, sessionstate.KindMirror, cw.key)
+		if err != nil {
+			s.logger.Printf("session state: answered %s: %v", cw.key, err)
+			continue
+		}
+		if has && ep.Waiting {
+			s.endEpisode(octx, ep, sessionstate.EndOwner, s.now())
+		}
+	}
+}
+
+// answeredWindow reports whether hs lists covered window cw on an online host
+// reporting status, in a known status other than waiting, still under cw's
+// episode key.
+func answeredWindow(hs []mirror.HostView, cw coveredWait) bool {
+	for _, h := range hs {
+		if h.Host != cw.host || !h.Online || !h.StatusReport {
+			continue
+		}
+		for _, w := range h.Windows {
+			if w.Session != cw.session || w.ID != cw.window {
+				continue
+			}
+			key, _, _ := stateWindowKey(w, sessionStateListsHermes)
+			return w.Status != "" && w.Status != mirror.StatusWaiting && key == cw.key
+		}
+	}
+	return false
 }
 
 // sessionStateListsHermes: session state lists Hermes windows (design default
@@ -687,10 +738,12 @@ func (s *Server) askListHTML(ctx context.Context, items []attentionItem, now tim
 // pageAttentionItems is items as the Asks list draws them: with session state
 // on, a plain waiting window session state covers (episodeCover — the hook's
 // own rule) is a row of the "Stalled / waiting" section (episodeSectionHTML),
-// not a list item too. 🔴 AN ANSWERABLE ASK STAYS A LIST ITEM, covered or not:
-// its card is where it is answered, at once — only its PUSH waits the grace —
-// and the section draws no row for its stop (episodeCarded). One session state
-// cannot key stays a list item, as it stays in the diff's push.
+// not a list item too. 🔴 A CARDED ITEM (cardedItem: an answerable ask, or a
+// question muster cannot relay, whose card says why) STAYS A LIST ITEM, covered
+// or not: its card is where it is answered, or read, at once — only its PUSH
+// waits the grace — and the section draws no row for its stop (episodeCarded).
+// One session state cannot key stays a list item, as it stays in the diff's
+// push.
 func (s *Server) pageAttentionItems(ctx context.Context, items []attentionItem) []attentionItem {
 	if !s.sessionStateOn() || s.ext.Mirror == nil {
 		return items
@@ -698,17 +751,28 @@ func (s *Server) pageAttentionItems(ctx context.Context, items []attentionItem) 
 	hs := s.ext.Mirror.Hosts(ctx)
 	out := items[:0:0]
 	for _, it := range items {
-		if _, _, _, ok := episodeCover(hs, it); !ok || answerableItem(it) {
+		if _, _, _, ok := episodeCover(hs, it); !ok || cardedItem(it) {
 			out = append(out, it)
 		}
 	}
 	return out
 }
 
+// cardedItem reports whether waiting item it is drawn as its own card on the
+// Asks list even when session state covers its window (pageAttentionItems): an
+// answerable ask (answerableItem), and a question muster cannot relay — an
+// opencode question whose card says why it cannot be answered here (audit
+// round 1 F5: it was a question card before the follow-up to #463, and lost
+// it once it stopped counting as answerable). Its PUSH is not this rule's: an
+// unrelayable question's is its episode's text-free one (episodeAsk).
+func cardedItem(it attentionItem) bool {
+	return answerableItem(it) || it.Kind == attentionKindQuestion
+}
+
 // episodeCarded is the episode keys (session keys) of ctx's owner's windows
-// that wait on an answerable ask now: drawn as that ask's card on the Asks
-// list (pageAttentionItems), so the "Stalled / waiting" section draws no
-// second row for the same stop. Nil with nothing mirrored.
+// that wait on a carded item now (cardedItem): drawn as that item's card on
+// the Asks list (pageAttentionItems), so the "Stalled / waiting" section draws
+// no second row for the same stop. Nil with nothing mirrored.
 func (s *Server) episodeCarded(ctx context.Context) map[string]bool {
 	if s.ext.Mirror == nil {
 		return nil
@@ -716,7 +780,7 @@ func (s *Server) episodeCarded(ctx context.Context) map[string]bool {
 	hs := s.ext.Mirror.Hosts(ctx)
 	out := map[string]bool{}
 	for _, it := range s.waitingSessionsIn(ctx, hs) {
-		if !answerableItem(it) {
+		if !cardedItem(it) {
 			continue
 		}
 		if key, _, _, ok := episodeWindowOf(hs, it); ok {

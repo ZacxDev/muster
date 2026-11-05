@@ -83,8 +83,8 @@ question or permission request its host relays, a Hermes approval) stays an
 answerable item above it — its card, drawn at once, with no second row — but
 its stop **is** an episode, pushed once, held like any other wait, and that
 push is the question's own full-text notification. An opencode question muster
-cannot relay (its card says to answer it in the terminal) is a plain wait: a
-row, and a text-free push.
+cannot relay keeps its card, which says to answer it in the terminal (and no
+second row), but its push is a plain wait's text-free one.
 
 **One push per stop.** Each episode is pushed **once**, however the stop moves
 between waiting and idle, and its notification closes when the stop ends:
@@ -152,7 +152,10 @@ was down has its notification closed.
   restart mid-hold still pushes it, once, and a question muster reads back
   from its transcript after a restart is the same stop: pushed before the
   restart, it is not pushed again; never pushed and past its 60 seconds, it is
-  pushed once. Never through the chief. A window muster cannot key keeps the
+  pushed once. A question asked right after one you answered is a new stop
+  with its own 60 seconds: the stop of the one you answered ends the moment
+  its window stops waiting, not a pass later. Never through the chief. A
+  window muster cannot key keeps the
   waiting diff's push, held by the same rule (timed from when muster first
   saw it wait, re-checked every 30 seconds).
 - An idle stop is pushed at once when no chief judges it live (the feature
@@ -337,10 +340,12 @@ you are typing) (`internal/api/attention_asker.go`). A session is not re-notifie
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
-  sessions that are already waiting are recorded silently, except one that
-  started waiting less than 60 seconds before (by its host's own time): its
-  push was still being held, so it is pushed once those 60 seconds are up if
-  it still waits. While a host is disconnected for less than 5 minutes its
+  sessions that are already waiting are recorded silently, except one whose
+  60 seconds (by its host's own time) ran out after this muster started: no
+  earlier muster can have pushed it, so it is pushed once those 60 seconds
+  are up if it still waits — at once if they already are (a slow restart). One
+  whose 60 seconds ran out while muster was down is taken as pushed: nothing
+  records the waiting diff's pushes across a restart. While a host is disconnected for less than 5 minutes its
   items stay (no clear). (With session state on, a window muster can key is
   an episode instead, whose push is recorded in the database: see above.)
 - when it goes waiting again within 2 minutes of its last notification or of

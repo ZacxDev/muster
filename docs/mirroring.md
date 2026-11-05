@@ -729,8 +729,8 @@ a prompt does:
 - a **question** (the question tool's form, `form.created`) is a *Session
   question* item, notified as "<window> is asking" with its question and, for
   one question, its options — when muster can relay its answer; one it cannot
-  (the card says to answer it in the terminal) is notified as a plain waiting
-  window.
+  keeps its card (which says to answer it in the terminal) and is notified as
+  a plain waiting window.
 
 Either notification waits 60 seconds and is sent only if the window still
 waits then ([attention.md](attention.md#stalled--waiting-session-state)); the
