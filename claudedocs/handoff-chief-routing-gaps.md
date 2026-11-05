@@ -33,6 +33,7 @@ Messages and tasks reaching the chief were not routed to the live sessions alrea
   - The never-delivered outcome stays in the chief's conversation only; no Attention or route-listing view.
   - Token rotation (rank 2) is skipped for now.
   - Quiet pushes (rank 3) stay dropped.
+- **Later work in session 38c989dc (2026-11-01 to 11-05) is NOT part of this arc.** It shipped as separate efforts (task references and the assigned-task backfill, the chief page's phone layout #445/#451/#452, a dotfiles handoff-tool rename) and is recorded in the operator's private infrastructure repo as `handoff-muster-task-references.md`. Nothing in this arc's Next steps changed.
 
 ## Open investigations — live diagnosis state
 ### ~~A routed message never reaches a busy session~~ RESOLVED — the hand-back now says when a route was never delivered (#378); see the RESOLVED block below

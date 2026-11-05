@@ -9,6 +9,31 @@ puts that session first. A session's page lists its focus over time behind the
 header's focus-history button ([below](#focus-history)). (The Agents list page,
 whose cards were headed by their focus, is retired.)
 
+## How old a focus is
+
+A focus title says what the session was doing **when it was written**. An idle
+session keeps its last title for days, so wherever a focus title is shown — the
+second line of a row in the switcher dock, the second line of a search palette
+result, and the bold focus line of a row in the Asks list — its age follows it
+once it is **older than a day**, in whole days: `Bisecting the flaky tunnel
+test · 2d`. A title **older than four days** is also marked stale and drawn
+muted (italic, faded). A newer title shows no age. The age is labelled for a
+pointer and a screen reader ("focus title set 2d ago"), since an Asks card
+also shows how long it has waited in the same shape.
+
+A chief **notice** on the Asks list shows the session's title as the chief saw
+it when it decided to nudge. It gets that title's age while the session's
+stored focus still has that title; once the session has a newer title, the
+notice's older one shows no age.
+
+The age is the time the focus was last written. It is worked out by the server
+when the page (or the switcher, or the list) is drawn, from one rule
+(`internal/ui`'s `FocusAgeOf`); the dock and the palette draw what the server
+decided and hold no rule of their own, so an age is as old as the page showing
+it. A refresh that fails keeps the old title and its time, so a session whose
+refresh keeps failing ages like an idle one. In the dock and the palette the
+title is cut to fit one line, and the age after it never is.
+
 Your **chief** reads focus to decide which session should handle something
 (`fleet_list`, `focus_search`). It never computes focus itself.
 
@@ -63,10 +88,10 @@ default `15m`), which for each session:
   unusable`, `the summarizer ignored the format`, `the summarizer answered in
   markdown`, `the summarizer repeated the session's text`, `the summarizer
   could not be reached`. Nothing from the transcript, the key or the provider's error
-  text is stored or shown. The card's popover says it ("No focus: …", or
-  "Last refresh failed: …" on a focus that is now stale, whose title is also
-  marked `stale`), and so does
-  `fleet_list` (`focus_problem`). The next successful refresh clears it.
+  text is stored or shown. `fleet_list` shows it (`focus_problem`); no page
+  does (the retired Agents list's card popover did). The next successful
+  refresh clears it. A failed refresh leaves the focus's time where it was, so
+  its title [ages](#how-old-a-focus-is) like any other.
 
 A pass only looks at sessions that were active since their focus was
 written **or since their tail was last read**, at most 20 per user, and skips
