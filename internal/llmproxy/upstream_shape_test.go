@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 // The provider's Anthropic-compatible endpoint REFUSES a `role: "system"`
@@ -164,7 +166,14 @@ func TestAnUpstreamErrorIsRecordedWithItsTypeAndMessage(t *testing.T) {
 		{
 			name: "truncated",
 			body: `{"error":{"message":"` + long + `"}}`,
-			want: `upstream_error="` + strings.Repeat("x", 300) + `…"`,
+			want: `upstream_error="` + strings.Repeat("x", 200) + `…"`,
+		},
+		{
+			// Every rune start is at an odd offset, so byte 200 is inside an
+			// "é": the cut must back off to 199, never split it.
+			name: "truncated on a rune boundary",
+			body: `{"error":{"message":"x` + strings.Repeat("é", 150) + `"}}`,
+			want: `upstream_error="x` + strings.Repeat("é", 99) + `…"`,
 		},
 		{
 			name: "not JSON",
@@ -215,5 +224,66 @@ func TestASuccessfulRequestRecordsNoUpstreamError(t *testing.T) {
 	}
 	if d := r.audits()[0].Detail(); strings.Contains(d, "upstream_error") {
 		t.Fatalf("an ok request carries an upstream error: %s", d)
+	}
+}
+
+// TestTheOfficersOwnKeyIsRedactedEvenWhenItIsNotKeyShaped: the exact-key rule
+// is the only one that catches a key the sk- pattern does not match, so it is
+// tested with such a key (testKey itself is sk-shaped, and would be caught by
+// the pattern alone).
+func TestTheOfficersOwnKeyIsRedactedEvenWhenItIsNotKeyShaped(t *testing.T) {
+	const odd = "orkey_NOT_SK_SHAPED_7f3e9a1b2c4d"
+	r := newRig(t, "err:oddkey", func(w http.ResponseWriter, _ *http.Request, _ int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"key `+odd+` refused"}}`)
+	})
+	r.set(func(c *Caller) { c.Key = odd })
+	_, out := r.post(t)
+	const want = `upstream_error="invalid_request_error: key [redacted] refused"`
+	if d := r.audits()[0].Detail(); !strings.HasSuffix(d, " "+want) {
+		t.Errorf("audit detail\n got %s\nwant suffix %s", d, want)
+	}
+	for where, text := range map[string]string{"relayed body": out, "log": r.logs.String()} {
+		if strings.Contains(text, odd) {
+			t.Errorf("the key reached the %s", where)
+		}
+	}
+	if !strings.Contains(out, "[redacted]") {
+		t.Errorf("POSITIVE CONTROL: the stub's echo is not in the relayed body at all: %s", out)
+	}
+}
+
+// TestAnUpstream401RecordsTheProvidersError: the key-refusal path relays
+// muster's own message, and still records the provider's.
+func TestAnUpstream401RecordsTheProvidersError(t *testing.T) {
+	for _, st := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		r := newRig(t, "err:auth", func(w http.ResponseWriter, _ *http.Request, _ int) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(st)
+			_, _ = io.WriteString(w, `{"error":{"code":401,"message":"User not found."}}`)
+		})
+		_, out := r.post(t)
+		if strings.Contains(out, "User not found") {
+			t.Errorf("%d: the provider's auth body reached the client: %s", st, out)
+		}
+		const want = `upstream_error="User not found."`
+		if d := r.audits()[0].Detail(); !strings.HasSuffix(d, " "+want) {
+			t.Errorf("%d: audit detail\n got %s\nwant suffix %s", st, d, want)
+		}
+	}
+}
+
+// TestTheLongestUpstreamErrorFitsTheAuditRow: the connector audit row keeps
+// at most 500 bytes of detail (internal/connectors PGStore.Audit), so a
+// realistic record carrying the longest upstream_error, multi-byte, still
+// fits whole, closing quote included.
+func TestTheLongestUpstreamErrorFitsTheAuditRow(t *testing.T) {
+	rec := Record{Officer: "cluster-anomaly:dp-1", Instance: "r1", Item: "item-0123456789", Model: "deepseek/deepseek-v4.1-flash-1017",
+		RequestedModel: "claude-opus-5-5", Status: 400, Result: "upstream_status", Duration: 250 * time.Millisecond,
+		UpstreamError: upstreamError([]byte(`{"error":{"type":"invalid_request_error","message":"`+strings.Repeat("é", 400)+`"}}`), testKey)}
+	d := rec.Detail()
+	if len(d) > 500 || !utf8.ValidString(d) || !strings.HasSuffix(d, `…"`) {
+		t.Fatalf("detail is %d bytes (valid UTF-8 %t), want at most 500 ending in the closed upstream_error:\n%s", len(d), utf8.ValidString(d), d)
 	}
 }
