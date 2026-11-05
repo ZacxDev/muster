@@ -85,23 +85,33 @@ func entryOf(html, code string) string {
 	return html[start : i+end+1]
 }
 
-// TestTheDockAndThePaletteDrawTheAgeOneWay: both scripts draw a focus title's
-// age through the ONE drawing function (focusAgeLineJS), fed from the
-// attributes, and neither holds a threshold of its own: the age is the
-// server's (FocusAgeOf).
-func TestTheDockAndThePaletteDrawTheAgeOneWay(t *testing.T) {
-	for name, js := range map[string]string{"the dock": dockJS, "the palette": paletteJS} {
-		if strings.Count(js, "function focusAgeLine(") != 1 || !strings.Contains(js, focusAgeLineJS) {
-			t.Errorf("%s does not carry focusAgeLineJS exactly once", name)
-		}
-		// The definition is one "focusAgeLine("; a CALL is a second.
-		if strings.Count(js, "focusAgeLine(") < 2 || !strings.Contains(js, "data-switcher-focus-age") || !strings.Contains(js, "data-switcher-focus-stale") {
-			t.Errorf("%s does not draw the age from the attributes", name)
-		}
+// TestTheSidebarAgesItsFocusByThePagesClock: NavAgentsList's injected now is
+// the clock its focus ages are read by — the same one its rows' own times use
+// — not the wall clock. Fixture: a page clock ten days ahead of the wall, and a
+// focus written 50 hours before it (so, by the wall clock, in the future: no
+// age). Red at 80a44d4a: switcherItems read time.Now().
+func TestTheSidebarAgesItsFocusByThePagesClock(t *testing.T) {
+	now := time.Now().Add(10 * 24 * time.Hour)
+	list := []AgentCardView{{ID: 1, Name: "ag-wren", Status: "running", Focus: &FocusView{Title: "Indexing the wren archive", UpdatedAt: now.Add(-50 * time.Hour)}}}
+	nav := renderString(t, NavAgentsList(list, nil, "", now))
+	if el := entryOf(nav, "ag-wren"); !strings.Contains(el, `data-switcher-focus-age="2d"`) {
+		t.Errorf("the sidebar row is not aged by the page's clock:\n%s", el)
 	}
-	for _, n := range []string{"864", "3600", "1440", "Date.now", "new Date"} {
-		if strings.Contains(focusAgeLineJS, n) {
-			t.Errorf("focusAgeLineJS computes an age itself (%q)", n)
+}
+
+// TestTheFocusAgeIsLabelled: the age's words, for its title and aria-label,
+// say what it measures — a waiting time is drawn beside it in the same shape.
+func TestTheFocusAgeIsLabelled(t *testing.T) {
+	for _, c := range []struct {
+		age  FocusAge
+		want string
+	}{
+		{FocusAge{}, ""},
+		{FocusAge{Text: "2d"}, "focus title set 2d ago"},
+		{FocusAge{Text: "5d", Stale: true}, "focus title set 5d ago (stale)"},
+	} {
+		if got := FocusAgeLabel(c.age); got != c.want {
+			t.Errorf("FocusAgeLabel(%+v) = %q, want %q", c.age, got, c.want)
 		}
 	}
 }

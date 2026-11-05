@@ -233,7 +233,7 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	cur := navCurrent(currentURL, list)
 	// The switcher's items for the same entries: each row's label, and what
 	// the command palette finds it by on a page with no switcher (palette.go).
-	items := switcherItems(es, cur)
+	items := switcherItems(es, cur, now)
 	var rows, idle []g.Node
 	for i, e := range es {
 		if navInIdleGroup(e, items[i]) {

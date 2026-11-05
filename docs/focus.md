@@ -14,10 +14,17 @@ whose cards were headed by their focus, is retired.)
 A focus title says what the session was doing **when it was written**. An idle
 session keeps its last title for days, so wherever a focus title is shown — the
 second line of a row in the switcher dock, the second line of a search palette
-result, and the bold focus line of a session's row in the Asks list — its age
-follows it once it is **older than a day**, in whole days: `Bisecting the flaky
-tunnel test · 2d`. A title **older than four days** is also marked stale and
-drawn muted (italic, faded). A newer title shows no age.
+result, and the bold focus line of a row in the Asks list — its age follows it
+once it is **older than a day**, in whole days: `Bisecting the flaky tunnel
+test · 2d`. A title **older than four days** is also marked stale and drawn
+muted (italic, faded). A newer title shows no age. The age is labelled for a
+pointer and a screen reader ("focus title set 2d ago"), since an Asks card
+also shows how long it has waited in the same shape.
+
+A chief **notice** on the Asks list shows the session's title as the chief saw
+it when it decided to nudge. It gets that title's age while the session's
+stored focus still has that title; once the session has a newer title, the
+notice's older one shows no age.
 
 The age is the time the focus was last written. It is worked out by the server
 when the page (or the switcher, or the list) is drawn, from one rule

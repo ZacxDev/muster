@@ -63,6 +63,20 @@ type FocusAge struct {
 	Stale bool
 }
 
+// FocusAgeLabel is age in words, for its element's title and aria-label: the
+// focus age sits beside a waiting time drawn in the same "· 3m" shape, and
+// must not be read as one. "" when there is no age.
+func FocusAgeLabel(age FocusAge) string {
+	if age.Text == "" {
+		return ""
+	}
+	l := "focus title set " + age.Text + " ago"
+	if age.Stale {
+		l += " (stale)"
+	}
+	return l
+}
+
 // FocusAgeOf is the age at now of a focus title written at updatedAt. A zero
 // updatedAt (no focus, or no known time) has none.
 func FocusAgeOf(updatedAt, now time.Time) FocusAge {
@@ -102,6 +116,9 @@ const focusAgeLineJS = `  function focusAgeLine(age, stale, title) {
     line.appendChild(title);
     var a = el('span', 'shrink-0', '\u00b7 ' + age);
     a.setAttribute('data-focus-age', '');
+    var label = 'focus title set ' + age + ' ago' + (stale ? ' (stale)' : '');
+    a.setAttribute('title', label);
+    a.setAttribute('aria-label', label);
     line.appendChild(a);
     return line;
   }`

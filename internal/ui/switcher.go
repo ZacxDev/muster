@@ -337,20 +337,24 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 	// The bar's row is the first switcherRecentMax, labelled against each
 	// other as before; the rest are hrefs (the dock draws them from All).
 	var more []string
+	// One clock for every item's focus age (FocusAgeOf); NavAgentsList,
+	// which has the page's own, passes that one.
+	now := time.Now()
 	if len(recent) > switcherRecentMax {
-		for _, it := range switcherItems(recent[switcherRecentMax:], cur) {
+		for _, it := range switcherItems(recent[switcherRecentMax:], cur, now) {
 			more = append(more, it.Href)
 		}
 		recent = recent[:switcherRecentMax]
 	}
-	return &Switcher{Recent: switcherItems(recent, cur), RecentMore: more, Waiting: switcherItems(waiting, cur), Pins: switcherItems(pins, cur), All: switcherItems(entries, cur), pin: pin}
+	return &Switcher{Recent: switcherItems(recent, cur, now), RecentMore: more, Waiting: switcherItems(waiting, cur, now),
+		Pins: switcherItems(pins, cur, now), All: switcherItems(entries, cur, now), pin: pin}
 }
 
-// switcherItems is es as one view's items, labelled against each other.
-func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
+// switcherItems is es as one view's items, labelled against each other, with
+// each focus title's age at now.
+func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []SwitcherItem {
 	labels := sessionSwitcherLabels(es)
 	out := make([]SwitcherItem, len(es))
-	now := time.Now()
 	for i, e := range es {
 		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting()}
 		if e.agent != nil {

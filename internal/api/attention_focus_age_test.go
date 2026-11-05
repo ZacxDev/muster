@@ -32,6 +32,17 @@ func TestTheAsksListShowsAFocusTitlesAge(t *testing.T) {
 		rows[sub] = focus.Focus{Subject: sub, Owner: 1, Title: f.title, Source: focus.SourceSummarizer, UpdatedAt: now.Add(-f.age)}
 		items = append(items, attentionItem{Key: "k-" + sid[len(sid)-4:], Kind: attentionKindSession, Text: "waiting", Since: now.Add(-time.Minute), claudeSession: sid})
 	}
+	// Two chief NOTICES: each carries its session's focus title as the
+	// decision snapshotted it. One snapshot is still the stored title (5 days
+	// old: it gets that age, stale); the other's session has a newer title
+	// since (no age: the stored time is the newer title's).
+	same, moved := focus.MirrorSubject("0a1b2c3d-0000-4000-8000-00000000dddd"), focus.MirrorSubject("0a1b2c3d-0000-4000-8000-00000000eeee")
+	rows[same] = focus.Focus{Subject: same, Owner: 1, Title: "Banding the osprey chicks", Source: focus.SourceSummarizer, UpdatedAt: now.Add(-5*24*time.Hour - 7*time.Hour)}
+	// The newer title is itself 3 days old, so an age copied from it would show.
+	rows[moved] = focus.Focus{Subject: moved, Owner: 1, Title: "A newer title", Source: focus.SourceSummarizer, UpdatedAt: now.Add(-3*24*time.Hour - 5*time.Hour)}
+	items = append(items,
+		attentionItem{Key: "k-dddd", Kind: attentionKindNotice, Text: "nudge", Since: now.Add(-time.Minute), Focus: "Banding the osprey chicks", subject: same},
+		attentionItem{Key: "k-eeee", Kind: attentionKindNotice, Text: "nudge", Since: now.Add(-time.Minute), Focus: "Ringing the gull colony", subject: moved})
 	s := &Server{}
 	s.ext.Focus = &memFocus{rows: rows}
 	s.withFocus(context.Background(), items)
@@ -45,11 +56,15 @@ func TestTheAsksListShowsAFocusTitlesAge(t *testing.T) {
 		return page[i : i+j]
 	}
 	plover, heron, tern := row("k-aaaa"), row("k-bbbb"), row("k-cccc")
+	osprey, gull := row("k-dddd"), row("k-eeee")
 	for _, c := range []struct{ name, row, want string }{
-		{"two days", plover, `<span data-attention-focus>Weighing the plover samples</span><span class="font-normal" data-focus-age> · 2d</span>`},
-		{"five days", heron, `<span data-attention-focus>Charting the heron migration</span><span class="font-normal" data-focus-age> · 5d</span>`},
+		{"two days", plover, `<span data-attention-focus>Weighing the plover samples</span><span class="font-normal" data-focus-age title="focus title set 2d ago" aria-label="focus title set 2d ago"> · 2d</span>`},
+		{"five days", heron, `<span data-attention-focus>Charting the heron migration</span><span class="font-normal" data-focus-age title="focus title set 5d ago (stale)" aria-label="focus title set 5d ago (stale)"> · 5d</span>`},
 		{"five days, stale", heron, `text-fg2 italic opacity-60" data-focus-stale>`},
 		{"fresh", tern, `<span data-attention-focus>Counting the tern nests</span></span>`},
+		{"a notice, five days", osprey, `<span data-attention-focus>Banding the osprey chicks</span><span class="font-normal" data-focus-age`},
+		{"a notice, stale", osprey, `text-fg2 italic opacity-60" data-focus-stale>`},
+		{"a notice whose session moved on", gull, `<span data-attention-focus>Ringing the gull colony</span></span>`},
 	} {
 		if !strings.Contains(c.row, c.want) {
 			t.Errorf("%s: the row lacks\n%s\nin:\n%s", c.name, c.want, c.row)
@@ -60,5 +75,22 @@ func TestTheAsksListShowsAFocusTitlesAge(t *testing.T) {
 	}
 	if strings.Contains(tern, "data-focus-age") || strings.Contains(tern, "data-focus-stale") {
 		t.Errorf("a two-hour-old focus carries an age:\n%s", tern)
+	}
+}
+
+// TestANoticeOnlyListGetsItsFocusAge: a list of chief notices alone — no
+// mirrored session row to make the focus index be read — still gives each its
+// focus title's age. Red at 80a44d4a.
+func TestANoticeOnlyListGetsItsFocusAge(t *testing.T) {
+	now := time.Now()
+	sub := focus.MirrorSubject("0a1b2c3d-0000-4000-8000-00000000ffff")
+	s := &Server{}
+	s.ext.Focus = &memFocus{rows: map[focus.Subject]focus.Focus{
+		sub: {Subject: sub, Owner: 1, Title: "Banding the osprey chicks", Source: focus.SourceSummarizer, UpdatedAt: now.Add(-50 * time.Hour)},
+	}}
+	items := []attentionItem{{Key: "k-ffff", Kind: attentionKindNotice, Text: "nudge", Since: now.Add(-time.Minute), Focus: "Banding the osprey chicks", subject: sub}}
+	s.withFocus(context.Background(), items)
+	if page := attentionItemsHTML(items, now); !strings.Contains(page, `aria-label="focus title set 2d ago"> · 2d</span>`) {
+		t.Errorf("a notice-only list drew no focus age:\n%s", page)
 	}
 }
