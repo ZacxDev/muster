@@ -31,7 +31,7 @@ attention queue).
 |---|---|
 | The concept | One **session state** per session: `needs-you`, `stalled`, `working`, with `done` as a label only. A stop is an **episode**, keyed on the session; everything the owner sees is a view of states and episodes |
 | Where it comes from | Code over inputs muster already reads (host status, `stallInputs`, `waitingSessions`), plus **one model input**: the stall classifier's score, which splits `needs-you` from `stalled` for an idle session and is persisted on the episode |
-| Waiting windows | Push in code, never through the Chief, **after a 60 s grace**, unless the stop ended inside it — a prompt answered at the terminal never buzzes ([Push](#push)). Questions muster can answer (a held AskUserQuestion, an opencode question) stay **answerable asks** with full text and are not episodes |
+| Waiting windows | Push in code, never through the Chief, **after a 60 s grace**, unless the stop ended inside it — a prompt answered at the terminal never buzzes ([Push](#push)). Questions muster can answer (a held AskUserQuestion, an opencode question) keep their **answer card** at once and their full-text push, but since the follow-up to #463 their stop **is** an episode and that push waits the same grace ([below](#answerable-asks-are-episodes-too)) |
 | The Chief | Consulted only for **idle** episodes, and only when it is available. It decides **`nudge`, `leave` or `notify`**. No summary, no options, no notice text. `leave` quiets only a session that asked nothing. Covering words widen to the owner's own typed messages in sessions on the **same repository** plus their typed Chief chat, once muster can attribute them; shadow mode first |
 | Push | **One push per episode**, claimed in the database before it is sent (at most once; a graceful shutdown drains it). Text built in code: tmux session, window index, host, state and idle time. **No session text.** Tap opens the session. No push for an episode whose nudge was **sent**, or that was left with no question |
 | Attention | A **"Stalled / waiting"** section of plain rows, no answer box, oldest first, replacing chief-nudge notices. Left sessions are quiet rows. Answerable asks stay above it |
@@ -248,14 +248,36 @@ rule (below), so the failure cannot quiet it.
 A session with a turn error, an officer, the chief, and another owner's
 session keep today's exclusions.
 
-### Answerable asks are not episodes
+### Answerable asks are episodes too
 
-A held AskUserQuestion, an opencode question or permission request muster can
-relay, and a Hermes approval with a prompt id are **answerable asks**, as
-today: they keep their own full-text push ("Full text always",
-`attention.go:820-827`) and their place above the section. Their window does
-not open an episode for that wait, so there is never a second, text-free push
-for it.
+*As first built (PR 2, #430) and until the follow-up to #463:* a held AskUserQuestion, an
+opencode question or permission request muster can relay, and a Hermes
+approval with a prompt id were **answerable asks** that opened no episode and
+kept the waiting diff's full-text push, **sent at once**. Measured on the live
+fleet right after #463, every needs-you push the
+operator felt came from such a question, sent the second it registered and
+answered at the terminal 13–30 s later — and a restart re-sent every question
+read back from its transcript (the host's first nudge marked it seen, so the
+rebuilt question pushed as new).
+
+**Operator decision (after #463): every prompt's push waits 60 s, questions
+too.** So an answerable ask's stop is an episode like any other wait
+(`sessionstate.StateOf` no longer has an answerable case; the hook's
+`episodeCover` covers every waiting window it can key): held for the grace,
+pushed once if still open, claimed on `pushed_at`. What the ask keeps is its
+**card** — on the Asks list at once (`pageAttentionItems`), with no second
+"Stalled / waiting" row beside it (`episodeCarded`) — and its **text**: when
+the stop is pushed while its window waits on the ask, the push is the ask's
+own notification (`attentionNotification`, "Full text always") under the
+episode's tag and tap route (`episodeNotification`, `episodeAsk`). A restart
+reads `pushed_at`: a rebuilt question already pushed is not pushed again; one
+never pushed is pushed once its grace (from the stop's opening) has passed.
+One accepted edge: on the deploy that ships this, a question pushed by the
+previous image (which claimed no episode) can buzz once more after its grace.
+
+An opencode question muster **cannot** relay (no prompt id, host offline, or
+no relay) was counted answerable by its question Kind alone; it is a plain
+wait now (`answerableItem`): a row, and the episode's text-free push.
 
 ### Episodes
 
@@ -384,7 +406,7 @@ nothing raises a notice, `KindNotice`, `ErrNotice` and its push and tap cases
 
 | episode | decided by | result |
 |---|---|---|
-| a waiting window, not answerable | **code only, after its grace** | row at once (a plain waiting row while in its grace); pushed once the grace has passed unless it ended first (a host that dropped meanwhile ends nothing; it pushes once known offline for the grace too). Never sent to the Chief, never nudged |
+| a waiting window (an answerable ask's too) | **code only, after its grace** | row at once (a plain waiting row while in its grace); pushed once the grace has passed unless it ended first (a host that dropped meanwhile ends nothing; it pushes once known offline for the grace too). Never sent to the Chief, never nudged |
 | an idle `needs-you` (classifier: asked) | code; the Chief **if available** | `nudge` (sent) → no push. Anything else, **`leave` included** → push and row |
 | an idle `stalled` (classifier: did not ask) | code; the Chief **if available** | `nudge` (sent) → no push. `leave` → quiet row, no push. `notify` or anything else → push and row |
 
@@ -583,7 +605,11 @@ One push per episode, under the existing `attention` toggle:
   episode's opening, recomputed from `opened_at` on every pass; nothing new
   keeps the hold, so a restart mid-hold pushes it on the next pass, and the
   `pushed_at` claim still sends it once across the hook, the pass and
-  replicas. Answerable asks are not episodes and are not held.
+  replicas. Since the follow-up to #463 answerable asks are episodes and held the same
+  way ([above](#answerable-asks-are-episodes-too)), and a window session
+  state cannot key keeps the waiting diff's push held by the SAME rule
+  (`insideGrace`, from when the diff first saw the wait; the attention sweep
+  re-diffs held items every 30 s): one rule for every waiting push.
 
 ### Attention: "Stalled / waiting"
 

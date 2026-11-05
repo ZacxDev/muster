@@ -32,9 +32,16 @@ import (
 // muster was down is closed too).
 //
 // WHEN IT PUSHES (episodeVerdict):
-//   - a WAITING window (a prompt muster cannot answer): once it has waited
-//     out its GRACE (EpisodeWaitingGrace, 60 s), unless its episode ended
-//     first. The hub's change hook (attentionMirrorChanged) opens the
+//   - a WAITING window — 🔴 WHATEVER IT WAITS ON: a prompt muster cannot
+//     answer, and an answerable ask too (a held AskUserQuestion, an opencode
+//     question or permission request, a Hermes approval; operator decision
+//     after #463, "every prompt's push waits 60 s"): once it has waited out
+//     its GRACE (EpisodeWaitingGrace, 60 s), unless its episode ended first.
+//     An answerable ask's CARD is on the Asks list at once; only the phone
+//     waits, and its push, when sent, is the ask's own full text
+//     (episodeNotification). A window session state cannot key keeps the
+//     waiting diff's push (attention.go), held by the SAME grace
+//     (insideGrace) — one rule. The hub's change hook (attentionMirrorChanged) opens the
 //     episode and HOLDS it (verdictHold: nothing is written, the row is a
 //     plain waiting row); the first 30 s pass after the grace pushes it —
 //     normally 60..90 s after the window started waiting, one pass more for
@@ -97,6 +104,16 @@ const episodeNudgeHold = 10 * time.Minute
 // live fleet 165 of 169 owner-answered waiting windows were answered inside
 // 60 s. Server.waitingGrace holds it (New); a test may set that field.
 const EpisodeWaitingGrace = time.Minute
+
+// insideGrace reports whether a wait that has lasted waited is still inside
+// grace (0: no grace), so its push is held. 🔴 THE ONE HOLD RULE for every
+// waiting window's push — the episode's (episodeVerdict, timed from its
+// opening) and the waiting diff's for a window session state cannot key
+// (attention.go, timed from the item's own Since) — so the two paths cannot
+// disagree about how long a prompt waits before the phone buzzes.
+func insideGrace(waited, grace time.Duration) bool {
+	return grace > 0 && waited < grace
+}
 
 // episodeKeyPrefix is an episode's attention key prefix: its notification tag
 // (attentionTag) and its tap route's key (attentionOpenURL).
@@ -163,7 +180,7 @@ const (
 func episodeVerdict(f episodeFacts) string {
 	switch {
 	case f.Waiting:
-		if f.Grace > 0 && f.OpenFor < f.Grace {
+		if insideGrace(f.OpenFor, f.Grace) {
 			return verdictHold
 		}
 		return verdictPush
@@ -290,10 +307,22 @@ func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle
 // state and how long in the body — 🔴 NO SESSION TEXT (the file's header).
 // hosts is the owner's windows as the caller already read them (the state
 // pass's one read, the hub hook's); nil reads them once here (episodeHosts).
+//
+// 🔴 EXCEPT A STOP WAITING ON AN ANSWERABLE ASK NOW (episodeAsk): its push is
+// the ask's own notification (attentionNotification — its question in full,
+// the operator's "Full text always" for asks), sent under the episode's tag
+// and tap route, so the one push per stop, its claim and its clear stay the
+// episode's. Until the follow-up to #463 that notification was sent at once by the
+// waiting diff; it now waits the grace like every prompt's.
 func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episode, idle time.Duration, hosts []mirror.HostView) RouterNotification {
 	key := episodeKey(ep.ID)
 	if hosts == nil {
 		hosts = s.episodeHosts(octx, ep)
+	}
+	if it, ok := s.episodeAsk(octx, ep, hosts); ok {
+		n := attentionNotification(it, false)
+		n.ID, n.Tag, n.Data = key, attentionTag(key), map[string]string{"url": attentionOpenURL(key)}
+		return n
 	}
 	who, keep := s.episodeWho(octx, ep, hosts)
 	verb := " is stalled"
@@ -302,6 +331,25 @@ func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episo
 	}
 	return RouterNotification{Type: attentionNotificationType, ID: key, Title: who + verb, Body: episodeBody(ep.State, idle),
 		Tag: attentionTag(key), Data: map[string]string{"url": attentionOpenURL(key)}, TitleKeep: keep}
+}
+
+// episodeAsk is the answerable ask (answerableItem) mirrored episode ep's
+// window waits on now, over hosts: the item whose own notification its push
+// carries (episodeNotification). ok is false for an agent's episode, and for
+// a window that waits on no answerable ask — or none listed now.
+func (s *Server) episodeAsk(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (attentionItem, bool) {
+	if ep.Kind != sessionstate.KindMirror || s.ext.Mirror == nil {
+		return attentionItem{}, false
+	}
+	for _, it := range s.waitingSessionsIn(octx, hosts) {
+		if !answerableItem(it) {
+			continue
+		}
+		if key, _, _, ok := episodeWindowOf(hosts, it); ok && key == ep.Key {
+			return it, true
+		}
+	}
+	return attentionItem{}, false
 }
 
 // episodeWho names ep's session, for its push title and its "Stalled /
@@ -457,30 +505,22 @@ func (s *Server) clearEndedEpisodes(octx context.Context, owner int64) {
 
 // --- the waiting hook --------------------------------------------------------
 
-// plainWaitingItem reports whether it is a waiting window muster cannot
-// answer — a plain "session waiting" item, which session state turns into an
-// episode — rather than an answerable ask (answerableItem), which keeps its
-// own full-text push.
-func plainWaitingItem(it attentionItem) bool {
-	return it.Kind == attentionKindSession && !answerableItem(it)
-}
-
 // episodeCover is the episode key session state keeps waiting item it under,
-// and where it is: ok only for a plain waiting window (plainWaitingItem) on a
-// host the state pass reads (online, reporting status) whose window it lists
-// (stateWindowKey, the stall facts' own rule). 🔴 ONLY A COVERED ITEM LEAVES
-// TODAY'S WAITING DIFF: a window session state cannot key (an older host that
-// sends no Claude session id, a runtime window naming no conversation) keeps
-// today's summary-only push, never silence.
+// and where it is: ok for a waiting window — 🔴 WHATEVER IT WAITS ON, an
+// answerable ask too (operator decision after #463: until then only a plain
+// wait was covered, and an answerable ask kept the waiting diff's push, sent
+// AT ONCE) — on a host the state pass reads (online, reporting status) whose
+// window it lists (stateWindowKey, the stall facts' own rule). 🔴 ONLY A
+// COVERED ITEM LEAVES TODAY'S WAITING DIFF: a window session state cannot key
+// (an older host that sends no Claude session id, a runtime window naming no
+// conversation) keeps the diff's push — held by the same grace
+// (insideGrace), never silence.
 func episodeCover(hs []mirror.HostView, it attentionItem) (key, runtime string, w mirror.Window, ok bool) {
-	if !plainWaitingItem(it) {
-		return "", "", mirror.Window{}, false
-	}
 	return episodeWindowOf(hs, it)
 }
 
-// episodeWindowOf is episodeCover without its plain-waiting test: the episode
-// key of the window of item it, whatever it waits on (an answerable ask too).
+// episodeWindowOf is the episode key of the window of waiting item it, and
+// the window (episodeCover's rule; episodeHandedOver and episodeAsk read it).
 func episodeWindowOf(hs []mirror.HostView, it attentionItem) (key, runtime string, w mirror.Window, ok bool) {
 	for _, h := range hs {
 		if h.Host != it.card.ref.Host || !h.Online || !h.StatusReport {
@@ -497,14 +537,14 @@ func episodeWindowOf(hs []mirror.HostView, it attentionItem) (key, runtime strin
 }
 
 // episodeHandedOver is which of items (today's diff's, after episodeCover took
-// the plain waiting windows out) the episode path covered at the last nudge
-// (prev) and so must not be pushed as new now: a host that reported the window
-// waiting before it named the answerable ask it waits on, whose stop the
-// episode pushed already. 🔴 EXCEPT ONE WHOSE EPISODE IS STILL HELD (open and
-// unpushed — inside its waiting grace): that stop was never pushed, and an
-// answerable window gets no episode push of its own (sessionstate.StateOf), so
-// suppressing the ask too would leave it SILENT. It pushes as the ask. A failed
-// read is not "pushed": the ask pushes (a double push, never silence).
+// the covered windows out) the episode path covered at the last nudge (prev)
+// and so must not be pushed as new now: a window that LEFT the cover mid-wait
+// (its host stopped reporting status, its window stopped naming its
+// conversation), whose stop the episode pushed already. 🔴 EXCEPT ONE WHOSE
+// EPISODE IS STILL HELD (open and unpushed — inside its waiting grace): that
+// stop was never pushed, so it is the diff's to push (after the same grace,
+// insideGrace) — suppressing it would leave it SILENT. A failed read is not
+// "pushed": the diff pushes it (a double push, never silence).
 func (s *Server) episodeHandedOver(octx context.Context, hs []mirror.HostView, items []attentionItem, prev map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	for _, it := range items {
@@ -645,10 +685,12 @@ func (s *Server) askListHTML(ctx context.Context, items []attentionItem, now tim
 }
 
 // pageAttentionItems is items as the Asks list draws them: with session state
-// on, a waiting window session state covers (episodeCover — the hook's own
-// rule) is a row of the "Stalled / waiting" section (episodeSectionHTML), not
-// a list item too. One it cannot key stays a list item, as it stays in
-// today's push.
+// on, a plain waiting window session state covers (episodeCover — the hook's
+// own rule) is a row of the "Stalled / waiting" section (episodeSectionHTML),
+// not a list item too. 🔴 AN ANSWERABLE ASK STAYS A LIST ITEM, covered or not:
+// its card is where it is answered, at once — only its PUSH waits the grace —
+// and the section draws no row for its stop (episodeCarded). One session state
+// cannot key stays a list item, as it stays in the diff's push.
 func (s *Server) pageAttentionItems(ctx context.Context, items []attentionItem) []attentionItem {
 	if !s.sessionStateOn() || s.ext.Mirror == nil {
 		return items
@@ -656,8 +698,29 @@ func (s *Server) pageAttentionItems(ctx context.Context, items []attentionItem) 
 	hs := s.ext.Mirror.Hosts(ctx)
 	out := items[:0:0]
 	for _, it := range items {
-		if _, _, _, ok := episodeCover(hs, it); !ok {
+		if _, _, _, ok := episodeCover(hs, it); !ok || answerableItem(it) {
 			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// episodeCarded is the episode keys (session keys) of ctx's owner's windows
+// that wait on an answerable ask now: drawn as that ask's card on the Asks
+// list (pageAttentionItems), so the "Stalled / waiting" section draws no
+// second row for the same stop. Nil with nothing mirrored.
+func (s *Server) episodeCarded(ctx context.Context) map[string]bool {
+	if s.ext.Mirror == nil {
+		return nil
+	}
+	hs := s.ext.Mirror.Hosts(ctx)
+	out := map[string]bool{}
+	for _, it := range s.waitingSessionsIn(ctx, hs) {
+		if !answerableItem(it) {
+			continue
+		}
+		if key, _, _, ok := episodeWindowOf(hs, it); ok {
+			out[key] = true
 		}
 	}
 	return out
@@ -669,12 +732,24 @@ func (s *Server) pageAttentionItems(ctx context.Context, items []attentionItem) 
 // looked at, never answered. A quiet row is drawn muted and says why it has
 // not pushed. It is ONE <li> of the list, so the list's live refresh
 // (handleAttentionItems) redraws it: an Asks page left open shows a window
-// that starts waiting. "" with session state off, or with no open episode.
+// that starts waiting. A stop waiting on an answerable ask is that ask's card
+// on the list instead (episodeCarded), not a row. "" with session state off,
+// or with no open episode to draw.
 func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
 	if !s.sessionStateOn() {
 		return ""
 	}
 	eps, err := s.ext.Episodes.OpenEpisodes(ctx)
+	if err == nil && len(eps) > 0 {
+		carded := s.episodeCarded(ctx)
+		kept := eps[:0:0]
+		for _, ep := range eps {
+			if !(ep.Kind == sessionstate.KindMirror && carded[ep.Key]) {
+				kept = append(kept, ep)
+			}
+		}
+		eps = kept
+	}
 	if err == nil && len(eps) == 0 {
 		return ""
 	}

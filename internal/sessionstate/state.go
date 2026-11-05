@@ -150,11 +150,6 @@ type Facts struct {
 	// Waiting: the host reports the session waiting on a prompt
 	// (mirror.StatusWaiting).
 	Waiting bool
-	// Answerable: the wait is an ask muster itself can answer — a held
-	// AskUserQuestion, an opencode question or permission request, a Hermes
-	// approval with a prompt id. It stays an answerable ask with its own
-	// full-text push, and opens NO episode.
-	Answerable bool
 	// Stalled: the stall rule (chiefnudge.Exclude) passed — idle past the
 	// threshold, no background work, no turn error, no open ask — and the
 	// session's last word is its own.
@@ -167,16 +162,17 @@ type Facts struct {
 // StateOf is the session's state, and whether that state opens (or keeps) an
 // episode. Precedence: needs_you > stalled > working.
 //
-//   - waiting on a prompt muster cannot answer: needs_you, an episode;
-//   - waiting on an answerable ask: needs_you, but NO episode (the ask is the
-//     owner's item, with its own push);
+//   - waiting on a prompt: needs_you, an episode — 🔴 AN ANSWERABLE ASK TOO
+//     (a held AskUserQuestion, an opencode question or permission request, a
+//     Hermes approval with a prompt id). Its push waits the same grace as any
+//     prompt's (operator decision after #463): until then an answerable ask
+//     was no episode and pushed at once, and nearly every one was answered at
+//     the terminal within a minute;
 //   - stalled and the classifier says it asked: needs_you, an episode;
 //   - stalled otherwise: stalled, an episode;
 //   - anything else: working.
 func StateOf(f Facts) (state string, episode bool) {
 	switch {
-	case f.Waiting && f.Answerable:
-		return StateNeedsYou, false
 	case f.Waiting:
 		return StateNeedsYou, true
 	case f.Stalled && f.AskStall:

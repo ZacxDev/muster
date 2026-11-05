@@ -159,6 +159,7 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 	f.mirror.windows[0].Pending = &mirror.Pending{Summary: "Bash: npm publish --tag next", Tool: "Bash", Last: "Tests pass. Publishing \x1b[31mnow\x1b[0m."}
 	f.mirror.mu.Unlock()
 	f.srv.BroadcastAgentsChangedFor(1)
+	pastWaitingGrace(f.srv) // its push waits the grace (since #463's follow-up)
 
 	items, _ = f.srv.attentionItems(asUser(1))
 	if len(items) != 1 || items[0].Text != "Bash: npm publish --tag next" || items[0].Detail != "Tests pass. Publishing [31mnow [0m." {
@@ -379,6 +380,8 @@ func TestAHostThatDroppedIsListedAndNotifiedAlikeUntilItsGraceEnds(t *testing.T)
 	f.srv.BroadcastAgentsChangedFor(1)
 	clock = clock.Add(attentionRepushAfter + time.Minute)
 	f.setWindows(mirror.StatusWaiting)
+	f.srv.BroadcastAgentsChangedFor(1)
+	clock = clock.Add(EpisodeWaitingGrace + time.Second) // its push waits the grace (since #463's follow-up)
 	f.srv.BroadcastAgentsChangedFor(1)
 	// (Pushes are delivered concurrently, so they are counted, not ordered.)
 	count := func(line string) int {

@@ -222,9 +222,11 @@ func TestAWaitingWindowIsNeedsYouAtOnce(t *testing.T) {
 	}
 }
 
-// TestAHeldQuestionOpensNoEpisode: a waiting window whose AskUserQuestion
-// muster holds is an answerable ask with its own push, never an episode.
-func TestAHeldQuestionOpensNoEpisode(t *testing.T) {
+// TestAHeldQuestionIsAnEpisode: a waiting window whose AskUserQuestion muster
+// holds is an episode like any other wait (operator decision after #463: its
+// push waits the grace too — session_push_questions_pg_test.go). Until then
+// it was an answerable ask with its own push at once, and opened none.
+func TestAHeldQuestionIsAnEpisode(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.status(mirror.StatusWaiting, 5*time.Second)
 	if _, err := f.srv.Questions().Open(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: nudgeSID, ToolUseID: "toolu_state1"},
@@ -232,8 +234,9 @@ func TestAHeldQuestionOpensNoEpisode(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.statePass(t)
-	if list := f.episodes(t); len(list) != 0 {
-		t.Fatalf("episodes: %+v", list)
+	e := f.oneEpisode(t)
+	if e.State != sessionstate.StateNeedsYou || !e.Waiting || !e.PushedAt.IsZero() {
+		t.Fatalf("episode: %+v, want a held needs-you wait", e)
 	}
 }
 
