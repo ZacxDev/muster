@@ -498,3 +498,83 @@ func TestACappedHolderIsNeverStartedForOtherWork(t *testing.T) {
 		})
 	}
 }
+
+// TestAStillUpCappedHolderKeepsThePoolWithinMaxInstances: at the cap the
+// stop of the holder (judgement instance 1) FAILS, so it stays up, and HQ
+// refuses the escalation, so its item stays held. Three judgement items wait,
+// more than the pool's two instances. Over 30 minutes of passes instance 1 is
+// never started, only instance 2 is (once), and the judgement pool never has
+// more than max_instances (2) up.
+//
+// ⚠ AN INVARIANT GUARD, NOT REGRESSION COVERAGE. The pool's bound holds
+// because Decide starts only DOWN instance numbers 1..max_instances, and a
+// capped holder that is still up is not down; counting it in Decide's `up`
+// is not what keeps the pool within max_instances (a mutant that leaves it
+// out of `up` is not caught here, PR #459's record). What that count changes
+// is only whether a free number starts for fewer claimable items than the
+// pool has instances, which the PR records open (round-2 🟢1).
+func TestAStillUpCappedHolderKeepsThePoolWithinMaxInstances(t *testing.T) {
+	r := newCapRig(t, cappedTiers)
+	r.hq.RefuseCompletes(400, "invalid", "investigation.root_cause must be at most 300 characters")
+	a := r.capped(t)
+	r.fleet.mu.Lock()
+	r.fleet.failStop = map[string]bool{judgeStem + "1": true}
+	r.fleet.mu.Unlock()
+	items := []string{
+		r.hq.AddTieredItem(tierID, "gpu.alert", "node-b", officers.TierJudgement),
+		r.hq.AddTieredItem(tierID, "gpu.alert", "node-d", officers.TierJudgement),
+		r.hq.AddTieredItem(tierID, "gpu.alert", "node-e", officers.TierJudgement),
+	}
+	upJudgement := func() []string {
+		r.fleet.mu.Lock()
+		defer r.fleet.mu.Unlock()
+		var up []string
+		for n := 1; n <= 5; n++ {
+			if name := fmt.Sprintf("%s%d", judgeStem, n); r.fleet.up[name] {
+				up = append(up, name)
+			}
+		}
+		return up
+	}
+	var started []string
+	stopTries := 0
+	for i := 0; i < 6; i++ {
+		r.check(t)
+		starts, stops := r.fleet.take()
+		for _, s := range stops {
+			if s == judgeStem+"1" {
+				stopTries++
+			}
+		}
+		for _, s := range starts {
+			started = append(started, s)
+			for _, it := range items {
+				if r.hq.Item(it).Status == "open" {
+					r.hold(it, s) // a started instance claims a waiting item at once
+					break
+				}
+			}
+		}
+		if up := upJudgement(); len(up) > 2 {
+			t.Fatalf("pass %d: judgement instances up %v, more than max_instances 2 (instance 1's stop is failing)", i+1, up)
+		}
+		r.clk.Advance(5 * time.Minute)
+		for _, it := range items {
+			if st := r.hq.Item(it); st.Status == "claimed" {
+				r.hold(it, st.ClaimedBy) // its holder heartbeats it
+			}
+		}
+	}
+	if stopTries == 0 {
+		t.Fatal("positive control: instance 1's stop was never tried, so the failing stop was never exercised")
+	}
+	if up := upJudgement(); fmt.Sprint(up) != fmt.Sprint([]string{judgeStem + "1", judgeStem + "2"}) {
+		t.Errorf("judgement instances up at the end: %v, want instance 1 (its stop fails) and instance 2", up)
+	}
+	if fmt.Sprint(started) != fmt.Sprint([]string{judgeStem + "2"}) {
+		t.Errorf("started %v while instance 1's stop failed, want only instance 2, once (instance 1 holds capped item %s)", started, a)
+	}
+	if it := r.hq.Item(a); it.Status != "claimed" || it.ClaimedBy != judgeStem+"1" {
+		t.Errorf("capped item %s is %q by %q, want still held by instance 1 (its escalation is refused)", a, it.Status, it.ClaimedBy)
+	}
+}

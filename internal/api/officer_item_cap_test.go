@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -118,5 +122,124 @@ func TestACappedJudgementInstanceHoldsOneLiveClaimAtATime(t *testing.T) {
 	}
 	if out := claim(j1, c); isToolErr(out) {
 		t.Fatalf("j1, holding nothing now, claims %s: %s", c, out)
+	}
+}
+
+// TestTwoParallelClaimsFromOneCappedInstanceLandOneClaim: one judgement
+// instance makes two officer_claim calls at once (parallel tool calls), for
+// two different items. Exactly one claim reaches HQ; the other is refused,
+// naming the item the first one took. officer_claim's per-instance lock is
+// what makes this true: without it, both read HQ's claimed list while it is
+// still empty and both claim.
+//
+// HQ's Before hook holds each claimed-list read until a second read arrives
+// (3 s at most), so without the lock the two reads always overlap; with it,
+// the second read cannot start until the first claim is done, and the first
+// read gives up waiting after 3 s.
+func TestTwoParallelClaimsFromOneCappedInstanceLandOneClaim(t *testing.T) {
+	r := newItemCapOfficerRig(t)
+	ctx := context.Background()
+	j1 := r.addNamed(offTJudge+"1", 971)
+	a := r.hq.AddTieredItem(offT, "gpu.alert", "node-a", officers.TierJudgement)
+	c := r.hq.AddTieredItem(offT, "gpu.alert", "node-c", officers.TierJudgement)
+	var mu sync.Mutex
+	reads := 0
+	both := make(chan struct{})
+	r.hq.Before = func(method, p string) {
+		if method != http.MethodGet || !strings.HasSuffix(p, "/items") {
+			return
+		}
+		mu.Lock()
+		reads++
+		if reads == 2 {
+			close(both)
+		}
+		mu.Unlock()
+		select {
+		case <-both:
+		case <-time.After(3 * time.Second):
+		}
+	}
+	r.hq.ResetRequests()
+	outs := make([]string, 2)
+	var wg sync.WaitGroup
+	for i, it := range []string{a, c} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			outs[i] = r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{"item_id":"`+it+`"}`)
+		}()
+	}
+	wg.Wait()
+	if n := claimRequests(r); n != 1 {
+		t.Fatalf("two parallel claims from one capped instance: %d claim requests reached HQ, want exactly 1 (results: %q)", n, outs)
+	}
+	var won, refused []int
+	for i, out := range outs {
+		if isToolErr(out) {
+			refused = append(refused, i)
+		} else {
+			won = append(won, i)
+		}
+	}
+	if len(won) != 1 || len(refused) != 1 {
+		t.Fatalf("two parallel claims: results %q, want one claim and one refusal", outs)
+	}
+	winner := []string{a, c}[won[0]]
+	if !strings.Contains(outs[refused[0]], winner) {
+		t.Errorf("the refused parallel claim says %q, want it to name %s (the item the other call took)", outs[refused[0]], winner)
+	}
+	for _, it := range []string{a, c} {
+		want := "open"
+		if it == winner {
+			want = "claimed"
+		}
+		if st := r.hq.Item(it).Status; st != want {
+			t.Errorf("item %s is %s in HQ, want %s", it, st, want)
+		}
+	}
+}
+
+// TestACappedClaimIsRefusedWhenHQsClaimedListCannotBeRead: officer_claim from
+// a capped judgement instance reads HQ's claimed list first. When that read
+// fails (here a 503 on the items list only; HQ's claim routes still answer),
+// the claim is refused, by id and claim-next alike, and no claim reaches HQ:
+// fail closed. Positive control: once the list reads again, the same claim
+// lands.
+func TestACappedClaimIsRefusedWhenHQsClaimedListCannotBeRead(t *testing.T) {
+	r := newItemCapOfficerRig(t)
+	r.hq.ClaimNext = true
+	ctx := context.Background()
+	j1 := r.addNamed(offTJudge+"1", 981)
+	a := r.hq.AddTieredItem(offT, "gpu.alert", "node-a", officers.TierJudgement)
+	var listDown atomic.Bool
+	listDown.Store(true)
+	r.hq.Before = func(method, p string) {
+		if listDown.Load() && method == http.MethodGet && strings.HasSuffix(p, "/items") {
+			r.hq.SetStatus(http.StatusServiceUnavailable)
+			return
+		}
+		r.hq.SetStatus(0)
+	}
+	r.hq.ResetRequests()
+	const failClosed = "could not check which item you already hold"
+	for _, args := range []string{`{"item_id":"` + a + `"}`, `{}`} {
+		out := r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, args)
+		if !isToolErr(out) || !strings.Contains(out, failClosed) {
+			t.Fatalf("officer_claim %s with HQ's claimed list unreadable: %s, want the fail-closed refusal (%q)", args, out, failClosed)
+		}
+	}
+	if n := claimRequests(r); n != 0 {
+		t.Fatalf("with HQ's claimed list unreadable, %d claim request(s) reached HQ, want 0 (fail closed)", n)
+	}
+	if st := r.hq.Item(a).Status; st != "open" {
+		t.Fatalf("item %s is %s after the refused claims, want open", a, st)
+	}
+	listDown.Store(false)
+	if out := r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{"item_id":"`+a+`"}`); isToolErr(out) {
+		t.Fatalf("positive control: with the claimed list readable again the claim is refused: %s", out)
+	}
+	if st := r.hq.Item(a).Status; st != "claimed" {
+		t.Fatalf("positive control: item %s is %s, want claimed", a, st)
 	}
 }
