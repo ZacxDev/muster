@@ -137,6 +137,9 @@ const appNoRepoNote = "approving grants NOTHING usable: this agent was dispatche
 // an officer's `read_repos`): every one of them is listed, each marked READ
 // ONLY, so the owner sees the whole set the approval grants.
 func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string, readRepos []string, officer bool) (string, string) {
+	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok && connectors.IsKubeRead(vc) {
+		return s.kubeGrantsDescription(ctx, g), ""
+	}
 	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok {
 		if strings.TrimSpace(repo) == "" {
 			return appNoRepoNote, vc.Problem(g.AgentID)
@@ -289,7 +292,18 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 			" from any of your owner's agents are approved automatically, until your owner revokes the shared approval on the Connectors tab"
 		out["also_approved"] = also
 	}
-	if approve && g.Source == connectors.SourceApp {
+	kube := false
+	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok && connectors.IsKubeRead(vc) {
+		// kube-read is a virtual connector (source 'app') but not the GitHub
+		// App: it needs no repository, so the App's no-repository warning
+		// would be false. Say what it grants instead (grantsDescription's
+		// own kube-read branch).
+		kube = true
+		if approve {
+			out["grants"] = s.kubeGrantsDescription(ctx, g)
+		}
+	}
+	if approve && g.Source == connectors.SourceApp && !kube {
 		if a, aerr := s.ext.Agents.Get(ctx, g.AgentID); aerr == nil {
 			if strings.TrimSpace(s.agentRepo(a)) == "" {
 				out["warning"] = appNoRepoNote

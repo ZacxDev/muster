@@ -704,7 +704,9 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 			Scheme: string(k.Scheme), HeaderName: k.HeaderName, Username: k.Username,
 			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name],
 			Shared: shared[k.Name]}
-		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok {
+		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok && connectors.IsKubeRead(vc) {
+			cv.Managed = kubeReadManagedNote
+		} else if ok {
 			cv.Managed = "Provided by the GitHub App this server is configured with: each approved agent's " +
 				"requests to its own repository carry a 1-hour token limited to it (" + githubAppScope(vc) + "); " +
 				"other repositories are reached anonymously, " +

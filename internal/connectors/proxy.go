@@ -537,6 +537,12 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	// host the connector does not serve mints nothing.
 	if v, ok := VirtualOf(ctx, p.Store, connector); ok {
 		c := v.Describe()
+		// kube-read has no HTTP face: muster-server runs its reads itself.
+		if c.Scheme == SchemeKubeRead {
+			refuse(http.StatusForbidden, RefusalBody{Error: "connector " + connector + " is served by the " + KubeReadTool +
+				" tool only, never through the proxy"}, "kube-read: not proxied")
+			return
+		}
 		if !c.AllowsHost(host) {
 			refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
 				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")

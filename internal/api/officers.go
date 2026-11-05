@@ -79,6 +79,9 @@ type officerRuntime struct {
 	// loop reads it. now is the clock both use (OfficersConfig.Now).
 	judgement *officers.JudgementLedger
 	now       func() time.Time
+	// kube is officer_kube_read's state (officer_kube.go); nil when no
+	// declared officer has a `kube` block.
+	kube *kubeRuntime
 }
 
 // clock is the runtime's now (time.Now when unset).
@@ -254,8 +257,13 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
+	kube, err := newKubeRuntime(cfg.Officers, now)
+	if err != nil {
+		return nil, err
+	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, judgement: judgement, now: now, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, judgement: judgement, now: now, kube: kube,
+		claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
@@ -752,7 +760,7 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officerToolDefs are the tools an officer instance is offered. None takes an
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
-	return append(queueToolDefs(), shipToolDefs()...)
+	return append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef())
 }
 
 // queueToolDefs are every officer's queue tools and obs tools (and the
@@ -899,6 +907,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return s.dispatchShipTool(ctx, a, o, name, arguments), true
 	}
 	c := s.officerRT.hq.Client(o)
+	if name == officers.ToolKubeRead {
+		return s.officerKubeRead(ctx, a, o, c, arguments), true
+	}
 	// The obs tools pass their arguments to HQ unchanged (officers.
 	// ObsQueryArgs): they are not decoded into the queue tools' struct below,
 	// whose field types would otherwise be a second, local schema.

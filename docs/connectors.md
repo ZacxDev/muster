@@ -174,6 +174,18 @@ Secret), and the two `ALTER ROLE … SET` lines run once by hand.
 6. **Check it.** The audit trail on the Connectors tab shows a `query` row per
    call, and a refused write reads `class=read_only`.
 
+## The kube-read connector
+
+`kube-read` is the grant behind [`officer_kube_read`](officers.md#reading-a-cluster-officer_kube_read).
+It is a virtual connector, presented when a declared officer has a `kube`
+block, to admins only. It holds no stored secret: each cluster's endpoint, CA
+and minter token are the server's sealed environment, and its read allowlist
+the deployment's configuration. An officer's judgement
+instance asks for it with `connector_request`, and the owner approves that one
+instance by hand; the approval is never shared. The HTTP proxy refuses
+`/connect/kube-read/…`: muster-server performs every read itself, and audits
+each as a connector-audit row of kind `query` (connector `kube-read`).
+
 ## The LLM proxy
 
 The connect listener also serves `POST /llm/v1/messages`: an
