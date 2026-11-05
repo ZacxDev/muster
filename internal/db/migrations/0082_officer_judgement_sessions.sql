@@ -1,4 +1,4 @@
--- muster 0081 — THE JUDGEMENT-TIER DAILY SESSION CAP, PERSISTED
+-- muster 0082 — THE JUDGEMENT-TIER DAILY SESSION CAP, PERSISTED
 -- (internal/officers sessions.go; docs/officers.md "The two pools").
 --
 --   officer_judgement_sessions   one row per (owner, officer, UTC day): the
@@ -19,7 +19,7 @@
 -- rest, and --rls-on re-applies this file (db.RLSOn), so every statement is
 -- idempotent.
 --
--- Must apply after 0080 (the contiguity test refuses a gap).
+-- Must apply after 0081 (the contiguity test refuses a gap).
 --
 -- ROLLBACK. 🔴 FIRST edit MUSTER_OFFICERS: an older image has no session
 -- cap at all and refuses to boot on a config that names
@@ -27,7 +27,7 @@
 -- refuses ANY officer with `llm` (the pod route did not exist). So remove
 -- both from every officer, THEN roll the image back, then (optionally):
 --   DROP TABLE public.officer_judgement_sessions;
---   DELETE FROM schema_migrations WHERE version = 81;
+--   DELETE FROM schema_migrations WHERE version = 82;
 -- An older image never reads the table, so leaving it is harmless.
 
 SET LOCAL lock_timeout = '3s';

@@ -476,7 +476,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// The stall classifier runs on the owner's OpenRouter key, resolved
 			// exactly as the focus summarizer's (the credential plane).
 			ext.ChiefNudge = &api.ChiefNudges{Idle: cfg.ChiefNudgeIdle, HourlyCap: cfg.ChiefNudgeHourlyCap, Live: cfg.ChiefNudgeLiveOwners,
-				NeedsYouLive: cfg.ChiefNudgeNeedsYouLiveOwners, AskThreshold: cfg.ChiefNudgeAskThreshold,
+				NeedsYouLive: cfg.ChiefNudgeNeedsYouLiveOwners, ChiefChatQuotesLive: cfg.ChiefNudgeChiefChatQuotesLiveOwners,
+				AskThreshold: cfg.ChiefNudgeAskThreshold,
 				Classifier: &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
 		}
 	}
@@ -696,7 +697,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// officer that declares `llm` with no database is refused.
 			ocfg.LLMStore = llmproxy.NewPGStore(a.pool)
 			// The judgement session cap's count lives here too (migration
-			// 0081), shared by every replica; a cap with no database is
+			// 0082), shared by every replica; a cap with no database is
 			// refused.
 			ocfg.Sessions = officers.NewPGSessionStore(a.pool)
 		}
@@ -1481,16 +1482,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	case ext.ChiefNudge != nil && len(ext.ChiefNudge.Live) > 0:
 		l.Printf("chief nudges: ON (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall classifier "+
 			"first, ask score %.2f defaults to an ask); LIVE for %d owner(s) (%s), shadow for everyone else; needs-you nudges "+
-			"LIVE for %d of them (%s), shadow for the rest; at most %d nudges an hour",
+			"LIVE for %d of them (%s), shadow for the rest; nudges quoting the Chief chat LIVE for %d of them (%s), shadow "+
+			"for the rest; at most %d nudges an hour",
 			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold,
 			len(ext.ChiefNudge.Live), envChiefNudgeLiveOwners, needsYouLiveCount(ext.ChiefNudge), envChiefNudgeNeedsYouLiveOwners,
-			ext.ChiefNudge.HourlyCap)
+			chiefChatQuotesLiveCount(ext.ChiefNudge), envChiefNudgeChiefChatQuotesLiveOwners, ext.ChiefNudge.HourlyCap)
 	case ext.ChiefNudge != nil:
 		l.Printf("chief nudges: ON in SHADOW (%s=1) — every %s the chief judges each owner's sessions idle %s or more (a stall "+
 			"classifier first, ask score %.2f defaults to an ask) and the decision is recorded; nothing is sent (%s is empty, "+
-			"so %s does nothing)",
+			"so %s and %s do nothing)",
 			envChiefNudges, api.ChiefNudgeInterval, ext.ChiefNudge.Idle, ext.ChiefNudge.AskThreshold, envChiefNudgeLiveOwners,
-			envChiefNudgeNeedsYouLiveOwners)
+			envChiefNudgeNeedsYouLiveOwners, envChiefNudgeChiefChatQuotesLiveOwners)
 	case a.cfg.ChiefNudges:
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:
@@ -2028,6 +2030,21 @@ func suggestBootLine(cfg config) string {
 	}
 	return "suggest: suggested replies are ON with " + cfg.SuggestModel + ": generated at a mirrored Claude Code turn end while " +
 		"its Rendered view is open, on the owner's OpenRouter key; each user can turn them off in Account (MUSTER_SUGGEST=off for everyone)"
+}
+
+// chiefChatQuotesLiveCount is how many owners' Chief-chat quotes can be live:
+// those in BOTH MUSTER_CHIEF_NUDGE_LIVE_OWNERS and
+// MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS (a needs-you one needs the
+// needs-you list as well; one listed only in the Chief-chat list is shadow,
+// and is not counted).
+func chiefChatQuotesLiveCount(c *api.ChiefNudges) int {
+	n := 0
+	for id := range c.ChiefChatQuotesLive {
+		if c.Live[id] {
+			n++
+		}
+	}
+	return n
 }
 
 // needsYouLiveCount is how many owners' needs-you nudges are live: those in

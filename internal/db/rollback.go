@@ -182,10 +182,10 @@ const sessionEpisodesMigrationVersion = 73
 // of what RLSOn re-applies (for example, skip 0075's ALTER here).
 const officerLLMUsageMigrationVersion = 75
 
-// officerJudgementSessionsMigrationVersion is 0081: officer_judgement_sessions
+// officerJudgementSessionsMigrationVersion is 0082: officer_judgement_sessions
 // (the judgement-tier daily session cap's ledger), owned and under the same
 // row-level security; same treatment again. Its body is idempotent.
-const officerJudgementSessionsMigrationVersion = 81
+const officerJudgementSessionsMigrationVersion = 82
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

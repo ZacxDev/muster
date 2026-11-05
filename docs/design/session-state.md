@@ -1,11 +1,13 @@
 # Design: session state (stalls, waiting sessions, nudges and check-ins as one model)
 
-**Status: steps 1, 2 and 3a are built (3a behind its own shadow gate,
-decision 15); 3b and 4 are proposals.** The operator settled the shape
+**Status: steps 1, 2, 3a and 3b-1 are built (3a behind its own shadow gate,
+decision 15; 3b-1 behind its own, default D4); 3b-2 and 4 are proposals.**
+Step 3b was split in two by the operator (decision 16, "Chief chat first").
+The operator settled the shape
 (item, Chief role, states, push, placement, check-ins, phasing, metrics) before
 this was written, then answered the draft's open questions and three more
 raised by its review; all of it is recorded under
-[Operator decisions](#operator-decisions). Three remaining points carry
+[Operator decisions](#operator-decisions). Four remaining points carry
 coordinator defaults, each open to change, under
 [Defaults](#defaults-open-to-change). No questions remain open.
 
@@ -446,7 +448,40 @@ with a partial read authorising nothing. Only the `needs-you` nudge and the
 `nudge`/`leave`/`notify` shape are new.
 
 **Step 3b: widened sources** (decisions 10 and 13), on only once muster can
-attribute a message to the owner:
+attribute a message to the owner. Split in two (decision 16, "Chief chat
+first"):
+
+- **3b-1 (built, shadow): the Chief chat.** A sender record on Chief-chat
+  turns, `chat_messages.typed_by` (migration 0081), written at the one place a
+  person's line becomes a turn (`runEnteredTurn`) from the owner's signed-in
+  chat doors only (`ownerTypedBy`: the chat page's socket and the composer's
+  POST, web or phone). Every other writer leaves it NULL, and a ledger test
+  (`TestEveryChatWriterIsClassified`) pins every writer of a chat row with its
+  kind. Rows from before 0081 are not owner-typed (no backfill). **The CLI
+  is not counted** (decision 13 as amended 2026-11-04, "Exclude the CLI"):
+  `muster chief ask` arrives over a token, the same door a session's own
+  question uses, which any session of the owner's can hold. With session
+  state on, the nudge's quote may come from those typed turns within
+  `OwnerWindow`, for any of the owner's sessions; the Chief names the quote's
+  source (`quote_source`) and code checks the quote verbatim in that source
+  only; an unverifiable one meets the one quote guard
+  (`suppressed:quote_unverified`, its source recorded, the stop pushed); the
+  Chief chat is read newest first, only the `MaxOwnerMessages` (20) the chief
+  is shown, and a failed read contributes nothing. Shadow first: such a nudge
+  is live only for an owner also on
+  `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS` (default D4), and so is
+  ANY nudge decided while typed Chief-chat lines were in the prompt, whatever
+  its quote's source (decision 17; `chief_nudges.chief_chat_in_view`); both
+  re-read at the paste, at an agent's turn and at the reconcile retry; the source is recorded on the decision
+  (`chief_nudges.quote_source`) and shown on the Chief nudges tab. Same-session
+  quotes keep their gates. Session state off is unchanged.
+- **3b-2 (proposal): panes.** Host provenance for typed pane input, normalised
+  origin remotes, and same-repository cross-session pane quotes. It needs a
+  host ship, and same-repository matching waits for host-reported remotes.
+  The Chief chat needs neither: it is a source for any of the owner's
+  sessions.
+
+The full shape, both halves:
 
 - **Same repository** means the **normalised origin remote** (`owner/name`),
   not the repo chip's directory name: two unrelated checkouts both named
@@ -456,8 +491,8 @@ attribute a message to the owner:
   resolvable remote **gives and gets no cross-session quotes**.
 - **Owner-typed only.** A quote's source message must be one muster can
   attribute to the owner:
-  - **Chief chat:** only turns muster records as typed by the owner (web,
-    phone, CLI). Relayed answers, session questions, plugin messages, task
+  - **Chief chat:** only turns muster records as typed by the owner in the
+    signed-in web or phone chat (decision 13 as amended: not the CLI). Relayed answers, session questions, plugin messages, task
     events and agent-sent turns never count, fenced or not (decision 13).
     Today no such record exists (`store.go:215-221`); step 3b adds a sender
     column written at the point a turn is typed.
@@ -567,9 +602,12 @@ check-ins plan (`docs/design/check-ins.md`, "Phased plan"):
    `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS`, so an owner already live for
    today's stalled nudges stays live for those while their needs-you nudges
    stay shadow (decision 15). Each episode is put to the Chief at most once
-   (`chief_nudges.episode_id`, migration 0078). **b.** Owner-typed provenance (a Chief
-   chat sender column; a host record for typed pane input; normalised origin
-   remotes), then same-repository cross-session quotes, shadow first.
+   (`chief_nudges.episode_id`, migration 0078). **b.** Owner-typed provenance,
+   split (decision 16): **b-1** a Chief-chat sender column (migration 0081),
+   then Chief-chat quotes, shadow first under
+   `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS`; **b-2** a host record for
+   typed pane input and normalised origin remotes, then same-repository
+   cross-session pane quotes, shadow first.
 4. **Check-ins** PRs 2–5 on the shared state with PR 4 amended, PR 6 reduced.
 
 Each is its own PR with tests and the audit ladder. `MUSTER_CHIEF_NUDGES`
@@ -578,7 +616,7 @@ unset turns off the Chief's call and nudges only; the state and pushes stay.
 ## Open questions
 
 None. The draft's seven questions and the review's three were answered by the
-operator (decisions 4, 9–14) or carry a default below.
+operator (decisions 4, 9–14, and 13's amendment) or carry a default below.
 
 ## Defaults (open to change)
 
@@ -594,6 +632,13 @@ without reworking the rest of the design.
   nudge.
 - **D3. View-only runtimes.** opencode and Hermes windows get the same push and
   row, but are never nudged.
+- **D4. Chief-chat quotes' own shadow gate** (step 3b-1). A nudge quoting the
+  owner's Chief chat pastes only for an owner on
+  `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS` (same format as the other
+  lists) **and** on every list the nudge is otherwise under; unset, every
+  Chief-chat quote is shadow. Decision 16 fixes only that 3b-1 ships shadow
+  first; the separate list is this default. Decision 17 widens what it gates
+  to any nudge decided with the Chief chat in view.
 
 ## Operator decisions
 
@@ -647,7 +692,10 @@ Recorded 2026-11-03.
     rule (`chief_nudge.go:572-603`).
 13. **Chief-chat quotes: owner-typed only.** Only turns muster records as typed
     by the owner (web, phone, CLI) count. Relayed or agent-sent turns never
-    count, even unfenced ones.
+    count, even unfenced ones. **Amended 2026-11-04 ("Exclude the CLI",
+    answering #439's round 0):** owner-typed means turns typed in the
+    signed-in web or phone chat only. `muster chief ask` from the CLI does not
+    count: it shares the token door any session can hold.
 14. **Verbatim quotes stay.** The owner's words are quoted verbatim in this
     public doc ("Keep verbatim").
 15. **`needs-you` nudges: a separate shadow gate** (recorded 2026-11-04, while
@@ -658,6 +706,20 @@ Recorded 2026-11-03.
     real only for an owner on **both** lists; otherwise it is shadow — recorded
     on the Chief nudges tab, never pasted, and the episode pushed. Unset, every
     owner's `needs-you` nudges are shadow ("Separate shadow gate").
+16. **Step 3b split: "Chief chat first"** (recorded 2026-11-04). Step 3b ships
+    as two PRs. **3b-1** is server only: owner-typed provenance for the Chief
+    chat (a sender record written where a turn is typed), then Chief-chat
+    quotes as covering words, shadow first. **3b-2** follows with host pane provenance, normalised origin remotes and
+    same-repository cross-session pane quotes, which need a host ship.
+17. **"Shadow whole decision"** (recorded 2026-11-04, answering #439's
+    round 1). The Chief sees the owner's typed Chief-chat lines on every stall
+    check with session state on, and they can steer a decision whatever it
+    quotes. So any nudge decided while Chief-chat lines were in the prompt is
+    shadow, whatever its `quote_source`, until the owner is on the Chief-chat
+    list (default D4) on top of the existing lists. The decision records it
+    (`chief_nudges.chief_chat_in_view`, migration 0081), and the paste gate,
+    an agent's turn and the reconcile retry read that stored fact. With no
+    typed line in the window the decision is gated as before.
 
 ## Effort
 
@@ -669,5 +731,6 @@ Sizes calibrated as in the check-ins plan (#360 nudges +5.3k, #366 lanes
 | 1 | `session-state: states and episodes` | the state function with precedence, the classifier run independent of the Chief and stored on the episode, the `session_episodes` table with claim-before-push, restart and clearing rules | M, ~+1.5k |
 | 2 | `session-state: episode push, tap route and the Attention section` | one text-free push per episode, the `episode-<id>` tap route, the "Stalled / waiting" rows (left ones quiet), answerable asks kept apart, notices no longer raised, the Chief's `ask` replaced by `notify`; then `KindNotice` deleted | M, ~+1.8k |
 | 3a | `chief-nudges: needs-you nudges, nudge/leave/notify (shadow)` | idle `needs-you` nudges gated by the classifier, sent-only handling, dropped-on-change, shadow never suppressing a push, view-only runtimes never nudged | M, ~+1k |
-| 3b | `chief-nudges: owner-typed provenance and same-repository quotes (shadow)` | Chief chat sender column, host provenance for typed pane input, normalised origin remotes, per-source injected sets and partial reads | L, ~+2k |
+| 3b-1 | `chief-nudges: owner-typed Chief-chat provenance and Chief-chat quotes (shadow)` | Chief chat sender column (0081) and its writer ledger, Chief-chat quotes with a named, verified source and a partial read giving nothing, their own shadow gate, the source on the decision and the tab | M |
+| 3b-2 | `chief-nudges: host pane provenance and same-repository quotes (shadow)` | host provenance for typed pane input, normalised origin remotes, per-source injected sets and partial reads, same-repository cross-session pane quotes | L |
 | 4 | check-ins PRs 2–5 on the shared state (PR 4 amended, PR 5 with `session_state`), PR 6 reduced to agents' PR attribution | as in `check-ins.md` | as there, minus PR 6's GraphQL client |

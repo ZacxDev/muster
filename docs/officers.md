@@ -1297,7 +1297,7 @@ An officer may split its instances into two **pools**, one per HQ item tier
     the [`llm`](#the-llm-proxy) budget), and neither is an untiered officer.
 
   The count is **persisted** (`officer_judgement_sessions`, migration
-  0081): one row per officer and UTC day holding the admitted entries,
+  0082): one row per officer and UTC day holding the admitted entries,
   shared by every muster-server replica, so a restart or a rollout overlap
   neither resets nor splits it. A session is admitted in one transaction
   holding the day's row lock, deciding on the row's latest version: two claims
