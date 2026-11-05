@@ -87,6 +87,13 @@ func (o Officer) Pool(tier string) Officer {
 		p.Tier, src = TierRoutine, o.Tiers.Routine
 	}
 	p.Model, p.MaxInstances = src.Model, src.MaxInstances
+	if p.Tier == TierRoutine {
+		// 🔴 ONLY THE JUDGEMENT POOL SHIPS. A routine instance (a cheaper
+		// model, fed untriaged input) gets no ship tool, push gate or officer
+		// App token: every one of those branches on Ship (ToolOffered,
+		// api.Server.shipGate), so nil here is the whole rule.
+		p.Ship, p.CILogs = nil, nil
+	}
 	return p
 }
 

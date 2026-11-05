@@ -229,7 +229,9 @@ type Gate interface {
 // ErrGateRefused is a [Gate]'s refusal of one request.
 var ErrGateRefused = errors.New("connectors: refused by this agent's write policy")
 
-// ErrGateConflict is a [Gate]'s content refusal (SCAFFOLD: not yet answered 409).
+// ErrGateConflict is a [Gate]'s refusal of a write whose CONTENT conflicts with
+// the policy (a forbidden path, a secret shape): answered 409, not 403. It
+// wraps [ErrGateRefused], so every check for a refusal still sees one.
 var ErrGateConflict = fmt.Errorf("%w: the change conflicts with it", ErrGateRefused)
 
 // Proxy forwards an agent's request to a connector's upstream with the
@@ -503,6 +505,9 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		}
 		admitted, err := g.Admit(r, strings.ToLower(host), rest)
 		switch {
+		case errors.Is(err, ErrGateConflict):
+			refuse(http.StatusConflict, RefusalBody{Error: err.Error()}, "gate refused: conflict")
+			return
 		case errors.Is(err, ErrGateRefused):
 			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "gate refused")
 			return

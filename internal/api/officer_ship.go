@@ -75,6 +75,7 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 	sp := o.Ship
 	var (
 		gh      officership.GitHub
+		ghFor   = map[string]officership.GitHub{}
 		cred    func(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error)
 		reject  func(connectors.Caller)
 		gitHost = githubapp.DefaultGitHost
@@ -82,6 +83,12 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 	)
 	if cfg.ShipGitHub != nil {
 		gh = cfg.ShipGitHub(o)
+		for _, r := range sp.RepoList(o.Repo) {
+			ghFor[strings.ToLower(r.Repo)] = gh
+			if cfg.ShipGitHubRepo != nil {
+				ghFor[strings.ToLower(r.Repo)] = cfg.ShipGitHubRepo(o, r.Repo)
+			}
+		}
 		cred = func(context.Context, connectors.Caller, string, string) (string, bool, error) {
 			return "fixture-ship-credential", false, nil
 		}
@@ -89,19 +96,37 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 			gitHost, apiHost = cfg.ShipHosts[0], cfg.ShipHosts[1]
 		}
 	} else {
-		app, err := githubapp.New(githubapp.Config{AppID: sp.AppID, PrivateKey: sp.AppKey(), Accounts: []githubapp.Account{sp.AppAccount},
+		// ONE App per officer, installed on every ship repository: its
+		// accounts are the repositories' owners.
+		var accounts []githubapp.Account
+		seen := map[int64]bool{}
+		for _, r := range sp.RepoList(o.Repo) {
+			if !seen[r.AppAccount.ID] {
+				seen[r.AppAccount.ID] = true
+				accounts = append(accounts, r.AppAccount)
+			}
+		}
+		app, err := githubapp.New(githubapp.Config{AppID: sp.AppID, PrivateKey: sp.AppKey(), Accounts: accounts,
 			Access: githubapp.AccessWrite, Logger: s.logger})
 		if err != nil {
 			return nil, fmt.Errorf("officer %s: its GitHub App: %w", o.ID, err)
 		}
 		cred, reject = app.Credential, app.Rejected
-		gh = &officership.REST{Base: strings.TrimRight(github.APIBaseURL(), "/"), Repo: o.Repo,
-			Token: func(ctx context.Context) (string, error) { return app.RepoToken(ctx, o.Repo) },
-			Slug:  app.Slug, HTTP: &http.Client{Timeout: officers.DefaultHQTimeout * 2}}
+		for _, r := range sp.RepoList(o.Repo) {
+			repo := r.Repo
+			ghFor[strings.ToLower(repo)] = &officership.REST{Base: strings.TrimRight(github.APIBaseURL(), "/"), Repo: repo,
+				Token: func(ctx context.Context) (string, error) { return app.RepoToken(ctx, repo) },
+				Slug:  app.Slug, HTTP: &http.Client{Timeout: officers.DefaultHQTimeout * 2}}
+		}
+		gh = ghFor[strings.ToLower(o.Repo)]
 	}
 	hq := officerHQ{c: s.officerRT.hq.Client(o)}
 	rt := &shipRuntime{}
-	rt.gate = &officership.PushGate{Repo: o.Repo, Ship: sp, GitHost: gitHost, APIHost: apiHost, Cred: cred, OnRejected: reject, GH: gh}
+	rt.gate = &officership.PushGate{Repo: o.Repo, Ship: sp, OfficerID: o.ID, GitHost: gitHost, APIHost: apiHost, Cred: cred,
+		ReadCred: s.deploymentReadCred(), OnRejected: reject, GH: gh, GHFor: ghFor, Now: cfg.Now, Logf: s.logger.Printf,
+		Notify: func(ctx context.Context, n officers.Notice) error {
+			return hq.PostNotice(ctx, sp.NoticeURLPath(o.ID), n)
+		}}
 	rt.gates = &officership.Gates{OfficerID: o.ID, Repo: o.Repo, Ship: sp, GH: gh, HQ: hq, Now: cfg.Now,
 		InFlight: func() (string, bool) { return "", false }}
 	if sp.Rollout != nil {
@@ -153,13 +178,69 @@ func (s *Server) enableShips(cfg OfficersConfig) error {
 			w := rt.watch
 			safeGo(s.logger, "officer rollout resume "+o.ID, func() { w.Resume(s.streams.context()) })
 		}
+		if o.Ship.IsDraft() && !cfg.NoShipResume {
+			o, rt := o, rt
+			safeGo(s.logger, "officer orphan report "+o.ID, func() { s.orphanReportLoop(s.streams.context(), o, rt) })
+		}
 	}
 	return nil
 }
 
-// reportOrphans is the daily orphan-branch report. SCAFFOLD: not implemented.
+// deploymentReadCred is the deployment App's credential for a shipping
+// officer's read_repos (officership.PushGate.ReadCred): minted READ-ONLY for
+// the one repository (the caller arrives ReadOnly with Repo set to it). nil
+// when the deployment has no App, or it cannot mint per caller: those reads
+// then go anonymously.
+func (s *Server) deploymentReadCred() func(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error) {
+	c, ok := s.ext.GitHubApp.(interface {
+		Credential(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error)
+	})
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error) {
+		caller.ReadOnly, caller.ReadRepos, caller.Gate = true, nil, nil
+		return c.Credential(ctx, caller, host, rest)
+	}
+}
+
+// orphanReportLoop runs officer o's orphan-branch report once a UTC day
+// (first an hour after boot), until ctx ends.
+func (s *Server) orphanReportLoop(ctx context.Context, o officers.Officer, rt *shipRuntime) {
+	last := ""
+	t := time.NewTimer(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if day := time.Now().UTC().Format(time.DateOnly); day != last {
+			last = day
+			if _, err := s.reportOrphans(ctx, o, rt, time.Now()); err != nil {
+				s.logger.Printf("officers: %s: the orphan-branch report failed: %v", o.ID, err)
+			}
+		}
+		t.Reset(time.Hour)
+	}
+}
+
+// reportOrphans lists officer o's orphan branches at now, logs them, and
+// posts them to HQ as a notice when there is any. It never deletes one.
 func (s *Server) reportOrphans(ctx context.Context, o officers.Officer, rt *shipRuntime, now time.Time) ([]officership.Orphan, error) {
-	return nil, nil
+	orphans, err := officership.OrphanBranches(ctx, o.ID, o.Repo, o.Ship, func(repo string) officership.GitHub {
+		return rt.gate.GHFor[strings.ToLower(repo)]
+	}, now)
+	if err != nil || len(orphans) == 0 {
+		return orphans, err
+	}
+	n := officership.OrphanNotice(o.ID, o.Ship.NoticeChannel, orphans)
+	s.logger.Printf("officers: %s: %s: %s", o.ID, n.Summary, strings.Join(n.Paths, " "))
+	if err := rt.gate.Notify(ctx, n); err != nil {
+		return orphans, fmt.Errorf("posting the report to HQ: %w", err)
+	}
+	return orphans, nil
 }
 
 // shipOf is officer instance a's ship runtime, or nil.
@@ -350,6 +431,19 @@ func shipRefusal(tool string, err error, passed []string) string {
 // `github` request grants: its OWN App's token, behind the push gate.
 func shipGrantsDescription(o officers.Officer) string {
 	sp := o.Ship
+	if sp.IsDraft() {
+		var repos []string
+		for _, r := range sp.RepoList(o.Repo) {
+			repos = append(repos, fmt.Sprintf("%s (pushes ONLY to refs/heads/%s%s/<item>-<slug>, never %s)", r.Repo, r.BranchPrefix, officers.Slug(o.ID), r.Base))
+		}
+		read := ""
+		if len(o.ReadRepos) > 0 {
+			read = "; reads of " + strings.Join(o.ReadRepos, ", ") + " with the deployment App's READ-ONLY token"
+		}
+		return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), behind muster's push gate, stage %s: reads; DRAFT pull requests only, in %s; "+
+			"editing and commenting on its own; every pull request checked for forbidden paths, removed volume/database/canary manifests and "+
+			"secret shapes. It never marks ready, merges, tags or deletes a branch%s", o.ID, sp.AppID, sp.Stage, strings.Join(repos, "; "), read)
+	}
 	return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), for %s only, behind muster's push gate: reads; pushes ONLY to refs/heads/%s* "+
 		"(never %s, never a tag); opening and editing its own pull requests and commenting; marking its own draft ready (%s). Merging and tagging happen only in muster, "+
 		"through the gated %s and %s tools (stage %s)", o.ID, sp.AppID, o.Repo, sp.BranchPrefix, sp.Base, officers.ToolMarkReady, officers.ToolMergePR, officers.ToolTagRelease, sp.Stage)

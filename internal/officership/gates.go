@@ -345,6 +345,11 @@ type ReadyOutcome struct {
 func (g *Gates) MarkReady(ctx context.Context, n int) (ReadyOutcome, error) {
 	out := ReadyOutcome{PR: n}
 	pass := func(name string) { out.Passed = append(out.Passed, name) }
+	if !g.Ship.MayMarkReady() {
+		// Not offered to a draft officer (officers.ToolOffered); refused here
+		// too, before any read, so no path to it converts one.
+		return out, refuse(GateStage, "this officer's stage is %q: its pull requests stay drafts and a human marks one ready", g.Ship.Stage)
+	}
 	pr, err := g.GH.PR(ctx, n)
 	if err != nil {
 		return out, refuse(GatePR, "could not read pull request #%d: %v", n, err)

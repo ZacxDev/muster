@@ -83,9 +83,11 @@ var (
 // «redacted» (see the comment above for the shapes).
 func Secrets(s string) string { return secrets(s, true) }
 
-// HasSecret reports whether s holds anything Secrets would replace.
-// SCAFFOLD: not implemented yet.
-func HasSecret(s string) bool { return false }
+// HasSecret reports whether s holds anything Secrets would replace: THE
+// secret-shape test for a refusal (an officer's pull request diff or body,
+// internal/officership's draft gate) rather than a rewrite, so a refusal and
+// a redaction can never disagree about what a credential looks like.
+func HasSecret(s string) bool { return Secrets(s) != s }
 
 // secrets is Secrets; with filter false every pattern runs, which is what the
 // test compares the filtered path against.

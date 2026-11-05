@@ -199,7 +199,9 @@ func ToolOffered(o Officer, tool string) bool {
 	case ToolReleaseEvaluation:
 		return o.Type() == ReleaseOfficerType
 	case ToolMergePR, ToolTagRelease, ToolRolloutStatus, ToolMarkReady:
-		return o.Ship != nil
+		// 🔴 A DRAFT OFFICER IS OFFERED NONE OF THEM: it opens draft pull
+		// requests and a human takes it from there.
+		return o.Ship != nil && !o.Ship.IsDraft()
 	case ToolCILogs:
 		return o.Ship != nil && o.CILogs != nil
 	}
@@ -210,6 +212,9 @@ func ToolOffered(o Officer, tool string) bool {
 // its repository, and that merges and tags are muster's.
 func shipNote(o Officer) string {
 	s := o.Ship
+	if s.IsDraft() {
+		return draftShipNote(o)
+	}
 	return fmt.Sprintf(`
 
 Your repository is %[1]s. Reach it through muster's %[2]q connector — %[9]s. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once approved:
@@ -233,4 +238,28 @@ func ciLogsNote(o Officer) string {
 	return "\nRed CI: when a required check on your pull request fails, call " + ToolCILogs + "{pr} BEFORE you escalate. " +
 		"It returns, for each failed CI task on the pull request's current head, the failing test names and the error lines from its logs. " +
 		"Fix what it shows and push; escalate only when it shows nothing you can act on (say so, with its answer, in the summary)."
+}
+
+// draftShipNote is shipNote for a draft-stage officer: its repositories, the
+// branch shape, the body contract and the limits — and that a human takes
+// every pull request from there.
+func draftShipNote(o Officer) string {
+	s := o.Ship
+	var repos []string
+	for _, r := range s.RepoList(o.Repo) {
+		repos = append(repos, fmt.Sprintf("%s (branches %s%s/<item>-<slug> off origin/%s)", r.Repo, r.BranchPrefix, Slug(o.ID), r.Base))
+	}
+	return fmt.Sprintf(`
+
+You may propose fixes as DRAFT pull requests in: %[1]s. Reach them through muster's %[2]q connector — %[3]s. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once approved:
+- git: run `+"`ccd connect-git %[2]s`"+` once, then clone https://github.com/<owner>/<name>.git. Name each branch <prefix>%[4]s/<item>-<slug>, where <item> is the HQ item number, and push only that branch. muster refuses any other ref, and deleting a branch.
+- the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/<owner>/<name>/<path>\"`"+`. Reads are open. The writes muster forwards: POST pulls with "draft": true (head your branch, base the repository's base), PATCH pulls/<n> of your own pull request (title, body, or state "closed" — never reopen, never draft), POST issues/<n>/comments on your own pull request.
+muster attaches the credential itself; you never hold one.
+
+Every pull request body must start with this exact line:
+%[5]s
+(with your item's number), and must have the sections %[6]s, each heading on a line of its own. Cite evidence by audit id; never quote a credential or any credential-shaped value — muster refuses a diff, title or body that holds one.
+muster reads the comparison of every pull request you open or edit and refuses it (409) when it changes a forbidden path of that repository, removes a PersistentVolumeClaim, PersistentVolume, CloudNativePG or Canary manifest, or carries a credential shape; HQ is told. Limits: %[7]d open pull requests per repository, %[8]d new per UTC day, %[9]d per item. You never mark ready, merge, tag or release: a human reviews the draft.`,
+		strings.Join(repos, "; "), GitHubConnector, onlyConnector(o), Slug(o.ID), strings.Replace(BodyFirstLine(o.ID, 0), "item 0", "item <n>", 1),
+		strings.Join(BodySections, ", "), MaxOpenPRsPerRepo, MaxNewPRsPerDay, MaxPRsPerItem) + ciLogsNote(o)
 }

@@ -58,7 +58,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `cc_failover` | `false` | With `cc_account`: let a pinned instance fail over to another account anyway ([account failover](#account-failover)). Without `cc_account` it changes nothing: an unpinned instance fails over by default. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
-| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or `read_repos` on a [shipping officer](#shipping-officers) is a boot refusal naming the officer. Kept lowercased and sorted, so reordering it changes nothing. |
+| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer. Kept lowercased and sorted, so reordering it changes nothing. |
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
@@ -749,12 +749,18 @@ ready for review). Nothing the officer can merge changes those gates: they are m
 code and muster-server's environment, and the officer's App is installed on
 its one repository only.
 
-**No `read_repos`.** A shipping officer's every request is decided by its push
-gate and served with its own App's token — never the deployment App's, by any
-path through the proxy (`connectors.Gate`). Honouring `read_repos` would mean
-either a second, ungated credential behind the gate or widening the officer's
-own App beyond its one repository, so `read_repos` on a shipping officer is a
-boot refusal naming the officer.
+**`read_repos` beside `ship`.** A shipping officer's every request is decided
+by its push gate. A request to one of its ship repositories carries its own
+App's token for that repository; a request to one of its `read_repos` is
+admitted only as a read (the gate forwards no write outside the ship
+repositories) and carries the **deployment** App's READ-ONLY token for that one
+repository; anything else goes anonymously. The officer App never mints for a
+read repository. An entry that is also a ship repository is a boot refusal.
+
+**`tiers` and `llm` beside `ship`.** Only the **judgement** pool ships: the
+routine pool (`Officer.Pool(routine)`) carries no ship policy, so a routine
+instance gets no ship tool, no push gate and no officer App token, and reads
+like any other officer instance. `llm` serves the routine pool only.
 
 🔴 **Use it only where the repository enforces nothing else, and know that
 muster is then the branch protection.** On a private repository without
@@ -792,12 +798,14 @@ A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
 
 | field | default | |
 |---|---|---|
-| `stage` | **required** | `shadow` (push and open pull requests; both gated tools refuse), `merge` (also `officer_merge_pr`), `release` (also `officer_tag_release`; needs `rollout`). There is no default. |
+| `stage` | **required** | `draft` (open DRAFT pull requests only, in one to three repositories — [The draft stage](#the-draft-stage)), `shadow` (push and open pull requests; both gated tools refuse), `merge` (also `officer_merge_pr`), `release` (also `officer_tag_release`; needs `rollout`). There is no default. |
+| `repos` | none | `draft` only with more than one: a list of 1–3 `{repo, base?, branch_prefix?, github_app, forbidden_paths?}`, which must list the officer's `repo` and replaces the top-level `base`, `branch_prefix`, `github_app` and `forbidden_paths` (each is then refused at the top). Every entry names the same App `id` (one key per officer); each `account` is that repository's owner. |
+| `forbidden_paths` | none | `draft` only (refused on another stage, which would ignore it): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
 | `base` | `main` | The branch merges land on and releases are cut from. |
 | `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. |
 | `github_app` | **required** | The officer's OWN App: `id`, and `account` as `<login>:<numeric id>` (matched by id; the login must be the repository's owner). Never the deployment's App, so suspending it stops this officer and nothing else. |
-| `required_checks` | **required** | 1–20 commit-status contexts (or check-run names) that must be `success` on the head commit. A status's `success` counts whatever its description says (a CI job that reports "success: skipped" passes). Missing is not passed. |
-| `review_check` | **required** | The check run that must be `completed`/`success` on the head. `neutral` does not pass. |
+| `required_checks` | **required** (not on `draft`) | 1–20 commit-status contexts (or check-run names) that must be `success` on the head commit. A status's `success` counts whatever its description says (a CI job that reports "success: skipped" passes). Missing is not passed. |
+| `review_check` | **required** (not on `draft`) | The check run that must be `completed`/`success` on the head. `neutral` does not pass. |
 | `review_app` | none | When set, only that App's check run of that name counts. |
 | `migrations` | none | The directory whose files are linted for destructive DDL, and whose added files make a release need HQ's backup preflight. |
 | `sensitive_paths` | none | Patterns whose change makes `officer_merge_pr` post a notice to HQ first (never a block by itself). `dir/` is a prefix, a pattern with `/` matches the whole path, one without matches any path segment. Needs `notice`. |
@@ -853,6 +861,37 @@ officer) and, for a shipping officer's instance, runs the gate first
 on the way out; the instance never sees it. The gate, the gates and the App
 key live in muster's code and muster-server's environment, and the officer's
 App is not installed on the repository that holds them.
+
+### The draft stage
+
+A `draft` officer proposes fixes as **draft** pull requests and a human takes
+each one from there. It is offered none of `officer_mark_ready`,
+`officer_merge_pr`, `officer_tag_release` and `officer_rollout_status` (and
+`officer_mark_ready`'s gate refuses its stage too); `required_checks`,
+`review_check` and `rollout` are not needed, `rollout` is refused, and a
+`notice` block is required. On top of the push gate's allowlist:
+
+| rule | answer |
+|---|---|
+| A branch is `<prefix><officer slug>/<item>-<slug>` (`officer/cluster-watch-example/134-fix-limit`); a push of any other branch, or a branch **deletion**, is refused. | 403 |
+| `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
+| The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item, and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
+| At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state (read from each repository's newest 300 pull requests: its App's bot, typed `Bot`, from its branch shape). | 403 |
+| At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read: a changed, added, removed or renamed-from path matching the repository's `forbidden_paths`; a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; an **added** line with a credential shape; or a file whose diff GitHub withholds (binary or very large). The title, body and comments are checked for a credential shape too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
+
+The credential shapes are `internal/redact`'s (`redact.HasSecret`), the one
+redactor every other muster surface uses. A comparison muster cannot read is
+a 502: the policy could not decide.
+
+⚠ **What the gate cannot see.** A push to a branch that already has a pull
+request changes that pull request's diff without a `PATCH`. The next `PATCH`
+reads the comparison again; the target repository's own CI is the wall for
+the rest.
+
+**The orphan report.** Once a UTC day (first an hour after boot) muster lists
+each draft officer's branches, older than 7 days by their head commit, that no
+pull request (in any state) was opened from — a refused proposal leaves one —
+logs them and posts them to HQ's notices route. It never deletes one.
 
 ### `officer_merge_pr {pr}`
 
@@ -1363,8 +1402,6 @@ Refused at boot, each naming the problem:
 - a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
   values are `tiers.judgement`'s, and two sources for one value are refused
   rather than ranked);
-- `tiers` on a [shipping officer](#shipping-officers), because every pool
-  would hold its merge and release tools;
 - a routine name (`-r<max>`, one character longer) over the namespace bound;
 - a provider model id (`vendor/model`) in either pool, except the routine
   pool of an officer with an [`llm` block](#the-llm-proxy) — and, the other way
@@ -1415,7 +1452,7 @@ does not depend on muster.
 
 Refused at boot, each naming the problem: `llm` without `tiers` (the proxy
 serves only a routine pool); `llm` beside a Claude routine model; a routine
-provider model id without `llm`; `llm` on a [shipping officer](#shipping-officers);
+provider model id without `llm`;
 an unknown key in `llm` (`model` and an agent list included: they live in
 `tiers`); a missing or out-of-range budget or cap; no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (even with the shared key set); `llm` on a
 server with no database (the budget is persisted) or no connector store (the
