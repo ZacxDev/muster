@@ -62,8 +62,9 @@ func whereSessionItem(t *testing.T, s *Server, session, window string) attention
 
 // TestANudgeNoticeNamesItsWindowsExactTmuxTarget: a chief nudge's notice,
 // built from the sweep's own candidate (stallInputs carries the window), is
-// labelled with its host and exact tmux target, "<host> · <session>:<index>"
-// (noticeLabel) — never the codename, which a tmux key cannot switch to.
+// labelled with its exact tmux target and host, "tmux <session>:<index> @ <host>"
+// (noticeLabel, mirror.WhereTarget: the shape a resolved window's name ends
+// in) — never the codename, which a tmux key cannot switch to.
 // (Before notices the ask said " (mango:1 · tmux scratch3:5 @ ws)" here.)
 func TestANudgeNoticeNamesItsWindowsExactTmuxTarget(t *testing.T) {
 	s := whereServer(t)
@@ -77,8 +78,8 @@ func TestANudgeNoticeNamesItsWindowsExactTmuxTarget(t *testing.T) {
 	for _, c := range []struct {
 		name, sid, want string
 	}{
-		{"a window with a codename", whereLabelledSID, "ws · scratch3:5"},
-		{"a window without a codename", whereUnlabelledSID, "ws · build:7"},
+		{"a window with a codename", whereLabelledSID, "tmux scratch3:5 @ ws"},
+		{"a window without a codename", whereUnlabelledSID, "tmux build:7 @ ws"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := noticeLabel(byKey[c.sid]); got != c.want {
