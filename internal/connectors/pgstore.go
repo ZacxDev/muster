@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -505,6 +506,9 @@ func (s *PGStore) TouchGrant(ctx context.Context, id int64) error {
 
 // --- audit ---------------------------------------------------------------------------
 
+// MaxAuditDetailBytes is how much of an audit entry's Detail is stored.
+const MaxAuditDetailBytes = 500
+
 // Audit appends one entry.
 func (s *PGStore) Audit(ctx context.Context, e AuditEntry) error {
 	var agentID *int64
@@ -515,7 +519,7 @@ func (s *PGStore) Audit(ctx context.Context, e AuditEntry) error {
 		INSERT INTO connector_audit (kind, agent_id, owner_id, agent_name, connector_name, method, host, path, status, detail)
 		VALUES ($1, $2, COALESCE((SELECT owner_id FROM agents WHERE id = $2), nullif(current_setting('muster.uid', true), '')::bigint),
 		        $3, $4, $5, $6, $7, $8, $9)`,
-		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, 500))
+		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, MaxAuditDetailBytes))
 	return err
 }
 
@@ -552,9 +556,15 @@ func (s *PGStore) PruneAudit(ctx context.Context, before time.Time) (int64, erro
 	return tag.RowsAffected(), nil
 }
 
+// truncate is s cut to at most n bytes, on a rune boundary: a cut inside a
+// multi-byte rune leaves invalid UTF-8, which Postgres refuses (SQLSTATE
+// 22021), losing the whole row.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

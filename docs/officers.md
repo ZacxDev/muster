@@ -1486,6 +1486,12 @@ any credential is read. For an admitted request, in order:
    routing fields above all: `fallbacks`, `models`, `provider`, `route`,
    `plugins` and `transforms` could serve the request from a model other than
    the pin.
+   Inside `messages`, a mid-conversation `system` entry (which Claude Code
+   sends, and which the provider refuses with a 400 for non-Anthropic models)
+   is folded into the adjacent user turn: its content blocks are appended to
+   that turn unchanged, or become a user turn of their own between two
+   assistant turns, and a `tool_result` stays first in its turn. Every other
+   message is sent as the client wrote it.
 3. **The budget.** The officer's booked spend for the UTC day is read from the
    database (`officer_llm_usage`, migration 0075). At or over
    `daily_budget_usd`, the request is refused with **400** and nothing is
@@ -1517,8 +1523,11 @@ any credential is read. For an admitted request, in order:
 8. One audit row (the [connector audit trail](connectors.md#the-llm-proxy),
    kind `llm`) and one log line: agent, officer, instance, item, model,
    requested model, provider, status, result, tokens by direction, USD,
-   whether it was estimated, stop reason and duration. Never a body, a header
-   or the key.
+   whether it was estimated, stop reason and duration; and, when the provider
+   answered with an error, `upstream_error="<type>: <message>"`: the
+   provider's error message only, with the officer's key and anything
+   key-shaped redacted, truncated to 200 bytes so that the line fits the audit
+   row. Never a request or response body, a header or the key.
 
 **Refusals end the turn.** The budget and the item cap answer **400**
 (`invalid_request_error`), not 429: Claude Code retries 429 and 5xx with

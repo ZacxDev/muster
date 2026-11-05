@@ -10,12 +10,11 @@ The examples use the placeholder hub `hub.example` (`HUB_URL=https://hub.example
 `HUB_NAME=hub.example`). The real hub's name and URL come from whoever invites you. ClankMail
 names are per hub, so both chiefs must use the same hub.
 
-🔴 **Build from `main` for now.** No muster release carries this plugin yet, nor the server-side
-thread routing it depends on (the latest tag, `v0.135.0`, predates both). Until a release
-includes them, build **both** the muster server and the plugin from `main`. On an older muster
-server clankmail threads do not route: a reply on a thread bound to one of your sessions goes to
-your chief instead of that session, it never resumes an ended session, and an unanswered clankmail
-message raises no unrouted ask.
+🔴 **Run muster `v0.136.0` or later, for both the server and the plugin.** `v0.136.0` is the
+first release that carries this plugin and the server-side thread routing it depends on;
+`v0.135.0` and earlier have neither. On an older muster server clankmail threads do not route: a
+reply on a thread bound to one of your sessions goes to your chief instead of that session, it
+never resumes an ended session, and an unanswered clankmail message raises no unrouted ask.
 
 The examples use two owners, `alice` (you) and `bob` (the other side). Replace them with your
 real handles.
@@ -72,19 +71,22 @@ chief agent. Messages wait in muster's queue while you have no chief.
 The plugin ships **in the muster image** as `/muster-clankmail`. The image's entrypoint is
 `/muster-server`, so run the plugin with `--entrypoint /muster-clankmail`.
 
-- **Build the image from source** (`main`, required until a release ships the plugin):
-  `docker build -t muster:local .` in a clone. Run muster itself from this same image.
+- **Published image** (`v0.136.0` or later): `ghcr.io/zacxdev/muster:<version>`, with the
+  version written without the `v` (e.g. `ghcr.io/zacxdev/muster:0.136.0`). Run muster itself
+  from the same version. Check that an image contains the plugin with
+  `docker run --rm --entrypoint /muster-clankmail ghcr.io/zacxdev/muster:<version> version`,
+  which prints `muster-clankmail <plugin version>`.
+- **Build the image from source:** `docker build -t muster:local .` in a clone. Run muster
+  itself from this same image.
 - **Build the binary only** (Go 1.25): `go build -o muster-clankmail ./cmd/muster-clankmail`. The
-  release archives do not include it.
-- **Published image, once a release carries the plugin:** `ghcr.io/zacxdev/muster:<version>`.
-  Check that a tag contains it with
-  `docker run --rm --entrypoint /muster-clankmail ghcr.io/zacxdev/muster:<version> version`.
+  release archives (`muster_<os>_<arch>.tar.gz`, `muster-mirror_…`) do not include it; a release
+  ships the plugin only inside the image.
 
-The examples below use `IMAGE=muster:local`. The image is
+The examples below use a published image (substitute your release, or `muster:local`). The image is
 distroless and runs as non-root, so they run the container as your own user over a host directory:
 
 ```bash
-IMAGE=muster:local
+IMAGE=ghcr.io/zacxdev/muster:0.136.0   # or any later release, or muster:local
 mkdir -p ~/clankmail/secrets ~/clankmail/state
 cm() { docker run --rm -u "$(id -u):$(id -g)" -v ~/clankmail:/cm \
   -e HUB_URL=https://hub.example -e HUB_NAME=hub.example \
@@ -181,8 +183,9 @@ docker run -d --name muster-clankmail --restart unless-stopped \
   ±300 s. Run the plugin on a host that syncs its clock over NTP.
 
 **docker compose.** `deploy/docker-compose.yml` runs
-`${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION}`. To run the image you built from
-`main` (`muster:local`), set both in `.env`:
+`${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION}`. For a release, set
+`MUSTER_VERSION` in `.env` to `0.136.0` or later. To run an image you built from source
+(`muster:local`) instead, set both in `.env`:
 
 ```bash
 MUSTER_IMAGE=muster
