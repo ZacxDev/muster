@@ -1145,7 +1145,10 @@ that they did not ask for.
 
 Turning a feature on is the same every time: its lines go into
 `~/muster/.env`, its compose profile (if it has one) into `COMPOSE_PROFILES`
-there, and then **Step 5's block** brings the server up with them. The compose
+there, and then **Step 5's block** brings the server up with them. Check it with
+`muster doctor` (Step 10) or, where the release has it, muster's Features page
+(`/account/features`); the examples below also name the feature's own start-up
+line. The compose
 file forwards every optional setting from `.env`, so it is never edited.
 
 **Dictation** is Step 1's question and Step 4's block; to switch options later,

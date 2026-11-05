@@ -20,17 +20,17 @@ unset one, with one exception: `MUSTER_SESSION_STATE`, which is on unless `.env`
 sets it, so there an empty value means **off** ([session state](#session-state)).
 Secrets go in `.env` only.
 
-**Checking a feature is on:** when muster starts it logs one line per feature,
-saying whether it is on or off and why. Read them with
+**Checking a feature is on:** `muster doctor`, and on releases that have it,
+the **Features** page (`/account/features`), list every feature as on, off or
+misconfigured, and say what an off one needs. Many features also log their own
+line when muster starts, saying whether they are on and why; each section below
+quotes it where there is one. Read them with
 
 ```sh
 docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 ```
 
-(or `docker compose logs muster | less` for all of them). Each section below quotes the
-line to look for. Releases that include the feature registry report the same
-state in `muster doctor` and on muster's Features page (`GET /api/features`);
-on an older release, the log is the place.
+(or `docker compose logs muster | less` for everything muster logged at start).
 
 ## Contents
 
@@ -41,8 +41,8 @@ on an older release, the log is the place.
 | [Push](#push) | phone notifications | VAPID keys (generated), HTTPS | on in INSTALL.md | 3 `.env` lines |
 | [Dictation](#dictation) | a microphone on every message box | a speech-to-text service: bundled (CPU or GPU) or your API key | off (INSTALL.md asks) | `--profile stt` + 1 line |
 | [Attachments](#attachments) | attach files in the message box; agents get signed links | an S3 store: bundled or your own | off | `--profile s3` + 2 lines |
-| [Suggested replies](#suggested-replies) | reply chips when a session hands back to you | an OpenRouter key | on, but idle without a key | 1 line |
-| [Focus](#focus) | a title and summary per session, searchable | an OpenRouter key | on, but idle without a key | the same line |
+| [Suggested replies](#suggested-replies) | reply chips when a session hands back to you | an OpenRouter key | off until the key is set | 1 line |
+| [Focus](#focus) | a title and summary per session, searchable | an OpenRouter key | off until the key is set | the same line |
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; the Stalled / waiting section | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
@@ -230,11 +230,12 @@ a tap fills the box, never sends. [suggested-replies.md](suggested-replies.md).
 - **`.env`:** `MUSTER_AGENT_OPENROUTER_KEY=<your key>`. Optional:
   `MUSTER_SUGGEST_MODEL` (default `openai/gpt-6-luna`), `MUSTER_SUGGEST=off`
   to turn them off for everyone.
-- **Default:** on. ⚠ Without a key the log still says `suggest: suggested
-  replies are ON with <model>`, and no chip ever appears: the key is what makes
-  it work.
-- **Check:** chips appear above the box when a session finishes a turn with its
-  Rendered view open. **Account → Suggested replies** is the per-user switch.
+- **Default:** off until you set `MUSTER_AGENT_OPENROUTER_KEY` in `.env`:
+  without a key no suggestion can be made, and muster reports the feature as
+  off, needing that variable.
+- **Check:** `muster doctor` or the Features page; then chips appear above the
+  box when a session finishes a turn with its Rendered view open.
+  **Account → Suggested replies** is the per-user switch.
 
 ### Focus
 
@@ -242,10 +243,12 @@ A short title and a sentence or three per session saying what it is doing now;
 search finds a session by it, and the chief reads it. [focus.md](focus.md).
 
 - **Needs:** the same OpenRouter key as [suggested replies](#suggested-replies).
+  Off until you set `MUSTER_AGENT_OPENROUTER_KEY` in `.env`; muster then
+  reports it as off, needing that variable.
 - **`.env`:** `MUSTER_AGENT_OPENROUTER_KEY=<your key>`. Optional:
   `MUSTER_FOCUS_INTERVAL` (15m; `0` turns it off), `MUSTER_FOCUS_RETENTION`.
-- **Check:** `focus: refresh every 15m0s (MUSTER_FOCUS_INTERVAL)…` in the log;
-  after a pass, search (`/`) finds a session by its focus title.
+- **Check:** `muster doctor` or the Features page; after a pass (every 15
+  minutes), search (`/`) finds a session by its focus title.
 
 ### Agent ask tool
 
