@@ -47,6 +47,14 @@ type Item struct {
 	// served without the field, as an HQ without tiers would, and a claim
 	// naming a tier reads it as judgement (HQ's default for an unnamed kind).
 	Tier string `json:"tier,omitempty"`
+	// ClaimedAt is HQ's `claimed_at`: when the current (or last) claim was
+	// made. A claim sets it; a heartbeat (and SetClaim by the same holder of
+	// a live lease) keeps it. Absent until the item is first claimed, or
+	// after ClearClaimedAt (an HQ without the field).
+	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
+	// Investigation is the `investigation` block the item was completed with
+	// (civ-hq docs/OFFICERS.md "Investigation"); absent when none.
+	Investigation map[string]any `json:"investigation,omitempty"`
 }
 
 // tierOf is the tier item it reads as: its own, or judgement when unset.
@@ -141,6 +149,43 @@ type Server struct {
 	askRefusal *refusal
 	askImages  []AskImage
 	asks       []Ask
+	// The investigation block on complete (civ-hq docs/OFFICERS.md
+	// "Investigation"): Investigating names the officers whose TYPE sets
+	// `investigation: true` — their `escalated` complete without a block is a
+	// 400 naming `investigation`, and nothing is written. PreInvestigation is
+	// an HQ from before the block: it refuses unknown body fields, so a
+	// complete carrying `investigation` is a 400. completeRefusal, when set,
+	// is answered by every complete instead (RefuseCompletes).
+	Investigating    map[string]bool
+	PreInvestigation bool
+	completeRefusal  *refusal
+}
+
+// RefuseCompletes makes every complete answer status {error, code} (status 0:
+// serve normally).
+func (s *Server) RefuseCompletes(status int, code, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if status == 0 {
+		s.completeRefusal = nil
+		return
+	}
+	s.completeRefusal = &refusal{status: status, code: code, error: msg}
+}
+
+// SetClaimedAt sets item id's claimed_at (a claim made at, e.g., before a
+// restart of muster).
+func (s *Server) SetClaimedAt(id string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[id].ClaimedAt = &at
+}
+
+// ClearClaimedAt drops item id's claimed_at: an HQ without the field.
+func (s *Server) ClearClaimedAt(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[id].ClaimedAt = nil
 }
 
 type refusal struct {
@@ -439,11 +484,18 @@ func (s *Server) SetTier(id, tier string) {
 	s.items[id].Tier = tier
 }
 
-// SetClaim puts item id in status claimed by holder until expires.
+// SetClaim puts item id in status claimed by holder until expires. As on HQ,
+// a new claim sets claimed_at to now, and the holder of a live lease
+// extending it (a heartbeat) keeps it.
 func (s *Server) SetClaim(id, holder string, expires time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	it := s.items[id]
+	now := s.Now()
+	renew := it.Status == "claimed" && it.ClaimedBy == holder && it.LeaseExpiresAt != nil && it.LeaseExpiresAt.After(now)
+	if !renew || it.ClaimedAt == nil {
+		it.ClaimedAt = &now
+	}
 	it.Status, it.ClaimedBy, it.LeaseExpiresAt = "claimed", holder, &expires
 }
 
@@ -693,7 +745,7 @@ func (s *Server) claimNext(w http.ResponseWriter, officer string, body map[strin
 		lease = int(v)
 	}
 	exp := now.Add(time.Duration(lease) * time.Second)
-	best.Status, best.ClaimedBy, best.LeaseExpiresAt, best.UpdatedAt = "claimed", instance, &exp, now
+	best.Status, best.ClaimedBy, best.LeaseExpiresAt, best.UpdatedAt, best.ClaimedAt = "claimed", instance, &exp, now, &now
 	best.Attempts++
 	if s.CommitThenFail != 0 {
 		s.write(w, s.CommitThenFail, map[string]any{"error": "committed, then failed to answer"})
@@ -767,7 +819,8 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 			return
 		}
 		exp := now.Add(time.Duration(lease) * time.Second)
-		it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = "claimed", instance, &exp, now
+		claimedAt := now
+		it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt, it.ClaimedAt = "claimed", instance, &exp, now, &claimedAt
 		it.Attempts++
 		if s.CommitThenFail != 0 {
 			s.write(w, s.CommitThenFail, map[string]any{"error": "committed, then failed to answer"})
@@ -783,17 +836,42 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		it.LeaseExpiresAt, it.UpdatedAt = &exp, now
 		s.write(w, http.StatusOK, map[string]any{"item": *it, "lease_expires_at": exp})
 	case "complete":
+		// HQ's order: the body decodes (unknown fields refused), the
+		// investigation block validates, the holder's update (409), then the
+		// type's requirement (400 naming investigation, nothing written).
+		inv, sent := body["investigation"].(map[string]any)
+		if _, present := body["investigation"]; present && s.PreInvestigation {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "body must be one JSON object {instance, outcome, summary, links?}", "code": "invalid"})
+			return
+		}
+		if s.completeRefusal != nil {
+			s.write(w, s.completeRefusal.status, map[string]any{"error": s.completeRefusal.error, "code": s.completeRefusal.code})
+			return
+		}
+		outcome, _ := body["outcome"].(string)
+		if sent {
+			if msg := investigationInvalid(inv, outcome); msg != "" {
+				s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"})
+				return
+			}
+		}
 		if !live || it.ClaimedBy != instance {
 			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
 			return
 		}
-		outcome, _ := body["outcome"].(string)
+		if outcome == "escalated" && !sent && s.Investigating[officer] {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "investigation is required to escalate an item of this officer type (its policy sets investigation: true)", "code": "invalid"})
+			return
+		}
 		summary, _ := body["summary"].(string)
 		st := "done"
 		if outcome == "escalated" {
 			st = "escalated"
 		}
 		it.Status, it.Outcome, it.Summary, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = st, outcome, summary, "", nil, now
+		if sent {
+			it.Investigation = inv
+		}
 		s.write(w, http.StatusOK, map[string]any{"item": *it})
 	case "transcript":
 		s.transcript(w, officer, it, instance, live, body)
@@ -809,6 +887,63 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 	default:
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such verb"})
 	}
+}
+
+// investigationInvalid is HQ's check of an investigation block (civ-hq
+// store/officer_investigation.go, the parts muster can get wrong): "" when
+// valid, else the refusal naming the field.
+func investigationInvalid(inv map[string]any, outcome string) string {
+	strs := func(k string) ([]string, bool) {
+		raw, ok := inv[k].([]any)
+		if !ok {
+			return nil, inv[k] == nil
+		}
+		out := []string{}
+		for _, v := range raw {
+			s, ok := v.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	}
+	if outcome != "escalated" {
+		return "investigation is kept only for outcome escalated"
+	}
+	if h, ok := strs("hypotheses"); !ok || len(h) < 1 || len(h) > 10 {
+		return "investigation.hypotheses must hold 1 to 10 entries"
+	}
+	if e, ok := inv["eliminated"].([]any); inv["eliminated"] != nil && (!ok || len(e) > 10) {
+		return "investigation.eliminated must hold at most 10 entries"
+	}
+	if rc, _ := inv["root_cause"].(string); strings.TrimSpace(rc) == "" || utf8.RuneCountInString(rc) > 300 {
+		return "investigation.root_cause must be 1 to 300 characters"
+	}
+	conf, _ := inv["confidence"].(string)
+	if conf != "low" && conf != "medium" && conf != "high" {
+		return "investigation.confidence must be one of low, medium, high"
+	}
+	fix, _ := inv["fix"].(map[string]any)
+	prs, _ := fix["pr_urls"].([]any)
+	steps, _ := fix["operator_steps"].([]any)
+	for _, v := range steps {
+		if s, ok := v.(string); !ok || strings.TrimSpace(s) == "" || utf8.RuneCountInString(s) > 1000 {
+			return "investigation.fix.operator_steps entries must be 1 to 1000 characters"
+		}
+	}
+	switch {
+	case (len(prs) > 0) == (len(steps) > 0):
+		return "investigation.fix must hold exactly one of pr_urls (draft PRs) or operator_steps"
+	case len(prs) > 0 && conf == "low":
+		return "investigation.fix.pr_urls needs confidence medium or high: at confidence low, give fix.operator_steps"
+	case len(steps) > 20:
+		return "investigation.fix.operator_steps must hold 1 to 20 entries"
+	}
+	if nc, ok := strs("not_checked"); !ok || len(nc) > 20 {
+		return "investigation.not_checked must hold at most 20 entries"
+	}
+	return ""
 }
 
 // Transcript route limits, as HQ states them.
