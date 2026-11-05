@@ -84,7 +84,8 @@
     "tests/telemetry.spec.ts": 95.0,
     "tests/open-perf.spec.ts": 45.0,
     "tests/agent-sidebar.spec.ts": 10.0,
-    "tests/chief-mobile.spec.ts": 12.0
+    "tests/chief-mobile.spec.ts": 12.0,
+    "tests/dock-fade.spec.ts": 8.0
   },
   "legs": {
     "1": [
@@ -128,7 +129,8 @@
       "tests/onboarding.spec.ts",
       "tests/chief-toggle.spec.ts",
       "tests/switcher-dock.spec.ts",
-      "tests/chief-mobile.spec.ts"
+      "tests/chief-mobile.spec.ts",
+      "tests/dock-fade.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",

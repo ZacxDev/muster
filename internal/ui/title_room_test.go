@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -38,6 +39,35 @@ func TestTitleEntriesAreWider(t *testing.T) {
 	}
 	if !strings.Contains(got, `<span class="`+switcherLabelClass+`">billing-reconcile-nightly:1</span>`) {
 		t.Errorf("the label is not drawn whole on one line:\n%s", got)
+	}
+}
+
+// The row's edge fade (switcherFadeJS) ships in the bar's own script and only
+// READS the row's scroll position — it never writes scrollLeft, so the offset
+// a refresh keeps is the reader's — and its two attributes are the ones the
+// stylesheet masks by. e2e dock-fade.spec.ts measures the fade at 412px.
+func TestTheRowFadeOnlyReadsTheScrollAndTheStylesheetKeysOffIt(t *testing.T) {
+	js := renderString(t, switcherScript())
+	if !strings.Contains(js, switcherFadeJS) {
+		t.Fatal("the fade is not in the bar's script")
+	}
+	for _, banned := range []string{"scrollLeft =", "scrollTo(", "scrollBy(", "scrollIntoView"} {
+		if strings.Contains(switcherFadeJS, banned) {
+			t.Errorf("the fade moves the row (%s)", banned)
+		}
+	}
+	css, err := os.ReadFile("../../web/css/input.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sel := range []string{
+		"[data-switcher-list][" + switcherFadeEndAttr + "] {",
+		"[data-switcher-list][" + switcherFadeStartAttr + "] {",
+		"[data-switcher-list][" + switcherFadeStartAttr + "][" + switcherFadeEndAttr + "] {",
+	} {
+		if !strings.Contains(string(css), sel) {
+			t.Errorf("web/css/input.css has no rule %q", sel)
+		}
 	}
 }
 
