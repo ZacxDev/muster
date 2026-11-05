@@ -1,0 +1,158 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ui"
+)
+
+// composeWorld is chiefWorld on the Compose chief: a provisioner wired, and
+// Extensions.ComposeChief set with the credential answer cred.
+func composeWorld(t *testing.T, withChief bool, cred ComposeChiefCred, credErr error) *chiefWorld {
+	t.Helper()
+	w := newChiefWorld(t, withChief, true)
+	ext := w.s.ext
+	ext.ComposeChief = &ComposeChief{Credential: func(context.Context, int64) (ComposeChiefCred, error) { return cred, credErr }}
+	w.s.UseExtensions(ext)
+	w.h = w.s.Handler()
+	return w
+}
+
+// TestNothingDispatchesOnTheComposeChief: the provisioner is wired for the
+// chief, and every surface that dispatches reads it as off — POST /agents (in
+// the dispatch sheet's 503 shape), the deployment refusal agent_dispatch and
+// the task actions read, and dispatchServed itself. Lifecycle stays served.
+// Control: the same server without ComposeChief dispatches.
+func TestNothingDispatchesOnTheComposeChief(t *testing.T) {
+	w := composeWorld(t, false, ComposeChiefOpenRouter, nil)
+	if !w.s.lifecycleServed() || w.s.dispatchServed() {
+		t.Fatalf("lifecycleServed %v dispatchServed %v; want true, false", w.s.lifecycleServed(), w.s.dispatchServed())
+	}
+	rec := w.post("/agents", url.Values{"note": {"a task"}})
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), ProvisionerUnwiredField) ||
+		!strings.Contains(rec.Body.String(), "dispatches no other agent") {
+		t.Fatalf("POST /agents: %d %s", rec.Code, rec.Body)
+	}
+	if got := w.s.chiefDispatchDeploymentRefusal(1); got == "" {
+		t.Fatal("agent_dispatch's deployment refusal is empty on the Compose chief")
+	}
+	if w.s.shellFeatures(opCtx).Dispatch {
+		t.Error("the sidebar's \"+\" (Features.Dispatch) is drawn on the Compose chief")
+	}
+	var unavailable strings.Builder
+	if err := ui.RenderDispatchUnavailable(&unavailable); err != nil {
+		t.Fatal(err)
+	}
+	if rec := w.get("/ui/agents/new", nil); rec.Body.String() != unavailable.String() {
+		t.Errorf("the dispatch sheet on the Compose chief is not the dispatch-unavailable sheet:\n%.800s", rec.Body)
+	}
+
+	control := newChiefWorld(t, false, true)
+	if !control.s.dispatchServed() || !control.s.shellFeatures(opCtx).Dispatch {
+		t.Fatal("control: a provisioner without ComposeChief does not offer a dispatch")
+	}
+	if rec := control.get("/ui/agents/new", nil); rec.Body.String() == unavailable.String() {
+		t.Fatal("control: the dispatch sheet is the unavailable one with a dispatching provisioner")
+	}
+	if rec := control.post("/agents", url.Values{"note": {"a task"}}); strings.Contains(rec.Body.String(), "dispatches no other agent") {
+		t.Fatalf("control: POST /agents refused with the Compose sentence: %s", rec.Body)
+	}
+}
+
+// TestTheComposeChiefIsTheAdminsAlone: user 1 gets the switch; another user's
+// Account page says why they have none, and a dispatch for them is refused.
+func TestTheComposeChiefIsTheAdminsAlone(t *testing.T) {
+	w := composeWorld(t, false, ComposeChiefOpenRouter, nil)
+	if _, state := w.chiefSection(t); state != "off" {
+		t.Fatalf("the admin's Chief section reads %q, want off (a switch)", state)
+	}
+	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
+	r := httptest.NewRequest(http.MethodGet, "/account", nil).WithContext(member)
+	section := w.s.accountChiefSection(r)
+	if !strings.Contains(section, `data-state="unavailable"`) || !strings.Contains(section, ComposeChiefNotYours) {
+		t.Fatalf("a member's Chief section:\n%s", section)
+	}
+	if strings.Contains(section, "<form") {
+		t.Fatal("a member is drawn a switch for the admin's chief")
+	}
+	if w.s.chiefToggleAvailable(2, nil) {
+		t.Fatal("the switch is available to a member on the Compose chief")
+	}
+	if _, _, err := w.s.composeChiefKindAccount(member, dispatchParams{Name: agents.ChiefNameFor(2)}); !errors.Is(err, ErrDispatchRefused) {
+		t.Fatalf("a member's chief: %v, want refused", err)
+	}
+}
+
+// TestTheComposeChiefIsCreatedOnItsFixedKindAndAccount: the admin's chief is
+// claude-code on ComposeChiefAccount; any other name, an account, a model or a
+// repository is refused; and with no credential the refusal names both.
+func TestTheComposeChiefIsCreatedOnItsFixedKindAndAccount(t *testing.T) {
+	w := composeWorld(t, false, ComposeChiefClaude, nil)
+	kind, account, err := w.s.composeChiefKindAccount(opCtx, dispatchParams{Name: agents.ChiefName})
+	if err != nil || kind != agents.KindClaudeCode || account != "chief" {
+		t.Fatalf("the admin's chief: %q %q %v", kind, account, err)
+	}
+	for _, p := range []dispatchParams{
+		{Name: "zesty-stoat"},
+		{Name: agents.ChiefName, Kind: agents.KindGateway},
+		{Name: agents.ChiefName, CCAccount: "other"},
+		{Name: agents.ChiefName, Model: "opus"},
+		{Name: agents.ChiefName, Repo: "o/r"},
+	} {
+		if _, _, err := w.s.composeChiefKindAccount(opCtx, p); !errors.Is(err, ErrDispatchRefused) {
+			t.Errorf("%+v: %v, want refused", p, err)
+		}
+	}
+	none := composeWorld(t, false, "", ErrComposeChiefNoCredential)
+	_, _, err = none.s.composeChiefKindAccount(opCtx, dispatchParams{Name: agents.ChiefName})
+	if !errors.Is(err, ErrDispatchRefused) || !strings.Contains(err.Error(), ErrComposeChiefNoCredential.Error()) {
+		t.Fatalf("no credential: %v", err)
+	}
+}
+
+// TestTheComposeChiefCannotBeReplaced: POST /api/chief/replace is 409 with the
+// reason. Control: without ComposeChief the same request is not that 409.
+func TestTheComposeChiefCannotBeReplaced(t *testing.T) {
+	for _, compose := range []bool{true, false} {
+		var w *chiefWorld
+		if compose {
+			w = composeWorld(t, true, ComposeChiefClaude, nil)
+		} else {
+			w = newChiefWorld(t, true, true)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/api/chief/replace", strings.NewReader(`{"kind":"claude-code"}`))
+		r.Header.Set("Authorization", "Bearer "+testHookToken)
+		r.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		w.h.ServeHTTP(rec, r)
+		got := rec.Code == http.StatusConflict && strings.Contains(rec.Body.String(), "the Compose chief cannot be replaced")
+		if got != compose {
+			t.Errorf("compose=%v: %d %s", compose, rec.Code, rec.Body)
+		}
+	}
+}
+
+// TestTheComposeChiefsTerminalSaysWhereItsOutputIs: its Terminal view is
+// unavailable, saying why and where to read it.
+func TestTheComposeChiefsTerminalSaysWhereItsOutputIs(t *testing.T) {
+	w := composeWorld(t, true, ComposeChiefClaude, nil)
+	name := ""
+	for i, a := range w.store.rows {
+		if a.ID == homeChiefID {
+			w.store.rows[i].Kind, w.store.rows[i].CCAccount = agents.KindClaudeCode, "chief"
+			name = a.Name
+		}
+	}
+	rec := w.get("/agents/"+name+"/terminal", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "docker compose logs chief") {
+		t.Fatalf("the terminal page: %d %.1500s", rec.Code, rec.Body)
+	}
+}

@@ -124,6 +124,10 @@ func ClaudeCodeNetwork() provision.Network {
 // cluster policy, which selects the pod by [LabelEgress]=[EgressLocked], is the
 // only allow (docs/jobs.md "A pool's egress lock").
 func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
+	// The Compose container: not confined (Config.ComposeContainer).
+	if cfg.ComposeContainer {
+		return provision.Network{}
+	}
 	n := ClaudeCodeNetwork()
 	if egressLocked {
 		n.PublicEgressTCPPorts = nil
@@ -133,6 +137,15 @@ func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
 	}
 	return n
+}
+
+// claudeCodeResourcesFor is ClaudeCodeResources, or none for the Compose
+// container (Config.ComposeContainer: its driver cannot enforce limits).
+func claudeCodeResourcesFor(cfg Config) provision.Resources {
+	if cfg.ComposeContainer {
+		return provision.Resources{}
+	}
+	return ClaudeCodeResources
 }
 
 // EnvClaudeDisableNonessentialTraffic is the Claude Code CLI's switch for its
@@ -380,8 +393,12 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if a.CCAccount == "" {
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s but names no Claude account", a.Name, agents.KindClaudeCode)
 	}
+	// 🔴 A SESSION ON THE LLM ROUTE NEEDS NO TOKEN: it places none
+	// (claudeCodeSecrets), and the Compose chief without a subscription token
+	// has its account but no token at all. Every other session still refuses a
+	// missing one.
 	token, ok := cc.Accounts[a.CCAccount]
-	if !ok || token == "" {
+	if !opts.ClaudeCodeSession.LLMRoute && (!ok || token == "") {
 		// The account NAME only — never a token, and not the configured set's
 		// values either.
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs on Claude account %q, which is not "+
@@ -458,7 +475,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// reached through muster's proxy with its own muster token, and the
 		// entrypoint refuses a routed pod that also holds one.
 		Secrets:   claudeCodeSecrets(a, token, route),
-		Resources: ClaudeCodeResources,
+		Resources: claudeCodeResourcesFor(cfg),
 		Workspace: provision.Workspace{Path: ClaudeCodeDataPath, Size: size, Persist: true},
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},

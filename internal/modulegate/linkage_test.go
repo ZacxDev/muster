@@ -146,11 +146,6 @@ var notLinkedLedger = map[string]string{
 
 	"internal/provision/provisiontest": "the driver contract suite, run by driver " +
 		"implementations from their own _test.go files. Same reason as internal/dbtest.",
-
-	// Leaves this ledger in the PR that selects it (MUSTER_CHIEF_RUNTIME=compose):
-	// this gate then fails until the entry is removed, which is the point.
-	"internal/provision/compose": "the docker compose chief's driver, landed before the " +
-		"cmd/muster-server wiring that selects it (a separate pull request).",
 }
 
 // TestTheHTTPLayerLinksIntoABinary is the gate that makes "muster serves" a

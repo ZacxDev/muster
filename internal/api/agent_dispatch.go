@@ -694,7 +694,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		}
 		return refuse(msg)
 	}
-	if s.ext.Provisioner == nil {
+	if !s.dispatchServed() {
 		return failSpent("this deployment cannot start agents")
 	}
 	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {

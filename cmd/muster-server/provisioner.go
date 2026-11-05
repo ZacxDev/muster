@@ -253,14 +253,18 @@ func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, plan
 			return nil, nil, err
 		}
 	}
-	prov, err := agentprovision.New(agentprovision.Config{
+	pc := agentprovision.Config{
 		Driver:             driver,
 		Store:              store,
 		Spec:               specCfg,
 		Credentials:        credResolver{pool: pool, plane: plane},
 		Logger:             logger,
 		KickoffDeliverable: kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired),
-	})
+	}
+	if cfg.chiefCompose() {
+		pc.ComposeChiefRoute = composeChiefRoute(composeChiefCredential(cfg, plane))
+	}
+	prov, err := agentprovision.New(pc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -454,6 +458,8 @@ func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) 
 		return noop, nil
 	case provisionerK8s:
 		return buildK8sDriver(cfg, logger)
+	case provisionerCompose:
+		return buildComposeDriver(cfg, logger)
 	default:
 		// Unreachable: config.validateProvisioner refuses anything else at boot.
 		// A silent nil here would present as a working server whose every
@@ -675,6 +681,8 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		// port, so a URL here always comes with the pod port its policy allows.
 		ConnectURL:  cfg.AgentConnectURL,
 		ConnectPort: cfg.ConnectPort,
+
+		ComposeContainer: cfg.chiefCompose(),
 	}, nil
 }
 

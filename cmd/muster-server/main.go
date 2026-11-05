@@ -506,6 +506,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// configuration.
 		return nil, fmt.Errorf("agent plane: %w", err)
 	}
+	if prov != nil && cfg.chiefCompose() {
+		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane)}
+	}
 	if prov != nil {
 		ext.Provisioner = prov
 		// The job API's sha checkout and result_path read exec through the

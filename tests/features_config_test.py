@@ -55,7 +55,13 @@ REQUIRED_ANCHORS = ["core", "ask-cards", "other-settings"]
 # credentials only (cmd/muster-server/provisioner.go), so none of it can work
 # in the Compose stack, and docs/features.md#dispatch says so.
 AGENT_PLANE = "agent plane: needs muster running inside Kubernetes (docs/features.md#dispatch)"
+# The Compose chief's own variables, until the compose file's `chief` profile
+# forwards them (the pull request that adds the profile removes this group).
+COMPOSE_CHIEF_PENDING = "the Compose chief runtime: forwarded with the `chief` profile, which a later change adds"
 NOT_FORWARDED = {
+    **{name: COMPOSE_CHIEF_PENDING for name in [
+        "MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_SPEC_DIR", "MUSTER_CHIEF_CLAUDE_TOKEN",
+    ]},
     **{name: AGENT_PLANE for name in [
         "MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_AGENT_GATEWAY_MODEL",
         "MUSTER_AGENT_GATEWAY_PORT", "MUSTER_AGENT_RUNTIME_CONFIG", "MUSTER_AGENT_RUNTIME_INSTALL",

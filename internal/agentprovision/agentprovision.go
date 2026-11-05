@@ -359,6 +359,16 @@ type Config struct {
 	// Empty is [DefaultAnonymousGitBase], the only production value; tests
 	// point it at a local directory (file://…/).
 	AnonymousGitBase string
+
+	// ComposeChiefRoute is set on the docker compose install's chief runtime
+	// (cmd/muster-server composechief.go) and nowhere else. For the chief (the
+	// reserved slug) it answers whether the chief runs on the LLM route — its
+	// owner's OpenRouter key through muster's proxy — instead of the Claude
+	// subscription token its account holds, or an error naming what to add.
+	// It is the same rule the api's Account page and refusal read
+	// (api.ComposeChief.Credential), so the two cannot disagree. nil: every
+	// agent's credential comes from Credentials, as before.
+	ComposeChiefRoute func(ctx context.Context, owner int64) (route bool, err error)
 }
 
 // CredentialResolver answers which credentials an OWNER's agent is built with.
@@ -395,6 +405,7 @@ type Adapter struct {
 	kickoffDeliverable bool
 	creds              CredentialResolver
 	anonGitBase        string
+	composeRoute       func(ctx context.Context, owner int64) (bool, error)
 	// githubGrant answers whether an agent holds an approved grant reaching
 	// GitHub (connectors.GitHubGrantLookup); set by UseGitHubGrants. nil is
 	// UNKNOWN, and vetoes job-lane bypass (jobBypassVeto).
@@ -510,6 +521,7 @@ func New(cfg Config) (*Adapter, error) {
 		kickoffDeliverable: cfg.KickoffDeliverable,
 		creds:              cfg.Credentials,
 		anonGitBase:        cfg.AnonymousGitBase,
+		composeRoute:       cfg.ComposeChiefRoute,
 	}
 	if a.anonGitBase == "" {
 		a.anonGitBase = DefaultAnonymousGitBase
@@ -1167,13 +1179,17 @@ func (a *Adapter) ensureGatewaySecret(ctx context.Context, ag agents.Agent) (age
 // note defending a form that carries no invariant is worse than no note: it sends
 // the next reader to protect a formatting choice.
 func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spec, error) {
-	cfg, err := a.specFor(ctx, ag)
+	route, err := a.composeChiefRoute(ctx, ag)
+	if err != nil {
+		return provision.Spec{}, err
+	}
+	cfg, err := a.specFor(ctx, ag, route)
 	if err != nil {
 		return provision.Spec{}, err
 	}
 	switch agents.ResolveKind(ag.Kind) {
 	case agents.KindClaudeCode:
-		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg))
+		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg), route)
 	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
@@ -1212,7 +1228,7 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 //
 // jobBypassVeto is Adapter.jobBypassVeto's answer for a worker; a chief is never
 // listed for bypass (agentspec.JobBypassListed), so it is unused there.
-func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string) (provision.Spec, error) {
+func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string, route bool) (provision.Spec, error) {
 	if !agents.IsChiefName(ag.Name) {
 		opts := agentspec.Options{JobBypassVeto: jobBypassVeto}
 		if a.ccSession != nil {
@@ -1233,7 +1249,20 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	// HQMCP: the chief, and no other agent, is offered the HQ MCP server with
 	// every tool allowed (internal/podagent/hqmcp.go).
 	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting),
-		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: true}})
+		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: true, LLMRoute: route}})
+}
+
+// composeChiefRoute is Config.ComposeChiefRoute for ag: false for every agent
+// but a claude-code chief on a server that set it.
+func (a *Adapter) composeChiefRoute(ctx context.Context, ag agents.Agent) (bool, error) {
+	if a.composeRoute == nil || !agents.IsChiefName(ag.Name) || agents.ResolveKind(ag.Kind) != agents.KindClaudeCode {
+		return false, nil
+	}
+	route, err := a.composeRoute(ctx, ag.OwnerID)
+	if err != nil {
+		return false, fmt.Errorf("agentprovision: chief %q: %w", ag.Name, err)
+	}
+	return route, nil
 }
 
 // specFor is the deployment-wide spec config with the model-provider
@@ -1243,7 +1272,7 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 // USES: a claude-code spec gets an empty OpenRouter key and a gateway spec an
 // empty account map. agentspec places each only for its own kind today; zeroing
 // the other means a future kind that reads both still cannot carry the admin's.
-func (a *Adapter) specFor(ctx context.Context, ag agents.Agent) (agentspec.Config, error) {
+func (a *Adapter) specFor(ctx context.Context, ag agents.Agent, route bool) (agentspec.Config, error) {
 	cfg := a.spec
 	if a.creds == nil {
 		return cfg, nil
@@ -1258,6 +1287,11 @@ func (a *Adapter) specFor(ctx context.Context, ag agents.Agent) (agentspec.Confi
 	case agents.KindClaudeCode:
 		if cfg.ClaudeCode == nil || ag.CCAccount == "" {
 			return cfg, nil // agentspec refuses this row, naming why
+		}
+		// A chief on the LLM route places no subscription token (the Compose
+		// chief without one, composeChiefRoute): its account has none to look up.
+		if route {
+			return cfg, nil
 		}
 		tok, err := a.creds.ClaudeToken(ctx, ag.OwnerID, ag.CCAccount)
 		if err != nil {
