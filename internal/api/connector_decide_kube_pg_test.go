@@ -50,9 +50,9 @@ func TestAnMCPApprovalOfKubeReadNeverSaysTheGitHubAppGrantsNothing(t *testing.T)
 	s := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword},
 		log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: agents.NewPG(f.pool), Connectors: connectors.WithVirtual(f.store, connectors.KubeReadVirtual(), authz.IsAdmin),
-		ConnectorPolicy: fakeTestPolicy(),
-		Mirror:          &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: attnWindows(mirror.StatusWaiting)},
-		MirrorTokens:    fakeMirrorTokens{ws: mirror.Token{ID: 1, OwnerID: 1, Host: "ws"}}})
+		ConnectorPolicy: fakeTestPolicy(), Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"},
+		Mirror:       &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: attnWindows(mirror.StatusWaiting)},
+		MirrorTokens: fakeMirrorTokens{ws: mirror.Token{ID: 1, OwnerID: 1, Host: "ws"}}})
 	if _, err := s.EnableOfficers(OfficersConfig{Officers: list, InstallSession: discardSession, NoShipResume: true}); err != nil {
 		t.Fatal(err)
 	}
