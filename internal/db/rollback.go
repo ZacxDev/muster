@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -176,11 +177,27 @@ const sessionEpisodesMigrationVersion = 73
 // treatment again. Its body is idempotent, the connector_audit CHECK it
 // widens included.
 //
-// ⚠ LATENT TRAP: re-applying 0075 re-sets connector_audit_kind_check to
-// exactly ('proxy','grant','query','llm'). Once a later migration adds a
-// kind, RLSOn fails on that kind's rows: before adding one, move the CHECK out
-// of what RLSOn re-applies (for example, skip 0075's ALTER here).
+// 🔴 ITS CONNECTOR_AUDIT CHECK IS NOT RE-APPLIED (withoutAuditKindCheck).
+// 0075 sets connector_audit_kind_check to the kinds of its day; 0084 added
+// 'kube', and re-setting 0075's list would refuse every kube row and fail
+// RLSOn. The CHECK is no policy, grant or default, so RLSOn has no reason to
+// touch it: 0084 is its one definition.
 const officerLLMUsageMigrationVersion = 75
+
+// auditKindCheck0075 is the start of 0075's two statements re-setting
+// connector_audit_kind_check; withoutAuditKindCheck cuts from it to the end.
+const auditKindCheck0075 = "ALTER TABLE public.connector_audit DROP CONSTRAINT IF EXISTS connector_audit_kind_check;"
+
+// withoutAuditKindCheck is 0075's body without its trailing CHECK statements,
+// for RLSOn. It fails loudly when 0075 no longer ends with them, rather than
+// re-applying a stale CHECK.
+func withoutAuditKindCheck(sql string) (string, error) {
+	i := strings.LastIndex(sql, auditKindCheck0075)
+	if i < 0 || strings.Contains(sql[i:], "CREATE ") || strings.Contains(sql[i:], "POLICY") {
+		return "", fmt.Errorf("rls on: migration %04d no longer ends with its connector_audit CHECK statements; update withoutAuditKindCheck", officerLLMUsageMigrationVersion)
+	}
+	return sql[:i], nil
+}
 
 // officerJudgementSessionsMigrationVersion is 0082: officer_judgement_sessions
 // (the judgement-tier daily session cap's ledger), owned and under the same
@@ -267,11 +284,19 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == officerJudgementSessionsMigrationVersion && hasOfficerJudgementSessions) {
 			continue
 		}
+		body := m.sql
+		if m.version == officerLLMUsageMigrationVersion {
+			b, err := withoutAuditKindCheck(body)
+			if err != nil {
+				return err
+			}
+			body = b
+		}
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("rls on: begin: %w", err)
 		}
-		if _, err := tx.Exec(ctx, m.sql); err != nil {
+		if _, err := tx.Exec(ctx, body); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("rls on: apply %s: %w", m.name, err)
 		}

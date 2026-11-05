@@ -28,7 +28,27 @@ Start now:
 
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + tierNote(o) + repoNote(o) + connectorsNote(o) + releaseNote(o)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + tierNote(o) + repoNote(o) + connectorsNote(o) + kubeNote(o) + releaseNote(o)
+}
+
+// kubeNote tells a judgement instance of an officer with a `kube` block how to
+// read its clusters. Nothing for every other instance.
+func kubeNote(o Officer) string {
+	cs := o.KubeClusters()
+	if len(cs) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(cs))
+	for _, c := range cs {
+		names = append(names, c.Name)
+	}
+	return fmt.Sprintf(`
+
+Cluster reads: %[1]s reads the clusters %[2]s, read-only, as your officer's own ServiceAccount. Ask once with connector_request{name: %[3]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[3]q, wait_seconds: 50}, repeated while it says pending. Then call it with typed arguments — never a URL:
+- {cluster, verb: "get"|"list", group ("" for core), version, resource (a plural name, e.g. "deployments"; no subresources — status is on the object), namespace?, name? (get), label_selector?, field_selector?, limit?}
+- {cluster, log: {namespace, pod, container?, previous?, since_seconds? (at most 86400), tail_lines? (at most 2000)}}
+Secrets, exec, port-forward, proxies, ServiceAccount tokens and RBAC are never readable, and watch is not offered. A list across all namespaces needs a selector. An answer over 1 MiB or a list of more than 500 objects is refused, not cut: narrow it. Log lines come back scrubbed of credential shapes and capped at 1000 characters. 30 calls a minute, and 200 reads per item (cluster and observability reads together). Each call is audited (the answer is not); cite a read by its jti. A ConfigMap comes back whole and may hold a credential: NEVER quote a credential-shaped value anywhere — summary, ask, pull request or log.`,
+		ToolKubeRead, strings.Join(names, ", "), KubeConnector)
 }
 
 // tierNote tells an instance of a tiered officer which tier it works: its
@@ -202,6 +222,8 @@ func ToolOffered(o Officer, tool string) bool {
 		return o.Ship != nil
 	case ToolCILogs:
 		return o.Ship != nil && o.CILogs != nil
+	case ToolKubeRead:
+		return len(o.KubeClusters()) > 0
 	}
 	return false
 }

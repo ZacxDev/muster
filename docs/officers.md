@@ -1537,6 +1537,85 @@ rolling muster-server back to an image that predates it (an older image
 refuses the unknown field and does not boot). Migration 0075's own rollback is
 in its header.
 
+## Reading a cluster: officer_kube_read
+
+A tiered officer with a `kube` block offers its **judgement** instances
+`officer_kube_read`: one typed, read-only request against a Kubernetes cluster
+the block names. muster-server runs it itself (`internal/kuberead`), as
+`postgres_query` runs SQL, so the instance pod never holds a cluster
+credential and never names an address.
+
+```json
+"kube": {"clusters": [{"name": "prod-a", "service_account": "officers/officer-anomaly-prod-a"}]}
+```
+
+Each cluster's connection is the server's **sealed environment**, never the
+declaration (`<CLUSTER>` is the name as a token suffix spells an id:
+`prod-a` → `PROD_A`):
+
+| variable | holds |
+|---|---|
+| `MUSTER_KUBE_READ_ENDPOINT_<CLUSTER>` | the API server's `host:port` (no scheme, no path) |
+| `MUSTER_KUBE_READ_CA_<CLUSTER>` | the PEM bundle its certificate chains to |
+| `MUSTER_KUBE_READ_MINTER_TOKEN_<CLUSTER>` | a token whose ONLY right is `create` on `serviceaccounts/token` for the officer's ServiceAccount |
+
+**One call:**
+
+1. **Binding.** Only a judgement instance of an officer with `kube` is offered
+   the tool. A routine instance, or any other agent, is refused at dispatch.
+2. **Arguments, typed only.** Either
+   `{cluster, verb: get|list, group, version, resource, namespace?, name?, label_selector?, field_selector?, limit?}`
+   or `{cluster, log: {namespace, pod, container?, previous?, since_seconds ≤ 86400, tail_lines ≤ 2000}}`,
+   plus an optional `item_id`. An unknown key (a `url`, a `path`, `watch`) is
+   refused. muster builds the GET path; there is never a URL from the model.
+3. **Grant.** The instance's own approved grant for the `kube-read`
+   connector, filed with `connector_request` and approved by hand, never from
+   a shared approval. `kube-read` is a virtual connector with no stored secret
+   and no HTTP face: the proxy refuses `/connect/kube-read/…`. It exists for
+   admins only, so the officer's owner must be one.
+4. **Item.** The instance must hold a live claim in HQ. The read is counted
+   against it (`item_id` picks one when it holds several).
+5. **Caps.** 30 calls a minute per officer; **200 reads per item**
+   (`officers.ReadBudget`, the one per-item counter, meant to be shared by the
+   observability tools). Both are in memory: a restart can only allow more.
+6. **Read.** muster mints a **600 s TokenRequest** for the officer's
+   ServiceAccount with the minter token, then GETs the path with that token
+   alone. TLS trusts the cluster's CA bundle only and verifies the name
+   `kubernetes.default.svc`; muster dials the declared endpoint and nothing
+   else, and follows no redirect.
+
+**What can be read.** The allowlist is ONE file,
+`internal/kuberead/allowlist.json`. A test pins it equal to the union of the
+officer-read ClusterRoles' rules (`internal/kuberead/testdata/`), and each
+infrastructure repository pins its ClusterRole to a byte-identical copy of its
+fixture: the ledger is enforced by fixture equality on both sides. The roles grant `get` and
+`list` only. Secrets, `pods/exec`, `attach`, `portforward`, every proxy,
+ServiceAccounts and their tokens, CSRs and RBAC are never on the list (and are
+refused in any group as a belt). No subresource is offered except a pod's log,
+through the log form: status is read on the object. `watch` is never offered. A list across all namespaces needs a label or
+field selector.
+
+**What comes back.**
+- An object, or `{kind, count, items, more, resource_version}` for a list.
+  `managedFields` and the `last-applied-configuration` annotation are
+  stripped. Everything else is returned as the API server returned it:
+  **ConfigMaps in full** (operator decision), pod `env` values and inline Helm
+  values included. The kickoff tells the instance never to quote a
+  credential-shaped value.
+- A pod log as `{lines, line_count, redactions}`: each line through a port of
+  HQ's `obs.RedactLine` (structured first; JWTs, bearer and URL credentials,
+  `key=value` secrets, e-mails, IPs, 32+ character tokens), capped at 1000
+  characters.
+- **Refused, not cut:** an answer over 1 MiB, or a list of more than 500
+  objects. A list the caller limited (`limit`) says `more` when there are more.
+
+**Audit.** Every call that reaches the caps writes one connector-audit row of
+kind `kube` (migration 0084): the instance, the cluster, the verb, the path,
+the status, and in `detail` the officer, item, group/version/resource,
+namespace, name, selectors, the minted token's jti, the object count, bytes,
+duration and any refusal. **Never the answer.** The API servers do not log
+reads, so this row is the read audit. The instance cites a read by its jti.
+
 ## Security model
 
 - **The token never leaves muster-server.** It is read from the server's

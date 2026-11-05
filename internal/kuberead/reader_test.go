@@ -92,7 +92,9 @@ func TestTheReaderFollowsNoRedirect(t *testing.T) {
 	t.Cleanup(other.Close)
 	f := newFakeAPI(t)
 	f.mu.Lock()
-	f.serve = func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, other.URL+"/api/v1/secrets", http.StatusFound) }
+	f.serve = func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/api/v1/secrets", http.StatusFound)
+	}
 	f.mu.Unlock()
 	if _, _, err := read(t, f, listConfigMaps); err == nil {
 		t.Fatal("a redirect was answered as a result")

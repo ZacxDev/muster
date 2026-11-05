@@ -385,6 +385,16 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// recorded as the App's problem (the request and agent cards show it).
 			go checkGitHubApp(ctx, gapp, logger)
 		}
+
+		// The kube-read connector (officer_kube_read, internal/kuberead) is
+		// presented through the same store when an officer declares `kube`,
+		// so its instances' requests for it are filed and approved by hand
+		// like any connector grant. It holds no credential and has no HTTP
+		// face: the proxy refuses it. Wrapped OVER the App's (VirtualOf
+		// looks through both).
+		if ext.Connectors != nil && declaresKube(cfg.Officers) {
+			ext.Connectors = connectors.WithVirtual(ext.Connectors, connectors.KubeReadVirtual(), authz.IsAdmin)
+		}
 	}
 
 	// 🔴 THE ASSIGNMENT IS TWO STEPS, AND THE nil-CHECK IS NOT PEDANTRY. Assigning
@@ -2060,4 +2070,14 @@ func needsYouLiveCount(c *api.ChiefNudges) int {
 		}
 	}
 	return n
+}
+
+// declaresKube reports whether any declared officer has a `kube` block.
+func declaresKube(list []officers.Officer) bool {
+	for _, o := range list {
+		if o.Kube != nil {
+			return true
+		}
+	}
+	return false
 }

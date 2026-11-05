@@ -36,8 +36,6 @@ func TestThePathBuilderBuildsOnlyAllowlistedGETPaths(t *testing.T) {
 			"/api/v1/namespaces/web/pods", "limit=501"},
 		{"get a deployment", `{"cluster":"prod-a","verb":"get","group":"apps","version":"v1","resource":"deployments","namespace":"web","name":"api"}`,
 			"/apis/apps/v1/namespaces/web/deployments/api", ""},
-		{"get a status subresource", `{"cluster":"prod-a","verb":"get","group":"apps","version":"v1","resource":"deployments/status","namespace":"web","name":"api"}`,
-			"/apis/apps/v1/namespaces/web/deployments/api/status", ""},
 		{"list a cluster-scoped resource with no selector", `{"cluster":"prod-a","verb":"list","group":"","version":"v1","resource":"nodes"}`,
 			"/api/v1/nodes", "limit=501"},
 		{"a wildcard group's resource", `{"cluster":"prod-a","verb":"list","group":"helm.toolkit.fluxcd.io","version":"v2","resource":"helmreleases","namespace":"flux-system"}`,
@@ -93,6 +91,8 @@ func TestThePathBuilderRefusesEverythingOutsideTheAllowlist(t *testing.T) {
 		"no verb":                      req("", "", "pods", "web", ""),
 		"pods/log by get":              req("get", "", "pods/log", "web", "api-1"),
 		"a status subresource listed":  req("list", "apps", "deployments/status", "web", ""),
+		"a status subresource read":    req("get", "apps", "deployments/status", "web", "api"),
+		"pods/status":                  req("get", "", "pods/status", "web", "api-1"),
 		"a name with a slash":          req("get", "", "configmaps", "web", "../secrets/db"),
 		"a name with an escape":        req("get", "", "configmaps", "web", "x%2fsecrets"),
 		"a namespace with a slash":     req("list", "", "configmaps", "web/secrets", ""),
@@ -189,24 +189,26 @@ func rbacRules(t *testing.T, path string) (map[string]bool, []string) {
 		t.Fatal(err)
 	}
 	var f struct {
-		Verbs []string `json:"verbs"`
 		Rules []struct {
 			APIGroups []string `json:"apiGroups"`
 			Resources []string `json:"resources"`
+			Verbs     []string `json:"verbs"`
 		} `json:"rules"`
 	}
 	if err := json.Unmarshal(b, &f); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
 	out := map[string]bool{}
+	var verbs []string
 	for _, r := range f.Rules {
+		verbs = append(verbs, strings.Join(r.Verbs, ","))
 		for _, g := range r.APIGroups {
 			for _, res := range r.Resources {
 				out[g+"|"+res] = true
 			}
 		}
 	}
-	return out, f.Verbs
+	return out, verbs
 }
 
 // TestTheAllowlistIsTheRBACLedger: muster's allowlist is EXACTLY the union of
@@ -214,8 +216,8 @@ func rbacRules(t *testing.T, path string) (map[string]bool, []string) {
 // it fails when either side grows or shrinks. Those fixtures are the
 // cross-repo ledger: each infrastructure repository pins its ClusterRole to a
 // byte-identical copy, so the RBAC and this list cannot drift apart
-// unnoticed. The verbs are get, list and watch only, and nothing on the
-// never-grant list appears.
+// unnoticed. Every rule's verbs are exactly get and list (no watch), and
+// nothing on the never-grant list, and no subresource but pods/log, appears.
 func TestTheAllowlistIsTheRBACLedger(t *testing.T) {
 	files, _ := filepath.Glob("testdata/officer-read-rbac-*.json")
 	if len(files) != 2 {
@@ -224,8 +226,10 @@ func TestTheAllowlistIsTheRBACLedger(t *testing.T) {
 	want := map[string]bool{}
 	for _, f := range files {
 		rules, verbs := rbacRules(t, f)
-		if strings.Join(verbs, ",") != "get,list,watch" {
-			t.Errorf("%s: verbs %v, want get, list, watch only", f, verbs)
+		for _, v := range verbs {
+			if v != "get,list" {
+				t.Errorf("%s: a rule's verbs are %q, want exactly get,list (watch is not offered)", f, v)
+			}
 		}
 		for k := range rules {
 			want[k] = true
@@ -254,6 +258,9 @@ func TestTheAllowlistIsTheRBACLedger(t *testing.T) {
 			if res == n {
 				t.Errorf("the allowlist names %q, which is never granted", k)
 			}
+		}
+		if strings.Contains(res, "/") && k != "|pods/log" {
+			t.Errorf("the allowlist names the subresource %q: only pods/log is offered", k)
 		}
 		if strings.HasPrefix(k, "rbac.authorization.k8s.io|") {
 			t.Errorf("the allowlist names an RBAC resource: %q", k)

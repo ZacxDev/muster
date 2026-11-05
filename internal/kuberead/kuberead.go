@@ -1,143 +1,56 @@
-// Package kuberead is officer_kube_read's engine: typed read requests against
-// a named cluster's API server, run by muster-server itself.
+// Package kuberead is officer_kube_read's engine: one typed, read-only
+// request against a named cluster's API server, run by muster-server itself
+// (docs/officers.md "Reading a cluster: officer_kube_read").
 //
-// RED-FIRST SKELETON: the exported surface the tests are written against,
-// with no behaviour. The implementation replaces it.
+// 🔴 THE MODEL NEVER SENDS A URL, A PATH OR AN ADDRESS. It names a cluster
+// (whose endpoint, CA and minter token are the server's sealed environment)
+// and a typed request — {verb: get|list, group, version, resource, namespace?,
+// name?, label_selector?, field_selector?, limit?} or {log: {namespace, pod,
+// container?, previous?, since_seconds?, tail_lines?}} — and [Allowlist.Build]
+// is the ONE place a request becomes a path: a GET under /api or /apis for a
+// resource on the allowlist (allowlist.json), or a pod's /log. watch is never
+// offered.
+//
+// 🔴 A FRESH, SHORT-LIVED IDENTITY PER CALL. Each Read mints a TokenSeconds
+// TokenRequest for the officer's ServiceAccount with the cluster's minter
+// token, then reads with that token alone; the minter token never reads. The
+// minted token's jti goes in the audit record.
+//
+// 🔴 REFUSED, NOT TRUNCATED. An answer over MaxAnswerBytes or a list over
+// MaxObjects is a refusal saying so — a partial answer would read as the whole.
 package kuberead
 
 import (
-	"context"
-	_ "embed"
-	"encoding/json"
 	"errors"
-	"net/url"
 	"time"
 )
 
-//go:embed allowlist.json
-var allowlistJSON []byte
-
-// Limits.
+// Limits and fixed values.
 const (
-	MaxAnswerBytes  = 1 << 20
-	MaxObjects      = 500
-	MaxTailLines    = 2000
+	// MaxAnswerBytes bounds one answer as returned, after stripping.
+	MaxAnswerBytes = 1 << 20
+	// maxRawBytes bounds what is read of one API answer before stripping
+	// (managedFields can be most of a list's bytes).
+	maxRawBytes = 8 << 20
+	// MaxObjects bounds one list: more is a refusal.
+	MaxObjects = 500
+	// MaxTailLines and DefaultTailLines bound a pod log read.
+	MaxTailLines     = 2000
+	DefaultTailLines = 500
+	// MaxSinceSeconds bounds a pod log read's window: a day.
 	MaxSinceSeconds = 86400
+	// MaxLogLineRunes caps one scrubbed log line.
 	MaxLogLineRunes = 1000
-	CallsPerMinute  = 30
-	TokenSeconds    = 600
-	ServerName      = "kubernetes.default.svc"
+	// CallsPerMinute is each officer's call budget (Limiter).
+	CallsPerMinute = 30
+	// TokenSeconds is a minted token's life: the API server's minimum.
+	TokenSeconds = 600
+	// ServerName is the name every API server certificate carries, verified
+	// whatever address the endpoint is.
+	ServerName = "kubernetes.default.svc"
+	// requestTimeout bounds one mint or one read.
+	requestTimeout = 30 * time.Second
 )
 
-// ErrRefused wraps every refusal of a request's shape.
+// ErrRefused wraps every refusal of a request's shape, before any network.
 var ErrRefused = errors.New("kuberead: refused")
-
-// Entry is one allowlisted (group, resource).
-type Entry struct {
-	Group    string `json:"group"`
-	Resource string `json:"resource"`
-	Scope    string `json:"scope"`
-}
-
-// Allowlist is the resources muster builds paths for.
-type Allowlist struct{ entries []Entry }
-
-// Default is the embedded allowlist.
-func Default() *Allowlist { return &Allowlist{} }
-
-// Entries is the allowlist's entries.
-func (a *Allowlist) Entries() []Entry { return nil }
-
-// Request is officer_kube_read's arguments.
-type Request struct {
-	Cluster       string      `json:"cluster"`
-	Verb          string      `json:"verb,omitempty"`
-	Group         string      `json:"group"`
-	Version       string      `json:"version,omitempty"`
-	Resource      string      `json:"resource,omitempty"`
-	Namespace     string      `json:"namespace,omitempty"`
-	Name          string      `json:"name,omitempty"`
-	LabelSelector string      `json:"label_selector,omitempty"`
-	FieldSelector string      `json:"field_selector,omitempty"`
-	Limit         int         `json:"limit,omitempty"`
-	Log           *LogRequest `json:"log,omitempty"`
-}
-
-// LogRequest is a pod log read.
-type LogRequest struct {
-	Namespace    string `json:"namespace"`
-	Pod          string `json:"pod"`
-	Container    string `json:"container,omitempty"`
-	Previous     bool   `json:"previous,omitempty"`
-	SinceSeconds int    `json:"since_seconds,omitempty"`
-	TailLines    int    `json:"tail_lines,omitempty"`
-}
-
-// ParseRequest decodes the tool's arguments.
-func ParseRequest(raw []byte) (Request, error) {
-	var r Request
-	err := json.Unmarshal(raw, &r)
-	return r, err
-}
-
-// Built is a request's GET path and query.
-type Built struct {
-	Path  string
-	Query url.Values
-	List  bool
-	Log   bool
-}
-
-// Build builds r's GET path.
-func (a *Allowlist) Build(r Request) (Built, error) { return Built{Query: url.Values{}}, nil }
-
-// Cluster is one cluster's API server, from the sealed configuration.
-type Cluster struct{ Name, Endpoint string }
-
-// NewCluster is a cluster.
-func NewCluster(name, endpoint string, caPEM []byte, minterToken string) (Cluster, error) {
-	return Cluster{Name: name, Endpoint: endpoint}, nil
-}
-
-// ServiceAccount names the officer's ServiceAccount on a cluster.
-type ServiceAccount struct{ Namespace, Name string }
-
-// Audit is one read's audit record.
-type Audit struct {
-	Cluster       string `json:"cluster"`
-	Verb          string `json:"verb"`
-	Group         string `json:"group"`
-	Version       string `json:"version"`
-	Resource      string `json:"resource"`
-	Namespace     string `json:"namespace,omitempty"`
-	Name          string `json:"name,omitempty"`
-	LabelSelector string `json:"label_selector,omitempty"`
-	FieldSelector string `json:"field_selector,omitempty"`
-	Path          string `json:"path"`
-	JTI           string `json:"jti,omitempty"`
-	Status        int    `json:"status,omitempty"`
-	Count         int    `json:"count"`
-	Bytes         int    `json:"bytes"`
-	Millis        int64  `json:"ms"`
-	Refusal       string `json:"refusal,omitempty"`
-}
-
-// Reader runs reads.
-type Reader struct{ allow *Allowlist }
-
-// NewReader is a reader over allow.
-func NewReader(allow *Allowlist) *Reader { return &Reader{allow: allow} }
-
-// Read runs one read.
-func (r *Reader) Read(ctx context.Context, c Cluster, sa ServiceAccount, req Request) (json.RawMessage, Audit, error) {
-	return nil, Audit{}, nil
-}
-
-// Limiter bounds calls per key per window.
-type Limiter struct{}
-
-// NewLimiter is a limiter.
-func NewLimiter(n int, per time.Duration, now func() time.Time) *Limiter { return &Limiter{} }
-
-// Allow spends one call for key.
-func (l *Limiter) Allow(key string) bool { return true }

@@ -91,12 +91,24 @@ func WithVirtual(s Store, v Virtual, allow func(context.Context) bool) Store {
 // principal, if any. The proxy uses it to take the credential from the
 // connector rather than from the sealed-secret table; the UI uses it to mark the
 // connector as managed.
+//
+// Wrappers nest (the GitHub App's, then kube-read's: KubeReadVirtual), so it
+// looks through each in turn: the outer one answering for its own name only,
+// as every virtualStore method does.
 func VirtualOf(ctx context.Context, s Store, name string) (Virtual, bool) {
-	vs, ok := s.(*virtualStore)
-	if !ok || vs.name != name || !vs.allow(ctx) {
-		return nil, false
+	for {
+		vs, ok := s.(*virtualStore)
+		if !ok {
+			return nil, false
+		}
+		if vs.name == name {
+			if !vs.allow(ctx) {
+				return nil, false
+			}
+			return vs.v, true
+		}
+		s = vs.Store
 	}
-	return vs.v, true
 }
 
 // SourceFor is the credential source connector name has for ctx's principal:

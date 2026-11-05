@@ -137,6 +137,9 @@ const appNoRepoNote = "approving grants NOTHING usable: this agent was dispatche
 // an officer's `read_repos`): every one of them is listed, each marked READ
 // ONLY, so the owner sees the whole set the approval grants.
 func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string, readRepos []string, officer bool) (string, string) {
+	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok && connectors.IsKubeRead(vc) {
+		return s.kubeGrantsDescription(ctx, g), ""
+	}
 	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok {
 		if strings.TrimSpace(repo) == "" {
 			return appNoRepoNote, vc.Problem(g.AgentID)
