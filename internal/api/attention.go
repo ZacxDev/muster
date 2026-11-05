@@ -310,6 +310,21 @@ const askNotShown = " (not shown in any mirrored window now)"
 // lists its windows for a grace period, so the target is the last one known.
 const whereHostOffline = " (host offline)"
 
+// entryWhere is the words an attention surface names a resolved mirrored
+// window by: mirror.Where, and whereHostOffline when its host has dropped and
+// the hub still lists it.
+//
+// 🔴 ONE RULE, ONE PLACE for marking an offline-retained host: an ask's source
+// (askSourceParts), a notice (noticeItem) and an episode's push title and
+// "Stalled / waiting" row (episodeWho, through sessionKeyWhere) all take it
+// from here.
+func entryWhere(e mirror.SessionView) string {
+	if !e.Online {
+		return e.Where() + whereHostOffline
+	}
+	return e.Where()
+}
+
 // askSource is what an ask names as its source: for a mirrored session, the
 // window running its Claude session NOW, by its exact tmux target
 // (mirror.Where, resolved through claudeSessionEntry over hosts) — or its
@@ -328,10 +343,7 @@ func askSourceParts(a attention.Ask, hosts []mirror.HostView) (src, target strin
 		return askerLabel(a), ""
 	}
 	if e, ok := claudeSessionEntry(hosts, a.Asker.MirrorHost, a.Asker.MirrorSession); ok {
-		if !e.Online {
-			return e.Where() + whereHostOffline, e.WhereTarget()
-		}
-		return e.Where(), e.WhereTarget()
+		return entryWhere(e), e.WhereTarget()
 	}
 	return askerLabel(a) + askNotShown, ""
 }
@@ -816,7 +828,7 @@ func attentionPushTitle(it attentionItem) string {
 	case attentionKindSession:
 		return sessionPushTitle
 	case attentionKindNotice:
-		// A notice asks nothing: it names where to look (noticeWhere).
+		// A notice asks nothing: it names where to look (sessionKeyWhere).
 		return it.Source + noticePushTitleSuffix
 	}
 	return it.Source + " is asking"

@@ -79,7 +79,7 @@ func TestChiefNudgeALiveNudgeIsNeverAnsweredNorRelayed(t *testing.T) {
 		t.Fatalf("an answer to the nudge: %d, want 409", w.Code)
 	}
 	card := noticeCard(f.page(t, "/attention"), d.AskID)
-	if card == "" || !strings.Contains(card, "ws · main:1") || strings.Contains(card, "data-attention-answer") || strings.Contains(card, "<textarea") {
+	if card == "" || !strings.Contains(card, "Gold:1 · tmux main:1 @ ws") || strings.Contains(card, "data-attention-answer") || strings.Contains(card, "<textarea") {
 		t.Fatalf("the nudge's card (want the host and tmux target, no answer box):\n%s", card)
 	}
 	f.pass(t)
@@ -193,7 +193,7 @@ func TestChiefNudgeAnOpencodePaneIsANudgeCandidate(t *testing.T) {
 	if q := f.queuedRows(t); q != 0 {
 		t.Fatalf("%d message(s) queued for a view-only pane", q)
 	}
-	if card := noticeCard(f.page(t, "/attention"), d.AskID); !strings.Contains(card, "ws · oc:2") {
+	if card := noticeCard(f.page(t, "/attention"), d.AskID); !strings.Contains(card, "tmux oc:2 @ ws") {
 		t.Fatalf("the notice does not name tmux oc:2 on ws:\n%s", card)
 	}
 }

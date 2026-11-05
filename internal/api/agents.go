@@ -2043,8 +2043,15 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 // the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
 // thing agent_dispatch's owner_asked releases a gate on (chief_owner_release.go).
 // TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn pins who passes what.
+//
+// typedBy is also stored on the user row (chat_messages.typed_by, migration
+// 0081): the one record that a person TYPED this line, which is what lets a
+// Chief-chat turn be quoted as the owner's covering words (step 3b-1,
+// chief_chat_quotes.go). Every other writer of a chat row leaves it unset
+// (TestEveryChatWriterIsClassified).
 func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit) ([]agents.TurnPart, error) {
-	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})
+	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text,
+		TypedBy: typedBy})
 	if err != nil {
 		msg = agents.ChatMessage{} // no row to point at: nothing is marked
 	}

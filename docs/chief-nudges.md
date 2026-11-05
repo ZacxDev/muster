@@ -25,12 +25,13 @@ whatever is still idle after that.
 | `MUSTER_CHIEF_NUDGES` | `1` runs the sweep, in shadow mode for every owner. Off by default. Needs a database. |
 | `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` | The user ids, comma-separated, whose decisions are **acted on**. Everyone else stays in shadow mode. |
 | `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS` | The user ids, comma-separated, whose [needs-you nudges](#needs-you-nudges) are sent too. A needs-you nudge is sent only for an owner on **both** lists; for everyone else it is shadow. Unset: every needs-you nudge is shadow. |
+| `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS` | The user ids, comma-separated, whose nudges [quoting their Chief chat](#chief-chat-quotes) are sent too. Such a nudge is sent only for an owner on this list **and** every list it is otherwise under; for everyone else it is shadow. Unset: every Chief-chat quote is shadow. |
 | `MUSTER_CHIEF_NUDGE_IDLE` | How long a session must have been idle to count as stalled. Default `10m`, from `2m` to `24h`. |
 | `MUSTER_CHIEF_NUDGE_HOURLY_CAP` | The most live nudges per hour, across every owner. Default `6`. Shadow mode is not capped. |
 
 All of them, and `MUSTER_CHIEF_NUDGE_ASK_THRESHOLD` (below), are read at boot;
-the boot log says which mode the sweep is in, and how many owners are on both
-live lists.
+the boot log says which mode the sweep is in, how many owners are live for
+needs-you nudges, and how many for Chief-chat quotes.
 
 **The kill switch** is unsetting `MUSTER_CHIEF_NUDGES` (or removing an owner
 from the live list, or from the needs-you list for their needs-you nudges) and
@@ -268,6 +269,78 @@ classification stored on the decision, so taking an owner off the needs-you
 list stops a needs-you nudge already queued (*Not sent: chief nudges are off,
 or in shadow mode for you, on this server*).
 
+### Chief-chat quotes
+
+With session state on (`MUSTER_SESSION_STATE=1`, session-state step 3b-1,
+[design](design/session-state.md#covering-words)) a nudge's quote may also come
+from **your Chief chat**: a line you typed to your chief, quoted for any of
+your sessions (operator decision 10). Only lines muster recorded as **typed by
+you** count (operator decision 13, as amended 2026-11-04, "Exclude the CLI"):
+what you type into the chat page or its composer, signed in on the web or your
+phone. The CLI does not count. muster writes that record
+(`chat_messages.typed_by`, migration 0081) at the moment the line becomes a
+turn, and nowhere else. These never count, fenced or not:
+
+- an answer relayed to the chief;
+- a session's question, and `muster chief ask` from the CLI (both come over a
+  token, which any of your sessions can hold, so muster cannot tell you typed
+  them);
+- a plugin message;
+- a task event (a forwarded task, a closed pull request);
+- an agent's or muster's own turn (a nudge, a route's note or hand-back);
+- every line written before this release: nothing is backfilled.
+
+The chief is shown your typed Chief-chat lines from the last 6 hours (the
+newest 20, redacted like your session messages), each with its id
+(`chief:<id>`), and names where its quote is from (`quote_source`: `session` or
+`chief_chat`). muster checks the quote, byte for byte, in **that** source only.
+A Chief-chat quote that does not check out (not verbatim in the line it names,
+or a source muster does not know) meets the same guard as any quote: it is
+recorded as `suppressed:quote_unverified`, with its source (`chief_chat`, or
+empty for a source muster does not know), the stop is pushed and nothing is
+pasted. muster reads only the newest 20 typed lines
+(all the chief is shown); a read that fails contributes nothing: no Chief-chat
+quote passes. A quote from the session itself is checked exactly as before. Whether
+a Chief-chat line covers *this* session's next step is the chief's judgement,
+as for any quote: code only guarantees the words are yours, recent and
+verbatim.
+
+**It has its own live gate, shadow first.** The operator decided Chief-chat
+quotes ship shadow first (2026-11-04, "Chief chat first"); the gate below is
+the coordinator's default for it, open to change (the design's
+[Defaults](design/session-state.md#defaults-open-to-change), D4): a nudge
+quoting the Chief chat is sent only for an owner
+also on `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS`, on top of every
+list it is otherwise under (`MUSTER_CHIEF_NUDGE_LIVE_OWNERS`, and the needs-you
+list for a needs-you stop). For everyone else it is shadow: recorded as
+`would_send` with its source on the Chief nudges tab, never pasted, and the
+stop pushed.
+
+**The whole decision is under that gate when your Chief chat was in view**
+(operator decision 2026-11-04, "Shadow whole decision"). The chief sees your
+typed Chief-chat lines on every check, and they can steer it even when it
+quotes the session. So any nudge decided while at least one typed line was in
+its prompt is shadow, whatever its quote's source, until you are on
+`MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS` (on top of the other lists).
+The decision records that the chat was in view (`chief_nudges.chief_chat_in_view`).
+With no typed line in the last 6 hours, nothing changes: a session quote is
+gated as before.
+
+The gate is read again at the paste, at an agent's turn and at the sweep's
+retry of one, from what is stored on the decision (`chief_nudges.quote_source`
+and `chief_chat_in_view`), so taking an owner off the list stops such a nudge
+already queued (*Not sent: chief nudges are off, or in shadow mode for you, on
+this server*). The pasted nudge
+says where the words were written: `[Chief nudge] Sam told the chief at 14:02:
+"…". Continue.`
+
+With session state off nothing here runs: the Chief chat is never read and the
+chief's prompt is the one from before this step.
+
+Quotes from your **other sessions' panes**, on the same repository, are the
+second half of step 3b and are not built yet: muster cannot yet tell a line you
+typed into a pane from one another agent sent there.
+
 A **waiting** window (a permission prompt, a question muster cannot answer) is
 never nudged: only an idle session is a candidate, and the send queue does not
 paste into a waiting one. An opencode or Hermes window is never nudged either
@@ -333,7 +406,9 @@ The call carries, fenced as untrusted data:
 - the session's focus title;
 - the session's **last message** (up to 4,000 characters);
 - **your own messages to that session**, up to the 20 newest, each up to 2,000
-  characters, each with the id a nudge must quote it by.
+  characters, each with the id a nudge must quote it by;
+- with session state on, **your typed Chief-chat lines** from the last 6 hours,
+  the same way ([Chief-chat quotes](#chief-chat-quotes)).
 
 "Your own messages" are the session's user-role messages, leaving out:
 
@@ -381,8 +456,9 @@ muster records no other source for an agent's chat messages, and that is the
 decision, not an oversight.
 
 **What leaves for the model provider.** Each call sends exactly the fenced block
-above — the focus title, the session's last message and your own recent
-messages to it — plus muster's instructions, with anything shaped like a secret
+above — the focus title, the session's last message, your own recent
+messages to it and, with session state on, your recent typed Chief-chat lines —
+plus muster's instructions, with anything shaped like a secret
 replaced by `«redacted»` (the same heuristic redaction as `sessions_overview`; a
 secret in a shape it does not know passes), to the chief's model provider:
 OpenRouter for a `gateway` chief, Anthropic for a `claude-code` chief. No earlier
@@ -501,8 +577,10 @@ is tried again.
 ([attention.md](attention.md#notices)): a pointer at the session, never a
 question. It carries:
 
-- where the session is: for a mirrored window its host and exact tmux target,
-  `<host> · <tmux session>:<window index>` (`laptop · build:4`), found by the
+- where the session is: for a mirrored window its label, exact tmux target
+  and host, as every attention text names a window
+  ([attention.md](attention.md#how-a-window-is-named):
+  `mango:4 · tmux build:4 @ laptop`), found by the
   session's key over your windows when the notice is drawn, so a window
   renumbered since shows its new index; for an agent, `agent <name>`;
 - the session's focus title;
@@ -558,7 +636,8 @@ their `host` and `target`.
 
 `/attention?tab=nudges` lists your 50 newest decisions, newest first. Each card
 shows the session (focus title and host, or agent), the decision, the message
-that was or would have been sent, the quote and its message id, the covered
+that was or would have been sent, the quote and its message id — and where the
+quote is from, your Chief chat or your messages to the session — the covered
 action, the chief's reason, the outcome (including which guard suppressed it)
 and a **Shadow** or **Live** badge.
 

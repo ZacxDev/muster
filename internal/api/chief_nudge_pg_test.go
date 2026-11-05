@@ -664,14 +664,14 @@ func TestChiefNudgeALiveAskIsANoticeNeverAnsweredNorRelayed(t *testing.T) {
 		t.Fatalf("live decision %+v", d)
 	}
 	a, err := f.attn.Get(asUser(authz.OperatorUserID), d.AskID)
-	if err != nil || a.Kind != attention.KindNotice || !a.Asker.System || a.Asker.Label != "ws · main:1" ||
+	if err != nil || a.Kind != attention.KindNotice || !a.Asker.System || a.Asker.Label != "tmux main:1 @ ws" ||
 		a.Question != "Waiting on you: Merge into main or into release?" || len(a.Options) != 0 {
 		t.Fatalf("the notice %+v %v", a, err)
 	}
 	body := f.page(t, "/attention")
 	item := body[strings.Index(body, `id="`+attentionAskKey(a.ID)+`"`):]
 	item = item[:strings.Index(item, "</li>")]
-	for _, want := range []string{`data-kind="notice"`, ">Notice<", `data-attention-source>ws · main:1<`,
+	for _, want := range []string{`data-kind="notice"`, ">Notice<", `data-attention-source>Gold:1 · tmux main:1 @ ws<`,
 		`data-attention-target>main:1<`, "Waiting on you: Merge into main or into release?", "data-attention-dismiss"} {
 		if !strings.Contains(item, want) {
 			t.Fatalf("the notice's card lacks %q:\n%s", want, item)

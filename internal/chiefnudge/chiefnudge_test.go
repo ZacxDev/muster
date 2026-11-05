@@ -290,7 +290,9 @@ func TestTheChiefIsAskedForNoOptions(t *testing.T) {
 // where it adds the needs-you rule (a nudge must quote words that ANSWER the
 // question) and drops the several-items guidance (which writes a question).
 func TestTheNotifyPromptAsksForNoQuestion(t *testing.T) {
-	const decisions = `{"decision":"nudge"|"leave"|"notify","reason":"<one short line>","quote_id":"<id>","quote":"<exact text>","covered_action":"<the pending action>"}`
+	// Step 3b-1 adds quote_source (session or the owner's typed Chief chat).
+	const decisions = `{"decision":"nudge"|"leave"|"notify","reason":"<one short line>","quote_source":"session"|"chief_chat",` +
+		`"quote_id":"<id>","quote":"<exact text>","covered_action":"<the pending action>"}`
 	for _, h := range []Hint{{Notify: true}, {Notify: true, AskStall: true, Label: LabelNeedsInput, AskScore: 0.95}} {
 		p := Prompt(Session{Title: "t"}, Msg{Role: "assistant", Text: "done?"}, nil, 15*time.Minute, h, "0123456789abcdef")
 		pre := p[:strings.Index(p, "<<<stall-check")]

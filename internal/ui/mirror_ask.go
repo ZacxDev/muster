@@ -19,7 +19,8 @@ import (
 // tool_use record is not in the transcript yet — it is written with the
 // answer. So:
 //
-//   - THE LIVE REGION (#mv-asks, above the composer) draws what the SERVER
+//   - THE LIVE REGION (#mv-asks, the conversation's last child: a card at
+//     the end of the conversation, mirrorAsksRegion) draws what the SERVER
 //     knows (the window's `muster-mirror ask` hook registered it): every open
 //     question as a form — one fieldset per question (header and text), radio
 //     buttons for a single-select question and checkboxes for a multi-select
@@ -300,23 +301,32 @@ func MirrorAsksLive(vs []MirrorAskLiveView) g.Node {
 // mirrorAsksRegion is the page's live region: empty and hidden until the poll
 // (askScript) fills it.
 //
-// 🔴 IT SHRINKS INTO THE ROOM ABOVE THE COMPOSER (min-h-0, never shrink-0). The
-// composer is pinned to the bottom of the screen and the column ends above it
-// (pinnedShellClass), so the room this region has is what the composer leaves —
-// and a queue drawn in the composer makes that much less. A region that
-// refused to shrink kept its full height and ran on under the pinned composer,
-// drawing the question's Submit under the queued messages, where it could not
-// be tapped. Shrunk, it scrolls within itself, and its Submit is in reach.
+// 🔴 IT IS THE LAST CHILD OF THE CONVERSATION (#mv-log), IN ITS FLOW — NEVER A
+// BOX BETWEEN THE CONVERSATION AND THE COMPOSER, AND NEVER fixed/absolute. The
+// operator's report: "ask user question shows as an overlay and makes it
+// impossible to see the conversation preceding the question". It was a region
+// of its own above the composer, up to 70% of the screen tall, so a long
+// question left the conversation a strip of about a hundred pixels (measured at
+// 412×915: 110px). Inside the one scroll region the card is read like the
+// message it follows, the conversation keeps the whole screen above the
+// composer, and scrolling up shows everything before the question. The
+// conversation's script keeps it last: a row is inserted before it and a reset
+// keeps it (mirrorViewScript's tail). askScript scrolls a newly arrived card
+// into view. Pinned by the "end of the conversation" spec in
+// e2e/tests/mirror-ask.spec.ts and TestTheLiveRegionIsTheConversationsLastChild.
 func mirrorAsksRegion(ref MirrorRef) g.Node {
 	return Section(
-		ID("mv-asks"),
+		ID(mirrorAsksID),
 		g.Attr("data-src", MirrorAsksSrc(ref)),
 		g.Attr("aria-label", "Questions from Claude"),
 		g.Attr("aria-live", "polite"),
 		g.Attr("hidden", ""),
-		Class("flex max-h-[70vh] min-h-0 flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2"),
+		Class("flex shrink-0 flex-col gap-2"),
 	)
 }
+
+// mirrorAsksID is the live region's element id.
+const mirrorAsksID = "mv-asks"
 
 // askForm is a pending question set's form: one fieldset per question and
 // one Submit.
@@ -479,14 +489,59 @@ func askScript() g.Node {
     var row = log && document.getElementById(card.getAttribute('data-ask-row'));
     return !!(row && log.contains(row) && row.getAttribute('data-ask-state') === '`+AskStateHistory+`');
   }
+  // A card that shows for the first time is scrolled into view in the
+  // conversation it ends (mirrorAsksRegion): wholly, when it fits — the
+  // conversation's end, the messages before it above — else from its start, so
+  // the question is read from its first line. Once per question: a poll or a
+  // redraw of the same card never moves a reader who has scrolled away.
+  //
+  // Of several shown at once, a PENDING one. A view opened on a pending
+  // question polls the cards before the conversation is drawn, so a card that
+  // has ended — answered, dismissed — shows too until the conversation's row
+  // for it hides it (drawn); revealing that one instead marked the pending
+  // question shown, and it never was (measured in the e2e suite: question 1
+  // 400 px above the screen at 412×915).
+  function pending(card) { return card.getAttribute('data-ask-state') === '`+AskStatePending+`'; }
+  //
+  // 🔴 THE CARD HOLDS THE CONVERSATION'S END UNTIL THE READER MOVES (held). A
+  // view opened on a question already pending draws the card BEFORE the
+  // conversation (its poll is faster than the transcript's first batch,
+  // measured 34 ms against 44 ms): a reveal then is on an empty log, and the
+  // reset batch that follows sticks to the bottom — question 1 ended up
+  // hundreds of pixels above the screen. So the revealed card is held: the
+  // conversation's every scroll to its end (mirrorViewScript's toEnd, through
+  // window.musterAskHold — a batch, a snapshot's paint, a resize) reveals the
+  // card again instead, until the reader scrolls, touches, clicks or types, or
+  // the card goes or changes state.
+  var revealed = {}, held = null;
+  function reveal(card) {
+    if (!log || !log.contains(card)) return;
+    var lr = log.getBoundingClientRect(), cr = card.getBoundingClientRect();
+    if (cr.height <= lr.height) log.scrollTop = log.scrollHeight;
+    else log.scrollTop += cr.top - lr.top - 12;
+  }
+  function hold() {
+    if (held && (held.hidden || !region.contains(held))) held = null;
+    if (held) reveal(held);
+  }
+  window.musterAskHold = hold;
+  ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(function (t) {
+    document.addEventListener(t, function () { held = null; }, { capture: true, passive: true });
+  });
   function tidy() {
-    var any = false;
+    var any = false, fresh = null;
     region.querySelectorAll('[data-ask-live]').forEach(function (c) {
       var hide = drawn(c);
       if (c.hidden !== hide) c.hidden = hide;
-      if (!hide) any = true;
+      if (hide) return;
+      any = true;
+      var tool = c.getAttribute('data-ask-tool');
+      if (revealed[tool]) return;
+      revealed[tool] = true;
+      if (!fresh || (!pending(fresh) && pending(c))) fresh = c;
     });
     region.hidden = !any;
+    if (fresh) { held = fresh; reveal(fresh); }
   }
   // The conversation draws (and redraws) its rows on its own socket, before or
   // after this region's poll: either order ends with tidy().

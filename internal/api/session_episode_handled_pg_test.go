@@ -240,7 +240,7 @@ func TestAnOlderImageReopeningAResetStopIsEndedAndWithdrawn(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("the repeat: %v %v", ok, err)
 			}
-			f.srv.pushEpisode(asUser(authz.OperatorUserID), ep, 20*time.Minute)
+			f.srv.pushEpisode(asUser(authz.OperatorUserID), ep, 20*time.Minute, nil)
 			if !f.pushedFor(rep) {
 				t.Fatalf("the scenario: the older image's push did not go out: %v", f.episodePushes())
 			}
