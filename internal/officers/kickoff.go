@@ -3,6 +3,7 @@ package officers
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // KickoffText is the first message instance n of officer o is given when the
@@ -42,8 +43,13 @@ func tierNote(o Officer) string {
 	if o.Tier == TierRoutine {
 		other = TierJudgement
 	}
-	return fmt.Sprintf("\n\nYour tier: %[1]s. This officer splits its queue into routine and judgement items, worked by separate pools of instances; you are in the %[1]s pool. %[2]s lists only %[1]s items, and %[3]s takes only those — a refusal with code wrong_tier means the item became a %[4]s item: leave it and take another.",
+	note := fmt.Sprintf("\n\nYour tier: %[1]s. This officer splits its queue into routine and judgement items, worked by separate pools of instances; you are in the %[1]s pool. %[2]s lists only %[1]s items, and %[3]s takes only those — a refusal with code wrong_tier means the item became a %[4]s item: leave it and take another.",
 		o.Tier, ToolItems, ToolClaim, other)
+	if c := o.ItemCap(); c > 0 {
+		note += fmt.Sprintf(" Each item has a wall-time cap of %d minutes from your claim: at the cap muster stops you and escalates the item to a human, "+
+			"with nothing you found recorded. Wrap up before it — %s the item with what you have.", int(c/time.Minute), ToolComplete)
+	}
+	return note
 }
 
 // closingLine is the kickoff's last paragraph: what the officer may never do.

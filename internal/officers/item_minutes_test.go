@@ -105,6 +105,12 @@ func TestAJudgementItemIsStoppedAndEscalatedAtItsWallTimeCap(t *testing.T) {
 	if starts, _ := r.fleet.take(); fmt.Sprint(starts) != fmt.Sprint([]string{judgeStem + "1", routineStem + "1"}) {
 		t.Fatalf("started %v, want judgement 1 and routine r1", starts)
 	}
+	if k := r.fleet.kickoff[judgeStem+"1"]; !strings.Contains(k, "wall-time cap of 30 minutes") {
+		t.Errorf("the judgement kickoff does not tell the instance its 30-minute cap:\n%s", k)
+	}
+	if k := r.fleet.kickoff[routineStem+"1"]; strings.Contains(k, "wall-time cap") {
+		t.Errorf("the routine kickoff names a cap its pool does not have:\n%s", k)
+	}
 	r.hold(j, judgeStem+"1")
 	r.hold(ro, routineStem+"1")
 	r.check(t) // both claims first seen now

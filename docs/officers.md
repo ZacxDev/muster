@@ -1352,6 +1352,25 @@ An officer may split its instances into two **pools**, one per HQ item tier
   claimed without the count), and the wake loop treats that judgement pool as
   capped for the pass (logged); the routine pool is unaffected.
 
+- **The judgement wall-time cap: `tiers.judgement.max_item_minutes`**
+  (1–1440; leave it out for no cap). Once a judgement instance has held one
+  item this long, the wake loop stops the instance and completes the item
+  **`escalated`** as its holder, with a summary naming the cap: the work did
+  not finish, and a human picks it up (HQ DMs the owner). The first message
+  tells a judgement instance its cap, so it can wrap up first.
+  - Why not release: the item would reopen and the same pool would claim it
+    again, and a re-claim of an item already counted today is free under
+    `max_sessions_per_day`. A release is a loop, not a stop.
+  - Why not `needs_judgement`: HQ refuses it on a judgement item.
+  - The clock starts on the first wake-loop pass that sees the claim, so it
+    runs late by up to one `poll_interval`. It is per claim: a new holder of
+    the same item starts again. It is **in memory**: a restarted muster starts
+    every clock again, which can only delay a stop, never cause one early.
+  - A claim past the cap whose holder is down is escalated too, not released.
+  - A failed stop does not hold back the escalation; the holder's next
+    heartbeat is then refused (`lease_lost`). A refused complete (the holder
+    finished first, or the lease lapsed) is logged.
+
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;
 - a missing pool;
@@ -1359,6 +1378,8 @@ Refused at boot, each naming the problem:
 - an unknown key inside a pool;
 - a pool `max_instances` outside 1–8 (the default is 1);
 - `max_sessions_per_day` on the routine pool, or outside 1–100 on the
+  judgement pool;
+- `max_item_minutes` on the routine pool, or outside 1–1440 on the
   judgement pool;
 - a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
   values are `tiers.judgement`'s, and two sources for one value are refused
