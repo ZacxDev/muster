@@ -48,12 +48,13 @@ func (f *stateFixture) payloads() []push.Payload {
 }
 
 // waitWithSecrets puts the fixture's window waiting on a prompt whose tool,
-// last words and window name are all secret-shaped.
+// summary and last words are all secret-shaped. Its label stays the host's
+// codename for it ("Gold:1"): a label is not session text, and the push names
+// the window by it (episodeWho).
 func (f *stateFixture) waitWithSecrets() {
 	f.status(mirror.StatusWaiting, 5*time.Second)
 	f.mirror.mu.Lock()
 	defer f.mirror.mu.Unlock()
-	f.mirror.windows[0].Label = "deploy " + pushSecret
 	f.mirror.windows[0].Pending = &mirror.Pending{Tool: "Bash " + pushSecret, Summary: "run " + pushSecret, Last: "about to use " + pushSecret}
 }
 
@@ -73,10 +74,11 @@ func (f *stateFixture) quietOf(t *testing.T, id int64) string {
 
 // TestAWaitingWindowPushesOnceAtOnceWithNoSessionText (regression): with
 // session state on, a window that starts waiting is pushed at once FROM THE
-// HUB HOOK as its episode — one push, tagged by the episode, naming the tmux
-// session and window index and host, and carrying none of the session's text
-// (no tool, no command, no window name, no last words). The state pass and a
-// second hook nudge send nothing more.
+// HUB HOOK as its episode — one push, tagged by the episode, naming the window
+// as every attention surface does (its label, then its tmux session, window
+// index and host), and carrying none of the session's text (no tool, no
+// command, no summary, no last words). The state pass and a second hook nudge
+// send nothing more.
 func TestAWaitingWindowPushesOnceAtOnceWithNoSessionText(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.waitWithSecrets()
@@ -87,11 +89,11 @@ func TestAWaitingWindowPushesOnceAtOnceWithNoSessionText(t *testing.T) {
 		t.Fatalf("pushes after the hook: %v, want [%s]", got, want)
 	}
 	p := f.payloads()[0]
-	if p.Title != "main:1 @ ws needs you" || p.Body != "Needs you · just now" {
+	if p.Title != "Gold:1 · tmux main:1 @ ws needs you" || p.Body != "Needs you · just now" {
 		t.Fatalf("payload: title %q body %q", p.Title, p.Body)
 	}
 	for _, s := range []string{p.Title, p.Body, p.Data["url"]} {
-		if strings.Contains(s, "PUSHSECRET") || strings.Contains(s, "deploy") || strings.Contains(s, "Bash") {
+		if strings.Contains(s, "PUSHSECRET") || strings.Contains(s, "Bash") || strings.Contains(s, "about to use") {
 			t.Fatalf("session text in the push: %q", s)
 		}
 	}
@@ -133,7 +135,7 @@ func TestAStallWithNoChiefPushesOnce(t *testing.T) {
 	if got := f.episodePushes(); len(got) != 1 {
 		t.Fatalf("pushes: %v", got)
 	}
-	if p := f.payloads()[0]; p.Title != "main:1 @ ws is stalled" || !strings.HasPrefix(p.Body, "Stalled · idle ") {
+	if p := f.payloads()[0]; p.Title != "Gold:1 · tmux main:1 @ ws is stalled" || !strings.HasPrefix(p.Body, "Stalled · idle ") {
 		t.Fatalf("payload: %q / %q (episode %+v)", p.Title, p.Body, e)
 	}
 }
@@ -193,7 +195,7 @@ func TestALiveLeaveOnAStopThatAskedPushes(t *testing.T) {
 	if n := f.askRows(t); n != 0 {
 		t.Fatalf("%d notice(s) raised", n)
 	}
-	if p := f.payloads()[0]; p.Title != "main:1 @ ws needs you" || strings.Contains(p.Body, "done") {
+	if p := f.payloads()[0]; p.Title != "Gold:1 · tmux main:1 @ ws needs you" || strings.Contains(p.Body, "done") {
 		t.Fatalf("payload: %q / %q", p.Title, p.Body)
 	}
 }
@@ -465,8 +467,8 @@ func TestTwoProcessesThatReadAStopUnpushedPushItOnce(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("open: %v %v", claimed, err)
 	}
-	f.srv.pushEpisode(octx, ep, 0) // both read ep unpushed
-	f.srv.pushEpisode(octx, ep, 0)
+	f.srv.pushEpisode(octx, ep, 0, nil) // both read ep unpushed
+	f.srv.pushEpisode(octx, ep, 0, nil)
 	if got := f.episodePushes(); len(got) != 1 {
 		t.Fatalf("pushes: %v", got)
 	}

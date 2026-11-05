@@ -25,13 +25,13 @@ has its own toggle, and all are on by default:
 
 | event | when |
 |---|---|
-| `review` | A task becomes ready for review. When it leaves review, the notification is withdrawn. |
+| `review` | A task becomes ready for review. The title says who moved it. `· agent <name>` means an agent did (`· agent` when the write names no agent, as a mirrored session's `task_set_status` does). `· machine` means `PATCH /api/tasks/{id}/status` (`muster task status`) by a caller muster cannot tell is an agent: the shared hook token, a personal token, or a service caller that is not one of your agents. A service caller that *is* one of your agents is named `· agent <name>`. No label means you did it yourself on the card. On a [plugin](plugins.md#task-references) task reference, a write is queued and the task moves when the upstream confirms it, so the title names the write through the upstream, e.g. `Task #42 ready for review · agent worker-7 via hq`. Your own queued write is still unlabelled. `· upstream (hq)` means the upstream itself changed. The namespace is the reference key's, before the colon. When the task leaves review, the notification is withdrawn. |
 | `connector` | An agent requests access to a connector. |
 | `agent` | A task's agent comes up. |
 | `created` | A machine (an agent, the CLI) created tasks. |
 | `comment` | A machine commented on a task. |
 | `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on the Asks page's Reply drafts tab (`/attention?tab=drafts#draft-<id>`). |
-| `attention` | Something new in your [attention queue](attention.md): an agent asked you a question (the notification shows the asker and the question's first line), or a mirrored Claude Code session started waiting at a prompt. One notification per item; it is withdrawn when the item is answered, dismissed, expires or stops waiting. A tap opens the item's session when it has one (a waiting window's or a held question's rendered view, an asking agent's page, an asking mirrored session's window) and its item on `/attention` otherwise, decided when tapped (`/attention/open/<key>`; [attention.md](attention.md)). A decided reply draft's `plugin` notification is withdrawn the same way. With `MUSTER_SESSION_STATE=1`, a waiting window or a stalled session is pushed instead as its **episode**: one notification per stop, titled `<tmux session>:<window index> @ <host> needs you` (or `is stalled`), its body only the state and idle time — never the session's text — tagged `attention-episode-<id>`, and withdrawn when the stop ends ([attention.md](attention.md#stalled--waiting-session-state)). |
+| `attention` | Something new in your [attention queue](attention.md): an agent asked you a question (the notification shows the asker and the question's first line), or a mirrored Claude Code session started waiting at a prompt. One notification per item; it is withdrawn when the item is answered, dismissed, expires or stops waiting. A tap opens the item's session when it has one (a waiting window's or a held question's rendered view, an asking agent's page, an asking mirrored session's window) and its item on `/attention` otherwise, decided when tapped (`/attention/open/<key>`; [attention.md](attention.md)). A decided reply draft's `plugin` notification is withdrawn the same way. With `MUSTER_SESSION_STATE=1`, a waiting window or a stalled session is pushed instead as its **episode**: one notification per stop, titled by its window as every attention text names it, `<label> · tmux <session>:<window index> @ <host> needs you` (or `is stalled`; [attention.md](attention.md#how-a-window-is-named)), resolved when sent, its body only the state and idle time — never the session's text — tagged `attention-episode-<id>`, and withdrawn when the stop ends ([attention.md](attention.md#stalled--waiting-session-state)). |
 
 Push routes are session-authenticated and same-origin:
 `/api/push/{vapid-public-key,subscribe,unsubscribe}` and
@@ -110,7 +110,7 @@ as **payload v2**:
   it. The app as shipped does not draw them yet.
 - A [notice](attention.md#notices) (a live chief nudge) is an `attention` push
   with **no** `ask` and **no** `actions`: its title names where the session is
-  (`<host> · <session>:<index> may be waiting on you`), its body the session's
+  (`<where> may be waiting on you`, [attention.md](attention.md#how-a-window-is-named)), its body the session's
   focus title and the chief's message, its `url` the tap route. Every Android
   app version draws buttons only from `ask`, so on any of them, including one
   that predates notices, it is a plain notification on the asks channel whose

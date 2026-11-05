@@ -13,7 +13,7 @@ creation), ties broken by the item's key:
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
-| Notice | A pointer at one of your sessions that looks like it is waiting on you, raised by a live [chief nudge](chief-nudges.md#live-mode) ([below](#notices)). Shown as `<host> · <tmux session>:<window index>` (resolved when drawn), its focus title, the chief's short message, and the tmux target on its own line. | `attention_asks` rows of kind `notice` (migration 0071), joined to the chief's decision for the session. | **View in session**, or **Dismiss**. It has **no answer box**: there is nothing to answer. It leaves the list when the session moves on. |
+| Notice | A pointer at one of your sessions that looks like it is waiting on you, raised by a live [chief nudge](chief-nudges.md#live-mode) ([below](#notices)). Shown as its window's [`<where>`](#how-a-window-is-named) (resolved when drawn), its focus title, the chief's short message, and the tmux target on its own line. | `attention_asks` rows of kind `notice` (migration 0071), joined to the chief's decision for the session. | **View in session**, or **Dismiss**. It has **no answer box**: there is nothing to answer. It leaves the list when the session moves on. |
 | Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail or ClankMail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
 | Session waiting | A mirrored Claude Code, **Hermes or opencode** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password; for opencode a **permission request**). Shown with **what it waits on** (below), its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway; an opencode **permission request** on an `-interactive` host offers **Allow once** / **Reject** (never "always"), answered through opencode's API ([mirroring.md](mirroring.md#opencodes-permission-requests-and-questions)). On a host that does not relay, the card says the answer can't be relayed from here. It leaves the list when the session stops waiting — answered here, or in the terminal. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once — or an **opencode** window's question-tool form, read by the host from opencode's server. | The open question (`internal/askq`), live; an opencode question from the hub's live window list. It leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered (an opencode form: its first question and how many more) — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. An opencode question of ONE single-select question (at most 4 options) offers its options on the card when its host is `-interactive`; any other is answered in the terminal, and the card says so. |
@@ -46,16 +46,20 @@ question in four ways:
   neither fill the cap nor be suppressed by it.
 - **Where, resolved when drawn.** Its place is the session its chief decision
   is about. A mirrored window is found by its session key over your windows
-  when the item is drawn, so a renumbered window shows its new index. A
-  session that no window shows now reads as the place it had when raised,
-  followed by `(not shown in any mirrored window now)`, and has no tmux target. When
+  when the item is drawn, and named as every attention text names a window
+  ([`<where>`](#how-a-window-is-named): its label, then its tmux target and
+  host), so a renumbered window shows its new index. A
+  session that no window shows now reads as the place it had when raised
+  (`tmux scratch3:5 @ laptop`; a notice raised before that shape keeps the
+  `laptop · scratch3:5` it was stored with), followed by
+  `(not shown in any mirrored window now)`, and has no tmux target. When
   muster cannot read the notices' sessions at all, each notice shows its label
   with no target and the queue reads as partial (the summary's `partial`), so
   `muster nudge next` exits 1 rather than claim nothing is waiting.
 - **Withdrawn when the session moves on**, as a nudge ask was. **Dismiss**
   withdraws it at once. Otherwise it expires after 24 hours.
 
-Its notification's title is `<host> · <session>:<index> may be waiting on you`.
+Its notification's title is `<where> may be waiting on you`.
 Its body is the session's focus title and the chief's message. It carries no
 `ask` payload, so a paired phone draws no buttons for it; an Android app that
 predates notices does the same, because it draws buttons only from `ask`
@@ -68,8 +72,8 @@ With `MUSTER_SESSION_STATE=1` ([configuration.md](configuration.md)) muster
 keeps one **episode** per stop of each of your sessions (the design:
 [design/session-state.md](design/session-state.md)), and the Asks tab draws the
 open ones as a **Stalled / waiting** section below the list: one plain row per
-stop, oldest first, saying where the session is (`<tmux session>:<window
-index> @ <host>`, or the agent), whether it **needs you** or is **stalled**,
+stop, oldest first, saying where the session is (its window's
+[`<where>`](#how-a-window-is-named), resolved when drawn, or the agent), whether it **needs you** or is **stalled**,
 for how long, and a **View in session** link. A row has **no answer box**. A
 waiting window muster cannot answer is a row here instead of a "Session
 waiting" item (one muster cannot key, from an older host that sends no Claude
@@ -78,17 +82,34 @@ opencode question or permission request, a Hermes approval) stays an
 answerable item above it, with its own full-text push.
 
 **One push per stop.** Each episode is pushed **once**, however the stop moves
-between waiting and idle, and its notification closes when the stop ends
-(sustained work, or its window gone from a host that is online). The push is
+between waiting and idle, and its notification closes when the stop ends:
+**you acted in the session** (you sent it a message of your own after the stop
+began, or answered the prompt it was waiting on: the push and the row go on
+the next 30-second pass; a chief nudge muster sent does not count), **you
+opened the session in muster** (its rendered view or terminal, or the agent's
+conversation, on the web or in the app, which shows the same pages: the push
+and the row go at once; the Agents list, the bar, the Asks page and a prefetch
+do not count, and looking at the window in a tmux terminal outside muster
+cannot be seen), sustained work of its own (2 minutes), or its window gone
+from a host that is online. A stop you dealt with (acted in, or opened) is not
+pushed again while the session sits where it was; once it moves, its next
+stop is a new one. The push is
 claimed in the database, so a restart, the double rollout and the waiting
 hook racing the 30-second pass never send it twice; a stop that began while
 muster was down is pushed when it is first seen, and one that ended while it
 was down has its notification closed.
 
-- Title: `<tmux session>:<window index> @ <host> needs you` (or `is
-  stalled`); an agent is named by its name. Body: `Needs you · idle 12m`
-  (`just now` under a minute). **No session text**: no window name, tool,
-  command, focus title or anything the session said. Tapping it opens the
+- Title: `<where> needs you` (or `is stalled`), the window named as every
+  attention text names it ([below](#how-a-window-is-named): `mango:1 · tmux
+  scratch3:5 @ laptop needs you`), found by the stop's session key when the
+  push is sent, so a renumbered window names its new index, and a window
+  whose host has just dropped is followed by `(host offline)`, as an ask's
+  and a notice's are; only when no window holds the session then, the place
+  the stop opened at, in the same shape without the label
+  (`tmux scratch3:5 @ laptop needs you`). An agent is named by its name. Body:
+  `Needs you · idle 12m` (`just now` under a minute). **No session text**:
+  no tool, command, focus title or anything the session said (the codename
+  is the host's, from its labels file, not the session's). Tapping it opens the
   session (`/attention/open/episode-<id>`, resolved when tapped), else the row.
 - A waiting window is pushed **at once**, never through the chief.
 - An idle stop is pushed at once when no chief judges it live (the feature
@@ -187,8 +208,9 @@ command, path or URL, never what Claude said.
 |---|---|---|
 | a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any — except muster's own ask about a [plugin message nobody acted on](plugins.md#a-message-the-chief-does-not-act-on), whose long fixed sentence would fill the body: its body is `From: <sender> · Subject: <subject>`, then the option (the page shows the whole question) |
 | a held question (a session's `AskUserQuestion`) | `<where> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
+| a session's stop, with `MUSTER_SESSION_STATE=1` ([above](#stalled--waiting-session-state)) | `<where> needs you` / `<where> is stalled` | `Needs you · idle 12m`: its state and idle time only |
 | a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <where>`, or `Waiting: <where>` when its host names no tool |
-| a [notice](#notices) | `<host> · <session>:<index> may be waiting on you` | the session's focus title, then the chief's message; no options and no `ask` payload |
+| a [notice](#notices) | `<where> may be waiting on you` | the session's focus title, then the chief's message; no options and no `ask` payload |
 
 `<where>` is the window's exact tmux target — see [How a window is named](#how-a-window-is-named).
 
@@ -198,7 +220,8 @@ Every attention text that names a mirrored window — a chief nudge's ask, a
 waiting session, a session question, a mirrored session's own ask (its source
 on the queue, its page's "*<source>* asks" header and the asks block of its
 session page), an answered ask's card and its delivery line ("Queued for …",
-"Waiting for … to read it"), and their notifications — names it the same way
+"Waiting for … to read it"), a notice, a session-state stop's row, and their
+notifications — names it the same way
 (`mirror.Where`), so you can go straight to it in a terminal. The chief reads
 the same text as `where` (`fleet_list`, `sessions_overview`, `fleet_report`,
 a session question's block, its session hints) and is told to give it exactly

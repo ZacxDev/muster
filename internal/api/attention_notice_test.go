@@ -36,7 +36,8 @@ func boxNotice(id int64) attention.Ask {
 }
 
 // TestANoticeNamesWhereItsSessionIsNow: a notice about a mirrored session names
-// the window running that conversation NOW — "ws · main:2" and the tmux target
+// the window running that conversation NOW — "tmux main:2 @ ws" (mirror.Where,
+// as every attention surface names a window) and the tmux target
 // "main:2" — not the address its decision recorded (@9, "old"); its push has
 // no ask payload (no buttons on a paired phone, an old app included) and names
 // the place in its title; its tap opens that window's view.
@@ -44,14 +45,14 @@ func TestANoticeNamesWhereItsSessionIsNow(t *testing.T) {
 	s := boxServer(t, true)
 	ctx := s.attentionPrincipal(context.Background(), 1)
 	it := s.askItemNow(ctx, boxNotice(boxNudgeMirror))
-	if it.Kind != attentionKindNotice || it.Source != "ws · main:2" || it.Target != "main:2" || it.host != "ws" || it.AskID != boxNudgeMirror {
+	if it.Kind != attentionKindNotice || it.Source != "tmux main:2 @ ws" || it.Target != "main:2" || it.host != "ws" || it.AskID != boxNudgeMirror {
 		t.Fatalf("the notice item %+v", it)
 	}
 	n := attentionNotification(it, false)
 	if n.Ask != nil || n.AskActions {
 		t.Fatalf("a notice's push carries an ask payload (buttons): %+v", n.Ask)
 	}
-	if n.Title != "ws · main:2 may be waiting on you" || n.Body != "Waiting on you: merge or wait?" || n.Type != attentionNotificationType {
+	if n.Title != "tmux main:2 @ ws may be waiting on you" || n.Body != "Waiting on you: merge or wait?" || n.Type != attentionNotificationType {
 		t.Fatalf("the notice's push: title %q body %q type %q", n.Title, n.Body, n.Type)
 	}
 	if got, want := s.pushTargetFor(ctx, 1, it), "/mirror/view?host=ws&session=main&window=%402"; got != want {
@@ -62,7 +63,7 @@ func TestANoticeNamesWhereItsSessionIsNow(t *testing.T) {
 	items := []attentionItem{it}
 	s.withAskBoxes(ctx, items, true)
 	card := attentionItemsHTML(items, time.Now())
-	for _, want := range []string{">Notice<", "ws · main:2", `data-attention-target>main:2<`, "data-attention-session", "data-attention-dismiss"} {
+	for _, want := range []string{">Notice<", "tmux main:2 @ ws", `data-attention-target>main:2<`, "data-attention-session", "data-attention-dismiss"} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("the card lacks %q:\n%s", want, card)
 		}
@@ -108,16 +109,23 @@ func TestANoticeWithNoSessionNowNamesItsLabelAndNoTarget(t *testing.T) {
 
 // TestANoticeAboutAnOpencodePaneResolvesItsWindow: the session key of an
 // opencode pane ("opencode:<id>") resolves to the window showing that opencode
-// session, for the notice's place and target alike.
+// session, for the notice's place (led by the host's label for the window)
+// and target alike.
 func TestANoticeAboutAnOpencodePaneResolvesItsWindow(t *testing.T) {
 	ws := mirror.NormalizeWindows([]mirror.Window{
 		{Session: "main", ID: "@1", Index: 1, Claude: true, ClaudeSession: focusSID},
-		{Session: "oc", ID: "@7", Index: 3, Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_abc123"},
+		{Session: "oc", ID: "@7", Index: 3, Label: "mango:3", Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_abc123"},
 	}, 0)
 	hosts := []mirror.HostView{{Host: "ws", Online: true, Windows: ws}}
 	a := boxNotice(90)
 	ds := map[int64]chiefnudge.Decision{90: {Owner: 1, AskID: 90, Kind: chiefnudge.KindMirror, Key: "opencode:ses_abc123", Host: "ws", TmuxSession: "oc", Window: "@7"}}
-	if it := noticeItem(a, ds, hosts); it.Source != "ws · oc:3" || it.Target != "oc:3" {
+	it := noticeItem(a, ds, hosts)
+	if it.Source != "mango:3 · tmux oc:3 @ ws" || it.Target != "oc:3" {
 		t.Fatalf("the opencode notice: source %q target %q", it.Source, it.Target)
+	}
+	// What `muster nudge next` prints (the summary's item): the label too, and
+	// the bare tmux target a jump key takes.
+	if si := attentionSummaryItemOf(it, "", time.Now()); si.Title != "mango:3 · tmux oc:3 @ ws" || si.Target != "oc:3" || si.Kind != attentionKindNotice {
+		t.Fatalf("the notice's summary item: %+v", si)
 	}
 }
