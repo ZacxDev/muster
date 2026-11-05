@@ -58,8 +58,8 @@ func (i Isolation) String() string {
 // driver instead is a predicate that is wrong in all but one of them, in the
 // same direction, and nobody hears the disagreement.
 //
-// ⚠ Isolation IS THE EXCEPTION, AND IT HAS NO BRANCH AT ALL. Both drivers
-// WRITE it; nothing in this repository READS it. It is kept because
+// ⚠ Isolation IS THE EXCEPTION, AND IT HAS NO BRANCH AT ALL. Every driver
+// WRITES it; nothing in this repository READS it. It is kept because
 // [IsolationNone] is a safety statement — an agent running as the muster
 // process's own user, with its credentials — that a future CheckSpec should be
 // able to refuse on, and that branch does not exist yet. Until it does,

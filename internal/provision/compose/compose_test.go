@@ -1,0 +1,490 @@
+package compose_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/provision/compose"
+	"github.com/ZacxDev/muster/internal/provision/provisiontest"
+)
+
+func admitAll(provision.Ref) error { return nil }
+
+// noContainer is the probe of a stack whose chief container is not running.
+func noContainer(context.Context, provision.Endpoint) (compose.Status, error) {
+	return compose.Status{}, errors.New("dial tcp: lookup chief: no such host")
+}
+
+func newDriver(t *testing.T, cfg compose.Config) *compose.Driver {
+	t.Helper()
+	if cfg.Root == "" {
+		cfg.Root = t.TempDir()
+	}
+	if cfg.Admit == nil {
+		cfg.Admit = admitAll
+	}
+	if cfg.Probe == nil {
+		cfg.Probe = noContainer
+	}
+	d, err := compose.New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return d
+}
+
+func TestComposeDriverContract(t *testing.T) {
+	provisiontest.RunContract(t, provisiontest.Harness{
+		Name: "compose",
+		New:  func(t *testing.T) provision.Provisioner { return newDriver(t, compose.Config{}) },
+		// Blind: the spec volume is not there (an unmounted volume, a wrong path).
+		Blind: func(t *testing.T) provision.Provisioner {
+			return newDriver(t, compose.Config{Root: filepath.Join(t.TempDir(), "not-mounted")})
+		},
+		Restricted: func(t *testing.T) provision.Provisioner {
+			return newDriver(t, compose.Config{Capabilities: &provision.Capabilities{Isolation: provision.IsolationContainer}})
+		},
+	})
+}
+
+// chiefSpec is the shape agentspec builds for a claude-code chief, with the
+// values that matter here pairwise distinct.
+func chiefSpec() provision.Spec {
+	return provision.Spec{
+		Ref:     provision.Ref{Name: "chief", ID: 71},
+		Runtime: provision.Runtime{Image: "ghcr.io/muster-example/claude-code-agent:1"},
+		Env:     []provision.EnvVar{{Name: "MUSTER_API_URL", Value: "http://muster:8105"}},
+		Secrets: []provision.EnvVar{{Name: "MUSTER_HOOK_TOKEN", Value: "tok-not-a-real-credential-9f3"}},
+		Files: []provision.File{{Path: "/etc/claude-code/CLAUDE.md", Content: []byte("# muster supervisor\n")},
+			{Path: "/etc/ccd/extra.json", Content: []byte(`{"x":1}`)}},
+		Workspace: provision.Workspace{Path: "/data", Persist: true},
+		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: 18789}},
+	}
+}
+
+func readSpec(t *testing.T, root, name string) compose.ContainerSpec {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, name, "spec.json"))
+	if err != nil {
+		t.Fatalf("read spec.json: %v", err)
+	}
+	var cs compose.ContainerSpec
+	if err := json.Unmarshal(raw, &cs); err != nil {
+		t.Fatalf("spec.json: %v", err)
+	}
+	return cs
+}
+
+func TestOnlyAnAdmittedInstanceIsWrittenAtAll(t *testing.T) {
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root, Admit: func(r provision.Ref) error {
+		if r.Name != "chief" {
+			return fmt.Errorf("this install runs one container, for %q; %q has none", "chief", r.Name)
+		}
+		return nil
+	}})
+	ctx := context.Background()
+	worker := chiefSpec()
+	worker.Ref.Name = "zesty-stoat"
+	for _, op := range []struct {
+		name string
+		fn   func(context.Context, provision.Spec) error
+	}{{"Create", d.Create}, {"Update", d.Update}} {
+		err := op.fn(ctx, worker)
+		if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), `"zesty-stoat" has none`) {
+			t.Fatalf("%s of an unadmitted instance: %v, want ErrUnsupported carrying the admission's reason", op.name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "zesty-stoat")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a refused instance left something on the volume: %v", err)
+	}
+	// Positive control: the admitted name is written.
+	if err := d.Create(ctx, chiefSpec()); err != nil {
+		t.Fatalf("Create chief: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "chief", "spec.json")); err != nil {
+		t.Fatalf("the admitted instance was not written: %v", err)
+	}
+}
+
+func TestTheVolumeHoldsTheContainersContract(t *testing.T) {
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root})
+	if err := d.Create(context.Background(), chiefSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cs := readSpec(t, root, "chief")
+	if cs.Version != 1 || cs.Name != "chief" || cs.Generation != 1 || cs.Replicas != 1 || len(cs.Epoch) != 32 {
+		t.Fatalf("spec.json = %+v, want version 1, name chief, generation 1, replicas 1, a 32-hex epoch", cs)
+	}
+	if len(cs.Env) != 1 || cs.Env[0] != (compose.EnvVar{Name: "MUSTER_API_URL", Value: "http://muster:8105"}) {
+		t.Fatalf("env = %+v", cs.Env)
+	}
+	if len(cs.Secrets) != 1 || cs.Secrets[0] != (compose.EnvVar{Name: "MUSTER_HOOK_TOKEN", Value: "tok-not-a-real-credential-9f3"}) {
+		t.Fatalf("secrets = %+v", cs.Secrets)
+	}
+	md := filepath.Join(root, "chief", "files", "etc", "claude-code", "CLAUDE.md")
+	b, err := os.ReadFile(md)
+	if err != nil || string(b) != "# muster supervisor\n" {
+		t.Fatalf("files/etc/claude-code/CLAUDE.md = %q, %v", b, err)
+	}
+	for _, p := range []string{md, filepath.Join(root, "chief", "spec.json"), filepath.Join(root, "chief", "driver.json")} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The literal, not compose.FileMode: an assertion that reads the
+		// constant it checks cannot see the constant change.
+		if fi.Mode().Perm() != 0o640 {
+			t.Errorf("%s mode %o, want 0640 (group-readable for the container, nothing for others)", p, fi.Mode().Perm())
+		}
+	}
+	for _, p := range []string{filepath.Join(root, "chief"), filepath.Join(root, "chief", "files", "etc", "claude-code")} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&(fs.ModePerm|fs.ModeSetgid) != fs.ModeSetgid|0o750 {
+			t.Errorf("%s mode %v, want setgid 0750 (the group the container reads by is inherited)", p, fi.Mode())
+		}
+	}
+	// No temporary file survives a write.
+	entries, _ := os.ReadDir(filepath.Join(root, "chief"))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Fatalf("a temporary file was left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestTheGenerationMovesOnlyWhenTheSpecDoes(t *testing.T) {
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root})
+	ctx := context.Background()
+	spec := chiefSpec()
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	epoch := readSpec(t, root, "chief").Epoch
+	// A Start of a running instance re-applies an identical spec: no restart.
+	if err := d.Update(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if g := readSpec(t, root, "chief").Generation; g != 1 {
+		t.Fatalf("an identical Update moved the generation to %d; the container would restart the agent for nothing", g)
+	}
+	// A rotated credential is a new spec: the container must restart on it.
+	spec.Secrets = []provision.EnvVar{{Name: "MUSTER_HOOK_TOKEN", Value: "tok-rotated-not-a-real-credential-41"}}
+	if err := d.Update(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	cs := readSpec(t, root, "chief")
+	if cs.Generation != 2 || cs.Secrets[0].Value != "tok-rotated-not-a-real-credential-41" {
+		t.Fatalf("after a changed Update: generation %d, secrets %+v; want generation 2 and the new value", cs.Generation, cs.Secrets)
+	}
+	if cs.Epoch != epoch {
+		t.Fatal("an Update minted a new epoch: the container would wipe the chief's /data on a credential rotation")
+	}
+	// Stop then Start.
+	if err := d.Scale(ctx, spec.Ref, 0); err != nil {
+		t.Fatal(err)
+	}
+	if cs := readSpec(t, root, "chief"); cs.Replicas != 0 || cs.Generation != 2 {
+		t.Fatalf("after Scale 0: %+v, want replicas 0 at generation 2", cs)
+	}
+	if err := d.Update(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if cs := readSpec(t, root, "chief"); cs.Replicas != 1 || cs.Generation != 2 {
+		t.Fatalf("Start (Update) after a Stop: %+v, want replicas 1 at generation 2 — Start of a claude-code agent is an Update, and must bring it back", cs)
+	}
+	if err := d.Scale(ctx, spec.Ref, 2); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("Scale 2: %v, want ErrUnsupported (one container)", err)
+	}
+}
+
+func TestDestroyKeepsTheDirectoriesAndANewCreateGetsANewEpoch(t *testing.T) {
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root})
+	ctx := context.Background()
+	if err := d.Create(ctx, chiefSpec()); err != nil {
+		t.Fatal(err)
+	}
+	first := readSpec(t, root, "chief").Epoch
+	if err := d.Destroy(ctx, provision.Ref{Name: "chief"}); err != nil {
+		t.Fatal(err)
+	}
+	mountDir := filepath.Join(root, "chief", "files", "etc", "claude-code")
+	if fi, err := os.Stat(mountDir); err != nil || !fi.IsDir() {
+		t.Fatalf("Destroy removed %s (%v): a running container's subpath mount would never see its re-creation", mountDir, err)
+	}
+	var left []string
+	_ = filepath.WalkDir(filepath.Join(root, "chief"), func(p string, e fs.DirEntry, err error) error {
+		if err == nil && !e.IsDir() {
+			left = append(left, p)
+		}
+		return nil
+	})
+	if len(left) != 0 {
+		t.Fatalf("Destroy left files: %v", left)
+	}
+	if err := d.Create(ctx, chiefSpec()); err != nil {
+		t.Fatal(err)
+	}
+	cs := readSpec(t, root, "chief")
+	if cs.Epoch == first || len(cs.Epoch) != 32 {
+		t.Fatalf("Create after Destroy kept epoch %q: the container would not wipe the old chief's /data", cs.Epoch)
+	}
+}
+
+func TestAFileTheSpecNoLongerCarriesIsRemoved(t *testing.T) {
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root})
+	ctx := context.Background()
+	spec := chiefSpec()
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	extra := filepath.Join(root, "chief", "files", "etc", "ccd", "extra.json")
+	if _, err := os.Stat(extra); err != nil {
+		t.Fatalf("positive control: %v", err)
+	}
+	spec.Files = spec.Files[:1]
+	if err := d.Update(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(extra); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a file dropped from the spec is still placed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "chief", "files", "etc", "claude-code", "CLAUDE.md")); err != nil {
+		t.Fatalf("the kept file went too: %v", err)
+	}
+}
+
+func TestInitStepsAreRefused(t *testing.T) {
+	d := newDriver(t, compose.Config{})
+	spec := chiefSpec()
+	spec.Init = []string{"echo never"}
+	if err := d.Create(context.Background(), spec); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("Create with Init: %v, want ErrUnsupported (the image's entrypoint runs, nothing else)", err)
+	}
+}
+
+func TestNetworkIsolationAndLimitsAreRefusedNotDropped(t *testing.T) {
+	d := newDriver(t, compose.Config{})
+	ctx := context.Background()
+	iso := chiefSpec()
+	iso.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{443}}
+	if err := d.Create(ctx, iso); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("an isolated spec: %v, want ErrUnsupported (the container's egress is not confined)", err)
+	}
+	lim := chiefSpec()
+	lim.Resources = provision.Resources{MemoryLimit: "1536Mi"}
+	if err := d.Create(ctx, lim); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("a spec with limits: %v, want ErrUnsupported", err)
+	}
+	if c := d.Capabilities(); c.Exec || c.NetworkIsolation || c.ResourceLimits || c.Scale || !c.Secrets || !c.Files || !c.Persistence {
+		t.Fatalf("capabilities = %+v", c)
+	}
+}
+
+type recordingProbe struct {
+	n      atomic.Int32
+	status compose.Status
+	err    error
+	ep     atomic.Value
+}
+
+func (r *recordingProbe) probe(_ context.Context, ep provision.Endpoint) (compose.Status, error) {
+	r.n.Add(1)
+	r.ep.Store(ep)
+	return r.status, r.err
+}
+
+func TestGetReadsTheContainersOwnStatus(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T, p *recordingProbe) (*compose.Driver, compose.ContainerSpec) {
+		root := t.TempDir()
+		d := newDriver(t, compose.Config{Root: root, Probe: p.probe, Hint: "add chief to COMPOSE_PROFILES"})
+		if err := d.Create(ctx, chiefSpec()); err != nil {
+			t.Fatal(err)
+		}
+		return d, readSpec(t, root, "chief")
+	}
+
+	t.Run("unreachable", func(t *testing.T) {
+		p := &recordingProbe{err: errors.New("connection refused")}
+		d, _ := setup(t, p)
+		inst, err := d.Get(ctx, provision.Ref{Name: "chief"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inst.Phase != provision.PhasePending || inst.Ready ||
+			inst.Reason != "the chief container is not answering at chief:18789: connection refused; add chief to COMPOSE_PROFILES" {
+			t.Fatalf("got %+v", inst)
+		}
+		if ep := p.ep.Load().(provision.Endpoint); ep.Host != "chief" || ep.Port != 18789 {
+			t.Fatalf("probed %+v, want chief:18789", ep)
+		}
+	})
+	t.Run("running and ready", func(t *testing.T) {
+		p := &recordingProbe{}
+		d, cs := setup(t, p)
+		p.status = compose.Status{State: compose.StateRunning, Generation: cs.Generation, Epoch: cs.Epoch, Boot: "b00751", Ready: true}
+		inst, err := d.Get(ctx, provision.Ref{Name: "chief"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inst.Phase != provision.PhaseRunning || !inst.Ready || inst.InstanceID != "chief-b00751" || inst.Ref.ID != 71 || inst.Driver != "compose" {
+			t.Fatalf("got %+v", inst)
+		}
+	})
+	t.Run("running but not ready", func(t *testing.T) {
+		p := &recordingProbe{}
+		d, cs := setup(t, p)
+		p.status = compose.Status{State: compose.StateRunning, Generation: cs.Generation, Epoch: cs.Epoch, Boot: "b1", Reason: "the CLI is starting"}
+		inst, _ := d.Get(ctx, provision.Ref{Name: "chief"})
+		if inst.Phase != provision.PhaseRunning || inst.Ready || inst.Reason != "the CLI is starting" {
+			t.Fatalf("got %+v", inst)
+		}
+	})
+	t.Run("an older generation is not yet this spec", func(t *testing.T) {
+		p := &recordingProbe{}
+		d, cs := setup(t, p)
+		p.status = compose.Status{State: compose.StateRunning, Generation: cs.Generation + 4, Epoch: cs.Epoch, Ready: true}
+		inst, _ := d.Get(ctx, provision.Ref{Name: "chief"})
+		if inst.Phase != provision.PhasePending || inst.Ready {
+			t.Fatalf("a container on another generation read %+v; it must not count as running this spec", inst)
+		}
+		want := "the container has not applied generation " + strconv.FormatInt(cs.Generation, 10)
+		if !strings.HasPrefix(inst.Reason, want) {
+			t.Fatalf("reason %q, want prefix %q", inst.Reason, want)
+		}
+	})
+	t.Run("another epoch is not this instance", func(t *testing.T) {
+		p := &recordingProbe{}
+		d, cs := setup(t, p)
+		p.status = compose.Status{State: compose.StateRunning, Generation: cs.Generation, Epoch: "0123456789abcdef0123456789abcdef", Ready: true}
+		if inst, _ := d.Get(ctx, provision.Ref{Name: "chief"}); inst.Phase != provision.PhasePending {
+			t.Fatalf("a container still running a destroyed instance's epoch read %+v", inst)
+		}
+	})
+	t.Run("error", func(t *testing.T) {
+		p := &recordingProbe{}
+		d, cs := setup(t, p)
+		p.status = compose.Status{State: compose.StateError, Generation: cs.Generation, Epoch: cs.Epoch, Reason: "spec version 9 is not one this image knows"}
+		if inst, _ := d.Get(ctx, provision.Ref{Name: "chief"}); inst.Phase != provision.PhaseFailed || inst.Reason != "spec version 9 is not one this image knows" {
+			t.Fatalf("got %+v", inst)
+		}
+	})
+	t.Run("stopped is read from the volume, not the container", func(t *testing.T) {
+		p := &recordingProbe{err: errors.New("must not be asked")}
+		d, _ := setup(t, p)
+		if err := d.Scale(ctx, provision.Ref{Name: "chief"}, 0); err != nil {
+			t.Fatal(err)
+		}
+		before := p.n.Load()
+		inst, err := d.Get(ctx, provision.Ref{Name: "chief"})
+		if err != nil || inst.Phase != provision.PhaseStopped {
+			t.Fatalf("got %+v, %v", inst, err)
+		}
+		if p.n.Load() != before {
+			t.Fatal("a stopped instance was probed")
+		}
+	})
+}
+
+func TestAnUnreadableVolumeIsBlind(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 directory; the not-mounted case in the contract suite covers blindness")
+	}
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root})
+	if err := d.Create(context.Background(), chiefSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	if _, err := d.List(context.Background()); !errors.Is(err, provision.ErrBlind) {
+		t.Fatalf("List of an unreadable volume: %v, want ErrBlind", err)
+	}
+	if _, err := d.Get(context.Background(), provision.Ref{Name: "chief"}); !errors.Is(err, provision.ErrBlind) || errors.Is(err, provision.ErrNotFound) {
+		t.Fatalf("Get of an unreadable volume: %v, want ErrBlind and not ErrNotFound", err)
+	}
+}
+
+func TestLogsPointAtDockerCompose(t *testing.T) {
+	d := newDriver(t, compose.Config{})
+	if err := d.Create(context.Background(), chiefSpec()); err != nil {
+		t.Fatal(err)
+	}
+	err := d.StreamLogs(context.Background(), provision.Ref{Name: "chief"}, func(string) {})
+	if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), "docker compose logs") {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+}
+
+func TestNewRefusesAnIncompleteConfig(t *testing.T) {
+	for _, c := range []struct {
+		cfg  compose.Config
+		want string
+	}{
+		{compose.Config{Admit: admitAll}, "Root is required"},
+		{compose.Config{Root: "relative/dir", Admit: admitAll}, "must be absolute"},
+		{compose.Config{Root: "/run/muster-spec"}, "Admit is required"},
+	} {
+		if _, err := compose.New(c.cfg); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("New(%+v) = %v, want an error containing %q", c.cfg, err, c.want)
+		}
+	}
+}
+
+func TestHTTPProbe(t *testing.T) {
+	var answer atomic.Value
+	answer.Store(`{"state":"running","generation":3,"epoch":"e","boot":"bb","ready":true}`)
+	code := atomic.Int32{}
+	code.Store(200)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != compose.StatusPath {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(int(code.Load()))
+		_, _ = w.Write([]byte(answer.Load().(string)))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	ep := provision.Endpoint{Host: u.Hostname(), Port: port}
+	probe := compose.HTTPProbe(nil, time.Second)
+
+	s, err := probe(context.Background(), ep)
+	if err != nil || s != (compose.Status{State: "running", Generation: 3, Epoch: "e", Boot: "bb", Ready: true}) {
+		t.Fatalf("probe = %+v, %v", s, err)
+	}
+	code.Store(503)
+	if _, err := probe(context.Background(), ep); err == nil || !strings.Contains(err.Error(), "answered 503") {
+		t.Fatalf("a non-200 status: %v", err)
+	}
+	code.Store(200)
+	answer.Store(`{"ok":true}`)
+	if _, err := probe(context.Background(), ep); err == nil || !strings.Contains(err.Error(), "no state") {
+		t.Fatalf("a body with no state (something else on the port): %v", err)
+	}
+}

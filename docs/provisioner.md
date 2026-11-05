@@ -505,6 +505,7 @@ the no-op driver brings in none of a cluster client's dependencies.
 |---|---|
 | `provision.Noop` | Records instead of provisioning. Use it to develop everything above the seam without a backend. |
 | `provision/k8s` | Renders its own minimal manifests and installs no chart: Namespace, ServiceAccount, **two** Secrets (confidential environment, and separately confidential files), ConfigMap, PVC, Deployment, Service, and a NetworkPolicy for `claude-code`. |
+| `provision/compose` | The chief on the `docker compose` install. It starts no container (that would need the Docker socket): it writes each admitted instance's spec and files into a volume shared with the `chief` container, whose supervisor runs, stops (replicas 0) and restarts (a new generation) the agent. It asks that container for its status. No exec, no network confinement, no resource limits: specs asking for those are refused. |
 
 `internal/agentprovision` adapts a driver to the API's lifecycle interface.
 `internal/agentgateway` speaks the chat protocol over the same driver.
