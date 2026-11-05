@@ -1188,7 +1188,7 @@ func (s *Server) oneClaimRefusal(ctx context.Context, c *officers.Client, o offi
 	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		s.logger.Printf("officers: %s: %s refused for %s, the claimed items could not be read: %v", o.ID, officers.ToolClaim, instance, err)
-		return "" // MUTATION (temporary, reverted in the next commit): fail OPEN on an unreadable claimed list
+		return toolErr("muster could not check which item you already hold, so nothing was claimed; try %s again in a minute", officers.ToolClaim)
 	}
 	now := s.officerRT.clock()
 	for _, it := range claimed {
