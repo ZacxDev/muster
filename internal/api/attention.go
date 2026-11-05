@@ -997,6 +997,10 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 			hosts[h.Host] = true
 		}
 	}
+	// The same nudges — a host connected, a window started waiting — are when
+	// muster reads a waiting window's transcript for the AskUserQuestion it
+	// shows open (mirror_ask_scan.go): a question outlives a restart.
+	s.scanOpenAsks(owner, hs)
 	waiting := s.waitingSessionsIn(octx, hs)
 	// episodePushed: the items the episode path covered at the last nudge
 	// (session state on) — handed to an episode then, so the diff does not
