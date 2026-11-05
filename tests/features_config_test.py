@@ -88,7 +88,7 @@ NOT_FORWARDED = {
     **{name: "needs the chief, which needs in-cluster dispatch (docs/features.md#chief-nudges)" for name in [
         "MUSTER_CHIEF_NUDGES", "MUSTER_CHIEF_NUDGE_IDLE", "MUSTER_CHIEF_NUDGE_HOURLY_CAP",
         "MUSTER_CHIEF_NUDGE_LIVE_OWNERS", "MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS",
-        "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD",
+        "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD", "MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS",
     ]},
     "MUSTER_TAG_AUTODISPATCH": "reserved: logs and counts eligible tasks, dispatches nothing",
     **{name: "test fixture: read only by a `-tags e2eterm` build" for name in [

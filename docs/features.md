@@ -520,7 +520,7 @@ recorded on the Asks page's Chief nudges tab, nothing is sent.
 - **Needs** the [chief](#chief), which needs in-cluster [dispatch](#dispatch)
   (Kubernetes), and the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`) for its
   stall classifier.
-- **Not available in the Compose stack**: `MUSTER_CHIEF_NUDGES` and the five
+- **Not available in the Compose stack**: `MUSTER_CHIEF_NUDGES` and the other
   `MUSTER_CHIEF_NUDGE_*` settings are not forwarded, like the rest of the
   agent plane. In a Kubernetes deployment, `MUSTER_CHIEF_NUDGES=1` turns it on
   and `MUSTER_CHIEF_NUDGE_LIVE_OWNERS=<user ids>` acts on it for those users;
