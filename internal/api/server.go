@@ -128,6 +128,10 @@ type Server struct {
 
 	startedAt time.Time
 	now       func() time.Time
+	// waitingGrace is how long a waiting window's push is held
+	// (session_push.go): EpisodeWaitingGrace, set by New; a test may set
+	// another, 0 for none.
+	waitingGrace time.Duration
 
 	// nudgeReadHook, when set (a test), replaces the chief nudge sweep's
 	// transcript read (chief_nudge.go nudgeTranscript).
@@ -141,6 +145,10 @@ type Server struct {
 	// ownerChecked is, per open episode, the streak its owner-acted read last
 	// succeeded on (session_state.go episodeOwnerActed).
 	ownerChecked episodeChecks
+	// hostsUnread is, per owner and host, since when THIS process has known
+	// the host unreadable (session_state.go hostUnreads): a held wait on it is
+	// pushed only once that has lasted the waiting grace.
+	hostsUnread hostUnreads
 
 	// pushInFlight registers every outstanding notification fan-out so a
 	// graceful shutdown can wait for them. Add happens on the CALLER's
@@ -471,6 +479,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		auth:                    authCfg,
 		startedAt:               time.Now(),
 		now:                     time.Now,
+		waitingGrace:            EpisodeWaitingGrace,
 		agentCLIPath:            defaultAgentCLIPath,
 		activeAgents:            make(map[string]agentPhase),
 		activeAgentsNow:         time.Now,

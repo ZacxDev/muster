@@ -32,9 +32,25 @@ import (
 // muster was down is closed too).
 //
 // WHEN IT PUSHES (episodeVerdict):
-//   - a WAITING window (a prompt muster cannot answer): at once, from the
-//     mirror hub's change hook (attentionMirrorChanged) — never from the 30 s
-//     poll, which only catches what the hook missed. Never through the chief.
+//   - a WAITING window (a prompt muster cannot answer): once it has waited
+//     out its GRACE (EpisodeWaitingGrace, 60 s), unless its episode ended
+//     first. The hub's change hook (attentionMirrorChanged) opens the
+//     episode and HOLDS it (verdictHold: nothing is written, the row is a
+//     plain waiting row); the first 30 s pass after the grace pushes it —
+//     normally 60..90 s after the window started waiting, one pass more for
+//     a stop the pass opened, longer under the repush floor. 🔴 THE HOLD
+//     DELAYS, IT NEVER SILENCES: the pass pushes a held wait whose state it
+//     cannot read (the host lists it waiting, AgentState Unknown) and one
+//     whose host dropped mid-hold, once this process has known the host
+//     offline for the grace too (session_state.go, heldWaitFacts,
+//     hostUnreads). 🔴 A PROMPT
+//     THE OWNER ANSWERS AT THE TERMINAL INSIDE THE GRACE NEVER BUZZES: the
+//     pass ends that episode (owner) and an ended episode is never pushed.
+//     Measured on a live fleet, nearly every waiting window was answered at
+//     the terminal within a minute. The hold is recomputed from the episode's
+//     opened_at on every pass, not kept in a timer: a restart mid-hold loses
+//     nothing, and the claim below still sends it once. Never through the
+//     chief.
 //   - an IDLE stop, when the owner's chief judges stops (the feature on, the
 //     owner live, a chief): on the chief's decision for the stop's streak —
 //     a SENT nudge never pushes; a "leave" quiets the stop only when the
@@ -76,6 +92,12 @@ const episodeChiefWait = 6 * time.Minute
 // nudge not sent by then is treated as failed, and the stop pushed.
 const episodeNudgeHold = 10 * time.Minute
 
+// EpisodeWaitingGrace is how long a waiting window's push is held: a prompt
+// answered at the terminal inside it is never pushed. Not configurable — on a
+// live fleet 165 of 169 owner-answered waiting windows were answered inside
+// 60 s. Server.waitingGrace holds it (New); a test may set that field.
+const EpisodeWaitingGrace = time.Minute
+
 // episodeKeyPrefix is an episode's attention key prefix: its notification tag
 // (attentionTag) and its tap route's key (attentionOpenURL).
 const episodeKeyPrefix = "episode-"
@@ -116,6 +138,10 @@ type episodeFacts struct {
 	D       chiefnudge.Decision
 	// OpenFor is how long the episode has been open.
 	OpenFor time.Duration
+	// Grace is how long a waiting episode's push is held from its opening
+	// (Server.waitingGrace, EpisodeWaitingGrace; 0 for none). settleEpisode
+	// sets it.
+	Grace time.Duration
 	// Now is the time of the observation (for a queued nudge's hold).
 	Now time.Time
 }
@@ -131,10 +157,15 @@ const (
 //
 // 🔴 A FAILURE NEVER QUIETS A STOP: only a sent nudge, a "leave" on a stop
 // that asked nothing, and the owner having spoken last are quiet; everything
-// unknown pushes, at once or after its bound.
+// unknown pushes, at once or after its bound. A waiting window inside its
+// grace is HELD (verdictHold), never quiet: the first pass after the grace
+// pushes it, unless it ended first.
 func episodeVerdict(f episodeFacts) string {
 	switch {
 	case f.Waiting:
+		if f.Grace > 0 && f.OpenFor < f.Grace {
+			return verdictHold
+		}
 		return verdictPush
 	case f.OwnerLast:
 		return sessionstate.QuietOwnerLast
@@ -202,14 +233,15 @@ func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (
 	return d, found
 }
 
-// settleEpisode is one open episode's push, for the state pass: f's verdict
-// pushes it, holds it, or records why it is quiet. idle is the session's idle
+// settleEpisode is one open episode's push, for the state pass and the waiting
+// hook: f's verdict pushes it, holds it, or records why it is quiet. idle is the session's idle
 // time, for the notification; hosts the owner's windows as the pass read them
 // (episodeNotification).
 func (s *Server) settleEpisode(octx context.Context, ep sessionstate.Episode, f episodeFacts, idle time.Duration, hosts []mirror.HostView) {
 	if !ep.Open() || !ep.PushedAt.IsZero() {
 		return
 	}
+	f.Grace = s.waitingGrace
 	if !f.Waiting && f.ChiefJudges && !f.OwnerLast {
 		f.D, f.Decided = s.streakDecision(octx, ep)
 	}
@@ -444,6 +476,12 @@ func episodeCover(hs []mirror.HostView, it attentionItem) (key, runtime string, 
 	if !plainWaitingItem(it) {
 		return "", "", mirror.Window{}, false
 	}
+	return episodeWindowOf(hs, it)
+}
+
+// episodeWindowOf is episodeCover without its plain-waiting test: the episode
+// key of the window of item it, whatever it waits on (an answerable ask too).
+func episodeWindowOf(hs []mirror.HostView, it attentionItem) (key, runtime string, w mirror.Window, ok bool) {
 	for _, h := range hs {
 		if h.Host != it.card.ref.Host || !h.Online || !h.StatusReport {
 			continue
@@ -458,6 +496,38 @@ func episodeCover(hs []mirror.HostView, it attentionItem) (key, runtime string, 
 	return "", "", mirror.Window{}, false
 }
 
+// episodeHandedOver is which of items (today's diff's, after episodeCover took
+// the plain waiting windows out) the episode path covered at the last nudge
+// (prev) and so must not be pushed as new now: a host that reported the window
+// waiting before it named the answerable ask it waits on, whose stop the
+// episode pushed already. 🔴 EXCEPT ONE WHOSE EPISODE IS STILL HELD (open and
+// unpushed — inside its waiting grace): that stop was never pushed, and an
+// answerable window gets no episode push of its own (sessionstate.StateOf), so
+// suppressing the ask too would leave it SILENT. It pushes as the ask. A failed
+// read is not "pushed": the ask pushes (a double push, never silence).
+func (s *Server) episodeHandedOver(octx context.Context, hs []mirror.HostView, items []attentionItem, prev map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for _, it := range items {
+		if !prev[it.Key] {
+			continue
+		}
+		out[it.Key] = true
+		key, _, _, ok := episodeWindowOf(hs, it)
+		if !ok {
+			continue
+		}
+		ep, has, err := s.ext.Episodes.OpenFor(octx, sessionstate.KindMirror, key)
+		switch {
+		case err != nil:
+			s.logger.Printf("session state: %s: its episode: %v (pushing it as an ask)", it.Key, err)
+			out[it.Key] = false
+		case has && ep.PushedAt.IsZero():
+			out[it.Key] = false
+		}
+	}
+	return out
+}
+
 // sessionStateListsHermes: session state lists Hermes windows (design default
 // D3). 🔴 ONE CONSTANT FOR BOTH SIDES of the shared rule — the state pass's
 // stall facts and the hook's episodeCover — so they cannot drift apart and
@@ -465,8 +535,10 @@ func episodeCover(hs []mirror.HostView, it attentionItem) (key, runtime string, 
 const sessionStateListsHermes = true
 
 // episodeWaitingPushes opens (or finds) the episode of each covered waiting
-// window in items (episodeCover) and pushes it at once: the waiting push, from
-// the mirror hub's change hook. With send false it SEEDS instead: the episode
+// window in items (episodeCover) and settles its push as the pass would
+// (settleEpisode — one rule): inside its grace (EpisodeWaitingGrace) it is
+// HELD — nothing written — for the pass to push once the grace has passed;
+// past it, it is pushed here at once. With send false it SEEDS instead: the episode
 // is claimed as pushed and nothing is sent — for a window today's path already
 // pushed in this stop (it gained its key mid-wait), so the stop is not pushed
 // a second time.
@@ -504,7 +576,7 @@ func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items [
 		case !ep.PushedAt.IsZero():
 		case send:
 			ep.State = sessionstate.StateNeedsYou
-			s.pushEpisode(octx, ep, 0, hs)
+			s.settleEpisode(octx, ep, heldWaitFacts(ep, s.now()), 0, hs)
 		default:
 			if _, err := s.ext.Episodes.ClaimPush(octx, ep.ID, s.now()); err != nil {
 				s.logger.Printf("session state: waiting %s: seed: %v", it.Key, err)

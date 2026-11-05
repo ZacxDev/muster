@@ -41,6 +41,18 @@ func (f *stateFixture) episodePushes() []string {
 	return out
 }
 
+// pastGrace moves the clock past a waiting window's grace (60 s) and runs a
+// pass: the pass that sends a held waiting push.
+func (f *stateFixture) pastGrace(t *testing.T) {
+	t.Helper()
+	f.advance(EpisodeWaitingGrace + time.Second)
+	f.statePass(t)
+}
+
+// noGrace sets the test seam Server.waitingGrace to 0: a waiting window is
+// pushed at once, from the hub hook, as before the grace.
+func (f *stateFixture) noGrace() { f.srv.waitingGrace = 0 }
+
 // payloads is every notification that reached the operator's device.
 func (f *stateFixture) payloads() []push.Payload {
 	f.srv.WaitForPushes()
@@ -73,14 +85,16 @@ func (f *stateFixture) quietOf(t *testing.T, id int64) string {
 }
 
 // TestAWaitingWindowPushesOnceAtOnceWithNoSessionText (regression): with
-// session state on, a window that starts waiting is pushed at once FROM THE
-// HUB HOOK as its episode — one push, tagged by the episode, naming the window
+// session state on and NO waiting grace (the test seam Server.waitingGrace
+// at 0), a window that starts waiting is pushed at once FROM THE HUB HOOK as its
+// episode — one push, tagged by the episode, naming the window
 // as every attention surface does (its label, then its tmux session, window
 // index and host), and carrying none of the session's text (no tool, no
 // command, no summary, no last words). The state pass and a second hook nudge
 // send nothing more.
 func TestAWaitingWindowPushesOnceAtOnceWithNoSessionText(t *testing.T) {
 	f := newStateFixture(t, false)
+	f.noGrace()
 	f.waitWithSecrets()
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	e := f.oneEpisode(t)
@@ -108,12 +122,15 @@ func TestAWaitingWindowPushesOnceAtOnceWithNoSessionText(t *testing.T) {
 }
 
 // TestTheHookAndThePassPushAStopOnce (regression): the claim. The pass opens
-// and pushes a waiting stop; the hook then finds it pushed and sends nothing;
-// a restarted process (a fresh hook state) sends nothing either.
+// a waiting stop (held for its grace) and pushes it once the grace has passed;
+// the hook then finds it pushed and sends nothing; a restarted process (a
+// fresh hook state) sends nothing either.
 func TestTheHookAndThePassPushAStopOnce(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.status(mirror.StatusWaiting, 5*time.Second)
 	f.statePass(t)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.pastGrace(t)
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	f.srv.attention.mu.Lock()
 	f.srv.attention.episodeWaiting = nil // a restart: the process forgot what it saw
@@ -569,8 +586,10 @@ func TestAWindowThatGainsItsKeyMidWaitPushesOnce(t *testing.T) {
 // windows by ONE rule, so for each kind of window the stop is pushed exactly
 // once across both — never twice, never not at all.
 func TestOneStopIsOnePushAcrossTheHookAndThePass(t *testing.T) {
+	// Four rounds, 30 s apart: past the 60 s waiting grace, so a held push is
+	// sent inside the run.
 	run := func(t *testing.T, f *stateFixture) {
-		for i := 0; i < 3; i++ {
+		for i := 0; i < 4; i++ {
 			f.statePass(t)
 			f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 			f.advance(30 * time.Second)
@@ -631,6 +650,8 @@ func TestAKeyedWaitingWindowPushesOnlyItsEpisode(t *testing.T) {
 	f.seenIdleThenWaiting()
 	f.statePass(t)
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.pastGrace(t)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	e := f.oneEpisode(t)
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-episode-"+strconv.FormatInt(e.ID, 10) {
 		t.Fatalf("pushes: %v", got)
@@ -639,19 +660,44 @@ func TestAKeyedWaitingWindowPushesOnlyItsEpisode(t *testing.T) {
 
 // TestAWaitThatNamesItsAskLaterPushesOnce (regression; audit F8): a host
 // reports the window waiting before the ask it waits on is known (here: the
-// held AskUserQuestion registers a moment later). The stop's episode pushed
-// already, so the now-answerable ask does not push a second time.
+// held AskUserQuestion registers a moment later). Exactly one push either way:
+//   - the stop's episode pushed already (no grace): the now-answerable ask
+//     does not push a second time;
+//   - the stop's episode is still HELD in its waiting grace: it never pushed,
+//     and an answerable window gets no episode push, so the ask pushes — as
+//     the ask, once. 🔴 Suppressing it there would leave the ask SILENT
+//     (episodeHandedOver), and the grace passing must not add a second push.
 func TestAWaitThatNamesItsAskLaterPushesOnce(t *testing.T) {
-	f := newStateFixture(t, false)
-	f.seenIdleThenWaiting()
-	if _, err := f.srv.Questions().Open(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: nudgeSID, ToolUseID: "toolu_push_flip"},
-		[]askq.Question{{Question: "Which database?", Options: []askq.Option{{Label: "postgres"}, {Label: "sqlite"}}}}, askq.NewID()); err != nil {
-		t.Fatal(err)
+	ask := func(t *testing.T, f *stateFixture) {
+		t.Helper()
+		if _, err := f.srv.Questions().Open(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: nudgeSID, ToolUseID: "toolu_push_flip"},
+			[]askq.Question{{Question: "Which database?", Options: []askq.Option{{Label: "postgres"}, {Label: "sqlite"}}}}, askq.NewID()); err != nil {
+			t.Fatal(err)
+		}
+		f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	}
-	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
-	if got := f.pushes(); len(got) != 1 {
-		t.Fatalf("pushes: %v", got)
-	}
+	t.Run("the episode pushed already", func(t *testing.T) {
+		f := newStateFixture(t, false)
+		f.noGrace()
+		f.seenIdleThenWaiting()
+		ask(t, f)
+		if got := f.pushes(); len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-episode-") {
+			t.Fatalf("pushes: %v", got)
+		}
+	})
+	t.Run("the episode still held", func(t *testing.T) {
+		f := newStateFixture(t, false)
+		f.seenIdleThenWaiting()
+		if got := f.pushes(); len(got) != 0 {
+			t.Fatalf("pushes inside the grace: %v", got)
+		}
+		ask(t, f)
+		f.pastGrace(t)
+		f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+		if got := f.pushes(); len(got) != 1 || strings.HasPrefix(got[0], "attention attention-episode-") {
+			t.Fatalf("pushes: %v, want the ask's one push", got)
+		}
+	})
 }
 
 // TestTheAsksListMovesAWaitingWindowIntoTheSectionLive (regression; audit F4
