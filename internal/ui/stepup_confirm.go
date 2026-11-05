@@ -199,6 +199,11 @@ func confirmDialog(s *StepUpView) g.Node {
 // /verify the server was still allowed to complete — blamed on the device,
 // a second challenge spent, the waiting action dropped although the session
 // had just been made fresh. The margin covers the database and the network.
+// stepUpLegacyCancelMS: how long a framed view waits for an older top
+// window's confirm (one whose ask takes no cancel) before it takes the ask
+// as cancelled, when it never saw that window's dialog open.
+const stepUpLegacyCancelMS = 120_000
+
 const stepUpNetTimeout = gotrue.SettingsTimeout + 2*gotrue.HTTPTimeout + 5*time.Second
 
 // stepUpNetTimeoutMS is stepUpNetTimeout as the script's milliseconds.
@@ -642,10 +647,34 @@ window.musterStepUp = (function () {
     var t = topStepUp();
     if (t) {
       done = []; dropped = [];
+      var confirmed = false;
       t.ask(why, function (ff) {
+        confirmed = true;
         if (ff !== undefined) freshUntil = performance.now() + (+ff || 0);
         if (cb) cb();
       }, cancel);
+      // 🔴 AN OLDER TOP WINDOW (a page loaded before ask took a cancel) never
+      // calls cancel: a close without a confirm would leave this caller — a
+      // composer's send, and every message waiting behind it — waiting for
+      // good. Watched here instead: the top's dialog closed without a confirm,
+      // or no confirm within stepUpLegacyCancelMS, is a cancel. (The caller
+      // ignores a confirm that comes after it.)
+      if (cancel && t.ask.length < 3) {
+        var t0 = Date.now();
+        var topDialog = function () { try { return window.parent.document.getElementById(dlg.id); } catch (e) { return null; } };
+        // Read now as well as on each tick: the top opens its dialog in ask,
+        // and a close inside the first tick must still count.
+        var d0 = topDialog(), seen = !!(d0 && d0.open);
+        var iv = setInterval(function () {
+          if (confirmed) { clearInterval(iv); return; }
+          var d = topDialog();
+          if (d && d.open) { seen = true; return; }
+          if (seen || Date.now() - t0 > ` + strconv.Itoa(stepUpLegacyCancelMS) + `) {
+            clearInterval(iv);
+            try { cancel(); } catch (e) {}
+          }
+        }, 500);
+      }
       return;
     }
     // 🔴 ALREADY OPEN: the new caller's done runs after the ones already

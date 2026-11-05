@@ -163,8 +163,13 @@ for (const vp of [
           await page.goto(rig.origin + path);
           const empty = await grow(page, '#mv-input', mode);
           await page.locator('#mv-input').fill(`a ${label} send\nover two lines`);
+          // The box empties at the press, before the answer; a page left
+          // before the answer keeps the message as the box's draft
+          // (composer_pending.go). Wait for it, so the next page starts empty.
+          const answered = page.waitForResponse((r) => r.request().method() === 'POST' && /\/mirror\/(view|terminal)\/send$/.test(new URL(r.url()).pathname));
           await page.locator('#mv-input').press('Enter');
           await shrunk(page, '#mv-input', empty);
+          await answered;
         }
       });
 

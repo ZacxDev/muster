@@ -9,15 +9,21 @@ import "strconv"
 // paste (measured in e2e/tests/optimistic-send.spec.ts: ~1.8 s with a 1.5 s
 // host delay injected, and nothing drawn in the conversation until then).
 //
+// 🔴 THE INVARIANT EVERYTHING BELOW SERVES: A TYPED MESSAGE IS NEVER SILENTLY
+// LOST AND NEVER SENT TWICE.
+//
 // What the press does now, in the same task:
 //
-//   - the box is emptied (focus and the keyboard stay: sendKeepsFocusJS);
+//   - the box is emptied (focus and the keyboard stay: sendKeepsFocusJS), but
+//     its DRAFT is not: the message is held in the box's draft
+//     (composer_draft.go, musterDraft.hold) until the server answers OK, so a
+//     reload, a navigation or a failed browser submit mid-send brings the text
+//     back in the box as a draft;
 //   - on the Rendered view the message is drawn at the END of the
 //     conversation as a pending bubble (data-pending-send): muted, with a
-//     status line ("Sending…", role=status). A Queue is drawn instead as a
-//     pending row in the send queue's list ("Queuing…"), never in the
-//     conversation: it is not sent. A Terminal view has no conversation, so
-//     its status line (#mv-note) says "Sending…";
+//     status line ("Sending…", role=status). A Queue has no bubble (it is not
+//     sent): its status line (#mv-note) says "Queuing…", as a Terminal view's
+//     says "Sending…";
 //   - the request goes out. Sends from one box are posted ONE AT A TIME, in
 //     the order pressed (a second Send while the first is out is drawn at
 //     once and posted after it), so two messages cannot overtake each other
@@ -25,87 +31,89 @@ import "strconv"
 //
 // Then, by what comes back:
 //
-//   - OK: the bubble says "Sent". 🔴 IT IS NOT REMOVED THEN: it is removed in
-//     the same DOM task that draws the transcript row it stands for
-//     (reconcile, called from mirrorViewScript's apply) — or the row of
-//     "Queued in Claude Code" (cc_queued.go) when Claude Code holds it — so
-//     there is never a frame with both or with neither. A sent bubble no row
-//     ever matches (a `/command` Claude Code records differently) is removed
-//     after pendingSentSettleMS: the host confirmed it.
+//   - OK: the bubble says "Sent" and the draft lets the message go. 🔴 THE
+//     BUBBLE IS NOT REMOVED THEN: it is removed in the same DOM task that
+//     draws the transcript row it stands for (reconcile, called from
+//     mirrorViewScript's apply) — or the row of "Queued in Claude Code"
+//     (cc_queued.go) when Claude Code holds it — so there is never a frame
+//     with both or with neither. A sent bubble no row ever matches (a
+//     `/command` Claude Code records differently) is removed after
+//     pendingSentSettleMS: the host confirmed it.
 //   - a step-up (403 + X-Muster-Step-Up): the bubble waits, "Confirm it's
 //     you to send", and the SAME request (same nonce) is posted after the
 //     confirm. Cancelling the dialog fails it.
 //   - any refusal (4xx/5xx, rate limit, the window gone, Claude waiting on a
 //     prompt) or offline: the bubble turns failed with the reason and Retry
-//     and Dismiss, and its text is put back in the box if the box is empty —
-//     nothing typed is lost. #mv-note says the reason too, as it always did.
-//     A refusal that MAY have been delivered (X-Muster-Send-Again) turns the
-//     bubble UNKNOWN instead, and its button is the composer's Send again
-//     (#mv-send-again, again=1): see SendAgainHeader. A new send of the same
-//     text replaces a failed or unknown bubble of it.
+//     and Dismiss, and its text is put back in the box if the box is empty.
+//     The reason is said ONCE: on the bubble, or — where there is no bubble
+//     (a Terminal view, a Queue) — in #mv-note, with Retry beside it. Text
+//     typed since is never overwritten: the message's Retry and the draft
+//     still have it. A refusal that MAY
+//     have been delivered (X-Muster-Send-Again) turns the bubble UNKNOWN
+//     instead, and its button is the composer's Send again (#mv-send-again,
+//     again=1): see SendAgainHeader. A new send of the same text replaces a
+//     failed or unknown message of it, as its Retry.
+//   - 🔴 A REFUSAL HOLDS WHAT CAME AFTER IT. The messages sent after it that
+//     have not been posted yet WAIT ("Waiting — an earlier message wasn't
+//     sent") until the person Retries the refused one (it then goes first)
+//     or Dismisses it. Posting them anyway would deliver a later message
+//     before an earlier one.
 //   - no answer while online: the browser submits the form itself (native),
 //     as before, with the text put back for it.
 //
+// 🔴 ONLY A MESSAGE WHOSE POST HAS GONE OUT AND COME BACK OK ("Sent") — or
+// come back "may have been delivered" (unknown) — CAN BE SETTLED BY A ROW. A
+// message still waiting its turn is never a candidate: an old row of the same
+// text, redrawn by a reset of the conversation, must not take it for sent.
+// And a waiting message is always posted: nothing marks it done before then.
+//
 // 🔴 HOW A BUBBLE IS MATCHED TO ITS ROW. Nothing the page sends survives into
 // Claude Code's transcript — the host pastes the text as typed — so the
-// match is by the TEXT: letters and digits only, lower-cased (the row is
-// rendered markdown; `*bold*` arrives as "bold"), the row's text beginning
-// with the first pendingMatchChars characters of what was TYPED (an
-// attachment's line is drawn in the row as a chip, not as its text). Only a user row that
-// was NOT on the page when the bubble was drawn can match it, and each row
-// settles at most one bubble, so a repeated "yes" is not settled by the old
-// one. (After a reset redraws the conversation every row is new; then only the
-// newest rows, one per bubble, are candidates.)
+// match is by the TEXT, compared against the row's RAW prompt (data-prompt,
+// MirrorTranscript.Ops: what the transcript holds, before markdown draws a
+// link as its label or a fence as a code block), falling back to the row's
+// drawn text. Both are reduced to letters and digits, lower-cased, and the
+// row must begin with the first pendingMatchChars characters of what was
+// TYPED (an attachment's line is drawn in the row as a chip). Only a user row
+// that was NOT on the page when the bubble was drawn can match it, and each
+// row settles at most one bubble, so a repeated "yes" is not settled by the
+// old one. A message with nothing to compare (an emoji, attachments only) is
+// matched by POSITION: the first new row that has nothing to compare either. "Queued in Claude Code" rows
+// are held to the same rule: only one beyond those shown at the press. (After
+// a reset redraws the conversation every row is new; then only the newest
+// rows, one per bubble, are candidates.)
 //
-// 🔴 A RELOAD MID-SEND LEAVES NO GHOST. Each pending send is kept in
-// sessionStorage (this tab only) under the box's draft key, which names the
-// account and the window, so it never shows in another account's or another
-// window's box. The draft itself is cleared at the press — the pending
-// entry holds the text instead, so a reload does not put it back in the box
-// as well. After a reload the bubble is drawn again as "Checking…"; the
-// conversation the page reads then settles it if the message landed; if no
-// row has matched it within pendingRestoreSettleMS it turns UNKNOWN — "Not
-// confirmed: it may or may not have been sent." — with Send again (again=1)
-// and Dismiss. Entries older than pendingMaxAgeMS are dropped
-// unread. A browser that refuses storage keeps none: the bubble then goes
-// with the page.
+// The bubble, the note and the hold are all this page's. Nothing is kept for
+// a reload except the draft: the page after a reload shows the message in the
+// box, as a draft, and a person decides whether to send it.
 
 // Pending sends' visible words. The e2e spec and the docs say these.
 const (
-	PendingSendingText  = "Sending…"
-	PendingCheckingText = "Checking…"
-	PendingSentText     = "Sent"
-	PendingStepUpText   = "Confirm it's you to send"
-	PendingQueuingText  = "Queuing…"
-	PendingFailedText   = "Not sent"
-	PendingUnknownText  = "Not confirmed: it may or may not have been sent."
-	pendingCancelled    = "you did not confirm it's you."
+	PendingSendingText = "Sending…"
+	PendingSentText    = "Sent"
+	PendingStepUpText  = "Confirm it's you to send"
+	PendingQueuingText = "Queuing…"
+	PendingFailedText  = "Not sent"
+	PendingUnknownText = "Not confirmed: it may or may not have been sent."
+	PendingWaitingText = "Waiting — an earlier message wasn't sent"
+	pendingCancelled   = "you did not confirm it's you."
 )
 
-// Pending sends' times.
+// Pending sends' times and bounds.
 const (
 	// pendingSentSettleMS: a send the host confirmed that no row has matched
 	// in this long is removed (it was delivered; the conversation is what
 	// shows it).
 	pendingSentSettleMS = 30_000
-	// pendingRestoreSettleMS: a send drawn again after a reload that no row
-	// has matched in this long turns unknown, with Retry.
-	pendingRestoreSettleMS = 10_000
-	// pendingMaxAgeMS: an entry older than this is not drawn after a reload.
-	pendingMaxAgeMS = 10 * 60_000
 	// pendingMatchChars: how much of a message must begin its row.
 	pendingMatchChars = 200
 )
-
-// pendingStoreKey is the sessionStorage key of this tab's pending sends.
-const pendingStoreKey = "muster.pending-send.v1"
 
 // pendingBubbleClass is a pending bubble: the user bubble's shape and side
 // (chatBubbleOf), muted. pendingFailedClass is a failed or unknown one.
 const (
 	pendingBubbleClass = "max-w-[85%] self-end break-words rounded-2xl bg-accent/10 px-3 py-2 text-sm text-fg2 ring-1 ring-inset ring-accent/30 opacity-70"
 	pendingFailedClass = "max-w-[85%] self-end break-words rounded-2xl bg-danger/10 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-danger/40"
-	pendingQueueClass  = "flex items-start gap-2 px-3 py-1 opacity-70"
 	pendingActionClass = "press min-h-[44px] rounded-lg px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s2"
 )
 
@@ -118,11 +126,16 @@ var mirrorComposerJS = `
   (` + sendKeepsFocusJS + `)(send);
   var note = document.getElementById('mv-note');
   var nonce = document.getElementById('mv-nonce');
-  // The conversation (the Rendered view's), and the send queue's list.
+  // The conversation (the Rendered view's).
   var log = document.getElementById('mv-log');
-  var qbox = document.getElementById('mv-queue');
   function say(msg) { note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
   function sayOK(msg) { say(msg); note.setAttribute('data-ok', ''); }
+  // noteBy: the message the status line is about, when it is about one. A
+  // message only clears its OWN line: a later one's "Sent" never wipes an
+  // earlier one's refusal.
+  var noteBy = null;
+  function sayFor(p, msg, ok) { noteBy = p; if (ok) sayOK(msg); else say(msg); }
+  function clearFor(p) { if (noteBy === p) { noteBy = null; say(''); } }
   function hex(n) {
     if (!window.crypto || !crypto.getRandomValues) return '';
     var b = new Uint8Array(n), s = '';
@@ -153,29 +166,6 @@ var mirrorComposerJS = `
     if (!on && f) f.parentNode.removeChild(f);
   }
   againField(false);
-  // 🔴 "SEND AGAIN" IS THE ONLY RETRY OF A SEND THAT MAY HAVE LANDED, where
-  // there is no bubble to carry it (a Terminal view, a Queue): the server
-  // holds the message by its TEXT under any nonce (internal/api
-  // sendNonces.hold), so this button sends it with a NEW nonce and again=1.
-  var againBtn = null;
-  function offerAgain(p) {
-    if (!againBtn) {
-      againBtn = document.createElement('button');
-      againBtn.type = 'button';
-      againBtn.id = 'mv-send-again';
-      againBtn.className = '` + composerSendClass + `';
-      againBtn.textContent = 'Send again';
-      note.parentNode.insertBefore(againBtn, note.nextSibling);
-    }
-    againBtn.hidden = false;
-    againBtn.onclick = function () {
-      againBtn.hidden = true;
-      say('');
-      if (input.value === p.text) clearBox();
-      start({ text: p.text, typed: p.typed, queued: p.queued, to: p.to, again: true });
-    };
-  }
-  function dropAgain() { if (againBtn) againBtn.hidden = true; }
   // The Queue button (send_queue.go), when the composer has one: a submit
   // whose formaction is the queue route.
   var queueBtn = document.getElementById('mv-queue-send');
@@ -185,20 +175,29 @@ var mirrorComposerJS = `
   var clicked = null;
   if (queueBtn) queueBtn.addEventListener('click', function () { clicked = queueBtn; });
   send.addEventListener('click', function () { clicked = null; });
-  function clearBox() {
-    input.value = '';
-    if (window.musterComposerFit) window.musterComposerFit(input);
-    // Its draft goes with it: the pending send holds the text now.
-    if (window.musterDraft) window.musterDraft.sent(input);
-  }
+
+  // ---- The box and its draft. ----
+  // (Read when used: the draft script may run after this one.)
+  function D() { return window.musterDraft || null; }
+  function fit() { if (window.musterComposerFit) window.musterComposerFit(input); }
+  // hold/release: the message stays in the box's draft from the press until
+  // the server has it (composer_draft.go), so the page going away loses
+  // nothing.
+  function hold(p) { var d = D(); if (d && d.hold) d.hold(input, p.id, p.text); }
+  function release(p) { var d = D(); if (d && d.release) d.release(input, p.id); }
+  function clearBox() { input.value = ''; fit(); }
   // restore puts a message that did not go back in the box — only into an
-  // empty box: what was typed since is not overwritten (the bubble's Retry
-  // still has it).
-  function restore(t) {
-    if (input.value.trim()) return;
+  // empty box: what was typed since is not overwritten (the message's Retry,
+  // and the draft, still have it). It reports whether the box has it now.
+  function restore(p) {
+    var t = p.text;
+    if (input.value === t) { release(p); return true; }
+    if (input.value.trim()) return false;
     input.value = t;
-    if (window.musterComposerFit) window.musterComposerFit(input);
-    if (window.musterDraft) window.musterDraft.sent(input);
+    fit();
+    // The box has it now: the draft keeps it as the box's text.
+    release(p);
+    return true;
   }
   // bodyOf is the form's fields with this message's text, nonce and again.
   function bodyOf(p) {
@@ -214,102 +213,77 @@ var mirrorComposerJS = `
     return b.toString();
   }
   // native hands the message to the browser: an ordinary form submission,
-  // which the server answers with a redirect back to this view. Its text goes
-  // back in the box for it, and the pending entry goes: the page it lands on
-  // says what happened (the draft's own pending covers the text).
+  // which the server answers with a redirect back to this view. 🔴 The draft
+  // is saved FIRST, with every message still held and what was typed since:
+  // if this submit fails too (no network for the browser either), the page
+  // after it — a Back, a reload — has all of it back in the box. The page it
+  // lands on takes this message out of the draft only if it says it went
+  // (composer_draft.go, musterDraft.pending).
   function native(p) {
-    forget(p);
+    // The page is leaving with p: nothing after it is posted from here (the
+    // draft, saved just below, has them all).
+    handedOff = true;
+    var d = D();
+    if (d) d.sent(input);
     if (p.el) p.el.remove();
     input.value = p.text;
     if (nonce) nonce.value = p.nonce;
     againField(!!p.again);
     if (p.queued && queueBtn) form.setAttribute('action', queueBtn.getAttribute('formaction'));
-    if (window.musterDraft) window.musterDraft.pending(input);
+    if (d) d.pending(input);
     browserSubmit();
   }
   // browserSubmit is the browser's own submit of the form, as it stands.
   function browserSubmit() { HTMLFormElement.prototype.submit.call(form); }
 
-  // ---- The pending sends, kept for a reload (sessionStorage). ----
-  var KEY = input.getAttribute('data-draft-key') || '';
-  function store() { try { return KEY ? window.sessionStorage : null; } catch (e) { return null; } }
-  function readAll() {
-    var s = store(); if (!s) return [];
-    try { var a = JSON.parse(s.getItem('` + pendingStoreKey + `') || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
-  }
-  function writeAll(a) {
-    var s = store(); if (!s) return;
-    try { if (a.length) s.setItem('` + pendingStoreKey + `', JSON.stringify(a)); else s.removeItem('` + pendingStoreKey + `'); } catch (e) {}
-  }
-  function keep(p) {
-    // Only a bubble is kept: a Terminal view's send has no row to settle it.
-    if (p.queued || !log) return;
-    var a = readAll().filter(function (x) { return x.id !== p.id; });
-    a.push({ id: p.id, k: KEY, text: p.text, typed: p.typed, to: p.to, at: p.at, state: p.state, reason: p.reason || '', again: !!p.again });
-    writeAll(a);
-  }
-  function forget(p) { writeAll(readAll().filter(function (x) { return x.id !== p.id; })); }
-
   // ---- What a pending send looks like. ----
   var live = [];
   var LABEL = {
     sending: ` + strconv.Quote(PendingSendingText) + `,
-    checking: ` + strconv.Quote(PendingCheckingText) + `,
     sent: ` + strconv.Quote(PendingSentText) + `,
     stepup: ` + strconv.Quote(PendingStepUpText) + `,
     queuing: ` + strconv.Quote(PendingQueuingText) + `,
+    held: ` + strconv.Quote(PendingWaitingText) + `,
     unknown: ` + strconv.Quote(PendingUnknownText) + `
   };
   function tail() { var t = document.getElementById('` + mirrorAsksID + `'); return t && log && t.parentNode === log ? t : null; }
+  // bubbled: p is drawn in the conversation (a Send on the Rendered view).
+  function bubbled(p) { return !p.queued && !!log; }
   function draw(p) {
-    var el;
-    if (p.queued ? !qbox : !log) { paint(p); return; }
-    if (p.queued) {
-      el = document.createElement('div');
-      el.className = '` + pendingQueueClass + `';
-      var chip = document.createElement('span');
-      chip.className = 'mt-0.5 shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] font-semibold text-fg2';
-      chip.setAttribute('data-pending-status', '');
-      chip.setAttribute('role', 'status');
-      var pv = document.createElement('p');
-      pv.className = 'line-clamp-2 min-w-0 flex-1 text-xs text-fg [overflow-wrap:anywhere]';
-      pv.textContent = p.text;
-      el.appendChild(chip); el.appendChild(pv);
-      qbox.appendChild(el);
-    } else {
-      el = document.createElement('div');
-      var body = document.createElement('div');
-      body.className = 'whitespace-pre-wrap [overflow-wrap:anywhere]';
-      body.textContent = p.text;
-      var st = document.createElement('p');
-      st.setAttribute('data-pending-status', '');
-      st.setAttribute('role', 'status');
-      st.className = 'mt-1 text-right text-[11px] text-muted';
-      el.appendChild(body); el.appendChild(st);
-      var empty = log.querySelector('[data-mirror-empty]');
-      if (empty) empty.remove();
-      log.insertBefore(el, tail());
-      // Its own message: brought into view, whatever was being read.
-      log.scrollTop = log.scrollHeight;
-    }
+    if (!bubbled(p)) { paint(p); return; }
+    var el = document.createElement('div');
+    var body = document.createElement('div');
+    body.className = 'whitespace-pre-wrap [overflow-wrap:anywhere]';
+    body.textContent = p.text;
+    var st = document.createElement('p');
+    st.setAttribute('data-pending-status', '');
+    st.setAttribute('role', 'status');
+    st.className = 'mt-1 text-right text-[11px] text-muted';
+    el.appendChild(body); el.appendChild(st);
+    var empty = log.querySelector('[data-mirror-empty]');
+    if (empty) empty.remove();
+    log.insertBefore(el, tail());
+    // Its own message: brought into view, whatever was being read.
+    log.scrollTop = log.scrollHeight;
     el.setAttribute('data-pending-id', p.id);
     p.el = el;
     paint(p);
   }
-  // paint shows p's state on its bubble (or row, or the status line).
+  // paint shows p's state on its bubble, or — with no bubble — on the status
+  // line.
   function paint(p) {
     var el = p.el;
     if (!el) {
-      // No conversation to draw in (a Terminal view): the status line.
-      if (p.state === 'failed') return;
-      if (p.state === 'sent') { say(''); return; }
-      sayOK(LABEL[p.state] || '');
+      if (p.state === 'failed' || p.state === 'unknown') { sayFor(p, p.reason || ''); offer(); return; }
+      if (p.state === 'held') return;
+      if (p.state === 'sent') { clearFor(p); return; }
+      sayFor(p, LABEL[p.state] || '', true);
       return;
     }
     el.setAttribute('data-pending-send', p.state);
     var st = el.querySelector('[data-pending-status]');
     var bad = p.state === 'failed' || p.state === 'unknown';
-    if (!p.queued) el.className = bad ? '` + pendingFailedClass + `' : '` + pendingBubbleClass + `';
+    el.className = bad ? '` + pendingFailedClass + `' : '` + pendingBubbleClass + `';
     st.textContent = p.state === 'failed' ? ` + strconv.Quote(PendingFailedText) + ` + (p.reason ? ': ' + p.reason : '') : (LABEL[p.state] || '');
     if (st.classList) st.classList.toggle('text-st-error-fg', bad);
     var acts = el.querySelector('[data-pending-actions]');
@@ -323,7 +297,7 @@ var mirrorComposerJS = `
       r.addEventListener('click', function () { retry(p); });
       var d = document.createElement('button');
       d.type = 'button'; d.className = '` + pendingActionClass + `'; d.textContent = 'Dismiss';
-      d.addEventListener('click', function () { settle(p); });
+      d.addEventListener('click', function () { dismiss(p); });
       acts.appendChild(r); acts.appendChild(d);
       el.appendChild(acts);
     } else if (!bad && acts) acts.remove();
@@ -332,8 +306,10 @@ var mirrorComposerJS = `
     if (rb && p.state === 'unknown') {
       var prev = document.getElementById('mv-send-again');
       if (prev && prev !== rb) {
-        if (prev === againBtn) { againBtn.remove(); againBtn = null; }
-        else { prev.removeAttribute('id'); prev.textContent = 'Retry'; }
+        if (prev === againBtn) hideOffer();
+        // Another bubble's keeps its label (it is still a Send again); only
+        // the one id moves.
+        else prev.removeAttribute('id');
       }
       rb.id = 'mv-send-again';
       rb.textContent = 'Send again';
@@ -344,21 +320,68 @@ var mirrorComposerJS = `
     p.state = state;
     if (reason !== undefined) p.reason = reason;
     paint(p);
-    if (state === 'sent' || state === 'failed' || state === 'unknown' || state === 'checking' || state === 'sending') keep(p);
-    if (state === 'sent') p.timer = setTimeout(function () { settle(p); }, ` + strconv.Itoa(pendingSentSettleMS) + `);
-    if (state === 'checking') p.timer = setTimeout(function () { if (p.state === 'checking') set(p, 'unknown'); }, ` + strconv.Itoa(pendingRestoreSettleMS) + `);
+    if (state === 'sent' && p.el) p.timer = setTimeout(function () { settle(p); }, ` + strconv.Itoa(pendingSentSettleMS) + `);
   }
-  // settle: p is done (its row arrived, it was dismissed, retried or removed).
+
+  // ---- With no bubble (a Terminal view, a Queue): the refused message's
+  // own buttons, beside the status line. Retry (#mv-send-retry) — or Send
+  // again when it may have been delivered (the one such button on the page,
+  // #mv-send-again) — and, when later messages wait behind it, Dismiss and
+  // the word that they wait.
+  var againBtn = null, offerBox = null, dismissBtn = null, heldNote = null;
+  function offer() {
+    var p = blocker;
+    if (!p || p.el) { hideOffer(); return; }
+    var waiting = queue.length > 0;
+    if (!offerBox) {
+      offerBox = document.createElement('div');
+      offerBox.setAttribute('data-send-offer', '');
+      offerBox.className = 'flex flex-wrap items-center gap-2';
+      againBtn = document.createElement('button');
+      againBtn.type = 'button';
+      againBtn.className = '` + composerSendClass + `';
+      dismissBtn = document.createElement('button');
+      dismissBtn.type = 'button';
+      dismissBtn.className = '` + pendingActionClass + `';
+      dismissBtn.textContent = 'Dismiss';
+      heldNote = document.createElement('span');
+      heldNote.className = 'text-xs text-muted';
+      heldNote.setAttribute('data-pending-held', '');
+      offerBox.appendChild(againBtn); offerBox.appendChild(dismissBtn); offerBox.appendChild(heldNote);
+      note.parentNode.insertBefore(offerBox, note.nextSibling);
+    }
+    offerBox.hidden = false;
+    // 🔴 "SEND AGAIN" IS THE ONLY RETRY OF A SEND THAT MAY HAVE LANDED: the
+    // server holds the message by its TEXT under any nonce (internal/api
+    // sendNonces.hold), so this sends it with a NEW nonce and again=1.
+    againBtn.id = p.again ? 'mv-send-again' : 'mv-send-retry';
+    againBtn.textContent = p.again ? 'Send again' : 'Retry';
+    againBtn.onclick = function () { retry(p); };
+    dismissBtn.hidden = !waiting;
+    dismissBtn.onclick = function () { dismiss(p); };
+    heldNote.hidden = !waiting;
+    heldNote.textContent = waiting ? LABEL.held : '';
+  }
+  function hideOffer() {
+    if (!offerBox) return;
+    offerBox.hidden = true;
+    againBtn.removeAttribute('id');
+  }
+
+  // settle: p is done (its row arrived, it was sent from a Terminal view, it
+  // was dismissed, or a new send of it replaced it).
   function settle(p) {
     clearTimeout(p.timer);
     p.done = true;
     if (p.el) p.el.remove();
     p.el = null;
-    forget(p);
     live = live.filter(function (x) { return x !== p; });
+    if (blocker === p) unblock();
   }
+  // dismiss: the person let a refused message go. What waited behind it is
+  // posted now. (Its text stays where it is: the box, if it went back there.)
+  function dismiss(p) { release(p); clearFor(p); settle(p); }
   function retry(p) {
-    settle(p);
     if (input.value === p.text) clearBox();
     // A message that may have landed is sent again ON PURPOSE (again=1).
     start({ text: p.text, typed: p.typed, queued: p.queued, to: p.to, again: p.again || p.state === 'unknown' });
@@ -378,38 +401,63 @@ var mirrorComposerJS = `
     for (var i = 0; i < rs.length; i++) s.add(rs[i]);
     return s;
   }
-  // p.typed is what the person typed: the row draws an attachment line as a
-  // chip, not as its text, so only the typed part is compared.
-  function matches(p, text) {
-    var a = norm(p.typed !== undefined ? p.typed : p.text).slice(0, ` + strconv.Itoa(pendingMatchChars) + `), b = norm(text);
-    if (!a) return true;
-    return b.indexOf(a) === 0;
+  // ccItems: the "Queued in Claude Code" rows now, by their compared text.
+  function ccItems() {
+    return Array.prototype.slice.call(document.querySelectorAll('#` + ccQueuedID + ` [data-cc-queued-item]')).map(function (el) { return norm(el.textContent); });
   }
-  // reconcile settles every pending send whose row is now on the page, then
-  // keeps the rest at the conversation's end. mirrorViewScript calls it after
-  // each batch it draws — in the SAME task, so the row and its bubble are
-  // never on screen together.
+  // key: what of p is compared — what the person TYPED (the row draws an
+  // attachment line as a chip). Empty: nothing to compare (by position).
+  function key(p) { return norm(p.typed !== undefined ? p.typed : p.text).slice(0, ` + strconv.Itoa(pendingMatchChars) + `); }
+  // rowText: the row's raw prompt when it carries one (data-prompt), else
+  // what it draws.
+  function rowText(r) { var raw = r.getAttribute('data-prompt'); return raw !== null ? raw : r.textContent; }
+  function begins(a, text) { return norm(text).indexOf(a) === 0; }
+  // reconcile settles every SENT (or unknown) bubble whose row is now on the
+  // page, then keeps the rest at the conversation's end. mirrorViewScript
+  // calls it after each batch it draws — in the SAME task, so the row and its
+  // bubble are never on screen together.
   function reconcile() {
     if (!log) return;
-    var open = live.filter(function (p) { return !p.queued && !p.done && p.el && p.state !== 'failed' && p.state !== 'stepup'; });
+    // 🔴 Only a message whose post came back: one still waiting its turn,
+    // asking for a step-up or refused is never settled by a row.
+    var open = live.filter(function (p) { return p.el && !p.done && (p.state === 'sent' || p.state === 'unknown'); });
     if (open.length) {
       var rows = Array.prototype.slice.call(log.querySelectorAll('[data-bubble="user"]'));
-      var queued = Array.prototype.slice.call(document.querySelectorAll('#` + ccQueuedID + ` [data-cc-queued-item]'));
+      var cc = null, ccTaken = {};
       open.forEach(function (p) {
         var cand = rows.filter(function (r) { return !(used && used.has(r)) && !(p.before && p.before.has(r)); });
         if (!p.before) cand = cand.slice(-open.length);
-        for (var i = 0; i < cand.length; i++) {
-          if (matches(p, cand[i].textContent)) { if (used) used.add(cand[i]); settle(p); return; }
-        }
-        // Held by Claude Code itself: the queued region shows it.
-        for (var j = 0; j < queued.length; j++) {
-          if (matches(p, queued[j].textContent)) { settle(p); return; }
-        }
+        var a = key(p), hit = null;
+        // Nothing to compare: by position — the first new row that has
+        // nothing to compare either (an emoji's, an attachment's), never just
+        // whatever row comes next.
+        if (!a) { for (var k = 0; k < cand.length && !hit; k++) { if (!norm(rowText(cand[k]))) hit = cand[k]; } }
+        else for (var i = 0; i < cand.length && !hit; i++) { if (begins(a, rowText(cand[i]))) hit = cand[i]; }
+        if (hit) { if (used) used.add(hit); landed(p); return; }
+        // Held by Claude Code itself: the queued region shows it — one row
+        // beyond as many of that text as it showed at the press, each row
+        // for one bubble.
+        if (!a) return;
+        if (!cc) cc = ccItems();
+        var n = 0;
+        cc.forEach(function (t) { if (t.indexOf(a) === 0) n++; });
+        var had = 0;
+        (p.beforeCC || []).forEach(function (t) { if (t.indexOf(a) === 0) had++; });
+        var taken = ccTaken[a] || 0;
+        if (n > had + taken) { ccTaken[a] = taken + 1; landed(p); }
       });
     }
     // What is still pending stays the newest thing in the conversation.
     var t = tail();
-    live.forEach(function (p) { if (!p.queued && p.el && p.el.parentNode === log) log.insertBefore(p.el, t); });
+    live.forEach(function (p) { if (p.el && p.el.parentNode === log) log.insertBefore(p.el, t); });
+  }
+  // landed: p's row is here. A message that was "Not confirmed" did arrive:
+  // its text, put back in the box, is taken out again (sending it would be a
+  // second copy).
+  function landed(p) {
+    if (p.state === 'unknown' && input.value === p.text) clearBox();
+    release(p);
+    settle(p);
   }
   window.musterPendingSends = {
     reconcile: reconcile,
@@ -417,7 +465,7 @@ var mirrorComposerJS = `
     // clearLog). A reset redraws every row, so none is "seen" any more.
     kept: function () {
       live.forEach(function (p) { p.before = null; });
-      return live.filter(function (p) { return !p.queued && p.el; }).map(function (p) { return p.el; });
+      return live.filter(function (p) { return p.el; }).map(function (p) { return p.el; });
     }
   };
 
@@ -426,104 +474,140 @@ var mirrorComposerJS = `
   // A beforeunload that does not end in leaving (a download link) ends here:
   // a page that did leave runs no timer.
   window.addEventListener('beforeunload', function () { leaving = true; setTimeout(function () { leaving = false; }, 3000); });
-  window.addEventListener('pageshow', function () { leaving = false; });
+  // Back from the back/forward cache after a browser submit that did not
+  // leave: the queue runs again.
+  window.addEventListener('pageshow', function (e) { leaving = false; if (e.persisted && handedOff) { handedOff = false; pump(); } });
 
-  // ---- Sending. ----
-  // One at a time, in the order pressed.
-  var chain = Promise.resolve();
+  // ---- Sending: one at a time, in the order pressed. ----
+  // queue: the messages not posted yet, in order. current: the one out now.
+  // blocker: a refused message the ones in queue wait behind.
+  var queue = [], current = null, blocker = null, handedOff = false;
+  function paintQueue() {
+    queue.forEach(function (p) {
+      var st = blocker ? 'held' : (p.queued && !p.el ? 'queuing' : 'sending');
+      if (p.state !== st) set(p, st);
+    });
+    if (blocker) offer(); else hideOffer();
+  }
+  function unblock() { blocker = null; paintQueue(); pump(); }
+  function pump() {
+    if (current || blocker || handedOff || !queue.length) return;
+    var p = queue.shift();
+    current = p;
+    var next = function () { if (current === p) current = null; pump(); };
+    var r;
+    try { r = post(p); } catch (e) { r = null; try { console.error('composer: a send failed', e); } catch (e2) {} }
+    Promise.resolve(r).then(next, next);
+  }
   function start(o) {
-    // A message sent again supersedes its failed or unconfirmed bubble.
-    live.slice().forEach(function (x) { if (!x.queued && x.text === o.text && (x.state === 'failed' || x.state === 'unknown')) settle(x); });
+    // A message sent again replaces its refused one — as that one's Retry,
+    // so it goes FIRST, before what waited behind it.
+    var first = false;
+    live.slice().forEach(function (x) {
+      if (x.queued === !!o.queued && x.text === o.text && (x.state === 'failed' || x.state === 'unknown')) {
+        if (x === blocker) first = true;
+        release(x);
+        clearFor(x);
+        x.done = true; if (x.el) x.el.remove(); x.el = null;
+        live = live.filter(function (y) { return y !== x; });
+        if (x === blocker) blocker = null;
+      }
+    });
     var p = { id: hex(8) || String(Date.now()) + String(Math.random()).slice(2), text: o.text, typed: o.typed, queued: !!o.queued, to: o.to, again: !!o.again,
-      at: Date.now(), nonce: hex(16), state: o.queued ? 'queuing' : 'sending', before: o.queued ? null : seenRows() };
+      nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems() };
     live.push(p);
+    hold(p);
+    if (first) queue.unshift(p); else queue.push(p);
     draw(p);
-    if (!p.queued) keep(p);
-    chain = chain.then(function () { return post(p); }, function () { return post(p); });
+    paintQueue();
+    pump();
     return p;
   }
-  // post sends p and settles its promise when it has an answer — a step-up
-  // included: the next message waits for this one's confirm.
+  // post sends p; its promise settles when it has an answer — a step-up
+  // included: the next message waits for this one's confirm. 🔴 It never
+  // skips p: a message in the queue is always posted.
   function post(p) {
-    if (p.done) return;
     var req, body = bodyOf(p);
     try {
-      // 🔴 keepalive: THE BOX EMPTIES AT THE PRESS, SO A PERSON CAN LEAVE THE
-      // PAGE WHILE THE MESSAGE IS STILL ON ITS WAY — and a request the
-      // browser abandons mid-paste is one the host never confirms, which the
-      // server then holds as "may have been delivered" (measured: the next
-      // send of the same text was refused, Not sent again). A keepalive
-      // request outlives the page; the page it leaves for settles the bubble
-      // (kept above). The browser caps keepalive bodies at 64 KiB in flight,
-      // so a body near that goes as an ordinary request.
-      req = fetch(p.to, { method: 'POST', body: body, credentials: 'same-origin', keepalive: body.length < 48000,
+      req = fetch(p.to, { method: 'POST', body: body, credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } });
     } catch (e) { native(p); return; }
     return req.then(function (r) {
-      if (r.ok) {
-        dropAgain();
-        if (p.queued) {
-          sayOK('Queued.');
-          // The list's next draw (send_queue.go, at once on mv-queued) has the
-          // server's row: it replaces this one in the same paint.
-          p.state = 'queued';
-          if (p.el) p.el.setAttribute('data-pending-send', 'queued');
-          live = live.filter(function (x) { return x !== p; });
-          document.dispatchEvent(new Event('mv-queued'));
-        } else if (!p.el) {
-          // A Terminal view: the pane shows it; nothing to settle.
-          say('');
-          settle(p);
-        } else if (!p.done) {
-          set(p, 'sent');
-          // The row may already be here (it can arrive before the answer).
-          reconcile();
-        }
-        // What was sent, for the suggested replies' edit distance
-        // (suggest_row.go): it stays on this page.
-        document.dispatchEvent(new CustomEvent('mv-sent', { detail: { text: p.text, queued: p.queued } }));
-        return;
-      }
-      if (r.status === 403 && r.headers.get('X-Muster-Step-Up')) {
-        var stepUp = window.musterStepUp;
-        if (!stepUp) { native(p); return; }
-        stepUp.stale();
-        if (!p.queued) set(p, 'stepup'); else if (!p.el) sayOK(LABEL.stepup);
-        return new Promise(function (resolve) {
-          // The SAME request again, nonce and all: nothing was delivered.
-          stepUp.ask('', function () { if (!p.queued) set(p, 'sending'); return Promise.resolve(post(p)).then(resolve, resolve); },
-            function () { refused(p, ` + strconv.Quote(pendingCancelled) + `, false); resolve(); });
-        });
-      }
-      var again = !!r.headers.get('` + SendAgainHeader + `');
-      return r.text().then(function (t) {
-        refused(p, t.trim() || ((p.queued ? 'Not queued' : 'Not sent') + ' (HTTP ' + r.status + ')'), again);
-      });
+      // 🔴 FROM HERE THE HOST HAS ANSWERED: nothing below hands p to the
+      // browser's own submit, which would post it a second time.
+      try { return answered(p, r); } catch (e) { try { console.error('composer: an answer was not shown', e); } catch (e2) {} }
     }, function () {
       // 🔴 THE PAGE IS GOING (a reload, a navigation): the browser abandoned
       // the request, which is not a failure to hand to the browser's own
-      // submit — that would post it again from a page being unloaded. Its
-      // entry stays, and the page that comes next shows it (Checking…).
+      // submit — that would post it again from a page being unloaded. The
+      // draft holds the message, and the page that comes next has it in the
+      // box.
       if (leaving) return;
       if (navigator.onLine === false) { refused(p, form.getAttribute('data-down'), false); return; }
       native(p);
-    }).then(null, function () { native(p); });
+    });
   }
-  // refused: p did not go. Its reason is said, its text goes back in the box,
-  // and its bubble turns failed with Retry — or, with no bubble (a Queue, a
-  // Terminal view), the box and the status line are the retry, and a send
-  // that may have landed offers Send again.
+  function answered(p, r) {
+    if (r.ok) {
+      // The server has it: the draft lets it go.
+      release(p);
+      if (p.queued) {
+        p.state = 'queued';
+        sayFor(p, 'Queued.', true);
+        live = live.filter(function (x) { return x !== p; });
+        document.dispatchEvent(new Event('mv-queued'));
+      } else if (!p.el) {
+        // A Terminal view: the pane shows it; nothing to settle.
+        p.state = 'sent';
+        clearFor(p);
+        settle(p);
+      } else {
+        set(p, 'sent');
+        // The row may already be here (it can arrive before the answer).
+        reconcile();
+      }
+      // What was sent, for the suggested replies' edit distance
+      // (suggest_row.go): it stays on this page.
+      document.dispatchEvent(new CustomEvent('mv-sent', { detail: { text: p.text, queued: p.queued } }));
+      return;
+    }
+    if (r.status === 403 && r.headers.get('X-Muster-Step-Up')) {
+      var stepUp = window.musterStepUp;
+      if (!stepUp) { native(p); return; }
+      stepUp.stale();
+      set(p, 'stepup');
+      return new Promise(function (resolve) {
+        // One answer only: a confirm after a cancel (or the other way) is
+        // ignored, so p is never both refused and posted.
+        var over = false;
+        // The SAME request again, nonce and all: nothing was delivered.
+        stepUp.ask('', function () { if (over) return; over = true; set(p, p.queued && !p.el ? 'queuing' : 'sending'); return Promise.resolve(post(p)).then(resolve, resolve); },
+          function () { if (over) return; over = true; refused(p, ` + strconv.Quote(pendingCancelled) + `, false); resolve(); });
+      });
+    }
+    var again = !!r.headers.get('` + SendAgainHeader + `');
+    return r.text().then(function (t) {
+      refused(p, t.trim() || ((p.queued ? 'Not queued' : 'Not sent') + ' (HTTP ' + r.status + ')'), again);
+    });
+  }
+  // refused: p did not go. Its text goes back, and it waits for the person:
+  // a failed bubble with the reason, Retry and Dismiss — or, with no bubble,
+  // the reason on the status line, the text in the box, and Send again (it
+  // may have landed) or Retry and Dismiss (messages wait behind it). 🔴 What
+  // was sent after it waits too (blocker).
   function refused(p, reason, again) {
     p.again = again;
-    say(reason);
-    // Its row already arrived (the conversation shows it): nothing to undo.
-    if (p.done) return;
-    restore(p.text);
-    // 🔴 MAY HAVE LANDED: not "failed" — it is unknown, and its Retry is the
-    // composer's Send again (#mv-send-again, the one such button on the page).
-    if (p.el && !p.queued) { set(p, again ? 'unknown' : 'failed', reason); return; }
-    settle(p);
-    if (again) offerAgain(p);
+    if (p.done) {
+      // Settled before its answer (it cannot be: only a sent message is
+      // settled by a row) — drawn again, so the refusal is never lost.
+      p.done = false;
+      live.push(p);
+      if (bubbled(p)) { p.state = 'sending'; draw(p); }
+    }
+    restore(p);
+    blocker = p;
+    set(p, again ? 'unknown' : 'failed', reason);
+    paintQueue();
   }
 
   form.addEventListener('submit', function (e) {
@@ -540,12 +624,13 @@ var mirrorComposerJS = `
     // The message as sent: the text, then a line per attachment (attach.go).
     var typed = input.value;
     var text = att ? att.compose(typed) : typed;
-    // A plain Send is never a Send again: that is the bubble's Retry, or
-    // the button offered for it.
+    // A plain Send is never a Send again: that is the refused message's own
+    // button.
     var again = !!form.querySelector('input[name="` + SendAgainField + `"]');
     e.preventDefault();
-    say('');
-    dropAgain();
+    // A refused message's line and buttons stay (it is still refused); any
+    // other line is done with.
+    if (!blocker || blocker.el) { noteBy = null; say(''); }
     againField(false);
     clearBox();
     if (att) att.sent();
@@ -553,7 +638,7 @@ var mirrorComposerJS = `
     try { start({ text: text, typed: typed, queued: queued, to: queued ? sub.getAttribute('formaction') : form.getAttribute('action'), again: again }); }
     catch (err) { input.value = text; browserSubmit(); }
   });
-  input.addEventListener('input', function () { if (input.value.trim()) say(''); });
+  input.addEventListener('input', function () { if (input.value.trim() && !(blocker && noteBy === blocker)) say(''); });
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
@@ -565,25 +650,5 @@ var mirrorComposerJS = `
       if (form.requestSubmit) form.requestSubmit(); else send.click();
     }
   });
-
-  // ---- After a reload: this box's sends that were still out. ----
-  if (log) (function () {
-    var now = Date.now(), all = readAll(), mine = [], rest = [];
-    all.forEach(function (x) {
-      if (!x || typeof x.text !== 'string' || !(now - x.at < ` + strconv.Itoa(pendingMaxAgeMS) + `)) return;
-      if (x.k === KEY && KEY) mine.push(x); else rest.push(x);
-    });
-    writeAll(rest);
-    mine.forEach(function (x) {
-      var p = { id: x.id, text: x.text, typed: typeof x.typed === 'string' ? x.typed : undefined, queued: false, to: x.to, again: !!x.again, at: x.at, nonce: hex(16), state: 'checking', before: null };
-      live.push(p);
-      draw(p);
-      if (x.state === 'failed' || x.state === 'unknown') set(p, x.state, x.reason);
-      else if (x.state === 'sent') set(p, 'sent');
-      else set(p, 'checking');
-    });
-    // The conversation may already be drawn (a snapshot): settle what it shows.
-    if (mine.length) reconcile();
-  })();
 })();
 `

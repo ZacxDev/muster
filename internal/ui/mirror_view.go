@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -701,6 +702,29 @@ func toolRowID(toolID string) string {
 	return "mt-" + hex.EncodeToString(sum[:8])
 }
 
+// promptMatchRunes bounds a user row's data-prompt: the pending bubble
+// compares only the first pendingMatchChars letters and digits, so the head
+// of the prompt is enough, and a pasted log does not double the page.
+const promptMatchRunes = 2000
+
+// promptHead is the first promptMatchRunes runes of text, up to its first
+// attachment. 🔴 An attachment's line carries its SIGNED link, which the row
+// deliberately never puts on the page (promptBody draws a chip with the
+// /uploads/ route); and only the typed part is compared anyway.
+func promptHead(text string) string {
+	if refs := uploads.FindRefs(text); len(refs) > 0 {
+		text = text[:refs[0].Start]
+	}
+	n := 0
+	for i := range text {
+		if n == promptMatchRunes {
+			return text[:i]
+		}
+		n++
+	}
+	return text
+}
+
 func render(n g.Node) string {
 	var b bytes.Buffer
 	_ = n.Render(&b)
@@ -729,7 +753,12 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// page-unique one (chatIndexScript).
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
-				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), promptBody(ev.Text)))})
+				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""),
+				// data-prompt: the prompt as the transcript holds it, before
+				// markdown draws it — what the composer's pending bubble is
+				// matched against (composer_pending.go), since a link drawn as
+				// its label or a fence drawn as code no longer reads as typed.
+				g.Attr("data-prompt", promptHead(ev.Text)), promptBody(ev.Text)))})
 		case cctranscript.KindText:
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})

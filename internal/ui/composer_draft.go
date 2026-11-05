@@ -114,12 +114,21 @@ func draftAttrs(key, note string) g.Node {
 // (e2e/tests/cls.spec.ts measures it).
 //
 // A send clears the draft through window.musterDraft.sent(box), which the
-// senders (mirrorComposerScript, agentChatScript) call once the server — or
-// the socket — has taken the message; whatever is left in the box then is
-// kept. A send handed to the BROWSER (its own form submission) is marked
-// pending in sessionStorage; the page it comes back to clears the draft only
-// when it says the message went (an OK notice) and the draft is still that
-// text.
+// senders (agentChatScript) call once the socket has taken the message;
+// whatever is left in the box then is kept.
+//
+// 🔴 A MESSAGE ON ITS WAY STAYS IN THE DRAFT (musterDraft.hold/release). The
+// mirrored composer (composer_pending.go) empties the box at the press, long
+// before the server has the message: it HOLDS the message in the box's draft
+// from the press and RELEASES it only on the server's OK (or once it is back
+// in the box). The draft saved is every held message, in order, then what is
+// in the box, a blank line between — so a reload, a navigation or a failed
+// browser submit mid-send puts the text back in the box, and nothing is kept
+// anywhere else.
+//
+// A send handed to the BROWSER (its own form submission) is marked pending in
+// sessionStorage; the page it comes back to takes that text out of the draft
+// only when it says the message went (an OK notice).
 func composerDraftScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -130,6 +139,16 @@ func composerDraftScript() g.Node {
     var PENDING = 'muster.draft.pending';
     var DEBOUNCE = 400;
     var timers = {};
+    // holds: per box key, the messages on their way ({id, t}), in order.
+    // frozen: a box handed to the browser's own submit — its draft was saved
+    // whole first, and the box now holds only the one message being submitted.
+    var holds = {}, frozen = {};
+    var SEP = '\n\n';
+    function composed(key, box) {
+      var parts = (holds[key] || []).map(function (h) { return h.t; });
+      if (box && box.trim()) parts.push(box);
+      return parts.join(SEP);
+    }
     function ls() { try { return window.localStorage || null; } catch (e) { return null; } }
     function read(key) {
       var s = ls(); if (!s) return null;
@@ -170,8 +189,12 @@ func composerDraftScript() g.Node {
     function save(el) {
       var key = keyOf(el); if (!key) return;
       clearTimeout(timers[key]); delete timers[key];
-      var t = el.value || '';
-      if (!t.trim() || t.length > MAX) { remove(key); return; }
+      if (frozen[key]) return;
+      var held = (holds[key] || []).length > 0;
+      var t = composed(key, el.value || '');
+      // A box's own text past MAX could not be sent: no draft. Messages on
+      // their way are kept whatever their total (each one could be sent).
+      if (!t.trim() || (t.length > MAX && !held)) { remove(key); return; }
       var s = ls(); if (!s) return;
       try { s.setItem(key, JSON.stringify({ t: t, at: Date.now() })); } catch (e) { return; }
       sweep();
@@ -209,7 +232,19 @@ func composerDraftScript() g.Node {
       if (p) {
         var note = document.getElementById(el.getAttribute('data-draft-note') || '');
         var d0 = read(key);
-        if (note && note.hasAttribute('data-ok') && !note.hidden && d0 && d0.t === p.t) remove(key);
+        if (note && note.hasAttribute('data-ok') && !note.hidden && d0) {
+          // It went: it leaves the draft, and what was held or typed with it
+          // stays.
+          if (d0.t === p.t) remove(key);
+          else {
+            var at = d0.t.indexOf(p.t);
+            if (at >= 0) {
+              var rest = (d0.t.slice(0, at) + d0.t.slice(at + p.t.length)).split(SEP + SEP).join(SEP).replace(/^\n\n/, '').replace(/\n\n$/, '');
+              var s0 = ls();
+              try { if (rest.trim()) s0.setItem(key, JSON.stringify({ t: rest, at: Date.now() })); else remove(key); } catch (e) {}
+            }
+          }
+        }
       }
       if (!el.value) {
         var d = read(key);
@@ -247,14 +282,35 @@ func composerDraftScript() g.Node {
       // sent: el's message was taken. What is left in the box (typed while it
       // was going) is kept; an empty box has no draft.
       sent: function (el) { if (keyOf(el)) save(el); },
+      // hold: message t (id) is on its way from el's box, which is emptied:
+      // the draft keeps it until release.
+      hold: function (el, id, t) {
+        var key = keyOf(el); if (!key) return;
+        (holds[key] = holds[key] || []).push({ id: id, t: t });
+        save(el);
+      },
+      // release: the server has message id (or the box has it back).
+      release: function (el, id) {
+        var key = keyOf(el); if (!key || !holds[key]) return;
+        var n = holds[key].length;
+        holds[key] = holds[key].filter(function (h) { return h.id !== id; });
+        if (holds[key].length !== n) save(el);
+      },
       // pending: el's message is being handed to the browser's own submit.
+      // The draft was saved whole just before (sent); from now on the box
+      // holds only that message, so it is not saved again on this page.
       pending: function (el) {
         var key = keyOf(el); if (!key) return;
+        clearTimeout(timers[key]); delete timers[key];
+        frozen[key] = true;
         try { window.sessionStorage.setItem(PENDING, JSON.stringify({ k: key, t: el.value, at: Date.now() })); } catch (e) {}
       },
       flush: flush
     };
     window.addEventListener('pagehide', flush);
+    // A page back from the back/forward cache after its browser submit did
+    // not leave: its boxes save again.
+    window.addEventListener('pageshow', function (e) { if (e.persisted) frozen = {}; });
     document.addEventListener('visibilitychange', function () { if (document.hidden) flush(); });
     // A boosted navigation fires no pagehide.
     document.addEventListener('htmx:beforeRequest', flush);
