@@ -51,15 +51,18 @@ default `15m`), which for each session:
   another conversation, and nothing is stored;
 - **skip the summarizer when the tail has not changed**: the tail's sha256
   is stored with the focus, and an equal one makes no call;
-- otherwise ask the summarizer (below) for a title and a description, clean
-  them (one line, no markup or control characters, three sentences; a title is
-  kept whole, cut only past a 300-character storage guard — migration 0023 —
-  while the prompt asks for 3 to 8 words), and store them;
+- otherwise ask the summarizer (below) for a title and a description —
+  handing it the session's **current title to keep** — check the answer
+  ([what is refused](#what-the-summarizer-must-answer)), clean it (one line,
+  no control characters, three sentences; a title cut to **60 characters** at
+  a word boundary), and store it;
 - on any failure, keep the previous focus and record **why** beside it, as a
   short fixed reason: `no OpenRouter key`, `the OpenRouter key could not be
   read` (a credential-store failure, not a missing key), `rate-limited`,
   `summarizer error (HTTP <status>)`, `the summarizer's answer was
-  unusable`, `the summarizer could not be reached`. Nothing from the transcript, the key or the provider's error
+  unusable`, `the summarizer ignored the format`, `the summarizer answered in
+  markdown`, `the summarizer repeated the session's text`, `the summarizer
+  could not be reached`. Nothing from the transcript, the key or the provider's error
   text is stored or shown. The card's popover says it ("No focus: …", or
   "Last refresh failed: …" on a focus that is now stale, whose title is also
   marked `stale`), and so does
@@ -165,6 +168,55 @@ session owner's OpenRouter key, exactly as that owner's gateway agents get it
 member's own otherwise. An owner with no key gets no summarized focus, and the
 error is recorded.
 
+The model is `MUSTER_FOCUS_MODEL` ([configuration](configuration.md)),
+`scaledown/summarize` when unset; any OpenRouter model that keeps to the
+format below can replace it.
+
+### What the summarizer must answer
+
+A focus title is a **stable name for the session's task**, not a description
+of its latest step. So the prompt asks for a name of 3 to 8 words, at most 60
+characters, plain text, in the summarizer's own words — and, when the session
+already has a title, it is sent with the transcript (in the instructions, not
+as transcript) with the instruction to **keep it word for word unless the
+session's overall goal has changed**. A kept title that comes back in another
+case or punctuation is stored exactly as before, so the name does not
+flicker. (A history row is still written when the description changes:
+history keeps every change of title *or* description.)
+
+The answer must be exactly a `Title: …` line and, optionally, a
+`Description: …` line. The code enforces what the prompt asks:
+
+- **any other shape is refused**: unlabelled lines, a sentence, labels in
+  markdown (`**Title:**`, `- Title:`), an extra line before or after. Nothing
+  is read out of an off-format answer: the session keeps its title, and the
+  row records `the summarizer ignored the format`;
+- **markdown is refused**: a code fence anywhere, or a title that is a
+  heading, `**bold**` or a markdown link. The session keeps its title, and the
+  row records `the summarizer answered in markdown`. Backticks around a name
+  and a leading list marker are removed rather than refused, and `__init__` or
+  `C#` are ordinary title text;
+- **a reply echoed back is refused**: a title that is mostly the session's
+  own replies word for word (at least 6 words, 60% of whose 4-word runs appear
+  in the tail's assistant lines). The session keeps its title, and the row
+  records `the summarizer repeated the session's text`. A title kept as asked
+  is never judged a copy, and neither are your own words: a title that names
+  the job as you asked for it is what the prompt wants. A **description** that
+  is mostly a reply is dropped, and the title kept. This is a quality guard
+  against echoed prose — it is **not** a privacy guard: a short title that
+  carries a host name or a token from the transcript passes it;
+- **a refused tail is not sent again until it changes**: after an answer is
+  refused for its content (format, markdown or a copy), that tail's
+  fingerprint is remembered (in memory, so a restart costs one more call), and
+  the next pass makes no call for it. A failure to reach the summarizer, or an
+  HTTP error, is retried on the next pass;
+- **a title longer than 60 characters is cut** at the last whole word, with
+  no ellipsis.
+
+Titles stored before these rules (up to the 300-character storage guard of
+migration 0023) stay until the next refresh replaces them, and are not sent
+back as a title to keep.
+
 🔴 **What leaves for each kind of session** (to OpenRouter and ScaleDown):
 
 | entry | dispatched agent | mirrored Claude Code session |
@@ -175,6 +227,7 @@ error is recorded.
 | tool arguments (shell commands, file bodies, URLs, patterns, anything else) | never | never |
 | tool output | never | never |
 | errors | — | the error text |
+| the session's current focus title | when it is one the rules above could produce | the same |
 
 Prompts and replies are sent as they are: whatever you or a session wrote,
 including text pasted from elsewhere, goes out. The one exception is a

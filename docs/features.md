@@ -246,7 +246,9 @@ search finds a session by it, and the chief reads it. [focus.md](focus.md).
   Off until you set `MUSTER_AGENT_OPENROUTER_KEY` in `.env`; muster then
   reports it as off, needing that variable.
 - **`.env`:** `MUSTER_AGENT_OPENROUTER_KEY=<your key>`. Optional:
-  `MUSTER_FOCUS_INTERVAL` (15m; `0` turns it off), `MUSTER_FOCUS_RETENTION`.
+  `MUSTER_FOCUS_INTERVAL` (15m; `0` turns it off), `MUSTER_FOCUS_RETENTION`,
+  `MUSTER_FOCUS_MODEL` (default `scaledown/summarize`; any OpenRouter model
+  that keeps to the two-line `Title:` / `Description:` format).
 - **Check:** `muster doctor` or the Features page; after a pass (every 15
   minutes), search (`/`) finds a session by its focus title.
 
