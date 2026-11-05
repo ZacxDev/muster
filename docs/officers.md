@@ -386,7 +386,9 @@ the whole set in one canonical form (`connectors.RepoScope`:
 `owner/repo (+ read: a/x, b/y)`, the read repositories lowercased and sorted),
 so adding, removing or changing a read repository re-opens the grant the same
 way, while declaring the same set in another order or case does not. An
-officer without `read_repos` records exactly `repo`, as before.
+officer without `read_repos` records exactly `repo`, as before. A `kube-read`
+grant is the exception: `repo` and `read_repos` do not change what
+`officer_kube_read` may read, so changing them leaves that grant approved.
 
 **Approving the grant.** Nothing is pre-granted: there is no automatic grant
 for officers, and none for any other configured agent. The instance asks once
@@ -1603,6 +1605,127 @@ number and UTC day with requests, tokens by direction, USD and estimated request
 rolling muster-server back to an image that predates it (an older image
 refuses the unknown field and does not boot). Migration 0075's own rollback is
 in its header.
+
+## Reading a cluster: officer_kube_read
+
+A tiered officer with a `kube` block offers its **judgement** instances
+`officer_kube_read`: one typed, read-only request against a Kubernetes cluster
+the block names. muster-server runs it itself (`internal/kuberead`), as
+`postgres_query` runs SQL, so the instance pod never holds a cluster
+credential and never names an address.
+
+```json
+"kube": {"clusters": [{"name": "prod-a", "service_account": "officers/officer-anomaly-prod-a"}]}
+```
+
+Each cluster's connection is the server's **sealed environment**, and its read
+allowlist the **deployment's configuration**, never the declaration
+(`<CLUSTER>` is the name as a token suffix spells an id: `prod-a` → `PROD_A`):
+
+| variable | holds |
+|---|---|
+| `MUSTER_KUBE_READ_ENDPOINT_<CLUSTER>` | the API server's `host:port` (no scheme, no path) |
+| `MUSTER_KUBE_READ_CA_<CLUSTER>` | the PEM bundle its certificate chains to |
+| `MUSTER_KUBE_READ_MINTER_TOKEN_<CLUSTER>` | a token whose ONLY right is `create` on `serviceaccounts/token` for the officer's ServiceAccount |
+| `MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>` | the resources officer_kube_read may read on that cluster (below). Unset or empty **disables** the cluster |
+
+**One call:**
+
+1. **Binding.** Only a judgement instance of an officer with `kube` is offered
+   the tool. A routine instance, or any other agent, is refused at dispatch.
+2. **Arguments, typed only.** Either
+   `{cluster, verb: get|list, group, version, resource, namespace?, name?, label_selector?, field_selector?, limit?}`
+   or `{cluster, log: {namespace, pod, container?, previous?, since_seconds ≤ 86400, tail_lines ≤ 2000}}`,
+   plus an optional `item_id`. An unknown key (a `url`, a `path`, `watch`) is
+   refused. muster builds the GET path; there is never a URL from the model.
+3. **Grant.** The instance's own approved grant for the `kube-read`
+   connector, filed with `connector_request` and approved by hand, never from
+   a shared approval. `kube-read` is a virtual connector with no stored secret
+   and no HTTP face: the proxy refuses `/connect/kube-read/…`. It exists for
+   admins only, so the officer's owner must be one.
+4. **Item.** The instance must hold a live claim in HQ. The read is counted
+   against it (`item_id` picks one when it holds several).
+5. **Caps.** 30 calls a minute per officer; **200 `officer_kube_read` calls
+   per item** (`officers.ReadBudget`). Today only `officer_kube_read` spends
+   that budget: the observability tools do not count against it, and sharing
+   it with them is future work (MU2). Both are in memory: a restart can only
+   allow more.
+6. **Read.** muster mints a **600 s TokenRequest** for the officer's
+   ServiceAccount with the minter token, then GETs the path with that token
+   alone. TLS trusts the cluster's CA bundle only and verifies the name
+   `kubernetes.default.svc`; muster dials the declared endpoint and nothing
+   else, and follows no redirect.
+
+**What can be read.** The deployment supplies the allowlist, per cluster, in
+`MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>`; muster compiles in no resource list.
+It is a JSON list of rules, `get` and `list` implied (there is no verbs field):
+
+```json
+[
+  {"apiGroup": "", "resources": ["pods", "pods/log", "events", "configmaps"], "scope": "namespaced"},
+  {"apiGroup": "", "resources": ["nodes", "namespaces"], "scope": "cluster"},
+  {"apiGroup": "widgets.example.com", "resources": ["widgets"], "scope": "namespaced"}
+]
+```
+
+- `apiGroup` is the group (`""` for core). `resources` are plural resource
+  names. `scope` is `namespaced` or `cluster`: a cluster-scoped resource takes
+  no namespace, and an all-namespace list of a namespaced one needs a selector.
+- **Validated strictly at boot**, and a malformed list refuses the boot naming
+  the variable: an unknown field, a `"*"` resource or group, any subresource
+  other than core `pods/log` (`deployments/status`, `*/status` …), a
+  never-granted resource, an RBAC group, a missing or unknown scope, and a
+  duplicate are each refused.
+- **Unset, blank, `null` or `[]` DISABLES that cluster's kube-read** (fail
+  closed): the officer still loads, the cluster is not offered to its
+  instances (with no other cluster, neither is the tool nor the `kube-read`
+  connector), and the server logs `kube-read DISABLED for cluster …` at
+  startup. It never means "allow all".
+- Secrets, `pods/exec`, `attach`, `portforward`, every proxy, ServiceAccounts
+  and their tokens, CSRs and RBAC are refused in any group as a belt, whatever
+  the list says. No subresource is offered except a pod's log, through the log
+  form: status is read on the object. `watch` is never offered.
+
+The cluster's RBAC (the officer's ClusterRole, `get` and `list` only) is the
+authoritative wall: a resource on the allowlist that the role does not grant
+is a 403, not a leak. Keep the two equal from the infrastructure side: each
+infrastructure repository should pin its officer-read ClusterRole's rules
+against the allowlist it ships in this variable, in its own tests. That pin
+lives in the infrastructure repositories, not in muster.
+
+**What comes back.**
+- An object, or `{kind, count, items, more, resource_version}` for a list.
+  `managedFields` and the `last-applied-configuration` annotation are
+  stripped. Everything else is returned as the API server returned it:
+  **ConfigMaps in full** (operator decision), pod `env` values and inline Helm
+  values included. The kickoff tells the instance never to quote a
+  credential-shaped value.
+- A pod log as `{lines, line_count, redactions}`, each line capped at 1000
+  characters. A line that is one JSON object keeps only a closed set of fields
+  (`msg`, `message`, `error`, `code`, `path` and a few more); the other
+  fields are dropped by name. What is left goes through a heuristic scrub:
+  - first `internal/redact`'s `Secrets`, the repo's one secret redactor (the
+    shapes it knows are listed in its header: credential headers,
+    `NAME_PASSWORD=` / `PGPASSWORD=`-style assignments, URL credentials,
+    prefixed tokens such as `AKIA…`, JWTs, "the password is …" and more);
+  - then the rules only pod logs need: a URL's whole query string, e-mail
+    and IP addresses, any run of 32 or more token characters, a `cookie` /
+    `session` / `sig` field, and a credential name followed by `:` in the
+    middle of a line.
+
+  A secret in a shape neither set knows passes.
+- **Refused, not cut:** an answer over 1 MiB, or a list of more than 500
+  objects. A list the caller limited (`limit`) says `more` when there are more.
+
+**Audit.** Every call that reaches the caps writes one connector-audit row of
+kind `query`, as `postgres_query` does; its connector, `kube-read`, is what
+identifies it. The row holds the instance, the cluster, the verb, the path,
+the status, and in `detail` the officer, item, group/version/resource,
+namespace, name, selectors, the minted token's jti, the object count, bytes,
+duration and any refusal. **Never the answer.** The API servers do not log
+reads, so this row is the read audit. The tool's result carries the row's id
+(`audit_id`, a positive integer: `connector_audit.id`) and the jti; the
+instance cites a read by its `audit_id`.
 
 ## Security model
 
