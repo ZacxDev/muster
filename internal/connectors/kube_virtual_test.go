@@ -60,3 +60,38 @@ func TestTheProxyNeverServesKubeRead(t *testing.T) {
 		t.Fatalf("a kube-read request reached an upstream (%d)", up.hits.Load())
 	}
 }
+
+// TestAKubeReadGrantIsNotReopenedWhenTheRepoChanges: a kube-read grant does
+// not depend on the officer's `repo` or `read_repos` (neither changes what
+// officer_kube_read may read), so ReconcileGrant leaves it approved when the
+// repository set it was approved for differs from the agent's now — both
+// a different repository and a read_repos change. CONTROLS: the App's github
+// grant under the same change IS re-opened, and a kube-read grant whose
+// credential source changed (the connector no longer presented) still is.
+func TestAKubeReadGrantIsNotReopenedWhenTheRepoChanges(t *testing.T) {
+	ctx := context.Background()
+	was := "example-org/widget"
+	for _, c := range []struct {
+		name, connector string
+		v               connectors.Virtual
+		allow           func(context.Context) bool
+		now             string
+		want            bool
+	}{
+		{"kube-read, another repo", connectors.KubeReadName, connectors.KubeReadVirtual(), allowAll, "example-org/other", false},
+		{"kube-read, read_repos added", connectors.KubeReadName, connectors.KubeReadVirtual(), allowAll,
+			connectors.RepoScope(was, []string{"other-org/docs"}), false},
+		{"kube-read, repo removed", connectors.KubeReadName, connectors.KubeReadVirtual(), allowAll, "", false},
+		{"control: github, another repo", "github", &stubVirtual{hosts: []string{"api.github.com"}}, allowAll, "example-org/other", true},
+		{"control: kube-read, source changed", connectors.KubeReadName, connectors.KubeReadVirtual(),
+			func(context.Context) bool { return false }, was, true},
+	} {
+		base := &reopenStub{}
+		s := connectors.WithVirtual(base, c.v, c.allow)
+		g := connectors.Grant{ID: 21, Connector: c.connector, Status: connectors.StatusApproved, Source: connectors.SourceApp, Repo: was}
+		_, why, err := connectors.ReconcileGrant(ctx, s, g, c.now)
+		if reopened := why != ""; err != nil || reopened != c.want || (len(base.reopened) == 1) != c.want {
+			t.Errorf("%s: reopened=%q (calls %v) err=%v, want reopened %v", c.name, why, base.reopened, err, c.want)
+		}
+	}
+}
