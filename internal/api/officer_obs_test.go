@@ -313,3 +313,70 @@ func TestObsQueryPassesHQsRefusalsBack(t *testing.T) {
 		t.Fatalf("the fake ran %d failed queries", n)
 	}
 }
+
+// TestTheObsQueryToolSchemaIsOpen (round 1): the tool definition the model
+// sees is not a second copy of HQ's request schema. It describes query_id
+// only and leaves every other property open (additionalProperties true), so
+// an argument HQ adds tomorrow — listed in officer_obs_queries' `args` —
+// can be sent without a muster release.
+func TestTheObsQueryToolSchemaIsOpen(t *testing.T) {
+	var def map[string]any
+	for _, d := range officerToolDefs() {
+		if d.Name == obsQueryTool {
+			b, _ := json.Marshal(d.Parameters)
+			_ = json.Unmarshal(b, &def)
+		}
+	}
+	if def == nil {
+		t.Fatal("no officer_obs_query definition")
+	}
+	props, _ := def["properties"].(map[string]any)
+	if open, _ := def["additionalProperties"].(bool); !open || len(props) != 1 || props["query_id"] == nil {
+		t.Fatalf("officer_obs_query's schema = %v, want an open object describing query_id only", def)
+	}
+	if req, _ := def["required"].([]any); len(req) != 1 || req[0] != "query_id" {
+		t.Fatalf("required = %v, want [query_id]", def["required"])
+	}
+}
+
+// TestTheObsQueryBodyIsTheArgumentsByteForByte (round 1): what HQ receives is
+// the arguments object exactly as the officer sent it — read from the RAW
+// request body, not a decoded copy. A 20-digit integer (which a float64
+// round trip would change) and the caller's key order and spacing survive.
+func TestTheObsQueryBodyIsTheArgumentsByteForByte(t *testing.T) {
+	r := newOfficerRig(t)
+	ctx := context.Background()
+	inst := r.addInstance(r.a, 1, 898)
+	args := `{"query_id":"fixture_calls_by_procedure", "min_calls":12345678901234567890,` + obsWin + `,"step":"300s"}`
+	r.hq.ResetRequests()
+	_ = r.s.dispatchAgentTool(ctx, inst, obsQueryTool, args)
+	reqs := r.hq.Requests()
+	if len(reqs) != 1 || string(reqs[0].Raw) != args {
+		t.Fatalf("HQ received %q, want the arguments byte for byte: %q", func() string {
+			if len(reqs) == 0 {
+				return ""
+			}
+			return string(reqs[0].Raw)
+		}(), args)
+	}
+}
+
+// TestNamingAnotherOfficerIsRefusedInAnyCase (round 1): the officer-naming
+// guard matches the key case-insensitively, as HQ's Go decoder matches field
+// names — `Officer_ID` or `OFFICER` naming another officer is refused before
+// HQ, like `officer_id`.
+func TestNamingAnotherOfficerIsRefusedInAnyCase(t *testing.T) {
+	r := newOfficerRig(t)
+	ctx := context.Background()
+	inst := r.addInstance(r.a, 1, 899)
+	r.hq.ResetRequests()
+	for _, k := range []string{"Officer_ID", "OFFICER", "Officer"} {
+		out := r.s.dispatchAgentTool(ctx, inst, obsQueryTool, `{"query_id":"fixture_error_lines","`+k+`":"`+offB+`",`+obsWin+`}`)
+		if !isToolErr(out) || !strings.Contains(out, "cannot name another officer") {
+			t.Errorf("%s naming %s: %s, want the other-officer refusal", k, offB, out)
+		}
+	}
+	if n := len(r.hq.Requests()); n != 0 {
+		t.Fatalf("calls naming another officer reached HQ (%d requests)", n)
+	}
+}
