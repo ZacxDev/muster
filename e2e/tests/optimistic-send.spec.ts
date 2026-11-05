@@ -686,8 +686,11 @@ for (const vp of [
     }
 
     // 🟢 Before, a later message's press and its OK wiped an earlier one's
-    // refusal and its Send again from the status line.
-    test('in the Terminal view a refusal that may have landed keeps its reason and Send again while a later message waits behind it', async ({ page }) => {
+    // refusal and its Send again from the status line. A message pressed
+    // AFTER the refusal is shown is the person moving on: it goes (it is not
+    // held — hermes-view.spec's busy loop sends a new text after each
+    // refusal), and the refusal's reason and Send again stay.
+    test('in the Terminal view a refusal that may have landed keeps its reason and Send again while a later message is sent past it', async ({ page }) => {
       const t = await openTerminal(page);
       const posted: string[] = [];
       let first = true;
@@ -714,13 +717,12 @@ for (const vp of [
       await expect(t.locator('#mv-input'), 'the text is back in the box').toHaveValue(m1);
       await t.locator('#mv-input').fill(m2);
       await press(t.locator('#mv-send'), vp.how === 'tap');
-      await expect(t.locator('[data-pending-held]')).toHaveText("Waiting — an earlier message wasn't sent");
+      await expect.poll(() => posted, { message: 'the new message is sent past the refusal', timeout: 10_000 }).toEqual([m2]);
       await sleep(1_000);
       await expect(t.locator('#mv-note'), 'the refusal is still said').toHaveText('it may have been delivered');
       await expect(t.locator('#mv-send-again'), 'and its Send again is still offered').toBeVisible();
-      expect(posted, 'the later message waits').toEqual([]);
       await press(t.locator('#mv-send-again'), vp.how === 'tap');
-      await expect.poll(() => posted, { message: 'Send again goes first, then the one that waited', timeout: 10_000 }).toEqual([m1, m2]);
+      await expect.poll(() => posted, { message: 'Send again sends it, once', timeout: 10_000 }).toEqual([m2, m1]);
       await expect(t.locator('#mv-send-again')).toBeHidden();
       await expect(t.locator('#mv-note')).toBeHidden({ timeout: 10_000 });
     });

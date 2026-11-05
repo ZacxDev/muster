@@ -64,6 +64,11 @@ test.afterAll(async () => {
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
+// refusalOn: what the Rendered view says of the newest refused message — on
+// its bubble (composer_pending.go). 🔴 Not #mv-note: the operator accepted
+// (PR #450, audit round 0, D1) that a refusal's reason is said ONCE, on the
+// bubble, and the status line carries it only where there is no bubble.
+const refusalOn = (page: Page) => page.locator('#mv-log [data-pending-send] [data-pending-status]').last();
 const viewOf = (window: string) => `${rig.viewPath('herm')}&window=${encodeURIComponent(window)}`;
 // A window's row in the sidebar's list.
 const card = (page: Page, window: string) =>
@@ -181,7 +186,7 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
     refused.push(text);
     if (body.includes('Hermes is working')) {
       hubRefused = true;
-      await expect(page.locator('#mv-note')).toContainText('Hermes is working');
+      await expect(refusalOn(page)).toContainText('Hermes is working');
     } else {
       expect(body).toContain("Hermes's status changed after muster decided to send. Nothing was pasted.");
     }
@@ -223,14 +228,14 @@ test('a send that may have been submitted offers Send again, and the same nonce 
     await page.waitForTimeout(200);
   }
   expect(first).toContain('May have been submitted');
-  await expect(page.locator('#mv-note')).toContainText('May have been submitted');
+  await expect(refusalOn(page)).toContainText('May have been submitted');
   const again = page.locator('#mv-send-again');
   await expect(again).toBeVisible();
   await expect(input).toHaveValue(text);
 
   // The same message, the same nonce: refused, nothing delivered.
   await page.locator('#mv-send').click();
-  await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+  await expect(refusalOn(page)).toContainText('Not sent again: the first try may already have been submitted');
   expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain(text);
 
   // The explicit retry: a new nonce, delivered once.
@@ -290,7 +295,7 @@ test('a send that may have been submitted is still refused after Back restores t
 
     // A plain Send of it: still refused, still nothing delivered.
     await page.locator('#mv-send').click();
-    await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+    await expect(refusalOn(page)).toContainText('Not sent again: the first try may already have been submitted');
     expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain(text);
   } finally {
     await browser.close();
@@ -343,8 +348,14 @@ async function sendMayHaveLanded(page: Page, text: string): Promise<void> {
     await page.waitForTimeout(200);
   }
   expect(first).toContain('May have been submitted');
-  await expect(page.locator('#mv-send-again')).toBeVisible();
   expect(deliveries(text), 'the first try DID land (late)').toBe(1);
+  // 🔴 Its row is in the conversation, so it WAS delivered: the bubble is
+  // settled by it and no Send again is offered (operator's ask, PR #450
+  // round 2: a "Not confirmed" message whose row arrives — before or after
+  // the answer — is done). This line used to expect #mv-send-again visible.
+  await expect(page.locator('#mv-log [data-bubble="user"]', { hasText: text })).toHaveCount(1, { timeout: 20_000 });
+  await expect(page.locator('#mv-log [data-pending-send]', { hasText: text }), 'settled by its row').toHaveCount(0, { timeout: 20_000 });
+  await expect(page.locator('#mv-send-again'), 'no Send again for a delivered message').toHaveCount(0);
 }
 
 // fromTheCopy: on the copy Back showed, a plain Send of the same text is
@@ -367,7 +378,7 @@ async function fromTheCopy(page: Page, text: string): Promise<void> {
   // once the send has its answer.
   expect(deliveries(text), `🔴 a plain Send from the copy delivered the message again (answer ${resp.status()})`).toBe(1);
   expect(resp.status()).toBe(409);
-  await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+  await expect(refusalOn(page)).toContainText('Not sent again: the first try may already have been submitted');
   // The same offer as on the live page, and it works.
   await page.locator('#mv-send-again').click();
   await expect(page.locator('#mv-input')).toHaveValue('', { timeout: 20_000 });

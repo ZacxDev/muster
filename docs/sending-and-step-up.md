@@ -109,7 +109,8 @@ never sent twice.**
   goes back in the box if the box is empty; if you have typed something since,
   that is not overwritten, and Retry still has the message. A refusal that
   says the message **may have been delivered** turns the bubble **Not
-  confirmed** instead, and its button is the
+  confirmed** instead (with the server's reason, such as "Pasted, not
+  submitted … Check the terminal."), and its button is the
   [Send again](#it-works-without-javascript-and-a-message-is-delivered-once).
   Sending the same text yourself counts as its Retry. If the message's row
   then arrives (or was already there when the answer came) it was delivered:
@@ -123,7 +124,10 @@ never sent twice.**
   wasn't sent", until you **Retry** the refused one (it then goes first, and
   they follow in order) or **Dismiss** it (they go). Without this, a later
   message would reach Claude Code before an earlier one. With no bubble, the
-  status line's buttons include Dismiss while anything waits.
+  status line's buttons include Dismiss while anything waits. A **new**
+  message you send once the refusal is showing is you moving on: what waited
+  goes, in order, then it, and the refused message keeps its Retry and
+  Dismiss.
 - **Step-up**: a send refused because the sign-in is stale stays pending,
   "Confirm it's you to send", while the dialog asks, and is sent once you
   confirm. Cancelling the dialog turns it failed, with the text back in the

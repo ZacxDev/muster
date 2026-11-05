@@ -60,7 +60,9 @@ import "strconv"
 //     have not been posted yet WAIT ("Waiting — an earlier message wasn't
 //     sent") until the person Retries the refused one (it then goes first)
 //     or Dismisses it. Posting them anyway would deliver a later message
-//     before an earlier one.
+//     before an earlier one. A NEW message sent once the refusal is shown is
+//     the person moving on: what waited goes, in order, then it; the refused
+//     message keeps its Retry and Dismiss.
 //   - no answer while online: the browser submits the form itself (native),
 //     as before, with the text put back for it. Shown again from the
 //     back/forward cache after that, the page settles that message by the
@@ -104,8 +106,11 @@ const (
 	PendingQueuingText = "Queuing…"
 	PendingFailedText  = "Not sent"
 	PendingUnknownText = "Not confirmed: it may or may not have been sent."
-	PendingWaitingText = "Waiting — an earlier message wasn't sent"
-	pendingCancelled   = "you did not confirm it's you."
+	// PendingUnknownPrefix leads the server's reason on a bubble that may
+	// have been delivered.
+	PendingUnknownPrefix = "Not confirmed — "
+	PendingWaitingText   = "Waiting — an earlier message wasn't sent"
+	pendingCancelled     = "you did not confirm it's you."
 	// pendingNetworkFailed: the request failed while the page stayed.
 	pendingNetworkFailed = "the connection failed before the server answered."
 	// pendingHandOffUnknown: back from the back/forward cache, the browser's
@@ -299,6 +304,9 @@ var mirrorComposerJS = `
       if (p.state === 'failed' || p.state === 'unknown') { sayFor(p, p.reason || ''); offer(); return; }
       if (p.state === 'held') return;
       if (p.state === 'sent') { clearFor(p); return; }
+      // An earlier refusal's reason stays on the line until that message is
+      // retried or dismissed: a later message's progress does not wipe it.
+      if (noteHeld() && noteBy !== p) return;
       sayFor(p, LABEL[p.state] || '', true);
       return;
     }
@@ -306,7 +314,10 @@ var mirrorComposerJS = `
     var st = el.querySelector('[data-pending-status]');
     var bad = p.state === 'failed' || p.state === 'unknown';
     el.className = bad ? '` + pendingFailedClass + `' : '` + pendingBubbleClass + `';
-    st.textContent = p.state === 'failed' ? ` + strconv.Quote(PendingFailedText) + ` + (p.reason ? ': ' + p.reason : '') : (LABEL[p.state] || '');
+    // The reason is the server's own words ("Pasted, not submitted: … Check
+    // the terminal."), said once, here.
+    st.textContent = p.state === 'failed' ? ` + strconv.Quote(PendingFailedText) + ` + (p.reason ? ': ' + p.reason : '')
+      : p.state === 'unknown' && p.reason ? ` + strconv.Quote(PendingUnknownPrefix) + ` + p.reason : (LABEL[p.state] || '');
     if (st.classList) st.classList.toggle('text-st-error-fg', bad);
     var acts = el.querySelector('[data-pending-actions]');
     if (bad && !acts) {
@@ -351,10 +362,23 @@ var mirrorComposerJS = `
   // #mv-send-again) — and, when later messages wait behind it, Dismiss and
   // the word that they wait.
   var againBtn = null, offerBox = null, dismissBtn = null, heldNote = null;
+  // openRefusal: the newest refused message with no bubble that is still
+  // the person's to Retry or Dismiss (it no longer holds anything once a new
+  // message was sent past it, but its offer stays).
+  function openRefusal() {
+    for (var i = live.length - 1; i >= 0; i--) {
+      var x = live[i];
+      if (!x.el && !x.done && (x.state === 'failed' || x.state === 'unknown')) return x;
+    }
+    return null;
+  }
+  // noteHeld: the status line is a refused message's reason, which stays
+  // until that message is retried or dismissed.
+  function noteHeld() { var x = noteBy; return !!(x && !x.el && !x.done && (x.state === 'failed' || x.state === 'unknown')); }
   function offer() {
-    var p = blocker;
+    var p = blocker && !blocker.el ? blocker : openRefusal();
     if (!p || p.el) { hideOffer(); return; }
-    var waiting = queue.length > 0;
+    var waiting = blocker === p && queue.length > 0;
     if (!offerBox) {
       offerBox = document.createElement('div');
       offerBox.setAttribute('data-send-offer', '');
@@ -563,7 +587,7 @@ var mirrorComposerJS = `
       var st = blocker ? 'held' : (p.queued && !p.el ? 'queuing' : 'sending');
       if (p.state !== st) set(p, st);
     });
-    if (blocker) offer(); else hideOffer();
+    offer();
   }
   function unblock() { blocker = null; paintQueue(); pump(); }
   function pump() {
@@ -589,6 +613,12 @@ var mirrorComposerJS = `
         if (x === blocker) blocker = null;
       }
     });
+    // 🔴 A NEW MESSAGE SENT AFTER A REFUSAL WAS SHOWN IS THE PERSON MOVING
+    // ON: what waited behind the refused message goes, in order, then this
+    // one. The refused message keeps its Retry and Dismiss (it is not lost;
+    // retried later, it goes after these). Only messages pressed BEFORE the
+    // refusal came wait for the person's answer to it.
+    if (blocker && !first) blocker = null;
     var p = { id: hex(8) || String(Date.now()) + String(Math.random()).slice(2), text: o.text, typed: o.typed, queued: !!o.queued, to: o.to, again: !!o.again,
       seq: seq, nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems() };
     live.push(p);
@@ -636,7 +666,7 @@ var mirrorComposerJS = `
       release(p);
       if (p.queued) {
         p.state = 'queued';
-        sayFor(p, 'Queued.', true);
+        if (!(noteHeld() && noteBy !== p)) sayFor(p, 'Queued.', true);
         live = live.filter(function (x) { return x !== p; });
         document.dispatchEvent(new Event('mv-queued'));
       } else if (!p.el) {
@@ -717,7 +747,7 @@ var mirrorComposerJS = `
     e.preventDefault();
     // A refused message's line and buttons stay (it is still refused); any
     // other line is done with.
-    if (!blocker || blocker.el) { noteBy = null; say(''); }
+    if (!noteHeld()) { noteBy = null; say(''); }
     againField(false);
     clearBox();
     if (att) att.sent();
@@ -725,7 +755,7 @@ var mirrorComposerJS = `
     try { start({ text: text, typed: typed, queued: queued, to: queued ? sub.getAttribute('formaction') : form.getAttribute('action'), again: again }); }
     catch (err) { input.value = text; browserSubmit(); }
   });
-  input.addEventListener('input', function () { if (input.value.trim() && !(blocker && noteBy === blocker)) say(''); });
+  input.addEventListener('input', function () { if (input.value.trim() && !noteHeld()) say(''); });
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
