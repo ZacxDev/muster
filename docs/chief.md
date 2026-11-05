@@ -210,6 +210,29 @@ To turn it on:
 If the chief has no `mcp__hq__` tools it says so; check the four steps above
 (`ccd seed` logs which one is missing when the pod starts).
 
+## The chief on OpenRouter
+
+A `claude-code` chief can run on OpenRouter instead of a Claude account, through
+muster's [LLM proxy](officers.md#the-llm-proxy): its Claude Code calls
+`POST /llm/v1/messages` on the connect listener with its own muster token, and
+muster sends the request on with your key attached. Nothing turns this on until
+the `docker compose` install's chief runtime does.
+
+- **Who is served.** Only your chief, and only while it is on (Account →
+  Chief): a chief you turned off is refused (403). Any other agent is refused
+  as it always was.
+- **Whose key.** Yours, read on each request: an admin's is the server's
+  `MUSTER_AGENT_OPENROUTER_KEY`, anyone else's is the key in **Account →
+  Credentials**. With none, the request is refused (400) with a message saying
+  where to add one, and nothing is sent.
+- **Which model.** A setting, `deepseek/deepseek-v4.1-flash` by default. Every
+  request is pinned to it, whatever model the client asks for.
+- **What it may spend.** muster sets **no budget** for the chief: no daily
+  budget, no per-item cap. **Set a credit limit on the key itself**, in
+  [OpenRouter's key settings](https://openrouter.ai/settings/keys): that limit
+  is the only cap. Usage is still counted in the metrics and the connector
+  audit trail, as officer `chief`.
+
 ## Restarting the chief
 
 The chief keeps running the image and tool set it was started on. After a muster

@@ -85,6 +85,7 @@ NOT_FORWARDED = {
         "MUSTER_E2E_OPENROUTER_MODELS", "MUSTER_E2E_SUGGEST_URL", "MUSTER_E2E_GOTRUE_SKEW",
         "MUSTER_E2E_AGENT_ENDPOINT",
     ]},
+    "MUSTER_TEST_LLM_UPSTREAM": "test only",
 }
 
 # Variables .env.example names that compose reads itself rather than

@@ -1669,6 +1669,16 @@ subscription token. Its entrypoint then points Claude Code at exactly
 session takes no model of its own, because the proxy pins it. The judgement
 pool's instances are not routed: they run on their Claude accounts as before.
 
+**The chief** is the proxy's one other caller, when muster runs the chief on
+OpenRouter (the `docker compose` install's chief; see
+[chief.md](chief.md#the-chief-on-openrouter)). It is admitted when the calling
+agent is its owner's chief and that chief is on; any other agent is refused as
+above. It runs on its **owner's** OpenRouter key and is pinned to the chief's
+model, and muster keeps **no budget** for it: no daily budget, no per-item
+cap, no `officer_llm_usage` row. Its requests are still in the metrics, the log
+line and the audit trail, as officer `chief`. Steps 3 and 4 below do not apply
+to it.
+
 #### What one request does
 
 `POST /llm/v1/messages` is the **only** path served (Claude Code calls nothing
@@ -1766,7 +1776,9 @@ relayed scrubbed (a 401/403 body is replaced outright).
 #### Usage counters
 
 Per officer and routine instance (`instance` is `r<n>`, never the agent name;
-both labels are bounded by `MUSTER_OFFICERS`):
+both labels are bounded by `MUSTER_OFFICERS`). The chief is counted with
+`officer` and `instance` both `chief`, every owner's chief together, and has
+no `spent_today`, `budget` or `book_failures` series (it is never booked):
 
 | metric | |
 |---|---|
@@ -1775,7 +1787,7 @@ both labels are bounded by `MUSTER_OFFICERS`):
 | `muster_officer_llm_cost_usd_total{officer,instance}` | USD booked against the budget |
 | `muster_officer_llm_cost_estimated_total{officer}` | requests booked from an estimate (no cost reported) |
 | `muster_officer_llm_spent_today_usd{officer}`, `muster_officer_llm_budget_usd{officer}` | the day's booked spend as last read or booked, and the budget |
-| `muster_officer_llm_refused_total{officer,reason}` | refused before any officer is charged: `path`, `not_routine`, `unconfigured` (`officer` is `none` for a non-officer caller) |
+| `muster_officer_llm_refused_total{officer,reason}` | refused before any officer is charged: `path`, `not_routine`, `unconfigured` (`officer` is `none` for a non-officer caller); for the chief (`officer` `chief`): `chief_off`, `no_key`, `key_unreadable` |
 | `muster_officer_llm_upstream_auth_failures_total{officer,status}`, `muster_officer_llm_upstream_auth_failing{officer}` | the provider refusing the key |
 | `muster_officer_llm_book_failures_total{officer}` | usage that could not be written to the database; alert on any |
 

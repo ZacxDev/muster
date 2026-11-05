@@ -362,7 +362,10 @@ var (
 	//   refused_budget — the officer's daily USD budget was spent
 	//   refused_item_cap — the instance used max_tokens_per_item on its item
 	//   refused_bad_request — a body that is not a JSON object
-	//   refused_store  — the budget could not be read, so nothing was sent
+	//   refused_store  — the budget could not be read (or this proxy keeps
+	//                    none for the caller), so nothing was sent
+	// The chief (an unbudgeted caller) is counted with officer and instance
+	// both "chief"; it is never refused_budget or refused_item_cap.
 	OfficerLLMRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_requests_total",
 		Help: "Officer LLM proxy requests by officer, routine instance (r<n>) and result.",
@@ -371,7 +374,9 @@ var (
 	// charged, by reason: path (not POST /llm/v1/messages), not_routine (the
 	// caller is not an allowed routine instance of an officer with `llm`),
 	// unconfigured (no officer declares `llm`). officer is "none" when the
-	// caller is not an officer instance.
+	// caller is not an officer instance. For the chief (officer "chief"):
+	// chief_off (its owner turned it off), no_key (its owner has no
+	// OpenRouter key), key_unreadable (the key could not be read).
 	OfficerLLMRefused = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_refused_total",
 		Help: "Officer LLM proxy requests refused before reaching the provider, by officer and reason.",

@@ -276,6 +276,9 @@ var bannerLedger = []string{
 	envDatabase,
 	// The officer runtime: `officers: ON — n declared …` or `officers: OFF`.
 	envOfficers,
+	// The LLM proxy's provider: `llm proxy: upstream OVERRIDDEN …` (test only)
+	// or `llm proxy: upstream is the provider …`.
+	envTestLLMUpstream,
 	// The Agents list's Idle section: one line in both directions (ON with the
 	// threshold / OFF).
 	envAgentsIdleAfter,
@@ -746,6 +749,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The officer runtime: one declared officer, so the ON render takes the
 		// `officers: ON` arm.
 		Officers: []officers.Officer{{ID: "release:example-web", HQURL: "https://hq.example.invalid/api/v1", MaxInstances: 1}},
+		// The LLM proxy's TEST-ONLY upstream override: the ON render takes the
+		// loud OVERRIDDEN arm.
+		LLMUpstreamOverride: "http://fake-llm.example.invalid:8080",
 
 		AgentProvisioner: provisionerNoop,
 		AgentImageRepo:   "registry.example.test/muster/agent-runtime",

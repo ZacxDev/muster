@@ -56,8 +56,16 @@ func (s *Server) handleLLMOtherPath(w http.ResponseWriter, r *http.Request) {
 
 // serveLLMMessages is POST /llm/v1/messages once the agent is admitted: it
 // must be a routine instance of an officer that declares `llm`.
+//
+// Or the owner's chief, when EnableChiefLLM was called (chief_llm.go). Without
+// it this check is skipped and a chief is refused below exactly as any other
+// agent that is not a routine instance.
 func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
+	if s.chiefLLM != nil && s.isChiefAgent(r.Context(), a) {
+		s.serveChiefLLM(w, r, a)
+		return
+	}
 	if s.officerRT == nil || s.officerRT.llm == nil {
 		metrics.OfficerLLMRefused.WithLabelValues("none", "unconfigured").Inc()
 		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "no officer on this server declares `llm`")
@@ -108,14 +116,30 @@ func (s *Server) newLLMProxy(cfg OfficersConfig) (*llmproxy.Proxy, error) {
 		return nil, fmt.Errorf("officers: %s declare `llm`, but this server has no connector store: the LLM proxy "+
 			"authenticates instances through the connector door and audits into its store", strings.Join(ids, ", "))
 	}
+	px, err := llmproxy.New(llmproxy.Config{Upstream: cfg.LLMUpstream, HTTP: cfg.LLMHTTP, Store: cfg.LLMStore,
+		Audit: s.llmAudit(cfg.LLMUpstream), Logger: s.logger, Now: cfg.Now})
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range on {
+		metrics.OfficerLLMBudget.WithLabelValues(o.ID).Set(o.LLM.DailyBudgetUSD)
+		s.logger.Printf("officers: %s may reach a model through the LLM proxy: %s", o.ID, o.LLM.String())
+	}
+	return px, nil
+}
+
+// llmAudit is the proxy's audit sink: one connector_audit row (kind llm) per
+// request, its host the provider's (upstream, or llmproxy.DefaultUpstream
+// when ""). The officer and the chief proxies share it.
+func (s *Server) llmAudit(upstream string) func(ctx context.Context, rec llmproxy.Record) {
 	host := ""
-	if u, err := url.Parse(cfg.LLMUpstream); err == nil && u.Host != "" {
+	if u, err := url.Parse(upstream); err == nil && u.Host != "" {
 		host = u.Host
 	} else {
 		u, _ := url.Parse(llmproxy.DefaultUpstream)
 		host = u.Host
 	}
-	audit := func(ctx context.Context, rec llmproxy.Record) {
+	return func(ctx context.Context, rec llmproxy.Record) {
 		if s.ext.Connectors == nil {
 			return
 		}
@@ -125,16 +149,6 @@ func (s *Server) newLLMProxy(cfg OfficersConfig) (*llmproxy.Proxy, error) {
 			s.logger.Printf("llm proxy: audit for agent %q: %v", rec.AgentName, err)
 		}
 	}
-	px, err := llmproxy.New(llmproxy.Config{Upstream: cfg.LLMUpstream, HTTP: cfg.LLMHTTP, Store: cfg.LLMStore, Audit: audit,
-		Logger: s.logger, Now: cfg.Now})
-	if err != nil {
-		return nil, err
-	}
-	for _, o := range on {
-		metrics.OfficerLLMBudget.WithLabelValues(o.ID).Set(o.LLM.DailyBudgetUSD)
-		s.logger.Printf("officers: %s may reach a model through the LLM proxy: %s", o.ID, o.LLM.String())
-	}
-	return px, nil
 }
 
 // llmClaimed and llmEnded tell the proxy's per-item meter about an officer

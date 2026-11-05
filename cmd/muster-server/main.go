@@ -710,6 +710,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// configuration, when officers are declared without what they need.
 	if len(cfg.Officers) > 0 {
 		ocfg := api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}
+		// "" is the provider; MUSTER_TEST_LLM_UPSTREAM is test only.
+		ocfg.LLMUpstream = cfg.LLMUpstreamOverride
 		if a.pool != nil {
 			// The LLM proxy's daily budget lives here (migration 0075); an
 			// officer that declares `llm` with no database is refused.
@@ -1233,6 +1235,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("officers: ON — %d declared in %s; woken by polling HQ", len(a.cfg.Officers), envOfficers)
 	} else {
 		l.Printf("officers: OFF (%s declares none)", envOfficers)
+	}
+
+	// The LLM proxy's provider, in both directions. Overridden, it is said
+	// loudly: every proxied request, and the key muster attaches, goes there.
+	if a.cfg.LLMUpstreamOverride != "" {
+		l.Printf("llm proxy: 🔴 upstream OVERRIDDEN to %s by %s — test only, every request and its key go there",
+			a.cfg.LLMUpstreamOverride, envTestLLMUpstream)
+	} else {
+		l.Printf("llm proxy: upstream is the provider (%s; %s unset)", llmproxy.DefaultUpstream, envTestLLMUpstream)
 	}
 
 	if a.pool != nil {
