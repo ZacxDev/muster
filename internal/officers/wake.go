@@ -223,6 +223,14 @@ type Decision struct {
 //     clock and is not capped (Unclocked). Released, a judgement item would
 //     be claimed again and run another cap. The holder is not counted busy, so it is
 //     neither re-prompted nor kept up for that claim.
+//   - 🔴 AN INSTANCE NUMBER HOLDING A CAPPED CLAIM IS NEVER STARTED, for as
+//     long as HQ shows it holding one (an escalation HQ refuses keeps the
+//     item held in that NAME): a new session under the name would claim
+//     other work, and the next pass would stop it for the old item's cap,
+//     killing that work every few polls without bound. Other work starts the
+//     next free number, or waits. A holder that is up still counts as up on
+//     the pass that stops it, so a failed stop never puts more than
+//     MaxInstances up; the next pass, seeing it down, starts another number.
 func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map[int]time.Time) Decision {
 	byName := map[string]InstanceState{}
 	for _, in := range obs.Instances {
@@ -251,6 +259,8 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	}
 	heldByUp := map[string]bool{}
 	overrun := map[string]bool{}
+	// capHolder: the instance numbers holding a capped claim. Never started.
+	capHolder := map[int]bool{}
 	limit := o.ItemCap()
 	for _, it := range obs.Claimed {
 		if !it.LeaseLive(now) {
@@ -269,6 +279,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		if limit > 0 && it.ClaimedAt != nil && now.Sub(*it.ClaimedAt) >= limit {
 			d.Overrun = append(d.Overrun, Overrun{Item: it, N: in.N, Up: in.Up, Held: now.Sub(*it.ClaimedAt)})
 			overrun[in.Name] = true
+			capHolder[in.N] = true
 			continue
 		}
 		d.Held++
@@ -289,9 +300,13 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		if want > o.MaxInstances {
 			want = o.MaxInstances
 		}
-		down := downInstances(o, obs.Instances)
-		for i := 0; up+len(d.Start) < want && i < len(down); i++ {
-			d.Start = append(d.Start, down[i])
+		for _, n := range downInstances(o, obs.Instances) {
+			if up+len(d.Start) >= want {
+				break
+			}
+			if !capHolder[n] {
+				d.Start = append(d.Start, n)
+			}
 		}
 		skip := map[string]bool{}
 		for n := range heldByUp {

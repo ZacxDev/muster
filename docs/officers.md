@@ -1368,6 +1368,17 @@ An officer may split its instances into two **pools**, one per HQ item tier
     item HQ returns without `claimed_at` has no clock and is **not** capped
     (logged once).
   - A claim past the cap whose holder is down is escalated too, not released.
+  - An instance number that holds a capped claim is **never started** while
+    HQ shows it holding one (see the kept-held refusal below): a new session
+    under that name would claim other work and then be stopped for the old
+    item's cap. Other judgement work starts the next free instance number, or
+    waits when there is none.
+  - A capped judgement instance holds **one live claim at a time**:
+    `officer_claim` (by id or claim-next) refuses a second claim while it
+    holds a live one on another item, before HQ, spending no session. The
+    cap stops the whole instance, so a second item would lose its work.
+    Re-claiming its own item is allowed (it becomes a heartbeat). If HQ's
+    claimed list cannot be read, the claim is refused.
   - The escalation carries an `investigation` block, which HQ requires to
     escalate an item of a type whose policy sets `investigation: true` and
     takes on `escalated` for any type: confidence `low` (so operator steps

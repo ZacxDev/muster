@@ -47,7 +47,8 @@ func tierNote(o Officer) string {
 		o.Tier, ToolItems, ToolClaim, other)
 	if c := o.ItemCap(); c > 0 {
 		note += fmt.Sprintf(" Each item has a wall-time cap of %d minutes from your claim: at the cap muster stops you and escalates the item to a human, "+
-			"with nothing you found recorded. Wrap up before it — %s the item with what you have.", int(c/time.Minute), ToolComplete)
+			"with nothing you found recorded. Wrap up before it — %s the item with what you have. Hold one item at a time: %s refuses a second claim while you hold one.",
+			int(c/time.Minute), ToolComplete, ToolClaim)
 	}
 	return note
 }
