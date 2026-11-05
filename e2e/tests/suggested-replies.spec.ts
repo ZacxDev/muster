@@ -31,6 +31,11 @@ import { writeFileAtomic } from '../lib/atomic';
 const reply = 'Two ways: (a) checkpoint every 500 rows in the jobs table, (b) idempotent re-run keyed on batch id. Which do you prefer?';
 const chipA = 'Go with (a), checkpoint every 500 rows';
 const chipB = '(b), the re-run keyed on batch id';
+// The expand button's set: a chip far wider than a chip may be (16rem), whose
+// END is what the operator could not read, and one that fits.
+const LONG_MARK = '(long set)';
+const chipLong = 'Go with (a), checkpoint every 500 rows in the jobs table, and keep the idempotent re-run keyed on batch id as the fallback for failed runs';
+const chipShort = '(b), batch id re-run';
 
 // The fake model: every request is counted and kept; each answers two grounded
 // picks for `reply` (the server's filter must keep both).
@@ -40,11 +45,18 @@ const fake = http.createServer((req, res) => {
   req.on('data', (d) => (body += d));
   req.on('end', () => {
     calls.push(body);
+    // A reply marked LONG_MARK answers a set whose first chip is longer than
+    // a chip can show (the expand button's cases), and a short one.
     const content = JSON.stringify({
-      suggestions: [
-        { text: chipA, kind: 'pick', cites: ['R'], quote: '(a) checkpoint every 500 rows' },
-        { text: chipB, kind: 'pick', cites: ['R'], quote: '(b) idempotent re-run keyed on batch id' },
-      ],
+      suggestions: body.includes(LONG_MARK)
+        ? [
+            { text: chipLong, kind: 'pick', cites: ['R'], quote: '(a) checkpoint every 500 rows' },
+            { text: chipShort, kind: 'pick', cites: ['R'], quote: '(b) idempotent re-run keyed on batch id' },
+          ]
+        : [
+            { text: chipA, kind: 'pick', cites: ['R'], quote: '(a) checkpoint every 500 rows' },
+            { text: chipB, kind: 'pick', cites: ['R'], quote: '(b) idempotent re-run keyed on batch id' },
+          ],
     });
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 800, completion_tokens: 60 } }));
@@ -308,6 +320,121 @@ test.describe.serial('phone 390×844: keys and what counts', () => {
     await ctx.close();
   });
 });
+
+// THE EXPAND BUTTON (docs/suggested-replies.md, "Reading a long chip"): a chip
+// is cut at 16rem with an ellipsis, so a long suggestion's end was unreadable.
+// A chip whose text is cut carries, at its end, a button that opens the whole
+// text in a popover — wrapping, inside the viewport, closed by Escape, an
+// outside tap or its ×, the focus moved in and given back — with "Use this",
+// which does exactly what the chip's own tap does (fills, sends nothing). A
+// chip that fits has no button; the chip body's tap is unchanged.
+const more = (page: Page, i: number) => page.locator(`#mv-suggest [data-suggest-more="${i}"]`);
+const fullPop = (page: Page, i: number) => page.locator(`#mv-suggest-full-${i}`);
+const focusIn = (page: Page, sel: string) => page.evaluate((s) => { const el = document.querySelector(s); return !!el && el.contains(document.activeElement); }, sel);
+
+for (const vp of [
+  { name: 'phone 412×915 (coarse pointer)', touch: true, use: { viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', touch: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`expand a long suggestion, ${vp.name}`, () => {
+    test.use(vp.use);
+    test('a cut chip has an expand button whose popover shows the whole text and offers the chip\'s own action', async ({ page }) => {
+      const press = (l: ReturnType<Page['locator']>) => (vp.touch ? l.tap() : l.click());
+      const sends = sendRequests(page);
+      const reports: string[] = [];
+      page.on('request', (r) => {
+        if (new URL(r.url()).pathname === '/mirror/view/suggest/event') reports.push(new URLSearchParams(r.postData() || '').get('event') || '');
+      });
+      await openView(page);
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches), 'the pointer this case is about').toBe(vp.touch);
+      await turn(page, reply + ' ' + LONG_MARK + ' [' + vp.name + ']');
+      await expect(chips(page)).toHaveCount(2, { timeout: 8_000 });
+      await expect(chips(page).first()).toHaveAttribute('aria-label', 'AI-suggested reply: ' + chipLong);
+
+      // The long chip IS cut (the instrument: the same measure on the short
+      // chip says it is not).
+      const cut = (i: number) => chips(page).nth(i).locator('span').evaluate((p) => ({ sw: p.scrollWidth, cw: p.clientWidth }));
+      const long = await cut(0), short = await cut(1);
+      console.log(`${vp.name}: long chip text ${long.sw}px in ${long.cw}px; short ${short.sw}px in ${short.cw}px`);
+      expect(long.sw, 'the long chip is cut').toBeGreaterThan(long.cw + 1);
+      expect(short.sw, 'the short chip fits').toBeLessThanOrEqual(short.cw + 1);
+
+      // Its expand button: at its end, named, a 44px target on a coarse
+      // pointer; the chip that fits has none.
+      await expect(more(page, 0)).toBeVisible();
+      await expect(more(page, 0)).toHaveAccessibleName('Show full suggestion');
+      await expect(more(page, 1), 'no button on a chip that fits').toBeHidden();
+      const cb = (await chips(page).first().boundingBox())!, mb = (await more(page, 0).boundingBox())!;
+      expect(Math.abs(mb.x - (cb.x + cb.width)), 'the button sits at the chip\'s end').toBeLessThanOrEqual(2);
+      expect(mb.height, 'a 44px tall target').toBeGreaterThanOrEqual(44);
+      if (vp.touch) expect(mb.width, 'a 44px wide target on a coarse pointer').toBeGreaterThanOrEqual(44);
+      await expect(fullPop(page, 0)).toBeHidden();
+
+      // Open: the WHOLE text, wrapped, inside the viewport, the focus in it.
+      await press(more(page, 0));
+      const pop = fullPop(page, 0);
+      await expect(pop).toBeVisible();
+      await expect(pop).toHaveAttribute('role', 'dialog');
+      await expect(pop.locator('[data-suggest-full-text]')).toHaveText(chipLong);
+      await expect(more(page, 0)).toHaveAttribute('aria-expanded', 'true');
+      await expect.poll(() => pop.evaluate((p) => getComputedStyle(p).visibility), { message: 'placed (floatingMenuScript)' }).toBe('visible');
+      const pb = (await pop.boundingBox())!, w = vp.use.viewport;
+      expect(pb.x, 'inside the viewport (left)').toBeGreaterThanOrEqual(0);
+      expect(pb.y, 'inside the viewport (top)').toBeGreaterThanOrEqual(0);
+      expect(pb.x + pb.width, 'inside the viewport (right)').toBeLessThanOrEqual(w.width);
+      expect(pb.y + pb.height, 'inside the viewport (bottom)').toBeLessThanOrEqual(w.height);
+      const tb = (await pop.locator('[data-suggest-full-text]').boundingBox())!;
+      expect(tb.height, 'the text wraps onto several lines').toBeGreaterThan(30);
+      expect(await focusIn(page, '#mv-suggest-full-0'), 'the focus moved into the popover').toBe(true);
+
+      // Escape closes it and gives the focus back to its button.
+      await page.keyboard.press('Escape');
+      await expect(pop).toBeHidden();
+      await expect(more(page, 0)).toHaveAttribute('aria-expanded', 'false');
+      await expect(more(page, 0), 'the focus is back on the button').toBeFocused();
+
+      // An outside tap closes it (and does nothing else).
+      await press(more(page, 0));
+      await expect(pop).toBeVisible();
+      if (vp.touch) await page.touchscreen.tap(w.width / 2, 120); else await page.mouse.click(w.width / 2, 120);
+      await expect(pop).toBeHidden();
+      await expect(page.locator('#mv-input')).toHaveValue('');
+
+      // Its × closes it too.
+      await press(more(page, 0));
+      await expect(pop).toBeVisible();
+      await press(pop.getByRole('button', { name: 'Close' }));
+      await expect(pop).toBeHidden();
+      await expect(more(page, 0), 'the focus is back on the button after ×').toBeFocused();
+      await expect(page.locator('#mv-input')).toHaveValue('');
+
+      // "Use this" does what the chip does: fills the box with the WHOLE text,
+      // focuses it, closes the popover — and sends nothing.
+      await press(more(page, 0));
+      await press(pop.getByRole('button', { name: 'Use this' }));
+      await expect(pop).toBeHidden();
+      await expect(page.locator('#mv-input')).toHaveValue(chipLong);
+      await expect(page.locator('#mv-input')).toBeFocused();
+      await expect.poll(() => reports, { message: 'reported as a fill, like a chip tap' }).toContain('filled');
+
+      // The chip body's own tap is unchanged: it fills and opens nothing.
+      await page.locator('#mv-input').fill('');
+      await press(chips(page).first());
+      await expect(page.locator('#mv-input')).toHaveValue(chipLong);
+      await expect(pop, 'the chip body does not open the popover').toBeHidden();
+      await page.waitForTimeout(1500);
+      expect(sends, 'nothing was sent').toEqual([]);
+
+      // RE-MEASURED: a chip that stops being cut (here, its width cap lifted)
+      // loses its button; restored, it gets it back.
+      const st = await page.addStyleTag({ content: '#mv-suggest [data-suggest-chip]{max-width:none!important}' });
+      await expect(more(page, 0), 'fits now: no button').toBeHidden();
+      await st.evaluate((s) => s.remove());
+      await expect(more(page, 0), 'cut again: the button is back').toBeVisible();
+      await page.locator('#mv-input').fill('');
+    });
+  });
+}
 
 // measureTurn measures CLS on a FRESH page (its own context: no snapshot, so
 // its socket reads the whole conversation): first the open of a view on an

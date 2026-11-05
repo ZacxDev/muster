@@ -27,6 +27,14 @@ chips for its question ([attention.md](attention.md#suggested-replies-to-an-ask)
   accessible name is "AI-suggested reply: …".
 - **Up to 3 chips**, each a 44px tap target, its text cut with an ellipsis
   (the whole text is its title).
+- **Reading a long chip.** A chip is at most 16rem wide, so a long suggestion's
+  end is cut off. A chip whose text **is** cut has an expand button at its end
+  ("Show full suggestion": 44px tall, 44px wide on a touch screen); it opens a
+  popover with the whole text, wrapped, inside the viewport. Escape, a tap
+  outside it or its × closes it, and the focus returns to the button.
+  **Use this** in the popover does exactly what tapping the chip does (fills
+  the box, never sends). A chip that fits has no button; the button follows
+  the text as it is measured (a resize, a rotation or a late font re-measures).
 - **A tap fills, never sends.** An empty box takes the chip's text; a box that
   already holds a draft gets it **on a new line below** the draft, never over
   it. It is an edit (Ctrl+Z gives the draft back), and you press Send. A tap
