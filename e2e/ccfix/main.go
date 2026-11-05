@@ -4,14 +4,14 @@
 // a real route — a failover needs a gateway reporting a rate limit from a real
 // runtime, and the noop driver runs none.
 //
-//	DATABASE_URL=…_e2e go run ./e2e/ccfix agent <owner-id> <name> <account> <token>   → prints the agent id
-//	DATABASE_URL=…_e2e go run ./e2e/ccfix failover <owner-id> <name> <from> <reason> <resets-RFC3339>
-//	DATABASE_URL=…_e2e go run ./e2e/ccfix rmagent <owner-id> <name>
+//		DATABASE_URL=…_e2e go run ./e2e/ccfix agent <owner-id> <name> <account> <token>   → prints the agent id
+//		DATABASE_URL=…_e2e go run ./e2e/ccfix failover <owner-id> <name> <from> <reason> <resets-RFC3339>
+//		DATABASE_URL=…_e2e go run ./e2e/ccfix rmagent <owner-id> <name>
 //
-//   - agent: a RUNNING claude-code agent on <account>, as a dispatch leaves it.
-//   - failover: one cc_account_failovers row (internal/ccfailover PGStore.Record
-//     writes the same columns) from <from> to the agent's own account.
-//   - rmagent: deletes the agent's asks, then the agent (its failovers cascade).
+//	  - agent: a RUNNING claude-code agent on <account>, as a dispatch leaves it.
+//	  - failover: one cc_account_failovers row (internal/ccfailover PGStore.Record
+//	    writes the same columns) from <from> to the agent's own account.
+//	  - rmagent: deletes the agent's asks, then the agent (its failovers cascade).
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes as the login role with row-level security's scope set to all, which

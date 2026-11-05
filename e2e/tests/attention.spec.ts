@@ -430,10 +430,14 @@ for (const vp of [
       const id2 = await askLocal(`And the changelog on the ${vp.name}?`);
       await expect(block.locator(`#ask-${id2}`)).toBeVisible({ timeout: 15_000 });
       // One card at a time (ui.AskerAsksList): the newest is on show and the
-      // first waits behind "Show 1 more", which opens it in place — and keeps
-      // it open across the block's live refreshes.
+      // first waits behind "Show N more", which opens it in place — and keeps
+      // it open across the block's live refreshes. N counts what the block
+      // holds: the window may hold an earlier test's open ask too (the split
+      // pane's).
       await expect(item).toBeHidden();
-      await expect(block.locator('[data-asks-more]')).toHaveText('Show 1 more');
+      const held = await block.locator('[data-attention-item]').count();
+      expect(held).toBeGreaterThanOrEqual(2);
+      await expect(block.locator('[data-asks-more]')).toHaveText(`Show ${held - 1} more`);
       await block.locator('[data-asks-more]').click();
       await expect(item).toBeVisible();
 
