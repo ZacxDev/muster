@@ -1362,14 +1362,30 @@ An officer may split its instances into two **pools**, one per HQ item tier
     again, and a re-claim of an item already counted today is free under
     `max_sessions_per_day`. A release is a loop, not a stop.
   - Why not `needs_judgement`: HQ refuses it on a judgement item.
-  - The clock starts on the first wake-loop pass that sees the claim, so it
-    runs late by up to one `poll_interval`. It is per claim: a new holder of
-    the same item starts again. It is **in memory**: a restarted muster starts
-    every clock again, which can only delay a stop, never cause one early.
+  - The clock is HQ's own `claimed_at` on the item: set on every claim
+    (so a new claim, by any holder, starts again), kept by a heartbeat, and
+    returned by the items list. A restarted muster reads the same clock. An
+    item HQ returns without `claimed_at` has no clock and is **not** capped
+    (logged once).
   - A claim past the cap whose holder is down is escalated too, not released.
+  - The escalation carries an `investigation` block, which HQ requires to
+    escalate an item of a type whose policy sets `investigation: true` and
+    takes on `escalated` for any type: confidence `low` (so operator steps
+    only), a root cause saying the cap of N minutes was reached with no
+    conclusion, and one step: re-investigate. An HQ from before the block
+    refuses it as an unknown field (400), so a 400 is retried once without
+    it.
   - A failed stop does not hold back the escalation; the holder's next
-    heartbeat is then refused (`lease_lost`). A refused complete (the holder
-    finished first, or the lease lapsed) is logged.
+    heartbeat is then refused (`lease_lost`). A 409 on the complete (the
+    holder finished first, or the lease lapsed) is logged.
+  - Any other refusal of the escalation (a 400 with and without the block, a
+    5xx) **keeps the item held**: muster heartbeats it as the stopped holder,
+    so its lease does not lapse and no instance claims it for another full
+    session. Every pass tries the escalation again; HQ's error is logged once
+    per change. The item then reads claimed, past its cap, in HQ until the
+    refusal is fixed. The hold lease is three `poll_interval`s (at least 600
+    s, at most 3600 s), so a muster that stays down longer than that lets
+    the lease lapse.
 
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;

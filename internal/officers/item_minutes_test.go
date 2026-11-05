@@ -393,8 +393,14 @@ func TestARefusedCapEscalationKeepsTheItemHeldNotReclaimed(t *testing.T) {
 			t.Fatalf("a refused cap escalation led to %s %s", q.Method, q.Path)
 		}
 	}
-	if n := strings.Count(r.logs.String(), refusal); n != 1 {
-		t.Errorf("the same refusal is logged %d times over five passes, want once:\n%s", n, r.logs.String())
+	n := 0
+	for _, line := range strings.Split(r.logs.String(), "\n") {
+		if strings.Contains(line, refusal) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("the same refusal is logged on %d lines over five passes, want once:\n%s", n, r.logs.String())
 	}
 	r.hq.RefuseCompletes(0, "", "")
 	r.clk.Advance(time.Minute)

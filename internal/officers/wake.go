@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strconv"
 	"sync"
@@ -86,6 +87,9 @@ type HQ interface {
 	// Complete completes item as instance (its holder): the wall-time cap's
 	// escalation (Decision.Overrun).
 	Complete(ctx context.Context, o Officer, item ItemID, instance string, done Completion) error
+	// Heartbeat renews instance's lease on item: a capped item whose
+	// escalation HQ refused is kept held, so it is never re-claimed.
+	Heartbeat(ctx context.Context, o Officer, item ItemID, instance string, leaseSeconds int) error
 }
 
 // ClientHQ is HQ over one Client per officer, built by NewClient.
@@ -133,6 +137,12 @@ func (h *ClientHQ) Complete(ctx context.Context, o Officer, item ItemID, instanc
 	return err
 }
 
+// Heartbeat implements HQ.
+func (h *ClientHQ) Heartbeat(ctx context.Context, o Officer, item ItemID, instance string, leaseSeconds int) error {
+	_, err := h.Client(o).Heartbeat(ctx, item, instance, leaseSeconds)
+	return err
+}
+
 // Observation is what one pass read.
 type Observation struct {
 	Open      []Item
@@ -143,10 +153,6 @@ type Observation struct {
 	// already claimed today — are work for it.
 	Capped  bool
 	Counted map[ItemID]bool
-	// HeldSince is when the loop first saw each item held by its current
-	// holder (the wall-time cap's clock, ItemCap). An item it does not name
-	// was first seen now.
-	HeldSince map[ItemID]time.Time
 }
 
 // Overrun is a live claim past its pool's wall-time cap (Officer.ItemCap).
@@ -155,7 +161,7 @@ type Overrun struct {
 	// N is the holder's instance number; Up whether it is up (then stopped).
 	N  int
 	Up bool
-	// Held is how long the loop has seen the item held.
+	// Held is how long the item has been held: now less HQ's claimed_at.
 	Held time.Duration
 }
 
@@ -173,6 +179,9 @@ type Decision struct {
 	// is stopped (when up) and the item completed escalated. An overrun claim
 	// is never in Release, Held or Stop.
 	Overrun []Overrun
+	// Unclocked is live claims of a capped pool that HQ gave no claimed_at:
+	// with no clock they are not capped (logged once per officer).
+	Unclocked []ItemID
 	// Idle reports the officer idle at this pass: nothing claimable, no live
 	// claim held by any of its instances.
 	Idle bool
@@ -208,10 +217,11 @@ type Decision struct {
 //   - A live claim held by an instance that is NOT up is released, busy or
 //     idle: its holder cannot heartbeat it, and releasing returns the item to
 //     the queue now rather than when the lease lapses.
-//   - A live claim held for the pool's wall-time cap (ItemCap, from
-//     obs.HeldSince) is an Overrun instead, up or not: its holder is stopped
-//     and the item escalated. Released, a judgement item would be claimed
-//     again and run another cap. The holder is not counted busy, so it is
+//   - A live claim held for the pool's wall-time cap (ItemCap, measured
+//     from HQ's claimed_at) is an Overrun instead, up or not: its holder is
+//     stopped and the item escalated. A claim without claimed_at has no
+//     clock and is not capped (Unclocked). Released, a judgement item would
+//     be claimed again and run another cap. The holder is not counted busy, so it is
 //     neither re-prompted nor kept up for that claim.
 func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map[int]time.Time) Decision {
 	byName := map[string]InstanceState{}
@@ -253,8 +263,11 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		if !mine {
 			continue
 		}
-		if since, ok := obs.HeldSince[it.ID]; ok && limit > 0 && now.Sub(since) >= limit {
-			d.Overrun = append(d.Overrun, Overrun{Item: it, N: in.N, Up: in.Up, Held: now.Sub(since)})
+		if limit > 0 && it.ClaimedAt == nil {
+			d.Unclocked = append(d.Unclocked, it.ID)
+		}
+		if limit > 0 && it.ClaimedAt != nil && now.Sub(*it.ClaimedAt) >= limit {
+			d.Overrun = append(d.Overrun, Overrun{Item: it, N: in.N, Up: in.Up, Held: now.Sub(*it.ClaimedAt)})
 			overrun[in.Name] = true
 			continue
 		}
@@ -391,11 +404,13 @@ type officerState struct {
 	// errored is the instances last seen in error (logged on change), by
 	// instance agent name.
 	errored map[string]erroredSlot
-	// heldSince is when each live claim was first seen, by heldKey (item and
-	// holder): the wall-time cap's clock. In memory only — a restarted muster
-	// starts every clock again, which can only DELAY a cap's stop, never
-	// cause one early (as idleSince).
-	heldSince map[heldKey]time.Time
+	// unclockedLogged: a capped pool's claim without HQ's claimed_at has been
+	// logged (once per officer per process).
+	unclockedLogged bool
+	// capRefused is the last refusal logged for each capped item whose
+	// escalation HQ refused (logged on change, not every pass); an item no
+	// longer over its cap is forgotten. Only the log depends on it.
+	capRefused map[ItemID]string
 	// fault is the CONFIRMED permanent HQ refusal (the status, e.g. "404"; ""
 	// = none). It is set once a refusal has been seen on FaultStrikes
 	// consecutive passes and cleared ONLY by a successful answer — a 5xx in
@@ -458,40 +473,6 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		judgement: cfg.Judgement, state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
-// heldKey is one claim: an item and its holder. A new holder of the same item
-// starts a new clock.
-type heldKey struct {
-	item   ItemID
-	holder string
-}
-
-// trackHeld updates s.heldSince from a pass's claimed items read at now — a
-// live claim not seen before starts its clock now, one no longer live is
-// forgotten — and returns each live claim's start by item. Call with r.mu.
-func trackHeld(s *officerState, claimed []Item, now time.Time) map[ItemID]time.Time {
-	seen := map[heldKey]bool{}
-	out := map[ItemID]time.Time{}
-	for _, it := range claimed {
-		if !it.LeaseLive(now) || it.ClaimedBy == "" {
-			continue
-		}
-		k := heldKey{it.ID, it.ClaimedBy}
-		seen[k] = true
-		since, ok := s.heldSince[k]
-		if !ok {
-			since = now
-			s.heldSince[k] = since
-		}
-		out[it.ID] = since
-	}
-	for k := range s.heldSince {
-		if !seen[k] {
-			delete(s.heldSince, k)
-		}
-	}
-	return out
-}
-
 // erroredSlot is how an instance in error is named in the log.
 type erroredSlot struct{ officer, instance string }
 
@@ -499,7 +480,7 @@ func (r *Reconciler) st(id string) *officerState {
 	s, ok := r.state[id]
 	if !ok {
 		s = &officerState{idleSince: map[string]time.Time{}, promptedAt: map[string]time.Time{}, errored: map[string]erroredSlot{},
-			heldSince: map[heldKey]time.Time{}}
+			capRefused: map[ItemID]string{}}
 		r.state[id] = s
 	}
 	return s
@@ -591,10 +572,8 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		r.observed(o, obs[0].Claimed, now)
 	}
 	r.mu.Lock()
-	heldSince := trackHeld(s, obs[0].Claimed, now)
 	ds := make([]Decision, len(pools))
 	for i, p := range pools {
-		obs[i].HeldSince = heldSince
 		prompted := map[int]time.Time{}
 		for n := 1; n <= p.MaxInstances; n++ {
 			if at, ok := s.promptedAt[p.InstanceName(n)]; ok {
@@ -610,6 +589,21 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	s.strikes = 0
 	s.failures = 0
 	s.nextAt = now.Add(o.PollInterval)
+	over := map[ItemID]bool{}
+	for _, d := range ds {
+		for _, ov := range d.Overrun {
+			over[ov.Item.ID] = true
+		}
+		if len(d.Unclocked) > 0 && !s.unclockedLogged {
+			s.unclockedLogged = true
+			r.log.Printf("officers: %s: HQ gave item %s no claimed_at, so max_item_minutes cannot time it: such items are NOT capped (logged once)", o.ID, d.Unclocked[0])
+		}
+	}
+	for id := range s.capRefused {
+		if !over[id] {
+			delete(s.capRefused, id)
+		}
+	}
 	for i, p := range pools {
 		d := ds[i]
 		switch {
@@ -810,11 +804,22 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 }
 
 // stopOverrun ends a claim past its pool's wall-time cap: the holder is
-// stopped when up, then the item is completed escalated as the holder. A
-// failed stop does not hold back the escalation: once the item is complete
-// the holder's next heartbeat is refused (lease_lost), which ends its work on
-// the item. A refused complete (409 lease_lost: the holder finished it, or the
-// lease lapsed) is logged, not retried.
+// stopped when up, then the item is completed escalated as the holder, with a
+// low-confidence investigation block (OverrunInvestigation: HQ requires one
+// on an investigating type, and takes it on any).
+//
+//   - A failed stop does not hold back the escalation: once the item is
+//     complete the holder's next heartbeat is refused (lease_lost).
+//   - A 400 with the block is retried once without it: an HQ from before the
+//     block refuses it as an unknown field.
+//   - 409 (lease_lost: the holder finished it, or the lease lapsed): the item
+//     is not ours to hold; logged, nothing more.
+//   - Any other refusal (a 400 with and without the block, a 5xx): the item
+//     is KEPT HELD — muster heartbeats it as the stopped holder, so its lease
+//     never lapses and no instance claims it for another full session. The
+//     next pass sees it over the cap again (claimed_at is HQ's, a heartbeat
+//     keeps it) and tries the escalation again. HQ's error is logged once per
+//     change. Releasing it instead would re-run the session the cap stopped.
 func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun) []error {
 	var errs []error
 	if ov.Up {
@@ -826,13 +831,75 @@ func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun) []e
 				ov.Item.ID, ov.Held.Round(time.Minute), int(o.ItemCap()/time.Minute))
 		}
 	}
-	if err := r.hq.Complete(ctx, o, ov.Item.ID, ov.Item.ClaimedBy, Completion{Outcome: StatusEscalated, Summary: OverrunSummary(o, ov)}); err != nil {
-		errs = append(errs, err)
-		r.log.Printf("officers: %s: escalate item %s at the wall-time cap: %v", o.label(), ov.Item.ID, err)
+	inv := OverrunInvestigation(o)
+	done := Completion{Outcome: StatusEscalated, Summary: OverrunSummary(o, ov), Investigation: &inv}
+	err := r.hq.Complete(ctx, o, ov.Item.ID, ov.Item.ClaimedBy, done)
+	if hqStatus(err) == http.StatusBadRequest {
+		done.Investigation = nil
+		if err2 := r.hq.Complete(ctx, o, ov.Item.ID, ov.Item.ClaimedBy, done); err2 == nil || hqStatus(err2) == http.StatusConflict {
+			err = err2
+		} else {
+			err = fmt.Errorf("%w; without the investigation block: %v", err, err2)
+		}
+	}
+	if err == nil {
+		r.log.Printf("officers: %s: escalated item %s: held by %s past the wall-time cap", o.label(), ov.Item.ID, ov.Item.ClaimedBy)
 		return errs
 	}
-	r.log.Printf("officers: %s: escalated item %s: held by %s past the wall-time cap", o.label(), ov.Item.ID, ov.Item.ClaimedBy)
+	errs = append(errs, err)
+	if hqStatus(err) == http.StatusConflict {
+		r.log.Printf("officers: %s: escalate item %s at the wall-time cap: %v (no longer held by %s)", o.label(), ov.Item.ID, err, ov.Item.ClaimedBy)
+		return errs
+	}
+	hbErr := r.hq.Heartbeat(ctx, o, ov.Item.ID, ov.Item.ClaimedBy, overrunHoldSeconds(o))
+	if hbErr != nil {
+		errs = append(errs, hbErr)
+	}
+	msg := err.Error()
+	r.mu.Lock()
+	s := r.st(o.ID)
+	changed := s.capRefused[ov.Item.ID] != msg
+	s.capRefused[ov.Item.ID] = msg
+	r.mu.Unlock()
+	if changed || hbErr != nil {
+		held := "kept it held by " + ov.Item.ClaimedBy + " (heartbeat) so it is not re-claimed; retrying the escalation every pass"
+		if hbErr != nil {
+			held = fmt.Sprintf("and could not keep it held (heartbeat: %v): it may be re-claimed once its lease lapses", hbErr)
+		}
+		r.log.Printf("officers: %s: HQ refused the wall-time cap's escalation of item %s: %v; %s", o.label(), ov.Item.ID, err, held)
+	}
 	return errs
+}
+
+// hqStatus is the HQ status of a refusal (an *HQError), else 0.
+func hqStatus(err error) int {
+	var he *HQError
+	if errors.As(err, &he) {
+		return he.Status
+	}
+	return 0
+}
+
+// overrunHoldSeconds is the lease a refused cap escalation's item is kept
+// held for: three polls, at least the default lease, at most HQ's maximum.
+func overrunHoldSeconds(o Officer) int {
+	return ClampLease(max(DefaultLeaseSeconds, int(3*o.PollInterval/time.Second)))
+}
+
+// OverrunInvestigation is the investigation block of a claim stopped at the
+// cap: low confidence (operator steps only), nothing concluded, re-investigate.
+func OverrunInvestigation(o Officer) Investigation {
+	n := int(o.ItemCap() / time.Minute)
+	return Investigation{
+		Hypotheses: []string{fmt.Sprintf("Not reached: the instance was stopped at the wall-time cap of %d minutes before it concluded.", n)},
+		Eliminated: []InvestigationRule{},
+		RootCause:  fmt.Sprintf("Not reached: stopped by muster at the wall-time cap of %d minutes (tiers.judgement.max_item_minutes); no conclusion.", n),
+		Confidence: ConfidenceLow,
+		Fix: InvestigationFix{OperatorSteps: []string{
+			fmt.Sprintf("Re-investigate this item: the investigation hit the %d-minute wall-time cap and reached no conclusion.", n),
+		}},
+		NotChecked: []string{},
+	}
 }
 
 // OverrunSummary is the escalation summary of a claim stopped at the cap.
