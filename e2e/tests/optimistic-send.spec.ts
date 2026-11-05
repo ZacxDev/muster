@@ -8,6 +8,7 @@ import { signIn } from '../lib/signin';
 import { binDir, dsn, optimisticSendPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
+import { launchWithBfcache } from '../lib/bfcache';
 
 // A SENT MESSAGE SHOWS AT ONCE AS PENDING, THEN RECONCILES (mirror_compose.go's
 // pending sends). The operator's ask: no hang between clicking Send and seeing
@@ -163,6 +164,19 @@ async function sendTimed(page: Page, text: string, how: 'tap' | 'click' | 'enter
     return w.__seenAt - w.__pressAt;
   });
 }
+
+// draftsHolding is the saved drafts (this browser's localStorage) that hold
+// text.
+const draftsHolding = (page: Page, text: string) =>
+  page.evaluate((t) => {
+    const out: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i) || '';
+      const v = localStorage.getItem(k) || '';
+      if (k.startsWith('muster.draft.') && v.includes(t)) out.push(v);
+    }
+    return out;
+  }, text);
 
 const pendingOf = (page: Page, text: string) => page.locator('#mv-log [data-pending-send]', { hasText: text });
 // rowsOf is every message row in the conversation holding text: the real
@@ -509,6 +523,158 @@ for (const vp of [
       expect(seen.max).toBe(1);
     });
 
+    // 🟡 Round 2 #1: a "Not confirmed" message whose row then arrives was
+    // delivered. Before, landed() emptied the box but the draft still had the
+    // text (restore had released the hold to the box), so a reload brought a
+    // delivered message back — and a Send then would paste it a second time.
+    test('a "Not confirmed" message whose row then arrives is out of the box and the draft: a reload does not bring it back', async ({ page }) => {
+      await openView(page);
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          await sleep(300);
+          return r.fulfill({ status: 502, headers: { 'Content-Type': 'text/plain', 'X-Muster-Send-Again': '1' }, body: 'it may have been delivered' });
+        },
+      );
+      const text = `not confirmed then landed ${vp.how} ${stamp}`;
+      await sendTimed(page, text, vp.how);
+      const p = pendingOf(page, text);
+      await expect(p).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      await expect(page.locator('#mv-input'), 'its text is back in the box').toHaveValue(text);
+      // It did arrive: Claude Code's row for it.
+      fs.appendFileSync(tr, prompt(text));
+      await expect(page.locator('#mv-log [data-bubble="user"]', { hasText: text })).toHaveCount(1, { timeout: 10_000 });
+      await expect(page.locator('#mv-log [data-pending-send]'), 'its bubble went with its row').toHaveCount(0);
+      await expect(page.locator('#mv-input'), 'its text leaves the box').toHaveValue('');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await page.reload();
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+      await expect(page.locator('#mv-input'), 'a delivered message is not back as a draft').toHaveValue('');
+      expect(await draftsHolding(page, text), 'no draft holds it').toEqual([]);
+    });
+
+    // 🟡 Round 2 #2: the row of a message can arrive BEFORE its "may have been
+    // delivered" answer. Before, refused() ran no reconcile, so the bubble sat
+    // "Not confirmed" with Send again beside its own row until the next batch.
+    test('a "may have been delivered" answer for a message whose row is already here settles it at once: no Send again is offered', async ({ page }) => {
+      await openView(page);
+      const text = `row before the answer ${vp.how} ${stamp}`;
+      let answered = false;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          // It reaches the server (pasted, its row drawn) ...
+          await r.fetch();
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline && (await page.locator('#mv-log [data-bubble="user"]', { hasText: text }).count()) === 0) await sleep(100);
+          // ... and only then is the answer "it may have been delivered".
+          answered = true;
+          return r.fulfill({ status: 502, headers: { 'Content-Type': 'text/plain', 'X-Muster-Send-Again': '1' }, body: 'it may have been delivered' });
+        },
+      );
+      const rows = await watchRows(page, text);
+      await sendTimed(page, text, vp.how);
+      await expect.poll(() => answered, { message: 'the answer came after the row', timeout: 15_000 }).toBe(true);
+      await expect(page.locator('#mv-log [data-pending-send]'), 'the bubble is settled at once').toHaveCount(0, { timeout: 2_000 });
+      await expect(page.locator('#mv-send-again'), 'no Send again for a message whose row is here').toHaveCount(0);
+      await expect(page.locator('#mv-input'), 'its text is not left in the box').toHaveValue('');
+      await expect(rowsOf(page, text)).toHaveCount(1);
+      const seen = await rows();
+      expect(seen.states, 'never shown "Not confirmed", not even for a frame').not.toContain('unknown');
+      expect(pasted(), 'pasted once').toEqual([`${pane} ${text}`]);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await page.reload();
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+      await expect(page.locator('#mv-input'), 'and no draft of it').toHaveValue('');
+    });
+
+    // 🟢 Round 2 #3: the draft is saved in pressed order. Before, a refused
+    // message back in the box and one held behind it were saved held-first.
+    test('a refused message and one held behind it are saved in the order pressed: a reload brings them back refused first', async ({ page }) => {
+      await openView(page);
+      const first = `pressed first ${vp.how} ${stamp}`;
+      const second = `pressed second ${vp.how} ${stamp}`;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          await sleep(800);
+          return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'the host said no' });
+        },
+      );
+      await sendTimed(page, first, vp.how);
+      await sendTimed(page, second, vp.how);
+      await expect(pendingOf(page, first)).toHaveAttribute('data-pending-send', 'failed', { timeout: 10_000 });
+      await expect(pendingOf(page, second)).toHaveAttribute('data-pending-send', 'held');
+      await expect(page.locator('#mv-input')).toHaveValue(first);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await page.reload();
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+      await expect(page.locator('#mv-input'), 'both, in the order they were pressed').toHaveValue(`${first}\n\n${second}`);
+      expect(pasted(), 'neither was sent').toEqual([]);
+    });
+
+    // 🟢 Round 2 #4: a download link fires beforeunload and the page STAYS.
+    // Before, a network failure in the 3 s after it was swallowed: the bubble
+    // stayed "Sending…" for good and the message behind it went first.
+    test('a network failure just after a download link fired beforeunload (the page stayed) fails the send with Retry and its text, and what came after it waits', async ({ page }) => {
+      await openView(page);
+      const first = `failed after a download ${vp.how} ${stamp}`;
+      const second = `behind the failed one ${vp.how} ${stamp}`;
+      let clicked = () => {};
+      const downloadClicked = new Promise<void>((r) => (clicked = r));
+      let failedOnce = false;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const t = new URLSearchParams(r.request().postData() || '').get('text') || '';
+          if (t === first && !failedOnce) {
+            failedOnce = true;
+            await downloadClicked;
+            await sleep(200);
+            return r.abort('connectionfailed').catch(() => {});
+          }
+          return r.continue().catch(() => {});
+        },
+      );
+      await page.route(
+        (u) => u.pathname === '/e2e-download',
+        (r: Route) => r.fulfill({ status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="e2e.bin"' }, body: 'e2e' }),
+      );
+      await page.evaluate(() => {
+        const a = document.createElement('a');
+        a.href = '/e2e-download';
+        a.id = 'e2e-dl';
+        a.textContent = 'download';
+        document.body.appendChild(a);
+        const w = window as unknown as { __beforeunload: number };
+        w.__beforeunload = 0;
+        addEventListener('beforeunload', () => w.__beforeunload++);
+      });
+      await sendTimed(page, first, vp.how);
+      await sendTimed(page, second, vp.how);
+      const dl = page.waitForEvent('download');
+      await page.evaluate(() => (document.getElementById('e2e-dl') as HTMLAnchorElement).click());
+      await dl;
+      // The instrument: the link did fire a beforeunload, and the page stayed.
+      expect(await page.evaluate(() => (window as unknown as { __beforeunload: number }).__beforeunload), 'the download link fired beforeunload').toBeGreaterThan(0);
+      clicked();
+      const p = pendingOf(page, first);
+      await expect(p, 'the failure is not swallowed').toHaveAttribute('data-pending-send', 'failed', { timeout: 10_000 });
+      await expect(p).toContainText('the connection failed');
+      await expect(p.getByRole('button', { name: 'Retry' })).toBeVisible();
+      await expect(page.locator('#mv-input'), 'its text is kept').toHaveValue(first);
+      await expect(pendingOf(page, second), 'the one behind it waits').toHaveAttribute('data-pending-send', 'held');
+      await sleep(1_000);
+      expect(pasted(), 'nothing went ahead of it').toEqual([]);
+      await press(p.getByRole('button', { name: 'Retry' }), vp.how === 'tap');
+      await expect.poll(pasted, { message: 'Retry: both go, in order, once each', timeout: 15_000 }).toEqual([`${pane} ${first}`, `${pane} ${second}`]);
+      await expect(page.locator('#mv-log [data-pending-send]')).toHaveCount(0, { timeout: 10_000 });
+    });
+
     // The Terminal view, in the view switch's frame: no bubble, so the status
     // line and its buttons carry a refused message.
     async function openTerminal(page: Page) {
@@ -600,3 +766,76 @@ for (const vp of [
     });
   });
 }
+
+// 🟢 Round 2 #5: back from the back/forward cache after a browser submit
+// (native) that LANDED. Before, the restored page still had the sent message
+// in its box (native put it there for the submit) and the queue simply ran
+// again: one Send and it went a second time. Now the page settles that
+// message by the draft — the page the submit landed on took it out — before
+// anything resumes.
+//
+// 🔴 IN lib/bfcache.ts's BROWSER: the suite's own cannot restore a page at all
+// (see there), so a goBack in it is always the reload path. The request is
+// failed IN THE PAGE, not with page.route: routing does not see a restored
+// document's requests (bfcache-restore.spec.ts, slowNet).
+test.describe('back/forward cache', () => {
+  test('back from the cache after a browser submit that landed: the box does not hold the sent message, and it is sent once', async ({ playwright }) => {
+    const browser = await launchWithBfcache(playwright.chromium);
+    try {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      await ctx.addInitScript(() => {
+        const w = window as unknown as { __doc: string; __restored: number };
+        w.__doc = Math.random().toString(36).slice(2);
+        w.__restored = 0;
+        addEventListener('pageshow', (e) => { if (e.persisted) w.__restored++; });
+        const F = window.fetch;
+        window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
+          let fail = false;
+          try { fail = sessionStorage.getItem('__e2eFailSend') === '1' && String(input).includes('/mirror/view/send'); } catch (e) {}
+          return fail ? Promise.reject(new TypeError('Failed to fetch')) : F.call(window, input, init);
+        } as typeof window.fetch;
+      });
+      const page = await ctx.newPage();
+      const why: string[] = [];
+      const cdp = await ctx.newCDPSession(page);
+      await cdp.send('Page.enable');
+      cdp.on('Page.backForwardCacheNotUsed', (e: { notRestoredExplanations?: { reason: string }[] }) => {
+        why.push(JSON.stringify((e.notRestoredExplanations || []).map((x) => x.reason)));
+      });
+      await openView(page);
+      const doc = await page.evaluate(() => (window as unknown as { __doc: string }).__doc);
+      const text = `sent by the browser then back ${stamp}`;
+      // The script's request fails: the browser submits the form itself.
+      await page.evaluate(() => sessionStorage.setItem('__e2eFailSend', '1'));
+      await page.locator('#mv-input').fill(text);
+      await page.locator('#mv-input').press('Enter');
+      await expect.poll(pasted, { message: 'the browser\'s own submit pastes it', timeout: 15_000 }).toEqual([`${pane} ${text}`]);
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __doc: string }).__doc), { message: 'the page it landed on', timeout: 15_000 }).not.toBe(doc);
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+      await expect(page.locator('#mv-input'), 'the page it landed on has no draft of it').toHaveValue('');
+      await page.evaluate(() => sessionStorage.removeItem('__e2eFailSend'));
+      await page.goBack({ waitUntil: 'commit', timeout: 10_000 }).catch((e: Error) => {
+        if (!/ERR_ABORTED|frame was detached|Timeout/.test(e.message)) throw e;
+      });
+      await expect
+        .poll(() => page.evaluate(() => { const w = window as unknown as { __doc: string; __restored: number }; return { doc: w.__doc, restored: w.__restored }; }).catch(() => null), {
+          message: `Back restored the page that sent it (not restored because: ${why.join(' ')})`,
+          timeout: 10_000,
+        })
+        .toEqual({ doc, restored: 1 });
+      await expect(page.locator('#mv-input'), 'the restored box does not hold the message that was sent').toHaveValue('');
+      await expect(page.locator('#mv-log [data-pending-send]'), 'and no bubble of it').toHaveCount(0);
+      expect(await draftsHolding(page, text), 'nor any draft').toEqual([]);
+      await sleep(1_500);
+      expect(pasted(), 'nothing was sent again by itself').toEqual([`${pane} ${text}`]);
+      // A press of Send now sends what the person types — not the old message.
+      const next = `after coming back ${stamp}`;
+      await page.locator('#mv-input').fill(next);
+      await page.locator('#mv-input').press('Enter');
+      await expect.poll(pasted, { timeout: 15_000 }).toEqual([`${pane} ${text}`, `${pane} ${next}`]);
+      await ctx.close();
+    } finally {
+      await browser.close();
+    }
+  });
+});

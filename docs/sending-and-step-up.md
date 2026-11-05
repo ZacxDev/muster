@@ -111,7 +111,10 @@ never sent twice.**
   says the message **may have been delivered** turns the bubble **Not
   confirmed** instead, and its button is the
   [Send again](#it-works-without-javascript-and-a-message-is-delivered-once).
-  Sending the same text yourself counts as its Retry. On a Queue or a
+  Sending the same text yourself counts as its Retry. If the message's row
+  then arrives (or was already there when the answer came) it was delivered:
+  the bubble goes at once, with no Send again, and its text leaves the box
+  (unless you have changed it since) and the draft. On a Queue or a
   Terminal view there is no bubble: the reason is in the status line under
   the box, with the text back in the box, and **Retry** (or **Send again**,
   when it may have been delivered) beside it.
@@ -130,10 +133,18 @@ never sent twice.**
   two minutes), so the send never waits for good.
 - **A reload, a navigation, or a send the browser could not make either**
   does not lose it. The message stays in the box's
-  [draft](#drafts-kept-on-this-device) from the press until the server says
-  it has it, so the page you come back to has the text in the box. It is not
-  drawn again as a bubble and is never sent again by itself: you decide
-  whether to send it.
+  [draft](#drafts-kept-on-this-device) from the press until it is delivered,
+  so the page you come back to has the text in the box. It is not drawn again
+  as a bubble and is never sent again by itself: you decide whether to send
+  it.
+- **A network failure just after the page started to leave but stayed** (a
+  download link fires the same "leaving" event) is not taken for the page
+  going: once the page is still there after 3 seconds, the send is refused,
+  with its text kept and Retry, and what you sent after it waits.
+- **Back to the page after the browser sent the message itself** (from the
+  back/forward cache): the page checks the draft first. If the page the send
+  landed on took the message out (it went), the box does not show it again;
+  if not, it is refused, with Retry, before anything sent after it goes.
 
 ⚠ The bubble is matched to its row by its text. The row carries the prompt
 as Claude Code's transcript holds it, before it is drawn as markdown (where a
@@ -393,9 +404,13 @@ What you type into a message box is kept in this browser as you type
 navigation away, a reload, or a closed tab. It is removed when you send or
 queue the message and the server has it, and when you empty the box. A
 mirrored window's box empties at the press, but its draft keeps the message
-until the server's answer: a reload, a navigation or a failed submit
-meanwhile brings it back in the box (several messages on their way come back
-together, in order, a blank line between, then anything typed since). It is
+until it is **delivered** — the server says it has it, or its row is matched
+in the conversation (a **Not confirmed** message that did arrive) — or you
+dismiss it: a reload, a navigation or a failed submit meanwhile brings it
+back in the box, and a delivered message never comes back. Several messages
+not yet delivered come back together in the order you pressed Send, a blank
+line between — a refused one put back in the box keeps its place ahead of one
+waiting behind it — then anything typed since. It is
 kept per device: another
 device, or another browser, does not see it.
 

@@ -16,9 +16,12 @@ import "strconv"
 //
 //   - the box is emptied (focus and the keyboard stay: sendKeepsFocusJS), but
 //     its DRAFT is not: the message is held in the box's draft
-//     (composer_draft.go, musterDraft.hold) until the server answers OK, so a
-//     reload, a navigation or a failed browser submit mid-send brings the text
-//     back in the box as a draft;
+//     (composer_draft.go, musterDraft.hold) until it is DELIVERED — the
+//     server answers OK, or its row is matched in the conversation (a "Not
+//     confirmed" message that did arrive) — so a reload, a navigation or a
+//     failed browser submit mid-send brings the text back in the box as a
+//     draft, and a delivered message never does. Held messages are saved in
+//     the order pressed, a refused one put back in the box in its place;
 //   - on the Rendered view the message is drawn at the END of the
 //     conversation as a pending bubble (data-pending-send): muted, with a
 //     status line ("Sending…", role=status). A Queue has no bubble (it is not
@@ -59,7 +62,13 @@ import "strconv"
 //     or Dismisses it. Posting them anyway would deliver a later message
 //     before an earlier one.
 //   - no answer while online: the browser submits the form itself (native),
-//     as before, with the text put back for it.
+//     as before, with the text put back for it. Shown again from the
+//     back/forward cache after that, the page settles that message by the
+//     draft (delivered: out of the box; not known: refused, Retry) BEFORE
+//     anything behind it is posted.
+//   - no answer within pendingUnloadWaitMS of a beforeunload: the page may be
+//     going, so nothing is decided until it is known to still be here — then
+//     it is refused (text kept, Retry), and nothing behind it goes first.
 //
 // 🔴 ONLY A MESSAGE WHOSE POST HAS GONE OUT AND COME BACK OK ("Sent") — or
 // come back "may have been delivered" (unknown) — CAN BE SETTLED BY A ROW. A
@@ -97,6 +106,11 @@ const (
 	PendingUnknownText = "Not confirmed: it may or may not have been sent."
 	PendingWaitingText = "Waiting — an earlier message wasn't sent"
 	pendingCancelled   = "you did not confirm it's you."
+	// pendingNetworkFailed: the request failed while the page stayed.
+	pendingNetworkFailed = "the connection failed before the server answered."
+	// pendingHandOffUnknown: back from the back/forward cache, the browser's
+	// own submit of it is not known to have gone.
+	pendingHandOffUnknown = "your browser's send of it did not say it went."
 )
 
 // Pending sends' times and bounds.
@@ -107,6 +121,9 @@ const (
 	pendingSentSettleMS = 30_000
 	// pendingMatchChars: how much of a message must begin its row.
 	pendingMatchChars = 200
+	// pendingUnloadWaitMS: after a beforeunload, how long a failed request
+	// waits to see whether the page is leaving before it is a failure.
+	pendingUnloadWaitMS = 3_000
 )
 
 // pendingBubbleClass is a pending bubble: the user bubble's shape and side
@@ -181,22 +198,26 @@ var mirrorComposerJS = `
   function D() { return window.musterDraft || null; }
   function fit() { if (window.musterComposerFit) window.musterComposerFit(input); }
   // hold/release: the message stays in the box's draft from the press until
-  // the server has it (composer_draft.go), so the page going away loses
-  // nothing.
-  function hold(p) { var d = D(); if (d && d.hold) d.hold(input, p.id, p.text); }
+  // it is DELIVERED — the server's OK, or its row matched (landed) — so the
+  // page going away loses nothing, and a delivered one never comes back.
+  function hold(p) { var d = D(); if (d && d.hold) d.hold(input, p.id, p.text, p.seq); }
   function release(p) { var d = D(); if (d && d.release) d.release(input, p.id); }
+  // saveBox: the box's draft as the box stands now.
+  function saveBox() { var d = D(); if (d && d.sent) d.sent(input); }
   function clearBox() { input.value = ''; fit(); }
   // restore puts a message that did not go back in the box — only into an
   // empty box: what was typed since is not overwritten (the message's Retry,
   // and the draft, still have it). It reports whether the box has it now.
+  // 🔴 It stays HELD (in its place, as the box's text): it is not delivered,
+  // and a refused message and one held behind it are saved in pressed order.
   function restore(p) {
-    var t = p.text;
-    if (input.value === t) { release(p); return true; }
-    if (input.value.trim()) return false;
-    input.value = t;
-    fit();
-    // The box has it now: the draft keeps it as the box's text.
-    release(p);
+    var t = p.text, d = D();
+    if (input.value !== t) {
+      if (input.value.trim()) return false;
+      input.value = t;
+      fit();
+    }
+    if (d && d.inBox) d.inBox(input, p.id); else release(p);
     return true;
   }
   // bodyOf is the form's fields with this message's text, nonce and again.
@@ -222,10 +243,11 @@ var mirrorComposerJS = `
   function native(p) {
     // The page is leaving with p: nothing after it is posted from here (the
     // draft, saved just below, has them all).
-    handedOff = true;
+    handedOff = { p: p, box: input.value, action: form.getAttribute('action') };
     var d = D();
     if (d) d.sent(input);
     if (p.el) p.el.remove();
+    p.el = null;
     input.value = p.text;
     if (nonce) nonce.value = p.nonce;
     againField(!!p.again);
@@ -454,9 +476,13 @@ var mirrorComposerJS = `
   // landed: p's row is here. A message that was "Not confirmed" did arrive:
   // its text, put back in the box, is taken out again (sending it would be a
   // second copy).
+  // 🔴 Its draft goes too: it was delivered, so a reload must not bring it
+  // back (a draft lives 7 days; the server's hold of its text is far shorter).
   function landed(p) {
-    if (p.state === 'unknown' && input.value === p.text) clearBox();
+    var cleared = p.state === 'unknown' && input.value === p.text;
+    if (cleared) clearBox();
     release(p);
+    if (cleared) saveBox();
     settle(p);
   }
   window.musterPendingSends = {
@@ -469,19 +495,69 @@ var mirrorComposerJS = `
     }
   };
 
-  var leaving = false;
-  window.addEventListener('pagehide', function () { leaving = true; });
-  // A beforeunload that does not end in leaving (a download link) ends here:
-  // a page that did leave runs no timer.
-  window.addEventListener('beforeunload', function () { leaving = true; setTimeout(function () { leaving = false; }, 3000); });
-  // Back from the back/forward cache after a browser submit that did not
-  // leave: the queue runs again.
-  window.addEventListener('pageshow', function (e) { leaving = false; if (e.persisted && handedOff) { handedOff = false; pump(); } });
+  // ---- The page going away. ----
+  // gone: pagehide fired (the page left, or went into the back/forward
+  // cache). unloadUntil: a beforeunload fired, and until then the page may be
+  // about to go. 🔴 A beforeunload does not always end in leaving (a download
+  // link fires one and the page stays), so it never decides a failure by
+  // itself: a request that failed meanwhile waits (whenHere) and is then a
+  // failure, with its text kept and Retry, if the page is still here.
+  var gone = false, unloadUntil = 0, onShow = [];
+  window.addEventListener('pagehide', function () { gone = true; });
+  window.addEventListener('beforeunload', function () { unloadUntil = Date.now() + ` + strconv.Itoa(pendingUnloadWaitMS) + `; });
+  // whenHere runs fn once the page is known to still be here: after the
+  // beforeunload's wait, or — for a page that went into the back/forward
+  // cache — when it is shown again. A page that left for good runs nothing.
+  function whenHere(fn) {
+    if (gone) { onShow.push(fn); return; }
+    var w = unloadUntil - Date.now();
+    if (w > 0) { setTimeout(function () { whenHere(fn); }, w + 50); return; }
+    fn();
+  }
+  window.addEventListener('pageshow', function (e) {
+    gone = false;
+    unloadUntil = 0;
+    if (!e.persisted) return;
+    // Back from the back/forward cache after a message was handed to the
+    // browser's own submit (native): settle THAT message before the queue
+    // runs again.
+    if (handedOff) backFromHandOff();
+    var fs = onShow; onShow = [];
+    fs.forEach(function (fn) { fn(); });
+    pump();
+  });
+  // backFromHandOff: this page is shown again after it handed p to the
+  // browser's own submit, with p in the box (native put it there). 🔴 The page
+  // that submit landed on took p out of the draft only if it said p went
+  // (composer_draft.go, musterDraft.pending), so the draft is the answer:
+  //   - p is not in it: p was delivered. The box gets back what was typed in
+  //     it before the hand-off, and p is done — sending the restored box
+  //     would have sent p a second time;
+  //   - p is in it (or nothing can be read): it is not known to have gone. It
+  //     is refused, with its text and Retry, and what came after it waits —
+  //     the server refuses a Retry of a text it already delivered
+  //     (X-Muster-Send-Again), so it is never sent twice unasked.
+  function backFromHandOff() {
+    var h = handedOff, p = h.p, d = D();
+    handedOff = false;
+    if (d && d.thaw) d.thaw(input);
+    var st = d && d.stored ? d.stored(input) : null;
+    input.value = h.box;
+    fit();
+    if (nonce) renew();
+    againField(false);
+    form.setAttribute('action', h.action);
+    if (st !== null && st.indexOf(p.text) < 0) { release(p); saveBox(); settle(p); return; }
+    if (bubbled(p)) { p.state = 'sending'; draw(p); }
+    refused(p, ` + strconv.Quote(pendingHandOffUnknown) + `, false);
+  }
 
   // ---- Sending: one at a time, in the order pressed. ----
   // queue: the messages not posted yet, in order. current: the one out now.
   // blocker: a refused message the ones in queue wait behind.
-  var queue = [], current = null, blocker = null, handedOff = false;
+  // handedOff: the message handed to the browser's own submit ({p, box,
+  // action}), if any. seqN: the order of the presses (the draft saves in it).
+  var queue = [], current = null, blocker = null, handedOff = false, seqN = 0;
   function paintQueue() {
     queue.forEach(function (p) {
       var st = blocker ? 'held' : (p.queued && !p.el ? 'queuing' : 'sending');
@@ -502,10 +578,10 @@ var mirrorComposerJS = `
   function start(o) {
     // A message sent again replaces its refused one — as that one's Retry,
     // so it goes FIRST, before what waited behind it.
-    var first = false;
+    var first = false, seq = ++seqN;
     live.slice().forEach(function (x) {
       if (x.queued === !!o.queued && x.text === o.text && (x.state === 'failed' || x.state === 'unknown')) {
-        if (x === blocker) first = true;
+        if (x === blocker) { first = true; seq = x.seq; }
         release(x);
         clearFor(x);
         x.done = true; if (x.el) x.el.remove(); x.el = null;
@@ -514,7 +590,7 @@ var mirrorComposerJS = `
       }
     });
     var p = { id: hex(8) || String(Date.now()) + String(Math.random()).slice(2), text: o.text, typed: o.typed, queued: !!o.queued, to: o.to, again: !!o.again,
-      nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems() };
+      seq: seq, nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems() };
     live.push(p);
     hold(p);
     if (first) queue.unshift(p); else queue.push(p);
@@ -537,12 +613,19 @@ var mirrorComposerJS = `
       // browser's own submit, which would post it a second time.
       try { return answered(p, r); } catch (e) { try { console.error('composer: an answer was not shown', e); } catch (e2) {} }
     }, function () {
-      // 🔴 THE PAGE IS GOING (a reload, a navigation): the browser abandoned
-      // the request, which is not a failure to hand to the browser's own
-      // submit — that would post it again from a page being unloaded. The
+      // 🔴 THE PAGE MAY BE GOING (a reload, a navigation): the browser
+      // abandons the request, which is not a failure to hand to the browser's
+      // own submit — that would post it again from a page being unloaded. The
       // draft holds the message, and the page that comes next has it in the
-      // box.
-      if (leaving) return;
+      // box. But a beforeunload that did NOT end in leaving (a download link)
+      // must not swallow a real failure: once the page is known to still be
+      // here, it is refused — its text kept, Retry — and the promise settles
+      // only then, so nothing after it goes ahead of it.
+      if (gone || Date.now() < unloadUntil) {
+        return new Promise(function (resolve) {
+          whenHere(function () { if (!p.done) refused(p, ` + strconv.Quote(pendingNetworkFailed) + `, false); resolve(); });
+        });
+      }
       if (navigator.onLine === false) { refused(p, form.getAttribute('data-down'), false); return; }
       native(p);
     });
@@ -608,6 +691,10 @@ var mirrorComposerJS = `
     blocker = p;
     set(p, again ? 'unknown' : 'failed', reason);
     paintQueue();
+    // 🔴 A message that may have been delivered may ALREADY have its row on
+    // the page (it can arrive before the answer): settled now, not at the
+    // next batch — it was delivered, so no Send again is offered for it.
+    if (again) reconcile();
   }
 
   form.addEventListener('submit', function (e) {
