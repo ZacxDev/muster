@@ -433,8 +433,65 @@ for (const vp of [
       await expect(more(page, 0), 'cut again: the button is back').toBeVisible();
       await page.locator('#mv-input').fill('');
     });
+
+    // CLEARED UNDER AN OPEN POPOVER: a send (mv-sent) or the next turn's set
+    // empties the row while the operator reads the popover. It must be CLOSED
+    // first — its toggle seen at the document, where floatingMenuScript
+    // listens (it then stops observing it and drops its inline position) — and
+    // the focus, which was in it, goes to the box rather than falling to BODY.
+    test('a send or the next turn closes an open expand popover first and puts the focus in the box', async ({ page }) => {
+      const press = (l: ReturnType<Page['locator']>) => (vp.touch ? l.tap() : l.click());
+      await openView(page);
+      await page.evaluate(() => {
+        (window as any).__tg = [];
+        document.addEventListener('toggle', (e) => (window as any).__tg.push((e.target as HTMLElement).id + ':' + (e as any).newState), true);
+      });
+      const cases: [string, () => Promise<unknown>][] = [
+        ['a send (mv-sent)', () => page.evaluate(() => document.dispatchEvent(new CustomEvent('mv-sent', { detail: { text: 'x', queued: false } })))],
+        ['the next turn', () => turn(page, reply + ' ' + LONG_MARK + ' [next ' + vp.name + ']')],
+      ];
+      for (const [k, [what, clear]] of cases.entries()) {
+        await turn(page, reply + ' ' + LONG_MARK + ' [clear ' + k + ' ' + vp.name + ']');
+        await expect(chips(page)).toHaveCount(2, { timeout: 8_000 });
+        await expect(more(page, 0)).toBeVisible();
+        await press(more(page, 0));
+        const pop = fullPop(page, 0);
+        await expect.poll(() => pop.evaluate((p) => getComputedStyle(p).visibility), { message: 'placed' }).toBe('visible');
+        expect(await focusIn(page, '#mv-suggest-full-0'), 'the focus is in the popover').toBe(true);
+        const h = await pop.elementHandle();
+        await page.evaluate(() => ((window as any).__tg = []));
+        await clear();
+        await expect(chips(page), what + ': the chips are gone').toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => (window as any).__tg), { message: what + ': its close was seen at the document (toggle)' }).toContain('mv-suggest-full-0:closed');
+        expect(await h!.evaluate((p) => p.matches(':popover-open')), what + ': not in the top layer').toBe(false);
+        expect(await h!.evaluate((p) => p.getAttribute('style')), what + ': no inline position left on it').toBeNull();
+        await expect(page.locator('#mv-input'), what + ': the focus is in the box').toBeFocused();
+      }
+    });
   });
 }
+
+// WITHOUT THE POPOVER API (iOS < 17): the expand button would show and do
+// nothing, so it stays hidden; the chip's own tap still fills the box. The
+// API is removed before any script runs; the positive control is the same
+// set with it, where the button shows (the cases above).
+test.describe('expand a long suggestion, no Popover API', () => {
+  test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true });
+  test('the expand button stays hidden and the chip tap still fills', async ({ page }) => {
+    await page.addInitScript(() => { delete (HTMLElement.prototype as any).popover; });
+    await openView(page);
+    expect(await page.evaluate(() => HTMLElement.prototype.hasOwnProperty('popover')), 'the API is gone').toBe(false);
+    await turn(page, reply + ' ' + LONG_MARK + ' [no popover api]');
+    await expect(chips(page)).toHaveCount(2, { timeout: 8_000 });
+    const sw = await chips(page).first().locator('span').evaluate((p) => p.scrollWidth - p.clientWidth);
+    expect(sw, 'the long chip is cut (so with the API it would have its button)').toBeGreaterThan(1);
+    await page.waitForTimeout(300);
+    await expect(more(page, 0), 'no button without the Popover API').toBeHidden();
+    await chips(page).first().tap();
+    await expect(page.locator('#mv-input')).toHaveValue(chipLong);
+    await page.locator('#mv-input').fill('');
+  });
+});
 
 // measureTurn measures CLS on a FRESH page (its own context: no snapshot, so
 // its socket reads the whole conversation): first the open of a view on an

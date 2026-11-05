@@ -132,6 +132,10 @@ const (
 //     button opened). No animation, so nothing for reduced motion to remove.
 //   - "Use this" IS THE CHIP'S TAP: the same take() (fill, never send; the
 //     same "filled" report), after closing the popover.
+//   - CLEARED UNDER AN OPEN POPOVER (a send, the next set): it is closed first,
+//     floatingMenuScript is told, and the focus goes to the box (clearChips).
+//   - NO POPOVER API (iOS < 17): the button is never shown, so it cannot sit
+//     there doing nothing; the chip's tap still fills.
 const (
 	suggestItemClass = "inline-flex shrink-0 items-center"
 	suggestMoreClass = "press inline-flex h-11 w-8 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2 [@media(pointer:coarse)]:w-11 [&[hidden]]:hidden"
@@ -186,16 +190,41 @@ func suggestRowScript() g.Node {
     row.hidden = true;
     row.removeAttribute('data-state');
     if (fitRO) fitRO.disconnect();
-    chips.textContent = '';
+    clearChips();
     measure();
   }
+  // clearChips empties the row. An expand popover open in it is CLOSED first,
+  // and its close is told to floatingMenuScript, which stops observing it and
+  // drops its inline position only on a toggle it sees at the document. A
+  // popover merely removed from the page fires no toggle at all; and the one
+  // hidePopover() queues fires a task LATER, on the element already detached
+  // here, so it never reaches the document either (measured: none seen in
+  // Chromium). So the closed toggle is dispatched now, while it is still in
+  // the page. A focus inside the row, which would fall to BODY, goes to the box.
+  function clearChips() {
+    var had = chips.contains(document.activeElement);
+    var ps = chips.querySelectorAll('[popover]');
+    for (var i = 0; i < ps.length; i++) {
+      var open = false;
+      try { open = ps[i].matches(':popover-open'); if (open) ps[i].hidePopover(); } catch (e) {}
+      if (!open) continue;
+      var ev;
+      try { ev = new ToggleEvent('toggle', { oldState: 'open', newState: 'closed' }); } catch (e) { ev = new Event('toggle'); }
+      ps[i].dispatchEvent(ev);
+    }
+    chips.textContent = '';
+    if (had) input.focus();
+  }
   // fit shows an item's expand button exactly while its chip's text is cut,
-  // and closes its popover when it no longer is (see suggest_row.go).
+  // and closes its popover when it no longer is (see suggest_row.go) — and
+  // never without the Popover API (iOS < 17), where the button would do
+  // nothing; the chip's own tap still fills.
+  var POPOVER = typeof HTMLElement !== 'undefined' && HTMLElement.prototype.hasOwnProperty('popover');
   function fit(item) {
     var p = item.querySelector('[data-suggest-chip] > span'), m = item.querySelector('[data-suggest-more]');
     if (!p || !m) return;
     var cut = p.scrollWidth > p.clientWidth + 1;
-    if (cut) { if (m.hidden) m.hidden = false; return; }
+    if (cut) { if (m.hidden && POPOVER) m.hidden = false; return; }
     if (!m.hidden) m.hidden = true;
     var pop = document.getElementById(m.getAttribute('popovertarget'));
     try { if (pop && pop.matches(':popover-open')) pop.hidePopover(); } catch (e) {}
@@ -333,7 +362,7 @@ func suggestRowScript() g.Node {
   function show(f, list) {
     clearTimeout(timer);
     if (fitRO) fitRO.disconnect();
-    chips.textContent = '';
+    clearChips();
     fp = f;
     list.forEach(function (s, i) {
       var b = document.createElement('button');

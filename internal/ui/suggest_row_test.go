@@ -92,38 +92,10 @@ func TestATapFillsAndNeverSubmits(t *testing.T) {
 	}
 }
 
-// TestALongChipsExpandButtonIsTheChipsActionInAPopover pins the expand
-// button's contract by its source (the e2e suite drives it in a browser): a
-// SIBLING of the chip (never inside it), named SuggestMoreLabel, drawn hidden
-// and shown only while the pill's text is cut — re-measured by a
-// ResizeObserver; its popover is a native popover="auto" dialog placed by
-// floatingMenuScript ([data-floating-menu]) holding the whole text as
-// textContent; and "Use this" is the chip's own take(), closing the popover
-// first.
+// TestALongChipsExpandButtonIsTheChipsActionInAPopover: the page that draws
+// the row also loads floatingMenuScript, which places the expand popover (the
+// button and popover themselves are driven in a browser by the e2e suite).
 func TestALongChipsExpandButtonIsTheChipsActionInAPopover(t *testing.T) {
-	js := renderString(t, suggestRowScript())
-	for _, want := range []string{
-		`item.appendChild(b);`, `full(s, i, b).forEach(function (n) { item.appendChild(n); });`,
-		`m.hidden = true;`, `aria-label', '` + SuggestMoreLabel + `'`, `setAttribute('popovertarget', id)`,
-		`p.scrollWidth > p.clientWidth + 1`, `new ResizeObserver(`, `fitRO.observe(p)`,
-		`setAttribute('popover', 'auto')`, `setAttribute('role', 'dialog')`, `aria-label', '` + SuggestFullLabel + `'`,
-		`setAttribute('data-floating-menu', '')`, `t.textContent = s.text;`,
-		`pop.hidePopover(); } catch (err) {}
-      take(s.text, e.detail === 0 ? chip : null);`,
-		`setAttribute('popovertargetaction', 'hide')`,
-	} {
-		if !strings.Contains(js, want) {
-			t.Fatalf("the script lacks %s", want)
-		}
-	}
-	// The popover's classes: closed is display:none (no box in the row), open
-	// is the top layer; only the text scrolls.
-	for _, want := range []string{`invisible hidden [&:popover-open]:flex`, `min-h-0 overflow-y-auto`, `[@media(pointer:coarse)]:w-11`, `[&[hidden]]:hidden`} {
-		if !strings.Contains(js, want) {
-			t.Fatalf("the script lacks the class %s", want)
-		}
-	}
-	// The page that draws the row also places popovers.
 	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@3", Interactive: true,
 		StepUp: stepUpFixture(), Suggest: suggestSrc}))
 	if !strings.Contains(page, floatingMenuScriptSrc) {

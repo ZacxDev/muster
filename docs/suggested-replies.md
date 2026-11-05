@@ -34,7 +34,11 @@ chips for its question ([attention.md](attention.md#suggested-replies-to-an-ask)
   outside it or its × closes it, and the focus returns to the button.
   **Use this** in the popover does exactly what tapping the chip does (fills
   the box, never sends). A chip that fits has no button; the button follows
-  the text as it is measured (a resize, a rotation or a late font re-measures).
+  the text as it is measured (a resize, a rotation or a late font re-measures). When
+  the row is cleared under an open popover (a send, the next turn's set), the
+  popover is closed first and the focus goes to the message box. A browser
+  without the Popover API (iOS before 17) shows no expand button; tapping the
+  chip still fills the box.
 - **A tap fills, never sends.** An empty box takes the chip's text; a box that
   already holds a draft gets it **on a new line below** the draft, never over
   it. It is an edit (Ctrl+Z gives the draft back), and you press Send. A tap
