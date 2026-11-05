@@ -291,7 +291,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	}
 	up := 0
 	for _, in := range obs.Instances {
-		if in.Up && !capHolder[in.N] { // MUTATION (temporary, reverted next): a still-up capped holder is not counted
+		if in.Up {
 			up++
 		}
 	}
