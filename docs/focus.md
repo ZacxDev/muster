@@ -66,8 +66,32 @@ default `15m`), which for each session:
   `fleet_list` (`focus_problem`). The next successful refresh clears it.
 
 A pass only looks at sessions that were active since their focus was
-written, at most 20 per user, and skips disabled users. Calls are capped at
-60 per user and 300 in all per hour, two at a time.
+written **or since their tail was last read**, at most 20 per user, and skips
+disabled users. A session's activity is its transcript's last message (the
+time the Agents list shows), or tmux's window activity for a window whose host
+reports no last message (an opencode or Hermes window, an older host) —
+**except while a Claude window is busy or waiting on you**: its host then
+reports its activity as *now*, so it always looks active. A tail read that
+found nothing new (or an empty tail) is remembered, with when it began and the
+tail's sha256, so a session whose transcript has not moved since is skipped
+without another read. A Claude window that has been **waiting** on you (a
+permission prompt, a question) since before that read is skipped too, from its
+host's status: Claude Code writes no transcript row a focus tail shows while it
+waits. A **busy** window has no such signal, so it is read on every pass.
+Skipped sessions do not count toward the 20, so they cannot crowd out
+sessions that did move — but 20 or more **busy** windows, which sort first,
+still fill the 20 ahead of an idle window whose transcript moved, and that one
+waits for a pass with fewer busy windows. The record is kept in memory only:
+after a restart, each session costs one extra read on the first pass. A read
+that failed is not remembered, so it is retried on the next pass. Calls are
+capped at 60 per user and 300 in all per hour, two at a time.
+
+Every pass logs one line of counts, a quiet pass included, so a missing line
+means the pass did not run:
+`focus: pass: owners=1 candidates=25 skipped=20 deferred=0 updated=3 unchanged=2 empty=0 failed=0 rate-limited=false`.
+`skipped` is sessions not read because nothing moved, and `deferred` is
+sessions that may have moved but were past the 20 or the rate cap, left for
+the next pass. It never carries a title.
 
 ### The working directory
 

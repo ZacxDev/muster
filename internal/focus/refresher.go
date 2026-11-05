@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE SERVER-SIDE REFRESH (operator decision: muster computes focus, the chief
@@ -39,6 +41,15 @@ type KeyChecker interface {
 type Candidate struct {
 	Subject  Subject
 	ActiveAt time.Time
+	// WaitingSince is when a mirrored Claude window began waiting on the
+	// person (its host's StatusWaiting, StatusSince), zero when it is not
+	// waiting or its host does not say. Its host reports a waiting window's
+	// activity as "now" (mirrorhost.WireWindows), so ActiveAt alone always
+	// reads as moved; but Claude Code writes no row a focus tail renders
+	// while it waits, so a window waiting since before a read that found its
+	// tail unchanged has nothing new (checkedSkip). A BUSY window has no such
+	// signal and is never skipped by it.
+	WaitingSince time.Time
 }
 
 // Sessions is where subjects and their transcripts come from (internal/api: the
@@ -98,6 +109,11 @@ type Refresher struct {
 	mu      sync.Mutex
 	calls   map[int64][]time.Time // per owner, the last hour's call times
 	global  []time.Time
+	// checked is, per owner, when each subject's tail was last READ to an
+	// unchanged, updated or empty end, and the fingerprint that read found
+	// (checkedSkip). In memory only: lost on restart, which costs one extra
+	// tail read per session on the first pass after it — no migration.
+	checked map[int64]map[Subject]check
 	// Calls counts summarizer calls made (a test reads it).
 	Calls int
 }
@@ -173,6 +189,9 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 			return OutcomeFailed, err
 		}
 	}
+	// Taken BEFORE the tail read: activity after this instant may be missing
+	// from the tail, so it must keep the subject a candidate.
+	readAt := r.now()
 	entries, err := r.Sessions.Tail(ctx, sub)
 	if err != nil {
 		if !errors.Is(err, ErrNoSession) {
@@ -182,9 +201,11 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 	}
 	tail, fp := RenderTail(entries)
 	if tail == "" {
+		r.markChecked(owner, sub, readAt, "")
 		return OutcomeEmpty, nil
 	}
 	if has && cur.Has() && cur.Fingerprint == fp {
+		r.markChecked(owner, sub, readAt, fp)
 		return OutcomeUnchanged, nil
 	}
 	if !r.take(owner) {
@@ -206,7 +227,79 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err
 	}
+	r.markChecked(owner, sub, readAt, fp)
 	return OutcomeUpdated, nil
+}
+
+// check is one tail read that ended without a failure: when it began and the
+// fingerprint it found ("" for an empty tail).
+type check struct {
+	at time.Time
+	fp string
+}
+
+func (r *Refresher) markChecked(owner int64, sub Subject, at time.Time, fp string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.checked == nil {
+		r.checked = map[int64]map[Subject]check{}
+	}
+	if r.checked[owner] == nil {
+		r.checked[owner] = map[Subject]check{}
+	}
+	r.checked[owner][sub] = check{at: at, fp: fp}
+}
+
+// checkedSkip reports whether c needs no tail read because one already read
+// everything it can have said: a read began a whole ActivityBucket after c's
+// last activity (ActiveAt is floored to the bucket, so a message inside the
+// bucket may postdate a read that began within it) — or a whole bucket after
+// c began WAITING on the person (Candidate.WaitingSince) — and that read found
+// the fingerprint the stored focus still carries (storedFP; "" with no focus),
+// or found an empty tail (an empty read matches an empty read). A read that
+// FAILED records nothing, so a failure is retried on the next pass.
+//
+// 🔴 THIS IS WHAT STOPS AN UNCHANGED SESSION BEING A CANDIDATE FOREVER. The
+// unchanged outcome writes nothing to the store, so updated_at alone never
+// catches up with the session's activity; without this record every such
+// session was re-read on every pass, filled MaxPerPass, and pushed sessions
+// that had really moved past the cap.
+func (r *Refresher) checkedSkip(owner int64, c Candidate, storedFP string) bool {
+	r.mu.Lock()
+	ck, ok := r.checked[owner][c.Subject]
+	r.mu.Unlock()
+	// An empty read matches an empty read: an empty tail stores nothing, so
+	// the stored focus (from an earlier, non-empty tail) never carries "".
+	if !ok || (ck.fp != storedFP && ck.fp != "") {
+		return false
+	}
+	bucket := mirror.ActivityBucket * time.Second
+	quiet := !c.ActiveAt.IsZero() && !c.ActiveAt.Add(bucket).After(ck.at)
+	// Waiting since a whole bucket before the read began: StatusSince is the
+	// CLI's clock, the read's is the server's, and the bucket is the slack
+	// the activity rule already allows for.
+	waiting := !c.WaitingSince.IsZero() && !c.WaitingSince.Add(bucket).After(ck.at)
+	return quiet || waiting
+}
+
+// pruneChecked keeps owner's check records for the subjects in cands only, so
+// the map is bounded by the live candidates.
+func (r *Refresher) pruneChecked(owner int64, cands []Candidate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.checked[owner]
+	if len(m) == 0 {
+		return
+	}
+	live := make(map[Subject]bool, len(cands))
+	for _, c := range cands {
+		live[c.Subject] = true
+	}
+	for s := range m {
+		if !live[s] {
+			delete(m, s)
+		}
+	}
 }
 
 // record stores cause's Reason — never its text, which can carry a provider's
@@ -218,46 +311,97 @@ func (r *Refresher) record(ctx context.Context, sub Subject, cause error) {
 	}
 }
 
+// PassCounts is what one pass did: counts only, never a title.
+type PassCounts struct {
+	// Candidates is every subject listed; Skipped those not read because
+	// nothing moved (their focus or their last check is newer than their
+	// activity); Deferred those that may have moved but were past MaxPerPass
+	// or the rate cap, left for the next pass.
+	Candidates, Skipped, Deferred int
+	Outcomes                      map[Outcome]int
+	// RateLimited is a pass an owner's rate cap ended early.
+	RateLimited bool
+}
+
+func (p *PassCounts) add(o PassCounts) {
+	p.Candidates += o.Candidates
+	p.Skipped += o.Skipped
+	p.Deferred += o.Deferred
+	p.RateLimited = p.RateLimited || o.RateLimited
+	if p.Outcomes == nil {
+		p.Outcomes = map[Outcome]int{}
+	}
+	for k, v := range o.Outcomes {
+		p.Outcomes[k] += v
+	}
+}
+
+// String is the pass's one log line's counts.
+func (p PassCounts) String() string {
+	return fmt.Sprintf("candidates=%d skipped=%d deferred=%d updated=%d unchanged=%d empty=%d failed=%d rate-limited=%t",
+		p.Candidates, p.Skipped, p.Deferred, p.Outcomes[OutcomeUpdated], p.Outcomes[OutcomeUnchanged], p.Outcomes[OutcomeEmpty],
+		p.Outcomes[OutcomeFailed], p.RateLimited)
+}
+
 // RefreshOwner refreshes owner's subjects that may have moved since their
-// focus was written — active after it, or with none — at most MaxPerPass of
-// them, most recently active first. ctx acts as owner.
+// focus was written or their tail last read — active after it, or with none —
+// at most MaxPerPass of them, most recently active first. A subject skipped
+// because nothing moved does NOT count toward MaxPerPass. ctx acts as owner.
 func (r *Refresher) RefreshOwner(ctx context.Context, owner int64) (map[Outcome]int, error) {
+	pc, err := r.refreshOwner(ctx, owner)
+	return pc.Outcomes, err
+}
+
+func (r *Refresher) refreshOwner(ctx context.Context, owner int64) (PassCounts, error) {
+	pc := PassCounts{Outcomes: map[Outcome]int{}}
 	cands, err := r.Sessions.Candidates(ctx)
 	if err != nil {
-		return nil, err
+		return pc, err
 	}
 	have, err := r.Store.List(ctx)
 	if err != nil {
-		return nil, err
+		return pc, err
 	}
+	r.pruneChecked(owner, cands)
 	updated := map[Subject]time.Time{}
+	stored := map[Subject]string{}
 	for _, f := range have {
 		if f.Has() {
 			updated[f.Subject] = f.UpdatedAt
+			stored[f.Subject] = f.Fingerprint
 		}
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].ActiveAt.After(cands[j].ActiveAt) })
-	out := map[Outcome]int{}
+	pc.Candidates = len(cands)
 	n := 0
 	for _, c := range cands {
-		if n >= MaxPerPass || ctx.Err() != nil {
-			break
-		}
 		if at, ok := updated[c.Subject]; ok && !c.ActiveAt.IsZero() && !c.ActiveAt.After(at) {
+			pc.Skipped++
+			continue
+		}
+		if r.checkedSkip(owner, c, stored[c.Subject]) {
+			pc.Skipped++
+			continue
+		}
+		if n >= MaxPerPass || ctx.Err() != nil || pc.RateLimited {
+			pc.Deferred++
 			continue
 		}
 		n++
 		o, err := r.Refresh(ctx, owner, c.Subject)
 		if errors.Is(err, ErrCapped) {
-			out[OutcomeFailed]++
-			break
+			pc.Outcomes[OutcomeFailed]++
+			pc.RateLimited = true
+			continue
 		}
-		out[o]++
+		pc.Outcomes[o]++
 	}
-	return out, nil
+	return pc, nil
 }
 
-// Pass refreshes every owner (Store.Owners), each as itself.
+// Pass refreshes every owner (Store.Owners), each as itself, and logs ONE line
+// of counts for the whole pass — every pass, a quiet one too, so "no line"
+// always means "the pass did not run". Never a title.
 func (r *Refresher) Pass(ctx context.Context) error {
 	if r.AsOwner == nil {
 		return errors.New("focus: the refresher has no AsOwner")
@@ -266,19 +410,19 @@ func (r *Refresher) Pass(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var total PassCounts
 	for _, o := range owners {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		res, err := r.RefreshOwner(r.AsOwner(ctx, o), o)
+		res, err := r.refreshOwner(r.AsOwner(ctx, o), o)
 		if err != nil {
 			r.logf("focus: owner %d: %v", o, err)
 			continue
 		}
-		if res[OutcomeUpdated]+res[OutcomeFailed] > 0 {
-			r.logf("focus: owner %d: %s", o, fmt.Sprint(res))
-		}
+		total.add(res)
 	}
+	r.logf("focus: pass: owners=%d %s", len(owners), total)
 	return nil
 }
 
