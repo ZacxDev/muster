@@ -19,9 +19,9 @@ import (
 // ---------------------------------------------------------------------------
 // THE `kube` BLOCK: which clusters an officer's JUDGEMENT instances may read
 // with officer_kube_read, and as which ServiceAccount. Each cluster's endpoint,
-// CA bundle and minter token come from the server's sealed environment
-// (MUSTER_KUBE_READ_{ENDPOINT,CA,MINTER_TOKEN}_<CLUSTER>), never from the
-// officer declaration and never from the model.
+// CA bundle, minter token and read allowlist come from the server's deployment
+// environment (MUSTER_KUBE_READ_{ENDPOINT,CA,MINTER_TOKEN,ALLOWLIST}_<CLUSTER>),
+// never from the officer declaration and never from the model.
 // ---------------------------------------------------------------------------
 
 func fixtureCAPEM(t *testing.T) string {
@@ -41,12 +41,22 @@ func fixtureCAPEM(t *testing.T) string {
 
 const kubeBlock = `,"kube":{"clusters":[{"name":"prod-a","service_account":"officers/officer-gpu-health-prod-a"}]}`
 
+// allowlistVar is the cluster's allowlist variable, spelled out (not built
+// from a constant) so the test pins the name the deployment sets.
+const allowlistVar = "MUSTER_KUBE_READ_ALLOWLIST_PROD_A"
+
+// fixtureAllowlist is a made-up allowlist: no real deployment's resources.
+const fixtureAllowlist = `[{"apiGroup":"","resources":["pods","pods/log","configmaps"],"scope":"namespaced"},` +
+	`{"apiGroup":"","resources":["nodes"],"scope":"cluster"},` +
+	`{"apiGroup":"widgets.example.com","resources":["widgets","gadgets"],"scope":"namespaced"}]`
+
 func kubeEnv(t *testing.T) map[string]string {
 	return map[string]string{
 		officers.TokenEnvPrefix + officers.TokenEnvSuffix(tierID): tierTok,
 		officers.KubeEndpointEnvPrefix + "PROD_A":                 "192.0.2.9:6443",
 		officers.KubeCAEnvPrefix + "PROD_A":                       fixtureCAPEM(t),
 		officers.KubeMinterEnvPrefix + "PROD_A":                   "fixture-minter-token-4e1a",
+		allowlistVar:                                              fixtureAllowlist,
 	}
 }
 
@@ -126,6 +136,102 @@ func TestKubeBlockRefusals(t *testing.T) {
 	badEP[officers.KubeEndpointEnvPrefix+"PROD_A"] = "https://192.0.2.9:6443/api"
 	if _, err := parseKube(t, ","+tiersBlock+kubeBlock, badEP); err == nil || !strings.Contains(err.Error(), "host:port") {
 		t.Errorf("an endpoint that is a URL: err = %v", err)
+	}
+}
+
+// TestAMissingOrEmptyAllowlistDisablesTheCluster: the deployment supplies
+// each cluster's read allowlist. With none (unset, blank, or an empty list)
+// that cluster's kube-read is DISABLED — fail closed, never "allow all": the
+// officer still loads, but the cluster is not offered, and with no other
+// cluster neither is the tool nor the kube-read connector.
+func TestAMissingOrEmptyAllowlistDisablesTheCluster(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value *string
+	}{
+		{"unset", nil},
+		{"blank", ptr("  ")},
+		{"an empty list", ptr("[]")},
+		{"null", ptr("null")},
+	} {
+		e := kubeEnv(t)
+		delete(e, allowlistVar)
+		if tc.value != nil {
+			e[allowlistVar] = *tc.value
+		}
+		list, err := parseKube(t, ","+tiersBlock+kubeBlock, e)
+		if err != nil {
+			t.Errorf("%s: the officer was refused (%v): a missing allowlist disables the cluster, it does not stop the officer", tc.name, err)
+			continue
+		}
+		judge, _ := pools(t, list[0])
+		if cs := judge.KubeClusters(); len(cs) != 0 {
+			t.Errorf("%s: the cluster is still offered (%v): fail closed", tc.name, cs)
+		}
+		if officers.ToolOffered(judge, officers.ToolKubeRead) || officers.MayRequestConnector(judge, officers.KubeConnector) {
+			t.Errorf("%s: officer_kube_read or the kube-read connector is still offered with no allowlist", tc.name)
+		}
+	}
+
+	// Two clusters, one with an allowlist: only that one is offered.
+	two := `,"kube":{"clusters":[{"name":"prod-a","service_account":"officers/x"},{"name":"prod-b","service_account":"officers/y"}]}`
+	e := kubeEnv(t)
+	e[officers.KubeEndpointEnvPrefix+"PROD_B"] = "192.0.2.10:6443"
+	e[officers.KubeCAEnvPrefix+"PROD_B"] = fixtureCAPEM(t)
+	e[officers.KubeMinterEnvPrefix+"PROD_B"] = "fixture-minter-token-b"
+	list, err := parseKube(t, ","+tiersBlock+two, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	judge, _ := pools(t, list[0])
+	cs := judge.KubeClusters()
+	if len(cs) != 1 || cs[0].Name != "prod-a" {
+		t.Fatalf("clusters %v, want only prod-a (prod-b has no allowlist)", cs)
+	}
+	if _, ok := judge.KubeCluster("prod-b"); ok {
+		t.Fatal("prod-b, with no allowlist, is still a readable cluster")
+	}
+	if !officers.ToolOffered(judge, officers.ToolKubeRead) {
+		t.Fatal("positive control: prod-a has an allowlist, and the tool is not offered")
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// TestAnAllowlistIsValidatedStrictly: a malformed allowlist is a load
+// refusal naming the variable — an unknown field, a "*" resource or group,
+// any subresource but core pods/log (*/status included), a never-granted
+// resource, a missing or unknown scope, a duplicate.
+func TestAnAllowlistIsValidatedStrictly(t *testing.T) {
+	for _, tc := range []struct{ name, value, want string }{
+		{"a wildcard resource", `[{"apiGroup":"widgets.example.com","resources":["*"],"scope":"namespaced"}]`, "*"},
+		{"a wildcard among resources", `[{"apiGroup":"","resources":["pods","*"],"scope":"namespaced"}]`, "*"},
+		{"a wildcard group", `[{"apiGroup":"*","resources":["widgets"],"scope":"namespaced"}]`, "*"},
+		{"a status subresource", `[{"apiGroup":"apps","resources":["deployments/status"],"scope":"namespaced"}]`, "deployments/status"},
+		{"a wildcard subresource", `[{"apiGroup":"apps","resources":["*/status"],"scope":"namespaced"}]`, "*/status"},
+		{"pods/status", `[{"apiGroup":"","resources":["pods/status"],"scope":"namespaced"}]`, "pods/status"},
+		{"pods/log outside core", `[{"apiGroup":"widgets.example.com","resources":["pods/log"],"scope":"namespaced"}]`, "pods/log"},
+		{"pods/exec", `[{"apiGroup":"","resources":["pods/exec"],"scope":"namespaced"}]`, "pods/exec"},
+		{"secrets", `[{"apiGroup":"","resources":["secrets"],"scope":"namespaced"}]`, "secrets"},
+		{"rbac", `[{"apiGroup":"rbac.authorization.k8s.io","resources":["clusterroles"],"scope":"cluster"}]`, "rbac"},
+		{"an unknown field", `[{"apiGroup":"","resources":["pods"],"scope":"namespaced","verbs":["get","list","watch"]}]`, "verbs"},
+		{"no scope", `[{"apiGroup":"","resources":["pods"]}]`, "scope"},
+		{"an unknown scope", `[{"apiGroup":"","resources":["pods"],"scope":"global"}]`, "scope"},
+		{"no resources", `[{"apiGroup":"","resources":[],"scope":"namespaced"}]`, "resources"},
+		{"a duplicate", `[{"apiGroup":"","resources":["pods"],"scope":"namespaced"},{"apiGroup":"","resources":["pods"],"scope":"namespaced"}]`, "twice"},
+		{"not a list", `{"resources":[]}`, allowlistVar},
+		{"not JSON", `pods,nodes`, allowlistVar},
+	} {
+		e := kubeEnv(t)
+		e[allowlistVar] = tc.value
+		_, err := parseKube(t, ","+tiersBlock+kubeBlock, e)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), allowlistVar) {
+			t.Errorf("%s: err = %v, want a refusal naming %s and containing %q", tc.name, err, allowlistVar, tc.want)
+		}
+	}
+	// Positive control: the fixture itself loads.
+	if _, err := parseKube(t, ","+tiersBlock+kubeBlock, kubeEnv(t)); err != nil {
+		t.Fatalf("positive control: the fixture allowlist was refused: %v", err)
 	}
 }
 

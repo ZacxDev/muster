@@ -138,7 +138,8 @@ func (a *seamAPI) counts() (int, int) { a.mu.Lock(); defer a.mu.Unlock(); return
 // TestOfficerKubeReadEndToEnd: a judgement instance is refused while its
 // kube-read grant is pending and while it holds no item — reaching no cluster
 // either time — and, approved and holding an item, reads a ConfigMap list
-// through a freshly minted token. The call's audit row is kind `kube` and
+// through a freshly minted token. The call's audit row is kind `query` (as
+// postgres_query's), its connector kube-read, and
 // names the officer, the item, the cluster, the path and the jti, and carries
 // nothing of the answer.
 func TestOfficerKubeReadEndToEnd(t *testing.T) {
@@ -160,6 +161,7 @@ func TestOfficerKubeReadEndToEnd(t *testing.T) {
 			officers.KubeEndpointEnvPrefix + "PROD_A":               api.srv.Listener.Addr().String(),
 			officers.KubeCAEnvPrefix + "PROD_A":                     api.caPEM,
 			officers.KubeMinterEnvPrefix + "PROD_A":                 "fixture-minter-token-5d0a",
+			"MUSTER_KUBE_READ_ALLOWLIST_PROD_A":                     kubeRigAllowlist,
 		}[k]
 	}, "muster-agent-")
 	if err != nil {
@@ -202,7 +204,7 @@ func TestOfficerKubeReadEndToEnd(t *testing.T) {
 		t.Fatalf("%d audit rows, want 1: %+v", len(rows), rows)
 	}
 	row := rows[0]
-	if row.Kind != "kube" || row.AgentName != judge.Name || row.Connector != officers.KubeConnector || row.Host != "prod-a" ||
+	if row.Kind != "query" || row.AgentName != judge.Name || row.Connector != officers.KubeConnector || row.Host != "prod-a" ||
 		row.Method != "list" || row.Path != "/api/v1/namespaces/web/configmaps" || row.Status != 200 {
 		t.Errorf("audit row %+v", row)
 	}

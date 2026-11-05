@@ -1,10 +1,7 @@
 package kuberead_test
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -30,7 +27,7 @@ func parse(t *testing.T, raw string) kuberead.Request {
 // query muster builds for each request shape (literal expectations, never
 // derived from the builder).
 func TestThePathBuilderBuildsOnlyAllowlistedGETPaths(t *testing.T) {
-	allow := kuberead.Default()
+	allow := fixtureAllow(t)
 	for _, tc := range []struct{ name, args, path, query string }{
 		{"list pods in a namespace", `{"cluster":"prod-a","verb":"list","group":"","version":"v1","resource":"pods","namespace":"web"}`,
 			"/api/v1/namespaces/web/pods", "limit=501"},
@@ -38,8 +35,8 @@ func TestThePathBuilderBuildsOnlyAllowlistedGETPaths(t *testing.T) {
 			"/apis/apps/v1/namespaces/web/deployments/api", ""},
 		{"list a cluster-scoped resource with no selector", `{"cluster":"prod-a","verb":"list","group":"","version":"v1","resource":"nodes"}`,
 			"/api/v1/nodes", "limit=501"},
-		{"a wildcard group's resource", `{"cluster":"prod-a","verb":"list","group":"helm.toolkit.fluxcd.io","version":"v2","resource":"helmreleases","namespace":"flux-system"}`,
-			"/apis/helm.toolkit.fluxcd.io/v2/namespaces/flux-system/helmreleases", "limit=501"},
+		{"a custom resource", `{"cluster":"prod-a","verb":"list","group":"widgets.example.com","version":"v2","resource":"widgets","namespace":"tools"}`,
+			"/apis/widgets.example.com/v2/namespaces/tools/widgets", "limit=501"},
 		{"an all-namespace list with a label selector", `{"cluster":"prod-a","verb":"list","group":"","version":"v1","resource":"pods","label_selector":"app=api"}`,
 			"/api/v1/pods", "labelSelector=app%3Dapi&limit=501"},
 		{"an all-namespace list with a field selector and a limit", `{"cluster":"prod-a","verb":"list","group":"","version":"v1","resource":"events","field_selector":"type=Warning","limit":50}`,
@@ -65,42 +62,43 @@ func TestThePathBuilderBuildsOnlyAllowlistedGETPaths(t *testing.T) {
 // verb, watch, and every way of smuggling a path through a field are
 // refused — each with kuberead.ErrRefused, so the refusal is THIS guard's.
 func TestThePathBuilderRefusesEverythingOutsideTheAllowlist(t *testing.T) {
-	allow := kuberead.Default()
+	allow := fixtureAllow(t)
 	req := func(verb, group, resource, ns, name string) kuberead.Request {
 		return kuberead.Request{Cluster: "prod-a", Verb: verb, Group: group, Version: "v1", Resource: resource, Namespace: ns, Name: name}
 	}
 	cases := map[string]kuberead.Request{
-		"get a secret":                 req("get", "", "secrets", "web", "db"),
-		"list secrets":                 req("list", "", "secrets", "web", ""),
-		"secrets under a wildcard":     req("list", "helm.toolkit.fluxcd.io", "secrets", "web", ""),
-		"serviceaccounts":              req("list", "", "serviceaccounts", "web", ""),
-		"a serviceaccount token":       req("get", "", "serviceaccounts/token", "web", "default"),
-		"pods/exec":                    req("get", "", "pods/exec", "web", "api-1"),
-		"pods/attach":                  req("get", "", "pods/attach", "web", "api-1"),
-		"pods/portforward":             req("get", "", "pods/portforward", "web", "api-1"),
-		"pods/proxy":                   req("get", "", "pods/proxy", "web", "api-1"),
-		"services/proxy":               req("get", "", "services/proxy", "web", "api"),
-		"nodes/proxy":                  req("get", "", "nodes/proxy", "", "node-a"),
-		"pods/ephemeralcontainers":     req("get", "", "pods/ephemeralcontainers", "web", "api-1"),
-		"rbac":                         req("list", "rbac.authorization.k8s.io", "clusterroles", "", ""),
-		"csr":                          req("list", "certificates.k8s.io", "certificatesigningrequests", "", ""),
-		"an unknown group":             req("list", "example.com", "widgets", "web", ""),
-		"watch":                        req("watch", "", "pods", "web", ""),
-		"a write verb":                 req("delete", "", "pods", "web", "api-1"),
-		"create":                       req("create", "", "pods", "web", ""),
-		"no verb":                      req("", "", "pods", "web", ""),
-		"pods/log by get":              req("get", "", "pods/log", "web", "api-1"),
-		"a status subresource listed":  req("list", "apps", "deployments/status", "web", ""),
-		"a status subresource read":    req("get", "apps", "deployments/status", "web", "api"),
-		"pods/status":                  req("get", "", "pods/status", "web", "api-1"),
-		"a name with a slash":          req("get", "", "configmaps", "web", "../secrets/db"),
-		"a name with an escape":        req("get", "", "configmaps", "web", "x%2fsecrets"),
-		"a namespace with a slash":     req("list", "", "configmaps", "web/secrets", ""),
-		"a resource with a query":      req("list", "", "pods?watch=true", "web", ""),
-		"a cluster resource namespace": req("list", "", "nodes", "web", ""),
-		"get without a name":           req("get", "", "configmaps", "web", ""),
-		"list with a name":             req("list", "", "configmaps", "web", "x"),
-		"a group with dots only":       req("list", "..", "pods", "web", ""),
+		"get a secret":                           req("get", "", "secrets", "web", "db"),
+		"list secrets":                           req("list", "", "secrets", "web", ""),
+		"secrets in a listed group":              req("list", "widgets.example.com", "secrets", "web", ""),
+		"an unlisted resource of a listed group": req("list", "widgets.example.com", "sprockets", "web", ""),
+		"serviceaccounts":                        req("list", "", "serviceaccounts", "web", ""),
+		"a serviceaccount token":                 req("get", "", "serviceaccounts/token", "web", "default"),
+		"pods/exec":                              req("get", "", "pods/exec", "web", "api-1"),
+		"pods/attach":                            req("get", "", "pods/attach", "web", "api-1"),
+		"pods/portforward":                       req("get", "", "pods/portforward", "web", "api-1"),
+		"pods/proxy":                             req("get", "", "pods/proxy", "web", "api-1"),
+		"services/proxy":                         req("get", "", "services/proxy", "web", "api"),
+		"nodes/proxy":                            req("get", "", "nodes/proxy", "", "node-a"),
+		"pods/ephemeralcontainers":               req("get", "", "pods/ephemeralcontainers", "web", "api-1"),
+		"rbac":                                   req("list", "rbac.authorization.k8s.io", "clusterroles", "", ""),
+		"csr":                                    req("list", "certificates.k8s.io", "certificatesigningrequests", "", ""),
+		"an unknown group":                       req("list", "example.com", "widgets", "web", ""),
+		"watch":                                  req("watch", "", "pods", "web", ""),
+		"a write verb":                           req("delete", "", "pods", "web", "api-1"),
+		"create":                                 req("create", "", "pods", "web", ""),
+		"no verb":                                req("", "", "pods", "web", ""),
+		"pods/log by get":                        req("get", "", "pods/log", "web", "api-1"),
+		"a status subresource listed":            req("list", "apps", "deployments/status", "web", ""),
+		"a status subresource read":              req("get", "apps", "deployments/status", "web", "api"),
+		"pods/status":                            req("get", "", "pods/status", "web", "api-1"),
+		"a name with a slash":                    req("get", "", "configmaps", "web", "../secrets/db"),
+		"a name with an escape":                  req("get", "", "configmaps", "web", "x%2fsecrets"),
+		"a namespace with a slash":               req("list", "", "configmaps", "web/secrets", ""),
+		"a resource with a query":                req("list", "", "pods?watch=true", "web", ""),
+		"a cluster resource namespace":           req("list", "", "nodes", "web", ""),
+		"get without a name":                     req("get", "", "configmaps", "web", ""),
+		"list with a name":                       req("list", "", "configmaps", "web", "x"),
+		"a group with dots only":                 req("list", "..", "pods", "web", ""),
 	}
 	bad := req("list", "", "pods", "web", "")
 	bad.Version = "v1/../../api/v1/secrets"
@@ -160,7 +158,7 @@ func TestParseRequestRefusesAnUnknownKey(t *testing.T) {
 // no namespace must carry a label or field selector; a cluster-scoped list
 // needs none.
 func TestAnAllNamespaceListNeedsASelector(t *testing.T) {
-	allow := kuberead.Default()
+	allow := fixtureAllow(t)
 	if _, err := allow.Build(kuberead.Request{Cluster: "prod-a", Verb: "list", Version: "v1", Resource: "pods"}); !errors.Is(err, kuberead.ErrRefused) ||
 		!strings.Contains(err.Error(), "selector") {
 		t.Errorf("an all-namespace pod list with no selector: err %v, want a refusal naming the selector", err)
@@ -176,94 +174,60 @@ func TestAnAllNamespaceListNeedsASelector(t *testing.T) {
 	}
 }
 
-// neverGranted is officers plan §2.1's "never granted" list: none of these may
-// appear in the allowlist, in any group.
-var neverGranted = []string{"secrets", "pods/exec", "pods/attach", "pods/portforward", "pods/proxy", "services/proxy", "nodes/proxy",
-	"serviceaccounts", "serviceaccounts/token", "pods/ephemeralcontainers", "certificatesigningrequests"}
+// fixtureAllowJSON is a made-up allowlist in the deployment's format: no
+// real deployment's resources.
+const fixtureAllowJSON = `[
+  {"apiGroup": "", "resources": ["pods", "pods/log", "events", "configmaps", "services"], "scope": "namespaced"},
+  {"apiGroup": "", "resources": ["nodes", "namespaces"], "scope": "cluster"},
+  {"apiGroup": "apps", "resources": ["deployments"], "scope": "namespaced"},
+  {"apiGroup": "widgets.example.com", "resources": ["widgets", "gadgets"], "scope": "namespaced"}
+]`
 
-// rbacRules flattens one fixture's rules to "group|resource".
-func rbacRules(t *testing.T, path string) (map[string]bool, []string) {
+func fixtureAllow(t *testing.T) *kuberead.Allowlist {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	a, err := kuberead.ParseAllowlist([]byte(fixtureAllowJSON))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the fixture allowlist was refused: %v", err)
 	}
-	var f struct {
-		Rules []struct {
-			APIGroups []string `json:"apiGroups"`
-			Resources []string `json:"resources"`
-			Verbs     []string `json:"verbs"`
-		} `json:"rules"`
-	}
-	if err := json.Unmarshal(b, &f); err != nil {
-		t.Fatalf("%s: %v", path, err)
-	}
-	out := map[string]bool{}
-	var verbs []string
-	for _, r := range f.Rules {
-		verbs = append(verbs, strings.Join(r.Verbs, ","))
-		for _, g := range r.APIGroups {
-			for _, res := range r.Resources {
-				out[g+"|"+res] = true
-			}
-		}
-	}
-	return out, verbs
+	return a
 }
 
-// TestTheAllowlistIsTheRBACLedger: muster's allowlist is EXACTLY the union of
-// the officer-read ClusterRoles' rules (testdata/officer-read-rbac-*.json) —
-// it fails when either side grows or shrinks. Those fixtures are the
-// cross-repo ledger: each infrastructure repository pins its ClusterRole to a
-// byte-identical copy, so the RBAC and this list cannot drift apart
-// unnoticed. Every rule's verbs are exactly get and list (no watch), and
-// nothing on the never-grant list, and no subresource but pods/log, appears.
-func TestTheAllowlistIsTheRBACLedger(t *testing.T) {
-	files, _ := filepath.Glob("testdata/officer-read-rbac-*.json")
-	if len(files) != 2 {
-		t.Fatalf("found %d officer-read fixtures (%v), want 2 (primary and fleet)", len(files), files)
+// TestParseAllowlistIsStrict: the deployment's allowlist is a list of
+// {apiGroup, resources, scope}; get and list are implied. Each malformed
+// shape is refused: an unknown field, "*" (resource or group), any
+// subresource but core pods/log (*/status included), a never-granted
+// resource or RBAC, a missing scope, a duplicate. An empty one is no
+// allowlist (nil, no error), which the caller treats as "disabled", never
+// "allow all".
+func TestParseAllowlistIsStrict(t *testing.T) {
+	a := fixtureAllow(t)
+	if n := len(a.Entries()); n != 12 {
+		t.Fatalf("the fixture flattens to %d entries, want 12", n)
 	}
-	want := map[string]bool{}
-	for _, f := range files {
-		rules, verbs := rbacRules(t, f)
-		for _, v := range verbs {
-			if v != "get,list" {
-				t.Errorf("%s: a rule's verbs are %q, want exactly get,list (watch is not offered)", f, v)
-			}
-		}
-		for k := range rules {
-			want[k] = true
-		}
-	}
-	if len(want) < 50 {
-		t.Fatalf("positive control: the fixtures flatten to %d rules, want the full §2.1 list", len(want))
-	}
-	got := map[string]bool{}
-	for _, e := range kuberead.Default().Entries() {
-		got[e.Group+"|"+e.Resource] = true
-	}
-	for k := range want {
-		if !got[k] {
-			t.Errorf("the RBAC grants %q and the allowlist does not: add it to allowlist.json, or drop it from the role", k)
+	for _, raw := range []string{
+		`[{"apiGroup":"widgets.example.com","resources":["*"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"*","resources":["widgets"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"apps","resources":["deployments/status"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"apps","resources":["*/status"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"","resources":["pods/status"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"widgets.example.com","resources":["pods/log"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"","resources":["secrets"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"","resources":["serviceaccounts"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"rbac.authorization.k8s.io","resources":["roles"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"","resources":["pods"],"scope":"namespaced","verbs":["watch"]}]`,
+		`[{"apiGroup":"","resources":["pods"]}]`,
+		`[{"apiGroup":"","resources":[],"scope":"namespaced"}]`,
+		`[{"apiGroup":"","resources":["Pods"],"scope":"namespaced"}]`,
+		`[{"apiGroup":"","resources":["pods"],"scope":"namespaced"},{"apiGroup":"","resources":["pods"],"scope":"cluster"}]`,
+		`{"resources":[]}`,
+	} {
+		if a, err := kuberead.ParseAllowlist([]byte(raw)); err == nil || a != nil || !strings.HasPrefix(err.Error(), "kuberead: allowlist") {
+			t.Errorf("ParseAllowlist(%s): %v, err %v; want a refusal", raw, a, err)
 		}
 	}
-	for k := range got {
-		if !want[k] {
-			t.Errorf("the allowlist names %q and the RBAC does not: the role must grant it first", k)
-		}
-	}
-	for k := range got {
-		res := k[strings.Index(k, "|")+1:]
-		for _, n := range neverGranted {
-			if res == n {
-				t.Errorf("the allowlist names %q, which is never granted", k)
-			}
-		}
-		if strings.Contains(res, "/") && k != "|pods/log" {
-			t.Errorf("the allowlist names the subresource %q: only pods/log is offered", k)
-		}
-		if strings.HasPrefix(k, "rbac.authorization.k8s.io|") {
-			t.Errorf("the allowlist names an RBAC resource: %q", k)
+	for _, raw := range []string{``, `  `, `[]`, `null`} {
+		if a, err := kuberead.ParseAllowlist([]byte(raw)); err != nil || a != nil {
+			t.Errorf("ParseAllowlist(%q): %v, %v; want no allowlist and no error", raw, a, err)
 		}
 	}
 }

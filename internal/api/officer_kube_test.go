@@ -32,6 +32,10 @@ const (
 	offKRout  = "officer-anomaly-prod-a-r"
 )
 
+// kubeRigAllowlist is a made-up read allowlist (the deployment's
+// MUSTER_KUBE_READ_ALLOWLIST_<CLUSTER>).
+const kubeRigAllowlist = `[{"apiGroup":"","resources":["pods","pods/log","configmaps"],"scope":"namespaced"}]`
+
 func kubeRigCA(t *testing.T) string {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -61,6 +65,7 @@ func newKubeOfficerRig(t *testing.T) *officerRig {
 				officers.KubeEndpointEnvPrefix + "PROD_A":               "192.0.2.9:6443",
 				officers.KubeCAEnvPrefix + "PROD_A":                     ca,
 				officers.KubeMinterEnvPrefix + "PROD_A":                 "fixture-minter-token-0c9e",
+				"MUSTER_KUBE_READ_ALLOWLIST_PROD_A":                     kubeRigAllowlist,
 			}[k]
 		}, "muster-agent-")
 		if err != nil {

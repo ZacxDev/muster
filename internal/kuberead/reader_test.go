@@ -17,7 +17,7 @@ import (
 
 func read(t *testing.T, f *fakeAPI, args string) (json.RawMessage, kuberead.Audit, error) {
 	t.Helper()
-	return kuberead.NewReader(kuberead.Default()).Read(context.Background(), f.cluster(t), f.sa(), parse(t, args))
+	return kuberead.NewReader(fixtureAllow(t)).Read(context.Background(), f.cluster(t), f.sa(), parse(t, args))
 }
 
 const listConfigMaps = `{"cluster":"prod-a","verb":"list","group":"","version":"v1","resource":"configmaps","namespace":"web"}`
@@ -72,7 +72,7 @@ func TestTheReaderTrustsOnlyTheClusterCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := kuberead.NewReader(kuberead.Default()).Read(context.Background(), c, f.sa(), parse(t, listConfigMaps)); err == nil {
+	if _, _, err := kuberead.NewReader(fixtureAllow(t)).Read(context.Background(), c, f.sa(), parse(t, listConfigMaps)); err == nil {
 		t.Fatal("a reader trusting another CA connected")
 	}
 	if mints, gets := f.calls(); len(mints)+len(gets) != 0 {
