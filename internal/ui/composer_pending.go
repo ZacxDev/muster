@@ -16,12 +16,12 @@ import "strconv"
 //
 //   - the box is emptied (focus and the keyboard stay: sendKeepsFocusJS), but
 //     its DRAFT is not: the message is held in the box's draft
-//     (composer_draft.go, musterDraft.hold) until it is DELIVERED — the
-//     server answers OK, or its row is matched in the conversation (a "Not
-//     confirmed" message that did arrive) — so a reload, a navigation or a
-//     failed browser submit mid-send brings the text back in the box as a
-//     draft, and a delivered message never does. Held messages are saved in
-//     the order pressed, a refused one put back in the box in its place;
+//     (composer_draft.go, musterDraft.hold) until the server answers OK, or
+//     the person Dismisses it or sends it again — so a reload, a navigation
+//     or a failed browser submit mid-send brings the text back in the box as
+//     a draft, and a message the server took never does. Held messages are
+//     saved in the order pressed, a refused one put back in the box in its
+//     place;
 //   - on the Rendered view the message is drawn at the END of the
 //     conversation as a pending bubble (data-pending-send): muted, with a
 //     status line ("Sending…", role=status). A Queue has no bubble (it is not
@@ -79,24 +79,24 @@ import "strconv"
 //     going, so nothing is decided until it is known to still be here — then
 //     it is refused (text kept, Retry), and nothing behind it goes first.
 //
-// 🔴 ONLY A MESSAGE WHOSE POST HAS GONE OUT AND COME BACK OK ("Sent") — or
-// come back "may have been delivered" (unknown) — CAN BE SETTLED BY A ROW. A
-// message still waiting its turn is never a candidate: an old row of the same
-// text, redrawn by a reset of the conversation, must not take it for sent.
-// And a waiting message is always posted: nothing marks it done before then.
+// 🔴 ONLY A MESSAGE THE SERVER ANSWERED OK ("Sent") IS EVER MATCHED TO A ROW,
+// and the match only TIDIES: it removes a bubble whose message the server
+// already confirmed (its draft was let go at the OK). A wrong match is
+// cosmetic — a "Sent" bubble removed a little early or late — never a
+// delivery decision: it cannot release another message's draft or settle a
+// message that is not "Sent". A message still waiting its turn is never a
+// candidate either, and a waiting message is always posted.
 //
-// 🔴 AN UNKNOWN MESSAGE IS NEVER SETTLED BY A LATER MESSAGE'S ROW. Sent
-// messages claim their rows first (never, by its beginning, a row that IS
-// another open message's text), and once a later message is posted past an
-// unknown one, only a row on the page at that moment — or one drawn ahead of
-// the later message's own row — can settle it: posts go one at a time and
-// the transcript keeps paste order. Otherwise "yes" (not confirmed, never
-// landed) would be settled by "yes, go ahead", and silently lost. The
-// price: an unknown message whose row arrives after a later message was
-// posted, and whose later message's row never matches it (a `/command`), is
-// left Not confirmed, with Send again — the safe side: shown, not lost.
+// 🔴 A "NOT CONFIRMED" (UNKNOWN) MESSAGE IS NEVER SETTLED BY A ROW (operator
+// decision, PR #450 round 4). A row is matched by its text, and a text match
+// cannot tell this message's row from an earlier one's, a later one's that
+// begins with it, or a retyped copy's: each such guess settled a message that
+// never landed, silently losing it. So it keeps its text (the box, or the
+// draft) and its Send again and Dismiss until the person uses one — the
+// server sends the page no later confirmation of it. The person checks the
+// terminal or the transcript to see whether it landed.
 //
-// 🔴 HOW A BUBBLE IS MATCHED TO ITS ROW. Nothing the page sends survives into
+// 🔴 HOW A "SENT" BUBBLE IS MATCHED TO ITS ROW. Nothing the page sends survives into
 // Claude Code's transcript — the host pastes the text as typed — so the
 // match is by the TEXT, compared against the row's RAW prompt (data-prompt,
 // MirrorTranscript.Ops: what the transcript holds, before markdown draws a
@@ -230,8 +230,9 @@ var mirrorComposerJS = `
   function D() { return window.musterDraft || null; }
   function fit() { if (window.musterComposerFit) window.musterComposerFit(input); }
   // hold/release: the message stays in the box's draft from the press until
-  // it is DELIVERED — the server's OK, or its row matched (landed) — so the
-  // page going away loses nothing, and a delivered one never comes back.
+  // the server's OK (or the person dismisses it, or sends it again), so the
+  // page going away loses nothing, and a message the server took never comes
+  // back. A row never releases it.
   function hold(p) { var d = D(); if (d && d.hold) d.hold(input, p.id, p.text, p.seq); }
   function release(p) { var d = D(); if (d && d.release) d.release(input, p.id); }
   // saveBox: the box's draft as the box stands now.
@@ -454,8 +455,9 @@ var mirrorComposerJS = `
     againBtn.removeAttribute('id');
   }
 
-  // settle: p is done (its row arrived, it was sent from a Terminal view, it
-  // was dismissed, or a new send of it replaced it).
+  // settle: p is done (it was "Sent" and its row arrived or its timer ran, it
+  // was sent from a Terminal view, it was dismissed, or a new send of it
+  // replaced it).
   function settle(p) {
     clearTimeout(p.timer);
     p.done = true;
@@ -498,100 +500,52 @@ var mirrorComposerJS = `
   // what it draws.
   function rowText(r) { var raw = r.getAttribute('data-prompt'); return raw !== null ? raw : r.textContent; }
   function begins(a, text) { return norm(text).indexOf(a) === 0; }
-  // before: row r is drawn ahead of row b (b still in the conversation; a
-  // reset redraws every row, and then nothing is ahead of a gone one).
-  function before(r, b) {
-    return !!(b && log.contains(b) && r !== b && (r.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING));
-  }
-  // passing: q is about to be posted. Every unknown message still open is
-  // posted PAST: what can settle it is cut at the rows (and the "Queued in
-  // Claude Code" rows) on the page now. A Queue is not posted to the pane,
-  // and does not cut.
-  function passing(q) {
-    if (q.queued) return;
-    live.forEach(function (u) {
-      if (u === q || u.done || !u.el || u.state !== 'unknown' || u.passed) return;
-      u.passed = true; u.passedBy = q; u.cut = seenRows(); u.cutCC = ccItems();
-    });
-  }
-  // reconcile settles every SENT (or unknown) bubble whose row is now on the
-  // page, then keeps the rest at the conversation's end. mirrorViewScript
-  // calls it after each batch it draws — in the SAME task, so the row and its
-  // bubble are never on screen together.
+  // reconcile removes every SENT bubble whose row is now on the page, then
+  // keeps the rest at the conversation's end. mirrorViewScript calls it after
+  // each batch it draws — in the SAME task, so the row and its bubble are
+  // never on screen together.
   function reconcile() {
     if (!log) return;
-    // 🔴 Only a message whose post came back: one still waiting its turn,
-    // asking for a step-up or refused is never settled by a row.
-    var open = live.filter(function (p) { return p.el && !p.done && (p.state === 'sent' || p.state === 'unknown'); });
-    // 🔴 THE SENT ONES CLAIM THEIR ROWS FIRST, then the unknown ones (each in
-    // pressed order). A "Not confirmed" message must never take the row of a
-    // message posted after it — "yes", then "yes, go ahead": the later row
-    // begins with the earlier text.
-    open = open.filter(function (p) { return p.state === 'sent'; }).concat(open.filter(function (p) { return p.state === 'unknown'; }));
+    // 🔴 ONLY "SENT": the server already confirmed these, and their drafts
+    // were let go at the OK. A message still waiting its turn, asking for a
+    // step-up, refused or NOT CONFIRMED is never settled by a row (see the
+    // file's comment), so a wrong match below can only remove a "Sent"
+    // bubble early or late — settle() of a sent message touches nothing
+    // else.
+    var open = live.filter(function (p) { return p.el && !p.done && p.state === 'sent'; });
     if (open.length) {
       var rows = Array.prototype.slice.call(log.querySelectorAll('[data-bubble="user"]'));
       var cc = null, ccTaken = {};
-      var whole = function (r) { return norm(rowText(r)).slice(0, ` + strconv.Itoa(pendingMatchChars) + `); };
-      var owned = function (r, p) { var t = whole(r); return open.some(function (q) { return q !== p && !q.done && key(q) === t; }); };
       open.forEach(function (p) {
         var cand = rows.filter(function (r) { return !(used && used.has(r)) && !(p.before && p.before.has(r)); });
-        // 🔴 An unknown message a later one was POSTED PAST (pump) can only be
-        // settled by a row that was on the page by then (cut) — or one drawn
-        // before the row of that later message (bound): posts go one at a
-        // time and the transcript keeps paste order, so its row, if it
-        // landed, comes before the later message's. Anything after is not
-        // its row. (After a reset of the conversation neither holds a row
-        // that is drawn now, so it stays Not confirmed, with Send again.)
-        if (p.state === 'unknown' && p.passed) cand = cand.filter(function (r) { return (p.cut && p.cut.has(r)) || before(r, p.bound); });
         if (!p.before) cand = cand.slice(-open.length);
         var a = key(p), hit = null;
         // Nothing to compare: by position — the first new row that has
         // nothing to compare either (an emoji's, an attachment's), never just
         // whatever row comes next.
         if (!a) { for (var k = 0; k < cand.length && !hit; k++) { if (!norm(rowText(cand[k]))) hit = cand[k]; } }
-        else {
-          // 🔴 A row that IS another open message's text is never taken as
-          // only beginning with this one's: "yes" (sent) must not take the
-          // late row of "yes, go ahead" (not confirmed) — its OK can come
-          // before its own row does.
-          for (var i = 0; i < cand.length && !hit; i++) { if (begins(a, rowText(cand[i])) && !owned(cand[i], p)) hit = cand[i]; }
-        }
+        else { for (var i = 0; i < cand.length && !hit; i++) { if (begins(a, rowText(cand[i]))) hit = cand[i]; } }
         if (hit) {
           if (used) used.add(hit);
-          // The unknown messages p was posted past are bounded by p's row.
-          live.forEach(function (u) { if (u.passedBy === p && !u.bound) u.bound = hit; });
-          landed(p);
+          settle(p);
           return;
         }
         // Held by Claude Code itself: the queued region shows it — one row
         // beyond as many of that text as it showed at the press, each row
-        // for one bubble. (An unknown message posted past counts only what
-        // the region showed at the cut.)
+        // for one bubble.
         if (!a) return;
         if (!cc) cc = ccItems();
         var n = 0;
-        (p.state === 'unknown' && p.passed ? p.cutCC || [] : cc).forEach(function (t) { if (t.indexOf(a) === 0) n++; });
+        cc.forEach(function (t) { if (t.indexOf(a) === 0) n++; });
         var had = 0;
         (p.beforeCC || []).forEach(function (t) { if (t.indexOf(a) === 0) had++; });
         var taken = ccTaken[a] || 0;
-        if (n > had + taken) { ccTaken[a] = taken + 1; landed(p); }
+        if (n > had + taken) { ccTaken[a] = taken + 1; settle(p); }
       });
     }
     // What is still pending stays the newest thing in the conversation.
     var t = tail();
     live.forEach(function (p) { if (p.el && p.el.parentNode === log) log.insertBefore(p.el, t); });
-  }
-  // landed: p's row is here. A message that was "Not confirmed" did arrive:
-  // its text, put back in the box, is taken out again (sending it would be a
-  // second copy).
-  // 🔴 Its draft goes too: it was delivered, so a reload must not bring it
-  // back (a draft lives 7 days; the server's hold of its text is far shorter).
-  function landed(p) {
-    var cleared = p.state === 'unknown' && input.value === p.text;
-    if (cleared) clearBox();
-    release(p);
-    if (cleared) saveBox();
-    settle(p);
   }
   window.musterPendingSends = {
     reconcile: reconcile,
@@ -678,7 +632,6 @@ var mirrorComposerJS = `
     if (current || blocker || handedOff || !queue.length) return;
     var p = queue.shift();
     current = p;
-    passing(p);
     var next = function () { if (current === p) current = null; pump(); };
     var r;
     try { r = post(p); } catch (e) { r = null; try { console.error('composer: a send failed', e); } catch (e2) {} }
@@ -797,7 +750,7 @@ var mirrorComposerJS = `
   function refused(p, reason, again) {
     p.again = again;
     if (p.done) {
-      // Settled before its answer (it cannot be: only a sent message is
+      // Settled before its answer (it cannot be: only a "Sent" message is
       // settled by a row) — drawn again, so the refusal is never lost.
       p.done = false;
       live.push(p);
@@ -807,10 +760,6 @@ var mirrorComposerJS = `
     blocker = p;
     set(p, again ? 'unknown' : 'failed', reason);
     paintQueue();
-    // 🔴 A message that may have been delivered may ALREADY have its row on
-    // the page (it can arrive before the answer): settled now, not at the
-    // next batch — it was delivered, so no Send again is offered for it.
-    if (again) reconcile();
   }
 
   form.addEventListener('submit', function (e) {

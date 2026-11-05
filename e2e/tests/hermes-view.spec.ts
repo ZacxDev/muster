@@ -368,13 +368,13 @@ async function sendMayHaveLanded(page: Page, text: string): Promise<void> {
   }
   expect(first).toContain('May have been submitted');
   expect(deliveries(text), 'the first try DID land (late)').toBe(1);
-  // 🔴 Its row is in the conversation, so it WAS delivered: the bubble is
-  // settled by it and no Send again is offered (operator's ask, PR #450
-  // round 2: a "Not confirmed" message whose row arrives — before or after
-  // the answer — is done). This line used to expect #mv-send-again visible.
+  // 🔴 Its row is in the conversation, and still the bubble stays Not
+  // confirmed, with Send again: a row never settles a message that may have
+  // been delivered (operator decision, PR #450 round 4) — the person checks
+  // and Dismisses or sends it again.
   await expect(page.locator('#mv-log [data-bubble="user"]', { hasText: text })).toHaveCount(1, { timeout: 20_000 });
-  await expect(page.locator('#mv-log [data-pending-send]', { hasText: text }), 'settled by its row').toHaveCount(0, { timeout: 20_000 });
-  await expect(page.locator('#mv-send-again'), 'no Send again for a delivered message').toHaveCount(0);
+  await expect(page.locator('#mv-log [data-pending-send]', { hasText: text }), 'still Not confirmed beside its row').toHaveAttribute('data-pending-send', 'unknown');
+  await expect(page.locator('#mv-send-again')).toBeVisible();
 }
 
 // fromTheCopy: on the copy Back showed, a plain Send of the same text is

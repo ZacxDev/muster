@@ -523,11 +523,12 @@ for (const vp of [
       expect(seen.max).toBe(1);
     });
 
-    // 🟡 Round 2 #1: a "Not confirmed" message whose row then arrives was
-    // delivered. Before, landed() emptied the box but the draft still had the
-    // text (restore had released the hold to the box), so a reload brought a
-    // delivered message back — and a Send then would paste it a second time.
-    test('a "Not confirmed" message whose row then arrives is out of the box and the draft: a reload does not bring it back', async ({ page }) => {
+    // 🔴 OPERATOR DECISION (PR #450 round 4): a "Not confirmed" message is
+    // NEVER settled by a transcript row — not even one that IS its text. It
+    // keeps its text (box and draft) and Send again until the person acts.
+    // (This case used to pin the opposite: the row settled it, and the box
+    // and the draft let it go.)
+    test('a "Not confirmed" message whose row then arrives stays Not confirmed, with Send again, its text in the box and the draft', async ({ page }) => {
       await openView(page);
       await page.route(
         (u) => u.pathname === '/mirror/view/send',
@@ -542,22 +543,29 @@ for (const vp of [
       const p = pendingOf(page, text);
       await expect(p).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
       await expect(page.locator('#mv-input'), 'its text is back in the box').toHaveValue(text);
-      // It did arrive: Claude Code's row for it.
+      // A row of its text arrives (it may be its own — or not: the page
+      // cannot tell).
       fs.appendFileSync(tr, prompt(text));
       await expect(page.locator('#mv-log [data-bubble="user"]', { hasText: text })).toHaveCount(1, { timeout: 10_000 });
-      await expect(page.locator('#mv-log [data-pending-send]'), 'its bubble went with its row').toHaveCount(0);
-      await expect(page.locator('#mv-input'), 'its text leaves the box').toHaveValue('');
+      await sleep(1_500);
+      await expect(p, 'still Not confirmed: a row never settles it').toHaveAttribute('data-pending-send', 'unknown');
+      await expect(p.locator('#mv-send-again'), 'and still offers Send again').toBeVisible();
+      await expect(p.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+      await expect(page.locator('#mv-input'), 'its text stays in the box').toHaveValue(text);
+      expect((await draftsHolding(page, text)).length, 'and in the draft').toBeGreaterThan(0);
       await page.unrouteAll({ behavior: 'ignoreErrors' });
       await page.reload();
       await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
-      await expect(page.locator('#mv-input'), 'a delivered message is not back as a draft').toHaveValue('');
-      expect(await draftsHolding(page, text), 'no draft holds it').toEqual([]);
+      await expect(page.locator('#mv-input'), 'a reload brings it back as a draft: whether it landed is the person\'s to check').toHaveValue(text);
+      expect(pasted(), 'nothing was pasted by the page on its own').toEqual([]);
     });
 
-    // 🟡 Round 2 #2: the row of a message can arrive BEFORE its "may have been
-    // delivered" answer. Before, refused() ran no reconcile, so the bubble sat
-    // "Not confirmed" with Send again beside its own row until the next batch.
-    test('a "may have been delivered" answer for a message whose row is already here settles it at once: no Send again is offered', async ({ page }) => {
+    // 🔴 The row can arrive BEFORE the "may have been delivered" answer.
+    // Round 2 had the answer settle the message at once on that row; by the
+    // operator's round-4 decision it stays Not confirmed with Send again
+    // until the person acts — here Dismiss, which takes it away and sends
+    // nothing.
+    test('a "may have been delivered" answer for a message whose row is already here stays Not confirmed with Send again; Dismiss takes it away', async ({ page }) => {
       await openView(page);
       const text = `row before the answer ${vp.how} ${stamp}`;
       let answered = false;
@@ -577,17 +585,22 @@ for (const vp of [
       const rows = await watchRows(page, text);
       await sendTimed(page, text, vp.how);
       await expect.poll(() => answered, { message: 'the answer came after the row', timeout: 15_000 }).toBe(true);
-      await expect(page.locator('#mv-log [data-pending-send]'), 'the bubble is settled at once').toHaveCount(0, { timeout: 2_000 });
-      await expect(page.locator('#mv-send-again'), 'no Send again for a message whose row is here').toHaveCount(0);
-      await expect(page.locator('#mv-input'), 'its text is not left in the box').toHaveValue('');
+      const p = pendingOf(page, text);
+      await expect(p, 'Not confirmed, beside the row').toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      await sleep(1_500);
+      await expect(p, 'still Not confirmed').toHaveAttribute('data-pending-send', 'unknown');
+      await expect(page.locator('#mv-send-again'), 'Send again is offered').toBeVisible();
+      await expect(page.locator('#mv-input'), 'its text is back in the box').toHaveValue(text);
+      expect(pasted(), 'pasted once').toEqual([`${pane} ${text}`]);
+      // The person checks the conversation, sees it landed, and dismisses it.
+      await press(p.getByRole('button', { name: 'Dismiss' }), vp.how === 'tap');
+      await expect(page.locator('#mv-log [data-pending-send]'), 'Dismiss takes it away').toHaveCount(0);
+      await expect(page.locator('#mv-send-again')).toHaveCount(0);
       await expect(rowsOf(page, text)).toHaveCount(1);
       const seen = await rows();
-      expect(seen.states, 'never shown "Not confirmed", not even for a frame').not.toContain('unknown');
-      expect(pasted(), 'pasted once').toEqual([`${pane} ${text}`]);
-      await page.unrouteAll({ behavior: 'ignoreErrors' });
-      await page.reload();
-      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
-      await expect(page.locator('#mv-input'), 'and no draft of it').toHaveValue('');
+      expect(seen.states, 'it was shown Not confirmed').toContain('unknown');
+      await sleep(1_000);
+      expect(pasted(), 'Dismiss sends nothing').toEqual([`${pane} ${text}`]);
     });
 
     // 🟢 Round 2 #3: the draft is saved in pressed order. Before, a refused
@@ -773,45 +786,187 @@ for (const vp of [
       await expect(page.locator('#mv-log [data-pending-send]'), 'both settled').toHaveCount(0, { timeout: 10_000 });
     });
 
-    // 🔴 The rule above must not cost a message that DID land: its row came
-    // late, after a later message was already posted — but ahead of that
-    // message's own row (posts go one at a time; the transcript keeps paste
-    // order). Both texts orders: the later one beginning with the earlier, and
-    // the earlier beginning with the later (there a row that IS the text is
-    // taken before one that only begins with it).
-    for (const order of ['later-longer', 'earlier-longer'] as const) {
-      test(`a "Not confirmed" message whose row arrives late, ahead of a later message's row, is settled (${order})`, async ({ page }) => {
-        await openView(page);
-        const base = `late row ${order} ${vp.how} ${stamp}`;
-        const m1 = order === 'later-longer' ? base : `${base}, go ahead`;
-        const m3 = order === 'later-longer' ? `${base}, go ahead` : base;
-        let refusedOnce = false;
-        await page.route(
-          (u) => u.pathname === '/mirror/view/send',
-          async (r: Route) => {
-            if (r.request().method() !== 'POST') return r.continue();
-            const text = new URLSearchParams(r.request().postData() || '').get('text') || '';
-            await sleep(300);
-            if (text === m1 && !refusedOnce) {
-              refusedOnce = true;
-              return r.fulfill({ status: 502, headers: { 'Content-Type': 'text/plain', 'X-Muster-Send-Again': '1' }, body: 'late may have been delivered' });
-            }
-            // M1 did land: its row arrives only now, once M3 is posted.
-            fs.appendFileSync(tr, prompt(m1));
-            const deadline = Date.now() + 10_000;
-            while (Date.now() < deadline && (await page.locator('#mv-log [data-bubble="user"]', { hasText: m1 }).count()) === 0) await sleep(100);
-            return r.continue().catch(() => {});
-          },
-        );
-        await sendTimed(page, m1, vp.how);
-        await expect(pendingOf(page, m1).first()).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
-        await sendTimed(page, m3, vp.how);
-        await expect.poll(pasted, { timeout: 10_000 }).toEqual([`${pane} ${m3}`]);
-        await expect(page.locator('#mv-log [data-pending-send]'), 'both settle, each on its own row').toHaveCount(0, { timeout: 10_000 });
-        await expect(page.locator('#mv-send-again'), 'no Send again for a delivered message').toHaveCount(0);
-        await expect(page.locator('#mv-input')).toHaveValue('');
-      });
+    // ---- Round 4 (probes P6–P10): the operator's decision. A "Not
+    // confirmed" message is never settled by a row; only a "Sent" one is
+    // matched, and only to take its bubble away. ----
+
+    // answerBy routes the Rendered view's send: `answers` maps a text to what
+    // its FIRST post gets ('unknown': 502 "may have been delivered"; 'busy':
+    // 409; 'ok': 204 — the page is told it was sent, nothing is pasted).
+    // Every other post goes on to the real server. It returns the texts
+    // posted, in order.
+    async function answerBy(page: Page, answers: Record<string, 'unknown' | 'busy' | 'ok'>) {
+      const posted: string[] = [];
+      const once = new Set<string>();
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const text = new URLSearchParams(r.request().postData() || '').get('text') || '';
+          posted.push(text);
+          await sleep(300);
+          const a = once.has(text) ? undefined : answers[text];
+          once.add(text);
+          if (a === 'unknown') return r.fulfill({ status: 502, headers: { 'Content-Type': 'text/plain', 'X-Muster-Send-Again': '1' }, body: 'it may have been delivered' });
+          if (a === 'busy') return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'the host is busy' });
+          if (a === 'ok') return r.fulfill({ status: 204 });
+          return r.continue().catch(() => {});
+        },
+      );
+      return posted;
     }
+    // rowsExactly is the user rows whose raw prompt IS text.
+    const rowsExactly = (page: Page, text: string) =>
+      page.evaluate((t) => Array.from(document.querySelectorAll('#mv-log [data-bubble="user"]')).filter((e) => (e.getAttribute('data-prompt') ?? e.textContent ?? '').trim() === t).length, text);
+    // stillNotConfirmed: u's bubble is Not confirmed, with its text, Send
+    // again and Dismiss — nothing took it away.
+    async function stillNotConfirmed(page: Page, u: string) {
+      const b = page.locator('#mv-log [data-pending-send]').filter({ has: page.locator('div', { hasText: new RegExp('^' + u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') }) });
+      await expect(b, `"${u}" is still shown`).toHaveCount(1);
+      await expect(b).toHaveAttribute('data-pending-send', 'unknown');
+      await expect(b.locator('#mv-send-again'), 'with Send again').toBeVisible();
+      await expect(b.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+      return b;
+    }
+
+    // 🔴 Round 4 #1 (probe P6). S sent OK; then U, of the SAME compared text,
+    // came back "may have been delivered" and never landed. At f457028a
+    // `owned` kept S off its own row, S went on its 30 s timer, and the next
+    // batch gave S's row to U — settled as delivered, box and draft cleared:
+    // silently lost.
+    test('P6: a Not confirmed message that never landed keeps Send again and its text past a sent message\'s row and timer, though their texts compare equal', async ({ page }) => {
+      test.setTimeout(120_000);
+      await openView(page);
+      const s = `okay p6 ${vp.how} ${stamp}`, u = `OKAY P6! ${vp.how} ${stamp}`;
+      await answerBy(page, { [s]: 'ok', [u]: 'unknown' });
+      await sendTimed(page, s, vp.how);
+      await expect(pendingOf(page, s)).toHaveAttribute('data-pending-send', 'sent', { timeout: 10_000 });
+      await sendTimed(page, u, vp.how);
+      await expect(pendingOf(page, u)).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      fs.appendFileSync(tr, prompt(s));
+      await expect.poll(() => rowsExactly(page, s), { timeout: 10_000 }).toBe(1);
+      await expect(pendingOf(page, s), 'the sent one goes with its row').toHaveCount(0, { timeout: 5_000 });
+      // Past where S's 30 s timer would have run, and another batch.
+      await sleep(31_000);
+      const trig = `p6 trigger ${vp.how} ${stamp}`;
+      fs.appendFileSync(tr, prompt(trig));
+      await expect.poll(() => rowsExactly(page, trig), { timeout: 10_000 }).toBe(1);
+      await sleep(1_000);
+      await stillNotConfirmed(page, u);
+      await expect(page.locator('#mv-input'), 'its text is still in the box').toHaveValue(u);
+      expect((await draftsHolding(page, u)).length, 'and in the draft').toBeGreaterThan(0);
+    });
+
+    // 🔴 The rule behind it, directly: a SENT match never touches an unknown
+    // message. U (pressed first, Not confirmed) and S (sent) compare equal;
+    // S's row arrives. S's bubble goes AT ONCE (at f457028a `owned` kept it
+    // there for its 30 s timer); U stays, and its Send again delivers it.
+    test('a sent message\'s row takes only the sent bubble: an unknown one of an equal text keeps Send again, and Send again delivers it once', async ({ page }) => {
+      await openView(page);
+      const u = `Ready SV! ${vp.how} ${stamp}`, s = `ready sv ${vp.how} ${stamp}`;
+      const posted = await answerBy(page, { [u]: 'unknown', [s]: 'ok' });
+      await sendTimed(page, u, vp.how);
+      await expect(pendingOf(page, u)).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      await sendTimed(page, s, vp.how);
+      await expect(pendingOf(page, s)).toHaveAttribute('data-pending-send', 'sent', { timeout: 10_000 });
+      fs.appendFileSync(tr, prompt(s));
+      await expect.poll(() => rowsExactly(page, s), { timeout: 10_000 }).toBe(1);
+      await expect(pendingOf(page, s), 'the sent bubble goes with its row, not on a timer').toHaveCount(0, { timeout: 5_000 });
+      await sleep(1_000);
+      const b = await stillNotConfirmed(page, u);
+      expect(pasted(), 'nothing was pasted').toEqual([]);
+      await press(b.locator('#mv-send-again'), vp.how === 'tap');
+      await expect.poll(pasted, { message: 'Send again delivers it, once', timeout: 15_000 }).toEqual([`${pane} ${u}`]);
+      expect(posted, 'posted: U, S, then U again').toEqual([u, s, u]);
+      await expect(page.locator('#mv-log [data-pending-send]'), 'and it settles on its own row').toHaveCount(0, { timeout: 10_000 });
+    });
+
+    // 🔴 Round 4 #2 (probe P7). U "may have been delivered" and did land (its
+    // row comes late); Q is refused. U stays Not confirmed with Send again —
+    // the intended behaviour now: nothing settles it for the person, and
+    // nothing of U or Q is lost.
+    test('P7: a Not confirmed message whose row comes late, after a later message was refused, stays Not confirmed with Send again', async ({ page }) => {
+      await openView(page);
+      const u = `alpha p7 ${vp.how} ${stamp}`, q = `beta p7 ${vp.how} ${stamp}`;
+      await answerBy(page, { [u]: 'unknown', [q]: 'busy' });
+      await sendTimed(page, u, vp.how);
+      await expect(pendingOf(page, u)).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      await sendTimed(page, q, vp.how);
+      await expect(pendingOf(page, q)).toHaveAttribute('data-pending-send', 'failed', { timeout: 10_000 });
+      fs.appendFileSync(tr, prompt(u));
+      await expect.poll(() => rowsExactly(page, u), { timeout: 10_000 }).toBe(1);
+      await sleep(2_000);
+      await stillNotConfirmed(page, u);
+      await expect(pendingOf(page, q).getByRole('button', { name: 'Retry' }), 'the refused one keeps Retry').toBeVisible();
+      await expect(page.locator('#mv-input'), 'the refused one\'s text is in the box').toHaveValue(q);
+    });
+
+    // 🔴 Round 4 #3 (probe P8). Nothing to compare (emoji only): U unknown,
+    // Q sent; both rows arrive. Q's bubble goes (matched by position); U
+    // stays Not confirmed with Send again.
+    test('P8: an emoji-only Not confirmed message stays Not confirmed with Send again when its row and a sent emoji\'s row arrive', async ({ page }) => {
+      await openView(page);
+      const u = vp.how === 'tap' ? '👍' : '👌', q = vp.how === 'tap' ? '🎉🎉🎉' : '🎊🎊🎊';
+      await answerBy(page, { [u]: 'unknown', [q]: 'ok' });
+      await sendTimed(page, u, vp.how);
+      await expect(page.locator('#mv-log [data-pending-send="unknown"]')).toHaveCount(1, { timeout: 10_000 });
+      await sendTimed(page, q, vp.how);
+      await expect(page.locator('#mv-log [data-pending-send="sent"]')).toHaveCount(1, { timeout: 10_000 });
+      const ru = await rowsExactly(page, u), rq = await rowsExactly(page, q);
+      fs.appendFileSync(tr, prompt(u) + prompt(q));
+      await expect.poll(() => rowsExactly(page, q), { timeout: 10_000 }).toBe(rq + 1);
+      await expect.poll(() => rowsExactly(page, u), { timeout: 10_000 }).toBe(ru + 1);
+      await expect(page.locator('#mv-log [data-pending-send="sent"]'), 'the sent one goes').toHaveCount(0, { timeout: 5_000 });
+      await sleep(1_000);
+      await stillNotConfirmed(page, u);
+    });
+
+    // 🔴 Round 4 #4 (probe P9). U unknown, landed late; the person retypes it
+    // (equal compared text) and sends it as Q. Both rows arrive: Q's bubble
+    // goes, U stays Not confirmed with Send again (at f457028a `owned` held Q
+    // for its 30 s timer).
+    test('P9: a Not confirmed message and a retyped copy that was sent: the copy settles on a row at once, the Not confirmed one keeps Send again', async ({ page }) => {
+      await openView(page);
+      const u = `Yes go p9 ${vp.how} ${stamp}`, q = `yes, go p9 ${vp.how} ${stamp}`;
+      await answerBy(page, { [u]: 'unknown', [q]: 'ok' });
+      await sendTimed(page, u, vp.how);
+      await expect(pendingOf(page, u)).toHaveAttribute('data-pending-send', 'unknown', { timeout: 10_000 });
+      await sendTimed(page, q, vp.how);
+      await expect(pendingOf(page, q)).toHaveAttribute('data-pending-send', 'sent', { timeout: 10_000 });
+      fs.appendFileSync(tr, prompt(u) + prompt(q));
+      await expect.poll(() => rowsExactly(page, q), { timeout: 10_000 }).toBe(1);
+      await expect(pendingOf(page, q), 'the sent copy goes at once').toHaveCount(0, { timeout: 5_000 });
+      await sleep(1_000);
+      await stillNotConfirmed(page, u);
+    });
+
+    // 🔴 Round 4 (probe P10). The same text sent twice and confirmed twice,
+    // their rows arriving only once BOTH bubbles say "Sent": both go with
+    // their rows. (A rule refusing a row that IS another open message's text
+    // — f457028a's `owned` — keeps each off its row, and both sit beside
+    // their rows for 30 s; mutation-checked. With the real host the first
+    // row lands while the second is still "Sending…", which never reaches
+    // that shape — so the answers here are the page's, and the rows are
+    // written once both are "Sent".)
+    test('P10: the same text sent twice and confirmed twice: both bubbles go with their rows', async ({ page }) => {
+      await openView(page);
+      const m = `same p10 ${vp.how} ${stamp}`;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          await sleep(300);
+          return r.fulfill({ status: 204 });
+        },
+      );
+      await sendTimed(page, m, vp.how);
+      await page.locator('#mv-input').fill(m);
+      await press(page.locator('#mv-send'), vp.how === 'tap');
+      await expect(page.locator('#mv-log [data-pending-send="sent"]', { hasText: m }), 'both are Sent').toHaveCount(2, { timeout: 10_000 });
+      fs.appendFileSync(tr, prompt(m) + prompt(m));
+      await expect.poll(() => rowsExactly(page, m), { timeout: 10_000 }).toBe(2);
+      await expect(page.locator('#mv-log [data-pending-send]'), 'both settled on their rows, not on the 30 s timer').toHaveCount(0, { timeout: 5_000 });
+    });
 
     // 🟢 Round 3 #3 (probe P1): M2 pressed BEFORE M1's refusal waits; M3
     // pressed AFTER it is the person moving on — M2 then M3 go, in order,

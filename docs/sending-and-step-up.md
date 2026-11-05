@@ -112,10 +112,7 @@ never sent twice.**
   confirmed** instead (with the server's reason, such as "Pasted, not
   submitted … Check the terminal."), and its button is the
   [Send again](#it-works-without-javascript-and-a-message-is-delivered-once).
-  Sending the same text yourself counts as its Retry. If the message's row
-  then arrives (or was already there when the answer came) it was delivered:
-  the bubble goes at once, with no Send again, and its text leaves the box
-  (unless you have changed it since) and the draft. On a Queue or a
+  Sending the same text yourself counts as its Retry. On a Queue or a
   Terminal view there is no bubble: the reason is in the status line under
   the box, with the text back in the box, and **Retry** (or **Send again**,
   when it may have been delivered) and **Dismiss** beside it.
@@ -132,10 +129,14 @@ never sent twice.**
   progress ("Sending…", "Queued."); while it does, the refusal's reason is
   shown beside its buttons, and once that message is done the line shows the
   refusal again.
-- **A "Not confirmed" message is never settled by a later message.** If
-  you send "yes, go ahead" after "yes" was not confirmed, the row for "yes,
-  go ahead" settles only "yes, go ahead": "yes" stays Not confirmed, with
-  Send again, unless its own row arrives (ahead of the later one's).
+- **A "Not confirmed" message stays until you Dismiss it or Send it
+  again.** Muster cannot tell from the conversation whether it landed: a row
+  is matched by its text, and the same words can be an earlier message's, a
+  later one's that begins with them, or a copy you retyped. So nothing takes
+  it away for you, not even a row that looks like it. Check the terminal (or
+  the transcript) to see whether it landed: if it did, **Dismiss** it; if not,
+  **Send again**. Until then its text stays (in the box, or the draft after a
+  reload).
 - **Step-up**: a send refused because the sign-in is stale stays pending,
   "Confirm it's you to send", while the dialog asks, and is sent once you
   confirm. Cancelling the dialog turns it failed, with the text back in the
@@ -145,8 +146,9 @@ never sent twice.**
   two minutes), so the send never waits for good.
 - **A reload, a navigation, or a send the browser could not make either**
   does not lose it. The message stays in the box's
-  [draft](#drafts-kept-on-this-device) from the press until it is delivered,
-  so the page you come back to has the text in the box. It is not drawn again
+  [draft](#drafts-kept-on-this-device) from the press until the server says
+  it has it (or you Dismiss it or Send it again), so the page you come back
+  to has the text in the box. It is not drawn again
   as a bubble and is never sent again by itself: you decide whether to send
   it.
 - **A network failure just after the page started to leave but stayed** (a
@@ -158,13 +160,15 @@ never sent twice.**
   landed on took the message out (it went), the box does not show it again;
   if not, it is refused, with Retry, before anything sent after it goes.
 
-⚠ The bubble is matched to its row by its text. The row carries the prompt
+⚠ A "Sent" bubble is matched to its row by its text, only to take the bubble
+away; the server has already confirmed the message, so a wrong match only
+takes a bubble away a little early or late. The row carries the prompt
 as Claude Code's transcript holds it, before it is drawn as markdown (where a
 link shows as its label and a code fence as a code block), and both are
 compared as letters and digits only, lower-cased: the row must begin with
 what you typed (attachments are drawn as chips in the row, so they are not
-compared). Only a message the host has answered can be matched, never one
-still waiting its turn. Only a row drawn after the message was sent can match
+compared). Only a message the server answered OK can be matched, never one
+still waiting its turn, refused or Not confirmed. Only a row drawn after the message was sent can match
 it, and each row settles one bubble. A message with no letters or digits (an
 emoji, attachments alone) is matched to the first new row that has none
 either. After the conversation is redrawn from the start (a reconnect that
@@ -416,11 +420,11 @@ What you type into a message box is kept in this browser as you type
 navigation away, a reload, or a closed tab. It is removed when you send or
 queue the message and the server has it, and when you empty the box. A
 mirrored window's box empties at the press, but its draft keeps the message
-until it is **delivered** — the server says it has it, or its row is matched
-in the conversation (a **Not confirmed** message that did arrive) — or you
-dismiss it: a reload, a navigation or a failed submit meanwhile brings it
-back in the box, and a delivered message never comes back. Several messages
-not yet delivered come back together in the order you pressed Send, a blank
+until the server says it has it, or you dismiss it or send it again: a
+reload, a navigation or a failed submit meanwhile brings it back in the box,
+and a message the server has never comes back. A **Not confirmed** message
+is kept too (a row in the conversation never removes it), since whether it
+landed is yours to check. Several messages not yet confirmed come back together in the order you pressed Send, a blank
 line between — a refused one put back in the box keeps its place ahead of one
 waiting behind it — then anything typed since. It is
 kept per device: another

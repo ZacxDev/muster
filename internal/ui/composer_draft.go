@@ -120,13 +120,16 @@ func draftAttrs(key, note string) g.Node {
 // 🔴 A MESSAGE ON ITS WAY STAYS IN THE DRAFT (musterDraft.hold/release). The
 // mirrored composer (composer_pending.go) empties the box at the press, long
 // before the server has the message: it HOLDS the message in the box's draft
-// from the press and RELEASES it only once it is DELIVERED — the server's OK,
-// or its row matched in the conversation (a "Not confirmed" message that did
-// arrive) — or the person dismisses it. A refused message put back in the box
+// from the press and RELEASES it only at the server's OK, or when the person
+// dismisses it or sends it again (a transcript row never releases it: a "Not
+// confirmed" message stays held). A refused message put back in the box
 // stays held in its place (inBox). The draft saved is every held message in
 // the order pressed, then what is in the box, a blank line between — so a
 // reload, a navigation or a failed browser submit mid-send puts the text back
-// in the box, and a delivered message never comes back as a draft.
+// in the box, and a message the server took (OK) never comes back as a draft.
+// A "Not confirmed" one does, after a reload: whether it landed is the
+// person's to check, and for 15 minutes the server refuses a plain Send of
+// the same text, offering Send again (internal/api sendNonces.hold).
 //
 // A send handed to the BROWSER (its own form submission) is marked pending in
 // sessionStorage; the page it comes back to takes that text out of the draft
@@ -316,8 +319,8 @@ func composerDraftScript() g.Node {
         holds[key].forEach(function (h) { h.box = h.id === id; });
         save(el);
       },
-      // release: message id is delivered — the server said OK, or its row is
-      // in the conversation — or the person let it go.
+      // release: the server said OK to message id, or the person let it go
+      // (Dismiss) or sent it again.
       release: function (el, id) {
         var key = keyOf(el); if (!key || !holds[key]) return;
         var n = holds[key].length;
