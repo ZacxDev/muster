@@ -41,6 +41,11 @@ const (
 	// ledger that holds it there.
 	EnvClaudeOAuthToken = "CLAUDE_CODE_OAUTH_TOKEN"
 
+	// EnvLLMRoute and LLMRouteMuster put a pod on the LLM route
+	// ([ClaudeCodeSession.LLMRoute]); the entrypoint refuses any other value.
+	EnvLLMRoute    = "CCD_LLM_ROUTE"
+	LLMRouteMuster = "muster"
+
 	// ClaudeCodeDataPath is where the agent's persistent volume is mounted.
 	ClaudeCodeDataPath = "/data"
 	// ClaudeCodeWorkspacePath is the CLI's workspace (the image's CCD_WORKSPACE).
@@ -400,6 +405,15 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 			"(agents.Agent.GatewaySecret, minted by the provisioner); ccd refuses a bearer its session "+
 			"could derive from %s", a.Name, EnvToken)
 	}
+	route := opts.ClaudeCodeSession.LLMRoute
+	if route && cfg.ConnectURL == "" {
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is on the LLM route, which reaches muster's proxy at "+
+			"Config.ConnectURL + \"/llm\", but Config.ConnectURL is not set", a.Name)
+	}
+	if route && opts.ClaudeCodeSession.Model != "" {
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is on the LLM route and names model %q; the proxy pins "+
+			"the model, so a routed session takes none", a.Name, opts.ClaudeCodeSession.Model)
+	}
 	if cfg.ConnectURL != "" && (cfg.ConnectPort < 1 || cfg.ConnectPort > 65535) {
 		return provision.Spec{}, fmt.Errorf("agentspec: Config.ConnectURL is set but Config.ConnectPort (%d) is not a "+
 			"port; a claude-code agent's network policy could not allow it to reach the connector surface", cfg.ConnectPort)
@@ -432,18 +446,18 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// (images/claude-code-agent/entrypoint.sh).
 		Runtime: provision.Runtime{Image: cc.Image},
 		Env:     claudeCodeEnv(cfg, repo, JobBypassListed(a, cfg) && opts.JobBypassVeto == ""),
-		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
+		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN (claudeCodeSecrets).
 		//
 		// 🔴 NO EnvGatewayToken (HOOKS_TOKEN): ccd takes its bearer from
 		// EnvGatewayBearer, the agent's own secret, and nothing in the pod derives
 		// one from the hooks token any more. EnvToken stays: it is the session's
 		// muster identity. ccd unsets EnvGatewayBearer before it starts the CLI
 		// (cmd/ccd/turncred.go).
-		Secrets: []provision.EnvVar{
-			{Name: EnvToken, Value: a.HooksToken},
-			{Name: EnvGatewayBearer, Value: a.GatewaySecret},
-			{Name: EnvClaudeOAuthToken, Value: token},
-		},
+		//
+		// 🔴 A POD ON THE LLM ROUTE CARRIES NO SUBSCRIPTION TOKEN: its model is
+		// reached through muster's proxy with its own muster token, and the
+		// entrypoint refuses a routed pod that also holds one.
+		Secrets:   claudeCodeSecrets(a, token, route),
 		Resources: ClaudeCodeResources,
 		Workspace: provision.Workspace{Path: ClaudeCodeDataPath, Size: size, Persist: true},
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
@@ -507,6 +521,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if opts.ClaudeCodeSession.HQMCP {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvHQMCP, Value: "1"})
 	}
+	if route {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvLLMRoute, Value: LLMRouteMuster})
+	}
 	if opts.ClaudeCodeSession.EgressLocked() || poolLocked {
 		// An egress-locked pool's worker too: the CLI's optional hosts
 		// (telemetry, error reporting, auto-update, release notes) are not
@@ -517,6 +534,20 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)
 	}
 	return spec, nil
+}
+
+// claudeCodeSecrets is a claude-code pod's secrets: its muster identity, its
+// turn credential and — unless it is on the LLM route — its account's
+// subscription token.
+func claudeCodeSecrets(a agents.Agent, token string, llmRoute bool) []provision.EnvVar {
+	s := []provision.EnvVar{
+		{Name: EnvToken, Value: a.HooksToken},
+		{Name: EnvGatewayBearer, Value: a.GatewaySecret},
+	}
+	if !llmRoute {
+		s = append(s, provision.EnvVar{Name: EnvClaudeOAuthToken, Value: token})
+	}
+	return s
 }
 
 // EnvCCDGatewayUpstreamBearer is the credential an OLDER muster gave ccd for

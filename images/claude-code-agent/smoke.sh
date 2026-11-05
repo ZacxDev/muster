@@ -33,7 +33,13 @@
 #   7. the entrypoint REFUSES to start (exit 1, naming the variable) with each of
 #      ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_BEDROCK,
 #      CLAUDE_CODE_USE_VERTEX, ANTHROPIC_BASE_URL set to a FAKE value — before it
-#      seeds or starts anything;
+#      seeds or starts anything; and under CCD_LLM_ROUTE=muster the installed
+#      credential check (/usr/local/lib/cc/credentials.sh, which the entrypoint
+#      sources) sets ANTHROPIC_BASE_URL to exactly $MUSTER_CONNECT_URL/llm and
+#      ANTHROPIC_AUTH_TOKEN to the pod's muster token, while the entrypoint
+#      still refuses, before seeding, a routed pod that also carries a
+#      subscription token, ANY preset base URL or auth token (even the exact
+#      values the check would set) or an API key;
 #   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json;
 #   9. with muster's connector store offered (FAKE url and token), seed registers
 #      muster's MCP server and `seed --check` agrees; `ccd connect-git` against
@@ -300,6 +306,34 @@ for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_C
     || fail "with $v set the entrypoint exited $rc, want 1 naming $v: $out"
   [[ ! -e /tmp/refuse-cfg/settings.json ]] || fail "with $v set the entrypoint seeded before refusing"
   echo "cc-smoke: $v refused"
+done
+
+# 7b. The LLM route. Positive: the installed check, sourced as the entrypoint
+# sources it, in a routed pod's environment (FAKE values; nothing listens on
+# port 9), points the CLI at exactly the proxy with the pod's own token.
+route_env=(CCD_LLM_ROUTE=muster MUSTER_CONNECT_URL=http://127.0.0.1:9 MUSTER_HOOK_TOKEN=smoke-route-token-not-real)
+[[ -r /usr/local/lib/cc/credentials.sh ]] || fail "the credential check is not installed at /usr/local/lib/cc/credentials.sh"
+out="$(env -i PATH="$PATH" "${route_env[@]}" bash -c \
+  'source /usr/local/lib/cc/credentials.sh && cc_check_credentials && printf "%s %s" "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN"' 2>&1)" \
+  || fail "a routed pod's environment was refused: $out"
+[[ "$out" == "http://127.0.0.1:9/llm smoke-route-token-not-real" ]] \
+  || fail "under the route the check set '$out', want the proxy URL and the pod's token"
+echo "cc-smoke: CCD_LLM_ROUTE=muster points the CLI at the proxy with the pod's token"
+# Negative: the real entrypoint refuses each of these beside the route, before
+# it seeds anything.
+# A preset base URL or auth token is refused even when it is exactly the
+# value the check would set.
+for extra in CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-SMOKE-DELIBERATELY-INVALID ANTHROPIC_BASE_URL=https://elsewhere.invalid \
+  ANTHROPIC_AUTH_TOKEN=another-smoke-token ANTHROPIC_API_KEY=fake-smoke-value \
+  ANTHROPIC_BASE_URL=http://127.0.0.1:9/llm ANTHROPIC_AUTH_TOKEN=smoke-route-token-not-real; do
+  v="${extra%%=*}"
+  rc=0
+  out="$(env -u CLAUDE_CODE_OAUTH_TOKEN "${route_env[@]}" "$extra" CLAUDE_CONFIG_DIR=/tmp/route-cfg CCD_WORKSPACE=/tmp/route-ws \
+    CCD_LISTEN=127.0.0.1:18798 CCD_TMUX_SOCKET=route timeout 15 /usr/local/bin/cc-entrypoint 2>&1)" || rc=$?
+  [[ "$rc" == "1" && "$out" == *"$v"*"Refusing."* ]] \
+    || fail "under the route with $v set the entrypoint exited $rc, want 1 naming $v: $out"
+  [[ ! -e /tmp/route-cfg/settings.json ]] || fail "under the route with $v set the entrypoint seeded before refusing"
+  echo "cc-smoke: CCD_LLM_ROUTE=muster with $v refused"
 done
 
 # 8. env / apiKeyHelper planted in the persisted settings.json are removed by seed.

@@ -43,6 +43,10 @@ type TierPool struct {
 	Model string `json:"model"`
 	// MaxInstances is how many of the pool's instances may run at once.
 	MaxInstances int `json:"max_instances"`
+	// MaxSessionsPerDay, on the judgement pool only, caps the distinct items
+	// it claims per UTC day (sessions.go); 0 is no cap. The routine pool is
+	// bounded by the `llm` budget instead.
+	MaxSessionsPerDay int `json:"max_sessions_per_day,omitempty"`
 }
 
 // Tiers is an officer's `tiers` block: both pools.
@@ -169,7 +173,7 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 	dec.DisallowUnknownFields()
 	var p TierPool
 	if err := dec.Decode(&p); err != nil {
-		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"}: %v`, err)
+		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "max_sessions_per_day"? (judgement only)}: %v`, err)
 	}
 	p.Model = strings.TrimSpace(p.Model)
 	if p.Model == "" {
@@ -190,6 +194,12 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 	}
 	if p.MaxInstances < 1 || p.MaxInstances > MaxInstancesCap {
 		return TierPool{}, fmt.Errorf("max_instances %d is not 1..%d", p.MaxInstances, MaxInstancesCap)
+	}
+	switch {
+	case routine && p.MaxSessionsPerDay != 0:
+		return TierPool{}, errors.New("max_sessions_per_day caps the judgement pool only; the routine pool is bounded by the officer's `llm` budget")
+	case p.MaxSessionsPerDay < 0 || p.MaxSessionsPerDay > MaxSessionsPerDayCap:
+		return TierPool{}, fmt.Errorf("max_sessions_per_day %d is not 1..%d (leave it out for no cap)", p.MaxSessionsPerDay, MaxSessionsPerDayCap)
 	}
 	return p, nil
 }

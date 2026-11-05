@@ -80,6 +80,7 @@ COPY --from=hq / /opt/hq/
 RUN if [ -e /opt/hq/hq ]; then chmod 0755 /opt/hq/hq && ln -s /opt/hq/hq /usr/local/bin/hq; fi
 COPY --from=build /ccd /usr/local/bin/ccd
 COPY images/claude-code-agent/settings.json /etc/ccd/settings.json
+COPY images/claude-code-agent/credentials.sh /usr/local/lib/cc/credentials.sh
 COPY --chmod=0755 images/claude-code-agent/entrypoint.sh /usr/local/bin/cc-entrypoint
 COPY --chmod=0755 images/claude-code-agent/smoke.sh /usr/local/bin/cc-smoke
 COPY --chmod=0755 images/claude-code-agent/deploykey-smoke.sh /usr/local/bin/cc-deploykey-smoke
