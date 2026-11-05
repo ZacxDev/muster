@@ -105,6 +105,52 @@ const (
 	suggestPillClass = "block max-h-8 truncate rounded-full bg-s2 px-3 py-1.5 text-sm leading-5 text-fg ring-1 ring-inset ring-line hover:bg-s3"
 )
 
+// READING A LONG CHIP (docs/suggested-replies.md). A chip is cut at 16rem, so
+// a long suggestion's end — usually the part that decides it — was unreadable
+// (measured at 412px: a 138-character suggestion showed 232 of its 965px).
+// Each chip therefore sits in an item with, at its END, an expand button
+// (SuggestMoreLabel) that opens the whole text in a popover.
+//
+//   - A SIBLING, NEVER INSIDE THE CHIP: a button in a button is invalid, and
+//     the chip's own tap (fill) must stay exactly what it was.
+//   - SHOWN ONLY WHILE THE TEXT IS CUT. The pill is one nowrap line with
+//     overflow hidden, so scrollWidth > clientWidth says exactly whether it is
+//     cut; a ResizeObserver on each pill re-measures on a resize, a rotation or
+//     a late web font. It cannot oscillate: the item and the chip are
+//     shrink-0 in a row that scrolls sideways, so showing the button never
+//     changes the pill's width. (Always showing it would cost every chip that
+//     fits 32–44px of a row that is already short on a phone, for a popover
+//     repeating what is on screen.)
+//   - 44px TALL ALWAYS (the row's height), 44px WIDE ON A COARSE POINTER,
+//     32px with a mouse.
+//   - THE POPOVER IS fullTitlePopover's PATTERN: a native popover="auto" (top
+//     layer — the row's sideways scroll does not clip it; an outside tap or
+//     Escape closes it) placed by floatingMenuScript beside its button, height
+//     capped to the viewport. Only the text scrolls, so its × and "Use this"
+//     stay on screen for any length. The focus moves to the panel on open and
+//     back to the button on Escape or × (the browser's, for a popover its
+//     button opened). No animation, so nothing for reduced motion to remove.
+//   - "Use this" IS THE CHIP'S TAP: the same take() (fill, never send; the
+//     same "filled" report), after closing the popover.
+//   - CLEARED UNDER AN OPEN POPOVER (a send, the next set): it is closed first,
+//     floatingMenuScript is told, and the focus goes to the box (clearChips).
+//   - NO POPOVER API (iOS < 17): the button is never shown, so it cannot sit
+//     there doing nothing; the chip's tap still fills.
+const (
+	suggestItemClass = "inline-flex shrink-0 items-center"
+	suggestMoreClass = "press inline-flex h-11 w-8 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2 [@media(pointer:coarse)]:w-11 [&[hidden]]:hidden"
+	suggestFullClass = "invisible hidden [&:popover-open]:flex m-0 w-80 max-w-[calc(100vw-16px)] overscroll-contain flex-col gap-2 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20 focus:outline-none"
+	suggestFullText  = "min-h-0 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6"
+	suggestFullClose = "press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+	suggestFullUse   = "press inline-flex min-h-[44px] items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+)
+
+// SuggestMoreLabel names a chip's expand button; SuggestFullLabel its popover.
+const (
+	SuggestMoreLabel = "Show full suggestion"
+	SuggestFullLabel = "Full suggestion"
+)
+
 // suggestRowScript drives the row: the socket's news (window.musterSuggest,
 // called by mirrorViewScript), the fetch of the set, the taps, the × and the
 // reports. See the file's comment for the rules.
@@ -143,8 +189,128 @@ func suggestRowScript() g.Node {
     if (row.hidden && !state()) return;
     row.hidden = true;
     row.removeAttribute('data-state');
-    chips.textContent = '';
+    if (fitRO) fitRO.disconnect();
+    clearChips();
     measure();
+  }
+  // clearChips empties the row. An expand popover open in it is CLOSED first,
+  // and its close is told to floatingMenuScript, which stops observing it and
+  // drops its inline position only on a toggle it sees at the document. A
+  // popover merely removed from the page fires no toggle at all; and the one
+  // hidePopover() queues fires a task LATER, on the element already detached
+  // here, so it never reaches the document either (measured: none seen in
+  // Chromium). So the closed toggle is dispatched now, while it is still in
+  // the page. A focus inside the row, which would fall to BODY, goes to the box.
+  function clearChips() {
+    var had = chips.contains(document.activeElement);
+    var ps = chips.querySelectorAll('[popover]');
+    for (var i = 0; i < ps.length; i++) {
+      var open = false;
+      try { open = ps[i].matches(':popover-open'); if (open) ps[i].hidePopover(); } catch (e) {}
+      if (!open) continue;
+      var ev;
+      try { ev = new ToggleEvent('toggle', { oldState: 'open', newState: 'closed' }); } catch (e) { ev = new Event('toggle'); }
+      ps[i].dispatchEvent(ev);
+    }
+    chips.textContent = '';
+    if (had) input.focus();
+  }
+  // fit shows an item's expand button exactly while its chip's text is cut,
+  // and closes its popover when it no longer is (see suggest_row.go) — and
+  // never without the Popover API (iOS < 17), where the button would do
+  // nothing; the chip's own tap still fills.
+  var POPOVER = typeof HTMLElement !== 'undefined' && HTMLElement.prototype.hasOwnProperty('popover');
+  function fit(item) {
+    var p = item.querySelector('[data-suggest-chip] > span'), m = item.querySelector('[data-suggest-more]');
+    if (!p || !m) return;
+    var cut = p.scrollWidth > p.clientWidth + 1;
+    if (cut) { if (m.hidden && POPOVER) m.hidden = false; return; }
+    if (!m.hidden) m.hidden = true;
+    var pop = document.getElementById(m.getAttribute('popovertarget'));
+    try { if (pop && pop.matches(':popover-open')) pop.hidePopover(); } catch (e) {}
+  }
+  var fitRO = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(function (es) {
+    es.forEach(function (en) { var it = en.target.closest('[data-suggest-item]'); if (it) fit(it); });
+  }) : null;
+  var SVG = 'http://www.w3.org/2000/svg';
+  function icon(d) {
+    var v = document.createElementNS(SVG, 'svg');
+    v.setAttribute('class', 'h-4 w-4');
+    v.setAttribute('viewBox', '0 0 20 20');
+    v.setAttribute('fill', 'currentColor');
+    v.setAttribute('aria-hidden', 'true');
+    var path = document.createElementNS(SVG, 'path');
+    path.setAttribute('d', d);
+    v.appendChild(path);
+    return v;
+  }
+  // The expand icon (two corner arrows) and the popover's ×.
+  var EXPAND = 'M3.75 3a.75.75 0 00-.75.75v3.5a.75.75 0 001.5 0V5.56l3.22 3.22a.75.75 0 001.06-1.06L5.56 4.5h1.69a.75.75 0 000-1.5h-3.5zM12.75 3a.75.75 0 000 1.5h1.69l-3.22 3.22a.75.75 0 001.06 1.06l3.22-3.22v1.69a.75.75 0 001.5 0v-3.5a.75.75 0 00-.75-.75h-3.5zM8.78 12.28a.75.75 0 00-1.06-1.06L4.5 14.44v-1.69a.75.75 0 00-1.5 0v3.5c0 .414.336.75.75.75h3.5a.75.75 0 000-1.5H5.56l3.22-3.22zM12.28 11.22a.75.75 0 00-1.06 1.06l3.22 3.22h-1.69a.75.75 0 000 1.5h3.5a.75.75 0 00.75-.75v-3.5a.75.75 0 00-1.5 0v1.69l-3.22-3.22z';
+  var CLOSE = 'M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z';
+  // full builds chip i's expand button and its popover: the whole text
+  // (textContent), a × and "Use this", which is the chip's own tap.
+  function full(s, i, chip) {
+    var id = 'mv-suggest-full-' + i;
+    var m = document.createElement('button');
+    m.type = 'button';
+    m.hidden = true;
+    m.className = '` + suggestMoreClass + `';
+    m.setAttribute('data-suggest-more', String(i));
+    m.setAttribute('popovertarget', id);
+    m.setAttribute('aria-haspopup', 'dialog');
+    m.setAttribute('aria-controls', id);
+    m.setAttribute('aria-expanded', 'false');
+    m.setAttribute('aria-label', '` + SuggestMoreLabel + `');
+    m.title = '` + SuggestMoreLabel + `';
+    m.appendChild(icon(EXPAND));
+    var pop = document.createElement('div');
+    pop.id = id;
+    pop.setAttribute('popover', 'auto');
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', '` + SuggestFullLabel + `');
+    pop.setAttribute('data-floating-menu', '');
+    pop.tabIndex = -1;
+    pop.className = '` + suggestFullClass + `';
+    var head = document.createElement('div');
+    head.className = 'flex items-center gap-2';
+    // Still labelled AI (the row's rule), in words: a second "AI" mark would
+    // make the row's own one ambiguous to anything that finds it by text.
+    var cap = document.createElement('span');
+    cap.className = 'min-w-0 flex-1 text-xs font-medium text-muted';
+    cap.textContent = 'AI-suggested reply';
+    var x = document.createElement('button');
+    x.type = 'button';
+    x.className = '` + suggestFullClose + `';
+    x.setAttribute('popovertarget', id);
+    x.setAttribute('popovertargetaction', 'hide');
+    x.setAttribute('aria-label', 'Close');
+    x.title = 'Close';
+    x.appendChild(icon(CLOSE));
+    head.appendChild(cap); head.appendChild(x);
+    var t = document.createElement('p');
+    t.className = '` + suggestFullText + `';
+    t.setAttribute('data-suggest-full-text', '');
+    t.textContent = s.text;
+    var acts = document.createElement('div');
+    acts.className = 'flex justify-end';
+    var use = document.createElement('button');
+    use.type = 'button';
+    use.className = '` + suggestFullUse + `';
+    use.setAttribute('data-suggest-use', String(i));
+    use.textContent = 'Use this';
+    // The chip's tap: close first (the browser gives the focus back to the
+    // button), then take() moves it to the box — or, from a keyboard, to the
+    // chip, so a held Enter cannot go on to send the box.
+    use.addEventListener('click', function (e) {
+      try { pop.hidePopover(); } catch (err) {}
+      take(s.text, e.detail === 0 ? chip : null);
+    });
+    use.addEventListener('keydown', function (e) { if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault(); });
+    acts.appendChild(use);
+    pop.appendChild(head); pop.appendChild(t); pop.appendChild(acts);
+    // The focus moves in on open (the panel, so the text is read first).
+    pop.addEventListener('toggle', function (e) { if (e.newState === 'open' && !pop.contains(document.activeElement)) pop.focus(); });
+    return [m, pop];
   }
   // blocked: what the server excludes, seen on the page too — a question card
   // drawn, an attention ask (shown or hidden on this device: hidden is not
@@ -195,7 +361,8 @@ func suggestRowScript() g.Node {
   }
   function show(f, list) {
     clearTimeout(timer);
-    chips.textContent = '';
+    if (fitRO) fitRO.disconnect();
+    clearChips();
     fp = f;
     list.forEach(function (s, i) {
       var b = document.createElement('button');
@@ -214,10 +381,22 @@ func suggestRowScript() g.Node {
       b.addEventListener('click', function (e) { take(s.text, e.detail === 0 ? b : null); });
       // A held Enter or Space fills ONCE (a button repeats its activation).
       b.addEventListener('keydown', function (e) { if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault(); });
-      chips.appendChild(b);
+      // The item: the chip, then its expand button and popover (full).
+      var item = document.createElement('span');
+      item.className = '` + suggestItemClass + `';
+      item.setAttribute('data-suggest-item', String(i));
+      item.appendChild(b);
+      full(s, i, b).forEach(function (n) { item.appendChild(n); });
+      chips.appendChild(item);
     });
     row.setAttribute('data-state', 'shown');
     row.hidden = false;
+    // Measured now (laid out, before the first paint) and on every resize.
+    chips.querySelectorAll('[data-suggest-item]').forEach(function (it) {
+      fit(it);
+      var p = it.querySelector('[data-suggest-chip] > span');
+      if (fitRO && p) fitRO.observe(p);
+    });
     measure();
     seen = false;
     if (io) io.observe(row); else { inView = true; seenNow(); }

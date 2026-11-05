@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -272,6 +273,27 @@ func TestAuditRecordsAndPrunes(t *testing.T) {
 	n, err := s.PruneAudit(ctx, time.Now().Add(time.Minute))
 	if err != nil || n != 1 {
 		t.Fatalf("prune = %d %v", n, err)
+	}
+}
+
+// TestAnAuditDetailCutInsideARuneIsStored: the detail is cut to fit its
+// budget, and a cut that fell inside a multi-byte rune left invalid UTF-8,
+// which Postgres refuses (SQLSTATE 22021), losing the whole row. The cut
+// backs off to the rune boundary.
+func TestAnAuditDetailCutInsideARuneIsStored(t *testing.T) {
+	ctx, pool := testPool(t)
+	s := newStore(t, pool, key(1))
+	detail := strings.Repeat("a", 499) + "é…" // byte 500 is inside the é
+	if err := s.Audit(ctx, connectors.AuditEntry{Kind: "llm", AgentName: "a", Connector: "llm",
+		Method: "POST", Host: "example.invalid", Path: "/api/v1/messages", Status: 400, Detail: detail}); err != nil {
+		t.Fatalf("the row was refused: %v", err)
+	}
+	list, err := s.ListAudit(ctx, 10)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("audit = %+v %v", list, err)
+	}
+	if got := list[0].Detail; got != strings.Repeat("a", 499) {
+		t.Fatalf("stored detail is %d bytes %q, want the 499 bytes before the split rune", len(got), got[len(got)-4:])
 	}
 }
 

@@ -25,7 +25,9 @@
 // routing fields in the body (fallbacks, models, provider, route, plugins,
 // transforms) that can serve a request from a model other than the pinned
 // one. Only the Anthropic Messages fields in forwardBodyFields go upstream;
-// every other key is dropped.
+// every other key is dropped. Inside `messages`, a mid-conversation `system`
+// entry (which the provider refuses) is folded into the user turn
+// (foldSystemMessages); nothing else in a message is changed.
 //
 // 🔴 COST IS THE PROVIDER'S, NOT A PRICE LIST'S. OpenRouter reports what it
 // billed in the stream (`usage.cost` in message_delta). Billed prices have run
@@ -44,6 +46,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptrace"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,8 +125,9 @@ type Store interface {
 	Book(ctx context.Context, u Usage) error
 }
 
-// Record is one request's audit record. It carries no body, no header and no
-// credential.
+// Record is one request's audit record. It carries no request or response
+// body, no header and no credential; on a provider error, only the provider's
+// error type and message (UpstreamError), redacted and truncated.
 type Record struct {
 	Officer        string
 	Instance       string // the instance's label, `r<n>`
@@ -144,16 +148,24 @@ type Record struct {
 	CostEstimated  bool
 	StopReason     string
 	Duration       time.Duration
+	// UpstreamError is a non-2xx provider answer's error, "<type>: <message>",
+	// redacted and truncated by upstreamError; "" on a 2xx.
+	UpstreamError string
 }
 
 // Detail is r as one line of key=value pairs (the audit row's detail and the
-// log line), in a fixed order.
+// log line), in a fixed order. upstream_error, quoted, ends the line when the
+// provider answered with an error.
 func (r Record) Detail() string {
-	return fmt.Sprintf("officer=%s instance=%s item=%s model=%s requested_model=%s provider=%s msg=%s status=%d result=%s "+
+	d := fmt.Sprintf("officer=%s instance=%s item=%s model=%s requested_model=%s provider=%s msg=%s status=%d result=%s "+
 		"in=%d cache_read=%d cache_write=%d out=%d usd=%.6f estimated=%t stop=%s ms=%d",
 		r.Officer, r.Instance, orDash(r.Item), orDash(r.Model), orDash(r.RequestedModel), orDash(r.Provider), orDash(r.MessageID),
 		r.Status, r.Result, r.Input, r.CacheRead, r.CacheWrite, r.Output, r.CostUSD, r.CostEstimated, orDash(r.StopReason),
 		r.Duration.Milliseconds())
+	if r.UpstreamError != "" {
+		d += fmt.Sprintf(" upstream_error=%q", r.UpstreamError)
+	}
+	return d
 }
 
 func orDash(s string) string {
@@ -325,6 +337,13 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 			dropped = append(dropped, key)
 		}
 	}
+	if raw, ok := fwd["messages"]; ok {
+		if folded, n := foldSystemMessages(raw); n > 0 {
+			fwd["messages"] = folded
+			p.log.Printf("llm proxy: agent=%q officer=%s: folded %d mid-conversation system message(s) into the user turn",
+				c.AgentName, c.Officer, n)
+		}
+	}
 	pinned, _ := json.Marshal(c.Model)
 	fwd["model"] = pinned
 	if len(dropped) > 0 {
@@ -421,7 +440,8 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		p.upstreamAuthFailed(c.Officer, resp.StatusCode)
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		rec.UpstreamError = upstreamError(b, c.Key)
 		// 🔴 A 400, NOT THE PROVIDER'S STATUS: Claude Code retries a 401 about
 		// ten times with backoff, which on an instance reads as a stall; a 400
 		// ends the turn with this message. The audit and the metrics keep the
@@ -434,9 +454,10 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		rec.UpstreamError = upstreamError(b, c.Key)
 		relayHeaders(w, resp)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(redact(b, c.Key))
+		_, _ = w.Write(redactError(b, c.Key))
 		finish("upstream_status", resp.StatusCode)
 		return
 	}
@@ -508,12 +529,30 @@ func relayHeaders(w http.ResponseWriter, resp *http.Response) {
 }
 
 // redact replaces every occurrence of key in b. A provider has no reason to
-// echo the key, and this makes sure an echo never reaches the instance.
+// echo the key, and this makes sure an echo never reaches the instance. It is
+// the one rule for a 2xx body (the model's own output), which is otherwise
+// relayed unchanged.
 func redact(b []byte, key string) []byte {
 	if key == "" || !bytes.Contains(b, []byte(key)) {
 		return b
 	}
 	return bytes.ReplaceAll(b, []byte(key), []byte("[redacted]"))
+}
+
+// keyShaped is an `sk-…` key of any provider; authSchemeToken a token after a
+// bearer scheme word.
+var (
+	keyShaped       = regexp.MustCompile(`sk-[A-Za-z0-9][A-Za-z0-9_-]{15,}`)
+	authSchemeToken = regexp.MustCompile(`(?i)\b(bearer)\s+[^\s"',;]+`)
+)
+
+// redactError is redact, then anything key-shaped, for a provider's non-2xx
+// body: both the body relayed to the instance and the record's upstream_error
+// go through it, so the two never disagree. It is not applied to a 2xx body,
+// where the model may legitimately write `Bearer ${token}` in code.
+func redactError(b []byte, key string) []byte {
+	b = keyShaped.ReplaceAll(redact(b, key), []byte("[redacted]"))
+	return authSchemeToken.ReplaceAll(b, []byte("${1} [redacted]"))
 }
 
 // book meters one request's usage: metrics, the per-item count, the store.

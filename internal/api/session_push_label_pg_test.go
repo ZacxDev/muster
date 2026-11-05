@@ -84,3 +84,20 @@ func episodeRows(page string) string {
 	}
 	return page[i:min(len(page), i+1500)]
 }
+
+// TestAStalledRowWhoseWindowMovedOnKeepsItsCodename (regression): the window
+// that held the stop's conversation now runs another one (a /clear gave it a
+// new Claude session id), so its key no longer resolves; the row still names
+// the stored place by its host's codename ("Gold:1"), never the bare target.
+func TestAStalledRowWhoseWindowMovedOnKeepsItsCodename(t *testing.T) {
+	f := newStateFixture(t, false)
+	f.statePass(t)
+	f.oneEpisode(t)
+	f.mirror.mu.Lock()
+	f.mirror.windows[0].ClaudeSession = "5d4c3b2a-1908-4f7e-8d6c-5b4a39281706"
+	f.mirror.mu.Unlock()
+	page := f.page(t, "/attention")
+	if !strings.Contains(page, `data-attention-episode-where>Gold:1 · tmux main:1 @ ws</code>`) {
+		t.Fatalf("the row lost its codename on the fallback:\n%s", episodeRows(page))
+	}
+}
