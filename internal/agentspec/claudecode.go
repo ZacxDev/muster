@@ -139,6 +139,15 @@ func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 	return n
 }
 
+// ComposeChiefAllowedMCPTools are the muster MCP tools the Compose chief runs
+// without a prompt (operator decision): reading the fleet and the board, and
+// routing work to a session. Every other prompt is denied in its container.
+// Pinned by TestTheComposeChiefsAllowedToolsArePinned.
+var ComposeChiefAllowedMCPTools = []string{
+	"sessions_overview", "fleet_list", "focus_search", "fleet_report",
+	"tasks_list", "task_get", "attention_list", "route_to_session",
+}
+
 // claudeCodeResourcesFor is ClaudeCodeResources, or none for the Compose
 // container (Config.ComposeContainer: its driver cannot enforce limits).
 func claudeCodeResourcesFor(cfg Config) provision.Resources {
@@ -519,6 +528,21 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	// The agent's own session settings (podagent/session.go), only when set:
 	// an agent without them keeps the spec — and so the fingerprint — it had.
+	// The Compose chief: exactly its read and route tools pre-allowed
+	// (operator decision), and no other source of an allow list. Every other
+	// prompt is denied in its container by the supervisor (ccd compose sets
+	// CCD_APPROVE_UNANSWERED=deny for its child), because nobody can answer one.
+	if cfg.ComposeContainer {
+		if len(opts.ClaudeCodeSession.AllowMCPTools) > 0 {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, whose allowed tools are "+
+				"ComposeChiefAllowedMCPTools alone; the session asks for %v", a.Name, opts.ClaudeCodeSession.AllowMCPTools)
+		}
+		if opts.ClaudeCodeSession.HQMCP {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, which is offered no HQ "+
+				"server: its pre-allowed tools are ComposeChiefAllowedMCPTools alone", a.Name)
+		}
+		opts.ClaudeCodeSession.AllowMCPTools = slices.Clone(ComposeChiefAllowedMCPTools)
+	}
 	if names := opts.ClaudeCodeSession.AllowMCPTools; len(names) > 0 {
 		v, err := podagent.FormatAllowMCPTools(names)
 		if err != nil {

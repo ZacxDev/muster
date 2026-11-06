@@ -323,6 +323,13 @@ func TestTheComposeChiefIsWrittenWhereItsContainerReadsIt(t *testing.T) {
 	if _, ok := secretOf["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
 		t.Fatal("the chief on the OpenRouter key carries a subscription token")
 	}
+	// Exactly its eight read and route tools pre-allowed, and no HQ server.
+	if envOf["CCD_ALLOW_MCP_TOOLS"] != "sessions_overview,fleet_list,focus_search,fleet_report,tasks_list,task_get,attention_list,route_to_session" {
+		t.Fatalf("the chief's pre-allowed tools: %q", envOf["CCD_ALLOW_MCP_TOOLS"])
+	}
+	if _, ok := envOf["CCD_HQ_MCP"]; ok {
+		t.Fatal("the Compose chief is offered the HQ server (its blanket approval is withdrawn on Compose)")
+	}
 	if secretOf["MUSTER_HOOK_TOKEN"] == "" || secretOf["MUSTER_GATEWAY_BEARER"] == "" {
 		t.Fatalf("the chief's own identity and turn credential are missing: %v", keysOf(secretOf))
 	}

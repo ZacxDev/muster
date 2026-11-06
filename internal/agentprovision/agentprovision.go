@@ -1247,9 +1247,11 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 			"for this kind — the client is not in its image and its network policy cannot reach the store", ag.Name, agents.KindClaudeCode)
 	}
 	// HQMCP: the chief, and no other agent, is offered the HQ MCP server with
-	// every tool allowed (internal/podagent/hqmcp.go).
+	// every tool allowed (internal/podagent/hqmcp.go) — except the Compose
+	// chief, whose pre-allowed tools are exactly agentspec.ComposeChiefAllowedMCPTools
+	// (operator decision): no blanket HQ approval there.
 	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting),
-		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: true, LLMRoute: route}})
+		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, LLMRoute: route}})
 }
 
 // composeChiefRoute is Config.ComposeChiefRoute for ag: false for every agent
