@@ -131,14 +131,19 @@ func TestAFreshInstanceWorksOneItemPerConversation(t *testing.T) {
 	if len(res.ActErrs) != 0 || len(res.Decision.Reprompt) != 1 || res.Decision.Reprompt[0] != 1 {
 		t.Fatalf("the pass after j1's item: %+v, want judgement instance 1 prompted", res)
 	}
-	judge := r.b.Pool(officers.TierJudgement)
-	text, nc, ok := r.chat.sentTo(j1.Name)
-	if !ok || text != officers.KickoffText(judge, 1) || nc != "1" {
-		t.Fatalf("j1's turn: sent=%v header=%q text:\n%s\n--- want the kickoff on a new-conversation turn (header \"1\")", ok, nc, text)
+	// The pool as the runtime resolves it from the agent's name (Parse sorts
+	// officers by id, so neither r.a nor r.b is T by position).
+	judge, _, ok := r.s.officerRT.reg.ForAgentName(j1.Name)
+	if !ok || judge.ID != offT || judge.Tier != officers.TierJudgement {
+		t.Fatalf("instrument check: %s resolves to %+v (ok %v), want %s's judgement pool", j1.Name, judge, ok, offT)
 	}
-	text, nc, ok = r.chat.sentTo(ro.Name)
-	if !ok || !strings.HasPrefix(text, "New work for officer "+offT) || nc != "" {
-		t.Fatalf("INVARIANT: the routine instance's turn: sent=%v header=%q text %q, want \"as before\" with no header", ok, nc, text)
+	text, nc, sent := r.chat.sentTo(j1.Name)
+	if !sent || text != officers.KickoffText(judge, 1) || nc != "1" {
+		t.Fatalf("j1's turn: sent=%v header=%q text:\n%s\n--- want the kickoff on a new-conversation turn (header \"1\")", sent, nc, text)
+	}
+	text, nc, sent = r.chat.sentTo(ro.Name)
+	if !sent || !strings.HasPrefix(text, "New work for officer "+offT) || nc != "" {
+		t.Fatalf("INVARIANT: the routine instance's turn: sent=%v header=%q text %q, want \"as before\" with no header", sent, nc, text)
 	}
 
 	if out := claim(j1, c); isToolErr(out) {
