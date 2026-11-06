@@ -256,7 +256,7 @@ command, path or URL, never what Claude said.
 | a held question (a session's `AskUserQuestion`) | `<where> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
 | a session's stop, with `MUSTER_SESSION_STATE=1` ([above](#stalled--waiting-session-state)) | `<where> needs you` / `<where> is stalled` | `Needs you · idle 12m`: its state and idle time only — except a stop waiting on a question muster can answer, which is pushed with that question's own title and body (the row above or the waiting session's below), under the stop's `attention-episode-<id>` tag |
 | a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <where>`, or `Waiting: <where>` when its host names no tool |
-| a [notice](#notices) | `<where> may be waiting on you` | the session's focus title, then the chief's message; no options and no `ask` payload |
+| a [notice](#notices) | `<where> may be waiting on you` | the session's focus title (with its age past a day, ` · 2d`: [focus.md](focus.md#how-old-a-focus-is)), then the chief's message; no options and no `ask` payload |
 
 `<where>` is the window's exact tmux target — see [How a window is named](#how-a-window-is-named).
 
@@ -418,7 +418,7 @@ called by name):
 
 | tool | does |
 |---|---|
-| `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`. Read-only: the chief cannot answer an ask (no dispatched agent can); only the operator does — on `/attention`, or through one of their own mirrored sessions' `attention_answer` (below). |
+| `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`, with `focus_set_at` and, past a day, `focus_age` ([focus.md](focus.md#how-old-a-focus-is)). Read-only: the chief cannot answer an ask (no dispatched agent can); only the operator does — on `/attention`, or through one of their own mirrored sessions' `attention_answer` (below). |
 | `fleet_list` | (Existing.) Now also carries a mirrored session's `host`. |
 | `answer_session_question {id, answer}` | Answers a question a mirrored session put to the chief with `chief_ask` ([below](#asking-the-chief)), as the chief's (`answered_by: "chief"`). Only a question put to the chief: any other ask, another owner's, or a missing id is *"no such session question: N"*; one already answered, cancelled or expired is *"is no longer open (it is …)"*. |
 
@@ -844,7 +844,7 @@ you, your mirror hosts' busy and idle Claude windows, and your
 | `items[].key` | The item's id (`ask-<id>`, `session-<hash>`, `draft-<id>`, `task-<id>`). A held question has its window's `session-…` key. |
 | `items[].kind` | `ask`, `session`, `question`, `plugin` (a reply draft), `task` or `notice` (a [notice](#notices)). |
 | `items[].host` | The mirror host it is on; `""` for an agent's ask, muster's own, a reply draft and a task. |
-| `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body. Secrets are redacted, a waiting session is `Waiting: <tool> · <where>` (its exact tmux target, [How a window is named](#how-a-window-is-named), kept verbatim), a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
+| `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body (a notice's focus title with its age past a day, ` · 2d`, as its push). Secrets are redacted, a waiting session is `Waiting: <tool> · <where>` (its exact tmux target, [How a window is named](#how-a-window-is-named), kept verbatim), a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
 | `items[].since`, `items[].age_secs` | When it started waiting (Unix seconds) and `ts` minus that; `0` and `0` when unknown. |
 | `items[].offline` | A session item whose host dropped within the last 5 minutes, shown as last seen. |
 | `items[].target` | A `notice`'s window as tmux takes it, `<session>:<window index>`, resolved when the summary is built. Absent for every other kind, and for a notice whose session no window shows now. With `host`, it is what [`muster nudge next`](cli.md#jumping-to-a-chief-nudge) switches to. |

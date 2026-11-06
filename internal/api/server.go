@@ -307,6 +307,11 @@ type Server struct {
 	// officerRT is the officer runtime (officers.go); nil when no officer is
 	// declared (EnableOfficers).
 	officerRT *officerRuntime
+	// chiefLLM is the admin's chief's place on the LLM proxy (chief_llm.go).
+	// nil unless EnableChiefLLM was called; while nil, every chief is refused
+	// by POST /llm/v1/messages as any non-routine agent is. Once set, only the
+	// admin's chief is served, and any other user's chief is refused 403.
+	chiefLLM *chiefLLMRuntime
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate

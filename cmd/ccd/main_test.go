@@ -11,8 +11,14 @@ import (
 //	CCD_TEST_AS=ccd     the real ccd (`ccd hook …` as the CLI's hooks run it)
 //	CCD_TEST_AS=claude  a fake interactive CLI (fakeclaude_test.go)
 //	CCD_TEST_AS=tmuxprint  a "tmux" that prints $CCD_TEST_TMUX_OUT, whatever its args
+//	CCD_TEST_AS=composechild  a stand-in for the entrypoint `ccd compose` runs (compose_test.go)
+//	CCD_TEST_AS=subreaper     a subreaper that orphans a process and sweeps it (compose_test.go)
 func TestMain(m *testing.M) {
 	switch os.Getenv("CCD_TEST_AS") {
+	case "composechild":
+		os.Exit(fakeComposeChild())
+	case "subreaper":
+		os.Exit(subreaperHelper())
 	case "ccd":
 		os.Exit(run(os.Args[1:]))
 	case "claude":

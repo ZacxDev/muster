@@ -24,6 +24,14 @@ if [[ $# -gt 0 ]]; then
   exec "$@"
 fi
 
+# A `docker compose` service (CCD_SPEC_DIR set): `ccd compose` reads the spec
+# muster writes there and runs THIS script, without CCD_SPEC_DIR, as its child
+# when the spec says so (cmd/ccd/compose.go). Kubernetes never sets it, so the
+# rest of this script is the whole of the Kubernetes path.
+if [[ -n "${CCD_SPEC_DIR:-}" ]]; then
+  exec ccd compose
+fi
+
 : "${CLAUDE_CONFIG_DIR:?CLAUDE_CONFIG_DIR must be set}"
 : "${CCD_WORKSPACE:?CCD_WORKSPACE must be set}"
 CCD_TMUX_TARGET="${CCD_TMUX_TARGET:-cc}"

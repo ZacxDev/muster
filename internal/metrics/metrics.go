@@ -357,12 +357,17 @@ var (
 	//   ok             — the provider answered 2xx and the response was relayed
 	//   upstream_auth  — the provider refused muster's key (401/403); also
 	//                    counted in OfficerLLMUpstreamAuth
-	//   upstream_status — any other non-2xx from the provider (relayed)
+	//   upstream_status — any other non-2xx from the provider (relayed; a
+	//                    402 to a caller with a KeyRemedy, the chief, is
+	//                    answered with muster's 400 and that remedy instead)
 	//   upstream_error — no answer, or the stream broke off
 	//   refused_budget — the officer's daily USD budget was spent
 	//   refused_item_cap — the instance used max_tokens_per_item on its item
 	//   refused_bad_request — a body that is not a JSON object
-	//   refused_store  — the budget could not be read, so nothing was sent
+	//   refused_store  — the budget could not be read (or this proxy keeps
+	//                    none for the caller), so nothing was sent
+	// The chief (an unbudgeted caller) is counted with officer and instance
+	// both "chief"; it is never refused_budget or refused_item_cap.
 	OfficerLLMRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_requests_total",
 		Help: "Officer LLM proxy requests by officer, routine instance (r<n>) and result.",
@@ -370,8 +375,12 @@ var (
 	// OfficerLLMRefused counts requests refused before any officer could be
 	// charged, by reason: path (not POST /llm/v1/messages), not_routine (the
 	// caller is not an allowed routine instance of an officer with `llm`),
-	// unconfigured (no officer declares `llm`). officer is "none" when the
-	// caller is not an officer instance.
+	// unconfigured (no officer declares `llm`), agents_read (with the chief
+	// LLM on, the agents list could not be read to tell whether a caller that
+	// is not a routine instance is the chief). officer is "none" when the
+	// caller is not an officer instance. For the chief (officer "chief"):
+	// not_admin (a chief, but not the admin's), chief_off (its owner turned
+	// it off), no_key (MUSTER_AGENT_OPENROUTER_KEY is empty).
 	OfficerLLMRefused = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_refused_total",
 		Help: "Officer LLM proxy requests refused before reaching the provider, by officer and reason.",

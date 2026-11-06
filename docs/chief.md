@@ -210,6 +210,36 @@ To turn it on:
 If the chief has no `mcp__hq__` tools it says so; check the four steps above
 (`ccd seed` logs which one is missing when the pod starts).
 
+## The chief on OpenRouter
+
+A `claude-code` chief can run on OpenRouter instead of a Claude account, through
+muster's [LLM proxy](officers.md#the-llm-proxy): its Claude Code calls
+`POST /llm/v1/messages` on the connect listener with its own muster token, and
+muster sends the request on with the server's key attached. Only the
+`docker compose` install's chief runtime turns this on.
+
+- **Who is served.** Only the admin's chief, and only while it is on (Account →
+  Chief): a chief you turned off is refused (403), and so is any other user's
+  chief. Any other agent is refused as it always was.
+- **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY` in `.env`. With it
+  empty, every request is refused (400) with a message naming it, and nothing
+  is sent.
+- **Which model.** A setting, `deepseek/deepseek-v4.1-flash` by default. Every
+  request is pinned to it, whatever model the client asks for.
+- **What it may spend.** muster sets **no budget** for the chief: no daily
+  budget, no per-item cap. **Set a credit limit on the key itself**, in
+  [OpenRouter's key settings](https://openrouter.ai/settings/keys): that limit
+  is the only cap. Usage is still counted in the metrics and the connector
+  audit trail, as officer `chief`.
+- **When the limit is reached.** If OpenRouter answers 402 (payment
+  required), the chief's turn ends with a 400 that tells it to check
+  `MUSTER_AGENT_OPENROUTER_KEY` and its credit limit, and muster does not
+  report the key as broken. If it answers 401 or 403, the chief gets the same
+  message, and muster also logs the key as refused and sets
+  `muster_officer_llm_upstream_auth_failing{officer="chief"}` to 1. Which
+  status OpenRouter sends for a spent limit has not been checked against the
+  live service.
+
 ## Restarting the chief
 
 The chief keeps running the image and tool set it was started on. After a muster

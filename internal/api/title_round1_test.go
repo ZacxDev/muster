@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/textplain"
@@ -34,7 +35,7 @@ func TestADispatchedAgentNamedAfterALongMarkdownTitleRendersPlain(t *testing.T) 
 
 	a := ui.AgentCardView{ID: 41, Name: "agent-41", Status: "running", DisplayName: name}
 	var b bytes.Buffer
-	if err := ui.RenderNavAgents(&b, []ui.AgentCardView{a}, nil, ""); err != nil {
+	if err := ui.RenderNavAgents(&b, []ui.AgentCardView{a}, nil, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	list := b.String()

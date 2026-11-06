@@ -113,6 +113,9 @@ func (s *Server) handleAttentionSummary(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		s.logger.Printf("attention: summary: %v", err)
 	}
+	// A notice's why is its push's first line, its focus title's age included
+	// (attentionPushBody): the same ages, from the same place (one focus read).
+	s.withFocusAges(ctx, items)
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, s.attentionSummaryOf(owner, items, err != nil, hosts, s.now()))
 }

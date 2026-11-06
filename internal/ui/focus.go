@@ -25,9 +25,25 @@ type FocusView struct {
 // Problem and ProblemAt were for that card. Its focus row sat beside the card's
 // control cluster, keeping the same pr-28 clear of it.)
 
-// 🔴 THE FOCUS AGE RULE — ONE PLACE. Every surface that shows a focus title
-// (the switcher dock's second line, the palette's results, the Asks list's
-// rows) says how old it is through FocusAgeOf, and nothing else decides it:
+// 🔴 THE FOCUS AGE RULE — ONE PLACE, ONE CLOCK. Every surface that shows a
+// focus title says how old it is through FocusAgeOf, at the SERVER's clock
+// (internal/api's s.now), and nothing else decides it:
+//
+//   - the owner's: the switcher dock's second line and the palette's results
+//     (SwitcherCurrent.Now), the sidebar's rows (NavAgentsList's now), the
+//     Asks list's rows, a chief notice's push body, and the attention
+//     summary's why (the push's first line);
+//   - the chief's: fleet_list, sessions_overview and focus_search rows and
+//     attention_list items (internal/api's focusAgeFields), and the chief
+//     nudge's prompt (FocusAgeLabel, chiefnudge.Session.TitleAge).
+//
+// Not here: focus_search with since_hours, fleet_report and the session
+// hints, which list PAST titles each with the time it was written, not a
+// current title's age; and a plugin message's pull-request author hint
+// (internal/api's prAuthorHint), which uses the current title as the
+// session's NAME beside its own last_seen time — named here so it is not
+// mistaken for covered.
+//
 // the dock and the palette draw in the browser, so the server computes the
 // age at RENDER time and hands them the result as attributes
 // (data-switcher-focus-age, data-switcher-focus-stale); their scripts only
@@ -75,6 +91,16 @@ func FocusAgeLabel(age FocusAge) string {
 		l += " (stale)"
 	}
 	return l
+}
+
+// FocusAgeSuffix is age as plain text after its title — " · 2d" — or "" when
+// there is no age: the Asks list's age element and a notice's push body both
+// spell it through here.
+func FocusAgeSuffix(age FocusAge) string {
+	if age.Text == "" {
+		return ""
+	}
+	return " · " + age.Text
 }
 
 // FocusAgeOf is the age at now of a focus title written at updatedAt. A zero

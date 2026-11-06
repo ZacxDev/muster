@@ -79,5 +79,6 @@ func (s *Server) switcher(ctx context.Context, cur ui.SwitcherCurrent) *ui.Switc
 		s.logger.Printf("switcher: list: %v", err)
 		return nil
 	}
+	cur.Now = s.now() // one clock for the focus ages (ui.FocusAgeOf)
 	return ui.NewSwitcher(cards, mirrors, s.recentRefs(ctx), cur)
 }

@@ -661,19 +661,19 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
 
 /*
  * The switcher dock (internal/ui/switcher_dock.go): a modal <dialog>, laid out
- * as a bottom sheet in the touch layout, the only layout that opens it in this
- * phase. Fixed to the bottom of the viewport, at the height of its snap,
- * measured against the VISUAL viewport (its script writes --dock-vvh and
- * --dock-half): half, or full less the top safe area and an 8px gap. Sitting
- * on a soft keyboard is Phase 3's, with the filter. It slides up and its backdrop
- * fades in, 220ms on the popovers' easing; display and overlay transition
- * discretely so the close plays before it leaves the top layer, and a closed
- * dock is display: none, so it adds nothing to first paint. Reduced motion: no
- * transition at all, both ways.
+ * as a bottom sheet in the touch layout, the only layout that opens it. ONE
+ * SNAP (operator decision: no full screen): 60% of the VISUAL viewport, never
+ * less than the header and three rows (its script writes --dock-half), its list
+ * scrolling inside it. It sits on a soft keyboard where one covers the page
+ * without resizing it (--dock-kb, 0 otherwise), so the filter stays above it.
+ * It slides up and its backdrop fades in, 220ms on the popovers' easing;
+ * display and overlay transition discretely so the close plays before it
+ * leaves the top layer, and a closed dock is display: none, so it adds nothing
+ * to first paint. Reduced motion: no transition at all, both ways.
  */
 #switcher-dock {
   position: fixed;
-  inset: auto 0 0 0;
+  inset: auto 0 var(--dock-kb, 0px) 0;
   margin: 0;
   width: 100%;
   max-width: none;
@@ -693,8 +693,11 @@ html[data-keyboard] [data-switcher-room] > #session-switcher {
   display: flex;
   transform: none;
 }
-#switcher-dock[data-snap="full"] {
-  height: calc(var(--dock-vvh, 100dvh) - env(safe-area-inset-top) - 8px);
+/* The filter draws its own clear button (data-dock-filter-clear), so the
+ * search field's built-in one would be a second ×. */
+#dock-filter::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
 }
 #switcher-dock::backdrop {
   background: rgb(0 0 0 / 0.5);

@@ -346,6 +346,78 @@ repositories (in the GitHub App's installation, [github-app.md](github-app.md)),
 make sure a `github` connector exists, then have the chief call `agent_dispatch`
 with `target: "pod/claude-code"` and `repo`.
 
+### The image as a docker compose service
+
+The same image runs as a `docker compose` service when `CCD_SPEC_DIR` is set.
+The entrypoint then runs `ccd compose` (`cmd/ccd/compose.go`) and nothing else;
+without the variable, which is the Kubernetes case, it runs exactly as above.
+muster configures the service through files in a shared volume, not through a
+docker socket.
+
+- **The spec.** muster writes `$CCD_SPEC_DIR/spec.json`:
+  `{"version":1,"name":…,"generation":N,"replicas":0|1,"epoch":"<hex>","env":[{"name","value"}…],"secrets":[…]}`.
+  `ccd compose` reads it every 2 seconds. A `version` other than 1 is refused,
+  and so are a `generation` below 1, `replicas` other than 0 or 1, an `epoch`
+  that is not hex, a variable named twice, and `CCD_LISTEN`, `CCD_SPEC_DIR` or
+  `CCD_APPROVE_UNANSWERED` in `env` or `secrets`. Fields it does not name, and other
+  files in the directory, are ignored. Files that belong elsewhere in the
+  container are written under `$CCD_SPEC_DIR/files/<path>` and mounted
+  read-only by the compose file (`files/etc/claude-code` at `/etc/claude-code`);
+  `ccd compose` does not copy them.
+- **The child.** With `replicas` 1, `ccd compose` runs the entrypoint again
+  as a child, without `CCD_SPEC_DIR`, with the spec's `env` and `secrets` in its
+  environment, `CCD_LISTEN=127.0.0.1:18790` and `CCD_APPROVE_UNANSWERED=deny`.
+  It proxies every request on port 18789 to the child, streamed responses
+  included. A new `generation` or `epoch` stops the child and starts another.
+  With `replicas` 0, an absent `spec.json` or a refused one, no child runs:
+  no CLI, so no model calls. `ccd compose` itself keeps running, so the
+  container does not exit.
+- **Stopping.** SIGTERM to the child's process group, SIGKILL after 20
+  seconds, then `tmux kill-server` on the server `ccd` used, then SIGKILL to
+  anything still descended from `ccd compose`. The last two steps are needed
+  because tmux runs in a session of its own: killing `ccd` leaves tmux and
+  `claude` running. `ccd compose` is a child subreaper, so the sweep can find
+  them.
+- **The epoch.** Before each start, if `/data/.muster-epoch` exists and holds
+  a different epoch, everything under `/data` is removed. Then the spec's epoch
+  is written there. If the file does not exist, nothing is removed. This is how
+  a destroy and create gives a chief a fresh volume.
+- **Supervision.** A child that exits is started again after a backoff (1s,
+  doubling, at most 30s). A child whose `/healthz` has not answered 200 within
+  305 seconds of starting, or has not answered 200 for 90 seconds after it
+  once did, is stopped and, after the same backoff, started again. These are
+  the Kubernetes driver's startup and liveness budgets.
+- **`GET /compose/status`** always answers 200:
+  `{"state","generation","replicas","epoch","boot","ready","reason"}`. `state`
+  is `awaiting_spec`, `off`, `starting`, `running`, `exited` or `error`.
+  `boot` is a random id for each child start, `""` when no child is running.
+  `ready` is whether the child's `/healthz` answered 200 on the last check.
+  While no child runs, `/healthz` (and `GET /`) answers 503 with
+  `{"compose":<that status>}`, and every other request a 503 `not_ready`
+  failure.
+- **Permission prompts are denied.** Nobody can answer one: there is no
+  approval gate and no terminal muster can reach, so a prompt deferred to the
+  terminal would hang the turn. With `CCD_APPROVE_UNANSWERED=deny`, `ccd
+  approve` denies every prompt that reaches it, without contacting the relay.
+  Only tools that are pre-allowed run.
+- **Logs.** `ccd compose` logs variable counts, never values.
+- **Users.** `ccd compose` must run as uid 0 and refuses any other uid. The
+  compose service runs it as `0:1001` with every capability dropped except
+  `SETUID`, `SETGID` and `KILL`, so it has no DAC override: it reads what group
+  1001 may read. The driver writes `spec.json` 0640 in group 1001. The child
+  runs as uid 1000, gid 1000, supplementary groups exactly `[1000]`, so the CLI
+  and its tool calls cannot read `spec.json` and its secrets, the turn bearer
+  included. This keeps the bearer out of the session's reach, as the Kubernetes
+  path does ([configuration.md](configuration.md#ccd-inside-the-claude-code-agent-image)).
+  The files under `files/` are group 1000 and readable by the CLI. The `/data`
+  wipe, the epoch marker and `tmux kill-server` run as uid 1000 (`ccd
+  compose-epoch` is the wipe's helper), because uid 0 without DAC override
+  cannot touch uid 1000's 0700 `/data`. `ccd compose` marks itself
+  non-dumpable.
+
+`images/claude-code-agent/compose-smoke.sh <image>` runs this mode with the
+real `ccd` and CLI in `docker compose`, and CI runs it.
+
 ## Talking to an agent
 
 When a gateway is configured, three routes are live:
@@ -505,6 +577,7 @@ the no-op driver brings in none of a cluster client's dependencies.
 |---|---|
 | `provision.Noop` | Records instead of provisioning. Use it to develop everything above the seam without a backend. |
 | `provision/k8s` | Renders its own minimal manifests and installs no chart: Namespace, ServiceAccount, **two** Secrets (confidential environment, and separately confidential files), ConfigMap, PVC, Deployment, Service, and a NetworkPolicy for `claude-code`. |
+| `provision/compose` | The chief on the `docker compose` install. It starts no container (that would need the Docker socket): it writes each admitted instance's spec and files into a volume shared with the `chief` container, whose supervisor runs, stops (replicas 0) and restarts (a new generation) the agent. It asks that container for its status. No exec, no network confinement, no resource limits: specs asking for those are refused. `Spec.Security` (`RunAsNonRoot`, `Restricted`, the uid and groups) is neither applied nor refused: this driver drops it, and the agent's identity and capabilities are whatever the Compose file and the image's supervisor give it. |
 
 `internal/agentprovision` adapts a driver to the API's lifecycle interface.
 `internal/agentgateway` speaks the chat protocol over the same driver.

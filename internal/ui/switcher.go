@@ -161,6 +161,10 @@ type SwitcherCurrent struct {
 	// address, so a pin there does not land on the session's other view. ""
 	// is the session's own page (its sidebar row's link, newSwitcherPin).
 	Back string
+	// Now is the server's clock, which every pill's focus age is worked out at
+	// (FocusAgeOf): the clock the Asks list, a notice's push and the chief's
+	// tools age titles by. Zero: time.Now.
+	Now time.Time
 }
 
 // is reports whether e is the page's own session.
@@ -339,7 +343,10 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 	var more []string
 	// One clock for every item's focus age (FocusAgeOf); NavAgentsList,
 	// which has the page's own, passes that one.
-	now := time.Now()
+	now := cur.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	if len(recent) > switcherRecentMax {
 		for _, it := range switcherItems(recent[switcherRecentMax:], cur, now) {
 			more = append(more, it.Href)
@@ -983,8 +990,8 @@ var switcherOOBJS = `if (!window.__musterSwitcherOOB || window.__musterSwitcherO
 // scale other than 1) is not a keyboard.
 var switcherKeyboardJS = `if (!window.__musterSwitcherKb) {
     window.__musterSwitcherKb = true;
-    var root = document.documentElement, vw = window;
-    try { if (window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) vw = window.parent; } catch (e) {}
+` + keyboardViewportJS + `
+    var root = document.documentElement, vw = kbWin();
     var kbWidth = -1, tallest = 0;
     function typing() {
       var a = document.activeElement;
@@ -993,9 +1000,9 @@ var switcherKeyboardJS = `if (!window.__musterSwitcherKb) {
       return a.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(a.type);
     }
     function kbCheck() {
-      var v = vw.visualViewport;
-      if (v && Math.abs(v.scale - 1) > 0.001) return;
-      var w = vw.innerWidth, h = v ? v.height : vw.innerHeight;
+      var m = kbMeasure(vw);
+      if (!m) return;
+      var w = vw.innerWidth, h = m.h;
       if (w !== kbWidth) { kbWidth = w; tallest = h; }
       if (h > tallest) tallest = h;
       var up = typing() && tallest - h >= ` + strconv.Itoa(switcherKeyboardDrop) + `;
