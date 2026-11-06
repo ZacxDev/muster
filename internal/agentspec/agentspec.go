@@ -525,6 +525,9 @@ type ClaudeCodeSession struct {
 	// only (internal/api OfficerClaudeCodeSession). Needs Config.ConnectURL,
 	// and refuses a Model: the proxy pins the model.
 	LLMRoute bool
+	// DisableAutoMemory turns off the CLI's auto-memory. STUB (red): not
+	// rendered yet.
+	DisableAutoMemory bool
 }
 
 // EgressLocked reports whether the pod's network policy drops the public-443

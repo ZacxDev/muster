@@ -171,6 +171,10 @@ func claudeCodeResourcesFor(cfg Config) provision.Resources {
 // work: the first succeeds, the second fails closed.
 const EnvClaudeDisableNonessentialTraffic = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 
+// EnvClaudeDisableAutoMemory is the Claude Code CLI's switch for auto-memory.
+// STUB (red): not rendered yet.
+const EnvClaudeDisableAutoMemory = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+
 // ClaudeCodeMCPOffered reports whether a claude-code agent built from this
 // Config can reach muster's MCP server — its ONLY route to muster's tools (the
 // image carries no muster CLI). ccd registers that server exactly when the pod
