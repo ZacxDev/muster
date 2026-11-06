@@ -99,6 +99,20 @@ func runApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) (code 
 		client:   &http.Client{Timeout: 10 * time.Second, CheckRedirect: noRedirects.CheckRedirect},
 		logf:     func(f string, v ...any) { fmt.Fprintf(stderr, "ccd approve: "+f+"\n", v...) },
 	}
+	// 🔴 A CONTAINER WHERE NOBODY CAN ANSWER (the Compose chief): DENY, never
+	// defer — a deferred prompt there is a turn that never ends. It can only
+	// ever print the deny decision; an unknown value keeps today's behaviour
+	// (defer), and says so.
+	switch v := os.Getenv(podagent.EnvApproveUnanswered); v {
+	case "":
+	case podagent.ApproveUnansweredDeny:
+		a.logf("%s=%s: no operator can answer a permission prompt in this container (the Compose chief has no "+
+			"terminal and no approval gate); denied", podagent.EnvApproveUnanswered, v)
+		fmt.Fprint(stdout, approveDeny)
+		return 0
+	default:
+		a.logf("%s=%q is not %q; ignoring it", podagent.EnvApproveUnanswered, v, podagent.ApproveUnansweredDeny)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 	body, err := io.ReadAll(io.LimitReader(stdin, 1<<20))

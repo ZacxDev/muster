@@ -30,7 +30,7 @@
 //	                     operator through muster's approval relay (approve.go)
 //	ccd compose          the image as a docker compose service: run the entrypoint
 //	                     as a child per the spec muster writes under CCD_SPEC_DIR,
-//	                     and proxy CCD_COMPOSE_LISTEN (default :18789) to it (compose.go)
+//	                     and proxy :18789 to it (compose.go)
 //	ccd compose-epoch    the helper `ccd compose` runs as the CLI's user to empty
 //	                     /data for a new epoch (compose.go prepareEpoch)
 //

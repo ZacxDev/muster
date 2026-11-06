@@ -48,6 +48,18 @@ const (
 	// PermissionModeBypass is EnvPermissionMode's one value: the CLI's own
 	// bypassPermissions mode.
 	PermissionModeBypass = "bypassPermissions"
+	// EnvApproveUnanswered says what `ccd approve` does with a permission
+	// prompt in a container where NOBODY can answer one: the Compose chief has
+	// no approval gate and no terminal muster can reach, so a deferred prompt
+	// would hang its turn for ever. Its one value is ApproveUnansweredDeny;
+	// unset is today's behaviour (the relay, then the terminal). `ccd compose`
+	// sets it in its child's environment itself (cmd/ccd/compose.go childEnv);
+	// nothing else sets it.
+	EnvApproveUnanswered = "CCD_APPROVE_UNANSWERED"
+	// ApproveUnansweredDeny is EnvApproveUnanswered's one value: deny every
+	// prompt that reaches the hook. The tools that must run are pre-allowed
+	// (EnvAllowMCPTools) and never reach it.
+	ApproveUnansweredDeny = "deny"
 	// MCPServerName is muster's server name in the CLI's mcpServers
 	// (cmd/ccd/connect.go registers it under this name).
 	MCPServerName = "muster"

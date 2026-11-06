@@ -1260,8 +1260,7 @@ jobs:
   #     (.github/scripts/release-publish.sh)
   #
   # 🔴 LAST, AND GATED ON THE IMAGES. The release's docker-compose.yml names
-  # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z> (and, once the
-  # chief runs in it, claude-code-agent:<X.Y.Z>, which gates it too); publishing
+  # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z>; publishing
   # the release before them would hand people a compose file that cannot pull.
   #
   # RELEASE NOTES: GitHub's generated notes — the pull requests merged since
@@ -1272,7 +1271,7 @@ jobs:
   release:
     name: GitHub release (tags only)
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
-    needs: [image-muster, image-claude-code-agent, image-stt-cohere]
+    needs: [image-muster, image-stt-cohere]
     runs-on: ubuntu-latest
     concurrency:
       group: github-release-${{ github.ref_name }}

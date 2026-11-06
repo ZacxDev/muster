@@ -359,15 +359,15 @@ docker socket.
   `ccd compose` reads it every 2 seconds. A `version` other than 1 is refused,
   and so are a `generation` below 1, `replicas` other than 0 or 1, an `epoch`
   that is not hex, a variable named twice, and `CCD_LISTEN`, `CCD_SPEC_DIR` or
-  `CCD_COMPOSE_LISTEN` in `env` or `secrets`. Fields it does not name, and other
+  `CCD_APPROVE_UNANSWERED` in `env` or `secrets`. Fields it does not name, and other
   files in the directory, are ignored. Files that belong elsewhere in the
   container are written under `$CCD_SPEC_DIR/files/<path>` and mounted
   read-only by the compose file (`files/etc/claude-code` at `/etc/claude-code`);
   `ccd compose` does not copy them.
 - **The child.** With `replicas` 1, `ccd compose` runs the entrypoint again
   as a child, without `CCD_SPEC_DIR`, with the spec's `env` and `secrets` in its
-  environment and `CCD_LISTEN=127.0.0.1:18790`. It proxies every request on
-  `CCD_COMPOSE_LISTEN` (default `:18789`) to the child, streamed responses
+  environment, `CCD_LISTEN=127.0.0.1:18790` and `CCD_APPROVE_UNANSWERED=deny`.
+  It proxies every request on port 18789 to the child, streamed responses
   included. A new `generation` or `epoch` stops the child and starts another.
   With `replicas` 0, an absent `spec.json` or a refused one, no child runs:
   no CLI, so no model calls. `ccd compose` itself keeps running, so the
@@ -395,6 +395,11 @@ docker socket.
   While no child runs, `/healthz` (and `GET /`) answers 503 with
   `{"compose":<that status>}`, and every other request a 503 `not_ready`
   failure.
+- **Permission prompts are denied.** Nobody can answer one: there is no
+  approval gate and no terminal muster can reach, so a prompt deferred to the
+  terminal would hang the turn. With `CCD_APPROVE_UNANSWERED=deny`, `ccd
+  approve` denies every prompt that reaches it, without contacting the relay.
+  Only tools that are pre-allowed run.
 - **Logs.** `ccd compose` logs variable counts, never values.
 - **Users.** `ccd compose` must run as uid 0 and refuses any other uid. The
   compose service runs it as `0:1001` with every capability dropped except

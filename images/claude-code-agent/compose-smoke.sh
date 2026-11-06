@@ -26,6 +26,8 @@
 #      the secrets reached the CLI's environment and appear in no log line; ccd
 #      and the CLI run as uid 1000, gid 1000, groups exactly 1000, with no
 #      capabilities, HOME /home/node, in /data/workspace; the supervisor as uid 0;
+#      and a permission prompt (`ccd approve`, as the CLI's hooks run it) is
+#      denied at once, where the same hook without CCD_APPROVE_UNANSWERED defers;
 #   4. a new generation (after /exit left a transcript to resume) is a new child:
 #      a new boot id and ccd pid, the same supervisor pid, /healthz 200 with the
 #      session started again and the CLI resumed (`cli_mode` continue) — no
@@ -218,6 +220,27 @@ in_chief sh -c "tr '\\0' '\\n' </proc/$cli/environ" | grep -qxF "CLAUDE_CODE_OAU
 in_chief sh -c "tr '\\0' '\\n' </proc/$cli/environ" | grep -q '^MUSTER_GATEWAY_BEARER=' \
   && fail "the turn bearer reached the CLI's environment (ccd must unset it)"
 in_chief sh -c 'echo planted > /data/smoke-marker'
+# A permission prompt in this chief is DENIED, never deferred to a terminal no
+# one can reach: the PermissionRequest hook (`ccd approve`) run as the CLI's
+# hooks run it, as uid 1000 with the CLI's own environment, which `ccd compose`
+# gave CCD_APPROVE_UNANSWERED=deny. The control: the same hook with that one
+# variable removed defers (prints nothing), so the deny is the flag's.
+approve_as_cli() {  # approve_as_cli [env -u args…]: the hook's stdout; its stderr in $work/approve.err
+  # shellcheck disable=SC2016 # expanded by the container's bash, on purpose
+  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"true"},"permission_mode":"default"}' \
+    | dc exec -T -u 1000:1000 chief bash -c 'mapfile -d "" e <"/proc/$1/environ"; shift; exec env -i "${e[@]}" env "$@" ccd approve' \
+      sh "$cli" "$@" 2>"$work/approve.err"
+}
+in_chief sh -c "tr '\\0' '\\n' </proc/$cli/environ" | grep -qx 'CCD_APPROVE_UNANSWERED=deny' \
+  || fail "the CLI's environment lacks CCD_APPROVE_UNANSWERED=deny"
+out="$(approve_as_cli)"
+[[ "$out" == '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}' ]] \
+  || fail "a permission prompt in the chief was not denied: stdout '$out', stderr $(cat "$work/approve.err")"
+grep -q 'no operator can answer a permission prompt in this container' "$work/approve.err" \
+  || fail "the denial does not say why: $(cat "$work/approve.err")"
+out="$(approve_as_cli -u CCD_APPROVE_UNANSWERED)"
+[[ -z "$out" ]] || fail "control: without the flag the hook did not defer: '$out'"
+echo "compose-smoke: a permission prompt in the chief is denied (the flag ccd compose sets); without it, deferred"
 echo "compose-smoke: generation 1 running (boot $boot1, ccd pid $serve1): session started, turn reached ccd, epoch recorded"
 
 # 4. A new generation, with a transcript to resume: /exit leaves one (cc-smoke step 5).

@@ -135,8 +135,7 @@ func newComposeHarness(t *testing.T) *composeHarness {
 	s.argv = []string{os.Args[0]}
 	s.childAddr = freeAddr(t)
 	s.baseEnv = append(os.Environ(), "CCD_TEST_AS=composechild", "CCD_TEST_ENV_DUMP="+h.envDump,
-		"CCD_TEST_HEALTH_FILE="+h.health, "CCD_TEST_RELEASE="+h.release, envSpecDir+"="+h.dir,
-		envComposeListen+"=:1")
+		"CCD_TEST_HEALTH_FILE="+h.health, "CCD_TEST_RELEASE="+h.release, envSpecDir+"="+h.dir)
 	s.poll, s.stopGrace, s.healthTimeout = 30*time.Millisecond, 3*time.Second, time.Second
 	s.backoffMin, s.backoffMax = 50*time.Millisecond, 100*time.Millisecond
 	s.logf = func(f string, a ...any) {
@@ -424,6 +423,26 @@ func TestComposeRefusesAVariableTheSupervisorSets(t *testing.T) {
 	}
 }
 
+// The child's prompts are denied because the supervisor says so, not because a
+// spec remembered to: a spec may not set the flag at all, to any value.
+func TestComposeRefusesASpecThatSetsTheUnansweredPromptFlag(t *testing.T) {
+	for _, list := range []string{"env", "secrets"} {
+		t.Run(list, func(t *testing.T) {
+			h := newComposeHarness(t)
+			sp := spec(1, 1, "aa")
+			sp[list] = []any{map[string]string{"name": "CCD_APPROVE_UNANSWERED", "value": ""}}
+			h.writeSpec(sp)
+			st := h.waitFor("error", func(st composeStatus) bool { return st.State == composeError })
+			if want := "spec.json: " + list + " names CCD_APPROVE_UNANSWERED, which this supervisor sets itself"; st.Reason != want {
+				t.Fatalf("reason %q, want %q", st.Reason, want)
+			}
+			if _, err := os.Stat(h.envDump); err == nil {
+				t.Fatal("a child was started for a spec that sets CCD_APPROVE_UNANSWERED")
+			}
+		})
+	}
+}
+
 func TestComposeReadsSpecFieldsItDoesNotKnow(t *testing.T) {
 	h := newComposeHarness(t)
 	sp := spec(1, 1, "aa")
@@ -455,12 +474,12 @@ func TestComposeExportsSecretsToTheChildAndNeverLogsThem(t *testing.T) {
 	env := "\n" + string(b) + "\n"
 	// The positive control: the values DID pass through this process.
 	for _, want := range []string{"\nMUSTER_GATEWAY_BEARER=" + composeSecretValue + "\n", "\nSOME_SETTING=" + composeEnvValue + "\n",
-		"\nCCD_LISTEN=" + h.sup.childAddr + "\n"} {
+		"\nCCD_LISTEN=" + h.sup.childAddr + "\n", "\nCCD_APPROVE_UNANSWERED=deny\n"} {
 		if !strings.Contains(env, want) {
 			t.Fatalf("the child's environment lacks %q", strings.TrimSpace(want))
 		}
 	}
-	for _, gone := range []string{"\n" + envSpecDir + "=", "\n" + envComposeListen + "="} {
+	for _, gone := range []string{"\n" + envSpecDir + "="} {
 		if strings.Contains(env, gone) {
 			t.Fatalf("the child's environment still holds %s", strings.TrimSpace(gone))
 		}

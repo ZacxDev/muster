@@ -90,7 +90,6 @@ import (
 // 0700 /data). runCompose refuses to run as any uid but 0.
 const (
 	envSpecDir         = "CCD_SPEC_DIR"
-	envComposeListen   = "CCD_COMPOSE_LISTEN"
 	composeChildListen = "127.0.0.1:18790"
 	composeEntrypoint  = "/usr/local/bin/cc-entrypoint"
 	composeDataDir     = "/data"
@@ -171,7 +170,7 @@ var (
 // environment (or removes from it). A spec naming one is refused rather than
 // silently overridden: a CCD_LISTEN of muster's choosing would move the child
 // off the port this process proxies to.
-var composeReserved = map[string]bool{envSpecDir: true, envComposeListen: true, "CCD_LISTEN": true}
+var composeReserved = map[string]bool{envSpecDir: true, "CCD_LISTEN": true, podagent.EnvApproveUnanswered: true}
 
 // readComposeSpec reads and checks dir/spec.json. errSpecAbsent when there is
 // none. 🔴 An error never carries a value from the file: json's own errors can
@@ -264,6 +263,11 @@ func childEnv(base []string, sp *composeSpec, listen string) []string {
 		m[v.Name] = v.Value
 	}
 	m["CCD_LISTEN"] = listen
+	// 🔴 NOBODY CAN ANSWER A PERMISSION PROMPT HERE: the Compose chief has no
+	// approval gate and no terminal muster can reach, so a prompt `ccd approve`
+	// deferred to the terminal would hang its turn for ever. The supervisor
+	// sets this itself, so no spec can leave it out (approve.go).
+	m[podagent.EnvApproveUnanswered] = podagent.ApproveUnansweredDeny
 	out := make([]string, 0, len(m))
 	for k, v := range m {
 		out = append(out, k+"="+v)
@@ -931,7 +935,7 @@ func runCompose(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	sup := newComposeSup(dir, cred)
-	addr := envOr(envComposeListen, defaultListen)
+	addr := defaultListen // agentspec.DefaultGatewayPort: the port the driver and the healthcheck reach
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		fmt.Fprintf(stderr, "ccd compose: listen %s: %v\n", addr, err)
