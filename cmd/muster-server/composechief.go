@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -133,6 +134,12 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 		{envChiefDispatchOwners, len(c.ChiefDispatchOwners) > 0},
 		{envChiefSessionRuntimes, len(c.ChiefSessionRuntimes) > 0},
 		{envTagAutoDispatch, c.TagAutoDispatch},
+		// The hosted store's credential lands in the chief's spec as a 0600
+		// secret file, which the compose driver refuses (it can only write a
+		// file the agent's group reads): refused here, at boot, instead of at
+		// the chief's first start.
+		{envAgentCairnURL, c.AgentCairnURL != ""},
+		{envAgentCairnToken, c.AgentCairnToken != ""},
 	} {
 		if v.on {
 			set = append(set, v.env)
@@ -204,6 +211,11 @@ func composeAdmit(r provision.Ref) error {
 // another user's group, records the calls instead.
 var composeChown func(path string, gid int) error
 
+// chiefLLMUpstream replaces the chief proxy's provider API base. "" (always,
+// outside tests) is llmproxy.DefaultUpstream; a test points it at a stub
+// provider so nothing reaches OpenRouter.
+var chiefLLMUpstream string
+
 // buildComposeDriver is buildDriver's compose arm.
 func buildComposeDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
 	d, err := compose.New(compose.Config{Root: cfg.ChiefSpecDir, Admit: composeAdmit, Hint: composeChiefHint,
@@ -211,8 +223,11 @@ func buildComposeDriver(cfg config, logger *log.Logger) (provision.Provisioner, 
 	if err != nil {
 		return nil, err
 	}
+	// The port is agentspec.DefaultGatewayPort, the one the claude-code spec
+	// always declares (ccd's), not cfg.agentGatewayPort(): MUSTER_AGENT_GATEWAY_PORT
+	// moves the gateway kind's port and never this container's.
 	logger.Printf("chief runtime: COMPOSE (%s=%s) — spec volume %s, container %s:%d, MCP door %s",
-		envChiefRuntime, chiefRuntimeCompose, cfg.ChiefSpecDir, agents.ChiefName, cfg.agentGatewayPort(), cfg.AgentConnectURL)
+		envChiefRuntime, chiefRuntimeCompose, cfg.ChiefSpecDir, agents.ChiefName, agentspec.DefaultGatewayPort, cfg.AgentConnectURL)
 	return d, nil
 }
 

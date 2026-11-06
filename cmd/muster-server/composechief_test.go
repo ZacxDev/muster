@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"html"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +14,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -101,6 +105,8 @@ func TestTheComposeChiefRefusesAnAgentPlaneVariableBesideIt(t *testing.T) {
 		envChiefDispatchOwners:  "1",
 		envChiefSessionRuntimes: "claude-code",
 		envTagAutoDispatch:      "1",
+		envAgentCairnURL:        "https://cairn.example.test",
+		envAgentCairnToken:      "a-synthetic-cairn-token",
 	} {
 		t.Run(env, func(t *testing.T) {
 			e := composeEnv("/run/muster-spec")
@@ -445,18 +451,43 @@ func keysOf(m map[string]string) []string {
 	return out
 }
 
-// TestTheComposeChiefIsServedByTheLLMProxy: the runtime wires the chief's place
-// on the LLM proxy (api.EnableChiefLLM), so the chief's own POST
-// /llm/v1/messages on the connect door is the chief proxy's answer, never the
-// officers-only 503 ("no officer on this server declares `llm`") a server
-// without the wiring gives. Run with no OpenRouter key, so nothing is sent:
-// the answer is the proxy's own refusal naming the variable. The boot log
-// names the pinned model.
-func TestTheComposeChiefIsServedByTheLLMProxy(t *testing.T) {
-	st := newComposeStack(t, map[string]string{envChiefClaudeToken: "sk-ant-oat01-FAKE-compose-llm-wiring-7a"})
-	if !strings.Contains(st.logs.String(), "chief llm: ON for the admin's chief (deepseek/deepseek-v4.1-flash), but MUSTER_AGENT_OPENROUTER_KEY is empty") {
-		t.Fatalf("no chief llm boot line naming the model:\n%s", st.logs.String())
-	}
+// composeProvider is a stub Anthropic-Messages provider for the chief proxy
+// (chiefLLMUpstream): it records each request's Authorization header and model
+// and answers one short stream.
+type composeProvider struct {
+	mu    sync.Mutex
+	auth  []string
+	model []string
+}
+
+func (p *composeProvider) calls() int { p.mu.Lock(); defer p.mu.Unlock(); return len(p.auth) }
+
+func newComposeProvider(t *testing.T) *composeProvider {
+	t.Helper()
+	p := &composeProvider{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		p.mu.Lock()
+		p.auth = append(p.auth, r.Header.Get("Authorization"))
+		p.model = append(p.model, body.Model)
+		p.mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_c\",\"model\":\""+body.Model+"\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	chiefLLMUpstream = srv.URL + "/api"
+	t.Cleanup(func() { chiefLLMUpstream = "" })
+	return p
+}
+
+// chiefLLMRequest turns the chief on and sends its own POST /llm/v1/messages
+// on the connect door, with its own token.
+func (st *composeStack) chiefLLMRequest(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
 	if w := st.post("/account/chief", url.Values{"on": {"1"}}); !strings.Contains(w.Header().Get("Location"), "chief=saved") {
 		t.Fatalf("turn the chief on: %d %s", w.Code, w.Header().Get("Location"))
 	}
@@ -465,15 +496,87 @@ func TestTheComposeChiefIsServedByTheLLMProxy(t *testing.T) {
 	if token == "" || st.app.connect == nil {
 		t.Fatalf("no chief token (%v) or no connect door (%v)", token != "", st.app.connect != nil)
 	}
-	r := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(`{"model":"x","max_tokens":1,"messages":[]}`))
+	r := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(`{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`))
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	st.app.connect.Handler.ServeHTTP(w, r)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "set MUSTER_AGENT_OPENROUTER_KEY") {
-		t.Fatalf("the chief's LLM request: %d %s; want the chief proxy's no-key refusal", w.Code, w.Body)
+	return w
+}
+
+// TestTheComposeChiefIsServedByTheLLMProxy: with no subscription token and the
+// admin's OpenRouter key, the credential rule puts the chief on OpenRouter, so
+// the runtime's chief proxy (api.EnableChiefLLM) serves its own POST
+// /llm/v1/messages: forwarded to the provider on the admin's key, pinned to
+// the default model. Never the officers-only 503 a server without the wiring
+// gives. A stub provider stands in for OpenRouter.
+func TestTheComposeChiefIsServedByTheLLMProxy(t *testing.T) {
+	const key = "sk-or-v1-FAKE-compose-llm-served-8c"
+	up := newComposeProvider(t)
+	st := newComposeStack(t, map[string]string{envAgentOpenRouterKey: key})
+	if !strings.Contains(st.logs.String(), "chief llm: the admin's chief may reach deepseek/deepseek-v4.1-flash through the LLM proxy") {
+		t.Fatalf("no chief llm boot line naming the model:\n%s", st.logs.String())
 	}
-	if strings.Contains(w.Body.String(), "no officer on this server") {
-		t.Fatal("the chief got the officers-only refusal: the chief proxy is not wired")
+	w := st.chiefLLMRequest(t)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "no officer on this server") {
+		t.Fatalf("the chief's LLM request: %d %s; want the provider's answer", w.Code, w.Body)
+	}
+	if up.calls() != 1 || up.auth[0] != "Bearer "+key || up.model[0] != "deepseek/deepseek-v4.1-flash" {
+		t.Fatalf("the provider saw %d call(s), auth %q, model %q; want 1 on the admin's key and the pinned model", up.calls(), up.auth, up.model)
+	}
+}
+
+// TestTheComposeChiefOnItsSubscriptionIsRefusedByTheLLMProxy: with
+// MUSTER_CHIEF_CLAUDE_TOKEN set beside the OpenRouter key, the credential rule
+// puts the chief on its subscription, so the LLM proxy refuses the chief's own
+// request (403) and nothing reaches the provider. Before, the proxy served it
+// on the admin's key with no muster budget, whatever the rule said (audit
+// round 1, F1). The served case above is this test's positive control: the
+// same stub provider records a call there.
+func TestTheComposeChiefOnItsSubscriptionIsRefusedByTheLLMProxy(t *testing.T) {
+	up := newComposeProvider(t)
+	st := newComposeStack(t, map[string]string{envChiefClaudeToken: "sk-ant-oat01-FAKE-compose-llm-refused-4d",
+		envAgentOpenRouterKey: "sk-or-v1-FAKE-compose-llm-refused-4d"})
+	w := st.chiefLLMRequest(t)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "runs on its Claude subscription (MUSTER_CHIEF_CLAUDE_TOKEN)") {
+		t.Fatalf("the subscription chief's LLM request: %d %s; want the proxy's 403 refusal", w.Code, w.Body)
+	}
+	if n := up.calls(); n != 0 {
+		t.Fatalf("the provider saw %d call(s) for a chief on its subscription; want none", n)
+	}
+}
+
+// TestTheComposeChiefRefusesOfficersBesideIt: MUSTER_OFFICERS beside the
+// Compose chief refuses to boot, naming it. An INVARIANT guard on existing
+// code (audit round 1, F2: the refusal had no test): without it a mis-set .env
+// boots and its officers silently never dispatch (composeAdmit admits the
+// chief alone).
+func TestTheComposeChiefRefusesOfficersBesideIt(t *testing.T) {
+	e := composeEnv("/run/muster-spec")
+	e[envOfficers] = `[{"id":"release:example-web","hq_url":"https://hq.example.invalid/api/v1"}]`
+	e["MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB"] = "fixture-officer-token-compose-1"
+	if _, err := loadEnv(t, e); err == nil || !strings.Contains(err.Error(), "but "+envOfficers+" is also set") {
+		t.Fatalf("%s beside the Compose chief: %v, want a refusal naming it", envOfficers, err)
+	}
+	// Control: the same environment without the officers loads, so the
+	// refusal above is the officers'.
+	delete(e, envOfficers)
+	if _, err := loadEnv(t, e); err != nil {
+		t.Fatalf("control: the Compose chief without officers was refused: %v", err)
+	}
+}
+
+// TestTheComposeBootLineNamesTheChiefsOwnPort: the boot line prints the port
+// the claude-code spec declares (agentspec.DefaultGatewayPort), not
+// MUSTER_AGENT_GATEWAY_PORT, which moves only the gateway kind's port.
+func TestTheComposeBootLineNamesTheChiefsOwnPort(t *testing.T) {
+	cfg := config{ChiefSpecDir: t.TempDir(), AgentGatewayPort: 19999, AgentConnectURL: "http://muster:18191"}
+	var logs bytes.Buffer
+	if _, err := buildComposeDriver(cfg, log.New(&logs, "", 0)); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("container %s:%d, MCP door", agents.ChiefName, agentspec.DefaultGatewayPort)
+	if !strings.Contains(logs.String(), want) || strings.Contains(logs.String(), "19999") {
+		t.Fatalf("boot line %q; want %q and not the gateway kind's 19999", logs.String(), want)
 	}
 }

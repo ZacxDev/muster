@@ -507,7 +507,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("agent plane: %w", err)
 	}
 	if prov != nil && cfg.chiefCompose() {
-		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane)}
+		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane), OpenRouterKey: plane.OpenRouterKey}
 	}
 	if prov != nil {
 		ext.Provisioner = prov
@@ -734,13 +734,22 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 
 	// The Compose chief on the OpenRouter key reaches its model through the
-	// LLM proxy (api.EnableChiefLLM): the admin's chief alone, on the admin's
-	// key (MUSTER_AGENT_OPENROUTER_KEY, which composeChiefCredential reads for
-	// user 1 through the same plane), the model pinned, no muster budget (the
-	// key's own credit limit is the cap). Only the Compose chief: nothing else
-	// here runs a chief on the LLM route.
+	// LLM proxy (api.EnableChiefLLM): the admin's chief alone, the model
+	// pinned, no muster budget (the key's own credit limit is the cap). Only
+	// the Compose chief: nothing else here runs a chief on the LLM route.
+	//
+	// 🔴 THE PROXY ASKS ext.ComposeChief ON EVERY REQUEST: it serves the chief
+	// only when composeChiefCredential says OpenRouter (never a chief on its
+	// subscription token), on the key the credential plane gives the owner.
+	// Without ext.ComposeChief it would serve on ChiefLLM.Key whatever the rule
+	// said, so that is a boot refusal.
 	if cfg.chiefCompose() {
-		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey}); err != nil {
+		if ext.ComposeChief == nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=%s: the Compose chief's credential rule is not wired (no agent provisioner), "+
+				"so the LLM proxy could not ask it", envChiefRuntime, chiefRuntimeCompose)
+		}
+		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: chiefLLMUpstream}); err != nil {
 			a.Close()
 			return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)
 		}

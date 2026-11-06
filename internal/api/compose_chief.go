@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/llmproxy"
+	"github.com/ZacxDev/muster/internal/metrics"
 )
 
 // ---------------------------------------------------------------------------
@@ -83,6 +87,53 @@ type ComposeChief struct {
 	// Credential is which credential owner's chief runs on, or
 	// ErrComposeChiefNoCredential naming what to add. Required.
 	Credential func(ctx context.Context, owner int64) (ComposeChiefCred, error)
+	// OpenRouterKey is owner's OpenRouter key from the credential plane
+	// (credentials.Plane.OpenRouterKey, the plane the Account page and
+	// Credential read). The LLM proxy serves the chief on it. Required.
+	OpenRouterKey func(ctx context.Context, owner int64) (string, error)
+}
+
+// ComposeChiefOnSubscription is the LLM proxy's refusal to a Compose chief
+// that the credential rule puts on its Claude subscription.
+const ComposeChiefOnSubscription = "this chief runs on its Claude subscription (MUSTER_CHIEF_CLAUDE_TOKEN), not on the " +
+	"server's OpenRouter key: the LLM proxy does not serve it, and nothing was sent"
+
+// composeChiefLLMKey is the key serveChiefLLM serves the Compose chief a on,
+// asked of the same rule the spec builder and the Account page ask
+// ([ComposeChief.Credential]), so the proxy cannot serve a chief that rule put
+// on its subscription:
+//
+//   - the rule says OpenRouter: the owner's key, read from the credential plane;
+//   - the rule says the subscription: refused (403), nothing sent;
+//   - the rule finds no credential: "" (serveChiefLLM's no-key refusal);
+//   - any read error: refused (503), nothing sent.
+//
+// ok is false when the refusal was written to w.
+func (s *Server) composeChiefLLMKey(w http.ResponseWriter, ctx context.Context, a agents.Agent) (key string, ok bool) {
+	owner := agentOwnerID(a)
+	cred, err := s.ext.ComposeChief.Credential(ctx, owner)
+	switch {
+	case errors.Is(err, ErrComposeChiefNoCredential):
+		return "", true
+	case err != nil:
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "credential_error").Inc()
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q): reading its credential: %v (nothing sent)", a.ID, a.Name, err)
+		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "the chief's credential could not be read; nothing was sent")
+		return "", false
+	case cred != ComposeChiefOpenRouter:
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "subscription").Inc()
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q): it runs on its Claude subscription (nothing sent)", a.ID, a.Name)
+		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", ComposeChiefOnSubscription)
+		return "", false
+	}
+	key, err = s.ext.ComposeChief.OpenRouterKey(ctx, owner)
+	if err != nil {
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "credential_error").Inc()
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q): reading its OpenRouter key: %v (nothing sent)", a.ID, a.Name, err)
+		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "the chief's OpenRouter key could not be read; nothing was sent")
+		return "", false
+	}
+	return strings.TrimSpace(key), true
 }
 
 // composeChiefOwner reports whether owner is the one user a Compose install

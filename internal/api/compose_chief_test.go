@@ -156,3 +156,52 @@ func TestTheComposeChiefsTerminalSaysWhereItsOutputIs(t *testing.T) {
 		t.Fatalf("the terminal page: %d %.1500s", rec.Code, rec.Body)
 	}
 }
+
+// TestTheLLMProxyAsksTheComposeChiefsCredentialRule: on Compose the chief
+// proxy serves the chief only when ComposeChief.Credential says OpenRouter,
+// and on the key ComposeChief.OpenRouterKey (the credential plane) gives, not
+// ChiefLLM.Key. The plane's key is distinct from ChiefLLM.Key so the served
+// case can tell which was used. Audit round 1, F1.
+func TestTheLLMProxyAsksTheComposeChiefsCredentialRule(t *testing.T) {
+	const planeKey = "sk-or-v1-FAKE-plane-key-7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a"
+	for _, tc := range []struct {
+		name     string
+		cred     ComposeChiefCred
+		credErr  error
+		keyErr   error
+		code     int
+		body     string
+		upstream int
+	}{
+		{name: "openrouter", cred: ComposeChiefOpenRouter, code: http.StatusOK, upstream: 1},
+		{name: "subscription", cred: ComposeChiefClaude, code: http.StatusForbidden, body: ComposeChiefOnSubscription},
+		{name: "no credential", credErr: ErrComposeChiefNoCredential, code: http.StatusBadRequest, body: NeedChiefOpenRouterKey},
+		{name: "credential error", credErr: errors.New("role read failed"), code: http.StatusServiceUnavailable, body: "credential could not be read"},
+		{name: "key error", cred: ComposeChiefOpenRouter, keyErr: errors.New("store down"), code: http.StatusServiceUnavailable, body: "OpenRouter key could not be read"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := chiefLLMOn(t)
+			r.s.ext.ComposeChief = &ComposeChief{
+				Credential: func(context.Context, int64) (ComposeChiefCred, error) { return tc.cred, tc.credErr },
+				OpenRouterKey: func(context.Context, int64) (string, error) {
+					if tc.keyErr != nil {
+						return "", tc.keyErr
+					}
+					return planeKey, nil
+				},
+			}
+			w := r.post(t, tokAdminChief)
+			if w.Code != tc.code || !strings.Contains(w.Body.String(), tc.body) {
+				t.Fatalf("%d %s; want %d containing %q", w.Code, w.Body, tc.code, tc.body)
+			}
+			if got := r.up.calls(); got != tc.upstream {
+				t.Fatalf("upstream calls = %d, want %d", got, tc.upstream)
+			}
+			if tc.upstream > 0 {
+				if hdr, _ := r.up.last(); hdr.Get("Authorization") != "Bearer "+planeKey {
+					t.Fatal("the chief was served on ChiefLLM.Key, not the credential plane's key")
+				}
+			}
+		})
+	}
+}
