@@ -488,8 +488,9 @@ model (it is checked, below), then Start it.
 ### Models are checked before a pod starts
 
 Every door that sets an agent's model — the dispatch form, a task's own model
-when it is dispatched, `POST /agents/{id}/model` on the agent page, and the
-chief's `agent_dispatch` (before it reserves anything) — checks the value
+when it is dispatched, `POST /agents/{id}/model` on the agent page, replacing
+the chief (before the old one is removed), and the chief's `agent_dispatch`
+(before it reserves anything) — checks the value
 against the OpenRouter model catalogue (the list the dispatch form's model
 picker reads, cached for an hour):
 
@@ -501,8 +502,16 @@ picker reads, cached for an hour):
 - anything else is **refused** before any pod starts, with up to five of the
   closest ids, so the chief can ask you which you meant.
 
-When the catalogue cannot be read, a value that has the `vendor/model` id
-shape passes unchecked (logged as a warning), and anything else is refused.
+**What is stored is always the route form, `openrouter/<catalogue id>`**: a
+gateway agent holds one credential, OpenRouter's, and its runtime reads the
+provider from the model's prefix. (An id OpenRouter itself owns, such as
+`openrouter/auto`, is already in that form.)
+
+When the catalogue cannot be read, a value with the id shape passes unchecked
+(logged as a warning) — but a bare `vendor/model` is then still refused by the
+credential check, which names the route form (`did you mean
+"openrouter/vendor/model"`), so only `openrouter/<vendor>/<model>` gets through;
+a display name is refused.
 muster's own suggested models always pass. The chief's `task.chief_dispatch`
 audit row records the `model` the agent runs on, and `model_input` when the
 value given was resolved.

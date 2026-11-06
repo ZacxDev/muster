@@ -165,12 +165,8 @@ for (const vp of [
   test.describe(vp.label, () => {
     test.use({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch, storageState: { cookies: [], origins: [] } });
 
-    test('a dispatched agent whose first turn fails shows error with the reason, and its owner is told once', async ({ page }) => {
-      test.setTimeout(90_000);
+    test('a model the catalogue does not have is refused before any agent exists', async ({ page }) => {
       await signIn(page, origin);
-      await subscribeDevice(page);
-
-      // A model the catalogue does not have is refused before any agent exists.
       const before = (await agentRows()).length;
       const refused = await page.request.post(origin + '/agents', {
         form: { action: 'dispatch', kind: 'gateway', model: 'Acme v9 ultra', note_text: 'never started' },
@@ -179,15 +175,23 @@ for (const vp of [
       expect(refused.status()).toBe(409);
       expect(await refused.text()).toContain('Closest ids: openrouter/acme/');
       expect((await agentRows()).length, 'a refused model created no agent').toBe(before);
+    });
 
-      // The incident's shape: a display name, resolved; then the runtime fails the turn.
+    test('a dispatched agent whose first turn fails shows error with the reason, and its owner is told once', async ({ page }) => {
+      test.setTimeout(90_000);
+      await signIn(page, origin);
+      await subscribeDevice(page);
+
+      // The incident's shape: a model's display name, then the runtime fails the
+      // turn mid-stream with its own "Unknown model".
       const a = await dispatch(page, 'Acme v4.1 flash', `OUTCOME-FAIL ${vp.label}: summarise the repo`);
-      expect(a.model).toBe('openrouter/acme/acme-v4.1-flash');
       await expect.poll(async () => (await agentRows()).find((x) => x.id === a.id)?.outcome, { timeout: 30_000 }).toBe('failed');
       const row = (await agentRows()).find((x) => x.id === a.id)!;
       expect(row.status).toBe('error');
       expect(row.errorMessage).toContain(FAILURE);
       expect(row.outcomeReason).toContain(FAILURE);
+      // The display name was resolved to the catalogue's id.
+      expect(row.model).toBe('openrouter/acme/acme-v4.1-flash');
 
       // The outcome API, as a signed-in browser reads it.
       const api = await page.request.get(origin + `/agents/${a.id}/outcome`);

@@ -587,7 +587,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	// 🔴 THE MODEL IS CHECKED AGAINST THE CATALOGUE BEFORE ANYTHING IS RESERVED
 	// (model_validate.go): a display name resolves to its id; an unknown value is
 	// refused with the closest ids, for the chief to ask its owner.
-	model := s.resolveAgentModel(ctx, in.Model)
+	model := s.resolveDispatchModel(ctx, kindArg, in.Model)
 	if model.Refusal != "" {
 		return dispatchModelRefusal(model, s.chiefBudgetNow(ctx))
 	}

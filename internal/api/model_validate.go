@@ -42,11 +42,20 @@ import (
 //   - anything else is REFUSED, with up to five closest ids, so the chief can ask
 //     its owner which they meant.
 //
+// 🔴 THE STORED FORM IS ALWAYS THE ROUTE FORM, "openrouter/<catalogue id>": a
+// gateway agent holds one credential, OpenRouter's, and the runtime reads the
+// provider from the slug's prefix, so a bare "vendor/model" would ask for a
+// provider it has no key for (agents.ValidateModelCredential). The one
+// exception is an id OpenRouter itself owns ("openrouter/auto"), which is
+// already in that form and is kept as muster's own suggestions spell it.
+//
 // ⚠ WHEN THE CATALOGUE CANNOT BE READ (unreachable, or not configured), this
 // FAILS CLOSED for a value that is not an id: a display name cannot be resolved
 // without the catalogue. A value with the `vendor/model` id SHAPE passes
 // unchecked, with a logged warning, so an OpenRouter outage does not stop every
-// dispatch; agents.ValidateModelCredential still decides its provider after.
+// dispatch — and agents.ValidateModelCredential still refuses one that is not
+// in the route form ("did you mean openrouter/…"), so only
+// "openrouter/<vendor>/<model>" can reach an agent unchecked.
 // ---------------------------------------------------------------------------
 
 // CatalogModel is one model of the catalogue: OpenRouter's id ("vendor/model")
@@ -116,6 +125,11 @@ var modelIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:~+-]*(/[A-Za-z0-
 // resolveAgentModel is THE model check (see the header): the one every door
 // calls.
 func (s *Server) resolveAgentModel(ctx context.Context, raw string) modelResolution {
+	// Nothing to check — the default, or one of muster's own suggestions — reads
+	// no catalogue: a dispatch with no model must not wait on OpenRouter.
+	if in := strings.TrimSpace(raw); in == "" || isModelOption(in) {
+		return modelResolution{Input: in, Model: in}
+	}
 	var (
 		cat []CatalogModel
 		err error = errCatalogUnavailable
@@ -129,6 +143,29 @@ func (s *Server) resolveAgentModel(ctx context.Context, raw string) modelResolut
 	}
 	if r.Resolved {
 		s.logger.Printf("models: %q resolved to %q", r.Input, r.Model)
+	}
+	return r
+}
+
+// isModelOption is whether in is one of muster's own suggested models.
+func isModelOption(in string) bool {
+	for _, o := range agents.ModelOptions {
+		if in == o.Value {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveDispatchModel is agent_dispatch's model check: resolveAgentModel of
+// the model the chief passed — and, for a gateway start that passed none, a
+// read of the catalogue so it is WARM when the task's own model is checked
+// under the reservation's lock (recordTaskModel): a cold catalogue there would
+// be a network fetch inside the lock.
+func (s *Server) resolveDispatchModel(ctx context.Context, kind, raw string) modelResolution {
+	r := s.resolveAgentModel(ctx, raw)
+	if strings.TrimSpace(raw) == "" && kind == agents.KindGateway && s.ext.ModelCatalog != nil {
+		_, _ = s.ext.ModelCatalog.Models(ctx)
 	}
 	return r
 }
@@ -147,13 +184,14 @@ func resolveModel(raw string, cat []CatalogModel, catErr error) modelResolution 
 	if in == "" {
 		return r
 	}
-	for _, o := range agents.ModelOptions {
-		if in == o.Value {
-			return r
-		}
+	if isModelOption(in) {
+		return r
 	}
 	if catErr != nil || len(cat) == 0 {
 		if modelIDShape.MatchString(in) {
+			// Passed UNCHECKED, as given. A bare "vendor/model" is then refused by
+			// agents.ValidateModelCredential, which names the route form: with no
+			// catalogue nothing says it is an OpenRouter id, so it is not guessed.
 			r.Unchecked = true
 			return r
 		}

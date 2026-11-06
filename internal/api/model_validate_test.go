@@ -69,7 +69,10 @@ func TestResolveModelAgainstTheCatalogue(t *testing.T) {
 		{name: "catalogue down: a name is refused", in: "Acme v4.1 flash", catErr: down, refusal: "the model catalogue could not be read"},
 		{name: "catalogue down: an id shape passes unchecked", in: "openrouter/acme/whatever", catErr: down,
 			want: "openrouter/acme/whatever", unchecked: true},
-		{name: "catalogue down: a bare id shape passes unchecked", in: "acme/whatever", catErr: down, want: "acme/whatever", unchecked: true},
+		// Unchecked and as given: the credential guard after it refuses a bare id
+		// (TestABareIDIsRefusedWithTheCatalogueDown), so only the route form passes.
+		{name: "catalogue down: a bare id shape passes the catalogue check as given", in: "acme/whatever", catErr: down,
+			want: "acme/whatever", unchecked: true},
 		{name: "catalogue down: a suggested model still passes", in: agents.DefaultModelOption(), catErr: down,
 			want: agents.DefaultModelOption()},
 	} {

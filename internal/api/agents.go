@@ -621,8 +621,8 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// The outcome and its reason (agent_outcome.go), scrubbed of the note.
 		Outcome:       a.Outcome,
 		OutcomeReason: agents.ScrubNote(a.OutcomeReason, a.PendingNote),
-		Namespace:            a.Namespace,
-		NoteID:               a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		Namespace:     a.Namespace,
+		NoteID:        a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
 		// The ONE chief predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.
