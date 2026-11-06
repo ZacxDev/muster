@@ -28,6 +28,11 @@
 //	ccd seed [--check]   write (or verify) the CLI's onboarding/trust/hook config
 //	ccd approve          the PermissionRequest hook: route the prompt to the
 //	                     operator through muster's approval relay (approve.go)
+//	ccd compose          the image as a docker compose service: run the entrypoint
+//	                     as a child per the spec muster writes under CCD_SPEC_DIR,
+//	                     and proxy :18789 to it (compose.go)
+//	ccd compose-epoch    the helper `ccd compose` runs as the CLI's user to empty
+//	                     /data for a new epoch (compose.go prepareEpoch)
 //
 // Environment (serve):
 //
@@ -114,8 +119,12 @@ func run(args []string) int {
 		return runApprove(args, os.Stdin, os.Stdout, os.Stderr)
 	case "ask-image":
 		return runAskImage(args, os.Stdout, os.Stderr)
+	case "compose":
+		return runCompose(args, os.Stderr)
+	case "compose-epoch":
+		return runComposeEpoch(args, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path>)\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path> | compose | compose-epoch <dir> <epoch>)\n", cmd)
 		return 2
 	}
 }
