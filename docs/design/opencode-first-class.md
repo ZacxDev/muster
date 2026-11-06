@@ -221,7 +221,16 @@ It does, in order:
    - There is no opencode token (`~/.muster/opencode-token`).
    - A subcommand was named (`run`, `serve`, …: not the TUI,
      `opencode.go:50-53`).
-2. **Choose the session.**
+2. **Refuse a version mismatch** (decided). The launcher compares the
+   `opencode` binary it will exec (`opencode --version`) with the running
+   service's (`GET /api/info`), after removing a leading `opencode ` and `v`
+   from each. If they differ, it **refuses to start** and names both
+   versions and the fix: "the opencode TUI is <a> but the running service is
+   <b>; starting it would restart the service and can sign every client
+   out. Run `opencode service restart` so they match, then start it again."
+   Upstream's own default would restart the service silently
+   (`default.ts:38-46`).
+3. **Choose the session.**
    - With `-s <id>`, it is that id. The id must exist on the shared server
      as a **root** session (`GET /api/session/{id}`, `parentID` null), or
      binding is refused.
@@ -234,7 +243,7 @@ It does, in order:
      a send from the phone works before anyone types in the terminal. With a
      merely reserved id, the session would not exist until the TUI's first
      typed prompt, and `session.prompt` would answer 404 until then.
-3. **Write the record**, then **`exec`** `opencode -s <id> [the rest]`.
+4. **Write the record**, then **`exec`** `opencode -s <id> [the rest]`.
    - `exec` keeps the pid, so the record can name the TUI's own pid before
      it runs.
    - The launcher passes only arguments it has parsed; anything it does not
@@ -272,14 +281,13 @@ the following hold:
   found.
 - **Server:** the record's server is the token file's.
 - **Session:** the session exists and is a root session.
-- **Title:** the pane's title does **not contradict** the record. This
-  catches a session switch inside the TUI (below).
-
 Any failure falls through to today's title match, which leaves the pane
 view-only, and its reason becomes the card's note (`AgentNote`).
 
-**The title cross-check** is the only signal a TUI gives of a session switch.
-The record stays bound while the title is one of:
+**The title cross-check is a warning, never a gate** (decided). It is the
+only signal a TUI gives of a session switch, and it **never decides a send's
+target or whether a send happens**. The title is consistent with the record
+while it is one of:
 
 - `OC | <t>`, where `t` matches the record's session title by
   `opencodehost.MatchTitle`'s own rule (exact, or a prefix when cut at "…");
@@ -288,8 +296,13 @@ The record stays bound while the title is one of:
 - unreadable or empty, while the session's title has not changed since the
   last read. This allows for titles turned off.
 
-Any other title unbinds the record for as long as it lasts. Two sessions that
-share a title cannot be told apart, which is a named, residual gap.
+Any other title keeps the binding and raises a **warning**: the window's
+note (`AgentNote`) and the Rendered view's composer say "This pane's title
+shows a different opencode session than the one muster sends to (<title>).
+Messages still go to the session shown here." It clears as soon as the title
+is consistent again. Two sessions that share a title cannot be told apart, a
+named, residual gap; since the check only warns, a gap costs a missing
+warning, never a misdirected send.
 
 ⚠ **A missed switch does not misdirect a send**, and this is the property
 that matters. The send goes to the **recorded** session id, and the Rendered
@@ -304,7 +317,7 @@ window's card names a pane that is showing another conversation.
 | the TUI exits | pid gone: the record is stale; the daemon deletes it on its next pass, and the pane (now a shell) is not an opencode window at all |
 | a TUI restarted in the pane without the launcher | the pid differs: the record is stale and deleted; the new TUI is title-matched, view-only |
 | tmux detach / attach, a muster-mirror restart | the pane id and pid are unchanged: the binding survives; the daemon reads records from disk on every listing, and holds no state of its own |
-| the TUI switches session | the title cross-check unbinds it (above); switching back rebinds |
+| the TUI switches session | the binding stays (sends still go to the recorded session, which the view shows); the title warning shows until the title is consistent again |
 | the session is deleted (`session.deleted`) | the binding is dropped and the record deleted |
 | the service restarts (TUI version mismatch, upgrade) | the token may be refused if the password changed (opencode.md); the window shows the token's reason, as today; the record survives |
 | `muster-mirror opencode -s <id>` in another pane on the same id | both panes bind to one session: allowed, and both windows view and send to it |
@@ -526,7 +539,7 @@ a run command. Any other text beginning with `/` (a path) is sent as is.
 - `internal/opencodehost/launch.go` (new): the record type, read and write,
   and the id formats.
 - `internal/mirrorhost/opencode.go`: the record lookup in `resolve`,
-  `SourceLauncher`, the title cross-check, stale-record cleanup, and
+  `SourceLauncher`, the title warning, stale-record cleanup, and
   `AgentSend`.
 - `internal/mirrorhost/runtime.go`: `gatedSender`.
 - `internal/mirrorhost/opencode_send.go` (new): `gatedSend`.
@@ -586,7 +599,8 @@ a run command. Any other text beginning with `/` (a path) is sent as is.
 - **Red/green:** each refusal and ledger test is shown **red** on a mutant
   (the gate deleted, the flag ignored, `typeInto` reached) and green at HEAD.
   The PR reports the matrix. The title cross-check gets a positive control: a
-  record whose title contradicts **must** unbind.
+  record whose title contradicts **must** raise the warning, and a send must
+  still go to the recorded session.
 - **e2e:**
   - `cmd/muster-mirror/e2eopencode.go:21-43` gains a launcher-bound window
     (an ops line `{"op": "bind", "pane", "session"}` writing a record the real
@@ -662,25 +676,19 @@ confirmed, as a Claude paste does today. Its busy semantics ("immediately",
   (`turnerror.go:134`), so the queue holds after a limit.
 - **Measured per-tool context cost:** from `session.step.ended` tokens.
 
-## Open questions for the operator
+## Decided
 
-1. **May the launcher create the session** (`POST /api/session` with an id)
-   before it starts the TUI? Without it, a session started with
-   `muster-mirror opencode` takes no send until its first prompt is typed in
-   the terminal. Recommendation: yes. It runs nothing, and only the launcher
-   calls it.
-2. **The launcher's name.** This doc proposes `muster-mirror opencode` (the
-   host binary holds the token and the tmux derivation). The decision said "a
-   small `muster` wrapper": is the `muster-mirror` subcommand acceptable, with
-   an optional shell alias, or should it be a separate binary?
-3. **Is the title cross-check wanted?** It is the only way to notice a session
-   switch inside the TUI, but it rests on the same title the decision moved
-   away from. Since a missed switch cannot misdirect a send (the send and the
-   view share the recorded id), the alternative is to drop it and accept that
-   a card can name a pane showing another conversation. Recommendation: keep
-   it, as a falsifier only, never as a source of the binding.
-4. **The version-mismatch restart.** A TUI whose version differs from the
-   service restarts the service (`default.ts:38-46`), which can sign every
-   client out if the password changes. Should the launcher refuse to start a
-   TUI whose version differs from the running service (`GET /api/info`), or
-   only warn?
+The operator answered the open questions of the first draft:
+
+1. **The launcher creates the session** (`POST /api/session` with an id it
+   chose) before it starts the TUI, so a session takes a send before anything
+   is typed in the terminal.
+2. **The launcher is `muster-mirror opencode`**, a subcommand of the host
+   binary. A short shell alias (such as `oc`) ships separately, with the
+   operator's own host configuration.
+3. **The title cross-check stays, as a warning and falsifier only.** It never
+   decides a send's target, and never blocks a send
+   ([above](#the-launcher-record)).
+4. **A TUI/service version mismatch is refused** (`GET /api/info` against
+   `opencode --version`), with a message naming both versions and the fix
+   ([above](#the-launcher-record)).
