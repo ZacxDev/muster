@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/kuberead"
 )
@@ -216,75 +214,4 @@ func parseKube(raw json.RawMessage, tiered bool, getenv func(string) string) (*K
 		k.Clusters = append(k.Clusters, KubeCluster{Name: name, ServiceAccount: ns + "/" + sa, Endpoint: ep, CA: []byte(ca), Allow: allow, minter: mt})
 	}
 	return k, nil
-}
-
-// ---------------------------------------------------------------------------
-// THE PER-ITEM READ BUDGET (officers plan §4: 200 reads per item).
-//
-// ONE counter per (officer, item). Today ONLY officer_kube_read spends it:
-// the obs tools do not count against it. Sharing it with them is future work
-// (the plan's MU2), which is why it lives here, beside them, and is keyed on
-// the item and not on the tool.
-//
-// In memory: a restart forgets the counts, which can only allow more reads,
-// never refuse one early. Entries untouched for a day are dropped.
-// ---------------------------------------------------------------------------
-
-// ReadsPerItem is the per-item read budget.
-const ReadsPerItem = 200
-
-// ErrReadBudget is a read refused because its item's budget is spent.
-var ErrReadBudget = errors.New("officers: the item's read budget is spent")
-
-// ReadBudget counts reads per (officer, item).
-type ReadBudget struct {
-	perItem int
-	now     func() time.Time
-
-	mu sync.Mutex
-	m  map[readKey]*readCount
-}
-
-type readKey struct {
-	officer string
-	item    ItemID
-}
-
-type readCount struct {
-	n    int
-	last time.Time
-}
-
-// NewReadBudget is a budget of perItem reads per item; now nil is time.Now.
-func NewReadBudget(perItem int, now func() time.Time) *ReadBudget {
-	if now == nil {
-		now = time.Now
-	}
-	return &ReadBudget{perItem: perItem, now: now, m: map[readKey]*readCount{}}
-}
-
-// Spend counts one read of item by officer and returns how many it has made,
-// or refuses (ErrReadBudget, nothing counted) once perItem are spent.
-func (b *ReadBudget) Spend(officer string, item ItemID) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	now := b.now()
-	for k, c := range b.m {
-		if now.Sub(c.last) > 24*time.Hour {
-			delete(b.m, k)
-		}
-	}
-	k := readKey{officer, item}
-	c, ok := b.m[k]
-	if !ok {
-		c = &readCount{}
-		b.m[k] = c
-	}
-	if c.n >= b.perItem {
-		return c.n, fmt.Errorf("%w: officer %s has made all %d of item %s's cluster reads (officer_kube_read calls; observability reads are not counted); "+
-			"conclude from what you have, and list what you could not check", ErrReadBudget, officer, b.perItem, item)
-	}
-	c.n++
-	c.last = now
-	return c.n, nil
 }

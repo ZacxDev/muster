@@ -115,12 +115,22 @@ type Server struct {
 	// ObsCalls is every POST /officers/{id}/obs/query the fake ran, in order.
 	// ObsOff makes both obs routes answer 503 obs_unconfigured (an HQ with
 	// the route switched off); ObsEmpty makes a query answer empty.
-	ObsCalls []ObsCall
-	ObsOff   bool
-	ObsEmpty bool
+	// ObsStatus, when non-zero, makes every obs POST (query and raw) answer
+	// that status with code "forced" before running (e.g. 429, 503, 403).
+	ObsCalls  []ObsCall
+	ObsOff    bool
+	ObsEmpty  bool
+	ObsStatus int
 	// ObsFail makes a query that passes validation answer HQ's backend
 	// failure instead of running (502 upstream / wrong_shape).
 	ObsFail ObsFail
+	// ObsRawCalls is every POST /officers/{id}/obs/raw the fake ran (past
+	// the decoder and the holder check), in order; ObsRawNotInvestigating
+	// makes every one answer 403 not_investigating (a type without
+	// investigation: true). ObsRawAnswers are the exact bytes each 200 wrote.
+	ObsRawCalls            []ObsCall
+	ObsRawNotInvestigating bool
+	ObsRawAnswers          [][]byte
 	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
 	// "Priority"); false — the default — is an HQ from before it: 404.
 	ClaimNext bool
@@ -375,6 +385,10 @@ func (s *Server) obs(w http.ResponseWriter, officer, verb, method string, body m
 		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "the obs query route is off on this HQ (CIVHQ_OFFICER_OBS)", "code": "obs_unconfigured"})
 		return
 	}
+	if s.ObsStatus != 0 && method == http.MethodPost {
+		s.write(w, s.ObsStatus, map[string]any{"error": "forced", "code": "forced"})
+		return
+	}
 	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
 	switch {
 	case verb == "queries" && method == http.MethodGet:
@@ -432,9 +446,70 @@ func (s *Server) obs(w http.ResponseWriter, officer, verb, method string, body m
 			ans["hint"] = "an empty answer is not a zero: run the positive control first"
 		}
 		s.write(w, http.StatusOK, ans)
+	case verb == "raw" && method == http.MethodPost:
+		s.obsRaw(w, officer, body)
 	default:
 		s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
 	}
+}
+
+// obsRawStringFields are HQ's POST /obs/raw string fields (civ-hq
+// internal/api/officer_obs_raw.go OfficerObsRawRequest); item_id and limit
+// are its integers.
+var obsRawStringFields = map[string]bool{"instance": true, "backend": true, "query": true, "start": true, "end": true, "step": true}
+
+// obsRaw serves POST /officers/{id}/obs/raw as HQ does, in HQ's order: the
+// decoder (400 invalid: one object of the known fields, each its type), the
+// holder check (403 not_investigating: the item is the officer's, judgement,
+// claimed by instance with its lease live — or the fake's type does not
+// investigate), then the window (400 invalid). It does not parse the query.
+func (s *Server) obsRaw(w http.ResponseWriter, officer string, body map[string]any) {
+	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
+	if body == nil {
+		invalid("body must be one JSON object")
+		return
+	}
+	for k, v := range body {
+		switch {
+		case obsRawStringFields[k]:
+			if _, ok := v.(string); !ok {
+				invalid("body field " + k + " must be a string")
+				return
+			}
+		case k == "item_id" || k == "limit":
+			if f, ok := v.(float64); !ok || f != float64(int64(f)) {
+				invalid("body field " + k + " must be an integer")
+				return
+			}
+		default:
+			invalid(`body must be one JSON object {"item_id", "instance", "backend": "prometheus"|"loki", "query", "start", "end", "step"?, "limit"?}`)
+			return
+		}
+	}
+	idf, _ := body["item_id"].(float64)
+	inst, _ := body["instance"].(string)
+	it := s.items[strconv.FormatInt(int64(idf), 10)]
+	if s.ObsRawNotInvestigating || it == nil || it.OfficerID != officer || tierOf(it) != "judgement" || it.Status != "claimed" ||
+		it.ClaimedBy != inst || it.LeaseExpiresAt == nil || !it.LeaseExpiresAt.After(s.Now()) {
+		s.write(w, http.StatusForbidden, map[string]any{"error": "not an investigating officer's judgement item held by that instance", "code": "not_investigating"})
+		return
+	}
+	for _, f := range []string{"start", "end"} {
+		if msg := obsTime(f, body); msg != "" {
+			invalid(msg)
+			return
+		}
+	}
+	s.ObsRawCalls = append(s.ObsRawCalls, ObsCall{Officer: officer, Body: body})
+	ans := map[string]any{"audit_id": 9000 + len(s.ObsRawCalls), "backend": body["backend"], "query": body["query"], "status": "ok",
+		"window": map[string]any{"start": body["start"], "end": body["end"]}, "step": "", "steps": 0, "result_count": 1, "empty": false,
+		"series": []any{map[string]any{"labels": map[string]any{"fixture": "raw"}, "points": []any{map[string]any{"t": 1, "v": "7"}}}},
+		"lines":  []any{}, "truncated": false, "redactions": 0}
+	b, _ := json.Marshal(ans)
+	s.ObsRawAnswers = append(s.ObsRawAnswers, b)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
 }
 
 // New starts a fake. tokens maps each officer token to the officer it acts
