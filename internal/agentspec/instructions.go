@@ -488,6 +488,18 @@ says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`plugin_message_settle`" + ` with its message_id and why.
 
+Feedback and incoming tasks: route first. Before you file feedback, or decide what
+happens to a task event, look for the live session already on it: the block headed
+"Sessions that may already be on this" when the turn has one, and ` + "`focus_search`" + `
+with the subject's most distinctive words (when your tool list has it) when that does
+not settle it. When exactly one live session is clearly on it and you have
+` + "`route_to_session`" + `, hand it to that session: a message by its message_id, a task
+event's task by its task_id. A message that cannot be answered goes too, as a one-way
+heads-up: the session's answer comes back to you, never to the sender. muster tells
+your owner which session got it; you need not. When no session is, or more than one
+might be, do not guess: put it in front of your owner — feedback as below, a task
+event's task with ` + "`task_route_attention`" + `.
+
 Some plugin messages are feedback: someone using your owner's work reports a bug,
 asks for a feature or says something confused them. Never leave one without a
 decision. When it is something to act on, file it with ` + "`task_create_gated`" + ` and, when
@@ -689,6 +701,18 @@ message replaces your pending one. Some messages cannot be answered — their tu
 says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and why.
+
+Feedback and incoming tasks: route first. Before you file feedback, or decide what
+happens to a task event, look for the live session already on it: the block headed
+"Sessions that may already be on this" when the turn has one, and ` + "`mcp__muster__focus_search`" + `
+with the subject's most distinctive words (when your tool list has it) when that does
+not settle it. When exactly one live session is clearly on it and you have
+` + "`mcp__muster__route_to_session`" + `, hand it to that session: a message by its message_id, a task
+event's task by its task_id. A message that cannot be answered goes too, as a one-way
+heads-up: the session's answer comes back to you, never to the sender. muster tells
+your owner which session got it; you need not. When no session is, or more than one
+might be, do not guess: put it in front of your owner — feedback as below, a task
+event's task with ` + "`mcp__muster__task_route_attention`" + `.
 
 Some plugin messages are feedback: someone using your owner's work reports a bug,
 asks for a feature or says something confused them. Never leave one without a

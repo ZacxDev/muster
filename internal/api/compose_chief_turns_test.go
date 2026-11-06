@@ -43,6 +43,8 @@ func composeChiefTurnTexts(tools plugins.ChiefTools) map[string]string {
 	out["message hand-back"] = handBackChoices(handBackMessage, tools)
 	out["request hand-back"] = handBackChoices(handBackRequest, tools)
 	out["task hand-back"] = handBackChoices(handBackTask, tools)
+	out["one-way hand-back"] = handBackChoices(handBackOneWay, tools)
+	out["one-way route answer"] = oneWayAnswerPreface(tools)
 	return out
 }
 
@@ -53,6 +55,7 @@ var actionPhrases = map[string]string{
 	"draft a reply":          "reply_draft",
 	"file a task":            "task_create_gated",
 	"in front of your owner": "task_route_attention",
+	"file the work":          "task_create_gated",
 }
 
 // namedTools is every registry tool (and muster_help) that text names.

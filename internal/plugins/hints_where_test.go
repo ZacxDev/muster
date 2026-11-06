@@ -11,7 +11,7 @@ import (
 // text, passed in), so an ask the chief raises from them can name it.
 func TestASessionHintAndAnOnlineAuthorCarryTheirWhere(t *testing.T) {
 	got := renderHints(Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "mirror:0b2c3d4e-a", Name: "ops", Host: "box-1",
-		Where: "mango:1 · tmux scratch3:5 @ box-1"}}}, hintNonce, true, nil)
+		Where: "mango:1 · tmux scratch3:5 @ box-1"}}}, hintNonce, true)
 	if !strings.Contains(got, "\n| mirror:0b2c3d4e-a — ops @ box-1 — where: mango:1 · tmux scratch3:5 @ box-1\n") {
 		t.Fatalf("hint block lacks the where line:\n%s", got)
 	}
