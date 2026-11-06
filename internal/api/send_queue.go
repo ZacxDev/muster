@@ -138,10 +138,18 @@ func mirrorQueueOff(h mirror.HostView, e mirror.SessionView) string {
 	case !h.StatusReport || h.Windows == nil:
 		return unprefixed(mirror.ErrNoStatusReport)
 	}
-	if !e.Claude {
-		return SendQueueNotClaude
+	if e.Claude {
+		return ""
 	}
-	return ""
+	// A runtime whose send is its host's own (opencode, through its API)
+	// queues like Claude Code once it can be sent to at all: its status and
+	// status time are on the window list, and the queue's idle wait reads
+	// them (mirror.Hub.AgentState). One that cannot (the host did not opt in,
+	// the pane is not launcher-bound) says why.
+	if r, ok := e.Spec(); ok && r.GatedSend {
+		return mirror.SendBlocked(h, e)
+	}
+	return SendQueueNotClaude
 }
 
 // handleSendQueueAdd is POST /send-queue (the window's address, text): queue a
@@ -801,7 +809,8 @@ type queueWords struct{ waiting, working string }
 // runtimeQueueWords is each runtime's queueWords; a runtime with none is
 // spoken of as Claude Code.
 var runtimeQueueWords = map[string]queueWords{
-	mirror.RuntimeClaude: {"Claude Code is waiting for you (a prompt or a question).", "Claude Code is working."},
+	mirror.RuntimeClaude:   {"Claude Code is waiting for you (a prompt or a question).", "Claude Code is working."},
+	mirror.RuntimeOpenCode: {"opencode is waiting for you (a permission request or a question).", "opencode is working."},
 }
 
 func queueWordsOf(runtime string) queueWords {
@@ -907,10 +916,14 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		return sendQueueStale()
 	}
+	// A queued message is its own message: its own key, never a held one
+	// (messageKey). Its retries carry the same row nonce, so they still post
+	// one id.
+	key := sendQueueNonce(it.ID)
 	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude,
-		opts...)
+		append(opts, mirror.MessageKey(key))...)
 	if !repeat {
-		s.settleHeld(ctx, it.Target.Host, it.Target.Session, it.Target.Window, mirror.PasteClaude, it.Body, err)
+		s.settleHeld(ctx, it.Target.Host, it.Target.Session, it.Target.Window, mirror.PasteClaude, it.Body, key, err)
 	}
 	var sup *mirror.SupersededError
 	switch {

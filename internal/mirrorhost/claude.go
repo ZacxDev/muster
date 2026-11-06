@@ -144,6 +144,10 @@ type ClaudePane struct {
 	// Note is the line the person reads about the pane (mirror.Window.
 	// AgentNote): for opencode, why it has no view, or what its token needs.
 	Note string
+	// Send: the host sends to this pane's session (Gen) through its runtime's
+	// API (mirror.Window.AgentSend): an opencode pane its launcher record
+	// binds (SourceLauncher). Never for Claude Code, whose send is a paste.
+	Send bool
 	// ConfigDir is the Claude Code config dir this pane's CLI writes under
 	// (ClaudeLocator.configDirOf); "" for another runtime's pane. Not on the
 	// wire: what the host reads the CLI's own files from (its shell snapshots).

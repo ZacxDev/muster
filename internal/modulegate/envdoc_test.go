@@ -73,6 +73,8 @@ const configDoc = "docs/configuration.md"
 var environCallSites = map[string]string{
 	"internal/mirrorhost/tmux.go": "copies the whole environment to the tmux child minus TMUX, TMUX_PANE " +
 		"and TERM (a nested-client guard); it reads no variable by name",
+	"cmd/muster-mirror/opencode_launch.go": "hands the whole environment, unchanged, to the opencode TUI the launcher " +
+		"execs (`muster-mirror opencode`); it reads no variable by name from it",
 	"cmd/ccd/compose.go": "copies the whole environment to the entrypoint it runs as a child, minus " +
 		"CCD_SPEC_DIR and CCD_LISTEN, plus the spec's env and secrets, its own CCD_LISTEN and " +
 		"CCD_APPROVE_UNANSWERED=deny; the one variable it reads back from that list by name, CCD_TMUX_SOCKET, is documented",

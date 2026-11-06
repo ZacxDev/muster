@@ -3,12 +3,15 @@
 // client that reads the server's REST API and event stream with it, and the
 // pairing step that mints the token in the first place.
 //
-// 🔴 READ-ONLY, BY CONSTRUCTION. Every request this package makes is a GET
-// (Client.get, Client.stream), except the two calls that mint a token —
-// POST /api/pair and the unauthenticated GET /auth/connect/{code} — which only
-// Pair and Credentials.Renew make (Client.mint). A test in this package
-// reads its source and fails when any other request is spelled
-// (TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies), and another drives every path
+// 🔴 ITS WRITES ARE ENUMERATED, BY CONSTRUCTION. Every request this package
+// makes is a GET (Client.get, Client.stream), except: the two calls that mint
+// a token — POST /api/pair and the unauthenticated GET /auth/connect/{code} —
+// which only Pair and Credentials.Renew make (Client.mint); the answer to an
+// ask (Client.reply); the API send (Client.prompt, from Prompt only); and the
+// launcher's session create (Client.createSession, from CreateSession only).
+// A test in this package reads its source and fails when any other request is
+// spelled
+// (TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend), and another drives every path
 // against a fake server and fails on any request outside that set.
 //
 // 🔴 THE TOKEN AND THE SERVER PASSWORD ARE NEVER PRINTED OR LOGGED. What a

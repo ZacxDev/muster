@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // THE RUNTIME INTERFACE, SERVER HALF: what muster knows of each agent CLI a
@@ -55,6 +56,21 @@ type RuntimeSpec struct {
 	// Answers reads, from a host's hello, whether it answers this runtime's
 	// asks itself. nil: it answers none.
 	Answers func(hello Msg) bool
+	// GatedSend: muster sends to a window of it only through the host's own
+	// gated send (Msg.Runtime names it on the paste), never as keys; only on a
+	// host that advertised it (Sends), only to a window its host says it sends
+	// to (Window.AgentSend), and only while that window is idle with a status
+	// time, which the paste carries (Msg.Since) for the host to check again.
+	// The paste waits PasteTimeout for the host's answer.
+	GatedSend    bool
+	PasteTimeout time.Duration
+	// Sends reads, from a host's hello, whether it advertised its gated send.
+	// nil: it advertises none.
+	Sends func(hello Msg) bool
+	// SendOff is the refusal of a send to a window of it on a host that did
+	// not advertise its gated send; Unbound the refusal of one to a window its
+	// host does not send to (not launcher-bound). nil without a gated send.
+	SendOff, Unbound func() error
 	// PendingNamesAsk: a window of it waits on a NAMED ask (Pending.Kind,
 	// PromptID, Choices), and a Pending that names none is none. false: the
 	// ask fields are not its own and are stripped.
@@ -65,10 +81,13 @@ type RuntimeSpec struct {
 }
 
 // RuntimeOpenCode: opencode v2 (docs/design/opencode.md). A host whose pane
-// runs an opencode TUI names the session the pane's title matches
-// (Window.AgentSession), and muster draws its rendered view from the opencode
-// server's API. It sends no message to it (the host's paste guard refuses its
-// panes). What it WAITS ON reaches muster (Caps.Prompts): a permission request
+// runs an opencode TUI names the session the pane's launcher record names, or
+// else the one its title matches (Window.AgentSession), and muster draws its
+// rendered view from the opencode server's API. A message reaches it only
+// through opencode's API (GatedSend, docs/design/opencode-first-class.md):
+// on a host that advertised it (Msg.OpenCodeSend), to a launcher-bound window
+// (Window.AgentSend), while it is idle — never as keys (the host's paste guard
+// still refuses its panes). What it WAITS ON reaches muster (Caps.Prompts): a permission request
 // or a question-tool form of its session (or of a subagent's child session)
 // makes the window waiting, its Pending naming the ask (PendingPermission,
 // PendingQuestion) — and a host that advertised it (Msg.OpenCodeAnswer:
@@ -84,10 +103,20 @@ var runtimes = []RuntimeSpec{
 	},
 	{
 		Name: RuntimeOpenCode, Kind: KindOpenCode,
-		Caps:   Capabilities{View: true, Prompts: true},
+		Caps:   Capabilities{View: true, Send: true, Prompts: true},
 		OnWire: true, KeyPrefix: RuntimeOpenCode + ":", ViewNeedsSession: true,
-		// It answers asks (OpenCodeAnswer) and sends nothing.
-		Answers:         func(m Msg) bool { return m.OpenCodeAnswer },
+		// It answers asks (OpenCodeAnswer), and sends through its API
+		// (OpenCodeSend), never keys.
+		Answers:      func(m Msg) bool { return m.OpenCodeAnswer },
+		GatedSend:    true,
+		PasteTimeout: openCodePasteTimeout,
+		Sends:        func(m Msg) bool { return m.OpenCodeSend },
+		SendOff: func() error {
+			return &PasteRefusedError{Why: PasteRefusedOpenCodeOffText, Refusal: PasteRefusalOpenCodeOff, Cause: ErrOpenCodeSendOff}
+		},
+		Unbound: func() error {
+			return &PasteRefusedError{Why: PasteRefusedOpenCodeUnboundText, Refusal: PasteRefusalOpenCodeUnbound, Cause: ErrOpenCodeUnbound}
+		},
 		PendingNamesAsk: true,
 		AskKinds:        []string{PendingPermission, PendingQuestion},
 	},

@@ -132,9 +132,10 @@ test('an opencode window opens a read-only rendered view of the session its titl
   await expect(log).not.toContainText('REASONING-NEVER-SHOWN');
   await expect(log).not.toContainText('TOOL-OUTPUT-FIXTURE');
 
-  // 🔴 Read-only on an interactive host: disabled, saying why, no queue.
+  // 🔴 Read-only on an interactive host that did not opt in to the opencode
+  // send (-opencode-send): disabled, saying why, no queue.
   await expect(page.locator('#mv-input')).toBeDisabled();
-  await expect(page.locator('#mv-readonly')).toContainText("Sending to opencode isn't supported yet");
+  await expect(page.locator('#mv-readonly')).toContainText('does not send to opencode (it needs -interactive and -opencode-send)');
   await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
 
   // A turn arrives without a reload: the prompt, busy while it streams, the
@@ -272,7 +273,7 @@ test('back to an opencode view restores it, reconnects, draws a message that cam
     expect(await log.getByText('Second reply, also live.').count()).toBe(1);
     // Still read-only after the restore.
     await expect(page.locator('#mv-input')).toBeDisabled();
-    await expect(page.locator('#mv-readonly')).toContainText("Sending to opencode isn't supported yet");
+    await expect(page.locator('#mv-readonly')).toContainText('does not send to opencode (it needs -interactive and -opencode-send)');
     await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
     await ctx.close();
   } finally {

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
@@ -33,7 +34,13 @@ import (
 //     {"op": "message", "session", "message": {…a Session.Message.Info…}} (a
 //     message with an id already put is rewritten in place),
 //     {"op": "status", "session", "status": "busy"|"idle"},
-//     {"op": "rotate"} (the server's password changes: the token is refused);
+//     {"op": "rotate"} (the server's password changes: the token is refused),
+//     {"op": "bind", "session", "window", "id"} (the window's pane is
+//     launcher-bound to opencode session id: a launcher record the REAL
+//     resolver reads, docs/design/opencode-first-class.md),
+//     {"op": "delay", "ms"} (the server admits each prompt at once and
+//     answers it ms later: a send the host cannot confirm),
+//     {"op": "failcommands", "on"} (GET /api/command answers 500);
 //
 //   - MUSTER_MIRROR_E2E_OPENCODE_WINDOWS_FILE adds opencode windows, one a
 //     line:
@@ -48,7 +55,16 @@ var e2eOpenCode struct {
 	src     *mirrorhost.OpenCodeSource
 	mu      sync.Mutex
 	applied int
+	// binds is each bound window ("<session>|<window id>") and the numeric
+	// tmux pane its record names (a record names a "%<n>" pane).
+	binds map[string]string
 }
+
+// e2eLaunchSocket is the tmux socket the fake's launcher records name.
+const e2eLaunchSocket = "/srv/e2e-fixture/tmux-1000/default"
+
+// e2eTUIStart is the start time the fake's bound TUIs report.
+const e2eTUIStart = "e2e"
 
 // openCodeSourceE2E is the fake's OpenCodeSource, nil without a directory.
 func openCodeSourceE2E() *mirrorhost.OpenCodeSource {
@@ -62,6 +78,8 @@ func openCodeSourceE2E() *mirrorhost.OpenCodeSource {
 			panic("muster-mirror (e2emirror): the fake opencode token: " + err.Error())
 		}
 		e2eOpenCode.src = mirrorhost.NewOpenCodeSource(context.Background(), creds, "", log.New(os.Stderr, "", log.LstdFlags))
+		e2eOpenCode.src.SetLaunches(filepath.Join(os.Getenv("MUSTER_MIRROR_E2E_OPENCODE_DIR"), "launch"), e2eLaunchSocket)
+		e2eOpenCode.binds = map[string]string{}
 	})
 	return e2eOpenCode.src
 }
@@ -98,6 +116,9 @@ func syncOpenCodeOps() {
 			Session string         `json:"session"`
 			Status  string         `json:"status"`
 			Message map[string]any `json:"message"`
+			Window  string         `json:"window"`
+			MS      int            `json:"ms"`
+			On      bool           `json:"on"`
 		}
 		if json.Unmarshal(sc.Bytes(), &op) != nil {
 			continue
@@ -112,6 +133,22 @@ func syncOpenCodeOps() {
 			srv.SetStatus(op.Session, op.Status)
 		case "rotate":
 			srv.Rotate("e2e-rotated-fixture-password")
+		case "bind":
+			key := op.Session + "|" + op.Window
+			pane, ok := e2eOpenCode.binds[key]
+			if !ok {
+				pane = "%" + strconv.Itoa(900+len(e2eOpenCode.binds))
+				e2eOpenCode.binds[key] = pane
+			}
+			rec := opencodehost.LaunchRecord{V: opencodehost.LaunchVersion, Socket: e2eLaunchSocket, Pane: pane, PID: 1,
+				PIDStart: e2eTUIStart, Session: op.ID, Server: srv.URL, Directory: "/srv/fixture", Created: 946684800}
+			if err := opencodehost.WriteLaunch(filepath.Join(os.Getenv("MUSTER_MIRROR_E2E_OPENCODE_DIR"), "launch"), rec); err != nil {
+				panic("muster-mirror (e2emirror): the fake's launcher record: " + err.Error())
+			}
+		case "delay":
+			srv.DelayPromptAnswers(time.Duration(op.MS) * time.Millisecond)
+		case "failcommands":
+			srv.FailCommands(op.On)
 		}
 	}
 }
@@ -135,8 +172,14 @@ func openCodeWindowsE2E() []mirrorhost.WindowInfo {
 		}
 		index, _ := strconv.Atoi(f[2])
 		activity, _ := strconv.ParseInt(f[4], 10, 64)
-		pane := windowFakePane(f[0], f[1])
-		ap := mirrorhost.ResolveOpenCodePane(openCodeSourceE2E(), pane, 1, f[5])
+		pane, start := windowFakePane(f[0], f[1]), ""
+		e2eOpenCode.mu.Lock()
+		if p, ok := e2eOpenCode.binds[f[0]+"|"+f[1]]; ok {
+			// A bound window: its record's pane, its TUI's start time.
+			pane, start = p, e2eTUIStart
+		}
+		e2eOpenCode.mu.Unlock()
+		ap := mirrorhost.ResolveOpenCodePaneStarted(openCodeSourceE2E(), pane, 1, start, f[5])
 		out = append(out, mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: "opencode",
 			Activity: activity, Pane: pane, PanePID: 1, Agent: &ap})
 	}

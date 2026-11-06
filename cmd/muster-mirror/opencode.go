@@ -28,6 +28,9 @@ const (
 	// re-reads it and never renews it (-opencode-read-only). With one
 	// muster-mirror per muster server on a host, exactly one renews.
 	envOpenCodeReadOnly = "MUSTER_MIRROR_OPENCODE_READ_ONLY"
+	// envOpenCodeSend lets muster send to opencode sessions here through the
+	// opencode API (-opencode-send; docs/design/opencode-first-class.md).
+	envOpenCodeSend = "MUSTER_MIRROR_OPENCODE_SEND"
 )
 
 // openCodeTokenFileDefault is the token file's default: ~/.muster/opencode-token,

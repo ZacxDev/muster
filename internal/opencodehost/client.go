@@ -157,7 +157,7 @@ func (c *Client) do(req *http.Request, out any) (err error) {
 		return ErrUnauthorized
 	case resp.StatusCode != http.StatusOK:
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("opencode %s %s: HTTP %d", req.Method, req.URL.Path, resp.StatusCode)
+		return &StatusError{Method: req.Method, Path: req.URL.Path, Code: resp.StatusCode}
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxJSON+1))
 	if err != nil {
@@ -170,6 +170,17 @@ func (c *Client) do(req *http.Request, out any) (err error) {
 		return fmt.Errorf("opencode %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	return nil
+}
+
+// StatusError is an answer other than 200 (and 401, ErrUnauthorized) to a
+// read.
+type StatusError struct {
+	Method, Path string
+	Code         int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("opencode %s %s: HTTP %d", e.Method, e.Path, e.Code)
 }
 
 // get is a GET of path into out: THE way this client reads.
@@ -199,7 +210,12 @@ type Session struct {
 	ID       string `json:"id"`
 	ParentID string `json:"parentID,omitempty"`
 	Title    string `json:"title,omitempty"`
-	Time     struct {
+	// Location is where the session runs (its directory): the slash
+	// commands it can run depend on it.
+	Location struct {
+		Directory string `json:"directory,omitempty"`
+	} `json:"location"`
+	Time struct {
 		Created float64 `json:"created"`
 		Updated float64 `json:"updated"`
 	} `json:"time"`

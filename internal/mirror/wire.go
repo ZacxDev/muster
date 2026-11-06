@@ -315,9 +315,19 @@ type Msg struct {
 	// Runtime (answer) is the agent runtime an answer is for: "opencode"
 	// relays it through opencode's API (OpenCodeReply); "" is Claude Code's
 	// picker. A host never trusts it to OPEN anything: it re-checks what runs
-	// in the pane NOW. Muster sends no paste with a Runtime; a host ignores
-	// one on a paste (an older muster's, for a runtime since removed).
+	// in the pane NOW. On a PASTE it names a runtime's gated send
+	// (RuntimeSpec.GatedSend: "opencode", through its API), with Since and
+	// MessageID; an older host, which never advertised that send, is never
+	// sent one.
 	Runtime string `json:"runtime,omitempty"`
+	// Since (paste, with Runtime) is the window's StatusSince muster decided
+	// the gated send on: the host sends only while the window is still idle
+	// since exactly then.
+	Since int64 `json:"since,omitempty"`
+	// MessageID (paste, with Runtime "opencode") is the id the message is
+	// posted under (OpenCodeMessageID): the same send retried posts the same
+	// id, and opencode admits it once.
+	MessageID string `json:"messageID,omitempty"`
 	// Lines (scroll) is how far to scroll the pane's history: positive is BACK
 	// (tmux scroll-up, older output), negative is forward (scroll-down, toward
 	// the live screen). 0 and anything beyond MaxScrollLines either way is
@@ -360,6 +370,15 @@ type Msg struct {
 	// older muster ignores it; an older host never sets it, so muster never
 	// sends it an answer, and the ask says to answer it in the terminal.
 	OpenCodeAnswer bool `json:"openCodeAnswer,omitempty"`
+	// OpenCodeSend (hello) is the host ADVERTISING that it sends a message to
+	// an opencode session through the opencode server's API (a paste with
+	// Runtime "opencode", docs/design/opencode-first-class.md): an
+	// -interactive v2 host started with -opencode-send that holds an opencode
+	// token. Only to a window it lists as AgentSend (launcher-bound).
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like OpenCodeAnswer:
+	// an older muster ignores it; an older host never sets it, so muster sends
+	// it no opencode message and the composer says why.
+	OpenCodeSend bool `json:"openCodeSend,omitempty"`
 	// OpenCodeReply (answer, with Runtime "opencode") is the opencode ask to
 	// answer and how: the PromptID muster showed (Pending.PromptID) and one of
 	// its offered answers (Pending.Offers). An older host, which never
@@ -576,6 +595,13 @@ type Window struct {
 	// of a list) and stripped of control characters by NormalizeWindows.
 	// Backward-compatible both ways, like AgentSession.
 	AgentNote string `json:"agentNote,omitempty"`
+	// AgentSend: the host sends to this window's session (AgentSession)
+	// through its runtime's gated send — an opencode pane started by the
+	// launcher (`muster-mirror opencode`), whose session the host knows
+	// deterministically. Only a window of a GatedSend runtime naming a session
+	// keeps it (NormalizeWindows). A title-matched opencode pane never has it,
+	// and is view-only. Backward-compatible both ways, like AgentSession.
+	AgentSend bool `json:"agentSend,omitempty"`
 	// LastMessage is when the Claude Code conversation in the window last had
 	// a MESSAGE — the newest timestamp of a user or assistant row in its
 	// transcript that is not meta (mirrorhost's lastMessageReader) — Unix
@@ -1042,6 +1068,11 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		if !onWire || r.KeyPrefix == "" || !ValidAgentSession(w.AgentSession) {
 			w.AgentSession = ""
 		}
+		// Only a gated-send runtime's window naming its session can be sent
+		// to that way.
+		if !onWire || !r.GatedSend || w.AgentSession == "" {
+			w.AgentSend = false
+		}
 		// A note says why a window has no rendered view (or what its runtime's
 		// credential needs): a window of a runtime on the wire, or a window
 		// with NO Claude view whose pane runs Claude Code all the same (the
@@ -1286,7 +1317,7 @@ func (w Window) Equal(o Window) bool {
 	return w.Session == o.Session && w.ID == o.ID && w.Index == o.Index && w.Active == o.Active && w.Label == o.Label &&
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
-		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession &&
+		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession && w.AgentSend == o.AgentSend &&
 		w.AgentNote == o.AgentNote && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError) &&
 		w.LiveCopy == o.LiveCopy
 }
@@ -1317,9 +1348,9 @@ const (
 	// it could not rule out an agent it does not type into. Nothing was typed.
 	PasteRefusalUnchecked = "unchecked"
 	// PasteRefusalOpenCode: the pane's process tree holds opencode. muster
-	// cannot send to opencode yet (its send goes through opencode's own API,
-	// not keystrokes, in a later version), so the host types nothing into
-	// such a pane. Nothing was typed.
+	// never types into opencode (its send goes through opencode's own API, the
+	// gated send, from the Rendered view), so the host types nothing into such
+	// a pane. Nothing was typed.
 	PasteRefusalOpenCode = "opencode"
 	// PasteRefusalClaudeWaiting: the Claude prompt guard — the Claude Code
 	// pane is waiting on the person (its session status is waiting, or its
@@ -1338,6 +1369,33 @@ const (
 	// this one would be pasted after and submitted with as one turn. Nothing
 	// was typed; a queued message is held, as for PasteRefusalClaudeWaiting.
 	PasteRefusalClaudeBox = "claude-box"
+	// The opencode gated send's refusals (docs/design/opencode-first-class.md).
+	// Nothing was sent to opencode, except for PasteRefusalOpenCodeUnconfirmed.
+	//
+	// PasteRefusalOpenCodeOff: the host does not send to opencode (no
+	// -interactive, no -opencode-send or no token).
+	PasteRefusalOpenCodeOff = "opencode-off"
+	// PasteRefusalOpenCodeUnbound: the window's pane was not started by the
+	// launcher, so the host cannot say which session it shows.
+	PasteRefusalOpenCodeUnbound = "opencode-unbound"
+	// PasteRefusalOpenCodeNotIdle: the session is not idle since the status
+	// muster decided on (busy, waiting on an ask, or newer). A queued message is
+	// decided on again (Hub.PasteWindow turns it into ErrSuperseded).
+	PasteRefusalOpenCodeNotIdle = "opencode-not-idle"
+	// PasteRefusalOpenCodeSlash: the message starts with one of opencode's
+	// slash commands, which a prompt would hand the model as text.
+	PasteRefusalOpenCodeSlash = "opencode-slash"
+	// PasteRefusalOpenCodeGone: opencode has no such session any more.
+	PasteRefusalOpenCodeGone = "opencode-gone"
+	// PasteRefusalOpenCodeConflict: opencode holds the message's id in
+	// another session (409) — a Send again after the pane was started on
+	// another session. muster forgets that first try, so the next send is a
+	// new message.
+	PasteRefusalOpenCodeConflict = "opencode-conflict"
+	// PasteRefusalOpenCodeUnconfirmed: the host posted the message and heard
+	// no answer: it MAY have been admitted (muster reads it as
+	// ErrPasteUnconfirmed).
+	PasteRefusalOpenCodeUnconfirmed = "opencode-unconfirmed"
 )
 
 // The texts of the paste guard's refusals, for the person sending: the host
@@ -1348,9 +1406,22 @@ const (
 		"abduco or zellij), so muster cannot see what runs inside it. Type it in the terminal."
 	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check what runs in this pane. " +
 		"Type it in the terminal."
-	PasteRefusedOpenCodeText = "Sending to opencode isn't supported yet: opencode runs in this pane, and muster " +
-		"does not type into it, because Enter there can answer a prompt opencode is showing, such as a permission " +
-		"request. Type it in the terminal."
+	PasteRefusedOpenCodeText = "Not sent from here: opencode runs in this pane, and muster never types into it, " +
+		"because Enter there can answer a prompt opencode is showing, such as a permission request. Send it from " +
+		"the session's Rendered view (when it was started with `muster-mirror opencode`), or type it in the terminal."
+	// The opencode gated send's refusals, in the person's words.
+	PasteRefusedOpenCodeOffText = "Not sent: this host's muster-mirror does not send to opencode " +
+		"(it needs -interactive and -opencode-send). Type it in the terminal."
+	PasteRefusedOpenCodeUnboundText = "Not sent: muster can't be sure which session this opencode shows, " +
+		"because it wasn't started with `muster-mirror opencode`. Type it in the terminal, or restart it that way."
+	PasteRefusedOpenCodeBusyText    = "Not sent: opencode is working. Queue it instead."
+	PasteRefusedOpenCodeWaitingText = "Not sent: opencode is waiting for you (a permission request or a question). Answer it first."
+	PasteRefusedOpenCodeUnknownText = "Not sent: muster cannot tell whether opencode is idle right now. Try again in a moment."
+	PasteRefusedOpenCodeSlashText   = "Not sent: that is an opencode slash command, and muster cannot run opencode's " +
+		"commands yet (sent as a message, the model would read it as text). Type it in the terminal."
+	PasteRefusedOpenCodeGoneText     = "Not sent: that opencode session no longer exists."
+	PasteRefusedOpenCodeConflictText = "Not sent: opencode already has this message in another session " +
+		"(the pane was started on another session since the first try). Send it again to send it as a new message."
 	// The Claude prompt guard's refusals (PasteRefusalClaudeWaiting): its
 	// session says it is waiting on the person; its screen shows a dialog; its
 	// screen could not be read.

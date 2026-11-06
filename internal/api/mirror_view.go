@@ -95,11 +95,21 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		LiveCopy: e.LiveCopyWarning(),
 		// What the retired list's card said: "offline", and the host's note.
 		Offline: !h.Online, Note: e.AgentNote}
-	// 🔴 A WINDOW OF A RUNTIME MUSTER ONLY VIEWS (opencode: Caps.Send off)
-	// has its composer drawn disabled, with no queue; every send is refused
-	// again at the hub (lookupAgent) and on the host (the paste guard).
-	if rt, ok := e.Spec(); ok && !rt.Caps.Send && e.AgentView() {
-		v.ViewOnly = rt.Kind
+	// 🔴 A WINDOW OF A RUNTIME MUSTER ONLY VIEWS (Caps.Send off) has its
+	// composer drawn disabled, with no queue; every send is refused again at
+	// the hub (lookupAgent) and on the host (the paste guard).
+	if rt, ok := e.Spec(); ok && e.AgentView() {
+		switch why := mirror.SendBlocked(h, e); {
+		case !rt.Caps.Send:
+			v.ViewOnly = rt.Kind
+		case why != "":
+			// 🔴 A GATED SEND THAT CANNOT GO (opencode: the host did not opt in,
+			// or the pane is not launcher-bound) is drawn disabled, saying why,
+			// with no queue; the hub and the host refuse it again.
+			v.ViewOnly, v.ViewOnlyWhy = rt.Kind, why
+		default:
+			v.Agent = rt.Kind
+		}
 	}
 	if v.ViewOnly == "" {
 		v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
@@ -652,6 +662,9 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			var pr *mirror.PasteRefusedError
 			errors.As(err, &pr)
 			status, notice, msg = http.StatusConflict, pasteGuardNotices[pr.Refusal], pr.Why
+		case errors.Is(err, mirror.ErrOpenCodeNotIdle):
+			// The hub's idle gate for opencode: its own words.
+			status, notice, msg = http.StatusConflict, noticeOpenCodeNotIdle, err.Error()
 		case errors.Is(err, mirror.ErrBadPaste):
 			status, notice = http.StatusBadRequest, noticeBadText
 		case errors.Is(err, mirror.ErrInteractiveRefused):
@@ -698,14 +711,38 @@ func (s *Server) isHeldFor(ctx context.Context, host, session, window string, ta
 // have landed is held, a confirmed one releases it. Every delivery passes
 // here — a Send's, a Send now's and the dispatcher's (sendQueueDeliver) — so a
 // may-have-landed queued message is held like a Send's.
-func (s *Server) settleHeld(ctx context.Context, host, session, window string, target mirror.PasteTarget, text string, err error) {
+func (s *Server) settleHeld(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, key string, err error) {
 	owner, dest := requestOwner(ctx), heldDestKey(host, session, window, target)
 	switch {
 	case err == nil:
 		s.sends.release(owner, dest, text)
 	case errors.Is(err, mirror.ErrPasteUnconfirmed):
-		s.sends.hold(owner, dest, text)
+		s.sends.hold(owner, dest, text, key)
+	case mirror.PasteGuardRefusal(err) == mirror.PasteRefusalOpenCodeConflict:
+		// opencode holds the key's message id in ANOTHER session (the pane was
+		// started on another session since): that first try did not land
+		// here, and a Send again under the same key would be refused the same
+		// way until the hold expired. Released: the next send is a new message.
+		s.sends.release(owner, dest, text)
 	}
+}
+
+// messageKey is the key a Send of text to that destination is sent under
+// (mirror.MessageKey: a gated send's message id is derived from it). 🔴 ONLY
+// THE PERSON'S EXPLICIT "Send again" (again) of a message that MAY have
+// landed (held) reuses its first try's key — so it posts the same opencode
+// message id and lands at most once. Any other send, a queued message's above
+// all, is its own message under its own nonce: reusing the held key there
+// would make opencode answer it with the earlier message's record, and a
+// distinct message would be reported Sent and never delivered.
+func (s *Server) messageKey(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, nonce string, again bool) string {
+	if !again {
+		return nonce
+	}
+	if k := s.sends.heldKey(requestOwner(ctx), heldDestKey(host, session, window, target), text); k != "" {
+		return k
+	}
+	return nonce
 }
 
 // sendAgainPage answers a browser-submitted send (no script ran) that was
@@ -742,9 +779,10 @@ func (s *Server) mirrorSendHeld(ctx context.Context, p mirrorPending) (repeat bo
 	if s.isHeldFor(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.again) {
 		return false, errUnconfirmedRepeat
 	}
-	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target)
+	key := s.messageKey(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.nonce, p.again)
+	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target, mirror.MessageKey(key))
 	if !repeat {
-		s.settleHeld(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, err)
+		s.settleHeld(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, key, err)
 	}
 	return repeat, err
 }

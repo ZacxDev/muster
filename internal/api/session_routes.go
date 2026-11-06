@@ -292,6 +292,14 @@ func (s *Server) resolveRouteTarget(ctx context.Context, sub focus.Subject) (rou
 	t := routeTarget{sub: sub}
 	switch sub.Kind {
 	case focus.KindMirror:
+		// 🔴 A ROUTED MESSAGE REACHES A CLAUDE CODE SESSION ONLY, and this
+		// lookup is what keeps it so: it finds Claude windows alone
+		// (mirrorClaudeEntries), so an opencode subject is "window gone" here
+		// even though the send queue now takes a launcher-bound opencode
+		// window (mirrorQueueOff). A route pins its window by Claude session
+		// (routeHolds) and its reply path is Claude Code's; routing into
+		// opencode is a later phase (docs/design/opencode-first-class.md).
+		// TestARouteToAnOpenCodeSessionIsRefusedBeforeTheQueue pins it.
 		e, ok := s.mirrorEntryForSession(ctx, sub.Key)
 		if !ok {
 			return t, routeRefusal(RefusedWindowGone, "no online mirrored window shows Claude session "+sub.Key+" now (the window is gone, or its host is offline)")

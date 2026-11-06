@@ -113,8 +113,9 @@ func (r claudeRuntime) LocatePanes(panes []pane, procs map[int]procInfo, childre
 // OpenCodeSource, resolves the session its pane title names. Its view is the
 // session's messages from the opencode server's API; what it waits on (a
 // permission request, a question) is the window's Pending, and its answerer
-// relays an answer through that API (opencode_asks.go). It has no send, and
-// the paste guard refuses its panes (openCodeShape).
+// relays an answer through that API (opencode_asks.go). Its send is the gated
+// sender's — a POST to the bound session (opencode_send.go) — and the paste
+// guard still refuses its panes (openCodeShape).
 type openCodeRuntime struct {
 	proc  string
 	src   *OpenCodeSource

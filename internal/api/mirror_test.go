@@ -107,6 +107,8 @@ type fakeMirror struct {
 	// a host that reports no status. statusReport is HostView.StatusReport.
 	agentState   *mirror.AgentState
 	statusReport bool
+	// openCodeSend is HostView.OpenCodeSend (when online and interactive).
+	openCodeSend bool
 	// offlineSince is HostView.OfflineSince while offline (as the hub sets it
 	// for a host that dropped); zero = a host that never was online here.
 	offlineSince time.Time
@@ -186,6 +188,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
 	hv.StatusReport = f.statusReport && f.online
+	hv.OpenCodeSend = f.openCodeSend && f.online && f.interactive
 	if !f.online {
 		hv.OfflineSince = f.offlineSince
 	}
