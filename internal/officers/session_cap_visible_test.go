@@ -87,7 +87,7 @@ func newCapVisRig(t *testing.T) *capVisRig {
 	t.Helper()
 	hq := hqtest.New(map[string]string{tierTok: tierID})
 	t.Cleanup(hq.Close)
-	clk := &clock{t: time.Date(2001, 1, 1, 18, 20, 0, 0, time.UTC)}
+	clk := &clock{t: time.Date(2000, 1, 1, 18, 20, 0, 0, time.UTC)}
 	hq.Now = clk.Now
 	list, err := officers.Parse(`[{"id":"`+tierID+`","hq_url":"`+hq.BaseURL()+`","idle_scale_to_zero_after":"10m",`+capVisibleTiers+`}]`,
 		env(map[string]string{officers.TokenEnvPrefix + officers.TokenEnvSuffix(tierID): tierTok}), "muster-agent-")
@@ -139,7 +139,7 @@ func (r *capVisRig) capLines() []string {
 // day, it is logged again, once.
 func TestAJudgementPoolAtItsSessionCapIsLoggedOncePerUTCDayAndCounted(t *testing.T) {
 	r := newCapVisRig(t)
-	r.store.set("2001-01-01", "unknown:a1", "unknown:a2", "unknown:a3", "unknown:a4")
+	r.store.set("2000-01-01", "unknown:a1", "unknown:a2", "unknown:a3", "unknown:a4")
 
 	r.check(t)
 	if got := r.capLines(); len(got) != 0 {
@@ -154,7 +154,7 @@ func TestAJudgementPoolAtItsSessionCapIsLoggedOncePerUTCDayAndCounted(t *testing
 	}
 	r.check(t)
 	want1 := "officers: gpu-health:fleet (judgement pool): judgement cap reached (4/3 until 00:00 UTC): 5 claimable judgement item(s) wait in HQ " +
-		"and are not claimed until the cap resets at 2001-01-02T00:00:00Z (tiers.judgement.max_sessions_per_day; logged once per UTC day)"
+		"and are not claimed until the cap resets at 2000-01-02T00:00:00Z (tiers.judgement.max_sessions_per_day; logged once per UTC day)"
 	if got := r.capLines(); len(got) != 1 || got[0] != want1 {
 		t.Fatalf("cap reached with 5 waiting: cap lines\n%s\nwant exactly\n%s", strings.Join(got, "\n"), want1)
 	}
@@ -188,13 +188,13 @@ func TestAJudgementPoolAtItsSessionCapIsLoggedOncePerUTCDayAndCounted(t *testing
 	}
 
 	// Capped again that day: logged again, once, with that day's numbers.
-	r.store.set("2001-01-02", "unknown:b1", "unknown:b2", "unknown:b3")
+	r.store.set("2000-01-02", "unknown:b1", "unknown:b2", "unknown:b3")
 	r.clk.Advance(time.Minute)
 	r.check(t)
 	r.clk.Advance(time.Minute)
 	r.check(t)
 	want2 := "officers: gpu-health:fleet (judgement pool): judgement cap reached (3/3 until 00:00 UTC): 5 claimable judgement item(s) wait in HQ " +
-		"and are not claimed until the cap resets at 2001-01-03T00:00:00Z (tiers.judgement.max_sessions_per_day; logged once per UTC day)"
+		"and are not claimed until the cap resets at 2000-01-03T00:00:00Z (tiers.judgement.max_sessions_per_day; logged once per UTC day)"
 	if got := r.capLines(); len(got) != 2 || got[1] != want2 {
 		t.Fatalf("capped again the next day: cap lines\n%s\nwant 2, the second exactly\n%s", strings.Join(got, "\n"), want2)
 	}
