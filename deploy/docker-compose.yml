@@ -247,8 +247,13 @@ services:
     # the chief's spec with group 1001 and its files with group 1000, the
     # claude-code-agent image's own groups, so it holds both
     # (internal/provision/compose: the agent's session cannot read its spec).
+    # chief-instructions is the chief's files/etc/claude-code, mounted where
+    # muster's driver writes it, so the chief can mount it at /etc/claude-code
+    # by itself (a volume `subpath` would refuse this whole file on Compose
+    # before 2.25, whether or not the chief is used).
     volumes:
       - chief-spec:/run/muster-spec
+      - chief-instructions:/run/muster-spec/chief/files/etc/claude-code
     group_add: ["1000", "1001"]
     networks: [default, chief]
     # The image is distroless; the server binary probes its own /readyz.
@@ -425,8 +430,8 @@ services:
   #
   # One-shot: the volume's directories, with the owners and groups muster and
   # the supervisor need (muster is uid 65532; 1001 is the supervisor's group,
-  # 1000 the agent's). The subpath mount below needs files/etc/claude-code to
-  # exist before the chief starts.
+  # 1000 the agent's), the instructions volume's included: it is mounted on
+  # files/etc/claude-code.
   chief-init:
     profiles: ["chief"]
     image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
@@ -440,6 +445,7 @@ services:
         install -d -o 65532 -g 1000 -m 2750 /v/chief/files /v/chief/files/etc /v/chief/files/etc/claude-code
     volumes:
       - chief-spec:/v
+      - chief-instructions:/v/chief/files/etc/claude-code
     network_mode: none
     restart: "no"
 
@@ -464,14 +470,9 @@ services:
       CCD_SPEC_DIR: /run/muster-spec/chief
     volumes:
       - chief-spec:/run/muster-spec:ro
-      # The managed instructions, read-only to the agent (subpath of the
-      # chief-spec volume; needs Docker Engine 26+ / Compose 2.23+).
-      - type: volume
-        source: chief-spec
-        target: /etc/claude-code
-        read_only: true
-        volume:
-          subpath: chief/files/etc/claude-code
+      # The managed instructions (CLAUDE.md), read-only to the agent: their own
+      # volume, which muster mounts at the spec's files/etc/claude-code.
+      - chief-instructions:/etc/claude-code:ro
       - chief-data:/data
     # Its own network, which muster is on and Postgres, S3 and STT are not.
     # ⚠ NOT CONFINED: the chief container can reach the internet, on either
@@ -496,4 +497,5 @@ volumes:
   whisper-cache:
   s3-data:
   chief-spec:
+  chief-instructions:
   chief-data:

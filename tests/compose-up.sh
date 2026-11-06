@@ -60,8 +60,10 @@
 #     the turn ends instead of hanging; every model request is pinned to deepseek/deepseek-v4.1-flash and
 #     carries the owner's key and nothing else; turned off, the supervisor
 #     reads off, no claude process runs, the model hears nothing for 15s, and
-#     the container stays up. COMPOSE_UP_CHIEF_BREAK=marker skips the task, and
-#     the phase must then fail.
+#     the container stays up; then it is removed exactly as docs/chief.md says
+#     (rm -sf chief chief-init, down, the three chief volumes) and nothing of it
+#     is left. COMPOSE_UP_CHIEF_BREAK=marker skips the task, and the phase must
+#     then fail.
 # Always tears down (`down -v`, every profile), including on failure.
 set -euo pipefail
 
@@ -491,6 +493,22 @@ PY
   [ "$n1" = "$n2" ] || fail "[chief] the model was sent $((n2 - n1)) request(s) after Off"
   [ "$(docker inspect -f '{{.State.Running}}' "$(dcc ps -q chief)")" = true ] || fail "[chief] Off stopped the container"
   echo "ok   [chief] Off: the supervisor reads off, no claude process, no model request in 15s, the container still up"
+
+  # Removing it, exactly as docs/chief.md "Removing it" says (step 3, the .env
+  # edit, is this script's next phase starting from env.core).
+  dcc rm -sf chief chief-init >/dev/null 2>&1 || fail "[chief] docker compose --profile chief rm -sf chief chief-init failed"
+  [ -z "$(dcc ps -a -q chief chief-init 2>/dev/null)" ] || fail "[chief] the chief's containers are still there after rm -sf"
+  dcc down >/dev/null 2>&1
+  local v
+  for v in chief-spec chief-instructions chief-data; do
+    docker volume inspect "${PROJECT}_$v" >/dev/null 2>&1 || fail "[chief] there is no volume ${PROJECT}_$v to remove (the docs name it)"
+  done
+  docker volume rm "${PROJECT}_chief-spec" "${PROJECT}_chief-instructions" "${PROJECT}_chief-data" >/dev/null ||
+    fail "[chief] the documented docker volume rm failed"
+  for v in chief-spec chief-instructions chief-data; do
+    if docker volume inspect "${PROJECT}_$v" >/dev/null 2>&1; then fail "[chief] ${PROJECT}_$v survived its removal"; fi
+  done
+  echo "ok   [chief] removed as docs/chief.md says: rm -sf chief chief-init, then down and the three volumes"
   dcc down -v --remove-orphans >/dev/null 2>&1
 }
 

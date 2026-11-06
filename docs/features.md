@@ -359,6 +359,11 @@ home opens its chat. [chief.md](chief.md).
   Details are in [chief.md](chief.md#on-the-docker-compose-install).
 - **Turning it off** stops the Claude Code CLI in the container. The container
   stays up and idle.
+- **Removing it:** taking `chief` out of `COMPOSE_PROFILES` does NOT stop its
+  container, even with `--remove-orphans`. Turn it Off, run
+  `docker compose --profile chief rm -sf chief chief-init`, take its lines out of
+  `.env`, and delete its volumes ([chief.md](chief.md#on-the-docker-compose-install)
+  has the commands).
 - **Check:** `chief runtime: COMPOSE (MUSTER_CHIEF_RUNTIME=compose) — …` in
   `docker compose logs muster`; Account → Chief reads **On.** and names its
   credential; `muster doctor` lists `chief` on. With the chief on and the

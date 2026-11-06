@@ -171,6 +171,14 @@ if nets(m) != {"default", "chief"}:
     errs.append(f"muster networks {sorted(nets(m))}, want default and chief")
 if ("volume", "chief-spec", "/run/muster-spec", False, None) not in mounts(m):
     errs.append(f"muster does not mount chief-spec read-write at /run/muster-spec: {mounts(m)}")
+if ("volume", "chief-instructions", "/run/muster-spec/chief/files/etc/claude-code", False, None) not in mounts(m):
+    errs.append(f"muster does not mount chief-instructions where its driver writes files/etc/claude-code: {mounts(m)}")
+# No volume subpath anywhere: Compose before 2.25 refuses the WHOLE file over one
+# (the old-Compose tier below measures that), chief profile or not.
+for name, sv in svcs.items():
+    for mt in mounts(sv):
+        if mt[4] is not None:
+            errs.append(f"{name} mounts a volume subpath {mt}: Compose before 2.25 refuses the whole file")
 if sorted(str(g) for g in m.get("group_add", [])) != ["1000", "1001"]:
     errs.append(f"muster group_add {m.get('group_add')}, want 1000 and 1001 (it gives the spec and the files their groups)")
 for other in ("postgres", "s3", "stt-whisper", "stt-cohere"):
@@ -204,7 +212,7 @@ if "chief" in svcs:
         errs.append(f"chief CCD_SPEC_DIR {c.get('environment', {}).get('CCD_SPEC_DIR')!r}")
     cm = mounts(c)
     for want_m in (("volume", "chief-spec", "/run/muster-spec", True, None),
-                   ("volume", "chief-spec", "/etc/claude-code", True, "chief/files/etc/claude-code"),
+                   ("volume", "chief-instructions", "/etc/claude-code", True, None),
                    ("volume", "chief-data", "/data", False, None)):
         if want_m not in cm:
             errs.append(f"chief lacks the mount {want_m}: {cm}")
@@ -213,6 +221,9 @@ if "chief" in svcs:
         errs.append(f"chief healthcheck {hc!r} does not probe the supervisor's /compose/status")
     if c.get("depends_on", {}).get("chief-init", {}).get("condition") != "service_completed_successfully":
         errs.append("chief does not wait for chief-init")
+    ci = mounts(svcs.get("chief-init", {}))
+    if ("volume", "chief-instructions", "/v/chief/files/etc/claude-code", False, None) not in ci:
+        errs.append(f"chief-init does not prepare the instructions volume at files/etc/claude-code: {ci}")
     ci = svcs["chief-init"]
     if ci.get("restart") != "no" or ci.get("network_mode") != "none":
         errs.append(f"chief-init restart {ci.get('restart')!r} network_mode {ci.get('network_mode')!r}: a one-shot with no network")
@@ -324,6 +335,47 @@ elif grep -q MUSTER_VERSION "$tmp/neg.err"; then
   echo "ok   [negative control]: the unfilled .env.example is refused, naming MUSTER_VERSION"
 else
   echo "FAIL [negative control]: refused, but not for MUSTER_VERSION: $(cat "$tmp/neg.err")"; fail=1
+fi
+
+# --- the oldest Compose this file must parse on ------------------------------
+# Compose validates the WHOLE file against its own schema before it applies any
+# profile, so a key an old Compose does not know refuses `up` for every user,
+# whether or not they use the profile that needs it (#474 round 1 F1: a volume
+# `subpath`, which Compose refuses before 2.25). COMPOSE_CHECK_OLD names an old
+# docker-compose binary; CI pins one (.github/workflows/ci.yml).
+if [ -n "${COMPOSE_CHECK_OLD:-}" ]; then
+  old="$COMPOSE_CHECK_OLD"
+  oldv="$("$old" version --short 2>/dev/null)" || { echo "compose-check: COMPOSE_CHECK_OLD=$old does not run" >&2; exit 2; }
+  # Negative control first: the same binary must REFUSE the file with a subpath
+  # mount put back, or it could not see the break this tier exists for.
+  python3 - "$COMPOSE" "$tmp/subpath.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+anchor = "      - chief-data:/data\n"
+assert s.count(anchor) == 1, "the chief's data mount moved; update this control"
+s = s.replace(anchor, anchor + "      - type: volume\n        source: chief-spec\n        target: /mnt/control\n"
+              "        volume:\n          subpath: chief/files\n")
+open(sys.argv[2], "w").write(s)
+PY
+  if "$old" -f "$tmp/subpath.yml" --env-file "$tmp/env" -p compose-check config -q 2>"$tmp/old-neg.err"; then
+    echo "FAIL [compose $oldv, negative control]: a volume subpath was ACCEPTED; this binary cannot see the break"; fail=1
+  elif grep -q subpath "$tmp/old-neg.err"; then
+    echo "ok   [compose $oldv, negative control]: a volume subpath is refused, naming it"
+  else
+    echo "FAIL [compose $oldv, negative control]: refused, but not for subpath: $(cat "$tmp/old-neg.err")"; fail=1
+  fi
+  for profile in default stt s3 chief; do
+    envfile="$tmp/env"; [ "$profile" = chief ] && envfile="$tmp/env-chief"
+    args=(-f "$COMPOSE" --env-file "$envfile" -p compose-check)
+    [ "$profile" = default ] || args+=(--profile "$profile")
+    if "$old" "${args[@]}" config -q 2>"$tmp/old.err"; then
+      echo "ok   [compose $oldv, $profile]: the file parses"
+    else
+      echo "FAIL [compose $oldv, $profile]: $(cat "$tmp/old.err")"; fail=1
+    fi
+  done
+else
+  echo "note compose-check: the old-Compose tier did not run (set COMPOSE_CHECK_OLD to a docker-compose binary; CI does)"
 fi
 
 exit "$fail"

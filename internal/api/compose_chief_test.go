@@ -240,6 +240,46 @@ func TestTheAdminsAccountPageSaysWhatTheComposeChiefRunsOn(t *testing.T) {
 	}
 }
 
+// TestAnOffComposeChiefWhoseStopFailedSaysSo: turned off, the switch reads off
+// and the chief gets no work, but if its container says the stop left a
+// process running (the driver reads the supervisor's status at replicas 0,
+// and ccd compose reports error, never off, while one lives), the admin's page
+// says so with the pid and the way out. Controls: a clean stop, and one still
+// in progress, draw no container line.
+func TestAnOffComposeChiefWhoseStopFailedSaysSo(t *testing.T) {
+	section := func(w *chiefWorld) string { s, _ := w.chiefSection(t); return html.UnescapeString(s) }
+	w := composeWorld(t, true, ComposeChiefClaude, nil)
+	if err := w.prefs.SetEnabled(context.Background(), 1, false); err != nil {
+		t.Fatal(err)
+	}
+	chief := w0(w)
+	set := func(phase provision.Phase, reason string) {
+		ext := w.s.ext
+		ext.Provisioner = instancesProvisioner{insts: []provision.Instance{{Ref: provision.Ref{Name: chief.Name}, Phase: phase, Reason: reason}}}
+		w.s.UseExtensions(ext)
+		w.h = w.s.Handler()
+	}
+	const why = "the chief did not stop: 89 (claude) still running 5s after SIGKILL"
+	set(provision.PhaseFailed, why)
+	want := `<p data-compose-chief="container" class="text-sm text-fg2">Off, but its container did not stop: ` + why +
+		`. It keeps retrying; docker compose restart chief ends everything in it.</p>`
+	if got := section(w); !strings.Contains(got, want) {
+		t.Errorf("an off chief whose stop failed: the page lacks\n  %s\nin:\n%s", want, got)
+	}
+	for _, c := range []struct {
+		phase  provision.Phase
+		reason string
+	}{
+		{provision.PhaseStopped, "scaled to zero: the container is up and its agent is stopped"},
+		{provision.PhasePending, "the chief is stopping: stopping the chief: replicas 0"},
+	} {
+		set(c.phase, c.reason)
+		if got := section(w); strings.Contains(got, `data-compose-chief="container"`) {
+			t.Errorf("an off chief, %s: the page has a container line:\n%s", c.phase, got)
+		}
+	}
+}
+
 // w0 is the chief row of a chiefWorld built withChief.
 func w0(w *chiefWorld) agents.Agent {
 	for _, a := range w.store.rows {

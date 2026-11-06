@@ -7,7 +7,7 @@
 # Run on the HOST (it drives `docker compose`), by CI's ccd-image job. The
 # chief-init and chief services are deploy/docker-compose.yml's OWN (profile
 # chief), unchanged: the spec volume, user 0:1001, the capabilities, the
-# subpath mount and the healthcheck all come from that file. The only service
+# instructions volume and the healthcheck all come from that file. The only service
 # added here is `writer`, a uid-65532 stand-in for muster that writes the spec
 # as muster's compose driver does (files first, spec.json last, each by
 # rename, 0640), so this script can write specs muster never would.
@@ -16,7 +16,7 @@
 # checks what it shares with this one: awaiting_spec before any spec, uid 1000
 # cannot read spec.json, Off leaves no CLI, a prompt is denied. This script
 # checks only what needs a hand-written spec:
-#   1. the subpath mount: the CLI's user (uid 1000) reads a 0640 group-1000 file
+#   1. the instructions volume at /etc/claude-code: the CLI's user (uid 1000) reads a 0640 group-1000 file
 #      there, sees an atomic-rename update to it, and cannot write there;
 #   2. replicas 1 starts the real ccd and CLI: the status reaches running/ready,
 #      the proxied /healthz reports the session started, a turn without the
@@ -78,7 +78,7 @@ services:
     init: true
     network_mode: none
     depends_on: {chief-init: {condition: service_completed_successfully}}
-    volumes: [chief-spec:/run/muster-spec]
+    volumes: [chief-spec:/run/muster-spec, chief-instructions:/run/muster-spec/chief/files/etc/claude-code]
 YAML
 
 # put PATH (relative to the chief's spec dir) with stdin, as muster writes: a
@@ -145,12 +145,13 @@ dc up -d --wait chief-init writer chief || fail "docker compose up --wait"
 sup1="$(sup_pid)"; [[ -n "$sup1" ]] || fail "no ccd compose process: $(procs)"
 echo "compose-smoke: the real chief service is up (deploy/docker-compose.yml); supervisor pid $sup1"
 
-# 1. The subpath mount of files/etc/claude-code.
+# 1. The instructions volume: files/etc/claude-code as the writer (muster) sees
+# it, /etc/claude-code as the chief does.
 printf 'v1\n' | put files/etc/claude-code/CLAUDE.md
 [[ "$(in_chief cat /etc/claude-code/CLAUDE.md)" == v1 ]] || fail "the chief does not read /etc/claude-code/CLAUDE.md"
 [[ "$(in_chief stat -c '%a %g' /etc/claude-code/CLAUDE.md)" == "640 1000" ]] || fail "CLAUDE.md is $(in_chief stat -c '%a %g' /etc/claude-code/CLAUDE.md)"
 printf 'v2\n' | put files/etc/claude-code/CLAUDE.md
-[[ "$(in_chief cat /etc/claude-code/CLAUDE.md)" == v2 ]] || fail "a rename update is not visible through the subpath mount"
+[[ "$(in_chief cat /etc/claude-code/CLAUDE.md)" == v2 ]] || fail "a rename update is not visible at /etc/claude-code"
 if in_chief sh -c 'echo x > /etc/claude-code/planted' 2>/dev/null; then fail "the chief could write /etc/claude-code"; fi
 echo "compose-smoke: /etc/claude-code: 0640 readable by uid 1000, rename updates visible, read-only"
 # 2. replicas 1: the real ccd and CLI.

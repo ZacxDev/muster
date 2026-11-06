@@ -37,7 +37,10 @@ again brings them back. While it is off:
 - with the agent provisioner, its pod is stopped (Stop, not Delete). The
   stopped-agent reaper never deletes the chief. If the Stop fails, the switch
   still reads off and the chief gets no work, and the page says its pod is
-  still up (turn it off again to retry);
+  still up (turn it off again to retry). On the docker compose install, the
+  page says "Off, but its container did not stop", naming the process the
+  container's supervisor could not end; the supervisor keeps retrying, and
+  `docker compose restart chief` ends everything in the container;
 - it still cannot be deleted by accident (the delete protection below does not
   depend on the switch);
 - `POST /chief/provision` refuses (409) rather than create or start it.
@@ -89,9 +92,14 @@ another identity than the agent, and the spec belongs to the supervisor's group.
 - Neither: turning it on is refused, and Account → Chief says which variables to
   set.
 
+A change in `.env` reaches a running chief when muster restarts
+(`docker compose up -d --wait`): muster re-applies its spec at boot on the new
+credential, with no Off/On needed. A chief that is off stays off.
+
 Account → Chief says which one it runs on, whether routing work to your
 sessions is on (it needs `MUSTER_SESSION_ROUTING=1`), and,
-while it is on and its container is not answering, why.
+while it is on and its container is not answering, why. Off, it says so if
+the stop left a process running (["Turning it off"](#turning-the-chief-on-or-off)).
 
 **What is different from the Kubernetes chief:**
 
@@ -127,7 +135,36 @@ muster can reach), so:
   (`task_comment`, `reply_draft`, `task_create_gated`, …), Bash, a file edit. The
   chief is told it was denied and carries on.
 
+⚠ **Not every tool prompts.** In its default permission mode Claude Code itself
+runs some tools without asking, so they run here too, beside the eight above
+([Claude Code: permissions](https://code.claude.com/docs/en/permissions)):
+read-only tools (file reads, Grep, Glob) within its working directory
+(`/data/workspace`), a built-in set of read-only Bash commands, and WebFetch to a
+built-in set of documentation domains. Everything else that would ask is denied.
+
 On Kubernetes those prompts go to the approval relay instead.
+
+**Removing it.** Taking `chief` out of `COMPOSE_PROFILES` does not stop the
+container: Compose leaves a running service of a profile you dropped alone, even
+with `--remove-orphans`, and its spec still holds its credential. To remove the
+chief, from the directory with your `.env`:
+
+1. Turn it **Off** under Account → Chief.
+2. Remove its containers:
+   `docker compose --profile chief rm -sf chief chief-init`
+3. In `.env`, take `chief` out of `COMPOSE_PROFILES` and delete
+   `MUSTER_CHIEF_RUNTIME`, `MUSTER_CHIEF_CLAUDE_TOKEN` and `MUSTER_CHIEF_LLM_MODEL`.
+4. Delete its volumes (the spec, which holds the credential, the instructions and
+   its data). muster mounts the spec, so stop the stack first:
+
+   ```sh
+   docker compose down
+   docker volume rm <project>_chief-spec <project>_chief-instructions <project>_chief-data
+   docker compose up -d --wait
+   ```
+
+   `<project>` is the Compose project name: the directory's name, or
+   `COMPOSE_PROJECT_NAME` (`docker compose ls` shows it).
 
 ## Stall nudges
 

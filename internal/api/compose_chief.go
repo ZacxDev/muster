@@ -316,6 +316,13 @@ const (
 	composeChiefInstanceDeadline = 3 * time.Second
 )
 
+// ComposeChiefStopFailed is the container line of a chief turned off whose
+// container says the stop left something running.
+func ComposeChiefStopFailed(reason string) string {
+	return "Off, but its container did not stop: " + reason + ". It keeps retrying; " +
+		"docker compose restart chief ends everything in it."
+}
+
 // ComposeChiefRunsOnOpenRouter is the credential line for the OpenRouter key.
 func ComposeChiefRunsOnOpenRouter(model string) string {
 	return "Runs on your OpenRouter key, on " + model + " (MUSTER_CHIEF_LLM_MODEL). muster adds no budget of its own: " +
@@ -345,10 +352,17 @@ func (s *Server) composeChiefDetails(ctx context.Context, owner int64, chief age
 	default:
 		b += p("credential", ComposeChiefRunsOnClaude)
 	}
-	if has && on {
+	if has {
 		if inst, ok := s.instanceIndexWithin(ctx, composeChiefInstanceDeadline)[chief.Name]; ok && inst != nil {
-			if inst.Phase != provision.PhaseRunning && inst.Reason != "" {
+			switch {
+			case on && inst.Phase != provision.PhaseRunning && inst.Reason != "":
 				b += p("container", "Its container: "+inst.Reason+".")
+			// 🔴 OFF, BUT THE STOP LEFT SOMETHING RUNNING. The switch reads off and
+			// the chief gets no work, but the supervisor says a process outlived
+			// the stop (internal/provision/compose: replicas 0 reads its status;
+			// ccd compose reports error, never off, while one lives).
+			case !on && inst.Phase == provision.PhaseFailed && inst.Reason != "":
+				b += p("container", ComposeChiefStopFailed(inst.Reason))
 			}
 		}
 	}
