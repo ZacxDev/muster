@@ -90,6 +90,57 @@ type officerRuntime struct {
 	// reads is THE per-item read budget, one counter per (officer, item)
 	// shared by every tool officers.CountsRead names (officer_reads.go).
 	reads *officers.ReadBudget
+	// worked is, per instance name of a fresh_session_per_item pool, the item
+	// whose hold ENDED in the instance's current conversation (complete,
+	// release, ask): officer_claim refuses that conversation another item
+	// (freshClaimRefusal). Cleared when muster starts the instance a new
+	// conversation (newConversation). Guarded by workedMu.
+	workedMu sync.Mutex
+	worked   map[string]officers.ItemID
+}
+
+// itemEnded records that instance's hold on item ended (complete, release,
+// ask) in its current conversation, for a fresh_session_per_item pool o; any
+// other pool records nothing.
+func (rt *officerRuntime) itemEnded(o officers.Officer, instance string, item officers.ItemID) {
+	if !o.FreshSessionPerItem() {
+		return
+	}
+	rt.workedMu.Lock()
+	defer rt.workedMu.Unlock()
+	if rt.worked == nil {
+		rt.worked = map[string]officers.ItemID{}
+	}
+	rt.worked[instance] = item
+}
+
+// workedItem is the item instance's current conversation has already worked
+// ("" when none).
+func (rt *officerRuntime) workedItem(instance string) officers.ItemID {
+	rt.workedMu.Lock()
+	defer rt.workedMu.Unlock()
+	return rt.worked[instance]
+}
+
+// newConversation forgets the item instance's conversation worked: muster is
+// starting it a NEW conversation (officerFleet.Start, Reprompt). The returned
+// func puts it back — for a turn ccd refused before typing anything, whose
+// conversation therefore did not change.
+func (rt *officerRuntime) newConversation(instance string) (undo func()) {
+	rt.workedMu.Lock()
+	defer rt.workedMu.Unlock()
+	prev, had := rt.worked[instance]
+	delete(rt.worked, instance)
+	return func() {
+		if !had {
+			return
+		}
+		rt.workedMu.Lock()
+		defer rt.workedMu.Unlock()
+		if _, again := rt.worked[instance]; !again {
+			rt.worked[instance] = prev
+		}
+	}
 }
 
 // clock is the runtime's now (time.Now when unset).
@@ -487,6 +538,10 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kickoff string) error {
 	octx := f.s.officerPrincipal(ctx, o.Owner)
 	name := o.InstanceName(n)
+	if o.FreshSessionPerItem() {
+		// Its first turn is a new conversation (OfficerTurnContext).
+		f.s.officerRT.newConversation(name)
+	}
 	a, err := f.s.ext.Agents.GetByName(octx, name)
 	if err != nil {
 		_, err := f.s.createAndDispatchAgent(octx, dispatchParams{
@@ -512,9 +567,25 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	return f.s.ext.Provisioner.Start(octx, a.ID)
 }
 
-// OfficerTurnContext is the context a turn of agent a is sent under. STUB
-// (red): ctx unchanged.
-func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context.Context { return ctx }
+// OfficerTurnContext is THE context a turn muster gives agent a is sent
+// under: for an instance of a fresh_session_per_item pool
+// (officers.Officer.FreshSessionPerItem), ctx routed with
+// agents.HeaderCCNewConversation "1", on which the pod's ccd starts a NEW
+// conversation (the old transcript kept) before it pastes the turn; for every
+// other agent, ctx unchanged.
+//
+// Both of the officer runtime's turns ask it: the wake loop's prompt
+// (Reprompt) and the kickoff deliverer's first turn (agentkickoff.Config.
+// TurnContext, wired by cmd/muster-server) — so a pod started for an item, a
+// pod restarted at the wall-time cap, and an idle instance prompted for its
+// next item all begin that item in a new conversation.
+func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context.Context {
+	o, _, ok := s.officerOf(a)
+	if !ok || !o.FreshSessionPerItem() {
+		return ctx
+	}
+	return agents.WithTurnRoute(ctx, agents.TurnRoute{Header: http.Header{agents.HeaderCCNewConversation: {"1"}}})
+}
 
 // promptPending is the kickoff deliverer's own "owed" rule
 // (agentkickoff.owesFirstTurn): a note is set and not yet stamped delivered.
@@ -592,6 +663,16 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		release()
 		return fmt.Errorf("officers: %s's session: %w", name, err)
 	}
+	// 🔴 A FRESH POOL'S TURN IS A NEW CONVERSATION (OfficerTurnContext), and its
+	// instance may claim again in it. Cleared HERE, under the session claim: no
+	// turn muster sent the instance is running (each holds this claim for its
+	// whole length), so its last conversation's turn is over. A turn ccd
+	// refuses before typing anything (Unsent: busy, not_ready) changed no
+	// conversation, and the item it worked is put back.
+	undoConversation := func() {}
+	if o.FreshSessionPerItem() {
+		undoConversation = s.officerRT.newConversation(name)
+	}
 	// 🔴 THE SEND ENDS AT SHUTDOWN, AND RELEASES ITS CLAIM WHEN IT DOES. Its
 	// context is cancelled by EndStreams — as a plugin delivery's is — and the
 	// shutdown drain waits for it (WaitForOfficerReprompts). Detached from that,
@@ -610,14 +691,16 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		// through context.AfterFunc, which runs asynchronously, so sendCtx may
 		// not read cancelled yet when shutdown has already begun.
 		if sendCtx.Err() != nil || s.streams.context().Err() != nil {
+			undoConversation()
 			return
 		}
-		tctx, cancel := context.WithTimeout(sendCtx, turn)
+		tctx, cancel := context.WithTimeout(s.OfficerTurnContext(sendCtx, fresh), turn)
 		defer cancel()
 		reply, err := s.ext.Gateway.Chat(tctx, fresh, sess.SessionKey, text, nil)
 		if unsent := agentgateway.Unsent(err); unsent != "" {
 			// Refused before anything was typed (ccd's 409 busy, 503
 			// not_ready): not a turn, so nothing goes on the transcript.
+			undoConversation()
 			s.logger.Printf("officers: %s: re-prompt not sent (%s); the next pass tries again", name, unsent)
 			return
 		}
@@ -1059,14 +1142,19 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor, Tier: o.Tier})
 		body = page.Raw
 	case officers.ToolClaim:
-		if o.ItemCap() > 0 {
-			// 🔴 ONE LIVE CLAIM PER CAPPED JUDGEMENT INSTANCE, before HQ and
-			// before the session ledger (a refused claim spends no session).
-			// The wake loop enforces max_item_minutes by stopping the holder's
-			// whole instance, so a second item it held would lose its work.
-			// Serialised per instance, so two parallel calls cannot both pass.
+		if o.ItemCap() > 0 || o.FreshSessionPerItem() {
+			// 🔴 ONE LIVE CLAIM PER CAPPED JUDGEMENT INSTANCE, AND PER FRESH
+			// POOL'S CONVERSATION, before HQ and before the session ledger (a
+			// refused claim spends no session). The wake loop enforces
+			// max_item_minutes by stopping the holder's whole instance, so a
+			// second item it held would lose its work; a fresh pool works one
+			// item per conversation (freshClaimRefusal). Serialised per
+			// instance, so two parallel calls cannot both pass.
 			unlock := s.officerRT.lockClaims(instance)
 			defer unlock()
+			if refusal := s.freshClaimRefusal(o, instance); refusal != "" {
+				return refusal, true
+			}
 			if refusal := s.oneClaimRefusal(ctx, c, o, instance, in.ItemID); refusal != "" {
 				return refusal, true
 			}
@@ -1153,22 +1241,16 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
 		body, err = c.Complete(ctx, in.ItemID, instance, officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv})
-		if err == nil && s.officerRT.fwd != nil {
-			s.officerRT.fwd.Ended(o, instance, in.ItemID)
-		}
 		if err == nil {
-			s.llmEnded(o, instance, in.ItemID)
+			s.officerItemEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolRelease:
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
 		body, err = c.Release(ctx, in.ItemID, instance)
-		if err == nil && s.officerRT.fwd != nil {
-			s.officerRT.fwd.Ended(o, instance, in.ItemID)
-		}
 		if err == nil {
-			s.llmEnded(o, instance, in.ItemID)
+			s.officerItemEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolAskPerson:
 		if bad := needItem(); bad != "" {
@@ -1201,13 +1283,45 @@ const askedNote = "asked. Your lease on this item has ENDED: HQ set it to waitin
 // in words (askedNote): the instance's next move is to stop working the item.
 func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask) string {
 	body, err := c.CreateAsk(ctx, item, instance, ask)
-	if err == nil && s.officerRT.fwd != nil {
-		s.officerRT.fwd.Ended(o, instance, item)
-	}
 	if err == nil {
-		s.llmEnded(o, instance, item)
+		s.officerItemEnded(o, instance, item)
 	}
 	return askToolResult(body, err)
+}
+
+// officerItemEnded is THE end of an instance's hold on item, by its own tool
+// (officer_complete, officer_release, officer_ask_person): the transcript
+// forwarder and the LLM proxy's item meter stop for it, and a
+// fresh_session_per_item pool's conversation is marked as having worked it
+// (freshClaimRefusal).
+func (s *Server) officerItemEnded(o officers.Officer, instance string, item officers.ItemID) {
+	if s.officerRT.fwd != nil {
+		s.officerRT.fwd.Ended(o, instance, item)
+	}
+	s.llmEnded(o, instance, item)
+	s.officerRT.itemEnded(o, instance, item)
+}
+
+// freshClaimRefusal is officer_claim's refusal for an instance of a
+// fresh_session_per_item pool whose current conversation has already worked
+// an item (its hold ended: complete, release, ask), or "" otherwise. The
+// instance's next item is muster's to start, in a new conversation, on the
+// wake loop's next pass (officerFleet.Reprompt).
+//
+// ⚠ What it rests on is this process's memory (officerRuntime.worked): a
+// muster restarted while an instance's turn is still running forgets that
+// the turn's conversation worked an item, and that one turn may claim one
+// more. Every turn muster sends afterwards starts a new conversation.
+func (s *Server) freshClaimRefusal(o officers.Officer, instance string) string {
+	if !o.FreshSessionPerItem() {
+		return ""
+	}
+	item := s.officerRT.workedItem(instance)
+	if item == "" {
+		return ""
+	}
+	return toolErr("this conversation has already worked item %s, and tiers.%s.fresh_session_per_item gives each item a NEW conversation: "+
+		"do not claim another here. Stop now and end your turn; muster starts you a new conversation for the next item", item, o.Tier)
 }
 
 // askToolResult is officer_ask_person's answer: HQ's JSON with askedNote on
@@ -1287,7 +1401,8 @@ func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, insta
 }
 
 // oneClaimRefusal is officer_claim's refusal for an instance of a capped
-// judgement pool (o.ItemCap() > 0) that already holds a live claim on an item
+// judgement pool (o.ItemCap() > 0) or of a fresh_session_per_item pool that
+// already holds a live claim on an item
 // other than item ("" = claim-next), or "" when it holds none. HQ's claimed
 // list is the truth; when it cannot be read the claim is refused (fail
 // closed: nothing is claimed without the check).
@@ -1300,8 +1415,12 @@ func (s *Server) oneClaimRefusal(ctx context.Context, c *officers.Client, o offi
 	now := s.officerRT.clock()
 	for _, it := range claimed {
 		if it.ClaimedBy == instance && it.ID != item && it.LeaseLive(now) {
-			return toolErr("you already hold item %s: a judgement instance works one item at a time here (tiers.judgement.max_item_minutes stops your whole instance at one item's cap, which would lose any other). "+
-				"Complete (%s) or release (%s) item %s before claiming another", it.ID, officers.ToolComplete, officers.ToolRelease, it.ID)
+			why := "tiers.judgement.max_item_minutes stops your whole instance at one item's cap, which would lose any other"
+			if o.ItemCap() == 0 {
+				why = "tiers." + o.Tier + ".fresh_session_per_item gives each item a conversation of its own"
+			}
+			return toolErr("you already hold item %s: an instance of this pool works one item at a time (%s). "+
+				"Complete (%s) or release (%s) item %s before claiming another", it.ID, why, officers.ToolComplete, officers.ToolRelease, it.ID)
 		}
 	}
 	return ""

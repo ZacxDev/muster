@@ -718,6 +718,12 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// for it (the same header, "1", on the request): a caller that never asked
 	// gets exactly the one answer it always got.
 	ctx := r.Context()
+	// A new conversation before the turn: the PRIMARY's only (an explicit
+	// session's lane is a conversation of its own already, and the header is
+	// ignored there). See startNewConversation.
+	if target == s && r.Header.Get(headerCCNewConversation) == "1" {
+		ctx = context.WithValue(ctx, newConversationKey{}, true)
+	}
 	if r.Header.Get(headerCCPromptAccepted) == "1" {
 		ctx = withPromptSubmitted(ctx, func() {
 			w.Header().Set(headerCCPromptAccepted, "1")
@@ -749,6 +755,120 @@ func withPromptSubmitted(ctx context.Context, fn func()) context.Context {
 	return context.WithValue(ctx, promptSubmittedKey{}, fn)
 }
 
+// newConversationKey marks a turn that starts a new conversation first
+// (headerCCNewConversation; startNewConversation).
+type newConversationKey struct{}
+
+// clearCommand is the CLI's own command for a new conversation.
+const clearCommand = "/clear"
+
+// startNewConversation starts a NEW conversation in the CLI before a turn that
+// asked for one (headerCCNewConversation): muster sets it on every turn of an
+// officer instance whose pool works each item in a conversation of its own
+// (internal/api OfficerTurnContext). Called by runTurn under the turn slot,
+// with the CLI's pane.
+//
+// 🔴 IT IS THE CLI'S OWN /clear, AND ccd CONFIRMS IT BY THE SESSION ID. Measured
+// on the real CLI (2.1.289, a workstation, 2026-11-06; the image pins 2.1.296,
+// not measured there): /clear, in the same process, fires SessionEnd (reason
+// "clear") for the old session, then SessionStart (source "clear") with a NEW
+// session id and a new transcript path; the old transcript is left on disk as
+// it was, and the CLI's sessions/<pid>.json names the new id — which is what
+// GET /v1/transcript reads, so muster's per-item transcript forwarding follows
+// the new conversation. ccd waits for a SessionStart naming a session other
+// than the one it saw before the paste; the primary's handleHook records that
+// session as the one every later start resumes (primaryRecordFile), so a
+// restart never returns to the old conversation.
+//
+//   - No transcript yet (a CLI on a fresh volume: the CLI writes none until
+//     its first prompt): the conversation is already new; nothing is typed.
+//     (A /clear does write one at once — measured: its local-command record —
+//     so a second request right after a clear clears again.)
+//   - No new SessionStart within SubmitTimeout: 503 not_ready, and the turn is
+//     NOT typed — muster re-sends it, and a re-send that finds the clear did
+//     land clears again into another empty conversation, which costs nothing.
+//     The turn is never typed into the old conversation.
+//   - The pane refuses the paste (a dialog, the usage-limit menu, a dead
+//     pane): the same refusal a turn's own paste gets (pasteRefused).
+func (s *server) startNewConversation(ctx context.Context, pane paneRef) *failure {
+	s.mu.Lock()
+	started, busy, old, path := s.sessionStarted, s.busy, s.sessionID, s.transcriptPath
+	s.mu.Unlock()
+	switch {
+	case !started:
+		return notStartedFailure()
+	case busy:
+		return busyFailure()
+	}
+	if path == "" || !fileIsRegular(path) {
+		log.Printf("ccd: a new conversation was asked for; session %s has no transcript yet, so it is one already", old)
+		return nil
+	}
+	if err := s.term.Paste(ctx, pane, clearCommand); err != nil {
+		return s.pasteRefused(err)
+	}
+	s.setScreenBlocked(false, "")
+	deadline := time.NewTimer(s.cfg.SubmitTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		s.mu.Lock()
+		started, id := s.sessionStarted, s.sessionID
+		s.mu.Unlock()
+		if started && id != "" && id != old {
+			log.Printf("ccd: started a new conversation, session %s; the previous one, %s, is kept at %s", id, old, path)
+			return nil
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			return paneNotReady(fmt.Sprintf("ccd typed %s for a new conversation, but no SessionStart for a new session arrived within %s; "+
+				"the turn was NOT typed — send it again", clearCommand, s.cfg.SubmitTimeout))
+		case <-ctx.Done():
+			return &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
+				Message: "caller went away while ccd started a new conversation; the turn was not typed"}
+		}
+	}
+}
+
+// notStartedFailure is runTurn's refusal while the CLI has sent no SessionStart.
+func notStartedFailure() *failure {
+	return &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
+		Message: "the session has not started (no SessionStart hook yet): the TUI may be on a " +
+			"first-run, trust or login screen, or restarting — attach to the pane to see it"}
+}
+
+// busyFailure is runTurn's refusal while a prompt submitted in the terminal runs.
+func busyFailure() *failure {
+	return &failure{Status: http.StatusConflict, Type: failBusy,
+		Message: "the session is mid-turn (a prompt was submitted in the terminal)"}
+}
+
+// pasteRefused is the failure for a Paste into the CLI's pane that failed, with
+// what the refusal tells: the usage-limit menu (the account's limit), a dialog
+// (awaiting approval), a pane that is not live (not_ready), else a terminal
+// error.
+func (s *server) pasteRefused(err error) *failure {
+	// The usage-limit menu first: it is a dialog too (errDialogShown), but
+	// the account's limit, not an approval (dialog.go limitMenuShown).
+	var lm *limitMenuShown
+	if errors.As(err, &lm) {
+		s.setScreenBlocked(true, err.Error())
+		f := limitMenuFailure(lm)
+		s.auth.observeTurn(f)
+		return f
+	}
+	if errors.Is(err, errDialogShown) {
+		s.setScreenBlocked(true, err.Error())
+		return awaitingApproval(err.Error())
+	}
+	if errors.Is(err, errPaneNotLive) {
+		return paneNotReady(err.Error())
+	}
+	return &failure{Status: http.StatusBadGateway, Type: failTerminal, Message: err.Error()}
+}
+
 // runTurn drives one prompt through the session and returns its reply or a
 // failure. It holds the single turn slot for its whole duration.
 func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *failure) {
@@ -773,18 +893,21 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 			"restarting, crash_loop or terminal_lost — see /healthz)")
 	}
 
+	if v, _ := ctx.Value(newConversationKey{}).(bool); v {
+		if f := s.startNewConversation(ctx, pane); f != nil {
+			return turnOutcome{}, f
+		}
+	}
+
 	p := &pendingTurn{want: turnKey(prompt), submitted: make(chan hookEvent, 1), done: make(chan hookEvent, 1)}
 	s.mu.Lock()
 	switch {
 	case !s.sessionStarted:
 		s.mu.Unlock()
-		return turnOutcome{}, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
-			Message: "the session has not started (no SessionStart hook yet): the TUI may be on a " +
-				"first-run, trust or login screen, or restarting — attach to the pane to see it"}
+		return turnOutcome{}, notStartedFailure()
 	case s.busy:
 		s.mu.Unlock()
-		return turnOutcome{}, &failure{Status: http.StatusConflict, Type: failBusy,
-			Message: "the session is mid-turn (a prompt was submitted in the terminal)"}
+		return turnOutcome{}, busyFailure()
 	}
 	s.pending = p
 	// Where this turn's records can start: the transcript's size BEFORE the paste.
@@ -804,23 +927,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	}()
 
 	if err := s.term.Paste(ctx, pane, prompt); err != nil {
-		// The usage-limit menu first: it is a dialog too (errDialogShown), but
-		// the account's limit, not an approval (dialog.go limitMenuShown).
-		var lm *limitMenuShown
-		if errors.As(err, &lm) {
-			s.setScreenBlocked(true, err.Error())
-			f := limitMenuFailure(lm)
-			s.auth.observeTurn(f)
-			return turnOutcome{}, f
-		}
-		if errors.Is(err, errDialogShown) {
-			s.setScreenBlocked(true, err.Error())
-			return turnOutcome{}, awaitingApproval(err.Error())
-		}
-		if errors.Is(err, errPaneNotLive) {
-			return turnOutcome{}, paneNotReady(err.Error())
-		}
-		return turnOutcome{}, &failure{Status: http.StatusBadGateway, Type: failTerminal, Message: err.Error()}
+		return turnOutcome{}, s.pasteRefused(err)
 	}
 	s.setScreenBlocked(false, "")
 

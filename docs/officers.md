@@ -844,6 +844,14 @@ read-only transaction with a timeout and capped rows, reading `pg_catalog` to
 check tables and columns (the github sentence then says "the only connector
 you may use for it").
 
+An instance of a pool with [`fresh_session_per_item`](#the-two-pools) is
+also told, last, that this conversation is for ONE item: once it has
+completed, released or handed the item on, or asked a person about it, it ends
+its turn without claiming another (`officer_claim` refuses one), and muster
+starts a new conversation, with the same first message, for the next item.
+The wake loop's prompt of such an instance is this whole first message, not
+the "as before" re-prompt.
+
 (`officers.KickoffText` has the whole text.) It carries no charter and no
 credential.
 
@@ -1482,7 +1490,8 @@ file, so a restarted muster derives the same `seq` for the same event, and its
 resume — which re-reads the backfill window — is deduplicated by HQ's rule
 rather than by memory. It stays below 2^53 (a JSON-safe integer) for any file
 under 256 GiB (2^53 / 2^15 = 2^38 bytes). A new conversation mid-item (a new file, offsets from zero: an
-operator's `/clear`; `ccd` resumes the primary's own conversation by id on a
+operator's `/clear` — never muster's own new conversation per item, which ccd
+starts before the item is claimed; `ccd` resumes the primary's own conversation by id on a
 restart) is shifted above the seqs before it; a muster that restarts INTO such
 a conversation has lost that shift, sees HQ answer `stored: 0` with a
 `last_seq` above a batch it read live, and re-sequences that batch and the ones
@@ -1648,6 +1657,67 @@ An officer may split its instances into two **pools**, one per HQ item tier
     `muster_officer_cap_refusal_withheld` counts the withheld instances,
     and the log says when one is withheld and when it is not any more. A
     restarted muster starts a new episode for a refusal still in force.
+
+- **One conversation per item: `tiers.<pool>.fresh_session_per_item`**
+  (`true` on either pool, or both; **off by default** — leave it out for one
+  conversation the instance keeps). 🔴 Turn it on for a LIVE officer only once
+  HQ serves the claim-time `history` block on the items it claims: with it on,
+  an instance remembers nothing from one item to the next, and that block is
+  where an officer's memory of earlier items is meant to come from. Until
+  then, enable it only on officers used for replay, where carrying nothing
+  over is the point. Without it an instance keeps ONE Claude
+  Code conversation on its volume: `ccd` resumes it on every start (a pod
+  restart, a stop at the idle window or the wall-time cap), and the wake
+  loop's prompt for the next item says "work the queue as before". So every
+  item is worked with every earlier item's context, which biases the next
+  investigation ("same conclusion as the last item") and makes a replay of
+  one item impossible. With it, every item an instance of the pool works
+  starts in a **new conversation**:
+  - **Every turn muster sends the instance asks ccd for a new
+    conversation**: the kickoff deliverer's first turn (a start: the pool woke,
+    a stopped instance restarted for its next item, an instance restarted
+    after the wall-time cap) and the wake loop's prompt of an idle instance
+    (its next item, a `needs_judgement` item promoted from the routine pool).
+    The turn carries `X-Muster-CC-New-Conversation: 1`
+    (`api.Server.OfficerTurnContext`, the one rule both share). ccd then types
+    the CLI's own `/clear` before the turn, waits for the CLI's `SessionStart`
+    naming a **new** session id, and only then types the turn. The new session
+    is recorded as the one every later start resumes, so a restart mid-item
+    keeps the item's own conversation. The old conversation's transcript is
+    **kept** on the volume, for audit. A CLI with no transcript yet (a fresh
+    volume) already has a new conversation, and nothing is typed. If no new
+    `SessionStart` arrives in time, the turn is refused `not_ready` and is
+    **not** typed into the old conversation; muster sends it again.
+  - **The turn is the kickoff**, never "as before": the instance calls
+    `officer_brief` and loads the current charter for every item. The kickoff
+    of such a pool ends with a one-item paragraph (see [The first
+    message](#the-first-message)).
+  - **One item per conversation, enforced before HQ**: `officer_claim` (by id
+    or claim-next) refuses a second claim while the instance holds one, and
+    any claim once its hold has ended in this conversation (complete,
+    release, `needs_judgement`, `officer_ask_person`), naming
+    `fresh_session_per_item`. The refusal tells it to end its turn; the wake
+    loop's next pass prompts it again, in a new conversation. ⚠ What the
+    second rule rests on is muster-server's memory: a muster restarted while
+    an instance's turn is still running forgets that the turn's conversation
+    had its item, and that one turn may claim one more.
+  - **Transcripts to HQ** (`transcript`) follow it: ccd's `GET
+    /v1/transcript` serves the CLI's current session, which `/clear` moves to
+    the new one, so each item's upload is that item's own conversation.
+  - **Cost.** Each item pays one kickoff it did not before: 5.3 KB (about
+    870 words) for a judgement instance without a repository, 7.7 KB (about
+    1,200 words) with `repo`, `read_repos` and `connectors` (measured from
+    `officers.KickoffText` at this version; a `kube` block adds about 1.5
+    KB). That is roughly 1,300–2,000 input tokens of text, plus one
+    `officer_brief` answer (the charter, open items and recent outcomes; its
+    size is HQ's). The CLI's system prompt and tool definitions are sent on
+    every request either way. In exchange, no request carries earlier items'
+    history.
+  - Not offered to an untiered officer: an officer without `tiers` is
+    exactly what it was.
+  - It needs a `claude-code-agent` image from this version: an older ccd
+    ignores the header, and the turn then runs in the conversation the CLI
+    already has (the claim rule above still holds).
 
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;

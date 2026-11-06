@@ -1093,7 +1093,15 @@ func HQFaults() float64 { published.Lock(); defer published.Unlock(); return pub
 
 // RepromptText is the turn an up, idle instance is given when its officer has
 // claimable work. Like KickoffText it carries no credential.
+//
+// 🔴 A FRESH POOL'S IS THE KICKOFF (Officer.FreshSessionPerItem): its turn
+// starts a NEW conversation (internal/api OfficerTurnContext), which has no
+// "as before" to refer to — it must call officer_brief and load the charter
+// like a first start.
 func RepromptText(o Officer, n int) string {
+	if o.FreshSessionPerItem() {
+		return KickoffText(o, n)
+	}
 	return fmt.Sprintf("New work for officer %s (you are instance %s, %s): call %s and work the queue as before — %s, %s while you work, %s when done. "+
 		"Call %s again only if you need your charter.", o.ID, o.InstanceLabel(n), o.InstanceName(n), ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolBrief)
 }

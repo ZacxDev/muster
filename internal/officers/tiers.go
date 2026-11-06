@@ -53,14 +53,44 @@ type TierPool struct {
 	// loop stops the instance and completes the item escalated (Decide,
 	// Overrun). 0 is no cap.
 	MaxItemMinutes int `json:"max_item_minutes,omitempty"`
-	// FreshSessionPerItem: every item an instance of the pool claims is
-	// worked in a NEW Claude Code conversation (Officer.FreshSessionPerItem).
+	// FreshSessionPerItem, on either pool: every item an instance of the pool
+	// claims is worked in a NEW Claude Code conversation
+	// (Officer.FreshSessionPerItem).
 	FreshSessionPerItem bool `json:"fresh_session_per_item,omitempty"`
 }
 
-// FreshSessionPerItem reports whether this pool works each item in a new
-// conversation. STUB (red): always false.
-func (o Officer) FreshSessionPerItem() bool { return false }
+// FreshSessionPerItem is THE rule for whether pool o works each item in a NEW
+// Claude Code conversation (tiers.<pool>.fresh_session_per_item): false for
+// an untiered officer, and for a tiered officer not read as one of its pools.
+//
+// Everything the option changes branches here, and nowhere else:
+//
+//   - RepromptText: the wake loop's prompt of an idle instance is the
+//     kickoff, never "as before" (a new conversation has no "before");
+//   - KickoffText: the kickoff ends with the one-item note (freshNote);
+//   - internal/api OfficerTurnContext: every turn muster sends the instance —
+//     the wake loop's prompt and the kickoff deliverer's first turn — carries
+//     agents.HeaderCCNewConversation, on which the pod's ccd starts a new
+//     conversation (the old transcript kept) before it pastes the turn;
+//   - internal/api officer_claim: one item per conversation — a second claim
+//     while the instance holds one, and any claim after its hold ended, is
+//     refused before HQ until muster starts it a new conversation.
+//
+// 🔴 AN UNTIERED OFFICER IS NOT OFFERED IT. An officer without `tiers` is
+// exactly today's officer (see the top of this file); the option lives with
+// the pool settings it sits beside.
+func (o Officer) FreshSessionPerItem() bool {
+	if o.Tiers == nil {
+		return false
+	}
+	switch o.Tier {
+	case TierJudgement:
+		return o.Tiers.Judgement.FreshSessionPerItem
+	case TierRoutine:
+		return o.Tiers.Routine.FreshSessionPerItem
+	}
+	return false
+}
 
 // MaxItemMinutesCap bounds tiers.judgement.max_item_minutes: a day.
 const MaxItemMinutesCap = 24 * 60
@@ -205,7 +235,7 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 	dec.DisallowUnknownFields()
 	var p TierPool
 	if err := dec.Decode(&p); err != nil {
-		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "max_sessions_per_day"?, "max_item_minutes"? (both judgement only)}: %v`, err)
+		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "fresh_session_per_item"?, "max_sessions_per_day"?, "max_item_minutes"? (both judgement only)}: %v`, err)
 	}
 	p.Model = strings.TrimSpace(p.Model)
 	if p.Model == "" {

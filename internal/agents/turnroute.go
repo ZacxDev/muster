@@ -54,8 +54,16 @@ const (
 	// for the session's life. A ccd that predates it IGNORES it and starts the
 	// CLI with the chief's full tool set (docs/chief-nudges.md, "Rolling out").
 	HeaderCCToolless = "X-Muster-CC-Toolless"
-	// HeaderCCNewConversation, "1": start a new conversation before the turn.
-	// STUB (red): not sent yet.
+	// HeaderCCNewConversation, "1", on a turn of the agent's ORIGINAL CLI (no
+	// HeaderCCSession): ccd starts a NEW conversation in that CLI before it
+	// pastes the turn — the CLI's /clear, whose new session ccd records as the
+	// one every later start resumes — when the current conversation has a
+	// transcript; the old transcript is kept. Set only by the officer runtime,
+	// on every turn of an instance of a fresh_session_per_item pool (internal/
+	// api OfficerTurnContext). ccd ignores it on an explicit session's turn,
+	// and a ccd that predates it ignores it everywhere: the turn then runs in
+	// the conversation the CLI already has (docs/officers.md, "One
+	// conversation per item").
 	HeaderCCNewConversation = "X-Muster-CC-New-Conversation"
 )
 
@@ -105,7 +113,7 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless} {
+	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless, HeaderCCNewConversation} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}
