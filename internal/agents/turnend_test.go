@@ -11,9 +11,8 @@ import (
 // TestATurnEndedByAToolRunsNoFurtherTool (ask_owner, internal/api owner_ask.go):
 // a tool that calls EndTurn ends the turn STRUCTURALLY. The loop sends the
 // round's outputs back once — the runtime's session must hold an output for
-// every call it made — with tool_choice "none", and returns; and when the
-// runtime ignores tool_choice and asks for another tool anyway, that call is
-// NOT run. Control: the same runtime without EndTurn runs the second call.
+// every call it made — and returns; when the runtime asks for another tool
+// anyway, that call is NOT run. Control: the same runtime without EndTurn runs the second call.
 func TestATurnEndedByAToolRunsNoFurtherTool(t *testing.T) {
 	type seen struct {
 		inputs     [][]inputItem
@@ -77,8 +76,10 @@ func TestATurnEndedByAToolRunsNoFurtherTool(t *testing.T) {
 	if in := s.inputs[1]; len(in) != 1 || in[0].Type != "function_call_output" || in[0].CallID != "call_ask" {
 		t.Errorf("the second request carried %+v, want ask_owner's output", in)
 	}
-	if s.toolChoice[0] != nil || s.toolChoice[1] != "none" {
-		t.Errorf("tool_choice = %v, want [nil none]", s.toolChoice)
+	// No tool_choice on either request: nothing the shipped runtimes are known
+	// to accept; the loop's own return is the gate.
+	if s.toolChoice[0] != nil || s.toolChoice[1] != nil {
+		t.Errorf("tool_choice = %v, want none sent", s.toolChoice)
 	}
 	if reply != "asked" {
 		t.Errorf("reply %q, want the closing text %q", reply, "asked")
@@ -108,5 +109,66 @@ func TestTheTurnEndMarkIsPerTurn(t *testing.T) {
 	}
 	if b := WithTurnEnd(a); TurnEnded(b) {
 		t.Fatal("a new turn inherited the last turn's mark")
+	}
+}
+
+// TestACallInTheSameRoundAfterTheTurnEndedIsNotRun (#496 round 1): a model can
+// ask for ask_owner AND agent_dispatch in ONE response. The dispatch comes after
+// the call that ended the turn, so it is answered "not run" — never executed —
+// while the runtime still gets an output for it. Two ask_owner calls in one
+// round: only the first runs (the second is answered "not run"), so one card.
+func TestACallInTheSameRoundAfterTheTurnEndedIsNotRun(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		second string
+	}{{"ask then dispatch", "agent_dispatch"}, {"two asks", "ask_owner"}} {
+		t.Run(c.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var seen [][]inputItem
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body responsesRequest
+				_ = decodeJSON(r, &body)
+				mu.Lock()
+				seen = append(seen, body.Input)
+				n := len(seen)
+				mu.Unlock()
+				w.Header().Set("Content-Type", "text/event-stream")
+				if n == 1 {
+					_, _ = w.Write([]byte(sseLines([2]string{"response.completed", `{"type":"response.completed","response":{"output":[` +
+						`{"type":"function_call","call_id":"call_a","name":"ask_owner","arguments":"{}"},` +
+						`{"type":"function_call","call_id":"call_b","name":"` + c.second + `","arguments":"{}"}]}}`})))
+					return
+				}
+				_, _ = w.Write([]byte(sseLines([2]string{"response.completed", `{"type":"response.completed","response":{"output":[]}}`})))
+			}))
+			defer srv.Close()
+			ctx := WithTurnEnd(context.Background())
+			var ran []string
+			var results []StreamEvent
+			dispatch := func(name, _ string) string {
+				ran = append(ran, name)
+				if name == "ask_owner" {
+					EndTurn(ctx)
+				}
+				return `{"asked":true}`
+			}
+			if _, err := RunToolLoop(ctx, srv.Client(), srv.URL, "tok", "sess", testRuntimeModel, "sys", "go",
+				nil, dispatch, func(ev StreamEvent) {
+					if ev.Kind == "tool_result" {
+						results = append(results, ev)
+					}
+				}); err != nil {
+				t.Fatal(err)
+			}
+			if len(ran) != 1 || ran[0] != "ask_owner" {
+				t.Fatalf("ran %v, want only the first ask_owner", ran)
+			}
+			if len(seen) != 2 || len(seen[1]) != 2 || seen[1][1].CallID != "call_b" || seen[1][1].Output != TurnEndedNotRun {
+				t.Fatalf("the second request carried %+v, want call_b answered %q", seen, TurnEndedNotRun)
+			}
+			if len(results) != 2 || !results[0].ToolOK || results[1].ToolOK {
+				t.Errorf("tool results %+v: want the ask ok and the second call not ok", results)
+			}
+		})
 	}
 }

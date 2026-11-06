@@ -569,19 +569,16 @@ func RunToolLoop(
 			Instructions: instructions,
 			Tools:        tools,
 		}
-		if ending {
-			// The turn was ended (EndTurn, turnend.go): the outputs go back so the
-			// runtime's session holds an answer for every call it made, and the
-			// model is told it may call nothing more.
-			req.ToolChoice = "none"
-		}
 		resp, err := streamResponses(ctx, client, url, token, sessionKey, req, emit)
 		if err != nil {
 			return "", laterRequest(i, err)
 		}
 		calls := resp.functionCalls()
-		// 🔴 AN ENDED TURN RUNS NO FURTHER TOOL, whatever this answer asks for: a
-		// runtime that ignores tool_choice still cannot go on past ask_owner.
+		// 🔴 AN ENDED TURN RUNS NO FURTHER TOOL, whatever this answer asks for.
+		// The request above carried the round's outputs back (the runtime's
+		// session must hold an output for every call it made) and nothing else:
+		// no tool_choice, which no runtime this ships against has been shown to
+		// accept. This return is the whole gate.
 		if ending {
 			return resp.messageText(), nil
 		}
@@ -598,7 +595,15 @@ func RunToolLoop(
 			if emit != nil {
 				emit(StreamEvent{Kind: "tool_call", ToolID: id, ToolName: call.Name, ToolArgs: call.Arguments})
 			}
-			out := dispatch(call.Name, call.Arguments)
+			// 🔴 A CALL AFTER THE TURN ENDED IS ANSWERED, NOT RUN: a model can ask
+			// for ask_owner and agent_dispatch in ONE round, and the dispatch must
+			// not start an agent the owner is being asked about.
+			var out string
+			if TurnEnded(ctx) {
+				out = TurnEndedNotRun
+			} else {
+				out = dispatch(call.Name, call.Arguments)
+			}
 			if emit != nil {
 				emit(StreamEvent{
 					Kind:       "tool_result",
@@ -661,6 +666,10 @@ func laterRequest(i int, err error) error {
 	}
 	return &AfterFirstRequestError{Request: i + 1, Err: err}
 }
+
+// TurnEndedNotRun is the output of a call made in the same round as, and after,
+// a tool that ended the turn (EndTurn): it was not run.
+const TurnEndedNotRun = `{"error":"not run: your turn ended (you asked your owner a question) before this call; wait for their answer"}`
 
 // RunToollessTurn runs ONE /v1/responses turn carrying NO tools and returns the
 // assembled assistant text, streaming text/thinking deltas to emit (nil-safe).

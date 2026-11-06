@@ -1059,3 +1059,28 @@ func TestAgentDispatchRefusesMirroredUntilItShips(t *testing.T) {
 		t.Errorf("a mirrored call reached the provisioner %d time(s)", got)
 	}
 }
+
+// TestAgentDispatchOfABareModelIdSaysToRetryWithTheOpenRouterForm (#496 round
+// 1): a gateway start with a bare provider id ("deepseek/…") is refused — the
+// agent's one credential is OpenRouter's — and the refusal tells the chief to
+// call again with openrouter/<provider>/<model>, not to give the task up to
+// its owner (task_route_attention). No agent is made, the start is released,
+// and the retry with the OpenRouter form starts the agent.
+func TestAgentDispatchOfABareModelIdSaysToRetryWithTheOpenRouterForm(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) { ext.Kinds = stubKinds{pick: "pool-acct-a"} })
+	n := f.task(t, "bare model id")
+	text := f.callRaw(f.chief, agentDispatchTool, map[string]any{"target": "pod/gateway", "task_id": n.ID, "model": "deepseek/deepseek-v3"})
+	// Refused after the reservation and released (createAndDispatchAgent's
+	// check): no agent exists.
+	if n := len(f.ownersAgents(t)); n != 0 {
+		t.Fatalf("a refused start created %d agents", n)
+	}
+	why := errorText(t, text)
+	if !strings.HasSuffix(why, "; "+agentDispatchModelRetry) || strings.Contains(why, "task_route_attention") {
+		t.Fatalf("refusal %q\nwant it to end in the retry sentence %q, and not to send the task to the owner", why, agentDispatchModelRetry)
+	}
+	ok := f.callRaw(f.chief, agentDispatchTool, map[string]any{"target": "pod/gateway", "task_id": n.ID, "model": "openrouter/deepseek/deepseek-v3"})
+	if !strings.Contains(ok, `"agent_id"`) {
+		t.Fatalf("the retry with the OpenRouter form: %s", ok)
+	}
+}

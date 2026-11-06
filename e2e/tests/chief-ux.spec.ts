@@ -98,9 +98,9 @@ async function script(body: { input?: { type?: string; content?: string; call_id
   if (outputs.length) {
     const o = outputs[0];
     if (o.call_id.startsWith('call_ask')) {
-      // ask_owner ended the turn: muster asks for closing text with tool_choice
-      // "none". A runtime that kept going would say so here.
-      return body.tool_choice === 'none' ? {} : { text: 'WENT-ON-AFTER-ASK' };
+      // ask_owner ended the turn and its output came back. This runtime tries to
+      // GO ON with another tool: muster must not run it (the loop's own gate).
+      return { call: { id: 'call_after_ask', name: 'agent_dispatch', args: { target: 'pod/gateway', prompt: 'went on', request_key: 'k-after-' + requests.length, owner_asked: true } } };
     }
     if (o.call_id === 'call_nomodel') {
       // The refusal of a dispatch with no target: ask the owner, offering its
@@ -308,6 +308,8 @@ for (const vp of [
     test('an ask_owner card: tap an option, it is sent as the next message, answered after a reload', async ({ page }) => {
       test.setTimeout(90_000);
       await openChief(page);
+      // The thread is shared across this file's tests: count what is there.
+      const cardsBefore = await log(page).locator('[data-dispatch-card]').count();
       await send(page, `Write me a report ASK-ME (${vp.name})`);
       const card = log(page).locator('[data-owner-ask]').last();
       await expect(card).toHaveAttribute('data-owner-ask-state', 'waiting', { timeout: 20_000 });
@@ -316,8 +318,10 @@ for (const vp of [
       await expect(card.getByRole('button', { name: /Short summary/ })).toBeVisible();
       await expect(card.getByRole('button', { name: /Full report/ })).toBeVisible();
       await expect(card.getByLabel('Other')).toBeVisible();
-      // The turn ENDED at the question: nothing ran on after it.
-      await expect(log(page)).not.toContainText('WENT-ON-AFTER-ASK');
+      // The turn ENDED at the question: the tool the runtime asked for after it
+      // was never run, so no output for it ever came back to the runtime.
+      expect(requests.some((r) => r.outputs.some((o) => o.call_id === 'call_after_ask'))).toBe(false);
+      await expect(log(page).locator('[data-dispatch-card]')).toHaveCount(cardsBefore);
       const before = requests.length;
 
       if (vp.name === 'desktop') {
@@ -359,6 +363,27 @@ for (const vp of [
       await expect(log(page)).toContainText('GOT: ' + answer, { timeout: 20_000 });
       await expect(waiting).toHaveAttribute('data-owner-ask-state', 'answered');
       await expect(waiting.locator('[data-owner-ask-answer]')).toHaveText('Your answer: ' + answer);
+    });
+
+    test('tapping an option keeps a half-typed draft in the composer', async ({ page }) => {
+      test.setTimeout(90_000);
+      await openChief(page);
+      await send(page, `Draft check ASK-ME (${vp.name})`);
+      const card = log(page).locator('[data-owner-ask]').last();
+      await expect(card).toHaveAttribute('data-owner-ask-state', 'waiting', { timeout: 20_000 });
+      const draft = `half-typed, not sent yet (${vp.name})`;
+      const input = panel(page).locator('#chat-input');
+      await input.fill(draft);
+      await card.getByRole('button', { name: /Short summary/ }).click();
+      await expect(log(page)).toContainText('GOT: Short summary', { timeout: 20_000 });
+      await expect(card).toHaveAttribute('data-owner-ask-state', 'answered');
+      // The answer went; the draft did not.
+      await expect(input).toHaveValue(draft);
+      expect(requests.some((r) => r.first.includes(draft))).toBe(false);
+      // And it is still the saved draft: a reload brings it back.
+      await page.reload();
+      await openChiefPanel(page);
+      await expect(panel(page).locator('#chat-input')).toHaveValue(draft);
     });
 
     test('"dispatch" with no model asks with a card offering Claude and OpenRouter models', async ({ page }) => {

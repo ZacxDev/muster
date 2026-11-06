@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -78,8 +81,15 @@ func isAgentDispatchCall(name string) bool {
 // nothing of it.
 func (s *Server) dispatchCardFor(ctx context.Context, id int64, idx map[string]*provision.Instance) ui.DispatchCard {
 	a, err := s.ext.Agents.Get(ctx, id)
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Gone (destroyed), or not the viewer's: removed, naming nothing of it.
 		return ui.DispatchCard{AgentID: id, Gone: true, Name: "Agent #" + strconv.FormatInt(id, 10)}
+	case err != nil:
+		// A read that FAILED is not a removed agent: the card says so and stays
+		// refreshable, so the next event draws the agent again.
+		s.logger.Printf("agents: dispatch card for agent %d: %v", id, err)
+		return ui.DispatchCard{AgentID: id, Unreadable: true, Name: "Agent #" + strconv.FormatInt(id, 10)}
 	}
 	c := ui.DispatchCard{
 		AgentID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Repo: a.Repo,

@@ -96,6 +96,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// refetch: one opened mid-turn draws "working…" from the session's count and
 		// would otherwise keep it (session_turns.go). ctx is the socket's request.
 		"(*Server).handleAgentWS → broadcast(ctx)",
+		// An answer delivery's turn the runtime took NOTHING of stores nothing,
+		// so it asks pages to refetch (session_turns.go's "working…"). a is the
+		// asking agent, read under the ask's owner (attention_delivery.go).
+		"(*Server).runDeliveredTurn → broadcastTo(a.OwnerID)",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorDelete → broadcast(r.Context())",

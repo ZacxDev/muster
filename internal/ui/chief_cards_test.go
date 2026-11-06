@@ -395,3 +395,48 @@ func TestReadDispatchResult(t *testing.T) {
 		}
 	}
 }
+
+// TestTwoAsksBeforeOneReplyDrawOneCard (#496 round 1): one typed reply answers
+// every question asked before it, so a second ask_owner since the owner last
+// typed is drawn as its plain row — never a second card the same reply answers.
+// After a typed reply, the next ask is a card again.
+func TestTwoAsksBeforeOneReplyDrawOneCard(t *testing.T) {
+	call := func(id string) []ChatLine {
+		return []ChatLine{
+			{Role: "assistant", Kind: "tool_call", ToolID: id, ToolName: "ask_owner", Content: askArgs},
+			{Role: "assistant", Kind: "tool_result", ToolID: id, ToolName: "ask_owner", ToolOK: true, Content: `{"asked":true}`},
+		}
+	}
+	rows := append(append([]ChatLine{{Role: "user", Content: "go", Typed: true}}, call("a1")...), call("a2")...)
+	doc := ccRenderLog(t, AgentDetailView{Name: "chief", Messages: rows})
+	if cards := ccWithAttr(doc, "data-owner-ask", ""); len(cards) != 1 {
+		t.Fatalf("%d cards for two asks before one reply, want 1", len(cards))
+	} else if id, _ := ccAttr(cards[0], "data-tool-id"); id != "a1" {
+		t.Errorf("the card is %q's, want the first ask's", id)
+	}
+	if n := len(ccWithAttr(doc, "data-tool-row", "")); n != 1 {
+		t.Errorf("the second ask is drawn as %d tool rows, want 1", n)
+	}
+	rows = append(append(rows, ChatLine{Role: "user", Content: "Claude", Typed: true}), call("a3")...)
+	if cards := ccWithAttr(ccRenderLog(t, AgentDetailView{Name: "chief", Messages: rows}), "data-owner-ask", ""); len(cards) != 2 {
+		t.Errorf("after a typed reply the next ask is not a card again: %d cards, want 2", len(cards))
+	}
+}
+
+// TestAnUnreadableDispatchedAgentStaysRefreshable (#496 round 1): a card whose
+// agent could not be READ (not a missing row) does not say "Removed": it says
+// so, links nowhere, and keeps a refresh on the app's own events.
+func TestAnUnreadableDispatchedAgentStaysRefreshable(t *testing.T) {
+	doc := ccRenderLog(t, AgentDetailView{Name: "chief", Messages: dispatchRows(`{"agent_id":9}`),
+		DispatchCards: map[string]DispatchCard{"d1": {AgentID: 9, Name: "Agent #9", Unreadable: true}}})
+	c := ccWithAttr(doc, "data-dispatch-card", "")[0]
+	if st, _ := ccAttr(c, "data-dispatch-state"); st != "unreadable" {
+		t.Errorf("state %q, want unreadable", st)
+	}
+	if strings.Contains(ccText(c), "Removed") || len(ccWithAttr(c, "href", "")) != 0 {
+		t.Errorf("an unreadable agent is drawn removed or linked: %s", ccText(c))
+	}
+	if g, _ := ccAttr(c, "hx-get"); g != DispatchCardSrc(9) {
+		t.Errorf("an unreadable card does not refresh itself (hx-get %q)", g)
+	}
+}

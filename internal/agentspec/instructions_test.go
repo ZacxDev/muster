@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "35eac02f680d64af59c5eeb4cf8f8b86b187c3a88cac750574378045f2f1acd3",
+			want: "fccd66cd76ba45b8fc607a5dc20b79e30cd2f2681030cf8e36a721200be400f5",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "51a9a24e2ec23f1f1252f07f99e34a90846717382a071294163eab699e750a8a",
+			want: "a45992d1986b17b107ed587923f1533cbffeb55a427319cf01678960f1648570",
 			min:  1000,
 		},
 		{
@@ -708,7 +708,7 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		// when they named no model it ASKS with ask_owner, never picking one.
 		"Its target has no default; map your owner's words to one:",
 		"\"with Claude\", or any Claude model → `pod/claude-code` (no model);",
-		"any other model they name → `pod/gateway` with that model's OpenRouter id (muster normalises it);",
+		"any other model they name → `pod/gateway` with that model, as `openrouter/<provider>/<model>`;",
 		"\"mirrored\" → `mirrored`, which is refused until mirrored dispatch ships (say so; never start a cluster agent instead).",
 		"If they named no model, call it without a target:",
 		"Ask them which with `ask_owner`",

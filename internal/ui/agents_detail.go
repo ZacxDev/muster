@@ -1513,6 +1513,19 @@ func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.No
 		if result != nil && !result.ToolOK {
 			return nil, false
 		}
+		// ONE CARD PER ANSWER: one typed reply answers every question asked
+		// before it, so a second ask_owner since the owner last typed (two in
+		// one turn — a claude-code chief's CLI is not stopped call by call) is
+		// drawn as its plain row, never as a second card the same reply answers.
+		for j := i - 1; j >= 0; j-- {
+			p := v.Messages[j]
+			if p.Role == "user" && p.Typed && p.Kind != "tool_result" {
+				break
+			}
+			if p.Kind == "tool_call" && musterToolIs(p.ToolName, OwnerAskTool) && askCallOK(v.Messages, j) {
+				return nil, false
+			}
+		}
 		// Answered by the next line a person TYPED in the conversation, if any: a
 		// plugin message or a hand-back landing after the question is not an answer.
 		for j := i + 1; j < len(v.Messages); j++ {
@@ -1531,6 +1544,20 @@ func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.No
 		}
 	}
 	return nil, false
+}
+
+// askCallOK reports whether the ask_owner call at index i was drawn as a card:
+// its arguments read, and its result (when stored) is not a failure.
+func askCallOK(msgs []ChatLine, i int) bool {
+	if _, err := DecodeOwnerAsk(msgs[i].Content); err != nil {
+		return false
+	}
+	for j := i + 1; j < len(msgs); j++ {
+		if r := msgs[j]; r.Kind == "tool_result" && r.ToolID == msgs[i].ToolID {
+			return r.ToolOK
+		}
+	}
+	return true
 }
 
 // chatProvisioningIndicator renders an animated "Provisioning agent…" row while
@@ -2487,6 +2514,32 @@ func agentChatScript(name string) g.Node {
     resetTurn();
     showWorking();
   }
+  // sendText sends text as the owner's next message WITHOUT touching the
+  // composer's box or its draft (a question card's answer): send()'s socket
+  // path minus the box, or a form post of its own (nativeSend's door).
+  function sendText(t) {
+    if (!ws || ws.readyState !== 1 || silent()) {
+      var f = document.createElement('form');
+      f.method = 'post';
+      f.action = form.getAttribute('action') || '';
+      f.style.display = 'none';
+      form.querySelectorAll('input[type=hidden]').forEach(function (h) {
+        var c = document.createElement('input'); c.type = 'hidden'; c.name = h.name; c.value = h.value; f.appendChild(c);
+      });
+      var tx = document.createElement('input'); tx.type = 'hidden'; tx.name = input.name || 'text'; tx.value = t; f.appendChild(tx);
+      document.body.appendChild(f);
+      HTMLFormElement.prototype.submit.call(f);
+      return;
+    }
+    var ub = bubble('user'); ub.innerHTML = mdRender(t);
+    forceScroll();
+    ws.send(JSON.stringify({ type: 'message', text: t }));
+    renewNonce();
+    sendBtn.disabled = true;
+    session.streaming = true;
+    resetTurn();
+    showWorking();
+  }
   // preventDefault only once send() has taken the message: if it throws, the
   // event is left alone and the browser submits the form.
   form.addEventListener('submit', function (e) { send(); e.preventDefault(); });
@@ -2501,13 +2554,19 @@ func agentChatScript(name string) g.Node {
   // stored transcript on the refetch that follows; until then it is disabled,
   // so a second tap cannot send a second answer. Bound once per #chat-log (the
   // element outlives its refetches); send is this start's.
+  //
+  // 🔴 THE ANSWER NEVER GOES THROUGH THE COMPOSER'S BOX. It used to be written
+  // into #chat-input and sent with send(), which cleared the box and the saved
+  // draft — a half-typed message the owner had there was lost by a tap. So the
+  // answer is sent DIRECTLY (sendText): over the socket, or, without one, as
+  // its own form post carrying the chat form's hidden fields; the box and its
+  // draft are left exactly as they were.
   logEl.__ownerAskSend = function (card, text) {
     text = String(text || '').trim();
     if (!text || !card || card.getAttribute('data-owner-ask-state') !== 'waiting') return;
-    input.value = text;
     card.setAttribute('data-owner-ask-state', 'sending');
     card.querySelectorAll('button, input, textarea').forEach(function (el) { el.disabled = true; });
-    send();
+    sendText(text);
   };
   if (!logEl.__ownerAskBound) {
     logEl.__ownerAskBound = true;

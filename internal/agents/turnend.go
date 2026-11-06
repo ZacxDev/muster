@@ -11,10 +11,13 @@ import (
 // as a card in the chat; the owner's answer arrives as their NEXT message. A turn
 // that went on after asking would answer its own question, or start the very
 // work it was asking about. So the tool marks the turn as ended, and
-// [RunToolLoop] honours the mark STRUCTURALLY: after the round of calls that set
-// it, the outputs go back to the runtime once (its session must hold an output
-// for every call it made) with tool_choice "none", and whatever that answer asks
-// for, no further tool is run — the loop returns.
+// [RunToolLoop] honours the mark STRUCTURALLY: a call later in the SAME round is
+// answered [TurnEndedNotRun] and not run; the round's outputs go back to the
+// runtime once (its session must hold an output for every call it made); and
+// whatever that answer asks for, no further tool is run — the loop returns.
+//
+// ⚠ NO tool_choice IS SENT. "none" was sent once and never verified against the
+// runtime this ships with; the loop's own return is the whole gate.
 //
 // ⚠ IT BINDS ONLY THE IN-PROCESS LOOP. A claude-code agent calls its tools over
 // MCP from its own CLI, which muster does not drive call by call, so there the

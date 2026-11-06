@@ -69,7 +69,9 @@ type DispatchCard struct {
 	Detail string
 	// Gone: the agent no longer exists (destroyed). The card says so and links
 	// nowhere.
-	Gone bool
+	Gone bool // Unreadable: the agent could not be read just now (a failed read, not a
+	// missing row). The card says so, links nowhere, and stays refreshable.
+	Unreadable bool
 }
 
 // DispatchResult is what the card needs from an agent_dispatch result: the
@@ -172,6 +174,23 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 	title := textplain.Title(c.DisplayName)
 	if title == "" {
 		title = c.Name
+	}
+	if c.Unreadable {
+		return Div(
+			g.Attr("data-dispatch-card", ""),
+			g.Attr("data-dispatch-state", "unreadable"),
+			g.Attr("data-dispatch-agent", strconv.FormatInt(c.AgentID, 10)),
+			g.Attr("role", "status"),
+			// Refreshed on the app's own events (any agent's: its name is
+			// unknown until it reads), never on a timer.
+			hx("hx-get", DispatchCardSrc(c.AgentID)),
+			hx("hx-trigger", "sse:agent.changed from:body, sse:chat.reply from:body"),
+			hx("hx-swap", "outerHTML"),
+			hx("hx-target", "this"),
+			Class("flex w-full max-w-[92%] min-w-0 items-center gap-2 self-start rounded-xl bg-bg/50 px-3 py-2 text-xs text-muted ring-1 ring-inset ring-line"),
+			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("🤖")),
+			Span(Class("min-w-0 break-words"), g.Text(c.Name+": could not be read just now; this card updates when it can.")),
+		)
 	}
 	state := c.State
 	if c.Gone {

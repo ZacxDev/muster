@@ -82,6 +82,10 @@ const (
 	agentDispatchHostOff       = "host %q cannot start agents now (offline, read-only, or its muster-mirror lacks -agent-spawn); nothing was queued"
 
 	agentDispatchModel = "this target takes its model from its own configuration"
+	// agentDispatchModelRetry closes a refusal of a model the agent cannot be
+	// credentialed for: call again with its OpenRouter id.
+	agentDispatchModelRetry = "call agent_dispatch again, everything else unchanged, with the model as its OpenRouter id " +
+		"openrouter/<provider>/<model> (for example openrouter/deepseek/deepseek-v3)"
 
 	agentDispatchKeyShape  = "request_key must be 1-64 of [A-Za-z0-9._:-]"
 	agentDispatchKeyReused = "request_key %q was used in the last 24 hours for a different dispatch: use a new key for a new request"
@@ -123,7 +127,7 @@ const chiefDispatchPromptCap = "prompt is over 8 KiB: shorten it"
 const agentDispatchDescription = "Start a new agent, only with your owner's opt-in: on one of your owner's open tasks (task_id), " +
 	"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Map their " +
 	"words to it: \"with Claude\", or any Claude model (opus, sonnet, haiku) → the Claude Code target, with no model; any " +
-	"other model they name → the gateway target, with that model's OpenRouter id (muster normalises it); \"mirrored\" → mirrored, which is " +
+	"other model they name → the gateway target with that model, as its OpenRouter id openrouter/<provider>/<model>; \"mirrored\" → mirrored, which is " +
 	"refused until mirrored dispatch ships — never start a cluster agent in its place. If they named no model, do not guess: " +
 	"call without a target, and the refusal lists the choices that exist right now, each with its label in your owner's " +
 	"words; ask them with ask_owner, offering those. " +
@@ -155,8 +159,8 @@ func agentDispatchToolDef() agents.ToolDef {
 			"repo": strProp("The repository to work in (owner/name): it must be one of your owner's connected GitHub " +
 				"repositories. On a task, only when the task names none. Without a repository the agent cannot open a pull request."),
 			"base": strProp("The branch to start from. Omit it for the repository's default branch."),
-			"model": strProp("The OpenRouter model id your owner named, for the gateway target (muster normalises it). " +
-				"Refused for any other target " +
+			"model": strProp("The model your owner named, for the gateway target, as its OpenRouter id: " +
+				"openrouter/<provider>/<model>. Refused for any other target " +
 				"(a Claude model means the Claude Code target, which takes none)."),
 			"owner_asked": map[string]any{"type": "boolean",
 				"description": "true only when your owner — typing in your muster chat, in the message you are answering now — " +
@@ -240,7 +244,7 @@ func dispatchTargetWhen(target string) string {
 	case "pod/claude-code":
 		return "your owner said Claude, or named a Claude model; pass no model"
 	case "pod/gateway":
-		return "your owner named any other model; give its OpenRouter model id as model (muster normalises it)"
+		return "your owner named any other model; pass it as model, as its OpenRouter id: openrouter/<provider>/<model>"
 	}
 	return ""
 }
@@ -779,6 +783,12 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			// never "the latest". Any other failure stays spent (fail-closed).
 			if _, rerr := s.ext.ChiefDispatch.ReleaseRefusedChiefDispatch(ctx, object, res.ReservationID); rerr != nil {
 				s.logger.Printf("task routing: release the refused start (%s): %v", object, rerr)
+			}
+			// A model the agent's one credential cannot reach (a bare provider id):
+			// the start is released, so the chief retries with the OpenRouter form
+			// rather than giving the task up to the owner.
+			if errors.Is(err, agents.ErrModelNotCredentialed) {
+				return refuse("the agent could not be started: " + err.Error() + "; " + agentDispatchModelRetry)
 			}
 			return refuse("the agent could not be started: " + err.Error() + "; use task_route_attention")
 		}

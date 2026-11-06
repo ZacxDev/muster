@@ -2036,10 +2036,18 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// refresh that chat.reply asks for is the one that swaps the streamed
 		// bubbles for the stored ones.
 		_ = wsWriteJSON(ctx, c, map[string]string{"type": "done"})
-		s.persistTurn(tctx, a, session, parts)
 		tcancel()
+		// Stored on a short context of its own: a reply that arrived in the turn
+		// budget's last moments must not be lost to that budget's expiry.
+		pctx, pcancel := context.WithTimeout(context.WithoutCancel(ctx), persistTurnTimeout)
+		s.persistTurn(pctx, a, session, parts)
+		pcancel()
 	}
 }
+
+// persistTurnTimeout bounds storing a finished turn's reply, on a context
+// detached from the turn's own budget (handleAgentWS).
+const persistTurnTimeout = 15 * time.Second
 
 // runUserTurn stores the user's message and runs the turn it starts against
 // a's gateway, with every stream event passed to emit (nil-safe). It returns
