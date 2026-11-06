@@ -119,3 +119,49 @@ func TestTheKickoffNamesTheReadRepos(t *testing.T) {
 		t.Fatalf("adding read_repos changed more than its own line:\n%s\n---\n%s", text, before)
 	}
 }
+
+// TestEveryKickoffShapeNamesTheReadRepos: the read_repos note reaches the
+// kickoff of EVERY officer shape that may declare read_repos — no ship, each
+// ship stage (shadow, merge, release, draft; read_repos is accepted beside any
+// stage), and both pools of a tiered shipping officer (the judgement pool
+// ships, the routine pool does not). The expected sentence is written out
+// literally here, not built by calling the code under test, and must appear
+// exactly once. The same shape without read_repos carries no such sentence.
+func TestEveryKickoffShapeNamesTheReadRepos(t *testing.T) {
+	const want = "\nYou may also READ these repositories through the same \"github\" connector and the same approval, in the same two ways " +
+		"(git clone https://github.com/<owner>/<name>.git, or the REST API at /repos/<owner>/<name>/…): acme/other-repo, acme/third-repo. " +
+		"Each request to one of them carries a READ-ONLY token limited to that one repository; any other repository is reached anonymously."
+	const marker = "You may also READ these repositories"
+	ship := func(stage string) *officers.Ship {
+		return &officers.Ship{Stage: stage, Base: "main", BranchPrefix: "officer/", ReviewCheck: "pr-review"}
+	}
+	withShip := func(o officers.Officer, s *officers.Ship) officers.Officer {
+		o.Ship = s
+		return o
+	}
+	base := officers.Officer{ID: "engineering:example-web", MaxInstances: 1, Repo: "acme/example-web",
+		ReadRepos: []string{"acme/other-repo", "acme/third-repo"}}
+	tiered := withShip(base, ship(officers.StageDraft))
+	tiered.Tiers = &officers.Tiers{Routine: officers.TierPool{Model: "haiku", MaxInstances: 1}, Judgement: officers.TierPool{Model: "opus", MaxInstances: 1}}
+	shapes := map[string]officers.Officer{
+		"no ship":               base,
+		"ship shadow":           withShip(base, ship(officers.StageShadow)),
+		"ship merge":            withShip(base, ship(officers.StageMerge)),
+		"ship release":          withShip(base, ship(officers.StageRelease)),
+		"ship draft":            withShip(base, ship(officers.StageDraft)),
+		"tiered judgement pool": tiered.Pool(officers.TierJudgement),
+		"tiered routine pool":   tiered.Pool(officers.TierRoutine),
+	}
+	for name, o := range shapes {
+		t.Run(name, func(t *testing.T) {
+			text := officers.KickoffText(o, 1)
+			if n := strings.Count(text, want); n != 1 {
+				t.Fatalf("the kickoff carries the read_repos note %d times, want exactly 1:\n%s", n, text)
+			}
+			o.ReadRepos = nil
+			if bare := officers.KickoffText(o, 1); strings.Contains(bare, marker) {
+				t.Fatalf("without read_repos the kickoff still names some:\n%s", bare)
+			}
+		})
+	}
+}

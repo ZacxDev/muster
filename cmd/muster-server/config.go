@@ -1812,6 +1812,30 @@ func (c config) validateConnectors() error {
 	return nil
 }
 
+// validateShipReadRepos refuses a shipping officer (a `ship` block) that
+// declares `read_repos` on a deployment with no GitHub App of its own.
+//
+// 🔴 A shipping officer's read_repos are read with the DEPLOYMENT App's
+// read-only token (PushGate.ReadCred = Server.deploymentReadCred), and that App
+// exists only when MUSTER_GITHUB_APP_ID is set (buildApp). Without it the push
+// gate would forward those reads anonymously while the officer's kickoff and
+// its approve card promise a read-only token for each, so this configuration
+// cannot boot.
+func (c config) validateShipReadRepos() error {
+	if c.GitHubAppID != 0 {
+		return nil
+	}
+	for _, o := range c.Officers {
+		if o.Ship != nil && len(o.ReadRepos) > 0 {
+			return fmt.Errorf("officer %s declares `read_repos` beside a `ship` block, but %s is not set: a shipping officer "+
+				"reads its read_repos with the deployment's own GitHub App (a read-only token for each), and without one those "+
+				"reads would go anonymously. Set %s (with %s and %s), or remove read_repos",
+				o.ID, envGitHubAppID, envGitHubAppID, envGitHubAppKey, envGitHubAppAccounts)
+		}
+	}
+	return nil
+}
+
 // githubLoginRE is a GitHub user or organization login.
 var githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 
@@ -2006,6 +2030,9 @@ func (c config) validate() error {
 		return fmt.Errorf("%s declares officers but %s is not set: officer instances reach their tools only over muster's "+
 			"MCP server on the connect listener, so they would boot with no officer tools. Set %s, %s and %s",
 			envOfficers, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
+	}
+	if err := c.validateShipReadRepos(); err != nil {
+		return err
 	}
 	if err := c.validateConnectors(); err != nil {
 		return err
