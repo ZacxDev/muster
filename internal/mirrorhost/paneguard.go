@@ -32,7 +32,11 @@ import (
 //     refusal for one that runs no agent, accepted as safe;
 //   - a process it could not read (its stat or cmdline), which is not
 //     presumed safe. A child forked after the walk read the process table is
-//     read on its own, then (procEntry): only one still unreadable refuses.
+//     read on its own, then (readProcEntry): only one still unreadable
+//     refuses. A process whose command line reads empty (mid-exec, exiting)
+//     is read once more: gone, its pid reused or a zombie by then, it is
+//     skipped; still alive with none, or unreadable while still there, it
+//     refuses.
 //
 // Known gaps: an agent run over ssh or `docker exec` inside the pane
 // (invisible to a local process walk); and a host with no /proc (macOS),
@@ -191,23 +195,24 @@ func (h PaneProcs) InTree(root int) (GuardProc, bool, error) {
 		if noArgv(p) {
 			// A command line that reads empty (or not at all) is a process
 			// mid-exec or exiting as often as a hidden one: read it ONCE
-			// more. Gone or a zombie now reads no input; a command line now
-			// is walked like any other; still alive with none refuses.
+			// more. Gone, reused by another process (a new start time) or a
+			// zombie now reads no input of the process first read; a command
+			// line now is walked like any other; still alive with none
+			// refuses, and so does a second read that fails on a process
+			// whose directory is still there.
 			q, err := paneProcEntry(h.proc(), pid)
 			switch {
 			case err != nil:
 				if _, lerr := os.Lstat(filepath.Join(h.proc(), strconv.Itoa(pid))); errors.Is(lerr, os.ErrNotExist) {
 					continue
 				}
-			case q.state == "Z":
+				return GuardProc{}, false, fmt.Errorf("process %d in the tree of %d could not be read again", pid, root)
+			case q.start != p.start, q.state == "Z":
 				continue
-			case !noArgv(q):
-				p = q
-				procs[pid] = q
-			}
-			if err != nil || noArgv(p) {
+			case noArgv(q):
 				return GuardProc{}, false, fmt.Errorf("the command line of process %d in the tree of %d could not be read", pid, root)
 			}
+			p = q
 		}
 		if rule, ok := guardShape(p); ok && (rule != ruleOpenCode || h.onPaneTerminal(pid, p, root, procs)) {
 			return GuardProc{PID: pid, Rule: rule}, true, nil

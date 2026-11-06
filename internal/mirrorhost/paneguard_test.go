@@ -214,9 +214,11 @@ func TestAChildForkedAfterTheTableWasReadIsWalkedNotRefused(t *testing.T) {
 
 // TestAnEmptyCommandLineIsReadOnceMore: a process in the pane whose command
 // line reads empty — mid-exec, or exiting — is read once more before the
-// guard decides. Gone by then, or a zombie, it is skipped and the paste goes;
-// with a command line by then it is walked like any other (a multiplexer
-// there is still refused); still alive with none, the guard refuses. The
+// guard decides. Gone by then, its pid reused by another process, or a
+// zombie, it is skipped and the paste goes; with a command line by then it is
+// walked like any other (a multiplexer there is still refused); still alive
+// with none, or unreadable while its /proc entry is still there, the guard
+// refuses. The
 // change between the two reads is made by wrapping the second one
 // (paneProcEntry), so the walk sees exactly that window.
 func TestAnEmptyCommandLineIsReadOnceMore(t *testing.T) {
@@ -242,6 +244,16 @@ func TestAnEmptyCommandLineIsReadOnceMore(t *testing.T) {
 			cmdline(f, 21, "tmux", "-L", "other", "attach")
 		}},
 		{name: "still alive with an empty command line: refused", wantErr: "command line", then: func(*fakeProc) {}},
+		{name: "unreadable on the second read while still there: refused", wantErr: "could not be read again", then: func(f *fakeProc) {
+			must(f.t, os.WriteFile(filepath.Join(f.root, "21", "stat"), []byte("not a stat line"), 0o644))
+		}},
+		// The pid reused between the reads: a new process (another start
+		// time) — here a multiplexer client, which the walk would refuse were
+		// it taken for the process first read. That one is gone: skipped.
+		{name: "its pid reused by another process by the second read: skipped", want: 0, then: func(f *fakeProc) {
+			must(f.t, os.RemoveAll(filepath.Join(f.root, "21")))
+			f.addStarted(21, 11, "tmux: client", "/work", "999", "tmux", "-L", "other", "attach")
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			proc := newFakeProc(t)
