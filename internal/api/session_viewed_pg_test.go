@@ -33,10 +33,12 @@ const (
 func viewPath() string { return ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}.ViewPath() }
 
 // restart swaps the fixture's server for a fresh process over the same
-// database and extensions, on the fixture's clock and transcript.
+// database and extensions, on the fixture's clock and transcript — started
+// NOW by that clock (startedAt, which a host's first sight reads).
 func (f *stateFixture) restart() {
 	s := f.restarted()
 	s.now, s.nudgeReadHook = f.srv.now, f.srv.nudgeReadHook
+	s.startedAt = s.now()
 	f.srv, f.h = s, s.Handler()
 }
 
