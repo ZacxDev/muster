@@ -2006,7 +2006,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		parts, err := s.runEnteredTurn(ctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name))
 		s.turns.leave(a.ID)
 		if err != nil {
-			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": err.Error()})
+			_ = wsWriteJSON(ctx, c, wsTurnError(err, in.Text))
 			continue
 		}
 		// 🔴 "done" BEFORE the turn is persisted and chat.reply broadcast: the page
@@ -2016,6 +2016,18 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		_ = wsWriteJSON(ctx, c, map[string]string{"type": "done"})
 		s.persistTurn(ctx, a, session, parts)
 	}
+}
+
+// wsTurnError is the socket's message for a turn that failed. A message that
+// waited out the turn in flight and was never sent (chat_busy.go) says so in
+// words, marked `unsent` and carrying the text, so the page shows it as a notice
+// rather than an "[error]" and gives the text back to the composer.
+func wsTurnError(err error, text string) map[string]any {
+	var busy *chatBusyError
+	if errors.As(err, &busy) {
+		return map[string]any{"type": "error", "content": err.Error(), "unsent": true, "text": text}
+	}
+	return map[string]any{"type": "error", "content": err.Error()}
 }
 
 // runUserTurn stores the user's message and runs the turn it starts against
@@ -2078,7 +2090,9 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 			emit(ev)
 		}
 	}
-	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, collect)
+	// A typed `busy` (another turn holds the session — a chief's kickoff, say)
+	// waits for that turn and sends again, rather than failing (chat_busy.go).
+	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, text, collect)
 	// The turn ended (reply or error): drop the live phase. The entry lingers
 	// as "recently active" until activeAgentWindow lapses.
 	s.markAgentIdle(a.Name)
@@ -2247,6 +2261,10 @@ func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName
 				"target": cctranscript.ToolTarget(ev.ToolName, ev.ToolArgs)})
 		case "tool_result":
 			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_result", "id": ev.ToolID, "name": ev.ToolName, "ok": ev.ToolOK, "output": ev.ToolOutput})
+		case "queued":
+			// The message waits for the session's turn in flight (chat_busy.go):
+			// the page says so in place of "working".
+			_ = wsWriteJSON(ctx, c, map[string]any{"type": "queued", "content": ev.Text})
 		}
 	}
 }

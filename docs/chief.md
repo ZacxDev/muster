@@ -52,6 +52,20 @@ creates one (the same as `POST /chief/provision`). If the create is refused, for
 example because you have no OpenRouter key or Claude account, the switch stays
 off and the page says what to add.
 
+**A message sent while it is still starting waits.** A chief just turned on
+runs a first turn in its chat, and its Claude Code session takes one turn at a
+time. A message you send during that turn is held, not refused: the chat shows
+"Still finishing its previous turn — your message is queued and will be sent as
+soon as it is free" in place of "working", and sends it as soon as the turn
+ends (it asks again every 3 seconds, for up to 10 minutes). If the session is
+still busy after that, the chat says your message was not sent, in words, and
+puts the text back in the box to send again; the message stays in the
+conversation. The same applies to any agent's chat, on Kubernetes and on the
+Compose install, whenever a turn is already running in that session — a
+message sent from the Terminal's composer waits the same way, in the
+background. A prompt waiting for an answer in the agent's terminal holds the
+session too, and the chat says so.
+
 **The last click wins.** Each user's switch changes run one at a time, each
 finishing its Start or Stop before the next begins, so a quick Off then On (or
 On then Off) leaves the pod in the state the switch shows.

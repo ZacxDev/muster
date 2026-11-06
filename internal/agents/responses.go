@@ -115,8 +115,8 @@ type ToolDispatch func(name, arguments string) string
 // loop never emits: "user" (the kickoff prompt, shown first) and "done" (terminal,
 // releasing the chat's streaming guard) — carried over the same StreamEmit/hook.
 type StreamEvent struct {
-	Kind       string // "text" | "thinking" | "tool_call" | "tool_result" | "user" | "done"
-	Text       string // text/thinking chunk
+	Kind       string // "text" | "thinking" | "tool_call" | "tool_result" | "user" | "done" | "queued" (muster's own: the message waits for a turn in flight, internal/api chat_busy.go)
+	Text       string // text/thinking chunk; for "queued", the notice to show
 	ToolID     string // tool_call / tool_result: the function call_id
 	ToolName   string // tool_call / tool_result: the function name
 	ToolArgs   string // tool_call: raw JSON arguments
