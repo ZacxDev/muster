@@ -147,15 +147,22 @@ async function openSidebar(page: Page, phone: boolean) {
   await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
 }
 
-let subscribed = false;
-async function subscribeDevice(page: Page) {
-  if (subscribed) return;
+// withDevice runs body with the owner's push device subscribed, and removes it
+// after, pass or fail: the e2e database is shared, and a device left behind is
+// counted by tests/push.spec.ts's account page.
+const device = 'https://fcm.googleapis.com/fcm/send/e2e-outcomes-device';
+async function withDevice(page: Page, body: () => Promise<void>) {
   const r = await page.request.post(origin + '/api/push/subscribe', {
-    data: { endpoint: 'https://fcm.googleapis.com/fcm/send/e2e-outcomes-device', keys: { p256dh: 'BStubClientKeyForE2E', auth: 'stubauthsecret' } },
+    data: { endpoint: device, keys: { p256dh: 'BStubClientKeyForE2E', auth: 'stubauthsecret' } },
     headers: { Origin: origin },
   });
   expect(r.status(), await r.text()).toBe(200);
-  subscribed = true;
+  try {
+    await body();
+  } finally {
+    const u = await page.request.post(origin + '/api/push/unsubscribe', { data: { endpoint: device }, headers: { Origin: origin } });
+    expect(u.status(), await u.text()).toBe(200);
+  }
 }
 
 for (const vp of [
@@ -180,70 +187,72 @@ for (const vp of [
     test('a dispatched agent whose first turn fails shows error with the reason, and its owner is told once', async ({ page }) => {
       test.setTimeout(90_000);
       await signIn(page, origin);
-      await subscribeDevice(page);
+      await withDevice(page, async () => {
 
-      // The incident's shape: a model's display name, then the runtime fails the
-      // turn mid-stream with its own "Unknown model".
-      const a = await dispatch(page, 'Acme v4.1 flash', `OUTCOME-FAIL ${vp.label}: summarise the repo`);
-      await expect.poll(async () => (await agentRows()).find((x) => x.id === a.id)?.outcome, { timeout: 30_000 }).toBe('failed');
-      const row = (await agentRows()).find((x) => x.id === a.id)!;
-      expect(row.status).toBe('error');
-      expect(row.errorMessage).toContain(FAILURE);
-      expect(row.outcomeReason).toContain(FAILURE);
-      // The display name was resolved to the catalogue's id.
-      expect(row.model).toBe('openrouter/acme/acme-v4.1-flash');
+        // The incident's shape: a model's display name, then the runtime fails the
+        // turn mid-stream with its own "Unknown model".
+        const a = await dispatch(page, 'Acme v4.1 flash', `OUTCOME-FAIL ${vp.label}: summarise the repo`);
+        await expect.poll(async () => (await agentRows()).find((x) => x.id === a.id)?.outcome, { timeout: 30_000 }).toBe('failed');
+        const row = (await agentRows()).find((x) => x.id === a.id)!;
+        expect(row.status).toBe('error');
+        expect(row.errorMessage).toContain(FAILURE);
+        expect(row.outcomeReason).toContain(FAILURE);
+        // The display name was resolved to the catalogue's id.
+        expect(row.model).toBe('openrouter/acme/acme-v4.1-flash');
 
-      // The outcome API, as a signed-in browser reads it.
-      const api = await page.request.get(origin + `/agents/${a.id}/outcome`);
-      expect(api.status()).toBe(200);
-      const outcome = (await api.json()) as { status: string; outcome: string; reason: string };
-      expect([outcome.status, outcome.outcome]).toEqual(['error', 'failed']);
-      expect(outcome.reason).toContain('Unknown model');
+        // The outcome API, as a signed-in browser reads it.
+        const api = await page.request.get(origin + `/agents/${a.id}/outcome`);
+        expect(api.status()).toBe(200);
+        const outcome = (await api.json()) as { status: string; outcome: string; reason: string };
+        expect([outcome.status, outcome.outcome]).toEqual(['error', 'failed']);
+        expect(outcome.reason).toContain('Unknown model');
 
-      // The agent's page: the status is error, and the reason is on the page.
-      await page.goto(origin + '/agents/' + a.name);
-      await expect(page.locator('#agent-status')).toHaveAttribute('data-agent-status', 'error');
-      await expect(page.locator('#agent-notices')).toContainText('Unknown model: openai/Acme v9 ultra');
-      // The sidebar row says it (on a phone, inside the drawer: opened first,
-      // since a shut drawer does not fetch its list).
-      await openSidebar(page, vp.touch);
-      await expect(page.locator(`#nav-agent-${a.id} [data-nav-outcome="failed"]`)).toBeVisible();
-      await expect(page.locator(`#nav-agent-${a.id} [data-nav-outcome="failed"]`)).toHaveAttribute('title', /Unknown model/);
+        // The agent's page: the status is error, and the reason is on the page.
+        await page.goto(origin + '/agents/' + a.name);
+        await expect(page.locator('#agent-status')).toHaveAttribute('data-agent-status', 'error');
+        await expect(page.locator('#agent-notices')).toContainText('Unknown model: openai/Acme v9 ultra');
+        // The sidebar row says it (on a phone, inside the drawer: opened first,
+        // since a shut drawer does not fetch its list).
+        await openSidebar(page, vp.touch);
+        await expect(page.locator(`#nav-agent-${a.id} [data-nav-outcome="failed"]`)).toBeVisible();
+        await expect(page.locator(`#nav-agent-${a.id} [data-nav-outcome="failed"]`)).toHaveAttribute('title', /Unknown model/);
 
-      // Exactly one notification.
-      await expect.poll(() => outcomePushes(a.id), { timeout: 10_000 }).toBe(1);
-      await page.waitForTimeout(2500); // two watchdog sweeps
-      expect(outcomePushes(a.id), 'one notification per change').toBe(1);
+        // Exactly one notification.
+        await expect.poll(() => outcomePushes(a.id), { timeout: 10_000 }).toBe(1);
+        await page.waitForTimeout(2500); // two watchdog sweeps
+        expect(outcomePushes(a.id), 'one notification per change').toBe(1);
+      });
     });
 
     test('a dispatched agent that goes quiet after its kickoff shows stuck', async ({ page }) => {
       test.setTimeout(90_000);
       await signIn(page, origin);
-      await subscribeDevice(page);
-      const a = await dispatch(page, 'openrouter/acme/acme-v4.1-pro', `OUTCOME-HANG ${vp.label}: think about it`);
-      await page.goto(origin + '/agents/' + a.name);
-      await expect.poll(async () => (await agentRows()).find((x) => x.id === a.id)?.outcome, { timeout: 30_000 }).toBe('stuck');
-      // Live: the open page redraws its strip and notices on agent.changed.
-      const badge = page.locator('#agent-strip [data-agent-outcome="stuck"]');
-      await expect(badge).toBeVisible({ timeout: 15_000 });
-      await expect(badge).toHaveText('stuck');
-      await expect(page.locator('#agent-notices [data-agent-outcome-notice="stuck"] [data-agent-outcome-reason]')).toHaveText(
-        'no reply since kickoff',
-      );
-      // Its pod is still up: the status is not error.
-      await expect(page.locator('#agent-status')).not.toHaveAttribute('data-agent-status', 'error');
-      await openSidebar(page, vp.touch);
-      await expect(page.locator(`#nav-agent-${a.id} [data-nav-outcome="stuck"]`)).toBeVisible();
-      await expect.poll(() => outcomePushes(a.id), { timeout: 10_000 }).toBe(1);
-      await page.waitForTimeout(2500);
-      expect(outcomePushes(a.id), 'one notification per change').toBe(1);
-      // Control: an agent that is not stuck draws no badge.
-      const other = await page.context().newPage();
-      const failed = (await agentRows()).find((x) => x.outcome === 'failed')!;
-      await other.goto(origin + '/agents/' + failed.name);
-      await expect(other.locator('#agent-strip')).toBeVisible();
-      await expect(other.locator('[data-agent-outcome="stuck"]')).toHaveCount(0);
-      await other.close();
+      await withDevice(page, async () => {
+        const a = await dispatch(page, 'openrouter/acme/acme-v4.1-pro', `OUTCOME-HANG ${vp.label}: think about it`);
+        await page.goto(origin + '/agents/' + a.name);
+        await expect.poll(async () => (await agentRows()).find((x) => x.id === a.id)?.outcome, { timeout: 30_000 }).toBe('stuck');
+        // Live: the open page redraws its strip and notices on agent.changed.
+        const badge = page.locator('#agent-strip [data-agent-outcome="stuck"]');
+        await expect(badge).toBeVisible({ timeout: 15_000 });
+        await expect(badge).toHaveText('stuck');
+        await expect(page.locator('#agent-notices [data-agent-outcome-notice="stuck"] [data-agent-outcome-reason]')).toHaveText(
+          'no reply since kickoff',
+        );
+        // Its pod is still up: the status is not error.
+        await expect(page.locator('#agent-status')).not.toHaveAttribute('data-agent-status', 'error');
+        await openSidebar(page, vp.touch);
+        await expect(page.locator(`#nav-agent-${a.id} [data-nav-outcome="stuck"]`)).toBeVisible();
+        await expect.poll(() => outcomePushes(a.id), { timeout: 10_000 }).toBe(1);
+        await page.waitForTimeout(2500);
+        expect(outcomePushes(a.id), 'one notification per change').toBe(1);
+        // Control: an agent that is not stuck draws no badge.
+        const other = await page.context().newPage();
+        const failed = (await agentRows()).find((x) => x.outcome === 'failed')!;
+        await other.goto(origin + '/agents/' + failed.name);
+        await expect(other.locator('#agent-strip')).toBeVisible();
+        await expect(other.locator('[data-agent-outcome="stuck"]')).toHaveCount(0);
+        await other.close();
+      });
     });
   });
 }
