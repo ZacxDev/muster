@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -20,11 +19,6 @@ func runtimeConst(name string) bool {
 	return name == "RuntimeClaude" || name == "RuntimeOpenCode"
 }
 
-// removedRuntime is the name of the runtime whose support was removed: a
-// comparison with it as a literal is counted too, so a branch on an older
-// host's "hermes" cannot come back unlisted.
-const removedRuntime = "hermes"
-
 // ledgerScope is the mirror surface the ledger reads: the server and host
 // halves, the API and UI that act on mirrored windows, focus keys, and the
 // host binary.
@@ -32,9 +26,8 @@ var ledgerScope = []string{"internal/mirror/", "internal/mirrorhost/", "internal
 
 // runtimeSites is every occurrence, in the non-test Go source of
 // ledgerScope, of a runtime constant (runtimeConst: mirror.X, or bare inside
-// internal/mirror), or of a comparison with the literal removedRuntime (==,
-// !=, a case), counted per function: "<file> <func> ×<n>". It also returns
-// how many files it parsed.
+// internal/mirror), counted per function: "<file> <func> ×<n>". It also
+// returns how many files it parsed.
 func runtimeSites(t *testing.T, root string) ([]string, int) {
 	t.Helper()
 	counts := map[string]int{}
@@ -65,14 +58,6 @@ func runtimeSites(t *testing.T, root string) ([]string, int) {
 		files++
 		rel, _ := filepath.Rel(root, path)
 		inMirror := strings.HasPrefix(rel, mirrorDir)
-		isRemovedLit := func(e ast.Expr) bool {
-			b, ok := e.(*ast.BasicLit)
-			if !ok || b.Kind != token.STRING {
-				return false
-			}
-			s, err := strconv.Unquote(b.Value)
-			return err == nil && s == removedRuntime
-		}
 		for _, decl := range f.Decls {
 			where := "(declarations)"
 			if fd, ok := decl.(*ast.FuncDecl); ok {
@@ -104,16 +89,6 @@ func runtimeSites(t *testing.T, root string) ([]string, int) {
 					if inMirror && !done[x] && runtimeConst(x.Name) {
 						counts[key]++
 					}
-				case *ast.BinaryExpr:
-					if (x.Op == token.EQL || x.Op == token.NEQ) && (isRemovedLit(x.X) || isRemovedLit(x.Y)) {
-						counts[key]++
-					}
-				case *ast.CaseClause:
-					for _, e := range x.List {
-						if isRemovedLit(e) {
-							counts[key]++
-						}
-					}
 				}
 				return true
 			})
@@ -133,9 +108,8 @@ func runtimeSites(t *testing.T, root string) ([]string, int) {
 
 // TestEveryPlaceThatNamesARuntimeIsListed is a SEAM LEDGER over the whole
 // module's non-test source: every OCCURRENCE of a runtime's name or of a
-// value that is one runtime's own (runtimeConst: the runtime constants), and
-// every comparison with the removed runtime's name as a literal, is counted
-// per function below. The ledger fails when a
+// value that is one runtime's own (runtimeConst: the runtime constants) is
+// counted per function below. The ledger fails when a
 // function's count GROWS or SHRINKS, or a function appears or goes. Per-
 // runtime decisions belong to the runtime interface (mirror.RuntimeSpec, the
 // mirrorhost Runtime); what names a runtime outside it is one of:

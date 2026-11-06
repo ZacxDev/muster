@@ -230,10 +230,6 @@ func TestTheDaemonRecordsItsConfigForTheHook(t *testing.T) {
 		t.Fatalf("recorded %+v (%v), want url %s, allowHttp, token file %s", c, err, refuse.URL, tok)
 	}
 	b, _ := os.ReadFile(filepath.Join(home, ".muster", "mirror-hook.json"))
-	// Hermes support was removed: no status directory is recorded any more.
-	if strings.Contains(string(b), "hermesStatusDir") {
-		t.Fatalf("the recorded config still names a Hermes status dir: %s", b)
-	}
 	if strings.Contains(string(b), "mmt_") {
 		t.Fatalf("the recorded config holds the token: %s", b)
 	}

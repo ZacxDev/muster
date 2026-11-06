@@ -41,8 +41,7 @@ func TestAHostViewSourceExistsExactlyWhereTheServerSaysAView(t *testing.T) {
 }
 
 // TestTheHostLocatesClaudeCodeThenOpenCode: the listing's runtimes are the
-// ones that locate panes, Claude Code first, then opencode — and nothing else
-// (Hermes support was removed).
+// ones that locate panes, Claude Code first, then opencode — and nothing else.
 func TestTheHostLocatesClaudeCodeThenOpenCode(t *testing.T) {
 	var loc []string
 	for _, r := range (Tmux{}).runtimes() {

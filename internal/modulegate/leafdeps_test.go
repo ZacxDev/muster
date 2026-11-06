@@ -41,9 +41,9 @@ func heavyIn(set map[string]bool) []string {
 // The instrument is checked first, one class at a time, on packages of this
 // module that DO pull each one, so a matcher that cannot see a class fails
 // here rather than passing the leaf: the wire package (websocket), the store
-// (pgx and database/sql) and the host package (MinIO). SQLite no package of
-// this module links outside a test any more (the Hermes host reader that did
-// was removed), so its class is checked against the driver's own path.
+// (pgx and database/sql) and the host package (MinIO). No package of this
+// module links SQLite outside a test, so its class is checked against the
+// driver's own path.
 func TestTheSubagentLeafPullsNoNetworkOrStorageClient(t *testing.T) {
 	root := moduleRoot(t)
 	for _, c := range []struct{ pkg, class string }{

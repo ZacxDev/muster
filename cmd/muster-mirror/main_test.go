@@ -31,6 +31,22 @@ func TestTheTokenNeverHasToBeAnArgument(t *testing.T) {
 	}
 }
 
+// TestALeftoverArgumentIsRefusedNotRunAsTheDaemon: a word the parser leaves
+// over — a subcommand this binary does not have, or a typo — fails with
+// usage status 2 and says which word, before anything dials or lists. The
+// control is the same word missing: the daemon's own usage error instead.
+func TestALeftoverArgumentIsRefusedNotRunAsTheDaemon(t *testing.T) {
+	for _, args := range [][]string{{"no-such-subcommand"}, {"-allow-http", "stray"}} {
+		rc, out, errs := runWith(t, map[string]string{envURL: "https://m.example"}, args...)
+		if rc != 2 || out != "" || !strings.Contains(errs, `unknown command or argument "`+args[len(args)-1]+`"`) {
+			t.Fatalf("%q: rc %d, stdout %q, stderr %q; want 2 naming the word", args, rc, out, errs)
+		}
+	}
+	if rc, _, errs := runWith(t, map[string]string{envURL: "https://m.example"}, "-allow-http"); rc != 2 || strings.Contains(errs, "unknown command") || !strings.Contains(errs, "are required") {
+		t.Fatalf("CONTROL: no leftover word: rc %d, %s; want the missing-token usage error", rc, errs)
+	}
+}
+
 // TestMissingURLOrTokenIsAUsageError, and a non-mirror token or a cleartext URL
 // is refused before anything dials.
 func TestMissingURLOrTokenIsAUsageError(t *testing.T) {

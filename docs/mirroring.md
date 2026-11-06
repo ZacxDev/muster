@@ -770,27 +770,21 @@ running Hermes is a plain terminal window: the Terminal view shows it, and
 the host's message box types into it like any shell's (the guard above
 refuses only what it lists).
 
-An older `muster-mirror` may still be running on a host, since hosts run a
-pinned one. A newer muster takes its Hermes wire without an error: its hello's
-`hermesSend` and `hermesAnswer`, a window it names `runtime: "hermes"` (listed
-as a plain terminal window: no rendered view, status, session key, pending
-approval or note), and its paste guard's `hermes` refusal (shown as a plain
-refusal in the host's own words).
+An older `muster-mirror` may still be running on a host until its pin moves.
+A newer muster takes its Hermes wire without an error: its hello's
+`hermesSend` and `hermesAnswer` are ignored, a window it names
+`runtime: "hermes"` is listed as a plain terminal window (no rendered view,
+status, session key, pending approval or note), and its paste guard's
+`hermes` refusal is shown as a plain refusal in the host's own words.
 
-🔴 **One release of compatibility on the host.** A newer `muster-mirror`
-still starts when its unit passes the removed flags or variables —
-`-hermes-send`, `-hermes-answer`, `-hermes-home`, `-hermes-status-dir`,
-`-list -hermes`, `MUSTER_MIRROR_HERMES_SEND`, `MUSTER_MIRROR_HERMES_ANSWER`,
-`MUSTER_MIRROR_HERMES_HOME`, `MUSTER_MIRROR_HERMES_STATUS_DIR`: it accepts
-and ignores them, and logs one line naming them. `muster-mirror
-hermes-allowlist` (a Home Manager activation's) exits 0 with one line saying
-nothing was written, and `muster-mirror hermes-hook` (Hermes's status hook)
-exits 0 and says nothing. Drop them from the host's configuration; a later
-release refuses them as unknown.
+A newer `muster-mirror` has no Hermes flags or subcommands: one started with
+a removed flag fails as with any unknown flag, and a leftover word
+(`hermes-hook`, `hermes-allowlist`, a typo) fails with "unknown command or
+argument". Remove them from a host's configuration before moving its pin.
 
-The database keeps what Hermes left: session keys `hermes:<id>` stay valid
-in the CHECKs migration 0052 wrote, so a stored focus, route or ask keyed so
-is still read. Nothing new is keyed so. A later migration may narrow them.
+Migration `0085` deleted the focus history Hermes windows left
+(`hermes:<id>` keys) and narrowed the session-key CHECKs back to Claude Code
+ids and `opencode:` keys ([schema.md](schema.md)).
 
 ## Answering Claude's questions
 

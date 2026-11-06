@@ -80,8 +80,6 @@ The design in one line each:
 
 ## Non-goals
 
-- **Hermes.** There is no Hermes spawn profile (Hermes support has since been
-  removed altogether).
 - **A general remote shell.** Free command lines and free paths are out.
   Arbitrary execution already exists through `-interactive`
   ([mirroring.md](../mirroring.md#read-only-interactive-and-sending)), and this

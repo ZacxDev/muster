@@ -37,8 +37,7 @@ agent you run in tmux shows up; Claude Code gets the most.
   endpoint listens on loopback only). Machines are read-only until you let
   muster type into them, one machine at a time.
 - **Mixed agents in one place.** Claude Code renders as a chat; opencode has
-  its own read view; Codex, Gemini CLI, Hermes and plain shells are live
-  terminals.
+  its own read view; Codex, Gemini CLI and plain shells are live terminals.
 - **Agents ask you instead of stopping.** A Claude Code session can ask you a
   question with options and wait for your answer, and Claude Code's own
   multiple-choice questions become a form you answer from your phone. Each

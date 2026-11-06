@@ -43,7 +43,7 @@ func (p pushTargetAgents) Get(_ context.Context, id int64) (agents.Agent, error)
 // The push-target fixture's names: pairwise distinct, so a target built from
 // the wrong field cannot pass.
 const (
-	ptOtherSID      = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
+	ptOtherSID = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
 )
 
 // pushTargetServer is a server whose owner (user 1) has one online host "ws"

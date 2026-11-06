@@ -229,12 +229,7 @@ func TestNormalizeWindowsKeepsRuntimesApart(t *testing.T) {
 		t.Errorf("an opencode window: %+v (key %q)", w, w.SessionKey())
 	}
 	for key, ok := range map[string]bool{
-		// A key stored before Hermes support was removed is still a key
-		// (legacyKeyPrefixes: the CHECKs still admit it); a bare id of its
-		// length is not.
-		"0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b": true, "hermes:local-" + strings.Repeat("0123456789abcdef", 4): true,
-		"local-" + strings.Repeat("0123456789abcdef", 4): false,
-		"hermes:": false, "claude:abc": false, strings.Repeat("c", 65): false,
+		"0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b": true, "local-" + strings.Repeat("0123456789abcdef", 4): false, "claude:abc": false, strings.Repeat("c", 65): false,
 		"opencode:ses_0fixture": true, "opencode:": false,
 	} {
 		if mirror.ValidSessionKey(key) != ok {

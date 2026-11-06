@@ -108,9 +108,6 @@ func TestThePaneGuardRefusesMultiplexersAndTheUnreadableAndNothingElse(t *testin
 			f.add(1332, root, "python3", "/work/v", "python3", "manage.py", "migrate")
 			f.add(1333, root, "python3", "/work/v", "python3", "cli.py")
 		}},
-		{name: "a process named hermes is nothing special any more", want: 0, procs: func(f *fakeProc, root int) {
-			f.add(1341, root, "hermes", "/work/w", "/usr/bin/python3", "/usr/local/bin/hermes", "chat")
-		}},
 		{name: "a zombie child (no command line, reads no input)", want: 0, procs: func(f *fakeProc, root int) {
 			f.add(1351, root, "sleep", "/work/x")
 			f.state(1351, root, "sleep", "Z")
@@ -152,7 +149,7 @@ func TestThePaneGuardRefusesMultiplexersAndTheUnreadableAndNothingElse(t *testin
 }
 
 // TestAChildForkedAfterTheTableWasReadIsWalkedNotRefused is the regression
-// behind "muster-mirror could not check whether Hermes runs in this pane":
+// behind the guard's spurious "could not check" refusals:
 // a busy Claude Code pane forks a tool call's process between the guard's
 // read of the process table and its walk, the kernel lists it as a child,
 // and the walk — finding it absent from the table — refused the paste as

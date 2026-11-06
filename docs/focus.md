@@ -53,8 +53,7 @@ survives tmux reissuing window ids and follows a conversation into another
 window. `muster-mirror` reports the id per window (`claudeSession` in its
 window list). An older `muster-mirror` does not, and its windows simply have no
 focus. Only Claude Code windows, and opencode windows whose host names their
-session, have one. (A focus keyed `hermes:<id>` from before Hermes support was
-removed is still read; nothing new is keyed so.)
+session, have one.
 
 The transcript **path** is not sent to the server. The window list is one
 WebSocket message, and its largest case already fills 96% of a frame; muster

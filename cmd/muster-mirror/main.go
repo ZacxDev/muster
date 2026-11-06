@@ -141,12 +141,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if len(args) > 0 && args[0] == "ask" {
 		return runAsk(args[1:], getenv, stdin, stdout, stderr)
 	}
-	// The removed Hermes subcommands, accepted as no-ops for one release
-	// (hermes_removed.go). 🔴 Given no stdout: Hermes reads a hook's stdout
-	// as a directive.
-	if rc, ok := runRemovedHermesSubcommand(args, stdin, stderr); ok {
-		return rc
-	}
 	// `muster-mirror opencode-pair`: mint this host's opencode token
 	// (opencode.go). Run once per host.
 	if len(args) > 0 && args[0] == "opencode-pair" {
@@ -184,11 +178,17 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
 	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	version := fs.Bool("version", false, "print the version and exit")
-	registerRemovedHermesFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		return 2
+	}
+	// A leftover argument is a subcommand this binary does not have (one a
+	// newer or older release had), or a typo: refused, never run as the
+	// daemon it would otherwise start.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "muster-mirror: unknown command or argument %q (subcommands: ask, opencode-pair; see -h)\n", fs.Arg(0))
 		return 2
 	}
 	if *version {
@@ -199,9 +199,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	ctx, stop := runContext()
 	defer stop()
 	logger := log.New(stderr, "", log.LstdFlags)
-	if used := removedHermesInUse(fs, getenv); used != "" {
-		logger.Printf("muster-mirror: %s: %s", used, hermesRemovedNote)
-	}
 	// The opencode token (opencode.go): ONE Credentials for the source that
 	// reads opencode windows and the renewal that keeps it valid.
 	// A browser-test build reads no token file: its opencode is a fake server

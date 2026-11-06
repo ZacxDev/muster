@@ -179,35 +179,17 @@ var sessionKeyPattern = regexp.MustCompile(SessionKeyPattern)
 // agent_focus_history.subject_key, session_routes.target_key and
 // attention_asks.mirror_session carry the same expression — the migration
 // that last wrote them is read by a test in internal/db that fails
-// when the two differ (0052 since opencode's prefix). A runtime that adds a
+// when the two differ (0085 last wrote them). A runtime that adds a
 // KeyPrefix changes this pattern, so it fails that test until a NEW migration
 // writes the wider CHECKs.
 var SessionKeyPattern = buildSessionKeyPattern()
 
 func buildSessionKeyPattern() string {
 	alts := []string{`[0-9A-Za-z][0-9A-Za-z_-]{0,63}`}
-	// The removed runtimes' prefixes first, where they stood (migration
-	// 0052's order), so the pattern stays the CHECKs' spelling.
-	prefixes := append([]string(nil), legacyKeyPrefixes...)
 	for _, r := range runtimes {
 		if r.KeyPrefix != "" {
-			prefixes = append(prefixes, r.KeyPrefix)
+			alts = append(alts, regexp.QuoteMeta(r.KeyPrefix)+`[0-9A-Za-z][0-9A-Za-z_-]{0,127}`)
 		}
-	}
-	for _, p := range prefixes {
-		alts = append(alts, regexp.QuoteMeta(p)+`[0-9A-Za-z][0-9A-Za-z_-]{0,127}`)
 	}
 	return `^(` + strings.Join(alts, "|") + `)$`
 }
-
-// legacyKeyPrefixes are the KeyPrefixes of runtimes muster no longer knows:
-// Hermes's ("hermes:"), whose support was removed. 🔴 KEPT IN THE PATTERN, ON
-// PURPOSE: rows written before the removal (a focus, a route, an ask keyed
-// "hermes:<id>") are still in the database, and the CHECKs migration 0052
-// wrote still admit them; narrowing the pattern without a migration would
-// make those rows unreadable as keys, and the CHECK test
-// (internal/db's TestTheLatestSessionKeyChecksSpellTheWirePattern) would fail.
-// No window carries one any more (NormalizeWindows drops the runtime), so
-// nothing new is keyed so. A later migration may narrow the CHECKs and drop
-// this.
-var legacyKeyPrefixes = []string{"hermes:"}
