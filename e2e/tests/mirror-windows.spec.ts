@@ -443,8 +443,9 @@ for (const vp of [
       await expect(page.locator('#mv-input')).toHaveValue('');
       expect(page.url(), 'the script sends without navigating').toBe(before);
 
-      // 3b. Text typed while a send is still out is not thrown away when its
-      // answer arrives.
+      // 3b. A send still out does not hold the box (composer_pending.go): it
+      // empties at the press, says "Sending…", and Send stays usable; text
+      // typed meanwhile is not thrown away when the answer arrives.
       let release: () => void = () => {};
       const held = new Promise<void>((r) => (release = r));
       await page.route('**/mirror/terminal/send?*', async (route) => {
@@ -453,11 +454,13 @@ for (const vp of [
       });
       await page.locator('#mv-input').fill('echo fourth');
       await page.locator('#mv-send').click();
-      await expect(page.locator('#mv-send')).toBeDisabled();
+      await expect(page.locator('#mv-input'), 'emptied at the press').toHaveValue('');
+      await expect(page.locator('#mv-note')).toHaveText('Sending…');
+      await expect(page.locator('#mv-send')).toBeEnabled();
       await page.locator('#mv-input').fill('typed meanwhile');
       release();
-      await expect(page.locator('#mv-send')).toBeEnabled();
-      expect(read(pasteFile)).toContain('%e2e-scratch2-@4 echo fourth\n');
+      await expect.poll(() => read(pasteFile)).toContain('%e2e-scratch2-@4 echo fourth\n');
+      await expect(page.locator('#mv-note')).toBeHidden();
       await expect(page.locator('#mv-input')).toHaveValue('typed meanwhile');
       await page.unroute('**/mirror/terminal/send?*');
 

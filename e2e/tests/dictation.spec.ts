@@ -325,7 +325,8 @@ for (const vp of [
       });
       await page.locator('#mv-send').click();
       await expect(page.locator('#mv-input')).toHaveValue('');
-      expect(sends, 'the dictated text was sent, once').toEqual([204]);
+      // The box empties at the press (composer_pending.go); the answer follows.
+      await expect.poll(() => sends, { message: 'the dictated text was sent, once' }).toEqual([204]);
 
       await page.goto(`${origin}/agents/${a.name}`);
       const log = page.locator('#chat-log');

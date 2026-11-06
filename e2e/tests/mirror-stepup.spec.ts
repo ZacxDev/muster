@@ -71,6 +71,14 @@ fs.writeFileSync(
     JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hi.' }] } }) + '\n',
 );
 
+
+// waitingForStepUp: a send held for "Confirm it's you" is not lost — the box
+// emptied at the press, and the message waits in the conversation as a
+// pending bubble (composer_pending.go) until the confirm sends it.
+async function waitingForStepUp(page: Page, text: string, msg: string) {
+  await expect(page.locator('#mv-log [data-pending-send="stepup"]', { hasText: text }), msg).toHaveCount(1);
+}
+
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
 // 🔴 REQUEST INTERCEPTION STAYS ON FOR THE WHOLE TEST. Playwright turns the
@@ -420,7 +428,7 @@ test.describe('the rendered view on a phone (390×844)', () => {
     await send.tap();
     await expect(dialog(page)).toBeVisible();
     expect(sends, 'the stale send was refused by the server').toEqual([204, 403]);
-    await expect(input).toHaveValue('second, after the confirm');
+    await waitingForStepUp(page, 'second, after the confirm', 'nothing typed is lost while confirming');
     expect(pasted()).toBe(before + '%9 first from the phone\n');
     const box = (await dialog(page).boundingBox())!;
     expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
@@ -429,7 +437,7 @@ test.describe('the rendered view on a phone (390×844)', () => {
     await page.locator('#term-confirm-submit').tap();
     await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
     expect(pasted(), 'a wrong password sends nothing').toBe(before + '%9 first from the phone\n');
-    await expect(input).toHaveValue('second, after the confirm');
+    await waitingForStepUp(page, 'second, after the confirm', 'nothing typed is lost while confirming');
 
     await page.fill('#term-confirm-password', adminPW);
     await page.locator('#term-confirm-submit').tap();
@@ -643,7 +651,7 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
     expect(box.y + box.height, 'and is on screen').toBeLessThanOrEqual(844);
     expect((await passkeyBtn(page).boundingBox())!.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
-    await expect(v.input, 'nothing typed is lost while confirming').toHaveValue('sent after a passkey');
+    await waitingForStepUp(page, 'sent after a passkey', 'nothing typed is lost while confirming');
     expect(pasted(), 'nothing is pasted while the confirm is open').toBe(before);
     const staleToken = await accessToken(context);
 
@@ -685,7 +693,7 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     await expect(page.locator('#term-confirm-error')).toContainText('did not verify you');
     await expect(dialog(page)).toBeVisible();
     expect(pasted(), 'a UV=0 assertion sends nothing').toBe(before);
-    await expect(v.input).toHaveValue('must not be sent without verification');
+    await waitingForStepUp(page, 'must not be sent without verification', 'nothing typed is lost while confirming');
     expect(Date.now() / 1000 - amrOf(await accessToken(context)), 'still the stale session').toBeGreaterThan(STALE_SECONDS - 100);
     await page.unrouteAll({ behavior: 'wait' });
 
@@ -742,11 +750,14 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     await expect(page.locator('#term-confirm-error')).toContainText('belongs to a different account');
     await expect(dialog(page)).toBeVisible();
     expect(pasted(), 'another account’s passkey sends nothing').toBe(before);
-    await expect(v.input).toHaveValue('must not be sent as somebody else');
+    await waitingForStepUp(page, 'must not be sent as somebody else', 'nothing typed is lost while confirming');
     const after = await accessToken(context);
     expect(subOf(after), '🔴 the browser is STILL the admin, not the member').toBe(adminSub);
     expect(Date.now() / 1000 - amrOf(after), 'and still stale').toBeGreaterThan(STALE_SECONDS - 100);
     await page.locator('#term-confirm-cancel').tap();
+    // Cancelled: the message fails, and its text is back in the box.
+    await expect(page.locator('#mv-log [data-pending-send="failed"]', { hasText: 'must not be sent as somebody else' })).toHaveCount(1);
+    await expect(v.input).toHaveValue('must not be sent as somebody else');
     const account = await (await page.request.get(browserURL + '/account')).text();
     expect(account.includes(adminEmail) && !account.includes(memberEmail), 'the account page is the admin’s').toBe(true);
     const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);

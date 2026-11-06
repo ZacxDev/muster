@@ -199,6 +199,11 @@ func confirmDialog(s *StepUpView) g.Node {
 // /verify the server was still allowed to complete — blamed on the device,
 // a second challenge spent, the waiting action dropped although the session
 // had just been made fresh. The margin covers the database and the network.
+// stepUpLegacyCancelMS: how long a framed view waits for an older top
+// window's confirm (one whose ask takes no cancel) before it takes the ask
+// as cancelled, when it never saw that window's dialog open.
+const stepUpLegacyCancelMS = 120_000
+
 const stepUpNetTimeout = gotrue.SettingsTimeout + 2*gotrue.HTTPTimeout + 5*time.Second
 
 // stepUpNetTimeoutMS is stepUpNetTimeout as the script's milliseconds.
@@ -475,7 +480,9 @@ window.musterStepUp = (function () {
   var pkNote = document.getElementById('term-confirm-passkey-note');
   var pwBox = document.getElementById('` + stepUpPasswordBoxID + `');
   var pwToggle = document.getElementById('` + stepUpPasswordToggleID + `');
-  var done = [], pre = null, freshUntil = 0, attempts = 0, openId = '';
+  // done: what a confirm runs; dropped: what a close without one runs (an
+  // ask's cancel — the composer's pending send turns failed, composer_pending.go).
+  var done = [], dropped = [], pre = null, freshUntil = 0, attempts = 0, openId = '';
   var ff = +dlg.getAttribute('data-fresh-for') || 0;
   if (ff > 0) freshUntil = performance.now() + ff;
 
@@ -580,7 +587,7 @@ window.musterStepUp = (function () {
   function finish(freshFor) {
     freshUntil = performance.now() + (+freshFor || 0);
     pw.value = '';
-    var cbs = done; done = [];
+    var cbs = done; done = []; dropped = [];
     dlg.close();
     // The duration, not an instant: a framed view that handed its ask here
     // (topStepUp) keeps its own clock (performance.now() is per document).
@@ -625,7 +632,7 @@ window.musterStepUp = (function () {
     for (var j = 0; j < 8; j++) s += (b[j] < 16 ? '0' : '') + b[j].toString(16);
     return s;
   }
-  function ask(why, cb) {
+  function ask(why, cb, cancel) {
     // 🔴 A FRAMED VIEW ASKS IN THE TOP WINDOW'S DIALOG. Reported from the
     // Android app (a WebView, WebAuthn as the app): the passkey was offered on
     // the rendered view loaded on its own, and the terminal opened in the
@@ -639,11 +646,35 @@ window.musterStepUp = (function () {
     // freshness is set from the same answer.
     var t = topStepUp();
     if (t) {
-      done = [];
+      done = []; dropped = [];
+      var confirmed = false;
       t.ask(why, function (ff) {
+        confirmed = true;
         if (ff !== undefined) freshUntil = performance.now() + (+ff || 0);
         if (cb) cb();
-      });
+      }, cancel);
+      // 🔴 AN OLDER TOP WINDOW (a page loaded before ask took a cancel) never
+      // calls cancel: a close without a confirm would leave this caller — a
+      // composer's send, and every message waiting behind it — waiting for
+      // good. Watched here instead: the top's dialog closed without a confirm,
+      // or no confirm within stepUpLegacyCancelMS, is a cancel. (The caller
+      // ignores a confirm that comes after it.)
+      if (cancel && t.ask.length < 3) {
+        var t0 = Date.now();
+        var topDialog = function () { try { return window.parent.document.getElementById(dlg.id); } catch (e) { return null; } };
+        // Read now as well as on each tick: the top opens its dialog in ask,
+        // and a close inside the first tick must still count.
+        var d0 = topDialog(), seen = !!(d0 && d0.open);
+        var iv = setInterval(function () {
+          if (confirmed) { clearInterval(iv); return; }
+          var d = topDialog();
+          if (d && d.open) { seen = true; return; }
+          if (seen || Date.now() - t0 > ` + strconv.Itoa(stepUpLegacyCancelMS) + `) {
+            clearInterval(iv);
+            try { cancel(); } catch (e) {}
+          }
+        }, 500);
+      }
       return;
     }
     // 🔴 ALREADY OPEN: the new caller's done runs after the ones already
@@ -653,10 +684,16 @@ window.musterStepUp = (function () {
     // call (answered or in flight) stands (see stepUpScript).
     if (dlg.open) {
       if (cb) done.push(cb);
+      if (cancel) dropped.push(cancel);
       if (why) fail(why);
       return;
     }
     done = cb ? [cb] : [];
+    // A close whose event has not run yet (see the close listener) was a
+    // cancel all the same: its asks are told now, before this open's replace them.
+    var left = dropped;
+    dropped = cancel ? [cancel] : [];
+    left.forEach(function (c) { try { c(); } catch (e) {} });
     attempts = 0;
     openId = newOpenId();
     // A tap of an earlier open may still hold the button (ours, in the tap):
@@ -696,7 +733,9 @@ window.musterStepUp = (function () {
   // old close's, and changes nothing.
   dlg.addEventListener('close', function () {
     if (dlg.open) return;
-    done = []; pre = null; unlift(); unavailable(''); pkWaiting(false);
+    var gone = dropped;
+    done = []; dropped = []; pre = null; unlift(); unavailable(''); pkWaiting(false);
+    gone.forEach(function (c) { try { c(); } catch (e) {} });
   });
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();

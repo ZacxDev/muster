@@ -64,6 +64,32 @@ test.afterAll(async () => {
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
+// hostMode: what the running fake host was started as. A worker starts with
+// the read-only host (beforeAll); a case that needs another starts it.
+let hostMode: 'readonly' | 'send' | 'answer' = 'readonly';
+
+// ensureSendHost: the host running with -hermes-send (and -interactive), its
+// window idle. 🔴 EVERY SEND CASE CALLS IT, so each runs alone (`-g`) and none
+// depends on the one before it having started this host — or on it having
+// left the window idle. A failed case restarts the worker (beforeAll's
+// read-only host), and the next case starts this one again.
+async function ensureSendHost(): Promise<void> {
+  writeFileAtomic(path.join(rig.dir, 'hermes-windows'), `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  if (hostMode === 'send') return;
+  // A fresh Hermes home: the fake creates state.db once per home.
+  home = fs.mkdtempSync(path.join(rig.dir, 'hermes-send-'));
+  rows = path.join(home, 'rows.jsonl');
+  row({ role: 'user', content: 'an earlier prompt' });
+  row({ role: 'assistant', content: 'An earlier reply.' });
+  await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_SEND: '1' });
+  hostMode = 'send';
+}
+
+// refusalOn: what the Rendered view says of the newest refused message — on
+// its bubble (composer_pending.go). 🔴 Not #mv-note: the operator accepted
+// (PR #450, audit round 0, D1) that a refusal's reason is said ONCE, on the
+// bubble, and the status line carries it only where there is no bubble.
+const refusalOn = (page: Page) => page.locator('#mv-log [data-pending-send] [data-pending-status]').last();
 const viewOf = (window: string) => `${rig.viewPath('herm')}&window=${encodeURIComponent(window)}`;
 // A window's row in the sidebar's list.
 const card = (page: Page, window: string) =>
@@ -122,12 +148,7 @@ test('a Hermes window opens a read-only rendered view of its conversation, live'
 // 🔴 REGRESSION TEST. On origin/main the composer stays disabled whatever the
 // host runs, and the hub refuses every paste into a Hermes window.
 test('on a host with -hermes-send, a Hermes window sends from its rendered view, and is refused while busy', async ({ page }) => {
-  // A fresh Hermes home: the fake creates state.db once per home.
-  home = fs.mkdtempSync(path.join(rig.dir, 'hermes-send-'));
-  rows = path.join(home, 'rows.jsonl');
-  row({ role: 'user', content: 'an earlier prompt' });
-  row({ role: 'assistant', content: 'An earlier reply.' });
-  await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_SEND: '1' });
+  await ensureSendHost();
   await rig.login(page);
   // The stopped host's listing outlives it for a while (offline retention),
   // so "listed" is not "the new host is connected": wait for the view itself.
@@ -181,7 +202,7 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
     refused.push(text);
     if (body.includes('Hermes is working')) {
       hubRefused = true;
-      await expect(page.locator('#mv-note')).toContainText('Hermes is working');
+      await expect(refusalOn(page)).toContainText('Hermes is working');
     } else {
       expect(body).toContain("Hermes's status changed after muster decided to send. Nothing was pasted.");
     }
@@ -198,6 +219,7 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
 // same message (the same nonce) is refused and delivers nothing; the
 // explicit "Send again" mints a new nonce and is delivered.
 test('a send that may have been submitted offers Send again, and the same nonce is refused', async ({ page }) => {
+  await ensureSendHost();
   await rig.login(page);
   await expect
     .poll(async () => {
@@ -223,14 +245,14 @@ test('a send that may have been submitted offers Send again, and the same nonce 
     await page.waitForTimeout(200);
   }
   expect(first).toContain('May have been submitted');
-  await expect(page.locator('#mv-note')).toContainText('May have been submitted');
+  await expect(refusalOn(page)).toContainText('May have been submitted');
   const again = page.locator('#mv-send-again');
   await expect(again).toBeVisible();
   await expect(input).toHaveValue(text);
 
   // The same message, the same nonce: refused, nothing delivered.
   await page.locator('#mv-send').click();
-  await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+  await expect(refusalOn(page)).toContainText('Not sent again: the first try may already have been submitted');
   expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain(text);
 
   // The explicit retry: a new nonce, delivered once.
@@ -257,6 +279,7 @@ test('a send that may have been submitted is still refused after Back restores t
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
     await ctx.addInitScript(`addEventListener('pageshow', (e) => { if (e.persisted) window.__restored = (window.__restored || 0) + 1; })`);
     const page = await ctx.newPage();
+    await ensureSendHost();
     await rig.login(page);
     await expect
       .poll(async () => {
@@ -290,7 +313,7 @@ test('a send that may have been submitted is still refused after Back restores t
 
     // A plain Send of it: still refused, still nothing delivered.
     await page.locator('#mv-send').click();
-    await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+    await expect(refusalOn(page)).toContainText('Not sent again: the first try may already have been submitted');
     expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain(text);
   } finally {
     await browser.close();
@@ -320,9 +343,10 @@ const deliveries = (text: string) =>
   fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8').split('\n').filter((l) => l && JSON.parse(l).content === text).length;
 
 async function sendMayHaveLanded(page: Page, text: string): Promise<void> {
-  // Idle FIRST: a case before this one that failed part-way may have left
-  // the window reported busy, and the view's box stays disabled until idle.
-  writeFileAtomic(path.join(rig.dir, 'hermes-windows'), `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  // The send host, idle FIRST: a case before this one that failed part-way
+  // may have left the window reported busy, and the view's box stays
+  // disabled until idle.
+  await ensureSendHost();
   await rig.login(page);
   await expect
     .poll(async () => {
@@ -343,8 +367,14 @@ async function sendMayHaveLanded(page: Page, text: string): Promise<void> {
     await page.waitForTimeout(200);
   }
   expect(first).toContain('May have been submitted');
-  await expect(page.locator('#mv-send-again')).toBeVisible();
   expect(deliveries(text), 'the first try DID land (late)').toBe(1);
+  // 🔴 Its row is in the conversation, and still the bubble stays Not
+  // confirmed, with Send again: a row never settles a message that may have
+  // been delivered (operator decision, PR #450 round 4) — the person checks
+  // and Dismisses or sends it again.
+  await expect(page.locator('#mv-log [data-bubble="user"]', { hasText: text })).toHaveCount(1, { timeout: 20_000 });
+  await expect(page.locator('#mv-log [data-pending-send]', { hasText: text }), 'still Not confirmed beside its row').toHaveAttribute('data-pending-send', 'unknown');
+  await expect(page.locator('#mv-send-again')).toBeVisible();
 }
 
 // fromTheCopy: on the copy Back showed, a plain Send of the same text is
@@ -367,7 +397,7 @@ async function fromTheCopy(page: Page, text: string): Promise<void> {
   // once the send has its answer.
   expect(deliveries(text), `🔴 a plain Send from the copy delivered the message again (answer ${resp.status()})`).toBe(1);
   expect(resp.status()).toBe(409);
-  await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+  await expect(refusalOn(page)).toContainText('Not sent again: the first try may already have been submitted');
   // The same offer as on the live page, and it works.
   await page.locator('#mv-send-again').click();
   await expect(page.locator('#mv-input')).toHaveValue('', { timeout: 20_000 });
@@ -407,14 +437,21 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
     tool_calls: JSON.stringify([{ id: 'call_build_rm', type: 'function', function: { name: 'terminal', arguments: JSON.stringify({ command: 'rm -r ./build' }) } }]),
   });
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
+  const approvalFor = (width: number) => JSON.stringify({ prompt_id: `p${width}`, command: 'rm -r ./build', description: 'recursive delete' });
+  // 🔴 The first approval is written BEFORE the host starts: the window is
+  // already waiting, so the host attaches its viewer at once and reads the
+  // approval then. Written later, the viewer attached with none (this case
+  // was red alone, PR #450 round 5 🟢) and the next one waits for a re-attach.
+  writeFileAtomic(path.join(home, 'approval.json'), approvalFor(390));
   writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
   await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_ANSWER: '1' });
+  hostMode = 'answer';
   await rig.login(page);
   const answers = path.join(home, 'answers.jsonl');
   for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(vp);
     const promptId = `p${vp.width}`;
-    writeFileAtomic(path.join(home, 'approval.json'), JSON.stringify({ prompt_id: promptId, command: 'rm -r ./build', description: 'recursive delete' }));
+    writeFileAtomic(path.join(home, 'approval.json'), approvalFor(vp.width));
     writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
     const approval = page.locator('[data-attention-item]').filter({ has: page.locator('[data-hermes-approval]') });
     // The host lists the approval once its viewer has attached (a refresh or two).
