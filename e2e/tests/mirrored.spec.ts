@@ -212,7 +212,10 @@ test('a labelled session shows its pretty name, follows the active window, and s
     expect(new URL(page.url()).searchParams.get('session'), 'opened by the tmux name, not the label').toBe('main');
     await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
     await expect(page.locator('header h1')).toContainText('Mango:3');
-    await expect(page.locator('header h1 [data-mirror-session]')).toHaveText('main');
+    // The raw tmux name is the title's tooltip, no longer drawn beside it (the
+    // header's room is the session's tags: session_tags.go).
+    await expect(page.locator('header h1 [data-mirror-name]')).toHaveAttribute('title', 'tmux session main');
+    await expect(page.locator('header [data-mirror-session]')).toHaveCount(0);
     await expect(page).toHaveTitle(/Mango:3/);
     await noHorizontalScroll(page);
   } finally {

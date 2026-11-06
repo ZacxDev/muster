@@ -63,7 +63,7 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 	}
 	// The Rendered view's form is collapsible on a touch screen (composer_reveal.go);
 	// the Terminal's is not. Otherwise one element.
-	if !strings.Contains(vf, ` data-mv-collapsed=""`) || strings.Contains(tf, `data-mv-collapsed`) {
+	if !strings.Contains(vf, ` data-mv-collapsible=""`) || strings.Contains(tf, `data-mv-collapsible`) {
 		t.Errorf("the Rendered view's form is not the collapsible one, or the Terminal's is:\n%s\n%s", tf, vf)
 	}
 	vf = collapsibleBits.ReplaceAllString(vf, "")

@@ -136,15 +136,11 @@ async function openSidebar(page: Page) {
   await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
 }
 
-// The TITLE as shown on a window's own PAGE: the name element's text, minus
-// the raw tmux session name the page draws small beside a label (it is not
-// part of the title).
+// The TITLE as shown on a window's own PAGE: the name element's text. (The
+// raw tmux session name is no longer drawn beside a label — it is the name's
+// tooltip — so nothing is taken out of it.)
 async function shownTitle(scope: Locator): Promise<string> {
-  return scope.locator('[data-mirror-name]').first().evaluate((el) => {
-    const c = el.cloneNode(true) as HTMLElement;
-    c.querySelector('[data-mirror-session]')?.remove();
-    return (c.textContent ?? '').trim();
-  });
+  return scope.locator('[data-mirror-name]').first().evaluate((el) => (el.textContent ?? '').trim());
 }
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });

@@ -15,7 +15,8 @@ import (
 // does not collapse it again.
 //
 // 🔴 DECIDED BY THE POINTER, IN CSS (web/css/input.css): `(pointer: coarse)`.
-// The server only marks the form (composerCollapsedAttr); a fine pointer — a
+// The server only marks the form collapsible and its script collapses it
+// (composerCollapsibleAttr); a fine pointer — a
 // desktop — shows the box as before and never draws the button, so there is one
 // behaviour per kind of device and no script deciding it before paint.
 //
@@ -41,9 +42,20 @@ import (
 // form reset or a back/forward-cache restore — the browser's own restore of a
 // field's value, which no writer here makes.
 
-// composerCollapsedAttr marks the composer's form as collapsed (removed by the
-// reveal).
-const composerCollapsedAttr = "data-mv-collapsed"
+// composerCollapsibleAttr is what the SERVER puts on the form: this box may be
+// collapsed. composerCollapsedAttr is what the reveal's script sets from it —
+// collapsed — and removes to reveal the box.
+//
+// 🔴 THE SCRIPT COLLAPSES THE BOX, NEVER THE MARKUP. A page whose script did
+// not run (or threw) must still have a box to type in: the button that would
+// reveal it is a script's. So a collapsed state the server drew would be a
+// box nobody could open (measured: mirror-stepup.spec's no-script phone test
+// could not type). The script runs before the pinned composer is first shown
+// (composePending), so collapsing it then moves nothing on screen.
+const (
+	composerCollapsibleAttr = "data-mv-collapsible"
+	composerCollapsedAttr   = "data-mv-collapsed"
+)
 
 // ComposerTextLabel is the "Type a message" button's accessible name.
 const ComposerTextLabel = "Type a message"
@@ -87,6 +99,12 @@ const composerRevealJS = `
   var input = document.getElementById('mv-input');
   var btn = document.getElementById('mv-text');
   if (!form || !input) return;
+  // Collapsed from the start unless the box already holds text (a field the
+  // browser restored); the draft, restored next, reveals it itself.
+  if (!input.value) {
+    form.setAttribute('` + composerCollapsedAttr + `', '');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
   function reveal(focus) {
     if (form.hasAttribute('` + composerCollapsedAttr + `')) {
       form.removeAttribute('` + composerCollapsedAttr + `');

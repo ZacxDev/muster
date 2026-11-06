@@ -184,6 +184,23 @@ test.describe('phone 390×844 touch', () => {
   });
 });
 
+// 🔴 WITHOUT SCRIPT THE BOX IS SHOWN: "Type a message" is a script's button,
+// so only the script collapses the box (composer_reveal.go). On a phone with
+// script off, the box must still be there to type into.
+test('on a phone with no script the box is shown, and “Type a message” is not', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, javaScriptEnabled: false });
+  const page = await ctx.newPage();
+  try {
+    await signIn(page, origin);
+    await page.goto(origin + view('tagd5', 15));
+    await expect(box(page)).toBeVisible({ timeout: 20_000 });
+    await expect(textBtn(page)).toBeHidden();
+    await expect(page.locator('#mv-form')).not.toHaveAttribute('data-mv-collapsed', '');
+  } finally {
+    await ctx.close();
+  }
+});
+
 test.describe('desktop 1280×800', () => {
   test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
 

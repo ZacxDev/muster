@@ -352,7 +352,7 @@ func mirrorComposer(v ComposerView) g.Node {
 			Class("flex items-end gap-2 px-3 pt-2 "+formPad),
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
-			g.If(collapse, g.Attr(composerCollapsedAttr, "")),
+			g.If(collapse, g.Attr(composerCollapsibleAttr, "")),
 			// The paperclip sits INSIDE the input, on its left (attach.go).
 			attachFieldOrOff(upload, uploadOff, composerFieldMark(collapse), func(pad string, mark g.Node) g.Node {
 				return Textarea(

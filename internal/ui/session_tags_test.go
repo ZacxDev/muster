@@ -157,15 +157,21 @@ func TestBothViewsDrawTagsInTheHeaderAndNotTheRawSession(t *testing.T) {
 // TestTheRenderedViewsBoxIsCollapsibleBehindTypeAMessage: the Rendered view's
 // composer draws "Type a message" (named, expanding the box it controls)
 // BESIDE the mic, the box still in the form (dictation and the draft need it
-// connected) marked as the collapsible field, and the form marked collapsed;
+// connected) marked as the collapsible field, and the form marked collapsible
+// (its script collapses it);
 // the reveal is the first of its scripts, before the draft's. The Terminal
 // views' composers draw none of it. A disabled composer is not collapsed.
 func TestTheRenderedViewsBoxIsCollapsibleBehindTypeAMessage(t *testing.T) {
 	view := renderString(t, MirrorViewPage(MirrorViewView{Host: "tower", Session: "w", Interactive: true, Dictate: TranscribePath, DraftUser: 1}))
 	form := view[strings.Index(view, `<form id="mv-form"`):]
 	form = form[:strings.Index(form, "</form>")]
-	if !strings.Contains(form, `data-mv-collapsed=""`) {
-		t.Errorf("the Rendered view's form is not collapsed:\n%s", form)
+	if !strings.Contains(form, `data-mv-collapsible=""`) {
+		t.Errorf("the Rendered view's form is not marked collapsible:\n%s", form)
+	}
+	// 🔴 The markup never collapses it: without script there is no way to
+	// reveal it, so only the reveal's script sets data-mv-collapsed.
+	if strings.Contains(form, `data-mv-collapsed`) || !strings.Contains(view, "form.setAttribute('data-mv-collapsed', '')") {
+		t.Errorf("the box is collapsed by the markup, or the script does not collapse it")
 	}
 	if !regexp.MustCompile(`<textarea id="mv-input" data-mv-field="" name="text"`).MatchString(form) {
 		t.Errorf("the box is not in the form as the collapsible field:\n%s", form)
@@ -181,13 +187,13 @@ func TestTheRenderedViewsBoxIsCollapsibleBehindTypeAMessage(t *testing.T) {
 	}
 	term := renderString(t, AgentTerminalPage(AgentTerminalView{Name: "w",
 		Composer: &ComposerView{SendPath: MirrorTerminalSendPath, Host: "tower", Session: "w", Dictate: TranscribePath}}))
-	for _, bit := range []string{"data-mv-collapsed", "data-mv-field", `id="mv-text"`, "window.musterComposerReveal = function"} {
+	for _, bit := range []string{"data-mv-collapsible", "data-mv-field", `id="mv-text"`, "window.musterComposerReveal = function"} {
 		if strings.Contains(term, bit) {
 			t.Errorf("the Terminal view's composer draws %s", bit)
 		}
 	}
 	off := renderString(t, mirrorComposer(ComposerView{SendPath: MirrorSendPath, Collapsible: true, Disabled: "read-only"}))
-	if strings.Contains(off, "data-mv-collapsed") || strings.Contains(off, `id="mv-text"`) {
+	if strings.Contains(off, "data-mv-collapsible") || strings.Contains(off, `id="mv-text"`) {
 		t.Error("a disabled composer is collapsed")
 	}
 }
