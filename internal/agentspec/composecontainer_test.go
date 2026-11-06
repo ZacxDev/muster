@@ -29,7 +29,13 @@ func TestTheComposeContainerAsksForNoConfinementItCannotHave(t *testing.T) {
 	cfg := ccConfig()
 	cfg.ConnectURL, cfg.ConnectPort = llmConnectURL, 18191
 	cfg.ClaudeCode.Accounts["chief"] = "sk-ant-oat01-FAKE-compose-chief-77e1"
-	d, err := compose.New(compose.Config{Root: t.TempDir(), Admit: func(provision.Ref) error { return nil }})
+	// The groups the install uses (cmd/muster-server composeSpecGroup /
+	// composeFilesGroup); the group change itself is stubbed, as this process
+	// is in neither. With them the driver applies its whole file-mode rule
+	// (#468: a file the agent's group cannot read is refused), so the real
+	// chief spec is checked against it here.
+	d, err := compose.New(compose.Config{Root: t.TempDir(), Admit: func(provision.Ref) error { return nil },
+		SpecGroup: 1001, FilesGroup: 1000, Chown: func(string, int) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
