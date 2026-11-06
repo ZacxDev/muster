@@ -476,10 +476,14 @@ test.describe('the view switch finishes the recording in the view it hides', () 
 test.describe('failures, said inline', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  async function openRendered(page: Page) {
+  // reveal: open the box (collapsed on a touch screen: lib/composer.ts), as
+  // the tests that type into it need; the transcript's own reveal test opens
+  // it collapsed.
+  async function openRendered(page: Page, reveal = true) {
     await signIn(page, origin);
     await page.goto(origin + '/mirror/view?' + q(claudeWin));
     await expect(page.locator('#mv-dictate')).toBeVisible({ timeout: 20_000 });
+    if (reveal) await revealBox(page);
   }
 
   // `inApp` plays the Android app's WebView: the app injects window.musterApp
@@ -543,7 +547,7 @@ test.describe('failures, said inline', () => {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, permissions: ['microphone'] });
     const page = await ctx.newPage();
     try {
-      await openRendered(page);
+      await openRendered(page, false);
       const input = page.locator('#mv-input');
       await expect(input, 'collapsed').toBeHidden();
       await expect(page.locator('#mv-text')).toHaveAttribute('aria-expanded', 'false');

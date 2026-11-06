@@ -156,6 +156,8 @@ async function openView(page: Page, host: string) {
 // queue queues text through Send's caret: the caret opens its menu, and the
 // menu's one item is Queue (composer_menu.go; Send's face never queues).
 async function queue(page: Page, text: string, touch: boolean) {
+  // Collapsed on a touch screen until revealed (lib/composer.ts).
+  await revealBox(page);
   await page.locator('#mv-input').fill(text);
   const more = page.locator('#mv-send-more');
   const btn = page.locator('#mv-queue-send');
