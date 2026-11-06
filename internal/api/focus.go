@@ -529,13 +529,15 @@ func (fi focusIndex) view(sub focus.Subject) *ui.FocusView {
 //
 // SetAt is when the title was written (RFC 3339): what every other time in
 // those answers is, so a title set an hour ago can be told from one set
-// yesterday. Age and Stale are THE focus age rule's verdict (ui.FocusAgeOf,
-// the one the dock, the palette and the Asks list draw): "2d" past a day,
-// stale past four. All three are absent for a session with no title.
+// yesterday. Age is THE focus age rule's verdict (ui.FocusAgeOf, the one the
+// dock, the palette and the Asks list draw): "2d" past a day. Both are absent
+// for a session with no title.
+//
+// No stale flag: to an LLM reader the age says it ("5d"), and in these tools
+// "stale" already means focus_problem's failed refresh (round 0 of #476, D1).
 type focusAgeFields struct {
 	SetAt string `json:"focus_set_at,omitempty"`
 	Age   string `json:"focus_age,omitempty"`
-	Stale bool   `json:"focus_stale,omitempty"`
 }
 
 // ageFields is sub's focusAgeFields at now (none without a title: view gives a
@@ -545,8 +547,7 @@ func (fi focusIndex) ageFields(sub focus.Subject, now time.Time) focusAgeFields 
 	if v == nil || v.UpdatedAt.IsZero() {
 		return focusAgeFields{}
 	}
-	age := ui.FocusAgeOf(v.UpdatedAt, now)
-	return focusAgeFields{SetAt: v.UpdatedAt.UTC().Format(time.RFC3339), Age: age.Text, Stale: age.Stale}
+	return focusAgeFields{SetAt: v.UpdatedAt.UTC().Format(time.RFC3339), Age: ui.FocusAgeOf(v.UpdatedAt, now).Text}
 }
 
 // mirrorFocus is a mirrored entry's focus view: its Claude session's, nil

@@ -84,7 +84,7 @@ var overviewBudget = 12 * time.Second
 func sessionsOverviewToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionsOverviewToolName,
 		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code windows active in the " +
-			"last 24 h — is doing now, newest-active first: id, kind, name, host, status, current focus with how old it is (focus_set_at; focus_age \"2d\" past a day, focus_stale past four), the distinct focus titles of " +
+			"last 24 h — is doing now, newest-active first: id, kind, name, host, status, current focus with how old it is (focus_set_at; focus_age \"2d\" past a day), the distinct focus titles of " +
 			"the last 6 h with their times, anything it has waiting on your owner, and its last few user and assistant messages " +
 			"(secrets redacted, tool output left out). Use it before filing a task or drafting a reply about ongoing work, to find " +
 			"the session already on it. Size-capped." + focusUntrustedTail +

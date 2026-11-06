@@ -35,7 +35,7 @@ func focusToolDefs() []agents.ToolDef {
 		{Type: "function", Name: fleetListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored Claude Code windows — compactly: " +
 				"id, kind, name, status, focus title (what it is working on) with how old it is — focus_set_at, and focus_age " +
-				"(\"2d\") past a day with focus_stale past four days: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
+				"(\"2d\") past a day: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
 				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{})},
 		{Type: "function", Name: focusSearchToolName,
@@ -67,7 +67,7 @@ type fleetListRow struct {
 	Where  string `json:"where,omitempty"`
 	Status string `json:"status"`
 	Focus  string `json:"focus,omitempty"`
-	// focusAgeFields: how old Focus is (focus_set_at, focus_age, focus_stale).
+	// focusAgeFields: how old Focus is (focus_set_at, focus_age).
 	focusAgeFields
 	// FocusProblem is why the session has no focus, or a stale one: the
 	// latest refresh's short, non-secret reason (focus.Reason). Absent when

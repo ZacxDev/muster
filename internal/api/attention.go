@@ -202,6 +202,11 @@ type attentionItem struct {
 	// focusAt is when Focus was written (withFocus), for its age on the Asks
 	// list (ui.FocusAgeOf); zero for none or unknown.
 	focusAt time.Time
+	// pushFocusAge is Focus's age as its push says it (attentionPushBody),
+	// decided on the SERVER's clock (s.now) when the push item is built
+	// (askPushItem) — the clock the chief's tools age titles by. None
+	// elsewhere: no other push carries a focus title.
+	pushFocusAge ui.FocusAge
 	// Since is when the item started waiting: an ask's or a draft's creation, a
 	// session's status time (when it went waiting), a held question's creation.
 	// The queue is NEWEST FIRST by it (sortAttentionItems).
@@ -935,7 +940,7 @@ func attentionPushBody(it attentionItem) string {
 		// is not sent for it: attentionNotification).
 		var parts []string
 		if title := pushLine(textplain.Title(it.Focus)); title != "" {
-			parts = append(parts, noticePushFocusLine(title, ui.FocusAgeOf(it.focusAt, time.Now())))
+			parts = append(parts, noticePushFocusLine(title, it.pushFocusAge))
 		}
 		if l := pushLine(it.Text); l != "" {
 			parts = append(parts, l)
