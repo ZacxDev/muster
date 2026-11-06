@@ -40,6 +40,14 @@ func newDriver(t *testing.T, cfg compose.Config) *compose.Driver {
 	if cfg.Probe == nil {
 		cfg.Probe = noContainer
 	}
+	// New requires two distinct non-zero groups; a test that does not care
+	// which gets two a test process cannot really give, so the chown is stubbed.
+	if cfg.SpecGroup == 0 && cfg.FilesGroup == 0 {
+		cfg.SpecGroup, cfg.FilesGroup = 4101, 4202
+		if cfg.Chown == nil {
+			cfg.Chown = func(string, int) error { return nil }
+		}
+	}
 	d, err := compose.New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -199,21 +207,78 @@ func TestTheGenerationMovesOnlyWhenTheSpecDoes(t *testing.T) {
 	if cs.Epoch != epoch {
 		t.Fatal("an Update minted a new epoch: the container would wipe the chief's /data on a credential rotation")
 	}
-	// Stop then Start.
+	if err := d.Scale(ctx, spec.Ref, 2); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("Scale 2: %v, want ErrUnsupported (one container)", err)
+	}
+}
+
+func readSpecBytes(t *testing.T, root, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, name, "spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestAStartAfterAStopMovesTheGeneration: chief_restart is Stop (Scale 0) then
+// Start (an identical Update) back to back. A supervisor that polls or
+// coalesces file events sees only the spec.json before and after, so the two
+// must differ: the start takes a new generation. Both start paths (Update and
+// Scale) are pinned, and a start of an instance that is already running moves
+// nothing.
+func TestAStartAfterAStopMovesTheGeneration(t *testing.T) {
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root})
+	ctx := context.Background()
+	spec := chiefSpec()
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	before := readSpecBytes(t, root, "chief")
+	epoch := readSpec(t, root, "chief").Epoch
+
+	// Stop: replicas 0, the generation stays (a stop is not a new run).
 	if err := d.Scale(ctx, spec.Ref, 0); err != nil {
 		t.Fatal(err)
 	}
-	if cs := readSpec(t, root, "chief"); cs.Replicas != 0 || cs.Generation != 2 {
-		t.Fatalf("after Scale 0: %+v, want replicas 0 at generation 2", cs)
+	if cs := readSpec(t, root, "chief"); cs.Replicas != 0 || cs.Generation != 1 {
+		t.Fatalf("after Scale 0: %+v, want replicas 0 at generation 1", cs)
 	}
+	// Start, as agentprovision does it for a claude-code agent: Update.
 	if err := d.Update(ctx, spec); err != nil {
 		t.Fatal(err)
 	}
-	if cs := readSpec(t, root, "chief"); cs.Replicas != 1 || cs.Generation != 2 {
-		t.Fatalf("Start (Update) after a Stop: %+v, want replicas 1 at generation 2 — Start of a claude-code agent is an Update, and must bring it back", cs)
+	after := readSpecBytes(t, root, "chief")
+	if cs := readSpec(t, root, "chief"); cs.Replicas != 1 || cs.Generation != 2 || cs.Epoch != epoch {
+		t.Fatalf("Start (Update) after a Stop: %+v, want replicas 1 at generation 2, same epoch", cs)
 	}
-	if err := d.Scale(ctx, spec.Ref, 2); !errors.Is(err, provision.ErrUnsupported) {
-		t.Fatalf("Scale 2: %v, want ErrUnsupported (one container)", err)
+	if string(after) == string(before) {
+		t.Fatal("Stop then Start left spec.json byte-identical: a polling supervisor cannot see the restart")
+	}
+	// A Start of a running instance is still not a restart.
+	if err := d.Update(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if g := readSpec(t, root, "chief").Generation; g != 2 {
+		t.Fatalf("an Update of a running instance moved the generation to %d", g)
+	}
+
+	// The Scale path: 0 then 1.
+	if err := d.Scale(ctx, spec.Ref, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Scale(ctx, spec.Ref, 1); err != nil {
+		t.Fatal(err)
+	}
+	if cs := readSpec(t, root, "chief"); cs.Replicas != 1 || cs.Generation != 3 {
+		t.Fatalf("Scale 0 then Scale 1: %+v, want replicas 1 at generation 3", cs)
+	}
+	if err := d.Scale(ctx, spec.Ref, 1); err != nil {
+		t.Fatal(err)
+	}
+	if g := readSpec(t, root, "chief").Generation; g != 3 {
+		t.Fatalf("Scale 1 of a running instance moved the generation to %d", g)
 	}
 }
 
@@ -406,6 +471,117 @@ func TestGetReadsTheContainersOwnStatus(t *testing.T) {
 			t.Fatal("a stopped instance was probed")
 		}
 	})
+}
+
+// TestAStaleExitIsNotTheNewSpecsFailure pins fromStatus's ORDER: the
+// generation/epoch comparison runs before the exited/error case, so a crash of
+// the previous generation (or of a destroyed instance's epoch) reads pending
+// for the new spec, while the same exit at the current generation reads failed.
+func TestAStaleExitIsNotTheNewSpecsFailure(t *testing.T) {
+	ctx := context.Background()
+	p := &recordingProbe{}
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root, Probe: p.probe})
+	spec := chiefSpec()
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	old := readSpec(t, root, "chief")
+	// The operator fixes the crashed chief by editing its spec: generation 2.
+	spec.Env = append(spec.Env, provision.EnvVar{Name: "MUSTER_FIX", Value: "1"})
+	if err := d.Update(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	cs := readSpec(t, root, "chief")
+	if cs.Generation != old.Generation+1 {
+		t.Fatalf("setup: generation %d, want %d", cs.Generation, old.Generation+1)
+	}
+	for _, c := range []struct {
+		name   string
+		status compose.Status
+		phase  provision.Phase
+	}{
+		{"exited at the previous generation", compose.Status{State: compose.StateExited, Generation: old.Generation, Epoch: cs.Epoch, Reason: "the CLI exited 1"}, provision.PhasePending},
+		{"error at another epoch", compose.Status{State: compose.StateError, Generation: cs.Generation, Epoch: "0123456789abcdef0123456789abcdef", Reason: "the CLI exited 1"}, provision.PhasePending},
+		// Control: the same exit about THIS spec is its failure.
+		{"exited at the current generation", compose.Status{State: compose.StateExited, Generation: cs.Generation, Epoch: cs.Epoch, Reason: "the CLI exited 1"}, provision.PhaseFailed},
+	} {
+		p.status = c.status
+		inst, err := d.Get(ctx, provision.Ref{Name: "chief"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inst.Phase != c.phase {
+			t.Errorf("%s: phase %s (%q), want %s", c.name, inst.Phase, inst.Reason, c.phase)
+			continue
+		}
+		if c.phase == provision.PhasePending {
+			want := "the container has not applied generation " + strconv.FormatInt(cs.Generation, 10)
+			if !strings.HasPrefix(inst.Reason, want) || !strings.HasSuffix(inst.Reason, ": the CLI exited 1") {
+				t.Errorf("%s: reason %q, want prefix %q and the container's own reason", c.name, inst.Reason, want)
+			}
+		}
+	}
+}
+
+// TestFileModesAreHonouredOrRefused: a Spec.File lands with its requested mode
+// less the "other" class, because the agent reads files/ through its group; a
+// mode whose group cannot read (0600, a Secret's default) is refused before
+// anything is written, never placed group-readable.
+func TestFileModesAreHonouredOrRefused(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	d := newDriver(t, compose.Config{Root: root})
+	spec := chiefSpec()
+	spec.Files = []provision.File{
+		{Path: "/etc/claude-code/CLAUDE.md", Content: []byte("# md\n")},                        // 0644 by default
+		{Path: "/usr/local/bin/wrap", Content: []byte("#!/bin/sh\n"), Mode: 0o755},             // an executable
+		{Path: "/etc/ccd/cred", Content: []byte("not-a-real-cred"), Mode: 0o640, Secret: true}, // a secret its group reads
+	}
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for rel, want := range map[string]fs.FileMode{
+		"files/etc/claude-code/CLAUDE.md": 0o640,
+		"files/usr/local/bin/wrap":        0o750,
+		"files/etc/ccd/cred":              0o640,
+	} {
+		fi, err := os.Stat(filepath.Join(root, "chief", filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != want {
+			t.Errorf("%s: mode %04o, want %04o", rel, fi.Mode().Perm(), want)
+		}
+	}
+
+	for _, c := range []struct {
+		name string
+		file provision.File
+		want string
+	}{
+		{"a secret at its 0600 default", provision.File{Path: "/etc/ccd/token", Content: []byte("x"), Secret: true}, "mode 0600, which gives its group no read"},
+		{"an explicit 0600", provision.File{Path: "/etc/ccd/token", Content: []byte("x"), Mode: 0o600}, "mode 0600, which gives its group no read"},
+		{"other-readable only", provision.File{Path: "/etc/ccd/token", Content: []byte("x"), Mode: 0o604}, "mode 0604, which gives its group no read"},
+		{"setuid", provision.File{Path: "/etc/ccd/token", Content: []byte("x"), Mode: fs.ModeSetuid | 0o750}, "only permission bits can be placed"},
+	} {
+		root := t.TempDir()
+		d := newDriver(t, compose.Config{Root: root})
+		s := chiefSpec()
+		s.Files = append(s.Files, c.file)
+		for _, op := range []struct {
+			name string
+			fn   func(context.Context, provision.Spec) error
+		}{{"Create", d.Create}, {"Update", d.Update}} {
+			err := op.fn(ctx, s)
+			if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("%s, %s: %v, want ErrUnsupported containing %q", c.name, op.name, err, c.want)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(root, "chief")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s: a refused spec left something on the volume: %v", c.name, err)
+		}
+	}
 }
 
 func TestAnUnreadableVolumeIsBlind(t *testing.T) {

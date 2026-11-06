@@ -16,6 +16,8 @@
 //     its supervisor (`ccd compose`, images/claude-code-agent) starts the agent
 //     when replicas is 1, stops it — the CLI and its tmux server, not the
 //     container — when it is 0, and restarts it when the generation changes.
+//     The generation moves when the spec does AND when replicas goes from 0
+//     to 1, so a Stop then Start always changes spec.json.
 //   - Get and List read that directory, then ask the container itself
 //     (GET /compose/status on the instance's endpoint) what it has applied.
 //   - Destroy removes the spec and every file, so the container goes back to
@@ -32,6 +34,10 @@
 //     refused (provision.CheckSpec) rather than started "confined".
 //   - Resource limits: none it can enforce (false, refused the same way).
 //   - More than one replica: none (Scale false).
+//   - Process isolation: Spec.Security (RunAsNonRoot, Restricted, the uid and
+//     groups) is NOT applied and NOT refused — this driver drops it. The
+//     agent's uid, capabilities and privilege escalation are whatever the
+//     Compose file and the image's supervisor give it.
 //
 // # Which instances it accepts
 //
@@ -52,9 +58,11 @@
 //	                             leading slash (files/etc/claude-code/CLAUDE.md)
 //	<root>/<name>/driver.json    this driver's own bookkeeping; not the contract
 //
-// Directories are created setgid 0750 and files written 0640, each with the
-// group "Who can read what" below gives it; the container's mount is
-// read-only, so nothing on the volume can be written from it.
+// Directories are created setgid 0750, spec.json and driver.json written 0640,
+// and each Spec.File with its requested mode less the "other" class (a mode
+// whose group cannot read is refused: see diskMode), each with the group "Who
+// can read what" below gives it; the container's mount is read-only, so
+// nothing on the volume can be written from it.
 //
 // # Who can read what
 //
@@ -178,6 +186,18 @@ type driverState struct {
 }
 
 // Status is what the supervisor answers on StatusPath.
+//
+// Generation and Epoch are those of the spec.json the supervisor last
+// ATTEMPTED to apply, including one it failed on: an error about the current
+// spec must carry the current generation, or Get reads it as not applied yet
+// (fromStatus checks the generation before the state).
+//
+// Boot identifies ONE RUN OF THE AGENT: the supervisor mints a new value every
+// time it starts the agent (the container's first start, a restart on a new
+// generation, a start after replicas 0), and keeps it while that run lasts.
+// It is not per container: a restart of the agent inside a container that
+// stayed up gets a new Boot. Get reports it as the InstanceID ("<name>-<boot>"),
+// which is how a restart is told apart from the run before it.
 type Status struct {
 	State      string `json:"state"`
 	Generation int64  `json:"generation"`
@@ -220,8 +240,8 @@ type Config struct {
 	// SpecGroup and FilesGroup are the group ids the driver gives what it
 	// writes (see the package doc's "Who can read what"): SpecGroup to
 	// spec.json, driver.json and every directory outside files/, FilesGroup to
-	// everything under files/. Zero leaves a path's group as the filesystem
-	// gives it (the setgid parent's): no deployment wants either to be root's.
+	// everything under files/. Both are required, non-zero and different: New
+	// refuses anything else, because spec.json holds the agent's secrets.
 	SpecGroup, FilesGroup int
 	// Chown replaces the group change (tests). nil is os.Lchown(path, -1, gid).
 	Chown func(path string, gid int) error
@@ -256,7 +276,19 @@ func New(cfg Config) (*Driver, error) {
 		return nil, errors.New("compose: Admit is required: the Compose file runs a container for named instances only")
 	}
 	if cfg.SpecGroup < 0 || cfg.FilesGroup < 0 {
-		return nil, fmt.Errorf("compose: SpecGroup %d and FilesGroup %d must be group ids (0: leave as inherited)", cfg.SpecGroup, cfg.FilesGroup)
+		return nil, fmt.Errorf("compose: SpecGroup %d and FilesGroup %d must be group ids", cfg.SpecGroup, cfg.FilesGroup)
+	}
+	// 🔴 FAIL CLOSED ON THE GROUPS: spec.json holds the agent's turn bearer, and
+	// these two values are all that keeps it from the agent's session. A zero
+	// would leave the group as inherited (root's, or the volume's), and equal
+	// groups would hand spec.json to the agent's own group.
+	if cfg.SpecGroup == 0 || cfg.FilesGroup == 0 {
+		return nil, fmt.Errorf("compose: SpecGroup and FilesGroup are both required (got %d and %d): "+
+			"spec.json's group must not be inherited, and the agent reads files/ by FilesGroup", cfg.SpecGroup, cfg.FilesGroup)
+	}
+	if cfg.SpecGroup == cfg.FilesGroup {
+		return nil, fmt.Errorf("compose: SpecGroup and FilesGroup are both %d: the agent's group would read spec.json, "+
+			"which holds its turn bearer", cfg.SpecGroup)
 	}
 	d := &Driver{root: filepath.Clean(cfg.Root), admit: cfg.Admit, probe: cfg.Probe, caps: Capabilities, hint: cfg.Hint,
 		specGroup: cfg.SpecGroup, filesGroup: cfg.FilesGroup, chown: cfg.Chown}
@@ -305,12 +337,9 @@ func (d *Driver) groupFor(p string) int {
 	return d.specGroup
 }
 
-// setGroup gives p its group (groupFor), when one is configured.
+// setGroup gives p its group (groupFor). New guarantees both are non-zero.
 func (d *Driver) setGroup(p string) error {
 	gid := d.groupFor(p)
-	if gid == 0 {
-		return nil
-	}
 	if err := d.chown(p, gid); err != nil {
 		return fmt.Errorf("compose: give %s group %d: %w", p, gid, err)
 	}
@@ -390,7 +419,33 @@ func (d *Driver) check(spec provision.Spec) error {
 		return fmt.Errorf("%w: compose: the container runs its image's own entrypoint, so the spec's %d init step(s) would never run",
 			provision.ErrUnsupported, len(spec.Init))
 	}
+	for _, f := range spec.Files {
+		if _, err := diskMode(f); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// diskMode is the mode a Spec.File is written with under files/.
+//
+// The file is owned by muster's uid and the agent reads it through
+// FilesGroup, so the requested mode's GROUP class is what the agent gets; the
+// "other" class is dropped (nobody else on the volume should read it). A mode
+// whose group class has no read (0600, the Secret default) is REFUSED: placed
+// as asked the agent could not read it, and made group-readable it would no
+// longer be the owner-only file it asked to be. Bits beyond the permissions
+// (setuid, sticky, a type) are refused too.
+func diskMode(f provision.File) (fs.FileMode, error) {
+	m := f.EffectiveMode()
+	if m != m.Perm() {
+		return 0, fmt.Errorf("%w: compose: file %s asks for mode %v; only permission bits can be placed", provision.ErrUnsupported, f.Path, m)
+	}
+	if m&0o040 == 0 {
+		return 0, fmt.Errorf("%w: compose: file %s asks for mode %04o, which gives its group no read: the agent reads files "+
+			"through its group, so it could not read this one, and it is not made group-readable", provision.ErrUnsupported, f.Path, m)
+	}
+	return m & 0o770, nil
 }
 
 func newEpoch() (string, error) {
@@ -439,8 +494,8 @@ func (d *Driver) mkdirs(dir string) error {
 	return nil
 }
 
-// writeFile writes content to p by a rename in its own directory, FileMode.
-func (d *Driver) writeFile(p string, content []byte) error {
+// writeFile writes content to p by a rename in its own directory, with mode.
+func (d *Driver) writeFile(p string, content []byte, mode fs.FileMode) error {
 	if err := d.mkdirs(filepath.Dir(p)); err != nil {
 		return err
 	}
@@ -465,7 +520,7 @@ func (d *Driver) writeFile(p string, content []byte) error {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(FileMode); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return fmt.Errorf("compose: chmod %s: %w", p, err)
 	}
@@ -488,7 +543,7 @@ func writeJSON(d *Driver, p string, v any) error {
 	if err != nil {
 		return err
 	}
-	return d.writeFile(p, append(b, '\n'))
+	return d.writeFile(p, append(b, '\n'), FileMode)
 }
 
 // apply writes spec as the instance's new state. prev is the stored state
@@ -503,7 +558,13 @@ func (d *Driver) apply(spec provision.Spec, prev *driverState, prevSpec *Contain
 		// 🔴 THE GENERATION MOVES ONLY WHEN THE SPEC DID. The supervisor restarts
 		// the agent on a new generation, and a Start of a running instance (which
 		// re-applies an identical spec) must not restart it.
-		if prev == nil || prev.Fingerprint != fp {
+		//
+		// 🔴 AND IT MOVES WHEN A STOPPED INSTANCE IS STARTED (replicas 0 -> 1).
+		// A restart is Stop (Scale 0) then Start (an identical Update) back to
+		// back; without the bump spec.json ends byte-identical to before it, so
+		// a supervisor that polls, debounces or coalesces file events would see
+		// no change and never restart the agent (startsRun).
+		if prev == nil || prev.Fingerprint != fp || startsRun(prevSpec.Replicas, cs.Replicas) {
 			cs.Generation++
 		}
 	}
@@ -518,7 +579,11 @@ func (d *Driver) apply(spec provision.Spec, prev *driverState, prevSpec *Contain
 	keep := map[string]bool{}
 	for _, f := range spec.Files {
 		p := d.filePath(spec.Ref.Name, f.Path)
-		if err := d.writeFile(p, f.Content); err != nil {
+		mode, err := diskMode(f)
+		if err != nil {
+			return err
+		}
+		if err := d.writeFile(p, f.Content, mode); err != nil {
 			return err
 		}
 		keep[p] = true
@@ -605,9 +670,17 @@ func (d *Driver) Scale(ctx context.Context, ref provision.Ref, replicas int) err
 	if cs.Replicas == replicas {
 		return nil
 	}
+	if startsRun(cs.Replicas, replicas) {
+		cs.Generation++
+	}
 	cs.Replicas = replicas
 	return writeJSON(d, d.specPath(ref.Name), cs)
 }
+
+// startsRun reports a write that takes an instance from stopped to running:
+// it gets a new generation (see apply), so every start is a change the
+// supervisor can see in spec.json, however its reads are spaced.
+func startsRun(from, to int) bool { return from == 0 && to > 0 }
 
 // Destroy implements provision.Provisioner: spec.json first (the container
 // stops the agent), then the files and driver.json; directories stay (see the
@@ -728,14 +801,24 @@ func (d *Driver) Get(ctx context.Context, ref provision.Ref) (provision.Instance
 
 // fromStatus maps what the container says onto inst, for an instance whose
 // stored spec is cs with replicas 1.
+//
+// 🔴 THE GENERATION AND EPOCH ARE CHECKED BEFORE THE STATE. A status about an
+// older generation or another epoch is about a spec that is no longer this
+// one, so its exit or error is not this spec's failure: an operator who fixes
+// a crashed chief by editing its spec, or replaces it, must see it pending,
+// not failed. The supervisor reports the generation it attempted (Status), so
+// an error about the CURRENT spec still reads failed.
 func fromStatus(inst provision.Instance, cs ContainerSpec, s Status) provision.Instance {
 	switch {
-	case s.State == StateError || s.State == StateExited:
-		inst.Phase, inst.Reason = provision.PhaseFailed, orState(s)
 	case s.Generation != cs.Generation || s.Epoch != cs.Epoch:
 		inst.Phase = provision.PhasePending
 		inst.Reason = fmt.Sprintf("the container has not applied generation %d yet (it reports generation %d, state %s)",
 			cs.Generation, s.Generation, s.State)
+		if s.Reason != "" {
+			inst.Reason += ": " + s.Reason
+		}
+	case s.State == StateError || s.State == StateExited:
+		inst.Phase, inst.Reason = provision.PhaseFailed, orState(s)
 	case s.State == StateRunning:
 		inst.Phase, inst.Ready, inst.Replicas = provision.PhaseRunning, s.Ready, 1
 		inst.InstanceID = inst.Ref.Name + "-" + s.Boot

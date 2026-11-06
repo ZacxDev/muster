@@ -80,29 +80,66 @@ func TestAGroupThatCannotBeSetStopsTheWriteBeforeTheSpec(t *testing.T) {
 	}
 }
 
-// TestTheRealGroupChangeIsApplied: the default chown, to the process's own
-// group (the one group a test can always give), lands on disk.
+// TestTheRealGroupChangeIsApplied: the default chown lands on disk. It needs
+// two distinct non-zero groups the process is in (New refuses equal groups),
+// so a process in fewer skips.
 func TestTheRealGroupChangeIsApplied(t *testing.T) {
 	root := t.TempDir()
-	gid := os.Getgid()
-	if gid == 0 {
-		t.Skip("running as group 0, which the driver treats as \"leave as inherited\"")
+	var gids []int
+	all, _ := os.Getgroups()
+	for _, g := range append([]int{os.Getgid()}, all...) {
+		if g != 0 && (len(gids) == 0 || gids[0] != g) {
+			gids = append(gids, g)
+		}
+		if len(gids) == 2 {
+			break
+		}
 	}
-	d := newDriver(t, compose.Config{Root: root, SpecGroup: gid, FilesGroup: gid})
+	if len(gids) < 2 {
+		t.Skipf("the process is in fewer than two non-zero groups (%v)", gids)
+	}
+	specGID, filesGID := gids[0], gids[1]
+	d := newDriver(t, compose.Config{Root: root, SpecGroup: specGID, FilesGroup: filesGID})
 	if err := d.Create(context.Background(), chiefSpec()); err != nil {
 		t.Fatal(err)
 	}
-	fi, err := os.Stat(filepath.Join(root, "chief", "spec.json"))
-	if err != nil {
-		t.Fatal(err)
+	for rel, gid := range map[string]int{"spec.json": specGID, "files/etc/claude-code/CLAUDE.md": filesGID} {
+		fi, err := os.Stat(filepath.Join(root, "chief", filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Gid) != gid {
+			t.Fatalf("%s's group: %+v, want %d", rel, fi.Sys(), gid)
+		}
+		if fi.Mode().Perm() != 0o640 {
+			t.Fatalf("%s's mode after the group change: %o, want 0640", rel, fi.Mode().Perm())
+		}
 	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Gid) != gid {
-		t.Fatalf("spec.json's group: %+v, want %d", fi.Sys(), gid)
-	}
-	if fi.Mode().Perm() != 0o640 {
-		t.Fatalf("spec.json's mode after the group change: %o, want 0640", fi.Mode().Perm())
-	}
-	if _, err := compose.New(compose.Config{Root: root, Admit: admitAll, SpecGroup: -1}); err == nil {
+	if _, err := compose.New(compose.Config{Root: root, Admit: admitAll, SpecGroup: -1, FilesGroup: 4202}); err == nil {
 		t.Fatal("a negative group id was accepted")
+	}
+}
+
+// TestNewRefusesGroupsThatWouldExposeTheSpec: spec.json holds the agent's
+// turn bearer, and the two groups are all that keeps it from the agent's
+// session, so New fails closed on a zero (inherited) group and on equal ones.
+func TestNewRefusesGroupsThatWouldExposeTheSpec(t *testing.T) {
+	for _, c := range []struct {
+		name              string
+		specGID, filesGID int
+		want              string
+	}{
+		{"SpecGroup 0", 0, 4202, "SpecGroup and FilesGroup are both required (got 0 and 4202)"},
+		{"FilesGroup 0", 4101, 0, "SpecGroup and FilesGroup are both required (got 4101 and 0)"},
+		{"equal groups", 4101, 4101, "SpecGroup and FilesGroup are both 4101: the agent's group would read spec.json"},
+	} {
+		_, err := compose.New(compose.Config{Root: "/run/muster-spec", Admit: admitAll, SpecGroup: c.specGID, FilesGroup: c.filesGID})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: New = %v, want an error containing %q", c.name, err, c.want)
+		}
+	}
+	// Positive control: two distinct non-zero groups are accepted.
+	if _, err := compose.New(compose.Config{Root: "/run/muster-spec", Admit: admitAll, SpecGroup: 4101, FilesGroup: 4202}); err != nil {
+		t.Fatalf("New with distinct groups: %v", err)
 	}
 }
