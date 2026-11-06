@@ -60,7 +60,10 @@ attention queue).
 ## Non-goals
 
 - **Answering for the owner.** A nudge pastes the owner's own earlier words;
-  the Chief never composes an instruction.
+  the Chief never composes an instruction. *Reversed by operator decision for
+  two fixed answers only ("continue", and "merge when green" when muster has
+  verified CI and the audit ladder), sent by an owner-promoted rule, never by
+  the Chief: see [ask-autoapproval.md](ask-autoapproval.md#operator-decisions).*
 - **Session text in a push.** The push names the session and its state; it
   never quotes it (see
   [The last line](#the-last-line-why-the-push-does-not-carry-it)).
