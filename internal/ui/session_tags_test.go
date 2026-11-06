@@ -75,7 +75,7 @@ func TestTheMoreMenuHasTagsAndItsEditor(t *testing.T) {
 				t.Errorf("%s: the editor has no removable chip %q", c.name, tag)
 			}
 		}
-		add := regexp.MustCompile(`(?s)<form method="post" action="/sessions/tags" hx-post="/sessions/tags"[^>]*data-session-tags-add=""[^>]*>(.*?)</form>`).FindStringSubmatch(ed)
+		add := regexp.MustCompile(`(?s)<form method="post" action="/sessions/tags" data-session-tags-add=""[^>]*>(.*?)</form>`).FindStringSubmatch(ed)
 		if add == nil || !strings.Contains(add[1], `<input id="session-tags-input" type="text" name="tag" aria-label="Add a tag"`) {
 			t.Fatalf("%s: no add form with its input:\n%s", c.name, ed)
 		}
@@ -88,6 +88,11 @@ func TestTheMoreMenuHasTagsAndItsEditor(t *testing.T) {
 			t.Errorf("%s: the input does not carry the store's length bound", c.name)
 		}
 		// The editor normalizes with the task tags' one rule (tag-normalize.js).
+		// Every submit is posted by the editor's script (htmx.ajax), never also by
+		// htmx's own binding of a form it may not have bound yet.
+		if strings.Contains(ed[:strings.Index(ed, "</div>")], "hx-post") || !strings.Contains(page, "window.htmx.ajax('POST', f.getAttribute('action')") {
+			t.Errorf("%s: the editor's forms are bound by htmx, or the script does not post them", c.name)
+		}
 		if !strings.Contains(page, tagNormalizeJS) || !strings.Contains(page, "var t = normalize(i.value);") {
 			t.Errorf("%s: the editor's script does not run the task tags' normalizer", c.name)
 		}

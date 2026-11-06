@@ -221,9 +221,6 @@ func sessionTagsBody(t SessionTagTarget, tags []string, back string) g.Node {
 			Form(
 				Method("post"),
 				Action(SessionTagsRemovePath),
-				hx("hx-post", SessionTagsRemovePath),
-				hx("hx-target", "#"+sessionTagsBodyID),
-				hx("hx-swap", "outerHTML"),
 				g.Attr("data-session-tag-chip", tag),
 				Class(sessionTagChipClass+" gap-1.5 py-1 pr-0.5"),
 				hidden(),
@@ -250,9 +247,6 @@ func sessionTagsBody(t SessionTagTarget, tags []string, back string) g.Node {
 		Form(
 			Method("post"),
 			Action(SessionTagsPath),
-			hx("hx-post", SessionTagsPath),
-			hx("hx-target", "#"+sessionTagsBodyID),
-			hx("hx-swap", "outerHTML"),
 			g.Attr("data-session-tags-add", ""),
 			Class("flex items-center gap-2"),
 			hidden(),
@@ -349,14 +343,28 @@ func sessionTagsScript() g.Node {
     say('');
     focusInput();
   });
+  // 🔴 EVERY SUBMIT OF THE EDITOR IS POSTED HERE, BY htmx.ajax — not left to
+  // htmx's own binding of the form. An answer REPLACES the editor's body, and
+  // htmx binds the new forms only once it has settled them: measured, an add
+  // typed and Entered at once after the previous one's answer went out as the
+  // browser's own form post, and the page became the server's plain-text
+  // refusal. Posted from here, the timing does not matter. Without htmx the
+  // forms post as the browser's (the server answers with a redirect).
   document.addEventListener('submit', function (e) {
-    var f = e.target;
-    if (!f || !f.matches || !f.matches('[data-session-tags-add]')) return;
-    var i = f.querySelector('input[name="tag"]');
-    if (!i) return;
-    var t = normalize(i.value);
-    if (!t) { e.preventDefault(); e.stopImmediatePropagation(); say('Type a tag first.'); return; }
-    i.value = t;
+    var f = e.target, ed = byId(ED);
+    if (!f || !f.matches || !ed || !ed.contains(f)) return;
+    if (f.matches('[data-session-tags-add]')) {
+      var i = f.querySelector('input[name="tag"]');
+      if (!i) return;
+      var t = normalize(i.value);
+      if (!t) { e.preventDefault(); e.stopImmediatePropagation(); say('Type a tag first.'); return; }
+      i.value = t;
+    }
+    if (!window.htmx || typeof window.htmx.ajax !== 'function') return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    say('');
+    window.htmx.ajax('POST', f.getAttribute('action'), { source: f, target: '#` + sessionTagsBodyID + `', swap: 'outerHTML' });
   }, true);
   document.addEventListener('htmx:responseError', function (e) {
     var ed = byId(ED), elt = e.detail && e.detail.elt;
