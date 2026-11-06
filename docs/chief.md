@@ -97,10 +97,13 @@ while it is on and its container is not answering, why.
 
 - **One chief per install, the admin's** (user 1): the container is one. Another
   user's Account page says the install's chief is the admin's.
-- **Its network is not confined.** The container is on a network of its own with
-  muster, so it cannot reach Postgres, the S3 store or the STT server, but it
-  reaches the internet. A Kubernetes chief's NetworkPolicy admits only public 443
-  and muster's connect port; the Compose file cannot express that.
+- **Its network is not confined. The chief container can reach the internet**,
+  on either credential: the subscription token's calls go to the Claude API
+  directly, and on OpenRouter the model calls go through muster but the
+  container's other traffic is not blocked. The container is on a network of its
+  own with muster, so it cannot reach Postgres, the S3 store or the STT server.
+  A Kubernetes chief's NetworkPolicy admits only public 443 and muster's connect
+  port; the Compose file cannot express that.
 - **No resource limits** from muster (none are set on the container).
 - **No Terminal view**: muster has no exec into the container. Its output is in
   `docker compose logs chief` on the server.

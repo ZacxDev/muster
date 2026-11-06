@@ -474,7 +474,8 @@ services:
           subpath: chief/files/etc/claude-code
       - chief-data:/data
     # Its own network, which muster is on and Postgres, S3 and STT are not.
-    # ⚠ NOT CONFINED: it reaches the internet (the Claude API needs it).
+    # ⚠ NOT CONFINED: the chief container can reach the internet, on either
+    # credential (the subscription token's Claude API calls need it).
     networks: [chief]
     healthcheck:
       # The supervisor's own status: 200 whether the chief is on, off or not
