@@ -689,7 +689,7 @@ One call, each step refusing before the next:
    officer's instance, or any other agent, is refused at dispatch. A routine
    instance's call reaches HQ like a judgement one's; until HQ admits a
    routine item, HQ answers it `403 not_investigating` (returned as is, and
-   counted as a read like any refusal HQ judged).
+   not counted: HQ read nothing — see [the read budget](#the-read-budget)).
 2. **Item.** The instance must hold a live claim in HQ — the same gate as
    [`officer_kube_read`](#reading-a-cluster-officer_kube_read) — and
    `item_id` picks one when it holds several.
@@ -717,11 +717,19 @@ own 200. A call muster refuses before the read (an argument, the item, the
 rate cap) spends nothing. Otherwise the unit is taken after the item is
 resolved and before the read is sent — a reservation, so concurrent calls
 cannot pass the cap — and for the two HQ tools (`officers.ReadCounted`) it is
-given back when HQ answers `429` or a 5xx, or no answer arrives (a timeout, a
-transport failure): no read was made. HQ's 2xx and its other refusals
-(`403 not_investigating`, `400 invalid`, …) still count, and so does every
-`officer_kube_read` that reached the cluster. The count is in memory: a
-restart can only allow more reads, never refuse one early.
+given back when HQ answers `429`, a 5xx or a `403` whose code is
+`not_investigating` (HQ refused to read for that item at all), or no answer
+arrives (a timeout, a transport failure): no read was made. HQ's 2xx and its
+other refusals (a `403` with any other code, `400 invalid`, …) still count,
+and so does every `officer_kube_read` that reached the cluster. The count is
+in memory: a restart can only allow more reads, never refuse one early.
+
+**The count is the item's, not the instance's.** It is kept per officer and
+item, and `needs_judgement` promotes a routine item in place (the same id),
+so the reads a routine instance made of an item it hands on **count toward
+the same 200** once it is a judgement item: a routine instance that spent 7
+leaves the judgement instance that takes the item 193. That is the design —
+one budget per item, whichever pool reads it.
 
 ### Asking an HQ member (`officer_ask_person`)
 

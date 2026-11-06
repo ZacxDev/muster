@@ -33,6 +33,9 @@ func (e *HQError) Error() string {
 	return fmt.Sprintf("officers: HQ answered %d: %s", e.Status, truncate(string(e.Body), 200))
 }
 
+// Code is HQ's `code` in the body ("" when it has none).
+func (e *HQError) Code() string { return bodyCode(e.Body) }
+
 // RetryableError is HQ answering a 5xx that its route documents as
 // retryable (e.g. the obs route's 502 upstream): HQ's own JSON body, passed
 // back so the instance sees the code, with "retry" — never a final refusal.
@@ -46,11 +49,14 @@ func (e *RetryableError) Error() string {
 }
 
 // Code is HQ's `code` in the body ("" when it has none).
-func (e *RetryableError) Code() string {
+func (e *RetryableError) Code() string { return bodyCode(e.Body) }
+
+// bodyCode is the `code` of HQ's JSON error body ("" when it has none).
+func bodyCode(body []byte) string {
 	var b struct {
 		Code string `json:"code"`
 	}
-	_ = json.Unmarshal(e.Body, &b)
+	_ = json.Unmarshal(body, &b)
 	return b.Code
 }
 

@@ -2,6 +2,7 @@ package officers
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -78,7 +79,7 @@ func tierNote(o Officer) string {
 	}
 	note := fmt.Sprintf("\n\nYour tier: %[1]s. This officer splits its queue into routine and judgement items, worked by separate pools of instances; you are in the %[1]s pool. %[2]s lists only %[1]s items, and %[3]s takes only those — a refusal with code wrong_tier means the item became a %[4]s item: leave it and take another.",
 		o.Tier, ToolItems, ToolClaim, other)
-	if o.Tier == TierRoutine {
+	if slices.Contains(CompleteOutcomes(o), OutcomeNeedsJudgement) {
 		note += fmt.Sprintf(" To hand an item on — it needs more than a routine pass, an investigation or a judgement call — finish it with %[1]s{item_id, outcome: %[2]q, summary} saying what you found and why: "+
 			"HQ makes it a judgement item (open again, with your summary kept for the judgement instance that takes it), and your hold on it ends. Its links are not kept: put any in the summary. "+
 			"The investigation block HQ requires to escalate an investigating officer's item is the judgement pool's, not yours: hand such an item on with %[2]s rather than escalating it.",
