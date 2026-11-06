@@ -1182,9 +1182,13 @@ func chatLogVersioned(v AgentDetailView) g.Node {
 	return g.Group{g.Attr("data-chat-version", ver), g.Raw(string(body))}
 }
 
+// ChatLogRefetchEvent is dispatched on #chat-log itself to re-fetch it:
+// agentChatScript's owedRefetch, when a turn ends with a refetch owed.
+const ChatLogRefetchEvent = "muster:chat-refetch"
+
 func chatLogTrigger(agentName string) string {
 	quoted, _ := json.Marshal(agentName) // a string always marshals
-	return "sse:chat.reply from:body, task:changed from:body, " +
+	return ChatLogRefetchEvent + ", sse:chat.reply from:body, task:changed from:body, " +
 		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body, " +
 		"htmx:sseOpen from:body"
 }
@@ -2214,6 +2218,15 @@ func agentChatScript(name string) g.Node {
 
   function resetTurn() { turn = null; text = null; think = null; tools = {}; }
 
+  // owedRefetch pays a #chat-log refetch the streaming guard cancelled (see the
+  // htmx:beforeRequest note): the turn is over, so the stored transcript is
+  // drawn now. ` + ChatLogRefetchEvent + ` is one of chatLogTrigger's arms.
+  function owedRefetch() {
+    if (!session.refetchOwed) return;
+    session.refetchOwed = false;
+    if (window.htmx) window.htmx.trigger(logEl, ` + strconv.Quote(ChatLogRefetchEvent) + `);
+  }
+
   // cardTool: which of the chief's carded tools a call is ('' for none), as a
   // gateway chief names it or a claude-code chief does over MCP.
   function cardTool(nm) {
@@ -2304,6 +2317,7 @@ func agentChatScript(name string) g.Node {
         resetTurn();
         session.streaming = false;
         sendBtn.disabled = false;
+        owedRefetch();
         scroll();
         break;
       case 'done':
@@ -2311,6 +2325,7 @@ func agentChatScript(name string) g.Node {
         resetTurn();
         session.streaming = false;
         sendBtn.disabled = false;
+        owedRefetch();
         // Mark this session read: a reply we just watched shouldn't linger as
         // "unread" in the notification FAB. Best-effort; ignore errors.
         if (sessionId) {
@@ -2373,7 +2388,7 @@ func agentChatScript(name string) g.Node {
       opening = null; live = null;
       // A turn streaming over it is over as far as this socket goes: the
       // chat log's refetch draws what was stored.
-      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; hideWorking(); resetTurn(); }
+      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; hideWorking(); resetTurn(); owedRefetch(); }
       retry++;
       // A hidden or offline page waits for its wake (live.go).
       if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
@@ -2611,9 +2626,20 @@ func agentChatScript(name string) g.Node {
     // Guard the sse:chat.reply #chat-log refresh: never let it fire WHILE a WS turn
     // is mid-stream (it would replace the in-flight streamed bubbles). chat.reply
     // fires again after 'done' (streaming=false), which refreshes canonically.
+    //
+    // 🔴 A REFETCH CANCELLED HERE IS OWED, NOT DROPPED. 'done' (the socket) and
+    // chat.reply (the event stream) travel on two connections, and the server
+    // sends 'done' FIRST but nothing orders their arrival: chat.reply can land
+    // while 'done' is still in flight, and was then cancelled with no second one
+    // to follow — the stored turn never drawn. A streamed text reply hid that (its
+    // bubbles were already on screen); a turn the server draws differently from
+    // its stream — an ask_owner question card, a dispatched agent's card — stayed
+    // a plain tool row. So the cancel records the debt, and the turn's end pays it
+    // (owedRefetch in agentChatScript).
     document.body.addEventListener('htmx:beforeRequest', function (e) {
       var elt = e.detail && e.detail.elt;
       if (elt && elt.id === 'chat-log' && window.__cgChat && window.__cgChat.streaming) {
+        window.__cgChat.refetchOwed = true;
         e.preventDefault();
       }
     });
