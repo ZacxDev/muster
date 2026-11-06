@@ -49,6 +49,10 @@ type ChatLine struct {
 	// data-msg-id, the same after the chat-log refresh redraws the transcript,
 	// so the bubble clamp keeps a message the reader opened open (bubble_clamp.go).
 	ID int64
+	// Typed: a person typed this user line into muster's chat (the stored row's
+	// typed_by) — not a plugin message, a hand-back or muster's own note. Only a
+	// typed line answers a question card (chiefToolCard).
+	Typed bool
 }
 
 // ChatSurface names WHERE a chat pane is being rendered.
@@ -106,6 +110,14 @@ type AgentDetailView struct {
 	DraftUser int64
 	// Surface is where this pane is being rendered. See ChatSurface.
 	Surface ChatSurface
+	// TurnInFlight: a turn is running in this conversation right now (internal/api
+	// sessionTurnCount), so #chat-working is drawn SHOWING. A page opened or
+	// reloaded mid-turn then says the agent is working, and the chat.reply
+	// refetch that brings the reply draws it hidden again.
+	TurnInFlight bool
+	// DispatchCards is each agent_dispatch call's card, by its tool id
+	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
+	DispatchCards map[string]DispatchCard
 
 	// Source task (Task 6): when this agent was dispatched from a Task, NoteID is
 	// its task id and TaskStatus its current lifecycle status. Both are populated
@@ -1345,6 +1357,13 @@ func chatLogInner(v AgentDetailView) g.Node {
 					break
 				}
 			}
+			// The chief's two cards are not tool rows: each ends a run of rows
+			// (a card is never folded into a collapsed group). A call either card
+			// cannot read falls through to its plain row.
+			if card, ok := chiefToolCard(v, i, m, result); ok {
+				items = append(items, logItem{node: card})
+				continue
+			}
 			items = append(items, logItem{chatToolChip(m, result), toolChipState(result)})
 		case "tool_result":
 			if paired[i] {
@@ -1442,9 +1461,16 @@ func chatLogInner(v AgentDetailView) g.Node {
 		// first server message, hidden again on done/error. The script toggles its
 		// `hidden` class and keeps it as the last child of #chat-log so it sits at
 		// the bottom of the transcript. aria-live so assistive tech announces it.
+		//
+		// 🔴 IT IS DRAWN SHOWING WHEN THE SERVER HAS A TURN IN FLIGHT FOR THIS
+		// CONVERSATION (TurnInFlight). It used to be drawn hidden always, so a page
+		// reloaded mid-turn lost it while the turn ran on — the reply then appeared
+		// from nowhere. The refetch chat.reply asks for once the reply is stored
+		// draws it from the server again, hidden by then.
 		Div(
 			ID("chat-working"),
-			Class("hidden max-w-[85%] items-center gap-2 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-muted"),
+			g.If(v.TurnInFlight, g.Attr("data-turn-in-flight", "")),
+			Class(workingClass(v.TurnInFlight)+" max-w-[85%] items-center gap-2 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-muted"),
 			g.Attr("role", "status"),
 			g.Attr("aria-live", "polite"),
 			Span(Class("animate-pulse"), g.Text("working")),
@@ -1457,6 +1483,50 @@ func chatLogInner(v AgentDetailView) g.Node {
 			),
 		),
 	}
+}
+
+// workingClass is #chat-working's display class: the script's own pair
+// (showWorking adds `flex`, hideWorking `hidden`), so a row drawn showing is
+// exactly the row the script would have shown.
+func workingClass(inFlight bool) string {
+	if inFlight {
+		return "flex"
+	}
+	return "hidden"
+}
+
+// chiefToolCard draws the stored call at index i (m, with its result when there
+// is one) as one of the chief's cards — ask_owner's question card, or
+// agent_dispatch's agent card — and ok false for any other call, or one the
+// card cannot read.
+func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.Node, bool) {
+	switch {
+	case musterToolIs(m.ToolName, OwnerAskTool):
+		ask, err := DecodeOwnerAsk(m.Content)
+		if err != nil {
+			return nil, false // the tool refused it too: its row says so
+		}
+		if result != nil && !result.ToolOK {
+			return nil, false
+		}
+		// Answered by the next line a person TYPED in the conversation, if any: a
+		// plugin message or a hand-back landing after the question is not an answer.
+		for j := i + 1; j < len(v.Messages); j++ {
+			if n := v.Messages[j]; n.Role == "user" && n.Typed && n.Kind != "tool_result" {
+				return ownerAskCard(m.ToolID, ask, true, n.Content), true
+			}
+		}
+		return ownerAskCard(m.ToolID, ask, false, ""), true
+	case musterToolIs(m.ToolName, AgentDispatchTool) && result != nil:
+		if c, ok := v.DispatchCards[m.ToolID]; ok {
+			return DispatchAgentCard(c), true
+		}
+		// A refusal needs nothing but its own sentence.
+		if r, ok := ReadDispatchResult(result.Content); ok && r.Refused != "" {
+			return DispatchAgentCard(DispatchCard{Refused: r.Refused}), true
+		}
+	}
+	return nil, false
 }
 
 // chatProvisioningIndicator renders an animated "Provisioning agent…" row while
@@ -2126,7 +2196,9 @@ func agentChatScript(name string) g.Node {
     // A second call in a row joins the first in one "N tool calls" row, and
     // every call after that ticks its count up (tool_groups.go — the same rule
     // and the same markup the persisted transcript is drawn with).
-    if (window.musterToolGroups) window.musterToolGroups.adopt(d);
+    // A call the chief's chat draws as a CARD (chiefToolCard) is never folded
+    // into a group: its row is replaced by the card when its result lands.
+    if (window.musterToolGroups && !cardTool(nm)) window.musterToolGroups.adopt(d);
     var chip = { details: d, status: stat, body: body, args: null, result: null };
     tools[id] = chip;
     return chip;
@@ -2141,6 +2213,32 @@ func agentChatScript(name string) g.Node {
   }
 
   function resetTurn() { turn = null; text = null; think = null; tools = {}; }
+
+  // cardTool: which of the chief's carded tools a call is ('' for none), as a
+  // gateway chief names it or a claude-code chief does over MCP.
+  function cardTool(nm) {
+    nm = String(nm || '').replace(/^mcp__muster__/, '');
+    return (nm === 'agent_dispatch' || nm === 'ask_owner') ? nm : '';
+  }
+  // dispatchCard swaps a streamed agent_dispatch row for its card: the agent it
+  // started, or the refusal's sentence (ui.ReadDispatchResult's reading). A
+  // result it cannot read keeps its row.
+  function dispatchCard(row, output) {
+    var r; try { r = JSON.parse(output || ''); } catch (e) { return; }
+    if (!r || typeof r !== 'object') return;
+    var src = '';
+    if (r.agent_id > 0) src = ` + strconv.Quote(DispatchCardPath+"?agent=") + ` + encodeURIComponent(r.agent_id);
+    else if (r.error) src = ` + strconv.Quote(DispatchCardPath+"?refused=") + ` + encodeURIComponent(String(r.error));
+    if (!src) return;
+    fetch(src, { credentials: 'include' }).then(function (res) { return res.ok ? res.text() : ''; }).then(function (html) {
+      if (!html || !row.parentNode) return;
+      var t = document.createElement('template'); t.innerHTML = html.trim();
+      var card = t.content.firstElementChild;
+      if (!card) return;
+      row.parentNode.replaceChild(card, row);
+      if (window.htmx) window.htmx.process(card);
+    }).catch(function () {});
+  }
 
   // The stream renderer for the user-turn WebSocket's {type, content/id/name/args/
   // ok/output} messages: delta/thinking/tool_call/tool_result/user/error/done.
@@ -2186,6 +2284,9 @@ func agentChatScript(name string) g.Node {
       }
       case 'tool_result': {
         var r = toolChip(msg.id, msg.name); // defensive: create if missing
+        // agent_dispatch's result is drawn as its card, by the server's one
+        // renderer (ui.DispatchAgentCard), in place of the row.
+        if (cardTool(msg.name) === 'agent_dispatch') dispatchCard(r.details, msg.output);
         r.status.textContent = msg.ok ? '✓' : '✗';
         r.status.className = 'ml-auto shrink-0 font-semibold ' + (msg.ok ? 'text-accent' : 'text-st-error-fg');
         r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');
@@ -2377,6 +2478,50 @@ func agentChatScript(name string) g.Node {
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
+
+  // THE CHIEF'S QUESTION CARDS (ui/owner_ask.go): a tapped option, the picks
+  // of a multi-select card, or an "Other" answer is sent as the owner's next
+  // message — through send(), so by the socket or, without one, the form post,
+  // exactly as if they had typed it. The card shows itself answered from the
+  // stored transcript on the refetch that follows; until then it is disabled,
+  // so a second tap cannot send a second answer. Bound once per #chat-log (the
+  // element outlives its refetches); send is this start's.
+  logEl.__ownerAskSend = function (card, text) {
+    text = String(text || '').trim();
+    if (!text || !card || card.getAttribute('data-owner-ask-state') !== 'waiting') return;
+    input.value = text;
+    card.setAttribute('data-owner-ask-state', 'sending');
+    card.querySelectorAll('button, input, textarea').forEach(function (el) { el.disabled = true; });
+    send();
+  };
+  if (!logEl.__ownerAskBound) {
+    logEl.__ownerAskBound = true;
+    logEl.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('[data-owner-ask-pick]') : null;
+      if (!b || !logEl.contains(b)) return;
+      e.preventDefault();
+      logEl.__ownerAskSend(b.closest('[data-owner-ask]'), b.getAttribute('data-owner-ask-pick'));
+    });
+    logEl.addEventListener('submit', function (e) {
+      var f = e.target && e.target.closest ? e.target.closest('[data-owner-ask-form]') : null;
+      if (!f) return;
+      e.preventDefault();
+      var other = f.querySelector('[data-owner-ask-other]');
+      var parts = [];
+      f.querySelectorAll('[data-owner-ask-check]:checked').forEach(function (c) { parts.push(c.value); });
+      if (other && other.value.trim()) parts.push(other.value.trim());
+      logEl.__ownerAskSend(f.closest('[data-owner-ask]'), parts.join(` + strconv.Quote(OwnerAskMultiSep) + `));
+    });
+    // Enter in the Other box sends it (Shift+Enter: a new line), like the composer.
+    logEl.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (!t || !t.hasAttribute || !t.hasAttribute('data-owner-ask-other')) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        if (t.form && t.form.requestSubmit) t.form.requestSubmit(); else if (t.form) t.form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+      }
+    });
+  }
   // A notice the server drew for a send the browser made has been shown: take
   // it out of the address, so a reload does not repeat it.
   try {

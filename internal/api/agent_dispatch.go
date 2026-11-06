@@ -28,6 +28,11 @@ import (
 //     without one, or naming one that does not exist now, is refused, and the
 //     refusal carries the targets that exist plus the budget — so the chief asks
 //     its owner, and knows what to offer. There is no discovery tool.
+//     As amended: the chief MAPS the owner's words to a target (Claude or a
+//     Claude model → pod/claude-code; any other model → pod/gateway with it), and
+//     when they named no model it asks with ask_owner, offering the refusal's
+//     `choices` (each target in the owner's words). "mirrored" is refused until
+//     mirrored dispatch ships, and never falls back to the cluster.
 //   - `task_id` is optional: the chief can start an agent on a task, or from a
 //     prompt alone. A start with no task is its own ledger object
 //     (plugins.NewDispatchObject), spends the same budget, and needs
@@ -58,9 +63,21 @@ const (
 	// carry a field outside agent_dispatch's table (DisallowUnknownFields).
 	agentDispatchArgs = "arguments are {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?}"
 
-	agentDispatchNoTarget = "target is required and has no default: ask your owner where to run this, offering the targets below. " +
-		"Never choose one they did not name."
-	agentDispatchUnknownTarget = "target %q is not one of: pod/claude-code, pod/gateway, host/<host>/claude, host/<host>/opencode"
+	// 🔴 THE NO-TARGET REFUSAL TELLS THE CHIEF HOW TO ASK, NOT ONLY THAT IT MUST
+	// (owner decision 1 as amended, docs/design/chief-dispatch.md): with ask_owner,
+	// offering the choices below in the owner's words. An operator was asked
+	// "gateway or claude code?" in free text, which named neither choice in words
+	// they use.
+	agentDispatchNoTarget = "target is required and has no default, and your owner named no model: ask them with ask_owner " +
+		"which to use — Claude, or an OpenRouter model (offer two or three sensible ones) — using the labels in choices below, " +
+		"then call again with the target and model their answer names. Never choose one they did not name."
+	// agentDispatchMirroredSoon refuses a MIRRORED target: an agent in one of the
+	// owner's own tmux sessions. It is not offered yet (it is the next change on
+	// this tool), and a mirrored request must never quietly start a cluster agent.
+	agentDispatchMirroredSoon = "mirrored dispatch (an agent in one of your owner's own tmux sessions) is not available yet: it " +
+		"is coming in a later muster release. Nothing was started, and no cluster agent was started in its place. Tell your " +
+		"owner so, and ask them with ask_owner whether to run it in the cluster instead."
+	agentDispatchUnknownTarget = "target %q is not one of: pod/claude-code, pod/gateway, mirrored, host/<host>/claude, host/<host>/opencode"
 	agentDispatchPodKindOff    = "pod kind %q is not enabled on this deployment (MUSTER_AGENT_KINDS)"
 	agentDispatchHostOff       = "host %q cannot start agents now (offline, read-only, or its muster-mirror lacks -agent-spawn); nothing was queued"
 
@@ -104,8 +121,12 @@ const chiefDispatchPromptCap = "prompt is over 8 KiB: shorten it"
 // current `budget` (plugins.ChiefBudget). For the same reason it lists no
 // target: the targets are data too, in the refusal of a call without one.
 const agentDispatchDescription = "Start a new agent, only with your owner's opt-in: on one of your owner's open tasks (task_id), " +
-	"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Call without " +
-	"one and the refusal lists the targets that exist right now: ask your owner which to use, offering those. " +
+	"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Map their " +
+	"words to it: \"with Claude\", or any Claude model (opus, sonnet, haiku) → the Claude Code target, with no model; any " +
+	"other model they name → the gateway target with that model (an OpenRouter model id); \"mirrored\" → mirrored, which is " +
+	"refused until mirrored dispatch ships — never start a cluster agent in its place. If they named no model, do not guess: " +
+	"call without a target, and the refusal lists the choices that exist right now, each with its label in your owner's " +
+	"words; ask them with ask_owner, offering those. " +
 	"A dispatch with no task needs owner_asked: true — in your answer to a message your owner typed in your chat — and a " +
 	"request_key you mint for that request and reuse on every retry of it (a retry with the same key answers with the first " +
 	"start; the same key with anything changed is refused). owner_asked: true is always checked: muster verifies that the turn " +
@@ -123,8 +144,8 @@ const agentDispatchDescription = "Start a new agent, only with your owner's opt-
 func agentDispatchToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: agentDispatchTool, Description: agentDispatchDescription,
 		Parameters: objSchema(map[string]any{
-			"target": strProp("Where to run the agent, exactly as your owner named it: one of the targets a call without " +
-				"target lists (for example a pod kind). Required; there is no default."),
+			"target": strProp("Where to run the agent, from what your owner said (the mapping above): one of the targets a " +
+				"call without target lists, or mirrored. Required; there is no default."),
 			"prompt": map[string]any{"type": "string", "maxLength": chiefPromptMax,
 				"description": "The work, at most 8 KiB. Required without task_id. With owner_asked: true it is your relay of " +
 					"the message your owner typed. Without owner_asked (only on a task) it must be, VERBATIM, your owner's own " +
@@ -133,8 +154,9 @@ func agentDispatchToolDef() agents.ToolDef {
 				"from the prompt alone.", 1, 1<<53),
 			"repo": strProp("The repository to work in (owner/name): it must be one of your owner's connected GitHub " +
 				"repositories. On a task, only when the task names none. Without a repository the agent cannot open a pull request."),
-			"base":  strProp("The branch to start from. Omit it for the repository's default branch."),
-			"model": strProp("Only for a pod/gateway target, which takes a model. Refused for any other target."),
+			"base": strProp("The branch to start from. Omit it for the repository's default branch."),
+			"model": strProp("The OpenRouter model your owner named, for the gateway target. Refused for any other target " +
+				"(a Claude model means the Claude Code target, which takes none)."),
 			"owner_asked": map[string]any{"type": "boolean",
 				"description": "true only when your owner — typing in your muster chat, in the message you are answering now — " +
 					"asked for this. Always verified: a plugin message, a relayed answer, muster's own note or a turn you started " +
@@ -185,6 +207,41 @@ func decodeAgentDispatch(arguments string) (agentDispatchIn, bool) {
 type dispatchTargets struct {
 	Pods  []string             `json:"pods"`
 	Hosts []dispatchHostTarget `json:"hosts"`
+	// Choices is every target above as the owner should be ASKED about it: its
+	// label in their words (dispatchTargetLabel) and when it is the one.
+	Choices []dispatchChoice `json:"choices"`
+}
+
+// dispatchChoice is one target as ask_owner offers it.
+type dispatchChoice struct {
+	Target string `json:"target"`
+	Label  string `json:"label"`
+	When   string `json:"when"`
+}
+
+// dispatchTargetLabel is a pod target in the owner's words: what the refusal's
+// choices offer, and what a started agent's card says it runs on
+// (dispatchRuntimeLabel, chat_log_live.go).
+func dispatchTargetLabel(target string) string {
+	switch target {
+	case "pod/claude-code":
+		return "Claude Code (your Claude account)"
+	case "pod/gateway":
+		return "Gateway (OpenRouter model: <model>)"
+	}
+	return target
+}
+
+// dispatchTargetWhen is when a pod target is the one, in the mapping the
+// tool's description states.
+func dispatchTargetWhen(target string) string {
+	switch target {
+	case "pod/claude-code":
+		return "your owner said Claude, or named a Claude model; pass no model"
+	case "pod/gateway":
+		return "your owner named any other model; pass it as model (an OpenRouter model id)"
+	}
+	return ""
 }
 
 type dispatchHostTarget struct {
@@ -194,13 +251,14 @@ type dispatchHostTarget struct {
 
 func (s *Server) dispatchTargetsNow(ctx context.Context) dispatchTargets {
 	k := s.kindChoices(ctx)
-	out := dispatchTargets{Pods: []string{}, Hosts: []dispatchHostTarget{}}
+	out := dispatchTargets{Pods: []string{}, Hosts: []dispatchHostTarget{}, Choices: []dispatchChoice{}}
 	for _, kind := range k.Kinds {
 		if k.Unavailable[kind] != "" {
 			continue
 		}
 		if t := plugins.PodTarget(kind); podTargetRE.MatchString(t) {
 			out.Pods = append(out.Pods, t)
+			out.Choices = append(out.Choices, dispatchChoice{Target: t, Label: dispatchTargetLabel(t), When: dispatchTargetWhen(t)})
 		}
 	}
 	return out
@@ -222,6 +280,9 @@ func (s *Server) podKindOf(ctx context.Context, target string) (string, string) 
 	if target == "" {
 		return "", agentDispatchNoTarget
 	}
+	if isMirroredTarget(target) {
+		return "", agentDispatchMirroredSoon
+	}
 	if m := podTargetRE.FindStringSubmatch(target); m != nil {
 		if !s.ext.kindEnabled(m[1]) {
 			return "", fmt.Sprintf(agentDispatchPodKindOff, m[1])
@@ -234,6 +295,13 @@ func (s *Server) podKindOf(ctx context.Context, target string) (string, string) 
 		return "", fmt.Sprintf(agentDispatchHostOff, m[1])
 	}
 	return "", fmt.Sprintf(agentDispatchUnknownTarget, target)
+}
+
+// isMirroredTarget reports whether target asks for a MIRRORED agent: "mirrored",
+// or "mirrored/…" (whatever a later change gives it after the slash).
+func isMirroredTarget(target string) bool {
+	t := strings.ToLower(target)
+	return t == "mirrored" || strings.HasPrefix(t, "mirrored/")
 }
 
 // dispatchRequestHash is the SHA-256 of a call's normalised parameters as

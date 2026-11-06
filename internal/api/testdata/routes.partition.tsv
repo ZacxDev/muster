@@ -225,6 +225,7 @@ muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/card
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/rename
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/status
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{name}/chat-log
+muster	agents.go:registerAgentRoutes	GET /ui/dispatch-card
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{name}/task
 router	attention.go:registerAttentionRoutes	GET /ui/attention
 router	server.go:registerRoutes	GET /ui/auto-approve-banner

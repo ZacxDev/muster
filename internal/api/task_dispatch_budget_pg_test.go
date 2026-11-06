@@ -32,8 +32,12 @@ import (
 // names a target: caps and targets are data, read at the call.
 func TestAgentDispatchDescriptionCarriesNoCapNumbers(t *testing.T) {
 	const want = "Start a new agent, only with your owner's opt-in: on one of your owner's open tasks (task_id), " +
-		"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Call without " +
-		"one and the refusal lists the targets that exist right now: ask your owner which to use, offering those. " +
+		"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Map their " +
+		"words to it: \"with Claude\", or any Claude model (opus, sonnet, haiku) → the Claude Code target, with no model; any " +
+		"other model they name → the gateway target with that model (an OpenRouter model id); \"mirrored\" → mirrored, which is " +
+		"refused until mirrored dispatch ships — never start a cluster agent in its place. If they named no model, do not guess: " +
+		"call without a target, and the refusal lists the choices that exist right now, each with its label in your owner's " +
+		"words; ask them with ask_owner, offering those. " +
 		"A dispatch with no task needs owner_asked: true — in your answer to a message your owner typed in your chat — and a " +
 		"request_key you mint for that request and reuse on every retry of it (a retry with the same key answers with the first " +
 		"start; the same key with anything changed is refused). owner_asked: true is always checked: muster verifies that the turn " +

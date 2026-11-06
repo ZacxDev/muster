@@ -134,7 +134,7 @@ func TestAgentDispatchRequiresATargetAndListsTheTargets(t *testing.T) {
 		{"no target, no task", map[string]any{"prompt": "do it", "request_key": "k1", "owner_asked": true}, agentDispatchNoTarget},
 		{"no target, on a task", map[string]any{"task_id": n.ID}, agentDispatchNoTarget},
 		{"blank target", map[string]any{"target": "  ", "task_id": n.ID}, agentDispatchNoTarget},
-		{"unknown pod kind", map[string]any{"target": "pod/robot", "task_id": n.ID}, `target "pod/robot" is not one of: pod/claude-code, pod/gateway, host/<host>/claude, host/<host>/opencode`},
+		{"unknown pod kind", map[string]any{"target": "pod/robot", "task_id": n.ID}, `target "pod/robot" is not one of: pod/claude-code, pod/gateway, mirrored, host/<host>/claude, host/<host>/opencode`},
 		{"a bare kind", map[string]any{"target": "claude-code", "task_id": n.ID}, `target "claude-code" is not one of:`},
 		{"a host target", map[string]any{"target": "host/box-a/claude", "task_id": n.ID}, `host "box-a" cannot start agents now (offline, read-only, or its muster-mirror lacks -agent-spawn); nothing was queued`},
 		{"a host target, opencode", map[string]any{"target": "host/box-a/opencode", "task_id": n.ID}, `host "box-a" cannot start agents now`},
@@ -150,8 +150,9 @@ func TestAgentDispatchRequiresATargetAndListsTheTargets(t *testing.T) {
 			f.refusedNothingReserved(t, text, c.want, 0, 0)
 			var out struct {
 				Targets struct {
-					Pods  []string         `json:"pods"`
-					Hosts []map[string]any `json:"hosts"`
+					Pods    []string         `json:"pods"`
+					Hosts   []map[string]any `json:"hosts"`
+					Choices []dispatchChoice `json:"choices"`
 				} `json:"targets"`
 				Budget *plugins.ChiefBudget `json:"budget"`
 			}
@@ -160,6 +161,11 @@ func TestAgentDispatchRequiresATargetAndListsTheTargets(t *testing.T) {
 			}
 			if strings.Join(out.Targets.Pods, ",") != "pod/claude-code" {
 				t.Errorf("targets.pods = %v, want exactly [pod/claude-code] (gateway has no credential here)", out.Targets.Pods)
+			}
+			// The same targets, as the owner is ASKED about them: one choice per pod.
+			if len(out.Targets.Choices) != 1 || out.Targets.Choices[0].Target != "pod/claude-code" ||
+				out.Targets.Choices[0].Label != "Claude Code (your Claude account)" {
+				t.Errorf("targets.choices = %+v, want exactly the Claude Code choice in the owner's words", out.Targets.Choices)
 			}
 			if out.Targets.Hosts == nil || len(out.Targets.Hosts) != 0 {
 				t.Errorf("targets.hosts = %v, want an empty list", out.Targets.Hosts)
@@ -969,5 +975,87 @@ func TestTheOwnersTaskStartsAreUnchangedByAgentDispatch(t *testing.T) {
 	}
 	if cur, _ := f.notes.Get(f.asOwner, n.ID); cur.Status != notes.StatusInProgress {
 		t.Errorf("task status %q, want in_progress", cur.Status)
+	}
+}
+
+// TestAgentDispatchWithNoModelAsksTheOwnerInTheirWords (owner decision 1, as
+// amended): a call with no target — the owner named no model — is refused with
+// the sentence that tells the chief to ASK with ask_owner, and the refusal lists
+// every target the deployment can start now as a choice in the owner's words:
+// "Claude Code (your Claude account)" and "Gateway (OpenRouter model: <model>)",
+// never only the raw pod/ names. Nothing is reserved and no agent starts —
+// there is no default target to fall back on.
+func TestAgentDispatchWithNoModelAsksTheOwnerInTheirWords(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) { ext.Kinds = stubKinds{pick: "pool-acct-a"} })
+	n := f.task(t, "no model named")
+	for _, args := range []map[string]any{
+		{"prompt": "do it", "request_key": "k-nomodel", "owner_asked": true},
+		{"task_id": n.ID},
+	} {
+		text := f.callRaw(f.chief, agentDispatchTool, args)
+		f.refusedNothingReserved(t, text, "", 0, 0)
+		const want = "target is required and has no default, and your owner named no model: ask them with ask_owner " +
+			"which to use — Claude, or an OpenRouter model (offer two or three sensible ones) — using the labels in choices below, " +
+			"then call again with the target and model their answer names. Never choose one they did not name."
+		if got := errorText(t, text); got != want {
+			t.Fatalf("error %q\nwant exactly %q", got, want)
+		}
+		var out struct {
+			Targets struct {
+				Choices []dispatchChoice `json:"choices"`
+			} `json:"targets"`
+		}
+		if err := json.Unmarshal([]byte(text), &out); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, c := range out.Targets.Choices {
+			got[c.Target] = c.Label
+		}
+		wantChoices := map[string]string{
+			"pod/claude-code": "Claude Code (your Claude account)",
+			"pod/gateway":     "Gateway (OpenRouter model: <model>)",
+		}
+		if len(got) != len(wantChoices) {
+			t.Fatalf("choices %+v, want exactly %v", out.Targets.Choices, wantChoices)
+		}
+		for target, label := range wantChoices {
+			if got[target] != label {
+				t.Errorf("choice %s is labelled %q, want %q", target, got[target], label)
+			}
+		}
+	}
+	if got := f.prov.calls(0); got != 0 {
+		t.Errorf("a call with no target reached the provisioner %d time(s)", got)
+	}
+}
+
+// TestAgentDispatchRefusesMirroredUntilItShips: "mirrored" is a target the
+// chief may name (the owner said mirrored), and it is REFUSED with its own
+// sentence — never quietly started in the cluster. Nothing is reserved, no agent
+// exists afterwards, the provisioner is not called, and a case-variant or a
+// "mirrored/…" spelling is refused the same way.
+func TestAgentDispatchRefusesMirroredUntilItShips(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) { ext.Kinds = stubKinds{pick: "pool-acct-a"} })
+	n := f.task(t, "mirrored please")
+	for _, target := range []string{"mirrored", "Mirrored", "mirrored/box-a/claude"} {
+		for _, args := range []map[string]any{
+			{"target": target, "prompt": "do it", "request_key": "k-mirror", "owner_asked": true},
+			{"target": target, "task_id": n.ID},
+		} {
+			text := f.callRaw(f.chief, agentDispatchTool, args)
+			f.refusedNothingReserved(t, text, "", 0, 0)
+			if got := errorText(t, text); got != agentDispatchMirroredSoon {
+				t.Fatalf("target %q: error %q\nwant exactly %q", target, got, agentDispatchMirroredSoon)
+			}
+		}
+	}
+	for _, must := range []string{"not available yet", "no cluster agent was started in its place", "ask_owner"} {
+		if !strings.Contains(agentDispatchMirroredSoon, must) {
+			t.Errorf("the mirrored refusal does not say %q: %s", must, agentDispatchMirroredSoon)
+		}
+	}
+	if got := f.prov.calls(0); got != 0 {
+		t.Errorf("a mirrored call reached the provisioner %d time(s)", got)
 	}
 }

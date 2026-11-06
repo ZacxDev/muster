@@ -36,7 +36,9 @@ var (
 		"tasks_list", "task_get", "task_comment", "task_set_status",
 		"attention_list",
 		// A mirrored session's question to the chief (chief_ask_tool.go).
-		"answer_session_question"}
+		"answer_session_question",
+		// The chief's question card in its own chat (owner_ask.go).
+		"ask_owner"}
 	workerMCPLedger = []string{"connectors_list", "connector_request", "connector_status",
 		// postgres_query (connector_tools.go): read-only SQL on a postgres
 		// connector the agent holds an approved grant for. On MCP because a
@@ -52,7 +54,7 @@ var (
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
 	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search",
-		"sessions_overview", "fleet_report", "attention_list", "answer_session_question"}
+		"sessions_overview", "fleet_report", "attention_list", "answer_session_question", "ask_owner"}
 )
 
 // without returns list minus the names in drop, in order.

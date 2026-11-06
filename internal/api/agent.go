@@ -439,6 +439,12 @@ func (s *Server) agentTools() []agentTool {
 		// A mirrored session's question to the chief (chief_ask_tool.go): the
 		// chief answers it. Chief-only, on MCP.
 		tools = append(tools, agentTool{def: answerSessionQuestionToolDef(), mcp: true, chiefOnly: true})
+		// ask_owner (owner_ask.go): the chief's question card in its own chat.
+		// Chief-only, and on MCP so a claude-code chief has it too. It is with the
+		// attention store's tools — the chief's other ways of asking its owner —
+		// rather than offered bare, so a deployment with no store and no chief-only
+		// tool still never reads the agent list per turn (toolsFor).
+		tools = append(tools, agentTool{def: askOwnerToolDef(), mcp: true, chiefOnly: true})
 	}
 	// The officer runtime (officers.go), present when officers are declared:
 	// an officer's instances reach their HQ queue through muster, which holds
@@ -729,6 +735,12 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return toolJSON(n)
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)
+	case askOwnerTool:
+		// Registered only with the attention store (agentTools).
+		if !s.attentionToolsOn() {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolAskOwner(ctx, arguments)
 	case "connectors_list":
 		return s.toolConnectorsList(ctx, a)
 	case "connector_request":

@@ -82,9 +82,13 @@ func TestEveryChatWriterIsClassified(t *testing.T) {
 		`e2e/mkchat/main.go appendMessages → AddChatMessage(role not a literal: m, TypedBy -)`: chatE2ESeed,
 		`e2e/mkchat/main.go createThreads → AddChatMessage(role not a literal: m, TypedBy -)`:  chatE2ESeed,
 		`e2e/seed/main.go run → AddChatMessage(role not a literal: m, TypedBy -)`:              chatE2ESeed,
-		// The SQL: the insert (NULL unless a user row has a typer) and the one read.
+		// The SQL: the insert (NULL unless a user row has a typer) and the reads —
+		// the quote read, and the transcript's two (a question card is answered
+		// only by a TYPED line, ui.chiefToolCard).
 		`internal/agents/pgstore.go (*PGStore).AddChatMessage → sql typed_by`:         chatOwnerTyped,
 		`internal/agents/pgstore.go (*PGStore).OwnerTypedChatMessages → sql typed_by`: chatOwnerTyped,
+		`internal/agents/pgstore.go (*PGStore).ListChatMessages → sql typed_by`:       chatOwnerTyped,
+		`internal/agents/pgstore.go (*PGStore).ListChatMessagesPage → sql typed_by`:   chatOwnerTyped,
 	}
 	got := chatWriterSites(t)
 	var wantSites []string

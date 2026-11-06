@@ -558,20 +558,33 @@ func RunToolLoop(
 ) (string, error) {
 	input := []inputItem{{Type: "message", Role: "user", Content: userMessage}}
 
+	ending := false
 	for i := 0; i < MaxToolLoopIterations; i++ {
 		if ctx.Err() != nil {
 			return "", laterRequest(i, ctx.Err())
 		}
-		resp, err := streamResponses(ctx, client, url, token, sessionKey, responsesRequest{
+		req := responsesRequest{
 			Model:        model,
 			Input:        input,
 			Instructions: instructions,
 			Tools:        tools,
-		}, emit)
+		}
+		if ending {
+			// The turn was ended (EndTurn, turnend.go): the outputs go back so the
+			// runtime's session holds an answer for every call it made, and the
+			// model is told it may call nothing more.
+			req.ToolChoice = "none"
+		}
+		resp, err := streamResponses(ctx, client, url, token, sessionKey, req, emit)
 		if err != nil {
 			return "", laterRequest(i, err)
 		}
 		calls := resp.functionCalls()
+		// 🔴 AN ENDED TURN RUNS NO FURTHER TOOL, whatever this answer asks for: a
+		// runtime that ignores tool_choice still cannot go on past ask_owner.
+		if ending {
+			return resp.messageText(), nil
+		}
 		if len(calls) == 0 {
 			// Terminal text turn: the text already streamed live via emit during
 			// streamResponses, so just return the assembled text (don't re-emit).
@@ -601,6 +614,7 @@ func RunToolLoop(
 				Output: out,
 			})
 		}
+		ending = TurnEnded(ctx)
 	}
 	// Every request was answered with calls that ran, so this is never "nothing sent".
 	return "", &AfterFirstRequestError{Request: MaxToolLoopIterations,

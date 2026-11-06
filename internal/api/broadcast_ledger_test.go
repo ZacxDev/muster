@@ -92,6 +92,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handleAgentTaskComment → broadcast(r.Context())",
 		"(*Server).handleAgentTaskStatus → broadcast(r.Context())",
 		"(*Server).persistTurn → broadcast(ctx)",
+		// A chat-socket turn that FAILED stores nothing, so it asks pages to
+		// refetch: one opened mid-turn draws "working…" from the session's count and
+		// would otherwise keep it (session_turns.go). ctx is the socket's request.
+		"(*Server).handleAgentWS → broadcast(ctx)",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorDelete → broadcast(r.Context())",
