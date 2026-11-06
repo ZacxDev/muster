@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -63,13 +64,20 @@ const releaseOnlyAction = "release_only"
 // releaseOnlyLabel is the "Release only" option: the button and the answer.
 const releaseOnlyLabel = "Release only: release the gate, start nothing"
 
-// releaseDispatchLabel is the "Release & dispatch" option for target.
-func releaseDispatchLabel(target string) string {
-	return "Release & dispatch on " + target + ": release the gate, then your chief starts a new agent on it"
+// releaseDispatchLabel is the "Release & dispatch" option for target, naming
+// the repository the agent will work in (repo, the task's own; "" for none) —
+// the tap binds both (ownersChosenTarget). Kept short: a phone chip carries at
+// most push.MaxNativeChip characters.
+func releaseDispatchLabel(target, repo string) string {
+	if repo == "" {
+		return "Release & dispatch on " + target + ", no repository"
+	}
+	return "Release & dispatch on " + target + ", repo " + repo
 }
 
-// releaseDispatchRE reads the target back out of a releaseDispatchLabel answer.
-var releaseDispatchRE = regexp.MustCompile(`^Release & dispatch on (pod/[a-z-]+): release the gate, then your chief starts a new agent on it$`)
+// releaseDispatchRE reads the target and the repository ("" for none) back
+// out of a releaseDispatchLabel answer.
+var releaseDispatchRE = regexp.MustCompile(`^Release & dispatch on (pod/[a-z-]+), (?:repo ([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)|no repository)$`)
 
 // The release refusals, as the owner reads them (the Attention view, the
 // phone's "Not sent: …", attention_answer's error).
@@ -148,6 +156,12 @@ func (s *Server) releaseForAnswer(ctx context.Context, id int64, answer string, 
 		return nil, errReleaseRefused(releaseNotOwnersDoor)
 	}
 	n, err := s.ext.Notes.Get(ctx, a.TaskID)
+	// ⚠ n.OwnerID != a.Owner is DEFENCE IN DEPTH, unreachable today: the
+	// trigger attention_asks_task_is_owners (migration 0032) refuses an ask
+	// whose owner is not its task's, and row-level security hides another
+	// owner's task. Kept so a
+	// store without either (a fake, RLS rolled back) still cannot release a
+	// stranger's task.
 	if err != nil || n.OwnerID != a.Owner {
 		return nil, errReleaseRefused(releaseTaskGone)
 	}
@@ -176,23 +190,45 @@ type gateReleaseAuditor interface {
 
 var _ gateReleaseAuditor = (*plugins.PGStore)(nil)
 
+// answerReleaseTimeout bounds the release's writes, which run without the
+// answer request's cancellation.
+const answerReleaseTimeout = 10 * time.Second
+
 // applyAnswerRelease removes rel's gates once ask a's Release answer is
-// recorded: the audit row (the owner, as ctx's principal, and the ask), a
-// comment on the task, and the board's refresh. A failure is logged and said
-// on the task; the gate then stays on, so agent_dispatch still refuses.
+// recorded: the audit row (the owner, as ctx's principal, and the ask) FIRST,
+// then the tag, then a comment on the task and the board's refresh.
+//
+// 🔴 NOT ON THE REQUEST'S CANCELLATION. The answer is already recorded and on
+// its way to the chief; a client that hangs up now must not leave the gate on
+// with nothing said. The writes run on a WithoutCancel copy (the principal
+// kept), bounded by answerReleaseTimeout, each retried once.
+//
+// 🔴 THE AUDIT ROW BEFORE THE REMOVAL: a release is never applied unrecorded.
+// An audit that cannot be written leaves the gate ON (agent_dispatch then
+// refuses), and the comment says so; a removal that fails after the row is
+// written is said the same way.
 func (s *Server) applyAnswerRelease(ctx context.Context, a attention.Ask, rel *answerRelease) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), answerReleaseTimeout)
+	defer cancel()
 	id := strconv.FormatInt(rel.task.ID, 10)
 	ask := strconv.FormatInt(a.ID, 10)
 	gates := strings.Join(rel.gates, ", ")
 	body := "muster released the gate (" + gates + ") on your answer to attention #" + ask + ": " + a.Answer
-	if _, err := s.ext.Notes.RemoveTags(ctx, rel.task.ID, rel.gates); err != nil {
-		s.logger.Printf("attention: release task %d's gate on ask %d: %v", rel.task.ID, a.ID, err)
-		body = "Your answer to attention #" + ask + " (" + a.Answer + ") asked muster to release the gate (" + gates +
-			"), but it could not be removed: release it on the board."
-	} else if au, ok := s.ext.Plugins.(gateReleaseAuditor); !ok {
-		s.logger.Printf("attention: task %d's gate released on ask %d with no audit store", rel.task.ID, a.ID)
-	} else if err := au.RecordGateReleasedByAnswer(ctx, rel.task.ID, a.ID, rel.gates, a.Answer); err != nil {
-		s.logger.Printf("attention: audit task %d's gate release on ask %d: %v", rel.task.ID, a.ID, err)
+	stuck := "Your answer to attention #" + ask + " (" + a.Answer + ") asked muster to release the gate (" + gates +
+		"), but it could not be released: release it on the board."
+	au, ok := s.ext.Plugins.(gateReleaseAuditor)
+	switch {
+	case !ok:
+		s.logger.Printf("attention: task %d's gate NOT released on ask %d: no audit store", rel.task.ID, a.ID)
+		body = stuck
+	default:
+		if err := retryOnce(func() error { return au.RecordGateReleasedByAnswer(ctx, rel.task.ID, a.ID, rel.gates, a.Answer) }); err != nil {
+			s.logger.Printf("attention: task %d's gate NOT released on ask %d: the audit row failed: %v", rel.task.ID, a.ID, err)
+			body = stuck
+		} else if err := retryOnce(func() error { _, err := s.ext.Notes.RemoveTags(ctx, rel.task.ID, rel.gates); return err }); err != nil {
+			s.logger.Printf("attention: release task %d's gate on ask %d (audited): %v", rel.task.ID, a.ID, err)
+			body = stuck
+		}
 	}
 	if _, _, err := s.addTaskComment(ctx, commentByMuster, notes.Comment{NoteID: rel.task.ID, Author: ownerReleaseAuthor, Body: body}); err != nil {
 		s.logger.Printf("attention: record task %d's gate release on ask %d: %v", rel.task.ID, a.ID, err)

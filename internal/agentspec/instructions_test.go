@@ -799,7 +799,7 @@ func TestTheChiefTriagesFeedback(t *testing.T) {
 			p + "task_route_attention`, call it with the new task's id and a one-line note saying what the feedback is: " +
 			"it puts the task on your owner's phone with your note. The task stays gated until your owner releases it, as above, " +
 			"or from that ask: it offers them Release & dispatch and Release only. On a \"Release & dispatch on <target>\" answer " +
-			"muster has already released the gate, so call `" + p + "agent_dispatch` with the task's id and exactly that target; " +
+			"muster has already released the gate, so call `" + p + "agent_dispatch` with the task's id, exactly that target and no repo; " +
 			"on \"Release only\", start nothing. " +
 			"When it is not something to act on — thanks, a +1, chatter, or the same thing as a task already open — call `" +
 			p + "plugin_message_settle` with its message_id and a short reason (for a duplicate, the open task's id)."

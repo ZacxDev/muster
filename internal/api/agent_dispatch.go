@@ -433,50 +433,91 @@ var dispatchOptionRE = regexp.MustCompile(`^agent_dispatch on (pod/[a-z-]+): sta
 const agentDispatchNotTheOwnersTarget = "your owner chose %s for this task (their answer to your ask about it): call agent_dispatch " +
 	"with target %q, or ask them again"
 
-// ownerReleasedOnly is ownersChosenTarget's answer when the owner's newest
-// answer about the task is "Release only": no target, and no start.
-const ownerReleasedOnly = "\x00release-only"
-
 // agentDispatchOwnerReleasedOnly refuses a start the owner declined.
 const agentDispatchOwnerReleasedOnly = "your owner released this task's gate and chose to start nothing (their answer to your ask " +
 	"about it: Release only): do not start an agent on it unless they ask you to in your chat"
 
-// ownersChosenTarget is the target the owner picked for task taskID: their
-// NEWEST answer to an ask about the task (ownerAnswer's structural link), when
-// it is one of task_route_attention's per-target options (agent_dispatch or
-// Release & dispatch); ownerReleasedOnly for its Release only; "" otherwise.
+// agentDispatchNotTheOwnersRepo refuses an effective repository other than
+// the one the owner's Release & dispatch tap showed.
+const agentDispatchNotTheOwnersRepo = "your owner released this task to start an agent with %s (their answer to your ask about it): " +
+	"call agent_dispatch with target %q and no repo, or ask them again"
+
+// ownerChoice is what the owner's answers about a task bind agent_dispatch
+// (without owner_asked) to: a target ("" for none), and — for a Release &
+// dispatch answer — the repository the button showed (repoBound; repo "" is
+// "no repository"); or releasedOnly, no start at all.
+type ownerChoice struct {
+	target       string
+	repo         string
+	repoBound    bool
+	releasedOnly bool
+}
+
+// choiceOf is the binding answer a carries, ok false when it is none of
+// task_route_attention's options.
+func choiceOf(answer string) (ownerChoice, bool) {
+	answer = sameWords(answer)
+	if m := dispatchOptionRE.FindStringSubmatch(answer); m != nil {
+		return ownerChoice{target: m[1]}, true
+	}
+	if m := releaseDispatchRE.FindStringSubmatch(answer); m != nil {
+		return ownerChoice{target: m[1], repo: m[2], repoBound: true}, true
+	}
+	if answer == releaseOnlyLabel {
+		return ownerChoice{releasedOnly: true}, true
+	}
+	return ownerChoice{}, false
+}
+
+// ownersChosenTarget is what the owner picked for task taskID: their NEWEST
+// answer to an ask about the task (ownerAnswer's structural link), when it is
+// one of task_route_attention's options — agent_dispatch or Release &
+// dispatch per target, or Release only; the zero choice otherwise.
+//
+// 🔴 A RELEASE THE OWNER TAPPED IS NOT UNDONE BY AN ANSWER THEY DID NOT TAP.
+// Release options are given only through the owner's own doors (browser or
+// phone, answer_release.go); an answer given through attention_answer (a
+// mirrored session, AnsweredVia) is newer but weaker: while an owner-door
+// Release answer stands behind it, the Release answer binds. With no Release
+// answer behind it, the newest answer binds as before.
 //
 // It only ever NARROWS a dispatch without owner_asked — the path an owner's
 // click on /attention reaches the chief by, a turn the owner did not type — to
 // exactly the target they clicked. It never lets anything through that the
 // guards would refuse, so it opens nothing R1 closed.
-func (s *Server) ownersChosenTarget(ctx context.Context, owner, taskID int64) (string, error) {
+func (s *Server) ownersChosenTarget(ctx context.Context, owner, taskID int64) (ownerChoice, error) {
 	if s.ext.Attention == nil {
-		return "", nil
+		return ownerChoice{}, nil
 	}
 	asks, err := s.ext.Attention.AnswersForTask(ctx, taskID)
 	if err != nil {
-		return "", err
+		return ownerChoice{}, err
 	}
+	var newest *ownerChoice
 	for _, a := range asks { // newest first
 		if a.Owner != owner || a.TaskID != taskID {
 			continue
 		}
-		answer := sameWords(a.Answer)
-		if m := dispatchOptionRE.FindStringSubmatch(answer); m != nil {
-			return m[1], nil
+		c, ok := choiceOf(a.Answer)
+		if !a.AnsweredVia.ViaSession() {
+			// An owner-door answer: a Release one binds over any newer MCP
+			// answer; any other one ends the search.
+			if ok && (c.releasedOnly || c.repoBound) {
+				return c, nil
+			}
+			if newest != nil {
+				return *newest, nil
+			}
+			return c, nil
 		}
-		// A "Release & dispatch on <target>" answer binds the same way; a
-		// "Release only" answer binds to no start at all (answer_release.go).
-		if m := releaseDispatchRE.FindStringSubmatch(answer); m != nil {
-			return m[1], nil
+		if newest == nil {
+			newest = &c
 		}
-		if answer == releaseOnlyLabel {
-			return ownerReleasedOnly, nil
-		}
-		return "", nil
 	}
-	return "", nil
+	if newest != nil {
+		return *newest, nil
+	}
+	return ownerChoice{}, nil
 }
 
 // The two ledger-write failures past the reservation, said to the chief
@@ -575,18 +616,20 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	// 🔴 THE OWNER'S CLICK BINDS THE TARGET: on a task whose newest owner
 	// answer is one of task_route_attention's per-target options, a dispatch
 	// without owner_asked takes exactly that target.
+	var bound ownerChoice
 	if onTask && !in.OwnerAsked {
 		chosen, err := s.ownersChosenTarget(ctx, owner, in.TaskID)
 		if err != nil {
 			s.logger.Printf("task routing: answers for task %d: %v", in.TaskID, err)
 			return refuse("your owner's answers could not be read; try again later")
 		}
-		if chosen == ownerReleasedOnly {
+		if chosen.releasedOnly {
 			return refuse(agentDispatchOwnerReleasedOnly)
 		}
-		if chosen != "" && chosen != in.Target {
-			return refuse(fmt.Sprintf(agentDispatchNotTheOwnersTarget, chosen, chosen))
+		if chosen.target != "" && chosen.target != in.Target {
+			return refuse(fmt.Sprintf(agentDispatchNotTheOwnersTarget, chosen.target, chosen.target))
 		}
+		bound = chosen
 	}
 	kind, err := s.resolveKind(ctx, kindArg)
 	if err != nil {
@@ -603,6 +646,17 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		if n, ok := s.ownersTask(ctx, a, in.TaskID); ok {
 			effective = n.Repo
 		}
+	}
+	// 🔴 A RELEASE & DISPATCH TAP BINDS THE REPOSITORY ITS BUTTON SHOWED, too:
+	// the task's text and the chief's repo are written while reading outside
+	// text, and the owner approved this one. (The task's repository is re-read
+	// under the lock below, and a change refused.)
+	if bound.repoBound && !strings.EqualFold(effective, bound.repo) {
+		shown := "no repository"
+		if bound.repo != "" {
+			shown = "the repository " + bound.repo
+		}
+		return refuse(fmt.Sprintf(agentDispatchNotTheOwnersRepo, shown, bound.target))
 	}
 	if effective != "" {
 		if why := s.connectedRepo(ctx, effective); why != "" {

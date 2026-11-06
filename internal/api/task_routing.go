@@ -327,8 +327,8 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	out := map[string]any{"id": ask.ID, "task_id": n.ID, "status": "pending", "actions_offered": offered,
 		"next": "Your owner has it. Their answer will be delivered to you as a new message in your default session; act on it then " +
 			"(with one of actions_offered when they pick one: an \"agent_dispatch on <target>\" answer means agent_dispatch with this " +
-			"task_id and exactly that target, and no owner_asked; so does a \"Release & dispatch on <target>\" answer, for which muster has " +
-			"already released the gate; a \"Release only\" answer means the gate is released and you start nothing). You do not need to wait; you MAY call attention_wait{id: " +
+			"task_id and exactly that target, and no owner_asked; so does a \"Release & dispatch on <target>, ...\" answer (with no repo: it binds the " +
+			"repository it names), for which muster has already released the gate; a \"Release only\" answer means the gate is released and you start nothing). You do not need to wait; you MAY call attention_wait{id: " +
 			strconv.FormatInt(ask.ID, 10) + "} to block on it."}
 	// The chief's dispatch budget, when its owner opted in: why agent_dispatch
 	// is or is not among actions_offered.

@@ -219,24 +219,32 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 			for _, target := range targets {
 				label := dispatchOptionLabel(target)
 				if releasable {
-					label = releaseDispatchLabel(target)
+					label = releaseDispatchLabel(target, n.Repo)
 				}
 				out = append(out, chiefTaskAction{Tool: agentDispatchTool, Label: label})
 			}
 		}
 	}
 	if releasable {
-		// Second, not last: a phone notification draws at most two options
-		// beside Dismiss (muster-android AskPush.MAX_BUTTONS), so with two
-		// targets "Release only" must not be the one cut off.
-		at := 0
-		for i, x := range out {
+		// The release options FIRST — Release & dispatch on the first target,
+		// then Release only, then the other targets, then task_forward: a phone
+		// notification draws at most two options beside Dismiss
+		// (muster-android AskPush.MAX_BUTTONS), so Release only must be one.
+		var rel, rest []chiefTaskAction
+		for _, x := range out {
 			if x.Tool == agentDispatchTool {
-				at = i + 1
-				break
+				rel = append(rel, x)
+			} else {
+				rest = append(rest, x)
 			}
 		}
-		out = append(out[:at], append([]chiefTaskAction{{Tool: releaseOnlyAction, Label: releaseOnlyLabel}}, out[at:]...)...)
+		only := chiefTaskAction{Tool: releaseOnlyAction, Label: releaseOnlyLabel}
+		if len(rel) > 0 {
+			rel = append(rel[:1], append([]chiefTaskAction{only}, rel[1:]...)...)
+		} else {
+			rel = []chiefTaskAction{only}
+		}
+		out = append(rel, rest...)
 	}
 	return out, budget, withheld, nil
 }
