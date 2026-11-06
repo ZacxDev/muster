@@ -9,6 +9,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // THE DISPATCHED-AGENT CARD — agent_dispatch's result in the chief's chat.
@@ -166,7 +168,8 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 				Span(g.Attr("data-dispatch-refused", ""), g.Text(c.Refused))),
 		)
 	}
-	title := c.DisplayName
+	// The display name is a title (derived from a task's text): plained once.
+	title := textplain.Title(c.DisplayName)
 	if title == "" {
 		title = c.Name
 	}

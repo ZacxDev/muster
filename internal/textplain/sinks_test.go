@@ -108,7 +108,15 @@ const (
 
 // uiExempt: "file func expr" → exemption.
 var uiExempt = map[string]exemption{
-	"mirror_ask.go askForm o.Description":               {2, whyOption},
+	"mirror_ask.go askForm o.Description": {2, whyOption},
+	// The chief's question card (owner_ask.go): an option is sent verbatim as the
+	// owner's answer, so it is shown verbatim; the decoder's reads only check it.
+	"owner_ask.go ownerAskForm o.Label":                 {4, whyOption},
+	"owner_ask.go ownerAskForm o.Description":           {4, whyOption},
+	"owner_ask.go ownerAskCard o.Label":                 {2, whyOption},
+	"owner_ask.go ownerAskCard o.Description":           {2, whyOption},
+	"owner_ask.go DecodeOwnerAsk o.Label":               {6, "validating ask_owner's arguments (trim, length, uniqueness); never drawn here"},
+	"owner_ask.go DecodeOwnerAsk o.Description":         {2, "validating ask_owner's arguments (trim, length); never drawn here"},
 	"mirror_ask.go askReadOnly o.Description":           {2, whyOption},
 	"subagent_cards.go subagentCallOf in.Description":   {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
 	"subagent_cards.go subagentSummary s.Description":   {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},

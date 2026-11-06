@@ -216,6 +216,14 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  75   routeFloor
 //
+// ⚠ AND AGAIN FOR THE CHIEF'S DISPATCHED-AGENT CARD: GET /ui/dispatch-card is a
+// new muster row, so the projection is 85 (71 + 14), same margin:
+//
+//	  85   manifest projection (71 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  76   routeFloor
+//
 // routeFloorProjection is checked against the MANIFEST, not against the code,
 // by TestRoutePartitionManifestIsATotalPartition.
 //
@@ -227,8 +235,8 @@ const manifestPath = "testdata/routes.partition.tsv"
 // red the gate from the first route to the eightieth.
 // ---------------------------------------------------------------------------
 const (
-	routeFloorProjection = 84
-	routeFloor           = 75
+	routeFloorProjection = 85
+	routeFloor           = 76
 )
 
 // muxRecorder implements Mux and records patterns instead of routing.
