@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -466,8 +467,24 @@ func (s *Server) agentTools() []agentTool {
 func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	all := s.agentTools()
 	chief, acting, decided := false, false, false
+	decide := func() {
+		if !decided {
+			// acting: the chief AND on. A chief its owner turned off keeps
+			// no chief-only tool (chief_toggle.go), and is still the chief
+			// for the notChief axis.
+			chief, decided = s.isChiefAgent(ctx, a), true
+			acting = chief && s.ownersChiefOn(ctx, a)
+		}
+	}
 	out := make([]agentTool, 0, len(all))
 	for _, t := range all {
+		// The Compose chief is offered exactly its pre-allowed tools
+		// (composeChiefRefuses' rule, with the chief decided once per listing).
+		if s.ext.ComposeChief != nil && !agentspec.ComposeChiefAllowed(t.def.Name) {
+			if decide(); chief {
+				continue
+			}
+		}
 		if t.officerOnly {
 			o, _, officer := s.officerOf(a)
 			if !officer || !officers.ToolOffered(o, t.def.Name) {
@@ -478,13 +495,7 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 			t.def = officerToolDefFor(o, t.def)
 		}
 		if t.chiefOnly || t.notChief {
-			if !decided {
-				// acting: the chief AND on. A chief its owner turned off keeps
-				// no chief-only tool (chief_toggle.go), and is still the chief
-				// for the notChief axis.
-				chief, decided = s.isChiefAgent(ctx, a), true
-				acting = chief && s.ownersChiefOn(ctx, a)
-			}
+			decide()
 			if (t.chiefOnly && !acting) || (t.notChief && chief) {
 				continue
 			}
@@ -492,6 +503,42 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 		out = append(out, t)
 	}
 	return out
+}
+
+// composeChiefRefuses reports whether name is refused to agent a because a is
+// the chief on the Docker Compose install (Extensions.ComposeChief) and name is
+// not one of its pre-allowed tools (agentspec.ComposeChiefAllowedMCPTools).
+//
+// 🔴 ONE LIST, THREE CONSUMERS. In the Compose container every permission
+// prompt is denied, so a tool outside that list is one the chief can never
+// run. The spec pre-allows the list (agentspec.Build), the listing offers
+// nothing outside it (toolsFor), and this re-check refuses a call by name, so
+// the chief is never offered — nor told about (agentspec.ChiefInstructionsCompose,
+// mcpInstructionsFor) — a tool it cannot use.
+func (s *Server) composeChiefRefuses(ctx context.Context, a agents.Agent, name string) bool {
+	return !agentspec.ComposeChiefAllowed(name) && s.isComposeChief(ctx, a)
+}
+
+// isComposeChief reports whether a is the chief on the Docker Compose install
+// (Extensions.ComposeChief).
+func (s *Server) isComposeChief(ctx context.Context, a agents.Agent) bool {
+	return s.ext.ComposeChief != nil && s.isChiefAgent(ctx, a)
+}
+
+// composeChiefRefusal is the Compose chief's answer for a tool outside its
+// pre-allowed set.
+func composeChiefRefusal(name string) string {
+	return name + " is not available to the chief on this install (Docker Compose). " + agentspec.ComposeChiefUnavailable
+}
+
+// toolDeclared reports whether the registry (agentTools) declares name.
+func (s *Server) toolDeclared(name string) bool {
+	for _, t := range s.agentTools() {
+		if t.def.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // toolAxis is name's two who-axis flags in the registry (both false for a name
@@ -661,6 +708,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 	// offered, and this closure runs whatever it is handed — so the decision is
 	// made again here, against the agent's current row.
 	switch chiefOnly, notChief := s.toolAxis(name); {
+	case s.composeChiefRefuses(ctx, a, name):
+		return toolErr("%s", composeChiefRefusal(name))
 	case chiefOnly && !s.isChiefAgent(ctx, a):
 		return toolErr("%s is available to your owner's chief agent only", name)
 	case chiefOnly && !s.chiefActing(ctx, a):

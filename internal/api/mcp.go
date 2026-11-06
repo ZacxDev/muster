@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -68,11 +69,22 @@ func mcpChiefInstructions() string {
 		"call one through muster's proxy: " + ProxyRecipe("<connector>", "<host>") + " You never see the credential. " + mcpGitNote
 }
 
+// mcpComposeChiefInstructions is the initialize instructions for the chief on
+// the Docker Compose install (composeChiefRefuses).
+const mcpComposeChiefInstructions = "muster's tools for the chief on this install (Docker Compose): the tools this server " +
+	"lists are exactly the ones you can run. " + agentspec.ComposeChiefUnavailable
+
 // mcpInstructionsFor is the initialize instructions this server gives agent a:
 // the connector store's (the chief's own when a is the chief), and the
 // attention queue's paragraph when its tools are offered (attention_tools.go's
 // attentionInstructionFor: an officer instance's differs).
 func (s *Server) mcpInstructionsFor(ctx context.Context, a agents.Agent) string {
+	// The Compose chief: none of the connector store's or the attention
+	// queue's tools is among the ones it can run, so neither paragraph is true
+	// for it; it is told what this install lacks (agentspec.ComposeChiefUnavailable).
+	if s.isComposeChief(ctx, a) {
+		return mcpComposeChiefInstructions
+	}
 	in := mcpInstructions()
 	if s.isChiefAgent(ctx, a) {
 		in = mcpChiefInstructions()
@@ -134,12 +146,28 @@ func (s *Server) writeMCP(w http.ResponseWriter, id json.RawMessage, result any,
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
 	disabled, off := s.mcpFeatureHooks(agentDoor)
+	compose := s.isComposeChief(r.Context(), a)
+	if compose {
+		// A tool the Compose chief is not offered is explained, not "unknown":
+		// it exists, and this install does not let the chief run it.
+		// A name the registry does not declare keeps the feature hook's answer.
+		featureOff := disabled
+		disabled = func(name string) string {
+			if name == mcpHelpTool || s.toolDeclared(name) {
+				return composeChiefRefusal(name)
+			}
+			return featureOff(name)
+		}
+	}
 	s.serveMCP(w, r, mcpSurface{
 		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
 		call:         func(name, args string) string { return s.dispatchAgentTool(r.Context(), a, name, args) },
 		instructions: s.mcpInstructionsFor(r.Context(), a),
 		disabled:     disabled,
 		offFeatures:  off,
+		// The Compose chief is offered exactly its pre-allowed tools, and
+		// muster_help is not one of them (composeChiefRefuses).
+		noHelp: compose && !agentspec.ComposeChiefAllowed(mcpHelpTool),
 	})
 }
 
@@ -159,6 +187,9 @@ type mcpSurface struct {
 	// offered) and misconfigured (offered, degraded), which muster_help lists
 	// (features.go's mcpOffFeatures). nil: none listed.
 	offFeatures func() (off, degraded []mcpOffFeature)
+	// noHelp: the door does not add muster_help (the Compose chief, which
+	// could not run it).
+	noHelp bool
 }
 
 // explainUnlisted is surface.disabled's answer for name, or "".
@@ -208,7 +239,7 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 	case "ping":
 		s.writeMCP(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
-		tools := newMCPCatalog(surface.tools()).served
+		tools := newMCPCatalog(surface.tools(), !surface.noHelp).served
 		if tools == nil {
 			tools = []map[string]any{}
 		}
@@ -224,7 +255,7 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 		}
 		// Only a tool this surface LISTS may be called through it: a gateway-only
 		// tool's name is as unknown here as a made-up one.
-		catalog := newMCPCatalog(surface.tools())
+		catalog := newMCPCatalog(surface.tools(), !surface.noHelp)
 		def, listed := catalog.lookup(p.Name)
 		if !listed {
 			// 🔴 HIDDEN, BUT EXPLAINED: a tool left out because its FEATURE is off

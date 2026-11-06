@@ -134,9 +134,17 @@ muster can reach), so:
 - these run **without a prompt**: `sessions_overview`, `fleet_list`,
   `focus_search`, `fleet_report`, `tasks_list`, `task_get`, `attention_list` and,
   with session routing on, `route_to_session`;
-- **every other prompt is denied at once**, not left hanging: another muster tool
-  (`task_comment`, `reply_draft`, `task_create_gated`, …), Bash, a file edit. The
-  chief is told it was denied and carries on.
+- **they are the only muster tools it is offered.** muster's MCP server lists
+  the chief nothing else (not `task_comment`, `task_set_status`,
+  `task_create_gated`, `reply_draft`, `agent_dispatch`, `attention_ask`,
+  `connectors_list` or `muster_help`), and refuses a call to one by name. Its
+  instructions name the same tools and say plainly that filing or commenting on
+  a task, changing a task's status, asking or answering an ask, dispatching an
+  agent, drafting a plugin reply, connectors and HQ are not available on this
+  install. All three (what it may run, what it is offered, what it is told) come
+  from one list in muster's code;
+- **every other prompt is denied at once**, not left hanging: Bash, a file edit.
+  The chief is told it was denied and carries on.
 
 ⚠ **Not every tool prompts.** In its default permission mode Claude Code itself
 runs some tools without asking, so they run here too, beside the eight above
@@ -229,6 +237,10 @@ The other way round, the chief is the one agent **not** offered
 `connector_request`, `connector_status`, `browser_flow_request` or
 `browser_flow_status`: its connectors are the standing grants you give it
 (`connectors_list` shows them), and it does not ask for browser flows.
+
+On the docker compose install the chief is offered far less: only the tools
+it can run there, the ones pre-allowed in its container ([its
+tools](#on-the-docker-compose-install)).
 
 `agent_dispatch` starts an agent where you say: its `target` is **required
 and has no default**. Today that is a pod, `pod/claude-code` or
