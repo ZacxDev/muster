@@ -907,6 +907,13 @@ type sweepOps struct {
 // chief has stopped calling the owner's model, which a process of the agent's
 // uid anywhere in the container would contradict, so that is swept too (a
 // `docker compose exec -u 1000` shell open at the stop included).
+//
+// ⚠ IT RUNS AT A STOP OF A CHILD THIS SUPERVISOR STARTED (stop), and again on
+// every step while that stop has left something (s.unclean). A spec that is
+// already replicas 0 when this supervisor starts, or that stays off, runs no
+// sweep: a process of the agent's uid that an operator starts by hand in an
+// off container (`docker compose exec -u 1000 chief …`) is the operator's, and
+// this does not kill it.
 func killDescendants(root, uid int, grace, killWait time.Duration, logf func(string, ...any)) error {
 	return sweep(sweepOps{
 		left: func() []int { return leftovers(root, uid) },
