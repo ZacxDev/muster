@@ -58,7 +58,7 @@ const ReadBudgetNote = "200 reads per item, ONE count shared by officer_kube_rea
 	"(every officer_obs_raw call counts, a routine instance's too; a judgement instance's officer_obs_query counts against the item it holds, " +
 	"and is not counted while it holds none; a routine instance's is never counted); " +
 	"the 201st read of an item is refused, whichever tool makes it. The count is the item's, not the instance's: " +
-	"reads a routine instance made of an item it handed on with needs_judgement count toward the same 200 once it is a judgement item. " +
+	"reads a routine instance made of an item before it handed the item on to the judgement pool count toward the same 200. " +
 	"An officer_obs_raw or officer_obs_query call HQ answers with 429, a 5xx or a 403 not_investigating, or that gets no answer from HQ, " +
 	"is not counted; HQ's other refusals are"
 
