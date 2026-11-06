@@ -99,6 +99,11 @@ type ComposeChief struct {
 	// boot re-apply restarted the chief) and its replicas (whether it is live:
 	// the re-apply never starts a stopped spec). Nil: nothing is re-applied.
 	Spec func() (generation int64, replicas int, err error)
+	// StartIfLive is the provisioner's Start, made only when live says so, the
+	// check and the start under the agent's lifecycle lock (agentprovision
+	// Adapter.StartIfLive): a Stop from the agent page during boot is never
+	// undone by the boot re-apply. Nil: nothing is re-applied.
+	StartIfLive func(ctx context.Context, agentID int64, live func() (bool, error)) (bool, error)
 }
 
 // composeReapplyTimeout bounds the boot re-apply as a whole (its Start has
@@ -125,14 +130,19 @@ const composeReapplyTimeout = 2 * time.Minute
 //
 // 🔴 IT NEVER STARTS A CHIEF THAT IS OFF, on either axis:
 //   - the admin's chief switch must be on (chiefOn: a stored Off wins);
-//   - its spec must be live (the driver's phase is not Stopped: replicas 1).
-//     A chief stopped from its agent page, or never applied, stays as it is.
+//   - its spec must be live (spec.json's replicas are 1; never the instance's
+//     phase, which reads pending or failed for a spec that is stopping). A
+//     chief stopped from its agent page, or never applied, stays as it is.
 //
 // It runs under the admin's switch lock, so a click on Account → Chief during
-// boot is ordered with it.
+// boot is ordered with it, and the spec check and the Start run under the
+// agent's own lifecycle lock (StartIfLive), so a Stop from the agent page
+// during boot is never undone.
 //
-// ⚠ A CHIEF WITH NO CREDENTIAL LEFT is not touched: the rule's refusal is
-// logged and the chief keeps the spec it had (Start would refuse to build one).
+// 🔴 A RUNNING CHIEF WITH NO CREDENTIAL LEFT IS STOPPED (Provisioner.Stop): the
+// admin withdrew it, and agentprovision.Start refuses to revive any agent on a
+// withdrawn credential. Keeping the spec would leave the CLI on the deleted
+// token while Account says "No credential yet".
 func (s *Server) ReapplyComposeChiefAtBoot(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), composeReapplyTimeout)
@@ -187,15 +197,36 @@ func (s *Server) reapplyComposeChief(ctx context.Context) (string, error) {
 	// whose container is still stopping, or whose stop left a process running,
 	// reads pending or failed (the driver asks the supervisor at replicas 0),
 	// and a Start here would turn it back on.
-	if s.ext.ComposeChief.Spec == nil {
+	if s.ext.ComposeChief.Spec == nil || s.ext.ComposeChief.StartIfLive == nil {
 		return "the chief's spec cannot be read: it was not re-applied at boot", nil
 	}
-	if _, replicas, err := s.ext.ComposeChief.Spec(); errors.Is(err, os.ErrNotExist) || (err == nil && replicas == 0) {
+	live := func() (bool, error) {
+		_, replicas, err := s.ext.ComposeChief.Spec()
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("read the chief's spec: %w", err)
+		}
+		return replicas > 0, nil
+	}
+	if ok, err := live(); err != nil {
+		return "", err
+	} else if !ok {
 		return "the chief's spec is stopped: it was not re-applied at boot", nil
-	} else if err != nil {
-		return "", fmt.Errorf("read the chief's spec: %w", err)
 	}
 	cred, err := s.ext.ComposeChief.Credential(ctx, owner)
+	// 🔴 NO CREDENTIAL LEFT STOPS IT. The admin deleted the chief's credential
+	// from .env: re-applying is refused, and keeping the spec would leave the
+	// CLI running on the credential they withdrew while Account says "No
+	// credential yet". agentprovision.Start refuses to revive any agent on a
+	// withdrawn credential; a running one is stopped here, the same rule.
+	if errors.Is(err, ErrComposeChiefNoCredential) {
+		if err := s.ext.Provisioner.Stop(ctx, chief.ID); err != nil {
+			return "", fmt.Errorf("stop the chief, whose credential was removed: %w", err)
+		}
+		return "stopped the running chief at boot: no credential is left in .env (" + ComposeChiefNeedsCredential + ")", nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("the chief's credential: %w", err)
 	}
@@ -204,8 +235,12 @@ func (s *Server) reapplyComposeChief(ctx context.Context) (string, error) {
 		return g, err == nil
 	}
 	before, okBefore := gen()
-	if err := s.ext.Provisioner.Start(ctx, chief.ID); err != nil {
+	started, err := s.ext.ComposeChief.StartIfLive(ctx, chief.ID, live)
+	if err != nil {
 		return "", err
+	}
+	if !started {
+		return "the chief was stopped while muster booted: it was not re-applied", nil
 	}
 	after, okAfter := gen()
 	label := composeChiefCredLabel(cred)

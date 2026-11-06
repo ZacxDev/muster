@@ -717,7 +717,28 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
 	defer a.lockAgent(agentID)()
+	return a.startLocked(ctx, agentID)
+}
 
+// StartIfLive is Start, only when live reports the agent live, with the check
+// and the start both under the agent's lifecycle lock (lockAgent): a Stop
+// cannot land between them, so a Stop is never undone by a start that read the
+// agent as live before it. It reports whether it started. The Compose chief's
+// boot re-apply is the caller (internal/api reapplyComposeChief); live reads
+// its spec's replicas.
+func (a *Adapter) StartIfLive(ctx context.Context, agentID int64, live func() (bool, error)) (bool, error) {
+	ctx, cancel := a.opCtx(ctx)
+	defer cancel()
+	defer a.lockAgent(agentID)()
+	ok, err := live()
+	if err != nil || !ok {
+		return false, err
+	}
+	return true, a.startLocked(ctx, agentID)
+}
+
+// startLocked is Start's work; the caller holds lockAgent(agentID).
+func (a *Adapter) startLocked(ctx context.Context, agentID int64) error {
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)

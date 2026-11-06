@@ -511,7 +511,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if prov != nil && cfg.chiefCompose() {
 		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane), OpenRouterKey: plane.OpenRouterKey,
-			Spec: composeSpec(cfg.ChiefSpecDir)}
+			Spec: composeSpec(cfg.ChiefSpecDir), StartIfLive: prov.StartIfLive}
 	}
 	if prov != nil {
 		ext.Provisioner = prov
