@@ -437,19 +437,16 @@ func composerPinScript() g.Node {
   // The frame is laid over the whole viewport, so its height is the top
   // window's — but a keyboard that only overlays the page (iOS) shrinks the TOP
   // window's visual viewport, never the frame's. Measured against the top
-  // window, the composer still rides on top of it.
-  var vw = window;
-  try { if (window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) vw = window.parent; } catch (e) {}
+  // window, the composer still rides on top of it (kbWin, keyboard_viewport.go).
+` + keyboardViewportJS + `
+  var vw = kbWin();
   var pending = false;
   function measure() {
     pending = false;
-    var vv = vw.visualViewport;
-    var bottom = vw.innerHeight;
-    if (vv) {
-      if (Math.abs(vv.scale - 1) > 0.001) return;
-      bottom = Math.min(vw.innerHeight, vv.height + vv.offsetTop);
-    }
-    var kb = Math.max(0, Math.round(vw.innerHeight - bottom));
+    // A pinch is not a resize: nothing is measured at a scale other than 1.
+    var m = kbMeasure(vw);
+    if (!m) return;
+    var bottom = m.bottom, kb = m.kb;
     box.style.bottom = kb ? kb + 'px' : '';
     root.style.setProperty('--mv-vh', Math.round(bottom) + 'px');
     var sg = document.getElementById('mv-suggest');

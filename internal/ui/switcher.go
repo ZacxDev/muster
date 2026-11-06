@@ -983,8 +983,8 @@ var switcherOOBJS = `if (!window.__musterSwitcherOOB || window.__musterSwitcherO
 // scale other than 1) is not a keyboard.
 var switcherKeyboardJS = `if (!window.__musterSwitcherKb) {
     window.__musterSwitcherKb = true;
-    var root = document.documentElement, vw = window;
-    try { if (window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) vw = window.parent; } catch (e) {}
+` + keyboardViewportJS + `
+    var root = document.documentElement, vw = kbWin();
     var kbWidth = -1, tallest = 0;
     function typing() {
       var a = document.activeElement;
@@ -993,9 +993,9 @@ var switcherKeyboardJS = `if (!window.__musterSwitcherKb) {
       return a.tagName === 'INPUT' && /^(text|search|email|url|tel|password|number)$/.test(a.type);
     }
     function kbCheck() {
-      var v = vw.visualViewport;
-      if (v && Math.abs(v.scale - 1) > 0.001) return;
-      var w = vw.innerWidth, h = v ? v.height : vw.innerHeight;
+      var m = kbMeasure(vw);
+      if (!m) return;
+      var w = vw.innerWidth, h = m.h;
       if (w !== kbWidth) { kbWidth = w; tallest = h; }
       if (h > tallest) tallest = h;
       var up = typing() && tallest - h >= ` + strconv.Itoa(switcherKeyboardDrop) + `;

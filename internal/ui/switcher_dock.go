@@ -301,7 +301,7 @@ var dockJS = func() string {
     li.appendChild(r);
     return li;
   }
-` + focusAgeLineJS + `
+` + focusAgeLineJS + keyboardViewportJS + `
   function tabOf(view) { return document.getElementById('dock-tab-' + view); }
   function field() { return document.getElementById(FILTER); }
   function query() { var f = field(); return f ? f.value.trim() : ''; }
@@ -375,16 +375,21 @@ var dockJS = func() string {
 
   // THE ONE SNAP, against the VISUAL viewport: 60% of it, never less than
   // the header and three rows (web/css/input.css). --dock-kb is the part of
-  // the layout viewport a soft keyboard covers, which the sheet sits on top of:
-  // 0 where the keyboard resizes the page itself (resizes-content, the Android
-  // shell), and 0 under a pinch zoom, which moves the visual viewport too.
+  // the layout viewport a soft keyboard covers, which the sheet sits on top of
+  // (kbMeasure, keyboard_viewport.go: 0 where the keyboard resizes the page
+  // itself), and 0 under a pinch zoom, which shrinks the visual viewport too.
+  //
+  // 🔴 ITS OWN window, NOT kbWin(): the sheet is position:fixed in the
+  // document it is drawn in, and that is always the TOP document (a frame's
+  // bar opens its parent's dock), so the viewport it sits in is this window's.
+  // kbWin() would give the same window there; naming window says why.
   function measure() {
     var d = dlg();
     if (!d) return;
-    var v = window.visualViewport, h = v ? v.height : window.innerHeight;
+    var m = kbMeasure(window), v = window.visualViewport;
+    var h = m ? m.h : (v ? v.height : window.innerHeight), kb = m ? m.kb : 0;
     var head = d.querySelector('[data-dock-header]');
     var half = Math.max(Math.round(0.6 * h), (head ? head.offsetHeight : 0) + 3 * ROW_MIN);
-    var kb = v && !(v.scale > 1.01) ? Math.max(0, Math.round(window.innerHeight - v.height - v.offsetTop)) : 0;
     d.style.setProperty('--dock-half', half + 'px');
     d.style.setProperty('--dock-kb', kb + 'px');
   }

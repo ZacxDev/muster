@@ -361,8 +361,14 @@ grip's "Expand" / "Shrink to half" names are gone. Measured against the
 
 The sheet is `position: fixed; inset-inline: 0; bottom: var(--dock-kb)` with
 that height, and the list's last row is reachable by scrolling inside it.
-`--dock-kb` is 0 under a pinch zoom (`visualViewport.scale > 1`), which
-shrinks the visual viewport without any keyboard.
+`--dock-kb` is 0 under a pinch zoom (a `visualViewport.scale` other than 1),
+which shrinks the visual viewport without any keyboard. The keyboard reading
+is the one shared helper, `keyboardViewportJS` (`internal/ui/keyboard_viewport.go`),
+that the Rendered view's pinned composer and the bar's keyboard mark also use
+(`TestOneKeyboardMeasure` pins all three). They measure the TOP window inside
+the view switch's frame (`kbWin()`); the dock measures its own window, which is
+always the top document it is drawn in, also when a frame's bar opens it
+(`switcher-dock.spec.ts` case 13k checks both).
 
 ### Drag physics
 

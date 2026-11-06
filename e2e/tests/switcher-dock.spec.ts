@@ -804,6 +804,25 @@ test.describe('phone 390×844 touch', () => {
     await page.evaluate(() => { delete (window as any).__vvH; window.visualViewport!.dispatchEvent(new Event('resize')); });
     await page.keyboard.press('Escape');
     await expect.poll(() => dockOpen(page)).toBe(false);
+
+    // 🔴 OPENED FROM THE VIEW SWITCH'S FRAME, the sheet still measures ITS OWN
+    // window — the top document it is drawn in (switcher_dock.go measure) —
+    // not the frame's that opened it: the top window's keyboard moves it, and
+    // the frame's viewport (left full height here) does not.
+    await page.locator('#view-terminal').tap();
+    await expect(frameEl(page)).toBeVisible();
+    const fl = page.frameLocator('iframe[data-muster-view]');
+    await expect(fl.locator('#switcher-toggle')).toBeVisible();
+    await fl.locator('#switcher-toggle').tap();
+    await expect.poll(() => dockOpen(page), 'the top dock opens from the frame').toBe(true);
+    await dock(page).evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
+    await page.evaluate(() => { (window as any).__vvH = 420; window.visualViewport!.dispatchEvent(new Event('resize')); });
+    await page.waitForTimeout(100);
+    const fb2 = (await dock(page).boundingBox())!;
+    expect(Math.abs(fb2.y + fb2.height - 420), `from the frame: the sheet's foot is on the top window's keyboard (${fb2.y + fb2.height})`).toBeLessThanOrEqual(2);
+    await page.evaluate(() => { delete (window as any).__vvH; window.visualViewport!.dispatchEvent(new Event('resize')); });
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page)).toBe(false);
   });
 
   // The server half (30 kept, visit order, gone windows dropped) is
