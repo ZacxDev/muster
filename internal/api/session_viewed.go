@@ -63,7 +63,7 @@ func (s *Server) episodeViewedMirror(ctx context.Context, r *http.Request, h mir
 		if w.Session == e.Session && w.ID == e.Window {
 			// The key the stall facts list the window under (stateWindowKey,
 			// one rule with the pass and the waiting hook).
-			if key, _, _ := stateWindowKey(w, sessionStateListsHermes); key != "" {
+			if key, _ := stateWindowKey(w); key != "" {
 				s.episodeViewed(ctx, sessionstate.KindMirror, key, func() string {
 					// The window's streak now, as the pass keys it (windowStreakKey).
 					return windowStreakKey(s.ext.Mirror.AgentState(ctx, h.Host, w.Session, w.ID))

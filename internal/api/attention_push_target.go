@@ -46,8 +46,8 @@ import (
 // EVERYTHING ELSE OPENS ITS ITEM ON THE QUEUE PAGE (attentionItemPath) — an
 // explicit fallback, never an empty link and never a 404: an ask that is no
 // longer open (answered, dismissed, expired), another owner's or a missing
-// one (the same answer, so nothing tells them apart), a Hermes window that
-// names no conversation, a window that stopped waiting, and any kind this
+// one (the same answer, so nothing tells them apart), a window that stopped
+// waiting, and any kind this
 // rule does not name.
 // ---------------------------------------------------------------------------
 
@@ -146,9 +146,6 @@ func (s *Server) attentionSessionPath(ctx context.Context, owner int64, it atten
 	c := it.card
 	switch it.Kind {
 	case attentionKindSession, attentionKindQuestion:
-		if it.hermes != nil && it.claudeSession == "" {
-			return "" // a Hermes window that names no conversation
-		}
 		if c.ref.Host == "" || c.ref.Session == "" {
 			return ""
 		}

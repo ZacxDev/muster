@@ -34,7 +34,7 @@ import (
 // WHEN IT PUSHES (episodeVerdict):
 //   - a WAITING window — 🔴 WHATEVER IT WAITS ON: a prompt muster cannot
 //     answer, and an answerable ask too (a held AskUserQuestion, an opencode
-//     question or permission request, a Hermes approval; operator decision
+//     question or permission request; operator decision
 //     after #463, "every prompt's push waits 60 s"): once it has waited out
 //     its GRACE (EpisodeWaitingGrace, 60 s), unless its episode ended first.
 //     An answerable ask's CARD is on the Asks list at once; only the phone
@@ -533,7 +533,7 @@ func episodeWindowOf(hs []mirror.HostView, it attentionItem) (key, runtime strin
 		}
 		for _, x := range h.Windows {
 			if x.Session == it.card.ref.Session && x.ID == it.card.ref.Window {
-				key, runtime, _ = stateWindowKey(x, sessionStateListsHermes)
+				key, runtime = stateWindowKey(x)
 				return key, runtime, x, key != ""
 			}
 		}
@@ -612,18 +612,12 @@ func answeredWindow(hs []mirror.HostView, cw coveredWait) bool {
 			if w.Session != cw.session || w.ID != cw.window {
 				continue
 			}
-			key, _, _ := stateWindowKey(w, sessionStateListsHermes)
+			key, _ := stateWindowKey(w)
 			return w.Status != "" && w.Status != mirror.StatusWaiting && key == cw.key
 		}
 	}
 	return false
 }
-
-// sessionStateListsHermes: session state lists Hermes windows (design default
-// D3). 🔴 ONE CONSTANT FOR BOTH SIDES of the shared rule — the state pass's
-// stall facts and the hook's episodeCover — so they cannot drift apart and
-// leave a window the hook covers that the pass never sees, or the reverse.
-const sessionStateListsHermes = true
 
 // episodeWaitingPushes opens (or finds) the episode of each covered waiting
 // window in items (episodeCover) and settles its push as the pass would

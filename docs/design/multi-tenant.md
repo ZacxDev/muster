@@ -129,9 +129,8 @@ Decided; this page does not reopen them.
 | local MCP endpoint | optional `-mcp-listen` on a **literal loopback address** (INSTALL examples use port 47823; a home-manager deployment uses 17823). It forwards every JSON-RPC call to `<url>/mirror/mcp` **with the same mirror token**, adding the caller's Claude session id on `tools/call` | `cmd/muster-mirror/main.go:183`, `:342-356`, `internal/mirrorhost/mcpproxy.go:25-45`, `:58`, `:284` |
 | MCP secret | `-mcp-secret-file`, default `os.UserConfigDir()/muster-mirror/mcp-secret`, created 0600 | `cmd/muster-mirror/main.go:184`, `internal/mirrorhost/mcpproxy.go:352-360` |
 | MCP caller check | every POST must carry the secret, no `Origin`, and an `X-Muster-Tmux` naming **the tmux server this mirror lists**; otherwise it is refused before anything is forwarded | `internal/mirrorhost/mcpproxy.go:180-196`, `:219-240` |
-| `AskUserQuestion` hook | `muster-mirror ask`, a short-lived Claude Code hook. With no `-url`, it reads **one** record the daemon wrote, `~/.muster/mirror-hook.json` (URL, token-file path, Hermes status dir; no secret), and POSTs to `/mirror/ask`. The recorded token goes **only** to the recorded URL. A record with no token file (the daemon records one only when it was given `-token-file`) means the hook's default, `~/.muster/mirror-token` | `cmd/muster-mirror/hookconfig.go:13-50`, `cmd/muster-mirror/main.go:390-403`, `cmd/muster-mirror/ask.go:63-110`, `:83-86` |
+| `AskUserQuestion` hook | `muster-mirror ask`, a short-lived Claude Code hook. With no `-url`, it reads **one** record the daemon wrote, `~/.muster/mirror-hook.json` (URL, token-file path; no secret), and POSTs to `/mirror/ask`. The recorded token goes **only** to the recorded URL. A record with no token file (the daemon records one only when it was given `-token-file`) means the hook's default, `~/.muster/mirror-token` | `cmd/muster-mirror/hookconfig.go:13-50`, `cmd/muster-mirror/main.go:390-403`, `cmd/muster-mirror/ask.go:63-110`, `:83-86` |
 | opencode | a **local** opencode pair token at `~/.muster/opencode-token`, renewed by the daemon. It is a credential for the host's opencode server, not for muster | `cmd/muster-mirror/opencode.go:19-40`, `:122-128` |
-| Hermes | status files written by `muster-mirror hermes-hook` into a status dir, which the hook finds through the same one hook record | `cmd/muster-mirror/hermes.go:46-53`, `:79-103` |
 | service | INSTALL.md writes one `muster-mirror.service` user unit (launchd agent `io.github.zacxdev.muster-mirror` on macOS) with `EnvironmentFile=~/.config/muster-mirror/env`. `muster doctor` checks that one unit and that one env file | `INSTALL.md:713-731`, `cmd/muster/doctor.go:54-58`, `:565-580` |
 | traces | OTLP attribute `host` only | `cmd/muster-mirror/main.go:425-426` |
 
@@ -621,8 +620,6 @@ tool list is quiet, with one registration per tenant.
     the hook now fails open where it used to send the question to the legacy
     record's server; muster never showed such a question anyway, since it
     shows one only in a window the calling host lists.
-- The **Hermes status dir** can stay shared: each daemon reads only the windows
-  in its own tmux server.
 - The **opencode token** is a credential for the host's opencode, not for muster.
   Today every daemon that finds the token file renews it
   (`cmd/muster-mirror/opencode.go:122-128`). Exactly one daemon should renew it:

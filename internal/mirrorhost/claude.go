@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/cctasks"
-	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/procstat"
 )
@@ -77,9 +76,8 @@ func capabilityOf[T any](b Backend) (T, bool) {
 // another agent CLI: it is also the runtime seam's AgentPane (runtime.go).
 type ClaudePane struct {
 	// Runtime is the agent CLI in the pane: "" for Claude Code (so every
-	// ClaudePane means what it did before the seam), mirror.RuntimeHermes for
-	// Hermes. Only a Claude Code pane is ever sent to: a Hermes pane has no
-	// send path before Hermes Phase 3.
+	// ClaudePane means what it did before the seam), mirror.RuntimeOpenCode
+	// for opencode. Only a Claude Code pane is ever sent to.
 	Runtime string
 	// Pane is the tmux pane id (%12): the only input target — never the session
 	// name, which resolves to whatever pane was focused last.
@@ -137,13 +135,8 @@ type ClaudePane struct {
 	// none.
 	LiveCopy string
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
-	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
-	// or SourceProcess.
+	// SourceGuessed (see ClaudeLocator).
 	Source string
-	// Hermes is how a Hermes pane resolved (its breadcrumb, lineage, status
-	// and, when it has no rendered view, why): what -list -hermes prints. nil
-	// for Claude Code, and for a host with no HermesSource.
-	Hermes *hermeshost.PaneSession
 	// OpenCode is how an opencode pane resolved (its title, the match, why it
 	// has no rendered view): what -list -opencode prints. nil for the other
 	// runtimes, and for a host with no OpenCodeSource.
@@ -326,7 +319,7 @@ type procInfo struct {
 	// argvUnread: /proc/<pid>/cmdline could not be read, so argv is empty for
 	// want of reading it, not because the process has none. The Claude
 	// locator does not look at it (a process it cannot read simply is not
-	// Claude Code); the Hermes guard refuses on it (hermes.go).
+	// Claude Code); the paste guard refuses on it (paneguard.go).
 	argvUnread bool
 }
 
@@ -340,9 +333,10 @@ func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
 // argv and start time, and each process's children (sorted). The error is the
 // proc root's own (unreadable, absent). A process whose stat cannot be read
 // (it vanished mid-read, or is hidden) is SKIPPED: absent from both maps. The
-// Claude locator relies on exactly that; the Hermes guard does not, and finds
+// Claude locator relies on exactly that; the paste guard does not, and finds
 // such a process inside a pane's tree by the kernel's own children lists
-// (HermesIdentity.InTree). Shared by ClaudeLocator and HermesIdentity.
+// (PaneProcs.InTree), then reads it alone (readProcEntry). Shared by
+// ClaudeLocator and PaneProcs.
 func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 	procs := map[int]procInfo{}
 	children := map[int][]int{}
@@ -355,31 +349,41 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		dir := filepath.Join(root, e.Name())
-		stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+		info, err := readProcEntry(root, pid)
 		if err != nil {
 			continue
 		}
-		st, ok := procstat.Parse(stat)
-		if !ok {
-			continue
-		}
-		ppid := st.PPID
-		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start, tty: st.TTY}
-		if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
-			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
-				info.argv = append(info.argv, string(a))
-			}
-		} else {
-			info.argvUnread = true
-		}
 		procs[pid] = info
-		children[ppid] = append(children[ppid], pid)
+		children[info.ppid] = append(children[info.ppid], pid)
 	}
 	for _, c := range children {
 		sort.Ints(c)
 	}
 	return procs, children, nil
+}
+
+// readProcEntry reads one process under the proc root: its stat (whose error
+// is the entry's, os.ErrNotExist when the process is gone) and its cmdline
+// (argvUnread when that cannot be read).
+func readProcEntry(root string, pid int) (procInfo, error) {
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return procInfo{}, err
+	}
+	st, ok := procstat.Parse(stat)
+	if !ok {
+		return procInfo{}, fmt.Errorf("%s/stat: unparseable", dir)
+	}
+	info := procInfo{ppid: st.PPID, comm: st.Comm, state: st.State, start: st.Start, tty: st.TTY}
+	if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
+		for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
+			info.argv = append(info.argv, string(a))
+		}
+	} else {
+		info.argvUnread = true
+	}
+	return info, nil
 }
 
 // installerVersion is how the native installer names Claude Code's binary:
@@ -931,8 +935,7 @@ func (t Tmux) PastePane(ctx context.Context, paneID, text string) error {
 	return nil
 }
 
-// pasteBracketed is PastePane's first half, and the Hermes send's paste
-// (hermes_send.go): text into paneID as one bracketed paste, with no Enter.
+// pasteBracketed is PastePane's first half, and PasteChecked's: text into paneID as one bracketed paste, with no Enter.
 // `load-buffer` from STDIN into a uniquely named buffer (never argv),
 // `paste-buffer -p -d` into the PANE id (the buffer deleted after).
 func (t Tmux) pasteBracketed(ctx context.Context, paneID, text string) error {
@@ -950,7 +953,7 @@ func (t Tmux) pasteBracketed(ctx context.Context, paneID, text string) error {
 	return nil
 }
 
-// pasteEnter is PastePane's Enter, and the Hermes send's.
+// pasteEnter is PastePane's Enter, and PasteChecked's.
 //
 // 🔴 THE ENTER IS A PASTED NEWLINE, NOT `send-keys`. tmux refuses
 // `send-keys` with "client is read-only" when the client it resolves for

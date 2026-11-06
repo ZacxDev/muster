@@ -1652,7 +1652,7 @@ there, to whatever model reads it. So, unlike the chief's tool:
   a path-component boundary (`/srv/example-work` covers
   `/srv/example-work/app`, never `/srv/example-work-x`). The directory
   decides; it is never written into the reply. Fail closed: a session whose
-  directory is **unknown** — a dispatched agent, a Hermes window, a host that
+  directory is **unknown** — a dispatched agent, an opencode window, a host that
   predates it, a focus not written since the upgrade — is left out and
   counted in `gaps`; a session **outside** the prefixes is left out and not
   mentioned at all. No permission router is involved.

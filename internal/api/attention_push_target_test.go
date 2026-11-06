@@ -43,15 +43,12 @@ func (p pushTargetAgents) Get(_ context.Context, id int64) (agents.Agent, error)
 // The push-target fixture's names: pairwise distinct, so a target built from
 // the wrong field cannot pass.
 const (
-	ptHermesSession = "local-0123456789abcdef"
-	ptOtherSID      = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
+	ptOtherSID = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
 )
 
 // pushTargetServer is a server whose owner (user 1) has one online host "ws"
 // listing: @1 a Claude window waiting at a prompt (session focusSID); @2 a
-// Claude window, idle, whose session holds an open AskUserQuestion; @3 a
-// waiting Hermes window that names its conversation; @4 a waiting Hermes window
-// that names none. Agents: 7 ("ptworker-7", the owner's) and 8 (another
+// Claude window, idle, whose session holds an open AskUserQuestion. Agents: 7 ("ptworker-7", the owner's) and 8 (another
 // owner's).
 func pushTargetServer(t *testing.T, store push.Store, pusher push.Pusher) *Server {
 	t.Helper()
@@ -59,8 +56,6 @@ func pushTargetServer(t *testing.T, store push.Store, pusher push.Pusher) *Serve
 	fm := &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: []mirror.Window{
 		{Session: "main", ID: "@1", Index: 1, Active: true, Claude: true, ClaudeSession: focusSID, Status: mirror.StatusWaiting, StatusSince: attnSince},
 		{Session: "main", ID: "@2", Index: 2, Claude: true, ClaudeSession: ptOtherSID, Status: mirror.StatusIdle, StatusSince: attnSince},
-		{Session: "ops", ID: "@3", Index: 1, Active: true, Runtime: mirror.RuntimeHermes, AgentSession: ptHermesSession, Status: mirror.StatusWaiting, StatusSince: attnSince},
-		{Session: "ops", ID: "@4", Index: 2, Runtime: mirror.RuntimeHermes, Status: mirror.StatusWaiting, StatusSince: attnSince},
 	}}
 	ext := Extensions{Users: stubUsers{}, Mirror: fm, Agents: pushTargetAgents{byID: map[int64]agents.Agent{
 		7: {ID: 7, OwnerID: 1, Name: "ptworker-7"},
@@ -90,12 +85,7 @@ func waitingItem(t *testing.T, s *Server, window string) attentionItem {
 	return attentionItem{}
 }
 
-func windowSession(window string) string {
-	if window == "@3" || window == "@4" {
-		return "ops"
-	}
-	return "main"
-}
+func windowSession(string) string { return "main" }
 
 // TestEachItemOpensItsSessionOrItsItem is the rule, per item kind: where a
 // tap on its notification lands (pushTargetFor, run when tapped). An ask opens
@@ -110,9 +100,9 @@ func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
 	ask := func(id int64, asker attention.Asker) attentionItem {
 		return askItem(attention.Ask{ID: id, Owner: 1, Asker: asker, Question: "q", CreatedAt: now})
 	}
-	session, question, hermes, hermesNoKey := waitingItem(t, s, "@1"), waitingItem(t, s, "@2"), waitingItem(t, s, "@3"), waitingItem(t, s, "@4")
-	if question.Kind != attentionKindQuestion || session.Kind != attentionKindSession || hermes.hermes == nil || hermesNoKey.hermes == nil {
-		t.Fatalf("fixture: kinds %s %s, hermes %v %v", session.Kind, question.Kind, hermes.hermes, hermesNoKey.hermes)
+	session, question := waitingItem(t, s, "@1"), waitingItem(t, s, "@2")
+	if question.Kind != attentionKindQuestion || session.Kind != attentionKindSession {
+		t.Fatalf("fixture: kinds %s %s", session.Kind, question.Kind)
 	}
 	for _, c := range []struct {
 		name string
@@ -121,8 +111,6 @@ func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
 	}{
 		{"a waiting mirrored session", session, "/mirror/view?host=ws&session=main&window=%401"},
 		{"a held question", question, "/mirror/view?host=ws&session=main&window=%402"},
-		{"a waiting Hermes window with a session key", hermes, "/mirror/view?host=ws&session=ops&window=%403"},
-		{"a waiting Hermes window without a session key", hermesNoKey, "/attention#" + sessionKey("ws", "ops", "@4")},
 		{"a mirrored session's attention_ask", ask(51, attention.Asker{MirrorHost: "ws", MirrorSession: ptOtherSID, Label: "s"}),
 			"/mirror/view?host=ws&session=main&window=%402"},
 		{"a mirrored session's attention_ask no window runs", ask(52, attention.Asker{MirrorHost: "ws", MirrorSession: "1a2b3c4d-0000-4000-8000-000000000052", Label: "s"}),

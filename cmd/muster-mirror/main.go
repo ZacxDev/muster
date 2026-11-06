@@ -44,7 +44,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
@@ -98,8 +97,6 @@ const (
 	envSocket      = "MUSTER_MIRROR_TMUX_SOCKET"
 	envSocketPath  = "MUSTER_MIRROR_TMUX_SOCKET_PATH"
 	envInteractive = "MUSTER_MIRROR_INTERACTIVE"
-	envHermesSend  = "MUSTER_MIRROR_HERMES_SEND"
-	envHermesAns   = "MUSTER_MIRROR_HERMES_ANSWER"
 	// The mail resume (mirrorhost's resume.go): off by default.
 	envResumeSpawn   = "MUSTER_MIRROR_RESUME_SPAWN"
 	envResumeSession = "MUSTER_MIRROR_RESUME_SESSION"
@@ -144,16 +141,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if len(args) > 0 && args[0] == "ask" {
 		return runAsk(args[1:], getenv, stdin, stdout, stderr)
 	}
-	// `muster-mirror hermes-hook`: Hermes's status hook (hermes.go). 🔴 It is
-	// given no stdout: Hermes reads a hook's stdout as a directive.
-	if len(args) > 0 && args[0] == hermeshost.HookSubcommand {
-		return runHermesHook(getenv, stdin, stderr, time.Now)
-	}
-	// `muster-mirror hermes-allowlist`: the hook's allowlist writer, for the
-	// host's Home Manager activation (hermes.go).
-	if len(args) > 0 && args[0] == "hermes-allowlist" {
-		return runHermesAllowlist(args[1:], getenv, stdout, stderr)
-	}
 	// `muster-mirror opencode-pair`: mint this host's opencode token
 	// (opencode.go). Run once per host.
 	if len(args) > 0 && args[0] == "opencode-pair" {
@@ -183,16 +170,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
-	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes|opencode <pane> <state> <session id or -> <source> for a Hermes or opencode one, then label=<label>)")
-	hermesSend := fs.Bool("hermes-send", envBool(envHermesSend), "with -interactive: let muster SEND to Hermes windows, through the gated send (screen check, Escapes, a database-confirmed submit; docs/design/hermes.md). OFF by default. Enable it on a host only after `make test-livehermes` is green against its Hermes. The host reads display.vim_mode from the Hermes home's config.yaml and sends nothing while it is on, or unreadable ("+envHermesSend+")")
-	hermesAnswer := fs.Bool("hermes-answer", envBool(envHermesAns), "with -interactive: let muster ANSWER a Hermes approval (once or deny) through Hermes's gateway viewer, which the host attaches only to a session waiting on an approval (docs/design/hermes.md, Phase 4). OFF by default: answering \"once\" lets the command run. Never a key into the pane; a sudo prompt and a clarify are answered in the terminal ("+envHermesAns+")")
+	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or opencode <pane> <state> <session id or -> <source> for an opencode one, then label=<label>)")
 	resumeSpawn := fs.Bool("resume-spawn", envBool(envResumeSpawn), "with -interactive: let muster RESUME an ended Claude Code session on this host — a new detached tmux window running `<-resume-claude> --resume <session id>` in the working directory its transcript records, when agent mail or ClankMail arrives for it (muster's MUSTER_MAIL_RESUME_ALLOW decides whose mail may). OFF by default: it starts a process here. Refused for a session running here already, a transcript this host does not hold, or a directory that is gone; at most one resume per session per 10 minutes and 6 an hour ("+envResumeSpawn+")")
 	resumeSession := fs.String("resume-session", or(getenv(envResumeSession), mirrorhost.DefaultResumeSession), "the tmux session resumed windows start in, created when absent ("+envResumeSession+")")
 	resumeClaude := fs.String("resume-claude", or(getenv(envResumeClaude), mirrorhost.DefaultResumeClaude), "the Claude Code binary a resume runs; a bare name is looked up on the tmux SERVER's PATH, so an absolute path is safer ("+envResumeClaude+")")
 	listOpenCode := fs.Bool("opencode", false, "with -list: diagnose this host's opencode windows — the opencode token (by fingerprint) and whether the server accepts it, and per window its TUI, pane title, the session the title matched and why it has no rendered view")
-	listHermes := fs.Bool("hermes", false, "with -list: diagnose this host's Hermes windows — each window's breadcrumb, session, status file and why it has no rendered view or no status — and, per hook command Hermes's config.yaml declares (its hooks: section only), its consent in the allowlist")
-	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
-	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
 	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	version := fs.Bool("version", false, "print the version and exit")
@@ -202,14 +184,18 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		}
 		return 2
 	}
+	// A leftover argument is a subcommand this binary does not have (one a
+	// newer or older release had), or a typo: refused, never run as the
+	// daemon it would otherwise start.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "muster-mirror: unknown command or argument %q (subcommands: ask, opencode-pair; see -h)\n", fs.Arg(0))
+		return 2
+	}
 	if *version {
 		fmt.Fprintf(stdout, "muster-mirror %s (tunnel protocol %d)\n", buildRevision, mirror.ProtocolVersion)
 		return 0
 	}
 
-	if *hermesStatusDir == "" {
-		fmt.Fprintln(stderr, "muster-mirror: HOME is not set, so there is no Hermes status directory (set -hermes-status-dir): every Hermes window's status is unknown")
-	}
 	ctx, stop := runContext()
 	defer stop()
 	logger := log.New(stderr, "", log.LstdFlags)
@@ -225,7 +211,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			ocCreds = openCodePending(*openCodeTokenFile)
 		}
 	}
-	backend := withOpenCode(newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir)),
+	backend := withOpenCode(newTmuxBackend(*socket, *socketPath, *paneMapDir),
 		mirrorhost.NewOpenCodeSource(ctx, ocCreds, ocWhy, logger))
 	if e2eBackend != nil {
 		backend = e2eBackend()
@@ -249,11 +235,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			fmt.Fprintln(stdout, "# truncated to the wire's bounds")
 		}
 		return 0
-	}
-	if *list && *listHermes {
-		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		return printHermes(lctx, backend, *hermesHome, *hermesStatusDir, stdout, stderr)
 	}
 	if *list && *listOpenCode {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -325,7 +306,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
-		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger, HermesSend: *hermesSend, HermesAnswer: *hermesAnswer,
+		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger,
 		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
@@ -359,25 +340,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	}
 	logger.Printf("muster-mirror %s: host %s → %s, %s", buildRevision, *host, *url, mode)
 	switch {
-	case *hermesSend && !*interactive:
-		logger.Printf("muster-mirror: -hermes-send has no effect without -interactive: this host sends nothing to Hermes")
-	case *hermesSend:
-		switch on, err := hermeshost.NewHome(*hermesHome).ViMode(); {
-		case err != nil:
-			logger.Printf("muster-mirror: -hermes-send is on but NOTHING IS SENT TO HERMES: %s could not be read to rule out vi mode (%v)", filepath.Join(*hermesHome, "config.yaml"), err)
-		case on:
-			logger.Printf("muster-mirror: -hermes-send is on but NOTHING IS SENT TO HERMES: its Hermes runs in vi mode (display.vim_mode in %s), and muster never sends to Hermes in vi mode", filepath.Join(*hermesHome, "config.yaml"))
-		default:
-			logger.Printf("muster-mirror: SENDING TO HERMES IS ON (-hermes-send; display.vim_mode is off). See docs/design/hermes.md for the accepted residual risk")
-		}
-	}
-	switch {
-	case *hermesAnswer && !*interactive:
-		logger.Printf("muster-mirror: -hermes-answer has no effect without -interactive: muster answers no Hermes approval on this host")
-	case *hermesAnswer:
-		logger.Printf("muster-mirror: ANSWERING HERMES APPROVALS IS ON (-hermes-answer): a session waiting on an approval gets a gateway viewer while it waits")
-	}
-	switch {
 	case *resumeSpawn && !*interactive:
 		logger.Printf("muster-mirror: -resume-spawn has no effect without -interactive: this host resumes no session")
 	case *resumeSpawn:
@@ -396,9 +358,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// without a token file; each refusal is logged and never fatal.
 	if *writeHook && e2eBackend == nil {
 		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
-		if abs, err := filepath.Abs(*hermesStatusDir); err == nil {
-			hc.HermesStatusDir = abs
-		}
 		if *tokenFile != "" {
 			if abs, err := filepath.Abs(expandHome(*tokenFile)); err == nil {
 				hc.TokenFile = abs
@@ -469,10 +428,10 @@ var runContext = func() (context.Context, context.CancelFunc) {
 var newTmuxBackend = tmuxBackend
 
 // tmuxBackend is the host's tmux, with its rendered-view lookup reading the pane
-// map in paneMapDir ("" = none) and its Hermes windows resolved from hermes.
-func tmuxBackend(socket, socketPath, paneMapDir string, hermes *mirrorhost.HermesSource) mirrorhost.Backend {
+// map in paneMapDir ("" = none).
+func tmuxBackend(socket, socketPath, paneMapDir string) mirrorhost.Backend {
 	return mirrorhost.Tmux{Socket: socket, SocketPath: socketPath,
-		Claude: mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir}, Hermes: hermes,
+		Claude:     mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir},
 		LiveCopies: &mirrorhost.LiveCopies{}}
 }
 
@@ -513,10 +472,10 @@ func printWindows(ctx context.Context, backend mirrorhost.Backend, codenames map
 			}
 			line += fmt.Sprintf("\tclaude\t%s\t%s\t%s\t%s\t%s", p.Pane, state, p.Gen, p.Transcript, p.Source)
 		} else if p := w.Agent; p != nil && !claudeOnly {
-			// A window of another runtime (Hermes): its pane, its state as the
-			// host reports it ("unknown" when muster does not believe one), its
-			// session id ("-" when it has no rendered view; -list -hermes says
-			// why) and how it was found.
+			// A window of another runtime (opencode): its pane, its state as
+			// the host reports it ("unknown" when muster does not believe one),
+			// its session id ("-" when it has no rendered view; -list -opencode
+			// says why) and how it was found.
 			line += fmt.Sprintf("\t%s\t%s\t%s\t%s\t%s", p.Runtime, p.Pane, stateOrUnknown(p.Status), orDash(p.Gen), p.Source)
 		}
 		if l := labels[w.Session+"\x00"+w.ID]; l != "" {

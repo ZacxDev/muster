@@ -236,9 +236,6 @@ type attentionItem struct {
 	// card is the entry the item is counted on (its sidebar row's attention
 	// count, cards_attention.go); zero for none.
 	card attentionCard
-	// hermes is a waiting HERMES window's ask (Hermes Phase 4): what it waits
-	// on, and the approval muster can answer; nil for any other item.
-	hermes *hermesAsk
 	// openCode is a waiting OPENCODE window's ask (attention_opencode.go): a
 	// permission request or a question, and the answers muster can relay; nil
 	// for any other item.
@@ -267,17 +264,6 @@ type attentionItem struct {
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
 	// nudge's is found through its decision (nudgeSessionPath).
 	systemAsk bool
-}
-
-// hermesAsk is a waiting Hermes window's ask as an attention item shows it.
-type hermesAsk struct {
-	// kind is mirror.PendingApproval, PendingClarify or PendingSudo.
-	kind string
-	// promptID and choices: the approval muster can answer here, "" and nil
-	// when it cannot (the host does not answer approvals, or could not read
-	// this one) — the item then says to answer in the terminal.
-	promptID string
-	choices  []string
 }
 
 // attentionCard is the entry an attention item belongs to: an agent's (an
@@ -420,10 +406,6 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	return it
 }
 
-// hermesWaitingText is a waiting Hermes window's text when its host says
-// nothing of what it waits on (a host older than Hermes Phase 4).
-const hermesWaitingText = "Hermes is waiting on you in the terminal: an approval, a question or a password."
-
 // sessionWaitingText is a waiting session's text when its host says nothing
 // of what it waits on (an older muster-mirror, a transcript it could not read):
 // muster's own words — the prompt itself is in the session, one tap away.
@@ -485,9 +467,9 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		q       *askq.Entry
 		pending *mirror.Pending
 		offline bool
-		// hermes: a Hermes window; openCode an opencode window; answers: its
-		// host answers its asks now.
-		hermes, openCode, answers bool
+		// openCode: an opencode window; answers: its host answers its asks
+		// now.
+		openCode, answers bool
 	}
 	now := s.now()
 	waiting := map[string]wait{}
@@ -498,15 +480,12 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		for _, w := range h.Windows {
 			k := sessionKey(h.Host, w.Session, w.ID)
 			if rt, ok := w.Spec(); ok && rt.PendingNamesAsk {
-				// A waiting window of a runtime that names its asks (Hermes,
-				// opencode): what its host says it waits on (Hermes Phase 4;
-				// opencode's asks, attention_opencode.go). Its Pending names
-				// the ask; a host that names none (older) still lists it as
-				// waiting.
+				// A waiting window of a runtime that names its asks
+				// (opencode): what its host says it waits on (opencode's asks,
+				// attention_opencode.go). Its Pending names the ask; a host
+				// that names none (older) still lists it as waiting.
 				if w.Status == mirror.StatusWaiting {
-					_, answers := h.GatedSendOn(rt)
-					oc := rt.Name == mirror.RuntimeOpenCode
-					waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online, hermes: !oc, openCode: oc, answers: h.Online && answers}
+					waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online, openCode: true, answers: h.Online && h.AnswersOn(rt)}
 				}
 				continue
 			}
@@ -535,26 +514,6 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		}
 		if wt.openCode {
 			s.openCodeItem(&it, e, wt.pending, wt.answers)
-			if wt.since > 0 {
-				it.Since = time.UnixMilli(wt.since)
-			}
-			out = append(out, it)
-			continue
-		}
-		if wt.hermes {
-			it.claudeSession = ""
-			if key := e.SessionKey(); key != "" {
-				// Its focus is keyed runtime-qualified (focus.HermesSubject).
-				it.claudeSession, it.subject = key, focus.MirrorSubject(key)
-			}
-			it.Text, it.hermes = hermesWaitingText, &hermesAsk{}
-			if p := wt.pending; p != nil && p.Kind != "" {
-				it.hermes.kind = p.Kind
-				it.Text, it.Detail, it.tool = p.Summary, p.Detail, p.Tool
-				if p.Kind == mirror.PendingApproval && p.PromptID != "" && wt.answers {
-					it.hermes.promptID, it.hermes.choices = p.PromptID, strings.Fields(p.Choices)
-				}
-			}
 			if wt.since > 0 {
 				it.Since = time.UnixMilli(wt.since)
 			}
@@ -1400,7 +1359,6 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))
-	mux.HandleFunc("POST "+attentionHermesPath, s.requireOperatorWrite(s.handleAttentionHermesApprove))
 	mux.HandleFunc("POST "+attentionOpenCodePath, s.requireOperatorWrite(s.handleAttentionOpenCodeAnswer))
 }
 
@@ -1553,8 +1511,8 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			b.WriteString(attentionFocusHTML(focus, ui.FocusAgeOf(it.focusAt, now)))
 		}
 		text, detail := esc(it.Text), esc(it.Detail)
-		if it.hermes != nil || it.openCode != nil {
-			// A Hermes or opencode ask quotes a command: drawn left to right and isolated
+		if it.openCode != nil {
+			// An opencode ask quotes a command: drawn left to right and isolated
 			// (<bdi>), so right-to-left text in it cannot reorder what the
 			// person reads around it.
 			text, detail = `<bdi dir="ltr">`+text+`</bdi>`, `<bdi dir="ltr">`+detail+`</bdi>`
@@ -1624,7 +1582,6 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 `)
 			}
 		case attentionKindSession:
-			b.WriteString(hermesAskHTML(it))
 			b.WriteString(openCodeAskHTML(it))
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>
 `)

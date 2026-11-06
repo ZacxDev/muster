@@ -86,14 +86,14 @@ func TestAnOpenCodeOnlyRefusesAPaneWhoseTerminalItIsOn(t *testing.T) {
 			}
 			proc.term(10, 1, "zsh", rootTTY, ptsOf(7), "-zsh")
 			c.procs(proc)
-			hp, found, err := HermesIdentity{Proc: proc.root}.InTree(10)
+			hp, found, err := PaneProcs{Proc: proc.root}.InTree(10)
 			if err != nil {
 				t.Fatalf("InTree: %v", err)
 			}
 			switch {
 			case c.want == 0 && found:
 				t.Fatalf("refused pid %d (%s); want it admitted", hp.PID, hp.Rule)
-			case c.want != 0 && (!found || hp.PID != c.want || hp.Rule != hermesRuleOpenCode):
+			case c.want != 0 && (!found || hp.PID != c.want || hp.Rule != ruleOpenCode):
 				t.Fatalf("found %v pid %d rule %q; want pid %d refused as opencode", found, hp.PID, hp.Rule, c.want)
 			}
 		})
@@ -102,7 +102,7 @@ func TestAnOpenCodeOnlyRefusesAPaneWhoseTerminalItIsOn(t *testing.T) {
 	proc := newFakeProc(t)
 	proc.term(10, 1, "zsh", -1, "", "-zsh")
 	proc.term(12, 10, ".opencode-wrapp", -1, "/dev/null", "opencode", "run")
-	if hp, found, err := (HermesIdentity{Proc: proc.root}).InTree(10); err != nil || !found || hp.PID != 12 {
+	if hp, found, err := (PaneProcs{Proc: proc.root}).InTree(10); err != nil || !found || hp.PID != 12 {
 		t.Fatalf("a pane with an unreadable terminal: found %v pid %d err %v; want 12 refused", found, hp.PID, err)
 	}
 }
@@ -181,15 +181,15 @@ func TestTheGuardRefusesEveryOpenCodeShapeAndNothingElse(t *testing.T) {
 			root := 9000 + i
 			proc.add(root, 1, "zsh", "/work", "-zsh")
 			c.procs(proc, root)
-			hp, found, err := HermesIdentity{Proc: proc.root}.InTree(root)
+			hp, found, err := PaneProcs{Proc: proc.root}.InTree(root)
 			if err != nil {
 				t.Fatalf("InTree: %v", err)
 			}
 			switch {
 			case c.want == 0 && found:
 				t.Fatalf("refused pid %d (%s); want no refusal", hp.PID, hp.Rule)
-			case c.want != 0 && (!found || hp.PID != c.want || hp.Rule != hermesRuleOpenCode):
-				t.Fatalf("found %v pid %d rule %q; want pid %d rule %q", found, hp.PID, hp.Rule, c.want, hermesRuleOpenCode)
+			case c.want != 0 && (!found || hp.PID != c.want || hp.Rule != ruleOpenCode):
+				t.Fatalf("found %v pid %d rule %q; want pid %d rule %q", found, hp.PID, hp.Rule, c.want, ruleOpenCode)
 			}
 		})
 	}

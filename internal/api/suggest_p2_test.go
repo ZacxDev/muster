@@ -561,8 +561,8 @@ func TestTheAccountSectionSaysTheStateAndOffersTheToggle(t *testing.T) {
 }
 
 // TestOnlyAClaudeWindowOnAnInteractiveHostGetsTheRow: suggestPath, what draws
-// the chip row and opens the socket's tracker, is "" for a read-only host, a
-// Hermes window, the kill switch and the user's toggle — and the window's URL
+// the chip row and opens the socket's tracker, is "" for a read-only host, an
+// opencode window, the kill switch and the user's toggle — and the window's URL
 // otherwise.
 func TestOnlyAClaudeWindowOnAnInteractiveHostGetsTheRow(t *testing.T) {
 	cases := []struct {
@@ -572,8 +572,8 @@ func TestOnlyAClaudeWindowOnAnInteractiveHostGetsTheRow(t *testing.T) {
 	}{
 		{"claude window", nil, true},
 		{"read-only host", func(fm *fakeMirror, _ *Extensions) { fm.interactive = false }, false},
-		{"hermes", func(fm *fakeMirror, _ *Extensions) {
-			fm.windows = []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeHermes, AgentSession: "local-" + strings.Repeat("a", 64)}}
+		{"opencode", func(fm *fakeMirror, _ *Extensions) {
+			fm.windows = []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_" + strings.Repeat("a", 26)}}
 		}, false},
 		{"kill switch", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Off = true }, false},
 		{"user off", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = &suggestPrefs{off: true} }, false},
@@ -582,7 +582,7 @@ func TestOnlyAClaudeWindowOnAnInteractiveHostGetsTheRow(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newSuggestFixture(t, c.mutate)
 			// What the socket's tracker is opened on, directly: the page's
-			// composer also drops the row for a read-only host or Hermes, so the
+			// composer also drops the row for a read-only host or opencode, so the
 			// page alone cannot see this gate.
 			h, e, ok := f.s.suggestWindow(operatorCtx(), "ws", "main", "@1")
 			if !ok {

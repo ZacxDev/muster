@@ -65,13 +65,6 @@ type MirrorViewView struct {
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
 	Interactive bool
-	// Hermes: the window runs Hermes (docs/design/hermes.md). Its composer
-	// sends only when HermesSend — the host advertised hermesSend and is
-	// -interactive (Phase 3) — and is drawn disabled saying why
-	// (MirrorHermesNoSendNote), with no queue, otherwise.
-	Hermes bool
-	// HermesSend: a Hermes window whose host sends to Hermes.
-	HermesSend bool
 	// ViewOnly is the Kind of a runtime muster VIEWS but never sends to
 	// (opencode); "" otherwise. Its composer is drawn disabled saying why
 	// (MirrorViewOnlyNote), with no queue.
@@ -109,7 +102,7 @@ type MirrorViewView struct {
 	// for none.
 	Switcher *Switcher
 	// Suggest is the suggested replies' URL (ComposerView.Suggest); "" for
-	// none — a Hermes window, a host with suggestions not wired.
+	// none — another runtime's window, a host with suggestions not wired.
 	Suggest string
 	// SuggestPaused: the viewer's suggestions are auto-paused here
 	// (ComposerView.SuggestPaused).
@@ -129,10 +122,6 @@ type MirrorViewView struct {
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
 // accepting text.
 const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not started with -interactive, so nothing can be sent from here."
-
-// MirrorHermesNoSendNote is a Hermes window's rendered view's composer, drawn
-// disabled on a host that does not send to Hermes (docs/design/hermes.md).
-const MirrorHermesNoSendNote = "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal."
 
 // MirrorViewOnlyNote is the disabled composer of a window of kind, a runtime
 // muster only views (opencode, docs/design/opencode.md).
@@ -167,19 +156,6 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		composer.Placeholder, composer.Aria = "Message "+v.ViewOnly+"…", "Message "+v.ViewOnly+" in this session"
 		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorViewOnlyNote(v.ViewOnly), "Sending to "+v.ViewOnly+" is not available", nil
 		composer.Suggest, composer.SuggestPaused = "", false
-	case v.Hermes && !v.HermesSend:
-		working = "Hermes is working…"
-		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
-		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorHermesNoSendNote, "Sending to Hermes is not available", nil
-		// No suggested replies on a Hermes window (Claude Code only).
-		composer.Suggest, composer.SuggestPaused = "", false
-	case v.Hermes:
-		working = "Hermes is working…"
-		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
-		composer.Suggest, composer.SuggestPaused = "", false
-		if !v.Interactive {
-			composer.Disabled = MirrorReadOnlyNote
-		}
 	case !v.Interactive:
 		composer.Disabled = MirrorReadOnlyNote
 	}
@@ -272,8 +248,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Span(Class("animate-pulse"), g.Text(working)),
 				),
 				mirrorComposer(composer),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", confirmDialog(v.StepUp)),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", stepUpScript()),
+				g.If(v.Interactive && v.ViewOnly == "", confirmDialog(v.StepUp)),
+				g.If(v.Interactive && v.ViewOnly == "", stepUpScript()),
 				// The snapshot store, PARSER-BLOCKING here (SnapScriptNow): it runs
 				// just before mirrorViewScript, which starts reading this window's
 				// snapshot — and opens the socket — while the rest of the document
@@ -919,8 +895,6 @@ func noticeRow(ev cctranscript.Event) g.Node {
 	switch ev.Notice {
 	case cctranscript.NoticeCommandOutput:
 		icon, label = "▸", "output"
-	case cctranscript.NoticeHermes:
-		icon, label = "☤", "hermes"
 	case cctranscript.NoticeOpenCode:
 		icon, label = "◇", "opencode"
 	}

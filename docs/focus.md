@@ -65,13 +65,12 @@ row per session, owned and under row-level security. Its history is in
 |---|---|---|
 | `agent` | the agent's id | deleted with the agent |
 | `mirror` | the **Claude Code session id** of the conversation in the window | not the tmux window id |
-| `mirror` | `hermes:` and the **Hermes session id** (the conversation's lineage root) of a Hermes window | only a Hermes window whose host names its session |
 
 A mirrored session is keyed by the conversation, not the window, so its focus
 survives tmux reissuing window ids and follows a conversation into another
 window. `muster-mirror` reports the id per window (`claudeSession` in its
 window list). An older `muster-mirror` does not, and its windows simply have no
-focus. Only Claude Code windows, and Hermes windows whose host names their
+focus. Only Claude Code windows, and opencode windows whose host names their
 session, have one.
 
 The transcript **path** is not sent to the server. The window list is one
@@ -115,7 +114,7 @@ A pass only looks at sessions that were active since their focus was
 written **or since their tail was last read**, at most 20 per user, and skips
 disabled users. A session's activity is its transcript's last message (the
 time the Agents list shows), or tmux's window activity for a window whose host
-reports no last message (an opencode or Hermes window, an older host) —
+reports no last message (an opencode window, an older host) —
 **except while a Claude window is busy or waiting on you**: its host then
 reports its activity as *now*, so it always looks active. A tail read that
 found nothing new (or an empty tail) is remembered, with when it began and the
@@ -155,7 +154,7 @@ in a narrow shape: absolute, cleaned (`filepath.Clean`), at most 512 bytes, no
 control or invisible characters. A tail whose newest prompt names a malformed
 directory makes it **unknown** (an older one never stands in: the session may
 have moved); a tail that names none — no prompt in its 40 entries — keeps the
-one stored. Unknown is what a dispatched agent, a Hermes window, a host older
+one stored. Unknown is what a dispatched agent, an opencode window, a host older
 than this change, and a session whose focus has not been written since the
 upgrade have; the report leaves all of them out. The directory lives on the
 focus row, so an ended session keeps it until that row is swept (below):

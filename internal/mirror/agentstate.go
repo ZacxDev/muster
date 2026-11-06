@@ -41,19 +41,14 @@ var (
 	// wrote it (an older muster-mirror, or a Claude Code whose sessions file has
 	// no statusUpdatedAt). Without it a turn cannot be told from no turn.
 	ErrNoStatusSince = errors.New("mirror: the host does not report since when this window's Claude Code session has been idle, so nothing queued for it is sent; upgrade muster-mirror (or Claude Code), or send by hand")
-	// ErrNoHermesStatus: the window runs Hermes and the host reports no status
-	// for it — every host before Hermes mirroring's status hook, and one
-	// whose hook wrote nothing. Unknown: nothing is sent to it.
-	ErrNoHermesStatus = errors.New("mirror: the host cannot read whether this window's Hermes session is busy, so nothing is sent to it")
 )
 
 // AgentState is what the hub knows of the agent session in one window.
 type AgentState struct {
 	// Runtime is the agent CLI in the window (Window.AgentRuntime):
-	// RuntimeClaude or RuntimeHermes — set whenever the hub knows it, ALSO when
-	// Status is unknown, because the rules differ by runtime (Send now refuses
-	// an unknown Hermes window, and pastes into an unknown Claude one). ""
-	// when the window runs no agent, or the hub cannot say.
+	// RuntimeClaude or RuntimeOpenCode — set whenever the hub knows it, ALSO
+	// when Status is unknown. "" when the window runs no agent, or the hub
+	// cannot say.
 	Runtime string
 	// Status is StatusBusy, StatusIdle or StatusWaiting; "" when unknown.
 	Status string
@@ -86,12 +81,12 @@ type AgentState struct {
 	GuardHeld string
 }
 
-// AgentState is the state of the agent session (Claude Code or Hermes) in
+// AgentState is the state of the agent session (Claude Code or opencode) in
 // owner's host's (session, window) — window "" being the session's active
 // window — or why it is unknown. Another owner's host answers ErrHostOffline,
 // like a host that does not exist. A window that runs no agent answers
-// ErrNotClaude, as it always did; a Hermes window never does (its Runtime says
-// which it is, and its status is read like Claude Code's).
+// ErrNotClaude, as it always did; an opencode window never does (its Runtime
+// says which it is, and its status is read like Claude Code's).
 func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
@@ -117,11 +112,7 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	if err != nil {
 		return AgentState{Unknown: err}
 	}
-	// noStatus is the "host cannot read it" refusal of this runtime.
 	noStatus := ErrNoStatus
-	if r, ok := LookupRuntime(runtime); ok {
-		noStatus = r.NoStatus
-	}
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	switch {

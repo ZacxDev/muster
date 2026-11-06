@@ -162,3 +162,19 @@ func TestARefusedAnswerIsNotSaidToBeGone(t *testing.T) {
 		t.Fatal("a refused answer took the question off the window")
 	}
 }
+
+// answeredOf is the host's answered for answer id, once it has sent it.
+func answeredOf(t *testing.T, d *drivenMuster, id uint32) mirror.Msg {
+	t.Helper()
+	var got mirror.Msg
+	waitUntil(t, "the answered", func() bool {
+		for _, m := range d.of(mirror.TypeAnswered) {
+			if m.ID == id {
+				got = m
+				return true
+			}
+		}
+		return false
+	})
+	return got
+}

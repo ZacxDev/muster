@@ -5,7 +5,7 @@
 | view | message goes to | needs |
 |---|---|---|
 | A mirrored window's **Rendered** view (Claude Code) | the Claude Code pane, pasted as typed | the host's `-interactive`, plus a fresh sign-in |
-| A mirrored window's **Terminal** view (any program except Hermes) | the window's active pane, followed by Enter | the host's `-interactive`, plus a fresh sign-in |
+| A mirrored window's **Terminal** view (any program but opencode) | the window's active pane, followed by Enter | the host's `-interactive`, plus a fresh sign-in |
 | A dispatched agent's chat and **Terminal** view | `POST /agents/<name>/send`: one agent turn, run in the background | a running agent with chat wired ([provisioner.md](provisioner.md)) |
 | The chief panel | the chief agent | as above |
 
@@ -29,11 +29,10 @@ is in [A sent message shows at once](#a-sent-message-shows-at-once).
   never calls itself "read-only" while its box can send. A read-only host says
   so once, in the box's disabled note (its status reads "Connected · this host
   takes no keys").
-- On either view, the host refuses a message into a pane that runs Hermes
-  (or a nested terminal multiplexer, or processes it cannot read), and nothing
-  is pasted — except the rendered view's send to a Hermes window on a host
-  started with `-hermes-send`, which goes through Hermes's gated send
-  ([mirroring.md](mirroring.md#muster-pastes-into-hermes-only-through-its-gated-send)).
+- On either view, the host refuses a message into a pane that runs opencode
+  on its terminal, a nested terminal multiplexer, or processes it cannot read,
+  and nothing is pasted
+  ([mirroring.md](mirroring.md#what-the-host-never-types-into)).
 - 🔴 **Never into a Claude Code prompt.** The Rendered view's Send, Send now and
   a queued or routed message are refused while the window's Claude Code is
   waiting on you (a permission prompt, a question, a menu): the paste's Enter

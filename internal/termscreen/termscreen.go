@@ -1,7 +1,6 @@
 // Package termscreen reads a tmux pane capture WITH its styles
 // (`tmux capture-pane -p -e`) into rows of cells. It is the one SGR reader:
-// hermeshost reads Hermes's input box by italic and background, ccdialog
-// reads Claude Code's ghost suggestion by dim.
+// ccdialog reads Claude Code's ghost suggestion by dim.
 //
 // 🔴 A LEAF: it imports only the standard library. cmd/ccd links it (through
 // ccdialog) into the agent pod, which internal/modulegate holds to no
@@ -15,10 +14,7 @@ import (
 
 // Cell is one character of a captured screen, whether it is italic, whether
 // it is dim (faint, SGR 2: Claude Code draws its ghost prompt suggestion so —
-// ccdialog.InputBox reads it), and whether it has a background colour (Bg). A draft typed in Hermes's input
-// box is drawn in the input's style, which has none at the pin (and an escape
-// sequence typed or pasted into the box is drawn as text, `^[`, never
-// obeyed), so a background is something a draft cannot draw.
+// ccdialog.InputBox reads it), and whether it has a background colour (Bg).
 type Cell struct {
 	R      rune
 	Italic bool

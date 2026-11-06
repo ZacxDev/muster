@@ -163,8 +163,8 @@ type Facts struct {
 // episode. Precedence: needs_you > stalled > working.
 //
 //   - waiting on a prompt: needs_you, an episode — 🔴 AN ANSWERABLE ASK TOO
-//     (a held AskUserQuestion, an opencode question or permission request, a
-//     Hermes approval with a prompt id). Its push waits the same grace as any
+//     (a held AskUserQuestion, an opencode question or permission request).
+//     Its push waits the same grace as any
 //     prompt's (operator decision after #463): until then an answerable ask
 //     was no episode and pushed at once, and nearly every one was answered at
 //     the terminal within a minute;

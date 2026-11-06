@@ -186,10 +186,8 @@ export const cardsConnectPort = port + 101;
 // Host icons and the Agents list's scroll positions (host-icons.spec.ts): its
 // own server (the e2eterm binary, mirror plugin on) and two mirrored hosts.
 export const hostIconsPort = port + 110;
-// A Hermes window's read-only rendered view and its card (hermes-view.spec.ts):
-// its own server (the e2eterm binary, mirror plugin on) and one mirrored host
-// whose Hermes conversation is a real state.db the fake host writes.
-export const hermesViewPort = port + 120;
+// port + 120 was a since-removed spec's: left unused,
+// so no other spec's ports move.
 // The Agents list UX batch (agents-list-ux.spec.ts): its own server (the
 // e2eterm binary, mirror plugin on) and one mirrored host with four windows.
 export const listUxPort = port + 137;

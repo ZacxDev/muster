@@ -540,7 +540,7 @@
 
         # The untagged tests only: the real-tmux suite (`-tags tmuxit`) runs in
         # CI's ccd-tmux job, and the nix sandbox has no tmux.
-        checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/... ./internal/hermeshost/...";
+        checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/...";
 
         meta = with pkgs.lib; {
           description = "Show this machine's tmux sessions in muster as mirrored sessions (dials out; no listener; read-only unless -interactive)";

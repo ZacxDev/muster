@@ -329,9 +329,6 @@ type nudgeCandidate struct {
 	chiefnudge.Session
 	agent   agents.Agent
 	session agents.ChatSession // an agent's conversation
-	// noTranscript: a window muster reads no transcript of (a Hermes window,
-	// listed for session state only): never read, never classified.
-	noTranscript bool
 	// ownerLast: an agent conversation's newest message is the owner's — a
 	// turn under way that no turn gate saw (session state keeps the stop's
 	// anchor where it was).
@@ -454,7 +451,7 @@ func (s *Server) stallInputs(octx context.Context, inFlight map[string]bool) []n
 	if s.ext.Mirror != nil {
 		hs = s.ext.Mirror.Hosts(octx)
 	}
-	return s.stallFacts(octx, inFlight, hs, false).sessions
+	return s.stallFacts(octx, inFlight, hs).sessions
 }
 
 // stallRead is one read of the stall facts (stallFacts).
@@ -468,11 +465,8 @@ type stallRead struct {
 
 // stallFacts is stallInputs over hs, ONE read of the owner's hosts that a
 // caller judging absences (session state's "gone") also reads, so a host
-// cannot be online in one read and offline in the other. hermes also lists
-// HERMES windows naming their session (runtime-qualified, as opencode): the
-// stall nudges never judge them (nudgeWindowKey), session state gives them
-// episodes (docs/design/session-state.md, default D3).
-func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs []mirror.HostView, hermes bool) stallRead {
+// cannot be online in one read and offline in the other.
+func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs []mirror.HostView) stallRead {
 	owner := requestOwner(octx)
 	now := s.now()
 	asked := s.nudgeOpenAskers(octx)
@@ -485,7 +479,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				continue
 			}
 			for _, w := range h.Windows {
-				key, runtime, noTranscript := stateWindowKey(w, hermes)
+				key, runtime := stateWindowKey(w)
 				if key == "" || seen[key] {
 					continue
 				}
@@ -502,7 +496,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				if c.StreakKey = windowStreakKey(st); c.StreakKey != "" {
 					c.IdleSince, c.IdleFor = st.Observed, now.Sub(st.Observed)
 				}
-				all = append(all, nudgeCandidate{Session: c, noTranscript: noTranscript})
+				all = append(all, nudgeCandidate{Session: c})
 			}
 		}
 	}
@@ -594,31 +588,25 @@ func windowStreakKey(st mirror.AgentState) string {
 //     rendered view's backfill (nudgeTranscript) — but it is VIEW ONLY: muster
 //     cannot type into it, so a nudge for it becomes a notice (decideNudge).
 //
-// Every other window — another runtime (Hermes), a plain shell — is not judged.
+// Every other window — a plain shell, a runtime muster does not know — is not
+// judged.
 func nudgeWindowKey(w mirror.Window) (key, runtime string) {
 	switch {
 	case w.Claude && w.ClaudeSession != "" && w.Runtime == "":
 		return w.ClaudeSession, ""
 	case !w.Claude && w.AgentRuntime() == mirror.RuntimeOpenCode && w.AgentSession != "":
 		// 🔴 BY NAME, ON PURPOSE (runtime_ledger_test.go lists it): the owner
-		// chose opencode, not "every view-only runtime" — Hermes is not judged.
+		// chose opencode, not "every view-only runtime".
 		return w.SessionKey(), w.AgentRuntime()
 	}
 	return "", ""
 }
 
 // stateWindowKey is the session key the stall facts list a window under
-// (nudgeWindowKey), and with hermes a Hermes window naming its conversation
-// too (noTranscript: muster reads none of it). "" when the window is not
-// listed. ONE RULE: the episode push's waiting hook keys a window by it too
-// (session_push.go), so the hook never opens an episode the pass cannot see.
-func stateWindowKey(w mirror.Window, hermes bool) (key, runtime string, noTranscript bool) {
-	key, runtime = nudgeWindowKey(w)
-	if key == "" && hermes && !w.Claude && w.AgentRuntime() == mirror.RuntimeHermes && w.AgentSession != "" {
-		return w.SessionKey(), w.AgentRuntime(), true
-	}
-	return key, runtime, false
-}
+// (nudgeWindowKey), "" when the window is not listed. ONE RULE: the episode
+// push's waiting hook keys a window by it too (session_push.go), so the hook
+// never opens an episode the pass cannot see.
+func stateWindowKey(w mirror.Window) (key, runtime string) { return nudgeWindowKey(w) }
 
 // nudgeOpenAskers is the sessions of octx's owner with an open attention ask of
 // their own, or an open question to the chief: "mirror:<claude session id>" or
@@ -934,8 +922,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 }
 
 // viewOnly reports whether c is a session muster cannot type into (an
-// opencode pane: mirror.RuntimeSpec Caps, no Send). A Hermes window is never
-// judged at all (nudgeWindowKey).
+// opencode pane: mirror.RuntimeSpec Caps, no Send).
 func viewOnly(c nudgeCandidate) bool { return c.Kind == chiefnudge.KindMirror && c.Runtime != "" }
 
 // actViewOnly is a nudge to a view-only session: 🔴 NEVER NUDGED — a queued

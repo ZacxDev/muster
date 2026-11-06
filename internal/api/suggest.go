@@ -56,7 +56,7 @@ import (
 // the composer reads the set — so a set made while idle is not served once the
 // session is busy or waiting again:
 //   - MUSTER_SUGGEST=off, the owner's toggle;
-//   - a window that is not a Claude Code pane with a session id: Hermes, a
+//   - a window that is not a Claude Code pane with a session id: opencode, a
 //     plain terminal (the Terminal view has no tracker at all);
 //   - a host that is offline, has no rendered view, or is not -interactive
 //     (the composer is disabled there);
@@ -339,7 +339,7 @@ func (s *Server) suggestBlocked(ctx context.Context, h mirror.HostView, e mirror
 	case suggest.OutcomePaused:
 		return suggestBlockedPaused
 	}
-	if !e.Claude || e.ClaudeSession == "" || e.HermesView() || e.Runtime != "" {
+	if !e.Claude || e.ClaudeSession == "" || e.Runtime != "" {
 		return suggestBlockedNotClaude
 	}
 	if !e.HasRenderedView() {

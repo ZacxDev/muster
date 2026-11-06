@@ -4,9 +4,9 @@
 // agent's repository checkout.
 //
 // Its user is cmd/ccd (the claude-code kind). The code was ccd's; it moved here
-// unchanged in behaviour when a second supervisor (the since-removed hermes
-// kind's hermesd) needed the same rules. The messages a person reads name the
-// supervisor that wrote them, through [Voice].
+// unchanged in behaviour when a second supervisor needed the same rules. The
+// messages a person reads name the supervisor that wrote them, through
+// [Voice].
 package podagent
 
 import (

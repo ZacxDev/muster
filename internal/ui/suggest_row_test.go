@@ -38,12 +38,13 @@ func TestTheChipRowIsDrawnHiddenAboveTheComposerAndLabelledAI(t *testing.T) {
 	}
 }
 
-// TestNoChipRowWithoutASourceOnHermesOrReadOnly: no URL, a Hermes window, and
-// a read-only host's (disabled) composer each draw no row and no script.
-func TestNoChipRowWithoutASourceOnHermesOrReadOnly(t *testing.T) {
+// TestNoChipRowWithoutASourceOnViewOnlyOrReadOnly: no URL, a view-only
+// runtime's window (opencode), and a read-only host's (disabled) composer
+// each draw no row and no script.
+func TestNoChipRowWithoutASourceOnViewOnlyOrReadOnly(t *testing.T) {
 	for name, v := range map[string]MirrorViewView{
 		"no source": {Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()},
-		"hermes":    {Host: "host-a", Session: "main", Interactive: true, Hermes: true, HermesSend: true, StepUp: stepUpFixture(), Suggest: suggestSrc},
+		"opencode":  {Host: "host-a", Session: "main", Interactive: true, ViewOnly: "opencode", StepUp: stepUpFixture(), Suggest: suggestSrc},
 		"read-only": {Host: "host-a", Session: "main", Interactive: false, Suggest: suggestSrc},
 	} {
 		page := renderString(t, MirrorViewPage(v))
@@ -64,7 +65,7 @@ func TestAPausedComposerSaysSoInOneLine(t *testing.T) {
 	for name, v := range map[string]MirrorViewView{
 		"not paused": {Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()},
 		"read-only":  {Host: "host-a", Session: "main", SuggestPaused: true},
-		"hermes":     {Host: "host-a", Session: "main", Interactive: true, Hermes: true, HermesSend: true, StepUp: stepUpFixture(), SuggestPaused: true},
+		"opencode":   {Host: "host-a", Session: "main", Interactive: true, ViewOnly: "opencode", StepUp: stepUpFixture(), SuggestPaused: true},
 	} {
 		if strings.Contains(renderString(t, MirrorViewPage(v)), `id="mv-suggest-paused"`) {
 			t.Fatalf("%s: a paused line", name)

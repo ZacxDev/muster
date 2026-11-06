@@ -795,8 +795,9 @@ type Outcome struct {
 	// 0, for a row whose session state could not be read (SendQueueNudgeWait).
 	Superseded bool
 	AfterSince int64
-	// Pasted: the text was pasted into Hermes's input box and Enter withheld
-	// (the host's gated send): not submitted, and not to be resent blindly.
+	// Pasted: the text was pasted into the agent's input box and Enter
+	// withheld (the Claude prompt guard): not submitted, and not to be resent
+	// blindly.
 	Pasted bool
 }
 

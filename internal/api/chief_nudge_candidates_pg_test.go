@@ -176,7 +176,7 @@ func TestNudgeCandidatesCharacterization(t *testing.T) {
 		{"mirror decided in another streak", func() { decided(chiefnudge.KindMirror, nudgeSID, "since:1") }, nil, both},
 		{"host reports no status", func() { f.mirror.statusReport = false }, nil, []string{candWorker}},
 		{"host offline", func() { f.mirror.online = false }, nil, []string{candWorker}},
-		{"window has a runtime", func() { f.mirror.windows[0].Runtime = "hermes" }, nil, []string{candWorker}},
+		{"window has a runtime", func() { f.mirror.windows[0].Runtime = mirror.RuntimeOpenCode }, nil, []string{candWorker}},
 		{"window is not claude", func() { f.mirror.windows[0].Claude = false }, nil, []string{candWorker}},
 		{"window has no claude session", func() { f.mirror.windows[0].ClaudeSession = "" }, nil, []string{candWorker}},
 		{"two windows, one conversation", func() {

@@ -98,24 +98,6 @@ type Config struct {
 	// FOR THE BROWSER SUITE'S OLDER-HOST CASE ONLY (cmd/muster-mirror's
 	// e2emirror build); no flag sets it.
 	NoCatalog bool
-	// HermesSend turns on the gated send into Hermes windows (muster-mirror's
-	// -hermes-send, MUSTER_MIRROR_HERMES_SEND; Hermes Phase 3,
-	// docs/design/hermes.md): the host advertises Msg.HermesSend, and a paste
-	// for a Hermes window goes through hermes_send.go. OFF by default.
-	//
-	// 🔴 NEVER ON A HOST WHOSE HERMES USES VI MODE (display.vim_mode): one
-	// Escape on an idle line enters vi navigation, where the paste's
-	// characters can be read as commands, and the vi label the screen check
-	// refuses on is not reliable. muster cannot read Hermes's config.yaml, so
-	// this is the operator's responsibility.
-	HermesSend bool
-	// HermesAnswer lets muster answer a Hermes APPROVAL through Hermes's
-	// gateway viewer (muster-mirror's -hermes-answer,
-	// MUSTER_MIRROR_HERMES_ANSWER; Hermes Phase 4, docs/design/hermes.md):
-	// with -interactive, the host attaches a viewer to each session waiting
-	// on an approval, lists its command, and advertises Msg.HermesAnswer. OFF
-	// by default: an answer of "once" lets the command run.
-	HermesAnswer bool
 	// NoSubagents makes this host behave as one that predates the subagent
 	// cards (mirror.Msg.SubagentReport): no summaries on a view's stream, none
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
@@ -354,12 +336,6 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, wire: wire, streams: map[uint32]*hostStream{},
 		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{},
 		kick: make(chan chan struct{}), want: make(chan struct{}, 1)}
-	conn.hermes = newHermesAsks(ctx, conn.hermesAttacher(), conn.nudge, c.log.Printf)
-	if src, ok := conn.hermesSource(); ok {
-		conn.hermes.terminal = src.State().PendingTerminalCommands
-		conn.hermes.clarify = src.State().PendingClarify
-	}
-	defer conn.hermes.close()
 	// An opencode ask raised or settled sends the listing at once, so muster
 	// notifies (and withdraws) without waiting for the next refresh — through
 	// nudge, which holds the signal until the refresh goroutine takes it.
@@ -396,8 +372,6 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
-	hello.HermesSend = conn.hermesSend()
-	hello.HermesAnswer = conn.hermesAnswer()
 	hello.OpenCodeAnswer = conn.openCodeAnswer()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	if err := conn.send(hello); err != nil {
@@ -578,10 +552,6 @@ type hostSide struct {
 	lastMsg lastMessageReader
 	// turnEnd reads how each idle Claude window's latest turn ended (turnend.go).
 	turnEnd turnEndReader
-	// hermes is what each waiting Hermes window waits on, and the gateway
-	// viewers that answer its approvals (hermes_asks.go); nil in a test that
-	// builds a hostSide without one.
-	hermes *hermesAsks
 	// kick asks the refresh goroutine for a read-and-send now
 	// (Client.RefreshNow); it closes the channel it receives when done.
 	kick chan chan struct{}
@@ -676,9 +646,6 @@ func (h *hostSide) read() (listing, bool) {
 	h.pending.attachPending(raw)
 	h.lastMsg.attach(raw)
 	h.turnEnd.attach(raw)
-	if h.hermes != nil {
-		h.hermes.attachPending(raw)
-	}
 	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
 	l := listing{windows: windows}
 	if h.version >= 2 {
@@ -1117,5 +1084,25 @@ func (h *hostSide) keepalive(cancel context.CancelFunc) {
 				return
 			}
 		}
+	}
+}
+
+// nudge asks the refresh goroutine for a listing now, without waiting: an
+// opencode ask, a resumed window or an idle status reaches muster at once
+// rather than at the next Refresh. THE ONE "a listing is owed" signal every
+// such caller uses.
+//
+// 🔴 IT IS NEVER DROPPED. It sets a one-slot flag (want) that the refresh
+// goroutine takes; a nudge while one is already owed is the same listing.
+// It used to be a non-blocking send on kick, dropped whenever the refresh
+// goroutine was not receiving — which it is not until after the hello and
+// welcome — so a change raised in that gap (after the hello's listing was
+// read) reached muster only at the next Refresh: 5 s by default, never in a
+// test whose Refresh is an hour (main's macOS CI failure, run 41724022997).
+func (h *hostSide) nudge() {
+	h.nudged.Add(1)
+	select {
+	case h.want <- struct{}{}:
+	default: // already owed: the refresh that takes it reads everything since
 	}
 }

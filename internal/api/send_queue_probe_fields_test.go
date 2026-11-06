@@ -21,7 +21,7 @@ func TestTheProbeCarriesTheTurnErrorHostLimitAndSessionOfAnIdleWindow(t *testing
 	h := sendqueue.Head{Item: sendqueue.Item{Owner: 1, Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"}}}
 	te := &mirror.TurnError{Kind: "rate_limit", At: 1792000001234}
 	hl := &mirror.HostLimit{At: 1792000005678, ResetsAt: 1792003600000}
-	for _, rt := range []string{mirror.RuntimeClaude, mirror.RuntimeHermes} {
+	for _, rt := range []string{mirror.RuntimeClaude, mirror.RuntimeOpenCode} {
 		fm.mu.Lock()
 		fm.agentState = &mirror.AgentState{Runtime: rt, Status: mirror.StatusIdle, Since: 7, TurnError: te, HostLimit: hl, Session: "c-probe"}
 		fm.mu.Unlock()

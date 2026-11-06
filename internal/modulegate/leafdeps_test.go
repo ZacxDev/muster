@@ -35,13 +35,15 @@ func heavyIn(set map[string]bool) []string {
 // cmd/ccd, which links it into the agent pod, is held to the narrower
 // podForbidden: it already links pgx and database/sql through internal/agents
 // (true on main before the leaf existed), so only the classes the leaf could
-// have brought in — the wire's websocket client, the host's MinIO and SQLite —
-// are pinned for it.
+// have brought in — the wire's websocket client, MinIO and SQLite — are pinned
+// for it.
 //
 // The instrument is checked first, one class at a time, on packages of this
 // module that DO pull each one, so a matcher that cannot see a class fails
 // here rather than passing the leaf: the wire package (websocket), the store
-// (pgx and database/sql) and the host package (MinIO and SQLite).
+// (pgx and database/sql) and the host package (MinIO). No package of this
+// module links SQLite outside a test, so its class is checked against the
+// driver's own path.
 func TestTheSubagentLeafPullsNoNetworkOrStorageClient(t *testing.T) {
 	root := moduleRoot(t)
 	for _, c := range []struct{ pkg, class string }{
@@ -49,7 +51,6 @@ func TestTheSubagentLeafPullsNoNetworkOrStorageClient(t *testing.T) {
 		{"./internal/db", "jackc/pgx"},
 		{"./internal/db", "database/sql"},
 		{"./internal/mirrorhost", "minio"},
-		{"./internal/mirrorhost", "sqlite"},
 	} {
 		seen := false
 		for _, p := range heavyIn(depsOf(t, root, c.pkg)) {
@@ -61,6 +62,9 @@ func TestTheSubagentLeafPullsNoNetworkOrStorageClient(t *testing.T) {
 		if !seen {
 			t.Fatalf("instrument check FAILED: %s pulls a %s client, and the matcher does not see it", c.pkg, c.class)
 		}
+	}
+	if got := heavyIn(map[string]bool{"modernc.org/sqlite": true}); len(got) != 1 || !podForbidden.MatchString(got[0]) {
+		t.Fatalf("instrument check FAILED: the matchers do not see the SQLite driver (%v)", got)
 	}
 	if got := heavyIn(depsOf(t, root, "./internal/ccsubagents")); len(got) != 0 {
 		t.Fatalf("internal/ccsubagents pulls in %v; it is meant for the agent pod's ccd and must stay a leaf", got)
@@ -101,19 +105,18 @@ func nonStdDepsOf(t *testing.T, root, pattern string) []string {
 // TestTheTerminalScreenReaderImportsOnlyTheStandardLibrary: internal/termscreen
 // — the one SGR reader, linked into the agent pod's ccd through ccdialog — is a
 // leaf that imports nothing outside the standard library, as its package
-// comment says. (It lived in hermeshost until ccd linked hermeshost's
-// websocket and SQLite clients through it.) The instrument is checked first:
-// hermeshost, which imports golang.org/x/text/width, must be seen to have it.
+// comment says. The instrument is checked first: internal/searchrank, which
+// imports golang.org/x/text/unicode/norm, must be seen to have it.
 func TestTheTerminalScreenReaderImportsOnlyTheStandardLibrary(t *testing.T) {
 	root := moduleRoot(t)
 	seen := false
-	for _, p := range nonStdDepsOf(t, root, "./internal/hermeshost") {
-		if p == "golang.org/x/text/width" {
+	for _, p := range nonStdDepsOf(t, root, "./internal/searchrank") {
+		if p == "golang.org/x/text/unicode/norm" {
 			seen = true
 		}
 	}
 	if !seen {
-		t.Fatal("instrument check FAILED: internal/hermeshost imports golang.org/x/text/width, and the listing does not see it")
+		t.Fatal("instrument check FAILED: internal/searchrank imports golang.org/x/text/unicode/norm, and the listing does not see it")
 	}
 	if got := nonStdDepsOf(t, root, "./internal/termscreen"); len(got) != 0 {
 		t.Fatalf("internal/termscreen pulls in %v; it must import only the standard library", got)

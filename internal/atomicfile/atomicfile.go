@@ -4,8 +4,7 @@
 // interleave — the file is always one whole write, the last one's.
 //
 // The ONE such writer muster-mirror has: the hook config (`muster-mirror
-// ask`'s record), the Hermes status files and the Hermes allowlist all go
-// through it.
+// ask`'s record) goes through it.
 package atomicfile
 
 import (

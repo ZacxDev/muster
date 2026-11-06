@@ -759,8 +759,7 @@ for (const vp of [
     // 🟢 Before, a later message's press and its OK wiped an earlier one's
     // refusal and its Send again from the status line. A message pressed
     // AFTER the refusal is shown is the person moving on: it goes (it is not
-    // held — hermes-view.spec's busy loop sends a new text after each
-    // refusal), and the refusal's reason and Send again stay.
+    // held), and the refusal's reason and Send again stay.
     test('in the Terminal view a refusal that may have landed keeps its reason and Send again while a later message is sent past it', async ({ page }) => {
       const t = await openTerminal(page);
       const posted: string[] = [];

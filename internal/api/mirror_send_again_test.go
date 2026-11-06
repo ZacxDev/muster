@@ -35,21 +35,18 @@ func postSendNonce(t *testing.T, ts, cookie string, form url.Values) (int, strin
 // with it (a re-tap, the script's retry) is refused and nothing is pasted a
 // second time — it may already be in the conversation. A retry is explicit:
 // the answer offers "Send again" (SendAgainHeader), which mints a NEW nonce,
-// and that one is delivered. For a Claude Code window and a Hermes one.
+// and that one is delivered.
 func TestAnUnconfirmedSendIsNeverRepeatedByItsNonce(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		windows []mirror.Window
-		hermes  bool
 		err     error
 	}{
-		{"Claude Code", []mirror.Window{{Session: "main", ID: "@1", Index: 0, Active: true, Claude: true, ClaudeSession: "c1"}}, false,
+		{"Claude Code", []mirror.Window{{Session: "main", ID: "@1", Index: 0, Active: true, Claude: true, ClaudeSession: "c1"}},
 			fmt.Errorf("mirror: the host did not answer: %w", mirror.ErrPasteUnconfirmed)},
-		{"Hermes", hermesWindows(), true,
-			fmt.Errorf("%w", joinUnconfirmed(&mirror.PasteRefusedError{Why: "May have been submitted: check the conversation before sending again. Hermes recorded no new message within 8s of the Enter.", Refusal: mirror.PasteRefusalHermesUnconfirmed}))},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fm := &fakeMirror{online: true, interactive: true, hermesSend: c.hermes, v2: &fakeMirrorV2{}, windows: c.windows, statusReport: true}
+			fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, windows: c.windows, statusReport: true}
 			s, ts := viewServer(t, fm)
 			cookie := sessionCookieFor(s)
 			form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "text": {"do the thing"}, "nonce": {"nonce-0123456789abcdef"}}
@@ -146,22 +143,10 @@ func TestAnUnconfirmedSendIsHeldByItsTextUnderAnyNonce(t *testing.T) {
 }
 
 // joinUnconfirmed is err marked ErrPasteUnconfirmed, as the hub returns a
-// host's hermes-unconfirmed answer.
+// host's unconfirmed answer.
 func joinUnconfirmed(err error) error { return unconfirmedErr{err} }
 
 type unconfirmedErr struct{ err error }
 
 func (u unconfirmedErr) Error() string   { return u.err.Error() }
 func (u unconfirmedErr) Unwrap() []error { return []error{u.err, mirror.ErrPasteUnconfirmed} }
-
-// TestAnIdleWithoutATimeRefusalHasItsNoticeWithoutScript: the hub's
-// not-idle refusal for status "idle" with no since reads the unknown words on
-// the no-script path too (a notice code, never an empty notice).
-func TestAnIdleWithoutATimeRefusalHasItsNoticeWithoutScript(t *testing.T) {
-	if hermesNotIdleNotices[mirror.StatusIdle] != noticeHermesUnknown {
-		t.Fatalf("hermesNotIdleNotices[idle] = %q, want %q", hermesNotIdleNotices[mirror.StatusIdle], noticeHermesUnknown)
-	}
-	if (&mirror.HermesNotIdleError{Status: mirror.StatusIdle}).Error() != composerNotices[noticeHermesUnknown].text {
-		t.Fatal("the idle-without-a-time refusal and its notice say different things")
-	}
-}

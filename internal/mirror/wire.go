@@ -312,20 +312,12 @@ type Msg struct {
 	// a pane it resolves as Claude Code NOW, and refuses otherwise: the rendered
 	// view's send must never land a prompt meant for Claude in a shell.
 	AnyPane bool `json:"anyPane,omitempty"`
-	// Runtime (paste) is the agent runtime muster decided this paste for.
-	// "hermes" sends it to the host's GATED SEND into a Hermes pane (Hermes
-	// Phase 3, docs/design/hermes.md; mirrorhost's hermes_send.go), which a
-	// host runs only with -hermes-send; "" is every other paste, unchanged.
-	// 🔴 A host never trusts it to OPEN anything: an unset Runtime aimed at a
-	// Hermes pane still meets the host's paste guard, and "hermes" aimed at
-	// a pane that runs no Hermes NOW is refused. An older host ignores it,
-	// and muster never sends it one (an older host never advertises
-	// HermesSend).
+	// Runtime (answer) is the agent runtime an answer is for: "opencode"
+	// relays it through opencode's API (OpenCodeReply); "" is Claude Code's
+	// picker. A host never trusts it to OPEN anything: it re-checks what runs
+	// in the pane NOW. Muster sends no paste with a Runtime; a host ignores
+	// one on a paste (an older muster's, for a runtime since removed).
 	Runtime string `json:"runtime,omitempty"`
-	// Since (paste, Runtime "hermes") is the window's StatusSince the paste
-	// was decided on. The host sends only while the window's status is still
-	// idle at exactly this time, and refuses as superseded otherwise.
-	Since int64 `json:"since,omitempty"`
 	// Lines (scroll) is how far to scroll the pane's history: positive is BACK
 	// (tmux scroll-up, older output), negative is forward (scroll-down, toward
 	// the live screen). 0 and anything beyond MaxScrollLines either way is
@@ -360,43 +352,11 @@ type Msg struct {
 	// BACKWARD-COMPATIBLE BOTH WAYS: an older host never sets it (0: nothing
 	// muster can vouch for), and an older muster ignores it.
 	Keys int `json:"keys,omitempty"`
-	// HermesSend (hello) is the host ADVERTISING that it accepts a paste into
-	// a Hermes window (Window.Runtime RuntimeHermes), on an -interactive v2
-	// host. 🔴 NO HOST SETS IT YET: the host's flag and its gated send arrive
-	// together in Hermes Phase 3 (docs/design/hermes.md, the hermesSend
-	// switch). muster refuses every paste into a window the host REPORTS as
-	// Hermes unless the host advertised this (Hub.PasteWindow), so today every
-	// such paste is refused before it reaches the host.
-	//
-	// ⚠ WHAT THIS GATE DOES NOT COVER: a window the host does not report as
-	// Hermes. That is every window of a host older than this field, and any
-	// Hermes the strict mirroring rule does not recognise (a profile-launched
-	// `hermes -p coder chat`). Those rely on the host's own paste guard alone
-	// (Hermes Phase 1a, mirrorhost's typeInto), and a host older than that
-	// guard has none.
-	//
-	// NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PanePaste: an older
-	// muster ignores it (and never sees a Hermes window: it does not read
-	// Window.Runtime); an older host never sets it.
-	HermesSend bool `json:"hermesSend,omitempty"`
-	// HermesAnswer (hello) is the host ADVERTISING that it answers a Hermes
-	// approval through Hermes's gateway viewer (Hermes Phase 4,
-	// hermes_answer.go): an -interactive v2 host that runs with
-	// -hermes-answer. 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an
-	// older muster ignores it; an older host never sets it, so muster never
-	// sends it an answer, and every Hermes approval there is answered in the
-	// terminal.
-	HermesAnswer bool `json:"hermesAnswer,omitempty"`
-	// HermesApproval (answer, with Runtime "hermes") is the Hermes approval to
-	// answer and how: the PromptID muster showed (Pending.PromptID) and one of
-	// HermesApprovalChoices. An older host, which never advertised
-	// HermesAnswer, is never sent one.
-	HermesApproval *HermesApprovalAnswer `json:"hermesApproval,omitempty"`
 	// OpenCodeAnswer (hello) is the host ADVERTISING that it relays an answer
 	// to an opencode ask — a permission request, a question-tool form —
 	// through the opencode server's API (opencode_answer.go): an -interactive
 	// v2 host that holds an opencode token — the same gate as AskAnswer.
-	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like HermesAnswer: an
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like AskCancel: an
 	// older muster ignores it; an older host never sets it, so muster never
 	// sends it an answer, and the ask says to answer it in the terminal.
 	OpenCodeAnswer bool `json:"openCodeAnswer,omitempty"`
@@ -581,23 +541,24 @@ type Window struct {
 	// of a list. Backward-compatible both ways, like ClaudeSession.
 	Pending *Pending `json:"pending,omitempty"`
 	// Runtime names the agent CLI in the window's active pane when it is NOT
-	// Claude Code: RuntimeHermes, or "" (Claude Code, which Claude says, or
-	// no agent at all). AgentRuntime is the one way to read it.
+	// Claude Code: RuntimeOpenCode, or "" (Claude Code, which Claude says, or
+	// no agent at all). AgentRuntime is the one way to read it. A name muster
+	// does not know (an older host's "hermes") is dropped by NormalizeWindows:
+	// the window is a plain terminal window.
 	//
 	// 🔴 "" FOR CLAUDE CODE, NOT "claude", ON PURPOSE: a Claude window's bytes
 	// on the wire stay exactly what they were before runtimes existed, and the
 	// worst-case window list stays inside MaxFrame
-	// (TestTheLargestWindowListFitsOneFrame and its Hermes twin measure both).
+	// (TestTheLargestWindowListFitsOneFrame measures both).
 	//
-	// 🔴 A HERMES WINDOW IS NEVER Claude (NormalizeWindows enforces it), so an
-	// older muster — which ignores this field — shows it as a plain terminal
-	// window, and its only way in, the Terminal view's paste, is refused by
-	// every current host's Hermes paste guard. Backward-compatible both ways,
-	// like ClaudeSession.
+	// 🔴 A WINDOW OF A RUNTIME ON THE WIRE IS NEVER Claude (NormalizeWindows
+	// enforces it), so an older muster — which ignores this field — shows it
+	// as a plain terminal window, and its only way in, the Terminal view's
+	// paste, is refused by the host's paste guard. Backward-compatible both
+	// ways, like ClaudeSession.
 	Runtime string `json:"runtime,omitempty"`
 	// AgentSession is the SESSION ID of the conversation in a non-Claude
-	// window's pane (a Hermes id: "local-<64 hex>", or a rotated child's bare
-	// 32-hex id), "" when the host does not say. Bounded by ValidAgentSession,
+	// window's pane (an opencode session id), "" when the host does not say. Bounded by ValidAgentSession,
 	// which is wider than a Claude id's 64 bytes. A Claude window's id stays in
 	// ClaudeSession (never in both, so a list's worst case grows by one id per
 	// window at most). SessionKey is the runtime-qualified key it is stored by.
@@ -668,13 +629,10 @@ const (
 	// RuntimeClaude: Claude Code. On the wire it is Window.Claude, never
 	// Window.Runtime.
 	RuntimeClaude = "claude"
-	// RuntimeHermes: the Hermes CLI (`hermes chat`). No rendered view and no
-	// send path yet: the window is detected and listed, nothing more.
-	RuntimeHermes = "hermes"
 )
 
 // AgentRuntime is the agent CLI in w's active pane: RuntimeClaude, a runtime
-// the wire carries as Window.Runtime (RuntimeSpec.OnWire: RuntimeHermes), or
+// the wire carries as Window.Runtime (RuntimeSpec.OnWire: RuntimeOpenCode), or
 // "" for none. What the hub's waiting set, AgentState and the gated-send
 // switch key on, instead of w.Claude.
 func (w Window) AgentRuntime() string {
@@ -691,9 +649,9 @@ func (w Window) AgentRuntime() string {
 func (w Window) Spec() (RuntimeSpec, bool) { return LookupRuntime(w.AgentRuntime()) }
 
 // SessionKey is the key w's conversation is stored by (a focus, a route, an
-// ask): a Claude session id as itself — exactly the key it always was — and a
-// Hermes one runtime-qualified, "hermes:<id>" (ValidSessionKey); "" when w
-// names no conversation.
+// ask): a Claude session id as itself — exactly the key it always was — and
+// another runtime's runtime-qualified, "opencode:<id>" (ValidSessionKey); ""
+// when w names no conversation.
 func (w Window) SessionKey() string {
 	if w.Claude {
 		return w.ClaudeSession
@@ -704,12 +662,8 @@ func (w Window) SessionKey() string {
 	return ""
 }
 
-// HermesKeyPrefix starts a Hermes conversation's session key.
-const HermesKeyPrefix = RuntimeHermes + ":"
-
 // agentSessionPattern is a non-Claude session id as the wire carries one
-// (Window.AgentSession): 1-128 bytes. Hermes's are "local-<64 hex>" (70), or a
-// rotated child's bare 32 hex, so a Claude id's 64-byte bound cannot hold them.
+// (Window.AgentSession): 1-128 bytes, wider than a Claude id's 64-byte bound.
 var agentSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$`)
 
 // ValidAgentSession reports whether id is a non-Claude session id the wire
@@ -720,7 +674,7 @@ func ValidAgentSession(id string) bool { return agentSessionPattern.MatchString(
 func ValidSessionKey(key string) bool { return sessionKeyPattern.MatchString(key) }
 
 // The AgentNote bounds: a note's bytes, and how many windows of one list
-// carry one (the frame budget: TestTheLargestWindowListWithHermesWindowsFitsOneFrame).
+// carry one (the frame budget: TestTheLargestWindowListFitsOneFrame).
 const (
 	MaxAgentNote        = 200
 	MaxAgentNoteWindows = 8
@@ -1072,11 +1026,13 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.Label = ""
 		}
 		w.Command = validCommand(w.Command)
-		// 🔴 A WINDOW OF A RUNTIME ON THE WIRE (Hermes) IS NEVER A CLAUDE ONE:
+		// 🔴 A WINDOW OF A RUNTIME ON THE WIRE (opencode) IS NEVER A CLAUDE ONE:
 		// a host claiming both gets the more restrictive reading, that
-		// runtime's (its own view, no Claude paste, its gated-send switch).
-		// Any runtime name the wire does not carry is dropped.
+		// runtime's (its own view, no Claude paste).
+		// Any runtime name the wire does not carry is dropped — an older
+		// host's "hermes" among them: that window is a plain terminal window.
 		r, onWire := wireRuntime(w.Runtime)
+		unknownRuntime := w.Runtime != "" && !onWire
 		if onWire {
 			// Its Pending is its own runtime's (boundPending).
 			w.Claude, w.ClaudeSession = false, ""
@@ -1090,7 +1046,9 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		// credential needs): a window of a runtime on the wire, or a window
 		// with NO Claude view whose pane runs Claude Code all the same (the
 		// host's NoView lines). A Claude window has its view; it has no note.
-		if w.AgentNote = cleanNote(w.AgentNote); !onWire && w.Claude {
+		// A note about a runtime muster does not know is that runtime's
+		// words: dropped with it.
+		if w.AgentNote = cleanNote(w.AgentNote); (!onWire && w.Claude) || unknownRuntime {
 			w.AgentNote = ""
 		}
 		// A status describes an agent's pane; a window without one has none.
@@ -1346,19 +1304,17 @@ type AskTyping struct {
 	Prior *askq.Progress `json:"prior,omitempty"`
 }
 
-// The kinds of paste refusal a host names (Msg.Refusal on pasted): the
-// Hermes paste guard's (docs/design/hermes.md). An older host names none, and
-// muster then shows the host's prose as a plain refusal.
+// The kinds of paste refusal a host names (Msg.Refusal on pasted): the host
+// paste guard's (mirrorhost's paneguard.go). An older host names none — or a
+// kind muster no longer knows (an older host's "hermes…" kinds) — and muster
+// then shows the host's prose as a plain refusal.
 const (
-	// PasteRefusalHermes: the pane's process tree holds a Hermes-shaped
-	// process. Nothing was typed.
-	PasteRefusalHermes = "hermes"
 	// PasteRefusalMultiplexer: the pane's process tree holds a terminal
 	// multiplexer client (tmux, screen, dtach, abduco, zellij), which can hide
-	// a Hermes the host cannot see. Nothing was typed.
+	// an agent the host cannot see. Nothing was typed.
 	PasteRefusalMultiplexer = "multiplexer"
 	// PasteRefusalUnchecked: the host could not read the pane's processes, so
-	// it could not rule Hermes out. Nothing was typed.
+	// it could not rule out an agent it does not type into. Nothing was typed.
 	PasteRefusalUnchecked = "unchecked"
 	// PasteRefusalOpenCode: the pane's process tree holds opencode. muster
 	// cannot send to opencode yet (its send goes through opencode's own API,
@@ -1382,36 +1338,15 @@ const (
 	// this one would be pasted after and submitted with as one turn. Nothing
 	// was typed; a queued message is held, as for PasteRefusalClaudeWaiting.
 	PasteRefusalClaudeBox = "claude-box"
-
-	// The gated send into a Hermes pane (Msg.Runtime "hermes"), by how it
-	// ended when it did not end "sent":
-	//
-	// PasteRefusalHermesNotSubmitted: refused before anything was pasted (the
-	// text rules, the screen check, the Escape sequence's abort, the host's
-	// -hermes-send off). Nothing was typed but, possibly, Escapes.
-	PasteRefusalHermesNotSubmitted = "hermes-not-submitted"
-	// PasteRefusalHermesSuperseded: the window's status moved after muster
-	// decided (not idle, or idle since another time). Nothing was pasted; a
-	// queued message can be decided on again.
-	PasteRefusalHermesSuperseded = "hermes-superseded"
-	// PasteRefusalHermesPasted: pasted, NOT submitted: the text is in
-	// Hermes's input box and Enter was withheld. Not to be resent blindly.
-	PasteRefusalHermesPasted = "hermes-pasted"
-	// PasteRefusalHermesUnconfirmed: Enter was sent and Hermes recorded no
-	// message in time: it MAY have been submitted. Never resent blindly.
-	PasteRefusalHermesUnconfirmed = "hermes-unconfirmed"
 )
 
 // The texts of the paste guard's refusals, for the person sending: the host
 // sends them as its reason, and muster shows the same words when the page
 // posted without script (one source, so the two paths cannot drift).
 const (
-	PasteRefusedHermesText = "Not sent: Hermes runs in this pane. muster sends to Hermes only from its window's " +
-		"rendered view, and only on a host whose muster-mirror runs with -hermes-send, because Enter there can " +
-		"answer a prompt Hermes is showing, such as a command approval. Type it in the terminal."
 	PasteRefusedMultiplexerText = "Not sent: this pane runs another terminal multiplexer (tmux, screen, dtach, " +
-		"abduco or zellij), so muster cannot see whether Hermes runs inside it. Type it in the terminal."
-	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check whether Hermes runs in this pane. " +
+		"abduco or zellij), so muster cannot see what runs inside it. Type it in the terminal."
+	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check what runs in this pane. " +
 		"Type it in the terminal."
 	PasteRefusedOpenCodeText = "Sending to opencode isn't supported yet: opencode runs in this pane, and muster " +
 		"does not type into it, because Enter there can answer a prompt opencode is showing, such as a permission " +

@@ -41,32 +41,26 @@ type Pending struct {
 	Summary string `json:"summary,omitempty"`
 	Tool    string `json:"tool,omitempty"`
 	Last    string `json:"last,omitempty"`
-	// THE HERMES ASK (Hermes Phase 4, docs/design/hermes.md, "Questions and
-	// approvals"): a waiting HERMES window's Pending also says which ask it
-	// waits on, and for an approval the one its host can answer. Never on a
-	// Claude window (boundPending drops them there), so a Claude window's
-	// bytes on the wire are unchanged; an older muster ignores them, and an
-	// older host never sends them (muster then shows its generic line).
+	// THE NAMED ASK: a waiting OPENCODE window's Pending also says which ask
+	// it waits on, and the one its host can answer. Never on a Claude window
+	// (boundPending drops them there), so a Claude window's bytes on the wire
+	// are unchanged; an older muster ignores them, and an older host never
+	// sends them (muster then shows its generic line). A kind muster does not
+	// know (an older host's Hermes "approval", "clarify" or "sudo") is
+	// dropped by CleanPending, and with it the window's named ask.
 	//
-	// Kind is PendingApproval, PendingClarify or PendingSudo; "" otherwise.
+	// Kind is PendingPermission or PendingQuestion; "" otherwise.
 	Kind string `json:"kind,omitempty"`
-	// Detail is an approval's description (why Hermes asks), capped at
-	// MaxPendingDetail like the rest.
+	// Detail is a permission's description, capped at MaxPendingDetail like
+	// the rest.
 	Detail string `json:"detail,omitempty"`
-	// PromptID is the approval's id in Hermes's gateway — what an answer
-	// names, so muster can only answer the approval it SHOWED. "" when the
-	// host could not read the approval (its gateway viewer could not attach):
-	// then there is nothing to answer here, and the card says so.
+	// PromptID is opencode's id for the request or form ("per…", "frm_…") —
+	// what an answer names, so muster can only answer the ask it SHOWED.
 	PromptID string `json:"promptId,omitempty"`
-	// Choices are the answers muster may send for PromptID, space-separated:
-	// a subset of HermesApprovalChoices, in that order ("once deny"). Empty
-	// without a PromptID. (A string, not a slice, so a Pending stays
+	// Choices are the answers muster may send for a permission's PromptID,
+	// space-separated: a subset of OpenCodePermissionChoices, in that order.
+	// Empty without a PromptID. (A string, not a slice, so a Pending stays
 	// comparable with ==.)
-	//
-	// An OPENCODE ask (PendingPermission, PendingQuestion) names its request
-	// or form the same way: PromptID is opencode's id for it ("per…",
-	// "frm_…"), and a permission's Choices a subset of
-	// OpenCodePermissionChoices.
 	Choices string `json:"choices,omitempty"`
 	// Options are an opencode QUESTION's option labels, one per line, when
 	// muster can answer it (one single-select question of 1..MaxPendingOptions
@@ -96,14 +90,6 @@ func (p Pending) OptionList() []string {
 	return strings.Split(p.Options, "\n")
 }
 
-// The Hermes asks a Pending names (Pending.Kind), as Hermes's status hook
-// records them (S2).
-const (
-	PendingApproval = "approval"
-	PendingClarify  = "clarify"
-	PendingSudo     = "sudo"
-)
-
 // The opencode asks a Pending names (docs/design/opencode.md, "Asks"): a
 // permission request, and a form its question tool raised. Only an opencode
 // window's (RuntimeSpec.AskKinds).
@@ -114,8 +100,7 @@ const (
 
 // OpenCodePermissionChoices are the answers muster ever sends an opencode
 // permission request: this one call, or no. `always` widens the session's
-// rules past this call, so muster never offers it (as HermesApprovalChoices
-// leaves out `session` and `always`).
+// rules past this call, so muster never offers it.
 var OpenCodePermissionChoices = []string{"once", "reject"}
 
 // openCodeIDPattern is an opencode permission request or form id as muster
@@ -127,20 +112,6 @@ var openCodeIDPattern = regexp.MustCompile(`^(per[0-9A-Za-z_-]{1,125}|frm_[0-9A-
 // ValidOpenCodeAskID reports whether id is an opencode permission request or
 // form id.
 func ValidOpenCodeAskID(id string) bool { return openCodeIDPattern.MatchString(id) }
-
-// HermesApprovalChoices are the answers muster ever sends a Hermes approval:
-// the moment being approved, or no. `session` and `always` widen what the
-// agent may do beyond it (docs/design/hermes.md, open question 1), so muster
-// never offers them.
-var HermesApprovalChoices = []string{"once", "deny"}
-
-// promptIDPattern is a Hermes request id — an approval's prompt id, a status
-// file's request id — as Hermes mints it (uuid4().hex): THE one rule for it
-// (internal/hermeshost uses ValidPromptID too).
-var promptIDPattern = regexp.MustCompile(`^[0-9A-Za-z_-]{1,64}$`)
-
-// ValidPromptID reports whether id is a Hermes request or approval id.
-func ValidPromptID(id string) bool { return promptIDPattern.MatchString(id) }
 
 // The Pending bounds.
 const (
@@ -173,9 +144,6 @@ func CleanPending(p *Pending) *Pending {
 	}
 	out := Pending{Summary: cleanLine(p.Summary, MaxPendingSummary), Tool: cleanLine(p.Tool, MaxPendingTool), Last: cleanLine(p.Last, MaxPendingLast)}
 	switch p.Kind {
-	case PendingApproval, PendingClarify, PendingSudo:
-		out.Kind = p.Kind
-		out.Detail = cleanLine(p.Detail, MaxPendingDetail)
 	case PendingPermission, PendingQuestion:
 		// An opencode ask has no "last words" (Last is Claude Code's), and a
 		// question no Detail: its bytes go to its options instead.
@@ -200,19 +168,6 @@ func CleanPending(p *Pending) *Pending {
 					out.PromptID, out.Options = p.PromptID, strings.Join(opts, "\n")
 				}
 			}
-		}
-	}
-	// An answer is offered only for an approval muster can name, and only
-	// with a choice muster ever sends.
-	if out.Kind == PendingApproval && ValidPromptID(p.PromptID) {
-		var cs []string
-		for _, c := range HermesApprovalChoices {
-			if p.Offers(c) {
-				cs = append(cs, c)
-			}
-		}
-		if len(cs) > 0 {
-			out.PromptID, out.Choices = p.PromptID, strings.Join(cs, " ")
 		}
 	}
 	if out.Summary == "" && out.Tool == "" && out.Last == "" && out.Kind == "" {
@@ -284,8 +239,8 @@ func boundPending(out []Window) {
 			continue
 		}
 		// A Claude window's Pending is what it always was (the named ask's
-		// fields are another runtime's); a Hermes window's names its ask, or
-		// it is none (RuntimeSpec.PendingNamesAsk).
+		// fields are another runtime's); an opencode window's names its ask,
+		// or it is none (RuntimeSpec.PendingNamesAsk).
 		out[i].Pending = r.cleanPending(out[i].Pending)
 		if out[i].Pending != nil {
 			with = append(with, i)

@@ -10,7 +10,7 @@ import (
 // RESOLVING A WINDOW WHILE A VIEW OPENS (the host.resolve phase).
 //
 // A watch that names a window is asked, in turn, of every runtime that could
-// serve it — opencode's view, Hermes's, then Claude Code's tail (watch) — and
+// serve it — opencode's view, then Claude Code's tail (watch) — and
 // each one's first step was hostSide.window: a whole-server `tmux list-panes
 // -a` plus a read of the entire proc table and every runtime's lookup over
 // every window. MEASURED at `a8fc65c3` (the tmuxit TestTmuxOpenPerfReport rig:
