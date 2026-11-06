@@ -10,7 +10,6 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/suggest"
-	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,12 +56,11 @@ func (s *Server) askFiled(a attention.Ask) {
 // askPushItem is ask a as its notification is built from: askItemNow, and —
 // for a chief notice, whose body leads with its session's focus title — that
 // title's time (withFocus, the Asks list's own rule) and its age on the
-// server's clock, s.now (pushFocusAge), so the push carries the title's age
+// server's clock (withFocusAges), so the push carries the title's age
 // (attentionPushBody). An ordinary ask reads no focus.
 func (s *Server) askPushItem(ctx context.Context, a attention.Ask) attentionItem {
 	items := []attentionItem{s.askItemNow(ctx, a)}
-	s.withFocus(ctx, items)
-	items[0].pushFocusAge = ui.FocusAgeOf(items[0].focusAt, s.now())
+	s.withFocusAges(ctx, items)
 	return items[0]
 }
 

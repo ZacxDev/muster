@@ -176,6 +176,10 @@ type Session struct {
 	AgentID       int64
 	ChatSessionID int64
 	Title         string // its focus title, "" for none
+	// TitleAge is how old Title is, in words, for the chief's prompt
+	// (ui.FocusAgeLabel of ui.FocusAgeOf on the server's clock: "focus title
+	// set 2d ago"), "" when it shows none. Prompt only: never stored.
+	TitleAge string
 
 	// Status is "idle", "busy", "waiting" or "" (unknown).
 	Status string

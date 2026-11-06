@@ -524,8 +524,10 @@ func (fi focusIndex) view(sub focus.Subject) *ui.FocusView {
 	return v
 }
 
-// focusAgeFields is how old a session's focus title is, as the chief's
-// fleet_list and sessions_overview rows carry it beside the title.
+// focusAgeFields is how old a session's focus title is, as everything the
+// chief reads carries it beside the title — fleet_list, sessions_overview and
+// focus_search rows, attention_list items — and as a notice's push and the
+// attention summary say it (withFocusAges).
 //
 // SetAt is when the title was written (RFC 3339): what every other time in
 // those answers is, so a title set an hour ago can be told from one set
@@ -544,10 +546,21 @@ type focusAgeFields struct {
 // title-less focus no UpdatedAt).
 func (fi focusIndex) ageFields(sub focus.Subject, now time.Time) focusAgeFields {
 	v := fi.view(sub)
-	if v == nil || v.UpdatedAt.IsZero() {
+	if v == nil {
 		return focusAgeFields{}
 	}
-	return focusAgeFields{SetAt: v.UpdatedAt.UTC().Format(time.RFC3339), Age: ui.FocusAgeOf(v.UpdatedAt, now).Text}
+	return focusAgeFieldsOf(v.UpdatedAt, now)
+}
+
+// focusAgeFieldsOf is the focusAgeFields of a title written at updatedAt, at
+// now (none for a zero updatedAt: no title, or no known time). 🔴 now is the
+// SERVER's clock (s.now) at every caller: one clock for every age the chief
+// or a push is told.
+func focusAgeFieldsOf(updatedAt, now time.Time) focusAgeFields {
+	if updatedAt.IsZero() {
+		return focusAgeFields{}
+	}
+	return focusAgeFields{SetAt: updatedAt.UTC().Format(time.RFC3339), Age: ui.FocusAgeOf(updatedAt, now).Text}
 }
 
 // mirrorFocus is a mirrored entry's focus view: its Claude session's, nil

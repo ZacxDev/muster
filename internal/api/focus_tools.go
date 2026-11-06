@@ -40,7 +40,7 @@ func focusToolDefs() []agents.ToolDef {
 			Parameters: objSchema(map[string]any{})},
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
-				"matches first: id, kind, title and a short snippet. Use it to find which session is best placed to handle something. " +
+				"matches first: id, kind, title (with focus_set_at, and focus_age \"2d\" past a day) and a short snippet. Use it to find which session is best placed to handle something. " +
 				"Only sessions muster can see now are returned. By default it searches each session's CURRENT focus; with since_hours " +
 				"it searches every focus each session had in that many past hours instead (a session's focus moves between subtasks " +
 				"of one job, so its current focus can miss what it has been on all along)." + focusUntrustedTail,
@@ -145,10 +145,23 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		Kind    string `json:"kind"`
 		Title   string `json:"title"`
 		Snippet string `json:"snippet,omitempty"`
+		// focusAgeFields: how old Title (the session's current focus) is.
+		focusAgeFields
 	}
+	var fi focusIndex
+	if len(hits) > 0 {
+		fi = s.focusIndex(ctx) // one read for every hit's age
+	}
+	now := s.now()
 	out := make([]row, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet})
+		r := row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet}
+		// The age is the stored focus's only while it is still this title (a
+		// refresh between the search and the read moved it on: no age).
+		if f, ok := fi[h.Subject]; ok && f.Title == h.Title {
+			r.focusAgeFields = fi.ageFields(h.Subject, now)
+		}
+		out = append(out, r)
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "results": out})
 }

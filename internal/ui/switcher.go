@@ -161,6 +161,10 @@ type SwitcherCurrent struct {
 	// address, so a pin there does not land on the session's other view. ""
 	// is the session's own page (its sidebar row's link, newSwitcherPin).
 	Back string
+	// Now is the server's clock, which every pill's focus age is worked out at
+	// (FocusAgeOf): the clock the Asks list, a notice's push and the chief's
+	// tools age titles by. Zero: time.Now.
+	Now time.Time
 }
 
 // is reports whether e is the page's own session.
@@ -339,7 +343,10 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 	var more []string
 	// One clock for every item's focus age (FocusAgeOf); NavAgentsList,
 	// which has the page's own, passes that one.
-	now := time.Now()
+	now := cur.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	if len(recent) > switcherRecentMax {
 		for _, it := range switcherItems(recent[switcherRecentMax:], cur, now) {
 			more = append(more, it.Href)

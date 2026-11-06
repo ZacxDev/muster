@@ -202,11 +202,12 @@ type attentionItem struct {
 	// focusAt is when Focus was written (withFocus), for its age on the Asks
 	// list (ui.FocusAgeOf); zero for none or unknown.
 	focusAt time.Time
-	// pushFocusAge is Focus's age as its push says it (attentionPushBody),
-	// decided on the SERVER's clock (s.now) when the push item is built
-	// (askPushItem) — the clock the chief's tools age titles by. None
-	// elsewhere: no other push carries a focus title.
-	pushFocusAge ui.FocusAge
+	// focusAgeFields is Focus's age (focus_set_at, focus_age) as attention_list
+	// gives it to the chief, a notice's push body says it (attentionPushBody)
+	// and the attention summary's why repeats it — set by withFocusAges on the
+	// SERVER's clock (s.now), the one the chief's tools age titles by. Unset
+	// where nothing ran withFocusAges.
+	focusAgeFields
 	// Since is when the item started waiting: an ask's or a draft's creation, a
 	// session's status time (when it went waiting), a held question's creation.
 	// The queue is NEWEST FIRST by it (sortAttentionItems).
@@ -766,6 +767,17 @@ func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 	}
 }
 
+// withFocusAges is withFocus, then each item's focus age at the server's clock
+// (s.now): what attention_list, a notice's push and the attention summary
+// carry (focusAgeFields). One focus read for all the items, as withFocus.
+func (s *Server) withFocusAges(ctx context.Context, items []attentionItem) {
+	s.withFocus(ctx, items)
+	now := s.now()
+	for i := range items {
+		items[i].focusAgeFields = focusAgeFieldsOf(items[i].focusAt, now)
+	}
+}
+
 // noticeFocus reports whether it is a chief notice that carries its session's
 // focus title (noticeItem).
 func noticeFocus(it attentionItem) bool {
@@ -940,7 +952,7 @@ func attentionPushBody(it attentionItem) string {
 		// is not sent for it: attentionNotification).
 		var parts []string
 		if title := pushLine(textplain.Title(it.Focus)); title != "" {
-			parts = append(parts, noticePushFocusLine(title, it.pushFocusAge))
+			parts = append(parts, noticePushFocusLine(title, ui.FocusAge{Text: it.Age}))
 		}
 		if l := pushLine(it.Text); l != "" {
 			parts = append(parts, l)
@@ -1427,7 +1439,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
-	now := time.Now()
+	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
 	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
 		s.askListHTML(r.Context(), items, now) + `</ul>`
 	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
@@ -1479,7 +1491,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	s.withAskBoxes(r.Context(), items, true)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	now := time.Now()
+	now := s.now() // as renderAsksPage
 	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, now)))
 }
 

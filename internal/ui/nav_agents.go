@@ -302,9 +302,10 @@ var navIdleJS = `(function () {
   });
 })();`
 
-// RenderNavAgents writes NavAgentsList.
-func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, currentURL string) error {
-	return NavAgentsList(list, mirrors, currentURL, time.Now()).Render(w)
+// RenderNavAgents writes NavAgentsList, its focus ages at now (the server's
+// clock).
+func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, currentURL string, now time.Time) error {
+	return NavAgentsList(list, mirrors, currentURL, now).Render(w)
 }
 
 // navAgentRow is one row: a real-load link (hx-boost="false", as a switcher

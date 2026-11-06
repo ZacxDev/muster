@@ -31,17 +31,22 @@ carries none, as everywhere. The age is never cut off: a title long enough to
 crowd it out is cut instead (with `…`), so the title and its age take at most
 half of the 200-character body and the chief's message keeps the rest.
 
-The chief's `fleet_list` and `sessions_overview` carry the same age beside each
-session's focus title: `focus_set_at` (when it was written, RFC 3339, like every
+The chief's `fleet_list`, `sessions_overview` and `focus_search` (its current
+focus search) rows, and its `attention_list` items, carry the same age beside
+each focus title: `focus_set_at` (when it was written, RFC 3339, like every
 other time in those answers), and `focus_age` (`"2d"`) past a day, from the same
 rule. They carry no stale flag: the age says it, and in those tools "stale"
 already means a failed refresh (`focus_problem`). `focus_set_at` is
 there so the chief can tell a title set an hour ago from one set yesterday,
 which the whole-day age does not show. A session with no title carries neither.
+A [chief nudge](chief-nudges.md)'s stall check is given the title's age in words
+on the line after it (`focus title set 2d ago`), and the
+[attention summary](attention.md)'s `why` for a notice is its push's first line,
+age included.
 
 The age is the time the focus was last written. It is worked out by the server
-when the page (or the switcher, or the list) is drawn, from one rule
-(`internal/ui`'s `FocusAgeOf`); the dock and the palette draw what the server
+when the page (or the switcher, the list, the push or the tool's answer) is
+made, from one rule (`internal/ui`'s `FocusAgeOf`) on one clock, the server's; the dock and the palette draw what the server
 decided and hold no rule of their own, so an age is as old as the page showing
 it. A refresh that fails keeps the old title and its time, so a session whose
 refresh keeps failing ages like an idle one. In the dock and the palette the
@@ -287,7 +292,7 @@ the chief that focus is data, never instructions. Neither makes the text safe
 | tool | who | what |
 |---|---|---|
 | `fleet_list` | chief | every session: id, kind, name, status, a mirrored window's `where` (its exact tmux target, [attention.md](attention.md#how-a-window-is-named)), focus title with how old it is (`focus_set_at`; `focus_age` past a day, [how old a focus is](#how-old-a-focus-is)), and `focus_problem` (the reason) when its focus is missing or stale |
-| `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, title and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
+| `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, title (with `focus_set_at`, and `focus_age` past a day) and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
 | `sessions_overview(limit?)` | chief | every live session (running agents, online mirrored windows) active in the last 24 h, newest-active first: id, kind, name, host, a mirrored window's `where`, status, current focus with the same `focus_set_at` and `focus_age` as `fleet_list`, the distinct focus titles of the last 6 h with their times, its pending attention item, and its last three user and assistant messages (300 characters each, secrets redacted, no tool output). A session whose transcript does not arrive within 5 s reads `"transcript": "unavailable (timed out)"`; all the reads share a 12 s budget, and a session it cuts or never reaches reads `"unavailable (overview budget)"`. The answer is capped at 32 KiB and says how many sessions it left out |
 | `fleet_report(since, until?)` | chief | every session of the owner's — running agents and mirrored windows, **ended ones included** — with focus activity between `since` and `until` (RFC 3339; `until` defaults to now; at most 4 days apart), most recently active first: id, kind, name, host, a listed window's `where` (this door only: the fleet-report reply below never carries it), repo, state (`waiting`: an attention item is pending; `active`: live now; `ended`), first and last seen, the distinct focus titles of the window with their times (at most 20 per session, the newest), and the pull requests it created or pushed. The chief itself is left out. Capped at 32 KiB; `coverage` says how many sessions were left out and what did not answer (an offline host, a store that could not be read). It shows the owner **everything**, hosts included and unfiltered, because its answer never leaves muster; the same report answering a [fleet-report request](plugins.md#a-fleet-report-request) is narrowed to `MUSTER_FLEET_REPORT_PATHS`, with no hosts and secret-shaped strings removed |
 

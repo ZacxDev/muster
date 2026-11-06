@@ -31,13 +31,16 @@ type focusAgeChiefCase struct {
 	setAt, wantAge string
 }
 
-// The fixed clock: every expected focus_set_at is a literal.
-var focusAgeChiefNow = time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+// The fixed clock: every expected focus_set_at is a literal. It is YEARS from
+// any wall time this test runs at, so an age worked out on time.Now instead
+// of s.now reads thousands of days, never one of the expected ages (round 1
+// of #476, F3: a clock within a day of the wall let that mutant survive).
+var focusAgeChiefNow = time.Date(2021, 3, 10, 12, 0, 0, 0, time.UTC)
 
 var focusAgeChiefCases = []focusAgeChiefCase{
-	{"two hours (set within the day: a time, no age)", 2 * time.Hour, "2026-11-05T10:00:00Z", ""},
-	{"fifty hours", 50 * time.Hour, "2026-11-03T10:00:00Z", "2d"},
-	{"five days three hours", 5*24*time.Hour + 3*time.Hour, "2026-10-31T09:00:00Z", "5d"},
+	{"two hours (set within the day: a time, no age)", 2 * time.Hour, "2021-03-10T10:00:00Z", ""},
+	{"fifty hours", 50 * time.Hour, "2021-03-08T10:00:00Z", "2d"},
+	{"five days three hours", 5*24*time.Hour + 3*time.Hour, "2021-03-05T09:00:00Z", "5d"},
 }
 
 // focusAgeRow is the part of a chief tool's row these tests read.
@@ -87,7 +90,7 @@ func TestTheChiefsFleetListAndOverviewSayHowOldAFocusTitleIs(t *testing.T) {
 					by[r.ID] = r
 				}
 				checkFocusAgeRow(t, tool+" labelled", by[labelled.String()], "Pruning the fig orchard", c.setAt, c.wantAge)
-				checkFocusAgeRow(t, tool+" other", by[other.String()], "Peeling the kiwi crate", "2026-11-04T06:00:00Z", "1d")
+				checkFocusAgeRow(t, tool+" other", by[other.String()], "Peeling the kiwi crate", "2021-03-09T06:00:00Z", "1d")
 				if strings.Contains(text, "focus_stale") {
 					t.Errorf("%s carries focus_stale:\n%s", tool, text)
 				}
@@ -109,7 +112,7 @@ func TestTheChiefsFleetListAndOverviewSayHowOldAFocusTitleIs(t *testing.T) {
 	if err := json.Unmarshal([]byte(s.toolFleetList(s.attentionPrincipal(context.Background(), 1))), &fl); err != nil || len(fl.Sessions) != 3 {
 		t.Fatalf("fleet_list with an agent: %+v %v", fl.Sessions, err)
 	}
-	checkFocusAgeRow(t, "fleet_list agent", fl.Sessions[0], "Indexing the wren archive", "2026-11-03T10:00:00Z", "2d")
+	checkFocusAgeRow(t, "fleet_list agent", fl.Sessions[0], "Indexing the wren archive", "2021-03-08T10:00:00Z", "2d")
 
 	// No focus row at all: neither field is sent.
 	s = whereServer(t)
@@ -198,7 +201,7 @@ func TestANoticesPushSaysHowOldItsFocusTitleIs(t *testing.T) {
 func TestANoticesPushKeepsItsAgeWithinTheBodysBudget(t *testing.T) {
 	title := strings.Repeat("orchard ", focus.MaxTitleRunes/8)
 	text := strings.Repeat("merge or wait? ", 20)
-	it := attentionItem{Kind: attentionKindNotice, Focus: title, Text: text, pushFocusAge: ui.FocusAge{Text: "2d"}}
+	it := attentionItem{Kind: attentionKindNotice, Focus: title, Text: text, focusAgeFields: focusAgeFields{Age: "2d"}}
 	body := attentionPushBody(it)
 	if n := utf8.RuneCountInString(body); n > attentionPushBodyMax {
 		t.Fatalf("the body is %d runes, over %d:\n%s", n, attentionPushBodyMax, body)
@@ -211,7 +214,7 @@ func TestANoticesPushKeepsItsAgeWithinTheBodysBudget(t *testing.T) {
 	if !strings.HasPrefix(rest, "merge or wait? merge") || !strings.HasSuffix(rest, "…") {
 		t.Fatalf("the message is not what the cut shortens: %q", rest)
 	}
-	it.pushFocusAge = ui.FocusAge{}
+	it.focusAgeFields = focusAgeFields{}
 	if got, want := attentionPushBody(it), push.CutClusters(pushLine(title)+"\n"+pushLine(text), attentionPushBodyMax); got != want {
 		t.Fatalf("with no age the body is\n%q, want it as before\n%q", got, want)
 	}

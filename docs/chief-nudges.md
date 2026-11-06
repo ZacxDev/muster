@@ -403,7 +403,8 @@ judged afresh) and the sweep goes on to the next session.
 
 The call carries, fenced as untrusted data:
 
-- the session's focus title;
+- the session's focus title, and past a day how old it is (`focus title set
+  2d ago`, [focus.md](focus.md#how-old-a-focus-is));
 - the session's **last message** (up to 4,000 characters);
 - **your own messages to that session**, up to the 20 newest, each up to 2,000
   characters, each with the id a nudge must quote it by;
