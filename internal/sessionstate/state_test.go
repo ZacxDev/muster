@@ -91,8 +91,8 @@ func TestAShortBlipWithNoOwnerActionStillLeavesTheEpisodeOpen(t *testing.T) {
 	}
 }
 
-// TestStateOfPrecedence: needs_you > stalled > working, and an answerable
-// wait is needs_you with NO episode (the ask is the owner's item).
+// TestStateOfPrecedence: needs_you > stalled > working; every wait is an
+// episode, an answerable ask's too (its push waits the grace like any other).
 func TestStateOfPrecedence(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -101,7 +101,6 @@ func TestStateOfPrecedence(t *testing.T) {
 		episode bool
 	}{
 		{"a waiting window", Facts{Waiting: true}, StateNeedsYou, true},
-		{"an answerable wait", Facts{Waiting: true, Answerable: true}, StateNeedsYou, false},
 		{"a stall the classifier says asked", Facts{Stalled: true, AskStall: true}, StateNeedsYou, true},
 		{"a stall", Facts{Stalled: true}, StateStalled, true},
 		{"waiting beats a stall", Facts{Waiting: true, Stalled: true}, StateNeedsYou, true},

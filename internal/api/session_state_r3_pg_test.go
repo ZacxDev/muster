@@ -138,10 +138,12 @@ func TestAHermesStallReadsNoTranscript(t *testing.T) {
 	}
 }
 
-// TestAHermesApprovalMusterCanAnswerOpensNoEpisode (N3): a Hermes window
-// waiting on an approval with a prompt id its host answers is an answerable
-// ask — no episode. The control, the same wait with no prompt id, opens one.
-func TestAHermesApprovalMusterCanAnswerOpensNoEpisode(t *testing.T) {
+// TestAHermesApprovalIsAnEpisodeAnswerableOrNot (N3, as the operator changed
+// it after #463): a Hermes window waiting on an approval opens an episode
+// whether or not its host answers it from muster — an answerable ask's push
+// waits the grace like any wait's. Until then one with a prompt id its host
+// answers opened none, and pushed at once.
+func TestAHermesApprovalIsAnEpisodeAnswerableOrNot(t *testing.T) {
 	for _, prompt := range []string{"p1", ""} {
 		t.Run("prompt="+prompt, func(t *testing.T) {
 			f := newStateFixture(t, false)
@@ -154,9 +156,8 @@ func TestAHermesApprovalMusterCanAnswerOpensNoEpisode(t *testing.T) {
 			f.mirror.mu.Unlock()
 			f.srv.ext.Mirror = &hermesAskMirror{fakeMirror: f.mirror, answers: true}
 			f.statePass(t)
-			n := len(f.episodes(t))
-			if (prompt != "" && n != 0) || (prompt == "" && n != 1) {
-				t.Fatalf("episodes: %d", n)
+			if n := len(f.episodes(t)); n != 1 {
+				t.Fatalf("episodes: %d, want 1", n)
 			}
 		})
 	}

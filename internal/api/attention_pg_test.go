@@ -612,11 +612,15 @@ func TestAWaitingSessionIsPushedOncePerEpisode(t *testing.T) {
 		f.srv.BroadcastAgentsChangedFor(1)
 		f.srv.WaitForPushes()
 	}
-	cycle := func() { // busy, then waiting again (nudged twice)
+	cycle := func() { // busy, then waiting again (nudged twice), then its grace passes
 		f.setWindows(mirror.StatusBusy)
 		nudge()
 		f.setWindows(mirror.StatusWaiting)
 		nudge()
+		nudge()
+		// Since the follow-up to #463 a new wait's push is held for its grace
+		// (insideGrace): the re-push window below is timed from the push.
+		clock = clock.Add(EpisodeWaitingGrace + time.Second)
 		nudge()
 	}
 	nudge() // the host's first observation: @1 is already waiting

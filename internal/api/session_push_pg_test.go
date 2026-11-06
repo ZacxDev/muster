@@ -409,7 +409,8 @@ func TestTheAsksPageDrawsStalledAndWaitingRows(t *testing.T) {
 
 // TestSessionStateOffKeepsTodaysPushes (INVARIANT GUARD — green at the base
 // too): MUSTER_SESSION_STATE off, a waiting window pushes as today (its
-// session item's tag) and a live chief ask raises today's notice.
+// session item's tag; since the follow-up to #463 once its grace has passed) and a live
+// chief ask raises today's notice.
 func TestSessionStateOffKeepsTodaysPushes(t *testing.T) {
 	f := newNudgeFixture(t, true)
 	f.mirror.mu.Lock()
@@ -428,6 +429,7 @@ func TestSessionStateOffKeepsTodaysPushes(t *testing.T) {
 	f.srv.attention.pushedAt = map[string]time.Time{}
 	f.srv.attention.mu.Unlock()
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	pastWaitingGrace(f.srv)
 	got := f.pushes()
 	sessionPushes := 0
 	for _, p := range got {
@@ -536,8 +538,8 @@ func (f *stateFixture) seenIdleThenWaiting() {
 
 // TestAWaitingWindowWithNoSessionKeyKeepsTodaysPush (regression; audit F1):
 // a window session state cannot key (a host that sends no Claude session id)
-// keeps today's summary-only push with the flag on — never silence — and
-// opens no episode.
+// keeps today's summary-only push with the flag on — never silence; since
+// since the follow-up to #463 once its grace has passed — and opens no episode.
 func TestAWaitingWindowWithNoSessionKeyKeepsTodaysPush(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.mirror.mu.Lock()
@@ -545,6 +547,8 @@ func TestAWaitingWindowWithNoSessionKeyKeepsTodaysPush(t *testing.T) {
 	f.mirror.mu.Unlock()
 	f.seenIdleThenWaiting()
 	f.statePass(t)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.advance(EpisodeWaitingGrace + time.Second)
 	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	got := f.pushes()
 	if len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-session-") {
@@ -560,15 +564,17 @@ func TestAWaitingWindowWithNoSessionKeyKeepsTodaysPush(t *testing.T) {
 }
 
 // TestAWindowThatGainsItsKeyMidWaitPushesOnce (regression; round 2): a
-// keyless waiting window gets today's push; its Claude session id then
-// arrives while it still waits. The stop is pushed once — not again as an
-// episode, by the hook or by the pass.
+// keyless waiting window gets today's push (once its grace has passed); its
+// Claude session id then arrives while it still waits. The stop is pushed
+// once — not again as an episode, by the hook or by the pass.
 func TestAWindowThatGainsItsKeyMidWaitPushesOnce(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.mirror.mu.Lock()
 	f.mirror.windows[0].ClaudeSession = ""
 	f.mirror.mu.Unlock()
 	f.seenIdleThenWaiting()
+	f.advance(EpisodeWaitingGrace + time.Second)
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
 	f.mirror.mu.Lock()
 	f.mirror.windows[0].ClaudeSession = nudgeSID
 	f.mirror.mu.Unlock()
@@ -663,10 +669,11 @@ func TestAKeyedWaitingWindowPushesOnlyItsEpisode(t *testing.T) {
 // held AskUserQuestion registers a moment later). Exactly one push either way:
 //   - the stop's episode pushed already (no grace): the now-answerable ask
 //     does not push a second time;
-//   - the stop's episode is still HELD in its waiting grace: it never pushed,
-//     and an answerable window gets no episode push, so the ask pushes — as
-//     the ask, once. 🔴 Suppressing it there would leave the ask SILENT
-//     (episodeHandedOver), and the grace passing must not add a second push.
+//   - the stop's episode is still HELD in its waiting grace: it is ONE stop
+//     either way, and the grace passing pushes it once — as the ASK, its
+//     question in full, under the episode's tag (operator decision after #463:
+//     an answerable ask is an episode too; until then the ask pushed AT ONCE
+//     from the waiting diff, and this case asserted that push).
 func TestAWaitThatNamesItsAskLaterPushesOnce(t *testing.T) {
 	ask := func(t *testing.T, f *stateFixture) {
 		t.Helper()
@@ -692,10 +699,16 @@ func TestAWaitThatNamesItsAskLaterPushesOnce(t *testing.T) {
 			t.Fatalf("pushes inside the grace: %v", got)
 		}
 		ask(t, f)
+		if got := f.pushes(); len(got) != 0 {
+			t.Fatalf("pushes when the ask registered: %v, want none inside the grace", got)
+		}
 		f.pastGrace(t)
 		f.srv.AttentionMirrorChanged(authz.OperatorUserID)
-		if got := f.pushes(); len(got) != 1 || strings.HasPrefix(got[0], "attention attention-episode-") {
-			t.Fatalf("pushes: %v, want the ask's one push", got)
+		if got := f.pushes(); len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-episode-") {
+			t.Fatalf("pushes: %v, want the stop's one push", got)
+		}
+		if p := f.payloads()[0]; !strings.HasPrefix(p.Body, "Which database?") {
+			t.Fatalf("body %q, want the ask's question", p.Body)
 		}
 	})
 }
