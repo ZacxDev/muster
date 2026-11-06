@@ -16,7 +16,7 @@ import (
 // ---------------------------------------------------------------------------
 // officer_complete's two per-pool arguments, end to end through the HQ fake:
 //
-//   - `investigation` (civ-hq docs/OFFICERS.md "Investigation"): HQ REQUIRES
+//   - `investigation` (HQ's officer guide, "Investigation"): HQ REQUIRES
 //     it to escalate an item of a type whose policy sets investigation: true.
 //     A judgement (or untiered) instance is offered it and muster forwards it
 //     to HQ AS SENT — HQ owns its validation, and HQ's 400 comes back to the

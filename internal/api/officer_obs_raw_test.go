@@ -75,7 +75,7 @@ func TestObsRawPassesTheCallThroughForTheHeldItem(t *testing.T) {
 }
 
 // TestObsRawRefusals: a plain agent is neither offered nor served the tool
-// (a routine instance is, since the operator's 2026-11-06 decision:
+// (a routine instance is, by the operator's decision:
 // TestObsRawIsOfferedToARoutineInstanceAndCounted); a judgement instance
 // holding no item, naming an item it does not
 // hold, or naming its own instance is refused without a raw query reaching
@@ -400,10 +400,10 @@ func TestTheObsRawToolSchemaIsOpen(t *testing.T) {
 }
 
 // TestObsRawIsOfferedToARoutineInstanceAndCounted (operator decision
-// 2026-11-06, "Give routine obs_raw"): a routine instance is offered
+// "Give routine obs_raw"): a routine instance is offered
 // officer_obs_raw (its session pre-allows it) and served it for the routine
 // item it holds, each call one read of that item's shared budget. Today's HQ
-// refuses a routine item's raw read (civ-hq store OfficerObsRawHolder: 403
+// refuses a routine item's raw read (HQ's raw-read holder check: 403
 // not_investigating) and that refusal reaches the instance with HQ's code;
 // an HQ that admits it gets the call with the item and instance added, and
 // the 201st read of the item is refused by the budget before HQ.

@@ -15,7 +15,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // TestObsRawIsOfferedToBothPoolsOnly: a judgement pool and (operator
-// decision 2026-11-06) a routine pool are offered officer_obs_raw whether or
+// decision) a routine pool are offered officer_obs_raw whether or
 // not their officer reads a cluster; an untiered officer is not.
 func TestObsRawIsOfferedToBothPoolsOnly(t *testing.T) {
 	if officers.ToolObsRaw != "officer_obs_raw" {

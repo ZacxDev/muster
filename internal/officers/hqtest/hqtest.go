@@ -136,8 +136,8 @@ type Server struct {
 	ObsRawNotInvestigating bool
 	ObsRawAnswers          [][]byte
 	// ObsRawAdmitsRoutine is an HQ that also admits a raw read of a ROUTINE
-	// item. No HQ does yet: civ-hq's holder check (store
-	// OfficerObsRawHolder) refuses any item that is not judgement tier, as
+	// item. No HQ does yet: HQ's raw-read holder check
+	// refuses any item that is not judgement tier, as
 	// this fake does by default.
 	ObsRawAdmitsRoutine bool
 	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
@@ -953,7 +953,7 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
 			return
 		}
-		// needs_judgement (civ-hq store CompleteOfficerItem / promoteOfficerItem):
+		// needs_judgement (HQ's complete of a routine item):
 		// no links; a ROUTINE item only (a judgement item is a 400, nothing
 		// changed); the item is promoted IN PLACE — judgement, open, no holder,
 		// the summary kept as routine_summary — and nothing closes.
