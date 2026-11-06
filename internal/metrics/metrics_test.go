@@ -43,6 +43,7 @@ import (
 var wantMetrics = map[string][]string{
 	"muster_officer_error_slots":                      nil,
 	"muster_officer_hq_faults":                        nil,
+	"muster_officer_cap_refusal_withheld":             nil,
 	"muster_officer_transcript_events_total":          {"result"},
 	"muster_officer_llm_requests_total":               {"instance", "officer", "result"},
 	"muster_officer_llm_refused_total":                {"officer", "reason"},

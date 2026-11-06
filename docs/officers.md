@@ -1354,6 +1354,62 @@ An officer may split its instances into two **pools**, one per HQ item tier
   claimed without the count), and the wake loop treats that judgement pool as
   capped for the pass (logged); the routine pool is unaffected.
 
+- **The judgement wall-time cap: `tiers.judgement.max_item_minutes`**
+  (1–1440; leave it out for no cap). Once a judgement instance has held one
+  item this long, the wake loop stops the instance and completes the item
+  **`escalated`** as its holder, with a summary naming the cap: the work did
+  not finish, and a human picks it up (HQ DMs the owner). The first message
+  tells a judgement instance its cap, so it can wrap up first.
+  - Why not release: the item would reopen and the same pool would claim it
+    again, and a re-claim of an item already counted today is free under
+    `max_sessions_per_day`. A release is a loop, not a stop.
+  - Why not `needs_judgement`: HQ refuses it on a judgement item.
+  - The clock is HQ's own `claimed_at` on the item: set on every claim
+    (so a new claim, by any holder, starts again), kept by a heartbeat, and
+    returned by the items list. A restarted muster reads the same clock. An
+    item HQ returns without `claimed_at` has no clock and is **not** capped
+    (logged once).
+  - A claim past the cap whose holder is down is escalated too, not released.
+  - An instance number that holds a capped claim is **never started** while
+    HQ shows it holding one (see the kept-held refusal below): a new session
+    under that name would claim other work and then be stopped for the old
+    item's cap. Other judgement work starts the next free instance number, or
+    waits when there is none.
+  - A capped judgement instance holds **one live claim at a time**:
+    `officer_claim` (by id or claim-next) refuses a second claim while it
+    holds a live one on another item, before HQ, spending no session. The
+    cap stops the whole instance, so a second item would lose its work.
+    Re-claiming its own item is allowed (it becomes a heartbeat). If HQ's
+    claimed list cannot be read, the claim is refused.
+  - The escalation carries an `investigation` block, which HQ requires to
+    escalate an item of a type whose policy sets `investigation: true` and
+    takes on `escalated` for any type: confidence `low` (so operator steps
+    only), a root cause saying the cap of N minutes was reached with no
+    conclusion, and one step: re-investigate. An HQ from before the block
+    refuses it as an unknown field (400), so a 400 is retried once without
+    it.
+  - A failed stop does not hold back the escalation; the holder's next
+    heartbeat is then refused (`lease_lost`). A 409 on the complete (the
+    holder finished first, or the lease lapsed) is logged.
+  - Any other refusal of the escalation (a 400 with and without the block, a
+    5xx) **keeps the item held**: muster heartbeats it as the stopped holder,
+    so its lease does not lapse and no instance claims it for another full
+    session. Every pass tries the escalation again; HQ's error is logged once
+    per change. The item then reads claimed, past its cap, in HQ until the
+    refusal is fixed. The hold lease is three `poll_interval`s (at least 600
+    s, at most 3600 s), so a muster that stays down longer than that lets
+    the lease lapse.
+  - While such a refusal holds, the holder's instance number is **withheld**
+    from the pool. At the default `max_instances` of 1 that is the whole
+    judgement pool, and every other judgement item waits. This is loud: the
+    officer's owner gets **one** notification per episode (the "needs you"
+    channel, muted with the attention toggle on /account) naming the
+    officer, the item, HQ's refusal and that the pool is waiting, and it is
+    cleared when the escalation lands. The gauge
+    `muster_officer_cap_refusal_withheld` counts the withheld instances,
+    and the log says when one is withheld and when it is not any more. A
+    restarted muster starts a new episode for a refusal still in force.
+
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;
 - a missing pool;
@@ -1361,6 +1417,8 @@ Refused at boot, each naming the problem:
 - an unknown key inside a pool;
 - a pool `max_instances` outside 1–8 (the default is 1);
 - `max_sessions_per_day` on the routine pool, or outside 1–100 on the
+  judgement pool;
+- `max_item_minutes` on the routine pool, or outside 1–1440 on the
   judgement pool;
 - a top-level `model` or `max_instances` beside `tiers` (the judgement pool's
   values are `tiers.judgement`'s, and two sources for one value are refused
