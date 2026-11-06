@@ -18,9 +18,10 @@ import (
 // its lease lapses in HQ (which promotes the item to the judgement tier). The
 // wake loop's next read then shows the instance holding nothing, Sync resets
 // its count, and its next item starts at zero. Tokens used while holding no
-// item are counted under "" and reset by every Sync pass that sees the
-// instance holding nothing: the daily USD budget, not this cap, is the wall
-// for an instance that never claims.
+// item are counted under "" but never capped (the proxy applies the cap to a
+// held item only): the daily USD budget, not this cap, is the wall for a turn
+// holding no item. A claim starts its item at zero, so they never count
+// toward an item.
 //
 // In memory only: a restart forgets the counts (the daily budget is the
 // persisted wall).

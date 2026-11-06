@@ -362,7 +362,8 @@ var (
 	//                    answered with muster's 400 and that remedy instead)
 	//   upstream_error — no answer, or the stream broke off
 	//   refused_budget — the officer's daily USD budget was spent
-	//   refused_item_cap — the instance used max_tokens_per_item on its item
+	//   refused_item_cap — the instance used max_tokens_per_item on the item
+	//                    it holds (never while it holds none)
 	//   refused_bad_request — a body that is not a JSON object
 	//   refused_store  — the budget could not be read (or this proxy keeps
 	//                    none for the caller), so nothing was sent
