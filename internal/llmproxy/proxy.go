@@ -15,15 +15,17 @@
 // store before the response ends, so the instance's next request sees them;
 // and one audit record and one log line are written.
 //
-// The chief is the one other caller (Caller.Unbudgeted): the same allowlist,
-// pin, key handling and metering, with its owner's key, and with no budget, no
-// item cap and no usage row — the key's own provider-side credit limit is its
-// cap.
+// The admin's chief is the one other caller (Caller.Unbudgeted): the same
+// allowlist, pin, key handling and metering, on the one key the route layer
+// hands it (the server's MUSTER_AGENT_OPENROUTER_KEY, internal/api), and with
+// no budget, no item cap and no usage row — the key's own provider-side credit
+// limit is its cap, so a 402 is answered with the caller's KeyRemedy.
 //
 // 🔴 THE KEY IS ATTACHED HERE AND NOWHERE ELSE. It is never logged, never
 // audited, never sent to the client: every byte relayed downstream is passed
-// through redact first, a 401/403 body is replaced by muster's own message,
-// and every other non-2xx body is relayed redacted. The client's own
+// through redact first, a 401/403 body (and a KeyRemedy caller's 402 body) is
+// replaced by muster's own message, and every other non-2xx body is relayed
+// redacted. The client's own
 // credential (its muster token) is never sent upstream.
 //
 // 🔴 THE MODEL PIN HOLDS BECAUSE THE BODY IS AN ALLOWLIST. OpenRouter reads
@@ -124,7 +126,9 @@ type Caller struct {
 	Title string
 	// KeyRemedy is what the client is told when the provider refuses the key
 	// (401/403), and the log line's remedy; "" is the officer's (the operator's
-	// MUSTER_OFFICER_OPENROUTER_KEY_<NAME>).
+	// MUSTER_OFFICER_OPENROUTER_KEY_<NAME>). A caller with one is also told it
+	// on a 402 (a spent credit limit), which is NOT counted as a refused key;
+	// an officer's 402 is relayed.
 	KeyRemedy string
 }
 
@@ -504,6 +508,23 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		finish("upstream_auth", resp.StatusCode)
 		return
 	}
+	if resp.StatusCode == http.StatusPaymentRequired && c.KeyRemedy != "" {
+		// 🔴 A 402 IS A SPENT CREDIT LIMIT, NOT A BROKEN KEY. For a caller whose
+		// only cap is its key's provider-side credit limit (the chief), the 402
+		// is the expected way that cap is hit, so it is answered with the
+		// caller's remedy, as a 400 for the same reason as above, and it does
+		// NOT go through upstreamAuthFailed: the key is fine, so the
+		// auth-failing gauge and the 🔴 key log line stay untouched. An officer
+		// (no KeyRemedy) still has its 402 relayed below.
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		rec.UpstreamError = upstreamError(b, c.Key)
+		p.log.Printf("llm proxy: %s: the provider answered HTTP 402 (payment required: the key's credit limit is probably "+
+			"spent, agent %q): %s", c.Officer, c.AgentName, c.KeyRemedy)
+		Refuse(w, http.StatusBadRequest, "billing_error", fmt.Sprintf("the provider refused the request for payment "+
+			"(HTTP 402): the OpenRouter key's credit limit is probably used up; %s", c.KeyRemedy))
+		finish("upstream_status", resp.StatusCode)
+		return
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		rec.UpstreamError = upstreamError(b, c.Key)
@@ -661,9 +682,10 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 // logged loudly once when the officer's state changes into failing (or from
 // one failing status to the other).
 //
-// ⚠ The state is kept per Caller.Officer, so every owner's chief shares the
-// one "chief" state: with two owners' keys, one failing and one not, the log
-// line and the gauge follow whichever answered last. The counter is exact.
+// The state is kept per Caller.Officer. The chief is one caller ("chief", the
+// admin's chief on the one server key), so its state is that key's. A 402 never
+// reaches here for a KeyRemedy caller: a spent credit limit is not a refused
+// key. A 403 does, whatever the provider meant by it.
 func (p *Proxy) upstreamAuthFailed(c Caller, status int) {
 	officer := c.Officer
 	metrics.OfficerLLMUpstreamAuth.WithLabelValues(officer, strconv.Itoa(status)).Inc()

@@ -1788,7 +1788,7 @@ no `spent_today`, `budget` or `book_failures` series (it is never booked):
 | `muster_officer_llm_cost_usd_total{officer,instance}` | USD booked against the budget |
 | `muster_officer_llm_cost_estimated_total{officer}` | requests booked from an estimate (no cost reported) |
 | `muster_officer_llm_spent_today_usd{officer}`, `muster_officer_llm_budget_usd{officer}` | the day's booked spend as last read or booked, and the budget |
-| `muster_officer_llm_refused_total{officer,reason}` | refused before any officer is charged: `path`, `not_routine`, `unconfigured` (`officer` is `none` for a non-officer caller); for the chief (`officer` `chief`): `not_admin`, `chief_off`, `no_key` |
+| `muster_officer_llm_refused_total{officer,reason}` | refused before any officer is charged: `path`, `not_routine`, `unconfigured`, `agents_read` (with the chief LLM on, the agents list could not be read to tell whether the caller is the chief; a 503, nothing sent) (`officer` is `none` for a non-officer caller); for the chief (`officer` `chief`): `not_admin`, `chief_off`, `no_key` |
 | `muster_officer_llm_upstream_auth_failures_total{officer,status}`, `muster_officer_llm_upstream_auth_failing{officer}` | the provider refusing the key |
 | `muster_officer_llm_book_failures_total{officer}` | usage that could not be written to the database; alert on any |
 

@@ -357,7 +357,9 @@ var (
 	//   ok             — the provider answered 2xx and the response was relayed
 	//   upstream_auth  — the provider refused muster's key (401/403); also
 	//                    counted in OfficerLLMUpstreamAuth
-	//   upstream_status — any other non-2xx from the provider (relayed)
+	//   upstream_status — any other non-2xx from the provider (relayed; a
+	//                    402 to a caller with a KeyRemedy, the chief, is
+	//                    answered with muster's 400 and that remedy instead)
 	//   upstream_error — no answer, or the stream broke off
 	//   refused_budget — the officer's daily USD budget was spent
 	//   refused_item_cap — the instance used max_tokens_per_item on its item
@@ -373,7 +375,9 @@ var (
 	// OfficerLLMRefused counts requests refused before any officer could be
 	// charged, by reason: path (not POST /llm/v1/messages), not_routine (the
 	// caller is not an allowed routine instance of an officer with `llm`),
-	// unconfigured (no officer declares `llm`). officer is "none" when the
+	// unconfigured (no officer declares `llm`), agents_read (with the chief
+	// LLM on, the agents list could not be read to tell whether a caller that
+	// is not a routine instance is the chief). officer is "none" when the
 	// caller is not an officer instance. For the chief (officer "chief"):
 	// not_admin (a chief, but not the admin's), chief_off (its owner turned
 	// it off), no_key (MUSTER_AGENT_OPENROUTER_KEY is empty).

@@ -8,12 +8,16 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
@@ -34,12 +38,29 @@ const (
 
 // chiefLLMAgents is an agents store holding chiefLLMRows, read as row-level
 // security would: a principal sees its own owner's rows.
+// listErr, when set, fails every List (an injected read failure); lists
+// counts the List calls.
 type chiefLLMAgents struct {
 	agents.Store
 	rows []agents.Agent
+
+	mu      sync.Mutex
+	listErr error
+	lists   int
 }
 
+func (s *chiefLLMAgents) failLists(err error) { s.mu.Lock(); s.listErr = err; s.mu.Unlock() }
+
+func (s *chiefLLMAgents) listCalls() int { s.mu.Lock(); defer s.mu.Unlock(); return s.lists }
+
 func (s *chiefLLMAgents) List(ctx context.Context) ([]agents.Agent, error) {
+	s.mu.Lock()
+	s.lists++
+	err := s.listErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	owner := requestOwner(ctx)
 	var out []agents.Agent
 	for _, a := range s.rows {
@@ -113,12 +134,18 @@ func (chiefLLMPrefs) SetEnabled(context.Context, int64, bool) error { return nil
 
 // chiefProvider is a stub Anthropic-Messages provider that records each
 // request's headers and model.
+//
+// status, when set (answer), is answered instead of a stream, with an error
+// body.
 type chiefProvider struct {
 	*httptest.Server
-	mu    sync.Mutex
-	hdrs  []http.Header
-	model []string
+	mu     sync.Mutex
+	hdrs   []http.Header
+	model  []string
+	status int
 }
+
+func (p *chiefProvider) answer(status int) { p.mu.Lock(); p.status = status; p.mu.Unlock() }
 
 func newChiefProvider(t *testing.T) *chiefProvider {
 	t.Helper()
@@ -131,9 +158,16 @@ func newChiefProvider(t *testing.T) *chiefProvider {
 		p.mu.Lock()
 		p.hdrs = append(p.hdrs, r.Header.Clone())
 		p.model = append(p.model, body.Model)
+		status := p.status
 		p.mu.Unlock()
 		if r.URL.Path != "/api/v1/messages" {
 			http.NotFound(w, r)
+			return
+		}
+		if status != 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"error":{"message":"Key limit exceeded","code":`+strconv.Itoa(status)+`}}`)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -159,6 +193,7 @@ type chiefLLMRig struct {
 	up    *chiefProvider
 	audit *chiefLLMAudit
 	logs  *llmLogs
+	ag    *chiefLLMAgents
 }
 
 // chiefLLMOpts: enable calls EnableChiefLLM with cfg (Upstream filled in when
@@ -171,9 +206,9 @@ type chiefLLMOpts struct {
 
 func newChiefLLMRig(t *testing.T, o chiefLLMOpts) *chiefLLMRig {
 	t.Helper()
-	r := &chiefLLMRig{up: newChiefProvider(t), audit: &chiefLLMAudit{}, logs: &llmLogs{}}
+	r := &chiefLLMRig{up: newChiefProvider(t), audit: &chiefLLMAudit{}, logs: &llmLogs{}, ag: &chiefLLMAgents{rows: chiefLLMRows()}}
 	r.s = New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(r.logs, "", 0))
-	r.s.UseExtensions(Extensions{Agents: &chiefLLMAgents{rows: chiefLLMRows()}, Connectors: r.audit, ChiefPrefs: chiefLLMPrefs{off: o.off},
+	r.s.UseExtensions(Extensions{Agents: r.ag, Connectors: r.audit, ChiefPrefs: chiefLLMPrefs{off: o.off},
 		Provisioner: stubProvisioner{}, SessionLiveness: stubLiveness{}, Kinds: stubKinds{pick: "acct-one"}})
 	if o.enable {
 		if o.cfg.Upstream == "" {
@@ -407,4 +442,107 @@ func TestTheDefaultChiefModelIsPinned(t *testing.T) {
 	if DefaultChiefLLMModel != "deepseek/deepseek-v4.1-flash" {
 		t.Fatalf("DefaultChiefLLMModel = %q", DefaultChiefLLMModel)
 	}
+}
+
+// chiefCreditRemedyText is the literal the chief must read when its key's
+// credit limit is spent (pinned, not derived from chiefKeyRemedy).
+const chiefCreditRemedyText = "it is the server's MUSTER_AGENT_OPENROUTER_KEY: check it, and its credit limit, then restart muster"
+
+// TestTheChiefIsToldToCheckItsCreditLimitOnA402AndA403: through the real
+// route, a provider 402 (a spent credit limit) and a provider 403 both end the
+// chief's turn with a 400 that names MUSTER_AGENT_OPENROUTER_KEY and its credit
+// limit. The 402 is not counted as a refused key; the 403 is.
+//
+// The 402 half is RED at 528fc231 (the 402 was relayed with the provider's
+// body). The 403 half is an INVARIANT GUARD, green there too.
+func TestTheChiefIsToldToCheckItsCreditLimitOnA402AndA403(t *testing.T) {
+	r := chiefLLMOn(t)
+	auth402 := metricsOfficerLLMUpstreamAuth("chief", "402")
+	r.up.answer(http.StatusPaymentRequired)
+	w := r.post(t, tokAdminChief)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), chiefCreditRemedyText) ||
+		!strings.Contains(w.Body.String(), "HTTP 402") {
+		t.Fatalf("a 402 to the chief: %d %s, want 400 with %q", w.Code, w.Body, chiefCreditRemedyText)
+	}
+	if got := metricsOfficerLLMUpstreamAuth("chief", "402") - auth402; got != 0 {
+		t.Errorf("a 402 was counted as %v refused-key answers", got)
+	}
+	if strings.Contains(r.logs.String(), "THE PROVIDER REFUSES") {
+		t.Errorf("a 402 logged the refused-key line:\n%s", r.logs.String())
+	}
+	r.up.answer(http.StatusForbidden)
+	w = r.post(t, tokAdminChief)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), chiefCreditRemedyText) ||
+		!strings.Contains(w.Body.String(), "HTTP 403") {
+		t.Fatalf("a 403 to the chief: %d %s, want 400 with %q", w.Code, w.Body, chiefCreditRemedyText)
+	}
+	if got := r.up.calls(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+	r.noKeyLeaked(t, w.Body.String())
+}
+
+// TestAFailedAgentsReadIsA503NotTheOfficerRefusal: with the chief LLM on and
+// the agents list unreadable, the admin's chief is refused 503 with the
+// agents-read message, not passed on to the officer checks ("no officer
+// declares `llm`" with none declared, "not a routine-tier instance" beside
+// one), and nothing is sent.
+//
+// RED at 528fc231 (the read error was "not the chief": the officer refusals).
+func TestAFailedAgentsReadIsA503NotTheOfficerRefusal(t *testing.T) {
+	for _, withOfficer := range []bool{false, true} {
+		r := chiefLLMOn(t)
+		if withOfficer {
+			r.enableOfficer(t)
+		}
+		r.ag.failLists(errors.New("injected: agents list unreadable"))
+		w := r.post(t, tokAdminChief)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), ChiefLLMAgentsReadRefusal) {
+			t.Errorf("officer %v, an unreadable agents list: %d %s, want 503 %q", withOfficer, w.Code, w.Body, ChiefLLMAgentsReadRefusal)
+			continue
+		}
+		if got := r.up.calls(); got != 0 {
+			t.Fatalf("officer %v: upstream calls = %d, want 0", withOfficer, got)
+		}
+		if !strings.Contains(r.logs.String(), "injected: agents list unreadable") {
+			t.Errorf("officer %v: the read error was not logged:\n%s", withOfficer, r.logs.String())
+		}
+	}
+}
+
+// TestAnOfficerRequestDoesNotReadTheAgentsList: with the chief LLM on, a
+// routine instance of an `llm` officer is served on the officer path without
+// an agents-list read (its name alone rules out the chief). The chief's own
+// request, which must read it, is the positive control.
+//
+// RED at 528fc231 (every request read the list to ask whether it was the
+// chief).
+func TestAnOfficerRequestDoesNotReadTheAgentsList(t *testing.T) {
+	const tokRoutine = "chief-llm-officer-routine-token-0123"
+	r := chiefLLMOn(t)
+	r.ag.rows = append(r.ag.rows, agents.Agent{ID: 30, Name: "officer-triage-example-web-r1", DisplayName: "triage",
+		OwnerID: 1, Kind: agents.KindClaudeCode, HooksToken: tokRoutine})
+	r.enableOfficer(t)
+	before := r.ag.listCalls()
+	w := r.post(t, tokRoutine)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a routine instance: %d %s, want 200", w.Code, w.Body)
+	}
+	if _, model := r.up.last(); model != "vendor/pinned-model" {
+		t.Fatalf("a routine instance: upstream model %q, want the officer's pin (the officer path)", model)
+	}
+	if got := r.ag.listCalls() - before; got != 0 {
+		t.Errorf("a routine instance's request read the agents list %d times, want 0", got)
+	}
+	before = r.ag.listCalls()
+	if w := r.post(t, tokAdminChief); w.Code != http.StatusOK {
+		t.Fatalf("the chief: %d %s", w.Code, w.Body)
+	}
+	if got := r.ag.listCalls() - before; got < 1 {
+		t.Fatalf("positive control: the chief's request read the agents list %d times, want >= 1", got)
+	}
+}
+
+func metricsOfficerLLMUpstreamAuth(officer, status string) float64 {
+	return testutil.ToFloat64(metrics.OfficerLLMUpstreamAuth.WithLabelValues(officer, status))
 }

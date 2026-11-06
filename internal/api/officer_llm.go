@@ -57,22 +57,39 @@ func (s *Server) handleLLMOtherPath(w http.ResponseWriter, r *http.Request) {
 // serveLLMMessages is POST /llm/v1/messages once the agent is admitted: it
 // must be a routine instance of an officer that declares `llm`.
 //
-// Or the owner's chief, when EnableChiefLLM was called (chief_llm.go). Without
-// it this check is skipped and a chief is refused below exactly as any other
-// agent that is not a routine instance.
+// Or a chief, when EnableChiefLLM was called (chief_llm.go, which serves only
+// the admin's). Without it the chief check is skipped and a chief is refused
+// below exactly as any other agent that is not a routine instance.
+//
+// A routine instance (decided from its name alone) is never asked whether it is
+// the chief, so an officer's request costs no agents-list read. Any other agent
+// is, and when that read fails the request is refused 503 with that cause: it
+// is not passed on to the officer checks, whose refusal would name the wrong
+// fault.
 func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
-	if s.chiefLLM != nil && s.isChiefAgent(r.Context(), a) {
-		s.serveChiefLLM(w, r, a)
-		return
+	o, n, isOfficer := s.officerOf(a)
+	routine := isOfficer && officers.RoutineAgent(o, a.Name)
+	if s.chiefLLM != nil && !routine {
+		_, chief, err := s.agentIsChief(r.Context(), a.ID)
+		if err != nil {
+			metrics.OfficerLLMRefused.WithLabelValues("none", "agents_read").Inc()
+			s.logger.Printf("llm proxy: refused agent %d (%q): could not read the agents list to decide whether it is the chief "+
+				"(nothing sent): %v", a.ID, a.Name, err)
+			llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", ChiefLLMAgentsReadRefusal)
+			return
+		}
+		if chief {
+			s.serveChiefLLM(w, r, a)
+			return
+		}
 	}
 	if s.officerRT == nil || s.officerRT.llm == nil {
 		metrics.OfficerLLMRefused.WithLabelValues("none", "unconfigured").Inc()
 		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "no officer on this server declares `llm`")
 		return
 	}
-	o, n, isOfficer := s.officerOf(a)
-	if !isOfficer || !officers.RoutineAgent(o, a.Name) {
+	if !routine {
 		label := "none"
 		if isOfficer && o.LLM != nil {
 			label = o.ID

@@ -20,7 +20,8 @@ import (
 // instance does, and POST /llm/v1/messages admits it here.
 //
 // It is admitted exactly when EnableChiefLLM was called, the calling agent is
-// its owner's chief (isChiefAgent: chiefPredicate on the agent's current row),
+// not a routine officer instance but its owner's chief (agentIsChief:
+// chiefPredicate on the agent's current row; a failed read is a 503),
 // that owner is the admin (authz.OperatorUserID — the compose runtime runs one
 // chief, the admin's), and that chief is ON (chiefActing, the gate the
 // chief-only tools use). The agent authenticates as every caller of the route
@@ -52,7 +53,14 @@ const NeedChiefOpenRouterKey = "the chief runs on the server's OpenRouter key an
 // chiefNotAdminRefusal is what any chief but the admin's is told.
 const chiefNotAdminRefusal = "only the admin's chief is served on the server's OpenRouter key; this chief belongs to another user"
 
-// chiefKeyRemedy is what the chief is told when the provider refuses its key.
+// ChiefLLMAgentsReadRefusal is the 503 a caller of POST /llm/v1/messages gets
+// when, with the chief LLM on, the agents list could not be read to tell
+// whether it is the chief (serveLLMMessages).
+const ChiefLLMAgentsReadRefusal = "muster could not read its agents list to tell whether this agent is the chief; nothing was " +
+	"sent, retry shortly"
+
+// chiefKeyRemedy is what the chief is told when the provider refuses its key,
+// or answers 402 (its credit limit is spent).
 const chiefKeyRemedy = "it is the server's MUSTER_AGENT_OPENROUTER_KEY: check it, and its credit limit, then restart muster"
 
 // ChiefLLM is EnableChiefLLM's input: the chief's place on the LLM proxy.
@@ -111,8 +119,8 @@ func (s *Server) EnableChiefLLM(c ChiefLLM) error {
 	return nil
 }
 
-// serveChiefLLM is POST /llm/v1/messages for agent a, which isChiefAgent has
-// called its owner's chief.
+// serveChiefLLM is POST /llm/v1/messages for agent a, which agentIsChief has
+// called its owner's chief (serveLLMMessages).
 func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.Agent) {
 	ctx := r.Context()
 	if agentOwnerID(a) != authz.OperatorUserID {

@@ -231,6 +231,14 @@ muster sends the request on with the server's key attached. Only the
   [OpenRouter's key settings](https://openrouter.ai/settings/keys): that limit
   is the only cap. Usage is still counted in the metrics and the connector
   audit trail, as officer `chief`.
+- **When the limit is reached.** If OpenRouter answers 402 (payment
+  required), the chief's turn ends with a 400 that tells it to check
+  `MUSTER_AGENT_OPENROUTER_KEY` and its credit limit, and muster does not
+  report the key as broken. If it answers 401 or 403, the chief gets the same
+  message, and muster also logs the key as refused and sets
+  `muster_officer_llm_upstream_auth_failing{officer="chief"}` to 1. Which
+  status OpenRouter sends for a spent limit has not been checked against the
+  live service.
 
 ## Restarting the chief
 

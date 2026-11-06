@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -155,5 +156,94 @@ func TestARefusedKeyTellsTheCallerItsOwnRemedy(t *testing.T) {
 	o := newRig(t, "remedy:officer", refuse)
 	if _, body := o.post(t); !strings.Contains(body, "muster configuration fault") {
 		t.Fatalf("an officer's refused key: %s, want today's text", body)
+	}
+}
+
+// creditRemedy is a distinctive KeyRemedy for the credit-limit tests.
+const creditRemedy = "fixture remedy: check the key and its credit limit"
+
+// answerStatus is a provider that answers every request with status and an
+// error body that echoes the key.
+func answerStatus(status int) func(http.ResponseWriter, *http.Request, int) {
+	return func(w http.ResponseWriter, _ *http.Request, _ int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, `{"error":{"message":"Key limit exceeded for `+chiefKey+`","code":`+strconv.Itoa(status)+`}}`)
+	}
+}
+
+// remedyCaller is the chief-shaped caller: unbudgeted, with a KeyRemedy.
+func remedyCaller(officer string) func(c *Caller) {
+	return func(c *Caller) {
+		*c = Caller{Officer: officer, InstanceLabel: "chief", AgentName: "chief-agent", Model: "example/m", Key: chiefKey,
+			Unbudgeted: true, KeyRemedy: creditRemedy}
+	}
+}
+
+// TestASpentCreditLimitTellsTheChiefItsRemedyAndIsNotARefusedKey: a 402 from
+// the provider (a spent credit limit) to a caller with a KeyRemedy is answered
+// with a 400 that carries the remedy, NOT the provider's 402 body, and is NOT
+// counted as a refused key: the auth-failing gauge stays 0, no 402 auth
+// failure is counted, and no 🔴 key line is logged. The key leaks nowhere. An
+// officer (no KeyRemedy) still has its 402 relayed.
+//
+// RED at 528fc231: the 402 was relayed as is (status 402, the provider's body,
+// no remedy).
+func TestASpentCreditLimitTellsTheChiefItsRemedyAndIsNotARefusedKey(t *testing.T) {
+	const officer = "credit402:chief"
+	r := newRig(t, officer, answerStatus(http.StatusPaymentRequired))
+	r.set(remedyCaller(officer))
+	resp, body := r.post(t)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, creditRemedy) || !strings.Contains(body, "HTTP 402") ||
+		!strings.Contains(body, "credit limit is probably used up") {
+		t.Fatalf("a 402 to the chief: %d %s, want the 400 with the remedy", resp.StatusCode, body)
+	}
+	if got := r.up.count(); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1", got)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMUpstreamAuthFailing.WithLabelValues(officer)); got != 0 {
+		t.Errorf("a 402 set the auth-failing gauge to %v: a spent credit limit is not a refused key", got)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMUpstreamAuth.WithLabelValues(officer, "402")); got != 0 {
+		t.Errorf("a 402 was counted as %v upstream auth failures", got)
+	}
+	if strings.Contains(r.logs.String(), "THE PROVIDER REFUSES") {
+		t.Errorf("a 402 logged the refused-key line:\n%s", r.logs.String())
+	}
+	a := r.audits()
+	if len(a) != 1 || a[0].Status != http.StatusPaymentRequired {
+		t.Fatalf("audit = %+v, want one record with the provider's 402", a)
+	}
+	for _, where := range []string{body, r.logs.String(), a[0].Detail()} {
+		if strings.Contains(where, chiefKey) {
+			t.Fatalf("the key leaked: %s", where)
+		}
+	}
+	o := newRig(t, "credit402:officer", answerStatus(http.StatusPaymentRequired))
+	if resp, body := o.post(t); resp.StatusCode != http.StatusPaymentRequired || strings.Contains(body, creditRemedy) {
+		t.Fatalf("an officer's 402: %d %s, want the provider's 402 relayed", resp.StatusCode, body)
+	}
+}
+
+// TestAForbiddenChiefKeyTellsTheChiefItsRemedy: a 403 to a caller with a
+// KeyRemedy is answered with a 400 carrying that remedy (which names the credit
+// limit for the chief), and IS counted as a refused key (the gauge is 1): the
+// provider's 403 cannot be told apart from a revoked key.
+//
+// An INVARIANT GUARD, green at 528fc231 too (the 401/403 branch already used
+// KeyRemedy); it pins that the 402 change left the 403 path alone.
+func TestAForbiddenChiefKeyTellsTheChiefItsRemedy(t *testing.T) {
+	const officer = "credit403:chief"
+	r := newRig(t, officer, answerStatus(http.StatusForbidden))
+	r.set(remedyCaller(officer))
+	resp, body := r.post(t)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, creditRemedy) || !strings.Contains(body, "HTTP 403") {
+		t.Fatalf("a 403 to the chief: %d %s, want the 400 with the remedy", resp.StatusCode, body)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMUpstreamAuthFailing.WithLabelValues(officer)); got != 1 {
+		t.Errorf("a 403: auth-failing gauge = %v, want 1", got)
+	}
+	if strings.Contains(body, chiefKey) || strings.Contains(r.logs.String(), chiefKey) {
+		t.Fatalf("the key leaked")
 	}
 }
