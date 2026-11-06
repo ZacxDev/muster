@@ -473,7 +473,17 @@ PY
     [ "$(date +%s)" -lt "$deadline" ] || fail "[chief] the chief did not stop: $st"
     sleep 2
   done
-  if dcc exec -T chief pgrep -u 1000 -f claude >/dev/null 2>&1; then fail "[chief] a claude process is still running after Off"; fi
+  if left="$(dcc exec -T chief pgrep -a -u 1000 -f claude 2>/dev/null)"; then
+    # What is left, whose child it is, what the supervisor and muster say.
+    echo "---- uid 1000 processes matching claude ----"; echo "$left"
+    echo "---- every process (pid ppid user args) ----"; dcc exec -T chief ps -eo pid=,ppid=,user=,args= 2>&1 || true
+    echo "---- supervisor status ----"; supervisor_status || true
+    echo "---- spec.json generation/replicas ----"
+    # Those three fields only: the spec also holds the turn bearer.
+    dcc exec -T chief grep -oE '"(generation|replicas|epoch)":[^,]*' /run/muster-spec/chief/spec.json 2>&1 || true
+    chief_diagnostics
+    fail "[chief] a claude process is still running after Off: $left"
+  fi
   local n1 n2
   n1="$(fake_ledger | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
   sleep 15
