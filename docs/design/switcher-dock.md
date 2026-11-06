@@ -1,6 +1,11 @@
 # Design: the switcher dock (a vertical session list from the bottom bar)
 
-**Status: proposed. Nothing here is implemented.** The operator decisions
+**Status: Phase 1 and Phase 3 (the filter) are implemented, with decision 8
+(one snap, the grip closes, a swipe on the dock's list changes its tab); the
+header drag of Phase 2 is moot, and Phases 4 and 5 are proposed.** Where an
+older section below still describes the full snap or "no swipe changes a dock
+tab", decision 8 supersedes it, and the code (`internal/ui/switcher_dock.go`)
+is the authority. The operator decisions
 below, including the answers to this page's open questions (decisions 5–7,
 and the amendment to decision 3), are **decided**. Every other section is the recommended design. Where
 this page says how muster works today, it cites `file:line` at `main`
@@ -29,13 +34,13 @@ phase below.
 |---|---|
 | What it is | A native modal `<dialog id="switcher-dock">`, drawn **once per document** beside the command palette, laid out as a bottom sheet in the **touch layout** (a coarse primary pointer) and as a centred panel in the **mouse layout**. It always opens in the **top** document, also when the bar that opens it is inside the view-swap frame. The same pattern as the agent page's focus history dialog (`internal/ui/focus_history.go:139-174`) |
 | How it opens | Touch: a swipe up that starts on the bar's row, or a tap on the bar's view button, which **is** the handle (decision 5). Desktop: today's view menu, plus a new chevron button |
-| Snap points | **Half**, 60% of the visual viewport, and **full**, the visual viewport less the top safe area and an 8px gap |
-| How it closes | A drag down on the sheet's header (its grab handle, tabs and filter row); a tap on the backdrop; the × button; Escape; Android back. **The dock touches no history**: back reaches it through the modal dialog's own close watcher in a browser, and through a small `back-claim` bridge message in the Android shell. The list only scrolls; it never moves the sheet |
-| Content | Tabs Recent / Waiting / Pins / All, a filter box under them, then vertical rows: whole name, host, current focus title, waiting badge (stalled and needs-you badges in Phase 5). Recent lists up to 30 in the dock, 8 on the bar (decision 6). A row tap is a real load, like a pill |
+| Snap points | **One: half**, 60% of the visual viewport, never less than the header and three rows; the list scrolls inside it (decision 8: no full snap) |
+| How it closes | A tap on the grip at its top; a tap on the backdrop; the × button; Escape (after a first Escape has cleared a typed filter); Android back. **The dock touches no history**: back reaches it through the modal dialog's own close watcher in a browser, and through a small `back-claim` bridge message in the Android shell. The list only scrolls; it never moves the sheet |
+| Content | A filter box under the grip, tabs Recent / Waiting / Pins / All under it (a sideways swipe on the list walks them), then vertical rows: whole name, host, current focus title, waiting badge (stalled and needs-you badges in Phase 5). Recent lists up to 30 in the dock, 8 on the bar (decision 6). A row tap is a real load, like a pill |
 | Where the data comes from | **The bar already on the page.** Its four rows are server-rendered with every session page; the dock draws its rows from them when it opens. No new request, no second copy of the markup. Two new attributes per pill (host, focus title), and an ordered href list for Recent's entries 9–30 (each one already a pill in the All row) |
 | Filter | The palette's in-page rule (`window.musterPaletteRank`) over the shown tab, previous titles included through `data-switcher-prev`. No server search: the palette stays the full-history search |
-| Gesture rules | The touch layout gets gestures; the mouse layout gets the chevron. A drag starts **only** on the bar's row or the sheet's header. Never on xterm, the composer, or anywhere while the soft keyboard is up. No sideways swipe changes a tab, in the dock or anywhere. Release snaps by position only |
-| Phases | 1 dock + tap to open + Back + Recent to 30; 2 gestures; 3 filter; 4 desktop chevron; 5 session state for Waiting and the badges. Each ships alone |
+| Gesture rules | The touch layout gets gestures; the mouse layout gets the chevron. A drag starts **only** on the bar's row or the sheet's header. Never on xterm, the composer, or anywhere while the soft keyboard is up. A sideways swipe changes a tab **only on the dock's list** (decision 8), nowhere else. Release snaps by position only |
+| Phases | 1 dock + tap to open + Back + Recent to 30 (shipped); 2 gestures (the header drag is moot: one snap); 3 filter (shipped); 4 desktop chevron; 5 session state for Waiting and the badges. Each ships alone |
 
 ## Operator decisions
 
@@ -67,6 +72,15 @@ phase below.
    ([Phase 5](#phase-5-session-state-for-waiting-and-the-badges)) switches
    the Waiting tab and the stalled / needs-you badges to session state once
    #426's model lands, giving one definition everywhere.
+8. **One snap; the grip closes; the dock's tabs swipe.** *(Owner, after
+   Phase 1 shipped.)* Drop full screen entirely: the dock is always the half
+   snap (60% of the visual viewport, never less than the header and three
+   rows) and its list scrolls inside it. A tap on the grip at its top
+   **closes** the dock (it used to toggle half and full), and is named "Close
+   sessions". A horizontal swipe on the dock's list moves to the next or
+   previous tab ([below](#the-docks-tab-swipe)). This amends decision 1's
+   "dragging up makes it full height" and the "no sideways swipe changes a
+   tab" rule, for the dock's list only.
 
 ## Current state
 
@@ -171,7 +185,38 @@ already using. The dock therefore:
 - starts a drag only on the bar's row or the sheet's own header;
 - uses only the **vertical** axis there, which nothing in those zones uses
   today (the row scrolls sideways; the bar is not inside a vertical scroller);
-- never changes a tab by a swipe (dock tabs change by tap or arrow keys only).
+- ~~never changes a tab by a swipe (dock tabs change by tap or arrow keys only)~~
+  — superseded by decision 8: see [The dock's tab swipe](#the-docks-tab-swipe).
+
+### The dock's tab swipe
+
+Decision 8 brings a tab swipe back, and the lesson above is what scopes it.
+It owns **one zone, the dock's list** (`#dock-list`, the tabpanel inside the
+modal dialog), and **the horizontal axis there, which nothing in that zone
+uses**: the list scrolls only vertically (`touch-action: pan-y`), its rows
+wrap their names and cut their focus line, and no element in it scrolls
+sideways (`switcher-dock.spec.ts` case S asserts that). The recents strip and
+every page tabpanel are outside the dialog, so a swipe there is never seen by
+it.
+
+- **Bound to the list alone**: three passive listeners (`touchstart`,
+  `touchend`, `touchcancel`) on `[data-dock-list]`, never on the document.
+  `TestNoTabSwitchSwipe` (`internal/ui/swipe_test.go`) is narrowed, not
+  lifted: it keeps a ledger of every touch listener `appScript` registers, on
+  any receiver — the sidebar's two on `document`, the dock's three on its
+  list — and fails when the set grows or shrinks, and when any of them names
+  the page's tab router (`switchTab`, `TABS`, `tabFromPath`, a `#panel-`).
+- **Clearly horizontal**: at least 60px across (`dockSwipeMinX`), and more
+  than 1.5 times as far across as down (`dockSwipeRatio`), so a scroll of a
+  long list, which always drifts sideways a little, never switches the tab.
+  These are the removed page swipe's numbers.
+- **The arrow keys' path**: leftwards shows the next tab, rightwards the
+  previous, through `pick(view, true)`, which the Left / Right keys call: the
+  same `aria-selected`, roving `tabindex`, focus on the tab, and the bar moved
+  through `musterSwitcherShow`. **No wrap** (the arrow keys wrap): a swipe at
+  the last tab stays there, so the edges read as edges.
+- **The sidebar's edge swipe stands down** for a touch that starts anywhere in
+  the dock: the dialog and the list both carry `data-own-swipe`.
 
 ### Prior art in the repo
 
@@ -219,22 +264,23 @@ already using. The dock therefore:
 ```html
 <!-- in #sidebar-root, beside the palette: once per document -->
 <dialog id="switcher-dock" aria-labelledby="switcher-dock-title"
-        data-own-swipe data-snap="half">
-  <div data-dock-header>                      <!-- the drag zone -->
-    <button data-dock-grip aria-label="Expand"></button>  <!-- full width, 44px tall; draws a 36×4 handle -->
+        data-own-swipe>
+  <div data-dock-header>
+    <button data-dock-grip aria-label="Close sessions"></button>  <!-- full width, 44px tall; draws a 36×4 handle; a tap closes -->
     <h2 id="switcher-dock-title" class="sr-only">Switch session</h2>
+    <input type="search" id="dock-filter" data-dock-filter aria-controls="dock-list"
+           aria-label="Filter sessions" enterkeyhint="search"
+           class="text-base">                  <!-- 16px: no zoom on focus -->
+    <button data-dock-filter-clear aria-label="Clear filter" hidden>×</button>
     <div role="tablist" aria-label="Session views">
       <button role="tab" id="dock-tab-recent" aria-controls="dock-list"
               aria-selected="true">Recent <span>8</span></button>
       … Waiting, Pins, All …
     </div>
-    <input type="search" id="switcher-dock-filter" aria-controls="dock-list"
-           aria-label="Filter sessions by name or focus" enterkeyhint="go"
-           class="text-base">                  <!-- 16px: no zoom on focus -->
     <button data-dock-close aria-label="Close">×</button>
   </div>
   <ul id="dock-list" role="tabpanel" aria-labelledby="dock-tab-recent"
-      data-dock-list>                         <!-- the only vertical scroller -->
+      data-dock-list data-own-swipe>          <!-- the only vertical scroller; the tab swipe's zone -->
     <li><a href="…" hx-boost="false" data-dock-row>…</a></li>
     <li><span aria-current="page" data-dock-row>…</span></li>
   </ul>
@@ -298,10 +344,12 @@ inert, which is what gives it a free focus trap. Consequences, all intended:
 
 ### Snap points
 
-Both measured against the **visual** viewport, kept in CSS custom properties
-the script writes on `visualViewport` `resize` and `scroll`:
+**One snap since decision 8: half.** The full snap, its CSS rule and the
+grip's "Expand" / "Shrink to half" names are gone. Measured against the
+**visual** viewport, kept in CSS custom properties the script writes on
+`visualViewport` `resize` and `scroll`:
 
-- `--dock-vvh`: `visualViewport.height`;
+- `--dock-half`: the half height below;
 - `--dock-kb`: `max(0, innerHeight - visualViewport.height - visualViewport.offsetTop)`,
   the part of the layout viewport the keyboard covers (0 where the keyboard
   resizes the page: the Rendered view's `interactive-widget=resizes-content`,
@@ -309,18 +357,19 @@ the script writes on `visualViewport` `resize` and `scroll`:
 
 | Snap | Height |
 |---|---|
-| half | `round(0.6 × --dock-vvh)`, never less than the header plus 3 rows |
-| full | `--dock-vvh − env(safe-area-inset-top) − 8px` |
+| half | `round(0.6 × visualViewport.height)`, never less than the header plus 3 rows |
 
 The sheet is `position: fixed; inset-inline: 0; bottom: var(--dock-kb)` with
-the snap's height. **At rest its height is the snap height**, so the list's
-last row is reachable by scrolling at half as at full. During a drag the
-sheet is set to the full height once and moved by `transform: translateY()`
-only (compositor, no layout per frame); on release it animates the transform
-to the target and, on `transitionend`, sets the target height with a zero
-transform.
+that height, and the list's last row is reachable by scrolling inside it.
+`--dock-kb` is 0 under a pinch zoom (`visualViewport.scale > 1`), which
+shrinks the visual viewport without any keyboard.
 
 ### Drag physics
+
+> **Moot since decision 8.** With one snap there is nothing to drag between,
+> so the header drag below (half ↔ full, `dockSnap`) will not be built. What
+> is left of Phase 2 is the swipe up on the bar to open, if it is still wanted.
+> The section is kept as the record of the design.
 
 **Pointer events with pointer capture**, on the two drag zones only. Neither
 scrolls vertically, so neither has to share an axis with a scroller. The dock
@@ -401,17 +450,20 @@ manipulation is not animation), and the release jumps to its snap.
 - **Initial focus.** Opened by touch: the selected tab, **not** the filter,
   so opening never raises the keyboard. Opened by the desktop chevron or a
   keyboard: the filter, so typing filters at once.
-- **Escape** (the dialog's `cancel` event) closes through the same path as
-  every other close: see [One cleanup point](#one-cleanup-point).
+- **Escape** with a filter typed **clears the filter** and keeps the dock
+  open (the dialog's keydown handler cancels the key, which stops the close
+  request); the next Escape (the dialog's `cancel` event) closes through the
+  same path as every other close: see [One cleanup point](#one-cleanup-point).
+  Closing empties the filter, so the dock reopens unfiltered.
 - **The palette's `/` is off while the dock is open.** Its document `keydown`
   (`palette.go:419-435`) already skips a text field, which covers the filter,
   but not the tabs or rows. It gains one early return, `if
   (document.getElementById('switcher-dock')?.open) return;`, so `/` cannot open
   an inert popover behind the modal.
 - **The grip is a real button**: full width and 44px tall at the sheet's top,
-  drawing the 36×4 handle inside it. A tap toggles half and full, and its name
-  says which ("Expand" / "Shrink to half"). A drag starting on it is a header
-  drag.
+  drawing the 36×4 handle inside it. **A tap closes the dock** (decision 8),
+  through the same cleanup point as every other close; its name is "Close
+  sessions".
 - **Focus returns** to what opened it: the view button, the chevron, or, for a
   swipe, the view button with `preventScroll`, in whichever document that
   element lives (the frame's, when the frame's bar opened it). Never to a text
@@ -437,14 +489,15 @@ already has (`switcherKeyboardJS`, `switcher.go:845-883`): focus in a text
 field **and** the visual viewport at least 150px shorter than the tallest seen
 at this width, pinch-zoom excluded. The dock adds no second detector.
 
-**The filter box does resize the sheet.** When the filter has focus and
-`data-keyboard` is set, the sheet snaps to **full** of the now shorter visual
-viewport, sitting on the keyboard (`bottom: var(--dock-kb)`), so the tabs, the
-filter and as many rows as fit stay visible above it. When the keyboard goes,
-it stays at full (it does not jump back to half under the finger). Pages
-differ in how a keyboard changes the viewport (the agent page resizes only the
-visual viewport; the Rendered view and the Android shell resize the layout
-viewport), and the two custom properties make that one code path.
+**The filter box does resize the sheet** (as built, with decision 8's one
+snap): on every visual viewport `resize` and `scroll` the sheet is the half of
+the now shorter visual viewport (never less than the header and three rows),
+sitting on the keyboard (`bottom: var(--dock-kb)`), so the filter, the tabs
+and the rows that fit stay above it. Pages differ in how a keyboard changes
+the viewport (the agent page resizes only the visual viewport; the Rendered
+view and the Android shell resize the layout viewport), and the two custom
+properties make that one code path. `switcher-dock.spec.ts` case 13k emulates
+a shorter visual viewport; **UNVERIFIED on a real phone keyboard**.
 
 ## The four tabs and the filter
 
@@ -537,8 +590,18 @@ Two consequences, both acceptable and tested:
    sidebar's, or `/`) remains the full-history search over every title in the
    retention (`/ui/palette/history`). The dock is for picking from what is on
    the page.
-3. A tab with no match says "No session matches" and nothing more.
+3. A tab with no match says "No sessions match" and nothing more. Every
+   tab's count is its matches.
 4. Switching tabs keeps the query and re-filters.
+5. **As built** (Phase 3): one reading of a pill's search fields,
+   `window.musterPaletteEntry` (`palette.go`), shared by the palette and the
+   dock, so the two match the same fields: name, display name, current and
+   previous focus titles, and the words (repository, kind, tmux session,
+   host, and whatever else the switcher folds into `data-switcher-words`).
+   Rows are drawn best match first. Clearing: the × button, or Escape (see
+   [Semantics, focus and keys](#semantics-focus-and-keys)). ⚠ Not built: the
+   "Previously: …" line under a row matched by a previous title (point 1),
+   and Arrow Up/Down from the filter into the rows.
 
 ### Badge sources
 
@@ -887,7 +950,8 @@ bar), the list really overflows (`scrollHeight > clientHeight`, seeded with
 4. **Drag the header down from half → closed**; a short drag down from full →
    half; a long one from full → closed.
 5. **Backdrop tap closes**; the close button closes; Escape closes. The grip
-   is 44px tall and a tap on it toggles half and full. With the dock open, `/`
+   is 44px tall and a tap on it closes the dock (decision 8; case G, which
+   also asserts no state reaches another snap). With the dock open, `/`
    on a focused tab opens no palette.
 6. **The list only scrolls**: with the list at its top, a downward drag on it
    leaves the dock open at its snap and the sheet unmoved; a drag up scrolls
@@ -1056,6 +1120,11 @@ name, the tabs, the grip, the current row.
 
 ### Phase 2: gestures
 
+> **The header drag is moot (decision 8: one snap, the grip closes).** The
+> dock's tab swipe shipped with Phase 3 instead ([The dock's tab
+> swipe](#the-docks-tab-swipe)). What remains below, if wanted, is the bar's
+> swipe up to open.
+
 `touch-action: pan-x` on the bar's rows; the bar and header drags, touch
 layout only; position-only `dockSnap` and its table; the keyboard guard;
 click suppression after a drag.
@@ -1065,6 +1134,14 @@ tablet, each mutation-checked; the constants tuned on a real phone (the
 owner's), the values recorded in the PR.
 
 ### Phase 3: the filter
+
+> **Shipped**, with decision 8: the filter under the grip (`#dock-filter`,
+> 16px, never focused on open), the per-tab counts of matches, "No sessions
+> match", × and Escape to clear, emptied on close; the sheet sitting on a
+> keyboard at the one snap; the grip closing the dock; the tab swipe on the
+> list. Covered by `switcher-dock.spec.ts` cases G, S, 13 and 13k and the Go
+> tests in `switcher_dock_test.go` and `swipe_test.go`. The palette's matching
+> is shared (`musterPaletteEntry`), not changed.
 
 The in-page filter over the shown tab (`musterPaletteRank`, no server search);
 snapping to full above the keyboard. The palette is not touched.

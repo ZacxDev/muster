@@ -4,6 +4,7 @@ import { dockPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { launchWithBfcache } from '../lib/bfcache';
 import { coarse } from '../lib/switcher';
+import { touchDrag } from '../lib/touch';
 
 // THE SWITCHER DOCK, PHASE 1 (docs/design/switcher-dock.md; internal/ui/
 // switcher_dock.go): the session switcher's four views as a vertical list in a
@@ -15,8 +16,15 @@ import { coarse } from '../lib/switcher';
 // The cases are the design's numbers:
 //   2 / 19  the view button opens the dock in the touch layout and the menu in
 //           the mouse layout (narrow and wide); a tab moves the bar at once;
-//   5       the backdrop, the close button and Escape close it; the 44px grip
-//           toggles half and full; "/" opens no palette while it is open;
+//   5       the backdrop, the close button and Escape close it; "/" opens no
+//           palette while it is open;
+//   G       the 44px grip CLOSES it; there is one snap, half, and nothing
+//           reaches another (operator decision: no full screen);
+//   S       a clearly horizontal swipe on the list walks the tabs, through
+//           the arrow keys' path; a vertical scroll, a diagonal and a short
+//           drag do not; a left-edge swipe in it never opens the sidebar;
+//   13      the filter: name, display name, tmux session and host, the counts,
+//           "No sessions match", ×, Escape twice, reset on reopen; the keyboard;
 //   9 / 9b  closing never touches history, on a boosted page too; a row tap
 //           is one real load, the dock closed BEFORE it (back/forward cache);
 //           the shell's back-claim pair;
@@ -58,6 +66,11 @@ const N = 37;
 const sess = (i: number) => 'dk' + String(i).padStart(2, '0');
 const viewOf = (s: string) => origin + rig.viewPath(s) + '&window=' + encodeURIComponent('@1');
 const OWN = sess(1);
+// One window shown by a CODENAME (the host's labels file), so its tmux session
+// is no part of its name: a filter that finds it by "dk29" found it by the
+// session, a word, not by the label.
+const MAPPED = sess(29);
+const CODENAME = 'quillon';
 
 test.beforeAll(async () => {
   test.setTimeout(240_000);
@@ -69,7 +82,8 @@ test.beforeAll(async () => {
     return `${s}|@1|1|1|claude|${now - 60 * (k + 1)}|${tr}`;
   });
   const windowsFile = rig.transcript(windowLines.join('\n') + '\n', 'windows');
-  await rig.startHost({ MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+  const labelsFile = rig.transcript(JSON.stringify({ [MAPPED]: CODENAME }), 'labels');
+  await rig.startHost({ MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile, MUSTER_MIRROR_E2E_REFRESH: '300ms', MUSTER_MIRROR_LABELS_FILE: labelsFile });
   mkchat(THREADS, [
     { title: 'First thread', hoursAgo: 3, messages: [{ role: 'user', content: 'the first thread' }] },
     { title: 'Second thread', hoursAgo: 1, messages: [{ role: 'user', content: 'the second thread' }] },
@@ -90,6 +104,9 @@ const rows = (p: Page) => p.locator('#dock-list [data-dock-row]');
 const dockOpen = (p: Page | Frame) => p.evaluate(() => (document.getElementById('switcher-dock') as HTMLDialogElement).open);
 const menuOpen = (p: Page | Frame) => p.evaluate(() => document.getElementById('switcher-views')!.matches(':popover-open'));
 const frameEl = (p: Page) => p.locator('iframe[data-muster-view]');
+const tab = (p: Page, v: string) => p.locator(`#switcher-dock [data-dock-tab="${v}"]`);
+const filter = (p: Page) => p.locator('#dock-filter');
+const clearBtn = (p: Page) => p.locator('#switcher-dock [data-dock-filter-clear]');
 
 async function ready(page: Page) {
   await rig.login(page);
@@ -143,7 +160,7 @@ const CLAIM_OFF = JSON.stringify({ type: 'back-claim', open: false });
 test.describe('phone 390×844 touch', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test('2/19/5: the view button opens the dock, not the menu, on the shown view; a tab moves the bar; backdrop, ×, Escape close it; the grip toggles half and full; "/" stands down', async ({ page }) => {
+  test('2/19/5: the view button opens the dock, not the menu, on the shown view; a tab moves the bar; backdrop, ×, Escape close it; "/" stands down', async ({ page }) => {
     test.setTimeout(120_000);
     await ready(page);
     await stubBridge(page);
@@ -179,19 +196,10 @@ test.describe('phone 390×844 touch', () => {
     await expect(rows(page).first().locator('[data-dock-host]')).toHaveText(rig.host);
     for (const h of await rows(page).evaluateAll((es) => es.map((e) => (e as HTMLElement).offsetHeight))) expect(h, "a row is at least 56px").toBeGreaterThanOrEqual(56);
 
-    // Half: 60% of the visual viewport. The grip, 44px tall, toggles full and back.
+    // Half: 60% of the visual viewport (the grip closes it: case G below).
     const vvh = await page.evaluate(() => window.visualViewport!.height);
     await dock(page).evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
     expect(Math.abs((await dock(page).boundingBox())!.height - Math.round(0.6 * vvh)), 'half is 60% of the visual viewport').toBeLessThanOrEqual(2);
-    const grip = dock(page).locator('[data-dock-grip]');
-    expect(Math.round((await grip.boundingBox())!.height), 'the grip is 44px tall').toBe(44);
-    await expect(grip).toHaveAccessibleName('Expand');
-    await grip.tap();
-    await expect(dock(page)).toHaveAttribute('data-snap', 'full');
-    await expect(grip).toHaveAccessibleName('Shrink to half');
-    expect(Math.abs((await dock(page).boundingBox())!.height - (vvh - 8)), 'full is the visual viewport less 8px').toBeLessThanOrEqual(2);
-    await grip.tap();
-    await expect(dock(page)).toHaveAttribute('data-snap', 'half');
 
     // A tab: Pins. The BAR moves to Pins at once, in this document, no reload.
     await dock(page).locator('[data-dock-tab="pins"]').tap();
@@ -494,6 +502,308 @@ test.describe('phone 390×844 touch', () => {
     expect(await menuOpen(f)).toBe(false);
     await page.keyboard.press('Escape');
     await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+  });
+
+  // G: ONE SNAP, AND THE GRIP CLOSES (operator decision: "drop full screen
+  // entirely"). The grip, the 44px button at the sheet's top, used to toggle
+  // half and full; a tap on it now closes the dock, through the one cleanup
+  // point (the claim released, focus back on the view button). In every state
+  // this case visits the sheet is the half snap, and even a page that set the
+  // old full attribute by hand gets no other height (its rule is gone).
+  test('G: a tap on the grip closes the dock; nothing reaches a full snap', async ({ page }) => {
+    test.setTimeout(90_000);
+    await ready(page);
+    await stubBridge(page);
+    await openOwn(page);
+    expect(await coarse(page), 'the touch layout').toBe(true);
+    const vvh = await page.evaluate(() => window.visualViewport!.height);
+    const half = Math.round(0.6 * vvh);
+    const grip = dock(page).locator('[data-dock-grip]');
+    const atHalf = async (when: string) => {
+      await dock(page).evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
+      const h = (await dock(page).boundingBox())!.height;
+      expect(Math.abs(h - half), `${when}: the sheet is the half snap (${h}px, want ${half})`).toBeLessThanOrEqual(2);
+      expect(await dock(page).getAttribute('data-snap'), `${when}: no snap attribute`).toBeNull();
+    };
+
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await atHalf('opened');
+    expect(Math.round((await grip.boundingBox())!.height), 'the grip is 44px tall').toBe(44);
+    await expect(grip).toHaveAccessibleName('Close sessions');
+    // The states the dock can be in: another tab, a filter typed, nothing matched.
+    await dock(page).locator('[data-dock-tab="all"]').tap();
+    await atHalf('the All tab');
+    await filter(page).fill('dk0');
+    await atHalf('filtered');
+    await filter(page).fill('no-such-session-anywhere');
+    await atHalf('nothing matches');
+    await filter(page).fill('');
+    // The old full snap, set by hand: no rule draws it any more.
+    await dock(page).evaluate((d) => d.setAttribute('data-snap', 'full'));
+    await page.waitForTimeout(50);
+    expect(Math.abs((await dock(page).boundingBox())!.height - half), 'data-snap="full" draws nothing taller').toBeLessThanOrEqual(2);
+    await dock(page).evaluate((d) => d.removeAttribute('data-snap'));
+
+    // The tap: closed, the claim released, focus on the view button.
+    await page.evaluate(() => ((window as any).__claims = []));
+    await grip.tap();
+    await expect.poll(() => dockOpen(page), 'a tap on the grip closes the dock').toBe(false);
+    await expect(toggle(page)).toBeFocused();
+    await expect(toggle(page)).toHaveAttribute('aria-expanded', 'false');
+    await expect.poll(async () => (await claims(page)).map((c) => c.m), 'the claim released').toEqual([CLAIM_OFF]);
+    // Opened again: still the half snap.
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await atHalf('reopened');
+    await grip.tap();
+    await expect.poll(() => dockOpen(page)).toBe(false);
+    await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+  });
+
+  // S: THE TAB SWIPE, ON THE DOCK'S LIST ONLY. The page's tab-switch swipe was
+  // removed (6424ce7d) because it owned every tabpanel and the horizontal axis
+  // the recents strip scrolls on. The dock's list scrolls only vertically and
+  // nothing in it scrolls sideways (asserted below), so the horizontal axis
+  // there is free; the swipe is bound to the list alone (TestNoTabSwitchSwipe).
+  // Real touches (CDP, lib/touch.ts), through Chrome's own gesture handling.
+  test('S: a horizontal swipe on the list walks the tabs (aria-selected, focus, the bar); a vertical scroll, a diagonal and a short drag do not; a left-edge swipe in the dock opens no sidebar', async ({ page }) => {
+    test.setTimeout(120_000);
+    await ready(page);
+    // Enough visits that Recent's list is taller than the sheet.
+    for (let i = 20; i >= 2; i--) await visit(page, sess(i));
+    await page.goto(viewOf(OWN));
+    await expect(page.locator('#mv-status')).toHaveText('Live');
+    expect(await coarse(page), 'the touch layout').toBe(true);
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await dock(page).evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
+    await expect(tab(page, 'recent')).toHaveAttribute('aria-selected', 'true');
+    const lb = (await page.locator('#dock-list').boundingBox())!;
+    const y = lb.y + Math.min(120, lb.height / 2);
+    // POSITIVE CONTROL: the swipe's points are on the list.
+    for (const x of [lb.x + lb.width - 40, lb.x + 40]) {
+      expect(await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('#dock-list'), [x, y]), `(${x}, ${y}) is on the list`).toBe(true);
+    }
+    // Nothing on the list scrolls sideways, so the horizontal axis is free.
+    expect(await page.evaluate(() => Array.from(document.querySelectorAll('#dock-list, #dock-list *')).filter((e) => {
+      const ox = getComputedStyle(e).overflowX;
+      return (ox === 'auto' || ox === 'scroll') && e.scrollWidth > e.clientWidth + 1;
+    }).length), 'no sideways scroller on the list').toBe(0);
+    const shown = async (v: string, why: string) => {
+      await expect(tab(page, v), why).toHaveAttribute('aria-selected', 'true');
+      await expect(tab(page, v)).toHaveAttribute('tabindex', '0');
+      await expect(tab(page, v), `${why}: focus on the tab, as the arrow keys put it`).toBeFocused();
+      await expect(page.locator('#dock-list')).toHaveAttribute('aria-labelledby', 'dock-tab-' + v);
+      await expect(page.locator('#session-switcher'), `${why}: the bar moved too`).toHaveAttribute('data-switcher-view', v);
+      expect(await page.locator('[data-dock-tab][aria-selected="true"]').count()).toBe(1);
+    };
+    const left = () => touchDrag(page, { x: lb.x + lb.width - 40, y }, { x: lb.x + 40, y: y + 6 });
+    const right = () => touchDrag(page, { x: lb.x + 40, y }, { x: lb.x + lb.width - 40, y: y + 6 });
+
+    await left();
+    await shown('waiting', 'a left swipe: the next tab');
+    await left();
+    await shown('pins', 'again: the one after');
+    await right();
+    await shown('waiting', 'a right swipe: the previous tab');
+    await right();
+    await shown('recent', 'back to the first');
+    // The ends are ends: no wrap.
+    await right();
+    await page.waitForTimeout(150);
+    await shown('recent', 'a right swipe on the first tab stays');
+
+    // A VERTICAL SCROLL of the long list, drifting sideways by more than the
+    // swipe's minimum: it scrolls, and the tab stays.
+    expect(await page.locator('#dock-list').evaluate((l) => l.scrollHeight > l.clientHeight + 100), 'Recent overflows the sheet').toBe(true);
+    const top0 = await page.locator('#dock-list').evaluate((l) => l.scrollTop);
+    await touchDrag(page, { x: lb.x + lb.width - 60, y: lb.y + lb.height - 30 }, { x: lb.x + lb.width - 150, y: lb.y + 40 });
+    await page.waitForTimeout(250);
+    expect(await page.locator('#dock-list').evaluate((l) => l.scrollTop), 'the drag scrolled the list').toBeGreaterThan(top0 + 50);
+    await expect(tab(page, 'recent'), 'a vertical scroll changed the tab').toHaveAttribute('aria-selected', 'true');
+    // A DIAGONAL: more across than down, but not 1.5 times more.
+    await touchDrag(page, { x: lb.x + lb.width - 40, y: lb.y + 200 }, { x: lb.x + lb.width - 160, y: lb.y + 110 });
+    await page.waitForTimeout(250);
+    await expect(tab(page, 'recent'), 'a diagonal changed the tab').toHaveAttribute('aria-selected', 'true');
+    // A SHORT sideways drag, under the minimum.
+    await touchDrag(page, { x: lb.x + 200, y }, { x: lb.x + 160, y });
+    await page.waitForTimeout(250);
+    await expect(tab(page, 'recent'), 'a short drag changed the tab').toHaveAttribute('aria-selected', 'true');
+    // CONTROL: the same place still swipes.
+    await left();
+    await shown('waiting', 'control: a real swipe after them');
+
+    // THE SIDEBAR'S EDGE SWIPE stands down inside the dock (data-own-swipe):
+    // from x = 4 on the open dock, rightwards, well past its 45px.
+    await expect(page.locator('#sidebar-root')).not.toHaveAttribute('data-open', 'true');
+    expect(await page.evaluate(([py]) => !!document.elementFromPoint(4, py)?.closest('#switcher-dock'), [y]), 'x = 4 is on the dock').toBe(true);
+    await touchDrag(page, { x: 4, y }, { x: 220, y: y + 4 });
+    await page.waitForTimeout(250);
+    await expect(page.locator('#sidebar-root'), 'an edge swipe in the dock opened the sidebar').not.toHaveAttribute('data-open', 'true');
+    // CONTROL: shut, the same edge swipe on the page opens the sidebar.
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page)).toBe(false);
+    await expect(dock(page)).toBeHidden();
+    await touchDrag(page, { x: 4, y }, { x: 220, y: y + 4 });
+    await expect(page.locator('#sidebar-root'), 'control: the edge swipe opens the sidebar off the dock').toHaveAttribute('data-open', 'true');
+    await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+  });
+
+  // 13: THE FILTER. It matches the palette's fields through the palette's own
+  // rank (musterPaletteMatch over the pills' data-switcher-code/-title/-words/
+  // -prev): a name (the label), an agent's DISPLAY name (its title only: its
+  // codename spells it with hyphens), a tmux session (a word only: that
+  // window is shown by a codename), and a host (a word: the mirror host's
+  // whole name matches every window and no agent, "cluster" every agent and no
+  // window). Each tab's count is its matches.
+  test('13: the filter narrows the rows by name, display name, tmux session and host; the counts follow; "No sessions match"; × and Escape clear it; a second Escape closes; reopened, it is empty', async ({ page }) => {
+    test.setTimeout(120_000);
+    await ready(page);
+    await openOwn(page);
+    expect(await coarse(page), 'the touch layout').toBe(true);
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    // Opening does not raise a keyboard: focus is on the tab, not the field.
+    await expect(tab(page, 'recent')).toBeFocused();
+    await expect(filter(page)).not.toBeFocused();
+    await expect(filter(page)).toHaveAccessibleName('Filter sessions');
+    await expect(filter(page)).toHaveAttribute('type', 'search');
+    expect(await filter(page).evaluate((e) => getComputedStyle(e).fontSize), '16px: no zoom on focus').toBe('16px');
+    await expect(clearBtn(page)).toBeHidden();
+    await tab(page, 'all').tap();
+    const allRows = await rows(page).count();
+    expect(allRows, 'All holds the windows and the agents').toBeGreaterThan(N);
+    const labels = () => rows(page).locator('[data-dock-label]').allTextContents();
+    const counts = () => page.locator('[data-dock-count]').evaluateAll((es) => Object.fromEntries(es.map((e) => [e.getAttribute('data-dock-count'), Number(e.textContent)])));
+    const unfiltered = await counts();
+    expect(unfiltered.all).toBe(allRows);
+
+    // A NAME.
+    await filter(page).tap();
+    await page.keyboard.type('dk07');
+    await expect.poll(labels, 'by name').toEqual([sess(7) + ':1']);
+    await expect(clearBtn(page)).toBeVisible();
+    expect((await counts()).all, 'All counts its matches').toBe(1);
+    // A TMUX SESSION, shown by a codename: found by the session alone.
+    await filter(page).fill(MAPPED);
+    await expect.poll(labels, 'by tmux session').toEqual([CODENAME + ':1']);
+    expect((await labels()).some((l) => l.includes(MAPPED)), 'the label does not spell the session').toBe(false);
+    // A DISPLAY NAME: the agent's title, not its codename.
+    await filter(page).fill('dock threads');
+    await expect.poll(labels, 'by display name').toEqual(['Dock threads']);
+    // A HOST: the mirror host's name is every window and no agent…
+    await filter(page).fill(rig.host);
+    await expect.poll(() => rows(page).count(), 'by the mirror host').toBe(N);
+    expect((await rows(page).locator('[data-dock-host]').allTextContents()).every((h) => h === rig.host), 'every row is on that host').toBe(true);
+    // …and "cluster" every dispatched agent and no window.
+    await filter(page).fill('cluster');
+    await expect.poll(async () => (await labels()).includes('Dock threads'), 'by the agents’ host').toBe(true);
+    expect((await labels()).some((l) => /^dk\d\d:1$/.test(l) || l === CODENAME + ':1'), 'no window is on the cluster').toBe(false);
+    expect((await counts()).all).toBe(await rows(page).count());
+
+    // THE COUNTS, per tab: each tab's count is its own rows under the filter.
+    await filter(page).fill('dk0');
+    const c = await counts();
+    for (const v of ['recent', 'waiting', 'pins', 'all']) {
+      await tab(page, v).tap();
+      await expect(filter(page), `${v}: switching tabs keeps the query`).toHaveValue('dk0');
+      expect(await rows(page).count(), `${v}: the count is its rows`).toBe(c[v]);
+      expect(c[v], `${v}: filtered, at most the unfiltered`).toBeLessThanOrEqual(unfiltered[v]);
+    }
+    expect(c.all, 'All under "dk0": dk01–dk09 (dk01 the page itself, drawn current)').toBe(9);
+
+    // NOTHING MATCHES: the line, every count 0.
+    await filter(page).fill('no-such-session-anywhere');
+    await expect(rows(page)).toHaveCount(0);
+    await expect(dock(page).locator('[data-dock-empty]')).toBeVisible();
+    await expect(dock(page).locator('[data-dock-empty]')).toHaveText('No sessions match');
+    expect(Object.values(await counts()), 'every count 0').toEqual([0, 0, 0, 0]);
+
+    // ×: cleared, every row back, the × hidden again.
+    await clearBtn(page).tap();
+    await expect(filter(page)).toHaveValue('');
+    await expect(rows(page)).toHaveCount(allRows);
+    await expect(clearBtn(page)).toBeHidden();
+    await expect(dock(page).locator('[data-dock-empty]')).toBeHidden();
+    expect(await counts()).toEqual(unfiltered);
+
+    // ESCAPE: the first clears a typed filter and leaves the dock open…
+    await filter(page).tap();
+    await page.keyboard.type('dk1');
+    await expect.poll(() => rows(page).count()).toBeLessThan(allRows);
+    await page.keyboard.press('Escape');
+    await expect(filter(page), 'the first Escape cleared it').toHaveValue('');
+    expect(await dockOpen(page), 'and left the dock open').toBe(true);
+    await expect(rows(page)).toHaveCount(allRows);
+    // …the second closes it.
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page), 'the second Escape closed it').toBe(false);
+    // 🔴 THE SAME WITH FOCUS OFF THE FIELD. In the field, Chromium's own
+    // search-field Escape also clears it, so the case above passes without the
+    // dock's handler (mutation-checked); on a tab only the dock's handler does.
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await filter(page).fill('dk1');
+    await tab(page, 'all').focus();
+    await expect(tab(page, 'all')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(filter(page), 'Escape on a tab cleared the filter').toHaveValue('');
+    expect(await dockOpen(page), 'Escape on a tab with a filter typed kept the dock open').toBe(true);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page), 'then closed it').toBe(false);
+
+    // RESET ON CLOSE: typed, closed by ×, reopened: empty, every row.
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await tab(page, 'all').tap();
+    await filter(page).fill('dk07');
+    await expect(rows(page)).toHaveCount(1);
+    await dock(page).locator('[data-dock-close]').tap();
+    await expect.poll(() => dockOpen(page)).toBe(false);
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await expect(filter(page), 'reopened, the filter is empty').toHaveValue('');
+    await expect(rows(page)).toHaveCount(allRows);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page)).toBe(false);
+    await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+  });
+
+  // 13k: THE KEYBOARD. Where a soft keyboard shrinks only the VISUAL viewport
+  // (the agent page: no resizes-content), the sheet sits on it, so the filter
+  // being typed into stays above it. The keyboard is emulated by a visual
+  // viewport whose height the case sets (installed before the page's scripts).
+  test('13k: with the visual viewport shortened by a keyboard, the sheet sits on top of it at half of what is left', async ({ page }) => {
+    test.setTimeout(90_000);
+    await ready(page);
+    await page.addInitScript(() => {
+      const real = window.visualViewport!;
+      const fake = new EventTarget() as any;
+      for (const k of ['width', 'offsetLeft', 'pageLeft', 'pageTop', 'scale']) Object.defineProperty(fake, k, { get: () => (real as any)[k] });
+      Object.defineProperty(fake, 'height', { get: () => (window as any).__vvH ?? real.height });
+      Object.defineProperty(fake, 'offsetTop', { get: () => 0 });
+      real.addEventListener('resize', () => fake.dispatchEvent(new Event('resize')));
+      Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
+    });
+    await openOwn(page);
+    expect(await coarse(page)).toBe(true);
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await dock(page).evaluate((d) => Promise.all(d.getAnimations().map((a) => a.finished)));
+    const inner = await page.evaluate(() => window.innerHeight);
+    expect(Math.round((await dock(page).boundingBox())!.y + (await dock(page).boundingBox())!.height), 'CONTROL: no keyboard, on the bottom').toBe(inner);
+    await page.evaluate(() => { (window as any).__vvH = 420; window.visualViewport!.dispatchEvent(new Event('resize')); });
+    await page.waitForTimeout(100);
+    const b = (await dock(page).boundingBox())!;
+    expect(Math.abs(b.y + b.height - 420), `the sheet's foot is on the keyboard's top (${b.y + b.height})`).toBeLessThanOrEqual(2);
+    const head = await dock(page).locator('[data-dock-header]').evaluate((e) => (e as HTMLElement).offsetHeight);
+    expect(Math.abs(b.height - Math.max(Math.round(0.6 * 420), head + 3 * 56)), 'half of what is left, never under the header and three rows').toBeLessThanOrEqual(2);
+    const fb = (await filter(page).boundingBox())!;
+    expect(fb.y >= 0 && fb.y + fb.height <= 420, 'the filter is above the keyboard').toBe(true);
+    await page.evaluate(() => { delete (window as any).__vvH; window.visualViewport!.dispatchEvent(new Event('resize')); });
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page)).toBe(false);
   });
 
   // The server half (30 kept, visit order, gone windows dropped) is

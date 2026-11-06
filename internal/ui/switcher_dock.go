@@ -7,10 +7,22 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// THE SWITCHER DOCK (docs/design/switcher-dock.md, Phase 1): the session
-// switcher's four views as a vertical list in a bottom sheet, for a touch
-// screen, where the bar's single sideways-scrolling row is crowded (operator
-// ask: "I have to scroll horizontally, which is crowded on mobile").
+// THE SWITCHER DOCK (docs/design/switcher-dock.md, Phases 1 and 3): the
+// session switcher's four views as a vertical list in a bottom sheet, for a
+// touch screen, where the bar's single sideways-scrolling row is crowded
+// (operator ask: "I have to scroll horizontally, which is crowded on mobile").
+//
+//   - ONE SNAP, HALF (operator decision: "drop full screen entirely"): 60% of
+//     the visual viewport, never less than the header and three rows, with the
+//     list scrolling inside it. The grip at its top CLOSES it.
+//   - A FILTER under the grip: the palette's own rank (musterPaletteRank over
+//     musterPaletteEntry, palette.go) over the shown tab's rows, live; each
+//     tab's count is its matches. Escape clears a typed filter before it
+//     closes the dock; closing empties it. Never focused on open.
+//   - A HORIZONTAL SWIPE ON THE LIST walks the tabs, through pick (the arrow
+//     keys' path). Bound to the list alone (TestNoTabSwitchSwipe's ledger): the
+//     page's tab swipe was removed because it owned every tabpanel and the
+//     axis the recents strip scrolls on; nothing in this list scrolls sideways.
 //
 //   - A NATIVE MODAL <dialog>, drawn ONCE PER DOCUMENT in #sidebar-root beside
 //     the command palette (sidebarIn), never inside the bar: three ancestors of
@@ -21,8 +33,7 @@ import (
 //   - OPENED IN THE TOUCH LAYOUT ONLY, by the bar's view button, which is its
 //     handle there (DockTouchQuery: a coarse primary pointer, at any width;
 //     operator decision 3 as amended, and 5). A fine pointer keeps the view
-//     menu. Gestures (a swipe up on the bar, the header drag) and the desktop
-//     chevron are later phases.
+//     menu. A swipe up on the bar and the desktop chevron are later phases.
 //   - ITS ROWS ARE THE BAR'S, read when it opens: the four rows the page
 //     already carries (no request, no second copy of the markup; the bar's
 //     bfcache refresh and the pin toggle's out-of-band refresh keep them
@@ -56,11 +67,18 @@ const DockTouchQuery = "(pointer: coarse)"
 
 // The dock's parts, as the script finds them.
 const (
-	dockListID  = "dock-list"
-	dockTitleID = "switcher-dock-title"
+	dockListID   = "dock-list"
+	dockTitleID  = "switcher-dock-title"
+	dockFilterID = "dock-filter"
 	// dockRowMin is a row's minimum height in px (a full-width target), and
 	// what the half snap keeps room for three of below the header.
 	dockRowMin = 56
+	// The tab swipe's travel: at least dockSwipeMinX px across, and more than
+	// dockSwipeRatio times as far across as down, so a scroll of the list,
+	// which always drifts sideways a little, is never a swipe. (The removed
+	// page swipe's numbers: 60px, 1.5.)
+	dockSwipeMinX  = 60
+	dockSwipeRatio = "1.5"
 )
 
 // dockTabID is view key's tab.
@@ -68,8 +86,9 @@ func dockTabID(key string) string { return "dock-tab-" + key }
 
 // switcherDock is the dock: closed and empty until the script opens it from a
 // bar. Its header holds the grip (a full-width 44px button drawing a 36×4
-// handle: a tap toggles half and full), the visually hidden name, the view
-// tabs and the close button; the list below is the one vertical scroller.
+// handle: a tap closes the dock), the visually hidden name, the filter and its
+// clear button, the view tabs and the close button; the list below is the one
+// vertical scroller, and the one place a sideways swipe changes the tab.
 func switcherDock() g.Node {
 	tabs := make([]g.Node, 0, len(switcherViews))
 	for _, v := range switcherViews {
@@ -93,7 +112,6 @@ func switcherDock() g.Node {
 		// A sideways swipe here is never the sidebar edge-swipe's (appScript's
 		// ownsSideways), so the sidebar cannot open over the dock.
 		g.Attr("data-own-swipe", ""),
-		g.Attr("data-snap", "half"),
 		Class("flex-col overflow-hidden bg-s1 p-0 text-fg shadow-2xl ring-1 ring-line"),
 		Div(
 			g.Attr("data-dock-header", ""),
@@ -101,11 +119,37 @@ func switcherDock() g.Node {
 			Button(
 				Type("button"),
 				g.Attr("data-dock-grip", ""),
-				g.Attr("aria-label", "Expand"),
+				g.Attr("aria-label", "Close sessions"),
 				Class("flex h-11 w-full items-center justify-center outline-none focus-visible:bg-s2"),
 				Span(g.Attr("aria-hidden", "true"), Class("h-1 w-9 rounded-full bg-line")),
 			),
 			H2(ID(dockTitleID), Class("sr-only"), g.Text("Switch session")),
+			Div(
+				Class("flex items-center gap-1 px-3 pb-1"),
+				Input(
+					Type("search"),
+					ID(dockFilterID),
+					g.Attr("data-dock-filter", ""),
+					g.Attr("aria-label", "Filter sessions"),
+					g.Attr("aria-controls", dockListID),
+					g.Attr("autocomplete", "off"),
+					g.Attr("autocapitalize", "off"),
+					g.Attr("autocorrect", "off"),
+					g.Attr("spellcheck", "false"),
+					g.Attr("enterkeyhint", "search"),
+					g.Attr("placeholder", "Filter sessions"),
+					// text-base: 16px, so a phone does not zoom the page on focus.
+					Class("h-11 min-w-0 flex-1 rounded-lg bg-s2 px-3 text-base text-fg outline-none placeholder:text-muted focus-visible:ring-2 focus-visible:ring-accent"),
+				),
+				Button(
+					Type("button"),
+					g.Attr("data-dock-filter-clear", ""),
+					g.Attr("aria-label", "Clear filter"),
+					g.Attr("hidden", ""),
+					Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted transition hover:text-fg"),
+					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`),
+				),
+			),
 			Div(
 				Class("flex items-center"),
 				Div(g.Attr("role", "tablist"), g.Attr("aria-label", "Session views"), Class("flex min-w-0 flex-1"), g.Group(tabs)),
@@ -123,7 +167,11 @@ func switcherDock() g.Node {
 			g.Attr("role", "tabpanel"),
 			g.Attr("aria-labelledby", dockTabID(SwitcherRecent)),
 			g.Attr("data-dock-list", ""),
-			Class("min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]"),
+			// The tab swipe's zone, and only it (dockJS binds it here): the
+			// sidebar's edge swipe stands down over it, as over the whole dock.
+			g.Attr("data-own-swipe", ""),
+			// pan-y: a sideways move here is the swipe's, never the browser's.
+			Class("min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]"),
 		),
 		P(g.Attr("data-dock-empty", ""), g.Attr("hidden", ""), Class("px-4 py-3 text-sm text-muted")),
 	)
@@ -158,6 +206,8 @@ var dockJS = func() string {
   var LABEL = 'span.` + switcherLabelClass + `', MORE = '` + switcherRecentMoreAttr + `';
   var ROW = '` + dockRowClass + `', ROW_CUR = '` + dockRowCurrentClass + `';
   var ROW_MIN = ` + strconv.Itoa(dockRowMin) + `;
+  var FILTER = '` + dockFilterID + `';
+  var SWIPE_MIN_X = ` + strconv.Itoa(dockSwipeMinX) + `, SWIPE_RATIO = ` + dockSwipeRatio + `;
   // st is the open dock: the bar it reads (a frame's, when the frame opened
   // it), the element focus goes back to, and the tab shown. null when shut.
   var st = null, claimed = false;
@@ -253,17 +303,40 @@ var dockJS = func() string {
   }
 ` + focusAgeLineJS + `
   function tabOf(view) { return document.getElementById('dock-tab-' + view); }
+  function field() { return document.getElementById(FILTER); }
+  function query() { var f = field(); return f ? f.value.trim() : ''; }
 
-  // render draws the shown tab's rows, every tab's count and the tabs' state.
+  // shown is view's pills that the filter keeps: all of them when it is
+  // empty; else the palette's rank over them (musterPaletteEntry reads the
+  // fields the palette matches: name, display name and focus titles, the
+  // previous ones, and the words — repository, kind, tmux session, host), best
+  // first, ties in the tab's order. The rank keys an entry by its href, and
+  // the page's own pill has none, so each is keyed by its place.
+  function shown(view) {
+    var es = entries(view), q = query();
+    if (!q || typeof window.musterPaletteRank !== 'function') return es;
+    var items = es.map(function (p, i) {
+      var e = window.musterPaletteEntry(p, i);
+      e.href = '#' + i;
+      e.pill = p;
+      return e;
+    });
+    return window.musterPaletteRank(items, q, []).map(function (it) { return it.e.pill; });
+  }
+
+  // render draws the shown tab's rows (filtered), every tab's count of its
+  // matches, the tabs' state and the empty line.
   function render() {
     var d = dlg(), list = document.getElementById(LIST);
     if (!d || !list || !st) return;
-    var es = entries(st.view);
+    var es = shown(st.view), q = query();
     list.textContent = '';
     es.forEach(function (p) { list.appendChild(rowOf(p)); });
     list.setAttribute('aria-labelledby', 'dock-tab-' + st.view);
     var empty = d.querySelector('[data-dock-empty]');
-    if (empty) { empty.textContent = EMPTY[st.view]; empty.hidden = es.length > 0; }
+    if (empty) { empty.textContent = q ? 'No sessions match' : EMPTY[st.view]; empty.hidden = es.length > 0; }
+    var f = field(), clear = d.querySelector('[data-dock-filter-clear]');
+    if (clear) clear.hidden = !(f && f.value);
     VIEWS.forEach(function (v) {
       var t = tabOf(v);
       if (!t) return;
@@ -271,8 +344,17 @@ var dockJS = func() string {
       t.setAttribute('aria-selected', on ? 'true' : 'false');
       t.setAttribute('tabindex', on ? '0' : '-1');
       var n = t.querySelector('[data-dock-count]');
-      if (n) n.textContent = String(v === st.view ? es.length : entries(v).length);
+      if (n) n.textContent = String(on ? es.length : shown(v).length);
     });
+  }
+
+  // setFilter writes the filter and redraws, the list back at its top.
+  function setFilter(v) {
+    var f = field();
+    if (f && f.value !== v) f.value = v;
+    var list = document.getElementById(LIST);
+    if (list) list.scrollTop = 0;
+    render();
   }
 
   // pick shows view's tab, and moves the bar that opened the dock to it at
@@ -291,23 +373,20 @@ var dockJS = func() string {
     if (focus) { var t = tabOf(view); if (t) t.focus(); }
   }
 
-  // THE SNAPS, against the VISUAL viewport: half is 60% of it, never less
-  // than the header and three rows; full is the whole of it less the top safe
-  // area and an 8px gap (web/css/input.css). Sitting on a soft keyboard is
-  // Phase 3's, with the filter (nothing in this phase raises one).
+  // THE ONE SNAP, against the VISUAL viewport: 60% of it, never less than
+  // the header and three rows (web/css/input.css). --dock-kb is the part of
+  // the layout viewport a soft keyboard covers, which the sheet sits on top of:
+  // 0 where the keyboard resizes the page itself (resizes-content, the Android
+  // shell), and 0 under a pinch zoom, which moves the visual viewport too.
   function measure() {
     var d = dlg();
     if (!d) return;
     var v = window.visualViewport, h = v ? v.height : window.innerHeight;
     var head = d.querySelector('[data-dock-header]');
     var half = Math.max(Math.round(0.6 * h), (head ? head.offsetHeight : 0) + 3 * ROW_MIN);
-    d.style.setProperty('--dock-vvh', Math.round(h) + 'px');
+    var kb = v && !(v.scale > 1.01) ? Math.max(0, Math.round(window.innerHeight - v.height - v.offsetTop)) : 0;
     d.style.setProperty('--dock-half', half + 'px');
-  }
-  function snap(d, to) {
-    d.setAttribute('data-snap', to);
-    var g = d.querySelector('[data-dock-grip]');
-    if (g) g.setAttribute('aria-label', to === 'full' ? 'Shrink to half' : 'Expand');
+    d.style.setProperty('--dock-kb', kb + 'px');
   }
 
   function plain(e, a) {
@@ -330,8 +409,14 @@ var dockJS = func() string {
         return;
       }
       if (!t || !t.closest) return;
-      if (t.closest('[data-dock-close]')) { d.close(); return; }
-      if (t.closest('[data-dock-grip]')) { snap(d, d.getAttribute('data-snap') === 'full' ? 'half' : 'full'); return; }
+      // The grip closes it, as the close button does (there is no other snap).
+      if (t.closest('[data-dock-close]') || t.closest('[data-dock-grip]')) { d.close(); return; }
+      if (t.closest('[data-dock-filter-clear]')) {
+        setFilter('');
+        var f = field();
+        if (f) f.focus({ preventScroll: true });
+        return;
+      }
       var tab = t.closest('[data-dock-tab]');
       if (tab) { pick(tab.getAttribute('data-dock-tab'), false); return; }
       var a = t.closest('a[data-dock-row]');
@@ -344,8 +429,24 @@ var dockJS = func() string {
       // again (as view_swap.go's leave does a frame link).
       if (framed && window.musterViews && window.musterViews.showOwn(a.href)) e.preventDefault();
     });
+    // The filter: live, as the operator types.
+    d.addEventListener('input', function (e) {
+      if (e.target && e.target.id === FILTER) setFilter(e.target.value);
+    });
+    // Escape with a filter typed CLEARS it and keeps the dock open; the next
+    // Escape (an empty filter) is the dialog's own, and closes it. Canceling
+    // the keydown is what stops the dialog's close request (and a search
+    // field's own clear-on-Escape, which would leave the rows unfiltered).
+    d.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || e.isComposing) return;
+      var f = field();
+      if (!f || !f.value) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setFilter('');
+    });
     // The tabs: Left / Right / Home / End move between them and show the tab
-    // (a roving tabindex). No swipe ever changes a tab.
+    // (a roving tabindex). A swipe on the list moves the same way (below).
     d.addEventListener('keydown', function (e) {
       var tab = e.target && e.target.closest ? e.target.closest('[data-dock-tab]') : null;
       if (!tab || !st) return;
@@ -358,6 +459,30 @@ var dockJS = func() string {
       e.preventDefault();
       pick(VIEWS[to], true);
     });
+    // THE TAB SWIPE, on the list (the tabpanel) and nowhere else: a clearly
+    // horizontal travel — SWIPE_MIN_X across, and more than SWIPE_RATIO times
+    // as far across as down, so a scroll of the list never switches the tab —
+    // shows the next tab (leftwards) or the previous (rightwards) through
+    // pick, as the arrow keys do. The ends are ends: no wrap (a wrap reads as
+    // the app jumping, not as reaching the last tab). Passive: it never stops
+    // the list's own scroll. A touch the browser cancels is forgotten.
+    var list = d.querySelector('[data-dock-list]');
+    if (list) {
+      var sw = null;
+      list.addEventListener('touchstart', function (e) {
+        sw = e.touches && e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+      }, { passive: true });
+      list.addEventListener('touchcancel', function () { sw = null; }, { passive: true });
+      list.addEventListener('touchend', function (e) {
+        var s = sw, ct = e.changedTouches && e.changedTouches[0];
+        sw = null;
+        if (!s || !ct || !st || (e.touches && e.touches.length)) return;
+        var dx = ct.clientX - s.x, dy = ct.clientY - s.y;
+        if (Math.abs(dx) < SWIPE_MIN_X || Math.abs(dx) <= Math.abs(dy) * SWIPE_RATIO) return;
+        var to = VIEWS.indexOf(st.view) + (dx < 0 ? 1 : -1);
+        if (to >= 0 && to < VIEWS.length) pick(VIEWS[to], true);
+      }, { passive: true });
+    }
     // The close event: this dialog's opening, cleaned up (see cleanup) —
     // unless the dock is open again, or another dialog's opening is the one
     // held (a boosted swap brought a new dock): then this event is late.
@@ -368,11 +493,11 @@ var dockJS = func() string {
   }
 
   // 🔴 THE ONE CLEANUP POINT. Escape and a browser's Back (the dialog's
-  // cancel), the backdrop, the close button, musterBack(), a row's click,
-  // pageshow.persisted and htmx:beforeHistorySave all end in dialog.close(),
-  // whose close event runs this; only this releases the claim, resets the
-  // sheet and returns focus — to the opener, in whichever document it lives (a
-  // frame's view button), never scrolling.
+  // cancel), the backdrop, the grip, the close button, musterBack(), a row's
+  // click, pageshow.persisted and htmx:beforeHistorySave all end in
+  // dialog.close(), whose close event runs this; only this releases the claim,
+  // empties the filter and returns focus — to the opener, in whichever
+  // document it lives (a frame's view button), never scrolling.
   //
   // 🔴 A close EVENT IS A TASK, AND IT CAN LAND AFTER THE DOCK WAS OPENED
   // AGAIN: it fires a few ms after close() (2–7 ms measured, headless
@@ -385,7 +510,10 @@ var dockJS = func() string {
     if (!s) return;
     st = null;
     claim(false);
-    snap(s.d, 'half');
+    var f = s.d.querySelector('[data-dock-filter]');
+    if (f) f.value = '';
+    var c = s.d.querySelector('[data-dock-filter-clear]');
+    if (c) c.hidden = true;
     if (!s.opener) return;
     s.opener.setAttribute('aria-expanded', 'false');
     if (!s.opener.isConnected) return;
@@ -408,13 +536,12 @@ var dockJS = func() string {
     try { if (bar.ownerDocument !== document) hidePops(bar.ownerDocument); } catch (e) {}
     var v = bar.getAttribute('data-switcher-view');
     st = { d: d, bar: bar, opener: opener || null, view: VIEWS.indexOf(v) < 0 ? VIEWS[0] : v };
-    snap(d, 'half');
     render();
     try { d.showModal(); } catch (e) { st = null; return false; }
     measure();
     if (opener) opener.setAttribute('aria-expanded', 'true');
     claim(true);
-    // On the shown tab, NOT a text field: opening never raises a keyboard.
+    // On the shown tab, NOT the filter: opening never raises a keyboard.
     var t = tabOf(st.view);
     if (t) t.focus({ preventScroll: true });
     return true;
@@ -425,7 +552,9 @@ var dockJS = func() string {
   // The shell's Back (the claim above): true when it closed the dock.
   window.musterBack = close;
   if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', function () { var d = dlg(); if (d && d.open) measure(); });
+    var remeasure = function () { var d = dlg(); if (d && d.open) measure(); };
+    window.visualViewport.addEventListener('resize', remeasure);
+    window.visualViewport.addEventListener('scroll', remeasure);
   }
   // 🔴 htmx's history cache must never hold the dock open: its snapshot is
   // the body's HTML, taken right after this event (as view_swap.go removes its

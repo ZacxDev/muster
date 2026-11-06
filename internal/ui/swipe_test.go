@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -33,8 +35,41 @@ func touchListenerBodies(t *testing.T, js string) map[string]string {
 	}
 }
 
+// touchRE is a touch listener's registration, on any receiver: `<recv>.
+// addEventListener('touch<event>'`.
+var touchRE = regexp.MustCompile(`([A-Za-z_$][\w$]*)\.addEventListener\('(touch\w+)'`)
+
+// touchListeners is the source of every touch listener in js, on ANY receiver,
+// keyed "<receiver>.<event>" (document.touchstart, list.touchend, …), each from
+// its registration to the `{ passive: true });` that closes it.
+//
+// ⚠ A TEXT EXTRACT, like touchListenerBodies, but it cannot MISS a
+// registration: every `.addEventListener('touch` is a key, and one with no
+// terminator fails the test rather than vanishing from it.
+func touchListeners(t *testing.T, js string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, m := range touchRE.FindAllStringSubmatchIndex(js, -1) {
+		key := js[m[2]:m[3]] + "." + js[m[4]:m[5]]
+		end := strings.Index(js[m[0]:], "{ passive: true });")
+		if end < 0 {
+			t.Fatalf("the %s listener has no `{ passive: true });` terminator — the extract cannot find its end", key)
+		}
+		out[key] += js[m[0] : m[0]+end]
+	}
+	return out
+}
+
 // TestNoTabSwitchSwipe pins the removal of the tab-switch swipe AND the survival
 // of the sidebar's edge-swipe, in the one script both lived in.
+//
+// 🔴 NARROWED, NOT LIFTED: the switcher dock's own tabs DO change by a swipe
+// (switcher_dock.go), and only there. So the ledger below lists EVERY touch
+// listener appScript registers, on any receiver, and fails when the set grows or
+// shrinks: the sidebar's two on document, and the dock's three on its list (the
+// tabpanel inside the modal dialog, marked data-own-swipe). None of them names
+// the page's tab router. A swipe bound anywhere else — a tabpanel, the
+// document, the recents strip — is a new key here, and red.
 //
 // 🔴 THE TWO HALVES ARE ONE TEST ON PURPOSE. Deleting the touch block wholesale
 // would satisfy "no tab switch on swipe" while taking the sidebar gesture with
@@ -48,6 +83,27 @@ func TestNoTabSwitchSwipe(t *testing.T) {
 	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
 		js := mustStripJSComments(t, jsSource(t, appScript(feat)))
 		bodies := touchListenerBodies(t, js)
+
+		// THE LEDGER: every touch listener in the script, by receiver.
+		all := touchListeners(t, js)
+		var keys []string
+		for k := range all {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if got, want := strings.Join(keys, " "), "document.touchend document.touchstart list.touchcancel list.touchend list.touchstart"; got != want {
+			t.Errorf("%s: appScript's touch listeners = %q\nwant %q (the sidebar's on document, the dock's on its list, nothing else)", shape, got, want)
+		}
+		for k, body := range all {
+			if strings.HasPrefix(k, "list.") && strings.Contains(body, "document.") {
+				t.Errorf("%s: the dock's %s listener reaches the document:\n%s", shape, k, body)
+			}
+			// The dock's bodies join the removal check below: none may reach
+			// the page's tab router either.
+			if strings.HasPrefix(k, "list.") {
+				bodies["dock "+k] = body
+			}
+		}
 
 		// POSITIVE CONTROLS: both listeners were found and carry real code.
 		for _, ev := range []string{"touchstart", "touchend"} {

@@ -2,7 +2,10 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -151,7 +154,8 @@ func TestTheRecentsStoreKeepsEnoughForTheDock(t *testing.T) {
 // sidebar draws the dock once, in #sidebar-root beside the palette (never in
 // the bar, whose ancestors can hide it), closed, marked data-own-swipe (the
 // sidebar's edge swipe stands down over it), its list a tabpanel of the four
-// views' tabs and its name a heading.
+// views' tabs, itself marked data-own-swipe (the tab swipe is the panel's),
+// and its name a heading. The grip closes it, and is named so.
 func TestTheDockIsOneClosedDialogInTheSidebarRoot(t *testing.T) {
 	page := renderString(t, AgentDetailPage(AgentDetailView{Name: "docs-sweeper", Kind: "gateway"}, Features{}))
 	if n := strings.Count(page, `<dialog id="`+DockID+`"`); n != 1 {
@@ -159,7 +163,7 @@ func TestTheDockIsOneClosedDialogInTheSidebarRoot(t *testing.T) {
 	}
 	dock := page[strings.Index(page, `<dialog id="`+DockID+`"`):]
 	dock = dock[:strings.Index(dock, "</dialog>")]
-	if !strings.HasPrefix(dock, `<dialog id="switcher-dock" aria-labelledby="switcher-dock-title" data-own-swipe="" data-snap="half" class="`) {
+	if !strings.HasPrefix(dock, `<dialog id="switcher-dock" aria-labelledby="switcher-dock-title" data-own-swipe="" class="`) {
 		t.Errorf("the dock's head:\n%.300s", dock)
 	}
 	if regexp.MustCompile(`<dialog id="switcher-dock"[^>]*\bopen\b`).MatchString(page) {
@@ -178,8 +182,8 @@ func TestTheDockIsOneClosedDialogInTheSidebarRoot(t *testing.T) {
 	for _, want := range []string{
 		`<h2 id="switcher-dock-title" class="sr-only">Switch session</h2>`,
 		`role="tablist" aria-label="Session views"`,
-		`<ul id="dock-list" role="tabpanel" aria-labelledby="dock-tab-recent" data-dock-list=""`,
-		`data-dock-grip="" aria-label="Expand"`,
+		`<ul id="dock-list" role="tabpanel" aria-labelledby="dock-tab-recent" data-dock-list="" data-own-swipe=""`,
+		`data-dock-grip="" aria-label="Close sessions"`,
 		`data-dock-close="" aria-label="Close"`,
 	} {
 		if !strings.Contains(dock, want) {
@@ -195,12 +199,96 @@ func TestTheDockIsOneClosedDialogInTheSidebarRoot(t *testing.T) {
 	}
 }
 
-// TestTheDocksScriptBindsNoTouchListener: the dock's script is part of
-// appScript, whose document-level touch listeners the sidebar's swipe test
-// reads by their TEXT (touchListenerBodies, swipe_test.go); the dock binds
-// none, so that extract stays a claim about the sidebar's code alone.
-func TestTheDocksScriptBindsNoTouchListener(t *testing.T) {
-	if strings.Contains(dockJS, "'touch") {
-		t.Error("the dock binds a touch listener")
+// dockDialog is the agent page's dock, its markup alone.
+func dockDialog(t *testing.T) string {
+	t.Helper()
+	page := renderString(t, AgentDetailPage(AgentDetailView{Name: "docs-sweeper", Kind: "gateway"}, Features{}))
+	at := strings.Index(page, `<dialog id="`+DockID+`"`)
+	if at < 0 {
+		t.Fatal("the agent page draws no dock")
+	}
+	dock := page[at:]
+	return dock[:strings.Index(dock, "</dialog>")+len("</dialog>")]
+}
+
+// TestTheDockHasOneSnap (operator decision: drop full screen): the dock is
+// always the half snap, so nothing names another — not its markup, not its
+// script, not the stylesheet — and the grip's old names ("Expand", "Shrink to
+// half") are gone with the toggle they named.
+func TestTheDockHasOneSnap(t *testing.T) {
+	css, err := os.ReadFile(filepath.Join("..", "..", "web", "css", "input.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// POSITIVE CONTROL: the stylesheet read is the one that styles the dock.
+	if !strings.Contains(string(css), "#switcher-dock {") || !strings.Contains(string(css), "--dock-half") {
+		t.Fatal("web/css/input.css carries no #switcher-dock rule: nothing below is a claim about the dock's style")
+	}
+	for name, src := range map[string]string{"the markup": dockDialog(t), "the script": dockJS, "the stylesheet": string(css)} {
+		for _, gone := range []string{"data-snap", "'full'", `"full"`, "Shrink to half", "'Expand'", `"Expand"`, "--dock-vvh"} {
+			if strings.Contains(src, gone) {
+				t.Errorf("%s still names %s", name, gone)
+			}
+		}
+	}
+}
+
+// TestTheDocksFilterBox: under the grip and above the tabs, a search field
+// with a name of its own, 16px (text-base: a phone does not zoom the page on
+// its focus), never autofocused (opening must not raise a keyboard), and a
+// clear button, hidden while the field is empty.
+func TestTheDocksFilterBox(t *testing.T) {
+	dock := dockDialog(t)
+	in := regexp.MustCompile(`<input [^>]*id="dock-filter"[^>]*>`).FindString(dock)
+	if in == "" {
+		t.Fatalf("the dock has no filter field:\n%s", dock)
+	}
+	for _, want := range []string{`type="search"`, `data-dock-filter=""`, `aria-label="Filter sessions"`, `aria-controls="dock-list"`, `autocomplete="off"`, `text-base`} {
+		if !strings.Contains(in, want) {
+			t.Errorf("the filter field lacks %s: %s", want, in)
+		}
+	}
+	if strings.Contains(in, "autofocus") {
+		t.Errorf("the filter field is autofocused: %s", in)
+	}
+	clear := regexp.MustCompile(`<button [^>]*data-dock-filter-clear=""[^>]*>`).FindString(dock)
+	if clear == "" || !strings.Contains(clear, `aria-label="Clear filter"`) || !strings.Contains(clear, `hidden`) {
+		t.Errorf("the clear button: %q", clear)
+	}
+	grip, field, tabs := strings.Index(dock, "data-dock-grip"), strings.Index(dock, `id="dock-filter"`), strings.Index(dock, `role="tablist"`)
+	if !(grip >= 0 && grip < field && field < tabs) {
+		t.Errorf("the filter is not between the grip and the tabs (grip %d, filter %d, tabs %d)", grip, field, tabs)
+	}
+	// The empty line is the dock's one, which also says "No sessions match".
+	if !strings.Contains(dockJS, "'No sessions match'") {
+		t.Error("the dock's script never says No sessions match")
+	}
+}
+
+// TestTheDocksSwipeIsItsPanelsOnly: the dock's tab swipe is bound to its list
+// (the tabpanel, marked data-own-swipe) and nowhere else — not the document,
+// not the window, not the dialog — so it can only ever fire for a touch that
+// began on the dock's own rows. It walks the dock's tabs through pick, the
+// arrow keys' path, and needs a clearly horizontal travel (SWIPE_MIN_X, and
+// |dx| above SWIPE_RATIO times |dy|). The sidebar's document listeners are
+// TestNoTabSwitchSwipe's.
+func TestTheDocksSwipeIsItsPanelsOnly(t *testing.T) {
+	ls := touchListeners(t, mustStripJSComments(t, dockJS))
+	var got []string
+	for k := range ls {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	if strings.Join(got, " ") != "list.touchcancel list.touchend list.touchstart" {
+		t.Fatalf("the dock's touch listeners = %v, want exactly list.touchstart, list.touchend, list.touchcancel", got)
+	}
+	end := ls["list.touchend"]
+	for _, want := range []string{"pick(VIEWS[", "SWIPE_MIN_X", "SWIPE_RATIO"} {
+		if !strings.Contains(end, want) {
+			t.Errorf("the dock's touchend lacks %s:\n%s", want, end)
+		}
+	}
+	if !strings.Contains(dockJS, "querySelector('[data-dock-list]')") {
+		t.Error("the dock's list is not found by data-dock-list")
 	}
 }
