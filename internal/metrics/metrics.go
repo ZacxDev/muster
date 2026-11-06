@@ -325,6 +325,15 @@ var (
 		Name: "muster_officer_cap_refusal_withheld",
 		Help: "Judgement instances withheld from their pool because HQ refuses the wall-time cap's escalation of the item they held.",
 	})
+	// OfficerJudgementCapReached counts officers whose judgement pool has
+	// used its daily session cap (tiers.judgement.max_sessions_per_day) while
+	// claimable judgement items wait: muster does not wake the pool for them
+	// until the cap resets at 00:00 UTC. The log line (once per officer per
+	// UTC day) names the officer, used/cap and the waiting count.
+	OfficerJudgementCapReached = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_judgement_cap_reached",
+		Help: "Officers whose judgement pool has used its daily session cap while claimable judgement items wait (not woken until 00:00 UTC).",
+	})
 	// OfficerTranscriptEvents counts officer transcript events by what became
 	// of them (internal/officers/transcript): posted (HQ answered 2xx),
 	// dropped_buffer (an instance's buffer was full: the oldest went),
