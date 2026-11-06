@@ -218,7 +218,15 @@ for (const vp of [
   { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false }, how: 'enter' as const },
 ]) {
   test.describe(vp.name, () => {
-    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+    // 🔴 SERVICE WORKERS BLOCKED: these tests answer the send with page.route,
+    // and once the PWA's worker (web/static/sw.js) claims the page its fetches
+    // no longer reach page.route — the worker never handles a POST, but the
+    // request is then not the page's to intercept. Measured: with the extra
+    // step that reveals the phone's collapsed box (lib/composer.ts) the worker
+    // had time to claim the page, a 409 the route meant to give was answered
+    // 200 by the server, and ten phone tests failed in order (each passed
+    // alone); blocked, all 32 passed.
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] }, serviceWorkers: 'block' });
 
     // 🔴 THE REGRESSION TEST. On origin/main nothing is drawn until the
     // send's answer (the box clears then), so the message is first seen only

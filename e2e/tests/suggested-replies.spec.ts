@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import { Browser, Page, Request } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { suggestFakePort, suggestPort } from '../lib/env';
 import { clsInit, readCls, resetCls } from '../lib/cls';
@@ -194,6 +195,9 @@ test.describe.serial('phone 390×844', () => {
     await openView(page);
     await turn(page, reply + ' ');
     await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
+    // A draft is typed: the box is revealed first (collapsed on a touch screen,
+    // lib/composer.ts).
+    await revealBox(page);
     await page.locator('#mv-input').fill('my draft so far');
     await chips(page).nth(1).tap();
     await expect(page.locator('#mv-input')).toHaveValue('my draft so far\n' + chipB);
@@ -449,6 +453,9 @@ for (const vp of [
     test('a send or the next turn closes an open expand popover first and puts the focus in the box', async ({ page }) => {
       const press = (l: ReturnType<Page['locator']>) => (vp.touch ? l.tap() : l.click());
       await openView(page);
+      // The focus goes back to the box, so the box is the shown one (it is
+      // collapsed on a touch screen until revealed: lib/composer.ts).
+      await revealBox(page);
       await page.evaluate(() => {
         (window as any).__tg = [];
         document.addEventListener('toggle', (e) => (window as any).__tg.push((e.target as HTMLElement).id + ':' + (e as any).newState), true);
