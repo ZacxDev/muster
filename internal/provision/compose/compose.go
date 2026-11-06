@@ -78,18 +78,19 @@
 //   - spec.json, driver.json and every directory outside files/ get
 //     SpecGroup: the supervisor can read them, the agent cannot;
 //   - everything under files/ gets [Config.FilesGroup], the agent's group: the
-//     managed CLAUDE.md reaches it through the Compose file's subpath mount of
-//     files/etc/claude-code at /etc/claude-code, read-only.
+//     managed CLAUDE.md reaches it through the Compose file's chief-instructions
+//     volume, which muster mounts at files/etc/claude-code and the chief at
+//     /etc/claude-code, read-only (no volume `subpath`: Compose before 2.25
+//     refuses a file that has one).
 //
 // muster writes as its own uid with both groups as supplementary groups (the
 // Compose file's group_add), which is what lets it give each path its group.
 //
-// 🔴 DIRECTORIES ARE NEVER REMOVED, only files. The Compose file bind-mounts a
-// subdirectory of files/ (volume `subpath`) at /etc/claude-code; a removed and
-// re-created directory is a new inode that a running container's mount never
-// sees, so its managed instructions would vanish until the container was
-// recreated. Keeping the directories keeps the mount live across Destroy and
-// Create.
+// 🔴 DIRECTORIES ARE NEVER REMOVED, only files. files/etc/claude-code is the
+// root of a volume of its own (chief-instructions) that the chief mounts at
+// /etc/claude-code; a mount point cannot be removed, and any other directory
+// removed and re-created is a new inode that a running container never sees.
+// Keeping the directories keeps every mount live across Destroy and Create.
 package compose
 
 import (
