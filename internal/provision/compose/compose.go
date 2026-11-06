@@ -765,8 +765,17 @@ func (d *Driver) List(ctx context.Context) ([]provision.Instance, error) {
 	return out, nil
 }
 
-// Get implements provision.Provisioner. The stored replica count decides a
-// stop; for a running one, the container's own status decides the rest.
+// reasonStopped is Get's reason for a stop the container has confirmed.
+const reasonStopped = "scaled to zero: the container is up and its agent is stopped"
+
+// Get implements provision.Provisioner. It asks the container's own status
+// whatever the stored replica count; fromStatus maps it for replicas 1 and
+// fromStopStatus for replicas 0.
+//
+// 🔴 A STOP IS PROBED TOO. Scale(0) only writes spec.json, so the stored count
+// says muster ASKED for a stop, not that one happened: the supervisor reports
+// error ("the chief did not stop: <pid> … still running") when a process
+// outlives the kill, and only that status can carry it to muster.
 func (d *Driver) Get(ctx context.Context, ref provision.Ref) (provision.Instance, error) {
 	if err := ctx.Err(); err != nil {
 		return provision.Instance{}, err
@@ -778,25 +787,63 @@ func (d *Driver) Get(ctx context.Context, ref provision.Ref) (provision.Instance
 		return provision.Instance{}, err
 	}
 	inst := provision.Instance{Ref: provision.Ref{Name: ref.Name, ID: st.ID}, Driver: DriverName, Group: d.root}
-	if cs.Replicas == 0 {
-		inst.Phase, inst.Reason = provision.PhaseStopped, "scaled to zero: the container is up and its agent is stopped"
-		return inst, nil
-	}
+	stopped := cs.Replicas == 0
 	ep, err := d.endpoint(ref.Name, st)
 	if err != nil {
 		inst.Phase, inst.Reason = provision.PhaseUnknown, err.Error()
+		if stopped {
+			inst.Phase, inst.Reason = provision.PhaseStopped, reasonStopped+" (its status cannot be asked: "+err.Error()+")"
+		}
 		return inst, nil
 	}
 	s, err := d.probe(ctx, ep)
 	if err != nil {
-		inst.Phase = provision.PhasePending
-		inst.Reason = fmt.Sprintf("the %s container is not answering at %s: %v", ref.Name, ep.Addr(), err)
+		reason := fmt.Sprintf("the %s container is not answering at %s: %v", ref.Name, ep.Addr(), err)
 		if d.hint != "" {
-			inst.Reason += "; " + d.hint
+			reason += "; " + d.hint
+		}
+		// A container that is not there runs no agent either: a stopped
+		// instance stays stopped, not failed, and the reason says it is unconfirmed.
+		inst.Phase, inst.Reason = provision.PhasePending, reason
+		if stopped {
+			inst.Phase, inst.Reason = provision.PhaseStopped, "scaled to zero, unconfirmed: "+reason
 		}
 		return inst, nil
 	}
+	if stopped {
+		return fromStopStatus(inst, cs, s), nil
+	}
 	return fromStatus(inst, cs, s), nil
+}
+
+// fromStopStatus maps what the container says onto inst, for an instance whose
+// stored spec is cs with replicas 0. The same generation/epoch check comes
+// first, as in fromStatus. Then only off is stopped. Error is failed: the
+// supervisor's reason names what outlived the kill. Any other state at the
+// current generation (running, starting, exited) is a stop not yet done, so it
+// reads pending.
+//
+// A stop does not move the generation (startsRun), so a status still about the
+// run before the stop carries the current generation. That is why an error the
+// supervisor reported just before it read replicas 0 also reads failed here,
+// until the supervisor applies the stop.
+func fromStopStatus(inst provision.Instance, cs ContainerSpec, s Status) provision.Instance {
+	switch {
+	case s.Generation != cs.Generation || s.Epoch != cs.Epoch:
+		inst.Phase = provision.PhasePending
+		inst.Reason = fmt.Sprintf("the container has not applied the stop of generation %d yet (it reports generation %d, state %s)",
+			cs.Generation, s.Generation, s.State)
+		if s.Reason != "" {
+			inst.Reason += ": " + s.Reason
+		}
+	case s.State == StateOff:
+		inst.Phase, inst.Reason = provision.PhaseStopped, reasonStopped
+	case s.State == StateError:
+		inst.Phase, inst.Reason = provision.PhaseFailed, orState(s)
+	default:
+		inst.Phase, inst.Reason = provision.PhasePending, "stopping: "+orState(s)
+	}
+	return inst
 }
 
 // fromStatus maps what the container says onto inst, for an instance whose

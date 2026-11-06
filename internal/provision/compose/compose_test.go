@@ -456,21 +456,89 @@ func TestGetReadsTheContainersOwnStatus(t *testing.T) {
 			t.Fatalf("got %+v", inst)
 		}
 	})
-	t.Run("stopped is read from the volume, not the container", func(t *testing.T) {
-		p := &recordingProbe{err: errors.New("must not be asked")}
-		d, _ := setup(t, p)
-		if err := d.Scale(ctx, provision.Ref{Name: "chief"}, 0); err != nil {
-			t.Fatal(err)
-		}
-		before := p.n.Load()
-		inst, err := d.Get(ctx, provision.Ref{Name: "chief"})
-		if err != nil || inst.Phase != provision.PhaseStopped {
-			t.Fatalf("got %+v, %v", inst, err)
-		}
-		if p.n.Load() != before {
-			t.Fatal("a stopped instance was probed")
-		}
-	})
+}
+
+// TestAStopIsReadFromTheContainer: replicas 0 in spec.json is only muster's
+// request for a stop. Get asks the container, and the supervisor's error (a
+// process that outlived SIGKILL) reads failed, not stopped (#474 round 1 F2).
+func TestAStopIsReadFromTheContainer(t *testing.T) {
+	ctx := context.Background()
+	const otherEpoch = "0123456789abcdef0123456789abcdef"
+	for _, c := range []struct {
+		name   string
+		status func(cs compose.ContainerSpec) compose.Status
+		err    error
+		phase  provision.Phase
+		reason string
+	}{
+		{name: "off at the current generation is stopped",
+			status: func(cs compose.ContainerSpec) compose.Status {
+				return compose.Status{State: compose.StateOff, Generation: cs.Generation, Epoch: cs.Epoch, Reason: "the supervisor's own off text"}
+			},
+			phase: provision.PhaseStopped, reason: "scaled to zero: the container is up and its agent is stopped"},
+		{name: "error at the current generation is failed, with the supervisor's reason",
+			status: func(cs compose.ContainerSpec) compose.Status {
+				return compose.Status{State: compose.StateError, Generation: cs.Generation, Epoch: cs.Epoch,
+					Reason: "the chief did not stop: 89 (claude) still running 5s after SIGKILL"}
+			},
+			phase: provision.PhaseFailed, reason: "the chief did not stop: 89 (claude) still running 5s after SIGKILL"},
+		{name: "running at the current generation is still stopping",
+			status: func(cs compose.ContainerSpec) compose.Status {
+				return compose.Status{State: compose.StateRunning, Generation: cs.Generation, Epoch: cs.Epoch, Boot: "b7", Ready: true, Reason: "turn in progress"}
+			},
+			phase: provision.PhasePending, reason: "stopping: turn in progress"},
+		{name: "starting at the current generation, no reason, is still stopping",
+			status: func(cs compose.ContainerSpec) compose.Status {
+				return compose.Status{State: compose.StateStarting, Generation: cs.Generation, Epoch: cs.Epoch}
+			},
+			phase: provision.PhasePending, reason: "stopping: the container reports starting"},
+		{name: "another generation has not applied the stop",
+			status: func(cs compose.ContainerSpec) compose.Status {
+				return compose.Status{State: compose.StateOff, Generation: cs.Generation + 3, Epoch: cs.Epoch, Reason: "an older off"}
+			},
+			phase: provision.PhasePending, reason: "the container has not applied the stop of generation 1 yet (it reports generation 4, state off): an older off"},
+		{name: "another epoch has not applied the stop",
+			status: func(cs compose.ContainerSpec) compose.Status {
+				return compose.Status{State: compose.StateError, Generation: cs.Generation, Epoch: otherEpoch, Reason: "a destroyed chief's error"}
+			},
+			phase: provision.PhasePending, reason: "the container has not applied the stop of generation 1 yet (it reports generation 1, state error): a destroyed chief's error"},
+		{name: "a container that does not answer stays stopped, unconfirmed",
+			err:   errors.New("connection refused"),
+			phase: provision.PhaseStopped, reason: "scaled to zero, unconfirmed: the chief container is not answering at chief:18789: connection refused; add chief to COMPOSE_PROFILES"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			p := &recordingProbe{err: c.err}
+			d := newDriver(t, compose.Config{Root: root, Probe: p.probe, Hint: "add chief to COMPOSE_PROFILES"})
+			if err := d.Create(ctx, chiefSpec()); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.Scale(ctx, provision.Ref{Name: "chief"}, 0); err != nil {
+				t.Fatal(err)
+			}
+			cs := readSpec(t, root, "chief")
+			if cs.Replicas != 0 || cs.Generation != 1 {
+				t.Fatalf("setup: %+v, want replicas 0 at generation 1", cs)
+			}
+			if c.status != nil {
+				p.status = c.status(cs)
+			}
+			before := p.n.Load()
+			inst, err := d.Get(ctx, provision.Ref{Name: "chief"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inst.Phase != c.phase || inst.Reason != c.reason {
+				t.Fatalf("got phase %s reason %q, want %s %q", inst.Phase, inst.Reason, c.phase, c.reason)
+			}
+			if p.n.Load() != before+1 {
+				t.Fatalf("Get of a stopped instance probed %d times, want 1", p.n.Load()-before)
+			}
+			if inst.Ready || inst.InstanceID != "" || inst.Replicas != 0 {
+				t.Fatalf("a stopped instance read %+v; it must not count as a live run", inst)
+			}
+		})
+	}
 }
 
 // TestAStaleExitIsNotTheNewSpecsFailure pins fromStatus's ORDER: the
