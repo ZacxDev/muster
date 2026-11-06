@@ -58,6 +58,9 @@ type fakeMirrorV2 struct {
 	pasteErr error
 	watches  []watchCall
 	pastes   []pasteCall
+	// keys is each paste's mirror.MessageKey, in order (a gated send's
+	// message id is derived from it).
+	keys []string
 }
 
 func (f *fakeMirror) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error {
@@ -128,6 +131,7 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 	f.v2.mu.Lock()
 	defer f.v2.mu.Unlock()
 	f.v2.pastes = append(f.v2.pastes, pasteCall{f.user(ctx), host, session, text, target, o.Expect})
+	f.v2.keys = append(f.v2.keys, o.Key)
 	if f.user(ctx) != 1 {
 		return mirror.ErrHostOffline
 	}

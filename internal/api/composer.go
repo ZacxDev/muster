@@ -91,6 +91,12 @@ const (
 	noticeMultiplexer = "multiplexer"
 	noticeUnchecked   = "unchecked"
 	noticeOpenCode    = "opencode"
+	// The opencode gated send (mirror.PasteRefusalOpenCode*).
+	noticeOpenCodeOff     = "opencode-off"
+	noticeOpenCodeUnbound = "opencode-unbound"
+	noticeOpenCodeNotIdle = "opencode-not-idle"
+	noticeOpenCodeSlash   = "opencode-slash"
+	noticeOpenCodeGone    = "opencode-gone"
 	// A queued message's Edit (send_queue_edit.go).
 	noticeEditing           = "editing"
 	noticeEdited            = "edited"
@@ -114,6 +120,12 @@ var pasteGuardNotices = map[string]string{
 	mirror.PasteRefusalMultiplexer: noticeMultiplexer,
 	mirror.PasteRefusalUnchecked:   noticeUnchecked,
 	mirror.PasteRefusalOpenCode:    noticeOpenCode,
+	// The opencode gated send's (the hub's or the host's).
+	mirror.PasteRefusalOpenCodeOff:     noticeOpenCodeOff,
+	mirror.PasteRefusalOpenCodeUnbound: noticeOpenCodeUnbound,
+	mirror.PasteRefusalOpenCodeNotIdle: noticeOpenCodeNotIdle,
+	mirror.PasteRefusalOpenCodeSlash:   noticeOpenCodeSlash,
+	mirror.PasteRefusalOpenCodeGone:    noticeOpenCodeGone,
 }
 
 // claudeGuardNotices is the notice for each kind of Claude prompt guard
@@ -174,6 +186,11 @@ var composerNotices = map[string]struct {
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
 	noticeOpenCode:          {mirror.PasteRefusedOpenCodeText, false},
+	noticeOpenCodeOff:       {mirror.PasteRefusedOpenCodeOffText, false},
+	noticeOpenCodeUnbound:   {mirror.PasteRefusedOpenCodeUnboundText, false},
+	noticeOpenCodeNotIdle:   {"Not sent: opencode is not idle right now (working, or waiting for you). Queue it instead.", false},
+	noticeOpenCodeSlash:     {mirror.PasteRefusedOpenCodeSlashText, false},
+	noticeOpenCodeGone:      {mirror.PasteRefusedOpenCodeGoneText, false},
 	noticeEditing:           {SendQueueEditingText, true},
 	noticeEdited:            {SendQueueEditedText, true},
 	noticeEditCancelled:     {SendQueueEditCancelledText, true},
@@ -364,9 +381,19 @@ type sendNonces struct {
 	mu   sync.Mutex
 	seen map[string]sendNonce
 	// held: a message that MAY have landed, by its owner, its destination
-	// and its text — WHATEVER its nonce (hold).
-	held map[string]time.Time
+	// and its text — WHATEVER its nonce (hold): when, and the key its first
+	// try was sent under (heldEntry.key).
+	held map[string]heldEntry
 	now  func() time.Time
+}
+
+// heldEntry is one held message: when it was held, and the key (the nonce)
+// its first may-have-landed try was sent under — what a "Send again" of it is
+// sent under too, so a gated send (opencode, mirror.MessageKey) posts the SAME
+// message id and lands at most once.
+type heldEntry struct {
+	at  time.Time
+	key string
 }
 
 // sendNonce is one claimed message: when it was claimed, or delivered.
@@ -492,33 +519,50 @@ func sendHeldKey(owner int64, dest, text string) string {
 func (n *sendNonces) isHeld(owner int64, dest, text string) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	at, ok := n.held[sendHeldKey(owner, dest, text)]
-	return ok && n.clock().Sub(at) < sendNonceTTL
+	e, ok := n.held[sendHeldKey(owner, dest, text)]
+	return ok && n.clock().Sub(e.at) < sendNonceTTL
 }
 
-// hold records that text to dest may have landed; release forgets it (a send
-// of it was confirmed).
-func (n *sendNonces) hold(owner int64, dest, text string) {
+// heldKey is the key text to dest was first sent under while it is held
+// (hold), "" when it is not.
+func (n *sendNonces) heldKey(owner int64, dest, text string) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	e, ok := n.held[sendHeldKey(owner, dest, text)]
+	if !ok || n.clock().Sub(e.at) >= sendNonceTTL {
+		return ""
+	}
+	return e.key
+}
+
+// hold records that text to dest, sent under key, may have landed; release
+// forgets it (a send of it was confirmed). A message held already keeps the
+// key of its FIRST try.
+func (n *sendNonces) hold(owner int64, dest, text, key string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	now := n.clock()
 	if n.held == nil {
-		n.held = map[string]time.Time{}
+		n.held = map[string]heldEntry{}
 	}
 	if len(n.held) >= sendNonceMax {
 		oldest, oldestAt := "", now
-		for k, at := range n.held {
-			if now.Sub(at) >= sendNonceTTL {
+		for k, e := range n.held {
+			if now.Sub(e.at) >= sendNonceTTL {
 				delete(n.held, k)
-			} else if !at.After(oldestAt) {
-				oldest, oldestAt = k, at
+			} else if !e.at.After(oldestAt) {
+				oldest, oldestAt = k, e.at
 			}
 		}
 		if len(n.held) >= sendNonceMax && oldest != "" {
 			delete(n.held, oldest)
 		}
 	}
-	n.held[sendHeldKey(owner, dest, text)] = now
+	hk := sendHeldKey(owner, dest, text)
+	if e, ok := n.held[hk]; ok && now.Sub(e.at) < sendNonceTTL && e.key != "" {
+		key = e.key
+	}
+	n.held[hk] = heldEntry{at: now, key: key}
 }
 
 func (n *sendNonces) release(owner int64, dest, text string) {

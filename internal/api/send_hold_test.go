@@ -27,7 +27,7 @@ import (
 func TestTheHoldIsPerOwnerAndDestinationAndText(t *testing.T) {
 	n := &sendNonces{}
 	dest := heldDestKey("ws", "main", "@1", mirror.PasteClaude)
-	n.hold(1, dest, "yes")
+	n.hold(1, dest, "yes", "")
 	if !n.isHeld(1, dest, "yes") {
 		t.Fatal("control: the held message itself is not held")
 	}
@@ -61,7 +61,7 @@ func TestTheHoldEndsWithItsTTL(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	n := &sendNonces{now: func() time.Time { return now }}
 	dest := heldDestKey("ws", "main", "@1", mirror.PasteClaude)
-	n.hold(1, dest, "yes")
+	n.hold(1, dest, "yes", "")
 	now = now.Add(sendNonceTTL - time.Second)
 	if !n.isHeld(1, dest, "yes") {
 		t.Fatal("released before its TTL")
@@ -80,7 +80,7 @@ func TestTheHoldIsBounded(t *testing.T) {
 	dest := heldDestKey("ws", "main", "@1", mirror.PasteClaude)
 	for i := 0; i < sendNonceMax+3; i++ {
 		now = now.Add(time.Millisecond)
-		n.hold(1, dest, "message "+strconv.Itoa(i))
+		n.hold(1, dest, "message "+strconv.Itoa(i), "")
 	}
 	if len(n.held) > sendNonceMax {
 		t.Fatalf("%d holds kept; the bound is %d", len(n.held), sendNonceMax)

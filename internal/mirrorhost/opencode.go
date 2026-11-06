@@ -20,8 +20,9 @@ import (
 // an opencode TUI on the pane's terminal is an opencode window, and — with an
 // OpenCodeSource — the session its pane title names (opencodehost.MatchTitle)
 // is its rendered view, read from the host's opencode v2 server with the
-// host's pair token. No message is ever sent to opencode, and the paste guard
-// refuses its panes; what its session waits on (a permission request, a
+// host's pair token. No KEY is ever typed into opencode (the paste guard
+// refuses its panes); a message reaches a launcher-bound pane's session only
+// through the API (opencode_send.go); what its session waits on (a permission request, a
 // question) is the window's Pending, and an -interactive host relays an
 // answer to it through the API (opencode_asks.go).
 
@@ -42,6 +43,9 @@ type OpenCodePane struct {
 	Server string
 	// NoView is why the pane has no rendered view, "" when it has one.
 	NoView string
+	// Warning is said of a launcher-bound pane whose title shows another
+	// session than the recorded one (TitleMismatchWarning); "" for none.
+	Warning string
 }
 
 // openCodeSubcommands are opencode's subcommands at 6ec5682
@@ -131,6 +135,9 @@ func (r openCodeRuntime) LocatePanes(panes []pane, procs map[int]procInfo, child
 	if len(panes) == 0 || !anyOpenCode(procs) {
 		return out
 	}
+	if r.src != nil {
+		r.src.sweepLaunches(r.proc)
+	}
 	for _, p := range panes {
 		tty := p.TTY
 		if tty == "" {
@@ -145,7 +152,7 @@ func (r openCodeRuntime) LocatePanes(panes []pane, procs map[int]procInfo, child
 		}
 		ap := AgentPane{Runtime: mirror.RuntimeOpenCode, Pane: p.ID, PID: pid, Source: SourceProcess}
 		if r.src != nil {
-			r.src.resolve(&ap, shared, r.title)
+			r.src.resolve(&ap, shared, procs[pid].start, r.title)
 		}
 		out[p.ID] = ap
 	}
@@ -218,6 +225,11 @@ type OpenCodeSource struct {
 	since map[string]int64
 	// changes counts the events naming each session.
 	changes map[string]uint64
+	// launchDir and launchSocket are where this daemon's launcher records are
+	// and the tmux server they must name (SetLaunches); sweptAt when stale
+	// ones were last swept (opencode_launch.go).
+	launchDir, launchSocket string
+	sweptAt                 time.Time
 	// now is the source's clock.
 	now func() time.Time
 
@@ -385,6 +397,12 @@ func (s *OpenCodeSource) event(e opencodehost.Event) {
 		return
 	}
 	s.changes[id]++
+	// A session created while the stream is open (the launcher creates one
+	// before its TUI starts) is idle from that moment: without a time it
+	// would take no send until its first turn (the idle gate needs one).
+	if _, timed := s.since[id]; e.Type == "session.created" && !timed {
+		s.busy[id], s.since[id] = false, s.now().UnixMilli()
+	}
 	switch st := e.Status(); st {
 	case "busy", "retry":
 		if !s.busy[id] {
@@ -497,15 +515,19 @@ func (s *OpenCodeSource) client() (*opencodehost.Client, error) {
 // resolve fills a claimed opencode pane's session and status: the session
 // its title names, when the server can be read and exactly one root session
 // matches.
-func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) (string, bool)) {
+func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start string, title func(string) (string, bool)) {
 	oc := &OpenCodePane{}
 	ap.OpenCode = oc
 	// The person reads the same reason on the window's card (AgentNote): why
-	// it has no view, else what the token needs (Credentials.Health).
+	// it has no view, else what the token needs (Credentials.Health), else a
+	// bound pane's title warning.
 	defer func() {
 		ap.Note = oc.NoView
 		if ap.Note == "" {
 			ap.Note = s.tokenHealth()
+		}
+		if ap.Note == "" {
+			ap.Note = oc.Warning
 		}
 	}()
 	if !shared {
@@ -523,11 +545,7 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) 
 		oc.NoView = s.refusedWhy()
 		return
 	}
-	t, ok := title(ap.Pane)
-	if !ok {
-		oc.NoView = "the pane's title could not be read"
-		return
-	}
+	t, titleOK := title(ap.Pane)
 	oc.PaneTitle = t
 	sessions, err := s.rootSessions()
 	if err != nil {
@@ -538,18 +556,27 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) 
 		}
 		return
 	}
-	oc.Match = opencodehost.MatchTitle(t, sessions)
-	if oc.Match.Session == "" {
-		oc.NoView = oc.Match.Why
-		return
+	// A launcher record binds the pane (opencode_launch.go), whether or not
+	// its title can be read; only without one is its session read from its
+	// title, a heuristic, view-only.
+	if !s.bindLaunch(ap, start, t, titleOK, sessions) {
+		if !titleOK {
+			oc.NoView = "the pane's title could not be read"
+			return
+		}
+		oc.Match = opencodehost.MatchTitle(t, sessions)
+		if oc.Match.Session == "" {
+			oc.NoView = oc.Match.Why
+			return
+		}
+		ap.Gen, ap.Source = oc.Match.Session, SourceTitle
 	}
-	ap.Gen, ap.Source = oc.Match.Session, SourceTitle
-	ap.Status, ap.StatusSince = s.status(oc.Match.Session)
+	ap.Status, ap.StatusSince = s.status(ap.Gen)
 	// What it waits on (opencode_asks.go): a pending permission request or
 	// question of its session, or of a subagent's under it, makes it WAITING
 	// — opencode itself says "busy" while a tool waits on the person.
-	s.seed(oc.Match.Session)
-	if a, ok := s.pendingAsk(oc.Match.Session); ok {
+	s.seed(ap.Gen)
+	if a, ok := s.pendingAsk(ap.Gen); ok {
 		ap.Status, ap.StatusSince, ap.Pending = mirror.StatusWaiting, a.since, a.pendingOf()
 	}
 	ap.Busy = ap.Status == mirror.StatusBusy
@@ -590,9 +617,16 @@ func (s *OpenCodeSource) refusedWhy() string {
 // (a client of the shared server). For a backend that knows its panes' titles
 // another way — the browser suite's fake tmux, whose windows file names them.
 func ResolveOpenCodePane(s *OpenCodeSource, pane string, pid int, title string) AgentPane {
+	return ResolveOpenCodePaneStarted(s, pane, pid, "", title)
+}
+
+// ResolveOpenCodePaneStarted is ResolveOpenCodePane for a TUI whose process
+// start time is start (/proc/<pid>/stat field 22): with it, a launcher record
+// for the pane can bind it (opencode_launch.go).
+func ResolveOpenCodePaneStarted(s *OpenCodeSource, pane string, pid int, start, title string) AgentPane {
 	ap := AgentPane{Runtime: mirror.RuntimeOpenCode, Pane: pane, PID: pid, Source: SourceProcess}
 	if s != nil {
-		s.resolve(&ap, true, func(string) (string, bool) { return title, true })
+		s.resolve(&ap, true, start, func(string) (string, bool) { return title, true })
 	}
 	return ap
 }

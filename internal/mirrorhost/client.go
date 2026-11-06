@@ -72,6 +72,13 @@ type Config struct {
 	// use muster's Interactive switch for this host can run commands here as the
 	// user muster-mirror runs as. Turn it on only where that is intended.
 	Interactive bool
+	// OpenCodeSend lets muster SEND a message to an opencode session on this
+	// host through the opencode server's API (muster-mirror's -opencode-send),
+	// with Interactive and an opencode token: only to a pane started by
+	// `muster-mirror opencode` (docs/design/opencode-first-class.md). Off by
+	// default. 🔴 It lets muster prompt an agent here: whatever that agent may
+	// run, a message from muster can ask it to.
+	OpenCodeSend bool
 	// Codenames is session name → codename (LoadCodenames). A listed session
 	// with one is shown in muster as "<codename>:<active window index>"
 	// (BuildLabels); nil labels nothing, and then no window index is read.
@@ -373,6 +380,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
 	hello.OpenCodeAnswer = conn.openCodeAnswer()
+	hello.OpenCodeSend = conn.openCodeSend()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	if err := conn.send(hello); err != nil {
 		return err

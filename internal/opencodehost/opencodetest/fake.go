@@ -61,6 +61,15 @@ type Server struct {
 	perms, forms  map[string][]json.RawMessage
 	replies       []Reply
 	refuseReplies int
+	// The send routes (send.go): every prompt admitted, how many prompt
+	// POSTs came, how long an answer waits after admitting, the version
+	// /api/info names, and the slash commands /api/command lists.
+	prompts      []Prompt
+	promptPosts  int
+	promptDelay  time.Duration
+	version      string
+	commands     []map[string]string
+	failCommands bool
 }
 
 // FailEvents makes the event stream answer 503 (on) — a server whose stream
@@ -74,7 +83,10 @@ func (s *Server) FailEvents(on bool) {
 // New starts a fake opencode server whose password is password.
 func New(password string) *Server {
 	s := &Server{password: password, now: time.Now, codes: map[string]bool{}, messages: map[string][]json.RawMessage{},
-		running: map[string]bool{}, subs: map[chan string]bool{}}
+		running: map[string]bool{}, subs: map[chan string]bool{}, version: "2.0.0-fixture",
+		// The real server's built-ins (testdata/prompt-v2.0.32.json, commands).
+		commands: []map[string]string{{"name": "init", "description": "guided AGENTS.md setup"},
+			{"name": "review", "description": "review changes [commit|branch|pr], defaults to uncommitted"}}}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
 }
@@ -269,9 +281,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	if s.serveAsks(w, r, path) {
 		return
 	}
+	if s.serveSend(w, r, path) {
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && path == "/api/info":
-		writeJSON(w, map[string]any{"version": "2.0.0-fixture", "pid": 1, "urls": []string{s.URL}, "paths": map[string]any{}, "capabilities": map[string]any{}})
+		s.mu.Lock()
+		v := s.version
+		s.mu.Unlock()
+		writeJSON(w, map[string]any{"version": v, "pid": 1, "urls": []string{s.URL}, "paths": map[string]any{}, "capabilities": map[string]any{}})
 	case r.Method == http.MethodPost && path == "/api/pair":
 		code := randomCode()
 		s.mu.Lock()

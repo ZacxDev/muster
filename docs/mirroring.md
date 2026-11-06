@@ -631,10 +631,12 @@ make its Claude pane refuse. When either terminal cannot be read, the host
 refuses. An npm or bun install's JavaScript shim is refused through the
 native `opencode` it starts, which is in the same tree. A paste
 into opencode is blind, because nothing checks what its screen shows, and
-Enter there can answer a permission request it is showing. Every send is
-refused this way, Send, Queue and Send now alike, and the page says
-"Sending to opencode isn't supported yet…". A later version sends to opencode
-through its own API, never keystrokes. Type into opencode in the terminal.
+Enter there can answer a permission request it is showing. Every paste is
+refused this way, the Terminal view's box included, and the page says "Not
+sent from here: opencode runs in this pane, and muster never types into
+it…". A message reaches opencode only through its own API, from the Rendered
+view of a pane started with `muster-mirror opencode` ([sending to
+opencode](#sending-to-opencode)).
 
 The host decides this itself, from the pane's processes at the moment it
 types, not from the window's `opencode` label: a window labelled `zsh` whose
@@ -703,8 +705,9 @@ with `--standalone` or `--server` runs on another server and is never matched.
 The window opens a **read-only rendered view**: the session's prompts,
 the agent's replies, and each tool call by its name and target (the command,
 the file). It never shows a tool's input or output, nor the model's reasoning.
-The view opens with a "matched by title" row, because a title is a heuristic:
-a renamed session, or a TUI that switched sessions, moves it. Text appears once
+The view opens with a row saying how the session was found: "matched by
+title" (a heuristic: a renamed session, or a TUI that switched sessions, moves
+it), or "started by muster-mirror opencode" for a pane the launcher bound. Text appears once
 it is final (a reply streams in place upstream), and the view starts over when
 something it drew changes. The busy marker comes from the server's event
 stream (`session.status`). While that stream is down the status is unknown, and
@@ -714,9 +717,45 @@ When the token needs the person — a renewal is failing, it is within 3 days
 of expiry — the view's first row says so, in the same words `-list -opencode`
 prints (and the window's note, below).
 
-The composer is disabled, saying sending to opencode isn't supported yet:
-muster sends no message to opencode, and the paste guard above still refuses
-its panes. What the session **waits on** does reach muster (below).
+The composer of a title-matched window, or of any opencode window on a host
+that did not opt in, is disabled and says which. What the session **waits
+on** does reach muster (below).
+
+#### Sending to opencode
+
+A message is sent to an opencode session through the opencode server's API,
+never as keys, when all of these hold (each checked by muster and again by the
+host):
+
+- the host's muster-mirror runs with `-interactive` and `-opencode-send`
+  (`MUSTER_MIRROR_OPENCODE_SEND`, off by default) and holds an opencode token;
+- the pane was started with **`muster-mirror opencode`** (below), so the host
+  knows its session, not by its title;
+- the session is idle (a queued message waits until it is), with nothing it
+  is waiting on;
+- your sign-in is fresh, as for every send.
+
+Send, Queue and the optimistic pending bubble work as for Claude Code
+([sending](sending-and-step-up.md)), and so do attachments (each a line with a
+signed link, as for Claude Code) and dictation. A message muster could not
+confirm is **Not confirmed**, and its **Send again** posts the same opencode
+message id, which opencode admits once. A message whose first word is one of
+opencode's slash commands (`/review`, `/init`, …) is refused: sent as a
+message, the model would read it as text. Type it in the terminal.
+
+**`muster-mirror opencode [flags] [<directory>]`** starts the opencode TUI
+inside tmux on a session it names: a new one it creates first (so you can send
+to it before typing anything), or `-s <session id>`. It records the pane and
+its session for the host, then runs `opencode --session <id> …`. It refuses to
+start when the TUI's version differs from the running opencode service (the
+TUI would restart the service, which can sign other clients out), naming both
+versions and the fix, `opencode service restart`. Outside tmux, or with
+`--standalone`, `--server` or `-c`, it starts opencode unbound and says why.
+
+If the TUI then switches to another session, the window's note says so, and a
+message still goes to the session the Rendered view shows (the one the pane
+was started on).
+
 
 #### opencode's permission requests and questions
 

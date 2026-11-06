@@ -68,8 +68,12 @@ func TestAHostsGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) {
 			t.Errorf("%s, a queued message: %+v; want not sent, saying %q", c.refusal, out, c.text)
 		}
 	}
-	if !strings.HasPrefix(mirror.PasteRefusedOpenCodeText, "Sending to opencode isn't supported yet") {
-		t.Fatalf("the opencode refusal no longer says what the operator asked for: %q", mirror.PasteRefusedOpenCodeText)
+	// The words changed with the opencode API send (it IS supported now, from
+	// the Rendered view): keys are still never typed, and it says where to
+	// send instead.
+	if !strings.HasPrefix(mirror.PasteRefusedOpenCodeText, "Not sent from here: opencode runs in this pane, and muster never types into it") ||
+		!strings.Contains(mirror.PasteRefusedOpenCodeText, "Rendered view") {
+		t.Fatalf("the opencode refusal no longer says keys are never typed, and where to send: %q", mirror.PasteRefusedOpenCodeText)
 	}
 
 	// Control: another host refusal, with no kind — or with the kind an

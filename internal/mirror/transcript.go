@@ -99,6 +99,12 @@ func (hc *hostConn) pasted(id uint32, why, refusal string) {
 		return
 	}
 	if why != "" {
+		// The host posted an opencode message and heard no answer: it MAY
+		// have been admitted. That is unconfirmed, never "not sent".
+		if refusal == PasteRefusalOpenCodeUnconfirmed {
+			ch <- unconfirmed{errors.New(why)}
+			return
+		}
 		// The host's refusal, of the kind it named. A kind muster does not
 		// know (an older host's) is a plain refusal (PasteGuardRefusal "").
 		ch <- &PasteRefusedError{Why: why, Refusal: refusal}
@@ -141,7 +147,9 @@ func PasteGuardRefusal(err error) string {
 		return ""
 	}
 	switch pr.Refusal {
-	case PasteRefusalMultiplexer, PasteRefusalUnchecked, PasteRefusalOpenCode:
+	case PasteRefusalMultiplexer, PasteRefusalUnchecked, PasteRefusalOpenCode,
+		PasteRefusalOpenCodeOff, PasteRefusalOpenCodeUnbound, PasteRefusalOpenCodeNotIdle,
+		PasteRefusalOpenCodeSlash, PasteRefusalOpenCodeGone:
 		return pr.Refusal
 	}
 	return ""
@@ -186,6 +194,8 @@ func (h *Hub) lookupAgent(owner int64, host, session, window string) (*hostConn,
 	case hc.version < 2:
 		return nil, "", fmt.Errorf("%w (host %q)", ErrNoRenderedView, host)
 	case known && r.Caps.Send:
+		// A gated-send runtime's switch and binding are PasteWindow's
+		// (gatedSendCheck), which say which it is.
 		return hc, id, nil
 	}
 	return nil, "", fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)
@@ -421,6 +431,33 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if !hc.interactive {
 		return fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
 	}
+	// 🔴 THE GATED SEND, SERVER HALF (opencode_send.go). Every paste muster
+	// makes passes here, so Send, Send now, Queue, a routed message and any
+	// later caller are refused for a window the host REPORTS as a gated-send
+	// runtime (opencode) unless the host advertised that send AND reports the
+	// window as one it sends to (launcher-bound) — before anything reaches it.
+	// Only a Rendered-view send can be one: the Terminal composer's paste
+	// (AnyPane) still meets the host's paste guard, which never types into
+	// opencode.
+	gated, since := "", int64(0)
+	if !anyPane {
+		if err := hc.gatedSendCheck(session, windowID); err != nil {
+			return err
+		}
+		// 🔴 IDLE ONLY, and the paste carries the StatusSince it was decided
+		// on, which the host checks again at the moment it posts. A QUEUED
+		// paste (ExpectTurn) is SUPERSEDED, as on Claude Code: nothing was
+		// sent, and the row is decided on again.
+		if rt, st, s, ok := hc.gatedStatus(session, windowID); ok {
+			if st != StatusIdle || s <= 0 {
+				if o.Expect != nil {
+					return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
+				}
+				return &OpenCodeNotIdleError{Status: st}
+			}
+			gated, since = rt, s
+		}
+	}
 	// 🔴 THE CLAUDE PROMPT GUARD, SERVER HALF: a Claude Code window the host
 	// REPORTS as waiting on the person (a permission prompt, a question) takes
 	// no rendered-view paste. Enter there would answer the dialog — approve a
@@ -450,11 +487,16 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if err != nil {
 		return err
 	}
-	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane)
+	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, gatedPaste{runtime: gated, since: since, messageID: OpenCodeMessageID(owner, o.Key)})
 	// 🔴 A "PASTED, NOT SUBMITTED" LANDED: its text is in the input box, and the
 	// next message would be pasted after it and submitted with it as one turn,
 	// so it is recorded like a paste that may have reached the window.
 	h.endPaste(owner, host, session, windowID, held, err == nil || errors.Is(err, ErrPasteUnconfirmed) || ClaudePastedRefusal(err))
+	// The host's own idle check refused a gated send: nothing was sent. A
+	// queued message is decided on again, as for the Claude prompt guard.
+	if o.Expect != nil && gated != "" && GatedNotIdleRefusal(err) {
+		return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
+	}
 	if ClaudeWaitingRefusal(err) {
 		// The host's half of the Claude prompt guard refused it: nothing was
 		// typed. The window is held (backing off, guardHold) with the host's
@@ -515,6 +557,8 @@ type PasteOption func(*PasteOptions)
 type PasteOptions struct {
 	Expect *Turn
 	Window *string
+	// Key is what a gated send's message id is derived from (MessageKey).
+	Key string
 }
 
 // PasteOptionsOf applies opts. A PasteWindow implementation reads its options
@@ -583,8 +627,24 @@ func (hc *hostConn) statusSince(session, id string) int64 {
 	return 0
 }
 
+// gatedPaste is what a gated send's paste carries (opencode_send.go): the
+// runtime, the StatusSince decided on and the message id; zero for any other
+// paste.
+type gatedPaste struct {
+	runtime   string
+	since     int64
+	messageID string
+}
+
+// GatedNotIdleRefusal reports whether err is a host's refusal of a gated send
+// because the window was not idle when it checked (nothing was sent).
+func GatedNotIdleRefusal(err error) bool {
+	var pr *PasteRefusedError
+	return errors.As(err, &pr) && pr.Refusal == PasteRefusalOpenCodeNotIdle
+}
+
 // pasteTo hands text to hc for (session, window id) and waits for the answer.
-func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane bool) (err error) {
+func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane bool, g gatedPaste) (err error) {
 	ctx, done := hubOp(ctx, "paste")
 	defer func() { done(err) }()
 	hc.mu.Lock()
@@ -600,6 +660,9 @@ func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text
 	}()
 	m := Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane}
 	wait := pasteTimeout
+	if r, ok := LookupRuntime(g.runtime); ok && r.GatedSend {
+		m.Runtime, m.Since, m.MessageID, wait = r.Name, g.since, g.messageID, r.PasteTimeout
+	}
 	if err := writeJSON(ctx, hc.ws, m); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)
 	}

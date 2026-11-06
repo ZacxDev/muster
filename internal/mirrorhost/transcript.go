@@ -656,6 +656,15 @@ func (h *hostSide) paste(m mirror.Msg) {
 		}
 		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg, Refusal: pasteRefusalOf(err)})
 	}
+	if r, ok := runtimeNamed(m.Runtime); ok && !m.AnyPane {
+		if gs, ok := r.(gatedSender); ok {
+			// The runtime's gated send (opencode's, opencode_send.go): its own
+			// checks, replies and refusal kinds, through its API — the one
+			// deliberate exception to typeInto, which still refuses its panes.
+			gs.gatedSend(h, m)
+			return
+		}
+	}
 	if !h.c.cfg.Interactive {
 		reply(errors.New("this host is read-only (muster-mirror was not started with -interactive)"))
 		return

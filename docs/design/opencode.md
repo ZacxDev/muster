@@ -3,7 +3,8 @@
 Notes for muster's opencode runtime (`internal/mirror/runtime.go`,
 `internal/mirrorhost/opencode*.go`, `internal/opencodehost`): a rendered view,
 and its asks (permission requests, questions) in the attention queue,
-answerable through the API; an API send next (proposed in
+answerable through the API; and a send through the API to a pane the
+launcher started ([below](#as-built-the-api-send); designed in
 [opencode-first-class.md](opencode-first-class.md)). Facts are read from upstream source, <https://github.com/anomalyco/opencode>,
 at commit `6ec5682` (opencode v2.0.32+6ec5682). They are not measured against
 a running server.
@@ -99,15 +100,17 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
 
 ### As built: the read-only view
 
-- **Capabilities**: view yes, send no, prompts yes since "Asks" below
+- **Capabilities**: view yes, prompts yes since "Asks" below, send yes
+  since "The API send" below (to a launcher-bound pane only)
   (`mirror.RuntimeSpec`). An
   opencode window is on the wire (`Window.Runtime`), keyed `opencode:<id>`
   (migration 0052 widens the four session-key CHECKs).
 - **Pane to session**: the pane title, `OC | <title>` (a cut title ends in
   `…` and is a prefix match), against the server's ROOT sessions
-  (`GET /api/session?parentID=null`); exactly one match or none. View-only: a
-  send needs a launcher record that names the session deterministically
-  ([proposed](opencode-first-class.md#the-launcher-record)).
+  (`GET /api/session?parentID=null`); exactly one match or none. A
+  title-matched pane is view-only: a send needs the launcher record below,
+  which names the session deterministically
+  ([designed](opencode-first-class.md#the-launcher-record)).
 - **Messages**: `GET /api/session/{id}/message` (newest first, reversed),
   re-read when the event stream names the session, and every tenth poll
   regardless. Rendered by `opencodehost.Render`: prompts, final text, tool
@@ -198,4 +201,95 @@ below are what it sent, saved as `internal/opencodehost/opencodetest/testdata/as
   answer (`Hub.AnswerOpenCodeAsk`), the host re-checks the window and sends
   `ReplyPermission` (once or reject — "always" is refused before a byte is
   sent) or `ReplyForm` (the option's value, found by its label).
+
+## As built: the API send
+
+The design and the operator's decisions are in
+[opencode-first-class.md](opencode-first-class.md). Upstream at `6ec5682`, and **measured
+against a real `opencode serve` (v2.0.32+6ec5682)** in a scratch home: the
+bodies are `internal/opencodehost/opencodetest/testdata/prompt-v2.0.32.json`
+and the frames `prompt-v2.0.32.sse` (location directories replaced).
+
+### What the server does
+
+- `POST /api/session/{id}/prompt {id, text, delivery}` answers **200 on
+  admission**, `{data: {id, sessionID, payload: {text}, delivery}}`; the turn
+  runs after. **The same `id` again** on the same session answers 200 with the
+  record stored FIRST: measured, a second post carrying other text came back
+  with the first text, and the session held one user message. The same id on
+  another session answers 409 (`ConflictError`); an unknown session 404
+  (`SessionNotFoundError`).
+- `delivery: "queue"` holds the message while the session is busy and takes it
+  when the turn ends; the default, `"steer"`, would push it into the running
+  turn. Measured: a second queued prompt sent mid-turn ran after the first, in
+  the same execution.
+- Events: `session.inbox.enqueued`, then `session.execution.started`, then
+  `session.inbox.delivered` (the input is now a visible user message, its id
+  the one posted).
+- `POST /api/session {id, location: {directory}}` creates a session under the
+  caller's id; `opencode -s <id>` then opens it.
+- `GET /api/command` lists the built-ins (`init`, `review`) only for a request
+  naming a directory (`location[directory]`); without one it answered none.
+- `GET /api/info` names the service's version as `2.0.32+6ec5682`;
+  `opencode --version` says `opencode v2.0.32+6ec5682`.
+
+### The launcher
+
+- `muster-mirror opencode [flags] [<directory>]` passes on `-s/--session`,
+  `--prompt`, `--auto`, `-c/--continue`, `--standalone`, `--server`,
+  `--log-level`, `--print-logs` and one directory; anything else is refused
+  (exit 2), never forwarded.
+- It **refuses a version mismatch** (exit 1): the TUI's `--version` against
+  the running service's `GET /api/info`, naming both and the fix
+  (`opencode service restart`). Upstream's TUI would restart the service to
+  match, which can sign other clients out.
+- It creates the session first (a fresh `ses_` id in upstream's format, in
+  the directory), or uses `-s <id>` (created when it does not exist, as
+  opencode's own `-s` does; a subagent's session is not bound).
+- It writes the record `~/.muster/opencode-launch/<digest of the tmux
+  socket>/<pane number>.json` (0600, directory 0700): `{v, socket, pane, pid,
+  pidStart, session, server, directory, created}`, its own pid and start time
+  (`exec` keeps both), then execs `opencode --session <id> …`.
+- Outside tmux, with `--standalone`, `--server` or `-c`, without a token, or
+  when the service cannot be reached, it starts opencode **unbound** and says
+  why on stderr.
+
+### Binding a pane
+
+- The daemon reads records for ITS tmux server only. A record binds its pane
+  (`SourceLauncher`, `Window.AgentSend`) when it names the TUI the walk found
+  (pid and start time), the token file's server, and a root session that
+  server has. Otherwise the pane is title-matched, view-only.
+- A record whose pid or start time is not the pane's TUI is stale and is
+  removed; at most once a minute the daemon also removes records whose
+  process is gone.
+- **The title never decides a bound pane's session.** A title naming another
+  session (the TUI switched) leaves the binding and raises a warning, the
+  window's note: "This pane's title shows a different opencode session (…)
+  than the one muster sends to; messages still go to the session shown
+  here." A send goes to the recorded session, which is the one the Rendered
+  view shows.
+
+### Sending
+
+- **Gates, each checked by muster and again by the host:** a fresh sign-in;
+  an `-interactive` host started with `-opencode-send` and holding a token,
+  advertised as `Msg.OpenCodeSend`; a launcher-bound window; the session idle
+  since exactly the status time muster decided on (`Msg.Since`), with no ask
+  pending. A queued message to a window that is not idle is decided on again.
+- The host posts with `delivery: "queue"` under `Msg.MessageID`, derived by
+  muster from the send's key: its nonce, or for a message held as
+  may-have-landed, the nonce of its first try. So a **Send again** after
+  "Not confirmed" posts the same id, and opencode admits it at most once.
+  Upstream orders a session's messages by sequence, not by id.
+- A message whose first word is `/<name>`, for a command the session's
+  directory lists, is refused: a prompt would hand the model the command as
+  text. A path (`/etc/hosts …`) is sent.
+- Outcomes: 200 is sent; 404 "no longer exists"; a refused or unreachable
+  post "not sent"; a post with no answer (a timeout, a dropped connection) is
+  **unconfirmed**, never "not sent".
+- The host logs each send's session id and message id, never the text.
+- `internal/opencodehost`'s request ledger now names its four writes: mint,
+  reply, prompt (from `Prompt` only) and createSession (from `CreateSession`
+  only).
 

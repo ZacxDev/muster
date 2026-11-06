@@ -14,7 +14,8 @@ import (
 // row opens the rendered view when the host names the session its pane title matched,
 // the page draws the conversation socket like a Claude Code window's, and its
 // composer is DISABLED, saying why, with no send queue — on an interactive
-// host too: muster views opencode and sends nothing to it.
+// host too, when the pane's session is title-matched (not launcher-bound) or
+// its host did not opt in to the opencode send (mirror_opencode_send_test.go).
 //
 // 🔴 REGRESSION TEST. On origin/main an opencode window is not on the wire: its
 // card opens the Terminal, and /mirror/view redirects there.
@@ -48,8 +49,9 @@ func TestAnOpenCodeWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 		t.Fatalf("the opencode view page = %d", resp.StatusCode)
 	}
 	for _, want := range []string{`id="mv-log"`, `data-ws="` + amp(view.ViewWSPath()) + `"`, "opencode is working…",
-		// The note, pinned literally (ui.MirrorViewOnlyNote spells it).
-		html.EscapeString("Sending to opencode isn't supported yet: muster shows this session read-only. Type in the terminal.")} {
+		// The note, pinned literally: a title-matched window on a host that
+		// did not opt in to the opencode send says THAT (mirror.SendBlocked).
+		html.EscapeString("Not sent: this host's muster-mirror does not send to opencode (it needs -interactive and -opencode-send). Type it in the terminal.")} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the opencode view lacks %q", want)
 		}

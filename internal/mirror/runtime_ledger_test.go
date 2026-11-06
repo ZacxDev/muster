@@ -133,10 +133,13 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		// The chief's stall nudges judge opencode panes — and only those of the
 		// non-Claude runtimes — by the owner's choice (chief_nudge.go).
 		"internal/api/chief_nudge.go nudgeWindowKey ×1",
-		"internal/api/send_queue.go (declarations) ×1",
+		// The queue's per-runtime words: Claude Code's and opencode's (the
+		// opencode API send, docs/design/opencode-first-class.md).
+		"internal/api/send_queue.go (declarations) ×2",
 		"internal/api/send_queue.go queueWordsOf ×1",
 		"internal/mirror/agentstate.go Hub.AgentState ×1",
-		"internal/mirror/hub.go Hub.Hosts ×1",
+		// The host view's opencode flags: OpenCodeAnswer and OpenCodeSend.
+		"internal/mirror/hub.go Hub.Hosts ×2",
 		"internal/mirror/hub.go hostConn.target ×1",
 		"internal/mirror/hub.go hostConn.targetRuntime ×1",
 		"internal/mirror/opencode_answer.go Hub.AnswerOpenCodeAsk ×3",
@@ -145,9 +148,11 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirror/turnerror.go boundTurnError ×1",
 		"internal/mirror/wire.go (declarations) ×1",
 		"internal/mirror/wire.go Window.AgentRuntime ×1",
-		"internal/mirrorhost/opencode.go ResolveOpenCodePane ×1",
+		"internal/mirrorhost/opencode.go ResolveOpenCodePaneStarted ×1",
 		"internal/mirrorhost/opencode.go openCodeRuntime.LocatePanes ×1",
 		"internal/mirrorhost/opencode_asks.go hostSide.answerOpenCode ×1",
+		// The gated send checking the window is opencode's NOW.
+		"internal/mirrorhost/opencode_send.go hostSide.sendOpenCode ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeGone ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeWindow ×1",
 		"internal/mirrorhost/runtime.go claudeRuntime.Name ×1",

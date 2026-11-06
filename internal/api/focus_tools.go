@@ -33,7 +33,7 @@ const (
 func focusToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: fleetListToolName,
-			Description: "List your owner's sessions — dispatched agents and mirrored Claude Code windows — compactly: " +
+			Description: "List your owner's sessions — dispatched agents and mirrored agent windows (Claude Code, opencode) — compactly: " +
 				"id, kind, name, status, focus title (what it is working on) with how old it is — focus_set_at, and focus_age " +
 				"(\"2d\") past a day: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
 				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic." + focusUntrustedTail,

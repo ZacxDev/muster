@@ -101,6 +101,12 @@ func openCodeTokenNotice(health string) cctranscript.Event {
 // openCodeMatchedNotice is the first line of every opencode view: how the
 // session was found, which the person must be able to see.
 func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
+	if p.Source == SourceLauncher {
+		// Bound by its launcher record (opencode_launch.go): muster sends to it.
+		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
+			Text: cctranscript.Cap("started by muster-mirror opencode: "+p.Gen, cctranscript.MaxTarget*4),
+			Output: "muster knows this pane's session from its launcher, and sends to it through opencode's API, never as keys."}
+	}
 	title := ""
 	if p.OpenCode != nil {
 		title = p.OpenCode.Match.Title

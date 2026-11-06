@@ -68,18 +68,21 @@ func exprText(fset *token.FileSet, src []byte, e ast.Expr) string {
 	return string(src[fset.Position(e.Pos()).Offset:fset.Position(e.End()).Offset])
 }
 
-// TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies: the ONE place a
-// request is built is Client.request; every call of it names http.MethodGet
-// except exactly two: mint's POST to /api/pair, and reply's POST (an answer to
-// a permission request or a form); mint is called only by Pair and Renew, and
-// reply only by ReplyPermission and ReplyForm; and no file spells another way
-// to send (http.Post, a Client.Post, a raw method string). So muster-mirror
-// cannot prompt, interrupt or change anything else on the opencode server —
-// whatever the rest of the code does. An INVARIANT GUARD; mutation-checked in
-// the PR that added reply.
-func TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies(t *testing.T) {
+// TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend: the ONE place
+// a request is built is Client.request; every call of it names
+// http.MethodGet except exactly four: mint's POST to /api/pair, reply's POST
+// (an answer to a permission request or a form), prompt's POST (the API send,
+// docs/design/opencode-first-class.md) and createSession's POST to
+// /api/session (the launcher's); mint is called only by Pair and Renew, reply
+// only by ReplyPermission and ReplyForm, prompt only by Prompt and
+// createSession only by CreateSession; and no file spells another way to send
+// (http.Post, a Client.Post, a raw method string). So muster-mirror cannot
+// interrupt, run a shell, write a file or change anything else on the
+// opencode server — whatever the rest of the code does. An INVARIANT GUARD;
+// mutation-checked in the PRs that added reply and prompt.
+func TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend(t *testing.T) {
 	fset, files := sourceFiles(t)
-	var builders, requests, mints, replies []string
+	var builders, requests, mints, replies, prompts, creates []string
 	for name, f := range files {
 		src, err := os.ReadFile(name)
 		if err != nil {
@@ -111,6 +114,16 @@ func TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies(t *testing.T) {
 				replies = append(replies, fn)
 			}
 		}
+		for fn, calls := range callsIn(f, func(c *ast.CallExpr) bool { return selectorName(c.Fun) == "prompt" }) {
+			for range calls {
+				prompts = append(prompts, fn)
+			}
+		}
+		for fn, calls := range callsIn(f, func(c *ast.CallExpr) bool { return selectorName(c.Fun) == "createSession" }) {
+			for range calls {
+				creates = append(creates, fn)
+			}
+		}
 		// No method spelled as a literal anywhere.
 		for _, m := range []string{`"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`, "MethodPut", "MethodPatch", "MethodDelete"} {
 			if strings.Contains(string(src), m) {
@@ -126,9 +139,11 @@ func TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies(t *testing.T) {
 	}
 	want := []string{
 		"Events http.MethodGet \"/api/event\"",
+		"createSession http.MethodPost \"/api/session\"",
 		"get http.MethodGet path",
 		"mint http.MethodGet \"/auth/connect/\"+url.PathEscape(code.Code)",
 		"mint http.MethodPost \"/api/pair\"",
+		"prompt http.MethodPost path",
 		"reply http.MethodPost path",
 	}
 	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
@@ -139,5 +154,11 @@ func TestTheClientMakesOnlyGETsExceptTheMintAndTheReplies(t *testing.T) {
 	}
 	if strings.Join(replies, ",") != "ReplyForm,ReplyPermission" {
 		t.Errorf("reply is called from %q, want ReplyPermission and ReplyForm only", replies)
+	}
+	if strings.Join(prompts, ",") != "Prompt" {
+		t.Errorf("prompt is called from %q, want Prompt only", prompts)
+	}
+	if strings.Join(creates, ",") != "CreateSession" {
+		t.Errorf("createSession is called from %q, want CreateSession only", creates)
 	}
 }

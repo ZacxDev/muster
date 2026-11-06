@@ -72,6 +72,14 @@ type MirrorViewView struct {
 	// (opencode); "" otherwise. Its composer is drawn disabled saying why
 	// (MirrorViewOnlyNote), with no queue.
 	ViewOnly string
+	// ViewOnlyWhy is what the disabled composer of a ViewOnly window says
+	// (a gated send's refusal, mirror.SendBlocked); "" says
+	// MirrorViewOnlyNote.
+	ViewOnlyWhy string
+	// Agent is the Kind of a runtime other than Claude Code that this window
+	// SENDS to (launcher-bound opencode): the composer's words name it. "" for
+	// Claude Code, and for a ViewOnly window.
+	Agent string
 	// StepUp is the "Confirm it's you" wiring (stepup_confirm.go): a send
 	// refused as stale asks there — passkey or password — and retries. Unused
 	// (no dialog is drawn) on a read-only host, which cannot be sent to at all.
@@ -161,7 +169,17 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	case v.ViewOnly != "":
 		working = v.ViewOnly + " is working…"
 		composer.Placeholder, composer.Aria = "Message "+v.ViewOnly+"…", "Message "+v.ViewOnly+" in this session"
-		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorViewOnlyNote(v.ViewOnly), "Sending to "+v.ViewOnly+" is not available", nil
+		why := v.ViewOnlyWhy
+		if why == "" {
+			why = MirrorViewOnlyNote(v.ViewOnly)
+		}
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = why, "Sending to "+v.ViewOnly+" is not available", nil
+		composer.Suggest, composer.SuggestPaused = "", false
+	case v.Agent != "" && v.Interactive:
+		// A window muster sends to through its runtime's API: its own words;
+		// suggested replies are Claude Code's.
+		working = v.Agent + " is working…"
+		composer.Placeholder, composer.Aria = "Message "+v.Agent+"…", "Message "+v.Agent+" in this session"
 		composer.Suggest, composer.SuggestPaused = "", false
 	case !v.Interactive:
 		composer.Disabled = MirrorReadOnlyNote

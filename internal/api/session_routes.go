@@ -304,6 +304,14 @@ func (s *Server) resolveRouteTarget(ctx context.Context, sub focus.Subject) (rou
 		if !t.host.Interactive {
 			return t, routeRefusal(RefusedHostNotInteractve, unprefixed(mirror.ErrInteractiveRefused))
 		}
+		// A routed message reaches a Claude Code session only. The queue now
+		// takes a launcher-bound opencode window too (mirrorQueueOff), but a
+		// route pins its window by Claude session (routeHolds) and its reply
+		// path is Claude Code's: routing into opencode is a later phase
+		// (docs/design/opencode-first-class.md), refused here in words.
+		if !e.Claude {
+			return t, routeRefusal(RefusedUnsupported, "only a mirrored Claude Code session can take a routed message; answer it yourself with reply_draft")
+		}
 		if off := mirrorQueueOff(t.host, e); off != "" {
 			return t, routeRefusal(RefusedQueueUnavailable, "the window cannot be queued for: "+off)
 		}

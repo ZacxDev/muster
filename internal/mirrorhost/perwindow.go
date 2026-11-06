@@ -445,7 +445,7 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 			}
 		} else if claude && w.Agent != nil {
 			m.Runtime, m.AgentSession, m.Status, m.StatusSince, m.Pending = w.Agent.Runtime, w.Agent.Gen, w.Agent.Status, w.Agent.StatusSince, w.Agent.Pending
-			m.AgentNote = w.Agent.Note
+			m.AgentNote, m.AgentSend = w.Agent.Note, w.Agent.Send
 		} else if claude {
 			// A Claude Code pane with no rendered view says why.
 			m.AgentNote = w.NoView

@@ -146,6 +146,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if len(args) > 0 && args[0] == "opencode-pair" {
 		return runOpenCodePair(args[1:], getenv, stdout, stderr)
 	}
+	// `muster-mirror opencode`: start the opencode TUI bound to a session
+	// muster can send to (opencode_launch.go).
+	if len(args) > 0 && args[0] == "opencode" {
+		return runOpenCodeLaunch(args[1:], realLaunchDeps(getenv), stderr)
+	}
 	fs := flag.NewFlagSet("muster-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
@@ -177,6 +182,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	listOpenCode := fs.Bool("opencode", false, "with -list: diagnose this host's opencode windows — the opencode token (by fingerprint) and whether the server accepts it, and per window its TUI, pane title, the session the title matched and why it has no rendered view")
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
 	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
+	openCodeSend := fs.Bool("opencode-send", envBool(envOpenCodeSend), "with -interactive: let muster SEND messages to opencode sessions on this host through the opencode server's API — only to a pane started with `muster-mirror opencode`, only while its session is idle, behind a fresh sign-in. OFF by default: whatever the agent there may run, a message from muster can ask it to ("+envOpenCodeSend+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -188,7 +194,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// newer or older release had), or a typo: refused, never run as the
 	// daemon it would otherwise start.
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "muster-mirror: unknown command or argument %q (subcommands: ask, opencode-pair; see -h)\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "muster-mirror: unknown command or argument %q (subcommands: ask, opencode, opencode-pair; see -h)\n", fs.Arg(0))
 		return 2
 	}
 	if *version {
@@ -211,8 +217,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			ocCreds = openCodePending(*openCodeTokenFile)
 		}
 	}
-	backend := withOpenCode(newTmuxBackend(*socket, *socketPath, *paneMapDir),
-		mirrorhost.NewOpenCodeSource(ctx, ocCreds, ocWhy, logger))
+	ocSrc := mirrorhost.NewOpenCodeSource(ctx, ocCreds, ocWhy, logger)
+	// The launcher records this daemon binds panes by: those naming ITS tmux
+	// server (opencode_launch.go). A socket that cannot be derived binds none.
+	if sock, err := tmuxSocketPath(*socket, *socketPath, getenv, os.Getuid()); err == nil && e2eBackend == nil {
+		ocSrc.SetLaunches(opencodehost.LaunchDirDefault(getenv("HOME")), sock)
+	}
+	backend := withOpenCode(newTmuxBackend(*socket, *socketPath, *paneMapDir), ocSrc)
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}
@@ -306,7 +317,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
-		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger,
+		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
 		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
@@ -344,6 +355,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		logger.Printf("muster-mirror: -resume-spawn has no effect without -interactive: this host resumes no session")
 	case *resumeSpawn:
 		logger.Printf("muster-mirror: RESUMING ENDED SESSIONS IS ON (-resume-spawn): muster may start `%s --resume <id>` in tmux session %q for a session whose transcript is on this host", *resumeClaude, *resumeSession)
+	}
+	switch {
+	case *openCodeSend && !*interactive:
+		logger.Printf("muster-mirror: -opencode-send has no effect without -interactive: muster sends nothing to opencode here")
+	case *openCodeSend:
+		logger.Printf("muster-mirror: SENDING TO OPENCODE IS ON (-opencode-send): muster may post a message to an opencode session here started with `muster-mirror opencode`, through the opencode server's API")
 	}
 	// Record where muster is for `muster-mirror ask` (hookconfig.go), whose
 	// Claude Code hook does not inherit this service's environment — only when

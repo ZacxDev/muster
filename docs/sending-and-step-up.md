@@ -188,6 +188,12 @@ drew your message at once; they are unchanged.
 
 ## Queue: send when Claude Code is idle
 
+An opencode window started with `muster-mirror opencode`, on a host that runs
+with `-opencode-send`, has the same Send and Queue: its messages go through
+opencode's API instead of being pasted, and wait for opencode's own idle
+status ([sending to opencode](mirroring.md#sending-to-opencode)). What
+follows says Claude Code; for such a window read opencode.
+
 Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 **Queue**. A queued message is kept by the server (`send_queue`, migration
 `0019`) and sent there, so it is sent with the page closed, and every device of

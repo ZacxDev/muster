@@ -108,6 +108,10 @@ type HostView struct {
 	// -interactive, v2, and holds an opencode token): an opencode ask muster shows
 	// for one of its windows can be answered here.
 	OpenCodeAnswer bool
+	// OpenCodeSend: the host advertised Msg.OpenCodeSend (-interactive, v2,
+	// -opencode-send, an opencode token): a message can be sent to its
+	// launcher-bound opencode windows (Window.AgentSend).
+	OpenCodeSend bool
 	// PanePaste: the host advertised that a paste may target a session's active
 	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
 	// and for an offline host.
@@ -373,6 +377,10 @@ type hostConn struct {
 	// whether the host advertised that it does (Msg.OpenCodeAnswer), speaks
 	// v2 and is -interactive.
 	runtimeAnswers map[string]bool
+	// gatedSends: per runtime with a gated send (RuntimeSpec.Sends), whether
+	// the host advertised it (Msg.OpenCodeSend), speaks v2 and is
+	// -interactive.
+	gatedSends map[string]bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -436,7 +444,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn,
-			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode]})
+			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode]})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -709,9 +717,15 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// the session (it can let a command run): -interactive hosts only,
 		// like the rest.
 		hc.runtimeAnswers = map[string]bool{}
+		// And each runtime's gated send: a message into the session, the same
+		// gate as a paste.
+		hc.gatedSends = map[string]bool{}
 		for _, r := range runtimes {
 			if r.Answers != nil {
 				hc.runtimeAnswers[r.Name] = r.Answers(hello) && hello.Interactive
+			}
+			if r.Sends != nil {
+				hc.gatedSends[r.Name] = r.Sends(hello) && hello.Interactive
 			}
 		}
 	}
