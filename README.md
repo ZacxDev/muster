@@ -162,7 +162,7 @@ turned on with a few lines in `.env` (and, for some, a Compose profile).
 | [Suggested replies](docs/features.md#suggested-replies) and [focus](docs/features.md#focus) | an OpenRouter key | off until the key is set |
 | [Agent ask tool](docs/features.md#agent-ask-tool) and [ask cards](docs/features.md#ask-cards) | a one-time setup on each machine | off |
 | [Accounts](docs/features.md#accounts) (per-user sign-in, passkeys) | a GoTrue server you run | off (one shared password) |
-| [Chief](docs/features.md#chief) | `--profile chief` (amd64 hosts), the connector store's key, and a Claude subscription token or an OpenRouter key; routing work to sessions also `MUSTER_SESSION_ROUTING=1` | off (routing too) |
+| [Chief](docs/features.md#chief) | `--profile chief` (amd64 hosts), the connector store's key, and a Claude subscription token or an OpenRouter key; routing work to sessions also needs `MUSTER_SESSION_ROUTING=1` | off (routing too) |
 | [Dispatch](docs/features.md#dispatch) and [officers](docs/features.md#officers) | **Kubernetes** | off; not in the Compose stack |
 | [Approval router](docs/features.md#approval-router) | an external permission router you run (advanced) | off |
 
