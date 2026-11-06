@@ -17,11 +17,13 @@
 
 ## Agents
 
-- **The provisioner has two drivers, and neither has run against a real cluster
-  from this tree.** The Kubernetes driver's tests use a fake clientset. A fake
-  cannot see scheduling, image pulls, volume attachment, admission, or the exec
-  stream. A green suite there means the manifests are what the code says, not
-  that a pod came up.
+- **The Kubernetes driver has not run against a real cluster from this tree.**
+  Its tests use a fake clientset. A fake cannot see scheduling, image pulls,
+  volume attachment, admission, or the exec stream. A green suite there means
+  the manifests are what the code says, not that a pod came up.
+- **The compose driver's own tests use a temporary directory and a fake status
+  probe.** They pin what it writes to the shared volume and how it reads the
+  container's answer, not that a container acted on it.
 - **A first turn against an agent this binary provisioned has not been verified
   in-repo.** `internal/agentkickoff`'s seam test runs the real adapter, deliverer
   and gateway against a fake runtime over HTTP. A real turn needs

@@ -75,8 +75,9 @@ var (
 	//
 	// It is not pinned by provisiontest.RunContract: a driver has to have a
 	// SHARED backend for a foreign co-named object to be expressible at all,
-	// and Noop's backend is its own map, so a contract case would be
-	// unfalsifiable for half the drivers in this repository. It is pinned in
+	// and Noop's backend is its own map (and compose's a volume only muster
+	// writes), so a contract case would be unfalsifiable for most of the
+	// drivers in this repository. It is pinned in
 	// the kubernetes driver's own ownership tests instead.
 	ErrNotManaged = errors.New("provision: an object under this name is not managed by this driver")
 
