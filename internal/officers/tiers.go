@@ -53,7 +53,14 @@ type TierPool struct {
 	// loop stops the instance and completes the item escalated (Decide,
 	// Overrun). 0 is no cap.
 	MaxItemMinutes int `json:"max_item_minutes,omitempty"`
+	// FreshSessionPerItem: every item an instance of the pool claims is
+	// worked in a NEW Claude Code conversation (Officer.FreshSessionPerItem).
+	FreshSessionPerItem bool `json:"fresh_session_per_item,omitempty"`
 }
+
+// FreshSessionPerItem reports whether this pool works each item in a new
+// conversation. STUB (red): always false.
+func (o Officer) FreshSessionPerItem() bool { return false }
 
 // MaxItemMinutesCap bounds tiers.judgement.max_item_minutes: a day.
 const MaxItemMinutesCap = 24 * 60

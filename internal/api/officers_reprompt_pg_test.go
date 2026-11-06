@@ -23,12 +23,20 @@ type repromptChat struct {
 	stubGateway
 	mu   sync.Mutex
 	sent []string
+	// newConv is, per send in order, "<agent>: <the turn's
+	// agents.HeaderCCNewConversation route header>" ("" when none).
+	newConv []string
 }
 
-func (g *repromptChat) Chat(_ context.Context, a agents.Agent, _, message string, _ func(string)) (string, error) {
+func (g *repromptChat) Chat(ctx context.Context, a agents.Agent, _, message string, _ func(string)) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.sent = append(g.sent, a.Name+": "+message)
+	nc := ""
+	if rt, ok := agents.TurnRouteFrom(ctx); ok {
+		nc = rt.Header.Get(agents.HeaderCCNewConversation)
+	}
+	g.newConv = append(g.newConv, a.Name+": "+nc)
 	return "on it", nil
 }
 

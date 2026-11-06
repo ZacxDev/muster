@@ -512,6 +512,10 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	return f.s.ext.Provisioner.Start(octx, a.ID)
 }
 
+// OfficerTurnContext is the context a turn of agent a is sent under. STUB
+// (red): ctx unchanged.
+func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context.Context { return ctx }
+
 // promptPending is the kickoff deliverer's own "owed" rule
 // (agentkickoff.owesFirstTurn): a note is set and not yet stamped delivered.
 func promptPending(a agents.Agent) bool { return !a.KickedOff && a.PendingNote != "" }

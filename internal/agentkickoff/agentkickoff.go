@@ -187,6 +187,9 @@ type Config struct {
 	// still reads "kickoff owed"), and it recurs every tick while the pod boots, so
 	// calling it there would re-fetch every open sidebar every 10 s.
 	OnChange func(name string)
+	// TurnContext, when set, derives the context a first turn is sent under
+	// from the agent. STUB (red): not applied yet.
+	TurnContext func(ctx context.Context, a agents.Agent) context.Context
 }
 
 // Deliverer delivers owed first turns. Build it with [New].

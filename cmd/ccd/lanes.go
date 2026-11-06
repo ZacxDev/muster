@@ -133,6 +133,9 @@ const (
 	// matched it) — muster's agents.HeaderCCPromptAccepted, which marks an
 	// owner's turn in flight from then until the turn's answer.
 	headerCCPromptAccepted = "X-Muster-CC-Prompt-Accepted"
+	// headerCCNewConversation: "1" on a PRIMARY turn starts a new
+	// conversation first. STUB (red): not read yet.
+	headerCCNewConversation = "X-Muster-CC-New-Conversation"
 )
 
 // toollessArgs are the flags a tool-less lane's CLI starts with: no built-in

@@ -37,6 +37,11 @@ import (
 //     no model turn — while a `/` text naming no command ("/etc/hosts is broken")
 //     is an ordinary prompt; all as measured on the real CLI. `/exit` fires
 //     SessionEnd and exits 0;
+//   - `/clear` starts a NEW conversation in the same process, as measured on
+//     the real CLI (2.1.289, a workstation, 2026-11-06): SessionEnd (reason
+//     "clear") for the old session, then SessionStart (source "clear") with a
+//     new session id and a new transcript path; the old transcript is left as
+//     it was, and the new one holds the command's local record;
 //   - `--continue` resumes the newest transcript for the cwd (SessionStart source
 //     "resume", same session id) and, with none, prints "No conversation found to
 //     continue" and exits 1 — the real CLI's measured behaviour;
@@ -70,7 +75,7 @@ func fakeWorktreeMain(dir string) string {
 }
 
 // fakeLocalCommands are the slash commands the fake runs locally.
-var fakeLocalCommands = map[string]bool{"/compact": true, "/help": true, "/clear": true, "/model": true}
+var fakeLocalCommands = map[string]bool{"/compact": true, "/help": true, "/model": true}
 
 func fakeClaude() int {
 	if os.Getenv("CCD_FAKE_CRASH") == "1" {
@@ -249,6 +254,18 @@ func fakeClaude() int {
 		if prompt == "/exit" {
 			fire("SessionEnd", map[string]any{"reason": "prompt_input_exit"})
 			exit = true
+			return
+		}
+		if strings.TrimSpace(prompt) == "/clear" {
+			// Measured on the real CLI: a new conversation, same process.
+			fire("SessionEnd", map[string]any{"reason": "clear"})
+			sid = randomID()
+			transcript = filepath.Join(projDir, sid+".jsonl")
+			base["session_id"], base["transcript_path"] = sid, transcript
+			write(map[string]any{"type": "user", "isSidechain": false,
+				"message": map[string]any{"role": "user", "content": "<local-command>/clear</local-command>"}})
+			fire("SessionStart", map[string]any{"source": "clear"})
+			fmt.Print("\r\n/ cleared\r\n> ")
 			return
 		}
 		if strings.HasPrefix(prompt, "!") {

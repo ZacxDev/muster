@@ -54,6 +54,9 @@ const (
 	// for the session's life. A ccd that predates it IGNORES it and starts the
 	// CLI with the chief's full tool set (docs/chief-nudges.md, "Rolling out").
 	HeaderCCToolless = "X-Muster-CC-Toolless"
+	// HeaderCCNewConversation, "1": start a new conversation before the turn.
+	// STUB (red): not sent yet.
+	HeaderCCNewConversation = "X-Muster-CC-New-Conversation"
 )
 
 // FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names
