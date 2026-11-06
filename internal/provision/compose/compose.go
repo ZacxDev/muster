@@ -123,9 +123,16 @@ const (
 // StatusPath is the supervisor's status route on the instance's endpoint.
 const StatusPath = "/compose/status"
 
-// DefaultEndpointTemplate is the instance's host: its own name, which is the
-// Compose service's name for the one instance muster-server admits ("chief").
-const DefaultEndpointTemplate = "{{.Name}}"
+// hostTemplate renders the instance's host: its own name, which is the Compose
+// service's name for the one instance muster-server admits ("chief"). A spec's
+// own Endpoint still overrides it (provision.ResolveEndpoint).
+var hostTemplate = func() provision.EndpointTemplate {
+	t, err := provision.ParseEndpointTemplate("{{.Name}}")
+	if err != nil {
+		panic("compose: the host template does not parse: " + err.Error())
+	}
+	return t
+}()
 
 // DefaultProbeTimeout bounds one status probe.
 const DefaultProbeTimeout = 2 * time.Second
@@ -202,9 +209,6 @@ type Config struct {
 	// spec and nothing is written. Required: a driver that admitted anything
 	// would accept agents the Compose file runs no container for.
 	Admit func(provision.Ref) error
-	// EndpointTemplate renders the instance's host ("" is
-	// DefaultEndpointTemplate).
-	EndpointTemplate string
 	// Probe replaces the HTTP status probe (tests). nil is HTTPProbe.
 	Probe Prober
 	// Capabilities replaces [Capabilities] (the contract suite's restricted
@@ -227,7 +231,6 @@ type Config struct {
 type Driver struct {
 	root       string
 	admit      func(provision.Ref) error
-	tmpl       provision.EndpointTemplate
 	probe      Prober
 	caps       provision.Capabilities
 	hint       string
@@ -252,18 +255,10 @@ func New(cfg Config) (*Driver, error) {
 	if cfg.Admit == nil {
 		return nil, errors.New("compose: Admit is required: the Compose file runs a container for named instances only")
 	}
-	raw := cfg.EndpointTemplate
-	if raw == "" {
-		raw = DefaultEndpointTemplate
-	}
-	tmpl, err := provision.ParseEndpointTemplate(raw)
-	if err != nil {
-		return nil, fmt.Errorf("compose: %w", err)
-	}
 	if cfg.SpecGroup < 0 || cfg.FilesGroup < 0 {
 		return nil, fmt.Errorf("compose: SpecGroup %d and FilesGroup %d must be group ids (0: leave as inherited)", cfg.SpecGroup, cfg.FilesGroup)
 	}
-	d := &Driver{root: filepath.Clean(cfg.Root), admit: cfg.Admit, tmpl: tmpl, probe: cfg.Probe, caps: Capabilities, hint: cfg.Hint,
+	d := &Driver{root: filepath.Clean(cfg.Root), admit: cfg.Admit, probe: cfg.Probe, caps: Capabilities, hint: cfg.Hint,
 		specGroup: cfg.SpecGroup, filesGroup: cfg.FilesGroup, chown: cfg.Chown}
 	if d.chown == nil {
 		d.chown = func(p string, gid int) error { return os.Lchown(p, -1, gid) }
@@ -761,7 +756,7 @@ func orState(s Status) string {
 }
 
 func (d *Driver) endpoint(name string, st driverState) (provision.Endpoint, error) {
-	return provision.ResolveEndpoint(st.Endpoint, d.tmpl, provision.EndpointVars{Name: name, ID: st.ID}, st.Port, "http")
+	return provision.ResolveEndpoint(st.Endpoint, hostTemplate, provision.EndpointVars{Name: name, ID: st.ID}, st.Port, "http")
 }
 
 // Endpoint implements provision.Provisioner.
