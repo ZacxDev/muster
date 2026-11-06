@@ -441,16 +441,20 @@ phase_chief() {
   # never task_comment, task_set_status, … — tools it could not run.
   local led
   led="$(fake_ledger)" || fail "[chief] could not read the fake model's ledger"
-  python3 - "$led" <<'PY' || fail "[chief] the chief was offered a muster tool it cannot run: $led"
+  # EQUAL, not a subset: an allowed tool that stopped being served is red too.
+  # This stack sets no MUSTER_SESSION_ROUTING, so route_to_session is not
+  # served; it is expected exactly when the env file turns routing on.
+  local routing=0
+  grep -qx 'MUSTER_SESSION_ROUTING=1' "$tmp/env" && routing=1
+  python3 - "$led" "$routing" <<'PY' || fail "[chief] the chief's offered muster tools are not exactly its pre-allowed set: $led"
 import json, sys
-allowed = {"sessions_overview", "fleet_list", "focus_search", "fleet_report", "tasks_list", "task_get",
-           "attention_list", "route_to_session"}
+expected = {"sessions_overview", "fleet_list", "focus_search", "fleet_report", "tasks_list", "task_get", "attention_list"}
+if sys.argv[2] == "1":
+    expected.add("route_to_session")
 offered = {n[len("mcp__muster__"):] for r in json.loads(sys.argv[1]) for n in r.get("tool_names") or []
            if n.startswith("mcp__muster__")}
-# Positive control: the chief's turn above used tasks_list, so the set is not empty.
-assert "tasks_list" in offered, f"the ledger shows no muster tool offered: {sorted(offered)}"
-assert offered <= allowed, f"offered beyond the pre-allowed set: {sorted(offered - allowed)}"
-print(f"ok   [chief] the model is offered only pre-allowed muster tools: {sorted(offered)}")
+assert offered == expected, f"offered {sorted(offered)}, want exactly {sorted(expected)} (extra {sorted(offered - expected)}, missing {sorted(expected - offered)})"
+print(f"ok   [chief] the model is offered exactly the pre-allowed muster tools this stack serves: {sorted(offered)}")
 PY
 
   # task_comment, which it is not offered, named anyway (the fake does): the

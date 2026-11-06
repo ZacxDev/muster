@@ -145,6 +145,18 @@ muster can reach), so:
   agent, drafting a plugin reply, connectors and HQ are not available on this
   install. All three (what it may run, what it is offered, what it is told) come
   from one list in muster's code;
+- **the turns muster sends it name only those tools too.** A plugin message's
+  turn, its session hints and a route's hand-back are rendered from the tools
+  it is offered: no "draft a reply with `reply_draft`" or "raise an
+  `attention_ask`". With plugins and session routing on, it is told the one
+  thing it can do with a plugin message is route it to a session; without
+  routing, that it cannot act on one. A mirrored session's `chief_ask` is
+  refused (the chief cannot answer it) and the session is told to ask you with
+  `attention_ask` instead;
+- **task routing is refused beside it.** `MUSTER_TASK_ROUTING=1` with
+  `MUSTER_CHIEF_RUNTIME=compose` refuses to boot: a task event asks the chief to
+  decide with `agent_dispatch`, `task_forward` or `task_route_attention`, none of
+  which it is offered, and nothing else would put the event in front of you;
 - **every other prompt is denied at once**, not left hanging: Bash, a file edit.
   The chief is told it was denied and carries on.
 

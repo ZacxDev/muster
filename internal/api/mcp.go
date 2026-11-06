@@ -145,6 +145,17 @@ func (s *Server) writeMCP(w http.ResponseWriter, id json.RawMessage, result any,
 // handleMCP serves POST /mcp: the calling agent's tools.
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
+	// 🔴 WHETHER a IS THE CHIEF DECIDES ITS WHOLE TOOL LIST (the chief-only and
+	// not-chief axes, and the Compose chief's restriction to its pre-allowed
+	// tools). An agent list that cannot be read is answered with an error, never
+	// with a list built on a guess: the CLI caches the list it is given for the
+	// session, so a guessed one would stand for the whole session.
+	if _, _, err := s.agentIsChief(r.Context(), a.ID); err != nil {
+		s.logger.Printf("mcp: agent %d: could not decide whether it is the chief: %v", a.ID, err)
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "muster could not read its agents to decide which tools this agent is offered; retry"})
+		return
+	}
 	disabled, off := s.mcpFeatureHooks(agentDoor)
 	compose := s.isComposeChief(r.Context(), a)
 	s.serveMCP(w, r, mcpSurface{

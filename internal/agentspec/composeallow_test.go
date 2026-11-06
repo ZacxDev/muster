@@ -115,3 +115,41 @@ func TestTheComposeChiefIsToldExactlyItsTools(t *testing.T) {
 		t.Error("control: the Kubernetes chief's prose no longer names task_create_gated and the HQ tools")
 	}
 }
+
+// TestTheComposePluginProseStatesExactlyItsActions: what the Compose chief's
+// plugin prose says it CAN and CANNOT do with a plugin message agrees with the
+// tools it is offered, per plugins/routing state — not just which tool names
+// appear. With routing on it holds route_to_session, which takes a
+// message_id, so the prose must say routing is what it can do (it once said it
+// could not act on a plugin message at all); without it, that it can do
+// nothing. Filing, drafting and settling are never offered, so always CANNOT.
+// The phrases are typed here, independently of composePluginActions.
+func TestTheComposePluginProseStatesExactlyItsActions(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	canRoute := "On this install the one thing you can do with a plugin message is route it to the session already on it: " +
+		"when one of your owner's live sessions is clearly on the subject, call `mcp__muster__route_to_session` with its " +
+		"message_id and a subject, as its turn says."
+	canNothing := "On this install you cannot act on a plugin message."
+	cannot := "You cannot file a task from it, draft a reply to it or settle it."
+	for _, routing := range []bool{true, false} {
+		on, off := norm(ChiefInstructionsCompose(true, routing)), norm(ChiefInstructionsCompose(false, routing))
+		offered := slices.Contains(ComposeChiefTools(routing), "route_to_session")
+		if offered != routing {
+			t.Fatalf("control: routing=%v but route_to_session offered=%v", routing, offered)
+		}
+		if strings.Contains(on, canRoute) != offered {
+			t.Errorf("routing=%v: the prose says it can route a plugin message = %v, but route_to_session offered = %v", routing, !offered, offered)
+		}
+		if strings.Contains(on, canNothing) == offered {
+			t.Errorf("routing=%v: the prose says it cannot act on a plugin message = %v, but route_to_session offered = %v", routing, offered, offered)
+		}
+		if !strings.Contains(on, cannot) {
+			t.Errorf("routing=%v: the prose does not say it cannot file, draft or settle", routing)
+		}
+		for _, phrase := range []string{canRoute, canNothing, cannot} {
+			if strings.Contains(off, phrase) {
+				t.Errorf("routing=%v, plugins off: the prose carries plugin-message capability text %q", routing, phrase)
+			}
+		}
+	}
+}

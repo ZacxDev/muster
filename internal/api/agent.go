@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // agentCtxKey carries the authenticated agent through the request context.
@@ -513,8 +514,10 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 // prompt is denied, so a tool outside that list is one the chief can never
 // run. The spec pre-allows the list (agentspec.Build), the listing offers
 // nothing outside it (toolsFor), and this re-check refuses a call by name, so
-// the chief is never offered — nor told about (agentspec.ChiefInstructionsCompose,
-// mcpInstructionsFor) — a tool it cannot use.
+// the chief is never offered a tool it cannot use. What it is TOLD derives from
+// the same list: its CLAUDE.md (agentspec.ChiefInstructionsCompose), the MCP
+// instructions (mcpInstructionsFor) and every turn muster sends it
+// (ChiefTurnTools; TestNoComposeChiefTurnTextNamesAToolItIsNotOffered).
 func (s *Server) composeChiefRefuses(ctx context.Context, a agents.Agent, name string) bool {
 	return !agentspec.ComposeChiefAllowed(name) && s.isComposeChief(ctx, a)
 }
@@ -523,6 +526,24 @@ func (s *Server) composeChiefRefuses(ctx context.Context, a agents.Agent, name s
 // (Extensions.ComposeChief).
 func (s *Server) isComposeChief(ctx context.Context, a agents.Agent) bool {
 	return s.ext.ComposeChief != nil && s.isChiefAgent(ctx, a)
+}
+
+// ChiefTurnTools is the muster tools chief is offered when that set is
+// restricted — the Compose chief's: exactly what toolsFor lists it, read from
+// that one listing — or nil (unrestricted) for every other chief. Every turn
+// text muster sends the chief that names a tool is rendered against it
+// (plugins.ChiefTools): the plugin turn (DelivererConfig.Tools), a route's
+// hand-back (handBackChoices), and a session's question (toolChiefAsk, which
+// does not put one to a chief without answer_session_question).
+func (s *Server) ChiefTurnTools(ctx context.Context, chief agents.Agent) plugins.ChiefTools {
+	if s.ext.ComposeChief == nil {
+		return nil
+	}
+	set := plugins.ChiefTools{}
+	for _, d := range s.MCPToolDefsFor(ctx, chief) {
+		set[d.Name] = true
+	}
+	return set
 }
 
 // composeChiefRefusal is the Compose chief's answer for a tool outside its

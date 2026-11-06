@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -132,5 +133,42 @@ func TestTheComposeChiefIsOfferedExactlyItsAllowedTools(t *testing.T) {
 	}
 	if text, isErr := toolText(t, &r); !isErr || !strings.Contains(text, "id is required") {
 		t.Errorf("control: the Kubernetes chief's tools/call task_set_status did not reach the tool: %s", text)
+	}
+}
+
+// failingAgents is an agent store whose list cannot be read.
+type failingAgents struct{ agents.Store }
+
+func (failingAgents) List(context.Context) ([]agents.Agent, error) {
+	return nil, errors.New("fixture: the agents table is unreachable")
+}
+
+// TestAnUnreadableAgentListFailsTheMCPDoorLoudly: whether the caller is the
+// chief decides its whole tool list, so when the agent list cannot be read
+// POST /mcp answers 503 for every method — never a tool list built as if the
+// caller were not the chief (which, for the Compose chief, skipped its
+// restriction and offered the not-chief tools). Control: the same request with
+// a readable list is served.
+func TestAnUnreadableAgentListFailsTheMCPDoorLoudly(t *testing.T) {
+	s, chief, _ := chiefAndWorkerServer(t)
+	s.ext.ComposeChief = &ComposeChief{}
+	list := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	call := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(list))
+		r = r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, chief))
+		w := httptest.NewRecorder()
+		s.handleMCP(w, r)
+		return w
+	}
+	if w := call(); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"tasks_list"`) {
+		t.Fatalf("control: tools/list with a readable agent list = %d %s", w.Code, w.Body)
+	}
+	readable := s.ext.Agents
+	s.ext.Agents = failingAgents{}
+	defer func() { s.ext.Agents = readable }()
+	w := call()
+	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), `"tools"`) ||
+		!strings.Contains(w.Body.String(), "could not read its agents") {
+		t.Errorf("tools/list with an unreadable agent list = %d %s, want 503 and no tool list", w.Code, w.Body)
 	}
 }

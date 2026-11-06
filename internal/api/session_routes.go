@@ -1337,15 +1337,16 @@ func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
 		return
 	}
 	s.logger.Printf("routes: %s: handing it back to the chief (%s)", routeID, reason)
+	tools := s.routeChiefTools(ctx, r)
 	if r.IsRequest() {
-		s.handBackRoute(ctx, r, reason+", so your owner's request is back with you: "+routeRequestHandBackChoices)
+		s.handBackRoute(ctx, r, reason+", so your owner's request is back with you: "+handBackChoices(handBackRequest, tools))
 		return
 	}
 	if r.IsTask() {
-		s.handBackRoute(ctx, r, reason+", so the task is back with you: "+routeTaskHandBackChoices)
+		s.handBackRoute(ctx, r, reason+", so the task is back with you: "+handBackChoices(handBackTask, tools))
 		return
 	}
-	s.handBackRoute(ctx, r, reason+", so the message is back with you: "+routeHandBackChoices)
+	s.handBackRoute(ctx, r, reason+", so the message is back with you: "+handBackChoices(handBackMessage, tools))
 }
 
 // routeAnswerMarker is the fence marker of a request route's answer
@@ -1454,16 +1455,63 @@ func (s *Server) kickRouteSweep() {
 	}
 }
 
-// routeHandBackChoices ends every hand-back: what the chief may do now.
-const routeHandBackChoices = "draft a reply with reply_draft, route it to another session with route_to_session, or leave it."
+// routeHandBackChoices, routeRequestHandBackChoices and routeTaskHandBackChoices
+// end a hand-back of a plugin message, of the owner's request and of a task:
+// what the chief may do now, as an unrestricted chief is told it
+// (handBackChoices with nil tools).
+var (
+	routeHandBackChoices        = handBackChoices(handBackMessage, nil)
+	routeRequestHandBackChoices = handBackChoices(handBackRequest, nil)
+	routeTaskHandBackChoices    = handBackChoices(handBackTask, nil)
+)
 
-// routeRequestHandBackChoices ends a request route's hand-back.
-const routeRequestHandBackChoices = "tell your owner, route it to another session with route_to_session if they ask you " +
-	"again in this chat, or leave it."
+// What a hand-back hands back.
+const (
+	handBackMessage = iota
+	handBackRequest
+	handBackTask
+)
 
-// routeTaskHandBackChoices ends a task route's hand-back.
-const routeTaskHandBackChoices = "route it to another session with route_to_session, put it in front of your owner with " +
-	"task_route_attention, or leave it."
+// handBackChoices ends a hand-back of kind: each choice the chief holds the
+// tool for (tools: plugins.ChiefTools, nil = every tool), then "or leave it".
+// The Compose chief holds neither reply_draft nor task_route_attention, so it
+// is never told to use them.
+func handBackChoices(kind int, tools plugins.ChiefTools) string {
+	var opts []string
+	if kind == handBackRequest {
+		opts = append(opts, "tell your owner")
+	}
+	if kind == handBackMessage && tools.Has(replyDraftToolName) {
+		opts = append(opts, "draft a reply with reply_draft")
+	}
+	if tools.Has(routeToSessionToolName) {
+		route := "route it to another session with route_to_session"
+		if kind == handBackRequest {
+			route += " if they ask you again in this chat"
+		}
+		opts = append(opts, route)
+	}
+	if kind == handBackTask && tools.Has(taskRouteAttentionTool) {
+		opts = append(opts, "put it in front of your owner with task_route_attention")
+	}
+	if len(opts) == 0 {
+		return "leave it."
+	}
+	return strings.Join(opts, ", ") + ", or leave it."
+}
+
+// routeChiefTools is the restricted tool set of route r's chief
+// (ChiefTurnTools), or nil.
+func (s *Server) routeChiefTools(ctx context.Context, r plugins.Route) plugins.ChiefTools {
+	if s.ext.ComposeChief == nil || r.AgentID == nil || s.ext.Agents == nil {
+		return nil
+	}
+	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
+	if err != nil {
+		return nil
+	}
+	return s.ChiefTurnTools(ctx, chief)
+}
 
 // handBackRoute gives an ended route's item back to its chief (it timed out,
 // or its window moved on): a turn, when the chief is running, telling it what

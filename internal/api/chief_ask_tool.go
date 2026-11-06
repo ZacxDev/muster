@@ -116,6 +116,11 @@ func (s *Server) toolChiefAsk(ctx context.Context, c toolCaller, arguments strin
 		}
 		return toolErr("your owner has no chief agent to ask; ask your owner with attention_ask")
 	}
+	if !s.ChiefTurnTools(ctx, chief).Has(answerSessionQuestionTool) {
+		// The Compose chief: it cannot answer (answer_session_question is not
+		// among its tools), so the question is never put to it.
+		return toolErr("your owner's chief cannot answer session questions on this install; ask your owner with attention_ask")
+	}
 	var about *routedAbout
 	if in.RouteID = strings.TrimSpace(in.RouteID); in.RouteID != "" {
 		ra, bad := s.chiefAskRoute(ctx, in.RouteID)

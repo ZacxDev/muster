@@ -544,7 +544,10 @@ func (s *Server) UseExtensions(ext Extensions) {
 			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger, Routing: messageRoutingOn(ext),
 			// The session hint (sessions_overview.go): which live sessions may
 			// already be on the message, computed here and appended to the turn.
-			Hints: s.pluginHints(ext)})
+			Hints: s.pluginHints(ext),
+			// The chief's restricted tool set (the Compose chief's): the turn
+			// names only tools it holds.
+			Tools: s.ChiefTurnTools})
 		if err != nil {
 			s.logger.Printf("plugins: no deliverer: %v", err)
 		}

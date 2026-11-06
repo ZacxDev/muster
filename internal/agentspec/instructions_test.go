@@ -386,9 +386,15 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			min:  600,
 		},
 		{
-			name: "chiefComposePluginSection",
-			text: chiefComposePluginSection,
-			want: "bcf843bd5ef41264ae053ecc2712e776d38d1f3f8ecdad8251321ade63e189d5",
+			name: "chiefComposePluginSection, routing on",
+			text: chiefComposePluginSection(ComposeChiefTools(true)),
+			want: "a2999ed946fa26578ff46d5260a04fee6eab70063e4e8a8585c9614593e926b5",
+			min:  500,
+		},
+		{
+			name: "chiefComposePluginSection, routing off",
+			text: chiefComposePluginSection(ComposeChiefTools(false)),
+			want: "08d30ff61841bcdc6c618ff7deaabff053f526555fa02b8283c18ca66d42c826",
 			min:  500,
 		},
 		{
@@ -483,12 +489,12 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "compose, plugins on, routing off",
 			got:  ChiefInstructionsCompose(true, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection(ComposeChiefTools(false)),
 		},
 		{
 			name: "compose, plugins on, routing on",
 			got:  ChiefInstructionsCompose(true, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {

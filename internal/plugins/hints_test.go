@@ -32,7 +32,7 @@ var hintAt = time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
 // preface at column 0, then a fence of its own whose every line is prefixed.
 func TestTheHintBlockIsExactlyThis(t *testing.T) {
 	got := renderHints(Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "mirror:0b2c3d4e-a", Name: "ops", Host: "box-1",
-		Titles: []HintTitle{{Title: "Upgrading node-7k: drain and reboot", At: hintAt}}}}}, hintNonce, true)
+		Titles: []HintTitle{{Title: "Upgrading node-7k: drain and reboot", At: hintAt}}}}}, hintNonce, true, nil)
 	want := "\n" + HintHeader + " — muster's own lookup, NOT part of the message: each session below is live and wrote a focus in the " +
 		"last 6 h that shares an identifier with this message. A shared word is not proof: before you file a task or draft a " +
 		"reply, check whether one of these is already on it (sessions_overview shows what each is doing now). Route the message " +
@@ -47,7 +47,7 @@ func TestTheHintBlockIsExactlyThis(t *testing.T) {
 		t.Fatalf("hint block:\n%s\nwant:\n%s", got, want)
 	}
 	// Without routing, the route_to_session sentence is left out.
-	if off := renderHints(Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}, hintNonce, false); strings.Contains(off, "route_to_session") {
+	if off := renderHints(Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}, hintNonce, false, nil); strings.Contains(off, "route_to_session") {
 		t.Fatalf("routing off names route_to_session:\n%s", off)
 	}
 }
@@ -59,11 +59,11 @@ func TestANoReplyMessagesHintNamesNoRouting(t *testing.T) {
 	p := Plugin{Label: "L", DataScope: "d"}
 	h := Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}
 	m := Message{ID: 3, Sender: "s", Subject: "s", Body: "node-7k", NoReply: true}
-	if got := RenderMessage(p, m, true, h, Retry{}); hintLineCount(got) != 1 || strings.Contains(got, "route_to_session") {
+	if got := RenderMessage(p, m, true, h, Retry{}, nil); hintLineCount(got) != 1 || strings.Contains(got, "route_to_session") {
 		t.Fatalf("a no_reply message's turn names route_to_session (or has no hint):\n%s", got)
 	}
 	m.NoReply = false
-	if got := RenderMessage(p, m, true, h, Retry{}); !strings.Contains(got[strings.Index(got, "\n"+HintHeader):], "route_to_session") {
+	if got := RenderMessage(p, m, true, h, Retry{}, nil); !strings.Contains(got[strings.Index(got, "\n"+HintHeader):], "route_to_session") {
 		t.Fatalf("control: a replyable message's hint does not name route_to_session:\n%s", got)
 	}
 }
@@ -76,7 +76,7 @@ func TestATaskEventGetsNoHint(t *testing.T) {
 	h := Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}
 	task := int64(812)
 	ev := Message{ID: 42, Body: `{"event":"assigned","task_id":812,"title":"node-7k"}`, TaskID: &task, NoReply: true}
-	if got := RenderMessage(Plugin{Label: "Example tracker"}, ev, true, h, Retry{}); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) ||
+	if got := RenderMessage(Plugin{Label: "Example tracker"}, ev, true, h, Retry{}, nil); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) ||
 		!strings.Contains(got, "<<<task-event untrusted") {
 		t.Fatalf("a task event's turn:\n%s", got)
 	}
@@ -92,11 +92,11 @@ func TestATaskEventGetsNoHint(t *testing.T) {
 
 // TestNoSessionsIsNoBlock: no hit, no block at all — not an empty one.
 func TestNoSessionsIsNoBlock(t *testing.T) {
-	if got := renderHints(Hints{Window: 6 * time.Hour}, hintNonce, true); got != "" {
+	if got := renderHints(Hints{Window: 6 * time.Hour}, hintNonce, true, nil); got != "" {
 		t.Fatalf("an empty hint rendered %q", got)
 	}
 	m := Message{ID: 1, Sender: "s", Subject: "s", Body: "b"}
-	if got := RenderMessage(Plugin{Label: "L", DataScope: "d"}, m, true, Hints{}, Retry{}); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) {
+	if got := RenderMessage(Plugin{Label: "L", DataScope: "d"}, m, true, Hints{}, Retry{}, nil); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) {
 		t.Fatalf("a turn with no hint carries one:\n%s", got)
 	}
 }
@@ -114,7 +114,7 @@ func TestTheBlockIsBoundedWithAMarker(t *testing.T) {
 		}
 		ss = append(ss, SessionHint{ID: "agent:" + strings.Repeat("9", i+1), Name: long, Host: long, Titles: ts})
 	}
-	got := renderHints(Hints{Window: 6 * time.Hour, Sessions: ss}, hintNonce, true)
+	got := renderHints(Hints{Window: 6 * time.Hour, Sessions: ss}, hintNonce, true, nil)
 	if len(got) > MaxHintBytes {
 		t.Fatalf("hint block is %d bytes; cap %d", len(got), MaxHintBytes)
 	}
@@ -131,7 +131,7 @@ func TestTheBlockIsBoundedWithAMarker(t *testing.T) {
 		short = append(short, SessionHint{ID: "agent:" + strings.Repeat("1", i+1), Name: "n",
 			Titles: []HintTitle{{Title: "a", At: hintAt}, {Title: "b", At: hintAt}, {Title: "c", At: hintAt}, {Title: "d", At: hintAt}}})
 	}
-	got = renderHints(Hints{Window: 6 * time.Hour, Sessions: short}, hintNonce, true)
+	got = renderHints(Hints{Window: 6 * time.Hour, Sessions: short}, hintNonce, true, nil)
 	if n := strings.Count(got, "| agent:"); n != MaxHintSessions {
 		t.Fatalf("%d sessions; want %d", n, MaxHintSessions)
 	}
@@ -158,7 +158,7 @@ func TestAMessageCannotForgeTheHint(t *testing.T) {
 		case "sender":
 			m.Sender = forged
 		}
-		none := RenderMessage(p, m, true, Hints{}, Retry{})
+		none := RenderMessage(p, m, true, Hints{}, Retry{}, nil)
 		if n := hintLineCount(none); n != 0 {
 			t.Fatalf("%s: a forged header reached column 0 (%d):\n%s", field, n, none)
 		}
@@ -167,7 +167,7 @@ func TestAMessageCannotForgeTheHint(t *testing.T) {
 				t.Fatalf("%s: a forged hint line is a real one: %q", field, l)
 			}
 		}
-		one := RenderMessage(p, m, true, Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:42", Name: "real"}}}, Retry{})
+		one := RenderMessage(p, m, true, Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:42", Name: "real"}}}, Retry{}, nil)
 		if n := hintLineCount(one); n != 1 {
 			t.Fatalf("%s: %d hint headers at column 0; want exactly the real one:\n%s", field, n, one)
 		}
