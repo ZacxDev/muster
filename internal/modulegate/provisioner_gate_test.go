@@ -75,7 +75,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/notes.go (*Server).dismissTask Provisioner!=nil":                           1, // a dismissed task's linked agent torn down
 	"internal/api/officers.go (*Server).EnableOfficers Provisioner==nil":                     1, // officers (refused at boot beside the Compose chief)
 	"internal/api/session_routes.go (*Server).handBackRoute Provisioner==nil":                1, // a route handed back to the chief
-	"internal/api/session_routes.go (*Server).deliverRequestAnswer Provisioner!=nil":         1, // a session's answer delivered to the chief as a turn
+	"internal/api/session_routes.go (*Server).deliverRouteAnswer Provisioner!=nil":           1, // a session's answer delivered to the chief as a turn
 	"internal/api/task_complete_stop.go (*Server).stopChiefAgentOnComplete Provisioner==nil": 1, // stop the chief's own dispatched agent (no ChiefDispatch here)
 	"internal/api/terminal.go (*Server).handleAgentTerminalPage Provisioner==nil":            1, // the Terminal view (the Compose chief's says why it has none)
 }
