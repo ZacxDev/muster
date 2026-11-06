@@ -90,12 +90,13 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 	c.ChiefRuntime = strings.ToLower(strings.TrimSpace(getenv(envChiefRuntime)))
 	c.ChiefSpecDir = strings.TrimSpace(getenv(envChiefSpecDir))
 	c.ChiefClaudeToken = strings.TrimSpace(getenv(envChiefClaudeToken))
+	c.ChiefLLMModel = strings.TrimSpace(getenv(envChiefLLMModel))
 	switch c.ChiefRuntime {
 	case "":
-		if c.ChiefSpecDir != "" || c.ChiefClaudeToken != "" {
-			return fmt.Errorf("%s or %s is set but %s is not %s: they configure the chief's Compose "+
+		if c.ChiefSpecDir != "" || c.ChiefClaudeToken != "" || c.ChiefLLMModel != "" {
+			return fmt.Errorf("%s, %s or %s is set but %s is not %s: they configure the chief's Compose "+
 				"container and nothing else would read them. Set %s=%s, or unset them",
-				envChiefSpecDir, envChiefClaudeToken, envChiefRuntime, chiefRuntimeCompose, envChiefRuntime, chiefRuntimeCompose)
+				envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel, envChiefRuntime, chiefRuntimeCompose, envChiefRuntime, chiefRuntimeCompose)
 		}
 		return nil
 	case chiefRuntimeCompose:
@@ -105,6 +106,9 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 	}
 	if c.ChiefSpecDir == "" {
 		c.ChiefSpecDir = defaultChiefSpecDir
+	}
+	if c.ChiefLLMModel == "" {
+		c.ChiefLLMModel = api.DefaultChiefLLMModel
 	}
 	if !filepath.IsAbs(c.ChiefSpecDir) {
 		return fmt.Errorf("invalid %s %q: it must be an absolute path (the shared volume's mount point in "+

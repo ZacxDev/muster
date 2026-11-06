@@ -733,6 +733,19 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 	}
 
+	// The Compose chief on the OpenRouter key reaches its model through the
+	// LLM proxy (api.EnableChiefLLM): the admin's chief alone, on the admin's
+	// key (MUSTER_AGENT_OPENROUTER_KEY, which composeChiefCredential reads for
+	// user 1 through the same plane), the model pinned, no muster budget (the
+	// key's own credit limit is the cap). Only the Compose chief: nothing else
+	// here runs a chief on the LLM route.
+	if cfg.chiefCompose() {
+		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)
+		}
+	}
+
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
 	// deliverability was computed from, so "a dispatch is accepted" and "something
 	// delivers it" cannot disagree. startBackgroundLoops runs it. It is built after

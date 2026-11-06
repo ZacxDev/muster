@@ -107,7 +107,7 @@ func featureCatalog() []features.Feature {
 			Enable:      provisioner,
 			// The Compose chief (composechief.go). Its enable step and hint are
 			// the Compose stack's own, written with the `chief` profile.
-			Settings: []string{envChiefRuntime, envChiefSpecDir, envChiefClaudeToken}},
+			Settings: []string{envChiefRuntime, envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel}},
 		{ID: features.ChiefSessionRuntimes, Kubernetes: true, Name: "Chief session runtimes",
 			Description: "Start a chief chat session on Claude Code, with its own model.",
 			Enable:      []features.Var{is(envChiefSessionRuntimes, "claude-code")}},

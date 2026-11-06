@@ -457,6 +457,8 @@ var bannerExempt = map[string]string{
 		"shared ON fixture because it refuses that fixture's own agent-plane variables",
 	envChiefSpecDir: "printed with its value on the `chief runtime: COMPOSE` line; it means nothing without " +
 		"MUSTER_CHIEF_RUNTIME, which refuses to boot with it set alone",
+	envChiefLLMModel: "printed with its value on the `chief llm: … through the LLM proxy` line api.EnableChiefLLM logs on " +
+		"the Compose chief; it means nothing without MUSTER_CHIEF_RUNTIME, which refuses it alone",
 	envChiefClaudeToken: "a secret, never printed; which credential the chief runs on is the Account page's to say, " +
 		"and it is refused at boot without MUSTER_CHIEF_RUNTIME",
 	envFleetReportPaths: "counted on the `fleet-report requests: ON` line, which names it; it does nothing without " +

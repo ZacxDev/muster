@@ -160,6 +160,7 @@ var composeGroups map[string]int
 // loadConfig, validate and buildApp against a real database, with a signed-in
 // operator. extra is added to composeEnv.
 type composeStack struct {
+	app    *app
 	root   string
 	env    map[string]string
 	logs   *bytes.Buffer
@@ -213,7 +214,7 @@ func newComposeStack(t *testing.T, extra map[string]string) *composeStack {
 		}
 		a.Close()
 	})
-	st.h = a.srv.Handler()
+	st.h, st.app = a.srv.Handler(), a
 	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"password": {env[envUIPassword]}, "next": {"/"}}.Encode()))
 	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	lw := httptest.NewRecorder()
@@ -442,4 +443,37 @@ func keysOf(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestTheComposeChiefIsServedByTheLLMProxy: the runtime wires the chief's place
+// on the LLM proxy (api.EnableChiefLLM), so the chief's own POST
+// /llm/v1/messages on the connect door is the chief proxy's answer, never the
+// officers-only 503 ("no officer on this server declares `llm`") a server
+// without the wiring gives. Run with no OpenRouter key, so nothing is sent:
+// the answer is the proxy's own refusal naming the variable. The boot log
+// names the pinned model.
+func TestTheComposeChiefIsServedByTheLLMProxy(t *testing.T) {
+	st := newComposeStack(t, map[string]string{envChiefClaudeToken: "sk-ant-oat01-FAKE-compose-llm-wiring-7a"})
+	if !strings.Contains(st.logs.String(), "chief llm: ON for the admin's chief (deepseek/deepseek-v4.1-flash), but MUSTER_AGENT_OPENROUTER_KEY is empty") {
+		t.Fatalf("no chief llm boot line naming the model:\n%s", st.logs.String())
+	}
+	if w := st.post("/account/chief", url.Values{"on": {"1"}}); !strings.Contains(w.Header().Get("Location"), "chief=saved") {
+		t.Fatalf("turn the chief on: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	_, _, secretOf := st.waitSpec(t)
+	token := secretOf["MUSTER_HOOK_TOKEN"]
+	if token == "" || st.app.connect == nil {
+		t.Fatalf("no chief token (%v) or no connect door (%v)", token != "", st.app.connect != nil)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(`{"model":"x","max_tokens":1,"messages":[]}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	st.app.connect.Handler.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "set MUSTER_AGENT_OPENROUTER_KEY") {
+		t.Fatalf("the chief's LLM request: %d %s; want the chief proxy's no-key refusal", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), "no officer on this server") {
+		t.Fatal("the chief got the officers-only refusal: the chief proxy is not wired")
+	}
 }

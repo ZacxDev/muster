@@ -60,7 +60,7 @@ AGENT_PLANE = "agent plane: needs muster running inside Kubernetes (docs/feature
 COMPOSE_CHIEF_PENDING = "the Compose chief runtime: forwarded with the `chief` profile, which a later change adds"
 NOT_FORWARDED = {
     **{name: COMPOSE_CHIEF_PENDING for name in [
-        "MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_SPEC_DIR", "MUSTER_CHIEF_CLAUDE_TOKEN",
+        "MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_SPEC_DIR", "MUSTER_CHIEF_CLAUDE_TOKEN", "MUSTER_CHIEF_LLM_MODEL",
     ]},
     **{name: AGENT_PLANE for name in [
         "MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_AGENT_GATEWAY_MODEL",

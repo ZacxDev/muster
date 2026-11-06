@@ -339,6 +339,7 @@ const (
 	envChiefRuntime     = "MUSTER_CHIEF_RUNTIME"
 	envChiefSpecDir     = "MUSTER_CHIEF_SPEC_DIR"
 	envChiefClaudeToken = "MUSTER_CHIEF_CLAUDE_TOKEN"
+	envChiefLLMModel    = "MUSTER_CHIEF_LLM_MODEL"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -850,6 +851,10 @@ type config struct {
 	ChiefRuntime     string
 	ChiefSpecDir     string
 	ChiefClaudeToken string
+	// ChiefLLMModel is MUSTER_CHIEF_LLM_MODEL: the OpenRouter model the Compose
+	// chief's requests are pinned to when it runs on the OpenRouter key
+	// (api.DefaultChiefLLMModel when unset).
+	ChiefLLMModel string
 
 	// AgentGateway names the agent runtime whose chat wire this deployment talks:
 	// one of gatewayChoices. Default gatewayNone, which leaves
