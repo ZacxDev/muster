@@ -58,7 +58,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `cc_failover` | `false` | With `cc_account`: let a pinned instance fail over to another account anyway ([account failover](#account-failover)). Without `cc_account` it changes nothing: an unpinned instance fails over by default. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
-| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer. Kept lowercased and sorted, so reordering it changes nothing. |
+| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer; so is `read_repos` on a shipping officer when the deployment has no GitHub App of its own (`MUSTER_GITHUB_APP_ID` unset). Kept lowercased and sorted, so reordering it changes nothing. |
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
@@ -330,9 +330,12 @@ the App's error (never anonymously).
   approve card, `connector_requests_list` (`repo`, `read_repos`,
   `approving_grants`) and `connector_request_decide` (`read_repos`, `grants`)
   list `repo` and every read repository, each marked READ ONLY.
-- **Not for a shipping officer.** Its requests carry only its own App's token,
-  behind its push gate, for its one repository; `read_repos` on one is a boot
-  refusal ([below](#shipping-officers)).
+- **On a shipping officer, only with the deployment App.** Its requests are
+  decided by its push gate, which serves a read of one of its `read_repos` with
+  the **deployment** App's READ-ONLY token, not its own App's. `read_repos` on a
+  shipping officer is accepted when `MUSTER_GITHUB_APP_ID` is set, and a boot
+  refusal naming the officer when it is not
+  ([below](#shipping-officers)).
 
 **`github`, and the connectors it declares, only.** An officer instance may
 request and use the `github` connector and the connectors its officer lists in
@@ -855,13 +858,18 @@ admitted only as a read (the gate forwards no write outside the ship
 repositories) and carries the **deployment** App's READ-ONLY token for that one
 repository; anything else goes anonymously. The officer App never mints for a
 read repository. An entry that is also a ship repository is a boot refusal.
+🔴 **It needs the deployment's own GitHub App** (`MUSTER_GITHUB_APP_ID`, with
+its key and accounts): without one there is no read-only token to mint and the
+gate would forward those reads anonymously, so a shipping officer with
+`read_repos` on such a deployment refuses to boot, naming the officer,
+`read_repos` and `MUSTER_GITHUB_APP_ID`.
 
 **`tiers` and `llm` beside `ship`.** Only the **judgement** pool ships: the
 routine pool (`Officer.Pool(routine)`) carries no ship policy, so a routine
 instance gets no ship tool, no push gate and no officer App token, and reads
 like any other officer instance. `llm` serves the routine pool only.
 `tiers`, `llm` and `read_repos` are accepted beside **every** stage — shadow,
-merge and release included, not only `draft` — where they were boot refusals
+merge and release included, not only `draft` (`read_repos` only with the deployment App, above) — where they were boot refusals
 on any shipping officer before. Those stages' gates are unchanged.
 
 🔴 **Use it only where the repository enforces nothing else, and know that

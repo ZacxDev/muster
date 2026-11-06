@@ -120,6 +120,12 @@ const GitHubConnector = "github"
 // through the proxy — with muster holding a read-only credential. Nothing for
 // an officer without one, whose text is unchanged.
 //
+// 🔴 repoNote IS THE ONE PLACE readReposNote IS APPENDED, after whichever
+// repository text the officer's shape gets (this read-only one, shipNote or
+// draftShipNote), so every shape that may declare read_repos — any ship stage
+// included — is told about them exactly once
+// (TestEveryKickoffShapeNamesTheReadRepos).
+//
 // 🔴 THE TWO RECIPES ARE THE REAL MECHANISM, PINNED IN TESTS AGAINST THEIR
 // SOURCES: `ccd connect-git github` (cmd/ccd/connect.go: git's
 // https://github.com/ routed through the proxy; ccd also applies it by itself
@@ -130,14 +136,20 @@ func repoNote(o Officer) string {
 		return ""
 	}
 	if o.Ship != nil {
-		return shipNote(o)
+		return shipNote(o) + readReposNote(o)
 	}
+	return readOnlyRepoNote(o) + readReposNote(o)
+}
+
+// readOnlyRepoNote is repoNote's text for an officer that does not ship: how
+// it reads its repository, and that it never pushes or merges.
+func readOnlyRepoNote(o Officer) string {
 	return fmt.Sprintf(`
 
 Your repository is %[1]s. You may READ it through muster's %[2]q connector — %[3]s. Ask once with connector_request{name: %[2]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[2]q, wait_seconds: 50}, repeated while it says pending. Once it is approved, read the repository in either of two ways (both through muster's proxy):
 - git: run `+"`ccd connect-git %[2]s`"+` once (it routes git's https://github.com/ through the proxy; ccd also does this by itself within 15 seconds of the approval), then `+"`git clone --depth 50 https://github.com/%[1]s.git`"+` and read the clone; `+"`git fetch`"+` in it later for new commits.
 - the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/%[1]s/<path>\"`"+` (for example pulls/<n>, pulls/<n>/files, commits/<sha>, compare/<base>...<head>, contents/<file>?ref=<sha>); muster replaces that header with the credential.
-muster attaches a READ-ONLY token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector, onlyConnector(o)) + readReposNote(o)
+muster attaches a READ-ONLY token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector, onlyConnector(o))
 }
 
 // readReposNote is what an officer with read_repos (Officer.ReadRepos) is told
