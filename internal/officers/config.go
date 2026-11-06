@@ -95,7 +95,8 @@ type Officer struct {
 	// whatever MUSTER_GITHUB_APP_ACCESS says. Lowercased, sorted and unique —
 	// so a reordered or re-cased declaration is the same set and does not
 	// re-open an approved grant (connectors.RepoScope). Requires Repo, never
-	// holds it, at most MaxReadRepos, and is refused on a shipping officer.
+	// holds it, at most MaxReadRepos, and accepted beside any ship stage (never
+	// one of ship.repos).
 	ReadRepos []string `json:"read_repos,omitempty"`
 	// Ship, when set, lets the officer push branches, open pull requests, and
 	// (by stage) merge its own pull requests and tag releases in Repo — every
