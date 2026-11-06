@@ -61,7 +61,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | ↳ [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief | off | not in the Compose stack |
 | [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief (Kubernetes), an OpenRouter key | off | not in the Compose stack |
 | [Plugins](#plugins) | external systems (an inbox) reach your chief; reply drafts | **a plugin process you run**, the chief | off | 1 line + more |
-| ↳ [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins | plugins, and mostly the chief | off | 1 line each |
+| ↳ [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins (session routing also works without them, for your own typed requests and tasks) | plugins, and mostly the chief | off | 1 line each |
 | [Memo relay](#memo-relay) | cairn memos delivered to dispatched agents | **cairn you host**, dispatch | off | not in the Compose stack |
 | [Approval router](#approval-router) | transcript links, router notifications, agent permission cards | **an external permission router you run** | off (standalone) | 3 lines |
 | [Officers](#officers) | standing agents fed by an HQ queue | **HQ**, dispatch | off | not in the Compose stack |
@@ -550,11 +550,15 @@ needed. **Check:** `plugin tasks: ON …`.
 
 ### Session routing
 
-The chief hands a plugin message to one of your sessions and relays the
-session's answer ([plugins.md](plugins.md#routing-a-message-to-a-session)).
-`MUSTER_SESSION_ROUTING=1`, with plugins on and the [chief](#chief);
-`MUSTER_ROUTE_RELAY_ALLOW` lists the senders whose answers go out without your
-approval. **Check:** `session routing: ON (…)`.
+The chief hands one of your mirrored sessions an idea you typed in its chat
+([plugins.md](plugins.md#routing-your-own-request-to-a-session)), one of your
+tasks, or a plugin message, and relays the session's answer
+([plugins.md](plugins.md#routing-a-message-to-a-session)).
+`MUSTER_SESSION_ROUTING=1`, with the [chief](#chief). It does **not** need
+plugins: without them it routes your typed requests and tasks, and no plugin
+message. `MUSTER_ROUTE_RELAY_ALLOW` lists the senders whose answers go out
+without your approval. **Check:** `session routing: ON (…)` (`… WITHOUT
+plugins` when they are off).
 
 ### Task routing
 

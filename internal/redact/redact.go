@@ -11,6 +11,7 @@
 package redact
 
 import (
+	"math"
 	"regexp"
 	"strings"
 	"unicode"
@@ -81,10 +82,438 @@ var (
 
 // Secrets is s with every value that looks like a secret replaced by
 // «redacted» (see the comment above for the shapes).
-func Secrets(s string) string { return secrets(s, true) }
+func Secrets(s string) string { return secrets(s, true, nil) }
+
+// HasSecretValue reports whether s holds a secret-shaped VALUE: THE
+// secret-shape test for a refusal of an officer's SHIP content (its pull
+// request diff, title, body and comments; internal/officership's draft gate).
+//
+// It refuses on EITHER of two rules:
+//
+//   - THE VALUE (Secrets, with one narrowing). Every shape Secrets knows by its
+//     VALUE (a token prefix, a PEM block, a JWT, a Stripe, age, Google,
+//     Hugging Face or Discord key, an AWS secret) refuses as it redacts. A
+//     shape Secrets knows only by a credential NAME (a header, "the password
+//     is …", a URL query parameter, and the key forms below) refuses on this
+//     rule when the value is itself secret-shaped (literalSecret). A URL's
+//     userinfo refuses when it holds a password that is not a reference.
+//   - 🔴 THE KEY (keyLiteral). A credential-like KEY (one ending in password,
+//     passwd, passphrase, pwd, secret, token, api_key/apikey, private_key,
+//     secret_key, secret_access_key, credential or credentials; not
+//     access_key_id, an identifier) holding a LITERAL refuses,
+//     whatever the literal looks like: `password: hunter2`, a diceware
+//     passphrase, a letters-only word, a block scalar. Not a literal: an empty
+//     or null value, a boolean, a number, a reference (${…}, $(…), $VAR,
+//     {{…}}, valueFrom, a flow mapping, an alias, a <placeholder>), a SOPS
+//     ENC[…] value, a path or a URL — and a key that itself NAMES a reference
+//     (existingSecret…, passwordSecret, tokenSecret, …SecretName, …SecretRef,
+//     …secretKeyRef). So `automountServiceAccountToken: false`,
+//     `existingSecret: x`, `passwordSecret: x` and `password: ${DB_PASSWORD}`
+//     pass.
+func HasSecretValue(s string) bool { return HasSecretValueIn("", s) }
+
+// HasSecretValueIn is HasSecretValue for content of the file at path. In a
+// SOURCE file (sourceExts: Go, TypeScript, Python, …) an unquoted value is an
+// expression (`Password: cfg.Password,`), so the key rule judges only a
+// QUOTED string literal there; anywhere else (YAML, JSON, shell, .env, prose)
+// every value is. s is a WHOLE text (a file, a title, a body): its lines are
+// in order, so the env pair rule (HasSecretPairIn) runs on it too.
+func HasSecretValueIn(path, s string) bool {
+	return HasSecretLiteralIn(path, s) || HasSecretPairIn(path, strings.Split(s, "\n"), nil)
+}
+
+// HasSecretLiteralIn is HasSecretValueIn without the env pair rule: the
+// value and key rules, each judging one line (or a block scalar's start). It
+// is the test for lines that are NOT a whole text, such as a diff's added
+// lines spliced together: there the lines between them are missing, so items
+// cannot be told apart, and the pair rule must run on each hunk's post-image
+// instead (HasSecretPairIn with changed).
+func HasSecretLiteralIn(path, s string) bool {
+	return secrets(s, true, literalSecret) != s || keyLiteral(s, isSource(path))
+}
+
+// HasSecretPairIn reports whether lines (a manifest's lines, in order) hold
+// one YAML mapping whose credential-like `name:` (credKey: `name: DB_PASSWORD`)
+// has a sibling `value:` holding a literal: the shape of a Kubernetes env
+// entry, which the key rule cannot see because the name and the literal sit
+// on different lines. A mapping is
+//
+//   - a block list item: its keys sit at the column after its `- `, and it
+//     ends at the next line left of or at its dash (the next `- ` item);
+//   - a block mapping nested under a key, or at the top of a document (a
+//     kustomize JSON6902 patch's `value:` holding `name:` and `value:`): its
+//     keys share one column, and it ends at a line left of it or at `---`;
+//   - a one-line flow mapping, anywhere on a line (`- {name: X, value: y}`,
+//     `value: {name: X, value: y}`, `env: [{name: X, value: y}]`), each one
+//     its own mapping.
+//
+// A pair is never made across two mappings. `name:` and `value:` may come in
+// either order. The literal rules are the key rule's (isLiteral), except that
+// a QUOTED boolean or number is not a literal either (an env value must be a
+// string: "true", "5432"); a quoted name or value may carry a comment after
+// it. The pair is judged when either of its lines is marked in changed (nil:
+// every line), so a diff's unchanged name line counts as context. A source
+// file (sourceExts) is code: false.
+//
+// Not seen (best effort): multi-line JSON, a dash alone on its line, a flow
+// mapping that nests another, an alias whose anchor sits on another key.
+func HasSecretPairIn(path string, lines []string, changed []bool) bool {
+	if isSource(path) {
+		return false
+	}
+	is := func(i int) bool { return changed == nil || (i < len(changed) && changed[i]) }
+	type item struct {
+		col                    int // the column of the mapping's keys
+		name, value            string
+		hasName, hasValue, hit bool // hit: a name or value line is changed
+	}
+	// stack holds the open mappings, innermost last (a nested list or map
+	// inside one does not end it).
+	var stack []*item
+	judge := func(it *item) bool {
+		return it.hasName && it.hasValue && it.hit && credKey(unquote(it.name)) && pairLiteral(it.value)
+	}
+	set := func(it *item, key, v string, i int) {
+		switch key {
+		case "name":
+			it.name, it.hasName = v, true
+		case "value":
+			it.value, it.hasValue = v, true
+		default:
+			return
+		}
+		it.hit = it.hit || is(i)
+	}
+	// closeTo ends every open mapping whose keys sit right of column ind.
+	closeTo := func(ind int) bool {
+		for len(stack) > 0 && stack[len(stack)-1].col > ind {
+			if judge(stack[len(stack)-1]) {
+				return true
+			}
+			stack = stack[:len(stack)-1]
+		}
+		return false
+	}
+	for i, l := range lines {
+		t := strings.TrimLeft(l, " ")
+		ind := len(l) - len(t)
+		if strings.TrimSpace(t) == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if tt := strings.TrimSpace(t); tt == "---" || tt == "..." {
+			if closeTo(-1) {
+				return true
+			}
+			continue
+		}
+		if closeTo(ind) {
+			return true
+		}
+		for _, fm := range reFlowMap.FindAllString(l, -1) {
+			it := &item{}
+			for _, p := range reFlowPair.FindAllStringSubmatch(fm, -1) {
+				set(it, p[1], strings.TrimSpace(p[2]), i)
+			}
+			if judge(it) {
+				return true
+			}
+		}
+		if m := reItem.FindStringSubmatch(l); m != nil {
+			rest := l[len(m[1]):]
+			if strings.HasPrefix(rest, "{") || strings.HasPrefix(rest, "[") {
+				continue // a flow item: judged above
+			}
+			it := &item{col: len(m[1])}
+			if k := reKeyColon.FindStringSubmatch(rest); k != nil {
+				set(it, k[1], k[2], i)
+			}
+			stack = append(stack, it)
+			continue
+		}
+		k := reKeyColon.FindStringSubmatch(t)
+		if k == nil {
+			continue // a block scalar's text, a plain scalar
+		}
+		if n := len(stack); n == 0 || stack[n-1].col < ind {
+			// A mapping nested under a key, or a document's top mapping.
+			stack = append(stack, &item{col: ind})
+		}
+		set(stack[len(stack)-1], k[1], k[2], i)
+	}
+	return closeTo(-1)
+}
+
+var (
+	// reItem: a YAML list item's dash and the indentation up to its first key
+	// (m[1]: everything before the key, so len(m[1]) is the key column).
+	reItem = regexp.MustCompile(`^(\s*-\s+)\S`)
+	// reFlowMap: a one-line flow mapping that nests no other.
+	reFlowMap = regexp.MustCompile(`\{[^{}]*\}`)
+	// reFlowPair: one key: value pair of a one-line flow mapping.
+	reFlowPair = regexp.MustCompile(`["']?([A-Za-z0-9_.$-]+)["']?\s*:\s*("[^"]*"|'[^']*'|[^,}]*)`)
+)
+
+// unquote is v without its surrounding quotes and a trailing YAML comment: a
+// quoted v is the text inside its quotes (whatever follows them, such as a
+// comment, is dropped); an unquoted one ends at " #".
+func unquote(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') {
+		if j := strings.IndexByte(v[1:], v[0]); j >= 0 {
+			return v[1 : 1+j]
+		}
+	}
+	if i := strings.Index(v, " #"); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return v
+}
+
+// pairLiteral is HasSecretPairIn's literal rule for an env value v (as
+// written): isLiteral, judging a quoted value's text like an unquoted one's,
+// so "true" and "5432" are not literals.
+func pairLiteral(v string) bool { return isLiteral(unquote(v), false) }
+
+// credKeyWords are the endings of a credential-like key, compared with the
+// key lowercased and its _ - . separators removed.
+var credKeyWords = []string{"password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "privatekey", "secretkey",
+	"secretaccesskey", "credential", "credentials"}
+
+// refKeyEndings are keys that NAME a reference to a secret held elsewhere
+// (a Secret's name, a key selector), compared the same way; a key starting
+// with "existingsecret" is one too.
+var refKeyEndings = []string{"existingsecret", "passwordsecret", "tokensecret", "credentialssecret", "credentialsecret", "secretname",
+	"secretref", "secretkeyref", "keyref", "secretrefname"}
+
+// sourceExts are the source-code file extensions (HasSecretValueIn).
+var sourceExts = []string{".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rb", ".java", ".kt", ".kts", ".rs", ".c", ".h",
+	".cc", ".cpp", ".hpp", ".cs", ".swift", ".php", ".scala", ".lua", ".dart", ".ex", ".exs"}
+
+func isSource(path string) bool {
+	for _, e := range sourceExts {
+		if strings.HasSuffix(path, e) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// reKeyColon: a YAML or JSON `key: value` line (key optionally quoted,
+	// optionally a list item).
+	reKeyColon = regexp.MustCompile(`^\s*(?:-\s+)?["']?([A-Za-z0-9_.$-]+)["']?\s*:(?:\s+(.*)|\s*)$`)
+	// reJSONPair: every "key": value pair of a JSON object on one line.
+	reJSONPair = regexp.MustCompile(`"([A-Za-z0-9_.$-]+)"\s*:\s*("(?:[^"\\]|\\.)*"|[^,}\s]+)`)
+	// reKeyAssign: NAME=value / NAME = 'value' / name := "value" (export
+	// optional).
+	reKeyAssign = regexp.MustCompile(`(?:^|[\s;(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:?=\s*("[^"]*"|'[^']*'|` + "`[^`]*`" + `|[^\s;&]+)`)
+	// reKeyFlag: a credential flag and its value.
+	reKeyFlag = regexp.MustCompile(`(?:^|\s)--(password|passwd|pass|token|access-token|auth-token|api-key|apikey|secret|client-secret|private-key)(?:=|\s+)("[^"]*"|'[^']*'|\S+)`)
+	// reNumber: a number, optionally with a duration or size unit.
+	reNumber = regexp.MustCompile(`^[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?(?:ns|us|ms|s|m|h|d|w|Ki|Mi|Gi|Ti|K|M|G|T|k)?$`)
+	// reAnchor: a YAML anchor before a value (&name value).
+	reAnchor = regexp.MustCompile(`^&[^\s]+\s+`)
+)
+
+// credKey reports whether key is credential-like and does not name a
+// reference.
+func credKey(key string) bool {
+	k := strings.NewReplacer("_", "", "-", "", ".", "", "$", "").Replace(strings.ToLower(key))
+	if strings.HasPrefix(k, "existingsecret") {
+		return false
+	}
+	for _, e := range refKeyEndings {
+		if strings.HasSuffix(k, e) {
+			return false
+		}
+	}
+	for _, w := range credKeyWords {
+		if strings.HasSuffix(k, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// keyLiteral reports whether s has a credential-like key (credKey) holding a
+// LITERAL: any value except an empty or null one, a boolean, a number (with a
+// duration or size unit), a reference (${…}, $(…), $VAR, {{…}}, %{…}, a
+// <placeholder>, a YAML alias or flow mapping, anything mentioning
+// valueFrom), a SOPS ENC[…] value, a path (/…, ./…, ~/…) or a URL. A YAML
+// block scalar (| or >) is a literal. In code, only a quoted value is judged.
+func keyLiteral(s string, code bool) bool {
+	judge := func(key, v string) bool {
+		if !credKey(key) {
+			return false
+		}
+		v = strings.TrimSpace(v)
+		quoted := len(v) >= 2 && strings.ContainsRune(`"'`+"`", rune(v[0])) && v[len(v)-1] == v[0]
+		if !quoted {
+			v = strings.TrimSuffix(strings.TrimSpace(v), ",")
+			quoted = len(v) >= 2 && strings.ContainsRune(`"'`+"`", rune(v[0])) && v[len(v)-1] == v[0]
+		}
+		if code && !quoted {
+			return false
+		}
+		if !quoted {
+			if i := strings.Index(v, " #"); i >= 0 {
+				v = strings.TrimSpace(v[:i])
+			}
+		} else {
+			v = v[1 : len(v)-1]
+		}
+		return isLiteral(v, quoted)
+	}
+	for _, line := range strings.Split(s, "\n") {
+		for _, m := range reJSONPair.FindAllStringSubmatch(line, -1) {
+			if judge(m[1], m[2]) {
+				return true
+			}
+		}
+		if m := reKeyColon.FindStringSubmatch(line); m != nil && judge(m[1], m[2]) {
+			return true
+		}
+		for _, m := range reKeyAssign.FindAllStringSubmatch(line, -1) {
+			if judge(m[1], m[2]) {
+				return true
+			}
+		}
+		for _, m := range reKeyFlag.FindAllStringSubmatch(line, -1) {
+			if judge(m[1], m[2]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isLiteral reports whether v (unquoted already) is a literal value; a
+// quoted one is never a boolean, a null or a block scalar.
+func isLiteral(v string, quoted bool) bool {
+	v = reAnchor.ReplaceAllString(strings.TrimSpace(v), "")
+	if v == "" {
+		return false
+	}
+	if !quoted {
+		switch strings.ToLower(v) {
+		case "null", "~", "true", "false", "yes", "no", "on", "off":
+			return false
+		}
+		if v == "|" || v == ">" || strings.HasPrefix(v, "|") || strings.HasPrefix(v, ">") {
+			return true // a block scalar: its literal is on the next lines
+		}
+		if reNumber.MatchString(v) {
+			return false
+		}
+	}
+	for _, p := range []string{"${", "$(", "{{", "%{", "{", "*", "<", "ENC["} {
+		if strings.HasPrefix(v, p) {
+			return false
+		}
+	}
+	if len(v) > 1 && v[0] == '$' && (v[1] == '_' || v[1] >= 'A' && v[1] <= 'Z' || v[1] >= 'a' && v[1] <= 'z') {
+		return false
+	}
+	if strings.Contains(v, "valueFrom") || strings.HasPrefix(v, "/") || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "~/") {
+		return false
+	}
+	if i := strings.Index(v, "://"); i > 0 && !strings.ContainsAny(v[:i], " \t:@") {
+		return false // a URL (a password in its userinfo is the userinfo rule's)
+	}
+	return true
+}
+
+// minLiteralSecret is the shortest value literalSecret calls a secret.
+const minLiteralSecret = 12
+
+var (
+	// reRefName: a lowercase resource-style name with at least one '-' or '.'
+	// separator (db-credentials, my-release-postgresql, app.tls), or an
+	// UPPER_SNAKE variable name (DB_PASSWORD, ADMIN_TOKEN_REF).
+	reRefName = regexp.MustCompile(`^(?:[a-z0-9]+(?:[-.][a-z0-9]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)$`)
+	// reUUID is a UUID, which reRefName's first form would otherwise excuse.
+	reUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
+// literalSecret reports whether v, the value a credential-NAMED pattern
+// captured, is itself secret-shaped: at least minLiteralSecret characters
+// with no whitespace; not a reference, a SOPS ENC[…] value, a path or a URL;
+// not a resource or
+// variable name (reRefName, a UUID excepted); letters and a digit or a base64
+// symbol (+ / =); and at least 2.5 bits of entropy per character.
+func literalSecret(v string) bool {
+	v = strings.TrimSpace(v)
+	if i := strings.Index(v, " #"); i >= 0 {
+		v = strings.TrimSpace(v[:i]) // a YAML comment
+	}
+	v = strings.TrimSuffix(v, ",")
+	v = strings.Trim(v, `"'`)
+	if reUUID.MatchString(v) {
+		return true
+	}
+	if strings.HasPrefix(v, "ENC[") {
+		return false // a SOPS-encrypted value
+	}
+	if len(v) < minLiteralSecret || strings.ContainsAny(v, ws) || isReference(v) || reRefName.MatchString(v) {
+		return false
+	}
+	if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "~/") || strings.Contains(v, "://") {
+		return false
+	}
+	var letter, other bool
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
+			letter = true
+		case r >= '0' && r <= '9' || r == '+' || r == '/' || r == '=':
+			other = true
+		}
+	}
+	return letter && other && entropy(v) >= 2.5
+}
+
+// isReference reports whether v names a value held elsewhere: a shell or
+// template expansion, a YAML flow mapping, alias, anchor or block scalar, or
+// a placeholder.
+func isReference(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, p := range []string{"${", "$(", "{{", "{", "*", "&", "<", "|", ">", "%"} {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	if len(v) > 1 && v[0] == '$' && (v[1] == '_' || v[1] >= 'A' && v[1] <= 'Z' || v[1] >= 'a' && v[1] <= 'z') {
+		return true
+	}
+	return strings.Contains(v, "valueFrom")
+}
+
+// entropy is v's Shannon entropy in bits per byte.
+func entropy(v string) float64 {
+	var n [256]int
+	for i := 0; i < len(v); i++ {
+		n[v[i]]++
+	}
+	h := 0.0
+	for _, c := range n {
+		if c > 0 {
+			p := float64(c) / float64(len(v))
+			h -= p * math.Log2(p)
+		}
+	}
+	return h
+}
 
 // secrets is Secrets; with filter false every pattern runs, which is what the
 // test compares the filtered path against.
+//
+// isSecret, when set, is asked of every match of a credential-NAMED pattern
+// with the value that name holds, and a match whose value it does not call a
+// secret is left as it is (HasSecretValue). nil is Secrets: every pattern runs
+// exactly as it always has (the ReplaceAllString calls below are untouched on
+// that path).
 //
 // 🔴 THE FILTER ONLY SKIPS A PATTERN THAT CANNOT MATCH. Go's regexp costs
 // about 1 ms per pattern per 30 KiB of prose (measured at the rendered view's
@@ -95,7 +524,7 @@ func Secrets(s string) string { return secrets(s, true) }
 // through it. The literals are checked against the CURRENT text before each
 // pattern (a replacement can remove one, never make one: «redacted» spells
 // none), lowercased where the pattern ignores case.
-func secrets(s string, filter bool) string {
+func secrets(s string, filter bool, isSecret func(value string) bool) string {
 	if s == "" {
 		return s
 	}
@@ -116,8 +545,31 @@ func secrets(s string, filter bool) string {
 			s, lower = n, fold(n)
 		}
 	}
+	// named runs a credential-NAMED pattern: as Secrets did with isSecret
+	// nil; with isSecret, a match whose value (sub[group], or the match after
+	// sub[1] when group is 0) isSecret does not call a secret stays.
+	named := func(re *regexp.Regexp, tmpl string, group int) {
+		if isSecret == nil {
+			set(re.ReplaceAllString(s, tmpl))
+			return
+		}
+		set(re.ReplaceAllStringFunc(s, func(m string) string {
+			sub := re.FindStringSubmatch(m)
+			if sub == nil {
+				return m
+			}
+			v := strings.TrimPrefix(m, sub[1])
+			if group > 0 {
+				v = sub[group]
+			}
+			if !isSecret(v) {
+				return m
+			}
+			return Mark
+		}))
+	}
 	if may("authorization") {
-		set(reAuthHeader.ReplaceAllString(s, "${1}"+Mark))
+		named(reAuthHeader, "${1}"+Mark, 2)
 	}
 	if may("bearer", "basic") {
 		set(reBearer.ReplaceAllStringFunc(s, func(m string) string {
@@ -137,18 +589,34 @@ func secrets(s string, filter bool) string {
 			if strings.HasPrefix(sub[4], Mark) {
 				return m
 			}
+			if isSecret != nil && !isSecret(sub[4]) {
+				return m
+			}
 			return sub[1] + sub[2] + sub[3] + Mark
 		}))
 	}
 	if may("key=", "token=", "secret=", "password=", "passwd=", "pwd=") {
-		set(reAssign.ReplaceAllString(s, "${1}="+Mark))
+		named(reAssign, "${1}="+Mark, 2)
 	}
 	if may("://") && strings.Contains(s, "@") {
-		set(reUserinfo.ReplaceAllString(s, "${1}"+Mark+"@"))
+		if isSecret == nil {
+			set(reUserinfo.ReplaceAllString(s, "${1}"+Mark+"@"))
+		} else {
+			// A userinfo is a secret when it holds a password that is not a
+			// reference (user:${PASSWORD}@ is one; user@ holds none).
+			set(reUserinfo.ReplaceAllStringFunc(s, func(m string) string {
+				sub := reUserinfo.FindStringSubmatch(m)
+				_, pass, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(m, sub[1]), "@"), ":")
+				if !ok || isReference(pass) {
+					return m
+				}
+				return Mark
+			}))
+		}
 	}
 	if may("token", "key", "secret", "sig", "pass", "auth") && strings.Contains(s, "=") && (!filter ||
 		afterAny(lower, queryWords, func(r string) bool { return strings.HasPrefix(strings.TrimLeft(r, nameBytes), "=") })) {
-		set(reQuery.ReplaceAllString(s, "${1}"+Mark))
+		named(reQuery, "${1}"+Mark, 0)
 	}
 	// Case-sensitive, as the pattern is.
 	if !filter || containsAny(s, "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-",
@@ -168,18 +636,18 @@ func secrets(s string, filter bool) string {
 		set(reJWT.ReplaceAllString(s, Mark))
 	}
 	if may(`key"`, `token"`, `secret"`, `password"`, `passwd"`) {
-		set(reJSONSecret.ReplaceAllString(s, `${1}"`+Mark+`"`))
+		named(reJSONSecret, `${1}"`+Mark+`"`, 0)
 	}
 	if may("password", "passwd", "token", "secret", "key") && strings.Contains(s, ":") && (!filter ||
 		afterAny(lower, yamlWords, func(r string) bool { return strings.HasPrefix(strings.TrimLeft(r, " \t"), ":") })) {
-		set(reYAMLSecret.ReplaceAllString(s, "${1}"+Mark))
+		named(reYAMLSecret, "${1}"+Mark, 2)
 	}
 	if may("key", "token", "secret", "password", "passwd", "pwd") && strings.Contains(s, "=") && (!filter ||
 		afterAny(lower, assignWords, quotedAssignment)) {
-		set(reAssignSp.ReplaceAllString(s, "${1}"+Mark))
+		named(reAssignSp, "${1}"+Mark, 2)
 	}
 	if may("password", "passphrase", "passwd", "secret") {
-		set(reSaid.ReplaceAllString(s, "${1}"+Mark))
+		named(reSaid, "${1}"+Mark, 2)
 	}
 	if may("age-secret-key-1") {
 		set(reAge.ReplaceAllString(s, Mark))
@@ -194,7 +662,7 @@ func secrets(s string, filter bool) string {
 		set(reHF.ReplaceAllString(s, Mark))
 	}
 	if may("api-key", "auth-token", "access-token") {
-		set(reKeyHeader.ReplaceAllString(s, "${1}"+Mark))
+		named(reKeyHeader, "${1}"+Mark, 2)
 	}
 	// An AWS secret access key: exactly 40 base64 characters, mixed case with
 	// a digit, in text that says aws or secret (a lowercase git sha is 40

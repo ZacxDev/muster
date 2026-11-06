@@ -155,8 +155,8 @@ export class MirrorRig {
   // Agents list page this read is retired) that is ONLINE. needle is either a
   // plain substring of the entry's row markup (a session name, a label) or
   // one of two spellings kept from the retired list's card attributes:
-  // 'data-mirror-claude' (the row opens a rendered view: a Claude Code or a
-  // Hermes window) and 'data-f-session="<name>"' (the row's address names
+  // 'data-mirror-claude' (the row opens a rendered view: a Claude Code or an
+  // opencode window) and 'data-f-session="<name>"' (the row's address names
   // that tmux session).
   //
   // 🔴 A MATCH ANYWHERE ON THE LIST IS NOT READINESS. The server keeps a

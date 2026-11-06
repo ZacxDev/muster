@@ -378,3 +378,16 @@ func firstLine(s string) string {
 	}
 	return ""
 }
+
+// lastEvents is the newest lines holding at most n events in all (a line is
+// kept whole or not at all).
+func lastEvents(lines []cctranscript.Line, n int) []cctranscript.Line {
+	total := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		total += len(lines[i].Events)
+		if total > n {
+			return lines[i+1:]
+		}
+	}
+	return lines
+}

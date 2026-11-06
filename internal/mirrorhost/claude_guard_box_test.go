@@ -12,8 +12,7 @@ import (
 // TestAPasteIntoAClaudePaneWhoseInputBoxHoldsTextTypesNothing: text left in
 // Claude Code's input box (a message pasted and not submitted, something the
 // person typed) would be submitted WITH a new paste as one turn. The host
-// reads the box at the moment of typing and refuses (claude-box), as Hermes's
-// send does; a screen with no box it can read is refused too. The real CLI's
+// reads the box at the moment of typing and refuses (claude-box); a screen with no box it can read is refused too. The real CLI's
 // captures: its box holding text, its idle prompt (the control: typed).
 // Written against what the host had before the box check (screenBackend), so
 // it runs, and fails, there.

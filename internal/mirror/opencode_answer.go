@@ -24,8 +24,7 @@ import (
 // of the question's own option labels. The host checks again against what the
 // opencode server holds NOW.
 //
-// 🔴 THE GATES COPY THE HERMES APPROVAL PATH (hermes_answer.go), which copies
-// the Claude ask-answer path: an -interactive v2 host that advertised the
+// 🔴 THE GATES COPY the Claude ask-answer path: an -interactive v2 host that advertised the
 // capability (Msg.OpenCodeAnswer: -interactive, as for Claude Code), and a fresh sign-in
 // (internal/stepup); the owner and same-origin gates are the caller's
 // (internal/api's handleAttentionOpenCodeAnswer).
@@ -97,7 +96,7 @@ func (h *Hub) AnswerOpenCodeAsk(ctx context.Context, owner int64, host, session,
 	if runtime != RuntimeOpenCode {
 		return fmt.Errorf("%w: %w (the window does not run opencode)", ErrAskNotSent, ErrOpenCodeAskGone)
 	}
-	if !hc.gatedAnswers[RuntimeOpenCode] || !hc.interactive || hc.version < 2 {
+	if !hc.runtimeAnswers[RuntimeOpenCode] || !hc.interactive || hc.version < 2 {
 		return fmt.Errorf("%w: %w (host %q)", ErrAskNotSent, ErrOpenCodeAnswerUnsupported, host)
 	}
 	if !stepup.Fresh(ctx, h.now()) {
@@ -141,4 +140,18 @@ func (s *Service) AnswerOpenCodeAsk(ctx context.Context, host, session, window, 
 		return err
 	}
 	return s.hub.AnswerOpenCodeAsk(ctx, o, host, session, window, promptID, choice)
+}
+
+// pendingOf is the Pending the host lists for window windowID of session,
+// nil for none.
+func (hc *hostConn) pendingOf(session, windowID string) *Pending {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	for _, w := range hc.windows {
+		if w.Session == session && w.ID == windowID && w.Status == StatusWaiting && w.Pending != nil {
+			p := *w.Pending
+			return &p
+		}
+	}
+	return nil
 }

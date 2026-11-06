@@ -69,7 +69,7 @@ func TestAnOpenCodeAskOffersItsAnswersOnlyWhenItsHostRelays(t *testing.T) {
 		m := &openCodeAskMirror{fakeMirror: &fakeMirror{online: true, interactive: true, statusReport: true, windows: openCodeAnswerable()}, answers: answers}
 		s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 		s.UseExtensions(Extensions{Mirror: m})
-		by := itemsByWindow(s.waitingSessions(hermesUser()))
+		by := itemsByWindow(s.waitingSessions(attentionUser()))
 		q, p, many := by["@1"], by["@2"], by["@3"]
 		if q.Kind != attentionKindQuestion || strings.Join(q.choices, ",") != "Yes,No" {
 			t.Fatalf("the question: %+v", q)
@@ -99,7 +99,7 @@ func TestAnOpenCodeAskOffersItsAnswersOnlyWhenItsHostRelays(t *testing.T) {
 	m := &openCodeAskMirror{fakeMirror: &fakeMirror{online: false, offlineSince: time.Now(), interactive: true, statusReport: true, windows: openCodeAnswerable()}, answers: true}
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Mirror: m})
-	for _, it := range s.waitingSessions(hermesUser()) {
+	for _, it := range s.waitingSessions(attentionUser()) {
 		if h := attentionItemsHTML([]attentionItem{it}, time.Now()); strings.Contains(h, "<form") {
 			t.Errorf("an offline host's ask offers an answer:\n%s", h)
 		}
@@ -150,7 +150,7 @@ func TestAnOpenCodeAnswerIsGated(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := &openCodeAskMirror{fakeMirror: &fakeMirror{online: true, interactive: true, statusReport: true, windows: openCodeAnswerable()}, answers: true, err: c.err}
-			s, ts := hermesServer(t, m)
+			s, ts := attentionServer(t, m)
 			cookie := sessionCookieFor(s)
 			if c.stale {
 				cookie = staleCookieFor(s)

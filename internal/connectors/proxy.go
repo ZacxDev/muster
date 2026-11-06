@@ -229,6 +229,128 @@ type Gate interface {
 // ErrGateRefused is a [Gate]'s refusal of one request.
 var ErrGateRefused = errors.New("connectors: refused by this agent's write policy")
 
+// ErrGateConflict is a [Gate]'s refusal of a write whose CONTENT conflicts with
+// the policy (a forbidden path, a secret shape): answered 409, not 403. It
+// wraps [ErrGateRefused], so every check for a refusal still sees one.
+var ErrGateConflict = fmt.Errorf("%w: the change conflicts with it", ErrGateRefused)
+
+// afterForwardKey carries a gate's after-forward hook in an admitted
+// request's context.
+type afterForwardKey struct{}
+
+// ForwardResult is what the proxy saw of the upstream's answer to an admitted
+// request, handed to its after-forward hook.
+type ForwardResult struct {
+	// Forwarded: the request was handed to the upstream (false: the proxy
+	// answered it itself after Admit, e.g. no credential could be minted).
+	Forwarded bool
+	// Status is the upstream's status, 0 when no answer head arrived.
+	Status int
+	// Body is the start of the upstream's response body as the proxy read it
+	// (before redaction, at most MaxAfterForwardBody bytes), and Complete
+	// whether it was read to its end within that bound. A client that went
+	// away stops the relay, and with it the read: Complete is then false.
+	Body     []byte
+	Complete bool
+}
+
+// MaxAfterForwardBody bounds ForwardResult.Body.
+const MaxAfterForwardBody = 1 << 20
+
+// afterForward is the hook and what the proxy captured for it.
+type afterForward struct {
+	f        func(ctx context.Context, res ForwardResult)
+	mu       sync.Mutex
+	res      ForwardResult
+	once     sync.Once
+	captured bool
+}
+
+// WithAfterForward returns r carrying f: a [Gate]'s Admit returns it so that
+// the proxy calls f ONCE with what it saw of the upstream's answer.
+//
+// 🔴 f RUNS WHATEVER THE CLIENT DOES. Serve defers it as soon as Admit has
+// admitted the request, so it runs on every path out of Serve: a forwarded
+// request, a proxy refusal after Admit (Forwarded false), and a client that
+// went away mid-relay (ReverseProxy's panic(http.ErrAbortHandler) unwinds
+// through deferred calls only). Its ctx is detached from the request's
+// (context.WithoutCancel): a client that drops its connection cannot cancel
+// it. f runs in the handler; it must bound its own work. The push gate's
+// re-check of a push and of a new pull request is the user
+// (internal/officership's afterPush and afterCreate).
+func WithAfterForward(r *http.Request, f func(ctx context.Context, res ForwardResult)) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), afterForwardKey{}, &afterForward{f: f}))
+}
+
+// AfterForwardOf is the function WithAfterForward attached to r, nil when none.
+func AfterForwardOf(r *http.Request) func(ctx context.Context, res ForwardResult) {
+	if af := afterForwardOf(r); af != nil {
+		return af.f
+	}
+	return nil
+}
+
+func afterForwardOf(r *http.Request) *afterForward {
+	af, _ := r.Context().Value(afterForwardKey{}).(*afterForward)
+	return af
+}
+
+// run calls the hook once, with ctx detached from the request; a panic in it
+// is logged, never propagated (it may run while a client abort unwinds).
+func (af *afterForward) run(ctx context.Context, logf func(string, ...any)) {
+	af.once.Do(func() {
+		defer func() {
+			if v := recover(); v != nil {
+				logf("connectors: an after-forward hook panicked: %v", v)
+			}
+		}()
+		af.mu.Lock()
+		res := af.res
+		res.Body = append([]byte(nil), af.res.Body...)
+		af.mu.Unlock()
+		af.f(context.WithoutCancel(ctx), res)
+	})
+}
+
+// teeBody copies what is read of an upstream body into af, up to
+// MaxAfterForwardBody, and marks it Complete at a clean EOF within the bound.
+type teeBody struct {
+	io.ReadCloser
+	af *afterForward
+}
+
+func (t teeBody) Read(p []byte) (int, error) {
+	n, err := t.ReadCloser.Read(p)
+	t.af.mu.Lock()
+	defer t.af.mu.Unlock()
+	if room := MaxAfterForwardBody - len(t.af.res.Body); room > 0 && n > 0 {
+		t.af.res.Body = append(t.af.res.Body, p[:min(n, room)]...)
+	}
+	if n > 0 && len(t.af.res.Body) >= MaxAfterForwardBody {
+		t.af.res.Complete = false
+	}
+	if errors.Is(err, io.EOF) && len(t.af.res.Body) < MaxAfterForwardBody {
+		t.af.res.Complete = true
+	}
+	return n, err
+}
+
+// callerKey carries the Caller of a gated request into Admit.
+type callerKey struct{}
+
+// CallerOf is the caller Serve resolved for a gated request, as Admit sees it
+// in the request's context (ok false outside Serve: a test calling Admit
+// directly sets it with WithCaller).
+func CallerOf(ctx context.Context) (Caller, bool) {
+	c, ok := ctx.Value(callerKey{}).(Caller)
+	return c, ok
+}
+
+// WithCaller returns ctx carrying c for CallerOf.
+func WithCaller(ctx context.Context, c Caller) context.Context {
+	return context.WithValue(ctx, callerKey{}, c)
+}
+
 // Proxy forwards an agent's request to a connector's upstream with the
 // credential injected.
 type Proxy struct {
@@ -498,8 +620,18 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
 			return
 		}
-		admitted, err := g.Admit(r, strings.ToLower(host), rest)
+		admitted, err := g.Admit(r.WithContext(WithCaller(r.Context(), caller)), strings.ToLower(host), rest)
+		if err == nil {
+			if af := afterForwardOf(admitted); af != nil {
+				// 🔴 DEFERRED: it runs on every path out of here, a client
+				// abort's panic included (WithAfterForward).
+				defer af.run(ctx, p.logf)
+			}
+		}
 		switch {
+		case errors.Is(err, ErrGateConflict):
+			refuse(http.StatusConflict, RefusalBody{Error: err.Error()}, "gate refused: conflict")
+			return
 		case errors.Is(err, ErrGateRefused):
 			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "gate refused")
 			return
@@ -642,6 +774,13 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		red = newRedactor(secretForms(c, secret))
 	}
 	prefix := "/connect/" + connector + "/"
+	// A gate's after-forward hook sees what the upstream answered (WithAfterForward).
+	af := afterForwardOf(r)
+	if af != nil {
+		af.mu.Lock()
+		af.res.Forwarded = true
+		af.mu.Unlock()
+	}
 
 	// The upstream request runs on outCtx, which only an event stream's shutdown
 	// end cancels (ModifyResponse below); r.Context() still cancels it as before.
@@ -677,6 +816,14 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		Transport: p.upstreamTransport(),
 		ModifyResponse: func(resp *http.Response) error {
 			*status = resp.StatusCode
+			if af != nil {
+				af.mu.Lock()
+				af.res.Status = resp.StatusCode
+				af.mu.Unlock()
+				// Innermost: the hook sees the upstream's bytes as they were
+				// read, before any wrap below changes them.
+				resp.Body = teeBody{ReadCloser: resp.Body, af: af}
+			}
 			if onStatus != nil {
 				onStatus(resp.StatusCode)
 			}

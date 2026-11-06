@@ -253,7 +253,7 @@ attachments Claude Code adds before most requests that are judged negligible
 between them by the size of each call and result. Each share is marked `~`, and
 the row's tooltip gives the total. When nothing can be measured, the number is
 an estimate, also marked `~`. That happens when the runtime records no usage
-(Hermes), when something else entered the context before the next turn, or when
+(opencode), when something else entered the context before the next turn, or when
 the context shrank. Something else means a prompt, a notice, or context Claude
 Code injected that is not negligible, such as a message typed while the tool
 ran or a diagnostics report. The tooltip says which case it was. An image is
@@ -279,7 +279,7 @@ number.
 
 An estimate is the calling turn's own `output_tokens` (its share of them, by the
 size of each call's input, when it made several calls) plus the result's size at
-**2.2 bytes per token**. With no `output_tokens` known (Hermes, an older host),
+**2.2 bytes per token**. With no `output_tokens` known (opencode, an older host),
 it is the call and result size at that rate. That rate was fitted on Claude
 Code transcripts only, so for another runtime or model the figure is not
 validated, in either direction.
@@ -340,7 +340,7 @@ bytes / (growth − output), over results of 400 bytes or more, was 2.16 (p25
 | after, with the output withheld: (call + result bytes) / 2.2 | 0.29 | 0.60 | 1.40 |
 
 The last row is Claude Code's own gaps with the output withheld. It is not a
-measurement of Hermes or any other runtime.
+measurement of opencode or any other runtime.
 
 `TestTheEstimateIsTheCalibratedSplit` pins the rate. Changing the rate or the
 set is a decision made with that tool's numbers, not a drift.
@@ -416,8 +416,7 @@ browser, and the view starts again from the beginning.
   through the window's stream, never its page, so a warmed window is not
   recorded as visited and does not move in **Recent**. It stops on a hidden
   tab, with Save-Data on, or on a 2G connection, and reads at most 3 MiB per
-  pass. Refreshing a copy resumes its stream, so only what is new is read, except
-  for a Hermes window, whose host always sends the whole conversation again.
+  pass. Refreshing a copy resumes its stream, so only what is new is read.
 
 ### Why a window opens in the terminal
 
@@ -558,63 +557,30 @@ read-only viewer can see. It does not limit an attached interactive client.
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
-### muster pastes into Hermes only through its gated send
+### What the host never types into
 
-🔴 The host refuses to type into a pane that runs
-[Hermes](design/hermes.md), except through the one gated send described in
-[Sending to a Hermes window](#sending-to-a-hermes-window--hermes-send). On
-Hermes's approval prompt, a pasted message followed by Enter **approves the
-command**, whatever the message says. This covers every other way muster types
-into a pane: the Terminal view's message box, a Claude Code send, and an
-answer typed into Claude Code's question picker. Nothing reaches the pane, and
-the page says why, whether or not script ran: "Not sent: Hermes runs in this
-pane…". Type into Hermes in the terminal itself (muster's Terminal view, or the
-terminal on the host), or send from its window's rendered view on a host that runs with
-`-hermes-send`.
+🔴 Before the host types anything into a pane — the Terminal view's message
+box, a Claude Code send, an answer typed into Claude Code's question picker —
+it walks the pane's process tree from its root process, at that moment, and
+refuses when the tree holds:
 
-The host decides this itself, by what runs in the pane at the moment it
-types. It does not depend on the server's version. It walks the pane's process
-tree from its root process and refuses when any process in it is one of
-these:
-
-- a process named `hermes` whose second argument is a `hermes` launcher (the
-  Nix wrapper, a pip or uv install), whatever follows: `chat`,
-  `-p <profile> chat`, `gateway run`;
-- a Python interpreter with any argument that names `hermes_cli` (`-m
-  hermes_cli…`, a script under `hermes_cli/`, `-c` code importing it) or a
-  script named `hermes`, or a `cli.py` beside a `hermes_cli/` directory;
+- an opencode on the pane's terminal ([below](#muster-does-not-send-to-opencode-yet));
 - a terminal multiplexer client: `tmux`, `screen`, `dtach`, `abduco` or
   `zellij`. A tmux started inside the pane can show a session of another
   server, whose programs the host cannot see from this pane, so the host
-  refuses rather than guess. The message says so.
+  refuses rather than guess: "Not sent: this pane runs another terminal
+  multiplexer…";
+- a process it cannot read (its `stat` or its command line), which is not
+  presumed safe: "Not sent: muster-mirror could not check what runs in this
+  pane…". A process forked after the host read the process table — a busy
+  Claude Code pane's tool calls fork all the time — is read on its own then,
+  and walked like any other; only one that still cannot be read refuses.
 
-When no process matches, the host also looks at the pane's **screen**: one
-showing Hermes's input area (its status bar's `☤`, two rules around a `❯`
-line) is refused too. That catches a Hermes run over `ssh` or `docker exec`
-while its chrome is drawn. It is a best-effort extra and misses a Hermes whose
-chrome is not drawn (for a moment after a resize, in a pane under 64 columns,
-or with its status bar turned off).
-
-The gateway counts, so a pane running `hermes gateway run` is refused too. So
-is a Claude Code pane whose tree holds Hermes: one where Hermes was started in
-the foreground after Claude Code (`claude &`, then `hermes chat`), or one where
-Claude Code itself runs `hermes mcp serve` or `hermes acp`. If the host cannot
-read a process in the pane's tree, it refuses rather than assume.
-Shells, Claude Code and other programs are otherwise unaffected.
-
-These refusals are accepted as safe even when no Hermes is there: a nested
-tmux, screen or zellij session, a hand-run gateway, and a Claude Code pane
-whose Claude started a Hermes subprocess.
-
-Known gaps:
-
-- a Hermes run over `ssh` or `docker exec` inside the pane, whose chrome the
-  screen check above does not see;
-- a Hermes started under a renamed interpreter or from a copied tree;
-- a host with no `/proc`, which means macOS. There the host cannot see
-  processes, and it types as before. Refusing every message there would take
-  the message box away from every macOS user, and no deployment runs Hermes on
-  a macOS host.
+Nothing reaches the pane, and the page says why, whether or not script ran.
+The host decides this itself, by what runs in the pane at the moment it
+types. It does not depend on the server's version. Shells, Claude Code and
+other programs are otherwise unaffected. A host with no `/proc` (macOS)
+cannot see processes, and types as before.
 
 ### muster does not send to opencode yet
 
@@ -633,9 +599,9 @@ refused this way, Send, Queue and Send now alike, and the page says
 "Sending to opencode isn't supported yet…". A later version sends to opencode
 through its own API, never keystrokes. Type into opencode in the terminal.
 
-Like the Hermes refusal, the host decides this itself, from the pane's
-processes at the moment it types, not from the window's `opencode` label: a
-window labelled `zsh` whose pane runs opencode is refused too.
+The host decides this itself, from the pane's processes at the moment it
+types, not from the window's `opencode` label: a window labelled `zsh` whose
+pane runs opencode is refused too.
 
 Known gaps (the host types into these panes as into any other):
 
@@ -728,7 +694,13 @@ a prompt does:
   screen, the command on the page;
 - a **question** (the question tool's form, `form.created`) is a *Session
   question* item, notified as "<window> is asking" with its question and, for
-  one question, its options.
+  one question, its options — when muster can relay its answer; one it cannot
+  keeps its card (which says to answer it in the terminal) and is notified as
+  a plain waiting window.
+
+Either notification waits 60 seconds and is sent only if the window still
+waits then ([attention.md](attention.md#stalled--waiting-session-state)); the
+item itself is on the page at once.
 
 Answered, rejected or cancelled in the terminal (`permission.replied`,
 `form.replied`, `form.cancelled`), the window stops waiting and the item and
@@ -791,240 +763,38 @@ request or question you gave in muster (`POST …/permission/<id>/reply`,
 `POST …/form/<id>/reply`). To take muster's access away, rotate the opencode service
 password. That revokes every token, muster's and every other paired client's.
 
-### Hermes windows
+### Hermes support was removed
 
-A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
-listed as a **Hermes window**: a process named `hermes`, a Python running a
-`hermes` launcher, no `gateway` argument, reading the pane's terminal
-(`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
-as one; the paste refusal above still covers it. Its kind is **Hermes**
-(the search finds it by `hermes`), whatever its pane's command reads. muster sends into it only from its rendered view, and only on a host
-that runs with `-hermes-send` (below); elsewhere Send, Queue and Send now all
-refuse it.
+muster no longer mirrors, views, sends to or answers the Hermes CLI. A pane
+running Hermes is a plain terminal window: the Terminal view shows it, and
+the host's message box types into it like any shell's (the guard above
+refuses only what it lists).
 
-**Rendered view.** A Hermes window whose session the host can name
-(below) opens in a Rendered view of its conversation, read from Hermes's
-session store as it is written: the prompts, the replies, the tool calls and
-their results, and a compact row for what Hermes adds itself (a process
-finishing, a model switch). Thinking is never shown. On a host without
-`-hermes-send` its message box is drawn disabled and says why, with no send
-queue. Terminal is one tap away, as for Claude Code. A compression that
-rewrites the conversation redraws the view from the start.
+An older `muster-mirror` may still be running on a host until its pin moves.
+A newer muster takes its Hermes wire without an error: its hello's
+`hermesSend` and `hermesAnswer` are ignored, a window it names
+`runtime: "hermes"` is listed as a plain terminal window (no rendered view,
+status, session key, pending approval or note), and its paste guard's
+`hermes` refusal is shown as a plain refusal in the host's own words.
 
-**Which session.** The host finds the window's Hermes session from the
-breadcrumb Hermes writes for its terminal,
-`~/.hermes/terminal-sessions/tty-<terminal>`, and looks it up in Hermes's
-session store, `~/.hermes/state.db`, read-only. A breadcrumb is believed only
-when it is newer than the Hermes process in the pane. A conversation that
-Hermes compressed into a new session is followed to its newest one. 🔴 **After
-`/resume` or `/branch` at the terminal, Hermes leaves the breadcrumb on the old
-session**, which Hermes marks as ended. The window then has no session and its
-status is unknown, until `/new` or a restart of the CLI writes a new
-breadcrumb. muster never shows the abandoned session's status as this window's.
+A newer `muster-mirror` has no Hermes flags or subcommands: one started with
+a removed flag fails as with any unknown flag, and a leftover word
+(`hermes-hook`, `hermes-allowlist`, a typo) fails with "unknown command or
+argument". Remove them from a host's configuration before moving its pin.
 
-**Status.** Hermes reports no status of its own, so the host reads one that a
-Hermes shell hook writes: `muster-mirror hermes-hook`, one small file per
-session in `~/.muster/hermes-status/` (0700; it holds the status, its time and
-a request's kind and id, never a prompt or a command). `busy` is believed only
-while Hermes holds the conversation's turn lease and the gateway that wrote it
-is running; `idle` only while no lease is held and no message is newer than it.
-Anything else is **unknown**. An unknown window holds the send queue, and shows
-no status.
-
-The host reads only these Hermes files: `state.db` (and its `-wal` and `-shm`),
-`terminal-sessions/tty-*`, and `shell-hooks-allowlist.json` — and, only with
-`-hermes-send`, `config.yaml`'s `display.vim_mode` (that key alone). It never
-opens `auth.json`, `.env`, `pastes/`, `memories/`, `logs/` or
-`runtime/active_sessions.json`. The Hermes home is `$HERMES_HOME`, else
-`~/.hermes` (`-hermes-home` overrides it).
-
-#### Sending to a Hermes window (`-hermes-send`)
-
-Sending to Hermes is **off** unless the host's `muster-mirror` runs with
-`-interactive` **and** `-hermes-send` (`MUSTER_MIRROR_HERMES_SEND`). It needs
-the status hook (below). Turn it on per host, and only:
-
-- after `make test-livehermes` has ended with `HERMES HARNESS VERDICT: GREEN`
-  against the Hermes commit that host runs;
-- 🔴 **never in vi mode**, and the host enforces it: it reads
-  `display.vim_mode` from the Hermes home's `config.yaml` (that one section
-  and key) on every connect and every send, and while it is on — or the file
-  cannot be read — advertises nothing and sends nothing. One Escape there
-  would enter vi navigation, where the message's characters would be read as
-  commands. The startup log and `muster-mirror -list -hermes` (`vi-mode`)
-  say which.
-
-With it on, the window's rendered view offers Send, Queue and Send now. Every
-send goes through the host's **gated send**, in this order:
-
-1. muster refuses unless the window is **idle** (busy, waiting and unknown are
-   refused, saying why), and sends the status time it decided on;
-2. the host refuses a message whose text starts with `/` or `!` (Hermes would
-   run it as a command), ends with `\` (Enter would continue the line), or is
-   only a number (after `/resume` Hermes takes it as a session to switch to), and
-   one so long, on one line, that Hermes's input box could not show it whole
-   (about 8 rows: shorten it, or send six or more lines, which Hermes collapses);
-3. the host checks again that Hermes is idle at exactly that time;
-4. it checks the screen: Hermes's status bar is there (it is blank while the
-   command palette or the model picker is open) with at least one row above
-   it (a pane of 4 rows is refused as too short), no stash panel (found by its
-   header, even when a short pane cuts the rest of it), no vi label,
-   no images attached, the idle prompt `❯ ` with an empty box, nothing below
-   it. Any approval, question, password prompt, confirm or running turn
-   changes that prompt, so it is refused here;
-5. it types one Escape, waits 1.5 s and checks the screen again;
-6. it pastes the message, waits 150 ms, checks the status again and that the
-   box shows exactly the message (or Hermes's `[Pasted text #N: L lines → …]`
-   placeholder), then presses Enter;
-7. it waits up to 8 s for the message to appear in Hermes's session store.
-
-What you see: **Sent** (the message is in the conversation); **Not sent…
-Nothing was pasted** (refused at steps 1–5, possibly after some Escapes);
-**Pasted, not submitted** (the text is in Hermes's input box and Enter was not
-pressed: check the terminal); or **May have been submitted: check the
-conversation before sending again** (Enter was pressed and Hermes recorded no
-message in time). After a "may have been submitted", muster will not send the
-same message again by itself: sending it again is refused, and the message
-box offers **Send again** for when you have checked. Queued messages and Send
-now say the same words, never "Not sent". A send takes about five seconds. Right after a turn ends,
-Hermes can say it is idle while its screen still shows the turn finishing; a
-send in that moment is refused, and a queued message waits its idle time
-anyway.
-
-⚠ **Accepted residual risk** ([design](design/hermes.md#residual-cases-accepted)):
-a person opening an overlay at the terminal in the second before muster's
-Enter; an overlay a future Hermes adds before the harness is re-run; and a
-turn Hermes starts on its own between the last check and Enter. Hermes's `/busy queue` (it saves `display.busy_input_mode: queue`)
-turns the last one into a queued message instead of an interrupted turn; with
-it, Hermes can still submit a queued message up to about 2 s after it says
-idle, under load. A pasted message of 2,000 characters or more is saved by
-Hermes in `~/.hermes/pastes/`; muster never reads that directory.
-
-#### Hermes's approvals, questions and sudo prompts (`-hermes-answer`)
-
-A Hermes window waiting on you is in the **Attention** queue (and counts on
-its sidebar row), saying what it waits on, as Hermes's status hook recorded
-it:
-
-- **an approval** — Hermes wants to run a command. On a host that runs with
-  `-interactive` **and** `-hermes-answer` (`MUSTER_MIRROR_HERMES_ANSWER`),
-  the host attaches Hermes's **gateway viewer** to that session while it
-  waits, the queue shows the command (`terminal: rm -r ./build`) and why
-  Hermes asks, and offers **Allow once** and **Deny**. muster never offers
-  `session` or `always`, and offers **Allow once** only for a plain terminal
-  command it can show whole: the approval must be Hermes's terminal gate's
-  (not a file write, a plugin's rule or computer use, whose "command" is only
-  a label), its command must be the very command pending in the conversation,
-  plain ASCII on one line within the card's length, with nothing redacted or
-  masked out of it. Otherwise only **Deny** is offered. An answer needs a fresh
-  sign-in, as answering Claude's questions does, and goes through the gateway,
-  never as keys into the pane. After it, the terminal keeps showing Hermes's
-  prompt until a key is pressed there (the queue says so); the answer has
-  already been taken. Without `-hermes-answer`, or when the host cannot reach
-  the gateway (none running, not the pinned commit — `-list -hermes` names
-  it), the item says to answer in the terminal.
-- **a question** (Hermes's clarify tool): the queue shows the first question,
-  its choices and how many more there are, read from the conversation; answer
-  it in the terminal.
-- **a sudo password**: listed only. muster never answers a password prompt.
-
-The viewer is attached only while a session waits on an approval, and only
-to the pinned Hermes's gateway; it keeps nothing of the session but the
-approval's command, description and choices (docs/design/hermes.md, Phase 4).
-
-#### Installing the Hermes status hook
-
-The hook runs inside Hermes's gateway. Hermes runs a configured hook only when
-the exact `(event, command)` pair is in its allowlist,
-`~/.hermes/shell-hooks-allowlist.json`. A configured hook that is not
-allowlisted is skipped, and every new Hermes CLI then stops before its UI on
-`Allow this hook to run? [y/N]:`. So the host's configuration must declare both
-halves, with the same command string. `<muster-mirror>` below is the absolute
-path of the `muster-mirror` binary, for example
-`${pkgs.muster-mirror}/bin/muster-mirror` in Home Manager.
-
-1. **The hooks**, in Hermes's `config.yaml` (with Home Manager, through the
-   `hermes-agent` module's `settings`, as `settings.hooks`):
-
-   ```yaml
-   hooks:
-     pre_llm_call:            [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_human_input_request:  [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_human_input_resolved: [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_session_end:          [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-     on_session_finalize:     [{command: "<muster-mirror> hermes-hook", timeout: 5}]
-   ```
-
-2. **The allowlist entries**: one `{event, command}` approval per hook above.
-   Write them with the allowlist writer, in a Home Manager activation step
-   ordered after the `hermes-agent` module's own:
-
-   ```sh
-   <muster-mirror> hermes-allowlist -command "<muster-mirror> hermes-hook"
-   ```
-
-   It writes the way Hermes does: under Hermes's lock
-   (`shell-hooks-allowlist.json.lock`), as a real 0600 file through a temp file
-   and a rename. Never link a read-only file there: Hermes writes the same file
-   when someone answers `[y/N]` (a Home Manager link into the Nix store is
-   replaced by a real file; any other symlink there is refused). It keeps every
-   other approval, removes entries for an older `muster-mirror hermes-hook`
-   path (every Nix upgrade changes it), carries nothing but approvals over,
-   and changes nothing when the five pairs are already there. It refuses to
-   replace an allowlist that is not valid JSON.
-
-3. **The daemon** must run with `-write-hook-config`
-   (`MUSTER_MIRROR_WRITE_HOOK_CONFIG=1`), as for `muster-mirror ask`, so the hook
-   writes where the daemon reads (`-hermes-status-dir`, default
-   `~/.muster/hermes-status`).
-
-The hook prints nothing, always exits 0, and gives up after a second rather
-than hold Hermes up. If it cannot write, the window's status is unknown, never
-idle.
-
-#### Diagnosing a Hermes window
-
-`muster-mirror -list -windows` prints a Hermes window as
-`hermes <pane> <state> <session id> <source>`, with `-` for the session of a
-window that has no rendered view and `unknown` for a status muster does not
-believe. `muster-mirror -list -hermes` says why:
-
-- `hook-declared`: each `muster-mirror hermes-hook` command Hermes's
-  `config.yaml` declares, per event (only its `hooks:` section is read).
-  `hook-config` says when it declares none, or several.
-- `hook-consent`, per declared command: `ok for <command>`, or `MISSING for
-  <command>` with the events whose `(event, command)` pair is not in the
-  allowlist, and the command that fixes it (`muster-mirror hermes-allowlist
-  -hermes-home … -command <the declared command>`; none when several are
-  declared). `hook-undeclared` names events the config does not hook;
-  `hook-other` names allowlisted entries of a command that is not declared
-  (an older binary's, which the next `hermes-allowlist` removes).
-- per Hermes window: its pane, CLI process, terminal, session and status; the
-  `breadcrumb` (its session and time, or `none`); the `lineage` and how its tip
-  ended; the newest `status-file`; and, when there is one, the `no-view` and
-  `unknown` reasons (no breadcrumb, a breadcrumb older than the CLI, a switched
-  session, no status file, a stale busy, an idle under a live turn).
-
-- `gateway`: the home's Hermes gateway, as its control socket's `identify`
-  names it — `none running`, `code_sha <sha> (the pin)`, `NOT THE PIN` (the
-  commit it booted from is not the one muster supports), or `refused` with
-  why (a control path another user could reach, a gateway that is not ready).
-  muster attaches its gateway viewer (to answer Hermes approvals) only to the
-  pin; otherwise every Hermes approval is answered in the terminal. It asks
-  `identify` only: no ticket, no attach.
-
-muster also refuses every send into a window the host reports as Hermes on
-its own side, before anything reaches the host. A Hermes the host does not
-report as one (a profile-launched CLI, or any Hermes on a host older than this
-release) is refused by the host alone, as above; a host older than that
-refusal has no protection at all, so upgrade every host that runs Hermes.
+Migration `0085` deleted the focus history Hermes windows left
+(`hermes:<id>` keys) and narrowed the session-key CHECKs back to Claude Code
+ids and `opencode:` keys ([schema.md](schema.md)).
 
 ## Answering Claude's questions
 
 When Claude Code calls `AskUserQuestion`, the question shows in **both places
 at once**: the terminal draws its own picker, and the window's Rendered view
 draws the same questions as a form. Answer in either. Whichever is answered
-first counts, and the other side shows what happened. This needs a Claude Code
+first counts, and the other side shows what happened. Your phone is notified
+only if the question is still open 60 seconds after Claude asked it
+([attention.md](attention.md#stalled--waiting-session-state)), so a question
+you answer at the terminal, or in muster, within a minute never buzzes it. This needs a Claude Code
 hook on the host: `muster-mirror ask`. Add it to that machine's Claude Code
 `settings.json`, with no flags:
 
@@ -1162,9 +932,8 @@ How it works:
   dismissed. Same gates as an answer — your own host, `-interactive`, a
   same-origin request, one key at a time per pane — but no recent sign-in is
   asked: the dialog is the confirmation. A host whose `muster-mirror` predates
-  it does not offer it, and muster never sends it one. (Hermes approval and
-  clarify cards have no Cancel: they are answered through Hermes's gateway,
-  not by keys.)
+  it does not offer it, and muster never sends it one. (An opencode ask's
+  card has no Cancel: it is answered through opencode's API, not by keys.)
 - **One answer at a time.** Once you submit, closing the page does not stop
   it: muster waits for the host to report how it went. No second answer for
   the question starts until it has (or until 90 seconds have passed, when the
@@ -1249,6 +1018,13 @@ gone is reopened. A call whose result is already in the transcript is never
 registered, and a question past muster's size limits stays in the terminal
 only. Nothing changes on the host: this works with every `muster-mirror` that
 reports its windows' status.
+
+A question read back this way is **not notified again**. With session state on
+its push belongs to the window's stop, recorded in the database: one pushed
+before the restart is not pushed again, and one that was never pushed (its 60
+seconds had not passed) is pushed once they have, if it is still open
+([attention.md](attention.md#stalled--waiting-session-state)). Before
+the follow-up to #463 a restart re-sent every question it read back.
 
 When muster has no card for an open call, the conversation still shows it,
 with *Muster isn't tracking this question, so it can't answer it from here —

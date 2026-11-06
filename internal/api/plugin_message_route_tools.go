@@ -68,7 +68,7 @@ const (
 
 // pluginMessageRouteToolsOn reports whether the tools can work here: session
 // routing on (its configuration, its store and the plugin store).
-func (s *Server) pluginMessageRouteToolsOn() bool { return routingOn(s.ext) }
+func (s *Server) pluginMessageRouteToolsOn() bool { return messageRoutingOn(s.ext) }
 
 func pluginMessageRouteToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/podagent"
 )
@@ -47,6 +48,23 @@ type TierPool struct {
 	// it claims per UTC day (sessions.go); 0 is no cap. The routine pool is
 	// bounded by the `llm` budget instead.
 	MaxSessionsPerDay int `json:"max_sessions_per_day,omitempty"`
+	// MaxItemMinutes, on the judgement pool only, is the wall-time cap on ONE
+	// item: once an instance of the pool has held an item this long, the wake
+	// loop stops the instance and completes the item escalated (Decide,
+	// Overrun). 0 is no cap.
+	MaxItemMinutes int `json:"max_item_minutes,omitempty"`
+}
+
+// MaxItemMinutesCap bounds tiers.judgement.max_item_minutes: a day.
+const MaxItemMinutesCap = 24 * 60
+
+// ItemCap is the pool's wall-time cap on one item: 0 (none) unless o is the
+// judgement pool of a tiered officer that declares max_item_minutes.
+func (o Officer) ItemCap() time.Duration {
+	if o.Tiers == nil || o.Tier != TierJudgement {
+		return 0
+	}
+	return time.Duration(o.Tiers.Judgement.MaxItemMinutes) * time.Minute
 }
 
 // Tiers is an officer's `tiers` block: both pools.
@@ -87,6 +105,13 @@ func (o Officer) Pool(tier string) Officer {
 		p.Tier, src = TierRoutine, o.Tiers.Routine
 	}
 	p.Model, p.MaxInstances = src.Model, src.MaxInstances
+	if p.Tier == TierRoutine {
+		// 🔴 ONLY THE JUDGEMENT POOL SHIPS. A routine instance (a cheaper
+		// model, fed untriaged input) gets no ship tool, push gate or officer
+		// App token: every one of those branches on Ship (ToolOffered,
+		// api.Server.shipGate), so nil here is the whole rule.
+		p.Ship, p.CILogs = nil, nil
+	}
 	return p
 }
 
@@ -173,7 +198,7 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 	dec.DisallowUnknownFields()
 	var p TierPool
 	if err := dec.Decode(&p); err != nil {
-		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "max_sessions_per_day"? (judgement only)}: %v`, err)
+		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "max_sessions_per_day"?, "max_item_minutes"? (both judgement only)}: %v`, err)
 	}
 	p.Model = strings.TrimSpace(p.Model)
 	if p.Model == "" {
@@ -200,6 +225,12 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 		return TierPool{}, errors.New("max_sessions_per_day caps the judgement pool only; the routine pool is bounded by the officer's `llm` budget")
 	case p.MaxSessionsPerDay < 0 || p.MaxSessionsPerDay > MaxSessionsPerDayCap:
 		return TierPool{}, fmt.Errorf("max_sessions_per_day %d is not 1..%d (leave it out for no cap)", p.MaxSessionsPerDay, MaxSessionsPerDayCap)
+	}
+	switch {
+	case routine && p.MaxItemMinutes != 0:
+		return TierPool{}, errors.New("max_item_minutes caps the judgement pool only")
+	case p.MaxItemMinutes < 0 || p.MaxItemMinutes > MaxItemMinutesCap:
+		return TierPool{}, fmt.Errorf("max_item_minutes %d is not 1..%d (leave it out for no cap)", p.MaxItemMinutes, MaxItemMinutesCap)
 	}
 	return p, nil
 }

@@ -137,7 +137,7 @@ type ComposerView struct {
 	// (SuggestPath with its address) and draws the chip row above the
 	// composer (suggest_row.go); "" draws none. Only a Claude Code window's
 	// Rendered view on an interactive host sets it — never a Terminal view,
-	// never Hermes. A disabled composer draws none either way.
+	// never another runtime's. A disabled composer draws none either way.
 	Suggest string
 	// SuggestPaused draws one line saying the viewer's suggested replies are
 	// paused (the auto-pause), with the way back on (Account). Drawn with the
@@ -482,13 +482,16 @@ func composerPinScript() g.Node {
 
 // mirrorComposerScript sends the composer's text without leaving the page.
 //
+// 🔴 IT DOES NOT WAIT FOR THE ANSWER (composer_pending.go, which holds the
+// script: mirrorComposerJS). The box empties and the message is drawn as
+// pending at the press; the answer then settles it — sent (replaced by its
+// transcript row), refused (failed, with the reason, Retry, and the text back
+// in the box), or a step-up.
+//
 // A 403 carrying X-Muster-Step-Up means the sign-in is not fresh: "Confirm it's
 // you" is asked (window.musterStepUp, stepup_confirm.go) and on success the
-// SAME text — still in the box, never cleared on a refusal — is sent again. The
-// page never decides freshness; the server does.
-//
-// What a person sees: sent → the box clears (and the view above shows the text
-// land); not sent → the reason, inline, with the text kept; nothing typed →
+// SAME request — the pending message's own text and nonce — is sent again.
+// The page never decides freshness; the server does. Nothing typed →
 // MirrorComposeEmpty rather than a Send that silently does nothing.
 //
 // 🔴 WHEN THIS SCRIPT'S WAY FAILS, THE BROWSER'S TAKES OVER (native()). Three
@@ -510,187 +513,5 @@ func composerPinScript() g.Node {
 const SendAgainHeader = "X-Muster-Send-Again"
 
 func mirrorComposerScript() g.Node {
-	return Script(g.Raw(`
-(function () {
-  var form = document.getElementById('mv-form');
-  if (!form) return;
-  var input = document.getElementById('mv-input');
-  var send = document.getElementById('mv-send');
-  (` + sendKeepsFocusJS + `)(send);
-  var note = document.getElementById('mv-note');
-  var nonce = document.getElementById('mv-nonce');
-  function say(msg) { note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
-  function sayOK(msg) { say(msg); note.setAttribute('data-ok', ''); }
-  // A message that was sent is done with its nonce: the next one is a new
-  // message, and must not be taken for a repeat of this one.
-  function renew() {
-    if (!nonce) return;
-    // With no way to mint one the field is EMPTIED: no nonce is no protection,
-    // and a reused one would have the next message taken for this one.
-    nonce.value = '';
-    if (!window.crypto || !crypto.getRandomValues) return;
-    var b = new Uint8Array(16), s = '';
-    crypto.getRandomValues(b);
-    for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
-    nonce.value = s;
-  }
-  // A notice in the address has been shown (the server drew it): take it out,
-  // so reloading the page does not repeat it.
-  try {
-    var here = new URL(location.href);
-    if (here.searchParams.has('notice')) {
-      here.searchParams.delete('notice');
-      history.replaceState(history.state, '', here.pathname + here.search + here.hash);
-    }
-  } catch (e) {}
-  // 🔴 "SEND AGAIN" IS THE ONLY RETRY OF A SEND THAT MAY HAVE LANDED. When the
-  // host never confirmed a send (the answer carries X-Muster-Send-Again), the
-  // server keeps its nonce: the same message re-sent with it is refused,
-  // because it may be in the conversation already — and so is the same text
-  // under any other nonce (internal/api sendNonces.hold). This button is the
-  // person's explicit retry: it mints a NEW nonce and says it is Send again
-  // (againField), then sends.
-  var againBtn = null;
-  function offerAgain(sub) {
-    if (!againBtn) {
-      againBtn = document.createElement('button');
-      againBtn.type = 'button';
-      againBtn.id = 'mv-send-again';
-      againBtn.className = '` + composerSendClass + `';
-      againBtn.textContent = 'Send again';
-      note.parentNode.insertBefore(againBtn, note.nextSibling);
-    }
-    againBtn.hidden = false;
-    // A plain Send of the message stays refused while this is offered — on
-    // this page, and on any copy of it (a restore renews the nonce, a Back
-    // from the HTTP cache shows the page as first served): the server holds
-    // the message by its text (internal/api sendNonces.hold).
-    againBtn.onclick = function () { againBtn.hidden = true; renew(); say(''); againField(true); post(sub); };
-  }
-  function dropAgain() { if (againBtn) againBtn.hidden = true; }
-  // againField: the field (again=1) that tells the server this send IS the
-  // person's Send again. 🔴 The server holds a message that may have landed by
-  // its TEXT, under any nonce (internal/api sendNonces.hold), so a plain Send
-  // of it from a copy of this page that never saw the offer (a Back answered
-  // from the HTTP cache) is refused and offers Send again here. A field rather
-  // than a flag in body(): the browser's own submit (native) carries it too.
-  // It goes once the send has its answer (other than a step-up's).
-  function againField(on) {
-    var f = form.querySelector('input[name="` + SendAgainField + `"]');
-    if (on && !f) { f = document.createElement('input'); f.type = 'hidden'; f.name = '` + SendAgainField + `'; f.value = '1'; form.appendChild(f); }
-    if (!on && f) f.parentNode.removeChild(f);
-  }
-  // The Queue button (send_queue.go), when the composer has one: a submit
-  // whose formaction is the queue route.
-  var queueBtn = document.getElementById('mv-queue-send');
-  // Drawn disabled (the server cannot tell when Claude Code is idle): it stays
-  // so, whatever a send re-enables.
-  var queueOff = !!(queueBtn && queueBtn.disabled);
-  // 🔴 WHICH BUTTON SUBMITTED, WHERE e.submitter IS MISSING (older Safari):
-  // the last one clicked. Guessing "Send" for a Queue tap would deliver the
-  // message NOW, which is the one thing the person asked not to happen.
-  var clicked = null;
-  if (queueBtn) queueBtn.addEventListener('click', function () { clicked = queueBtn; });
-  send.addEventListener('click', function () { clicked = null; });
-  // native hands the send to the browser: an ordinary form submission, which
-  // the server answers with a redirect back to this view. sub is the button
-  // that submitted (Queue, or none for Send): the browser's submit() ignores a
-  // submitter, so its route is put on the form here.
-  function native(sub) {
-    if (sub && sub.getAttribute('formaction')) form.setAttribute('action', sub.getAttribute('formaction'));
-    // The draft (composer_draft.go) is cleared by the page this comes back to,
-    // if it says the message went.
-    if (window.musterDraft) window.musterDraft.pending(input);
-    // Attachments (attach.go) ride in the text: the browser's own submit
-    // carries only the form's fields.
-    if (window.musterAttach) input.value = window.musterAttach.compose(input.value);
-    HTMLFormElement.prototype.submit.call(form);
-  }
-  function body() {
-    var b = new URLSearchParams();
-    for (var i = 0; i < form.elements.length; i++) {
-      var el = form.elements[i];
-      if (!el.name || el.disabled) continue;
-      // The message is the text plus one line per attachment (attach.go).
-      b.append(el.name, el === input && window.musterAttach ? window.musterAttach.compose(el.value) : el.value);
-    }
-    return b;
-  }
-  function post(sub) {
-    send.disabled = true;
-    if (queueBtn) queueBtn.disabled = true;
-    var queued = !!(sub && sub === queueBtn);
-    var to = queued ? sub.getAttribute('formaction') : form.getAttribute('action');
-    // What is being sent: the box is emptied afterwards only if it still holds
-    // this, so text typed while the request was out is not thrown away.
-    var sent = input.value;
-    var req;
-    try {
-      req = fetch(to, { method: 'POST', body: body(), credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } });
-    } catch (e) { native(sub); return; }
-    return req.then(function (r) {
-        // A step-up keeps it: the send it confirms (post again) is still the
-        // Send again.
-        if (!(r.status === 403 && r.headers.get('X-Muster-Step-Up'))) againField(false);
-        if (r.ok) {
-          dropAgain();
-          if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
-          // Sent or queued: its draft goes (what was typed meanwhile is kept).
-          if (window.musterDraft) window.musterDraft.sent(input);
-          if (window.musterAttach) window.musterAttach.sent();
-          renew();
-          if (queued) { sayOK('Queued.'); document.dispatchEvent(new Event('mv-queued')); } else { say(''); }
-          // What was sent, for the suggested replies' edit distance
-          // (suggest_row.go): it stays on this page.
-          document.dispatchEvent(new CustomEvent('mv-sent', { detail: { text: sent, queued: queued } }));
-          return;
-        }
-        if (r.status === 403 && r.headers.get('X-Muster-Step-Up')) {
-          var stepUp = window.musterStepUp;
-          if (!stepUp) { native(sub); return; }
-          stepUp.stale();
-          stepUp.ask('', function () { return post(sub); });
-          return;
-        }
-        var again = !!r.headers.get('`+SendAgainHeader+`');
-        return r.text().then(function (t) {
-          say(t.trim() || ((queued ? 'Not queued' : 'Not sent') + ' (HTTP ' + r.status + ')'));
-          if (again) offerAgain(sub); else dropAgain();
-        });
-      }, function () {
-        if (navigator.onLine === false) { say(form.getAttribute('data-down')); return; }
-        native(sub);
-      })
-      .then(function () { send.disabled = false; if (queueBtn) queueBtn.disabled = queueOff; }, function () { native(sub); });
-  }
-  form.addEventListener('submit', function (e) {
-    // From here on a failure of THIS handler leaves the event alone, and the
-    // browser submits the form itself.
-    if (input.disabled) { e.preventDefault(); return; }
-    var att = window.musterAttach;
-    if (att && att.pending()) { e.preventDefault(); say(att.pendingMessage); return; }
-    if (!input.value.trim() && !(att && att.count())) { e.preventDefault(); say(form.getAttribute('data-empty')); input.focus(); return; }
-    if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function') return;
-    e.preventDefault();
-    say('');
-    againField(false);
-    var sub = ('submitter' in e) ? e.submitter : clicked;
-    clicked = null;
-    try { post(sub); } catch (err) { native(sub); }
-  });
-  input.addEventListener('input', function () { if (input.value.trim()) say(''); });
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      // 🔴 A HELD ENTER SENDS ONCE: its auto-repeats are not more sends (a
-      // focus that moved into the box mid-hold must not send what it holds).
-      if (e.repeat) return;
-      // requestSubmit is missing from older Safari; a click on Send is the same
-      // submit, through the same handler.
-      if (form.requestSubmit) form.requestSubmit(); else send.click();
-    }
-  });
-})();
-`))
+	return Script(g.Raw(mirrorComposerJS))
 }

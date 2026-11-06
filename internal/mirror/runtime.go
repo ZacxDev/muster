@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 )
 
 // THE RUNTIME INTERFACE, SERVER HALF: what muster knows of each agent CLI a
@@ -16,7 +15,7 @@ import (
 // (and its host implementation, internal/mirrorhost's Runtime), not a branch
 // at every site.
 //
-// Claude Code, Hermes and opencode are its implementations. Claude
+// Claude Code and opencode are its implementations. Claude
 // Code is still special where the WIRE is: it travels as Window.Claude and
 // ClaudeSession (never Window.Runtime), and its questions as askq entries.
 
@@ -27,7 +26,7 @@ type Capabilities struct {
 	// View: muster shows the window's conversation in a rendered view.
 	View bool
 	// Send: muster sends a message into the window from a rendered view or
-	// the queue (Claude Code: a paste; Hermes: the host's gated send).
+	// the queue (Claude Code: a paste).
 	Send bool
 	// Prompts: what the window waits on (a permission, an approval, a
 	// question) reaches muster, as the window's Pending.
@@ -36,7 +35,7 @@ type Capabilities struct {
 
 // RuntimeSpec is one agent runtime as muster's server sees it.
 type RuntimeSpec struct {
-	// Name is the runtime's wire name (RuntimeClaude, RuntimeHermes, …).
+	// Name is the runtime's wire name (RuntimeClaude, RuntimeOpenCode).
 	Name string
 	// Kind is what a list names a window of it (SessionView.Kind).
 	Kind string
@@ -47,29 +46,15 @@ type RuntimeSpec struct {
 	// instead; a stub nothing reports is not on the wire.
 	OnWire bool
 	// KeyPrefix qualifies the window's AgentSession into its stored session
-	// key ("hermes:"); "" for a runtime whose session is its own key (Claude
+	// key ("opencode:"); "" for a runtime whose session is its own key (Claude
 	// Code) or that names none.
 	KeyPrefix string
 	// ViewNeedsSession: a window of it has a rendered view only once its
 	// host names the conversation (Window.AgentSession).
 	ViewNeedsSession bool
-	// GatedSend: muster sends to it only through the host's own gated send
-	// (Msg.Runtime), only on a host that advertised it (Advertises), and only
-	// while the window is idle with a status time; the paste carries that
-	// time and waits PasteTimeout.
-	GatedSend    bool
-	PasteTimeout time.Duration
-	// SendOff is the refusal of a send to a window of it on a host that did
-	// not advertise its gated send, and SendOffErr that refusal's cause. nil
-	// for a runtime without one.
-	SendOff    func() error
-	SendOffErr error
-	// Advertises reads, from a host's hello, whether it sends (send) and
-	// answers (answer) for this runtime itself. nil: it advertises neither.
-	Advertises func(hello Msg) (send, answer bool)
-	// NoStatus is AgentState's refusal when the host reports no status for a
-	// window of it.
-	NoStatus error
+	// Answers reads, from a host's hello, whether it answers this runtime's
+	// asks itself. nil: it answers none.
+	Answers func(hello Msg) bool
 	// PendingNamesAsk: a window of it waits on a NAMED ask (Pending.Kind,
 	// PromptID, Choices), and a Pending that names none is none. false: the
 	// ask fields are not its own and are stripped.
@@ -95,30 +80,14 @@ const RuntimeOpenCode = "opencode"
 var runtimes = []RuntimeSpec{
 	{
 		Name: RuntimeClaude, Kind: KindClaudeCode,
-		Caps:     Capabilities{View: true, Send: true, Prompts: true},
-		NoStatus: ErrNoStatus,
-	},
-	{
-		Name: RuntimeHermes, Kind: KindHermes,
-		Caps:   Capabilities{View: true, Send: true, Prompts: true},
-		OnWire: true, KeyPrefix: RuntimeHermes + ":", ViewNeedsSession: true,
-		GatedSend: true, PasteTimeout: hermesPasteTimeout,
-		SendOff: func() error {
-			return &PasteRefusedError{Why: PasteRefusedHermesText, Refusal: PasteRefusalHermes, Cause: ErrHermesSendOff}
-		},
-		SendOffErr:      ErrHermesSendOff,
-		Advertises:      func(m Msg) (bool, bool) { return m.HermesSend, m.HermesAnswer },
-		NoStatus:        ErrNoHermesStatus,
-		PendingNamesAsk: true,
-		AskKinds:        []string{PendingApproval, PendingClarify, PendingSudo},
+		Caps: Capabilities{View: true, Send: true, Prompts: true},
 	},
 	{
 		Name: RuntimeOpenCode, Kind: KindOpenCode,
 		Caps:   Capabilities{View: true, Prompts: true},
 		OnWire: true, KeyPrefix: RuntimeOpenCode + ":", ViewNeedsSession: true,
 		// It answers asks (OpenCodeAnswer) and sends nothing.
-		Advertises:      func(m Msg) (bool, bool) { return false, m.OpenCodeAnswer },
-		NoStatus:        ErrNoStatus,
+		Answers:         func(m Msg) bool { return m.OpenCodeAnswer },
 		PendingNamesAsk: true,
 		AskKinds:        []string{PendingPermission, PendingQuestion},
 	},
@@ -144,14 +113,14 @@ func wireRuntime(name string) (RuntimeSpec, bool) {
 	return r, ok && r.OnWire
 }
 
-// GatedSendOn reports whether h's host advertised the gated send of r (and,
-// answers, that it answers r's asks) — read from the HostView's hello flags
-// through r.Advertises, the one place a flag is mapped to its runtime.
-func (h HostView) GatedSendOn(r RuntimeSpec) (send, answers bool) {
-	if r.Advertises == nil {
-		return false, false
+// AnswersOn reports whether h's host advertised that it answers r's asks —
+// read from the HostView's hello flags through r.Answers, the one place a
+// flag is mapped to its runtime.
+func (h HostView) AnswersOn(r RuntimeSpec) bool {
+	if r.Answers == nil {
+		return false
 	}
-	return r.Advertises(Msg{HermesSend: h.HermesSend, HermesAnswer: h.HermesAnswer, OpenCodeAnswer: h.OpenCodeAnswer})
+	return r.Answers(Msg{OpenCodeAnswer: h.OpenCodeAnswer})
 }
 
 // HasView reports whether a window of r whose host names agentSession has a
@@ -210,7 +179,7 @@ var sessionKeyPattern = regexp.MustCompile(SessionKeyPattern)
 // agent_focus_history.subject_key, session_routes.target_key and
 // attention_asks.mirror_session carry the same expression — the migration
 // that last wrote them is read by a test in internal/db that fails
-// when the two differ (0052 since opencode's prefix). A runtime that adds a
+// when the two differ (0085 last wrote them). A runtime that adds a
 // KeyPrefix changes this pattern, so it fails that test until a NEW migration
 // writes the wider CHECKs.
 var SessionKeyPattern = buildSessionKeyPattern()

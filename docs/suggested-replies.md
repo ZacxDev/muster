@@ -75,7 +75,7 @@ Then, every one of these must hold, or nothing is generated (and nothing is
 served — the same checks run again whenever the composer asks):
 
 - suggestions are on: not `MUSTER_SUGGEST=off`, and not turned off by you;
-- the window is a Claude Code pane that names its session (not Hermes, not a
+- the window is a Claude Code pane that names its session (not opencode, not a
   plain terminal) and has a rendered view, on a host that is interactive (the
   composer is enabled);
 - the window's own status is **idle** — not busy, not **waiting** (a permission

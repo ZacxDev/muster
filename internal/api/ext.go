@@ -527,7 +527,7 @@ func (s *Server) UseExtensions(ext Extensions) {
 		// 🔴 Turn IS chatTurn: the delivered message runs as an ordinary chat turn
 		// WITH the chief's tools, never as a toolless send (plugins.TurnFunc).
 		d, err := plugins.NewDeliverer(plugins.DelivererConfig{Store: ext.Plugins, Agents: ext.Agents,
-			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger, Routing: routingOn(ext),
+			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger, Routing: messageRoutingOn(ext),
 			// The session hint (sessions_overview.go): which live sessions may
 			// already be on the message, computed here and appended to the turn.
 			Hints: s.pluginHints(ext)})

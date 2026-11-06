@@ -59,7 +59,7 @@ type WindowInfo struct {
 	Command string
 	// Claude is the Claude Code session in the active pane; nil for none.
 	Claude *ClaudePane
-	// Agent is the active pane's agent session of ANOTHER runtime (Hermes),
+	// Agent is the active pane's agent session of ANOTHER runtime (opencode),
 	// for a window whose pane Claude Code did not claim; nil for none, and
 	// always nil when Claude is set (attachAgents).
 	Agent *AgentPane
@@ -138,9 +138,8 @@ func WindowAttacherOf(b Backend) (WindowAttacher, bool) { return capabilityOf[Wi
 // window of every session. The session name is the LAST field, so it is taken
 // whole whatever it holds.
 //
-// #{pane_tty} is the pane's terminal device: what a Hermes CLI's breadcrumb
-// file is named by (internal/hermeshost), and what its stdin must be for the
-// strict identity rule to claim it.
+// #{pane_tty} is the pane's terminal device: what an opencode TUI's stdin must
+// be for its locator to claim the pane (opencode.go).
 //
 // The two fields before the session name are the identity colour option
 // (ColorOption, a constant: nothing from outside the binary is ever spliced

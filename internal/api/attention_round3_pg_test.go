@@ -56,6 +56,11 @@ func TestAHostBlipReNotifiesNothing(t *testing.T) {
 			Status: mirror.StatusWaiting, StatusSince: attnSince})
 	f.mirror.mu.Unlock()
 	nudge()
+	if got := f.pushes(); len(got) != 0 {
+		t.Fatalf("a session new after the reconnect pushed inside its grace: %v", got)
+	}
+	clock = clock.Add(EpisodeWaitingGrace + time.Second) // its push waits the grace (since #463's follow-up)
+	nudge()
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-"+sessionKey("ws", "side", "@3") {
 		t.Fatalf("a session new after the reconnect: %v", got)
 	}

@@ -15,7 +15,7 @@ creation), ties broken by the item's key:
 |---|---|---|---|
 | Notice | A pointer at one of your sessions that looks like it is waiting on you, raised by a live [chief nudge](chief-nudges.md#live-mode) ([below](#notices)). Shown as its window's [`<where>`](#how-a-window-is-named) (resolved when drawn), its focus title, the chief's short message, and the tmux target on its own line. | `attention_asks` rows of kind `notice` (migration 0071), joined to the chief's decision for the session. | **View in session**, or **Dismiss**. It has **no answer box**: there is nothing to answer. It leaves the list when the session moves on. |
 | Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail or ClankMail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
-| Session waiting | A mirrored Claude Code, **Hermes or opencode** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password; for opencode a **permission request**). Shown with **what it waits on** (below), its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway; an opencode **permission request** on an `-interactive` host offers **Allow once** / **Reject** (never "always"), answered through opencode's API ([mirroring.md](mirroring.md#opencodes-permission-requests-and-questions)). On a host that does not relay, the card says the answer can't be relayed from here. It leaves the list when the session stops waiting — answered here, or in the terminal. |
+| Session waiting | A mirrored Claude Code or **opencode** window whose session reports `waiting` (a permission prompt, a question; for opencode a **permission request**). Shown with **what it waits on** (below), its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). An opencode **permission request** on an `-interactive` host offers **Allow once** / **Reject** (never "always"), answered through opencode's API ([mirroring.md](mirroring.md#opencodes-permission-requests-and-questions)). On a host that does not relay, the card says the answer can't be relayed from here. It leaves the list when the session stops waiting — answered here, or in the terminal. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once — or an **opencode** window's question-tool form, read by the host from opencode's server. | The open question (`internal/askq`), live; an opencode question from the hub's live window list. It leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. It survives a muster restart: muster reads it open again in its waiting session's transcript ([mirroring.md](mirroring.md#a-question-survives-a-muster-restart-and-a-host-reconnect)). Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered (an opencode form: its first question and how many more) — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. An opencode question of ONE single-select question (at most 4 options) offers its options on the card when its host is `-interactive`; any other is answered in the terminal, and the card says so. |
 | Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open the task**. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
 | Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Ask tab: with [plugins](plugins.md) on, the page has a second tab, **Reply drafts** (below), whose label carries the count ("Reply drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
@@ -77,9 +77,14 @@ stop, oldest first, saying where the session is (its window's
 for how long, and a **View in session** link. A row has **no answer box**. A
 waiting window muster cannot answer is a row here instead of a "Session
 waiting" item (one muster cannot key, from an older host that sends no Claude
-session id, stays a "Session waiting" item with today's push); a question muster can answer (a held AskUserQuestion, an
-opencode question or permission request, a Hermes approval) stays an
-answerable item above it, with its own full-text push.
+session id, stays a "Session waiting" item with today's push, held the same 60
+seconds); a question muster can answer (a held AskUserQuestion, an opencode
+question or permission request its host relays) stays an
+answerable item above it — its card, drawn at once, with no second row — but
+its stop **is** an episode, pushed once, held like any other wait, and that
+push is the question's own full-text notification. An opencode question muster
+cannot relay keeps its card, which says to answer it in the terminal (and no
+second row), but its push is a plain wait's text-free one.
 
 **One push per stop.** Each episode is pushed **once**, however the stop moves
 between waiting and idle, and its notification closes when the stop ends:
@@ -117,10 +122,18 @@ was down has its notification closed.
   no tool, command, focus title or anything the session said (the codename
   is the host's, from its labels file, not the session's). Tapping it opens the
   session (`/attention/open/episode-<id>`, resolved when tapped), else the row.
-- A waiting window is **held for 60 seconds** (not configurable) and pushed
-  once they have passed, unless the stop has ended by then: a permission
-  prompt you answer at the terminal inside them, while its host stays
-  connected, does not buzz your phone, and its row never shows it pushed. The
+  **Except a stop waiting on a question muster can answer** when it is pushed:
+  its push is that question's own notification (`<where> is asking`, the
+  question and its options in full, as an ask's), under the episode's tag and
+  tap route.
+- **Every prompt's push waits 60 seconds** (not configurable) — a permission
+  prompt, and since the follow-up to #463 a question muster can answer too (an
+  AskUserQuestion, an opencode prompt): it is pushed once they have
+  passed, unless the stop has ended by then. A prompt or question you answer
+  at the terminal or in muster inside them, while its host stays connected,
+  does not buzz your phone, and its row never shows it pushed. A question's
+  card is on the Asks page and in the session from the start; only the phone
+  waits. The
   hold only delays a push, it never drops one: a window whose host lists it
   waiting without saying since when is pushed from that listing, and a held
   window whose host drops is pushed once muster has known the host offline
@@ -136,9 +149,15 @@ was down has its notification closed.
   longer, and the 2-minute repush floor can hold it past that.
   While held, its row is an ordinary waiting row. The hold is worked out
   afresh on every pass from when the stop opened, not kept in a timer: a
-  restart mid-hold still pushes it, once. Never
-  through the chief. Answerable asks (an AskUserQuestion card, an opencode or
-  Hermes prompt) are not held: they keep their own push, at once.
+  restart mid-hold still pushes it, once, and a question muster reads back
+  from its transcript after a restart is the same stop: pushed before the
+  restart, it is not pushed again; never pushed and past its 60 seconds, it is
+  pushed once. A question asked right after one you answered is a new stop
+  with its own 60 seconds: the stop of the one you answered ends the moment
+  its window stops waiting, not a pass later. Never through the chief. A
+  window muster cannot key keeps the
+  waiting diff's push, held by the same rule (timed from when muster first
+  saw it wait, re-checked every 30 seconds).
 - An idle stop is pushed at once when no chief judges it live (the feature
   off, you in shadow mode, no chief). When your chief judges it live, the
   push follows its decision for the stop: a **sent** nudge never pushes; a
@@ -235,7 +254,7 @@ command, path or URL, never what Claude said.
 |---|---|---|
 | a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any — except muster's own ask about a [plugin message nobody acted on](plugins.md#a-message-the-chief-does-not-act-on), whose long fixed sentence would fill the body: its body is `From: <sender> · Subject: <subject>`, then the option (the page shows the whole question) |
 | a held question (a session's `AskUserQuestion`) | `<where> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
-| a session's stop, with `MUSTER_SESSION_STATE=1` ([above](#stalled--waiting-session-state)) | `<where> needs you` / `<where> is stalled` | `Needs you · idle 12m`: its state and idle time only |
+| a session's stop, with `MUSTER_SESSION_STATE=1` ([above](#stalled--waiting-session-state)) | `<where> needs you` / `<where> is stalled` | `Needs you · idle 12m`: its state and idle time only — except a stop waiting on a question muster can answer, which is pushed with that question's own title and body (the row above or the waiting session's below), under the stop's `attention-episode-<id>` tag |
 | a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <where>`, or `Waiting: <where>` when its host names no tool |
 | a [notice](#notices) | `<where> may be waiting on you` | the session's focus title, then the chief's message; no options and no `ask` payload |
 
@@ -290,8 +309,7 @@ notification opens `/attention/open/<key>`, which resolves it then — a window
 that closed or an ask answered meanwhile opens its item on `/attention` instead
 of a dead page): a waiting window or a held question opens that window's
 rendered view. Everything else opens its item on `/attention`: a question that
-is no longer open, a Hermes window that names no conversation
-(`internal/api/attention_push_target.go`, the one rule).
+is no longer open (`internal/api/attention_push_target.go`, the one rule).
 
 **The question's page, `/attention/asks/<id>`,** is a phone app screen, inside
 the Android app's WebView as in a browser: a top bar with a back arrow to Asks
@@ -321,8 +339,14 @@ you are typing) (`internal/api/attention_asker.go`). A session is not re-notifie
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
-  sessions that are already waiting are recorded silently. While a host is
-  disconnected for less than 5 minutes its items stay (no clear);
+  sessions that are already waiting are recorded silently, except one whose
+  60 seconds (by its host's own time) ran out after this muster started: no
+  earlier muster can have pushed it, so it is pushed once those 60 seconds
+  are up if it still waits — at once if they already are (a slow restart). One
+  whose 60 seconds ran out while muster was down is taken as pushed: nothing
+  records the waiting diff's pushes across a restart. While a host is disconnected for less than 5 minutes its
+  items stay (no clear). (With session state on, a window muster can key is
+  an episode instead, whose push is recorded in the database: see above.)
 - when it goes waiting again within 2 minutes of its last notification or of
   being recorded (busy and back is one episode).
 

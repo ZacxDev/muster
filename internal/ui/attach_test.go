@@ -55,16 +55,21 @@ func TestTheComposerHasAPaperclipOnlyWhenUploadsAreOn(t *testing.T) {
 }
 
 // TestTheComposerScriptSendsTheAttachmentLines: the send script composes the
-// message through window.musterAttach on all three of its paths — the fetch
-// body, the browser's own submit, and the empty-text check.
+// message through window.musterAttach at the press, and that one text is what
+// every path sends — the fetch body and the browser's own submit — and the
+// empty-text check counts attachments.
 func TestTheComposerScriptSendsTheAttachmentLines(t *testing.T) {
 	js := renderString(t, mirrorComposerScript())
 	for _, want := range []string{
-		"window.musterAttach.compose(el.value)",                  // body()
-		"input.value = window.musterAttach.compose(input.value)", // native()
-		"att.pending()",              // a Send while uploading waits
-		"!(att && att.count())",      // attachments alone are a message
-		"window.musterAttach.sent()", // cleared after a send
+		// The message is composed ONCE, at the press (composer_pending.go):
+		// that text is what is drawn pending, posted (bodyOf) and, handed to
+		// the browser, put back in the box for its own submit (native).
+		"var text = att ? att.compose(typed) : typed;",
+		"if (el === input) b.append(el.name, p.text);", // bodyOf()
+		"input.value = p.text;",                         // native()
+		"att.pending()",                                 // a Send while uploading waits
+		"!(att && att.count())",                         // attachments alone are a message
+		"if (att) att.sent();",                          // cleared with the box, at the press
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the composer script lacks %q", want)

@@ -73,6 +73,9 @@ func (f *apiFakeGH) BranchSHA(context.Context, string) (string, error) { return 
 func (f *apiFakeGH) Commit(context.Context, string) (string, []string, error) {
 	return "tree", []string{"base-sha"}, nil
 }
+func (f *apiFakeGH) ClosePR(context.Context, int) error {
+	return errors.New("fake: ClosePR is not scripted")
+}
 func (f *apiFakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

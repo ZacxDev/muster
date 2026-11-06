@@ -36,9 +36,8 @@ agent you run in tmux shows up; Claude Code gets the most.
   out to it, so muster opens no network port on them (the optional MCP
   endpoint listens on loopback only). Machines are read-only until you let
   muster type into them, one machine at a time.
-- **Mixed agents in one place.** Claude Code renders as a chat; opencode and
-  Hermes have their own read views; Codex, Gemini CLI and plain shells are
-  live terminals.
+- **Mixed agents in one place.** Claude Code renders as a chat; opencode has
+  its own read view; Codex, Gemini CLI and plain shells are live terminals.
 - **Agents ask you instead of stopping.** A Claude Code session can ask you a
   question with options and wait for your answer, and Claude Code's own
   multiple-choice questions become a form you answer from your phone. Each
@@ -68,7 +67,7 @@ From v0.146.0 the Compose stack pushes each stop of a session **once**: when it
 waits on you, or when it has sat idle 10 minutes (stalled). The push names the
 session and never quotes it. Asks are pushed with their text: an agent's or the
 chief's question, muster's own, a Claude Code question held by the ask hook, and
-opencode questions, permission requests and Hermes approvals
+opencode questions and permission requests
 ([docs/attention.md](docs/attention.md#stalled--waiting-session-state)). Task
 events have their own switches under **Account → Notifications**. Turning
 this off: [docs/features.md](docs/features.md#session-state).

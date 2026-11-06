@@ -74,6 +74,7 @@ func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 	f.srv.BroadcastAgentsChangedFor(1)
 	f.setWindows(mirror.StatusWaiting)
 	f.srv.BroadcastAgentsChangedFor(1)
+	pastWaitingGrace(f.srv) // its push waits the grace (since #463's follow-up)
 	waiting := sessionKey("ws", "main", "@1")
 	if got := urls()[attentionTag(waiting)]; got != "/attention/open/"+waiting {
 		t.Fatalf("the waiting window's push carries %q", got)

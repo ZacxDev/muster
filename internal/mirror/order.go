@@ -46,9 +46,9 @@ type SessionView struct {
 	// per-session host's entry. What its focus is keyed by.
 	ClaudeSession string
 	// Runtime is the window's non-Claude agent runtime (Window.Runtime:
-	// RuntimeHermes, or ""), and AgentSession that runtime's session id
-	// (Window.AgentSession), "" when the host names none — for Hermes, when
-	// the window has no rendered view.
+	// RuntimeOpenCode, or ""), and AgentSession that runtime's session id
+	// (Window.AgentSession), "" when the host names none — when the window
+	// has no rendered view.
 	Runtime      string
 	AgentSession string
 	// AgentNote is the host's line for the person about the window
@@ -278,8 +278,8 @@ func (s SessionView) TerminalOnlyReason() string {
 }
 
 // SessionKey is the key the entry's conversation is stored by (a focus):
-// a Claude session id as itself, a Hermes one runtime-qualified
-// ("hermes:<id>", Window.SessionKey's rule); "" when the entry names none.
+// a Claude session id as itself, another runtime's runtime-qualified
+// ("opencode:<id>", Window.SessionKey's rule); "" when the entry names none.
 func (s SessionView) SessionKey() string {
 	switch {
 	case s.Claude:
@@ -301,16 +301,12 @@ func (s SessionView) Spec() (RuntimeSpec, bool) {
 }
 
 // AgentView reports whether the entry is a window of a non-Claude runtime
-// whose host names its conversation, and so has a rendered view (Hermes's,
-// RuntimeSpec.HasView).
+// whose host names its conversation, and so has a rendered view
+// (RuntimeSpec.HasView).
 func (s SessionView) AgentView() bool {
 	r, ok := s.Spec()
 	return ok && s.AgentSession != "" && r.HasView(s.AgentSession)
 }
-
-// HermesView reports whether the entry is a Hermes window whose host names
-// its conversation (AgentView, for Hermes).
-func (s SessionView) HermesView() bool { return s.Runtime == RuntimeHermes && s.AgentView() }
 
 // CanPaste reports whether a message can be sent into the entry's active pane
 // from the Terminal view (PasteActivePane): the host is connected and
@@ -335,16 +331,12 @@ var shells = []string{"ash", "bash", "csh", "dash", "fish", "ksh", "nu", "pwsh",
 // The kinds Kind names itself. Anything else it returns is the command.
 const (
 	KindClaudeCode = "Claude Code"
-	// KindHermes: the host reports a Hermes CLI in the pane
-	// (Window.Runtime), whether or not it names the session.
-	KindHermes   = "Hermes"
-	KindOpenCode = "opencode"
-	KindShell    = "shell"
+	KindOpenCode   = "opencode"
+	KindShell      = "shell"
 )
 
 // Kind is what runs in the entry's pane, as a list names it: KindClaudeCode
-// when the host resolved a Claude Code session there, KindHermes when it
-// reports a Hermes CLI (its command reads python3.14, S10), KindOpenCode / KindShell
+// when the host resolved a Claude Code session there, KindOpenCode / KindShell
 // from the pane's command, else the command itself; "" when the host said
 // nothing (a per-session host, which reports no command).
 func (s SessionView) Kind() string {

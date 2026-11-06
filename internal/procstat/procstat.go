@@ -1,7 +1,6 @@
 // Package procstat parses /proc/<pid>/stat — the ONE parser muster-mirror
 // has: the process table the locators and the paste guard read
-// (internal/mirrorhost), and the Hermes hook's record of the gateway that ran
-// it (cmd/muster-mirror).
+// (internal/mirrorhost).
 package procstat
 
 import (

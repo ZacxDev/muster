@@ -26,7 +26,7 @@ func TestALiveCopyIsKeptOnlyBesideAClaudeConversation(t *testing.T) {
 		{"no conversation of its own", mirror.Window{Claude: true, LiveCopy: lcOther}, ""},
 		{"its own id", mirror.Window{Claude: true, ClaudeSession: lcOwn, LiveCopy: lcOwn}, ""},
 		{"not an id", mirror.Window{Claude: true, ClaudeSession: lcOwn, LiveCopy: "../../etc/passwd"}, ""},
-		{"a Hermes window", mirror.Window{Runtime: mirror.RuntimeHermes, Claude: true, ClaudeSession: lcOwn, LiveCopy: lcOther}, ""},
+		{"an opencode window", mirror.Window{Runtime: mirror.RuntimeOpenCode, Claude: true, ClaudeSession: lcOwn, LiveCopy: lcOther}, ""},
 	} {
 		c.w.Session, c.w.ID = "s", "@1"
 		got := mirror.NormalizeWindows([]mirror.Window{c.w}, 0)

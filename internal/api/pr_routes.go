@@ -52,7 +52,7 @@ const routedByPR = "muster, because this session created or pushed the pull requ
 // prRouteOn reports whether pull-request routing is on: a sender list, its
 // store, and session routing (the route it makes).
 func (s *Server) prRouteOn() bool {
-	return s.ext.PRMail != nil && len(s.ext.PRMail.Senders) > 0 && s.ext.PRSessions != nil && routingOn(s.ext)
+	return s.ext.PRMail != nil && len(s.ext.PRMail.Senders) > 0 && s.ext.PRSessions != nil && messageRoutingOn(s.ext)
 }
 
 // prMailRef is the pull request message m of plugin p reviews: only with
@@ -190,7 +190,7 @@ func (s *Server) handlePRSessionBind(w http.ResponseWriter, r *http.Request) {
 		sig.HeadRef = *in.HeadRef
 	}
 	// A Claude session id, exactly as the thread bind takes one — and never a
-	// runtime-qualified key ("hermes:<id>"): only a Claude Code hook reports.
+	// runtime-qualified key ("opencode:<id>"): only a Claude Code hook reports.
 	sub, err := focus.ParseSubject(string(focus.KindMirror) + ":" + in.ClaudeSession)
 	if err != nil || strings.Contains(sub.Key, ":") || !sig.Valid() {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": prSessionBadRequest})

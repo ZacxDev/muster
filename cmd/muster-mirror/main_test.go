@@ -31,6 +31,22 @@ func TestTheTokenNeverHasToBeAnArgument(t *testing.T) {
 	}
 }
 
+// TestALeftoverArgumentIsRefusedNotRunAsTheDaemon: a word the parser leaves
+// over — a subcommand this binary does not have, or a typo — fails with
+// usage status 2 and says which word, before anything dials or lists. The
+// control is the same word missing: the daemon's own usage error instead.
+func TestALeftoverArgumentIsRefusedNotRunAsTheDaemon(t *testing.T) {
+	for _, args := range [][]string{{"no-such-subcommand"}, {"-allow-http", "stray"}} {
+		rc, out, errs := runWith(t, map[string]string{envURL: "https://m.example"}, args...)
+		if rc != 2 || out != "" || !strings.Contains(errs, `unknown command or argument "`+args[len(args)-1]+`"`) {
+			t.Fatalf("%q: rc %d, stdout %q, stderr %q; want 2 naming the word", args, rc, out, errs)
+		}
+	}
+	if rc, _, errs := runWith(t, map[string]string{envURL: "https://m.example"}, "-allow-http"); rc != 2 || strings.Contains(errs, "unknown command") || !strings.Contains(errs, "are required") {
+		t.Fatalf("CONTROL: no leftover word: rc %d, %s; want the missing-token usage error", rc, errs)
+	}
+}
+
 // TestMissingURLOrTokenIsAUsageError, and a non-mirror token or a cleartext URL
 // is refused before anything dials.
 func TestMissingURLOrTokenIsAUsageError(t *testing.T) {
@@ -148,7 +164,7 @@ func TestListClaudeIsOneRowPerClaudeWINDOW(t *testing.T) {
 // conversation that also runs elsewhere (mirrorhost's livecopy.go) — the
 // scanner is on, not merely written.
 func TestTheTmuxBackendLooksForLiveCopies(t *testing.T) {
-	if b := tmuxBackend("", "", "", nil).(mirrorhost.Tmux); b.LiveCopies == nil {
+	if b := tmuxBackend("", "", "").(mirrorhost.Tmux); b.LiveCopies == nil {
 		t.Fatal("the tmux backend has no LiveCopies: no window would ever say its conversation runs elsewhere")
 	}
 }
@@ -156,18 +172,18 @@ func TestTheTmuxBackendLooksForLiveCopies(t *testing.T) {
 // TestThePaneMapDirReachesTheTmuxBackend: the flag/env is not decoration — the
 // backend the host runs reads the map from it.
 func TestThePaneMapDirReachesTheTmuxBackend(t *testing.T) {
-	b, ok := tmuxBackend("s", "", "/fx/ledger", nil).(mirrorhost.Tmux)
+	b, ok := tmuxBackend("s", "", "/fx/ledger").(mirrorhost.Tmux)
 	if !ok || b.Claude.PaneMapDir != "/fx/ledger" || b.Socket != "s" {
 		t.Fatalf("tmuxBackend = %+v, want PaneMapDir /fx/ledger", b)
 	}
-	if b := tmuxBackend("", "", "", nil).(mirrorhost.Tmux); b.Claude.PaneMapDir != "" {
+	if b := tmuxBackend("", "", "").(mirrorhost.Tmux); b.Claude.PaneMapDir != "" {
 		t.Fatalf("no pane map dir configured, yet the backend has %q", b.Claude.PaneMapDir)
 	}
 	// And run passes it: from the environment, and from the flag (which wins).
 	prev := newTmuxBackend
 	t.Cleanup(func() { newTmuxBackend = prev })
 	var got []string
-	newTmuxBackend = func(s, sp, dir string, _ *mirrorhost.HermesSource) mirrorhost.Backend {
+	newTmuxBackend = func(s, sp, dir string) mirrorhost.Backend {
 		got = append(got, dir)
 		return listBackend{}
 	}
@@ -235,7 +251,7 @@ func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
-	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	type result struct {
 		rc        int
@@ -288,7 +304,7 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
-	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	done := make(chan string, 1)
 	go func() {

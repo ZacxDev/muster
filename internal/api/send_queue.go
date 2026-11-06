@@ -130,21 +130,13 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 
 // mirrorQueueOff is why a mirrored entry cannot be queued for, "" when it can:
 // the host must report the agent's status, and the window must run Claude
-// Code — or a runtime with a gated send (Hermes), on a host that advertised
-// it (Hermes Phase 3; the delivery then goes through the hub's idle gate and
-// the host's gated send).
+// Code.
 func mirrorQueueOff(h mirror.HostView, e mirror.SessionView) string {
 	switch {
 	case !h.Online:
 		return unprefixed(mirror.ErrHostOffline)
 	case !h.StatusReport || h.Windows == nil:
 		return unprefixed(mirror.ErrNoStatusReport)
-	}
-	if rt, ok := e.Spec(); ok && rt.GatedSend && e.AgentView() {
-		if send, _ := h.GatedSendOn(rt); send {
-			return ""
-		}
-		return unprefixed(rt.SendOffErr)
 	}
 	if !e.Claude {
 		return SendQueueNotClaude
@@ -807,10 +799,9 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 type queueWords struct{ waiting, working string }
 
 // runtimeQueueWords is each runtime's queueWords; a runtime with none is
-// spoken of as Claude Code, as every window was before Hermes.
+// spoken of as Claude Code.
 var runtimeQueueWords = map[string]queueWords{
 	mirror.RuntimeClaude: {"Claude Code is waiting for you (a prompt or a question).", "Claude Code is working."},
-	mirror.RuntimeHermes: {"Hermes is waiting for you (an approval or a question).", "Hermes is working."},
 }
 
 func queueWordsOf(runtime string) queueWords {
@@ -936,19 +927,14 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 }
 
 // sendQueueFailure is a failed delivery's outcome, in the composer's words.
-// 🔴 A delivery that MAY have landed (the host never confirmed it; Hermes's
-// gated send pressed Enter and saw no row) or that sits pasted in Hermes's
-// box is NEVER "Not sent", which would invite a resend and a second turn.
+// 🔴 A delivery that MAY have landed (the host never confirmed it) or that
+// sits pasted in the agent's input box is NEVER "Not sent", which would
+// invite a resend and a second turn.
 func sendQueueFailure(err error) sendqueue.Outcome {
 	may := errors.Is(err, mirror.ErrPasteUnconfirmed)
 	var pr *mirror.PasteRefusedError
 	if errors.As(err, &pr) {
 		switch pr.Refusal {
-		case mirror.PasteRefusalHermesUnconfirmed, mirror.PasteRefusalHermesPasted,
-			mirror.PasteRefusalHermesNotSubmitted, mirror.PasteRefusalHermesSuperseded:
-			// The host's gated send says it in full ("May have been
-			// submitted: …", "Pasted, not submitted: …", "Not sent: …").
-			return sendqueue.Outcome{MayHaveDelivered: may, Pasted: pr.Refusal == mirror.PasteRefusalHermesPasted, Detail: pr.Why}
 		case mirror.PasteRefusalClaudeWaiting, mirror.PasteRefusalClaudeBox:
 			// The Claude prompt guard, nothing typed, in its own words. A
 			// queued message never gets here (the hub supersedes it, and it is

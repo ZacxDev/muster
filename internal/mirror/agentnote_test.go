@@ -73,8 +73,8 @@ func TestTheTerminalOnlyReasonSaysWhy(t *testing.T) {
 		{"old host", mirror.SessionView{Online: true, Rendered: false, Command: "claude"},
 			"This host's muster-mirror is too old to send the Rendered view. Update it to read Claude Code as a chat."},
 		{"host's reason", mirror.SessionView{Online: true, Rendered: true, Command: "claude", AgentNote: why}, why},
-		{"runtime, no view", mirror.SessionView{Online: true, Rendered: true, Runtime: mirror.RuntimeHermes, Command: "hermes"},
-			"This Hermes window has no conversation muster can show yet."},
+		{"runtime, no view", mirror.SessionView{Online: true, Rendered: true, Runtime: mirror.RuntimeOpenCode, Command: "opencode"},
+			"This opencode window has no conversation muster can show yet."},
 		{"no Claude Code", mirror.SessionView{Online: true, Rendered: true, Command: "zsh"},
 			"muster found no Claude Code conversation in this window."},
 	} {

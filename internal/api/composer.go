@@ -80,27 +80,14 @@ const (
 	noticeClaudeWaiting = "claude-waiting"
 	noticeClaudePasted  = "claude-pasted"
 	noticeClaudeBox     = "claude-box"
-	// A Hermes window's Send now refusals.
-	noticeHermesWaitingNow = "hermes-waiting-now"
-	noticeHermesBusyNow    = "hermes-busy-now"
-	noticeHermesUnknownNow = "hermes-unknown-now"
-	noticeGatedUnspokenNow = "gated-unspoken-now"
-	// A Hermes window's Send (Phase 3): the hub's idle gate, and the host's
-	// gated send by how it ended.
-	noticeHermesBusy        = "hermes-busy"
-	noticeHermesWaiting     = "hermes-waiting"
-	noticeHermesUnknown     = "hermes-unknown"
-	noticeHermesNotSent     = "hermes-not-sent"
-	noticeHermesPasted      = "hermes-pasted"
-	noticeHermesUnconfirmed = "hermes-unconfirmed"
 	// Any send the host never confirmed, and its repeat with the same nonce.
 	noticeUnconfirmed       = "unconfirmed"
 	noticeUnconfirmedRepeat = "unconfirmed-repeat"
-	// Send now: the message may have landed, or sits pasted in Hermes's box.
+	// Send now: the message may have landed, or sits pasted in the agent's
+	// input box.
 	noticeSendNowUnconfirmed = "send-now-unconfirmed"
 	noticeSendNowPasted      = "send-now-pasted"
-	// The host's Hermes paste guard (mirror.PasteRefusal*).
-	noticeHermes      = "hermes"
+	// The host's paste guard (mirror.PasteRefusal*).
 	noticeMultiplexer = "multiplexer"
 	noticeUnchecked   = "unchecked"
 	noticeOpenCode    = "opencode"
@@ -120,10 +107,10 @@ const (
 	noticeEditedAnswered = "edited-answered"
 )
 
-// pasteGuardNotices is the notice for each kind of Hermes paste-guard refusal
-// a host names.
+// pasteGuardNotices is the notice for each kind of paste-guard refusal a host
+// names. A kind not here (an older host's "hermes…") is a plain refusal in the
+// host's own words.
 var pasteGuardNotices = map[string]string{
-	mirror.PasteRefusalHermes:      noticeHermes,
 	mirror.PasteRefusalMultiplexer: noticeMultiplexer,
 	mirror.PasteRefusalUnchecked:   noticeUnchecked,
 	mirror.PasteRefusalOpenCode:    noticeOpenCode,
@@ -135,25 +122,6 @@ var claudeGuardNotices = map[string]string{
 	mirror.PasteRefusalClaudeWaiting: noticeClaudeWaiting,
 	mirror.PasteRefusalClaudePasted:  noticeClaudePasted,
 	mirror.PasteRefusalClaudeBox:     noticeClaudeBox,
-}
-
-// hermesNotIdleNotices is the notice for each status the hub's idle gate
-// refuses a Hermes send in ("" unknown).
-var hermesNotIdleNotices = map[string]string{
-	mirror.StatusBusy:    noticeHermesBusy,
-	mirror.StatusWaiting: noticeHermesWaiting,
-	"":                   noticeHermesUnknown,
-	// idle with no status time: the host could not check it, so unknown.
-	mirror.StatusIdle: noticeHermesUnknown,
-}
-
-// hermesSendNotices is the notice for each way the host's gated send into
-// Hermes can end short of "sent" (mirror.PasteRefusalHermes*).
-var hermesSendNotices = map[string]string{
-	mirror.PasteRefusalHermesNotSubmitted: noticeHermesNotSent,
-	mirror.PasteRefusalHermesSuperseded:   noticeHermesNotSent,
-	mirror.PasteRefusalHermesPasted:       noticeHermesPasted,
-	mirror.PasteRefusalHermesUnconfirmed:  noticeHermesUnconfirmed,
 }
 
 // ComposerNoticeAgain is what a send that came back as a GET is told: it was
@@ -198,22 +166,11 @@ var composerNotices = map[string]struct {
 	noticeClaudeWaiting:     {mirror.ClaudeWaitingText, false},
 	noticeClaudeBox:         {mirror.ClaudeBoxText, false},
 	noticeClaudePasted:      {"Pasted, not submitted: the text is in Claude Code's input box, and Enter was not pressed, because a dialog opened. Check the terminal.", false},
-	noticeHermesWaitingNow:  {SendQueueHermesWaitingNow, false},
-	noticeHermesBusyNow:     {SendQueueHermesBusyNow, false},
-	noticeHermesUnknownNow:  {SendQueueHermesUnknownNow, false},
-	noticeGatedUnspokenNow:  {SendQueueGatedUnspokenNow, false},
 	noticeSendNowFailed:     {"Not sent: the message could not be delivered. Its row in the queue says why.", false},
-	noticeHermesBusy:        {mirror.HermesBusyText, false},
-	noticeHermesWaiting:     {mirror.HermesWaitingText, false},
-	noticeHermesUnknown:     {mirror.HermesUnknownText, false},
-	noticeHermesNotSent:     {"Not sent: Hermes's screen or status was not safe to send into. Nothing was pasted.", false},
-	noticeHermesPasted:      {"Pasted, not submitted: the text is in Hermes's input box, and Enter was not pressed. Check the terminal.", false},
-	noticeHermesUnconfirmed: {"May have been submitted: check the conversation before sending again.", false},
 	noticeUnconfirmed:        {MirrorSendUnconfirmed, false},
 	noticeUnconfirmedRepeat:  {MirrorSendUnconfirmedRepeat, false},
 	noticeSendNowUnconfirmed: {"May have been sent: check the conversation before sending again. Its row in the queue says more.", false},
 	noticeSendNowPasted:      {"Pasted, not submitted: the text is in the agent's input box, and Enter was not pressed. Check the terminal. Its row in the queue says more.", false},
-	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
 	noticeOpenCode:          {mirror.PasteRefusedOpenCodeText, false},

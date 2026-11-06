@@ -91,8 +91,7 @@ func AskOutcomeKnown(err error) bool {
 	if err == nil {
 		return true
 	}
-	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskCancelUnsupported, ErrAskRefused,
-		ErrHermesApprovalGone, ErrHermesUnreachable} {
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskCancelUnsupported, ErrAskRefused} {
 		if errors.Is(err, e) {
 			return true
 		}
@@ -203,12 +202,6 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrAskUnreadable, why)
 	case AskRefusalUnreadableTyped:
 		return fmt.Errorf("%w: %w: %s", ErrAskUnreadable, ErrAskLost, why)
-	case AskRefusalHermesGone:
-		return fmt.Errorf("%w: %s", ErrHermesApprovalGone, why)
-	case AskRefusalHermesUnreachable:
-		return fmt.Errorf("%w: %s", ErrHermesUnreachable, why)
-	case AskRefusalHermesUnknown:
-		return fmt.Errorf("%w: %s", ErrHermesAnswerUnknown, why)
 	case AskRefusalOpenCodeGone:
 		return fmt.Errorf("%w: %s", ErrOpenCodeAskGone, why)
 	case AskRefusalOpenCodeUnreachable:

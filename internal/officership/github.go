@@ -49,6 +49,10 @@ type PR struct {
 	BaseRepo       string
 	Title          string
 	MergeCommitSHA string
+	CreatedAt      time.Time
+	// Body is the pull request's description (OfficerPRs fills it: the draft
+	// gate reads its item from the first line).
+	Body string
 }
 
 // Compare is GET compare/{base}...{head}.
@@ -58,6 +62,9 @@ type Compare struct {
 	BehindBy int
 	Files    []File
 	Commits  []string // shas, oldest first
+	// MergeBase is the comparison's merge base commit: what a removed file
+	// is read at when GitHub shows no diff for it (the draft gate).
+	MergeBase string
 }
 
 // File is one changed file of a pull request or a comparison.
@@ -65,6 +72,21 @@ type File struct {
 	Path     string
 	Previous string // a rename's old path
 	Status   string // added | modified | removed | renamed | copied | changed | unchanged
+	// Patch is the file's unified diff hunks as GitHub reports them, and
+	// Changes its added+removed line count. GitHub OMITS the patch of a binary
+	// file (reported with changes 0, MEASURED on a read-only comparison: every
+	// added, modified and removed PNG came back changes 0, additions 0,
+	// deletions 0, no patch), of a very large one (changes > 0), and of a pure
+	// rename or mode change. An empty Patch is therefore a diff nobody can
+	// read whatever Changes says (the draft gate's ForbiddenFiles).
+	Patch   string
+	Changes int
+}
+
+// Branch is one branch: its name (without refs/heads/) and head commit.
+type Branch struct {
+	Name string
+	SHA  string
 }
 
 // CheckRun is one check run on a commit.
@@ -138,11 +160,33 @@ type GitHub interface {
 	CreateCommit(ctx context.Context, message, tree string, parents []string) (string, error)
 	MergeInto(ctx context.Context, base, head, message string) (string, error)
 	OpenPR(ctx context.Context, title, head, base, body string) (int, error)
+	// PRsForBranch is every pull request whose head is branch in this
+	// repository (GitHub's head=<owner>:<branch> filter, which finds a closed
+	// pull request whose branch was deleted too), in state "open", "closed"
+	// or "all". Every page is read; more than maxPages pages is an error,
+	// never a truncated answer.
+	PRsForBranch(ctx context.Context, branch, state string) ([]PR, error)
+	// OfficerPRs is every pull request login opened in this repository
+	// (GitHub's issues list filtered by creator, every page, newest created
+	// first), in state "open", "closed" or "all", with its Body. More than
+	// maxPages pages is an error, never a truncated answer.
+	OfficerPRs(ctx context.Context, login, state string) ([]PR, error)
+	// DeleteBranch deletes refs/heads/<branch> (the draft gate, after it
+	// closed a pull request whose branch holds a refused change).
+	DeleteBranch(ctx context.Context, branch string) error
+	// Branches is every branch whose name starts with prefix.
+	Branches(ctx context.Context, prefix string) ([]Branch, error)
+	// CommitTime is sha's committer date.
+	CommitTime(ctx context.Context, sha string) (time.Time, error)
 	// MarkReady converts draft pull request n (GraphQL node nodeID) to ready
 	// for review. 🔴 REST cannot: PATCH pulls takes no `draft` field (only
 	// POST pulls does), so this is the GraphQL markPullRequestReadyForReview
 	// mutation, and it errs unless GitHub answers pull request n, not a draft.
 	MarkReady(ctx context.Context, n int, nodeID string) error
+	// ClosePR closes pull request n (PATCH pulls/<n> state "closed"): the
+	// draft gate's answer to a push that put a refused change into an open
+	// pull request.
+	ClosePR(ctx context.Context, n int) error
 }
 
 // REST is [GitHub] over GitHub's REST API for Repo, authenticated by Token
@@ -282,13 +326,15 @@ type restPR struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`
 	} `json:"base"`
-	MergeCommitSHA string `json:"merge_commit_sha"`
+	MergeCommitSHA string    `json:"merge_commit_sha"`
+	CreatedAt      time.Time `json:"created_at"`
+	Body           string    `json:"body"`
 }
 
 func (r restPR) pr() PR {
 	p := PR{Number: r.Number, NodeID: r.NodeID, State: r.State, Draft: r.Draft, Merged: r.Merged, Mergeable: r.Mergeable, Title: r.Title,
 		Author: r.User.Login, AuthorType: r.User.Type, HeadRef: r.Head.Ref, HeadSHA: r.Head.SHA, BaseRef: r.Base.Ref,
-		MergeCommitSHA: r.MergeCommitSHA}
+		MergeCommitSHA: r.MergeCommitSHA, CreatedAt: r.CreatedAt, Body: r.Body}
 	if r.Head.Repo != nil {
 		p.HeadRepo = r.Head.Repo.FullName
 	}
@@ -312,6 +358,8 @@ type restFile struct {
 	Filename         string `json:"filename"`
 	PreviousFilename string `json:"previous_filename"`
 	Status           string `json:"status"`
+	Patch            string `json:"patch"`
+	Changes          int    `json:"changes"`
 }
 
 // PRFiles implements GitHub.
@@ -346,6 +394,9 @@ func (g *REST) Compare(ctx context.Context, base, head string) (Compare, error) 
 			SHA string `json:"sha"`
 		} `json:"commits"`
 		TotalCommits int `json:"total_commits"`
+		MergeBase    struct {
+			SHA string `json:"sha"`
+		} `json:"merge_base_commit"`
 	}
 	if err := g.do(ctx, http.MethodGet, g.repoPath()+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head), "",
 		nil, &r, "comparing "+base+"..."+head); err != nil {
@@ -355,9 +406,9 @@ func (g *REST) Compare(ctx context.Context, base, head string) (Compare, error) 
 		return Compare{}, fmt.Errorf("the comparison %s...%s is larger than GitHub lists in one answer (%d commits, %d files)",
 			base, head, r.TotalCommits, len(r.Files))
 	}
-	c := Compare{Status: r.Status, AheadBy: r.AheadBy, BehindBy: r.BehindBy}
+	c := Compare{Status: r.Status, AheadBy: r.AheadBy, BehindBy: r.BehindBy, MergeBase: r.MergeBase.SHA}
 	for _, f := range r.Files {
-		c.Files = append(c.Files, File{Path: f.Filename, Previous: f.PreviousFilename, Status: f.Status})
+		c.Files = append(c.Files, File{Path: f.Filename, Previous: f.PreviousFilename, Status: f.Status, Patch: f.Patch, Changes: f.Changes})
 	}
 	for _, x := range r.Commits {
 		c.Commits = append(c.Commits, x.SHA)
@@ -647,6 +698,12 @@ func (g *REST) OpenPR(ctx context.Context, title, head, base, body string) (int,
 	return r.Number, err
 }
 
+// ClosePR implements GitHub.
+func (g *REST) ClosePR(ctx context.Context, n int) error {
+	return g.do(ctx, http.MethodPatch, g.repoPath()+"/pulls/"+strconv.Itoa(n), "", map[string]string{"state": "closed"}, nil,
+		"closing pull request #"+strconv.Itoa(n))
+}
+
 // graphqlURL is the GraphQL endpoint beside Base (api.github.com/graphql; a
 // test's or the e2eterm fixture's loopback base gets <base>/graphql).
 func (g *REST) graphqlURL() string { return g.Base + "/graphql" }
@@ -688,4 +745,102 @@ func (g *REST) MarkReady(ctx context.Context, n int, nodeID string) error {
 		return fmt.Errorf("GitHub answered pull request #%d (draft %v) while %s", pr.Number, pr.IsDraft, op)
 	}
 	return nil
+}
+
+// Branches implements GitHub (git/matching-refs, every page).
+func (g *REST) Branches(ctx context.Context, prefix string) ([]Branch, error) {
+	var out []Branch
+	for page := 1; page <= maxPages; page++ {
+		var refs []struct {
+			Ref    string `json:"ref"`
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := g.do(ctx, http.MethodGet, fmt.Sprintf("%s/git/matching-refs/heads/%s?per_page=100&page=%d", g.repoPath(), escapeRef(prefix), page),
+			"", nil, &refs, "listing branches under "+prefix); err != nil {
+			return nil, err
+		}
+		for _, r := range refs {
+			out = append(out, Branch{Name: strings.TrimPrefix(r.Ref, "refs/heads/"), SHA: r.Object.SHA})
+		}
+		if len(refs) < 100 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("more than %d branches under %s", maxPages*100, prefix)
+}
+
+// CommitTime implements GitHub.
+func (g *REST) CommitTime(ctx context.Context, sha string) (time.Time, error) {
+	var r struct {
+		Commit struct {
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+	err := g.do(ctx, http.MethodGet, g.repoPath()+"/commits/"+url.PathEscape(sha), "", nil, &r, "reading commit "+sha)
+	return r.Commit.Committer.Date, err
+}
+
+// PRsForBranch implements GitHub.
+func (g *REST) PRsForBranch(ctx context.Context, branch, state string) ([]PR, error) {
+	owner, _, _ := strings.Cut(g.Repo, "/")
+	q := url.Values{"head": {owner + ":" + branch}, "state": {state}, "per_page": {"100"}}
+	var out []PR
+	for page := 1; page <= maxPages; page++ {
+		q.Set("page", strconv.Itoa(page))
+		var batch []restPR
+		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/pulls?"+q.Encode(), "", nil, &batch, "listing the pull requests from "+branch); err != nil {
+			return nil, err
+		}
+		for _, r := range batch {
+			out = append(out, r.pr())
+		}
+		if len(batch) < 100 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("more than %d pull requests from %s: too many to vouch for", maxPages*100, branch)
+}
+
+// OfficerPRs implements GitHub.
+func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error) {
+	q := url.Values{"creator": {login}, "state": {state}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
+	var out []PR
+	for page := 1; page <= maxPages; page++ {
+		q.Set("page", strconv.Itoa(page))
+		var batch []struct {
+			Number    int       `json:"number"`
+			State     string    `json:"state"`
+			Title     string    `json:"title"`
+			Body      string    `json:"body"`
+			CreatedAt time.Time `json:"created_at"`
+			User      struct {
+				Login string `json:"login"`
+				Type  string `json:"type"`
+			} `json:"user"`
+			PullRequest *struct{} `json:"pull_request"`
+		}
+		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/issues?"+q.Encode(), "", nil, &batch, "listing "+login+"'s pull requests"); err != nil {
+			return nil, err
+		}
+		for _, r := range batch {
+			if r.PullRequest == nil {
+				continue // an issue, not a pull request
+			}
+			out = append(out, PR{Number: r.Number, State: r.State, Title: r.Title, Body: r.Body, CreatedAt: r.CreatedAt,
+				Author: r.User.Login, AuthorType: r.User.Type})
+		}
+		if len(batch) < 100 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("more than %d issues and pull requests by %s: too many to vouch for", maxPages*100, login)
+}
+
+// DeleteBranch implements GitHub.
+func (g *REST) DeleteBranch(ctx context.Context, branch string) error {
+	return g.do(ctx, http.MethodDelete, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", nil, nil, "deleting branch "+branch)
 }

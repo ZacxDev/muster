@@ -66,7 +66,7 @@ func (h *hostSide) askCancel(answering bool) bool {
 //
 // 🔴 REFUSED UNLESS THIS HOST OPTED IN (-interactive), only for a listed
 // session, into a pane that runs Claude Code NOW, through typeInto and so the
-// Hermes paste guard — exactly an answer's gates (answer). The key is
+// paste guard — exactly an answer's gates (answer). The key is
 // askdrive.KeyEscape, always, and only when the pane shows a picker.
 func (h *hostSide) cancelAsk(m mirror.Msg) {
 	note := ""

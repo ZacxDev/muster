@@ -49,8 +49,8 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		{"focus history", "Drafted the release notes", func() g.Node {
 			return focusHistoryRows(FocusHistoryPageView{Entries: []FocusHistoryEntry{{Title: "## Drafted the _release_ notes", At: now}}})
 		}},
-		{"mirror sidebar row", "Hermes chat about x_y", func() g.Node {
-			return NavAgentsList(nil, []MirrorCardView{{Host: "h1", Session: "s6", Label: "**Hermes** chat about `x_y`", Online: true}}, "", now)
+		{"mirror sidebar row", "Opencode chat about x_y", func() g.Node {
+			return NavAgentsList(nil, []MirrorCardView{{Host: "h1", Session: "s6", Label: "**Opencode** chat about `x_y`", Online: true}}, "", now)
 		}},
 		{"mirror view <title>", "<title>Session one · Mirrored · muster</title>", func() g.Node {
 			return MirrorViewPage(MirrorViewView{Host: "h1", Session: "s7", Label: "> Session ~~one~~"})

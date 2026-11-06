@@ -125,6 +125,10 @@ type Ship struct {
 	Quiet *QuietHours
 	// Rollout, when set, is how a release is watched. Required for StageRelease.
 	Rollout *Rollout
+	// Repos are the repositories the officer ships to (ship_v2.go): one for
+	// every stage but draft, one to MaxShipRepos for draft. Base,
+	// BranchPrefix, AppID and AppAccount above are the officer `repo`'s entry.
+	Repos []ShipRepo
 
 	appKey          *rsa.PrivateKey
 	escalateWebhook string
@@ -214,19 +218,23 @@ type Rollout struct {
 
 // declaredShip is the JSON shape of a `ship` block.
 type declaredShip struct {
-	Stage        string `json:"stage"`
-	Base         string `json:"base"`
-	BranchPrefix string `json:"branch_prefix"`
+	Stage string `json:"stage"`
+	// Repos is the several-repository form (ship_v2.go shipRepos).
+	Repos        json.RawMessage `json:"repos"`
+	Base         string          `json:"base"`
+	BranchPrefix string          `json:"branch_prefix"`
 	GitHubApp    *struct {
 		ID      int64  `json:"id"`
 		Account string `json:"account"`
 	} `json:"github_app"`
-	RequiredChecks []string `json:"required_checks"`
-	ReviewCheck    string   `json:"review_check"`
-	ReviewApp      string   `json:"review_app"`
-	Migrations     string   `json:"migrations"`
-	SensitivePaths []string `json:"sensitive_paths"`
-	Notice         *struct {
+	RequiredChecks     []string `json:"required_checks"`
+	ReviewCheck        string   `json:"review_check"`
+	ReviewApp          string   `json:"review_app"`
+	Migrations         string   `json:"migrations"`
+	SensitivePaths     []string `json:"sensitive_paths"`
+	ForbiddenPaths     []string `json:"forbidden_paths"`
+	ForbiddenPathsFile string   `json:"forbidden_paths_file"`
+	Notice             *struct {
 		Path    string `json:"path"`
 		Channel string `json:"channel"`
 	} `json:"notice"`
@@ -283,43 +291,27 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 		NoticePath:     DefaultNoticePath,
 	}
 	switch s.Stage {
-	case StageShadow, StageMerge, StageRelease:
+	case StageShadow, StageMerge, StageRelease, StageDraft:
 	case "":
-		return nil, fmt.Errorf("ship: stage is required (%s, %s or %s) — there is no default", StageShadow, StageMerge, StageRelease)
+		return nil, fmt.Errorf("ship: stage is required (%s, %s, %s or %s) — there is no default", StageDraft, StageShadow, StageMerge, StageRelease)
 	default:
-		return nil, fmt.Errorf("ship: stage %q is not %s, %s or %s", d.Stage, StageShadow, StageMerge, StageRelease)
+		return nil, fmt.Errorf("ship: stage %q is not %s, %s, %s or %s", d.Stage, StageDraft, StageShadow, StageMerge, StageRelease)
 	}
-	if s.Base == "" {
-		s.Base = DefaultShipBase
+	repos, err := shipRepos(s.Stage, repo, d)
+	if err != nil {
+		return nil, err
 	}
-	if !validBranchName(s.Base) {
-		return nil, fmt.Errorf("ship: base %q is not a branch name", s.Base)
+	s.Repos = repos
+	primary, _ := s.RepoFor(repo, repo)
+	s.Base, s.BranchPrefix, s.AppID, s.AppAccount = primary.Base, primary.BranchPrefix, primary.AppID, primary.AppAccount
+	// 🔴 A DRAFT OFFICER NEEDS NO CHECKS: nothing it can call reads them. Every
+	// other stage still needs at least one (a merge reads them).
+	minChecks := 1
+	if s.Stage == StageDraft {
+		minChecks = 0
 	}
-	if s.BranchPrefix == "" {
-		s.BranchPrefix = DefaultBranchPrefix
-	}
-	if !strings.HasSuffix(s.BranchPrefix, "/") || !validBranchName(strings.TrimSuffix(s.BranchPrefix, "/")) {
-		return nil, fmt.Errorf("ship: branch_prefix %q must be a branch-name prefix ending in '/' (e.g. %q)", s.BranchPrefix, DefaultBranchPrefix)
-	}
-	if strings.HasPrefix(s.Base+"/", s.BranchPrefix) || strings.HasPrefix(s.BranchPrefix, s.Base+"/") {
-		return nil, fmt.Errorf("ship: base %q and branch_prefix %q overlap: the officer could push to its own base", s.Base, s.BranchPrefix)
-	}
-	if d.GitHubApp == nil || d.GitHubApp.ID <= 0 {
-		return nil, fmt.Errorf("ship: github_app.id is required: the officer's OWN GitHub App (never the deployment's)")
-	}
-	s.AppID = d.GitHubApp.ID
-	login, idStr, ok := strings.Cut(strings.TrimSpace(d.GitHubApp.Account), ":")
-	accID, err := strconv.ParseInt(idStr, 10, 64)
-	if !ok || !loginRE.MatchString(login) || err != nil || accID <= 0 {
-		return nil, fmt.Errorf("ship: github_app.account %q must be <login>:<numeric id> (the id is what is matched)", d.GitHubApp.Account)
-	}
-	owner, _, _ := strings.Cut(repo, "/")
-	if !strings.EqualFold(owner, login) {
-		return nil, fmt.Errorf("ship: github_app.account %q is not the owner of repo %q", login, repo)
-	}
-	s.AppAccount = githubapp.Account{Login: login, ID: accID}
-	if n := len(d.RequiredChecks); n == 0 || n > maxRequiredChecks {
-		return nil, fmt.Errorf("ship: required_checks needs 1..%d check names, got %d", maxRequiredChecks, n)
+	if n := len(d.RequiredChecks); n < minChecks || n > maxRequiredChecks {
+		return nil, fmt.Errorf("ship: required_checks needs %d..%d check names, got %d", minChecks, maxRequiredChecks, n)
 	}
 	seen := map[string]bool{}
 	for _, c := range d.RequiredChecks {
@@ -330,7 +322,7 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 		seen[c] = true
 		s.RequiredChecks = append(s.RequiredChecks, c)
 	}
-	if s.ReviewCheck == "" {
+	if s.ReviewCheck == "" && s.Stage != StageDraft {
 		return nil, fmt.Errorf("ship: review_check is required (the check run whose success a merge needs)")
 	}
 	if s.ReviewApp != "" && !slugRE.MatchString(s.ReviewApp) {
@@ -443,6 +435,12 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 			return nil, fmt.Errorf("ship: a rollout watch escalates OUTSIDE HQ: set %s%s to an https webhook URL",
 				EscalateWebhookEnvPrefix, TokenEnvSuffix(id))
 		}
+	}
+	if s.Stage == StageDraft && s.Rollout != nil {
+		return nil, fmt.Errorf("ship: stage %s tags nothing, so it watches no rollout; remove the rollout block", StageDraft)
+	}
+	if s.Stage == StageDraft && d.Notice == nil {
+		return nil, fmt.Errorf("ship: stage %s needs a notice block (channel): a refused pull request is announced to someone", StageDraft)
 	}
 	if s.Stage == StageRelease && s.Rollout == nil {
 		return nil, fmt.Errorf("ship: stage %s needs a rollout block: a release nobody watches cannot be rolled back", StageRelease)

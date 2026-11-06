@@ -68,7 +68,7 @@ func (s *Server) toolRouteReply(ctx context.Context, c toolCaller, arguments str
 	if !c.mirroredSession() {
 		return toolErr(routeReplyMirrorOnly)
 	}
-	if !routingOn(s.ext) {
+	if !routesOn(s.ext) {
 		return toolErr("session routing is off on this server")
 	}
 	var in struct {

@@ -114,12 +114,27 @@ func draftAttrs(key, note string) g.Node {
 // (e2e/tests/cls.spec.ts measures it).
 //
 // A send clears the draft through window.musterDraft.sent(box), which the
-// senders (mirrorComposerScript, agentChatScript) call once the server — or
-// the socket — has taken the message; whatever is left in the box then is
-// kept. A send handed to the BROWSER (its own form submission) is marked
-// pending in sessionStorage; the page it comes back to clears the draft only
-// when it says the message went (an OK notice) and the draft is still that
-// text.
+// senders (agentChatScript) call once the socket has taken the message;
+// whatever is left in the box then is kept.
+//
+// 🔴 A MESSAGE ON ITS WAY STAYS IN THE DRAFT (musterDraft.hold/release). The
+// mirrored composer (composer_pending.go) empties the box at the press, long
+// before the server has the message: it HOLDS the message in the box's draft
+// from the press and RELEASES it only at the server's OK, or when the person
+// dismisses it or sends it again (a transcript row never releases it: a "Not
+// confirmed" message stays held). A refused message put back in the box
+// stays held in its place (inBox). The draft saved is every held message in
+// the order pressed, then what is in the box, a blank line between — so a
+// reload, a navigation or a failed browser submit mid-send puts the text back
+// in the box, and a message the server took (OK) never comes back as a draft.
+// A "Not confirmed" one does, after a reload, until it is dismissed (Dismiss
+// forgets it, box and draft — composer_pending.go dismiss): whether it landed is the
+// person's to check, and for 15 minutes the server refuses a plain Send of
+// the same text, offering Send again (internal/api sendNonces.hold).
+//
+// A send handed to the BROWSER (its own form submission) is marked pending in
+// sessionStorage; the page it comes back to takes that text out of the draft
+// only when it says the message went (an OK notice).
 func composerDraftScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -130,6 +145,31 @@ func composerDraftScript() g.Node {
     var PENDING = 'muster.draft.pending';
     var DEBOUNCE = 400;
     var timers = {};
+    // holds: per box key, the messages not yet delivered ({id, t, seq, box}),
+    // in the order they were PRESSED (seq). box: the message is the box's
+    // text now (a refused one put back): it is saved in its own place, and
+    // the box's text is not saved a second time.
+    // frozen: a box handed to the browser's own submit — its draft was saved
+    // whole first, and the box now holds only the one message being submitted.
+    var holds = {}, frozen = {};
+    var SEP = '\n\n';
+    // composed is the draft of box key: every message not yet delivered, in
+    // pressed order, then the box's own text. 🔴 A message put back in the box
+    // keeps its PLACE: a refused message and one held behind it are saved
+    // refused-first, as they were pressed. Once the box no longer has that
+    // message's text (it was edited), the box's text is the person's own and
+    // goes last.
+    function composed(key, box) {
+      var hs = (holds[key] || []).filter(function (h) { return !h.box || h.t === box; });
+      holds[key] = hs;
+      var parts = [], inBox = false;
+      hs.forEach(function (h) {
+        if (!h.box) parts.push(h.t);
+        else if (!inBox) { parts.push(h.t); inBox = true; }
+      });
+      if (!inBox && box && box.trim()) parts.push(box);
+      return parts.join(SEP);
+    }
     function ls() { try { return window.localStorage || null; } catch (e) { return null; } }
     function read(key) {
       var s = ls(); if (!s) return null;
@@ -170,8 +210,12 @@ func composerDraftScript() g.Node {
     function save(el) {
       var key = keyOf(el); if (!key) return;
       clearTimeout(timers[key]); delete timers[key];
-      var t = el.value || '';
-      if (!t.trim() || t.length > MAX) { remove(key); return; }
+      if (frozen[key]) return;
+      var t = composed(key, el.value || '');
+      var held = (holds[key] || []).length > 0;
+      // A box's own text past MAX could not be sent: no draft. Messages on
+      // their way are kept whatever their total (each one could be sent).
+      if (!t.trim() || (t.length > MAX && !held)) { remove(key); return; }
       var s = ls(); if (!s) return;
       try { s.setItem(key, JSON.stringify({ t: t, at: Date.now() })); } catch (e) { return; }
       sweep();
@@ -209,7 +253,19 @@ func composerDraftScript() g.Node {
       if (p) {
         var note = document.getElementById(el.getAttribute('data-draft-note') || '');
         var d0 = read(key);
-        if (note && note.hasAttribute('data-ok') && !note.hidden && d0 && d0.t === p.t) remove(key);
+        if (note && note.hasAttribute('data-ok') && !note.hidden && d0) {
+          // It went: it leaves the draft, and what was held or typed with it
+          // stays.
+          if (d0.t === p.t) remove(key);
+          else {
+            var at = d0.t.indexOf(p.t);
+            if (at >= 0) {
+              var rest = (d0.t.slice(0, at) + d0.t.slice(at + p.t.length)).split(SEP + SEP).join(SEP).replace(/^\n\n/, '').replace(/\n\n$/, '');
+              var s0 = ls();
+              try { if (rest.trim()) s0.setItem(key, JSON.stringify({ t: rest, at: Date.now() })); else remove(key); } catch (e) {}
+            }
+          }
+        }
       }
       if (!el.value) {
         var d = read(key);
@@ -247,14 +303,64 @@ func composerDraftScript() g.Node {
       // sent: el's message was taken. What is left in the box (typed while it
       // was going) is kept; an empty box has no draft.
       sent: function (el) { if (keyOf(el)) save(el); },
+      // hold: message t (id) is on its way from el's box, which is emptied:
+      // the draft keeps it until release. seq is its place in pressed order
+      // (a Retry takes its refused message's place).
+      hold: function (el, id, t, seq) {
+        var key = keyOf(el); if (!key) return;
+        var hs = holds[key] = holds[key] || [];
+        hs.push({ id: id, t: t, seq: typeof seq === 'number' ? seq : Date.now() });
+        hs.sort(function (a, b) { return a.seq - b.seq; });
+        save(el);
+      },
+      // inBox: message id was put back in el's box. It stays held in its
+      // place until it is delivered, dismissed or edited away.
+      inBox: function (el, id) {
+        var key = keyOf(el); if (!key || !holds[key]) return;
+        holds[key].forEach(function (h) { h.box = h.id === id; });
+        save(el);
+      },
+      // release: the server said OK to message id, or the person let it go
+      // (Dismiss) or sent it again.
+      release: function (el, id) {
+        var key = keyOf(el); if (!key || !holds[key]) return;
+        var n = holds[key].length;
+        holds[key] = holds[key].filter(function (h) { return h.id !== id; });
+        if (holds[key].length !== n) save(el);
+      },
+      // thaw: el's page is back from the back/forward cache after it handed a
+      // message to the browser's own submit — it saves again, and the hand-off
+      // mark is the restored page's to settle, not a later load's.
+      thaw: function (el) {
+        var key = keyOf(el); if (!key) return;
+        delete frozen[key];
+        try {
+          var p = JSON.parse(window.sessionStorage.getItem(PENDING) || 'null');
+          if (p && p.k === key) window.sessionStorage.removeItem(PENDING);
+        } catch (e) {}
+      },
+      // stored: el's saved draft ('' for none), or null when this browser
+      // keeps no drafts (nothing can be read from it).
+      stored: function (el) {
+        var key = keyOf(el); if (!key || !ls()) return null;
+        var d = read(key);
+        return d ? d.t : '';
+      },
       // pending: el's message is being handed to the browser's own submit.
+      // The draft was saved whole just before (sent); from now on the box
+      // holds only that message, so it is not saved again on this page.
       pending: function (el) {
         var key = keyOf(el); if (!key) return;
+        clearTimeout(timers[key]); delete timers[key];
+        frozen[key] = true;
         try { window.sessionStorage.setItem(PENDING, JSON.stringify({ k: key, t: el.value, at: Date.now() })); } catch (e) {}
       },
       flush: flush
     };
     window.addEventListener('pagehide', flush);
+    // A page back from the back/forward cache after its browser submit did
+    // not leave: its boxes save again.
+    window.addEventListener('pageshow', function (e) { if (e.persisted) frozen = {}; });
     document.addEventListener('visibilitychange', function () { if (document.hidden) flush(); });
     // A boosted navigation fires no pagehide.
     document.addEventListener('htmx:beforeRequest', flush);

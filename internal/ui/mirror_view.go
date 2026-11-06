@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -64,13 +65,6 @@ type MirrorViewView struct {
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
 	Interactive bool
-	// Hermes: the window runs Hermes (docs/design/hermes.md). Its composer
-	// sends only when HermesSend — the host advertised hermesSend and is
-	// -interactive (Phase 3) — and is drawn disabled saying why
-	// (MirrorHermesNoSendNote), with no queue, otherwise.
-	Hermes bool
-	// HermesSend: a Hermes window whose host sends to Hermes.
-	HermesSend bool
 	// ViewOnly is the Kind of a runtime muster VIEWS but never sends to
 	// (opencode); "" otherwise. Its composer is drawn disabled saying why
 	// (MirrorViewOnlyNote), with no queue.
@@ -108,7 +102,7 @@ type MirrorViewView struct {
 	// for none.
 	Switcher *Switcher
 	// Suggest is the suggested replies' URL (ComposerView.Suggest); "" for
-	// none — a Hermes window, a host with suggestions not wired.
+	// none — another runtime's window, a host with suggestions not wired.
 	Suggest string
 	// SuggestPaused: the viewer's suggestions are auto-paused here
 	// (ComposerView.SuggestPaused).
@@ -128,10 +122,6 @@ type MirrorViewView struct {
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
 // accepting text.
 const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not started with -interactive, so nothing can be sent from here."
-
-// MirrorHermesNoSendNote is a Hermes window's rendered view's composer, drawn
-// disabled on a host that does not send to Hermes (docs/design/hermes.md).
-const MirrorHermesNoSendNote = "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal."
 
 // MirrorViewOnlyNote is the disabled composer of a window of kind, a runtime
 // muster only views (opencode, docs/design/opencode.md).
@@ -166,19 +156,6 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		composer.Placeholder, composer.Aria = "Message "+v.ViewOnly+"…", "Message "+v.ViewOnly+" in this session"
 		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorViewOnlyNote(v.ViewOnly), "Sending to "+v.ViewOnly+" is not available", nil
 		composer.Suggest, composer.SuggestPaused = "", false
-	case v.Hermes && !v.HermesSend:
-		working = "Hermes is working…"
-		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
-		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorHermesNoSendNote, "Sending to Hermes is not available", nil
-		// No suggested replies on a Hermes window (Claude Code only).
-		composer.Suggest, composer.SuggestPaused = "", false
-	case v.Hermes:
-		working = "Hermes is working…"
-		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
-		composer.Suggest, composer.SuggestPaused = "", false
-		if !v.Interactive {
-			composer.Disabled = MirrorReadOnlyNote
-		}
 	case !v.Interactive:
 		composer.Disabled = MirrorReadOnlyNote
 	}
@@ -271,8 +248,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Span(Class("animate-pulse"), g.Text(working)),
 				),
 				mirrorComposer(composer),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", confirmDialog(v.StepUp)),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", stepUpScript()),
+				g.If(v.Interactive && v.ViewOnly == "", confirmDialog(v.StepUp)),
+				g.If(v.Interactive && v.ViewOnly == "", stepUpScript()),
 				// The snapshot store, PARSER-BLOCKING here (SnapScriptNow): it runs
 				// just before mirrorViewScript, which starts reading this window's
 				// snapshot — and opens the socket — while the rest of the document
@@ -701,6 +678,29 @@ func toolRowID(toolID string) string {
 	return "mt-" + hex.EncodeToString(sum[:8])
 }
 
+// promptMatchRunes bounds a user row's data-prompt: the pending bubble
+// compares only the first pendingMatchChars letters and digits, so the head
+// of the prompt is enough, and a pasted log does not double the page.
+const promptMatchRunes = 2000
+
+// promptHead is the first promptMatchRunes runes of text, up to its first
+// attachment. 🔴 An attachment's line carries its SIGNED link, which the row
+// deliberately never puts on the page (promptBody draws a chip with the
+// /uploads/ route); and only the typed part is compared anyway.
+func promptHead(text string) string {
+	if refs := uploads.FindRefs(text); len(refs) > 0 {
+		text = text[:refs[0].Start]
+	}
+	n := 0
+	for i := range text {
+		if n == promptMatchRunes {
+			return text[:i]
+		}
+		n++
+	}
+	return text
+}
+
 func render(n g.Node) string {
 	var b bytes.Buffer
 	_ = n.Render(&b)
@@ -729,7 +729,12 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// page-unique one (chatIndexScript).
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
-				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), promptBody(ev.Text)))})
+				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""),
+				// data-prompt: the prompt as the transcript holds it, before
+				// markdown draws it — what the composer's pending bubble is
+				// matched against (composer_pending.go), since a link drawn as
+				// its label or a fence drawn as code no longer reads as typed.
+				g.Attr("data-prompt", promptHead(ev.Text)), promptBody(ev.Text)))})
 		case cctranscript.KindText:
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
@@ -890,8 +895,6 @@ func noticeRow(ev cctranscript.Event) g.Node {
 	switch ev.Notice {
 	case cctranscript.NoticeCommandOutput:
 		icon, label = "▸", "output"
-	case cctranscript.NoticeHermes:
-		icon, label = "☤", "hermes"
 	case cctranscript.NoticeOpenCode:
 		icon, label = "◇", "opencode"
 	}
@@ -1075,7 +1078,15 @@ func mirrorViewScript() g.Node {
   // askScript's, not the transcript's — a reset is no claim that a question
   // the hook holds has gone. tail() is it while it is in the log.
   function tail() { var t = document.getElementById('` + mirrorAsksID + `'); return t && t.parentNode === log ? t : null; }
-  function clearLog() { var t = tail(); log.innerHTML = ''; if (t) log.appendChild(t); }
+  // 🔴 A RESET KEEPS THE PENDING SENDS (composer_pending.go): a message on its
+  // way is not part of the transcript being redrawn, and its bubble is
+  // settled by the row that arrives for it (reconcile, below).
+  function clearLog() {
+    var t = tail(), ps = window.musterPendingSends ? window.musterPendingSends.kept() : [];
+    log.innerHTML = '';
+    ps.forEach(function (el) { log.appendChild(el); });
+    if (t) log.appendChild(t);
+  }
   function rowCount() { return log.children.length - (tail() ? 1 : 0); }
   // toEnd scrolls the conversation to its end — unless a question card that
   // has just shown holds it (askScript's musterAskHold): then to the card,
@@ -1173,6 +1184,10 @@ func mirrorViewScript() g.Node {
       var into = op.into && document.getElementById(op.into);
       if (into) into.appendChild(frag(op.html)); else log.insertBefore(frag(op.html), tail());
     });
+    // A message sent from this page whose row has just been drawn: its
+    // pending bubble goes in this same task, so the two are never on screen
+    // together (composer_pending.go).
+    if (window.musterPendingSends) window.musterPendingSends.reconcile();
     if (m.gen) gen = m.gen;
     if (typeof m.offset === 'number') offset = m.offset;
     working.hidden = !m.busy;

@@ -65,7 +65,7 @@ func TestATurnErrorRidesOnlyAnIdleClaudeWindowAndAtMostTheBound(t *testing.T) {
 		{Session: "a", ID: "@1", Claude: true, Status: StatusBusy, StatusSince: 1, TurnError: e(1)},
 		{Session: "a", ID: "@2", Claude: true, Status: StatusWaiting, StatusSince: 1, TurnError: e(1)},
 		{Session: "a", ID: "@3", Command: "zsh", TurnError: e(1)},
-		{Session: "a", ID: "@4", Runtime: RuntimeHermes, Status: StatusIdle, StatusSince: 1, TurnError: e(1)},
+		{Session: "a", ID: "@4", Runtime: RuntimeOpenCode, Status: StatusIdle, StatusSince: 1, TurnError: e(1)},
 		{Session: "a", ID: "@5", Claude: true, Status: StatusIdle, StatusSince: 1, TurnError: e(1)},
 	}
 	for i, w := range NormalizeWindows(in, 0) {

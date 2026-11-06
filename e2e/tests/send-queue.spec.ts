@@ -1456,6 +1456,11 @@ test.describe('a usage limit, phone 390×844 touch', () => {
 // 🔴 THE CLAUDE PROMPT GUARD: a message from muster must never be the keystroke
 // that answers a permission prompt. Each test runs its OWN host and transcript,
 // so it neither reads nor moves the shared one's status.
+// refusalOn: what the Rendered view says of the newest refused message — on
+// its bubble (composer_pending.go). 🔴 Not #mv-note: the operator accepted
+// (PR #450, audit round 0, D1) that a refusal's reason is said ONCE, on the
+// bubble, and the status line carries it only where there is no bubble.
+const refusalOn = (page: Page) => page.locator('#mv-log [data-pending-send] [data-pending-status]').last();
 test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', () => {
   test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
 
@@ -1486,7 +1491,7 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     await seen();
     await page.locator('#mv-input').fill('1');
     await page.locator('#mv-send').click();
-    await expect(page.locator('#mv-note')).toContainText('Claude is waiting on a permission prompt — answer it first');
+    await expect(refusalOn(page)).toContainText('Claude is waiting on a permission prompt — answer it first');
     await expect(page.locator('#mv-input'), 'the text stays in the box').toHaveValue('1');
     await queue(page, 'after the prompt', false);
     await expect(page.locator('#mv-queue-waiting'), 'the server holds it').toContainText('waiting for you', { timeout: 20_000 });
@@ -1510,7 +1515,7 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     const logFrom = mirrorLog.length;
     await page.locator('#mv-input').fill('2');
     await page.locator('#mv-send').click();
-    await expect(page.locator('#mv-note')).toContainText('Claude is waiting on a permission prompt — answer it first');
+    await expect(refusalOn(page)).toContainText('Claude is waiting on a permission prompt — answer it first');
     // The refusal is the HOST's, at the moment of typing (muster never heard
     // of the prompt): its own log says so.
     expect(mirrorLog.slice(logFrom), 'the host refused it').toContain(`Claude Code in pane ${pane} is waiting on the person`);
@@ -1541,7 +1546,7 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     fs.writeFileSync(h.t + '.prompt-on-paste', '');
     await page.locator('#mv-input').fill('3');
     await page.locator('#mv-send').click();
-    await expect(page.locator('#mv-note')).toContainText('Pasted, not submitted');
+    await expect(refusalOn(page)).toContainText('Pasted, not submitted');
     const inBox = () => read(h.t + '.typed').split('\n').filter((l) => l !== '');
     expect(inBox(), 'the text landed in the box').toEqual([`${pane} 3`]);
     expect(h.typed(), 'no Enter was pressed into the prompt').toEqual([]);
@@ -1560,7 +1565,7 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     expect(h.typed(), 'and nothing submitted').toEqual([]);
     await page.locator('#mv-input').fill('4');
     await page.locator('#mv-send').click();
-    await expect(page.locator('#mv-note')).toContainText("Claude's input box already has text — clear or send it first");
+    await expect(refusalOn(page)).toContainText("Claude's input box already has text — clear or send it first");
     expect(inBox(), 'a Send into the full box typed nothing').toEqual([`${pane} 3`]);
     // The person clears the box: the queued message goes, on its own.
     fs.rmSync(h.t + '.box');

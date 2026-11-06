@@ -77,9 +77,6 @@ const (
 	// jevNotConfigured: the owner's classifier does not run (the chief's
 	// nudges are off, there is no classifier, or the owner's chief is off).
 	jevNotConfigured = "not_configured"
-	// jevNoTranscript: a view-only runtime muster reads no transcript of
-	// (Hermes).
-	jevNoTranscript = "no_transcript"
 )
 
 // sessionStateOn reports whether the pass runs here (MUSTER_SESSION_STATE=1,
@@ -155,8 +152,8 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		byKey[e.Kind+":"+e.Key] = e
 	}
 	// ONE read of the owner's hosts for everything below: the stall facts,
-	// the answerable asks, which hosts can say a window is gone and the window
-	// an episode's push names (statePass.hs).
+	// which hosts can say a window is gone and the window an episode's push
+	// names (statePass.hs).
 	var hs []mirror.HostView
 	if s.ext.Mirror != nil {
 		hs = s.ext.Mirror.Hosts(octx)
@@ -188,12 +185,11 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 			dropped[h.Host] = h.OfflineSince
 		}
 	}
-	answerable := answerableWaits(s.waitingSessionsIn(octx, hs))
 	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now(), judges: s.episodeChiefJudges(octx, owner), hs: hs}
 	// The restart rule's clear first: an ended stop's notification is closed
 	// whether it ended in a pass, or while muster was down.
 	defer s.clearEndedEpisodes(octx, owner)
-	read := s.stallFacts(octx, nil, hs, sessionStateListsHermes)
+	read := s.stallFacts(octx, nil, hs)
 	seen := map[string]bool{}
 	agentsSeen := map[int64]bool{}
 	for _, c := range read.sessions {
@@ -209,7 +205,7 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		k := c.Kind + ":" + c.Key
 		seen[k] = true
 		ep, has := byKey[k]
-		s.sessionStateStep(octx, sp, c, ep, has, answerable[c.Key])
+		s.sessionStateStep(octx, sp, c, ep, has)
 	}
 	for k, ep := range byKey {
 		if seen[k] {
@@ -234,9 +230,8 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		// (hostUnreads; audit round 2 🟡-1) — so a blip the owner answered
 		// through, or a fresh process whose hosts have not reconnected yet,
 		// buzzes nothing. Claimed on pushed_at: the host coming back does not
-		// push it again. Accepted edge: a held wait that named its answerable
-		// ask before the drop already pushed as the ask (episodeHandedOver), so
-		// it buzzes twice — never silence.
+		// push it again — an answerable ask's stop too, which is an episode
+		// like any other wait.
 		//
 		// 🔴 NOT FOR A WAIT WHOSE STATE WAS NEVER READ (audit round 2 🟡-2): an
 		// episode with no streak is a window whose host reports no StatusSince,
@@ -291,7 +286,7 @@ func (s *Server) stateClassifier(octx context.Context) *chiefnudge.Classifier {
 
 // sessionStateStep is one session's observation: ep is its open episode when
 // has.
-func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCandidate, ep sessionstate.Episode, has, answerable bool) {
+func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCandidate, ep sessionstate.Episode, has bool) {
 	now := sp.now
 	if has {
 		// 🔴 A HANDLED STOP OPENED AGAIN ENDS AGAIN (PG.EndRepeat): an open
@@ -337,7 +332,7 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			has = false
 		}
 	}
-	f := sessionstate.Facts{Waiting: c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusWaiting, Answerable: answerable}
+	f := sessionstate.Facts{Waiting: c.Kind == chiefnudge.KindMirror && c.Status == mirror.StatusWaiting}
 	var jev chiefnudge.Result
 	classified := false
 	if chiefnudge.Exclude(c.Session, s.chiefNudgeIdle()) == "" {
@@ -347,8 +342,6 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			// Classified for this streak already — by an earlier pass, or
 			// before a restart.
 			jev, classified = episodeJev(ep), true
-		case c.noTranscript:
-			jev, classified = chiefnudge.Result{Err: jevNoTranscript}, true
 		case sp.cl == nil:
 			// With no classifier no transcript is read, so a streak that ends
 			// on the OWNER's word (an Esc-interrupted window, a prompt not yet
@@ -399,8 +392,8 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		// but the hook opened and HELD one from the host's own listing of it
 		// waiting. While that listing still shows it waiting, this pass settles
 		// the held wait as the hook would (heldWaitFacts), so it pushes once
-		// its grace has passed; claimed on pushed_at, so never twice. Not for
-		// an answerable ask: that keeps its own push.
+		// its grace has passed; claimed on pushed_at, so never twice — an
+		// answerable ask's stop too (its push is the ask's: episodeNotification).
 		//
 		// 🔴 AND ONCE THAT LISTING SHOWS IT NOT WAITING, THE STOP IS OVER (audit
 		// round 2 🟡-2): with no status time the pass sees no turn, so nothing
@@ -411,7 +404,7 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		// terminal: ended 'owner'.
 		listed := listedWaiting(sp.hs, c.Host, c.TmuxSession, c.Window)
 		switch {
-		case has && ep.Waiting && !answerable && listed:
+		case has && ep.Waiting && listed:
 			s.settleEpisode(octx, ep, heldWaitFacts(ep, now), now.Sub(ep.OpenedAt), sp.hs)
 		case has && ep.Waiting && !listed && c.Kind == chiefnudge.KindMirror && c.StreakKey == "":
 			s.endEpisode(octx, ep, sessionstate.EndOwner, now)
@@ -624,7 +617,7 @@ func (s *Server) episodeOwnerActed(octx context.Context, c nudgeCandidate, ep se
 	if !f.Known || f.WaitingNow || f.WasWaiting {
 		return sessionstate.OwnerActed(f)
 	}
-	if c.noTranscript || s.ownerChecked.done(ep.ID, c.StreakKey) {
+	if s.ownerChecked.done(ep.ID, c.StreakKey) {
 		return false
 	}
 	read, err := s.nudgeTranscript(octx, c)
@@ -733,28 +726,24 @@ func (u *hostUnreads) unreadFor(owner int64, host string, dropped, now time.Time
 	return now.Sub(since)
 }
 
-// answerableWaits is the session keys (an item's claudeSession: the Claude
-// session id, or a runtime-qualified key) whose wait is an ask muster can
-// answer: a held AskUserQuestion or an opencode question (a question item),
-// a Hermes approval with a prompt id its host answers, an opencode
-// permission request its host answers.
-func answerableWaits(items []attentionItem) map[string]bool {
-	out := map[string]bool{}
-	for _, it := range items {
-		if it.claudeSession != "" && answerableItem(it) {
-			out[it.claudeSession] = true
-		}
-	}
-	return out
-}
-
-// answerableItem reports whether waiting item it is an ask muster can answer
-// (answerableWaits' rule, one place): it keeps its own full-text push and is
-// never an episode.
+// answerableItem reports whether waiting item it is an ask muster can answer:
+// a held AskUserQuestion, an opencode question or permission request its host
+// relays. One rule, for
+// what such an ask keeps over a plain wait — its answer card on the Asks list
+// (pageAttentionItems) and its own full-text notification (episodeNotification). 🔴
+// IT IS NOT A PUSH RULE: an answerable ask's push waits the grace like every
+// prompt's (operator decision after #463; session_push.go).
+//
+// 🔴 AN OPENCODE QUESTION MUSTER CANNOT RELAY IS NOT ANSWERABLE (why set: the
+// host answers nothing, it is offline, or the form offers no choice). It is a
+// question item, drawn as one with the reason it cannot be answered here, but
+// until the follow-up to #463 its Kind alone made it answerable — pushed at once, with no
+// episode, as an ask nobody could answer from muster.
 func answerableItem(it attentionItem) bool {
-	return it.Kind == attentionKindQuestion ||
-		it.hermes != nil && it.hermes.promptID != "" ||
-		it.openCode != nil && it.openCode.kind != "" && it.openCode.why == ""
+	if it.openCode != nil {
+		return it.openCode.kind != "" && it.openCode.why == ""
+	}
+	return it.Kind == attentionKindQuestion
 }
 
 // episodeJev is ep's stored classification as a classifier Result.
