@@ -168,6 +168,19 @@ const paletteMatchJS = `  window.musterPaletteMatch = function (e, q) {
     if (low(e.words).indexOf(q) >= 0) return { r: 4, why: 'words' };
     return null;
   };
+  // window.musterPaletteEntry is element a (a switcher pill, or a sidebar
+  // agent row) as the entry musterPaletteMatch reads, n its place: what the
+  // search finds it by, from the pill's data-switcher-* attributes. ONE
+  // reading of them, for the palette and the switcher dock's filter alike
+  // (switcher_dock.go), so the two match the same fields.
+  window.musterPaletteEntry = function (a, n) {
+    var label = a.getAttribute('title') || a.textContent;
+    return { href: a.getAttribute('href'), label: label, code: a.getAttribute('data-switcher-code') || label,
+      title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
+      prev: (a.getAttribute('data-switcher-prev') || '').split('\n').filter(Boolean),
+      age: a.getAttribute('data-switcher-focus-age') || '', stale: a.hasAttribute('data-switcher-focus-stale'),
+      kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: n };
+  };
   // window.musterPaletteRank is the palette's whole list for query q: each of
   // entries (in page order) that musterPaletteMatch matches, plus the server
   // search's hits ({href, title}) for q merged in, best first, ties in page
@@ -227,15 +240,7 @@ const paletteJS = `
     var es = document.querySelectorAll('#` + SwitcherID + ` [data-switcher-list="all"] a[data-switcher-entry]');
     if (!es.length) es = document.querySelectorAll('#` + NavAgentsListID + ` a[data-nav-agent]:not([data-nav-current])');
     var out = [];
-    for (var i = 0; i < es.length; i++) {
-      var a = es[i];
-      var label = a.getAttribute('title') || a.textContent;
-      out.push({ href: a.getAttribute('href'), label: label, code: a.getAttribute('data-switcher-code') || label,
-        title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
-        prev: (a.getAttribute('data-switcher-prev') || '').split('\n').filter(Boolean),
-        age: a.getAttribute('data-switcher-focus-age') || '', stale: a.hasAttribute('data-switcher-focus-stale'),
-        kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: i });
-    }
+    for (var i = 0; i < es.length; i++) out.push(window.musterPaletteEntry(es[i], i));
     return out;
   }
   function el(tag, cls, text) { var x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }
