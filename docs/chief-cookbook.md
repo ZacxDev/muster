@@ -30,10 +30,11 @@ What each tool returns is in [focus.md](focus.md#the-tools) and
 chief's model**: on OpenRouter, to OpenRouter; on a Claude subscription token,
 to the Claude API.
 
-"Who is on what" and routing find sessions by their [focus](focus.md), and
+"Who is on what", routing and the standup rely on [focus](focus.md), and
 focus is written only with an OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`):
 a chief on a subscription token alone has no focus to search, only the recent
-messages `sessions_overview` returns.
+messages `sessions_overview` returns, and its standup is empty, because
+`fleet_report` returns only sessions with focus activity.
 
 ## Everything being worked on
 
@@ -134,8 +135,9 @@ Waiting ~20 min. This is an authorization, not a design call — sending to a ma
 […]
 ```
 
-It cannot answer them for you on the Compose install; answer in the session
-or on the Asks page. It offered to route your answers back into each window,
+No chief can answer them for you, on any install: only you answer an ask
+([attention.md](attention.md#the-agent-tools)). Answer in the session or on
+the Asks page. It offered to route your answers back into each window,
 which `route_to_session` can do as a typed request.
 
 ## What happened while I was away
@@ -216,10 +218,13 @@ routes; it does not:
   status: `task_comment` and `task_set_status` are among the denied prompts. A
   model can misstate its own tools; the allowlist above is what holds. File the
   task yourself, or have it route the idea to a session.
-- comment on a task, answer an ask for you, draft a reply, or start an agent
-  (`agent_dispatch` needs Kubernetes).
+- comment on a task, draft a reply, or start an agent (`agent_dispatch`
+  needs Kubernetes).
 - route to anything but a mirrored Claude Code window that can take a paste:
   not an offline or read-only host, not a Codex, opencode or shell window.
+
+On any install, no chief answers your asks: only you do
+([attention.md](attention.md#the-agent-tools)).
 
 The chief is the admin's alone on this install (one per install), its
 container's network is not confined, and on OpenRouter muster sets no budget:
