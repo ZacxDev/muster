@@ -48,5 +48,6 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/agent-cards.md](design/agent-cards.md) — live subagent and shell counts, and tmux identity colours, on the (since retired) Agents list's cards
 - [design/host-sessions.md](design/host-sessions.md) — proposed: start a tmux-backed session on one of your hosts from muster, mirrored automatically
 - [design/switcher-dock.md](design/switcher-dock.md) — proposed: a swipe-up dock that lists the session switcher's views vertically on a phone
+- [design/opencode-first-class.md](design/opencode-first-class.md) — proposed: opencode as a first-class runtime, starting with an API send from the Rendered view
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
