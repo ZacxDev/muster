@@ -99,7 +99,8 @@ func Secrets(s string) string { return secrets(s, true, nil) }
 //     userinfo refuses when it holds a password that is not a reference.
 //   - 🔴 THE KEY (keyLiteral). A credential-like KEY (one ending in password,
 //     passwd, passphrase, pwd, secret, token, api_key/apikey, private_key,
-//     secret_key, credential or credentials) holding a LITERAL refuses,
+//     secret_key, secret_access_key, credential or credentials; not
+//     access_key_id, an identifier) holding a LITERAL refuses,
 //     whatever the literal looks like: `password: hunter2`, a diceware
 //     passphrase, a letters-only word, a block scalar. Not a literal: an empty
 //     or null value, a boolean, a number, a reference (${…}, $(…), $VAR,
@@ -115,34 +116,59 @@ func HasSecretValue(s string) bool { return HasSecretValueIn("", s) }
 // SOURCE file (sourceExts: Go, TypeScript, Python, …) an unquoted value is an
 // expression (`Password: cfg.Password,`), so the key rule judges only a
 // QUOTED string literal there; anywhere else (YAML, JSON, shell, .env, prose)
-// every value is.
+// every value is. s is a WHOLE text (a file, a title, a body): its lines are
+// in order, so the env pair rule (HasSecretPairIn) runs on it too.
 func HasSecretValueIn(path, s string) bool {
-	return secrets(s, true, literalSecret) != s || keyLiteral(s, isSource(path)) || HasSecretPairIn(path, strings.Split(s, "\n"), nil)
+	return HasSecretLiteralIn(path, s) || HasSecretPairIn(path, strings.Split(s, "\n"), nil)
 }
 
-// HasSecretPairIn reports whether lines (a manifest's lines, in order) hold a
-// list item whose credential-like `name:` (credKey: `- name: DB_PASSWORD`)
-// has a sibling `value:` holding a literal — the shape of a Kubernetes env
+// HasSecretLiteralIn is HasSecretValueIn without the env pair rule: the
+// value and key rules, each judging one line (or a block scalar's start). It
+// is the test for lines that are NOT a whole text, such as a diff's added
+// lines spliced together: there the lines between them are missing, so items
+// cannot be told apart, and the pair rule must run on each hunk's post-image
+// instead (HasSecretPairIn with changed).
+func HasSecretLiteralIn(path, s string) bool {
+	return secrets(s, true, literalSecret) != s || keyLiteral(s, isSource(path))
+}
+
+// HasSecretPairIn reports whether lines (a manifest's lines, in order) hold
+// one YAML mapping whose credential-like `name:` (credKey: `name: DB_PASSWORD`)
+// has a sibling `value:` holding a literal: the shape of a Kubernetes env
 // entry, which the key rule cannot see because the name and the literal sit
-// on different lines. `name:` and `value:` may come in either order, on the
-// item's own lines or as a flow mapping (`- {name: X, value: y}`). The literal
-// rules are the key rule's (isLiteral), except that a QUOTED boolean or number
-// is not a literal either (an env value must be a string: "true", "5432"). The
-// pair is judged when either of its lines is marked in changed (nil: every
-// line), so a diff's unchanged name line counts as context. A source file
-// (sourceExts) is code: false.
+// on different lines. A mapping is
+//
+//   - a block list item: its keys sit at the column after its `- `, and it
+//     ends at the next line left of or at its dash (the next `- ` item);
+//   - a block mapping nested under a key, or at the top of a document (a
+//     kustomize JSON6902 patch's `value:` holding `name:` and `value:`): its
+//     keys share one column, and it ends at a line left of it or at `---`;
+//   - a one-line flow mapping, anywhere on a line (`- {name: X, value: y}`,
+//     `value: {name: X, value: y}`, `env: [{name: X, value: y}]`), each one
+//     its own mapping.
+//
+// A pair is never made across two mappings. `name:` and `value:` may come in
+// either order. The literal rules are the key rule's (isLiteral), except that
+// a QUOTED boolean or number is not a literal either (an env value must be a
+// string: "true", "5432"); a quoted name or value may carry a comment after
+// it. The pair is judged when either of its lines is marked in changed (nil:
+// every line), so a diff's unchanged name line counts as context. A source
+// file (sourceExts) is code: false.
+//
+// Not seen (best effort): multi-line JSON, a dash alone on its line, a flow
+// mapping that nests another, an alias whose anchor sits on another key.
 func HasSecretPairIn(path string, lines []string, changed []bool) bool {
 	if isSource(path) {
 		return false
 	}
 	is := func(i int) bool { return changed == nil || (i < len(changed) && changed[i]) }
 	type item struct {
-		col                    int // the column of the item's keys
+		col                    int // the column of the mapping's keys
 		name, value            string
 		hasName, hasValue, hit bool // hit: a name or value line is changed
 	}
-	// stack holds the open list items, innermost last (a nested list inside
-	// an entry does not end it).
+	// stack holds the open mappings, innermost last (a nested list or map
+	// inside one does not end it).
 	var stack []*item
 	judge := func(it *item) bool {
 		return it.hasName && it.hasValue && it.hit && credKey(unquote(it.name)) && pairLiteral(it.value)
@@ -158,7 +184,7 @@ func HasSecretPairIn(path string, lines []string, changed []bool) bool {
 		}
 		it.hit = it.hit || is(i)
 	}
-	// closeTo ends every open item whose keys sit right of column ind.
+	// closeTo ends every open mapping whose keys sit right of column ind.
 	closeTo := func(ind int) bool {
 		for len(stack) > 0 && stack[len(stack)-1].col > ind {
 			if judge(stack[len(stack)-1]) {
@@ -174,34 +200,45 @@ func HasSecretPairIn(path string, lines []string, changed []bool) bool {
 		if strings.TrimSpace(t) == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
+		if tt := strings.TrimSpace(t); tt == "---" || tt == "..." {
+			if closeTo(-1) {
+				return true
+			}
+			continue
+		}
 		if closeTo(ind) {
 			return true
 		}
-		if m := reItem.FindStringSubmatch(l); m != nil {
-			it := &item{col: len(m[1])}
-			rest := l[len(m[1]):]
-			if strings.HasPrefix(rest, "{") {
-				for _, p := range reFlowPair.FindAllStringSubmatch(rest, -1) {
-					set(it, p[1], strings.TrimSpace(p[2]), i)
-				}
-				if judge(it) {
-					return true
-				}
-				continue
+		for _, fm := range reFlowMap.FindAllString(l, -1) {
+			it := &item{}
+			for _, p := range reFlowPair.FindAllStringSubmatch(fm, -1) {
+				set(it, p[1], strings.TrimSpace(p[2]), i)
 			}
+			if judge(it) {
+				return true
+			}
+		}
+		if m := reItem.FindStringSubmatch(l); m != nil {
+			rest := l[len(m[1]):]
+			if strings.HasPrefix(rest, "{") || strings.HasPrefix(rest, "[") {
+				continue // a flow item: judged above
+			}
+			it := &item{col: len(m[1])}
 			if k := reKeyColon.FindStringSubmatch(rest); k != nil {
 				set(it, k[1], k[2], i)
 			}
 			stack = append(stack, it)
 			continue
 		}
-		if n := len(stack); n > 0 && stack[n-1].col == ind {
-			if k := reKeyColon.FindStringSubmatch(t); k != nil {
-				set(stack[n-1], k[1], k[2], i)
-			}
+		k := reKeyColon.FindStringSubmatch(t)
+		if k == nil {
+			continue // a block scalar's text, a plain scalar
 		}
-		// Right of the innermost item's keys: a nested line (valueFrom's
-		// children, a block scalar's text).
+		if n := len(stack); n == 0 || stack[n-1].col < ind {
+			// A mapping nested under a key, or a document's top mapping.
+			stack = append(stack, &item{col: ind})
+		}
+		set(stack[len(stack)-1], k[1], k[2], i)
 	}
 	return closeTo(-1)
 }
@@ -210,15 +247,21 @@ var (
 	// reItem: a YAML list item's dash and the indentation up to its first key
 	// (m[1]: everything before the key, so len(m[1]) is the key column).
 	reItem = regexp.MustCompile(`^(\s*-\s+)\S`)
+	// reFlowMap: a one-line flow mapping that nests no other.
+	reFlowMap = regexp.MustCompile(`\{[^{}]*\}`)
 	// reFlowPair: one key: value pair of a one-line flow mapping.
 	reFlowPair = regexp.MustCompile(`["']?([A-Za-z0-9_.$-]+)["']?\s*:\s*("[^"]*"|'[^']*'|[^,}]*)`)
 )
 
-// unquote is v without its surrounding quotes and a trailing YAML comment.
+// unquote is v without its surrounding quotes and a trailing YAML comment: a
+// quoted v is the text inside its quotes (whatever follows them, such as a
+// comment, is dropped); an unquoted one ends at " #".
 func unquote(v string) string {
 	v = strings.TrimSpace(v)
-	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-		return v[1 : len(v)-1]
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') {
+		if j := strings.IndexByte(v[1:], v[0]); j >= 0 {
+			return v[1 : 1+j]
+		}
 	}
 	if i := strings.Index(v, " #"); i >= 0 {
 		v = strings.TrimSpace(v[:i])
@@ -234,7 +277,7 @@ func pairLiteral(v string) bool { return isLiteral(unquote(v), false) }
 // credKeyWords are the endings of a credential-like key, compared with the
 // key lowercased and its _ - . separators removed.
 var credKeyWords = []string{"password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "privatekey", "secretkey",
-	"credential", "credentials"}
+	"secretaccesskey", "credential", "credentials"}
 
 // refKeyEndings are keys that NAME a reference to a secret held elsewhere
 // (a Secret's name, a key selector), compared the same way; a key starting

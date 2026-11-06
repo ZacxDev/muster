@@ -895,7 +895,8 @@ file) refuse on either of two rules:
   block, a JWT, a cloud key) always counts.
 - **The key.** A credential-like key — one whose name ends in `password`,
   `passwd`, `passphrase`, `pwd`, `secret`, `token`, `api_key`/`apikey`,
-  `private_key`, `secret_key`, `credential` or `credentials`, in YAML, JSON,
+  `private_key`, `secret_key`, `secret_access_key`, `credential` or
+  `credentials` (not `access_key_id`, an identifier), in YAML, JSON,
   `NAME=…` or a `--password`/`--token`-style flag — holding a **literal**
   string refuses, however short or plain: `password: hunter2` and `password:
   correct-horse-battery-staple` are refused. Not a literal: an empty or null
@@ -909,12 +910,21 @@ file) refuse on either of two rules:
   (`.go`, `.ts`, `.py`, …) an unquoted value is an expression, so only a quoted
   string literal is judged there (`Password: cfg.Password` passes, `Password:
   "hunter2"` does not).
-- **The env pair.** A list item whose `name:` is credential-like (the same
-  endings: `- name: DB_PASSWORD`) and whose sibling `value:` holds a literal
-  refuses, in either order and as a flow mapping (`- {name: X, value: y}`).
-  The literal rules are the key rule's, except that a quoted boolean or number
-  (`"true"`, `"5432"`, an env value being a string) is not a literal either;
-  `valueFrom`, `$(VAR)`, `{{…}}` and `ENC[…]` pass.
+- **The env pair.** One YAML mapping whose `name:` is credential-like (the
+  same endings: `name: DB_PASSWORD`) and whose sibling `value:` holds a literal
+  refuses, in either order. A mapping is a block list item (`- name: X` with
+  `value: y` below it), a block mapping nested under a key (a kustomize
+  JSON6902 patch's `value:` holding `name:` and `value:`), or a one-line flow
+  mapping anywhere on a line (`- {name: X, value: y}`, `value: {name: X,
+  value: y}`, `env: [{name: X, value: y}]`). A pair is never made across two
+  mappings: in a diff, each hunk is judged with its context lines, so an added
+  `valueFrom` entry next to a changed harmless `value:` is not a pair, and an
+  unchanged `- name: DB_PASSWORD` above a changed `value:` is. A quoted name
+  or value may carry a comment after it. The literal rules are the key rule's,
+  except that a quoted boolean or number (`"true"`, `"5432"`, an env value
+  being a string) is not a literal either; `valueFrom`, `$(VAR)`, `{{…}}` and
+  `ENC[…]` pass. Not seen: multi-line JSON, a dash alone on its line, a flow
+  mapping that nests another, an alias whose anchor sits on another key.
 
 A SOPS-encrypted Secret (its values `ENC[…]`, a `sops:` block) passes the
 `kind: Secret` rule. A comparison muster cannot read at create or `PATCH` is a

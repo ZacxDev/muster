@@ -109,11 +109,12 @@ func patchLines(patch string) []patchLine {
 //     kind may sit outside the hunk);
 //   - a removed `name:` line in a diff that shows a protected kind (renaming a
 //     volume, database or canary deletes it and creates another);
-//   - an added line has a secret-shaped value (redact.HasSecretValueIn, which
-//     judges a credential-like KEY as well as a value), or a list item's
-//     credential-like name: has a literal value: (an env entry,
-//     redact.HasSecretPairIn, judged with the hunk's context lines so an
-//     unchanged name line counts);
+//   - an added line has a secret-shaped value (redact.HasSecretLiteralIn,
+//     which judges a credential-like KEY as well as a value), or one YAML
+//     mapping's credential-like name: has a literal value: (an env entry, a
+//     JSON6902 env add, a flow mapping; redact.HasSecretPairIn, judged on
+//     each hunk's post-image WITH its context lines, so an unchanged name
+//     line counts and a pair is never made across two entries);
 //   - an added kind: Secret holds a literal data/stringData value (plainSecret).
 //
 // ⚠ BEST EFFORT, BY THE DIFF: a hunk shows three lines of context, so a rule
@@ -180,7 +181,11 @@ func ForbiddenFiles(forbidden []string, files []File) ([]string, string) {
 		if patchDelete {
 			add(f.Path, "an added line is a kustomize `$patch: delete` (an officer never deletes a resource)")
 		}
-		if redact.HasSecretValueIn(f.Path, strings.Join(added, "\n")) || secretPair(f.Path, lines) {
+		// The added lines spliced together are not a whole text (the lines
+		// between them are missing, so one env entry's value would pair with
+		// another's name): the value and key rules judge them, and the pair
+		// rule judges each hunk's post-image (secretPair).
+		if redact.HasSecretLiteralIn(f.Path, strings.Join(added, "\n")) || secretPair(f.Path, lines) {
 			add(f.Path, "an added line has a credential-shaped value")
 		}
 		if plainSecret(lines) {
