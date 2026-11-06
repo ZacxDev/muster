@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "9b71cb2d75a867238ec54c4836f09d496cdbec64a72f69b0f4a3bfba81f94754",
+			want: "c8dd7244f5c8f35864896c2320e30afdbde66a61d63f26ccfb1e588d2e5e25fb",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "aeed61daaa56bceb92cbae865e7e01f34082ff5f19992583ce92d7de3973ff50",
+			want: "6be6d7969ab3f577d5b8c6f5837329a521ae51668f6d96afd05c99de2eb70947",
 			min:  1000,
 		},
 		{
@@ -719,6 +719,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`route_to_session`", "`mcp__muster__route_to_session`",
 		"`plugin_message_settle`", "`mcp__muster__plugin_message_settle`",
 		"`agent_dispatch`", "`mcp__muster__agent_dispatch`",
+		"`task_route_attention`", "`mcp__muster__task_route_attention`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
@@ -756,6 +757,42 @@ func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 	}
 	if gw := norm(ChiefInstructions(false, true)); !strings.Contains(gw, "The `muster` CLI is on your PATH") || strings.Contains(gw, "mcp__muster__") {
 		t.Error("the gateway prose changed runtime: it must keep the CLI and must not name MCP tools")
+	}
+}
+
+// TestTheChiefTriagesFeedback pins the feedback paragraph WHOLE, normalised,
+// against an independently typed literal (a guard on keywords is walkable by
+// rewording), in each runtime's spelling, and only with plugins on. The rule is
+// generic on purpose: it keys on what a message SAYS (a bug report, a feature
+// request, confusion), never on which plugin brought it.
+//
+// ⚠ IT PROMISES NO DISPATCH BUTTONS. The task is gated, and task_route_attention
+// offers agent_dispatch only on an ungated task (internal/api
+// chiefDispatchTaskBlock), so the paragraph says the task stays gated.
+func TestTheChiefTriagesFeedback(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	para := func(p string) string {
+		return "Some plugin messages are feedback: someone using your owner's work reports a bug, " +
+			"asks for a feature or says something confused them. Never leave one without a decision. " +
+			"When it is something to act on, file it with `" + p + "task_create_gated` and, when your tool list has `" +
+			p + "task_route_attention`, call it with the new task's id and a one-line note saying what the feedback is: " +
+			"it puts the task on your owner's phone with your note. The task stays gated until your owner releases it, as above. " +
+			"When it is not something to act on — thanks, a +1, chatter, or the same thing as a task already open — call `" +
+			p + "plugin_message_settle` with its message_id and a short reason (for a duplicate, the open task's id)."
+	}
+	for _, c := range []struct {
+		name, on, off, para string
+	}{
+		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), para("")},
+		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), para("")},
+		{"claude-code", ChiefInstructionsClaudeCode(true, false), ChiefInstructionsClaudeCode(false, false), para("mcp__muster__")},
+	} {
+		if !strings.Contains(norm(c.on), c.para) {
+			t.Errorf("%s: the chief prompt does not carry the feedback paragraph:\n%s", c.name, c.para)
+		}
+		if strings.Contains(norm(c.off), "Some plugin messages are feedback") {
+			t.Errorf("%s: plugins OFF, but the prompt carries the feedback paragraph", c.name)
+		}
 	}
 }
 

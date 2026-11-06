@@ -1171,6 +1171,20 @@ on the message (`settle_reason`, at most 2000 characters) and in the
 offered the tool, and only for a message delivered to it: another owner's
 message, or one still queued, is *"not a plugin message delivered to you"*.
 
+**Feedback** gets a decision every time. A provisioned chief's standing
+instructions say that a plugin message which is feedback (someone using your
+work reports a bug, asks for a feature or says something confused them),
+whichever plugin brought it, is either filed or settled. When it can be acted
+on, the chief files it with `task_create_gated`, then, when
+[task routing](#routing-a-task-to-the-chief) is on, calls
+`task_route_attention` with the new task's id and a one-line note, so the
+task reaches your phone with that note. The ask has no `agent_dispatch`
+buttons, because the task is gated and only you can release it: approve it on
+the board, or tell the chief in its chat. Thanks, a +1, chatter, or a duplicate
+of a task already open is settled with a short reason instead. This is the
+chief's judgement under its instructions. muster does not check it: the
+15-minute ask below covers only agent-mail and ClankMail.
+
 An **agent-mail** or **ClankMail** message — one from the plugin named
 `agent-mail` or `clankmail` (`plugins.ThreadPlugins`; plugins are named this
 way everywhere, as in the route allowlist) — still awaiting a disposition **15 minutes** after its

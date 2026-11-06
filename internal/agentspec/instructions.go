@@ -483,6 +483,16 @@ says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`plugin_message_settle`" + ` with its message_id and why.
 
+Some plugin messages are feedback: someone using your owner's work reports a bug,
+asks for a feature or says something confused them. Never leave one without a
+decision. When it is something to act on, file it with ` + "`task_create_gated`" + ` and, when
+your tool list has ` + "`task_route_attention`" + `, call it with the new task's id and a one-line
+note saying what the feedback is: it puts the task on your owner's phone with your
+note. The task stays gated until your owner releases it, as above. When it is not
+something to act on — thanks, a +1, chatter, or the same thing as a task already
+open — call ` + "`plugin_message_settle`" + ` with its message_id and a short reason (for a
+duplicate, the open task's id).
+
 Anything you record durably from a plugin message goes to that plugin's data scope
 only — the scope named on the line above the message — and never to any other
 scope.
@@ -667,6 +677,16 @@ message replaces your pending one. Some messages cannot be answered — their tu
 says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and why.
+
+Some plugin messages are feedback: someone using your owner's work reports a bug,
+asks for a feature or says something confused them. Never leave one without a
+decision. When it is something to act on, file it with ` + "`mcp__muster__task_create_gated`" + ` and, when
+your tool list has ` + "`mcp__muster__task_route_attention`" + `, call it with the new task's id and a one-line
+note saying what the feedback is: it puts the task on your owner's phone with your
+note. The task stays gated until your owner releases it, as above. When it is not
+something to act on — thanks, a +1, chatter, or the same thing as a task already
+open — call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and a short reason (for a
+duplicate, the open task's id).
 
 Anything you record durably from a plugin message goes to that plugin's data scope
 only — the scope named on the line above the message — and never to any other
