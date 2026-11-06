@@ -201,6 +201,21 @@ positive and a negative case in the Go suite (`cmd/ccd`,
 still needs a `claude-code-agent` image built from this version: an older
 entrypoint refuses the route's variables, and its pod does not start.
 
+**Auto-memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`).** Every officer
+instance's pod — either pool, untiered too, whatever
+[`fresh_session_per_item`](#the-two-pools) says — is given the Claude Code
+CLI's own switch for its auto-memory, so the CLI neither reads nor writes its
+memory directory on the instance's volume
+(`<CLAUDE_CONFIG_DIR>/projects/<workspace>/memory`). What an officer remembers
+of earlier items is HQ's to give (the claim-time history), never a file a
+session wrote for itself; with one conversation per item, such a file would be
+the one channel left between items, outside HQ. It is the pod's environment
+rather than a `settings.json` key because a session can rewrite its own
+settings but not its CLI's environment. Files already in that directory are
+left where they are, and no longer read. It takes effect at the instance's
+next pod start. Read from the CLI 2.1.289's bundle, where the variable is
+consulted before any setting; the image's 2.1.296 was not inspected.
+
 No other agent gets any of them (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
 

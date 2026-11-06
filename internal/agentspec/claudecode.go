@@ -171,8 +171,16 @@ func claudeCodeResourcesFor(cfg Config) provision.Resources {
 // work: the first succeeds, the second fails closed.
 const EnvClaudeDisableNonessentialTraffic = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 
-// EnvClaudeDisableAutoMemory is the Claude Code CLI's switch for auto-memory.
-// STUB (red): not rendered yet.
+// EnvClaudeDisableAutoMemory is the Claude Code CLI's switch for its
+// auto-memory (ClaudeCodeSession.DisableAutoMemory). Read from the CLI's own
+// bundle (2.1.289; the image's 2.1.296 not inspected): a truthy value turns
+// auto-memory "off" BEFORE any setting is consulted, and the setting's own
+// description is "When false, Claude will not read from or write to the
+// auto-memory directory" (settings key autoMemoryEnabled). The variable is
+// used rather than the setting because it is the pod's, set at provision
+// time: a session can write its own settings.json, but not its CLI's
+// environment. It reaches the CLI as every pod variable does (ccd's
+// environment is the tmux server's, which the pane inherits).
 const EnvClaudeDisableAutoMemory = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
 // ClaudeCodeMCPOffered reports whether a claude-code agent built from this
@@ -568,6 +576,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	if route {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvLLMRoute, Value: LLMRouteMuster})
+	}
+	if opts.ClaudeCodeSession.DisableAutoMemory {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableAutoMemory, Value: "1"})
 	}
 	if opts.ClaudeCodeSession.EgressLocked() || poolLocked {
 		// An egress-locked pool's worker too: the CLI's optional hosts

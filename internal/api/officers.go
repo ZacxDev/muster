@@ -584,7 +584,11 @@ func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context
 	if !ok || !o.FreshSessionPerItem() {
 		return ctx
 	}
-	return agents.WithTurnRoute(ctx, agents.TurnRoute{Header: http.Header{agents.HeaderCCNewConversation: {"1"}}})
+	// Set, never a map literal: a literal key is not canonicalised ("CC"), and
+	// Header.Get — applyTurnRoute's read — would never find it.
+	h := http.Header{}
+	h.Set(agents.HeaderCCNewConversation, "1")
+	return agents.WithTurnRoute(ctx, agents.TurnRoute{Header: h})
 }
 
 // promptPending is the kickoff deliverer's own "owed" rule
@@ -771,6 +775,7 @@ func (s *Server) WaitForOfficerReprompts() {
 //   - Model: the officer's configured model (its pool's, for a tiered officer).
 //   - LLMRoute, with no Model: a routine instance of an officer that declares
 //     `llm` (below).
+//   - DisableAutoMemory: every officer instance (below).
 func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeSession, bool) {
 	o, _, ok := s.officerOf(a)
 	if !ok {
@@ -797,10 +802,19 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// reaches its model through muster's proxy with its own muster token and
 	// carries no subscription token. It takes no session model: the proxy
 	// pins tiers.routine.model, and the pod spec refuses a provider id.
+	//
+	// 🔴 EVERY OFFICER INSTANCE RUNS WITH THE CLI'S AUTO-MEMORY OFF
+	// (DisableAutoMemory; operator decision 2026-11-06), whatever its pool and
+	// whatever fresh_session_per_item says: what an officer remembers of
+	// earlier items is HQ's (the claim-time history), never a file on its
+	// volume.
+	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true}
 	if officers.RoutineAgent(o, a.Name) {
-		return agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, LLMRoute: true}, true
+		sess.LLMRoute = true
+		return sess, true
 	}
-	return agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: o.Model, BypassPermissions: true}, true
+	sess.Model = o.Model
+	return sess, true
 }
 
 // --- delete protection -------------------------------------------------------

@@ -42,7 +42,9 @@ func fileHolds(t *testing.T, path, prompt string) bool {
 // requires the fake CLI's reply for exactly those bytes.
 func (r *serveRig) chatNewConversation(t *testing.T, p string) {
 	t.Helper()
-	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Header: http.Header{agents.HeaderCCNewConversation: {"1"}}})
+	h := http.Header{}
+	h.Set(agents.HeaderCCNewConversation, "1") // Set canonicalises; a map literal's "CC" key would never be read
+	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Header: h})
 	reply, err := mustersGateway(t, "http://"+r.gwAddr).Chat(ctx, contractAgent, "s", p, nil)
 	sum := sha256.Sum256([]byte(p))
 	if want := fmt.Sprintf("received %d bytes\n\nsha256 %s", len(p), hex.EncodeToString(sum[:])); err != nil || reply != want {

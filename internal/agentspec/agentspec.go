@@ -525,8 +525,13 @@ type ClaudeCodeSession struct {
 	// only (internal/api OfficerClaudeCodeSession). Needs Config.ConnectURL,
 	// and refuses a Model: the proxy pins the model.
 	LLMRoute bool
-	// DisableAutoMemory turns off the CLI's auto-memory. STUB (red): not
-	// rendered yet.
+	// DisableAutoMemory turns the CLI's auto-memory OFF in every session the
+	// pod runs ([EnvClaudeDisableAutoMemory]=1): the CLI then neither reads
+	// nor writes its memory directory (<config dir>/projects/<cwd>/memory).
+	// Set for an officer instance only (internal/api OfficerClaudeCodeSession):
+	// what an officer remembers of earlier items is HQ's to give, and a memory
+	// file on the instance's volume would be a second, hidden channel outside
+	// it — one a fresh conversation per item would still read.
 	DisableAutoMemory bool
 }
 
