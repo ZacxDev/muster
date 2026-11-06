@@ -248,7 +248,7 @@ func (l *JudgementLedger) Usage(ctx context.Context, o Officer, now time.Time) (
 // CapResetAt is when the daily session cap in force at now resets: the next
 // UTC midnight.
 func CapResetAt(now time.Time) time.Time {
-	y, m, d := now.Date() // MUTANT (round 1 F3): the local date
+	y, m, d := now.UTC().Date()
 	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
 }
 
