@@ -161,11 +161,24 @@ func TestJSUnderscoreEmphasisMatchesGo(t *testing.T) {
 			t.Errorf("Go mdEmphasis(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	// JS only: its autolinker emits target="_blank" into the string the
-	// underscore pass then reads (the Go renderer vaults the anchor first), so
-	// an underscore in the URL used to pair with that attribute's `_`.
-	cases = append(cases, struct{ in, want string }{"see https://x.example/a_b_c now",
-		`see <a href="https://x.example/a_b_c" target="_blank" rel="noopener noreferrer" class="text-accent underline">https://x.example/a_b_c</a> now`})
+	// JS only (its anchor's attributes differ from Go's): a bare URL is drawn as
+	// written. Its autolinker used to leave the anchor in the string the
+	// emphasis passes read, so a `_` or `*` in the URL paired — with the `_` of
+	// target="_blank", or inside the href. The Go equivalents are in
+	// TestMarkdownBareURLIsNotEmphasis.
+	const jsA = `" target="_blank" rel="noopener noreferrer" class="text-accent underline">`
+	cases = append(cases, []struct{ in, want string }{
+		{"see https://x.example/a_b_c now",
+			`see <a href="https://x.example/a_b_c` + jsA + `https://x.example/a_b_c</a> now`},
+		{"https://example.com/foo_ then x_",
+			`<a href="https://example.com/foo_` + jsA + `https://example.com/foo_</a> then x_`},
+		{"https://h.com/a*b*c",
+			`<a href="https://h.com/a*b*c` + jsA + `https://h.com/a*b*c</a>`},
+		{"see https://h.com/a*b* and *real* and _also_",
+			`see <a href="https://h.com/a*b*` + jsA + `https://h.com/a*b*</a> and <em>real</em> and <em>also</em>`},
+		{"(https://h.com/x_y).",
+			`(<a href="https://h.com/x_y` + jsA + `https://h.com/x_y</a>).`},
+	}...)
 	ins := make([]string, len(cases))
 	for i, c := range cases {
 		ins[i] = c.in
@@ -183,6 +196,28 @@ func TestJSUnderscoreEmphasisMatchesGo(t *testing.T) {
 	for i, c := range cases {
 		if got[i] != c.want {
 			t.Errorf("JS mdInline(%q) = %q, want %q", c.in, got[i], c.want)
+		}
+	}
+}
+
+// TestMarkdownBareURLIsNotEmphasis: the Go renderer's half of the bare-URL
+// cases. mdAutolink already vaulted its anchor before this change, so these
+// are invariant guards here (the JS renderer was the one that broke them).
+func TestMarkdownBareURLIsNotEmphasis(t *testing.T) {
+	const a = `" target="_blank" rel="noopener" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">`
+	cases := []struct{ in, want string }{
+		{"https://example.com/foo_ then x_",
+			`<p class="my-1"><a href="https://example.com/foo_` + a + `https://example.com/foo_</a> then x_</p>`},
+		{"https://h.com/a*b*c",
+			`<p class="my-1"><a href="https://h.com/a*b*c` + a + `https://h.com/a*b*c</a></p>`},
+		{"see https://h.com/a*b* and *real* and _also_",
+			`<p class="my-1">see <a href="https://h.com/a*b*` + a + `https://h.com/a*b*</a> and <em>real</em> and <em>also</em></p>`},
+		{"(https://h.com/x_y).",
+			`<p class="my-1">(<a href="https://h.com/x_y` + a + `https://h.com/x_y</a>).</p>`},
+	}
+	for _, c := range cases {
+		if got := markdownHTML(c.in); got != c.want {
+			t.Errorf("markdownHTML(%q)\n got: %s\nwant: %s", c.in, got, c.want)
 		}
 	}
 }

@@ -1861,11 +1861,16 @@ func agentChatScript(name string) g.Node {
     // OUT of the href. Code + markdown-link URLs are already tokenized out above;
     // the \uE000 sentinel is excluded from the URL so a URL directly abutting a
     // token can't swallow the placeholder into the href.
+    // The WHOLE anchor is stashed, like the [text](url) branch above and the Go
+    // renderer's mdAutolink: emitted markup must never reach the emphasis passes
+    // below. Unstashed, a '*' or '_' in the URL paired with emphasis \u2014 inside the
+    // href, or with the '_' of target="_blank" ("https://example.com/foo_ then
+    // x_" drew target="<em>blank"). The trail stays outside, as plain text.
     s = s.replace(/https?:\/\/[^\s<\uE000]+/g, function (m) {
       var trail = '';
       var mm = m.match(/[.,)\]!?:;"']+$/);
       if (mm) { trail = mm[0]; m = m.slice(0, m.length - trail.length); }
-      return '<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + m + '</a>' + trail;
+      return stash('<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + m + '</a>') + trail;
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
