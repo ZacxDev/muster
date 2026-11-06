@@ -684,8 +684,8 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		// also reads as Capped (fail closed) but with Used 0.
 		reached := obs[i].Capped && obs[i].Used >= limit && ds[i].CapWaiting > 0
 		s.capReached = reached
-		if day := utcDay(now); reached && r.st("").capLoggedDay != day { // MUTANT (round 1 F3): one memory per loop
-			r.st("").capLoggedDay = day
+		if day := utcDay(now); reached && s.capLoggedDay != day {
+			s.capLoggedDay = day
 			reset := CapResetAt(now)
 			capLines = append(capLines, fmt.Sprintf("officers: %s: %s: %d claimable judgement item(s) wait in HQ and are not claimed until the cap resets at %s "+
 				"(tiers.judgement.max_sessions_per_day; logged once per UTC day)", p.label(), CapReason(obs[i].Used, limit, reset), ds[i].CapWaiting, reset.Format(time.RFC3339)))
