@@ -708,6 +708,13 @@ func (s *composeSup) stop(ctx context.Context, why string) {
 // prepareEpoch empties dataDir when its recorded epoch differs from epoch, then
 // records epoch. A dataDir with NO record is not emptied — a fresh volume, or
 // one a chief used before epochs existed — only stamped.
+//
+// 🔴 THE OLD RECORD IS NEVER REMOVED, ONLY REPLACED, AND ONLY AFTER THE WIPE
+// SUCCEEDED. A wipe that fails part-way (an entry it cannot remove, or the
+// 2-minute runAsCLI timeout killing a slow one) leaves the OLD epoch recorded,
+// so the next attempt wipes again. Were the record removed with the rest, the
+// next attempt would read "no record" and stamp the new epoch over the old
+// chief's leftover files.
 func prepareEpoch(dataDir, epoch string, logf func(string, ...any)) error {
 	marker := filepath.Join(dataDir, composeEpochFile)
 	b, err := os.ReadFile(marker)
@@ -725,6 +732,9 @@ func prepareEpoch(dataDir, epoch string, logf func(string, ...any)) error {
 			return fmt.Errorf("empty %s: %w", dataDir, err)
 		}
 		for _, e := range entries {
+			if e.Name() == composeEpochFile {
+				continue // replaced below, once everything else is gone
+			}
 			if err := os.RemoveAll(filepath.Join(dataDir, e.Name())); err != nil {
 				return fmt.Errorf("empty %s: %w", dataDir, err)
 			}

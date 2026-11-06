@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -67,6 +68,59 @@ func TestAnUnansweredPromptIsDeniedNotLeftHanging(t *testing.T) {
 		runApprove(nil, strings.NewReader(mcpEvent), &out, &errb)
 		if out.Len() != 0 {
 			t.Fatalf("without the flag and a relay: stdout %q, want nothing (defer)", out.String())
+		}
+	})
+}
+
+// eofReader records whether its reader was read to EOF.
+type eofReader struct {
+	r   io.Reader
+	eof bool
+}
+
+func (e *eofReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err == io.EOF {
+		e.eof = true
+	}
+	return n, err
+}
+
+// TestTheDenyIsTheHooksFirstDecision: with CCD_APPROVE_UNANSWERED=deny, a
+// setting the hook would otherwise refuse (a malformed CCD_APPROVAL_DEADLINE,
+// which defers) still DENIES — the deny is decided before anything that can
+// return — and the payload on stdin is read to EOF first. Control: the same
+// malformed deadline without the flag defers, and says why, so the deadline
+// is reached and rejected on the path the deny now precedes.
+func TestTheDenyIsTheHooksFirstDecision(t *testing.T) {
+	const bad = "not-a-duration"
+	t.Setenv(envConnectURL, "")
+	t.Setenv(envAgentToken, "")
+	t.Setenv("CCD_APPROVAL_DEADLINE", bad)
+	t.Run("deny mode", func(t *testing.T) {
+		t.Setenv(podagent.EnvApproveUnanswered, "deny")
+		in := &eofReader{r: strings.NewReader(mcpEvent)}
+		var out, errb bytes.Buffer
+		if code := runApprove(nil, in, &out, &errb); code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		if out.String() != approveDeny {
+			t.Fatalf("CCD_APPROVAL_DEADLINE=%q in deny mode: stdout %q, want the deny decision %q (stderr %q)",
+				bad, out.String(), approveDeny, errb.String())
+		}
+		if !in.eof {
+			t.Fatal("the deny was printed without reading the hook payload on stdin to EOF")
+		}
+	})
+	t.Run("control: no flag defers on the malformed deadline", func(t *testing.T) {
+		t.Setenv(podagent.EnvApproveUnanswered, "")
+		var out, errb bytes.Buffer
+		runApprove(nil, strings.NewReader(mcpEvent), &out, &errb)
+		if out.Len() != 0 {
+			t.Fatalf("without the flag: stdout %q, want nothing (defer)", out.String())
+		}
+		if !strings.Contains(errb.String(), "CCD_APPROVAL_DEADLINE") {
+			t.Fatalf("the malformed deadline is not what deferred: stderr %q", errb.String())
 		}
 	})
 }

@@ -86,6 +86,26 @@ func runApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) (code 
 		fmt.Fprintln(stderr, "usage: ccd approve  (the PermissionRequest hook; reads the hook payload on stdin)")
 		return 0
 	}
+	logf := func(f string, v ...any) { fmt.Fprintf(stderr, "ccd approve: "+f+"\n", v...) }
+	// 🔴 A CONTAINER WHERE NOBODY CAN ANSWER (the Compose chief): DENY, never
+	// defer — a deferred prompt there is a turn that never ends. This is the
+	// hook's FIRST decision: nothing above it can return, so no other setting
+	// (a malformed CCD_APPROVAL_DEADLINE included) turns the deny into a
+	// deferral. It can only ever print the deny decision, after reading the
+	// payload to EOF as every other path does, so the CLI's write to the hook's
+	// stdin never meets a closed pipe. An unknown value keeps today's behaviour
+	// (defer), and says so.
+	switch v := os.Getenv(podagent.EnvApproveUnanswered); v {
+	case "":
+	case podagent.ApproveUnansweredDeny:
+		_, _ = io.Copy(io.Discard, io.LimitReader(stdin, 1<<20))
+		logf("%s=%s: no operator can answer a permission prompt in this container (the Compose chief has no "+
+			"terminal and no approval gate); denied", podagent.EnvApproveUnanswered, v)
+		fmt.Fprint(stdout, approveDeny)
+		return 0
+	default:
+		logf("%s=%q is not %q; ignoring it", podagent.EnvApproveUnanswered, v, podagent.ApproveUnansweredDeny)
+	}
 	deadline, err := envDuration("CCD_APPROVAL_DEADLINE", defaultApprovalDeadline)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -97,21 +117,7 @@ func runApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) (code 
 		deadline: deadline,
 		poll:     time.Second,
 		client:   &http.Client{Timeout: 10 * time.Second, CheckRedirect: noRedirects.CheckRedirect},
-		logf:     func(f string, v ...any) { fmt.Fprintf(stderr, "ccd approve: "+f+"\n", v...) },
-	}
-	// 🔴 A CONTAINER WHERE NOBODY CAN ANSWER (the Compose chief): DENY, never
-	// defer — a deferred prompt there is a turn that never ends. It can only
-	// ever print the deny decision; an unknown value keeps today's behaviour
-	// (defer), and says so.
-	switch v := os.Getenv(podagent.EnvApproveUnanswered); v {
-	case "":
-	case podagent.ApproveUnansweredDeny:
-		a.logf("%s=%s: no operator can answer a permission prompt in this container (the Compose chief has no "+
-			"terminal and no approval gate); denied", podagent.EnvApproveUnanswered, v)
-		fmt.Fprint(stdout, approveDeny)
-		return 0
-	default:
-		a.logf("%s=%q is not %q; ignoring it", podagent.EnvApproveUnanswered, v, podagent.ApproveUnansweredDeny)
+		logf:     logf,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()

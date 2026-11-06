@@ -551,6 +551,63 @@ func TestComposeEpochEmptiesDataOnlyWhenARecordedEpochDiffers(t *testing.T) {
 	}
 }
 
+// TestComposeEpochAFailedWipeIsRetriedNotStamped: a wipe that fails part-way
+// (here a read-only directory under workspace/, the shape of Go's module
+// cache) keeps the OLD epoch recorded, so the next attempt wipes again rather
+// than finding no record and stamping the new epoch over the old chief's
+// files. Once the entry can be removed, the wipe completes.
+func TestComposeEpochAFailedWipeIsRetriedNotStamped(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes a 0555 directory's entries, so the wipe cannot be made to fail this way")
+	}
+	logf := func(string, ...any) {}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, composeEpochFile)
+	if err := os.WriteFile(marker, []byte("aa\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ro := filepath.Join(dir, "workspace", "mod", "ro")
+	stale := filepath.Join(ro, "f")
+	if err := os.MkdirAll(ro, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("old chief"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ro, 0o755) })
+	for i := 1; i <= 2; i++ {
+		if err := prepareEpoch(dir, "bb", logf); err == nil {
+			t.Fatalf("attempt %d: a wipe that could not remove %s returned no error", i, stale)
+		}
+		if b, err := os.ReadFile(marker); err != nil || string(b) != "aa\n" {
+			t.Fatalf("attempt %d: after a failed wipe the record is %q (%v), want the old epoch aa kept", i, b, err)
+		}
+		if _, err := os.Stat(stale); err != nil {
+			t.Fatalf("attempt %d: control: the entry the wipe cannot remove is gone (%v), so the wipe never failed", i, err)
+		}
+	}
+	if err := os.Chmod(ro, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareEpoch(dir, "bb", logf); err != nil {
+		t.Fatalf("the retried wipe: %v", err)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 1 || ents[0].Name() != composeEpochFile {
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("after the retried wipe the volume holds %v, want only %s", names, composeEpochFile)
+	}
+	if b, _ := os.ReadFile(marker); string(b) != "bb\n" {
+		t.Fatalf("the epoch recorded is %q, want bb", b)
+	}
+}
+
 func TestComposeEpochIsAppliedBeforeTheChildStarts(t *testing.T) {
 	h := newComposeHarness(t)
 	data := h.sup.dataDir

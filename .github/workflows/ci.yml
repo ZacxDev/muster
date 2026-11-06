@@ -1065,9 +1065,10 @@ jobs:
 
       # 🔴 THE IMAGE THIS JOB PUSHES IS SMOKED, NOT ONLY THE `ccd-image` JOB'S.
       # This is a fresh build on floating base images, so it is not byte-for-byte
-      # the image `ccd-image` tested. Same three runs as that job: a fresh
-      # volume, a legacy root-owned
-      # /data/workspace, and the resume of that legacy volume's transcript.
+      # the image `ccd-image` tested. The same four runs as that job, all
+      # BEFORE the push and the release retag below: the three cc-smoke runs (a
+      # fresh volume, a legacy root-owned /data/workspace, and the resume of
+      # that legacy volume's transcript) here, and compose-smoke next.
       - name: cc-smoke the image it will push (fresh, legacy, legacy-resume)
         env:
           IMG: claude-code-agent:${{ steps.tag.outputs.short }}
@@ -1080,6 +1081,15 @@ jobs:
           docker run --rm --user 0 -v cc-smoke-legacy:/data:nocopy "$IMG" \
             sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume "$IMG" cc-smoke
+
+      # The compose mode (`ccd compose`) on the bits this job publishes: the
+      # X.Y.Z tag exists for the compose install, so its image is compose-smoked
+      # too, not only `ccd-image`'s. A failure here stops the job before `push`
+      # and `tag the release version`, so no tag names an unsmoked image.
+      - name: compose-smoke the image it will push (ccd compose, real ccd and CLI)
+        env:
+          IMG: claude-code-agent:${{ steps.tag.outputs.short }}
+        run: images/claude-code-agent/compose-smoke.sh "$IMG"
 
       - name: log in to ghcr.io
         if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
