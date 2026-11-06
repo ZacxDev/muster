@@ -112,6 +112,13 @@ func (h PaneProcs) proc() string {
 	return "/proc"
 }
 
+// paneProcEntry is how InTree reads one process again (readProcEntry), which
+// a test wraps to change it between two reads.
+var paneProcEntry = readProcEntry
+
+// noArgv reports whether p's command line could not be read or reads empty.
+func noArgv(p procInfo) bool { return p.argvUnread || len(strings.Join(p.argv, "")) == 0 }
+
 // paneProcTable is the table InTree walks: readProcTable, which a test wraps
 // to fork a process between the table's read and the walk.
 var paneProcTable = readProcTable
@@ -134,7 +141,9 @@ var procWalkBound = 4096
 // (readProcEntry): one forked after the table was read — a busy Claude Code
 // pane's tool calls fork constantly — is walked like any other, one that has
 // exited meanwhile is skipped, and only one that still cannot be read
-// refuses. A zombie is skipped: it reads no input. The one exception is a
+// refuses. A process whose command line reads empty (mid-exec, exiting) is
+// read once more the same way, and refuses only if it is still alive with
+// none. A zombie is skipped: it reads no input. The one exception is a
 // host with no proc filesystem at all (not Linux, default root): there is
 // nothing to walk, so it answers false — a ratified gap, not a check that
 // passed.
@@ -179,8 +188,26 @@ func (h PaneProcs) InTree(root int) (GuardProc, bool, error) {
 		if p.state == "Z" {
 			continue
 		}
-		if p.argvUnread || len(strings.Join(p.argv, "")) == 0 {
-			return GuardProc{}, false, fmt.Errorf("the command line of process %d in the tree of %d could not be read", pid, root)
+		if noArgv(p) {
+			// A command line that reads empty (or not at all) is a process
+			// mid-exec or exiting as often as a hidden one: read it ONCE
+			// more. Gone or a zombie now reads no input; a command line now
+			// is walked like any other; still alive with none refuses.
+			q, err := paneProcEntry(h.proc(), pid)
+			switch {
+			case err != nil:
+				if _, lerr := os.Lstat(filepath.Join(h.proc(), strconv.Itoa(pid))); errors.Is(lerr, os.ErrNotExist) {
+					continue
+				}
+			case q.state == "Z":
+				continue
+			case !noArgv(q):
+				p = q
+				procs[pid] = q
+			}
+			if err != nil || noArgv(p) {
+				return GuardProc{}, false, fmt.Errorf("the command line of process %d in the tree of %d could not be read", pid, root)
+			}
 		}
 		if rule, ok := guardShape(p); ok && (rule != ruleOpenCode || h.onPaneTerminal(pid, p, root, procs)) {
 			return GuardProc{PID: pid, Rule: rule}, true, nil

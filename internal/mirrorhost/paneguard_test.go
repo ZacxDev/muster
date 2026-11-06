@@ -212,6 +212,69 @@ func TestAChildForkedAfterTheTableWasReadIsWalkedNotRefused(t *testing.T) {
 	}
 }
 
+// TestAnEmptyCommandLineIsReadOnceMore: a process in the pane whose command
+// line reads empty — mid-exec, or exiting — is read once more before the
+// guard decides. Gone by then, or a zombie, it is skipped and the paste goes;
+// with a command line by then it is walked like any other (a multiplexer
+// there is still refused); still alive with none, the guard refuses. The
+// change between the two reads is made by wrapping the second one
+// (paneProcEntry), so the walk sees exactly that window.
+func TestAnEmptyCommandLineIsReadOnceMore(t *testing.T) {
+	cmdline := func(f *fakeProc, pid int, argv ...string) {
+		must(f.t, os.WriteFile(filepath.Join(f.root, fmt.Sprint(pid), "cmdline"), []byte(strings.Join(argv, "\x00")), 0o644))
+	}
+	for _, c := range []struct {
+		name     string
+		then     func(f *fakeProc)
+		want     int
+		wantRule string
+		wantErr  string
+	}{
+		{name: "gone by the second read", want: 0, then: func(f *fakeProc) {
+			must(f.t, os.RemoveAll(filepath.Join(f.root, "21")))
+		}},
+		{name: "a zombie by the second read", want: 0, then: func(f *fakeProc) { f.state(21, 11, "bash", "Z") }},
+		{name: "exec'd by the second read: walked like any other", want: 0, then: func(f *fakeProc) {
+			cmdline(f, 21, "/bin/bash", "-c", "go test ./...")
+		}},
+		{name: "exec'd into a multiplexer by the second read: still refused", want: 21, wantRule: ruleMultiplexer, then: func(f *fakeProc) {
+			f.state(21, 11, "tmux: client", "S")
+			cmdline(f, 21, "tmux", "-L", "other", "attach")
+		}},
+		{name: "still alive with an empty command line: refused", wantErr: "command line", then: func(*fakeProc) {}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			proc := newFakeProc(t)
+			proc.add(10, 1, "zsh", "/work", "-zsh")
+			proc.add(11, 10, "claude", "/work", "claude")
+			proc.add(21, 11, "bash", "/work") // no argv: an empty command line
+			defer func(f func(string, int) (procInfo, error)) { paneProcEntry = f }(paneProcEntry)
+			reread := 0
+			paneProcEntry = func(root string, pid int) (procInfo, error) {
+				reread++
+				c.then(proc)
+				return readProcEntry(root, pid)
+			}
+			got, found, err := PaneProcs{Proc: proc.root}.InTree(10)
+			if reread != 1 {
+				t.Fatalf("instrument check: the empty command line was read again %d times, want once", reread)
+			}
+			switch {
+			case c.wantErr != "":
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("InTree = %+v, found %v, err %v; want an error naming %q", got, found, err, c.wantErr)
+				}
+			case err != nil:
+				t.Fatalf("InTree: %v — refused a process whose command line was read again", err)
+			case c.want == 0 && found:
+				t.Fatalf("REFUSED %+v; want admitted", got)
+			case c.want != 0 && (!found || got.PID != c.want || got.Rule != c.wantRule):
+				t.Fatalf("InTree = %+v, found %v; want pid %d by %q", got, found, c.want, c.wantRule)
+			}
+		})
+	}
+}
+
 // TestThePaneGuardFailsClosed: a pane whose processes cannot be read is not
 // presumed safe. The root missing from /proc, an unreadable proc root,
 // and a tree larger than the walk's bound are errors, which the guard turns
