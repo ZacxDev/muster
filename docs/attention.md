@@ -789,6 +789,14 @@ fixed answers ("continue", and "merge when green" once muster has verified the
 PR's CI and audit ladder), given by a deterministic rule the operator promoted.
 Every other ask stays the operator's.
 
+**A Release button is yours alone.** On a task the chief filed gated, its
+routed ask offers *Release & dispatch* and *Release only*
+([plugins.md](plugins.md#releasing-the-chiefs-gate-from-the-ask)). Those two
+release the gate as the answer is recorded, so they are accepted only from
+your signed-in browser or your paired phone: `attention_answer` cannot give
+them, and a task that changed since the ask (already released, closed, a gate
+of yours added) refuses the tap and leaves the ask open.
+
 **Or in the session.** Writing to the asker directly answers it too: a message
 you send into a mirrored session's Claude Code pane (the rendered view's Send —
 not the Terminal's, which types into whatever pane is active, possibly a

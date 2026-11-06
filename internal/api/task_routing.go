@@ -196,7 +196,8 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 				"The default for a task event whenever you are unsure, or when another routing tool refuses. muster shows your owner, as buttons, " +
 				"the actions you can actually take on the task right now (task_forward when a running agent works it; agent_dispatch when your owner " +
 				"has opted in) — returned as actions_offered — so phrase your note as a choice between THOSE actions; never offer one that is not " +
-				"listed. Their answer is delivered to you as a new message in your default session, so you need not wait; you MAY call " +
+				"listed. On a task you filed gated with task_create_gated, the buttons are your owner's to release it: Release & dispatch " +
+				"(muster releases the gate; you then start the agent on the target they picked) and Release only. Their answer is delivered to you as a new message in your default session, so you need not wait; you MAY call " +
 				"attention_wait with the returned id to block on it.",
 			Parameters: objSchema(map[string]any{"task_id": id, "note": note}, "task_id", "note")},
 		{Type: "function", Name: taskForwardTool,
@@ -326,7 +327,8 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	out := map[string]any{"id": ask.ID, "task_id": n.ID, "status": "pending", "actions_offered": offered,
 		"next": "Your owner has it. Their answer will be delivered to you as a new message in your default session; act on it then " +
 			"(with one of actions_offered when they pick one: an \"agent_dispatch on <target>\" answer means agent_dispatch with this " +
-			"task_id and exactly that target, and no owner_asked). You do not need to wait; you MAY call attention_wait{id: " +
+			"task_id and exactly that target, and no owner_asked; so does a \"Release & dispatch on <target>\" answer, for which muster has " +
+			"already released the gate; a \"Release only\" answer means the gate is released and you start nothing). You do not need to wait; you MAY call attention_wait{id: " +
 			strconv.FormatInt(ask.ID, 10) + "} to block on it."}
 	// The chief's dispatch budget, when its owner opted in: why agent_dispatch
 	// is or is not among actions_offered.

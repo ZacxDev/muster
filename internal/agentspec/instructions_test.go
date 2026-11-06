@@ -786,9 +786,10 @@ func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 // generic on purpose: it keys on what a message SAYS (a bug report, a feature
 // request, confusion), never on which plugin brought it.
 //
-// ⚠ IT PROMISES NO DISPATCH BUTTONS. The task is gated, and task_route_attention
-// offers agent_dispatch only on an ungated task (internal/api
-// chiefDispatchTaskBlock), so the paragraph says the task stays gated.
+// ⚠ ITS BUTTONS ARE THE OWNER'S RELEASE. The task is gated, so
+// task_route_attention offers "Release & dispatch on <target>" and "Release
+// only" (internal/api answer_release.go): the owner's tap releases the gate,
+// and only then does the chief call agent_dispatch, on the target they tapped.
 func TestTheChiefTriagesFeedback(t *testing.T) {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	para := func(p string) string {
@@ -796,7 +797,10 @@ func TestTheChiefTriagesFeedback(t *testing.T) {
 			"asks for a feature or says something confused them. Never leave one without a decision. " +
 			"When it is something to act on, file it with `" + p + "task_create_gated` and, when your tool list has `" +
 			p + "task_route_attention`, call it with the new task's id and a one-line note saying what the feedback is: " +
-			"it puts the task on your owner's phone with your note. The task stays gated until your owner releases it, as above. " +
+			"it puts the task on your owner's phone with your note. The task stays gated until your owner releases it, as above, " +
+			"or from that ask: it offers them Release & dispatch and Release only. On a \"Release & dispatch on <target>\" answer " +
+			"muster has already released the gate, so call `" + p + "agent_dispatch` with the task's id and exactly that target; " +
+			"on \"Release only\", start nothing. " +
 			"When it is not something to act on — thanks, a +1, chatter, or the same thing as a task already open — call `" +
 			p + "plugin_message_settle` with its message_id and a short reason (for a duplicate, the open task's id)."
 	}

@@ -433,9 +433,18 @@ var dispatchOptionRE = regexp.MustCompile(`^agent_dispatch on (pod/[a-z-]+): sta
 const agentDispatchNotTheOwnersTarget = "your owner chose %s for this task (their answer to your ask about it): call agent_dispatch " +
 	"with target %q, or ask them again"
 
+// ownerReleasedOnly is ownersChosenTarget's answer when the owner's newest
+// answer about the task is "Release only": no target, and no start.
+const ownerReleasedOnly = "\x00release-only"
+
+// agentDispatchOwnerReleasedOnly refuses a start the owner declined.
+const agentDispatchOwnerReleasedOnly = "your owner released this task's gate and chose to start nothing (their answer to your ask " +
+	"about it: Release only): do not start an agent on it unless they ask you to in your chat"
+
 // ownersChosenTarget is the target the owner picked for task taskID: their
 // NEWEST answer to an ask about the task (ownerAnswer's structural link), when
-// it is one of task_route_attention's per-target options; "" otherwise.
+// it is one of task_route_attention's per-target options (agent_dispatch or
+// Release & dispatch); ownerReleasedOnly for its Release only; "" otherwise.
 //
 // It only ever NARROWS a dispatch without owner_asked — the path an owner's
 // click on /attention reaches the chief by, a turn the owner did not type — to
@@ -453,8 +462,17 @@ func (s *Server) ownersChosenTarget(ctx context.Context, owner, taskID int64) (s
 		if a.Owner != owner || a.TaskID != taskID {
 			continue
 		}
-		if m := dispatchOptionRE.FindStringSubmatch(sameWords(a.Answer)); m != nil {
+		answer := sameWords(a.Answer)
+		if m := dispatchOptionRE.FindStringSubmatch(answer); m != nil {
 			return m[1], nil
+		}
+		// A "Release & dispatch on <target>" answer binds the same way; a
+		// "Release only" answer binds to no start at all (answer_release.go).
+		if m := releaseDispatchRE.FindStringSubmatch(answer); m != nil {
+			return m[1], nil
+		}
+		if answer == releaseOnlyLabel {
+			return ownerReleasedOnly, nil
 		}
 		return "", nil
 	}
@@ -562,6 +580,9 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		if err != nil {
 			s.logger.Printf("task routing: answers for task %d: %v", in.TaskID, err)
 			return refuse("your owner's answers could not be read; try again later")
+		}
+		if chosen == ownerReleasedOnly {
+			return refuse(agentDispatchOwnerReleasedOnly)
 		}
 		if chosen != "" && chosen != in.Target {
 			return refuse(fmt.Sprintf(agentDispatchNotTheOwnersTarget, chosen, chosen))

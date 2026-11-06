@@ -48,8 +48,9 @@ var expectedCommentWriterLedger = map[string][]string{
 	// The plugin relaying its upstream — local:
 	"handlePluginTask": {"commentByPlugin"},
 	// Muster's own bookkeeping — local, rendered as muster-only history:
-	"applyGateRelease": {"commentByMuster"},
-	"handleTaskMerge":  {"commentByMuster", "commentByMuster"},
+	"applyGateRelease":   {"commentByMuster"},
+	"applyAnswerRelease": {"commentByMuster"}, // the owner's Release tap (answer_release.go)
+	"handleTaskMerge":    {"commentByMuster", "commentByMuster"},
 }
 
 // expectedDirectThreadWriters is every function that calls a store method
