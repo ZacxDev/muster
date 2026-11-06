@@ -121,6 +121,11 @@ type AgentCardView struct {
 	// current one left out (internal/api's withPreviousTitles); the palette
 	// finds the entry by them after its current title (palette.go).
 	PrevFocus []string
+	// Tags is the VIEWER's own tags on the agent (internal/sessiontags; per
+	// user and private), sorted, nil for none — internal/api's
+	// withSessionTags. The palette and the dock's filter find the entry by
+	// them (switcherItems' Words), and the session switcher's ⋯ menu edits them.
+	Tags []string
 	// Attention is the entry's attention count (cards_attention.go), drawn on
 	// its sidebar row (navAttentionPill), nil for none. Composed in internal/api
 	// from the attention queue's own read.

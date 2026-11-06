@@ -372,6 +372,9 @@ func composerMenuScript(src string) g.Node {
     var m = shown[i], t = token;
     if (!m || !t) return;
     var text = '/' + m.e.name + ' ';
+    // A collapsed box is revealed before it is focused and written
+    // (composer_reveal.go): a hidden box takes no focus.
+    ` + composerRevealCallJS("input") + `
     // As an EDIT, not an assignment: insertText goes on the textarea's undo
     // stack, so Ctrl+Z gives back what was typed. (setRangeText where the
     // browser has no insertText — undoable there only as far as it is.)

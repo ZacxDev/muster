@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
@@ -148,11 +149,15 @@ async function openView(page: Page, host: string) {
   await signIn(page, origin);
   await page.goto(origin + viewPath(host));
   await expect(page.locator('#mv-input'), `the rendered view (log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
+  // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+  await revealBox(page);
 }
 
 // queue queues text through Send's caret: the caret opens its menu, and the
 // menu's one item is Queue (composer_menu.go; Send's face never queues).
 async function queue(page: Page, text: string, touch: boolean) {
+  // Collapsed on a touch screen until revealed (lib/composer.ts).
+  await revealBox(page);
   await page.locator('#mv-input').fill(text);
   const more = page.locator('#mv-send-more');
   const btn = page.locator('#mv-queue-send');
@@ -1071,7 +1076,11 @@ for (const vp of [
   { name: 'desktop 1280×800', touch: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
 ]) {
   test.describe(`drafts, ${vp.name}`, () => {
-    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+    // Service workers blocked: a test here answers the send with page.route,
+    // which a page the PWA's worker has claimed no longer reaches (see
+    // optimistic-send.spec.ts — measured there; the reveal step on a phone
+    // gives the worker the time to claim it).
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] }, serviceWorkers: 'block' });
 
     test('a draft survives navigating away and back, is cleared once sent, and is never restored into another window, host or view', async ({ page }) => {
       await busyAndSeen();

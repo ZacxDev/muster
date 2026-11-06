@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Page, request as pwRequest } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, fakeS3Port, repoRoot, uploadsOffPort, uploadsPort, versionTerm } from '../lib/env';
@@ -337,6 +338,9 @@ for (const vp of [
     const page = await ctx.newPage();
     try {
       await openView(page);
+      // On a phone the box — and the paperclip inside it — is collapsed until
+      // revealed (lib/composer.ts).
+      await revealBox(page);
       const input = page.locator('#mv-input');
       const clip = page.locator('#mv-attach');
       const at = async () => ({ i: (await input.boundingBox())!, c: (await clip.boundingBox())! });

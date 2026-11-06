@@ -244,6 +244,12 @@ var mirrorComposerJS = `
   // saveBox: the box's draft as the box stands now.
   function saveBox() { var d = D(); if (d && d.sent) d.sent(input); }
   function clearBox() { input.value = ''; fit(); }
+  // shown reveals the box when it holds text (composer_reveal.go): every
+  // write of a text into it below calls it.
+  // focusBox focuses the box, revealing it first where it is collapsed
+  // (composer_reveal.go): a hidden box takes no focus.
+  function focusBox() { if (window.musterComposerReveal) window.musterComposerReveal(input, true); else input.focus(); }
+  function shown() { if (input.value) { ` + composerRevealCallJS("input") + ` } }
   // restore puts a message that did not go back in the box — only into an
   // empty box: what was typed since is not overwritten (the message's Retry,
   // and the draft, still have it). It reports whether the box has it now.
@@ -254,6 +260,7 @@ var mirrorComposerJS = `
     if (input.value !== t) {
       if (input.value.trim()) return false;
       input.value = t;
+      shown();
       fit();
     }
     if (d && d.inBox) d.inBox(input, p.id); else release(p);
@@ -290,6 +297,7 @@ var mirrorComposerJS = `
     if (p.aside && used) used.delete(p.aside);
     p.aside = null;
     input.value = p.text;
+    shown();
     if (nonce) nonce.value = p.nonce;
     againField(!!p.again);
     if (p.queued && queueBtn) form.setAttribute('action', queueBtn.getAttribute('formaction'));
@@ -657,6 +665,7 @@ var mirrorComposerJS = `
     if (d && d.thaw) d.thaw(input);
     var st = d && d.stored ? d.stored(input) : null;
     input.value = h.box;
+    shown();
     fit();
     if (nonce) renew();
     againField(false);
@@ -820,7 +829,7 @@ var mirrorComposerJS = `
     if (input.disabled) { e.preventDefault(); return; }
     var att = window.musterAttach;
     if (att && att.pending()) { e.preventDefault(); say(att.pendingMessage); return; }
-    if (!input.value.trim() && !(att && att.count())) { e.preventDefault(); say(form.getAttribute('data-empty')); input.focus(); return; }
+    if (!input.value.trim() && !(att && att.count())) { e.preventDefault(); say(form.getAttribute('data-empty')); focusBox(); return; }
     if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function' || typeof Promise !== 'function') return;
     var sub = ('submitter' in e) ? e.submitter : clicked;
     clicked = null;
@@ -840,7 +849,7 @@ var mirrorComposerJS = `
     if (att) att.sent();
     renew();
     try { start({ text: text, typed: typed, queued: queued, to: queued ? sub.getAttribute('formaction') : form.getAttribute('action'), again: again }); }
-    catch (err) { input.value = text; browserSubmit(); }
+    catch (err) { input.value = text; shown(); browserSubmit(); }
   });
   input.addEventListener('input', function () { if (input.value.trim() && !noteHeld()) say(''); });
   input.addEventListener('keydown', function (e) {

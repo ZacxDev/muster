@@ -772,6 +772,7 @@ func sendQueueScript() g.Node {
     var input = document.getElementById('mv-input');
     if (!ta || !input || input.value.trim() || !ta.value.trim()) return '';
     input.value = ta.value;
+    ` + composerRevealCallJS("input") + `
     try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
     return ' Your edited text is in the message box.';
   }

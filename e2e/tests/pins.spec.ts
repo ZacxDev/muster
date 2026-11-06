@@ -99,7 +99,9 @@ async function login(page: Page) {
 // pinToggle is the ⋯ menu's Pin / Unpin item (hidden until the ⋯ opens);
 // moreBtn the ⋯ that opens it.
 const pinToggle = (page: Page) => page.locator('#switcher-pin');
-const moreBtn = (page: Page) => page.locator('#session-switcher #switcher-more-btn');
+// The ⋯ is the bar's on a Terminal view and in the composer's input row on a
+// Rendered view (session_tags / composer_reveal, operator ask): one per page.
+const moreBtn = (page: Page) => page.locator('#switcher-more-btn');
 const viewRow = (page: Page, key: string) => page.locator(`#session-switcher [data-switcher-list="${key}"]`);
 // rowHrefs is a bar view's entries as their links ("current" for the page's
 // own, which is not one), each agent link without its ?session= query.

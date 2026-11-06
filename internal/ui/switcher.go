@@ -210,8 +210,9 @@ type SwitcherItem struct {
 	// is called beyond that (its display name, its focus), "" for nothing more.
 	Code, Title string
 	// Words are what the search finds the entry by AFTER its codename and
-	// title, as plain words: its repository, its kind and — a window's — its
-	// raw tmux session name; "" for none. Space-separated, lower-cased.
+	// title, as plain words: its repository, its kind, — a window's — its
+	// raw tmux session name and host, and the viewer's own tags on it
+	// (sessionTagWords); "" for none. Space-separated, lower-cased.
 	Words string
 	// Prev is the entry's previous focus titles, newest first, one per line
 	// (switcherPrevTitles): what the search finds it by after its current
@@ -372,7 +373,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.Title = switcherSearchTitle(a.Name, plainOr(a.DisplayName, ""), focusTitle(a.Focus))
 			// The host is a word too (the retired Agents list's host tabs): a
 			// dispatched agent's is the cluster.
-			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost)
+			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost, sessionTagWords(a.Tags))
 			it.Prev = switcherPrevTitles(a.PrevFocus)
 			it.Focus = focusTitle(a.Focus)
 			it.FocusAge = focusAgeOf(a.Focus, now)
@@ -383,7 +384,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.HostNamed = labelNamesHost(*m, labels[i])
 			it.Code = switcherName(e)
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
-			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host)
+			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host, sessionTagWords(m.Tags))
 			it.Prev = switcherPrevTitles(m.PrevFocus)
 			it.Focus = focusTitle(m.Focus)
 			it.FocusAge = focusAgeOf(m.Focus, now)
@@ -478,7 +479,15 @@ func (s *Switcher) view(key string) []SwitcherItem {
 // and padded by the safe-area insets; otherwise (the agent page, inside its
 // already-inset pane) it lines up with the form above it.
 // Nothing when s is nil.
-func switcherBar(s *Switcher, pinned bool) g.Node {
+//
+// moreElsewhere: the page draws the ⋯ BUTTON itself, outside the bar — the
+// Rendered view's composer, in its input row (ComposerView.MoreInRow) — so the
+// bar leaves it out; the menu it opens, and the tag editor, are still the
+// bar's (they are popovers: where they sit in the document moves nothing).
+func switcherBar(s *Switcher, pinned bool) g.Node { return switcherBarWith(s, pinned, false) }
+
+// switcherBarWith is switcherBar with moreElsewhere (above).
+func switcherBarWith(s *Switcher, pinned, moreElsewhere bool) g.Node {
 	if s == nil {
 		return nil
 	}
@@ -568,10 +577,11 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 						g.Raw(searchIconSVG),
 					),
 				),
-				switcherMoreButton(s),
+				g.If(!moreElsewhere, switcherMoreButton(s)),
 			),
 			switcherViewMenu(s),
 			switcherMoreMenu(s),
+			switcherTagsEditor(s),
 		),
 		switcherScript(),
 		NoScript(StyleEl(g.Raw(`#` + SwitcherID + ` { visibility: visible !important; }`))),

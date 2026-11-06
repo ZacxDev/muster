@@ -1,4 +1,5 @@
 import { Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { switcherSearchPort } from '../lib/env';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
@@ -378,7 +379,9 @@ for (const vp of [
       await page.keyboard.press('Escape');
       await expect(pal(page)).toBeHidden();
 
-      // "/" in the message box is a character, not the search.
+      // "/" in the message box is a character, not the search. (The box is
+      // collapsed on a touch screen until revealed: lib/composer.ts.)
+      await revealBox(page);
       await page.locator('#mv-input').fill('');
       await page.locator('#mv-input').focus();
       await page.keyboard.press('/');

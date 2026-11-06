@@ -119,9 +119,10 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   session you opened last.
 - **Titles.** An entry is titled `<session>:<index>`. With `-labels-file` you
   can map a session to a codename: a JSON object `{"<session>": "<codename>"}`.
-  Each of that session's windows is then titled `<codename>:<index>`. The
-  window's own pages show the raw session name beside it; the sidebar and the
-  switcher do not (the search still finds it). Each entry is checked on its
+  Each of that session's windows is then titled `<codename>:<index>`. The raw
+  session name is not drawn beside the title anywhere (the headers' room is the
+  session's [tags](#session-tags)); it is the title's tooltip, it is in the
+  Rendered view's full title (tap the title), and the search finds it. Each entry is checked on its
   own: an invalid one is logged and skipped, and a missing or unreadable file is
   logged and ignored, never fatal.
   When the same title appears on more than one host, every one of them carries
@@ -163,10 +164,11 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   list in memory, under the token owner's account. A mirrored window cannot be
   dispatched, deleted, or mistaken for a muster agent. A disconnected host stays
   listed as `offline` for a day. The database holds `mirror_tokens`, as sha256
-  hashes, and your pins (below), both under row-level security.
+  hashes, and your pins and session tags (below), all under row-level security.
 - **Pins.** On a session's own page (a window's Rendered view, an agent's chat
-  page, or the Terminal view of either) the session switcher's **⋯** menu, at
-  its right end, has **Pin this session** / **Unpin this session** — a window with no
+  page, or the Terminal view of either) the session switcher's **⋯** menu — at
+  the switcher's right end, or, on a window's Rendered view, in the message
+  box's row beside Send — has **Pin this session** / **Unpin this session** — a window with no
   Rendered view is pinned from its Terminal view. Your pins are the session switcher's **Pins** view (below),
   on every device you sign in on, and come first in its **All** view.
   A mirrored pin is the window's address — host, session and tmux window id —
@@ -174,6 +176,9 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   window is gone is kept and shown nothing; it comes back with the window. A
   tmux-server restart (a reboot) reissues window ids, so after one a pin names
   whichever window now has that id in a same-named session, or nothing — re-pin.
+- **Session tags.** The same **⋯** menu has **Tags…**, your own labels on the
+  session, drawn in its headers and found by the search: see
+  [Session tags](#session-tags).
 - **The session switcher.** The bar under the message box of a window's
   Rendered view and an agent's chat page, and at the bottom of the Terminal
   view of either (whether or not that view can send), so you switch sessions
@@ -191,8 +196,10 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   sidebar, or `/` outside a text field, opens one search box that finds any
   entry by its tmux codename (`mango`, `wheat:2`) or its title as you type —
   and, after those, by its repository, its kind (`opencode`, `shell`), a
-  window's raw tmux session name (`scratch11`) or its **host's name**
-  (`laptop`; `cluster` for dispatched agents). The arrows move and Enter opens
+  window's raw tmux session name (`scratch11`), its **host's name**
+  (`laptop`; `cluster` for dispatched agents) or one of your
+  [tags](#session-tags) on it (`needs-review`). The Sessions dock's filter
+  matches the same words. The arrows move and Enter opens
   it. On a page with no switcher it searches the sidebar's list.
 - **Host icons.** Every entry draws its host's icon beside its name — in the
   sidebar, its session-switcher entry and the badge on its own pages — with the
@@ -206,6 +213,27 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
 
 ![The sidebar's search open, matching Claude Code windows on two hosts by their kind](img/sidebar-search.png)
 ![A session page with the switcher's search open, finding a window by its codename](img/switcher-search.png)
+
+### Session tags
+
+On a session's own page the **⋯** menu (see **Pins** above) has **Tags…**: a
+small editor with your tags on the session as chips (× removes one) and a box
+that adds one.
+
+- **Spelled as a [task tag](tasks.md) is:** lower case, spaces become `-`,
+  letters, digits and `. _ / -`, at most one `:`, up to 64 characters. A
+  session carries at most 20. The task tags' reserved namespaces (`gate:`,
+  `project:`, …) mean nothing on a session: every session tag is a plain label.
+- **Yours alone.** Tags are kept by the server, so they follow you across
+  devices, and nobody else — an admin included — sees them.
+- **What they are on.** A mirrored window's tags are on its **tmux session**,
+  so every window of that session carries them. A dispatched agent's are on
+  the agent, and are deleted with it.
+- **Where they show.** The Rendered and Terminal views draw them in the header
+  after the title: one tag as its chip, more as the first chip and **+N**,
+  which opens the full list. An edit shows at once, without a reload.
+- **Search.** The search box (above) and the Sessions dock's filter find a
+  session by any of its tags.
 
 ## Viewing never moves your terminal
 
@@ -556,6 +584,15 @@ read-only viewer can see. It does not limit an attached interactive client.
 
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
+
+On a touch screen the **Rendered view's** box starts collapsed, to give the
+conversation the room: its row is **Type a message** (a keyboard) beside the
+mic, the session's **⋯** and Send. Tapping **Type a message** opens the box and
+focuses it, and it stays open until you leave the page. Anything that puts text
+in the box opens it too — a draft kept from before, the mic's transcript, a `/`
+command, a suggested reply, a message put back with **Send again**, an attached
+file — so text is never hidden. With a mouse (a fine pointer) the box is always
+shown, as is the Terminal view's.
 
 ### What the host never types into
 

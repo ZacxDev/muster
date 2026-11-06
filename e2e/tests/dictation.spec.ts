@@ -9,6 +9,7 @@ import { signIn } from '../lib/signin';
 import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, repoRoot, sttToken, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
+import { revealBox } from '../lib/composer';
 import { openDispatchSheet } from '../lib/dispatch';
 
 // DICTATION: the microphone on every message box, in a real Chromium with its
@@ -291,6 +292,9 @@ for (const vp of [
       fs.rmSync(transcript + '.pasted', { force: true });
       await page.goto(origin + '/mirror/view?' + q(claudeWin));
       await expect(page.locator('#mv-input'), `the composer (mirror log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
+      // On a touch screen the box is collapsed behind "Type a message"; this
+      // test types into it (the transcript's own reveal has its own test).
+      await revealBox(page);
       const text = await dictate(page, mvBox, vp.use.viewport.width);
       // The page never sent it: nothing pasted until Send.
       expect(read(transcript + '.pasted'), 'dictation sent nothing by itself').toBe('');
@@ -472,10 +476,14 @@ test.describe('the view switch finishes the recording in the view it hides', () 
 test.describe('failures, said inline', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  async function openRendered(page: Page) {
+  // reveal: open the box (collapsed on a touch screen: lib/composer.ts), as
+  // the tests that type into it need; the transcript's own reveal test opens
+  // it collapsed.
+  async function openRendered(page: Page, reveal = true) {
     await signIn(page, origin);
     await page.goto(origin + '/mirror/view?' + q(claudeWin));
     await expect(page.locator('#mv-dictate')).toBeVisible({ timeout: 20_000 });
+    if (reveal) await revealBox(page);
   }
 
   // `inApp` plays the Android app's WebView: the app injects window.musterApp
@@ -529,6 +537,32 @@ test.describe('failures, said inline', () => {
       await expect(page.locator('#mv-dictate')).toHaveAttribute('data-state', 'idle');
     } finally {
       sttMode = 'ok';
+    }
+  });
+
+  // THE RENDERED VIEW'S BOX IS COLLAPSED ON A TOUCH SCREEN (composer_reveal.go),
+  // and the mic's transcript REVEALS it: dictation reaches the hidden box
+  // (it is in the DOM: dictate.go's isConnected) and the text is then shown.
+  test('on a touch screen the mic’s transcript reveals the collapsed box', async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, permissions: ['microphone'] });
+    const page = await ctx.newPage();
+    try {
+      await openRendered(page, false);
+      const input = page.locator('#mv-input');
+      await expect(input, 'collapsed').toBeHidden();
+      await expect(page.locator('#mv-text')).toHaveAttribute('aria-expanded', 'false');
+      const posted = page.waitForResponse((r) => new URL(r.url()).pathname === '/transcribe');
+      await page.locator('#mv-dictate').tap();
+      await expect(page.locator('#mv-dictate')).toHaveAttribute('data-state', 'recording');
+      await page.waitForTimeout(1300);
+      await page.locator('#mv-dictate').tap();
+      expect((await posted).status()).toBe(200);
+      await expect(input).toHaveValue(FAKE_TEXT);
+      await expect(input, 'the transcript revealed the box').toBeVisible();
+      await expect(page.locator('#mv-text')).toHaveAttribute('aria-expanded', 'true');
+      await input.fill('');
+    } finally {
+      await ctx.close();
     }
   });
 

@@ -90,6 +90,7 @@ var noStoreLiterals = map[string]string{
 	"redirectTo":               "home's redirect, from `/` and GET /agents (it follows who the chief is now)",
 	"handleAgentsHome":         "GET /agents: home's redirect, or the onboarding page when there is nowhere to go",
 	"handleAgentHeader":        "an agent page's status strip, ⋯ menu and notices, live",
+	"handleSessionTagsList":    "a session's tags: the viewer's own, private, and changed by any tab",
 }
 
 // viewDocumentCallers are the four handlers whose documents Back may restore.
@@ -288,6 +289,9 @@ var htmlWithoutNoStore = map[string]string{
 	"handleNoteStatus":      htmlFragment,
 	"handleNoteComment":     htmlFragment,
 	"handleUITagVocabulary": htmlFragment,
+	// The tag editor's answer (session_tags.go): the editor's body, the
+	// header's chips and the switcher's rows, out of band.
+	"handleSessionTagWrite": htmlFragment,
 }
 
 // TestEveryHTMLWriterIsClassified enumerates the functions that set

@@ -61,6 +61,9 @@ type MirrorViewView struct {
 	// same name ("" = none) — the SAME qualifier its Agents card shows
 	// (mirror.Qualified): part of the header's title and of <title>.
 	Qualifier string
+	// Tags is the viewer's own tags on the tmux session (internal/sessiontags),
+	// drawn in the header after the title (sessionTagsHead); nil for none.
+	Tags []string
 	// Interactive: the host advertised -interactive, so the composer is offered
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
@@ -143,7 +146,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
-		Pinned: true, Switcher: v.Switcher}
+		Pinned: true, Switcher: v.Switcher,
+		// The box collapsed on a touch screen behind "Type a message", and the
+		// session's ⋯ in the input row (composer_reveal.go; operator ask: more
+		// room by default, the ⋯ beside the message controls).
+		Collapsible: true, MoreInRow: true}
 	composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
 	shell := pinnedShellClass
 	if v.Switcher != nil {
@@ -196,7 +203,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						// relative: the title button's 44px hit area
 						// (mirrorTitleHitClass) is placed on this column.
 						Class("relative min-w-0 flex-1"),
-						mirrorViewTitle(v),
+						mirrorViewTitleRow(v),
 						Div(
 							// relative: the Updating… chip is positioned in this row
 							// (mirrorUpdatingChip), taking none of its width.
@@ -383,6 +390,18 @@ func mirrorViewTitle(v MirrorViewView) g.Node {
 	}
 }
 
+// mirrorViewTitleRow is the header's first line: the title (mirrorViewTitle),
+// then the viewer's tags on the session (sessionTagsHead) — where the raw tmux
+// session name used to be drawn; that name is in the full-title popover
+// (mirrorViewHeading) and the palette's words now.
+func mirrorViewTitleRow(v MirrorViewView) g.Node {
+	return Div(
+		Class("flex min-w-0 items-center gap-1.5"),
+		Div(Class("min-w-0 flex-1"), mirrorViewTitle(v)),
+		sessionTagsHeadNode(SessionTagTarget{Host: v.Host, Session: v.Session}, v.Tags),
+	)
+}
+
 // mirrorViewName is the window's name as the rendered view's header and
 // <title> call it: mirrorDisplayName — entryTitle's rule, not a copy — and its
 // qualifier.
@@ -394,8 +413,16 @@ func mirrorViewName(v MirrorViewView) string {
 // mirrorViewHeading is the header line as text: the name, then its badge's
 // "Mirrored · <host>". The full-title popover shows exactly this, so when only
 // the badge is clipped the popover still says what the header did not.
+//
+// A window titled by its host's label also names its raw tmux session
+// ("tmux session scratch2"): the header no longer draws that name beside the
+// label (it made room for the tags), and it is what `tmux attach` takes.
 func mirrorViewHeading(v MirrorViewView) string {
-	return mirrorViewName(v) + " · Mirrored · " + v.Host
+	h := mirrorViewName(v) + " · Mirrored · " + v.Host
+	if _, labelled := mirrorDisplayName(v.Label, v.Title, v.Session); labelled {
+		h += " · tmux session " + v.Session
+	}
+	return h
 }
 
 // mirrorTitleHitClass gives the title button a 44px-tall hit area (a thumb

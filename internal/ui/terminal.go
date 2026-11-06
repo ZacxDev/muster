@@ -80,15 +80,23 @@ type AgentTerminalView struct {
 	// BadgeHost and BadgeHostIcon are the mirrored host the badge names and its
 	// icon key (HostIconFor): the badge leads with the icon its cards draw.
 	BadgeHost, BadgeHostIcon string
-	// RawName, when set, is shown small and muted after the title, and as its
-	// tooltip (mirrorSessionTitle): a mirrored session titled by its host's
-	// label ("mango:1") keeps its real tmux session name findable. "" = the
-	// title alone.
+	// RawName, when set, is the title's tooltip (mirrorSessionTitle): a
+	// mirrored session titled by its host's label ("mango:1") keeps its real
+	// tmux session name findable (no longer drawn beside it: the header's room
+	// is the tags'). "" = the title alone.
 	RawName string
 	// TitleQualifier, when set, is drawn right after the title as part of it
 	// (" · laptop") and added to <title>: a mirrored entry whose name another
 	// listed entry shares (mirror.SessionView.Qualifier). "" = the title alone.
 	TitleQualifier string
+	// Tags is the viewer's own tags on the session — the agent, or the mirrored
+	// tmux session (internal/sessiontags) — drawn in the header after the
+	// title (sessionTagsHead); nil for none.
+	Tags []string
+	// TagTarget is the session Tags are on — the agent, or the mirrored tmux
+	// session — which the header names (data-session-tags-for), so the editor's
+	// copy into the other live view lands only on the same session's header.
+	TagTarget SessionTagTarget
 	// WSPath is the socket the page opens, WITHOUT its query ("" = the agent's
 	// /agents/{name}/terminal/ws). A mirrored session's is
 	// /mirror/terminal/ws?host=…&session=…, and the page appends mode/cols/rows.
@@ -315,12 +323,16 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						// relative: a restore's Updating… chip (restore.go) sits at
 						// the right of the status line, taking none of its width.
 						Class("relative min-w-[6rem] flex-1"),
-						H1(Class("truncate text-sm font-semibold"),
-							g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
-							// A mirrored entry: its label with the raw session name
-							// beside it, and/or its qualifier — drawn like its card.
-							g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
-							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
+						// The title, then the viewer's tags on the session
+						// (sessionTagsHead), on one line.
+						Div(Class("flex min-w-0 items-center gap-1.5"),
+							H1(Class("min-w-0 flex-1 truncate text-sm font-semibold"),
+								g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
+								// A mirrored entry: its label (the raw session name its
+								// tooltip), and/or its qualifier — drawn like its card.
+								g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
+								g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
+							sessionTagsHeadNode(v.TagTarget, v.Tags)),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"),
 							// What typing here really reaches (InteractiveNote).
 							g.If(v.InteractiveNote != "", g.Group([]g.Node{g.Attr("title", v.InteractiveNote), g.Attr("data-interactive-note", v.InteractiveNote)})),
@@ -1394,7 +1406,7 @@ func agentTerminalScript() g.Node {
 
 // mirrorTerminalTitle is the terminal page's title for a mirrored entry, drawn
 // by the same mirrorEntryTitle as its card: the label with the raw session name
-// beside it when rawName is set, else the title alone — either with its
+// as its tooltip when rawName is set, else the title alone — either with its
 // qualifier.
 func mirrorTerminalTitle(title, rawName, qualifier string) g.Node {
 	if rawName != "" {

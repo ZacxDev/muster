@@ -78,6 +78,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /agent/task': 'agent API (JSON)',
   'GET /agents/{name}/logs/stream': 'event stream',
   'GET /agents/{name}/send': 'a redirect back to the agent page',
+  'GET /sessions/tags': "the tag editor's list (JSON)",
   'GET /agents/{name}/terminal/ws': 'websocket',
   'GET /agents/{name}/ws': 'websocket',
   'GET /apple-touch-icon-precomposed.png': 'image',

@@ -416,6 +416,10 @@ func suggestRowScript() g.Node {
     var cur = input.value;
     var draft = cur.trim() !== '';
     var add = draft ? (/\n$/.test(cur) ? '' : '\n') + text : text;
+    // A collapsed box is revealed before it is focused and written
+    // (composer_reveal.go): a hidden box takes no focus, and an insertText
+    // would land wherever the focus is instead.
+    ` + composerRevealCallJS("input") + `
     input.focus();
     input.setSelectionRange(draft ? cur.length : 0, cur.length);
     var done = false;
@@ -455,7 +459,7 @@ func suggestRowScript() g.Node {
   x.addEventListener('click', function () {
     if (fp) dismiss(fp);
     hide();
-    input.focus();
+    if (window.musterComposerReveal) window.musterComposerReveal(input, true); else input.focus();
   });
   // A message went (Send or Queue, mirrorComposerScript): a new turn starts,
   // and a tap before it is reported with how much it was edited.

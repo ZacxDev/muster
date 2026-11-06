@@ -1,4 +1,5 @@
 import { Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { featuresPort } from '../lib/env';
 import { cc, MirrorRig } from '../lib/mirrorhost';
@@ -54,7 +55,10 @@ for (const size of [
       await rig.login(page);
       await rig.waitListed(page, 'data-mirror-claude');
       await page.goto(origin + `/mirror/view?host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent('@1')}`);
-      await expect(page.locator('#mv-input')).toBeVisible();
+      // On a phone the box (and the paperclip inside it) is collapsed behind
+      // "Type a message" (lib/composer.ts); the mic's hint is beside it either way.
+      await expect(page.locator('#mv-dictate-off')).toBeVisible();
+      await revealBox(page);
       // The hints, in the real controls' places — and not the real controls.
       await expect(page.locator('#mv-dictate-off')).toBeVisible();
       await expect(page.locator('#mv-attach-off')).toBeVisible();

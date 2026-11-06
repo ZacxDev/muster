@@ -143,6 +143,15 @@ type ComposerView struct {
 	// paused (the auto-pause), with the way back on (Account). Drawn with the
 	// page, so it moves nothing.
 	SuggestPaused bool
+	// Collapsible draws the message box COLLAPSED on a touch screen (a coarse
+	// pointer): only a "Type a message" button beside the mic, which reveals
+	// it (composer_reveal.go). Only the Rendered view sets it. A disabled
+	// composer is never collapsed (there is nothing to type).
+	Collapsible bool
+	// MoreInRow draws the session switcher's ⋯ button in the input row, beside
+	// Send, instead of in the bar (switcherBarWith's moreElsewhere). Only the
+	// Rendered view sets it; it needs Switcher.
+	MoreInRow bool
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -255,6 +264,10 @@ func mirrorComposer(v ComposerView) g.Node {
 	for _, f := range v.fields() {
 		hidden = append(hidden, Input(Type("hidden"), Name(f.Name), Value(f.Value)))
 	}
+	// collapse: the box starts collapsed on a touch screen (composerRevealCSS
+	// decides by the pointer; the attribute is only the state).
+	collapse := v.Collapsible && !off
+	moreInRow := v.MoreInRow && v.Switcher != nil
 	menu := composerMenuSrc(v)
 	place := "flex-none"
 	if menu != "" {
@@ -339,10 +352,12 @@ func mirrorComposer(v ComposerView) g.Node {
 			Class("flex items-end gap-2 px-3 pt-2 "+formPad),
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
+			g.If(collapse, g.Attr(composerCollapsibleAttr, "")),
 			// The paperclip sits INSIDE the input, on its left (attach.go).
-			attachFieldOrOff(upload, uploadOff, func(pad string) g.Node {
+			attachFieldOrOff(upload, uploadOff, composerFieldMark(collapse), func(pad string, mark g.Node) g.Node {
 				return Textarea(
 					ID("mv-input"),
+					mark,
 					Name("text"),
 					Rows("1"),
 					g.Attr("aria-label", v.Aria),
@@ -354,8 +369,14 @@ func mirrorComposer(v ComposerView) g.Node {
 					Class(composerInputClass+pad),
 				)
 			}),
+			// Collapsed: the row's room, so the buttons stay at its right.
+			g.If(collapse, composerSpacer()),
+			// "Type a message" — beside the mic (composer_reveal.go).
+			g.If(collapse, composerTextButton()),
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
 			g.If(dictateOff, dictateOffControl("mv-dictate-off")),
+			// The session switcher's ⋯, in the row with Send (the Rendered view).
+			g.If(moreInRow, switcherMoreButton(v.Switcher)),
 			sendSplit(v.Queue, off),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
@@ -363,14 +384,17 @@ func mirrorComposer(v ComposerView) g.Node {
 		// the browser paint the composer half-parsed, and the height it then
 		// grows by is a layout shift (measured: 0.006–0.014 at 390×844 with the
 		// queue's script before the form). The draft's is FIRST among them: it
-		// puts a restored text in the box before anything else measures it.
+		// puts a restored text in the box before anything else measures it —
+		// after only the reveal's, which defines what the draft calls to show
+		// the box it fills (composer_reveal.go).
+		g.If(collapse, composerRevealScript()),
 		composerFitScript(),
 		g.If(v.DraftKey != "" && !off, composerDraftScript()),
 		// The session switcher, below the input row (switcher.go): drawn with
 		// the page, at its fixed height, so nothing moves when it is filled. It
 		// comes AFTER the draft's script (its own script is the first after it),
 		// so a restored draft has sized the box before anything below is parsed.
-		switcherBar(v.Switcher, true),
+		switcherBarWith(v.Switcher, true, moreInRow),
 		g.If(v.Queue != nil && !off, sendQueueScript()),
 		g.If(v.Queue != nil && !off, sendMenuScript()),
 		dictateScript(dictate),

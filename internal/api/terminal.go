@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -108,6 +109,9 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	// The session switcher at the page's foot (ui/switcher.go), as the chat
 	// page draws it — its pin posting back to THIS view.
 	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{AgentID: a.ID, Back: ui.AgentTerminalPath(a.Name)})
+	// The viewer's tags on the agent, in the header (ui/session_tags.go).
+	v.Tags = s.sessionTagsFor(r.Context(), sessiontags.Target{AgentID: a.ID})
+	v.TagTarget = ui.SessionTagTarget{AgentID: a.ID}
 	// The Terminal half of the switch, which the agent's chat opens in a frame
 	// (ui/view_swap.go).
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}

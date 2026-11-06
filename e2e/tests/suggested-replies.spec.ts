@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import { Browser, Page, Request } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { suggestFakePort, suggestPort } from '../lib/env';
 import { clsInit, readCls, resetCls } from '../lib/cls';
@@ -158,8 +159,15 @@ test.describe.serial('phone 390×844', () => {
       .poll(async () => { const lb = (await page.locator('#mv-log').boundingBox())!; return lb.y + lb.height - rb.y; }, { message: 'the conversation ends above the row' })
       .toBeLessThanOrEqual(1);
 
+    // On a phone the box starts collapsed behind "Type a message"
+    // (composer_reveal.go), and the chip's insert REVEALS it: text is never
+    // put in a hidden box.
+    await expect(page.locator('#mv-input'), 'collapsed on a touch screen').toBeHidden();
+    await expect(page.locator('#mv-text')).toBeVisible();
     // A tap fills — and sends nothing.
     await chips(page).first().tap();
+    await expect(page.locator('#mv-input'), 'the insert revealed the box').toBeVisible();
+    await expect(page.locator('#mv-text')).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('#mv-input')).toHaveValue(chipA);
     await expect(page.locator('#mv-input')).toBeFocused();
     await page.waitForTimeout(1500);
@@ -183,10 +191,27 @@ test.describe.serial('phone 390×844', () => {
     }
   });
 
+  // The row's × puts the focus in the box: on a phone with the box still
+  // collapsed it reveals it first (a hidden box takes no focus). Red before:
+  // × hid the row and the focus went nowhere.
+  test('× with the box collapsed hides the row and reveals and focuses the box', async ({ page }) => {
+    await openView(page);
+    await turn(page, reply + '  ');
+    await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
+    await expect(page.locator('#mv-input'), 'collapsed').toBeHidden();
+    await page.locator('#mv-suggest-x').tap();
+    await expect(row(page)).toBeHidden();
+    await expect(page.locator('#mv-input')).toBeVisible();
+    await expect(page.locator('#mv-input')).toBeFocused();
+  });
+
   test('a tap below a draft appends on a new line; × hides the row for the turn; a reload shows none', async ({ page }) => {
     await openView(page);
     await turn(page, reply + ' ');
     await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
+    // A draft is typed: the box is revealed first (collapsed on a touch screen,
+    // lib/composer.ts).
+    await revealBox(page);
     await page.locator('#mv-input').fill('my draft so far');
     await chips(page).nth(1).tap();
     await expect(page.locator('#mv-input')).toHaveValue('my draft so far\n' + chipB);
@@ -442,6 +467,9 @@ for (const vp of [
     test('a send or the next turn closes an open expand popover first and puts the focus in the box', async ({ page }) => {
       const press = (l: ReturnType<Page['locator']>) => (vp.touch ? l.tap() : l.click());
       await openView(page);
+      // The focus goes back to the box, so the box is the shown one (it is
+      // collapsed on a touch screen until revealed: lib/composer.ts).
+      await revealBox(page);
       await page.evaluate(() => {
         (window as any).__tg = [];
         document.addEventListener('toggle', (e) => (window as any).__tg.push((e.target as HTMLElement).id + ':' + (e as any).newState), true);

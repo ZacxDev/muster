@@ -10,6 +10,7 @@ import { binDir, composerMenuPort, dsn, password, repoRoot, versionTerm } from '
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
+import { revealBox } from '../lib/composer';
 
 // THE RENDERED VIEW COMPOSER'S SPLIT SEND/QUEUE BUTTON AND ITS `/` AND `:` MENU,
 // in a real browser, against a real muster-server (MUSTER_MIRROR=1, password
@@ -464,6 +465,8 @@ test.describe('phone 390×844 touch', () => {
 
   test('the menu never covers the input — also on a viewport the keyboard shrank — and a tap inserts; the split button is two 44px targets', async ({ page }) => {
     await openView(page);
+    // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+    await revealBox(page);
     for (const id of ['#mv-send', '#mv-send-more']) {
       const b = (await page.locator(id).boundingBox())!;
       expect(b.height, `${id} is a 44px target`).toBeGreaterThanOrEqual(44);
@@ -500,6 +503,8 @@ test.describe('phone 390×844 touch', () => {
 
   test('a tap on Send sends; the caret then Queue queues', async ({ page }) => {
     await openView(page);
+    // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+    await revealBox(page);
     const before = pasted();
     await input(page).fill('tapped send');
     await page.locator('#mv-send').tap();
@@ -523,6 +528,8 @@ test.describe('phone 390×844 touch', () => {
   // focused instead, so the keyboard stays up and nothing moves.
   test('with the keyboard up, the first tap on Send sends and the box keeps focus', async ({ page }) => {
     await openView(page);
+    // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+    await revealBox(page);
     const before = pasted();
     await input(page).tap();
     await page.setViewportSize({ width: 390, height: 500 });

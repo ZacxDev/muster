@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, repoRoot, versionTerm, windowsPort } from '../lib/env';
@@ -249,12 +250,17 @@ for (const vp of [
       await page.waitForURL((u) => u.pathname === '/mirror/view');
       expect(new URL(page.url()).searchParams.get('window'), 'opened by the window id').toBe('@9');
       await expect(page.locator('header h1')).toContainText('Gold:11');
-      await expect(page.locator('header h1 [data-mirror-session]')).toHaveText('scratch2');
+      // The raw tmux name is the title's tooltip and in its full-title popover,
+      // no longer drawn beside it (the header's room is the session's tags).
+      await expect(page.locator('header h1 [data-mirror-name]')).toHaveAttribute('title', 'tmux session scratch2');
+      await expect(page.locator('header [data-mirror-session]')).toHaveCount(0);
+      await expect(page.locator('#mv-title-full')).toContainText('tmux session scratch2');
 
       const log = page.locator('#mv-log');
       await expect(log.locator('[data-bubble="user"]').first()).toContainText('the prompt of window ELEVEN');
       await expect(log).not.toContainText('window EIGHT');
 
+      await revealBox(page);
       await page.locator('#mv-input').fill('a message for window eleven');
       await page.locator('#mv-send').click();
       await expect(page.locator('#mv-input')).toHaveValue('');

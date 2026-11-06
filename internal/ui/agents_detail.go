@@ -77,7 +77,10 @@ const (
 
 // AgentDetailView is the data the agent detail page renders.
 type AgentDetailView struct {
-	ID          int64
+	ID int64
+	// Tags is the viewer's own tags on the agent (internal/sessiontags), drawn
+	// in the header after the title (sessionTagsHead); nil for none.
+	Tags        []string
 	Name        string
 	DisplayName string
 	Status      string
@@ -340,6 +343,8 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// task-linked, the title is a button that opens the full task detail
 				// in a modal (hx-loads /ui/agents/{name}/task into #task-modal).
 				agentTitle(v),
+				// The viewer's tags on the agent (session_tags.go), after the title.
+				sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
 				agentHeaderTools(v),
 			),
 			// 🔴 THE SECOND ROW CARRIES WHAT THE RETIRED AGENTS LIST'S CARD DID

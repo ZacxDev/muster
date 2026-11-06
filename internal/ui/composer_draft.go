@@ -277,6 +277,9 @@ func composerDraftScript() g.Node {
           // page whenever the browser had already painted the box: a race with
           // the first paint (measured 0.0104 on the Terminal view and 0.0131
           // on an agent's chat at 1280×800, under load; 0 otherwise).
+          // Shown BEFORE it is measured (a collapsed box measures 0): the
+          // Rendered view's collapsible box (composer_reveal.go).
+          ` + composerRevealCallJS("el") + `
           var h = el.offsetHeight;
           if (h > 0) el.style.maxHeight = h + 'px';
           el.value = d.t;

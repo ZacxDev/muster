@@ -1,4 +1,5 @@
 import { FrameLocator, Page, request as pwRequest } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, sidenavPort } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
@@ -323,6 +324,8 @@ test.describe('phone header', () => {
     await page.goto(origin + viewOf('@2'));
     await expect(page.locator('#mv-status')).toHaveText('Live');
     const draft = 'half-typed before the session expired ' + Date.now().toString(36);
+    // Collapsed on a touch screen until revealed (lib/composer.ts).
+    await revealBox(page);
     await page.locator('#mv-input').fill(draft);
     await expect
       .poll(() => page.evaluate((d) => Object.keys(localStorage).some((k) => (localStorage.getItem(k) || '').includes(d)), draft), { message: 'the draft is stored as typed' })
