@@ -24,7 +24,7 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 	// It is this user's list, read on every load: no shared or stored copy.
 	w.Header().Set("Cache-Control", "private, no-store")
 	if s.ext.Agents == nil {
-		if err := ui.RenderNavAgents(w, nil, nil, ""); err != nil {
+		if err := ui.RenderNavAgents(w, nil, nil, "", s.now()); err != nil {
 			s.logger.Printf("nav agents: render: %v", err)
 		}
 		return
@@ -35,7 +35,7 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load agents", http.StatusInternalServerError)
 		return
 	}
-	if err := ui.RenderNavAgents(w, cards, mirrors, r.Header.Get("HX-Current-URL")); err != nil {
+	if err := ui.RenderNavAgents(w, cards, mirrors, r.Header.Get("HX-Current-URL"), s.now()); err != nil {
 		s.logger.Printf("nav agents: render: %v", err)
 	}
 }

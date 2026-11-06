@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -393,7 +394,7 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 			}
 			c.episodeID = id
 		}
-		c.Title = s.nudgeTitle(octx, c.Session)
+		c.Title, c.TitleAge = s.nudgeTitle(octx, c.Session)
 		out = append(out, c)
 	}
 	return out
@@ -631,20 +632,21 @@ func (s *Server) nudgeOpenAskers(octx context.Context) map[string]bool {
 	return out
 }
 
-// nudgeTitle is c's focus title, "" for none.
-func (s *Server) nudgeTitle(ctx context.Context, c chiefnudge.Session) string {
+// nudgeTitle is c's focus title, "" for none, and its age for the chief's
+// prompt (ui.FocusAgeLabel at the server's clock; "" for none).
+func (s *Server) nudgeTitle(ctx context.Context, c chiefnudge.Session) (title, age string) {
 	if s.ext.Focus == nil {
-		return ""
+		return "", ""
 	}
 	sub := focus.MirrorSubject(c.Key)
 	if c.Kind == chiefnudge.KindAgent {
 		sub = focus.AgentSubject(c.AgentID)
 	}
 	f, ok, err := s.ext.Focus.Get(ctx, sub)
-	if err != nil || !ok {
-		return ""
+	if err != nil || !ok || !f.Has() {
+		return "", ""
 	}
-	return f.Title
+	return f.Title, ui.FocusAgeLabel(ui.FocusAgeOf(f.UpdatedAt, s.now()))
 }
 
 // errNudgeChiefBusy: the chief could not take the call now (busy, not running,

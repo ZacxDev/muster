@@ -202,6 +202,12 @@ type attentionItem struct {
 	// focusAt is when Focus was written (withFocus), for its age on the Asks
 	// list (ui.FocusAgeOf); zero for none or unknown.
 	focusAt time.Time
+	// focusAgeFields is Focus's age (focus_set_at, focus_age) as attention_list
+	// gives it to the chief, a notice's push body says it (attentionPushBody)
+	// and the attention summary's why repeats it — set by withFocusAges on the
+	// SERVER's clock (s.now), the one the chief's tools age titles by. Unset
+	// where nothing ran withFocusAges.
+	focusAgeFields
 	// Since is when the item started waiting: an ask's or a draft's creation, a
 	// session's status time (when it went waiting), a held question's creation.
 	// The queue is NEWEST FIRST by it (sortAttentionItems).
@@ -720,6 +726,17 @@ func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 	}
 }
 
+// withFocusAges is withFocus, then each item's focus age at the server's clock
+// (s.now): what attention_list, a notice's push and the attention summary
+// carry (focusAgeFields). One focus read for all the items, as withFocus.
+func (s *Server) withFocusAges(ctx context.Context, items []attentionItem) {
+	s.withFocus(ctx, items)
+	now := s.now()
+	for i := range items {
+		items[i].focusAgeFields = focusAgeFieldsOf(items[i].focusAt, now)
+	}
+}
+
 // noticeFocus reports whether it is a chief notice that carries its session's
 // focus title (noticeItem).
 func noticeFocus(it attentionItem) bool {
@@ -739,7 +756,7 @@ func attentionFocusHTML(title string, age ui.FocusAge) string {
 		// Labelled: the card's header already ends in how long it has waited,
 		// in the same "· 3m" shape; this one is how old the title is.
 		after = `<span class="font-normal" data-focus-age title="` + esc(ui.FocusAgeLabel(age)) + `" aria-label="` +
-			esc(ui.FocusAgeLabel(age)) + `"> · ` + esc(age.Text) + `</span>`
+			esc(ui.FocusAgeLabel(age)) + `">` + esc(ui.FocusAgeSuffix(age)) + `</span>`
 	}
 	return `<span class="` + cls + `"` + stale + `><span data-attention-focus>` + esc(title) + `</span>` + after + `</span>
 `
@@ -893,10 +910,11 @@ func attentionPushBody(it attentionItem) string {
 		// line, because a notice has none (and no buttons, payload v2's `ask`
 		// is not sent for it: attentionNotification).
 		var parts []string
-		for _, l := range []string{textplain.Title(it.Focus), it.Text} {
-			if l = pushLine(l); l != "" {
-				parts = append(parts, l)
-			}
+		if title := pushLine(textplain.Title(it.Focus)); title != "" {
+			parts = append(parts, noticePushFocusLine(title, ui.FocusAge{Text: it.Age}))
+		}
+		if l := pushLine(it.Text); l != "" {
+			parts = append(parts, l)
 		}
 		return push.CutClusters(strings.Join(parts, "\n"), attentionPushBodyMax)
 	case attentionKindSession:
@@ -950,6 +968,30 @@ func attentionPushBody(it attentionItem) string {
 	}
 	return q + "\n" + opts
 }
+
+// noticePushFocusLine is a notice's push line for its session's focus title
+// (one line already, pushLine): the title, then its age (" · 2d",
+// ui.FocusAgeSuffix) when ui.FocusAgeOf shows one — the Asks list's rule, so a
+// title set within the day, like one the session has moved on from
+// (withFocus), carries none and the line is the title alone.
+//
+// 🔴 THE AGE IS NEVER CUT, as in the dock and the palette: a line carrying an
+// age is at most noticePushFocusMax runes, its title cut (with "…") to leave
+// the age room. The body's own cut (attentionPushBodyMax) then only ever
+// reaches the chief's message after it, which keeps the other half. A title
+// with no age is sent as before, the body's cut alone bounding it.
+func noticePushFocusLine(title string, age ui.FocusAge) string {
+	suffix := ui.FocusAgeSuffix(age)
+	if suffix == "" {
+		return title
+	}
+	return push.CutClusters(title, noticePushFocusMax-utf8.RuneCountInString(suffix)) + suffix
+}
+
+// noticePushFocusMax bounds a notice push's focus line when it carries an age:
+// half the body. (A summarizer's title is at most focus.TitleCapRunes, far
+// under it; the bound is for a longer stored one.)
+const noticePushFocusMax = attentionPushBodyMax / 2
 
 // pushLine is s as one line of a notification: secrets redacted, control
 // characters and runs of space folded (no length cut: the caller cuts on a
@@ -1355,7 +1397,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
-	now := time.Now()
+	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
 	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
 		s.askListHTML(r.Context(), items, now) + `</ul>`
 	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
@@ -1407,7 +1449,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	s.withAskBoxes(r.Context(), items, true)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	now := time.Now()
+	now := s.now() // as renderAsksPage
 	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, now)))
 }
 

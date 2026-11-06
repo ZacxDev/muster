@@ -525,6 +525,45 @@ func (fi focusIndex) view(sub focus.Subject) *ui.FocusView {
 	return v
 }
 
+// focusAgeFields is how old a session's focus title is, as everything the
+// chief reads carries it beside the title — fleet_list, sessions_overview and
+// focus_search rows, attention_list items — and as a notice's push and the
+// attention summary say it (withFocusAges).
+//
+// SetAt is when the title was written (RFC 3339): what every other time in
+// those answers is, so a title set an hour ago can be told from one set
+// yesterday. Age is THE focus age rule's verdict (ui.FocusAgeOf, the one the
+// dock, the palette and the Asks list draw): "2d" past a day. Both are absent
+// for a session with no title.
+//
+// No stale flag: to an LLM reader the age says it ("5d"), and in these tools
+// "stale" already means focus_problem's failed refresh (round 0 of #476, D1).
+type focusAgeFields struct {
+	SetAt string `json:"focus_set_at,omitempty"`
+	Age   string `json:"focus_age,omitempty"`
+}
+
+// ageFields is sub's focusAgeFields at now (none without a title: view gives a
+// title-less focus no UpdatedAt).
+func (fi focusIndex) ageFields(sub focus.Subject, now time.Time) focusAgeFields {
+	v := fi.view(sub)
+	if v == nil {
+		return focusAgeFields{}
+	}
+	return focusAgeFieldsOf(v.UpdatedAt, now)
+}
+
+// focusAgeFieldsOf is the focusAgeFields of a title written at updatedAt, at
+// now (none for a zero updatedAt: no title, or no known time). 🔴 now is the
+// SERVER's clock (s.now) at every caller: one clock for every age the chief
+// or a push is told.
+func focusAgeFieldsOf(updatedAt, now time.Time) focusAgeFields {
+	if updatedAt.IsZero() {
+		return focusAgeFields{}
+	}
+	return focusAgeFields{SetAt: updatedAt.UTC().Format(time.RFC3339), Age: ui.FocusAgeOf(updatedAt, now).Text}
+}
+
 // mirrorFocus is a mirrored entry's focus view: its Claude session's, nil
 // when it reports none.
 func (fi focusIndex) mirrorFocus(sid string) *ui.FocusView {

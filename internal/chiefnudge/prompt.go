@@ -71,7 +71,11 @@ func Prompt(s Session, last Msg, owner []Msg, idle time.Duration, hint Hint, non
 			"one or two sentences. A nudge is accepted only for a permission request (asks_permission) " +
 			"that one of the owner's messages below already covers. " + askSeveralItems
 	}
-	lines := []string{"focus title: " + fence.Sanitize(s.Title), "", "the session's last message:"}
+	lines := []string{"focus title: " + fence.Sanitize(s.Title)}
+	if s.TitleAge != "" {
+		lines = append(lines, fence.Sanitize(s.TitleAge))
+	}
+	lines = append(lines, "", "the session's last message:")
 	for _, l := range strings.Split(Cut(last.Text, MaxLastRunes), "\n") {
 		lines = append(lines, "  "+fence.Sanitize(l))
 	}

@@ -34,12 +34,13 @@ func focusToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: fleetListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored Claude Code windows — compactly: " +
-				"id, kind, name, status, focus title (what it is working on) and, when a session has no focus or a stale one, " +
+				"id, kind, name, status, focus title (what it is working on) with how old it is — focus_set_at, and focus_age " +
+				"(\"2d\") past a day: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
 				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{})},
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
-				"matches first: id, kind, title and a short snippet. Use it to find which session is best placed to handle something. " +
+				"matches first: id, kind, title (with focus_set_at, and focus_age \"2d\" past a day) and a short snippet. Use it to find which session is best placed to handle something. " +
 				"Only sessions muster can see now are returned. By default it searches each session's CURRENT focus; with since_hours " +
 				"it searches every focus each session had in that many past hours instead (a session's focus moves between subtasks " +
 				"of one job, so its current focus can miss what it has been on all along)." + focusUntrustedTail,
@@ -66,6 +67,8 @@ type fleetListRow struct {
 	Where  string `json:"where,omitempty"`
 	Status string `json:"status"`
 	Focus  string `json:"focus,omitempty"`
+	// focusAgeFields: how old Focus is (focus_set_at, focus_age).
+	focusAgeFields
 	// FocusProblem is why the session has no focus, or a stale one: the
 	// latest refresh's short, non-secret reason (focus.Reason). Absent when
 	// the focus is current.
@@ -73,7 +76,7 @@ type fleetListRow struct {
 }
 
 func (s *Server) toolFleetList(ctx context.Context) string {
-	fi := s.focusIndex(ctx)
+	fi, now := s.focusIndex(ctx), s.now()
 	rows := []fleetListRow{}
 	if s.ext.Agents != nil {
 		list, err := s.ext.Agents.List(ctx)
@@ -84,7 +87,8 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
 			rows = append(rows, fleetListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
-				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
+				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title,
+				focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 		}
 	}
 	seen := map[string]bool{}
@@ -100,7 +104,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 			status = "unknown"
 		}
 		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host, Host: e.Host,
-			Where: e.Where(), Status: status, Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
+			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
 }
@@ -141,10 +145,23 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		Kind    string `json:"kind"`
 		Title   string `json:"title"`
 		Snippet string `json:"snippet,omitempty"`
+		// focusAgeFields: how old Title (the session's current focus) is.
+		focusAgeFields
 	}
+	var fi focusIndex
+	if len(hits) > 0 {
+		fi = s.focusIndex(ctx) // one read for every hit's age
+	}
+	now := s.now()
 	out := make([]row, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet})
+		r := row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet}
+		// The age is the stored focus's only while it is still this title (a
+		// refresh between the search and the read moved it on: no age).
+		if f, ok := fi[h.Subject]; ok && f.Title == h.Title {
+			r.focusAgeFields = fi.ageFields(h.Subject, now)
+		}
+		out = append(out, r)
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "results": out})
 }

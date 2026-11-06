@@ -143,7 +143,7 @@ as **payload v2**:
 - A [notice](attention.md#notices) (a live chief nudge) is an `attention` push
   with **no** `ask` and **no** `actions`: its title names where the session is
   (`<where> may be waiting on you`, [attention.md](attention.md#how-a-window-is-named)), its body the session's
-  focus title and the chief's message, its `url` the tap route. Every Android
+  focus title (with its age past a day, `· 2d`: [focus.md](focus.md#how-old-a-focus-is)) and the chief's message, its `url` the tap route. Every Android
   app version draws buttons only from `ask`, so on any of them, including one
   that predates notices, it is a plain notification on the asks channel whose
   tap opens the session.

@@ -48,9 +48,20 @@ func askSuggestSubject(id int64) string { return "ask:" + strconv.FormatInt(id, 
 // once, without suggestions), the views, and — in the background — its
 // suggested replies.
 func (s *Server) askFiled(a attention.Ask) {
-	s.attentionNotify(a.Owner, s.askItemNow(s.attentionPrincipal(context.Background(), a.Owner), a))
+	s.attentionNotify(a.Owner, s.askPushItem(s.attentionPrincipal(context.Background(), a.Owner), a))
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	s.startAskSuggestions(a)
+}
+
+// askPushItem is ask a as its notification is built from: askItemNow, and —
+// for a chief notice, whose body leads with its session's focus title — that
+// title's time (withFocus, the Asks list's own rule) and its age on the
+// server's clock (withFocusAges), so the push carries the title's age
+// (attentionPushBody). An ordinary ask reads no focus.
+func (s *Server) askPushItem(ctx context.Context, a attention.Ask) attentionItem {
+	items := []attentionItem{s.askItemNow(ctx, a)}
+	s.withFocusAges(ctx, items)
+	return items[0]
 }
 
 // startAskSuggestions generates ask a's suggested replies in the background
@@ -123,7 +134,7 @@ func (s *Server) suggestAsk(ctx context.Context, a attention.Ask) {
 // again). Once delivered, the ask is read again: one settled meanwhile — its
 // clear may have overtaken this push — is withdrawn again.
 func (s *Server) repushAsk(a attention.Ask) {
-	it := s.askItemNow(s.attentionPrincipal(context.Background(), a.Owner), a)
+	it := s.askPushItem(s.attentionPrincipal(context.Background(), a.Owner), a)
 	s.goNotify(a.Owner, push.EventAttention, attentionNotification(it, true), func(int) {
 		ctx, cancel := context.WithTimeout(s.attentionPrincipal(context.Background(), a.Owner), pushTargetLookupTimeout)
 		defer cancel()
