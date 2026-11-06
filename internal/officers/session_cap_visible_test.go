@@ -30,17 +30,18 @@ import (
 // so a line that printed the wrong one cannot pass.
 // ---------------------------------------------------------------------------
 
-// daySessions is a SessionStore whose day's entries are set by the test.
+// daySessions is a SessionStore whose entries, per officer and day, are set
+// by the test.
 type daySessions struct {
 	mu   sync.Mutex
 	days map[string][]string
 	err  error
 }
 
-func (s *daySessions) set(day string, entries ...string) {
+func (s *daySessions) set(officer, day string, entries ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.days[day] = entries
+	s.days[officer+"|"+day] = entries
 }
 
 func (s *daySessions) AdmitSession(context.Context, string, string, string, int, time.Time) (officers.Admission, error) {
@@ -50,10 +51,10 @@ func (s *daySessions) ReleaseSession(context.Context, string, string, string) er
 func (s *daySessions) ResolveSession(context.Context, string, string, string, string) error {
 	return nil
 }
-func (s *daySessions) Sessions(_ context.Context, _, day string) ([]string, error) {
+func (s *daySessions) Sessions(_ context.Context, officer, day string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.days[day], s.err
+	return s.days[officer+"|"+day], s.err
 }
 
 const capVisibleTiers = `"tiers":{"routine":{"model":"haiku","max_instances":3},"judgement":{"model":"opus","max_instances":2,"max_sessions_per_day":3}}`
@@ -75,6 +76,7 @@ func capGauge(t *testing.T) (v float64, ok bool) {
 }
 
 type capVisRig struct {
+	hq    *hqtest.Server
 	add   func(subject string) string
 	store *daySessions
 	fleet *poolFleet
@@ -94,7 +96,7 @@ func newCapVisRig(t *testing.T) *capVisRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &capVisRig{store: &daySessions{days: map[string][]string{}}, fleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}},
+	r := &capVisRig{hq: hq, store: &daySessions{days: map[string][]string{}}, fleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}},
 		clk: clk, logs: &bytes.Buffer{}}
 	r.add = func(subject string) string {
 		return hq.AddTieredItem(tierID, "gpu.alert", subject, officers.TierJudgement)
@@ -139,7 +141,7 @@ func (r *capVisRig) capLines() []string {
 // day, it is logged again, once.
 func TestAJudgementPoolAtItsSessionCapIsLoggedOncePerUTCDayAndCounted(t *testing.T) {
 	r := newCapVisRig(t)
-	r.store.set("2000-01-01", "unknown:a1", "unknown:a2", "unknown:a3", "unknown:a4")
+	r.store.set(tierID, "2000-01-01", "unknown:a1", "unknown:a2", "unknown:a3", "unknown:a4")
 
 	r.check(t)
 	if got := r.capLines(); len(got) != 0 {
@@ -174,6 +176,39 @@ func TestAJudgementPoolAtItsSessionCapIsLoggedOncePerUTCDayAndCounted(t *testing
 		t.Fatalf("muster_officer_judgement_cap_reached = %v on the second capped poll, want 1", v)
 	}
 
+	// A pass that fails cannot see the cap, so the gauge does not keep a
+	// stale 1 (round 1 F2): an outage clears it, and so does a confirmed HQ
+	// fault (two 404s, then the fault scale-down). The next good pass sets it
+	// again without a second line.
+	r.hq.SetDown(true)
+	if res := r.rec.Check(context.Background(), tierID, true); res.Err == nil {
+		t.Fatal("HQ down: the pass did not fail")
+	}
+	if v, _ := capGauge(t); v != 0 {
+		t.Fatalf("muster_officer_judgement_cap_reached = %v after a failed pass, want 0", v)
+	}
+	r.hq.SetDown(false)
+	r.check(t)
+	if v, _ := capGauge(t); v != 1 {
+		t.Fatalf("muster_officer_judgement_cap_reached = %v once HQ answers again, want 1", v)
+	}
+	r.hq.SetStatus(404)
+	r.rec.Check(context.Background(), tierID, true)
+	if res := r.rec.Check(context.Background(), tierID, true); res.Err == nil || !strings.Contains(r.logs.String(), "HQ refuses this officer") {
+		t.Fatalf("two 404s: err %v; want a confirmed configuration fault", res.Err)
+	}
+	if v, _ := capGauge(t); v != 0 {
+		t.Fatalf("muster_officer_judgement_cap_reached = %v after a fault scale-down, want 0", v)
+	}
+	r.hq.SetStatus(0)
+	r.check(t)
+	if v, _ := capGauge(t); v != 1 {
+		t.Fatalf("muster_officer_judgement_cap_reached = %v once HQ answers again after the fault, want 1", v)
+	}
+	if got := r.capLines(); len(got) != 1 {
+		t.Fatalf("outage and fault the same UTC day: %d cap lines, want still 1:\n%s", len(got), strings.Join(got, "\n"))
+	}
+
 	// 00:05 UTC the next day: a new day's ledger, empty — the pool wakes.
 	r.clk.Advance(5*time.Hour + 44*time.Minute)
 	r.check(t)
@@ -188,7 +223,7 @@ func TestAJudgementPoolAtItsSessionCapIsLoggedOncePerUTCDayAndCounted(t *testing
 	}
 
 	// Capped again that day: logged again, once, with that day's numbers.
-	r.store.set("2000-01-02", "unknown:b1", "unknown:b2", "unknown:b3")
+	r.store.set(tierID, "2000-01-02", "unknown:b1", "unknown:b2", "unknown:b3")
 	r.clk.Advance(time.Minute)
 	r.check(t)
 	r.clk.Advance(time.Minute)
@@ -221,5 +256,95 @@ func TestAnUnreadableLedgerIsNotReportedAsTheCap(t *testing.T) {
 	}
 	if !strings.Contains(r.logs.String(), "fixture: ledger down") {
 		t.Fatalf("the ledger failure was not logged:\n%s", r.logs.String())
+	}
+}
+
+// TestTheCapLineIsPerOfficerAndResetsAtUTCMidnightWhateverTheClocksZone
+// (round 1 F3): two officers in one loop each get their own line the day
+// each is capped — the once-per-day memory is per officer, not per loop —
+// and the reset is UTC midnight even when muster's clock is in another zone.
+// The clock reads 20:00 on 1 January at UTC-6, which is 02:00 on 2 January
+// UTC: a reset computed on the local date would say 2000-01-02, not
+// 2000-01-03.
+func TestTheCapLineIsPerOfficerAndResetsAtUTCMidnightWhateverTheClocksZone(t *testing.T) {
+	const (
+		edgeID  = "disk-health:edge"
+		edgeTok = "tok-edge-7c41d0" // a fixture, nobody's token
+	)
+	hq := hqtest.New(map[string]string{tierTok: tierID, edgeTok: edgeID})
+	t.Cleanup(hq.Close)
+	west := time.FixedZone("UTC-6", -6*60*60)
+	clk := &clock{t: time.Date(2000, 1, 1, 20, 0, 0, 0, west)}
+	hq.Now = clk.Now
+	edgeTiers := `"tiers":{"routine":{"model":"haiku","max_instances":3},"judgement":{"model":"opus","max_instances":2,"max_sessions_per_day":2}}`
+	list, err := officers.Parse(`[{"id":"`+tierID+`","hq_url":"`+hq.BaseURL()+`","idle_scale_to_zero_after":"10m",`+capVisibleTiers+`},`+
+		`{"id":"`+edgeID+`","hq_url":"`+hq.BaseURL()+`","idle_scale_to_zero_after":"10m",`+edgeTiers+`}]`,
+		env(map[string]string{
+			officers.TokenEnvPrefix + officers.TokenEnvSuffix(tierID): tierTok,
+			officers.TokenEnvPrefix + officers.TokenEnvSuffix(edgeID): edgeTok,
+		}), "muster-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &daySessions{days: map[string][]string{}}
+	logs := &bytes.Buffer{}
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewClientHQ(nil),
+		Fleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}}, Logger: log.New(logs, "", 0), Now: clk.Now,
+		Judgement: officers.NewJudgementLedger(store, nil, nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(logs.String())
+		}
+	})
+	pass := func() {
+		t.Helper()
+		for _, id := range []string{tierID, edgeID} {
+			if res := rec.Check(context.Background(), id, true); res.Err != nil {
+				t.Fatalf("pass %s: %v", id, res.Err)
+			}
+		}
+	}
+	capLines := func() []string {
+		var out []string
+		for _, l := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(l, "judgement cap reached") {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	for _, s := range []string{"node-a", "node-b", "node-c", "node-d", "node-e"} {
+		hq.AddTieredItem(tierID, "gpu.alert", s, officers.TierJudgement)
+	}
+	hq.AddTieredItem(edgeID, "disk.alert", "disk-a", officers.TierJudgement)
+
+	// The ledger is keyed by the UTC day: 2000-01-02, though the clock's
+	// local date is 1 January.
+	store.set(tierID, "2000-01-02", "unknown:a1", "unknown:a2", "unknown:a3", "unknown:a4")
+	pass()
+	wantA := "officers: gpu-health:fleet (judgement pool): judgement cap reached (4/3 until 00:00 UTC): 5 claimable judgement item(s) wait in HQ " +
+		"and are not claimed until the cap resets at 2000-01-03T00:00:00Z (tiers.judgement.max_sessions_per_day; logged once per UTC day)"
+	if got := capLines(); len(got) != 1 || got[0] != wantA {
+		t.Fatalf("the first officer capped on a UTC-6 clock: cap lines\n%s\nwant exactly\n%s", strings.Join(got, "\n"), wantA)
+	}
+	if v, _ := capGauge(t); v != 1 {
+		t.Fatalf("muster_officer_judgement_cap_reached = %v with one officer capped, want 1", v)
+	}
+
+	// The second officer reaches its own cap later the same UTC day: its
+	// own line, and the first officer's is not repeated.
+	store.set(edgeID, "2000-01-02", "unknown:b1", "unknown:b2")
+	clk.Advance(time.Minute)
+	pass()
+	wantB := "officers: disk-health:edge (judgement pool): judgement cap reached (2/2 until 00:00 UTC): 1 claimable judgement item(s) wait in HQ " +
+		"and are not claimed until the cap resets at 2000-01-03T00:00:00Z (tiers.judgement.max_sessions_per_day; logged once per UTC day)"
+	if got := capLines(); len(got) != 2 || got[0] != wantA || got[1] != wantB {
+		t.Fatalf("the second officer capped the same day: cap lines\n%s\nwant\n%s\n%s", strings.Join(got, "\n"), wantA, wantB)
+	}
+	if v, _ := capGauge(t); v != 2 {
+		t.Fatalf("muster_officer_judgement_cap_reached = %v with both officers capped, want 2", v)
 	}
 }
