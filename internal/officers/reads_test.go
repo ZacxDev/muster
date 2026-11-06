@@ -135,3 +135,48 @@ func TestTheRoutineKickoffTellsItsHandOff(t *testing.T) {
 		t.Error("the judgement kickoff offers needs_judgement")
 	}
 }
+
+// TestReadCountedRefundsANotInvestigatingRefusal (audit F1): HQ's 403 whose
+// code is not_investigating read nothing — HQ refused the read before making
+// it — so it does not count, whatever the tier; a 403 with any other code,
+// and HQ's other 4xx, still count; a 429 and a 5xx never do. Red before the
+// fix: every 4xx but 429 counted, so not_investigating read true.
+func TestReadCountedRefundsANotInvestigatingRefusal(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"2xx", nil, true},
+		{"403 not_investigating", &officers.HQError{Status: 403, Body: []byte(`{"error":"not an investigating officer's judgement item held by that instance","code":"not_investigating"}`)}, false},
+		{"403 forced", &officers.HQError{Status: 403, Body: []byte(`{"error":"forced","code":"forced"}`)}, true},
+		{"403 without a code", &officers.HQError{Status: 403, Body: []byte(`{"error":"no"}`)}, true},
+		{"403 not JSON", &officers.HQError{Status: 403, Body: []byte(`not_investigating`)}, true},
+		{"400 not_investigating", &officers.HQError{Status: 400, Body: []byte(`{"code":"not_investigating"}`)}, true},
+		{"400 invalid", &officers.HQError{Status: 400, Body: []byte(`{"code":"invalid"}`)}, true},
+		{"429", &officers.HQError{Status: 429, Body: []byte(`{"code":"rate_limited"}`)}, false},
+		{"5xx", officers.ErrHQUnavailable, false},
+	}
+	for _, c := range cases {
+		if got := officers.ReadCounted(c.err); got != c.want {
+			t.Errorf("%s: ReadCounted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestTheReadBudgetNoteIsPinnedWhole (audit F1): the one statement of the
+// budget the instance is given, whole — it names the carry-over (a routine
+// instance's reads of an item it hands on count toward the same 200) and
+// that a 403 not_investigating is not counted. A reword fails here on purpose.
+func TestTheReadBudgetNoteIsPinnedWhole(t *testing.T) {
+	const want = "200 reads per item, ONE count shared by officer_kube_read, officer_obs_raw and officer_obs_query " +
+		"(every officer_obs_raw call counts, a routine instance's too; a judgement instance's officer_obs_query counts against the item it holds, " +
+		"and is not counted while it holds none; a routine instance's is never counted); " +
+		"the 201st read of an item is refused, whichever tool makes it. The count is the item's, not the instance's: " +
+		"reads a routine instance made of an item it handed on with needs_judgement count toward the same 200 once it is a judgement item. " +
+		"An officer_obs_raw or officer_obs_query call HQ answers with 429, a 5xx or a 403 not_investigating, or that gets no answer from HQ, " +
+		"is not counted; HQ's other refusals are"
+	if officers.ReadBudgetNote != want {
+		t.Fatalf("the budget note is\n%q\nwant\n%q", officers.ReadBudgetNote, want)
+	}
+}

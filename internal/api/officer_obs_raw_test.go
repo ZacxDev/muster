@@ -312,7 +312,8 @@ func TestANamedQueryIsCountedOnlyForAJudgementItem(t *testing.T) {
 // TestOnlyAnAnswerHQJudgedSpendsARead (audit Y3): each HQ read tool's call
 // that HQ answers 429, 503 (an outage, and the route's own 503
 // obs_unconfigured) leaves the item's budget where it was; one HQ answers 200
-// or 403 spends exactly one. A call muster refuses before HQ (a key it owns)
+// or 403 with a code other than not_investigating spends exactly one (a 403
+// not_investigating spends none: TestANotInvestigatingRefusalSpendsNoRead). A call muster refuses before HQ (a key it owns)
 // spends nothing either — that case is an INVARIANT guard (it held before
 // the fix too). Red before the fix: both tools spent before calling HQ and
 // never gave the unit back, so the 429 and 503 cases read spent 1, want 0.
@@ -331,7 +332,7 @@ func TestOnlyAnAnswerHQJudgedSpendsARead(t *testing.T) {
 		{"503", func() { rs.hq.ObsStatus = 503 }, 0},
 		{"503 obs_unconfigured", func() { rs.hq.ObsOff = true }, 0},
 		{"200", func() {}, 1},
-		{"403", func() { rs.hq.ObsStatus = 403 }, 1},
+		{"403 forced (a code other than not_investigating)", func() { rs.hq.ObsStatus = 403 }, 1},
 	}
 	for _, tool := range []struct{ name, args string }{{obsRawTool, rawArgs}, {obsQueryTool, obsQueryArgs}} {
 		for _, c := range cases {
@@ -423,12 +424,13 @@ func TestObsRawIsOfferedToARoutineInstanceAndCounted(t *testing.T) {
 	call := func() string { return rs.s.dispatchAgentTool(ctx, rs.routine, obsRawTool, rawArgs) }
 
 	// today's HQ: a routine item's raw read is refused, with HQ's code, and
-	// (an answer HQ judged, officers.ReadCounted) counted
+	// NOT counted (audit F1, officers.ReadCounted: a 403 not_investigating
+	// read nothing)
 	if out := call(); !isToolErr(out) || !strings.Contains(out, `"not_investigating"`) || !strings.Contains(out, "403") {
 		t.Fatalf("today's HQ: %s, want HQ's 403 not_investigating", out)
 	}
-	if got := spent(); got != 1 {
-		t.Fatalf("HQ's 403 spent %d reads, want 1", got)
+	if got := spent(); got != 0 {
+		t.Fatalf("HQ's 403 not_investigating spent %d reads, want 0", got)
 	}
 
 	rs.hq.ObsRawAdmitsRoutine = true
@@ -459,6 +461,99 @@ func TestObsRawIsOfferedToARoutineInstanceAndCounted(t *testing.T) {
 	}
 	if len(rs.hq.ObsRawCalls) != served {
 		t.Fatal("the refused 201st read reached HQ")
+	}
+}
+
+// TestANotInvestigatingRefusalSpendsNoRead (audit F1): officer_obs_raw
+// answered 403 not_investigating leaves the item's budget where it was, for a
+// routine instance and a judgement one alike; a 403 with another code
+// (the fake's "forced") still spends one. Red before the fix: the
+// not_investigating case spent 1.
+func TestANotInvestigatingRefusalSpendsNoRead(t *testing.T) {
+	rs := newReadSeam(t)
+	ctx := context.Background()
+	for _, c := range []struct {
+		a    agents.Agent
+		tier string
+		node string
+	}{{rs.routine, officers.TierRoutine, "node-r"}, {rs.judge, officers.TierJudgement, "node-j"}} {
+		item := rs.hq.AddTieredItem(offK, "anomaly.alert", c.node, c.tier)
+		rs.hq.SetClaim(item, c.a.Name, time.Now().Add(time.Hour))
+		spent := func() int { return rs.s.officerRT.reads.Spent(offK, officers.ItemID(item)) }
+
+		rs.hq.ObsStatus, rs.hq.ObsRawNotInvestigating = 0, true
+		for i := 0; i < 3; i++ {
+			if out := rs.s.dispatchAgentTool(ctx, c.a, obsRawTool, rawArgs); !isToolErr(out) || !strings.Contains(out, `"not_investigating"`) {
+				t.Fatalf("%s: %s, want HQ's 403 not_investigating", c.a.Name, out)
+			}
+		}
+		if got := spent(); got != 0 {
+			t.Errorf("%s: three 403 not_investigating answers spent %d, want 0", c.a.Name, got)
+		}
+
+		rs.hq.ObsStatus, rs.hq.ObsRawNotInvestigating = 403, false
+		for i := 0; i < 2; i++ {
+			if out := rs.s.dispatchAgentTool(ctx, c.a, obsRawTool, rawArgs); !isToolErr(out) || !strings.Contains(out, `"forced"`) || !strings.Contains(out, "403") {
+				t.Fatalf("%s: %s, want HQ's 403 forced", c.a.Name, out)
+			}
+		}
+		if got := spent(); got != 2 {
+			t.Errorf("%s: two 403 forced answers spent %d, want 2", c.a.Name, got)
+		}
+		rs.hq.ObsStatus = 0
+	}
+}
+
+// TestRoutineReadsCarryOverToTheJudgementInvestigation (audit F1): the budget
+// is the item's, so the reads a routine instance spent on an item count
+// toward the same 200 after it hands the item on with needs_judgement (HQ
+// promotes it in place: same id). A routine instance's 1 refused (403
+// not_investigating) and 7 served raw reads, then needs_judgement: the
+// judgement instance that takes the item is served exactly 193 reads and its
+// 194th is refused by the budget. Red before the fix: the refused read was
+// counted too, so only 192 were served.
+func TestRoutineReadsCarryOverToTheJudgementInvestigation(t *testing.T) {
+	rs := newReadSeam(t)
+	ctx := context.Background()
+	item := rs.hq.AddTieredItem(offK, "anomaly.alert", "node-c", officers.TierRoutine)
+	rs.hq.SetClaim(item, rs.routine.Name, time.Now().Add(time.Hour))
+	routineCall := func() string { return rs.s.dispatchAgentTool(ctx, rs.routine, obsRawTool, rawArgs) }
+
+	if out := routineCall(); !isToolErr(out) || !strings.Contains(out, `"not_investigating"`) {
+		t.Fatalf("today's HQ: %s, want HQ's 403 not_investigating", out)
+	}
+	rs.hq.ObsRawAdmitsRoutine = true
+	for i := 0; i < 7; i++ {
+		if out := routineCall(); isToolErr(out) {
+			t.Fatalf("routine raw read %d: %s", i+1, out)
+		}
+	}
+	if got := rs.s.officerRT.reads.Spent(offK, officers.ItemID(item)); got != 7 {
+		t.Fatalf("the routine instance's reads spent %d, want 7", got)
+	}
+	out := rs.s.dispatchAgentTool(ctx, rs.routine, completeTool, `{"item_id":"`+item+`","outcome":"needs_judgement","summary":"needs a judgement pass"}`)
+	if isToolErr(out) {
+		t.Fatalf("needs_judgement: %s", out)
+	}
+	rs.hq.SetClaim(item, rs.judge.Name, time.Now().Add(time.Hour))
+
+	before := len(rs.hq.ObsRawCalls)
+	served := 0
+	for i := 0; i < officers.ReadsPerItem; i++ {
+		out := rs.s.dispatchAgentTool(ctx, rs.judge, obsRawTool, rawArgs)
+		if isToolErr(out) {
+			if !strings.Contains(out, "all 200 reads of item "+item) {
+				t.Fatalf("judgement read %d: %s, want served or the budget's refusal", i+1, out)
+			}
+			break
+		}
+		served++
+	}
+	if served != 193 || len(rs.hq.ObsRawCalls)-before != 193 {
+		t.Fatalf("the judgement instance was served %d reads (%d reached HQ), want 193 (200 - the routine instance's 7)", served, len(rs.hq.ObsRawCalls)-before)
+	}
+	if got := rs.s.officerRT.reads.Spent(offK, officers.ItemID(item)); got != 200 {
+		t.Fatalf("spent %d, want 200", got)
 	}
 }
 
