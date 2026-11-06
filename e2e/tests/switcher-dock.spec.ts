@@ -585,6 +585,8 @@ test.describe('phone 390×844 touch', () => {
     for (const x of [lb.x + lb.width - 40, lb.x + 40]) {
       expect(await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('#dock-list'), [x, y]), `(${x}, ${y}) is on the list`).toBe(true);
     }
+    // The list leaves sideways moves to the swipe, and a pinch to the browser.
+    expect(await page.locator('#dock-list').evaluate((l) => getComputedStyle(l).touchAction), 'pan-y and pinch-zoom').toBe('pan-y pinch-zoom');
     // Nothing on the list scrolls sideways, so the horizontal axis is free.
     expect(await page.evaluate(() => Array.from(document.querySelectorAll('#dock-list, #dock-list *')).filter((e) => {
       const ox = getComputedStyle(e).overflowX;
@@ -823,6 +825,46 @@ test.describe('phone 390×844 touch', () => {
     await page.evaluate(() => { delete (window as any).__vvH; window.visualViewport!.dispatchEvent(new Event('resize')); });
     await page.keyboard.press('Escape');
     await expect.poll(() => dockOpen(page)).toBe(false);
+  });
+
+  // 13m: CLOSED WHILE THE KEYBOARD MARK IS SET. Typing in the dock's filter
+  // is typing in a text field, so with the keyboard up the bar's keyboard
+  // mark (html[data-keyboard], switcherKeyboardJS) is set, and the Rendered
+  // view's CSS then hides the bar — the dock's opener. Closed with focus still
+  // in the filter (Escape twice; on iOS a tap on × does not move focus either),
+  // focus must still land on the opener, visible: the cleanup clears the mark
+  // before it focuses the opener. The keyboard is the 13k emulation.
+  test('13m: closed while the keyboard mark is set, focus lands on the view button, visible', async ({ page }) => {
+    test.setTimeout(90_000);
+    await ready(page);
+    await page.addInitScript(() => {
+      const real = window.visualViewport!;
+      const fake = new EventTarget() as any;
+      for (const k of ['width', 'offsetLeft', 'pageLeft', 'pageTop', 'scale']) Object.defineProperty(fake, k, { get: () => (real as any)[k] });
+      Object.defineProperty(fake, 'height', { get: () => (window as any).__vvH ?? real.height });
+      Object.defineProperty(fake, 'offsetTop', { get: () => 0 });
+      real.addEventListener('resize', () => fake.dispatchEvent(new Event('resize')));
+      Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
+    });
+    await openOwn(page);
+    expect(await coarse(page)).toBe(true);
+    await toggle(page).tap();
+    await expect.poll(() => dockOpen(page)).toBe(true);
+    await filter(page).tap();
+    await page.keyboard.type('dk');
+    await expect(filter(page)).toBeFocused();
+    await page.evaluate(() => { (window as any).__vvH = 480; window.visualViewport!.dispatchEvent(new Event('resize')); });
+    // REACHED: the mark is set, and it hides the opener.
+    await expect(page.locator('html'), 'the keyboard mark is set while typing in the filter').toHaveAttribute('data-keyboard', '');
+    await expect(toggle(page), 'the mark hides the opener').toBeHidden();
+    await page.keyboard.press('Escape');
+    await expect(filter(page)).toHaveValue('');
+    await expect(filter(page), 'focus still in the filter').toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => dockOpen(page)).toBe(false);
+    await expect(toggle(page), 'the opener is visible again').toBeVisible();
+    await expect(toggle(page), 'focus lands on the opener').toBeFocused();
+    await page.evaluate(() => { delete (window as any).__vvH; window.visualViewport!.dispatchEvent(new Event('resize')); });
   });
 
   // The server half (30 kept, visit order, gone windows dropped) is

@@ -35,29 +35,129 @@ func touchListenerBodies(t *testing.T, js string) map[string]string {
 	}
 }
 
-// touchRE is a touch listener's registration, on any receiver: `<recv>.
-// addEventListener('touch<event>'`.
-var touchRE = regexp.MustCompile(`([A-Za-z_$][\w$]*)\.addEventListener\('(touch\w+)'`)
+// addListenerRE is every `.addEventListener(` call, whatever its receiver.
+var addListenerRE = regexp.MustCompile(`\.addEventListener\(\s*`)
 
-// touchListeners is the source of every touch listener in js, on ANY receiver,
-// keyed "<receiver>.<event>" (document.touchstart, list.touchend, …), each from
-// its registration to the `{ passive: true });` that closes it.
+// onGestureRE is a gesture handler set as a property (`x.ontouchend = …`,
+// `x.onpointerup = …`), which addEventListener's ledger would not see.
+var onGestureRE = regexp.MustCompile(`\.on(touch|pointer)\w*\s*=[^=]`)
+
+// gestureListeners is every touch* and pointer* listener in js (comments
+// already stripped), keyed "<receiver>.<event>", each mapped to the source of
+// its whole addEventListener(…) call. What it covers, exactly:
 //
-// ⚠ A TEXT EXTRACT, like touchListenerBodies, but it cannot MISS a
-// registration: every `.addEventListener('touch` is a key, and one with no
-// terminator fails the test rather than vanishing from it.
-func touchListeners(t *testing.T, js string) map[string]string {
+//   - every `.addEventListener(` call, on ANY receiver: an identifier receiver
+//     is keyed by that identifier (document, list); any other receiver — a
+//     call, an index, `x.querySelector(…)` — is keyed "(expr)";
+//   - an event name written as a string literal in single or double quotes:
+//     one starting "touch" or "pointer" is a ledger key;
+//   - an event name that is the parameter of an enclosing
+//     `[<literals>].forEach(function (<p>) {` (within 300 bytes before the
+//     call) is each of those literals, and each is a key as above;
+//   - any other event name that is NOT a literal (a variable, a call, a
+//     concatenation) FAILS the test: a computed name could be any gesture;
+//   - a gesture handler set as a property, `.on(touch|pointer)…=`, FAILS it.
+//
+// ⚠ NOT COVERED: a listener registered with no `.addEventListener(` text at
+// all (a call through a stored reference to the function, `el['addEventListener']`,
+// a template-literal event name), and a gesture library's own API.
+func gestureListeners(t *testing.T, js string) map[string]string {
 	t.Helper()
+	if m := onGestureRE.FindString(js); m != "" {
+		t.Errorf("a gesture handler is set as a property (%q): the ledger below cannot see one", m)
+	}
 	out := map[string]string{}
-	for _, m := range touchRE.FindAllStringSubmatchIndex(js, -1) {
-		key := js[m[2]:m[3]] + "." + js[m[4]:m[5]]
-		end := strings.Index(js[m[0]:], "{ passive: true });")
-		if end < 0 {
-			t.Fatalf("the %s listener has no `{ passive: true });` terminator — the extract cannot find its end", key)
+	for _, m := range addListenerRE.FindAllStringIndex(js, -1) {
+		at := m[1]
+		var names []string
+		if at < len(js) && (js[at] == '\'' || js[at] == '"') {
+			close := strings.IndexByte(js[at+1:], js[at])
+			if close < 0 {
+				t.Fatalf("an unterminated event name at %d", at)
+			}
+			names = []string{js[at+1 : at+1+close]}
+		} else if ns, ok := forEachNames(js, m[0], at); ok {
+			names = ns
+		} else {
+			ctx := js[m[0]:min(len(js), m[0]+60)]
+			t.Errorf("an addEventListener with a computed event name (%q): it could register any gesture, and the ledger cannot name it", ctx)
+			continue
 		}
-		out[key] += js[m[0] : m[0]+end]
+		recv := "(expr)"
+		if i := m[0]; i > 0 && isIdentByte(js[i-1]) {
+			j := i
+			for j > 0 && isIdentByte(js[j-1]) {
+				j--
+			}
+			recv = js[j:i]
+		}
+		body := js[m[0]:callEnd(t, js, m[0]+len(".addEventListener"))]
+		for _, name := range names {
+			if strings.HasPrefix(name, "touch") || strings.HasPrefix(name, "pointer") {
+				out[recv+"."+name] += body
+			}
+		}
 	}
 	return out
+}
+
+// forEachRE is `[<string literals>].forEach(function (<param>) {`.
+var forEachRE = regexp.MustCompile(`\[((?:\s*(?:'[^']*'|"[^"]*")\s*,?)+)\]\.forEach\(function\s*\((\w+)\)\s*\{`)
+
+var literalRE = regexp.MustCompile(`'([^']*)'|"([^"]*)"`)
+
+// forEachNames: the call at callAt names its event by an identifier at arg;
+// when that identifier is the parameter of the nearest enclosing forEach over
+// string literals (within 300 bytes before the call), those literals.
+func forEachNames(js string, callAt, arg int) ([]string, bool) {
+	id := arg
+	for id < len(js) && isIdentByte(js[id]) {
+		id++
+	}
+	if id == arg {
+		return nil, false
+	}
+	param := js[arg:id]
+	from := max(0, callAt-300)
+	ms := forEachRE.FindAllStringSubmatch(js[from:callAt], -1)
+	if len(ms) == 0 || ms[len(ms)-1][2] != param {
+		return nil, false
+	}
+	var out []string
+	for _, l := range literalRE.FindAllStringSubmatch(ms[len(ms)-1][1], -1) {
+		out = append(out, l[1]+l[2])
+	}
+	return out, true
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '$' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+// callEnd is the index just past the `)` that closes the call whose `(` is at
+// open, string literals skipped (comments are stripped already).
+func callEnd(t *testing.T, js string, open int) int {
+	t.Helper()
+	depth := 0
+	for i := open; i < len(js); i++ {
+		switch c := js[i]; c {
+		case '\'', '"', '`':
+			for i++; i < len(js) && js[i] != c; i++ {
+				if js[i] == '\\' {
+					i++
+				}
+			}
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	t.Fatalf("the addEventListener call at %d never closes", open)
+	return len(js)
 }
 
 // TestNoTabSwitchSwipe pins the removal of the tab-switch swipe AND the survival
@@ -65,9 +165,12 @@ func touchListeners(t *testing.T, js string) map[string]string {
 //
 // 🔴 NARROWED, NOT LIFTED: the switcher dock's own tabs DO change by a swipe
 // (switcher_dock.go), and only there. So the ledger below lists EVERY touch
-// listener appScript registers, on any receiver, and fails when the set grows or
-// shrinks: the sidebar's two on document, and the dock's three on its list (the
-// tabpanel inside the modal dialog, marked data-own-swipe). None of them names
+// and pointer listener appScript registers, on any receiver (gestureListeners),
+// and fails when the set grows or
+// shrinks: the sidebar's two on document, the dock's three on its list (the
+// tabpanel inside the modal dialog, marked data-own-swipe), and the scroll
+// restore's stop-on-operator-input on window (touchstart and pointerdown, from
+// a forEach, components.go: it stops a restore, it is no swipe). None of them names
 // the page's tab router. A swipe bound anywhere else — a tabpanel, the
 // document, the recents strip — is a new key here, and red.
 //
@@ -84,15 +187,16 @@ func TestNoTabSwitchSwipe(t *testing.T) {
 		js := mustStripJSComments(t, jsSource(t, appScript(feat)))
 		bodies := touchListenerBodies(t, js)
 
-		// THE LEDGER: every touch listener in the script, by receiver.
-		all := touchListeners(t, js)
+		// THE LEDGER: every touch and pointer listener in the script, by
+		// receiver (gestureListeners says exactly what it can see).
+		all := gestureListeners(t, js)
 		var keys []string
 		for k := range all {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		if got, want := strings.Join(keys, " "), "document.touchend document.touchstart list.touchcancel list.touchend list.touchstart"; got != want {
-			t.Errorf("%s: appScript's touch listeners = %q\nwant %q (the sidebar's on document, the dock's on its list, nothing else)", shape, got, want)
+		if got, want := strings.Join(keys, " "), "document.touchend document.touchstart list.touchcancel list.touchend list.touchstart window.pointerdown window.touchstart"; got != want {
+			t.Errorf("%s: appScript's touch listeners = %q\nwant %q (the sidebar's on document, the dock's on its list, the scroll restore's stop-on-input on window, nothing else)", shape, got, want)
 		}
 		for k, body := range all {
 			if strings.HasPrefix(k, "list.") && strings.Contains(body, "document.") {
@@ -103,6 +207,8 @@ func TestNoTabSwitchSwipe(t *testing.T) {
 			if strings.HasPrefix(k, "list.") {
 				bodies["dock "+k] = body
 			}
+			// Every ledger body joins the removal check below.
+			bodies["ledger "+k] = body
 		}
 
 		// POSITIVE CONTROLS: both listeners were found and carry real code.

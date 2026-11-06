@@ -273,7 +273,7 @@ func TestTheDocksFilterBox(t *testing.T) {
 // |dx| above SWIPE_RATIO times |dy|). The sidebar's document listeners are
 // TestNoTabSwitchSwipe's.
 func TestTheDocksSwipeIsItsPanelsOnly(t *testing.T) {
-	ls := touchListeners(t, mustStripJSComments(t, dockJS))
+	ls := gestureListeners(t, mustStripJSComments(t, dockJS))
 	var got []string
 	for k := range ls {
 		got = append(got, k)

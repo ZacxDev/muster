@@ -170,8 +170,9 @@ func switcherDock() g.Node {
 			// The tab swipe's zone, and only it (dockJS binds it here): the
 			// sidebar's edge swipe stands down over it, as over the whole dock.
 			g.Attr("data-own-swipe", ""),
-			// pan-y: a sideways move here is the swipe's, never the browser's.
-			Class("min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]"),
+			// pan-y: a sideways move here is the swipe's, never the browser's;
+			// pinch-zoom: a pinch still zooms the page.
+			Class("min-h-0 flex-1 touch-pan-y touch-pinch-zoom overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]"),
 		),
 		P(g.Attr("data-dock-empty", ""), g.Attr("hidden", ""), Class("px-4 py-3 text-sm text-muted")),
 	)
@@ -314,7 +315,7 @@ var dockJS = func() string {
   // the page's own pill has none, so each is keyed by its place.
   function shown(view) {
     var es = entries(view), q = query();
-    if (!q || typeof window.musterPaletteRank !== 'function') return es;
+    if (!q || typeof window.musterPaletteRank !== 'function' || typeof window.musterPaletteEntry !== 'function') return es;
     var items = es.map(function (p, i) {
       var e = window.musterPaletteEntry(p, i);
       e.href = '#' + i;
@@ -522,6 +523,15 @@ var dockJS = func() string {
     if (!s.opener) return;
     s.opener.setAttribute('aria-expanded', 'false');
     if (!s.opener.isConnected) return;
+    // 🔴 THE KEYBOARD MARK CAN STILL HIDE THE OPENER HERE. Typing in the
+    // filter is typing in a text field, so with a keyboard up the bar's mark
+    // (html[data-keyboard], switcherKeyboardJS) is set and the bar — the
+    // opener's — is display:none; closed with focus still in the filter
+    // (Escape, or an iOS tap on ×, which moves no focus), focus() on a hidden
+    // button does nothing and focus is lost. Focus is leaving the field for a
+    // button, so the mark is over: cleared here, in the opener's document, and
+    // its own focusout check then agrees.
+    try { s.opener.ownerDocument.documentElement.removeAttribute('data-keyboard'); } catch (e) {}
     try {
       var w = s.opener.ownerDocument.defaultView;
       if (w && w !== window) w.focus();
