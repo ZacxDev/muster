@@ -42,6 +42,15 @@ agent you run in tmux shows up; Claude Code gets the most.
   question with options and wait for your answer, and Claude Code's own
   multiple-choice questions become a form you answer from your phone. Each
   needs a one-time setup per machine.
+- **A chief that knows what every session is on.** An optional fleet agent
+  you chat with: ask it what everyone is working on, who is on what, or what
+  needs you, and have it hand a request or a task to the session already on
+  it. On the Compose install it is the `chief` profile, one per install (the
+  admin's), on amd64 hosts, with a Claude subscription token or your
+  OpenRouter key (muster sets no budget: put a credit limit on the key);
+  routing also needs `MUSTER_SESSION_ROUTING=1`. It sends what it reads of
+  your sessions to its model. Prompts that work, with real replies:
+  [docs/chief-cookbook.md](docs/chief-cookbook.md).
 
 <p align="center"><img src="docs/img/ask-flow.gif" width="270" alt="On a phone: the sidebar lists sessions on two machines; one asks whether to tag and publish a release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"></p>
 
@@ -153,7 +162,8 @@ turned on with a few lines in `.env` (and, for some, a Compose profile).
 | [Suggested replies](docs/features.md#suggested-replies) and [focus](docs/features.md#focus) | an OpenRouter key | off until the key is set |
 | [Agent ask tool](docs/features.md#agent-ask-tool) and [ask cards](docs/features.md#ask-cards) | a one-time setup on each machine | off |
 | [Accounts](docs/features.md#accounts) (per-user sign-in, passkeys) | a GoTrue server you run | off (one shared password) |
-| [Dispatch](docs/features.md#dispatch), the [Chief](docs/features.md#chief) and [officers](docs/features.md#officers) | **Kubernetes** | off; not in the Compose stack |
+| [Chief](docs/features.md#chief) | `--profile chief` (amd64 hosts), the connector store's key, and a Claude subscription token or an OpenRouter key | off |
+| [Dispatch](docs/features.md#dispatch) and [officers](docs/features.md#officers) | **Kubernetes** | off; not in the Compose stack |
 | [Approval router](docs/features.md#approval-router) | an external permission router you run (advanced) | off |
 
 Every other optional feature, what it needs and the `.env` lines that turn it
