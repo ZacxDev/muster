@@ -115,9 +115,12 @@ type Server struct {
 	// ObsCalls is every POST /officers/{id}/obs/query the fake ran, in order.
 	// ObsOff makes both obs routes answer 503 obs_unconfigured (an HQ with
 	// the route switched off); ObsEmpty makes a query answer empty.
-	ObsCalls []ObsCall
-	ObsOff   bool
-	ObsEmpty bool
+	// ObsStatus, when non-zero, makes every obs POST (query and raw) answer
+	// that status with code "forced" before running (e.g. 429, 503, 403).
+	ObsCalls  []ObsCall
+	ObsOff    bool
+	ObsEmpty  bool
+	ObsStatus int
 	// ObsFail makes a query that passes validation answer HQ's backend
 	// failure instead of running (502 upstream / wrong_shape).
 	ObsFail ObsFail
@@ -380,6 +383,10 @@ func obsTime(field string, body map[string]any) string {
 func (s *Server) obs(w http.ResponseWriter, officer, verb, method string, body map[string]any) {
 	if s.ObsOff {
 		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "the obs query route is off on this HQ (CIVHQ_OFFICER_OBS)", "code": "obs_unconfigured"})
+		return
+	}
+	if s.ObsStatus != 0 && method == http.MethodPost {
+		s.write(w, s.ObsStatus, map[string]any{"error": "forced", "code": "forced"})
 		return
 	}
 	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }

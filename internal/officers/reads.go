@@ -3,6 +3,7 @@ package officers
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -26,6 +27,14 @@ import (
 // read); a routine instance's never counts (routine items are not
 // investigated).
 //
+// Which ANSWERS count (ReadCounted): the two HQ tools reserve the unit before
+// they call HQ and give it back when HQ answers 429 (its rate limit) or a 5xx,
+// or when no answer arrives (a timeout, a transport failure): the read was
+// not made. HQ's 2xx and its other 4xx refusals (403 not_investigating, 400
+// invalid, …) count — the instance spent the read on a query HQ judged. A
+// call muster refuses before HQ (a bad key, the item) spends nothing.
+// Reserving first is what keeps concurrent calls from passing the cap.
+//
 // In memory: a restart forgets the counts, which can only allow more reads,
 // never refuse one early. Entries untouched for a day are dropped.
 // ---------------------------------------------------------------------------
@@ -37,7 +46,8 @@ const ReadsPerItem = 200
 // (the kickoff and each counted tool's description).
 const ReadBudgetNote = "200 reads per item, ONE count shared by officer_kube_read, officer_obs_raw and officer_obs_query " +
 	"(a judgement instance's officer_obs_query counts against the item it holds, and is not counted while it holds none); " +
-	"the 201st read of an item is refused, whichever tool makes it"
+	"the 201st read of an item is refused, whichever tool makes it. An officer_obs_raw or officer_obs_query call HQ answers " +
+	"with 429 or a 5xx, or that gets no answer from HQ, is not counted; HQ's other refusals are"
 
 // CountsRead reports whether a call of tool by an instance of pool o spends
 // its item's read budget: THE rule (see above).
@@ -49,6 +59,17 @@ func CountsRead(o Officer, tool string) bool {
 		return o.Tier == TierJudgement
 	}
 	return false
+}
+
+// ReadCounted reports whether an HQ read tool's call that HQ answered with
+// err (nil: a 2xx) spends its item's read: THE rule for which answers count
+// (see above). Only HQ's 2xx and its 4xx other than 429 do.
+func ReadCounted(err error) bool {
+	if err == nil {
+		return true
+	}
+	var hq *HQError
+	return errors.As(err, &hq) && hq.Status >= 400 && hq.Status < 500 && hq.Status != http.StatusTooManyRequests
 }
 
 // ErrReadBudget is a read refused because its item's budget is spent.
@@ -105,4 +126,24 @@ func (b *ReadBudget) Spend(officer string, item ItemID) (int, error) {
 	c.n++
 	c.last = now
 	return c.n, nil
+}
+
+// Refund gives back one read Spend counted of item by officer (a reserved
+// read whose answer does not count, ReadCounted); never below 0.
+func (b *ReadBudget) Refund(officer string, item ItemID) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if c, ok := b.m[readKey{officer, item}]; ok && c.n > 0 {
+		c.n--
+	}
+}
+
+// Spent is how many counted reads of item officer has made.
+func (b *ReadBudget) Spent(officer string, item ItemID) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if c, ok := b.m[readKey{officer, item}]; ok {
+		return c.n
+	}
+	return 0
 }

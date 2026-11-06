@@ -958,9 +958,14 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 				return heldItemRefusal(name, err), true
 			}
 			if item != "" {
+				// reserved now, given back by settleRead when HQ's answer
+				// does not count (officers.ReadCounted)
 				if err := s.spendRead(o, item); err != nil {
 					return toolErr("%v", err), true
 				}
+				body, err := c.ObsQuery(ctx, args)
+				s.settleRead(o, item, err)
+				return officerToolResult(name, body, err), true
 			}
 		}
 		body, err := c.ObsQuery(ctx, args)

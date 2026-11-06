@@ -21,15 +21,17 @@ import (
 //  3. the body: the arguments object passed through, plus the item and the
 //     instance muster names (a key spelling either is refused);
 //  4. the budget: one read of that item (spendRead, the count shared with
-//     officer_kube_read and officer_obs_query);
+//     officer_kube_read and officer_obs_query), RESERVED before the call;
 //  5. HQ: the officer's own token (the one the instance already spends for
 //     every officer tool; no other credential), and HQ's answer or refusal
 //     returned AS HQ SENT IT — HQ checks the query, redacts the lines and
 //     writes the audit row (with the query text), so muster neither re-checks
-//     nor rewrites any of it.
+//     nor rewrites any of it. settleRead then gives the reserved read back
+//     when HQ's answer does not count (officers.ReadCounted: a 429, a 5xx,
+//     or no answer).
 //
-// A call refused at steps 1-3 reaches HQ only for the claim lookup and spends
-// nothing.
+// A call refused at step 1 reaches nothing; one refused at steps 2-3 reaches
+// HQ only for the claim lookup. Neither spends a read.
 // ---------------------------------------------------------------------------
 
 // obsRawToolDef is officer_obs_raw's definition (offered by
@@ -38,20 +40,26 @@ func obsRawToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: officers.ToolObsRaw,
 		Description: "Run your OWN PromQL or LogQL (POST /officers/{id}/obs/raw) for the item you hold, when HQ's named queries (" +
 			officers.ToolObsQuery + ") cannot answer the question. HQ answers it only when your officer's type investigates (otherwise 403 " +
-			"not_investigating) and checks the query itself: its window caps (7 days; Loki 24 hours), step, series and line limits, a Loki stream " +
-			"selector (required; the apiserver audit stream is refused), and it redacts every log line and audits the query text. " +
-			"Prometheus is not pinned to a cluster: filter by cluster yourself. `empty: true` is NOT a zero nor an absence of logs: run the " +
-			"positive control its `hint` names before you report none. A 429 means wait a minute (HQ's limit is shared with " + officers.ToolObsQuery +
-			"). muster names your instance and the item and returns HQ's answer as HQ sent it. Read budget: " + officers.ReadBudgetNote + ". Read-only.",
-		Parameters: objSchema(map[string]any{
-			"backend": map[string]any{"type": "string", "enum": []string{"prometheus", "loki"}},
-			"query":   strProp("The PromQL or LogQL text (at most 4096 bytes)."),
-			"start":   strProp("RFC 3339 in whole seconds, e.g. 2006-01-02T15:04:05Z; the window is (start, end]."),
-			"end":     strProp("RFC 3339 in whole seconds."),
-			"step":    strProp("Prometheus only, and required there: a duration of at least 1m, e.g. \"300s\"."),
-			"limit":   intProp("A Loki log query's line limit (default 100).", 1, 1000),
-			"item_id": strProp("Optional: the claimed item this read is for, when you hold more than one."),
-		}, "backend", "query", "start", "end")}
+			"not_investigating) and checks every argument itself — the window, the step, the series and line limits, its rate limit, and a Loki " +
+			"stream selector (required; the apiserver audit stream is refused) — and its refusal names the limit to fix. It redacts every log " +
+			"line and audits the query text. Prometheus is not pinned to a cluster: filter by cluster yourself. `empty: true` is NOT a zero nor " +
+			"an absence of logs: run the positive control its `hint` names before you report none. A 429 means wait a minute (HQ's limit is " +
+			"shared with " + officers.ToolObsQuery + "). muster names your instance and the item and returns HQ's answer as HQ sent it. Read budget: " +
+			officers.ReadBudgetNote + ". Read-only.",
+		// 🔴 AN OPEN OBJECT, as officer_obs_query's: HQ's decoder is the one
+		// schema (officers.ObsRawBody passes the arguments through), so the
+		// properties are guidance and carry none of HQ's limits — a copy
+		// here would drift from HQ's and refuse what HQ accepts.
+		Parameters: map[string]any{"type": "object", "additionalProperties": true, "required": []string{"backend", "query", "start", "end"},
+			"properties": map[string]any{
+				"backend": strProp("\"prometheus\" or \"loki\"."),
+				"query":   strProp("The PromQL or LogQL text."),
+				"start":   strProp("RFC 3339 in whole seconds, e.g. 2006-01-02T15:04:05Z; the window is (start, end]."),
+				"end":     strProp("RFC 3339 in whole seconds."),
+				"step":    strProp("Prometheus only, and required there: a duration, e.g. \"300s\"."),
+				"limit":   map[string]any{"type": "integer", "description": "A Loki log query's line limit."},
+				"item_id": strProp("Optional: the claimed item this read is for, when you hold more than one."),
+			}}}
 }
 
 // officerObsRaw runs officer_obs_raw for instance a of pool o.
@@ -72,5 +80,6 @@ func (s *Server) officerObsRaw(ctx context.Context, a agents.Agent, o officers.O
 		return toolErr("%v", err)
 	}
 	ans, err := c.ObsRaw(ctx, body)
+	s.settleRead(o, item, err)
 	return officerToolResult(officers.ToolObsRaw, ans, err)
 }

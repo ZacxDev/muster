@@ -108,6 +108,22 @@ func TestObsRawRefusals(t *testing.T) {
 			t.Errorf("naming %s: %s, want a refusal", name, out)
 		}
 	}
+	// splitItemID removes only the exact key item_id: ITEM_ID / Item_Id reach
+	// ObsRawBody, whose case-insensitive check must refuse them with ITS
+	// words and before any request to /obs/raw (HQ's decoder would also
+	// refuse the unknown key, with a 400 — a different, later refusal).
+	r.hq.ResetRequests()
+	for _, key := range []string{"ITEM_ID", "Item_Id"} {
+		out := r.s.dispatchAgentTool(ctx, judge, obsRawTool, `{"`+key+`":"`+item+`",`+rawArgs[1:])
+		if !isToolErr(out) || !strings.Contains(out, "is muster's to send") {
+			t.Errorf("naming the item as %s: %s, want muster's refusal of the key", key, out)
+		}
+	}
+	for _, q := range r.hq.Requests() {
+		if strings.HasSuffix(q.Path, "/obs/raw") {
+			t.Fatalf("a refused item key reached HQ: %+v", q)
+		}
+	}
 	if n := len(r.hq.ObsRawCalls); n != 0 {
 		t.Fatalf("%d raw queries reached HQ from refused calls", n)
 	}
@@ -279,6 +295,96 @@ func TestANamedQueryIsCountedOnlyForAJudgementItem(t *testing.T) {
 	}
 	if n := len(rs.hq.ObsCalls); n != 2*(officers.ReadsPerItem+1) {
 		t.Fatalf("%d named queries served, want %d", n, 2*(officers.ReadsPerItem+1))
+	}
+}
+
+// TestOnlyAnAnswerHQJudgedSpendsARead (audit Y3): each HQ read tool's call
+// that HQ answers 429, 503 (an outage, and the route's own 503
+// obs_unconfigured) leaves the item's budget where it was; one HQ answers 200
+// or 403 spends exactly one. A call muster refuses before HQ (a key it owns)
+// spends nothing either — that case is an INVARIANT guard (it held before
+// the fix too). Red before the fix: both tools spent before calling HQ and
+// never gave the unit back, so the 429 and 503 cases read spent 1, want 0.
+func TestOnlyAnAnswerHQJudgedSpendsARead(t *testing.T) {
+	rs := newReadSeam(t)
+	ctx := context.Background()
+	item := rs.hq.AddTieredItem(offK, "anomaly.alert", "node-a", officers.TierJudgement)
+	rs.hq.SetClaim(item, rs.judge.Name, time.Now().Add(time.Hour))
+	spent := func() int { return rs.s.officerRT.reads.Spent(offK, officers.ItemID(item)) }
+	cases := []struct {
+		name  string
+		set   func()
+		spend int
+	}{
+		{"429", func() { rs.hq.ObsStatus = 429 }, 0},
+		{"503", func() { rs.hq.ObsStatus = 503 }, 0},
+		{"503 obs_unconfigured", func() { rs.hq.ObsOff = true }, 0},
+		{"200", func() {}, 1},
+		{"403", func() { rs.hq.ObsStatus = 403 }, 1},
+	}
+	for _, tool := range []struct{ name, args string }{{obsRawTool, rawArgs}, {obsQueryTool, obsQueryArgs}} {
+		for _, c := range cases {
+			rs.hq.ObsStatus, rs.hq.ObsOff = 0, false
+			c.set()
+			before := spent()
+			out := rs.s.dispatchAgentTool(ctx, rs.judge, tool.name, tool.args)
+			if served := !isToolErr(out); served != (c.name == "200") {
+				t.Fatalf("%s answered %s: %s (the fake did not answer as set)", tool.name, c.name, out)
+			}
+			if got := spent() - before; got != c.spend {
+				t.Errorf("%s answered %s: spent %d, want %d", tool.name, c.name, got, c.spend)
+			}
+		}
+	}
+	rs.hq.ObsStatus, rs.hq.ObsOff = 0, false
+	before := spent()
+	if out := rs.s.dispatchAgentTool(ctx, rs.judge, obsRawTool, `{"Instance":"x",`+rawArgs[1:]); !isToolErr(out) || !strings.Contains(out, "is muster's to send") {
+		t.Fatalf("%s naming its instance: %s, want muster's refusal", obsRawTool, out)
+	}
+	if got := spent() - before; got != 0 {
+		t.Errorf("a call muster refused before HQ spent %d", got)
+	}
+}
+
+// TestTheObsRawToolSchemaIsOpen (audit Y1): officer_obs_raw's definition is
+// not a second copy of HQ's request schema — an open object (as
+// officer_obs_query's), no property carrying a bound, and neither the
+// description nor a property stating one of HQ's figures.
+func TestTheObsRawToolSchemaIsOpen(t *testing.T) {
+	var def map[string]any
+	var desc string
+	for _, d := range officerToolDefs() {
+		if d.Name == obsRawTool {
+			b, _ := json.Marshal(d.Parameters)
+			_ = json.Unmarshal(b, &def)
+			desc = d.Description
+		}
+	}
+	if def == nil {
+		t.Fatal("no officer_obs_raw definition")
+	}
+	if open, _ := def["additionalProperties"].(bool); !open {
+		t.Fatalf("officer_obs_raw's schema is closed: %v", def)
+	}
+	props, _ := def["properties"].(map[string]any)
+	for _, k := range []string{"backend", "query", "start", "end", "step", "limit", "item_id"} {
+		if props[k] == nil {
+			t.Errorf("the schema no longer describes %s", k)
+		}
+	}
+	b, _ := json.Marshal(def)
+	for _, bound := range []string{"minimum", "maximum", "maxLength", "enum"} {
+		if strings.Contains(string(b), `"`+bound+`"`) {
+			t.Errorf("the schema carries %q, a limit HQ owns: %s", bound, b)
+		}
+	}
+	for _, figure := range []string{"4096", "7 days", "24 hours", "1000", "default 100", "at least 1m"} {
+		if strings.Contains(desc+string(b), figure) {
+			t.Errorf("the definition states HQ's figure %q", figure)
+		}
+	}
+	if !strings.Contains(desc, "refusal names the limit") {
+		t.Error("the description does not say HQ's refusal names the limit")
 	}
 }
 

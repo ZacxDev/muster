@@ -637,10 +637,12 @@ judgement instance may send its own PromQL or LogQL for the item it holds,
 through HQ's `POST /officers/{id}/obs/raw`. HQ owns every check on it — the
 officer's type must set `investigation: true` and the item must be the
 officer's judgement item claimed by that instance (else `403
-not_investigating`); the window, step, series and line caps; a Loki stream
-selector, with the apiserver audit stream refused; every log line redacted;
-an audit row carrying the query text; the same 30-a-minute rate limit as
-`/obs/query`, the two routes together. muster re-checks none of it.
+not_investigating`); the window, the step, the caps and the rate limit; the
+refusal of the apiserver audit stream — and its refusal names the limit.
+HQ's officer guide states the limits; muster states none and re-checks none
+of them. HQ also redacts every log line and writes an audit row carrying the
+query text. The tool's schema is open, as `officer_obs_query`'s is: its
+properties are guidance, and HQ's decoder is the one schema.
 
 One call, each step refusing before the next:
 
@@ -653,7 +655,8 @@ One call, each step refusing before the next:
    with `item_id` (HQ's integer) and `instance` (the caller's own name) added.
    An argument spelling either key, in any case, is refused: muster names
    them, never the model.
-4. **Budget.** One read of that item ([the read budget](#the-read-budget)).
+4. **Budget.** One read of that item ([the read budget](#the-read-budget)),
+   reserved before the call and given back if HQ's answer does not count.
 5. **HQ.** With the officer's own HQ token, the one every officer tool
    already uses: there is no other credential. HQ's answer comes back as HQ
    sent it, and its refusals with HQ's status and body, as for
@@ -667,9 +670,15 @@ One call, each step refusing before the next:
 `officers.CountsRead` is the one rule for which calls spend it). 100 named
 queries, 99 raw queries and 1 cluster read are an item's 200; the 201st is
 refused whichever tool makes it, and names the budget. Another item has its
-own 200. A call spends its unit after the item is resolved and before the
-read is sent, so a read the backend then refuses still counts. The count is
-in memory: a restart can only allow more reads, never refuse one early.
+own 200. A call muster refuses before the read (an argument, the item, the
+rate cap) spends nothing. Otherwise the unit is taken after the item is
+resolved and before the read is sent — a reservation, so concurrent calls
+cannot pass the cap — and for the two HQ tools (`officers.ReadCounted`) it is
+given back when HQ answers `429` or a 5xx, or no answer arrives (a timeout, a
+transport failure): no read was made. HQ's 2xx and its other refusals
+(`403 not_investigating`, `400 invalid`, …) still count, and so does every
+`officer_kube_read` that reached the cluster. The count is in memory: a
+restart can only allow more reads, never refuse one early.
 
 ### Asking an HQ member (`officer_ask_person`)
 

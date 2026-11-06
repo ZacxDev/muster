@@ -88,3 +88,15 @@ func (s *Server) spendRead(o officers.Officer, item officers.ItemID) error {
 	_, err := s.officerRT.reads.Spend(o.ID, item)
 	return err
 }
+
+// settleRead is the second half of an HQ read tool's charge: spendRead
+// RESERVED the unit before the call (so concurrent calls can never pass the
+// cap), and settleRead gives it back when HQ's answer err does not count
+// (officers.ReadCounted: a 429, a 5xx, or no answer at all). officer_obs_raw
+// and a judgement instance's officer_obs_query call it after every HQ call
+// they charged; officer_kube_read reads no HQ route and does not.
+func (s *Server) settleRead(o officers.Officer, item officers.ItemID, err error) {
+	if !officers.ReadCounted(err) {
+		s.officerRT.reads.Refund(o.ID, item)
+	}
+}
