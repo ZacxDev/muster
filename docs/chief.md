@@ -4,6 +4,8 @@ The **chief** is your fleet agent: the one agent with no task and no repository,
 whose job is answering you about the state of the work. Plugin messages are
 delivered to it, and it alone is offered the chief tools (see below).
 
+What to ask it, with real example replies: [chief-cookbook.md](chief-cookbook.md).
+
 **The chief is optional and off by default.** muster works without one: home
 opens the session you opened last, and your sessions, tasks and asks all work
 as usual.

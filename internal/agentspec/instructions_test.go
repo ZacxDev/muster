@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "c8dd7244f5c8f35864896c2320e30afdbde66a61d63f26ccfb1e588d2e5e25fb",
+			want: "fe38f8c559f4859aba3378e60b6794eebd082f6704cdad0641011bfed8ca1e60",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "6be6d7969ab3f577d5b8c6f5837329a521ae51668f6d96afd05c99de2eb70947",
+			want: "0d814b5064ad457ccad76e541a3cf8662c46d1deced32dda39b232379cbe064c",
 			min:  1000,
 		},
 		{
@@ -716,6 +716,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`task_create_gated`", "`mcp__muster__task_create_gated`",
 		"`reply_draft`", "`mcp__muster__reply_draft`",
 		"`sessions_overview`", "`mcp__muster__sessions_overview`",
+		"`focus_search`", "`mcp__muster__focus_search`",
 		"`route_to_session`", "`mcp__muster__route_to_session`",
 		"`plugin_message_settle`", "`mcp__muster__plugin_message_settle`",
 		"`agent_dispatch`", "`mcp__muster__agent_dispatch`",
@@ -792,6 +793,50 @@ func TestTheChiefTriagesFeedback(t *testing.T) {
 		}
 		if strings.Contains(norm(c.off), "Some plugin messages are feedback") {
 			t.Errorf("%s: plugins OFF, but the prompt carries the feedback paragraph", c.name)
+		}
+	}
+}
+
+// TestTheChiefRoutesFeedbackAndTasksFirst pins the route-first paragraph WHOLE,
+// normalised, against an independently typed literal (a guard on keywords is
+// walkable by rewording), in each runtime's spelling, and only with plugins on.
+// It comes BEFORE the feedback paragraph, which files what no session is on.
+//
+// What it promises is the server's, not the prose's: a no_reply message can be
+// routed one-way (plugins.PGStore.CreateRouteFrom, its answer only ever the
+// chief's), a task event's task by task_id, and the owner's notice of a route is
+// sent by muster on the route's creation (internal/api notifyChiefRouted) — so
+// the paragraph tells the chief it need not tell the owner itself.
+func TestTheChiefRoutesFeedbackAndTasksFirst(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	para := func(p string) string {
+		return "Feedback and incoming tasks: route first. Before you file feedback, or decide what happens to a task event, " +
+			"look for the live session already on it: the block headed \"Sessions that may already be on this\" when the turn " +
+			"has one, and `" + p + "focus_search` with the subject's most distinctive words (when your tool list has it) when " +
+			"that does not settle it. When exactly one live session is clearly on it and you have `" + p + "route_to_session`, " +
+			"hand it to that session: a message by its message_id, a task event's task by its task_id. A message that cannot " +
+			"be answered goes too, as a one-way heads-up: the session's answer comes back to you, never to the sender. muster " +
+			"tells your owner which session got it; you need not. When no session is, or more than one might be, do not " +
+			"guess: put it in front of your owner — feedback as below, a task event's task with `" + p + "task_route_attention`."
+	}
+	for _, c := range []struct {
+		name, on, off, para string
+	}{
+		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), para("")},
+		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), para("")},
+		{"claude-code", ChiefInstructionsClaudeCode(true, false), ChiefInstructionsClaudeCode(false, false), para("mcp__muster__")},
+	} {
+		on := norm(c.on)
+		i, j := strings.Index(on, c.para), strings.Index(on, "Some plugin messages are feedback")
+		if i < 0 {
+			t.Errorf("%s: the chief prompt does not carry the route-first paragraph:\n%s", c.name, c.para)
+			continue
+		}
+		if j < 0 || i > j {
+			t.Errorf("%s: the route-first paragraph is not before the feedback paragraph (%d, %d)", c.name, i, j)
+		}
+		if strings.Contains(norm(c.off), "route first") {
+			t.Errorf("%s: plugins OFF, but the prompt carries the route-first paragraph", c.name)
 		}
 	}
 }
