@@ -111,17 +111,26 @@ func TestTheComposeChiefIsOfferedExactlyItsAllowedTools(t *testing.T) {
 		}
 	}
 
-	// A call by name to a tool it is not offered: refused with the reason, on
-	// MCP and in the dispatcher.
+	// A call by name to a tool it is not offered is refused: in the
+	// dispatcher with the reason, and on the MCP door by the catalog (only a
+	// listed tool may be called there), so the tool never runs.
 	want := toolErr("%s", composeChiefRefusal("task_comment"))
 	if got := s.dispatchAgentTool(ctx, chief, "task_comment", "{}"); got != want {
 		t.Errorf("dispatching task_comment for the Compose chief: %s, want %s", got, want)
 	}
-	r := mcpAs(t, s, chief, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_set_status","arguments":{}}}`)
-	if r.Error != nil {
-		t.Fatalf("tools/call task_set_status: %+v", r.Error)
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_set_status","arguments":{}}}`
+	if r := mcpAs(t, s, chief, call); r.Error == nil || r.Error.Message != "unknown tool task_set_status" || len(r.Result) != 0 {
+		t.Errorf("tools/call task_set_status for the Compose chief: error=%+v result=%s, want refused unrun", r.Error, r.Result)
 	}
-	if text, isErr := toolTextRaw(t, &r); !isErr || !strings.Contains(text, "task_set_status is not available to the chief on this install (Docker Compose)") {
-		t.Errorf("tools/call task_set_status for the Compose chief: isError=%v %s", isErr, text)
+	// Control: the same call from the Kubernetes chief reaches the tool (its
+	// own refusal of the empty arguments), so the refusal above is the
+	// Compose axis and not the call's shape.
+	s.ext.ComposeChief = nil
+	r := mcpAs(t, s, chief, call)
+	if r.Error != nil {
+		t.Fatalf("control: the Kubernetes chief's tools/call task_set_status: %+v", r.Error)
+	}
+	if text, isErr := toolText(t, &r); !isErr || !strings.Contains(text, "id is required") {
+		t.Errorf("control: the Kubernetes chief's tools/call task_set_status did not reach the tool: %s", text)
 	}
 }

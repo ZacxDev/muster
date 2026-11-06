@@ -531,16 +531,6 @@ func composeChiefRefusal(name string) string {
 	return name + " is not available to the chief on this install (Docker Compose). " + agentspec.ComposeChiefUnavailable
 }
 
-// toolDeclared reports whether the registry (agentTools) declares name.
-func (s *Server) toolDeclared(name string) bool {
-	for _, t := range s.agentTools() {
-		if t.def.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 // toolAxis is name's two who-axis flags in the registry (both false for a name
 // it does not declare). It reads the registry rather than a second list, so the
 // flags are the one place the decision is written.

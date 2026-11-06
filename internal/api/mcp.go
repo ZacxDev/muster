@@ -147,18 +147,6 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
 	disabled, off := s.mcpFeatureHooks(agentDoor)
 	compose := s.isComposeChief(r.Context(), a)
-	if compose {
-		// A tool the Compose chief is not offered is explained, not "unknown":
-		// it exists, and this install does not let the chief run it.
-		// A name the registry does not declare keeps the feature hook's answer.
-		featureOff := disabled
-		disabled = func(name string) string {
-			if name == mcpHelpTool || s.toolDeclared(name) {
-				return composeChiefRefusal(name)
-			}
-			return featureOff(name)
-		}
-	}
 	s.serveMCP(w, r, mcpSurface{
 		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
 		call:         func(name, args string) string { return s.dispatchAgentTool(r.Context(), a, name, args) },
