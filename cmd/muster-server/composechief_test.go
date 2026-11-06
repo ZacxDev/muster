@@ -176,18 +176,34 @@ type composeStack struct {
 
 func newComposeStack(t *testing.T, extra map[string]string) *composeStack {
 	t.Helper()
-	root := t.TempDir()
+	return newComposeStackAt(t, t.TempDir(), extra)
+}
+
+// composeGroupsMu guards composeGroups: two stacks on one spec volume (the
+// boot re-apply tests) share the recorder.
+var composeGroupsMu sync.Mutex
+
+// newComposeStackAt is newComposeStack on the spec volume root, so a second
+// stack can boot onto what a first one left (a muster restart: the same
+// volume and the same database, a new config). It returns once the boot
+// re-apply of a running chief (api.ReapplyComposeChiefAtBoot) is done.
+func newComposeStackAt(t *testing.T, root string, extra map[string]string) *composeStack {
+	t.Helper()
 	// The driver's group changes, recorded: a test cannot give a file the
 	// image's groups. TestTheComposeChiefIsWrittenWhereItsContainerReadsIt
-	// reads them back.
-	composeGroups = map[string]int{}
-	composeChown = func(p string, gid int) error {
-		if rel, err := filepath.Rel(root, p); err == nil {
-			composeGroups[filepath.ToSlash(rel)] = gid
+	// reads them back. A second stack on the same root keeps the first's.
+	if composeChown == nil {
+		composeGroups = map[string]int{}
+		composeChown = func(p string, gid int) error {
+			if rel, err := filepath.Rel(root, p); err == nil {
+				composeGroupsMu.Lock()
+				composeGroups[filepath.ToSlash(rel)] = gid
+				composeGroupsMu.Unlock()
+			}
+			return nil
 		}
-		return nil
+		t.Cleanup(func() { composeChown, composeGroups = nil, nil })
 	}
-	t.Cleanup(func() { composeChown, composeGroups = nil, nil })
 	env := composeEnv(root)
 	env[envDatabase] = dbtest.DSN(t)
 	for k, v := range extra {
@@ -220,6 +236,14 @@ func newComposeStack(t *testing.T, extra map[string]string) *composeStack {
 		}
 		a.Close()
 	})
+	if a.chiefReapplied == nil {
+		t.Fatal("the Compose chief booted without its boot re-apply")
+	}
+	select {
+	case <-a.chiefReapplied:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the boot re-apply did not finish:\n%s", st.logs.String())
+	}
 	st.h, st.app = a.srv.Handler(), a
 	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"password": {env[envUIPassword]}, "next": {"/"}}.Encode()))
 	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -388,6 +412,155 @@ func TestTheComposeChiefIsWrittenWhereItsContainerReadsIt(t *testing.T) {
 	}
 }
 
+// readChiefSpec is the chief's spec.json under root as it is now: raw, and
+// parsed with its env and secrets as maps.
+func readChiefSpec(t *testing.T, root string) ([]byte, compose.ContainerSpec, map[string]string, map[string]string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, "chief", "spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cs compose.ContainerSpec
+	if err := json.Unmarshal(raw, &cs); err != nil {
+		t.Fatal(err)
+	}
+	envOf, secretOf := map[string]string{}, map[string]string{}
+	for _, e := range cs.Env {
+		envOf[e.Name] = e.Value
+	}
+	for _, e := range cs.Secrets {
+		secretOf[e.Name] = e.Value
+	}
+	return raw, cs, envOf, secretOf
+}
+
+// scaleChief scales the chief's spec under root out of band, through a
+// compose driver of its own (the agent page's Stop is this Scale 0, with the
+// switch left on).
+func scaleChief(t *testing.T, root string, replicas int) {
+	t.Helper()
+	d, err := buildComposeDriver(config{ChiefSpecDir: root}, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Scale(context.Background(), provision.Ref{Name: agents.ChiefName}, replicas); err != nil {
+		t.Fatalf("scale the chief to %d: %v", replicas, err)
+	}
+}
+
+const (
+	reapplyToken = "sk-ant-oat01-FAKE-compose-chief-reapply-7a8b"
+	reapplyKey   = "sk-or-v1-FAKE-compose-chief-reapply-7a8b"
+)
+
+// onTheToken boots a Compose stack on the subscription token, turns the chief
+// on, and returns the stack and the spec's generation.
+func onTheToken(t *testing.T) (*composeStack, int64) {
+	t.Helper()
+	st := newComposeStack(t, map[string]string{envChiefClaudeToken: reapplyToken})
+	if w := st.post("/account/chief", url.Values{"on": {"1"}}); !strings.Contains(w.Header().Get("Location"), "chief=saved") {
+		t.Fatalf("turn the chief on: %d %s", w.Code, w.Header().Get("Location"))
+	}
+	cs, _, secretOf := st.waitSpec(t)
+	if secretOf["CLAUDE_CODE_OAUTH_TOKEN"] != reapplyToken || cs.Replicas != 1 {
+		t.Fatalf("precondition: the chief on the token: replicas %d, secrets %v", cs.Replicas, keysOf(secretOf))
+	}
+	return st, cs.Generation
+}
+
+// TestARunningComposeChiefIsReappliedOnItsNewCredentialAtBoot is audit #469
+// F3: the admin moves the chief from the subscription token to OpenRouter in
+// .env and runs `docker compose up -d --wait`, which restarts muster (a second
+// app on the same volume and database) and not the chief's container. The
+// running chief's spec is re-applied on the new credential: the LLM route, no
+// subscription token, and a new generation (the supervisor's restart signal).
+// Before, it kept the token while Account and the LLM proxy said OpenRouter.
+func TestARunningComposeChiefIsReappliedOnItsNewCredentialAtBoot(t *testing.T) {
+	st, gen := onTheToken(t)
+	st2 := newComposeStackAt(t, st.root, map[string]string{envAgentOpenRouterKey: reapplyKey})
+	_, cs, envOf, secretOf := readChiefSpec(t, st.root)
+	if _, ok := secretOf["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
+		t.Fatalf("after a restart onto the OpenRouter key the running chief still carries its subscription token (generation %d, was %d):\n%s",
+			cs.Generation, gen, st2.logs.String())
+	}
+	if envOf["CCD_LLM_ROUTE"] != "muster" || cs.Replicas != 1 {
+		t.Fatalf("the re-applied spec: replicas %d, CCD_LLM_ROUTE %q; want 1, muster", cs.Replicas, envOf["CCD_LLM_ROUTE"])
+	}
+	if cs.Generation <= gen {
+		t.Fatalf("generation %d, was %d: the supervisor is not told to restart the chief", cs.Generation, gen)
+	}
+	want := "chief runtime: re-applied the running chief's spec at boot (credential: the OpenRouter key, through the LLM proxy)\n"
+	if !strings.Contains(st2.logs.String(), want) {
+		t.Fatalf("no boot line %q:\n%s", want, st2.logs.String())
+	}
+}
+
+// TestAComposeChiefThatIsOffIsNotStartedAtBoot: the boot re-apply starts
+// nothing that is off, on either axis, and leaves its spec byte-identical:
+//
+//   - turned off (Account → Chief): the switch is off and the spec stopped;
+//   - stopped with the switch on (the agent page's Stop: Scale 0): the
+//     stopped-spec check's own case;
+//   - the switch off with the spec live (an Off whose Stop failed): the
+//     switch check's own case.
+func TestAComposeChiefThatIsOffIsNotStartedAtBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		prepare    func(t *testing.T, st *composeStack)
+		replicas   int
+	}{
+		{"turned off", "chief runtime: the chief is turned off: its spec was not re-applied at boot\n", func(t *testing.T, st *composeStack) {
+			if w := st.post("/account/chief", url.Values{"on": {"0"}}); !strings.Contains(w.Header().Get("Location"), "chief=saved") {
+				t.Fatalf("turn the chief off: %d %s", w.Code, w.Header().Get("Location"))
+			}
+		}, 0},
+		{"stopped, switch on", "chief runtime: the chief's spec is stopped: it was not re-applied at boot\n", func(t *testing.T, st *composeStack) {
+			scaleChief(t, st.root, 0)
+		}, 0},
+		{"switch off, spec live", "chief runtime: the chief is turned off: its spec was not re-applied at boot\n", func(t *testing.T, st *composeStack) {
+			if w := st.post("/account/chief", url.Values{"on": {"0"}}); !strings.Contains(w.Header().Get("Location"), "chief=saved") {
+				t.Fatalf("turn the chief off: %d %s", w.Code, w.Header().Get("Location"))
+			}
+			scaleChief(t, st.root, 1)
+		}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, _ := onTheToken(t)
+			tc.prepare(t, st)
+			before, cs, _, _ := readChiefSpec(t, st.root)
+			if cs.Replicas != tc.replicas {
+				t.Fatalf("precondition: replicas %d, want %d", cs.Replicas, tc.replicas)
+			}
+			st2 := newComposeStackAt(t, st.root, map[string]string{envAgentOpenRouterKey: reapplyKey})
+			after, cs2, _, secretOf := readChiefSpec(t, st.root)
+			if !bytes.Equal(before, after) {
+				t.Fatalf("the boot re-apply touched an off chief's spec (generation %d -> %d, replicas %d, token kept %v):\n%s",
+					cs.Generation, cs2.Generation, cs2.Replicas, secretOf["CLAUDE_CODE_OAUTH_TOKEN"] != "", st2.logs.String())
+			}
+			if !strings.Contains(st2.logs.String(), tc.line) {
+				t.Fatalf("no boot line %q:\n%s", tc.line, st2.logs.String())
+			}
+		})
+	}
+}
+
+// TestAnUnchangedComposeChiefIsNotRestartedAtBoot: a restart on the same
+// config re-applies the running chief's spec, and its generation does not
+// move, so the supervisor does not restart it.
+func TestAnUnchangedComposeChiefIsNotRestartedAtBoot(t *testing.T) {
+	st, gen := onTheToken(t)
+	st2 := newComposeStackAt(t, st.root, map[string]string{envChiefClaudeToken: reapplyToken})
+	_, cs, _, secretOf := readChiefSpec(t, st.root)
+	if cs.Generation != gen || cs.Replicas != 1 || secretOf["CLAUDE_CODE_OAUTH_TOKEN"] != reapplyToken {
+		t.Fatalf("an unchanged restart: generation %d (was %d), replicas %d, token kept %v; want it untouched:\n%s",
+			cs.Generation, gen, cs.Replicas, secretOf["CLAUDE_CODE_OAUTH_TOKEN"] == reapplyToken, st2.logs.String())
+	}
+	want := "chief runtime: the running chief's spec is unchanged at boot, nothing to re-apply (credential: the Claude subscription, MUSTER_CHIEF_CLAUDE_TOKEN)\n"
+	if !strings.Contains(st2.logs.String(), want) {
+		t.Fatalf("no boot line %q:\n%s", want, st2.logs.String())
+	}
+}
+
 // TestTheComposeChiefRunsOnItsSubscriptionTokenWhenItHasOne: with
 // MUSTER_CHIEF_CLAUDE_TOKEN set (and an OpenRouter key too) the chief carries
 // the subscription token and is NOT on the LLM route — the token wins.
@@ -417,7 +590,8 @@ func TestTheComposeChiefWithNoCredentialIsRefusedAndSaysWhatToAdd(t *testing.T) 
 	}
 	page := st.get("/account?chief=refused")
 	want := "The chief could not be created: set MUSTER_CHIEF_CLAUDE_TOKEN (a Claude subscription token from " +
-		"`claude setup-token`) or MUSTER_AGENT_OPENROUTER_KEY in .env, then run `docker compose up -d --wait`, then turn it on again."
+		"`claude setup-token`) or MUSTER_AGENT_OPENROUTER_KEY in .env, then run `docker compose up -d --wait`, which restarts muster, " +
+		"then turn it on again."
 	if !strings.Contains(html.UnescapeString(page), want) {
 		t.Fatalf("the Account page does not say what to add:\n%.3000s", page)
 	}

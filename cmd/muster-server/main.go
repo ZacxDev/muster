@@ -216,6 +216,9 @@ type app struct {
 	// memo relays cairn scope memos to the operator's agents; nil unless the
 	// relay's credential is set and a gateway exists. See buildMemoRelay.
 	memo *memorelay.Relay
+	// chiefReapplied is closed when the boot re-apply of a running Compose
+	// chief is done; nil without the Compose chief runtime.
+	chiefReapplied <-chan struct{}
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -507,7 +510,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("agent plane: %w", err)
 	}
 	if prov != nil && cfg.chiefCompose() {
-		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane), OpenRouterKey: plane.OpenRouterKey}
+		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane), OpenRouterKey: plane.OpenRouterKey,
+			Spec: composeSpec(cfg.ChiefSpecDir)}
 	}
 	if prov != nil {
 		ext.Provisioner = prov
@@ -803,6 +807,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	a.logBanner(ext, port)
 	a.logFeatures(feats)
+	// 🔴 A RUNNING COMPOSE CHIEF IS RE-APPLIED ON THE CURRENT CONFIG: its spec
+	// (the CLI's credential) is built only when it starts, and a .env change
+	// restarts muster, not the chief's container (api.ReapplyComposeChiefAtBoot;
+	// audit #469 F3). In the background: a boot never waits on it.
+	if ext.ComposeChief != nil {
+		a.chiefReapplied = srv.ReapplyComposeChiefAtBoot(ctx)
+	}
 	return a, nil
 }
 

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -229,6 +231,23 @@ func buildComposeDriver(cfg config, logger *log.Logger) (provision.Provisioner, 
 	logger.Printf("chief runtime: COMPOSE (%s=%s) — spec volume %s, container %s:%d, MCP door %s",
 		envChiefRuntime, chiefRuntimeCompose, cfg.ChiefSpecDir, agents.ChiefName, agentspec.DefaultGatewayPort, cfg.AgentConnectURL)
 	return d, nil
+}
+
+// composeSpec is api.ComposeChief.Spec: the generation (the compose driver's
+// restart signal) and the replicas (0 stopped, 1 live) of the chief's
+// spec.json under root.
+func composeSpec(root string) func() (int64, int, error) {
+	return func() (int64, int, error) {
+		raw, err := os.ReadFile(filepath.Join(root, agents.ChiefName, "spec.json"))
+		if err != nil {
+			return 0, 0, err
+		}
+		var cs compose.ContainerSpec
+		if err := json.Unmarshal(raw, &cs); err != nil {
+			return 0, 0, err
+		}
+		return cs.Generation, cs.Replicas, nil
+	}
 }
 
 // composeChiefCredential is THE rule for which credential the Compose chief

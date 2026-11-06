@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -60,7 +62,7 @@ var ErrComposeChiefNoCredential = errors.New("the chief has no credential")
 
 // ComposeChiefNeedsCredential is what the operator is told to add.
 const ComposeChiefNeedsCredential = "set MUSTER_CHIEF_CLAUDE_TOKEN (a Claude subscription token from `claude setup-token`) " +
-	"or MUSTER_AGENT_OPENROUTER_KEY in .env, then run `docker compose up -d --wait`"
+	"or MUSTER_AGENT_OPENROUTER_KEY in .env, then run `docker compose up -d --wait`, which restarts muster"
 
 // ComposeDispatchRefusal is POST /agents' answer on the Compose chief.
 const ComposeDispatchRefusal = "this install runs the chief in its own Compose container and dispatches no other agent: " +
@@ -69,7 +71,9 @@ const ComposeDispatchRefusal = "this install runs the chief in its own Compose c
 // ComposeChiefReplaceRefusal is POST /api/chief/replace's answer on the
 // Compose chief.
 const ComposeChiefReplaceRefusal = "the Compose chief cannot be replaced: this install runs one chief, on one kind " +
-	"(claude-code), in its Compose container. Change its credential in .env instead (docs/chief.md)"
+	"(claude-code), in its Compose container. Change its credential in .env instead, then run " +
+	"`docker compose up -d --wait`: that restarts muster, and muster then re-applies a running chief on the new " +
+	"credential (docs/chief.md)"
 
 // ComposeChiefNotYours is the Account page's text for a user who is not the
 // admin on a Compose install.
@@ -91,6 +95,135 @@ type ComposeChief struct {
 	// (credentials.Plane.OpenRouterKey, the plane the Account page and
 	// Credential read). The LLM proxy serves the chief on it. Required.
 	OpenRouterKey func(ctx context.Context, owner int64) (string, error)
+	// Spec reads the chief's spec on the volume: its generation (whether the
+	// boot re-apply restarted the chief) and its replicas (whether it is live:
+	// the re-apply never starts a stopped spec). Nil: nothing is re-applied.
+	Spec func() (generation int64, replicas int, err error)
+}
+
+// composeReapplyTimeout bounds the boot re-apply as a whole (its Start has
+// the adapter's own operation budget inside it).
+const composeReapplyTimeout = 2 * time.Minute
+
+// ReapplyComposeChiefAtBoot re-applies the admin's RUNNING Compose chief
+// through the provisioner's Start, in the background, and logs the outcome on
+// one "chief runtime:" line. The returned channel is closed when it is done.
+//
+// 🔴 WHY: the credential rule ([ComposeChief.Credential]) reads the current
+// config on every call, but the chief's spec (the CLI's environment: its
+// CLAUDE_CODE_OAUTH_TOKEN or its LLM route) is built only when the chief
+// starts. An admin who changes the credential in .env and runs `docker
+// compose up -d --wait` restarts muster, not the chief container (its own
+// environment does not change). Without this the running chief kept its old
+// spec: Account named one credential while the CLI used the other, and on
+// OpenRouter -> token the LLM proxy refused every turn (audit #469 F3).
+//
+// Start rebuilds the spec from the current config, and the compose driver
+// moves the generation (the supervisor's restart signal) only when the spec's
+// fingerprint changed: an unchanged config is a no-op, a changed one restarts
+// the chief on the new credential.
+//
+// 🔴 IT NEVER STARTS A CHIEF THAT IS OFF, on either axis:
+//   - the admin's chief switch must be on (chiefOn: a stored Off wins);
+//   - its spec must be live (the driver's phase is not Stopped: replicas 1).
+//     A chief stopped from its agent page, or never applied, stays as it is.
+//
+// It runs under the admin's switch lock, so a click on Account → Chief during
+// boot is ordered with it.
+//
+// ⚠ A CHIEF WITH NO CREDENTIAL LEFT is not touched: the rule's refusal is
+// logged and the chief keeps the spec it had (Start would refuse to build one).
+func (s *Server) ReapplyComposeChiefAtBoot(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), composeReapplyTimeout)
+	safeGo(s.logger, "compose chief re-apply", func() {
+		defer close(done)
+		defer cancel()
+		line, err := s.reapplyComposeChief(ctx)
+		if err != nil {
+			s.logger.Printf("chief runtime: could not re-apply the running chief's spec at boot: %v (it keeps the spec it had)", err)
+			return
+		}
+		s.logger.Printf("chief runtime: %s", line)
+	})
+	return done
+}
+
+// reapplyComposeChief is ReapplyComposeChiefAtBoot's work: the boot line's
+// text, or why it could not decide.
+func (s *Server) reapplyComposeChief(ctx context.Context) (string, error) {
+	if s.ext.ComposeChief == nil || !s.lifecycleServed() || s.ext.Agents == nil {
+		return "no Compose chief to re-apply at boot", nil
+	}
+	owner := authz.OperatorUserID
+	ctx = authz.Operator(ctx)
+	mu := s.chiefSwitchLock(owner)
+	mu.Lock()
+	defer mu.Unlock()
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list the agents: %w", err)
+	}
+	// The reserved slug: the one name the compose driver admits.
+	name := agents.ChiefNameFor(owner)
+	var chief agents.Agent
+	var has bool
+	for _, a := range ownedBy(list, owner) {
+		if a.Name == name {
+			chief, has = a, true
+		}
+	}
+	if !has {
+		return "the admin has no chief agent: nothing to re-apply at boot", nil
+	}
+	on, err := s.chiefOn(ctx, owner, list)
+	if err != nil {
+		return "", fmt.Errorf("read the chief switch: %w", err)
+	}
+	if !on {
+		return "the chief is turned off: its spec was not re-applied at boot", nil
+	}
+	// 🔴 LIVE IS THE SPEC'S REPLICAS, NOT THE INSTANCE'S PHASE. A stopped spec
+	// whose container is still stopping, or whose stop left a process running,
+	// reads pending or failed (the driver asks the supervisor at replicas 0),
+	// and a Start here would turn it back on.
+	if s.ext.ComposeChief.Spec == nil {
+		return "the chief's spec cannot be read: it was not re-applied at boot", nil
+	}
+	if _, replicas, err := s.ext.ComposeChief.Spec(); errors.Is(err, os.ErrNotExist) || (err == nil && replicas == 0) {
+		return "the chief's spec is stopped: it was not re-applied at boot", nil
+	} else if err != nil {
+		return "", fmt.Errorf("read the chief's spec: %w", err)
+	}
+	cred, err := s.ext.ComposeChief.Credential(ctx, owner)
+	if err != nil {
+		return "", fmt.Errorf("the chief's credential: %w", err)
+	}
+	gen := func() (int64, bool) {
+		g, _, err := s.ext.ComposeChief.Spec()
+		return g, err == nil
+	}
+	before, okBefore := gen()
+	if err := s.ext.Provisioner.Start(ctx, chief.ID); err != nil {
+		return "", err
+	}
+	after, okAfter := gen()
+	label := composeChiefCredLabel(cred)
+	if okBefore && okAfter && before == after {
+		return "the running chief's spec is unchanged at boot, nothing to re-apply (credential: " + label + ")", nil
+	}
+	return "re-applied the running chief's spec at boot (credential: " + label + ")", nil
+}
+
+// composeChiefCredLabel is cred as the boot line names it.
+func composeChiefCredLabel(cred ComposeChiefCred) string {
+	switch cred {
+	case ComposeChiefClaude:
+		return "the Claude subscription, MUSTER_CHIEF_CLAUDE_TOKEN"
+	case ComposeChiefOpenRouter:
+		return "the OpenRouter key, through the LLM proxy"
+	}
+	return string(cred)
 }
 
 // ComposeChiefOnSubscription is the LLM proxy's refusal to a Compose chief

@@ -66,6 +66,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/chief_restart_tool.go (*Server).chiefRestartOn Provisioner!=nil":           1, // chief_restart offered
 	"internal/api/chief_restart_tool.go (*Server).toolChiefRestart Provisioner==nil":         1, // chief_restart run
 	"internal/api/chief_toggle.go (*Server).chiefToggleAvailable Provisioner!=nil":           1, // Account → Chief drawn (after the Compose owner check)
+	"internal/api/compose_chief.go (*Server).reapplyComposeChief lifecycleServed()":          1, // the Compose chief's boot re-apply: its own Start, never a dispatch
 	"internal/api/chief_toggle.go (*Server).handleAccountChief Provisioner!=nil":             2, // the switch's Start and Stop
 	"internal/api/chief_toggle.go (*Server).handleAccountChief Provisioner==nil":             1, // the switch's create
 	"internal/api/ext.go (Extensions).defects Provisioner!=nil":                              1, // the namespace-prefix wiring check

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -137,6 +139,19 @@ func TestTheComposeChiefCannotBeReplaced(t *testing.T) {
 		if got != compose {
 			t.Errorf("compose=%v: %d %s", compose, rec.Code, rec.Body)
 		}
+		if compose {
+			// The whole text: it tells the admin what a .env change does to a
+			// running chief (audit #469 F3), and that is the claim to pin.
+			var body struct {
+				Error string `json:"error"`
+			}
+			const want = "the Compose chief cannot be replaced: this install runs one chief, on one kind (claude-code), " +
+				"in its Compose container. Change its credential in .env instead, then run `docker compose up -d --wait`: " +
+				"that restarts muster, and muster then re-applies a running chief on the new credential (docs/chief.md)"
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error != want {
+				t.Errorf("the refusal: %q (%v)\nwant %q", body.Error, err, want)
+			}
+		}
 	}
 }
 
@@ -203,5 +218,54 @@ func TestTheLLMProxyAsksTheComposeChiefsCredentialRule(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// phaseProvisioner is callProvisioner reporting fixed instances.
+type phaseProvisioner struct {
+	*callProvisioner
+	insts []provision.Instance
+}
+
+func (p phaseProvisioner) Instances(context.Context) ([]provision.Instance, error) {
+	return p.insts, nil
+}
+
+// TestTheBootReapplyReadsTheSpecsReplicasNotThePhase: a stopped spec whose
+// container is still stopping, or whose stop left a process running, reads
+// pending or failed (the compose driver asks the supervisor at replicas 0);
+// the boot re-apply must not Start it, which would turn the chief back on.
+// It reads the spec's replicas. Control: a live spec (replicas 1) is
+// re-applied.
+func TestTheBootReapplyReadsTheSpecsReplicasNotThePhase(t *testing.T) {
+	for _, c := range []struct {
+		phase     provision.Phase
+		replicas  int
+		wantStart bool
+	}{
+		{provision.PhaseFailed, 0, false},
+		{provision.PhasePending, 0, false},
+		{provision.PhaseRunning, 1, true},
+	} {
+		w := composeWorld(t, true, ComposeChiefClaude, nil)
+		for i := range w.store.rows { // the reserved slug, the one the compose driver admits
+			if w.store.rows[i].ID == homeChiefID {
+				w.store.rows[i].Name = agents.ChiefNameFor(authz.OperatorUserID)
+			}
+		}
+		cp := &callProvisioner{}
+		ext := w.s.ext
+		ext.Provisioner = phaseProvisioner{callProvisioner: cp,
+			insts: []provision.Instance{{Ref: provision.Ref{Name: agents.ChiefNameFor(authz.OperatorUserID)}, Phase: c.phase}}}
+		replicas := c.replicas
+		ext.ComposeChief.Spec = func() (int64, int, error) { return 4, replicas, nil }
+		w.s.UseExtensions(ext)
+		msg, err := w.s.reapplyComposeChief(context.Background())
+		cp.mu.Lock()
+		started := len(cp.calls) > 0 && strings.HasPrefix(cp.calls[0], "start")
+		cp.mu.Unlock()
+		if err != nil || started != c.wantStart {
+			t.Errorf("phase %s, replicas %d: started %v (%q, %v), want started %v", c.phase, c.replicas, started, msg, err, c.wantStart)
+		}
 	}
 }
