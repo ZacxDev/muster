@@ -29,6 +29,13 @@ import (
 // (internal/api's relayRoute writes it, then FinishTaskRoute ends the route
 // relayed), never a draft.
 //
+// A route carries the OWNER'S OWN REQUEST instead (request_text, migration
+// 0084): the chief's relay of a message the owner typed in its chat, checked by
+// internal/api's owner_asked (ownerTurnFor) before the route is made. Its relay
+// is the answer delivered to the chief's chat session where the owner asked
+// (FinishRequestRoute records it as owed, the sweep delivers it), never a
+// draft or a comment.
+//
 //	routed ──answer──▶ answered ──relay──▶ relayed  (approved draft)
 //	   │                      └──────────▶ fallback (pending draft)
 //	   ├─ deadline ─▶ timed_out
@@ -56,6 +63,14 @@ type RouteStore interface {
 	// CreateTaskRouteFrom opens a route carrying task taskID instead of a
 	// message: the same row, audit and one-open-route rule.
 	CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, taskID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error)
+	// CreateRequestRouteFrom opens a route carrying the owner's request req
+	// instead: the same row, audit and target, one open route per owner message
+	// and target.
+	CreateRequestRouteFrom(ctx context.Context, chiefID, ownerID int64, req RouteRequest, target RouteTarget, timeout time.Duration) (Route, error)
+	// FinishRequestRoute ends an answered request route relayed, owing the
+	// chief the answer's delivery (RouteRequestAnswerOwed) in the same
+	// transaction; the sweep delivers it, at least once.
+	FinishRequestRoute(ctx context.Context, routeID string) (Route, error)
 	// FinishTaskRoute ends an answered task route relayed, once its answer is
 	// on the task as a comment.
 	FinishTaskRoute(ctx context.Context, routeID string) (Route, error)
@@ -70,6 +85,9 @@ type RouteStore interface {
 	// TakeHandBack clears and returns the hand-back routeID owes its chief,
 	// exactly once: ok is false when none is owed (or another taker won).
 	TakeHandBack(ctx context.Context, routeID string) (r Route, reason string, ok bool, err error)
+	// OwesHandBack reports whether routeID owes its chief a hand-back, without
+	// taking it: a request route's answer is taken only once delivered.
+	OwesHandBack(ctx context.Context, routeID string) (bool, error)
 	AnswerRoute(ctx context.Context, routeID, body string) (Route, bool, error)
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
@@ -130,21 +148,28 @@ type Route struct {
 	OwnerID int64
 	// MessageID is the plugin message a route carries, TaskID the task: exactly
 	// one is set (0053's session_routes_one_item_check), the other 0.
-	MessageID   int64
-	TaskID      int64
-	AgentID     *int64
-	TargetKind  string
-	TargetKey   string
-	TargetLabel string
-	SendQueueID *int64
-	State       RouteState
-	CreatedAt   time.Time
-	TimeoutAt   time.Time
-	AnsweredAt  *time.Time
-	FinishedAt  *time.Time
-	ReplyBody   string
-	DraftID     *int64
-	Error       string
+	MessageID int64
+	TaskID    int64
+	// RequestText is the owner's request a route carries (0084), as the chief
+	// relayed it; RequestMessageID the owner's chat row that passed the
+	// owner_asked check, ChiefSessionID the chief session it is in. All three
+	// set on a request route and on no other.
+	RequestText      string
+	RequestMessageID int64
+	ChiefSessionID   int64
+	AgentID          *int64
+	TargetKind       string
+	TargetKey        string
+	TargetLabel      string
+	SendQueueID      *int64
+	State            RouteState
+	CreatedAt        time.Time
+	TimeoutAt        time.Time
+	AnsweredAt       *time.Time
+	FinishedAt       *time.Time
+	ReplyBody        string
+	DraftID          *int64
+	Error            string
 	// OwnerRepliedAt is when muster took the plugin's stamp that the reply
 	// went out directly: set exactly on an owner_answered route (0062's check).
 	OwnerRepliedAt *time.Time
@@ -170,6 +195,28 @@ const RouteTargetMirror = "mirror"
 
 // IsTask reports whether r carries a task rather than a plugin message.
 func (r Route) IsTask() bool { return r.TaskID != 0 }
+
+// IsRequest reports whether r carries the owner's own request (0084).
+func (r Route) IsRequest() bool { return r.RequestMessageID != 0 }
+
+// RouteRequest is the owner's request a route carries: Text, the chief's relay
+// of it (what is pasted), MessageID, the owner's chat row whose turn passed the
+// owner_asked check, and SessionID, the chief chat session that row is in.
+type RouteRequest struct {
+	Text      string
+	MessageID int64
+	SessionID int64
+}
+
+// MaxRouteRequestBytes bounds a request route's text (0084's cap).
+const MaxRouteRequestBytes = 16384
+
+// RouteRequestAnswerOwed is the hand-back a relayed request route owes its
+// chief (FinishRequestRoute): not a route that ended without an answer, but
+// its answer, which the sweep delivers AT LEAST ONCE to the chief session the
+// owner asked in, taking this hand-back only once the answer is on record
+// (internal/api's deliverRequestAnswer, which reads OwesHandBack first).
+const RouteRequestAnswerOwed = "the session answered your owner's request"
 
 // SentToMirrorSession reports whether r was routed to the mirrored Claude Code
 // session sid: route_reply's binding of an answer to the route's target.
@@ -257,14 +304,15 @@ func NewRouteID() string {
 // RouteObject is the audit_log `object` naming a route.
 func RouteObject(routeID string) string { return "session_route:" + routeID }
 
-const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
+const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0),
+	coalesce(request_text, ''), coalesce(request_message_id, 0), coalesce(chief_session_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
 	coalesce(pr_head_sha, '')`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
-	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
+	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.RequestText, &r.RequestMessageID, &r.ChiefSessionID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
 		&r.PRHeadSHA)
 	r.State = RouteState(st)
@@ -331,7 +379,7 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 			return inFlight
 		}
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil)
 		return err
 	})
 	return r, err
@@ -346,7 +394,7 @@ func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, tas
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "task_id", "task_id", taskID, target, timeout, origin)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "task_id", "task_id", taskID, target, timeout, origin, nil)
 		var pg *pgconn.PgError
 		// Another owner's task (the trigger) and a missing one (the key) alike.
 		if errors.As(err, &pg) && ((pg.Code == "23514" && strings.HasPrefix(pg.Message, "session_routes: owner")) ||
@@ -358,23 +406,30 @@ func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, tas
 	return r, err
 }
 
-// insertRouteTx writes one route carrying id in column col (plugin_message_id
-// or task_id) and its session_route.routed audit row (the id under key), the
-// ONE writer of a route row for both kinds.
+// insertRouteTx writes one route carrying id in column col (plugin_message_id,
+// task_id or, for a request route, request_message_id with req's text and
+// session) and its session_route.routed audit row (the id under key), the ONE
+// writer of a route row for every kind.
 //
 // Only a RouteViaPR origin records its round (pr_head_sha): every other route
 // has none, whatever its origin carries.
-func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
+func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin, req *RouteRequest) (Route, error) {
 	round := ""
 	if origin.Via == RouteViaPR {
 		round = origin.HeadSHA
 	}
+	var text *string
+	var sess *int64
+	if req != nil {
+		text, sess = &req.Text, &req.SessionID
+	}
 	r, err := scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, `+col+`, agent_id,
-			target_kind, target_key, target_label, timeout_at, pr_head_sha)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, '')) RETURNING `+routeCols,
-		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round))
+			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11) RETURNING `+routeCols,
+		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess))
 	var pg *pgconn.PgError
-	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" || pg.ConstraintName == "session_routes_one_open_task") {
+	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" ||
+		pg.ConstraintName == "session_routes_one_open_task" || pg.ConstraintName == "session_routes_one_open_request") {
 		return Route{}, ErrAlreadyRouted
 	}
 	if err != nil {
@@ -392,6 +447,58 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 	return r, audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), detail)
 }
 
+// CreateRequestRouteFrom: see RouteStore. The caller (internal/api's
+// route_to_session) has already checked that req.MessageID is the owner's
+// typed turn in flight on chief chiefID (ownerTurnFor) and req.SessionID its
+// session; the store checks only the shape. A request route is always the
+// chief's own (no origin): its audit row names the owner's message.
+func (s *PGStore) CreateRequestRouteFrom(ctx context.Context, chiefID, ownerID int64, req RouteRequest, target RouteTarget, timeout time.Duration) (Route, error) {
+	switch {
+	case chiefID <= 0 || ownerID <= 0:
+		return Route{}, invalid("the agent has no owner")
+	case req.MessageID <= 0 || req.SessionID <= 0:
+		return Route{}, invalid("a request route needs the owner's message and the chief's session")
+	case strings.TrimSpace(req.Text) == "" || len(req.Text) > MaxRouteRequestBytes:
+		return Route{}, invalid("a request route's text is 1 to %d bytes", MaxRouteRequestBytes)
+	}
+	var r Route
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "request_message_id", "owner_message_id", req.MessageID, target, timeout, RouteOrigin{}, &req)
+		return err
+	})
+	return r, err
+}
+
+// FinishRequestRoute: see RouteStore. internal/api's relayRoute calls it once a
+// request route is answered; a route already relayed is returned as it is (its
+// answer already owed, or delivered), one not answered is ErrRouteNotAnswered.
+func (s *PGStore) FinishRequestRoute(ctx context.Context, routeID string) (Route, error) {
+	var r Route
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := lockRoute(ctx, tx, routeID)
+		if err != nil {
+			return err
+		}
+		r = cur
+		switch {
+		case !cur.IsRequest():
+			return ErrRouteNotFound
+		case cur.State == RouteRelayed:
+			return nil
+		case cur.State != RouteAnswered:
+			return ErrRouteNotAnswered
+		}
+		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'relayed', finished_at = now(), handback = $2
+			WHERE route_id = $1 RETURNING `+routeCols, routeID, RouteRequestAnswerOwed)); err != nil {
+			return err
+		}
+		return audit(ctx, tx, "session_route.relayed", RouteObject(routeID), map[string]any{
+			"owner_message_id": cur.RequestMessageID, "chief_session_id": cur.ChiefSessionID})
+	})
+	return r, err
+}
+
 // FinishTaskRoute: see RouteStore. internal/api's relayRoute calls it once the
 // answer is on the task (notes.Store.AddCommentOnce: a retried relay finds the
 // comment there and writes none). A route already relayed is returned as it
@@ -405,6 +512,8 @@ func (s *PGStore) FinishTaskRoute(ctx context.Context, routeID string) (Route, e
 		}
 		r = cur
 		switch {
+		case !cur.IsTask():
+			return ErrRouteNotFound
 		case cur.State == RouteRelayed:
 			return nil
 		case cur.State != RouteAnswered:
@@ -558,15 +667,16 @@ func failRouteTx(ctx context.Context, tx pgx.Tx, cur Route, why, handBack string
 // was ALREADY answered with exactly this body (a retried reply: the stored
 // route is the answer, and nothing changes); any other answer to a route that
 // is no longer routed is ErrRouteClosed. body is screened as a reply draft is
-// (ScreenDraft), since it becomes one.
+// (ScreenDraft), since a message route's answer becomes one — with the
+// deployment's deny words for every route but a REQUEST route's, whose answer
+// goes only to the owner's own chief, never outward (answerDenyWords).
 func (s *PGStore) AnswerRoute(ctx context.Context, routeID, body string) (r Route, fresh bool, err error) {
-	body, err = ScreenDraft(body, s.denyWords)
-	if err != nil {
-		return Route{}, false, err
-	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockRoute(ctx, tx, routeID)
 		if err != nil {
+			return err
+		}
+		if body, err = ScreenDraft(body, s.answerDenyWords(cur)); err != nil {
 			return err
 		}
 		r = cur
@@ -588,6 +698,19 @@ func (s *PGStore) AnswerRoute(ctx context.Context, routeID, body string) (r Rout
 		return audit(ctx, tx, "session_route.answered", RouteObject(routeID), map[string]any{"bytes": len(body)})
 	})
 	return r, fresh, err
+}
+
+// answerDenyWords is the deny words route r's answer is screened against: the
+// deployment's own names for a route whose answer may leave muster (a message
+// route's reply draft; a task route's comment, which a task reference may queue
+// to its upstream), none for a request route, whose answer reaches only the
+// owner's chief. The rest of ScreenDraft (hidden characters, the agent-text
+// patterns such as a credential, the size cap) applies to every route.
+func (s *PGStore) answerDenyWords(r Route) []string {
+	if r.IsRequest() {
+		return nil
+	}
+	return s.denyWords
 }
 
 // RelayRoute turns routeID's answer into the reply draft for its message,
@@ -993,6 +1116,19 @@ func clampHandBack(s string) string {
 		return s
 	}
 	return strings.ToValidUTF8(s[:MaxHandBack], "")
+}
+
+// OwesHandBack: see RouteStore. A route the principal cannot see owes nothing.
+func (s *PGStore) OwesHandBack(ctx context.Context, routeID string) (bool, error) {
+	if !ValidRouteID(routeID) {
+		return false, nil
+	}
+	var owed bool
+	err := s.pool.QueryRow(ctx, `SELECT handback IS NOT NULL FROM session_routes WHERE route_id = $1`, routeID).Scan(&owed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return owed, err
 }
 
 // TakeHandBack clears routeID's owed hand-back and returns it with the route,

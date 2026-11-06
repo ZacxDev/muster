@@ -396,6 +396,15 @@ type Config struct {
 	// server sets it from the same predicate that wires the plugin store.
 	Plugins bool
 
+	// SessionRouting reports that session routing is on for this deployment
+	// (MUSTER_SESSION_ROUTING=1 with a database), with or without plugins. It
+	// decides whether a claude-code supervisor's prose carries the
+	// request-routing section ([ChiefInstructionsClaudeCode]): how to send the
+	// owner's own idea to the session already on it with route_to_session. The
+	// gateway supervisor never carries it (its tool calls cannot pass owner_asked). The server sets it from the
+	// same predicate that wires the routes store.
+	SessionRouting bool
+
 	// RuntimeConfig is the operator-supplied bundle that makes the agent
 	// runtime's own gateway START. Zero means nothing is installed and the
 	// image's entrypoint runs unchanged, which is what every deployment did

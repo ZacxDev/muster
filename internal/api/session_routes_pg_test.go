@@ -117,7 +117,11 @@ type routeFixture struct {
 	token   string // the owner's personal API token
 }
 
-func newRouteFixture(t *testing.T) *routeFixture {
+func newRouteFixture(t *testing.T) *routeFixture { return newRouteFixtureWith(t) }
+
+// newRouteFixtureWith is newRouteFixture with extra wiring applied after the
+// fixture's own (session_routes_request_pg_test.go turns plugins off with it).
+func newRouteFixtureWith(t *testing.T, extra ...func(ext *Extensions)) *routeFixture {
 	t.Helper()
 	f := &routeFixture{gatedFixture: &gatedFixture{}, mirror: &routeMirror{interactive: true, statusReport: true}, routing: &Routing{}}
 	g := f.gatedFixture
@@ -129,6 +133,9 @@ func newRouteFixture(t *testing.T) *routeFixture {
 		ext.APITokens = apitokens.NewPG(pool)
 		g.notes = notes.NewPG(pool)
 		ext.Notes = g.notes
+		for _, e := range extra {
+			e(ext)
+		}
 	})
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)

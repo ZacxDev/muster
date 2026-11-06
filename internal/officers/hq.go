@@ -95,6 +95,12 @@ type Item struct {
 	// Tier is HQ's `tier` as the item reads now: routine or judgement. Absent
 	// (an HQ without tiers) reads as judgement (ItemTier).
 	Tier string `json:"tier"`
+	// ClaimedAt is HQ's `claimed_at`: when the current (or last) claim was
+	// made. HQ sets it on every claim and a heartbeat keeps it, so it is the
+	// wall-time cap's clock (Officer.ItemCap), and it survives a restart of
+	// muster. Absent (an HQ without it): the item has no clock, and is not
+	// capped.
+	ClaimedAt *time.Time `json:"claimed_at"`
 }
 
 // LeaseLive reports whether the item's lease is unexpired at now. An item with
@@ -379,7 +385,42 @@ type Completion struct {
 	Outcome string   `json:"outcome"`
 	Summary string   `json:"summary"`
 	Links   []string `json:"links,omitempty"`
+	// Investigation is HQ's `investigation` block, sent only when set (an HQ
+	// from before the block refuses the field, even as null).
+	Investigation *Investigation `json:"investigation,omitempty"`
 }
+
+// Investigation is HQ's investigation block on an `escalated` complete
+// (civ-hq docs/OFFICERS.md "Investigation"). HQ REQUIRES it to escalate an
+// item of an officer type whose policy sets `investigation: true` (else 400
+// naming `investigation`), and takes it on `escalated` for any type. Every
+// list is sent, empty when there is nothing.
+type Investigation struct {
+	Hypotheses []string            `json:"hypotheses"`
+	Eliminated []InvestigationRule `json:"eliminated"`
+	RootCause  string              `json:"root_cause"`
+	// Confidence: low, medium or high. Low gives Fix.OperatorSteps only.
+	Confidence string           `json:"confidence"`
+	Fix        InvestigationFix `json:"fix"`
+	NotChecked []string         `json:"not_checked"`
+}
+
+// InvestigationRule is one hypothesis ruled out, with its evidence and the
+// audit ids of the reads it came from.
+type InvestigationRule struct {
+	Hypothesis string  `json:"hypothesis"`
+	Evidence   string  `json:"evidence"`
+	AuditIDs   []int64 `json:"audit_ids"`
+}
+
+// InvestigationFix is EXACTLY ONE of: draft PRs, or operator steps.
+type InvestigationFix struct {
+	PRURLs        []string `json:"pr_urls,omitempty"`
+	OperatorSteps []string `json:"operator_steps,omitempty"`
+}
+
+// ConfidenceLow is the investigation confidence of no conclusion.
+const ConfidenceLow = "low"
 
 // Outcomes the contract accepts.
 var Outcomes = []string{"done", "escalated", "no_action"}
@@ -395,9 +436,11 @@ const MaxLinks = 10
 
 // Complete is POST …/items/{item}/complete.
 func (c *Client) Complete(ctx context.Context, item ItemID, instance string, done Completion) ([]byte, error) {
-	return c.Do(ctx, http.MethodPost, c.itemPath(item, "complete"), map[string]any{
-		"instance": instance, "outcome": done.Outcome, "summary": done.Summary, "links": done.Links,
-	})
+	body := map[string]any{"instance": instance, "outcome": done.Outcome, "summary": done.Summary, "links": done.Links}
+	if done.Investigation != nil {
+		body["investigation"] = done.Investigation
+	}
+	return c.Do(ctx, http.MethodPost, c.itemPath(item, "complete"), body)
 }
 
 // Release is POST …/items/{item}/release.

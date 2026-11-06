@@ -348,6 +348,9 @@ type poolFleet struct {
 	starts  []string
 	stops   []string
 	kickoff map[string]string
+	// failStop: a Stop of one of these instance names is recorded and fails,
+	// leaving the instance up.
+	failStop map[string]bool
 }
 
 func (f *poolFleet) Instances(_ context.Context, o officers.Officer) ([]officers.InstanceState, error) {
@@ -375,8 +378,11 @@ func (f *poolFleet) Stop(_ context.Context, o officers.Officer, n int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	name := o.InstanceName(n)
-	f.up[name] = false
 	f.stops = append(f.stops, name)
+	if f.failStop[name] {
+		return errors.New("fixture: stop failed")
+	}
+	f.up[name] = false
 	return nil
 }
 

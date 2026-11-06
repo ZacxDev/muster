@@ -333,3 +333,33 @@ func TestOnlyTheSupervisorIsToldAboutPluginsAndOnlyWhenTheyAreOn(t *testing.T) {
 		})
 	}
 }
+
+// TestTheGatewaySupervisorIsNeverToldToRouteItsOwnersRequests is the
+// request-routing section's seam on the GATEWAY kind: the prose the instance
+// receives never carries it, with session routing on or off, plugins on or off
+// — a gateway chief's tool calls run in muster's process, which owner_asked
+// always refuses (#465 round 0, D1). The claude-code seam, where it does ship,
+// is TestAClaudeCodeChiefGetsTheChiefProseAsItsManagedClaudeMD.
+func TestTheGatewaySupervisorIsNeverToldToRouteItsOwnersRequests(t *testing.T) {
+	const marker = "## Your owner's ideas — send them to the session already on it"
+	for _, c := range []struct{ routing, plugins bool }{{true, false}, {true, true}, {false, false}} {
+		cfg := fixtureSpecConfig()
+		cfg.SessionRouting, cfg.Plugins = c.routing, c.plugins
+		spec, err := adapterWith(t, cfg, supervisorRow()).buildSpec(context.Background(), supervisorRow())
+		if err != nil {
+			t.Fatalf("buildSpec: %v", err)
+		}
+		found := false
+		for _, f := range spec.Files {
+			if strings.HasSuffix(f.Path, agentspec.InstructionsFileName) {
+				found = true
+				if strings.Contains(string(f.Content), marker) {
+					t.Errorf("routing=%v plugins=%v: the gateway supervisor's prose carries the routing section", c.routing, c.plugins)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("no %s in the built spec; files: %v", agentspec.InstructionsFileName, filePaths(spec))
+		}
+	}
+}

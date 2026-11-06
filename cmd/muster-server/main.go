@@ -583,7 +583,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Plugins = pluginStore
 		// Session routing (MUSTER_SESSION_ROUTING=1): the same store's routes
 		// half, and the allowlist whose routed answers relay without approval.
-		if cfg.SessionRouting {
+		if cfg.sessionRoutingEnabled() {
 			ext.Routes = pluginStore
 			ext.Routing = sessionRouting(cfg)
 			// Pull-request routing (MUSTER_PR_MAIL_SENDERS): a review mail from a
@@ -628,6 +628,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if gw != nil {
 			ext.PluginGateway = gw
 		}
+	}
+	// Session routing WITHOUT the plugin interface (MUSTER_SESSION_ROUTING=1, a
+	// database, MUSTER_PLUGINS unset): the plugin store's routes half alone, so
+	// the chief can route the owner's own request (route_to_session's text) or a
+	// task. ext.Plugins stays nil, so nothing that carries a plugin message is
+	// routed: api.messageRoutingOn is false.
+	if cfg.sessionRoutingEnabled() && a.pool != nil && ext.Routes == nil {
+		ext.Routes = plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
+		ext.Routing = sessionRouting(cfg)
 	}
 	var mirrorSvc *mirror.Service
 	if cfg.Mirror && a.pool != nil {
@@ -822,8 +831,8 @@ func approvalGateFor(cfg config) api.GatePort {
 }
 
 // sessionRouting is session routing's configuration from cfg: the relay
-// allowlist. buildApp wires it when MUSTER_SESSION_ROUTING=1 and the plugin
-// interface is on.
+// allowlist. buildApp wires it when MUSTER_SESSION_ROUTING=1 with a database,
+// with or without the plugin interface.
 func sessionRouting(cfg config) *api.Routing {
 	return &api.Routing{Allow: cfg.RouteRelayAllow}
 }
@@ -1423,9 +1432,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"answer 404", envPlugins)
 	}
 	switch {
+	case ext.Routing != nil && ext.Plugins == nil:
+		l.Printf("session routing: ON (%s=1) WITHOUT plugins — the chief may hand one of its owner's mirrored sessions an "+
+			"idea the owner typed in its chat (route_to_session's text, on a turn the owner typed: owner_asked) or one of the "+
+			"owner's tasks; a plugin message is never routed (%s is off); a route unanswered after %s (%s for the owner's "+
+			"request) goes back to the chief", envSessionRouting, envPlugins, api.RouteTimeout, api.RequestRouteTimeout)
+		if a.cfg.HookToken == "" {
+			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
+				"ONLY with a personal API token or its muster MCP server's route_reply", envHookToken)
+		}
 	case ext.Routing != nil:
-		l.Printf("session routing: ON (%s=1) — the chief may hand a plugin message to one of its owner's sessions "+
-			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
+		l.Printf("session routing: ON (%s=1) — the chief may hand one of its owner's sessions a plugin message, a task or an "+
+			"idea the owner typed in its chat (route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
 			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
 			"answers relay without approval (%s); a route unanswered after %s (%s for a pull-request review muster routes "+
 			"itself, %s; %s for a message its plugin marks human_conversation) goes back to the chief, unless its plugin "+
@@ -1438,7 +1456,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				"out back to the chief", envHookToken)
 		}
 	case a.cfg.SessionRouting:
-		l.Printf("session routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envSessionRouting)
+		l.Printf("session routing: INERT — %s=1 but there is no database, so nothing is routed", envSessionRouting)
 	default:
 		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
 			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)

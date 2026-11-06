@@ -79,6 +79,9 @@ type officerRuntime struct {
 	// loop reads it. now is the clock both use (OfficersConfig.Now).
 	judgement *officers.JudgementLedger
 	now       func() time.Time
+	// claimLocks serialises officer_claim per instance name (*sync.Mutex) for
+	// a capped judgement pool's one-claim rule (oneClaimRefusal).
+	claimLocks sync.Map
 	// kube is officer_kube_read's state (officer_kube.go); nil when no
 	// declared officer has a `kube` block.
 	kube *kubeRuntime
@@ -245,7 +248,8 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 			}
 		}
 	}
-	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement}
+	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
+		CapHold: s.officerCapHoldNotice}
 	switch {
 	case fwd != nil && px != nil:
 		sync := llmSync(px, reg)
@@ -973,6 +977,18 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor, Tier: o.Tier})
 		body = page.Raw
 	case officers.ToolClaim:
+		if o.ItemCap() > 0 {
+			// 🔴 ONE LIVE CLAIM PER CAPPED JUDGEMENT INSTANCE, before HQ and
+			// before the session ledger (a refused claim spends no session).
+			// The wake loop enforces max_item_minutes by stopping the holder's
+			// whole instance, so a second item it held would lose its work.
+			// Serialised per instance, so two parallel calls cannot both pass.
+			unlock := s.officerRT.lockClaims(instance)
+			defer unlock()
+			if refusal := s.oneClaimRefusal(ctx, c, o, instance, in.ItemID); refusal != "" {
+				return refusal, true
+			}
+		}
 		if strings.TrimSpace(string(in.ItemID)) == "" {
 			// no item_id: HQ picks the next item (claim-next)
 			var claimed officers.ItemID
@@ -1177,6 +1193,36 @@ func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, insta
 		return nothingToClaim(), "", nil
 	}
 	return body, res.Item.ID, nil
+}
+
+// oneClaimRefusal is officer_claim's refusal for an instance of a capped
+// judgement pool (o.ItemCap() > 0) that already holds a live claim on an item
+// other than item ("" = claim-next), or "" when it holds none. HQ's claimed
+// list is the truth; when it cannot be read the claim is refused (fail
+// closed: nothing is claimed without the check).
+func (s *Server) oneClaimRefusal(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID) string {
+	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		s.logger.Printf("officers: %s: %s refused for %s, the claimed items could not be read: %v", o.ID, officers.ToolClaim, instance, err)
+		return toolErr("muster could not check which item you already hold, so nothing was claimed; try %s again in a minute", officers.ToolClaim)
+	}
+	now := s.officerRT.clock()
+	for _, it := range claimed {
+		if it.ClaimedBy == instance && it.ID != item && it.LeaseLive(now) {
+			return toolErr("you already hold item %s: a judgement instance works one item at a time here (tiers.judgement.max_item_minutes stops your whole instance at one item's cap, which would lose any other). "+
+				"Complete (%s) or release (%s) item %s before claiming another", it.ID, officers.ToolComplete, officers.ToolRelease, it.ID)
+		}
+	}
+	return ""
+}
+
+// lockClaims serialises officer_claim for one instance; call the returned
+// func to unlock.
+func (rt *officerRuntime) lockClaims(instance string) func() {
+	v, _ := rt.claimLocks.LoadOrStore(instance, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // nothingToClaim is officer_claim's answer when nothing is claimable.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sessionstate"
@@ -926,6 +927,29 @@ func (bannerStubGitHubApp) Access() githubapp.Access { return githubapp.AccessWr
 
 type bannerStubPluginGateway struct{ plugins.Gateway }
 type bannerStubRoutes struct{ plugins.RouteStore }
+
+// Session routing WITHOUT plugins is ON, not inert: the banner says what it
+// routes (the owner's typed requests and tasks) and that a plugin message is
+// not — and the registry agrees, never calling it misconfigured for want of
+// plugins. The control: with plugins wired too, the banner takes the ordinary
+// ON line.
+func TestSessionRoutingWithoutPluginsIsOnForRequestsAndTasks(t *testing.T) {
+	cfg := config{SessionRouting: true, HookToken: "hook"}
+	ext := api.Extensions{Routes: bannerStubRoutes{}, Routing: &api.Routing{}}
+	out := renderBanner(t, cfg, ext)
+	if !strings.Contains(out, "session routing: ON ("+envSessionRouting+"=1) WITHOUT plugins") ||
+		!strings.Contains(out, "a plugin message is never routed") || strings.Contains(out, "session routing: INERT") {
+		t.Fatalf("routing wired without plugins: the banner does not say it routes requests and tasks:\n%s", out)
+	}
+	withPlugins := api.Extensions{Plugins: bannerStubPlugins{}, PluginGateway: bannerStubPluginGateway{}, Routes: bannerStubRoutes{}, Routing: &api.Routing{}}
+	if both := renderBanner(t, config{SessionRouting: true, Plugins: true, HookToken: "hook"}, withPlugins); strings.Contains(both, "WITHOUT plugins") {
+		t.Fatalf("control: with plugins wired the banner still says WITHOUT plugins:\n%s", both)
+	}
+	f, _ := featureSet(t, cfg, ext, true).Get(features.SessionRouting)
+	if strings.Contains(f.Reason, envPlugins+"=") || strings.Contains(f.Reason, "inert") {
+		t.Fatalf("routing wired without plugins: the registry says %s %q", f.State, f.Reason)
+	}
+}
 
 func TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections(t *testing.T) {
 	onOut, offOut := bannerBothDirections(t)

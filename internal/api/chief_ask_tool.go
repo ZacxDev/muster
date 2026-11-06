@@ -151,13 +151,17 @@ type routedAbout struct {
 // chiefAskRoute is route routeID — one of the owner's — its message and plugin,
 // or the refusal.
 func (s *Server) chiefAskRoute(ctx context.Context, routeID string) (routedAbout, string) {
-	if !routingOn(s.ext) {
+	if !routesOn(s.ext) {
 		return routedAbout{}, toolErr("session routing is off on this server, so there is no route to name")
 	}
 	r, err := s.ext.Routes.Route(ctx, routeID)
 	if err != nil {
 		// Another owner's route reads exactly as a missing one (row-level security).
 		return routedAbout{}, toolErr("no such route: %s", routeID)
+	}
+	if r.MessageID == 0 || s.ext.Plugins == nil {
+		// A task's or the owner's request's route has no message to quote.
+		return routedAbout{}, toolErr("route %s carries no plugin message (it carries a task or your owner's request): ask without route_id", r.RouteID)
 	}
 	m, err := s.ext.Plugins.Message(ctx, r.MessageID)
 	if err != nil {

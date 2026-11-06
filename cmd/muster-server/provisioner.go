@@ -668,6 +668,7 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		CairnURL:         cfg.AgentCairnURL,
 		CairnToken:       cfg.AgentCairnToken,
 		Plugins:          cfg.pluginsEnabled(),
+		SessionRouting:   cfg.sessionRoutingEnabled(),
 		RuntimeConfig:    rc,
 		ClaudeCode:       claudeCodeSpecConfig(cfg),
 		// Both or neither: config.validateConnectors refuses a URL without the

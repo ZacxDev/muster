@@ -234,7 +234,7 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	}
 	// route_reply — a routed session's answer (route_reply_tool.go) — with
 	// session routing on.
-	if routingOn(s.ext) && !s.featureOff(features.SessionRouting) {
+	if routesOn(s.ext) && !s.featureOff(features.SessionRouting) {
 		out = append(out, routeReplyToolDef())
 	}
 	// plugin_messages_list / plugin_message_route — the owner routing a plugin
