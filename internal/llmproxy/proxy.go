@@ -207,12 +207,11 @@ type Config struct {
 	// HTTP is the upstream transport; nil is a client that follows no
 	// redirect.
 	HTTP *http.Client
-	// Store is required, unless UnbudgetedOnly.
+	// Store keeps each officer's spend. nil is a proxy with no budget store:
+	// it serves Unbudgeted callers only, and a budgeted caller is refused
+	// (refused_store, nothing sent) because its spend cannot be read — never
+	// served as if it had no budget.
 	Store Store
-	// UnbudgetedOnly is a proxy that serves Unbudgeted callers only, so Store
-	// may be nil: a budgeted caller on a proxy with no store is refused (503,
-	// refused_store) before anything is sent, never served without a budget.
-	UnbudgetedOnly bool
 	// Audit receives one record per request ServeMessages answers (a
 	// malformed body's refusal included); nil records none.
 	Audit  func(ctx context.Context, r Record)
@@ -237,8 +236,9 @@ type Proxy struct {
 
 // New builds a Proxy.
 func New(cfg Config) (*Proxy, error) {
-	if cfg.Store == nil && !cfg.UnbudgetedOnly {
-		return nil, errors.New("llmproxy: a store is required (the daily budget must survive a restart)")
+	st := cfg.Store
+	if st == nil {
+		st = noStore{}
 	}
 	up := strings.TrimRight(cfg.Upstream, "/")
 	if up == "" {
@@ -270,9 +270,19 @@ func New(cfg Config) (*Proxy, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Proxy{upstream: up, http: hc, store: cfg.Store, audit: cfg.Audit, log: lg, now: now, items: newItems(),
+	return &Proxy{upstream: up, http: hc, store: st, audit: cfg.Audit, log: lg, now: now, items: newItems(),
 		authFailed: map[string]int{}}, nil
 }
+
+// noStore is the Store of a proxy built with none: every read fails, so a
+// budgeted caller there takes the ordinary "the budget could not be read"
+// refusal and nothing is sent.
+type noStore struct{}
+
+var errNoStore = errors.New("llmproxy: this proxy has no budget store")
+
+func (noStore) SpentToday(context.Context, string, time.Time) (float64, error) { return 0, errNoStore }
+func (noStore) Book(context.Context, Usage) error                              { return errNoStore }
 
 // Claimed tells the per-item meter that instance of officer now holds item.
 func (p *Proxy) Claimed(officer string, instance int, item string) {
@@ -393,14 +403,6 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	// An Unbudgeted caller (the chief) skips the budget and the item cap
 	// entirely: the key's own credit limit is its cap (Caller.Unbudgeted).
 	if !c.Unbudgeted {
-		if p.store == nil {
-			// Only an UnbudgetedOnly proxy has no store (New): a budgeted caller
-			// there is refused, never served without its budget.
-			p.log.Printf("llm proxy: officer %s: this proxy keeps no budget (refusing, nothing sent)", c.Officer)
-			Refuse(w, http.StatusServiceUnavailable, "api_error", "this proxy keeps no budget for this caller; nothing was sent")
-			finish("refused_store", http.StatusServiceUnavailable)
-			return
-		}
 		metrics.OfficerLLMBudget.WithLabelValues(c.Officer).Set(c.DailyBudgetUSD)
 		spent, err := p.store.SpentToday(r.Context(), c.Officer, day)
 		if err != nil {

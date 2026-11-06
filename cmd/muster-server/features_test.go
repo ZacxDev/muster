@@ -68,7 +68,6 @@ var featureLedgerExempt = map[string]string{
 	envLiveHeartbeat:          "a transport tuning interval of every live page; no feature is on or off with it",
 	envHostIcons:              "cosmetic: a mirrored host's icon",
 	envLegacyProvenancePrefix: "a compatibility spelling for older installed clients' headers",
-	envTestLLMUpstream:        "test only: it redirects the LLM proxy's provider to a fake, and turns nothing on or off",
 }
 
 var docVarRow = regexp.MustCompile("^\\| `((?:MUSTER_|DATABASE_URL)[A-Z0-9_<>]*)` \\|")

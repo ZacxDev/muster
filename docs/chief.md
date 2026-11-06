@@ -215,16 +215,15 @@ If the chief has no `mcp__hq__` tools it says so; check the four steps above
 A `claude-code` chief can run on OpenRouter instead of a Claude account, through
 muster's [LLM proxy](officers.md#the-llm-proxy): its Claude Code calls
 `POST /llm/v1/messages` on the connect listener with its own muster token, and
-muster sends the request on with your key attached. Nothing turns this on until
-the `docker compose` install's chief runtime does.
+muster sends the request on with the server's key attached. Only the
+`docker compose` install's chief runtime turns this on.
 
-- **Who is served.** Only your chief, and only while it is on (Account →
-  Chief): a chief you turned off is refused (403). Any other agent is refused
-  as it always was.
-- **Whose key.** Yours, read on each request: an admin's is the server's
-  `MUSTER_AGENT_OPENROUTER_KEY`, anyone else's is the key in **Account →
-  Credentials**. With none, the request is refused (400) with a message saying
-  where to add one, and nothing is sent.
+- **Who is served.** Only the admin's chief, and only while it is on (Account →
+  Chief): a chief you turned off is refused (403), and so is any other user's
+  chief. Any other agent is refused as it always was.
+- **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY` in `.env`. With it
+  empty, every request is refused (400) with a message naming it, and nothing
+  is sent.
 - **Which model.** A setting, `deepseek/deepseek-v4.1-flash` by default. Every
   request is pinned to it, whatever model the client asks for.
 - **What it may spend.** muster sets **no budget** for the chief: no daily

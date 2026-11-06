@@ -375,8 +375,8 @@ var (
 	// caller is not an allowed routine instance of an officer with `llm`),
 	// unconfigured (no officer declares `llm`). officer is "none" when the
 	// caller is not an officer instance. For the chief (officer "chief"):
-	// chief_off (its owner turned it off), no_key (its owner has no
-	// OpenRouter key), key_unreadable (the key could not be read).
+	// not_admin (a chief, but not the admin's), chief_off (its owner turned
+	// it off), no_key (MUSTER_AGENT_OPENROUTER_KEY is empty).
 	OfficerLLMRefused = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_llm_refused_total",
 		Help: "Officer LLM proxy requests refused before reaching the provider, by officer and reason.",

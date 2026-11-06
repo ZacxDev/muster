@@ -1,13 +1,12 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/credentials"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/metrics"
 )
@@ -22,17 +21,18 @@ import (
 //
 // It is admitted exactly when EnableChiefLLM was called, the calling agent is
 // its owner's chief (isChiefAgent: chiefPredicate on the agent's current row),
-// and that chief is ON (chiefActing, the gate the chief-only tools use). The
-// agent authenticates as every caller of the route does (requireConnectorAgent:
-// its own token; the shared hook and service tokens refused).
+// that owner is the admin (authz.OperatorUserID — the compose runtime runs one
+// chief, the admin's), and that chief is ON (chiefActing, the gate the
+// chief-only tools use). The agent authenticates as every caller of the route
+// does (requireConnectorAgent: its own token; the shared hook and service
+// tokens refused).
 //
-// 🔴 THE KEY IS THE OWNER'S, RESOLVED PER REQUEST (ChiefLLM.Keys, the
-// credential plane): an admin's is MUSTER_AGENT_OPENROUTER_KEY, a member's is
-// the one they stored under Account → Credentials. There is no chief key.
+// 🔴 THE KEY IS THE ADMIN'S, MUSTER_AGENT_OPENROUTER_KEY (ChiefLLM.Key). There
+// is no chief key, and no other user's chief is served on it.
 //
 // 🔴 MUSTER KEEPS NO BUDGET FOR THE CHIEF (llmproxy.Caller.Unbudgeted): no
 // daily budget, no per-item cap, no usage row. The cap is the key's own
-// OpenRouter credit limit, which the owner sets. Usage is still metered
+// OpenRouter credit limit, which the admin sets. Usage is still metered
 // (metrics and the audit record, officer label "chief").
 // ---------------------------------------------------------------------------
 
@@ -44,33 +44,28 @@ const DefaultChiefLLMModel = "deepseek/deepseek-v4.1-flash"
 // and audit detail.
 const chiefLLMLabel = "chief"
 
-// NeedChiefOpenRouterKey is the refusal a chief gets when its owner has no
-// OpenRouter key.
-const NeedChiefOpenRouterKey = "your chief runs on your own OpenRouter key and there is none: add your OpenRouter key in " +
-	"Account → Credentials (an admin's is the server's MUSTER_AGENT_OPENROUTER_KEY); nothing was sent"
+// NeedChiefOpenRouterKey is the refusal a chief gets when the server has no
+// OpenRouter key for it.
+const NeedChiefOpenRouterKey = "the chief runs on the server's OpenRouter key and there is none: set MUSTER_AGENT_OPENROUTER_KEY " +
+	"in .env and restart muster; nothing was sent"
+
+// chiefNotAdminRefusal is what any chief but the admin's is told.
+const chiefNotAdminRefusal = "only the admin's chief is served on the server's OpenRouter key; this chief belongs to another user"
 
 // chiefKeyRemedy is what the chief is told when the provider refuses its key.
-const chiefKeyRemedy = "it is your own key: check it, and its credit limit, in Account → Credentials (an admin's is " +
-	"the server's MUSTER_AGENT_OPENROUTER_KEY)"
-
-// ChiefLLMKeys resolves an owner's OpenRouter key. *credentials.Plane is the
-// production one: an admin's is the environment's, a member's is their own,
-// and a member with none is a credentials.ErrNoCredential.
-type ChiefLLMKeys interface {
-	OpenRouterKey(ctx context.Context, owner int64) (string, error)
-}
-
-var _ ChiefLLMKeys = (*credentials.Plane)(nil)
+const chiefKeyRemedy = "it is the server's MUSTER_AGENT_OPENROUTER_KEY: check it, and its credit limit, then restart muster"
 
 // ChiefLLM is EnableChiefLLM's input: the chief's place on the LLM proxy.
 type ChiefLLM struct {
-	// Model is the OpenRouter model every chief request is pinned to
-	// (MUSTER_CHIEF_LLM_MODEL); "" is DefaultChiefLLMModel.
+	// Model is the OpenRouter model every chief request is pinned to; "" is
+	// DefaultChiefLLMModel.
 	Model string
-	// Keys resolves the owner's key per request. REQUIRED.
-	Keys ChiefLLMKeys
+	// Key is the admin's OpenRouter key (MUSTER_AGENT_OPENROUTER_KEY). Empty
+	// is not a boot refusal: each request is refused (400, nothing sent) with
+	// a message naming the variable.
+	Key string
 	// Upstream replaces the provider's API base (llmproxy.DefaultUpstream when
-	// ""): tests, and MUSTER_TEST_LLM_UPSTREAM. HTTP replaces the transport.
+	// ""), and HTTP its transport: tests.
 	Upstream string
 	HTTP     *http.Client
 }
@@ -80,22 +75,19 @@ type ChiefLLM struct {
 type chiefLLMRuntime struct {
 	px    *llmproxy.Proxy
 	model string
-	keys  ChiefLLMKeys
+	key   string
 }
 
-// EnableChiefLLM puts the owner's chief on the LLM proxy. Call it after
-// UseExtensions. It refuses, for the caller to refuse to boot, without a key
-// resolver, the agents store or the connector store: the proxy's door
-// (requireConnectorAgent) answers 503 to every request without them, and its
-// audit rows go to the connector store.
+// EnableChiefLLM puts the admin's chief on the LLM proxy. Call it after
+// UseExtensions. It refuses, for the caller to refuse to boot, without the
+// agents store or the connector store: the proxy's door (requireConnectorAgent)
+// answers 503 to every request without them, and its audit rows go to the
+// connector store.
 //
-// The proxy is its own (llmproxy.Config.UnbudgetedOnly), with no usage store:
-// a chief is never budgeted, so nothing would read one, and a budgeted caller
-// on it is refused rather than served.
+// The proxy is its own, with no usage store: the chief is never budgeted, so
+// nothing would read one, and a budgeted caller on it is refused rather than
+// served (llmproxy.Config.Store).
 func (s *Server) EnableChiefLLM(c ChiefLLM) error {
-	if c.Keys == nil {
-		return errors.New("chief llm: no way to resolve the owner's OpenRouter key")
-	}
 	if s.ext.Connectors == nil || s.ext.Agents == nil {
 		return errors.New("chief llm: this server has no connector store or agents store: the LLM proxy authenticates " +
 			"the chief through the connector door and audits into its store")
@@ -104,14 +96,18 @@ func (s *Server) EnableChiefLLM(c ChiefLLM) error {
 	if model == "" {
 		model = DefaultChiefLLMModel
 	}
-	px, err := llmproxy.New(llmproxy.Config{Upstream: c.Upstream, HTTP: c.HTTP, UnbudgetedOnly: true,
-		Audit: s.llmAudit(c.Upstream), Logger: s.logger})
+	px, err := llmproxy.New(llmproxy.Config{Upstream: c.Upstream, HTTP: c.HTTP, Audit: s.llmAudit(c.Upstream), Logger: s.logger})
 	if err != nil {
 		return err
 	}
-	s.chiefLLM = &chiefLLMRuntime{px: px, model: model, keys: c.Keys}
-	s.logger.Printf("chief llm: a chief may reach %s through the LLM proxy on its owner's OpenRouter key, with no muster "+
-		"budget (the key's credit limit is the cap)", model)
+	s.chiefLLM = &chiefLLMRuntime{px: px, model: model, key: strings.TrimSpace(c.Key)}
+	if s.chiefLLM.key == "" {
+		s.logger.Printf("chief llm: ON for the admin's chief (%s), but MUSTER_AGENT_OPENROUTER_KEY is empty: every request "+
+			"is refused until it is set", model)
+		return nil
+	}
+	s.logger.Printf("chief llm: the admin's chief may reach %s through the LLM proxy on MUSTER_AGENT_OPENROUTER_KEY, "+
+		"with no muster budget (the key's credit limit is the cap)", model)
 	return nil
 }
 
@@ -119,28 +115,27 @@ func (s *Server) EnableChiefLLM(c ChiefLLM) error {
 // called its owner's chief.
 func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.Agent) {
 	ctx := r.Context()
+	if agentOwnerID(a) != authz.OperatorUserID {
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "not_admin").Inc()
+		s.logger.Printf("llm proxy: refused agent %d (%q): a chief, but not the admin's", a.ID, a.Name)
+		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", chiefNotAdminRefusal)
+		return
+	}
 	if !s.chiefActing(ctx, a) {
 		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "chief_off").Inc()
 		s.logger.Printf("llm proxy: refused agent %d (%q): the chief, and its owner turned the chief off", a.ID, a.Name)
 		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", "your owner turned the chief off")
 		return
 	}
-	key, err := s.chiefLLM.keys.OpenRouterKey(ctx, agentOwnerID(a))
-	switch {
-	case (err == nil && strings.TrimSpace(key) == "") || credentials.IsNoCredential(err):
+	if s.chiefLLM.key == "" {
 		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "no_key").Inc()
-		s.logger.Printf("llm proxy: refused the chief agent %d (%q): its owner has no OpenRouter key (nothing sent)", a.ID, a.Name)
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q): MUSTER_AGENT_OPENROUTER_KEY is empty (nothing sent)", a.ID, a.Name)
 		// A 400, not a 401/429: Claude Code retries those, and this ends the
 		// turn with the message.
 		llmproxy.Refuse(w, http.StatusBadRequest, "invalid_request_error", NeedChiefOpenRouterKey)
 		return
-	case err != nil:
-		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "key_unreadable").Inc()
-		s.logger.Printf("llm proxy: the chief agent %d (%q): its owner's OpenRouter key could not be read (nothing sent): %v", a.ID, a.Name, err)
-		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "your OpenRouter key could not be read just now; nothing was sent")
-		return
 	}
 	s.chiefLLM.px.ServeMessages(w, r, llmproxy.Caller{Officer: chiefLLMLabel, InstanceLabel: chiefLLMLabel,
-		AgentID: a.ID, AgentName: a.Name, Model: s.chiefLLM.model, Key: key, Unbudgeted: true,
+		AgentID: a.ID, AgentName: a.Name, Model: s.chiefLLM.model, Key: s.chiefLLM.key, Unbudgeted: true,
 		Title: "muster chief", KeyRemedy: chiefKeyRemedy})
 }

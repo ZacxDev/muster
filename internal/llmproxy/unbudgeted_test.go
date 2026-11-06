@@ -92,18 +92,16 @@ func TestABudgetedCallerWithAZeroBudgetIsStillRefused(t *testing.T) {
 	}
 }
 
-// TestAnUnbudgetedOnlyProxyHasNoStoreAndRefusesABudgetedCaller: New accepts a
-// nil store only with UnbudgetedOnly; such a proxy serves an Unbudgeted caller
-// and refuses a budgeted one (503, refused_store) without sending anything —
-// never serving it without its budget.
-func TestAnUnbudgetedOnlyProxyHasNoStoreAndRefusesABudgetedCaller(t *testing.T) {
-	if _, err := New(Config{}); err == nil || !strings.Contains(err.Error(), "a store is required") {
-		t.Fatalf("New with no store: err = %v, want the store refusal", err)
-	}
+// TestAStorelessProxyServesUnbudgetedCallersAndRefusesABudgetedOne: New
+// accepts a nil store; such a proxy serves an Unbudgeted caller and refuses a
+// budgeted one (503 refused_store, "the officer's budget could not be read")
+// without sending anything — it never serves a budgeted caller as if it had
+// no budget.
+func TestAStorelessProxyServesUnbudgetedCallersAndRefusesABudgetedOne(t *testing.T) {
 	up := newUpstream(t, streamOK(0.002))
-	p, err := New(Config{Upstream: up.URL + "/api", UnbudgetedOnly: true, Logger: log.New(io.Discard, "", 0)})
+	p, err := New(Config{Upstream: up.URL + "/api", Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("New with no store: %v, want a proxy", err)
 	}
 	serve := func(c Caller) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -113,14 +111,14 @@ func TestAnUnbudgetedOnlyProxyHasNoStoreAndRefusesABudgetedCaller(t *testing.T) 
 		return w
 	}
 	budgeted := Caller{Officer: "nostore:officer", InstanceLabel: "r1", Model: "example/m", DailyBudgetUSD: 5, MaxTokensPerItem: 1000, Key: chiefKey}
-	if w := serve(budgeted); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "keeps no budget") {
-		t.Fatalf("a budgeted caller on a store-less proxy: %d %s, want the 503 refusal", w.Code, w.Body.String())
+	if w := serve(budgeted); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "budget could not be read") {
+		t.Fatalf("a budgeted caller on a storeless proxy: %d %s, want the 503 refusal", w.Code, w.Body.String())
 	}
 	if got := up.count(); got != 0 {
 		t.Fatalf("upstream requests after the refusal = %d, want 0", got)
 	}
 	if w := serve(Caller{Officer: "chief", InstanceLabel: "chief", Model: "example/m", Key: chiefKey, Unbudgeted: true}); w.Code != http.StatusOK {
-		t.Fatalf("an unbudgeted caller on a store-less proxy: %d %s, want 200", w.Code, w.Body.String())
+		t.Fatalf("an unbudgeted caller on a storeless proxy: %d %s, want 200", w.Code, w.Body.String())
 	}
 	if got := up.count(); got != 1 {
 		t.Fatalf("upstream requests = %d, want 1 (positive control)", got)

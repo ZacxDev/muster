@@ -473,7 +473,7 @@ func (c config) redact(s string) string {
 		c.STTURL, c.STTToken, c.S3Endpoint, c.S3Bucket, c.S3AccessKey, c.S3SecretKey, c.UploadSigningKey,
 		c.RouterURL, c.RouterToken, c.ApprovalGateURL, c.ApprovalGateToken, c.VAPIDPublicKey, c.VAPIDPrivateKey,
 		c.VAPIDSubject, c.AgentRuntimeConfig, c.AgentRuntimeInstall, c.AgentAPIURL, c.AgentOpenRouterKey,
-		c.AgentCairnURL, c.AgentCairnToken, c.PublicURL, c.LLMUpstreamOverride}
+		c.AgentCairnURL, c.AgentCairnToken, c.PublicURL}
 	for _, t := range c.AgentCCTokens {
 		vals = append(vals, t)
 	}

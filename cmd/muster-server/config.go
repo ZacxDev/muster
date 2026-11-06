@@ -129,11 +129,6 @@ const (
 	// MUSTER_OFFICER_TOKEN_<NAME> (officers.TokenEnvPrefix, read inside
 	// officers.Parse). Officers are woken by polling HQ; there is no webhook.
 	envOfficers = "MUSTER_OFFICERS"
-	// envTestLLMUpstream is TEST ONLY: it replaces the LLM proxy's provider
-	// (llmproxy.DefaultUpstream) with a fake Anthropic-Messages server, so an
-	// end-to-end test can run a model turn with no real key. Every proxied
-	// request, and the key muster attaches to it, goes there.
-	envTestLLMUpstream = "MUSTER_TEST_LLM_UPSTREAM"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -662,9 +657,6 @@ type config struct {
 	// Officers is MUSTER_OFFICERS parsed, each with its token
 	// (officers.Parse). Empty: the officer runtime is off.
 	Officers []officers.Officer
-	// LLMUpstreamOverride is MUSTER_TEST_LLM_UPSTREAM (TEST ONLY; "" is the real
-	// provider): the LLM proxy's provider base, officers' and the chief's.
-	LLMUpstreamOverride string
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -1448,7 +1440,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	c.AgentReapStoppedAfter = d
-	c.LLMUpstreamOverride = strings.TrimRight(strings.TrimSpace(getenv(envTestLLMUpstream)), "/")
 	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv, c.AgentNamespacePrefix); err != nil {
 		return config{}, err
 	}
@@ -1991,12 +1982,6 @@ func (c config) validate() error {
 	}
 	if err := notes.ValidatePluginTaskNamespaces(c.PluginTaskNamespaces); err != nil {
 		return fmt.Errorf("%s: %w", envPluginTaskNamespaces, err)
-	}
-	if c.LLMUpstreamOverride != "" {
-		if u, err := url.Parse(c.LLMUpstreamOverride); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("%s=%q is not an http(s) URL. It is a TEST-ONLY override of the LLM proxy's provider; "+
-				"unset it in any real deployment", envTestLLMUpstream, c.LLMUpstreamOverride)
-		}
 	}
 	if c.FaroUpstream != "" {
 		if u, err := url.Parse(c.FaroUpstream); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
