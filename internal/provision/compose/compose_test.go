@@ -295,7 +295,7 @@ func TestDestroyKeepsTheDirectoriesAndANewCreateGetsANewEpoch(t *testing.T) {
 	}
 	mountDir := filepath.Join(root, "chief", "files", "etc", "claude-code")
 	if fi, err := os.Stat(mountDir); err != nil || !fi.IsDir() {
-		t.Fatalf("Destroy removed %s (%v): a running container's subpath mount would never see its re-creation", mountDir, err)
+		t.Fatalf("Destroy removed %s (%v): a running container's mount of it would never see its re-creation", mountDir, err)
 	}
 	var left []string
 	_ = filepath.WalkDir(filepath.Join(root, "chief"), func(p string, e fs.DirEntry, err error) error {
