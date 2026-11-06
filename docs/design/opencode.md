@@ -3,7 +3,8 @@
 Notes for muster's opencode runtime (`internal/mirror/runtime.go`,
 `internal/mirrorhost/opencode*.go`, `internal/opencodehost`): a rendered view,
 and its asks (permission requests, questions) in the attention queue,
-answerable through the API; an API send next. Facts are read from upstream source, <https://github.com/anomalyco/opencode>,
+answerable through the API; an API send next (proposed in
+[opencode-first-class.md](opencode-first-class.md)). Facts are read from upstream source, <https://github.com/anomalyco/opencode>,
 at commit `6ec5682` (opencode v2.0.32+6ec5682). They are not measured against
 a running server.
 
@@ -105,7 +106,8 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
 - **Pane to session**: the pane title, `OC | <title>` (a cut title ends in
   `…` and is a prefix match), against the server's ROOT sessions
   (`GET /api/session?parentID=null`); exactly one match or none. View-only: a
-  send needs a launcher record that names the session deterministically.
+  send needs a launcher record that names the session deterministically
+  ([proposed](opencode-first-class.md#the-launcher-record)).
 - **Messages**: `GET /api/session/{id}/message` (newest first, reversed),
   re-read when the event stream names the session, and every tenth poll
   regardless. Rendered by `opencodehost.Render`: prompts, final text, tool
