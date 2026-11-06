@@ -54,7 +54,7 @@ func TestShipReadReposWithoutTheDeploymentAppRefuseToBoot(t *testing.T) {
 	}
 	const want = "officer engineering:example-web declares `read_repos` beside a `ship` block, but MUSTER_GITHUB_APP_ID is not set: " +
 		"a shipping officer reads its read_repos with the deployment's own GitHub App (a read-only token for each), and without one " +
-		"those reads would go anonymously. Set MUSTER_GITHUB_APP_ID (with MUSTER_GITHUB_APP_KEY and MUSTER_GITHUB_APP_ACCOUNTS), " +
+		"those reads would go anonymously. Set MUSTER_GITHUB_APP_ID (with MUSTER_GITHUB_APP_PRIVATE_KEY and MUSTER_GITHUB_APP_ACCOUNTS), " +
 		"or remove read_repos"
 	rr := []string{"example-org/flags-state", "example-org/docs"}
 	if err := load(rr, false); err == nil || err.Error() != want {

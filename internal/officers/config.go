@@ -472,8 +472,10 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		// read_repos beside ship: a READ to one of them is admitted by the push
 		// gate (it admits no write outside the ship repositories) and served
 		// with the DEPLOYMENT App's read-only token for that one repository
-		// (PushGate.ReadCred), never the officer App's. A read_repos entry that
-		// is also a ship repository is refused below: it would have two answers.
+		// (PushGate.ReadCred), never the officer App's; with no deployment App
+		// muster-server refuses to boot (config.validateShipReadRepos). A
+		// read_repos entry that is also a ship repository is refused below: it
+		// would have two answers.
 		ship, err := parseShip(o.ID, o.Repo, d.Ship, getenv)
 		if err != nil {
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)

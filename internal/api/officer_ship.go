@@ -195,7 +195,9 @@ func (s *Server) enableShips(cfg OfficersConfig) error {
 // officer's read_repos (officership.PushGate.ReadCred): minted READ-ONLY for
 // the one repository (the caller arrives ReadOnly with Repo set to it). nil
 // when the deployment has no App, or it cannot mint per caller: those reads
-// then go anonymously.
+// would then go anonymously, so a shipping officer with read_repos on a
+// deployment with no App refuses to boot (muster-server's
+// config.validateShipReadRepos).
 func (s *Server) deploymentReadCred() func(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error) {
 	c, ok := s.ext.GitHubApp.(interface {
 		Credential(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error)
@@ -483,21 +485,30 @@ func shipRefusal(tool string, err error, passed []string) string {
 }
 
 // shipGrantsDescription is what approving a shipping officer instance's
-// `github` request grants: its OWN App's token, behind the push gate.
+// `github` request grants: its OWN App's token, behind the push gate, and —
+// at EVERY stage, read_repos being accepted beside any — a read of each of its
+// read_repos with the deployment App's READ-ONLY token. The read_repos clause
+// is appended here and only here, after whichever stage text applies.
 func shipGrantsDescription(o officers.Officer) string {
+	read := ""
+	if len(o.ReadRepos) > 0 {
+		read = "; reads of " + strings.Join(o.ReadRepos, ", ") + " with the deployment App's READ-ONLY token"
+	}
+	return shipStageGrants(o) + read
+}
+
+// shipStageGrants is shipGrantsDescription's stage-specific part: what the
+// officer's own App may do in its ship repositories.
+func shipStageGrants(o officers.Officer) string {
 	sp := o.Ship
 	if sp.IsDraft() {
 		var repos []string
 		for _, r := range sp.RepoList(o.Repo) {
 			repos = append(repos, fmt.Sprintf("%s (pushes ONLY to refs/heads/%s%s/<item>-<slug>, never %s)", r.Repo, r.BranchPrefix, officers.Slug(o.ID), r.Base))
 		}
-		read := ""
-		if len(o.ReadRepos) > 0 {
-			read = "; reads of " + strings.Join(o.ReadRepos, ", ") + " with the deployment App's READ-ONLY token"
-		}
 		return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), behind muster's push gate, stage %s: reads; DRAFT pull requests only, in %s; "+
 			"editing and commenting on its own; every pull request checked for forbidden paths, removed volume/database/canary manifests and "+
-			"secret shapes. It never marks ready, merges, tags or deletes a branch%s", o.ID, sp.AppID, sp.Stage, strings.Join(repos, "; "), read)
+			"secret shapes. It never marks ready, merges, tags or deletes a branch", o.ID, sp.AppID, sp.Stage, strings.Join(repos, "; "))
 	}
 	return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), for %s only, behind muster's push gate: reads; pushes ONLY to refs/heads/%s* "+
 		"(never %s, never a tag); opening and editing its own pull requests and commenting; marking its own draft ready (%s). Merging and tagging happen only in muster, "+
