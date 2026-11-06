@@ -255,6 +255,67 @@ for (const vp of [
       expect(seen.states[seen.states.length - 1], 'ends as the transcript row').toBe('row');
     });
 
+    // 🔴 The row can reach the page BEFORE the host's OK: the host tails the
+    // transcript on its own tick (ViewPoll, 300 ms), and on a loaded machine
+    // that tick can land between the paste and the answer's arrival (CI, run
+    // 42149018442, the case above: two rows). Here the answer is held until
+    // the row is drawn, so it is always so. Before, the "Sending…" bubble and
+    // the row were both on the page until the OK.
+    test('a message whose row arrives before the host answers OK is one row throughout, never two', async ({ page }) => {
+      await openView(page);
+      const text = `row before the ok ${vp.how} ${stamp}`;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const resp = await r.fetch();
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline && (await page.locator('#mv-log [data-bubble="user"]', { hasText: text }).count()) === 0) await sleep(50);
+          await sleep(300);
+          return r.fulfill({ response: resp }).catch(() => {});
+        },
+      );
+      const rows = await watchRows(page, text);
+      await sendTimed(page, text, vp.how);
+      await expect.poll(pasted, { message: 'pasted once', timeout: 10_000 }).toEqual([`${pane} ${text}`]);
+      await expect(page.locator('#mv-log [data-bubble="user"]', { hasText: text })).toHaveCount(1, { timeout: 10_000 });
+      await expect(page.locator('#mv-log [data-pending-send]'), 'no pending bubble is left').toHaveCount(0, { timeout: 10_000 });
+      await sleep(500);
+      await expect(rowsOf(page, text)).toHaveCount(1);
+      const seen = await rows();
+      expect(seen.max, 'never the bubble and its row together').toBe(1);
+      expect(seen.gap, 'never neither').toBe(false);
+      expect(seen.states[seen.states.length - 1]).toBe('row');
+    });
+
+    // The other side of it: a row of its text that came while it was out does
+    // not decide anything. Refused after it, the message is shown failed, with
+    // Retry, and its text is back in the box.
+    test('a message refused after a row of its text arrived is shown failed with Retry, its text back in the box', async ({ page }) => {
+      await openView(page);
+      const text = `row then refused ${vp.how} ${stamp}`;
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          // Someone types the same words into Claude Code itself meanwhile.
+          fs.appendFileSync(tr, prompt(text));
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline && (await page.locator('#mv-log [data-bubble="user"]', { hasText: text }).count()) === 0) await sleep(50);
+          await sleep(300);
+          return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'the host said no' });
+        },
+      );
+      await sendTimed(page, text, vp.how);
+      const p = pendingOf(page, text);
+      await expect(p, 'the refusal is shown').toHaveAttribute('data-pending-send', 'failed', { timeout: 10_000 });
+      await expect(p).toContainText('the host said no');
+      await expect(p.getByRole('button', { name: 'Retry' })).toBeVisible();
+      await expect(page.locator('#mv-log > :not(#mv-asks)').last(), 'at the end of the conversation').toHaveAttribute('data-pending-send', 'failed');
+      await expect(page.locator('#mv-input'), 'its text is back in the box').toHaveValue(text);
+      expect(pasted(), 'nothing was pasted').toEqual([]);
+    });
+
     test('a refused send turns its bubble failed with the reason and Retry, keeps the text, and Retry sends it once', async ({ page }) => {
       await openView(page);
       setStatus('waiting');
@@ -319,6 +380,41 @@ for (const vp of [
       await expect(pendingOf(page, text2)).toHaveAttribute('data-pending-send', 'failed');
       await expect(page.locator('#mv-input')).toHaveValue(text2);
       expect(pasted()).toEqual([`${pane} ${text}`]);
+    });
+
+    // A row of its text that came while it was out does not hide a step-up:
+    // the bubble stood aside for that row, and the 403 draws it again, asking,
+    // at the end of the conversation, for as long as the dialog is up.
+    test('a message asked to step up after a row of its text arrived shows its bubble asking while the dialog is up, and is sent once after the confirm', async ({ page }) => {
+      await openView(page);
+      const text = `row then step-up ${vp.how} ${stamp}`;
+      const refused = new Set<string>();
+      await page.route(
+        (u) => u.pathname === '/mirror/view/send',
+        async (r: Route) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          const nonce = new URLSearchParams(r.request().postData() || '').get('nonce') || '';
+          if (refused.has(nonce)) return r.continue();
+          refused.add(nonce);
+          // Someone types the same words into Claude Code itself meanwhile.
+          fs.appendFileSync(tr, prompt(text));
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline && (await page.locator('#mv-log [data-bubble="user"]', { hasText: text }).count()) === 0) await sleep(50);
+          await sleep(300);
+          return r.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': '1', 'Content-Type': 'text/plain' }, body: 'confirm it is you' });
+        },
+      );
+      await sendTimed(page, text, vp.how);
+      await expect(page.locator('#term-confirm')).toBeVisible({ timeout: 10_000 });
+      const p = pendingOf(page, text);
+      await expect(p, 'the bubble is back, asking, while the dialog is up').toHaveAttribute('data-pending-send', 'stepup');
+      await expect(p.getByRole('status')).toContainText('Confirm it');
+      await expect(page.locator('#mv-log > :not(#mv-asks)').last(), 'at the end of the conversation').toHaveAttribute('data-pending-send', 'stepup');
+      expect(pasted(), 'nothing pasted before the confirm').toEqual([]);
+      await page.locator('#term-confirm-password').fill(password);
+      await page.locator('#term-confirm-submit').click();
+      await expect.poll(pasted, { message: 'sent once confirmed', timeout: 10_000 }).toEqual([`${pane} ${text}`]);
+      await expect(page.locator('#mv-log [data-pending-send]'), 'no pending bubble is left').toHaveCount(0, { timeout: 10_000 });
     });
 
     test('Queue says "Queuing…" in the status line at once, never shows it in the conversation, and the server row lists it', async ({ page }) => {

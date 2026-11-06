@@ -91,9 +91,13 @@ never sent twice.**
   ("Sending…", read out to screen readers). When the host confirms the paste
   it says "Sent", and when the conversation's own row for it arrives the
   bubble is replaced by that row in the same moment: never both, never a gap.
-  If Claude Code is busy and holds it, its "Queued in Claude Code" row
-  replaces the bubble instead. A message that was sent but whose row never
-  arrives (a command Claude Code records differently) is taken off after
+  The row can arrive before the host's answer does; it replaces the bubble
+  then all the same, but decides nothing: the answer still does. An OK is
+  the end of it; a refusal or a "Not confirmed" brings the bubble back at the
+  end of the conversation, with its Retry or Send again and its text kept,
+  and a confirm-it's-you brings it back waiting for the confirm. If Claude
+  Code is busy and holds it, its "Queued in Claude Code" row replaces the
+  bubble instead. A message that was sent but whose row never arrives (a command Claude Code records differently) is taken off after
   30 seconds; the host confirmed it.
 - **Queue** says "Queuing…" in the status line under the box (it is not sent
   yet, so nothing is drawn in the conversation), then "Queued." when the
