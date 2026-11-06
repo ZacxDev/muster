@@ -69,21 +69,25 @@ const attachInputPad = " pl-9"
 // attachField is the input with the paperclip inside it: one positioned box
 // that takes the input's place in the composer's row. Without uploads (path
 // "") it is the input alone, unpadded.
-func attachField(path string, input func(pad string) g.Node) g.Node {
+//
+// mark is put on the OUTERMOST element of the field — the wrapper, or the bare
+// input — so the composer can address the field whole (composer_reveal.go's
+// data-mv-field); nil for nothing.
+func attachField(path string, mark g.Node, input func(pad string, mark g.Node) g.Node) g.Node {
 	if path == "" {
-		return input("")
+		return input("", mark)
 	}
-	return Div(Class("relative flex min-w-0 flex-1"), attachControl(path), input(attachInputPad))
+	return Div(mark, Class("relative flex min-w-0 flex-1"), attachControl(path), input(attachInputPad, nil))
 }
 
 // attachFieldOrOff is attachField, or — when attachments are off on this
 // server (off) — the input with a MUTED paperclip in the paperclip's place,
 // linking to the feature's row on the Features page.
-func attachFieldOrOff(path string, off bool, input func(pad string) g.Node) g.Node {
+func attachFieldOrOff(path string, off bool, mark g.Node, input func(pad string, mark g.Node) g.Node) g.Node {
 	if path != "" || !off {
-		return attachField(path, input)
+		return attachField(path, mark, input)
 	}
-	return Div(Class("relative flex min-w-0 flex-1"), attachOffControl(), input(attachInputPad))
+	return Div(mark, Class("relative flex min-w-0 flex-1"), attachOffControl(), input(attachInputPad, nil))
 }
 
 // AttachOffLabel is the muted paperclip's accessible name.
@@ -290,7 +294,9 @@ func attachScript(path string) g.Node {
         say((err && err.message) || M.failed);
       });
   }
-  function addAll(files) { for (var i = 0; i < files.length; i++) upload(files[i]); }
+  // An attached file shows its chip above the box: a collapsed box is
+  // revealed with it (composer_reveal.go), so what is sent is in view.
+  function addAll(files) { if (files.length && input) { ` + composerRevealCallJS("input") + ` } for (var i = 0; i < files.length; i++) upload(files[i]); }
   btn.addEventListener('click', function () { picker.click(); });
   picker.addEventListener('change', function () { addAll(picker.files || []); picker.value = ''; });
   if (input) input.addEventListener('paste', function (e) {

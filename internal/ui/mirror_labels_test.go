@@ -20,18 +20,22 @@ func visibleText(t *testing.T, markup string) string {
 
 // PRETTY NAMES on the mirrored surfaces: a host's label ("mango:1") is what a
 // card and a page are TITLED by, and every link and socket keeps addressing the
-// session by its NAME. A window's own PAGES keep the raw tmux session name
-// visible beside the label; the Agents list's CARD does not (an operator ask:
-// the resolved title only) — it keeps it as the name's tooltip and a search
-// term.
+// session by its NAME. The raw tmux session name is NOT drawn beside the label
+// on a window's own pages any more (operator ask: that room is the session's
+// tags'); it stays the name's tooltip, the Rendered view's full-title popover,
+// and a search term.
 
 func TestTheMirrorTerminalPageIsTitledByTheLabelWithTheRawName(t *testing.T) {
 	html := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "scratch2", DisplayName: "Gold:8", RawName: "scratch2",
 		Badge: "Mirrored · laptop", BackHref: "/agents", WSPath: MirrorTerminalWSPath("laptop", "scratch2")}))
-	for _, want := range []string{"<title>Terminal · Gold:8 · muster</title>", `>Gold:8`, `data-mirror-session="" class="ml-1.5 text-xs text-muted">scratch2</span>`, `title="tmux session scratch2"`} {
+	for _, want := range []string{"<title>Terminal · Gold:8 · muster</title>", `>Gold:8`, `title="tmux session scratch2"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("terminal page lacks %q", want)
 		}
+	}
+	// The raw name is not drawn beside the label (the tooltip above keeps it).
+	if strings.Contains(html, "data-mirror-session") || strings.Contains(html, `">scratch2</span>`) {
+		t.Errorf("the terminal page still draws the raw session name beside the label")
 	}
 	// Control: without a label (DisplayName/RawName empty) it is the raw name only.
 	plain := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "scratch2", Badge: "Mirrored · laptop", BackHref: "/agents",
@@ -44,10 +48,16 @@ func TestTheMirrorTerminalPageIsTitledByTheLabelWithTheRawName(t *testing.T) {
 func TestTheRenderedViewIsTitledByTheLabelAndAddressedByTheSession(t *testing.T) {
 	html := renderNode(t, MirrorViewPage(MirrorViewView{Host: "laptop", Session: "scratch13", Label: "mango:1"}))
 	for _, want := range []string{"<title>mango:1 · Mirrored · muster</title>", `<span data-mirror-label="">mango:1</span>`,
-		`data-mirror-session="" class="ml-1.5 text-xs text-muted">scratch13</span>`, `data-ws="` + strings.ReplaceAll(MirrorViewWSPath("laptop", "scratch13"), "&", "&amp;") + `"`} {
+		`title="tmux session scratch13"`, `mango:1 · Mirrored · laptop · tmux session scratch13</span>`,
+		`data-ws="` + strings.ReplaceAll(MirrorViewWSPath("laptop", "scratch13"), "&", "&amp;") + `"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("rendered view lacks %q", want)
 		}
+	}
+	// The raw name is not drawn beside the label: the tooltip and the full-title
+	// popover above keep it.
+	if strings.Contains(html, "data-mirror-session") || strings.Contains(html, `">scratch13</span>`) {
+		t.Errorf("the rendered view still draws the raw session name beside the label")
 	}
 	plain := renderNode(t, MirrorViewPage(MirrorViewView{Host: "laptop", Session: "scratch13"}))
 	if !strings.Contains(plain, "<title>scratch13 · Mirrored · muster</title>") || strings.Contains(plain, "data-mirror-label") {

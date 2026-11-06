@@ -42,9 +42,10 @@ func TestTheRawSessionNameIsNeverPlained(t *testing.T) {
 	if !strings.Contains(out, ">_scratch_<") {
 		t.Errorf("an all-markup label did not fall back to the raw session name: %s", out)
 	}
-	// And a real label is still plained, with the session beside it as written.
+	// And a real label is still plained, with the session as its tooltip as
+	// written (no longer drawn beside it: the header's room is the tags').
 	out = renderString(t, mirrorEntryTitle("**Build** box", "", "_scratch_", "", ""))
-	if !strings.Contains(out, ">Build box<") || !strings.Contains(out, ">_scratch_<") {
+	if !strings.Contains(out, ">Build box<") || !strings.Contains(out, `title="tmux session _scratch_"`) {
 		t.Errorf("label/session: %s", out)
 	}
 }

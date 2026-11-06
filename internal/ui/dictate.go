@@ -267,6 +267,9 @@ func dictateScript(path string) g.Node {
     if (before && !/\s$/.test(before)) text = ' ' + text;
     if (after && !/^\s/.test(after)) text = text + ' ';
     input.value = before + text + after;
+    // The Rendered view's box may be collapsed: a transcript reveals it
+    // (composer_reveal.go).
+    ` + composerRevealCallJS("input") + `
     var at = before.length + text.length;
     try { input.focus({ preventScroll: true }); } catch (e) { input.focus(); }
     try { input.setSelectionRange(at, at); } catch (e) {}

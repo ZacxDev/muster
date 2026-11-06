@@ -264,7 +264,12 @@ func fullTitlePopover(pop, full string) g.Node {
 		g.Attr("aria-label", "Full title"),
 		g.Attr("data-floating-menu", ""),
 		g.Attr("data-title-full", ""),
-		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
+		Class(fullTitlePopoverClass),
 		Span(Class("[overflow-wrap:anywhere] text-sm font-semibold"), g.Text(full)),
 	)
 }
+
+// fullTitlePopoverClass is the full-title popover's look, which the header's
+// tag list (session_tags.go's "+N") wears too: invisible until
+// floatingMenuScript has placed it, a flex column only while open.
+const fullTitlePopoverClass = "invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"

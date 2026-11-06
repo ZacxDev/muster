@@ -512,6 +512,30 @@
 }
 
 /*
+ * The Rendered view's COLLAPSIBLE message box (internal/ui/composer_reveal.go).
+ * On a touch screen (a coarse pointer) a form carrying data-mv-collapsed draws
+ * no box — only "Type a message" (#mv-text) beside the mic, and a spacer that
+ * keeps the buttons at the row's right. The box stays in the DOM (display:
+ * none), so dictation and the draft still reach it. Revealing it is removing
+ * the attribute. With a fine pointer the box is shown and the button never is.
+ */
+#mv-text,
+[data-mv-spacer] {
+  display: none;
+}
+@media (pointer: coarse) {
+  #mv-form[data-mv-collapsed] [data-mv-field] {
+    display: none;
+  }
+  #mv-form[data-mv-collapsed] #mv-text {
+    display: inline-flex;
+  }
+  #mv-form[data-mv-collapsed] [data-mv-spacer] {
+    display: block;
+  }
+}
+
+/*
  * A run of consecutive tool calls collapsed into one row (internal/ui/
  * tool_groups.go). Opening it reveals the individual rows with a short
  * fade-and-drop; reduced motion shows them at once.

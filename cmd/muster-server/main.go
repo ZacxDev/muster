@@ -85,6 +85,7 @@ import (
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -338,6 +339,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Flows = flows.NewPG(pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 		// The per-user pins the session switcher sets (migration 0017).
 		ext.Pins = pins.NewPG(pool)
+		// The per-user session tags (internal/sessiontags): ⋯ → Tags…, the headers, the search.
+		ext.SessionTags = sessiontags.NewPG(pool)
 		// The per-user recently viewed entries (migration 0018): the switcher's Recent.
 		ext.Recents = recents.NewPG(pool)
 		// The server-side send queue (migration 0019); RunSendQueue delivers it.
@@ -491,7 +494,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ext.ChiefNudge = &api.ChiefNudges{Idle: cfg.ChiefNudgeIdle, HourlyCap: cfg.ChiefNudgeHourlyCap, Live: cfg.ChiefNudgeLiveOwners,
 				NeedsYouLive: cfg.ChiefNudgeNeedsYouLiveOwners, ChiefChatQuotesLive: cfg.ChiefNudgeChiefChatQuotesLiveOwners,
 				AskThreshold: cfg.ChiefNudgeAskThreshold,
-				Classifier: &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
+				Classifier:   &chiefnudge.Classifier{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}}
 		}
 	}
 	ccPool, err := buildClaudePool(cfg, plane, marks)

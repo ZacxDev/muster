@@ -30,6 +30,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -97,6 +98,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Flows:           stubFlows{},
 		Plugins:         stubPlugins{},
 		Pins:            stubPins{},
+		SessionTags:     stubSessionTags{},
 		Recents:         stubRecents{},
 		Focus:           stubFocus{},
 		FocusSummarizer: stubSummarizer{},
@@ -159,6 +161,9 @@ type stubPlugins struct{ plugins.Store }
 
 // stubPins satisfies pins.Store for registration only; any method call panics.
 type stubPins struct{ pins.Store }
+
+// stubSessionTags satisfies sessiontags.Store for registration only; any method call panics.
+type stubSessionTags struct{ sessiontags.Store }
 
 // stubRecents satisfies recents.Store for registration only; any method call panics.
 type stubRecents struct{ recents.Store }

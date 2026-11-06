@@ -645,6 +645,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAgentRoutes(mux)
 	// Pins (internal/pins): the session switcher's pin toggle, 404 without a store.
 	s.registerPinRoutes(mux)
+	// Session tags (internal/sessiontags): the ⋯ menu's tag editor, 404 without a store.
+	s.registerSessionTagRoutes(mux)
 	// The send queue (internal/sendqueue): Queue, its list, Cancel; 404 without a store.
 	s.registerSendQueueRoutes(mux)
 	// Focus history (internal/focus): one page of a session's past focus; 404 without a store.

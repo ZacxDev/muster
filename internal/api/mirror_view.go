@@ -11,6 +11,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -116,6 +117,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 	// The session switcher below the composer (ui/switcher.go).
 	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
+	// The viewer's tags on the tmux session, in the header (ui/session_tags.go).
+	v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
 	allowSameOriginFrame(w)
 	viewDocument(w)
 	op.serverTiming(w)

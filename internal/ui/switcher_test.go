@@ -328,7 +328,8 @@ func TestThePaperclipIsSmallAndInsideTheInput(t *testing.T) {
 		}
 	}
 	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, Upload: UploadPath}))
-	box := regexp.MustCompile(`<div class="relative flex min-w-0 flex-1"><input id="mv-file"[^>]*><button id="mv-attach"[^>]*class="` + regexp.QuoteMeta(attachButtonClass) + `"><svg class="h-4 w-4"[^>]*><path[^>]*/></svg></button><textarea id="mv-input"[^>]*class="` + regexp.QuoteMeta(composerInputClass+attachInputPad) + `"`)
+	// The Rendered view's field is marked data-mv-field (composer_reveal.go).
+	box := regexp.MustCompile(`<div data-mv-field="" class="relative flex min-w-0 flex-1"><input id="mv-file"[^>]*><button id="mv-attach"[^>]*class="` + regexp.QuoteMeta(attachButtonClass) + `"><svg class="h-4 w-4"[^>]*><path[^>]*/></svg></button><textarea id="mv-input"[^>]*class="` + regexp.QuoteMeta(composerInputClass+attachInputPad) + `"`)
 	if !box.MatchString(page) {
 		t.Errorf("the paperclip is not inside the input's box, before it, with the input padded:\n%s", page[strings.Index(page, `id="mv-form"`):][:1500])
 	}

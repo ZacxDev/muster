@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -279,6 +280,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	// one where it has no rendered view, posting back to THIS view.
 	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window},
 		Back: mirrorRef(e).TerminalPath()})
+	// The viewer's tags on the tmux session, in the header (ui/session_tags.go).
+	v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
 	if e.AgentNote != v.TerminalOnly {
 		v.Note = e.AgentNote
 	}

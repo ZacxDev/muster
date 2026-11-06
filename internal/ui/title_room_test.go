@@ -92,7 +92,9 @@ func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
 	if pop == nil {
 		t.Fatal("no full-title popover")
 	}
-	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly:1 · tower · Mirrored · host-a</span>` {
+	// The raw tmux session is in it too: the header no longer draws it beside a
+	// label (mirrorViewHeading).
+	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly:1 · tower · Mirrored · host-a · tmux session scratch2</span>` {
 		t.Errorf("the popover is not exactly the whole title:\n%s", pop[1])
 	}
 	if !strings.Contains(page, "<title>billing-reconcile-nightly:1 · tower · Mirrored · muster</title>") {

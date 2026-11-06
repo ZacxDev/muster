@@ -248,6 +248,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 	// Each entry's previous focus titles, one read for all of them (the
 	// command palette's search: withPreviousTitles).
 	s.withPreviousTitles(ctx, cards, mirrors)
+	// The viewer's tags on each entry, one read for all of them: the palette's
+	// and the dock's words, and the ⋯ menu's tag editor (session_tags.go).
+	s.withSessionTags(ctx, cards, mirrors)
 	s.withCardAttention(ctx, cards, mirrors)
 	// The Idle section (ui.InIdleSection), with the server's clock, after the
 	// pins are marked: decided on every build, so an entry active again leaves

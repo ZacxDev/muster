@@ -262,6 +262,12 @@ BEGIN
         ALTER TABLE public.officer_judgement_sessions DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_judgement_sessions ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0086 (session_tags), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_tags') IS NOT NULL THEN
+        ALTER TABLE public.session_tags NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_tags DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_tags ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

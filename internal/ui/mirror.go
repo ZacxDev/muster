@@ -87,6 +87,11 @@ type MirrorCardView struct {
 	// current one left out (internal/api's withPreviousTitles); the palette
 	// finds the entry by them after its current title (palette.go).
 	PrevFocus []string
+	// Tags is the VIEWER's own tags on the window's tmux SESSION
+	// (internal/sessiontags: keyed on host + session, so every window of a
+	// session carries the same), sorted, nil for none — internal/api's
+	// withSessionTags. AgentCardView.Tags says what reads them.
+	Tags []string
 	// Repo is the short name of the repository the window works in
 	// (mirror.SessionView.Repo: its git top level's name, else its cwd's),
 	// "" when the host did not say (an older muster-mirror). The palette finds
@@ -189,19 +194,21 @@ func mirrorCardID(m MirrorCardView) string {
 }
 
 // mirrorSessionTitle is a mirrored session's name as a page title: the
-// host's label when it sent one, with the raw tmux session name as a small
-// secondary text AND the tooltip; the session name alone otherwise.
+// host's label when it sent one, with the raw tmux session name as its
+// tooltip; the session name alone otherwise.
 //
-// 🔴 THE RAW NAME STAYS VISIBLE, NOT ONLY IN A TOOLTIP: it is what an operator
-// types into `tmux attach`, and a phone has no hover.
+// 🔴 THE RAW NAME IS NO LONGER DRAWN BESIDE THE LABEL (operator ask: the
+// header's room goes to the session's tags, sessionTagsHead). It stays
+// findable: the tooltip, the Rendered view's full-title popover
+// (mirrorViewHeading), and the palette's words (switcherItems).
 func mirrorSessionTitle(label, session, class string) g.Node {
 	return mirrorEntryTitle(label, "", session, "", class)
 }
 
 // mirrorEntryTitle is mirrorSessionTitle for an entry that may be a WINDOW:
 // title is what an entry with no label is called ("<session>:<window index>";
-// "" = the session name). A window with no label needs no secondary text — its
-// title already spells the session.
+// "" = the session name). A window with no label needs no tooltip — its title
+// already spells the session.
 //
 // qualifier ("" = none) is what tells the entry apart from another listed
 // entry of the same name (mirror.SessionView.Qualifier). It is drawn AS PART
@@ -220,7 +227,6 @@ func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 		g.Attr("title", "tmux session "+session),
 		Span(g.Attr("data-mirror-label", ""), g.Text(name)),
 		q,
-		Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session)),
 	)
 }
 

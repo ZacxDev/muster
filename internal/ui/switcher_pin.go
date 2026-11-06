@@ -49,15 +49,21 @@ type switcherPin struct {
 	pinned bool
 	fields [][2]string
 	back   string
+	// tags is the viewer's tags on the session and tagTarget what the ⋯
+	// menu's tag editor (session_tags.go) posts them for.
+	tags      []string
+	tagTarget SessionTagTarget
 }
 
 // newSwitcherPin is e's pin item: its subject's fields (pins.go) and the page
 // to come back to after a post without script.
 func newSwitcherPin(e listEntry) *switcherPin {
 	if e.agent != nil {
-		return &switcherPin{pinned: e.agent.Pinned, fields: agentPinFields(*e.agent), back: e.agent.PageHref()}
+		return &switcherPin{pinned: e.agent.Pinned, fields: agentPinFields(*e.agent), back: e.agent.PageHref(),
+			tags: e.agent.Tags, tagTarget: SessionTagTarget{AgentID: e.agent.ID}}
 	}
-	return &switcherPin{pinned: e.mirror.Pinned, fields: mirrorPinFields(*e.mirror), back: MirrorCardHref(*e.mirror)}
+	return &switcherPin{pinned: e.mirror.Pinned, fields: mirrorPinFields(*e.mirror), back: MirrorCardHref(*e.mirror),
+		tags: e.mirror.Tags, tagTarget: SessionTagTarget{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window}}
 }
 
 // switcherMoreButton is the bar's ⋯ button, at its right end, opening
@@ -92,7 +98,7 @@ func switcherMoreButton(s *Switcher) g.Node {
 }
 
 // switcherMoreMenu is the ⋯ menu: a popover (top layer, out of flow — opening
-// it moves nothing) holding the pin item. Nothing when switcherMoreButton is.
+// it moves nothing) holding the pin item and "Tags…" (session_tags.go). Nothing when switcherMoreButton is.
 // Its open and close are animated in CSS (web/css/input.css, #switcher-more),
 // as the view menu's are.
 func switcherMoreMenu(s *Switcher) g.Node {
@@ -106,7 +112,19 @@ func switcherMoreMenu(s *Switcher) g.Node {
 		g.Attr("aria-label", "This session"),
 		Class("m-0 min-w-[12rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
 		SwitcherPinToggle(s.pin.pinned, s.pin.fields, s.pin.back),
+		// The page's session's tags (session_tags.go): the editor is its own
+		// popover, drawn beside this one (switcherTagsEditor).
+		sessionTagsMenuItem(),
 	)
+}
+
+// switcherTagsEditor is the ⋯ menu's tag editor and its script, for the
+// page's own session; nothing when the menu is not drawn.
+func switcherTagsEditor(s *Switcher) g.Node {
+	if s == nil || s.pin == nil {
+		return nil
+	}
+	return g.Group{sessionTagsEditor(s.pin.tagTarget, s.pin.tags, s.pin.back), sessionTagsScript()}
 }
 
 // SwitcherPinToggle is the ⋯ menu's pin item: a form posting fields (the

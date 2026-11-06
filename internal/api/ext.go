@@ -29,6 +29,7 @@ import (
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
@@ -222,6 +223,12 @@ type Extensions struct {
 	// migration 0017). nil (no database): nothing is pinned, the switcher's Pins
 	// view is empty, and the pin routes answer 404.
 	Pins pins.Store
+
+	// SessionTags is the per-user session tags (internal/sessiontags): the
+	// session switcher's ⋯ → Tags…, the session headers' chips, and words the
+	// palette and the dock's filter match. nil (no database): no session has
+	// tags, and the tag routes answer 404.
+	SessionTags sessiontags.Store
 
 	// Recents is the per-user "recently viewed" entries (internal/recents,
 	// migration 0018): the session switcher's Recent view, and where home goes

@@ -113,9 +113,10 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - session_episodes (0073, one row per stop of one of the owner's sessions).
 //   - officer_llm_usage (0075, the officer LLM proxy's per-day usage).
 //   - officer_judgement_sessions (0082, the judgement session cap's ledger).
+//   - session_tags (0086, the per-owner session tags).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -255,6 +256,9 @@ var wantForeignKeys = []string{
 	// 0053: 0027's shape, its owner checked by session_routes_task_is_owners.
 	"session_routes|session_routes_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	"send_queue|send_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0086: pins' shape (an agent row dies with its agent).
+	"session_tags|session_tags_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"session_tags|session_tags_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"task_sessions|task_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"user_credentials|user_credentials_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

@@ -44,6 +44,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -408,6 +409,14 @@ var isolationClasses = map[string]routeClass{
 	// seeded pins are in the snapshot, so either reaching A's would show.
 	"POST /agents/pins":        classList,
 	"POST /agents/pins/delete": classList,
+	// Session tags (internal/sessiontags): pins' shape. The form (the list's
+	// query) names A's agent as agent_id: B's add is refused as no such agent
+	// (the owner trigger, as a ghost's), B's remove deletes only B's rows, and
+	// B's read is B's own (none); A's seeded tags spell the canary and are in
+	// the snapshot, so either reaching A's would show.
+	"GET /sessions/tags":         classList,
+	"POST /sessions/tags":        classList,
+	"POST /sessions/tags/delete": classList,
 	// The send queue (0019): the queue form, the list and the plain confirm
 	// page name A's mirrored window; Cancel, Retry and Delete name A's queued
 	// message by id.
@@ -929,6 +938,14 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	recentStore := recents.NewPG(pool)
 	must(recentStore.VisitAgent(ua, w.a.agent.ID), "a agent visit")
 	must(recentStore.VisitMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror visit")
+	// A's session tags (internal/sessiontags): on A's agent and on A's mirrored
+	// session, each spelling the canary. B's tag routes read and write B's own
+	// rows only (the snapshot holds A's; a read leaking one shows the canary).
+	tagStore := sessiontags.NewPG(pool)
+	_, terr := tagStore.Add(ua, sessiontags.Target{AgentID: w.a.agent.ID}, w.canary+"-tag")
+	must(terr, "a agent tag")
+	_, terr = tagStore.Add(ua, sessiontags.Target{Host: w.canary + "-host", Session: "main"}, w.canary+"-tag")
+	must(terr, "a mirror tag")
 	// A's session focus (0020): B's tools and pages read and write B's own.
 	_, ferr := focus.NewPG(pool).Upsert(ua, focus.AgentSubject(w.a.agent.ID), focus.Write{Title: w.canary + " focus", Source: focus.SourceSummarizer})
 	must(ferr, "a focus")
@@ -1026,9 +1043,10 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Flows:  flows.NewPG(pool),
 		// Plugins ON, with no gateway: a message B's plugin posts is stored as
 		// B's and stays queued.
-		Plugins: plugins.NewPG(pool),
-		Pins:    pins.NewPG(pool),
-		Recents: recents.NewPG(pool),
+		Plugins:     plugins.NewPG(pool),
+		Pins:        pins.NewPG(pool),
+		SessionTags: sessiontags.NewPG(pool),
+		Recents:     recents.NewPG(pool),
 		// Session routing (0021), on: A's route is a real object B must not reach.
 		Routes:    plugins.NewPG(pool),
 		Routing:   &Routing{},
@@ -1446,6 +1464,15 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		f.Set("kind", "agent")
 		f.Set("agent_id", strconv.FormatInt(o.agent, 10))
 	}
+	// The session tag routes name o's agent too (the list in its query).
+	if strings.HasSuffix(pattern, " /sessions/tags") || strings.HasSuffix(pattern, " /sessions/tags/delete") {
+		f.Set("kind", "agent")
+		f.Set("agent_id", strconv.FormatInt(o.agent, 10))
+		f.Set("tag", w.canary+"-tag")
+		if method == http.MethodGet {
+			return method, path + "?" + url.Values{"kind": {"agent"}, "agent_id": {strconv.FormatInt(o.agent, 10)}}.Encode(), ""
+		}
+	}
 	if pattern == "POST /tasks" {
 		return method, path, "multipart:" + f.Encode()
 	}
@@ -1475,7 +1502,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "session_tags", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
 		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage", "chief_preferences",
 		"task_ref_writes"} {
 		var js string

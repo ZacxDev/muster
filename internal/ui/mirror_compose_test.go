@@ -61,6 +61,12 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 	if !strings.Contains(tf, `method="post" action="/mirror/terminal/send?`) || !strings.Contains(vf, `method="post" action="/mirror/view/send?`) {
 		t.Fatalf("the forms do not post to their own routes:\n%s\n%s", tf, vf)
 	}
+	// The Rendered view's form is collapsible on a touch screen (composer_reveal.go);
+	// the Terminal's is not. Otherwise one element.
+	if !strings.Contains(vf, ` data-mv-collapsed=""`) || strings.Contains(tf, `data-mv-collapsed`) {
+		t.Errorf("the Rendered view's form is not the collapsible one, or the Terminal's is:\n%s\n%s", tf, vf)
+	}
+	vf = collapsibleBits.ReplaceAllString(vf, "")
 	if strings.Replace(tf, "/mirror/terminal/send", "/mirror/view/send", 1) != vf {
 		t.Errorf("the two composer forms differ in more than their route:\n%s\n%s", tf, vf)
 	}
