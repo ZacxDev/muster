@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "bd1d82b8d6235182371e742c0e067c3b3335ef2b7a1b52f607009dbabd476b4d",
+			want: "93489c2095e703da7d8a77e5313d7d9603f8b77c6b688dc34054a0e301b976db",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "cd7db3098eab43daf2127360966de6b79365d46b440f1b6e621adbbd1be554d5",
+			want: "a5b311303272276986dee6cefd25bb81249293dbbb91df697474daabb0e5f1aa",
 			min:  1000,
 		},
 		{
@@ -795,7 +795,7 @@ func TestTheChiefTriagesFeedback(t *testing.T) {
 	para := func(p string) string {
 		return "Some plugin messages are feedback: someone using your owner's work reports a bug, " +
 			"asks for a feature or says something confused them. Never leave one without a decision. " +
-			"When it is something to act on, file it with `" + p + "task_create_gated` and, when your tool list has `" +
+			"When it is something to act on and no session took it (above), file it with `" + p + "task_create_gated` and, when your tool list has `" +
 			p + "task_route_attention`, call it with the new task's id and a one-line note saying what the feedback is: " +
 			"it puts the task on your owner's phone with your note. The task stays gated until your owner releases it, as above, " +
 			"or from that ask: it offers them Release & dispatch and Release only. On a \"Release & dispatch on <target>\" answer " +

@@ -501,7 +501,7 @@ event's task with ` + "`task_route_attention`" + `.
 
 Some plugin messages are feedback: someone using your owner's work reports a bug,
 asks for a feature or says something confused them. Never leave one without a
-decision. When it is something to act on, file it with ` + "`task_create_gated`" + ` and, when
+decision. When it is something to act on and no session took it (above), file it with ` + "`task_create_gated`" + ` and, when
 your tool list has ` + "`task_route_attention`" + `, call it with the new task's id and a one-line
 note saying what the feedback is: it puts the task on your owner's phone with your
 note. The task stays gated until your owner releases it, as above, or from that
@@ -742,7 +742,7 @@ event's task with ` + "`mcp__muster__task_route_attention`" + `.
 
 Some plugin messages are feedback: someone using your owner's work reports a bug,
 asks for a feature or says something confused them. Never leave one without a
-decision. When it is something to act on, file it with ` + "`mcp__muster__task_create_gated`" + ` and, when
+decision. When it is something to act on and no session took it (above), file it with ` + "`mcp__muster__task_create_gated`" + ` and, when
 your tool list has ` + "`mcp__muster__task_route_attention`" + `, call it with the new task's id and a one-line
 note saying what the feedback is: it puts the task on your owner's phone with your
 note. The task stays gated until your owner releases it, as above, or from that

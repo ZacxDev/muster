@@ -1279,8 +1279,8 @@ below.
 **Feedback** gets a decision every time. A provisioned chief's standing
 instructions say that a plugin message which is feedback (someone using your
 work reports a bug, asks for a feature or says something confused them),
-whichever plugin brought it, is either filed or settled. When it can be acted
-on, the chief files it with `task_create_gated`, then, when
+whichever plugin brought it, is routed, filed or settled. When it can be acted
+on and no live session took it (route first, above), the chief files it with `task_create_gated`, then, when
 [task routing](#routing-a-task-to-the-chief) is on, calls
 `task_route_attention` with the new task's id and a one-line note, so the
 task reaches your phone with that note. The task is gated, so the ask's
