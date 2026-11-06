@@ -326,7 +326,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	bctx, bcancel := bookkeeping()
 	defer bcancel()
 	if err != nil {
-		s.persistTurn(bctx, ag, sess, []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}})
+		s.persistTurn(bctx, ag, sess, turnFailedParts(err))
 		return settle(false, sess.ID, "the agent's turn failed: "+err.Error())
 	}
 	s.persistTurn(bctx, ag, sess, parts)

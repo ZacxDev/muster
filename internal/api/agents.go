@@ -2007,6 +2007,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		s.turns.leave(a.ID)
 		if err != nil {
 			_ = wsWriteJSON(ctx, c, wsTurnError(err, in.Text))
+			s.storeChatBusyGiveUp(ctx, a, session, err)
 			continue
 		}
 		// 🔴 "done" BEFORE the turn is persisted and chat.reply broadcast: the page

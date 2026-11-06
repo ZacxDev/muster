@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -121,4 +122,29 @@ func (s *Server) chatTurnWhenFree(ctx context.Context, a agents.Agent, sessionKe
 		case <-t.C:
 		}
 	}
+}
+
+// storeChatBusyGiveUp stores a busy give-up (chatBusyError) in the conversation
+// the way every other door stores a failed turn (turnFailedParts), and does
+// nothing for any other error.
+//
+// 🔴 FOR THE CHAT SOCKET, WHICH OTHERWISE STORES NO FAILURE: it only writes the
+// error to the socket. A give-up comes after up to chatBusyWait of waiting, and
+// the wait outlives the page (closing the tab does not end it: the socket's
+// handler keeps running the turn, TestAQueuedMessageIsDeliveredAfterItsPageIsClosed),
+// so the page that sent it is often gone — without this, a reload shows the
+// user's line with no answer and nothing saying it was never sent. The composer
+// POST and the route hand-back store every failure already, through the same
+// turnFailedParts.
+//
+// ⚠ ONLY THE GIVE-UP, DELIBERATELY: the socket's other failures were never
+// stored, and that is a separate decision from this one.
+func (s *Server) storeChatBusyGiveUp(ctx context.Context, a agents.Agent, session agents.ChatSession, err error) {
+	var busy *chatBusyError
+	if !errors.As(err, &busy) {
+		return
+	}
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	s.persistTurn(sctx, a, session, turnFailedParts(err))
 }

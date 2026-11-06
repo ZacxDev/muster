@@ -188,7 +188,7 @@ func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session age
 		parts, err := s.runEnteredTurn(tctx, a, session, text, typedBy, nil)
 		if err != nil {
 			s.logger.Printf("agents: a turn sent to %s failed: %v", a.Name, err)
-			parts = []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}
+			parts = turnFailedParts(err)
 		}
 		s.persistTurn(tctx, a, session, parts)
 	})
@@ -197,3 +197,12 @@ func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session age
 // AgentTurnFailedPrefix starts the stored line that stands in for a reply when
 // a turn started by POST /agents/{name}/send failed.
 const AgentTurnFailedPrefix = "⚠ This message was not answered: "
+
+// turnFailedParts is the stored line that stands in for the reply of a turn that
+// failed: AgentTurnFailedPrefix and the error's text. 🔴 THE ONE SPELLING of it,
+// for every door that stores a failure (the composer POST, the route hand-back,
+// chief_ask, the attention deliverer, and the chat socket's give-up after a busy
+// wait, chat_busy.go) — two copies are how the socket door came to store none.
+func turnFailedParts(err error) []agents.TurnPart {
+	return []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}
+}

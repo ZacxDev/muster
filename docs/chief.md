@@ -57,10 +57,12 @@ runs a first turn in its chat, and its Claude Code session takes one turn at a
 time. A message you send during that turn is held, not refused: the chat shows
 "Still finishing its previous turn — your message is queued and will be sent as
 soon as it is free" in place of "working", and sends it as soon as the turn
-ends (it asks again every 3 seconds, for up to 10 minutes). If the session is
-still busy after that, the chat says your message was not sent, in words, and
-puts the text back in the box to send again; the message stays in the
-conversation. The same applies to any agent's chat, on Kubernetes and on the
+ends (it asks again every 3 seconds, for up to 10 minutes). Closing the page
+does not cancel it: the message is still sent and the reply stored. If the
+session is still busy after 10 minutes, the conversation records that your
+message was not sent, in words, whether or not a page is open, and an open
+chat puts the text back in the box to send again. A restart of muster during
+the wait ends it, like any turn in flight. The same applies to any agent's chat, on Kubernetes and on the
 Compose install, whenever a turn is already running in that session — a
 message sent from the Terminal's composer waits the same way, in the
 background. A prompt waiting for an answer in the agent's terminal holds the

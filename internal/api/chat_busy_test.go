@@ -312,19 +312,63 @@ func TestAMessageThatOutwaitsTheBusyBoundIsToldInWordsAndKeepsItsText(t *testing
 		t.Fatalf("the person was told %q; want words, not a status code", content)
 	}
 
+	// The socket's give-up is stored too, as the POST's is (turnFailedParts):
+	// a reload shows it, not just the page that was watching.
+	eventuallyAPI(t, "the socket's give-up to be stored", func() bool { return len(store.transcript(41)) == 2 })
+	assertGiveUp(t, store.transcript(41), "still there?")
+
 	if resp := postAgent(t, s, ts, "keen-wren", url.Values{"text": {"posted while busy"}, "session": {"41"}}, false); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("the post = %d", resp.StatusCode)
 	}
-	eventuallyAPI(t, "the give-up to be stored", func() bool {
-		got := store.transcript(41)
-		return len(got) == 3 && strings.HasPrefix(got[2], "assistant: ")
-	})
-	got := store.transcript(41)
-	if got[1] != "user: posted while busy" {
-		t.Fatalf("the posted message was not kept: %q", got)
+	eventuallyAPI(t, "the POST's give-up to be stored", func() bool { return len(store.transcript(41)) == 4 })
+	assertGiveUp(t, store.transcript(41)[2:], "posted while busy")
+}
+
+// assertGiveUp checks got is exactly [the user's line, the stored busy give-up].
+func assertGiveUp(t *testing.T, got []string, text string) {
+	t.Helper()
+	if len(got) != 2 || got[0] != "user: "+text {
+		t.Fatalf("transcript = %q; want the user's %q kept, then the give-up", got, text)
 	}
-	if !strings.HasPrefix(got[2], "assistant: "+AgentTurnFailedPrefix+"It was still busy") || strings.Contains(got[2], "409") {
-		t.Fatalf("stored give-up = %q; want the busy notice in words", got[2])
+	if !strings.HasPrefix(got[1], "assistant: "+AgentTurnFailedPrefix+"It was still busy") || strings.Contains(got[1], "409") {
+		t.Fatalf("stored give-up = %q; want the busy notice in words", got[1])
+	}
+}
+
+// TestAGiveUpWithNoPageWatchingIsStoredInTheConversation: the chat page sends a
+// message and is closed while it waits; the wait runs out with nobody on the
+// socket. The conversation must say the message was not sent — on a reload
+// that is the only place it can be read.
+//
+// 🔴 REGRESSION (round 0 of #494): before this the socket door wrote its
+// give-up only to the (gone) socket and stored nothing: transcript ["user: …"].
+func TestAGiveUpWithNoPageWatchingIsStoredInTheConversation(t *testing.T) {
+	f := newBusyCCD() // never freed
+	s, ts, store := busyServer(t, f, 150*time.Millisecond)
+	c, ctx := dialChat(t, s, ts)
+	sendChat(t, ctx, c, "sent, then the tab closed")
+	waitRefusals(t, f, 1)
+	c.CloseNow() // the tab is gone: no close handshake
+	eventuallyAPI(t, "the give-up to be stored with no page watching", func() bool { return len(store.transcript(41)) == 2 })
+	assertGiveUp(t, store.transcript(41), "sent, then the tab closed")
+}
+
+// TestAQueuedMessageIsDeliveredAfterItsPageIsClosed pins the behaviour the PR
+// states: closing the page does not end the wait. The socket's handler keeps
+// running the turn (its request context is not cancelled by the client going
+// away), so the message is sent once the session is free and its reply stored.
+func TestAQueuedMessageIsDeliveredAfterItsPageIsClosed(t *testing.T) {
+	f := newBusyCCD()
+	s, ts, store := busyServer(t, f, time.Minute)
+	c, ctx := dialChat(t, s, ts)
+	sendChat(t, ctx, c, "queued, then the tab closed")
+	waitRefusals(t, f, 2)
+	c.CloseNow()          // the tab is gone: no close handshake
+	waitRefusals(t, f, 2) // still asking after the close
+	f.free()
+	eventuallyAPI(t, "the reply stored after the page closed", func() bool { return len(store.transcript(41)) == 2 })
+	if got := store.transcript(41); got[1] != "assistant: answer to: queued, then the tab closed" {
+		t.Fatalf("transcript = %q; want the queued message answered", got)
 	}
 }
 
@@ -335,7 +379,7 @@ func TestAMessageThatOutwaitsTheBusyBoundIsToldInWordsAndKeepsItsText(t *testing
 func TestOnlyATypedBusyIsWaitedOn(t *testing.T) {
 	f := newBusyCCD()
 	f.failType = "rate_limited"
-	s, ts, _ := busyServer(t, f, time.Minute)
+	s, ts, store := busyServer(t, f, time.Minute)
 	c, ctx := dialChat(t, s, ts)
 	sendChat(t, ctx, c, "limit?")
 	msgs := readUntilEnd(t, ctx, c)
@@ -349,6 +393,13 @@ func TestOnlyATypedBusyIsWaitedOn(t *testing.T) {
 	}
 	if refused, _ := f.counts(); refused != 1 {
 		t.Fatalf("the runtime was asked %d time(s) for a rate_limited refusal, want 1", refused)
+	}
+	// The socket stores ONLY a busy give-up (storeChatBusyGiveUp); its other
+	// failures are still only shown. (The positive control that the store CAN
+	// happen is TestAGiveUpWithNoPageWatchingIsStoredInTheConversation.)
+	time.Sleep(150 * time.Millisecond)
+	if got := store.transcript(41); len(got) != 1 {
+		t.Fatalf("a socket failure that is not a busy give-up was stored: %q", got)
 	}
 }
 
