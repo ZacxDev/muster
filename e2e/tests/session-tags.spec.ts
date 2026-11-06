@@ -285,6 +285,18 @@ for (const vp of [
       // And a tag nobody carries finds nothing (the search is not matching everything).
       await page.locator('#switcher-search-input').fill('no-such-tag');
       await expect(hits).toHaveCount(0);
+      // The Sessions dock's filter (a touch screen's view button opens the
+      // dock: switcher_dock.go) matches the same words: both windows of tagx.
+      if (vp.use.hasTouch) {
+        await page.keyboard.press('Escape');
+        await page.locator('#switcher-toggle').tap();
+        await expect(page.locator('#switcher-dock')).toBeVisible();
+        await page.locator('#switcher-dock [data-dock-tab="all"]').tap();
+        await page.locator('#dock-filter').fill('needs-review');
+        await expect(page.locator('#dock-list [data-dock-row]')).toHaveCount(2);
+        await page.locator('#dock-filter').fill('no-such-tag');
+        await expect(page.locator('#dock-list [data-dock-row]')).toHaveCount(0);
+      }
     });
 
     // The view switch keeps both views alive (view_swap.go: the other one is a
