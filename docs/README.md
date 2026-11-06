@@ -18,6 +18,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [push.md](push.md) — Web Push and the installable app
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
 - [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
+- [chief-cookbook.md](chief-cookbook.md) — what to ask the chief: fleet summaries, who is on what, what needs you, routing a request or a task to a session, with real example replies
 - [chief-nudges.md](chief-nudges.md) — the chief's stall nudges: finding stalled sessions (Claude Code and opencode), nudging them with your own words or pointing you at them with a notice, shadow mode first
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
 - [connectors.md](connectors.md) — credentials agents use without seeing them, and deciding an agent's request from your own mirrored session (`connector_request_decide`)
