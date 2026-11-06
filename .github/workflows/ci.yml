@@ -623,10 +623,11 @@ jobs:
             sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume claude-code-agent:ci cc-smoke
 
-      # The image as a `docker compose` service (CCD_SPEC_DIR, `ccd compose`):
-      # the spec volume laid out as the compose install lays it out, the real
-      # ccd and CLI started, restarted, stopped and wiped through spec.json.
-      # Runs on the runner, not in the image: it drives `docker compose`.
+      # The image as deploy/docker-compose.yml's own `chief` service (`ccd
+      # compose`), with a stand-in for muster writing spec.json: the real ccd
+      # and CLI started, restarted, wiped and refused through specs muster
+      # never writes. Runs on the runner, not in the image: it drives
+      # `docker compose`.
       - name: compose-smoke (ccd compose, real ccd and CLI)
         run: images/claude-code-agent/compose-smoke.sh claude-code-agent:ci
 

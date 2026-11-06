@@ -1,50 +1,46 @@
 #!/usr/bin/env bash
-# The claude-code-agent image as a `docker compose` service (`ccd compose`,
-# cmd/ccd/compose.go), with the REAL entrypoint, ccd, tmux and CLI:
+# The claude-code-agent image as the docker compose install runs it (`ccd
+# compose`, cmd/ccd/compose.go), with the REAL entrypoint, ccd, tmux and CLI:
 #
-#   images/claude-code-agent/compose-smoke.sh <image>
+#   images/claude-code-agent/compose-smoke.sh <image>:<tag>
 #
-# Run on the HOST (it drives `docker compose`), by CI's ccd-image job. It lays
-# the service out as the compose install does: a spec volume a root one-shot
-# prepares (setgid 02750 directories owned by uid 65532: group 1001 for the
-# spec's own, group 1000 for files/ and below), written by a uid-65532 writer
-# standing in for muster (files first, spec.json last, each by rename, 0640),
-# mounted read-only into the chief, whose files/etc/claude-code is mounted at
-# /etc/claude-code through a volume `subpath`. The chief runs as user 0:1001
-# with every capability dropped but SETUID, SETGID and KILL, no-new-privileges,
-# `init: true`, `restart: unless-stopped`, the healthcheck on /compose/status.
+# Run on the HOST (it drives `docker compose`), by CI's ccd-image job. The
+# chief-init and chief services are deploy/docker-compose.yml's OWN (profile
+# chief), unchanged: the spec volume, user 0:1001, the capabilities, the
+# subpath mount and the healthcheck all come from that file. The only service
+# added here is `writer`, a uid-65532 stand-in for muster that writes the spec
+# as muster's compose driver does (files first, spec.json last, each by
+# rename, 0640), so this script can write specs muster never would.
 #
-# It asserts:
-#   1. before any spec, `up --wait` passes, the status is awaiting_spec, /healthz
-#      is 503 and a turn is a typed not_ready 503 — and no CLI runs;
-#   2. the subpath mount: the CLI's user (uid 1000) reads a 0640 group-1000 file
-#      there, sees an atomic-rename update to it, and cannot write there — and
-#      CANNOT read spec.json (0640, group 1001), which the supervisor's user can;
-#   3. replicas 1 starts the real ccd and CLI: the status reaches running/ready,
+# tests/compose-up.sh's chief phase runs the same file with muster itself and
+# checks what it shares with this one: awaiting_spec before any spec, uid 1000
+# cannot read spec.json, Off leaves no CLI, a prompt is denied. This script
+# checks only what needs a hand-written spec:
+#   1. the subpath mount: the CLI's user (uid 1000) reads a 0640 group-1000 file
+#      there, sees an atomic-rename update to it, and cannot write there;
+#   2. replicas 1 starts the real ccd and CLI: the status reaches running/ready,
 #      the proxied /healthz reports the session started, a turn without the
 #      bearer reaches ccd (its 401), and /data/.muster-epoch records the epoch;
-#      the secrets reached the CLI's environment and appear in no log line; ccd
-#      and the CLI run as uid 1000, gid 1000, groups exactly 1000, with no
-#      capabilities, HOME /home/node, in /data/workspace; the supervisor as uid 0;
-#      and a permission prompt (`ccd approve`, as the CLI's hooks run it) is
-#      denied at once, where the same hook without CCD_APPROVE_UNANSWERED defers;
-#   4. a new generation (after /exit left a transcript to resume) is a new child:
+#      the secrets reached the CLI's environment (the turn bearer did not) and
+#      appear in no log line; ccd and the CLI run as uid 1000, gid 1000, groups
+#      exactly 1000, with no capabilities, HOME /home/node, in /data/workspace;
+#      the supervisor as uid 0;
+#   3. a new generation (after /exit left a transcript to resume) is a new child:
 #      a new boot id and ccd pid, the same supervisor pid, /healthz 200 with the
 #      session started again and the CLI resumed (`cli_mode` continue) — no
 #      crash_loop — and /data kept (same epoch);
-#   5. replicas 0: state off, NO claude, tmux or `ccd serve` process left, the
-#      supervisor's pid unchanged, the container still running with no restart,
-#      /healthz 503;
-#   6. replicas 1 with a NEW epoch: /data was emptied before the start (the
-#      planted file is gone, the CLI starts fresh) and the new epoch recorded;
-#   7. a spec version it does not know: state error, no CLI;
-#   8. spec.json removed: awaiting_spec, "muster removed this chief's spec", no CLI.
+#   4. a NEW epoch: /data was emptied before the start (the planted file is
+#      gone, the CLI starts fresh) and the new epoch recorded;
+#   5. a spec version it does not know: state error, no CLI;
+#   6. spec.json removed: awaiting_spec, "muster removed this chief's spec", no CLI.
 #
 # ⚠ NO REAL CREDENTIAL, NO TURN: the OAuth token is deliberately invalid (as
 # cc-smoke's), which is enough for the CLI to start and fire SessionStart.
 set -euo pipefail
 
-IMG="${1:?usage: compose-smoke.sh <image>}"
+IMG="${1:?usage: compose-smoke.sh <image>:<tag>}"
+[[ "$IMG" == *:* ]] || { echo "compose-smoke: the image needs a tag: $IMG" >&2; exit 2; }
+ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="$(mktemp -d)"
 project="ccsmoke$$"
 turn_secret="compose-smoke-turn-$RANDOM$RANDOM-not-real"
@@ -56,56 +52,33 @@ fail() {
   dc logs --no-color chief 2>&1 | tail -80 >&2 || true
   exit 1
 }
-dc() { docker compose -p "$project" -f "$work/compose.yml" "$@"; }
+dc() {
+  docker compose -p "$project" -f "$ROOT/deploy/docker-compose.yml" -f "$work/writer.yml" \
+    --env-file "$work/env" --profile chief "$@"
+}
 cleanup() { dc down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$work"; }
 trap cleanup EXIT
 
-cat >"$work/compose.yml" <<YAML
+# The file's required variables (only the chief's services are started), and
+# the image under test as the chief's.
+cat >"$work/env" <<ENV
+MUSTER_VERSION=${IMG##*:}
+CHIEF_IMAGE=${IMG%:*}
+POSTGRES_PASSWORD=compose-smoke-unused
+MUSTER_UI_PASSWORD=compose-smoke-unused
+MUSTER_HOOK_TOKEN=compose-smoke-unused
+ENV
+cat >"$work/writer.yml" <<YAML
 services:
-  spec-init:
-    image: $IMG
-    user: "0"
-    entrypoint: ["sh", "-euc"]
-    command:
-      - |
-        install -d -o 65532 -g 1001 -m 02750 /run/muster-spec /run/muster-spec/chief
-        install -d -o 65532 -g 1000 -m 02750 /run/muster-spec/chief/files \
-          /run/muster-spec/chief/files/etc /run/muster-spec/chief/files/etc/claude-code
-    volumes: [spec:/run/muster-spec]
   writer:
+    profiles: ["chief"]
     image: $IMG
     user: "65532:1001"
     entrypoint: ["sleep", "infinity"]
     init: true
-    depends_on: {spec-init: {condition: service_completed_successfully}}
-    volumes: [spec:/run/muster-spec]
-  chief:
-    image: $IMG
-    user: "0:1001"
-    cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, KILL]
-    security_opt: ["no-new-privileges:true"]
-    init: true
-    restart: unless-stopped
-    depends_on: {spec-init: {condition: service_completed_successfully}}
-    environment:
-      CCD_SPEC_DIR: /run/muster-spec/chief
-    volumes:
-      - spec:/run/muster-spec:ro
-      - type: volume
-        source: spec
-        target: /etc/claude-code
-        read_only: true
-        volume: {subpath: chief/files/etc/claude-code}
-      - data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18789/compose/status"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-volumes:
-  spec: {}
-  data: {}
+    network_mode: none
+    depends_on: {chief-init: {condition: service_completed_successfully}}
+    volumes: [chief-spec:/run/muster-spec]
 YAML
 
 # put PATH (relative to the chief's spec dir) with stdin, as muster writes: a
@@ -167,19 +140,12 @@ no_cli_left() {  # no claude, tmux or ccd serve process in the chief
   fi
 }
 
-# 1. No spec yet.
-dc up -d --wait spec-init writer chief || fail "docker compose up --wait"
-st="$(status)"
-[[ "$(field state <<<"$st")" == awaiting_spec ]] || fail "before any spec: $st"
-out="$(http /healthz)"; [[ "$out" == '503 {"compose":{"state":"awaiting_spec"'* ]] || fail "/healthz with no spec: $out"
-out="$(http /v1/responses -X POST -d '{}')"
-[[ "$out" == '503 {"error":{"type":"not_ready","code":"not_ready","message":"waiting for muster to write this chief'* ]] \
-  || fail "a turn with no spec: $out"
-no_cli_left "before any spec"
+# Up, with no spec yet (tests/compose-up.sh checks what that state reads).
+dc up -d --wait chief-init writer chief || fail "docker compose up --wait"
 sup1="$(sup_pid)"; [[ -n "$sup1" ]] || fail "no ccd compose process: $(procs)"
-echo "compose-smoke: no spec -> awaiting_spec, /healthz 503, turn not_ready; up --wait passed; supervisor pid $sup1"
+echo "compose-smoke: the real chief service is up (deploy/docker-compose.yml); supervisor pid $sup1"
 
-# 2. The subpath mount of files/etc/claude-code.
+# 1. The subpath mount of files/etc/claude-code.
 printf 'v1\n' | put files/etc/claude-code/CLAUDE.md
 [[ "$(in_chief cat /etc/claude-code/CLAUDE.md)" == v1 ]] || fail "the chief does not read /etc/claude-code/CLAUDE.md"
 [[ "$(in_chief stat -c '%a %g' /etc/claude-code/CLAUDE.md)" == "640 1000" ]] || fail "CLAUDE.md is $(in_chief stat -c '%a %g' /etc/claude-code/CLAUDE.md)"
@@ -187,17 +153,7 @@ printf 'v2\n' | put files/etc/claude-code/CLAUDE.md
 [[ "$(in_chief cat /etc/claude-code/CLAUDE.md)" == v2 ]] || fail "a rename update is not visible through the subpath mount"
 if in_chief sh -c 'echo x > /etc/claude-code/planted' 2>/dev/null; then fail "the chief could write /etc/claude-code"; fi
 echo "compose-smoke: /etc/claude-code: 0640 readable by uid 1000, rename updates visible, read-only"
-# The spec is the supervisor's alone: the positive control first (its user
-# reads it), then the CLI's user is refused.
-spec 1 1 0 aa01
-[[ "$(as_sup stat -c '%a %g' /run/muster-spec/chief/spec.json)" == "640 1001" ]] \
-  || fail "spec.json is $(as_sup stat -c '%a %g' /run/muster-spec/chief/spec.json), want 640 group 1001"
-as_sup cat /run/muster-spec/chief/spec.json | grep -qF "$turn_secret" || fail "control: the supervisor's user cannot read spec.json"
-if out="$(in_chief cat /run/muster-spec/chief/spec.json 2>&1)"; then fail "uid 1000 read spec.json"; fi
-[[ "$out" == *"Permission denied"* ]] || fail "uid 1000's read of spec.json failed, but not as Permission denied: $out"
-echo "compose-smoke: spec.json (640, group 1001): readable by the supervisor's user, Permission denied to uid 1000"
-
-# 3. replicas 1: the real ccd and CLI.
+# 2. replicas 1: the real ccd and CLI.
 spec 1 1 1 aa01
 st="$(wait_status 'generation 1 running' 's["state"]=="running" and s["ready"] and s["generation"]==1')"
 boot1="$(field boot <<<"$st")"
@@ -220,30 +176,9 @@ in_chief sh -c "tr '\\0' '\\n' </proc/$cli/environ" | grep -qxF "CLAUDE_CODE_OAU
 in_chief sh -c "tr '\\0' '\\n' </proc/$cli/environ" | grep -q '^MUSTER_GATEWAY_BEARER=' \
   && fail "the turn bearer reached the CLI's environment (ccd must unset it)"
 in_chief sh -c 'echo planted > /data/smoke-marker'
-# A permission prompt in this chief is DENIED, never deferred to a terminal no
-# one can reach: the PermissionRequest hook (`ccd approve`) run as the CLI's
-# hooks run it, as uid 1000 with the CLI's own environment, which `ccd compose`
-# gave CCD_APPROVE_UNANSWERED=deny. The control: the same hook with that one
-# variable removed defers (prints nothing), so the deny is the flag's.
-approve_as_cli() {  # approve_as_cli [env -u args…]: the hook's stdout; its stderr in $work/approve.err
-  # shellcheck disable=SC2016 # expanded by the container's bash, on purpose
-  printf '%s' '{"tool_name":"Bash","tool_input":{"command":"true"},"permission_mode":"default"}' \
-    | dc exec -T -u 1000:1000 chief bash -c 'mapfile -d "" e <"/proc/$1/environ"; shift; exec env -i "${e[@]}" env "$@" ccd approve' \
-      sh "$cli" "$@" 2>"$work/approve.err"
-}
-in_chief sh -c "tr '\\0' '\\n' </proc/$cli/environ" | grep -qx 'CCD_APPROVE_UNANSWERED=deny' \
-  || fail "the CLI's environment lacks CCD_APPROVE_UNANSWERED=deny"
-out="$(approve_as_cli)"
-[[ "$out" == '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}' ]] \
-  || fail "a permission prompt in the chief was not denied: stdout '$out', stderr $(cat "$work/approve.err")"
-grep -q 'no operator can answer a permission prompt in this container' "$work/approve.err" \
-  || fail "the denial does not say why: $(cat "$work/approve.err")"
-out="$(approve_as_cli -u CCD_APPROVE_UNANSWERED)"
-[[ -z "$out" ]] || fail "control: without the flag the hook did not defer: '$out'"
-echo "compose-smoke: a permission prompt in the chief is denied (the flag ccd compose sets); without it, deferred"
 echo "compose-smoke: generation 1 running (boot $boot1, ccd pid $serve1): session started, turn reached ccd, epoch recorded"
 
-# 4. A new generation, with a transcript to resume: /exit leaves one (cc-smoke step 5).
+# 3. A new generation, with a transcript to resume: /exit leaves one (cc-smoke step 5).
 in_chief tmux send-keys -t cc -l '/exit'
 sleep 0.3
 in_chief tmux send-keys -t cc Enter
@@ -261,18 +196,7 @@ serve2="$(procs | awk '$2 == "ccd" && $3 == "serve" { print $1 }')"
 [[ "$(in_chief cat /data/smoke-marker)" == planted ]] || fail "the same epoch lost /data"
 echo "compose-smoke: generation 2 is a new child (boot $boot2, ccd pid $serve2) that resumed: $hz"
 
-# 5. replicas 0.
-spec 1 2 0 aa01
-wait_status off 's["state"]=="off" and not s["ready"] and s["boot"]==""' >/dev/null
-no_cli_left "replicas 0"
-[[ "$(sup_pid)" == "$sup1" ]] || fail "replicas 0: the supervisor's pid moved: $(sup_pid), was $sup1"
-cid="$(dc ps -q chief)"
-[[ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$cid")" == "true 0" ]] \
-  || fail "replicas 0: the container is $(docker inspect -f '{{.State.Status}} restarts={{.RestartCount}}' "$cid")"
-out="$(http /healthz)"; [[ "$out" == '503 {"compose":{"state":"off"'* ]] || fail "/healthz while off: $out"
-echo "compose-smoke: replicas 0 -> off: no claude, tmux or ccd serve left; supervisor $sup1 and the container still up"
-
-# 6. A new epoch: /data emptied first.
+# 4. A new epoch: /data emptied first.
 spec 1 3 1 bb02
 wait_status 'generation 3 running' 's["state"]=="running" and s["ready"] and s["generation"]==3' >/dev/null
 hz="$(wait_healthz '200 {*"session":"started"*')"
@@ -281,14 +205,14 @@ if in_chief test -e /data/smoke-marker; then fail "a new epoch did not empty /da
 [[ "$hz" == *'"cli_mode":"fresh"'* ]] || fail "after the wipe the CLI did not start fresh: $hz"
 echo "compose-smoke: new epoch -> /data emptied, epoch bb02 recorded, a fresh CLI"
 
-# 7. A version this image does not know.
+# 5. A version this image does not know.
 spec 2 4 1 bb02
 st="$(wait_status error 's["state"]=="error"')"
 [[ "$(field reason <<<"$st")" == "spec.json is version 2; this image reads version 1 only" ]] || fail "version 2: $st"
 no_cli_left "version 2"
 echo "compose-smoke: version 2 refused: $(field reason <<<"$st")"
 
-# 8. Muster removes the spec.
+# 6. Muster removes the spec.
 spec 1 4 1 bb02
 wait_status 'generation 4 running' 's["state"]=="running" and s["ready"] and s["generation"]==4' >/dev/null
 dc exec -T writer rm /run/muster-spec/chief/spec.json
