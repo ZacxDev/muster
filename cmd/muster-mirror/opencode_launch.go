@@ -209,6 +209,32 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "muster-mirror opencode: starting opencode UNBOUND (muster views it by its title and cannot send to it): %s\n", why)
 		return execOr(d, bin, a.argv(""), stderr)
 	}
+	// 🔴 THE VERSION CHECK RUNS ON EVERY PATH, bound or not, whenever the
+	// host's opencode service is running (the token reaches it): a TUI of
+	// another version would restart that service, whatever this pane is for.
+	// Only a KNOWN mismatch refuses; a version that cannot be read is said and
+	// the start goes on — a probe must not block the TUI.
+	creds, credsWhy := openCodeCredentials(openCodeTokenFileDefault(d.getenv))
+	var cl *opencodehost.Client
+	service, serviceErr := "", errors.New(credsWhy)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if creds != nil {
+		if cl, serviceErr = creds.Client(); serviceErr == nil {
+			service, serviceErr = cl.Info(ctx)
+		}
+	}
+	if serviceErr == nil {
+		tuiOut, err := d.version(bin)
+		switch {
+		case err != nil:
+			fmt.Fprintf(stderr, "muster-mirror opencode: warning: `opencode --version` failed (%v), so its version could not be checked against the running service's (%s); starting it anyway\n",
+				err, normalizeOpenCodeVersion(service))
+		case normalizeOpenCodeVersion(tuiOut) != normalizeOpenCodeVersion(service):
+			fmt.Fprintln(stderr, versionMismatchText(normalizeOpenCodeVersion(tuiOut), normalizeOpenCodeVersion(service)))
+			return 1
+		}
+	}
 	tmuxEnv, pane := d.getenv("TMUX"), d.getenv("TMUX_PANE")
 	socket, _, _ := strings.Cut(tmuxEnv, ",")
 	switch {
@@ -220,29 +246,10 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 		return unbound("--standalone and --server run another server than this host's")
 	case a.cont:
 		return unbound("-c/--continue resumes a session the launcher cannot name in advance; pass -s <session id>")
-	}
-	creds, why := openCodeCredentials(openCodeTokenFileDefault(d.getenv))
-	if creds == nil {
-		return unbound(why)
-	}
-	cl, err := creds.Client()
-	if err != nil {
-		return unbound(err.Error())
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	service, err := cl.Info(ctx)
-	if err != nil {
-		return unbound("the opencode service cannot be reached: " + err.Error())
-	}
-	tuiOut, err := d.version(bin)
-	if err != nil {
-		fmt.Fprintf(stderr, "muster-mirror opencode: refused: `opencode --version` failed: %v\n", err)
-		return 1
-	}
-	if tui := normalizeOpenCodeVersion(tuiOut); tui != normalizeOpenCodeVersion(service) {
-		fmt.Fprintln(stderr, versionMismatchText(tui, normalizeOpenCodeVersion(service)))
-		return 1
+	case creds == nil:
+		return unbound(credsWhy)
+	case serviceErr != nil:
+		return unbound("the opencode service cannot be reached: " + serviceErr.Error())
 	}
 	dir := a.dir
 	if dir == "" {

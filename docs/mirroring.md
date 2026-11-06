@@ -749,7 +749,9 @@ to it before typing anything), or `-s <session id>`. It records the pane and
 its session for the host, then runs `opencode --session <id> …`. It refuses to
 start when the TUI's version differs from the running opencode service (the
 TUI would restart the service, which can sign other clients out), naming both
-versions and the fix, `opencode service restart`. Outside tmux, or with
+versions and the fix, `opencode service restart` — whether or not it can bind
+the pane. A TUI whose version cannot be read starts all the same, with a
+warning. Outside tmux, or with
 `--standalone`, `--server` or `-c`, it starts opencode unbound and says why.
 
 If the TUI then switches to another session, the window's note says so, and a

@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"html"
+	"time"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -169,5 +173,67 @@ func TestTheQueueIsOpenForASendableOpenCodeWindowOnly(t *testing.T) {
 	}
 	if why := mirrorQueueOff(on, mirror.SessionView{Host: "ws", Session: "main", Window: "@9"}); why != SendQueueNotClaude {
 		t.Fatalf("a shell window's queue: %q", why)
+	}
+}
+
+// TestAQueuedMessageIsItsOwnMessageEvenWhileTheSameWordsAreHeld: 🔴 a Send of
+// "yes" comes back Not confirmed (it may have landed) and is HELD under its
+// key; a QUEUED "yes" to the same window, delivered meanwhile, is a message of
+// its own — its own key, so its own opencode message id. Reusing the held key
+// would make opencode answer it with the first message's record: reported
+// Sent, never delivered (round 1 of #486).
+func TestAQueuedMessageIsItsOwnMessageEvenWhileTheSameWordsAreHeld(t *testing.T) {
+	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, windows: ocWindows(), statusReport: true, openCodeSend: true}
+	s, ts := viewServer(t, fm)
+	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "text": {"yes"}, "nonce": {"nonce-0123456789abcdef"}}
+	fm.v2.pasteErr = fmt.Errorf("mirror: the host did not answer: %w", mirror.ErrPasteUnconfirmed)
+	if code, _, again := postSendNonce(t, ts.URL, sessionCookieFor(s), form); code < 400 || !again {
+		t.Fatalf("instrument check: the Send was not held as may-have-landed (%d)", code)
+	}
+	fm.v2.pasteErr = nil
+	now := time.Now()
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaQueue})
+	it := sendqueue.Item{ID: 77, Owner: 1, Body: "yes", StepUpAt: now, CreatedAt: now,
+		Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"}}
+	if out := s.sendQueueDeliver(ctx, it); !out.Sent {
+		t.Fatalf("the queued message: %+v", out)
+	}
+	fm.v2.mu.Lock()
+	keys := append([]string(nil), fm.v2.keys...)
+	fm.v2.mu.Unlock()
+	if len(keys) != 2 || keys[1] != sendQueueNonce(77) || keys[1] == keys[0] {
+		t.Fatalf("keys %q; the queued message must go under its own key %q, not the held one", keys, sendQueueNonce(77))
+	}
+}
+
+// TestASendAgainRefusedAsAnotherSessionsMessageIsReleased: after the pane was
+// started on another session, a Send again under the held key is refused 409
+// (the id is the other session's message). That releases the hold: the NEXT
+// Send again is a new message under its own nonce, not the same 409 until
+// the hold expires.
+func TestASendAgainRefusedAsAnotherSessionsMessageIsReleased(t *testing.T) {
+	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, windows: ocWindows(), statusReport: true, openCodeSend: true}
+	s, ts := viewServer(t, fm)
+	cookie := sessionCookieFor(s)
+	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "text": {"do it"}, "nonce": {"nonce-0123456789abcdef"}}
+	fm.v2.pasteErr = fmt.Errorf("mirror: the host did not answer: %w", mirror.ErrPasteUnconfirmed)
+	_, _, _ = postSendNonce(t, ts.URL, cookie, form)
+	fm.v2.pasteErr = &mirror.PasteRefusedError{Why: mirror.PasteRefusedOpenCodeConflictText, Refusal: mirror.PasteRefusalOpenCodeConflict}
+	form.Set("nonce", "nonce-fedcba9876543210")
+	form.Set("again", "1")
+	if code, body, _ := postSendNonce(t, ts.URL, cookie, form); code != http.StatusConflict || body != mirror.PasteRefusedOpenCodeConflictText {
+		t.Fatalf("the 409 Send again: %d %q", code, body)
+	}
+	fm.v2.pasteErr = nil
+	form.Set("nonce", "nonce-aaaabbbbccccdddd")
+	if code, body, _ := postSendNonce(t, ts.URL, cookie, form); code != http.StatusNoContent {
+		t.Fatalf("the next Send again: %d %q", code, body)
+	}
+	fm.v2.mu.Lock()
+	keys := append([]string(nil), fm.v2.keys...)
+	fm.v2.mu.Unlock()
+	want := []string{"nonce-0123456789abcdef", "nonce-0123456789abcdef", "nonce-aaaabbbbccccdddd"}
+	if strings.Join(keys, ",") != strings.Join(want, ",") {
+		t.Fatalf("keys %q, want %q (the conflict released the hold)", keys, want)
 	}
 }

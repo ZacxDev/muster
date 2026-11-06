@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/opencodehost"
@@ -144,7 +145,11 @@ func (h *hostSide) sendOpenCode(m mirror.Msg) {
 		reply(ocRefusal(mirror.PasteRefusalOpenCodeGone, mirror.PasteRefusedOpenCodeGoneText), ag.Gen, msgID)
 	case errors.Is(err, opencodehost.ErrUnauthorized):
 		reply(errors.New(unauthorizedWhy), ag.Gen, msgID)
-	case errors.Is(err, opencodehost.ErrPromptConflict), errors.Is(err, opencodehost.ErrPromptRefused), isDialError(err):
+	case errors.Is(err, opencodehost.ErrPromptConflict):
+		// The id is another session's message: a retry of a send first tried
+		// on the session this pane showed before. Nothing was admitted here.
+		reply(ocRefusal(mirror.PasteRefusalOpenCodeConflict, mirror.PasteRefusedOpenCodeConflictText), ag.Gen, msgID)
+	case errors.Is(err, opencodehost.ErrPromptRefused), isDialError(err):
 		// Refused, or never reached the server: nothing was admitted.
 		reply(fmt.Errorf("Not sent: %v", err), ag.Gen, msgID)
 	default:
@@ -162,9 +167,13 @@ func (h *hostSide) sendOpenCode(m mirror.Msg) {
 // "/etc/hosts is wrong" — passes. A read that fails refuses a text starting
 // with "/", since what it would do cannot be told.
 func refuseSlashCommand(ctx context.Context, cl *opencodehost.Client, session, text string) error {
-	first, _, _ := strings.Cut(strings.TrimLeft(text, " \t\n"), " ")
-	first, _, _ = strings.Cut(first, "\n")
-	name, ok := strings.CutPrefix(first, "/")
+	// The first word, after ANY leading whitespace (unicode.IsSpace: a
+	// no-break space too), up to ANY whitespace (a tab, a newline).
+	words := strings.FieldsFunc(text, unicode.IsSpace)
+	if len(words) == 0 {
+		return nil
+	}
+	name, ok := strings.CutPrefix(words[0], "/")
 	if !ok || name == "" || strings.Contains(name, "/") {
 		return nil
 	}

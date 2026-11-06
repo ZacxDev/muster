@@ -300,6 +300,11 @@ func TestTheHostRefusesAGatedSendItCannotMake(t *testing.T) {
 			waitUntil(t, "busy", func() bool { s, _ := src.status("ses_fixtureS"); return s == mirror.StatusBusy })
 		}},
 		{"a slash command", "/review the branch", mirror.PasteRefusalOpenCodeSlash, mirror.PasteRefusedOpenCodeSlashText, true, nil, nil},
+		// Any leading whitespace, and any whitespace after the command.
+		{"a slash command after a space", " /review", mirror.PasteRefusalOpenCodeSlash, mirror.PasteRefusedOpenCodeSlashText, true, nil, nil},
+		{"a slash command after a newline and a tab", "\n\t/review now", mirror.PasteRefusalOpenCodeSlash, mirror.PasteRefusedOpenCodeSlashText, true, nil, nil},
+		{"a slash command after a no-break space", "\u00a0/review now", mirror.PasteRefusalOpenCodeSlash, mirror.PasteRefusedOpenCodeSlashText, true, nil, nil},
+		{"a slash command followed by a tab", "/review\tx", mirror.PasteRefusalOpenCodeSlash, mirror.PasteRefusedOpenCodeSlashText, true, nil, nil},
 		{"a slash command while the commands cannot be read", "/review", mirror.PasteRefusalOpenCodeSlash, "", true, nil, func(srv *opencodetest.Server, _ *OpenCodeSource) {
 			srv.FailCommands(true)
 		}},
@@ -414,5 +419,29 @@ func TestASessionCreatedAfterTheStreamOpenedTakesASendAtOnce(t *testing.T) {
 	}
 	if p := srv.Prompts(); len(p) != 1 || p[0].Session != "ses_fixtureS" {
 		t.Fatalf("admitted %+v", p)
+	}
+}
+
+// TestAnIDAnotherSessionHoldsIsAConflictNotAFailure: a send whose message id
+// opencode already holds in ANOTHER session (a Send again after the pane was
+// started on another session) answers 409: the host names that refusal, so
+// muster releases the hold and the next try is a new message.
+func TestAnIDAnotherSessionHoldsIsAConflictNotAFailure(t *testing.T) {
+	srv, src := sendFixture(t)
+	srv.PutSession("ses_fixtureOther", "the earlier session", "")
+	cl, err := opencodehost.NewClient(srv.URL, func() string { return srv.Issue() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.Prompt(context.Background(), "ses_fixtureOther", "msg_fixtureone", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := runSendHost(t, src, true, true)
+	d.send(t, ocPaste(1, "hello", windowOf(t, d).StatusSince, "msg_fixtureone"))
+	if m := pastedOf(t, d, 1); m.Refusal != mirror.PasteRefusalOpenCodeConflict || m.Error != mirror.PasteRefusedOpenCodeConflictText {
+		t.Fatalf("answered %+v; want the conflict refusal", m)
+	}
+	if n := len(srv.Prompts()); n != 1 {
+		t.Fatalf("admitted %d; want only the other session's", n)
 	}
 }

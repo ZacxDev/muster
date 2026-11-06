@@ -241,8 +241,10 @@ and the frames `prompt-v2.0.32.sse` (location directories replaced).
   (exit 2), never forwarded.
 - It **refuses a version mismatch** (exit 1): the TUI's `--version` against
   the running service's `GET /api/info`, naming both and the fix
-  (`opencode service restart`). Upstream's TUI would restart the service to
-  match, which can sign other clients out.
+  (`opencode service restart`), on EVERY path — bound or not — whenever the
+  service answers. Upstream's TUI would restart the service to match, which
+  can sign other clients out. A `--version` that fails or times out is said
+  on stderr, and the TUI starts: only a known mismatch refuses.
 - It creates the session first (a fresh `ses_` id in upstream's format, in
   the directory), or uses `-s <id>` (created when it does not exist, as
   opencode's own `-s` does; a subagent's session is not bound).
@@ -289,6 +291,15 @@ and the frames `prompt-v2.0.32.sse` (location directories replaced).
   post "not sent"; a post with no answer (a timeout, a dropped connection) is
   **unconfirmed**, never "not sent".
 - The host logs each send's session id and message id, never the text.
+- A Send again whose id opencode holds in ANOTHER session (409: the pane was
+  started on another session since the first try) is refused as such, and
+  muster forgets that first try: the next send is a new message. Only an
+  explicit Send again reuses a held message's key; a queued message always
+  goes under its own.
+- ⚠ **Known: the send is advertised at connect.** `Msg.OpenCodeSend`, like
+  `Msg.OpenCodeAnswer`, is part of the hello, so a host paired AFTER its
+  muster-mirror connected advertises the send only from its next connection:
+  restart muster-mirror after `muster-mirror opencode-pair`.
 - `internal/opencodehost`'s request ledger now names its four writes: mint,
   reply, prompt (from `Prompt` only) and createSession (from `CreateSession`
   only).

@@ -718,15 +718,27 @@ func (s *Server) settleHeld(ctx context.Context, host, session, window string, t
 		s.sends.release(owner, dest, text)
 	case errors.Is(err, mirror.ErrPasteUnconfirmed):
 		s.sends.hold(owner, dest, text, key)
+	case mirror.PasteGuardRefusal(err) == mirror.PasteRefusalOpenCodeConflict:
+		// opencode holds the key's message id in ANOTHER session (the pane was
+		// started on another session since): that first try did not land
+		// here, and a Send again under the same key would be refused the same
+		// way until the hold expired. Released: the next send is a new message.
+		s.sends.release(owner, dest, text)
 	}
 }
 
-// messageKey is the key a delivery of text to that destination is sent under
-// (mirror.MessageKey: a gated send's message id is derived from it): the key
-// of its first try while that MAY have landed (held) — so a "Send again", or a
-// queued copy of the same words, posts the same opencode message id and
-// lands at most once — else this delivery's own nonce.
-func (s *Server) messageKey(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, nonce string) string {
+// messageKey is the key a Send of text to that destination is sent under
+// (mirror.MessageKey: a gated send's message id is derived from it). 🔴 ONLY
+// THE PERSON'S EXPLICIT "Send again" (again) of a message that MAY have
+// landed (held) reuses its first try's key — so it posts the same opencode
+// message id and lands at most once. Any other send, a queued message's above
+// all, is its own message under its own nonce: reusing the held key there
+// would make opencode answer it with the earlier message's record, and a
+// distinct message would be reported Sent and never delivered.
+func (s *Server) messageKey(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, nonce string, again bool) string {
+	if !again {
+		return nonce
+	}
 	if k := s.sends.heldKey(requestOwner(ctx), heldDestKey(host, session, window, target), text); k != "" {
 		return k
 	}
@@ -767,7 +779,7 @@ func (s *Server) mirrorSendHeld(ctx context.Context, p mirrorPending) (repeat bo
 	if s.isHeldFor(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.again) {
 		return false, errUnconfirmedRepeat
 	}
-	key := s.messageKey(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.nonce)
+	key := s.messageKey(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.nonce, p.again)
 	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target, mirror.MessageKey(key))
 	if !repeat {
 		s.settleHeld(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, key, err)

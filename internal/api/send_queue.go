@@ -916,7 +916,10 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		return sendQueueStale()
 	}
-	key := s.messageKey(ctx, it.Target.Host, it.Target.Session, it.Target.Window, mirror.PasteClaude, it.Body, sendQueueNonce(it.ID))
+	// A queued message is its own message: its own key, never a held one
+	// (messageKey). Its retries carry the same row nonce, so they still post
+	// one id.
+	key := sendQueueNonce(it.ID)
 	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude,
 		append(opts, mirror.MessageKey(key))...)
 	if !repeat {

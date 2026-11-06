@@ -22,6 +22,8 @@ type launchRig struct {
 	execd   []string
 	stderr  bytes.Buffer
 	tuiVer  string
+	// verErr makes `opencode --version` fail.
+	verErr error
 }
 
 func newLaunchRig(t *testing.T) *launchRig {
@@ -40,7 +42,7 @@ func (r *launchRig) deps() launchDeps {
 	return launchDeps{
 		getenv:   func(k string) string { return r.env[k] },
 		lookPath: func(string) (string, error) { return "/srv/fixture/bin/opencode", nil },
-		version:  func(string) (string, error) { return r.tuiVer, nil },
+		version:  func(string) (string, error) { return r.tuiVer, r.verErr },
 		exec: func(bin string, argv, env []string) error {
 			r.execd = append([]string{bin}, argv...)
 			return nil
@@ -210,5 +212,55 @@ func TestTheLauncherRefusesWhatItDoesNotKnow(t *testing.T) {
 		if rc := r.run(args...); rc != 2 || r.execd != nil {
 			t.Fatalf("%q: rc %d exec %q", args, rc, r.execd)
 		}
+	}
+}
+
+// TestTheVersionCheckRunsOnEveryPath: a TUI of another version than the
+// running service is refused on the paths the launcher does not BIND too —
+// outside tmux, -c, --standalone, --server — since it would restart the
+// service all the same: exit 1, nothing started.
+func TestTheVersionCheckRunsOnEveryPath(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+		prep func(*launchRig)
+	}{
+		{"bound", nil, nil},
+		{"outside tmux", nil, func(r *launchRig) { delete(r.env, "TMUX") }},
+		{"continue", []string{"-c"}, nil},
+		{"standalone", []string{"--standalone"}, nil},
+		{"another server", []string{"--server", "http://127.0.0.1:9"}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newLaunchRig(t)
+			if c.prep != nil {
+				c.prep(r)
+			}
+			r.srv.SetVersion("2.0.33+abc1234")
+			r.tuiVer = "opencode v2.0.32+6ec5682"
+			if rc := r.run(c.args...); rc != 1 || r.execd != nil || !strings.Contains(r.stderr.String(), "opencode service restart") {
+				t.Fatalf("rc %d exec %q: %s", rc, r.execd, r.stderr.String())
+			}
+		})
+	}
+}
+
+// TestAVersionThatCannotBeReadIsSaidAndTheStartGoesOn: `opencode --version`
+// failing (or timing out) is NOT a mismatch: the launcher says it could not
+// check, and starts the TUI — bound when it can bind, unbound when not.
+func TestAVersionThatCannotBeReadIsSaidAndTheStartGoesOn(t *testing.T) {
+	r := newLaunchRig(t)
+	r.verErr = errors.New("signal: killed")
+	if rc := r.run(); rc != 0 || r.execd == nil || !strings.Contains(r.stderr.String(), "could not be checked") {
+		t.Fatalf("bound: rc %d exec %q: %s", rc, r.execd, r.stderr.String())
+	}
+	if _, err := r.record(t); err != nil {
+		t.Fatalf("bound: no record: %v", err)
+	}
+	r = newLaunchRig(t)
+	r.verErr = errors.New("signal: killed")
+	delete(r.env, "TMUX")
+	if rc := r.run(); rc != 0 || r.execd == nil || !strings.Contains(r.stderr.String(), "could not be checked") || !strings.Contains(r.stderr.String(), "UNBOUND") {
+		t.Fatalf("unbound: rc %d exec %q: %s", rc, r.execd, r.stderr.String())
 	}
 }

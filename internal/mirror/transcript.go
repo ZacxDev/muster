@@ -149,7 +149,7 @@ func PasteGuardRefusal(err error) string {
 	switch pr.Refusal {
 	case PasteRefusalMultiplexer, PasteRefusalUnchecked, PasteRefusalOpenCode,
 		PasteRefusalOpenCodeOff, PasteRefusalOpenCodeUnbound, PasteRefusalOpenCodeNotIdle,
-		PasteRefusalOpenCodeSlash, PasteRefusalOpenCodeGone:
+		PasteRefusalOpenCodeSlash, PasteRefusalOpenCodeGone, PasteRefusalOpenCodeConflict:
 		return pr.Refusal
 	}
 	return ""

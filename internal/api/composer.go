@@ -97,6 +97,7 @@ const (
 	noticeOpenCodeNotIdle = "opencode-not-idle"
 	noticeOpenCodeSlash   = "opencode-slash"
 	noticeOpenCodeGone    = "opencode-gone"
+	noticeOpenCodeConflict = "opencode-conflict"
 	// A queued message's Edit (send_queue_edit.go).
 	noticeEditing           = "editing"
 	noticeEdited            = "edited"
@@ -126,6 +127,7 @@ var pasteGuardNotices = map[string]string{
 	mirror.PasteRefusalOpenCodeNotIdle: noticeOpenCodeNotIdle,
 	mirror.PasteRefusalOpenCodeSlash:   noticeOpenCodeSlash,
 	mirror.PasteRefusalOpenCodeGone:    noticeOpenCodeGone,
+	mirror.PasteRefusalOpenCodeConflict: noticeOpenCodeConflict,
 }
 
 // claudeGuardNotices is the notice for each kind of Claude prompt guard
@@ -191,6 +193,7 @@ var composerNotices = map[string]struct {
 	noticeOpenCodeNotIdle:   {"Not sent: opencode is not idle right now (working, or waiting for you). Queue it instead.", false},
 	noticeOpenCodeSlash:     {mirror.PasteRefusedOpenCodeSlashText, false},
 	noticeOpenCodeGone:      {mirror.PasteRefusedOpenCodeGoneText, false},
+	noticeOpenCodeConflict:  {mirror.PasteRefusedOpenCodeConflictText, false},
 	noticeEditing:           {SendQueueEditingText, true},
 	noticeEdited:            {SendQueueEditedText, true},
 	noticeEditCancelled:     {SendQueueEditCancelledText, true},

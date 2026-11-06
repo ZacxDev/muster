@@ -1387,6 +1387,11 @@ const (
 	PasteRefusalOpenCodeSlash = "opencode-slash"
 	// PasteRefusalOpenCodeGone: opencode has no such session any more.
 	PasteRefusalOpenCodeGone = "opencode-gone"
+	// PasteRefusalOpenCodeConflict: opencode holds the message's id in
+	// another session (409) — a Send again after the pane was started on
+	// another session. muster forgets that first try, so the next send is a
+	// new message.
+	PasteRefusalOpenCodeConflict = "opencode-conflict"
 	// PasteRefusalOpenCodeUnconfirmed: the host posted the message and heard
 	// no answer: it MAY have been admitted (muster reads it as
 	// ErrPasteUnconfirmed).
@@ -1414,7 +1419,9 @@ const (
 	PasteRefusedOpenCodeUnknownText = "Not sent: muster cannot tell whether opencode is idle right now. Try again in a moment."
 	PasteRefusedOpenCodeSlashText   = "Not sent: that is an opencode slash command, and muster cannot run opencode's " +
 		"commands yet (sent as a message, the model would read it as text). Type it in the terminal."
-	PasteRefusedOpenCodeGoneText = "Not sent: that opencode session no longer exists."
+	PasteRefusedOpenCodeGoneText     = "Not sent: that opencode session no longer exists."
+	PasteRefusedOpenCodeConflictText = "Not sent: opencode already has this message in another session " +
+		"(the pane was started on another session since the first try). Send it again to send it as a new message."
 	// The Claude prompt guard's refusals (PasteRefusalClaudeWaiting): its
 	// session says it is waiting on the person; its screen shows a dialog; its
 	// screen could not be read.
