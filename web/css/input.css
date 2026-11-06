@@ -523,6 +523,17 @@
 [data-mv-spacer] {
   display: none;
 }
+/*
+ * Revealed, the box shares its row with the mic, the ⋯ and the split Send, so
+ * on a phone it is narrow: its placeholder stays one line (ellipsed) rather
+ * than wrapping and making an EMPTY box two lines tall (measured 68px against
+ * one line's 44 at 390px wide, e2e/tests/composer-autosize.spec.ts).
+ */
+#mv-input::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 @media (pointer: coarse) {
   #mv-form[data-mv-collapsed] [data-mv-field] {
     display: none;

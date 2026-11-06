@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
@@ -148,6 +149,8 @@ async function openView(page: Page, host: string) {
   await signIn(page, origin);
   await page.goto(origin + viewPath(host));
   await expect(page.locator('#mv-input'), `the rendered view (log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
+  // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+  await revealBox(page);
 }
 
 // queue queues text through Send's caret: the caret opens its menu, and the
