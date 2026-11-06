@@ -1076,7 +1076,11 @@ for (const vp of [
   { name: 'desktop 1280×800', touch: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
 ]) {
   test.describe(`drafts, ${vp.name}`, () => {
-    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+    // Service workers blocked: a test here answers the send with page.route,
+    // which a page the PWA's worker has claimed no longer reaches (see
+    // optimistic-send.spec.ts — measured there; the reveal step on a phone
+    // gives the worker the time to claim it).
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] }, serviceWorkers: 'block' });
 
     test('a draft survives navigating away and back, is cleared once sent, and is never restored into another window, host or view', async ({ page }) => {
       await busyAndSeen();
