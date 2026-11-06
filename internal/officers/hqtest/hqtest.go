@@ -55,6 +55,10 @@ type Item struct {
 	// Investigation is the `investigation` block the item was completed with
 	// (civ-hq docs/OFFICERS.md "Investigation"); absent when none.
 	Investigation map[string]any `json:"investigation,omitempty"`
+	// RoutineSummary is the summary a routine holder completed the item with
+	// outcome needs_judgement (HQ's routine_summary, kept for the judgement
+	// claimer); absent when none.
+	RoutineSummary string `json:"routine_summary,omitempty"`
 }
 
 // tierOf is the tier item it reads as: its own, or judgement when unset.
@@ -131,6 +135,11 @@ type Server struct {
 	ObsRawCalls            []ObsCall
 	ObsRawNotInvestigating bool
 	ObsRawAnswers          [][]byte
+	// ObsRawAdmitsRoutine is an HQ that also admits a raw read of a ROUTINE
+	// item. No HQ does yet: HQ's raw-read holder check
+	// refuses any item that is not judgement tier, as
+	// this fake does by default.
+	ObsRawAdmitsRoutine bool
 	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
 	// "Priority"); false — the default — is an HQ from before it: 404.
 	ClaimNext bool
@@ -489,7 +498,7 @@ func (s *Server) obsRaw(w http.ResponseWriter, officer string, body map[string]a
 	idf, _ := body["item_id"].(float64)
 	inst, _ := body["instance"].(string)
 	it := s.items[strconv.FormatInt(int64(idf), 10)]
-	if s.ObsRawNotInvestigating || it == nil || it.OfficerID != officer || tierOf(it) != "judgement" || it.Status != "claimed" ||
+	if s.ObsRawNotInvestigating || it == nil || it.OfficerID != officer || (tierOf(it) != "judgement" && !(s.ObsRawAdmitsRoutine && tierOf(it) == "routine")) || it.Status != "claimed" ||
 		it.ClaimedBy != inst || it.LeaseExpiresAt == nil || !it.LeaseExpiresAt.After(s.Now()) {
 		s.write(w, http.StatusForbidden, map[string]any{"error": "not an investigating officer's judgement item held by that instance", "code": "not_investigating"})
 		return
@@ -928,6 +937,12 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 			return
 		}
 		outcome, _ := body["outcome"].(string)
+		switch outcome {
+		case "done", "escalated", "no_action", "needs_judgement":
+		default:
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "outcome must be one of done, escalated, no_action, needs_judgement", "code": "invalid"})
+			return
+		}
 		if sent {
 			if msg := investigationInvalid(inv, outcome); msg != "" {
 				s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"})
@@ -936,6 +951,25 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		}
 		if !live || it.ClaimedBy != instance {
 			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
+			return
+		}
+		// needs_judgement (HQ's complete of a routine item):
+		// no links; a ROUTINE item only (a judgement item is a 400, nothing
+		// changed); the item is promoted IN PLACE — judgement, open, no holder,
+		// the summary kept as routine_summary — and nothing closes.
+		if outcome == "needs_judgement" {
+			if l, _ := body["links"].([]any); len(l) > 0 {
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "links are not kept for outcome needs_judgement: put them in the summary", "code": "invalid"})
+				return
+			}
+			if tierOf(it) != "routine" {
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "outcome needs_judgement is for a routine item only: this item is " + tierOf(it) +
+					" tier — complete it done, no_action or escalated", "code": "invalid"})
+				return
+			}
+			summary, _ := body["summary"].(string)
+			it.Tier, it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt, it.RoutineSummary = "judgement", "open", "", nil, now, summary
+			s.write(w, http.StatusOK, map[string]any{"item": *it})
 			return
 		}
 		if outcome == "escalated" && !sent && s.Investigating[officer] {

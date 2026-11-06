@@ -469,9 +469,13 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	out := make([]agentTool, 0, len(all))
 	for _, t := range all {
 		if t.officerOnly {
-			if o, _, officer := s.officerOf(a); !officer || !officers.ToolOffered(o, t.def.Name) {
+			o, _, officer := s.officerOf(a)
+			if !officer || !officers.ToolOffered(o, t.def.Name) {
 				continue
 			}
+			// the definition as o's pool is offered it (officer_complete's
+			// outcomes and investigation differ per pool)
+			t.def = officerToolDefFor(o, t.def)
 		}
 		if t.chiefOnly || t.notChief {
 			if !decided {

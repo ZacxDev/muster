@@ -8,14 +8,17 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// officer_obs_raw: an investigating judgement instance's own PromQL / LogQL,
+// officer_obs_raw: an investigating officer instance's own PromQL / LogQL,
 // passed through to HQ's POST /officers/{id}/obs/raw (docs/officers.md
 // "Raw metrics and logs: officer_obs_raw"; officers/obs.go ObsRawBody).
 //
 // The order of one call, each step refusing before the next:
 //
-//  1. the binding (dispatchOfficerTool): an instance of a JUDGEMENT pool
-//     (officers.ToolOffered); a routine instance is refused there;
+//  1. the binding (dispatchOfficerTool): an instance of either pool of a
+//     tiered officer (officers.ToolOffered; the routine pool by operator
+//     decision); an untiered officer's instance is refused there.
+//     HQ decides which ITEMS it answers for: today only judgement-tier ones
+//     (a routine item's read is HQ's 403 not_investigating, returned as is);
 //  2. the item: the instance must hold one live claim in HQ (or name which of
 //     its claims, item_id) — the same gate as officer_kube_read (heldItem);
 //  3. the body: the arguments object passed through, plus the item and the
@@ -35,12 +38,12 @@ import (
 // ---------------------------------------------------------------------------
 
 // obsRawToolDef is officer_obs_raw's definition (offered by
-// officers.ToolOffered: judgement instances only).
+// officers.ToolOffered: both pools of a tiered officer).
 func obsRawToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: officers.ToolObsRaw,
 		Description: "Run your OWN PromQL or LogQL (POST /officers/{id}/obs/raw) for the item you hold, when HQ's named queries (" +
-			officers.ToolObsQuery + ") cannot answer the question. HQ answers it only when your officer's type investigates (otherwise 403 " +
-			"not_investigating) and checks every argument itself — the window, the step, the series and line limits, its rate limit, and a Loki " +
+			officers.ToolObsQuery + ") cannot answer the question. HQ decides whether it answers for your item (a 403 not_investigating means it does not: " +
+			"your officer's type does not investigate, or HQ takes no raw read of an item of your tier) and checks every argument itself — the window, the step, the series and line limits, its rate limit, and a Loki " +
 			"stream selector (required; the apiserver audit stream is refused) — and its refusal names the limit to fix. It redacts every log " +
 			"line and audits the query text. Prometheus is not pinned to a cluster: filter by cluster yourself. `empty: true` is NOT a zero nor " +
 			"an absence of logs: run the positive control its `hint` names before you report none. A 429 means wait a minute (HQ's limit is " +
