@@ -94,7 +94,10 @@ another identity than the agent, and the spec belongs to the supervisor's group.
 
 A change in `.env` reaches a running chief when muster restarts
 (`docker compose up -d --wait`): muster re-applies its spec at boot on the new
-credential, with no Off/On needed. A chief that is off stays off.
+credential, with no Off/On needed. A chief that is off stays off. If you
+removed its credential and set no other, muster **stops** it at that boot (it
+does not keep running on the one you deleted), and Account → Chief says what to
+set.
 
 Account → Chief says which one it runs on, whether routing work to your
 sessions is on (it needs `MUSTER_SESSION_ROUTING=1`), and,
