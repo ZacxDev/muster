@@ -121,6 +121,28 @@ test('a human-origin pasted notice is a user bubble; a command record with an ex
   await expect(users.nth(2)).toContainText('<command-name>/model</command-name>');
 });
 
+// SNAKE_CASE IS NOT EMPHASIS: `_` cannot open or close emphasis inside a word
+// (CommonMark), so the block route_to_session pastes into a session shows its
+// route_id as written. On origin/main the user bubble drew
+// route<em>id rt</em>8f51… — the ids are synthetic.
+test('snake_case identifiers in a routed prompt are not italicised; _real emphasis_ still is', async ({ page }) => {
+  const id = 'rt_8f51ffceb101b6c0faaf3b9b';
+  const tr = newTranscript(
+    prompt('Routed to you by your owner\'s chief: route_id ' + id + ', owner message 42. Call the route_reply tool with route_id ' + id + '.') +
+      reply('Answered via route_reply; see focus_search and file_path. This is _real emphasis_.'),
+  );
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  const user = log.locator('[data-bubble="user"]').first();
+  await expect(user).toContainText('route_id ' + id + ', owner message 42');
+  await expect(user).toContainText('Call the route_reply tool with route_id ' + id + '.');
+  await expect(user.locator('em')).toHaveCount(0);
+  const asst = log.locator('[data-bubble="assistant"]').first();
+  await expect(asst).toContainText('Answered via route_reply; see focus_search and file_path.');
+  await expect(asst.locator('em')).toHaveCount(1);
+  await expect(asst.locator('em')).toHaveText('real emphasis');
+});
+
 // 🔴 A TOKEN IN THE TRANSCRIPT NEVER REACHES THE PAGE: the host redacts every
 // free-text field of the rendered view's stream (internal/mirrorhost
 // redact_stream.go) — a prompt, a reply, a notice's detail, in the backfill

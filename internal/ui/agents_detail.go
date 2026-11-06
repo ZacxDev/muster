@@ -1798,6 +1798,40 @@ func agentChatScript(name string) g.Node {
       .replace(/\uE000/g, '')
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+  // mdUnderEm applies _x_ italics under CommonMark's rule for '_': emphasis can
+  // neither open nor close INSIDE A WORD, so snake_case, route_id rt_8f51… and
+  // file_path stay as written. The old /(^|[^_])_([^_\n]+)_/ paired any two
+  // underscores on a line. Same rule, same shape as mdItalicUnderscore in
+  // internal/ui/markdown.go (a closer index computed once, right to left, so a
+  // run of unclosed openers stays linear); TestJSUnderscoreEmphasisMatchesGo
+  // runs mdInline under node against the Go renderer's cases.
+  function mdUnderWord(c) { return c === '_' || /[\p{L}\p{N}]/u.test(c); }
+  function mdUnderEm(s) {
+    if (s.indexOf('_') < 0) return s;
+    var cs = Array.from(s), n = cs.length, next = new Array(n + 1);
+    var sp = function (c) { return /\s/.test(c); };
+    var closes = function (j) {
+      if (j === 0 || cs[j - 1] === '_' || sp(cs[j - 1])) return false;
+      return !(j + 1 < n && mdUnderWord(cs[j + 1]));
+    };
+    var opens = function (i) {
+      if ((i > 0 && mdUnderWord(cs[i - 1])) || i + 1 >= n) return false;
+      return cs[i + 1] !== '_' && !sp(cs[i + 1]);
+    };
+    next[n] = -1;
+    for (var k = n - 1; k >= 0; k--) {
+      next[k] = cs[k] === '\n' ? -1 : (cs[k] === '_' && closes(k)) ? k : next[k + 1];
+    }
+    var out = '', i = 0;
+    while (i < n) {
+      if (cs[i] === '_' && opens(i)) {
+        var j = next[i + 1];
+        if (j > 0) { out += '<em>' + cs.slice(i + 1, j).join('') + '</em>'; i = j + 1; continue; }
+      }
+      out += cs[i]; i++;
+    }
+    return out;
+  } // end mdUnderEm
   function mdInline(s) { // s is ALREADY escaped
     // Tokenize FIRST: pull inline code spans (and markdown links) OUT of the
     // string into placeholder tokens before any other inline transform runs, so
@@ -1835,7 +1869,7 @@ func agentChatScript(name string) g.Node {
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-    s = s.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+    s = mdUnderEm(s);
     // Restore tokens verbatim (their content was already escaped before stashing).
     s = s.replace(/\uE000(\d+)\uE000/g, function (_, i) { return toks[+i]; });
     return s;
