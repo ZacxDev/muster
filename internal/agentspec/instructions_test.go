@@ -374,6 +374,24 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			min:  1000,
 		},
 		{
+			name: "chiefComposeToolsSection, routing on",
+			text: chiefComposeToolsSection(ComposeChiefTools(true)),
+			want: "54963f3c57e5ae5418c7ea3f42dceeec0a13ebb191f8de0ac3bcc40637f410dd",
+			min:  600,
+		},
+		{
+			name: "chiefComposeToolsSection, routing off",
+			text: chiefComposeToolsSection(ComposeChiefTools(false)),
+			want: "633690ff215b13bc414b6b45e47add96faa7865ee416ea207e82e61fe213c823",
+			min:  600,
+		},
+		{
+			name: "chiefComposePluginSection",
+			text: chiefComposePluginSection,
+			want: "bcf843bd5ef41264ae053ecc2712e776d38d1f3f8ecdad8251321ade63e189d5",
+			min:  500,
+		},
+		{
 			name: "chiefHQSectionClaudeCode",
 			text: chiefHQSectionClaudeCode,
 			want: "8505d4d483224d83c2b2cf180c352f4272c9b180354b48bb9d1de876a2f8a379",
@@ -451,6 +469,26 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			name: "claude-code, plugins and routing on",
 			got:  ChiefInstructionsClaudeCode(true, true),
 			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
+		},
+		{
+			name: "compose, plugins off, routing off",
+			got:  ChiefInstructionsCompose(false, false),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(false)),
+		},
+		{
+			name: "compose, plugins off, routing on",
+			got:  ChiefInstructionsCompose(false, true),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
+		},
+		{
+			name: "compose, plugins on, routing off",
+			got:  ChiefInstructionsCompose(true, false),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection,
+		},
+		{
+			name: "compose, plugins on, routing on",
+			got:  ChiefInstructionsCompose(true, true),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection + chiefRoutingSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {
