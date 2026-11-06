@@ -216,6 +216,9 @@ type app struct {
 	// memo relays cairn scope memos to the operator's agents; nil unless the
 	// relay's credential is set and a gateway exists. See buildMemoRelay.
 	memo *memorelay.Relay
+	// chiefReapplied is closed when the boot re-apply of a running Compose
+	// chief is done; nil without the Compose chief runtime.
+	chiefReapplied <-chan struct{}
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -506,6 +509,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// configuration.
 		return nil, fmt.Errorf("agent plane: %w", err)
 	}
+	if prov != nil && cfg.chiefCompose() {
+		ext.ComposeChief = &api.ComposeChief{Credential: composeChiefCredential(cfg, plane), OpenRouterKey: plane.OpenRouterKey,
+			Spec: composeSpec(cfg.ChiefSpecDir), StartIfLive: prov.StartIfLive}
+	}
 	if prov != nil {
 		ext.Provisioner = prov
 		// The job API's sha checkout and result_path read exec through the
@@ -730,6 +737,34 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 	}
 
+	// The Compose chief on the OpenRouter key reaches its model through the
+	// LLM proxy (api.EnableChiefLLM): the admin's chief alone, the model
+	// pinned, no muster budget (the key's own credit limit is the cap). Only
+	// the Compose chief: nothing else here runs a chief on the LLM route.
+	//
+	// 🔴 THE PROXY ASKS ext.ComposeChief ON EVERY REQUEST: it serves the chief
+	// only when composeChiefCredential says OpenRouter (never a chief on its
+	// subscription token), on the key the credential plane gives the owner.
+	// Without ext.ComposeChief it would serve on ChiefLLM.Key whatever the rule
+	// said, so that is a boot refusal.
+	if cfg.chiefCompose() {
+		if ext.ComposeChief == nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=%s: the Compose chief's credential rule is not wired (no agent provisioner), "+
+				"so the LLM proxy could not ask it", envChiefRuntime, chiefRuntimeCompose)
+		}
+		upstream := chiefLLMUpstream
+		if cfg.LLMTestUpstream != "" {
+			logger.Printf("llm proxy: 🔴 the chief's upstream is OVERRIDDEN to %s by %s — TEST ONLY: every chief "+
+				"request, and the OpenRouter key muster attaches to it, goes there", cfg.LLMTestUpstream, envTestLLMUpstream)
+			upstream = cfg.LLMTestUpstream
+		}
+		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: upstream}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)
+		}
+	}
+
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
 	// deliverability was computed from, so "a dispatch is accepted" and "something
 	// delivers it" cannot disagree. startBackgroundLoops runs it. It is built after
@@ -778,6 +813,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	a.logBanner(ext, port)
 	a.logFeatures(feats)
+	// 🔴 A RUNNING COMPOSE CHIEF IS RE-APPLIED ON THE CURRENT CONFIG: its spec
+	// (the CLI's credential) is built only when it starts, and a .env change
+	// restarts muster, not the chief's container (api.ReapplyComposeChiefAtBoot;
+	// audit #469 F3). In the background: a boot never waits on it.
+	if ext.ComposeChief != nil {
+		a.chiefReapplied = srv.ReapplyComposeChiefAtBoot(ctx)
+	}
 	return a, nil
 }
 

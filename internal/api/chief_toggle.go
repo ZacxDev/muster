@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"sync"
 
@@ -163,6 +164,10 @@ func (s *Server) chiefToggleAvailable(owner int64, list []agents.Agent) bool {
 	if s.ext.ChiefPrefs == nil {
 		return false
 	}
+	// The Compose chief's container runs the admin's chief only.
+	if s.ext.ComposeChief != nil && !composeChiefOwner(owner) {
+		return false
+	}
 	if s.ext.Provisioner != nil {
 		return true
 	}
@@ -201,8 +206,11 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 		}
 		list = l
 	}
+	if owner > 0 && s.ext.ComposeChief != nil && !composeChiefOwner(owner) {
+		return head + state("unavailable", ComposeChiefNotYours) + `</section>`
+	}
 	if owner <= 0 || !s.chiefToggleAvailable(owner, list) {
-		return head + state("unavailable", "Not available on this install. The chief runs as an agent in its own Kubernetes pod, and this muster has no agent provisioner (MUSTER_AGENT_PROVISIONER). Everything else works without it.") + `</section>`
+		return head + state("unavailable", ChiefNotSetUp) + `</section>`
 	}
 	notice := ""
 	switch r.URL.Query().Get("chief") {
@@ -212,6 +220,11 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 	case "refused":
 		notice = `<p role="alert" class="text-sm font-semibold text-fg">The chief could not be created: add an OpenRouter key or a Claude account under Credentials, then turn it on again.</p>
 `
+		if s.ext.ComposeChief != nil {
+			notice = `<p role="alert" class="text-sm font-semibold text-fg">The chief could not be created: ` +
+				html.EscapeString(ComposeChiefNeedsCredential) + `, then turn it on again.</p>
+`
+		}
 	case "failed":
 		notice = `<p role="alert" class="text-sm font-semibold text-fg">The chief could not be created. It stays off; try again.</p>
 `
@@ -227,10 +240,15 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 		s.logger.Printf("chief: account: read the toggle: %v", err)
 		return head + state("unknown", "Your chief setting could not be read. Reload the page to try again.") + `</section>`
 	}
-	if on {
-		return head + notice + state("on", "On.") + form(false, "Turn the chief off") + `</section>`
+	details := ""
+	if s.ext.ComposeChief != nil {
+		chief, has := primaryChief(ownedBy(list, owner))
+		details = s.composeChiefDetails(ctx, owner, chief, has, on)
 	}
-	return head + notice + state("off", "Off.") + form(true, "Turn the chief on") + `</section>`
+	if on {
+		return head + notice + state("on", "On.") + details + form(false, "Turn the chief off") + `</section>`
+	}
+	return head + notice + state("off", "Off.") + details + form(true, "Turn the chief on") + `</section>`
 }
 
 // chiefSwitchLock is owner's switch lock: every POST /account/chief of one

@@ -81,7 +81,7 @@ func (s *Server) chiefDispatchDeploymentRefusal(owner int64) string {
 	if !chiefMayDispatch(s.ext, owner) {
 		return chiefDispatchOptOut
 	}
-	if s.ext.Provisioner == nil {
+	if !s.dispatchServed() {
 		return "this deployment cannot start agents"
 	}
 	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {

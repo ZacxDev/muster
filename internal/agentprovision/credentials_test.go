@@ -121,7 +121,7 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 	// environment's credentials either — replaced, not merged — so a kind that
 	// read both (or another account name) still could not reach the admin's.
 	for _, kind := range []string{agents.KindClaudeCode, agents.KindGateway} {
-		c, err := a.specFor(ctx, row(41, kind))
+		c, err := a.specFor(ctx, row(41, kind), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +130,7 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 			t.Fatalf("member %s spec config carries an environment credential: %s", kind, dump)
 		}
 	}
-	if c, _ := a.specFor(ctx, row(41, agents.KindClaudeCode)); len(c.ClaudeCode.Accounts) != 1 || c.OpenRouterAPIKey != "" {
+	if c, _ := a.specFor(ctx, row(41, agents.KindClaudeCode), false); len(c.ClaudeCode.Accounts) != 1 || c.OpenRouterAPIKey != "" {
 		t.Fatalf("member claude-code config: accounts %d, openrouter key set %v", len(c.ClaudeCode.Accounts), c.OpenRouterAPIKey != "")
 	}
 }

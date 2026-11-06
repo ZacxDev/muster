@@ -77,6 +77,8 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 		RenderedHref: s.agentPageHref(r.Context(), a)}
 	if s.ext.Provisioner == nil {
 		v.Unavailable = "this build has no agent provisioner wired, so it cannot attach a terminal"
+	} else if s.ext.ComposeChief != nil {
+		v.Unavailable = ComposeChiefNoTerminal
 	}
 	// 🔴 THE TERMINAL HAS A MESSAGE BOX TOO — the SAME composer as a mirrored
 	// session's views (ui.ComposerView), posting to the agent's send route, which

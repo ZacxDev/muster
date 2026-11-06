@@ -27,7 +27,10 @@ func buildCredentialPlane(cfg config, personal credentials.Personal, roles crede
 		Roles:            roles,
 		Logger:           logger,
 	}
-	if cfg.claudeCodeEnabled() {
+	// The Compose chief with no MUSTER_CHIEF_CLAUDE_TOKEN has no account at all:
+	// it runs on the OpenRouter key (composeChiefCredential), and an empty
+	// static pool is refused by design (ccpool.NewStatic).
+	if cfg.claudeCodeEnabled() && !(cfg.chiefCompose() && len(cfg.AgentCCTokens) == 0) {
 		env, err := ccpool.NewStatic(cfg.AgentCCTokens)
 		if err != nil {
 			return nil, err

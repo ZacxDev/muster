@@ -623,10 +623,11 @@ jobs:
             sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume claude-code-agent:ci cc-smoke
 
-      # The image as a `docker compose` service (CCD_SPEC_DIR, `ccd compose`):
-      # the spec volume laid out as the compose install lays it out, the real
-      # ccd and CLI started, restarted, stopped and wiped through spec.json.
-      # Runs on the runner, not in the image: it drives `docker compose`.
+      # The image as deploy/docker-compose.yml's own `chief` service (`ccd
+      # compose`), with a stand-in for muster writing spec.json: the real ccd
+      # and CLI started, restarted, wiped and refused through specs muster
+      # never writes. Runs on the runner, not in the image: it drives
+      # `docker compose`.
       - name: compose-smoke (ccd compose, real ccd and CLI)
         run: images/claude-code-agent/compose-smoke.sh claude-code-agent:ci
 
@@ -858,8 +859,19 @@ jobs:
       - name: build the release assets (placeholder version 0.0.0)
         run: scripts/release-build.sh 0.0.0
 
-      - name: compose file is valid (docker compose config, every profile)
-        run: tests/compose-check.sh
+      # 🔴 AND ON AN OLD COMPOSE, NOT ONLY THE RUNNER'S. Compose validates the
+      # whole file before it applies a profile, so a key an old Compose does not
+      # know refuses `up` for EVERY user (#474 round 1 F1: a volume `subpath`,
+      # refused before 2.25). The oldest Compose v2 this file is held to, pinned
+      # by checksum; compose-check's old tier first shows it refuses a subpath.
+      - name: compose file is valid (docker compose config, every profile; and on Compose 2.20.3)
+        run: |
+          set -o pipefail
+          curl -fsSLo /tmp/docker-compose-2.20.3 https://github.com/docker/compose/releases/download/v2.20.3/docker-compose-linux-x86_64
+          echo "f45e4cb687df8b48a57f656097ce7175fa8e8bef70be407b011e29ff663f475f  /tmp/docker-compose-2.20.3" | sha256sum -c -
+          chmod +x /tmp/docker-compose-2.20.3
+          COMPOSE_CHECK_OLD=/tmp/docker-compose-2.20.3 tests/compose-check.sh | tee /tmp/compose-check.log
+          test "$(grep -c '^ok   \[compose 2.20.3' /tmp/compose-check.log)" = 5
 
       # The tag-only jobs' decision logic, without a tag or GitHub writes:
       # release-publish.sh against a fake `gh` (create, draft, no-op, refusals)
@@ -869,12 +881,17 @@ jobs:
           tests/release-publish-test.sh
           tests/stt-cohere-source-test.sh
 
-      # The default stack, then the s3 and stt profiles with the .env lines
-      # docs/features.md gives. espeak-ng speaks the stt phase's test clips.
-      - name: bring the compose stack up from this run's image
+      # The default stack, then the s3, stt and chief profiles with the .env
+      # lines docs/features.md gives. espeak-ng speaks the stt phase's test
+      # clips. The chief phase runs this run's claude-code-agent image against
+      # a fake model behind muster's LLM proxy (tests/compose-chief.override.yml,
+      # tests/fake-llm): real CLI turns and real muster tool calls, no key.
+      - name: bring the compose stack up from this run's images
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng >/dev/null
+          python3 tests/fake-llm/fake_llm_test.py
           make image IMAGE=muster-local VERSION=0.0.0
+          docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent-local:0.0.0 .
           tests/compose-up.sh muster-local 0.0.0
 
       # setup-python, not the runner's system python: that one is
@@ -1281,7 +1298,10 @@ jobs:
   release:
     name: GitHub release (tags only)
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
-    needs: [image-muster, image-stt-cohere]
+    # image-claude-code-agent: the release's docker-compose.yml names
+    # claude-code-agent:<version> (the chief profile), so the release waits
+    # for that tag to exist.
+    needs: [image-muster, image-stt-cohere, image-claude-code-agent]
     runs-on: ubuntu-latest
     concurrency:
       group: github-release-${{ github.ref_name }}

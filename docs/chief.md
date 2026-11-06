@@ -37,7 +37,10 @@ again brings them back. While it is off:
 - with the agent provisioner, its pod is stopped (Stop, not Delete). The
   stopped-agent reaper never deletes the chief. If the Stop fails, the switch
   still reads off and the chief gets no work, and the page says its pod is
-  still up (turn it off again to retry);
+  still up (turn it off again to retry). On the docker compose install, the
+  page says "Off, but its container did not stop", naming the process the
+  container's supervisor could not end; the supervisor keeps retrying, and
+  `docker compose restart chief` ends everything in the container;
 - it still cannot be deleted by accident (the delete protection below does not
   depend on the switch);
 - `POST /chief/provision` refuses (409) rather than create or start it.
@@ -53,12 +56,118 @@ off and the page says what to add.
 finishing its Start or Stop before the next begins, so a quick Off then On (or
 On then Off) leaves the pod in the state the switch shows.
 
-**Not available on this install.** The chief is an agent in its own Kubernetes
-pod, so it needs the [agent provisioner](provisioner.md). The public
-`docker compose` install has none, and there the Account page says the chief is
-not available instead of showing a switch that cannot work. (An install without
-a provisioner that already holds a chief agent still gets the switch, to turn
-that chief off.)
+**Not set up on this install.** The chief runs either in the Compose stack's
+`chief` container ([below](#on-the-docker-compose-install)) or in its own
+Kubernetes pod through the [agent provisioner](provisioner.md). With neither,
+the Account page says how to turn it on instead of drawing a switch that cannot
+work. (An install without either that already holds a chief agent still gets the
+switch, to turn that chief off.)
+
+## On the docker compose install
+
+The `chief` profile runs the chief in a container of its own, from the
+`claude-code-agent` image, beside muster. Turning it on takes four `.env` lines
+([features.md](features.md#chief)): the profile, `MUSTER_CHIEF_RUNTIME=compose`,
+the connector store's key, and a credential.
+
+**How muster runs it without the Docker socket.** muster starts no container
+(the socket is root on the host). The Compose file starts the `chief` container,
+and muster tells its supervisor (`ccd compose`) what to run by writing the
+chief's spec into a volume the two containers share — the
+[compose driver](provisioner.md#the-provisioner-seam-internalprovision). The
+switch on Account → Chief writes it, Start and Stop rewrite it, and the
+supervisor starts, stops or restarts the Claude Code CLI inside. **Off stops
+the CLI; the container stays up and idle.** The spec holds the chief's own
+credentials, and the agent's session cannot read it: the supervisor runs as
+another identity than the agent, and the spec belongs to the supervisor's group.
+
+**Its credential**, decided each time it starts:
+
+- `MUSTER_CHIEF_CLAUDE_TOKEN` set: your Claude subscription (a `claude setup-token`
+  token). It wins when both are set.
+- Otherwise your OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`), through the LLM
+  proxy ([below](#the-chief-on-openrouter)). 🔴 **muster adds no budget: set a
+  credit limit on the key itself**, at
+  [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys).
+- Neither: turning it on is refused, and Account → Chief says which variables to
+  set.
+
+A change in `.env` reaches a running chief when muster restarts
+(`docker compose up -d --wait`): muster re-applies its spec at boot on the new
+credential, with no Off/On needed. A chief that is off stays off. If you
+removed its credential and set no other, muster **stops** it at that boot (it
+does not keep running on the one you deleted), and Account → Chief says what to
+set.
+
+Account → Chief says which one it runs on, whether routing work to your
+sessions is on (it needs `MUSTER_SESSION_ROUTING=1`), and,
+while it is on and its container is not answering, why. Off, it says so if
+the stop left a process running (["Turning it off"](#turning-the-chief-on-or-off)).
+
+**What is different from the Kubernetes chief:**
+
+- **One chief per install, the admin's** (user 1): the container is one. Another
+  user's Account page says the install's chief is the admin's.
+- **Its network is not confined. The chief container can reach the internet**,
+  on either credential: the subscription token's calls go to the Claude API
+  directly, and on OpenRouter the model calls go through muster but the
+  container's other traffic is not blocked. The container is on a network of its
+  own with muster, so it cannot reach Postgres, the S3 store or the STT server.
+  A Kubernetes chief's NetworkPolicy admits only public 443 and muster's connect
+  port; the Compose file cannot express that.
+- **No resource limits** from muster (none are set on the container).
+- **amd64 only.** The `claude-code-agent` image is published for amd64 (x86_64)
+  alone, so the `chief` profile does not run on an arm64 host (a Raspberry Pi, an
+  Apple-silicon Mac without emulation). muster itself runs on both.
+- **No Terminal view**: muster has no exec into the container. Its output is in
+  `docker compose logs chief` on the server.
+- **No other agents**: `agent_dispatch` is not offered, and the dispatch UI stays
+  off ("Agent dispatch not set up"). Agent dispatch needs Kubernetes.
+- **`muster chief replace` is refused** (409): there is one kind here.
+- **No HQ server**: the published image has no `hq` binary.
+
+**Its tools.** The chief reaches muster over the MCP server on muster's connect
+port (8106 inside the stack, not published to the host). Nobody can answer a
+permission prompt in its container (there is no approval gate and no terminal
+muster can reach), so:
+
+- these run **without a prompt**: `sessions_overview`, `fleet_list`,
+  `focus_search`, `fleet_report`, `tasks_list`, `task_get`, `attention_list` and,
+  with session routing on, `route_to_session`;
+- **every other prompt is denied at once**, not left hanging: another muster tool
+  (`task_comment`, `reply_draft`, `task_create_gated`, …), Bash, a file edit. The
+  chief is told it was denied and carries on.
+
+⚠ **Not every tool prompts.** In its default permission mode Claude Code itself
+runs some tools without asking, so they run here too, beside the eight above
+([Claude Code: permissions](https://code.claude.com/docs/en/permissions)):
+read-only tools (file reads, Grep, Glob) within its working directory
+(`/data/workspace`), a built-in set of read-only Bash commands, and WebFetch to a
+built-in set of documentation domains. Everything else that would ask is denied.
+
+On Kubernetes those prompts go to the approval relay instead.
+
+**Removing it.** Taking `chief` out of `COMPOSE_PROFILES` does not stop the
+container: Compose leaves a running service of a profile you dropped alone, even
+with `--remove-orphans`, and its spec still holds its credential. To remove the
+chief, from the directory with your `.env`:
+
+1. Turn it **Off** under Account → Chief.
+2. Remove its containers:
+   `docker compose --profile chief rm -sf chief chief-init`
+3. In `.env`, take `chief` out of `COMPOSE_PROFILES` and delete
+   `MUSTER_CHIEF_RUNTIME`, `MUSTER_CHIEF_CLAUDE_TOKEN` and `MUSTER_CHIEF_LLM_MODEL`.
+4. Delete its volumes (the spec, which holds the credential, the instructions and
+   its data). muster mounts the spec, so stop the stack first:
+
+   ```sh
+   docker compose down
+   docker volume rm <project>_chief-spec <project>_chief-instructions <project>_chief-data
+   docker compose up -d --wait
+   ```
+
+   `<project>` is the Compose project name: the directory's name, or
+   `COMPOSE_PROJECT_NAME` (`docker compose ls` shows it).
 
 ## Stall nudges
 
@@ -224,6 +333,10 @@ muster sends the request on with the server's key attached. Only the
 - **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY` in `.env`. With it
   empty, every request is refused (400) with a message naming it, and nothing
   is sent.
+- **Changing it.** A credential change in `.env` (adding or removing
+  `MUSTER_CHIEF_CLAUDE_TOKEN`) reaches a running chief when muster restarts
+  (`docker compose up -d --wait`): muster re-applies the running chief's spec
+  at boot, with no Off/On needed. A chief that is off, or stopped, stays so.
 - **Which model.** A setting, `deepseek/deepseek-v4.1-flash` by default. Every
   request is pinned to it, whatever model the client asks for.
 - **What it may spend.** muster sets **no budget** for the chief: no daily

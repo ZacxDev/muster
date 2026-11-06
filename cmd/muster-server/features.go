@@ -102,9 +102,15 @@ func featureCatalog() []features.Feature {
 				v(envAgentCCAccounts, "account names"), v(envAgentCCTokenPrefix+"<NAME>", "claude setup-token")},
 			Settings: []string{envAgentCCStorage, envAgentCCCooldown, envAgentCCMaxJobs, envAgentCCFailover, envAgentCCBypassPools,
 				envAgentCCPoolDeployKeys, envAgentCCEgressLockedPools, envAgentNetpolFromNS, envAgentNetpolFromLabels, envCheckoutWaitTimeout}},
-		{ID: features.Chief, Kubernetes: true, Name: "Chief",
-			Description: "An agent that manages your other agents; each user turns it on under Account. Needs agent dispatch.",
-			Enable:      provisioner},
+		// The documented install: the Compose stack's `chief` profile and the
+		// Compose chief runtime (composechief.go). A Kubernetes deployment runs
+		// it through MUSTER_AGENT_PROVISIONER instead (docs/chief.md).
+		{ID: features.Chief, Name: "Chief",
+			Description: "A fleet agent that reports on your sessions and agents, and routes work to them; the admin turns it on under Account.",
+			Enable: []features.Var{features.ProfileVar("chief"), is(envChiefRuntime, chiefRuntimeCompose),
+				v(envConnectorEncKey, "32 random bytes, base64")},
+			Note:     composeChiefCredentialNote,
+			Settings: []string{envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel}},
 		{ID: features.ChiefSessionRuntimes, Kubernetes: true, Name: "Chief session runtimes",
 			Description: "Start a chief chat session on Claude Code, with its own model.",
 			Enable:      []features.Var{is(envChiefSessionRuntimes, "claude-code")}},
@@ -224,7 +230,7 @@ func openRouterStatus(ext api.Extensions) features.Status {
 // own predicate, chiefRuntimeMissing).
 func chiefMissing(c config, ext api.Extensions) string {
 	if ext.Provisioner == nil || chiefRuntimeMissing(c, ext) {
-		return "it acts through the chief, which " + features.KubernetesHint + " — see docs/features.md#chief"
+		return "it acts through the chief, which is not set up — see docs/features.md#chief"
 	}
 	return ""
 }
@@ -321,18 +327,32 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 		"", envAuthMode+"=gotrue but GoTrue or the database is not configured", envAuthMode+" is not gotrue (the shared password is in use)")
 	st[features.Connectors] = pick(ext.Connectors != nil, false, "", "", envConnectorEncKey+" is unset")
 	st[features.GitHubApp] = pick(ext.GitHubApp != nil, false, "", "", envGitHubAppID+" is unset")
-	st[features.Dispatch] = pick(ext.Provisioner != nil, false, "", "", envAgentProvisioner+" is unset (none)")
+	// The Compose chief's provisioner runs the chief alone: dispatch is off
+	// there, for the reason api.dispatchServed reads it as off.
+	switch {
+	case ext.ComposeChief != nil:
+		st[features.Dispatch] = off(envChiefRuntime + "=" + chiefRuntimeCompose + " runs the chief alone; agent dispatch needs muster in Kubernetes")
+	default:
+		st[features.Dispatch] = pick(ext.Provisioner != nil, false, "", "", envAgentProvisioner+" is unset (none)")
+	}
 	st[features.AgentGateway] = pick(ext.Gateway != nil, false, "", "", envAgentGateway+" is unset")
-	st[features.ClaudeCodeAgents] = pick(c.claudeCodeEnabled() && ext.Provisioner != nil, c.claudeCodeEnabled(),
-		"", "the claude-code kind is enabled but there is no agent provisioner", envAgentKinds+" does not list claude-code")
+	if ext.ComposeChief != nil {
+		st[features.ClaudeCodeAgents] = off(envChiefRuntime + "=" + chiefRuntimeCompose + " runs the chief on claude-code and dispatches no agent")
+	} else {
+		st[features.ClaudeCodeAgents] = pick(c.claudeCodeEnabled() && ext.Provisioner != nil, c.claudeCodeEnabled(),
+			"", "the claude-code kind is enabled but there is no agent provisioner", envAgentKinds+" does not list claude-code")
+	}
 	// The chief has no variable of its own, so it is never "asked for": with
 	// what it needs missing it is OFF, never MISCONFIGURED.
 	switch {
 	case ext.Provisioner == nil:
-		st[features.Chief] = off("there is no agent provisioner (" + envAgentProvisioner + ")")
+		st[features.Chief] = off(envChiefRuntime + " is unset (and there is no agent provisioner, " + envAgentProvisioner + ")")
 	case chiefRuntimeMissing(c, ext):
 		st[features.Chief] = off("there is no runtime a chief can run on (" + envAgentGateway +
 			" is unset and " + envAgentKinds + " does not list claude-code)")
+	case ext.ComposeChief != nil:
+		st[features.Chief] = on("in its Compose container (" + envChiefRuntime + "=" + chiefRuntimeCompose +
+			"); the admin turns it on under Account; network not confined")
 	default:
 		st[features.Chief] = on("each user turns it on under Account")
 	}

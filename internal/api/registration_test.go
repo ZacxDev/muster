@@ -70,6 +70,9 @@ func fullyWiredServer(t *testing.T) *Server {
 		SessionLiveness: stubLiveness{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},
+		// The Compose chief's settings: registration must not branch on them
+		// (its refusals live inside handlers, not in which routes exist).
+		ComposeChief: &ComposeChief{Credential: func(context.Context, int64) (ComposeChiefCred, error) { return ComposeChiefClaude, nil }},
 		// A SYNTHETIC legacy provenance prefix: registration must not branch on it.
 		LegacyProvenanceHeaderPrefix: "X-Example",
 		// 🔴 BOTH, because this fixture's whole claim is "every dependency wired".

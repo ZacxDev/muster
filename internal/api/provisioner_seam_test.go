@@ -550,6 +550,17 @@ func inspectProvisionerUse(body *ast.BlockStmt, field string) (calls, nilChecked
 			if ok && isProvisionerExpr(sel.X, field) {
 				calls = true
 			}
+			// s.lifecycleServed() and s.dispatchServed() ARE the Provisioner's
+			// nil check, named (ext.go): lifecycleServed is `s.ext.Provisioner !=
+			// nil` and dispatchServed is lifecycleServed AND not the Compose
+			// chief. internal/modulegate's TestEveryProvisionerGateIsLedgered pins
+			// both bodies, so a call to either is a guard by construction.
+			if ok && field == "Provisioner" {
+				if recv, isIdent := sel.X.(*ast.Ident); isIdent && recv.Name == "s" &&
+					(sel.Sel.Name == "lifecycleServed" || sel.Sel.Name == "dispatchServed") {
+					nilChecked = true
+				}
+			}
 		case *ast.BinaryExpr:
 			if e.Op != token.EQL && e.Op != token.NEQ {
 				return true

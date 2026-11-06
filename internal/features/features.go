@@ -164,9 +164,9 @@ type Feature struct {
 	// Enable still lists the variables, for a Kubernetes deployment.
 	Kubernetes bool `json:"kubernetes,omitempty"`
 	// NeedsChief: the feature's variables are forwarded by the Compose stack,
-	// but what it does goes through the chief, which needs Kubernetes. Its
-	// hint says that FIRST, so following it on Compose is not a dead end
-	// (setting the variable alone leaves the feature misconfigured).
+	// but what it does goes through the chief. Its hint says that FIRST, so
+	// following it is not a dead end (setting the variable alone leaves the
+	// feature misconfigured).
 	NeedsChief bool `json:"needs_chief,omitempty"`
 
 	State State `json:"state"`
@@ -247,8 +247,10 @@ func (f Feature) DisabledMessage() string {
 // KubernetesHint is what a feature the Compose stack cannot run needs.
 const KubernetesHint = "needs Kubernetes (in-cluster dispatch)"
 
-// NeedsChiefHint leads the hint of a feature that acts through the chief.
-const NeedsChiefHint = "needs the chief, which " + KubernetesHint + " — see " + DocsPage + "#chief"
+// NeedsChiefHint leads the hint of a feature that acts through the chief. The
+// chief runs on the Compose stack (its `chief` profile) as well as on
+// Kubernetes, so the hint sends the reader to the page that says how.
+const NeedsChiefHint = "needs the chief — see " + DocsPage + "#chief"
 
 func joinAnd(xs []string) string {
 	switch len(xs) {

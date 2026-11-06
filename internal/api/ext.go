@@ -131,6 +131,13 @@ type Extensions struct {
 	// through requireLifecycleProvisioner.
 	Provisioner Provisioner
 
+	// ComposeChief is set when the provisioner runs the chief, and only the
+	// chief, in the docker compose install's `chief` container
+	// (MUSTER_CHIEF_RUNTIME=compose; compose_chief.go). Lifecycle stays wired
+	// for the chief; every surface that DISPATCHES an agent reads it as off
+	// (dispatchServed).
+	ComposeChief *ComposeChief
+
 	// Gateway drives agent CHAT. Nil disables the two chat routes even if
 	// Provisioner is set, through requireGatewayProvisioner.
 	//
@@ -737,7 +744,7 @@ const ProvisionerUnwiredField = "provisionerUnwired"
 // One condition, one refusal shape.
 func (s *Server) requireLifecycleProvisioner(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.dispatchServed() {
+		if !s.lifecycleServed() {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error": "this build has no agent provisioner wired, so it cannot " +
 					"provision, start, stop, destroy or stream logs from an agent. " +
@@ -751,20 +758,45 @@ func (s *Server) requireLifecycleProvisioner(next http.HandlerFunc) http.Handler
 	}
 }
 
-// dispatchServed reports whether this server holds an agent provisioner. It is
-// the ONE predicate behind requireLifecycleProvisioner's 503 AND every surface
-// that offers a dispatch: Features.Dispatch (the sidebar's "+"),
-// TaskCardView.Dispatch (a task card's Dispatch button) and the
-// /ui/agents/new sheet's body. A UI that decided "can this server dispatch?"
-// from anything else could draw a button over the very 503 this answers —
-// which is what a docker compose install (MUSTER_AGENT_PROVISIONER unset, so
-// `none`) shipped with.
+// lifecycleServed reports whether this server holds an agent provisioner: the
+// predicate behind requireLifecycleProvisioner's 503 (start, stop, delete,
+// logs, terminal, the chief's provision and replace).
+func (s *Server) lifecycleServed() bool { return s.ext.Provisioner != nil }
+
+// dispatchServed reports whether this server can DISPATCH an agent: a
+// provisioner, and not one that runs the chief alone (Extensions.ComposeChief).
+// It is the ONE predicate behind requireDispatchProvisioner's 503 (POST
+// /agents) AND every surface that offers a dispatch: Features.Dispatch (the
+// sidebar's "+"), TaskCardView.Dispatch (a task card's Dispatch button), the
+// /ui/agents/new sheet's body, agent_dispatch's targets and the task actions'
+// dispatch offer. A UI that decided "can this server dispatch?" from anything
+// else could draw a button over the very 503 this answers — which is what a
+// docker compose install (MUSTER_AGENT_PROVISIONER unset, so `none`) shipped
+// with, and what the Compose chief's provisioner would bring back.
 //
 // ⚠ IT IS NOT "A DISPATCH WILL SUCCEED". A wired provisioner whose kickoff is
 // undeliverable still answers a dispatch with a 409 naming why
 // (Provisioner.KickoffUndeliverableReason) while "Save for later" works, so
 // the sheet stays useful there and is not hidden.
-func (s *Server) dispatchServed() bool { return s.ext.Provisioner != nil }
+func (s *Server) dispatchServed() bool { return s.lifecycleServed() && s.ext.ComposeChief == nil }
+
+// requireDispatchServed is POST /agents' second door, inside
+// requireLifecycleProvisioner: a provisioner that runs the chief alone (the
+// Compose chief) refuses a dispatch with requireLifecycleProvisioner's 503
+// shape (ProvisionerUnwiredField, which the dispatch sheet reads) and a
+// sentence saying why.
+func (s *Server) requireDispatchServed(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.dispatchServed() {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error":                 ComposeDispatchRefusal,
+				ProvisionerUnwiredField: true,
+			})
+			return
+		}
+		next(w, r)
+	}
+}
 
 // requireGatewayProvisioner is the chat half. See requireLifecycleProvisioner.
 func (s *Server) requireGatewayProvisioner(next http.HandlerFunc) http.HandlerFunc {
