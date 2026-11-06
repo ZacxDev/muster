@@ -74,17 +74,19 @@ func TestObsRawPassesTheCallThroughForTheHeldItem(t *testing.T) {
 	}
 }
 
-// TestObsRawRefusals: a routine instance is neither offered nor served the
-// tool; a judgement instance holding no item, naming an item it does not
+// TestObsRawRefusals: a plain agent is neither offered nor served the tool
+// (a routine instance is, since the operator's 2026-11-06 decision:
+// TestObsRawIsOfferedToARoutineInstanceAndCounted); a judgement instance
+// holding no item, naming an item it does not
 // hold, or naming its own instance is refused without a raw query reaching
 // HQ; HQ's own refusal (403 not_investigating) comes back with HQ's code.
 func TestObsRawRefusals(t *testing.T) {
 	r := newKubeOfficerRig(t)
 	ctx := context.Background()
 	judge := r.addNamed(offKJudge+"1", 1981)
-	routine := r.addNamed(offKRout+"1", 1982)
 	plain := r.addNamed("brave-otter", 1983)
-	for _, a := range []agents.Agent{routine, plain} {
+	untiered := r.addNamed(officers.InstanceName(offA, 1), 1984)
+	for _, a := range []agents.Agent{plain, untiered} {
 		if officerToolNameSet(r.s.MCPToolDefsFor(ctx, a))[obsRawTool] {
 			t.Errorf("%s is offered %s", a.Name, obsRawTool)
 		}
@@ -140,7 +142,8 @@ func TestObsRawRefusals(t *testing.T) {
 // TestCountedReadToolsAreExactlyTheThree: the ledger of which officer tools
 // spend the item's read budget — for the judgement pool exactly
 // officer_kube_read, officer_obs_raw and officer_obs_query; for the routine
-// pool none. It fails when the set grows or shrinks.
+// pool exactly officer_obs_raw; for an untiered officer none. It fails when
+// any set grows or shrinks.
 func TestCountedReadToolsAreExactlyTheThree(t *testing.T) {
 	r := newKubeOfficerRig(t)
 	judge, _, ok := r.s.officerOf(r.addNamed(offKJudge+"1", 1991))
@@ -148,7 +151,11 @@ func TestCountedReadToolsAreExactlyTheThree(t *testing.T) {
 	if !ok || !ok2 || judge.Tier != officers.TierJudgement || routine.Tier != officers.TierRoutine {
 		t.Fatal("the rig's instances do not resolve to their pools")
 	}
-	var j, rt []string
+	untiered, _, ok3 := r.s.officerOf(r.addNamed(officers.InstanceName(offA, 1), 1993))
+	if !ok3 || untiered.Tier != "" {
+		t.Fatal("the rig's untiered instance does not resolve to an untiered officer")
+	}
+	var j, rt, un []string
 	for _, d := range officerToolDefs() {
 		if officers.CountsRead(judge, d.Name) {
 			j = append(j, d.Name)
@@ -156,10 +163,14 @@ func TestCountedReadToolsAreExactlyTheThree(t *testing.T) {
 		if officers.CountsRead(routine, d.Name) {
 			rt = append(rt, d.Name)
 		}
+		if officers.CountsRead(untiered, d.Name) {
+			un = append(un, d.Name)
+		}
 	}
 	sort.Strings(j)
-	if strings.Join(j, ",") != "officer_kube_read,officer_obs_query,officer_obs_raw" || len(rt) != 0 {
-		t.Fatalf("counted: judgement %v, routine %v; want the three read tools and none", j, rt)
+	sort.Strings(rt)
+	if strings.Join(j, ",") != "officer_kube_read,officer_obs_query,officer_obs_raw" || strings.Join(rt, ",") != "officer_obs_raw" || len(un) != 0 {
+		t.Fatalf("counted: judgement %v, routine %v, untiered %v; want the three read tools, officer_obs_raw, and none", j, rt, un)
 	}
 	for _, d := range officerToolDefs() {
 		if d.Name == officers.ToolKubeRead || d.Name == officers.ToolObsRaw || d.Name == officers.ToolObsQuery {
@@ -385,6 +396,69 @@ func TestTheObsRawToolSchemaIsOpen(t *testing.T) {
 	}
 	if !strings.Contains(desc, "refusal names the limit") {
 		t.Error("the description does not say HQ's refusal names the limit")
+	}
+}
+
+// TestObsRawIsOfferedToARoutineInstanceAndCounted (operator decision
+// 2026-11-06, "Give routine obs_raw"): a routine instance is offered
+// officer_obs_raw (its session pre-allows it) and served it for the routine
+// item it holds, each call one read of that item's shared budget. Today's HQ
+// refuses a routine item's raw read (civ-hq store OfficerObsRawHolder: 403
+// not_investigating) and that refusal reaches the instance with HQ's code;
+// an HQ that admits it gets the call with the item and instance added, and
+// the 201st read of the item is refused by the budget before HQ.
+func TestObsRawIsOfferedToARoutineInstanceAndCounted(t *testing.T) {
+	rs := newReadSeam(t)
+	ctx := context.Background()
+	if !officerToolNameSet(rs.s.MCPToolDefsFor(ctx, rs.routine))[obsRawTool] {
+		t.Fatalf("the routine instance is not offered %s", obsRawTool)
+	}
+	sess, _ := rs.s.OfficerClaudeCodeSession(rs.routine)
+	if !strings.Contains(","+strings.Join(sess.AllowMCPTools, ",")+",", ","+obsRawTool+",") {
+		t.Fatalf("the routine instance's session does not pre-allow %s: %v", obsRawTool, sess.AllowMCPTools)
+	}
+	item := rs.hq.AddTieredItem(offK, "anomaly.alert", "node-r", officers.TierRoutine)
+	rs.hq.SetClaim(item, rs.routine.Name, time.Now().Add(time.Hour))
+	spent := func() int { return rs.s.officerRT.reads.Spent(offK, officers.ItemID(item)) }
+	call := func() string { return rs.s.dispatchAgentTool(ctx, rs.routine, obsRawTool, rawArgs) }
+
+	// today's HQ: a routine item's raw read is refused, with HQ's code, and
+	// (an answer HQ judged, officers.ReadCounted) counted
+	if out := call(); !isToolErr(out) || !strings.Contains(out, `"not_investigating"`) || !strings.Contains(out, "403") {
+		t.Fatalf("today's HQ: %s, want HQ's 403 not_investigating", out)
+	}
+	if got := spent(); got != 1 {
+		t.Fatalf("HQ's 403 spent %d reads, want 1", got)
+	}
+
+	rs.hq.ObsRawAdmitsRoutine = true
+	rs.hq.ResetRequests()
+	if out := call(); isToolErr(out) || len(rs.hq.ObsRawAnswers) != 1 || out != string(rs.hq.ObsRawAnswers[0]) {
+		t.Fatalf("an HQ that admits it: %s, want HQ's answer byte for byte", out)
+	}
+	var want map[string]any
+	_ = json.Unmarshal([]byte(rawArgs), &want)
+	want["item_id"] = float64(numItem(t, item))
+	want["instance"] = rs.routine.Name
+	wb, _ := json.Marshal(want)
+	gb, _ := json.Marshal(rs.hq.ObsRawCalls[0].Body)
+	if string(gb) != string(wb) {
+		t.Fatalf("HQ received %s, want %s", gb, wb)
+	}
+	for i := spent(); i < officers.ReadsPerItem; i++ {
+		if out := call(); isToolErr(out) {
+			t.Fatalf("routine raw read %d: %s", i+1, out)
+		}
+	}
+	if got := spent(); got != 200 {
+		t.Fatalf("spent %d, want 200", got)
+	}
+	served := len(rs.hq.ObsRawCalls)
+	if out := call(); !isToolErr(out) || !strings.Contains(out, "all 200 reads of item "+item) {
+		t.Fatalf("the 201st read: %s, want the budget's refusal", out)
+	}
+	if len(rs.hq.ObsRawCalls) != served {
+		t.Fatal("the refused 201st read reached HQ")
 	}
 }
 
