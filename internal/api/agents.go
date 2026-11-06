@@ -2012,7 +2012,12 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// it runs, "working…" — sessionTurnCount). The socket's context is used only
 		// to write to the socket, which fails harmlessly once it is gone. Bounded
 		// like the composer's background turn (startAgentTurn), by the kind's budget.
-		// Pinned by TestAChiefTurnSurvivesTheSocketClosing.
+		// ⚠ MEASURED: the socket's own context is not cancelled by a client close
+		// either (the connection is hijacked), so before this line a reload already
+		// left the turn running. This makes that a stated property rather than a
+		// side effect. TestAChiefTurnSurvivesTheSocketClosing is therefore an
+		// INVARIANT guard: it goes red for a turn tied to the socket's lifetime
+		// (c.CloseRead's context, measured), not for the line this replaced.
 		tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
 		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name))
 		s.turns.leave(a.ID)

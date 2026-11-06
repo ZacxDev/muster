@@ -211,6 +211,11 @@ func TestAReloadMidTurnDrawsWorkingFromTheServer(t *testing.T) {
 // mid-turn — what a reload does to the page's socket — leaves the turn running;
 // it is not cancelled, it completes when the runtime answers, and its reply is
 // stored, so the reloaded page shows it.
+//
+// ⚠ AN INVARIANT GUARD, NOT A REGRESSION TEST: it passes on the code before this
+// change too (the hijacked socket's context is not cancelled by a close). Its
+// negative control is a turn tied to the socket's lifetime — run on
+// c.CloseRead's context, it goes red with "closing the socket cancelled the turn".
 func TestAChiefTurnSurvivesTheSocketClosing(t *testing.T) {
 	gw := newHeldGateway("finished after the page went away")
 	f := newAttnFixture(t, func(ext *Extensions, _ *pgxpool.Pool) { ext.Gateway = gw })
