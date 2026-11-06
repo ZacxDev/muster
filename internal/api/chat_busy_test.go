@@ -46,6 +46,15 @@ type busyCCD struct {
 	answered []string
 	// refusedCh is told of every refusal (buffered; never blocks the fake).
 	refusedCh chan struct{}
+	// seen is every input asked, in arrival order (refused or answered).
+	seen []string
+	// freeOn, when set: a busy session frees the moment it is asked THIS input,
+	// and answers it — the session frees just as one particular waiter asks.
+	freeOn string
+	// hold, when set: an answered turn first sends ccd's 103 (when asked for
+	// it), tells arrivedCh, then waits for hold to close before its reply.
+	hold      chan struct{}
+	arrivedCh chan struct{}
 }
 
 func newBusyCCD() *busyCCD {
@@ -74,7 +83,12 @@ func (f *busyCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Input json.RawMessage `json:"input"`
 	}
 	_ = json.Unmarshal(body, &req)
+	in := inputText(req.Input)
 	f.mu.Lock()
+	f.seen = append(f.seen, in)
+	if f.busy && f.freeOn != "" && in == f.freeOn {
+		f.busy = false
+	}
 	if f.busy {
 		f.refused++
 		failType, code := f.failType, f.code
@@ -88,9 +102,18 @@ func (f *busyCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"error":{"type":%q,"code":%q,"message":"another turn is already being driven through this session"}}`, failType, code)
 		return
 	}
-	in := inputText(req.Input)
 	f.answered = append(f.answered, in)
+	hold, arrived := f.hold, f.arrivedCh
 	f.mu.Unlock()
+	if hold != nil {
+		if r.Header.Get(agents.HeaderCCPromptAccepted) == "1" {
+			w.Header().Set(agents.HeaderCCPromptAccepted, "1")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Del(agents.HeaderCCPromptAccepted)
+		}
+		arrived <- struct{}{}
+		<-hold
+	}
 	reply := "answer to: " + in
 	w.Header().Set("Content-Type", "text/event-stream")
 	fmt.Fprint(w, "event: response.output_text.delta\n")
@@ -288,6 +311,17 @@ func TestTheChatSocketSaysAMessageIsQueuedAndThenStreamsItsReply(t *testing.T) {
 	}
 	if deltas.String() != "answer to: are you up yet" {
 		t.Fatalf("streamed reply = %q", deltas.String())
+	}
+	// This runtime sends no 103: its first stream event is what says the queued
+	// message was taken, so "accepted" comes once, right before the first delta.
+	var order []string
+	for _, m := range msgs {
+		if k := fmt.Sprint(m["type"]); k == "accepted" || k == "delta" {
+			order = append(order, k)
+		}
+	}
+	if len(order) < 2 || order[0] != "accepted" || order[1] != "delta" || strings.Count(strings.Join(order, " "), "accepted") != 1 {
+		t.Fatalf("accepted/delta order = %q; want one accepted, before the first delta", order)
 	}
 	eventuallyAPI(t, "the reply stored", func() bool { return len(store.transcript(41)) == 2 })
 }

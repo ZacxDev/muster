@@ -2164,6 +2164,11 @@ func agentChatScript(name string) g.Node {
   // every event of the owner's bus for a listener that never fired; it is gone. A
   // kickoff turn shows once it persists, by the chat.reply refetch of #chat-log.
   function renderStreamMsg(msg) {
+    // 🔴 A QUEUED MESSAGE IS SENT THE MOMENT ANY OF ITS TURN ARRIVES: the
+    // "queued" words must not sit under a reply that is already streaming (an
+    // owner reading them would send it again). "accepted" says so first; any
+    // part of the reply says so too, for a server that sends no "accepted".
+    if (msg.type !== 'queued' && msg.type !== 'error' && msg.type !== 'done') workingLabel(null);
     switch (msg.type) {
       case 'user': {
         // His kickoff message, streamed first so the chat shows the prompt before
@@ -2213,6 +2218,9 @@ func agentChatScript(name string) g.Node {
         // The message is held for the agent's turn in flight; it will be sent.
         showWorking();
         workingLabel(msg.content || '');
+        break;
+      case 'accepted':
+        // The runtime took the queued message (reset above): working on it.
         break;
       case 'error':
         var et = ensureText();

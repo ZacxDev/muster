@@ -56,17 +56,25 @@ off and the page says what to add.
 runs a first turn in its chat, and its Claude Code session takes one turn at a
 time. A message you send during that turn is held, not refused: the chat shows
 "Still finishing its previous turn — your message is queued and will be sent as
-soon as it is free" in place of "working", and sends it as soon as the turn
-ends (it asks again every 3 seconds, for up to 10 minutes). Closing the page
-does not cancel it: the message is still sent and the reply stored. If the
-session is still busy after 10 minutes, the conversation records that your
-message was not sent, in words, whether or not a page is open, and an open
-chat puts the text back in the box to send again. A restart of muster during
-the wait ends it, like any turn in flight. The same applies to any agent's chat, on Kubernetes and on the
-Compose install, whenever a turn is already running in that session — a
-message sent from the Terminal's composer waits the same way, in the
-background. A prompt waiting for an answer in the agent's terminal holds the
-session too, and the chat says so.
+soon as it is free" in place of "working" (the notification panel says
+**queued**), and sends it as soon as the turn ends (it asks again every 3
+seconds, for up to 10 minutes). The moment the agent takes it, the row goes
+back to "working". Several messages waiting for the same agent are sent in the
+order you sent them, from whichever page or box. Closing the page does not
+cancel it: the message is still sent and the reply stored.
+
+It is not sent, and the conversation says so in words (whether or not a page
+is open; an open chat also puts the text back in the box to send again), when:
+
+- the session is still busy after 10 minutes, or
+- the chief is replaced or restarted while the message waits — a waiting
+  message does not hold up a replacement or a `chief_restart`.
+
+A restart of muster during the wait ends it, like any turn in flight. The same
+applies to any agent's chat, on Kubernetes and on the Compose install, whenever
+a turn is already running in that session; a message sent from the Terminal's
+composer waits the same way, in the background. A prompt waiting for an answer
+in the agent's terminal holds the session too, and the chat says so.
 
 **The last click wins.** Each user's switch changes run one at a time, each
 finishing its Start or Stop before the next begins, so a quick Off then On (or

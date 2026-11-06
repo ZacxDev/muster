@@ -2266,6 +2266,9 @@ func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName
 			// The message waits for the session's turn in flight (chat_busy.go):
 			// the page says so in place of "working".
 			_ = wsWriteJSON(ctx, c, map[string]any{"type": "queued", "content": ev.Text})
+		case "accepted":
+			// The runtime took a message that was queued: "working" again.
+			_ = wsWriteJSON(ctx, c, map[string]any{"type": "accepted"})
 		}
 	}
 }

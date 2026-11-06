@@ -19,7 +19,7 @@ type agentPhase struct {
 	// owner is the user whose agent this is (accounts PR 3b): the registry is
 	// one server-wide map, so a reader MUST filter by it (activeAgentsList).
 	owner    int64
-	phase    string // "thinking" | "responding"
+	phase    string // "thinking" | "responding" | "queued" (a message waiting for a turn in flight, chat_busy.go)
 	at       time.Time
 	inFlight bool // true while a turn is running; false once it ends (done/error)
 }

@@ -46,6 +46,11 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		"internal/api/chief_owner_release.go (*Server).markOwnerTurn → ClearOwnerTurn(wctx)",
 		"internal/api/chief_owner_release.go (*Server).markOwnerTurn → SetOwnerTurn(wctx)",
 		"internal/api/chief_owner_release.go (*Server).markOwnerTurn → WithTurnAccepted(ctx)",
+		// A queued ask's 103 hook (chat_busy.go): it marks nothing itself — it
+		// CHAINS to the callback ctx already carries (markOwnerTurn's, for an
+		// owner turn; none for any other), then tells the page "accepted".
+		// TestAcceptedAfterQueuedKeepsTheCallerCallback pins the chaining.
+		"internal/api/chat_busy.go (*Server).acceptedAfterQueued → WithTurnAccepted(ctx)",
 		// The one caller of markOwnerTurn: the turn's own user row, its typer.
 		"internal/api/agents.go (*Server).runEnteredTurn → markOwnerTurn(typedBy)",
 		// Who passes what into the turn.

@@ -1525,7 +1525,7 @@ func (s *Server) startClaimedChiefTurnThen(ctx context.Context, chief agents.Age
 		}()
 		parts, err := s.runUserTurn(tctx, chief, sess, text, nil)
 		if err != nil {
-			parts = turnFailedParts(err)
+			parts = turnFailedParts(asHandBack(err)) // muster's own text: no "send it again"
 		}
 		s.persistTurn(tctx, chief, sess, parts)
 		if after != nil {
