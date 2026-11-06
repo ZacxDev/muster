@@ -52,15 +52,16 @@ Secrets, exec, port-forward, proxies, ServiceAccount tokens and RBAC are never r
 		ToolKubeRead, strings.Join(names, ", "), KubeConnector, ReadBudgetNote)
 }
 
-// obsRawNote tells a judgement instance how to run its own PromQL / LogQL for
-// the item it holds, and the read budget. Nothing for every other instance.
+// obsRawNote tells an instance of either pool of a tiered officer how to run
+// its own PromQL / LogQL for the item it holds, and the read budget. Nothing
+// for an untiered officer.
 func obsRawNote(o Officer) string {
 	if !ToolOffered(o, ToolObsRaw) {
 		return ""
 	}
 	return fmt.Sprintf(`
 
-Raw metrics and logs: %[1]s{backend: "prometheus"|"loki", query, start, end, step? (Prometheus: required), limit? (a Loki log query's line limit), item_id?} runs your own PromQL or LogQL through HQ for the item you hold (item_id picks one when you hold several). HQ answers it only when your officer's type investigates (otherwise 403 not_investigating: use %[2]s instead), checks every argument itself (the window, step, series and line limits, its rate limit), refuses the apiserver audit stream, redacts every log line, and audits the query text; a refusal names the limit to fix; muster passes its answer back as HQ sent it. Prometheus is not pinned to a cluster: filter by cluster yourself. A Loki query needs a stream selector. empty: true is NOT a zero nor an absence of logs: run the positive control its hint names before you report none. The read budget: %[3]s.`,
+Raw metrics and logs: %[1]s{backend: "prometheus"|"loki", query, start, end, step? (Prometheus: required), limit? (a Loki log query's line limit), item_id?} runs your own PromQL or LogQL through HQ for the item you hold (item_id picks one when you hold several). HQ decides whether it answers for that item: a 403 not_investigating means it does not (your officer's type does not investigate, or HQ does not take a raw read of an item of your tier) — use %[2]s instead. HQ checks every argument itself (the window, step, series and line limits, its rate limit), refuses the apiserver audit stream, redacts every log line, and audits the query text; a refusal names the limit to fix; muster passes its answer back as HQ sent it. Prometheus is not pinned to a cluster: filter by cluster yourself. A Loki query needs a stream selector. empty: true is NOT a zero nor an absence of logs: run the positive control its hint names before you report none. The read budget: %[3]s.`,
 		ToolObsRaw, ToolObsQuery, ReadBudgetNote)
 }
 
@@ -77,6 +78,12 @@ func tierNote(o Officer) string {
 	}
 	note := fmt.Sprintf("\n\nYour tier: %[1]s. This officer splits its queue into routine and judgement items, worked by separate pools of instances; you are in the %[1]s pool. %[2]s lists only %[1]s items, and %[3]s takes only those — a refusal with code wrong_tier means the item became a %[4]s item: leave it and take another.",
 		o.Tier, ToolItems, ToolClaim, other)
+	if o.Tier == TierRoutine {
+		note += fmt.Sprintf(" To hand an item on — it needs more than a routine pass, an investigation or a judgement call — finish it with %[1]s{item_id, outcome: %[2]q, summary} saying what you found and why: "+
+			"HQ makes it a judgement item (open again, with your summary kept for the judgement instance that takes it), and your hold on it ends. Its links are not kept: put any in the summary. "+
+			"The investigation block HQ requires to escalate an investigating officer's item is the judgement pool's, not yours: hand such an item on with %[2]s rather than escalating it.",
+			ToolComplete, OutcomeNeedsJudgement)
+	}
 	if c := o.ItemCap(); c > 0 {
 		note += fmt.Sprintf(" Each item has a wall-time cap of %d minutes from your claim: at the cap muster stops you and escalates the item to a human, "+
 			"with nothing you found recorded. Wrap up before it — %s the item with what you have. Hold one item at a time: %s refuses a second claim while you hold one.",
@@ -222,8 +229,10 @@ const (
 	ToolObsQuery   = "officer_obs_query"
 	// ToolObsRaw runs the instance's OWN PromQL / LogQL through HQ's raw obs
 	// route (POST /officers/{id}/obs/raw, obs.go) for the item it holds:
-	// offered to the judgement pool only, refused by HQ unless the officer's
-	// type investigates. Read-only; it spends the item's read budget (reads.go).
+	// offered to both pools of a tiered officer (the routine pool by operator
+	// decision), refused by HQ unless the officer's type
+	// investigates — and, on today's HQ, unless the item is judgement tier.
+	// Read-only; it spends the item's read budget (reads.go).
 	ToolObsRaw = "officer_obs_raw"
 )
 
@@ -238,10 +247,10 @@ func (o Officer) Type() string {
 
 // ToolOffered is THE rule for which officer tools officer o's instances get:
 // the six queue tools, officer_ask_person and the two obs tools for every officer, and the
-// captain route's tool for a release officer only; officer_obs_raw for a
-// judgement pool, officer_kube_read for one whose officer declares a
-// readable cluster. internal/api's listing and
-// dispatch both ask it.
+// captain route's tool for a release officer only; officer_obs_raw for
+// either pool of a tiered officer (never an untiered one), officer_kube_read
+// for a judgement pool whose officer declares a readable cluster.
+// internal/api's listing and dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
 	switch tool {
 	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolAskPerson, ToolObsQueries, ToolObsQuery:
@@ -257,7 +266,7 @@ func ToolOffered(o Officer, tool string) bool {
 	case ToolKubeRead:
 		return len(o.KubeClusters()) > 0
 	case ToolObsRaw:
-		return o.Tier == TierJudgement
+		return o.Tier == TierJudgement || o.Tier == TierRoutine
 	}
 	return false
 }

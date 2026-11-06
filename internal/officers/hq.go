@@ -388,6 +388,11 @@ type Completion struct {
 	// Investigation is HQ's `investigation` block, sent only when set (an HQ
 	// from before the block refuses the field, even as null).
 	Investigation *Investigation `json:"investigation,omitempty"`
+	// InvestigationJSON is an instance's `investigation` argument, sent to HQ
+	// AS SENT when Investigation is nil: HQ's decoder is the one schema for
+	// it, so it is never decoded into Investigation (whose omitempty lists
+	// would reshape it). Empty or JSON null sends none.
+	InvestigationJSON json.RawMessage `json:"-"`
 }
 
 // Investigation is HQ's investigation block on an `escalated` complete
@@ -422,8 +427,32 @@ type InvestigationFix struct {
 // ConfidenceLow is the investigation confidence of no conclusion.
 const ConfidenceLow = "low"
 
-// Outcomes the contract accepts.
+// Outcomes the contract accepts from every instance.
 var Outcomes = []string{"done", "escalated", "no_action"}
+
+// OutcomeNeedsJudgement hands a ROUTINE item to the judgement pool: HQ
+// promotes it to judgement in place (open again, no holder, the summary kept
+// for the judgement claimer, links refused) and closes nothing. HQ refuses it
+// on a judgement item.
+const OutcomeNeedsJudgement = "needs_judgement"
+
+// CompleteOutcomes is THE rule for which outcomes officer o's instances may
+// complete an item with (officer_complete's schema and its dispatch both ask
+// it): Outcomes, plus needs_judgement for a routine pool — the only pool
+// whose items HQ takes it for.
+func CompleteOutcomes(o Officer) []string {
+	if o.Tier == TierRoutine {
+		return append(append([]string{}, Outcomes...), OutcomeNeedsJudgement)
+	}
+	return Outcomes
+}
+
+// CompleteTakesInvestigation is THE rule for whether officer o's instances
+// may send officer_complete an `investigation` block: every pool but a
+// routine one. A routine instance that finds an item needs investigating
+// hands it to judgement (OutcomeNeedsJudgement); the investigation is the
+// judgement pool's.
+func CompleteTakesInvestigation(o Officer) bool { return o.Tier != TierRoutine }
 
 // MaxSummaryChars is HQ's bound on a completion summary, in CHARACTERS
 // (civ-hq: 24,576). A shadow officer puts a whole evaluation (≤10,000) or
@@ -439,6 +468,8 @@ func (c *Client) Complete(ctx context.Context, item ItemID, instance string, don
 	body := map[string]any{"instance": instance, "outcome": done.Outcome, "summary": done.Summary, "links": done.Links}
 	if done.Investigation != nil {
 		body["investigation"] = done.Investigation
+	} else if raw := bytes.TrimSpace(done.InvestigationJSON); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		body["investigation"] = json.RawMessage(raw)
 	}
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "complete"), body)
 }

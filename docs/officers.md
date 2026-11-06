@@ -539,13 +539,13 @@ listing and again at dispatch):
 | `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
 | `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
-| `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
+| `officer_complete` `{item_id, outcome, summary, links?, investigation?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 | `officer_obs_queries` | `GET /officers/{id}/obs/queries` — HQ's named observability queries (each one's id, what its answer may claim, the arguments it takes) and HQ's caps. See [Observability queries](#observability-queries) |
 | `officer_obs_query` `{query_id, …}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes (the `args` `officer_obs_queries` lists; the tool's schema describes `query_id` only and is open, so HQ's decoder is the one schema). Never a raw query |
-| `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **judgement instances only**: `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
+| `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **both pools of a tiered officer** (never an untiered one): `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates, and today's HQ takes it for a judgement item only. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
@@ -575,7 +575,8 @@ was claimed, and the instance gets a plain result — `claimed: false`,
 `blocked: true`, `blocked_by` (HQ **task** ids, as strings — not items to
 claim) and the note "not claimed: item N waits on tasks A, B (not done yet);
 claim another open item". At most 10 `links`. `outcome` is `done`,
-`escalated` or `no_action`; `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
+`escalated` or `no_action` (and `needs_judgement` for a routine instance:
+[Completing an item](#completing-an-item-outcomes-and-investigation)); `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
 returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
 409 on a claim names the holder), and an outage as "try again in a minute".
 
@@ -588,6 +589,40 @@ charter says to — an officers muster usually runs headless, so an attention
 ask there reaches nobody. Its MCP instructions and system prompt say the same,
 in place of the generic attention paragraph every other agent gets
 ([attention.md](attention.md#what-agents-are-told)).
+
+### Completing an item: outcomes and investigation
+
+`officers.CompleteOutcomes` and `officers.CompleteTakesInvestigation` are the
+one rule for what `officer_complete` offers each pool; its schema and its
+dispatch both ask them.
+
+| instance | outcomes | `investigation` |
+|---|---|---|
+| judgement pool | `done`, `escalated`, `no_action` | offered |
+| untiered officer | `done`, `escalated`, `no_action` | offered |
+| routine pool | the three, and `needs_judgement` | **not offered** |
+
+- **`investigation`.** HQ requires an investigation block to escalate an
+  item of an officer type whose policy sets `investigation: true`, and keeps
+  one only on `escalated` (HQ's officer guide, "Investigation", states its
+  fields and bounds). muster forwards the block **as sent** — never decoded
+  into a struct of its own, which would reshape it — and checks none of its
+  fields: HQ's decoder is the one schema, as for `officer_obs_query`. The
+  tool's schema describes it as an open object. HQ's `400` reaches the
+  instance with HQ's status and body, so it can fix the block and complete
+  again. JSON `null` is no block.
+- **`needs_judgement`.** HQ takes it for a **routine** item only: it promotes
+  the item to judgement in place (open again, no holder, the summary kept for
+  the judgement claimer) and closes nothing; it refuses links on it and
+  refuses the outcome on a judgement item. So it is offered to the routine
+  pool only, and muster refuses it from any other instance before HQ. The
+  routine kickoff explains the hand-off. As on any complete, the instance's
+  hold ends: the transcript forwarder and the LLM proxy's item meter stop.
+- **Why a routine instance gets no `investigation`.** A routine instance that
+  finds an item needs investigating hands it on with `needs_judgement`; the
+  investigation is the judgement pool's. An `investigation` it sends anyway
+  is **refused** by muster, naming `needs_judgement`, and nothing reaches HQ.
+  It is never silently dropped.
 
 ### Observability queries
 
@@ -633,11 +668,11 @@ call is not counted. A routine instance's calls are never counted.
 ### Raw metrics and logs (`officer_obs_raw`)
 
 The one exception to "no raw query": an **investigating** officer's
-judgement instance may send its own PromQL or LogQL for the item it holds,
-through HQ's `POST /officers/{id}/obs/raw`. HQ owns every check on it — the
+instance, of either pool, may send its own PromQL or LogQL for the item it
+holds, through HQ's `POST /officers/{id}/obs/raw`. HQ owns every check on it — the
 officer's type must set `investigation: true` and the item must be the
-officer's judgement item claimed by that instance (else `403
-not_investigating`); the window, the step, the caps and the rate limit; the
+officer's item claimed by that instance, and **today's HQ admits a judgement
+item only** (else `403 not_investigating`); the window, the step, the caps and the rate limit; the
 refusal of the apiserver audit stream — and its refusal names the limit.
 HQ's officer guide states the limits; muster states none and re-checks none
 of them. HQ also redacts every log line and writes an audit row carrying the
@@ -646,8 +681,12 @@ properties are guidance, and HQ's decoder is the one schema.
 
 One call, each step refusing before the next:
 
-1. **Binding.** Only a judgement pool's instances are offered the tool. A
-   routine instance, or any other agent, is refused at dispatch.
+1. **Binding.** Both pools of a tiered officer are offered the tool (the
+   routine pool by the operator's decision). An untiered
+   officer's instance, or any other agent, is refused at dispatch. A routine
+   instance's call reaches HQ like a judgement one's; until HQ admits a
+   routine item, HQ answers it `403 not_investigating` (returned as is, and
+   counted as a read like any refusal HQ judged).
 2. **Item.** The instance must hold a live claim in HQ — the same gate as
    [`officer_kube_read`](#reading-a-cluster-officer_kube_read) — and
    `item_id` picks one when it holds several.
@@ -665,7 +704,8 @@ One call, each step refusing before the next:
 ### The read budget
 
 **200 reads per item, ONE count** shared by `officer_kube_read`,
-`officer_obs_raw` and a judgement instance's `officer_obs_query`
+`officer_obs_raw` (every call, a routine instance's too) and a judgement
+instance's `officer_obs_query` (a routine instance's is never counted)
 (`officers.ReadBudget`, kept by the server for every tool;
 `officers.CountsRead` is the one rule for which calls spend it). 100 named
 queries, 99 raw queries and 1 cluster read are an item's 200; the 201st is

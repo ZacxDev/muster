@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -800,15 +802,7 @@ func queueToolDefs() []agents.ToolDef {
 		{Type: "function", Name: officers.ToolHeartbeat,
 			Description: "Extend your lease on an item you hold. A conflict answer means you lost the lease: stop working the item.",
 			Parameters:  objSchema(map[string]any{"item_id": item, "lease_seconds": lease}, "item_id")},
-		{Type: "function", Name: officers.ToolComplete,
-			Description: "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — " +
-				"in shadow mode your full evaluation or report goes here) and optional links.",
-			Parameters: objSchema(map[string]any{
-				"item_id": item,
-				"outcome": map[string]any{"type": "string", "enum": officers.Outcomes},
-				"summary": strProp("What you found and did, at most 24,576 characters."),
-				"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
-			}, "item_id", "outcome", "summary")},
+		completeToolDef(officers.Officer{}),
 		{Type: "function", Name: officers.ToolRelease,
 			Description: "Give an item back before its lease ends, so another instance can take it.",
 			Parameters:  objSchema(map[string]any{"item_id": item}, "item_id")},
@@ -874,6 +868,50 @@ func queueToolDefs() []agents.ToolDef {
 						"(start and end are RFC 3339 in whole seconds, e.g. 2006-01-02T15:04:05Z; the window is (start, end]); HQ checks every one."),
 				}}},
 	}
+}
+
+// completeToolDef is officer_complete's definition as officer o's instances
+// are offered it (officerToolDefFor): its outcomes are officers.
+// CompleteOutcomes(o) — needs_judgement for a routine pool only — and it
+// takes `investigation` when officers.CompleteTakesInvestigation(o). The
+// registry's copy is an untiered officer's.
+func completeToolDef(o officers.Officer) agents.ToolDef {
+	desc := "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action"
+	if slices.Contains(officers.CompleteOutcomes(o), officers.OutcomeNeedsJudgement) {
+		desc += ", or " + officers.OutcomeNeedsJudgement + " (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for " +
+			"the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary)"
+	}
+	desc += ", with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links."
+	props := map[string]any{
+		"item_id": strProp("The item's id, as officer_items or officer_brief returned it."),
+		"outcome": map[string]any{"type": "string", "enum": officers.CompleteOutcomes(o)},
+		"summary": strProp("What you found and did, at most 24,576 characters."),
+		"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
+	}
+	if officers.CompleteTakesInvestigation(o) {
+		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
+		// 🔴 AN OPEN OBJECT, as officer_obs_query's arguments: HQ's decoder
+		// is the one schema for the block, and muster forwards it to HQ as
+		// sent (officers.Completion.InvestigationJSON) — a closed schema here
+		// would be a second copy that drifts from HQ's.
+		props["investigation"] = map[string]any{"type": "object", "additionalProperties": true,
+			"description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], " +
+				"eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, " +
+				"confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), " +
+				"not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field."}
+	}
+	return agents.ToolDef{Type: "function", Name: officers.ToolComplete, Description: desc,
+		Parameters: objSchema(props, "item_id", "outcome", "summary")}
+}
+
+// officerToolDefFor is tool definition d as officer o's instances are
+// offered it: officer_complete's per-pool definition, every other tool as
+// the registry declares it.
+func officerToolDefFor(o officers.Officer, d agents.ToolDef) agents.ToolDef {
+	if d.Name == officers.ToolComplete {
+		return completeToolDef(o)
+	}
+	return d
 }
 
 // isOfficerTool reports whether name is one of officerToolDefs.
@@ -981,6 +1019,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		Outcome      string          `json:"outcome"`
 		Summary      string          `json:"summary"`
 		Links        []string        `json:"links"`
+		// officer_complete's investigation block, kept as sent: HQ's decoder
+		// is its one schema (officers.Completion.InvestigationJSON).
+		Investigation json.RawMessage `json:"investigation"`
 		// officer_ask_person's.
 		To              string          `json:"to"`
 		Question        string          `json:"question"`
@@ -1085,12 +1126,21 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
-		ok := false
-		for _, v := range officers.Outcomes {
-			ok = ok || v == in.Outcome
+		outcomes := officers.CompleteOutcomes(o)
+		if !slices.Contains(outcomes, in.Outcome) {
+			return toolErr("outcome must be one of %s", strings.Join(outcomes, ", ")), true
 		}
-		if !ok {
-			return toolErr("outcome must be one of %s", strings.Join(officers.Outcomes, ", ")), true
+		// 🔴 A BLOCK MUSTER DOES NOT FORWARD IS REFUSED, NEVER DROPPED: a
+		// routine instance is not offered investigation (its hand-off is
+		// needs_judgement), and silently completing without the block would
+		// read as accepted. JSON null is no block.
+		inv := bytes.TrimSpace(in.Investigation)
+		if string(inv) == "null" {
+			inv = nil
+		}
+		if len(inv) > 0 && !officers.CompleteTakesInvestigation(o) {
+			return toolErr("investigation is not a routine instance's: an item that needs investigating is the judgement pool's — complete it with outcome %s and what you found in the summary",
+				officers.OutcomeNeedsJudgement), true
 		}
 		if strings.TrimSpace(in.Summary) == "" || utf8.RuneCountInString(in.Summary) > officers.MaxSummaryChars {
 			return toolErr("summary is required and at most %d characters", officers.MaxSummaryChars), true
@@ -1098,7 +1148,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if len(in.Links) > officers.MaxLinks {
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
-		body, err = c.Complete(ctx, in.ItemID, instance, officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links})
+		body, err = c.Complete(ctx, in.ItemID, instance, officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv})
 		if err == nil && s.officerRT.fwd != nil {
 			s.officerRT.fwd.Ended(o, instance, in.ItemID)
 		}
