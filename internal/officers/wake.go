@@ -708,7 +708,9 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	}
 	r.mu.Unlock()
 	r.publish()
-	_ = capLines // MUTANT (round 1 F1): the cap line is never written
+	for _, l := range capLines {
+		r.log.Print(l)
+	}
 	for _, c := range ended {
 		r.endCapHold(c)
 	}
