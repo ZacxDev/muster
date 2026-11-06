@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 // --- HQ's officer obs route ---------------------------------------------------
@@ -30,7 +32,9 @@ import (
 // reaches the officer with HQ's code. muster keeps no copy of the schema or
 // the registry to drift from them. What muster owns, and checks itself: the
 // officer (the dispatcher refuses naming another), its token (Client), that
-// the arguments are one JSON object, and the body's size.
+// the arguments are one JSON object, and the body's size. The one key muster
+// removes is a judgement instance's item_id, which is muster's (the item its
+// read budget is charged to, internal/api officer_reads.go), never HQ's.
 
 // MaxObsQueryBody bounds the arguments object muster sends: HQ's own cap on
 // an officer route's body (civ-hq internal/api MaxOfficerBody, 256 KiB). A
@@ -74,4 +78,59 @@ func (c *Client) ObsQueries(ctx context.Context) ([]byte, error) {
 // byte for byte (ObsQueryArgs) — never re-encoded.
 func (c *Client) ObsQuery(ctx context.Context, args json.RawMessage) ([]byte, error) {
 	return c.doCoded(ctx, http.MethodPost, c.officerPath()+"/obs/query", "application/json", args, obsDecisionCodes, obsRetryCodes)
+}
+
+// --- HQ's raw obs route (officer_obs_raw) -------------------------------------
+//
+// civ-hq internal/api/officer_obs_raw.go (docs/OFFICERS.md §6b "Raw queries"):
+//
+//	POST /officers/{id}/obs/raw   an investigating officer's own PromQL / LogQL
+//	     {"item_id", "instance", "backend", "query", "start", "end",
+//	      "step"?, "limit"?}
+//
+// HQ owns every check on the query (its caps, the stream selector, the
+// refused audit stream, the redaction) and audits it with its text; muster
+// passes the tool's arguments through UNCHANGED, as ObsQueryArgs does, and
+// HQ's decoder is the one schema. What muster adds is what only muster knows:
+// the instance (the caller's own name) and the item (the live claim the read
+// is counted against, internal/api). The caller may name neither another way:
+// a key spelling either (in any case — HQ's decoder matches names without
+// case) is refused, never overwritten or forwarded.
+
+// ObsRawBody is the POST /obs/raw body: the tool's arguments object args
+// (item_id already split off by the caller), each value as sent (re-encoded
+// compactly, never decoded into a struct), plus item_id (HQ's int64) and
+// instance.
+func ObsRawBody(args []byte, item ItemID, instance string) (json.RawMessage, error) {
+	args = bytes.TrimSpace(args)
+	var obj map[string]json.RawMessage
+	if len(args) == 0 || args[0] != '{' || json.Unmarshal(args, &obj) != nil || obj == nil {
+		return nil, fmt.Errorf("arguments must be one JSON object: {backend, query, start, end, step?, limit?, item_id?}")
+	}
+	for k := range obj {
+		if strings.EqualFold(k, "instance") || strings.EqualFold(k, "item_id") {
+			return nil, fmt.Errorf("%q is muster's to send, not yours: muster names your instance and the item you hold (pick one with item_id)", k)
+		}
+	}
+	n, err := strconv.ParseInt(string(item), 10, 64)
+	if err != nil || n <= 0 {
+		return nil, fmt.Errorf("item %q is not one HQ's raw obs route can name (a positive integer id)", item)
+	}
+	obj["item_id"] = json.RawMessage(strconv.FormatInt(n, 10))
+	inst, _ := json.Marshal(instance)
+	obj["instance"] = inst
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("arguments: %v", err)
+	}
+	if len(out) > MaxObsQueryBody {
+		return nil, fmt.Errorf("arguments are %d bytes, over the %d-byte cap on an officer request", len(out), MaxObsQueryBody)
+	}
+	return out, nil
+}
+
+// ObsRaw is POST /officers/{id}/obs/raw with the officer token: body
+// (ObsRawBody) as given. The answer is HQ's, unchanged.
+func (c *Client) ObsRaw(ctx context.Context, body json.RawMessage) ([]byte, error) {
+	return c.doCoded(ctx, http.MethodPost, c.officerPath()+"/obs/raw", "application/json", body, obsDecisionCodes, obsRetryCodes)
 }
