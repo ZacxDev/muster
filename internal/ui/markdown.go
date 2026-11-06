@@ -267,10 +267,26 @@ func mdEmphasis(s string) string {
 }
 
 // mdIsWordRune is the "alphanumeric" side of CommonMark's intra-word `_` rule:
-// a letter, a digit, or another `_` (so `__x__`, which this renderer does not
-// support as bold, stays literal exactly as it did before).
+// a letter (L), a combining mark (M), a number (N), or another `_` (so `__x__`,
+// which this renderer does not support as bold, stays literal exactly as it
+// did before).
+//
+// Marks count because a word can END in one: a decomposed é is e + U+0301, and
+// Devanagari vowel signs (सूची) are marks, so `café_x_` must not open there.
+// Numbers are N, not just decimal digits, so `x²_y_` stays literal.
+//
+// 🔴 THE JS RENDERER'S mdUnderWord (agentChatScript) USES THE SAME CLASSES —
+// \p{L}\p{M}\p{N} — and TestUnderscoreRenderersAgree holds the two to one
+// output on a fixed list of such inputs. Change both or neither.
 func mdIsWordRune(r rune) bool {
-	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+	return r == '_' || unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsNumber(r)
+}
+
+// mdIsUnderSpace is the whitespace side of the rule: Go's unicode.IsSpace plus
+// U+FEFF. The JS renderer's /\s/ is IsSpace minus U+0085 plus U+FEFF, so its
+// side adds U+0085 — the two renderers use the UNION, and agree on both.
+func mdIsUnderSpace(r rune) bool {
+	return unicode.IsSpace(r) || r == '\uFEFF'
 }
 
 // mdItalicUnderscore applies `_x_` italics under CommonMark's rule for `_`:
@@ -340,7 +356,7 @@ func mdUnderOpens(s string, i int) bool {
 		return false
 	}
 	r, _ := utf8.DecodeRuneInString(s[i+1:])
-	return r != '_' && !unicode.IsSpace(r)
+	return r != '_' && !mdIsUnderSpace(r)
 }
 
 // mdUnderCloses reports whether the `_` at s[j] can close emphasis.
@@ -348,7 +364,7 @@ func mdUnderCloses(s string, j int) bool {
 	if j == 0 {
 		return false
 	}
-	if r, _ := utf8.DecodeLastRuneInString(s[:j]); r == '_' || unicode.IsSpace(r) {
+	if r, _ := utf8.DecodeLastRuneInString(s[:j]); r == '_' || mdIsUnderSpace(r) {
 		return false
 	}
 	if j+1 < len(s) {

@@ -1805,11 +1805,16 @@ func agentChatScript(name string) g.Node {
   // internal/ui/markdown.go (a closer index computed once, right to left, so a
   // run of unclosed openers stays linear); TestJSUnderscoreEmphasisMatchesGo
   // runs mdInline under node against the Go renderer's cases.
-  function mdUnderWord(c) { return c === '_' || /[\p{L}\p{N}]/u.test(c); }
+  // Same classes as the Go side (mdIsWordRune, mdIsUnderSpace in markdown.go):
+  // letters, marks (a decomposed é, Devanagari vowel signs), numbers (x²) and
+  // '_' are word characters; whitespace is /\s/ plus U+0085, Go's IsSpace plus
+  // U+FEFF — the union. TestUnderscoreRenderersAgree holds the two together.
+  function mdUnderWord(c) { return c === '_' || /[\p{L}\p{M}\p{N}]/u.test(c); }
+  function mdUnderSpace(c) { return /\s/.test(c) || c === '\u0085'; }
   function mdUnderEm(s) {
     if (s.indexOf('_') < 0) return s;
     var cs = Array.from(s), n = cs.length, next = new Array(n + 1);
-    var sp = function (c) { return /\s/.test(c); };
+    var sp = mdUnderSpace;
     var closes = function (j) {
       if (j === 0 || cs[j - 1] === '_' || sp(cs[j - 1])) return false;
       return !(j + 1 < n && mdUnderWord(cs[j + 1]));

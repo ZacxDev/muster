@@ -115,6 +115,41 @@ func TestMarkdownRoutedBlockKeepsIdentifiers(t *testing.T) {
 	}
 }
 
+// jsInlineSource is agentChatScript's inline renderer as node can run it: from
+// the underscore pass through mdInline, which calls it — running the whole
+// inline pass is what holds that the pass is actually WIRED IN.
+func jsInlineSource(t *testing.T) (node, src string) {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required to run the client renderer: %v", err)
+	}
+	js := jsSource(t, agentChatScript("x"))
+	start := strings.Index(js, "function mdUnderWord(")
+	end := strings.Index(js, "function mdTableCells(")
+	if start < 0 || end < start {
+		t.Fatalf("agentChatScript no longer carries mdUnderWord … mdInline … mdTableCells")
+	}
+	return node, js[start:end]
+}
+
+// jsInline runs the client renderer's mdInline over ins under node.
+func jsInline(t *testing.T, ins []string) []string {
+	t.Helper()
+	node, src := jsInlineSource(t)
+	in, _ := json.Marshal(ins)
+	prog := src + "\nprocess.stdout.write(JSON.stringify(" + string(in) + ".map(function (x) { return mdInline(x); })));\n"
+	out, err := exec.Command(node, "-e", prog).Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got []string
+	if err := json.Unmarshal(out, &got); err != nil || len(got) != len(ins) {
+		t.Fatalf("node output %q: %v", out, err)
+	}
+	return got
+}
+
 // TestJSUnderscoreEmphasisMatchesGo runs the client renderer's underscore pass
 // (mdUnderEm in agentChatScript, the /agents/{name} chat) under node, on the
 // same inputs, and holds it to the SAME literal outputs as the Go pass. The two
@@ -124,18 +159,6 @@ func TestMarkdownRoutedBlockKeepsIdentifiers(t *testing.T) {
 // node is REQUIRED, not optional: a missing node fails rather than skips, so
 // this cannot go quietly green (CI's verdict.py refuses a skip anyway).
 func TestJSUnderscoreEmphasisMatchesGo(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatalf("node is required to run the client renderer's underscore pass: %v", err)
-	}
-	js := jsSource(t, agentChatScript("x"))
-	// From the underscore pass through mdInline, which calls it: running the
-	// whole inline pass is what holds that the pass is actually WIRED IN.
-	start := strings.Index(js, "function mdUnderWord(")
-	end := strings.Index(js, "function mdTableCells(")
-	if start < 0 || end < start {
-		t.Fatalf("agentChatScript no longer carries mdUnderWord … mdInline … mdTableCells")
-	}
 	cases := []struct{ in, want string }{
 		{"route_id rt_abc_def", "route_id rt_abc_def"},
 		{"a_b_c", "a_b_c"},
@@ -154,6 +177,10 @@ func TestJSUnderscoreEmphasisMatchesGo(t *testing.T) {
 		{"café_x_ü", "café_x_ü"},
 		{"(_x_).", "(<em>x</em>)."},
 		{"_a\nb_ _c_", "_a\nb_ <em>c</em>"},
+		// A word can end in a combining mark: a DECOMPOSED é (e + U+0301), a
+		// Devanagari vowel sign. Neither may open emphasis on the `_` after it.
+		{"cafe\u0301_x_.txt", "cafe\u0301_x_.txt"},
+		{"सूची_x_.", "सूची_x_."},
 	}
 	for _, c := range cases {
 		// The Go pass must agree, or this test is comparing against nothing.
@@ -183,16 +210,7 @@ func TestJSUnderscoreEmphasisMatchesGo(t *testing.T) {
 	for i, c := range cases {
 		ins[i] = c.in
 	}
-	in, _ := json.Marshal(ins)
-	prog := js[start:end] + "\nprocess.stdout.write(JSON.stringify(" + string(in) + ".map(function (x) { return mdInline(x); })));\n"
-	out, err := exec.Command(node, "-e", prog).Output()
-	if err != nil {
-		t.Fatalf("node: %v", err)
-	}
-	var got []string
-	if err := json.Unmarshal(out, &got); err != nil || len(got) != len(cases) {
-		t.Fatalf("node output %q: %v", out, err)
-	}
+	got := jsInline(t, ins)
 	for i, c := range cases {
 		if got[i] != c.want {
 			t.Errorf("JS mdInline(%q) = %q, want %q", c.in, got[i], c.want)
@@ -222,19 +240,114 @@ func TestMarkdownBareURLIsNotEmphasis(t *testing.T) {
 	}
 }
 
-// TestMarkdownUnderscoreLinear holds the underscore pass linear. A paragraph is
-// ONE line to it (markdownHTML joins with <br>), so scanning forward from every
-// unclosed opener is quadratic. With that forward scan swapped in, this body
-// of 65k unclosed `_x` openers ran past the 5s bound below; the linear pass
-// renders it in ~10ms.
-func TestMarkdownUnderscoreLinear(t *testing.T) {
-	body := strings.Repeat(" _x", 65_000)
-	start := time.Now()
-	out := markdownHTML(body)
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("markdownHTML on %d bytes of unclosed `_` openers took %v", len(body), d)
+// TestUnderscoreRenderersAgree holds the Go and JS underscore passes to ONE
+// output, a literal, on inputs where their character classes could differ:
+// numbers beyond 0-9 (x², Ⅻ, ٣), combining marks, and the two whitespace
+// characters the engines disagree about — U+0085 (Go's unicode.IsSpace, not
+// JS's /\s/) and U+FEFF (JS's /\s/, not Go's IsSpace). Both renderers use the
+// union, so `_` beside either one neither opens nor closes.
+func TestUnderscoreRenderersAgree(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"x²_y_.", "x²_y_."},
+		{"Ⅻ_x_ y", "Ⅻ_x_ y"},
+		{"٣_x_ y", "٣_x_ y"},
+		{"x_²_ y", "x_²_ y"},
+		{"_x_\u0301 y", "_x_\u0301 y"},
+		{"cafe\u0301_x_.txt", "cafe\u0301_x_.txt"},
+		{"सूची_x_.", "सूची_x_."},
+		{"_\u0085b_ c", "_\u0085b_ c"},
+		{"_b\u0085_ c", "_b\u0085_ c"},
+		{"_\ufeffb_ c", "_\ufeffb_ c"},
+		{"_b\ufeff_ c", "_b\ufeff_ c"},
+		{"a\u00a0_b_ c", "a\u00a0<em>b</em> c"},
+		{"a\u0085_b_ c", "a\u0085<em>b</em> c"},
+		{"(_x_²)", "(_x_²)"},
 	}
-	if strings.Contains(out, "<em>") {
+	ins := make([]string, len(cases))
+	for i, c := range cases {
+		ins[i] = c.in
+	}
+	js := jsInline(t, ins)
+	for i, c := range cases {
+		goOut := mdEmphasis(c.in)
+		if goOut != c.want {
+			t.Errorf("Go mdEmphasis(%q) = %q, want %q", c.in, goOut, c.want)
+		}
+		if js[i] != c.want {
+			t.Errorf("JS mdInline(%q) = %q, want %q", c.in, js[i], c.want)
+		}
+	}
+}
+
+// scalingRatio is time(f(4n)) / time(f(n)), each the fastest of several runs.
+// A linear pass gives ~4 and a quadratic one ~16, whatever the runner's speed,
+// which is why the bound is on the RATIO rather than on a wall-clock time a
+// faster runner could let a quadratic pass slip under.
+func scalingRatio(f func(n int)) (float64, time.Duration, time.Duration) {
+	best := func(n int) time.Duration {
+		var b time.Duration
+		for i := 0; i < 7; i++ {
+			st := time.Now()
+			f(n)
+			if d := time.Since(st); i == 0 || d < b {
+				b = d
+			}
+		}
+		return b
+	}
+	const n = 20_000
+	small, large := best(n), best(4*n)
+	return float64(large) / float64(small), small, large
+}
+
+// TestMarkdownUnderscoreLinear holds the Go underscore pass linear. A
+// paragraph is ONE line to it (markdownHTML joins with <br>), so scanning
+// forward from every unclosed `_x` opener is quadratic.
+func TestMarkdownUnderscoreLinear(t *testing.T) {
+	if out := markdownHTML(strings.Repeat(" _x", 100)); strings.Contains(out, "<em>") {
+		t.Fatalf("unclosed openers produced emphasis: %s", out)
+	}
+	r, small, large := scalingRatio(func(n int) { mdItalicUnderscore(strings.Repeat(" _x", n)) })
+	t.Logf("n: %v, 4n: %v, ratio %.1f", small, large, r)
+	if r > 9 {
+		t.Fatalf("mdItalicUnderscore scales superlinearly: 4x the input took %.1fx the time (%v vs %v)", r, large, small)
+	}
+}
+
+// TestJSUnderscoreLinear is the same bound on the client renderer, timed
+// inside node (after a warm-up, so the JIT is not what is measured).
+func TestJSUnderscoreLinear(t *testing.T) {
+	node, src := jsInlineSource(t)
+	prog := src + `
+function best(n) {
+  var s = ' _x'.repeat(n), b = Infinity;
+  for (var i = 0; i < 7; i++) {
+    var st = process.hrtime.bigint(); mdInline(s);
+    var d = Number(process.hrtime.bigint() - st); if (d < b) b = d;
+  }
+  return b;
+}
+best(5000);
+var small = best(20000), large = best(80000);
+process.stdout.write(JSON.stringify({small: small, large: large, em: mdInline(' _x'.repeat(100)).indexOf('<em>') >= 0}));
+`
+	out, err := exec.Command(node, "-e", prog).Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var m struct {
+		Small, Large float64
+		Em           bool
+	}
+	if err := json.Unmarshal(out, &m); err != nil || m.Small <= 0 {
+		t.Fatalf("node output %q: %v", out, err)
+	}
+	if m.Em {
 		t.Fatalf("unclosed openers produced emphasis")
+	}
+	r := m.Large / m.Small
+	t.Logf("n: %.1fms, 4n: %.1fms, ratio %.1f", m.Small/1e6, m.Large/1e6, r)
+	if r > 9 {
+		t.Fatalf("JS mdInline scales superlinearly: 4x the input took %.1fx the time", r)
 	}
 }
