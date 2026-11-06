@@ -3,15 +3,15 @@
 **Status: phase 1 is built** (`agent_dispatch` for pods, #428,
 `internal/api/agent_dispatch.go`). **Phases 2-4 are proposed.** The owner made
 the nine decisions in [Owner decisions](#owner-decisions): four up front, and
-five more in answer to this page's first draft. This revision adds four more
-(10-13), the owner's rules for **mirrored dispatch**: when "mirrored" means a
+five more in answer to this page's first draft. This revision adds nine more:
+10-13, the owner's rules for **mirrored dispatch**: when "mirrored" means a
 host, which runtime runs there, and what the chief asks when a host or a model
-is missing ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)). It
-also rebuilds phase 4 on the opencode launcher that #486 shipped
+is missing ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model));
+and 14-18, the owner's answers to this revision's questions. It also rebuilds phase 4 on the opencode launcher that #486 shipped
 ([3.6](#36-the-commands-and-prompt-delivery)). Everything else on this page is
-the recommended design. What is still open is a set of measurements
-([7](#7-what-is-still-unverified)) and the owner questions in
-[8](#8-open-questions-for-the-owner).
+the recommended design. The owner answered this revision's five questions as
+decisions 14-18. What is still open is a set of measurements
+([7](#7-what-is-still-unverified)).
 
 **What this revision changed, and why it is not a new page.** Mirrored
 dispatch *is* this page's host spawn (section 3, phases 3 and 4): the same
@@ -19,7 +19,7 @@ target strings, the same flag, the same `host_dispatches` row. A parallel page
 would restate that protocol and drift from it, so the changes are made in
 place:
 
-- decisions 10-13, and [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)
+- decisions 10-18, and [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)
   (the routing rules and the two ask cards, reusing PR A's `ask_owner` card);
 - `model` is now accepted for `host/<host>/opencode`, as an OpenRouter model
   ([2.2](#22-parameters));
@@ -212,6 +212,30 @@ The owner's rules for mirrored dispatch, given after phase 1 shipped:
 
 Decisions 12 and 13 are decision 1 applied to the two parts of a host target:
 muster never chooses one the owner did not name.
+
+The owner's answers to this revision's questions:
+
+14. **"Mirrored" is the chief's reading, with no word check.** Mapping the
+    request to a host target is a prose rule in the chief's instructions.
+    muster does not refuse a host target for lacking the word "mirror"; the
+    card and the live agent card show where an agent goes before and after it
+    starts ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)).
+15. **The model card offers a configured list plus a typed id.** The list is
+    muster configuration, `MUSTER_CHIEF_DISPATCH_MODELS`, which the owner edits.
+    Its default is a small list of OpenRouter ids, and the card always also
+    takes a typed OpenRouter model id
+    ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model), "The model
+    list").
+16. **The host repository allow-list is empty by default.**
+    `-agent-spawn-repos` names nothing until the owner lists repositories for
+    each host in that host's configuration (their dotfiles), so a host spawns
+    nothing until then ([3.2](#32-the-flag), [5.5](#55-a-compromised-server)).
+17. **No Stop button in phases 3-4.** The live agent card tells the owner to
+    close the window on `<host>`. There is no kill message (D7)
+    ([3.7](#the-live-agent-card)).
+18. **"Mirrored with Claude `<model>`" uses Claude Code's default model.**
+    `model` stays refused on `host/<host>/claude` (defaulted, per the
+    recommendation).
 
 ---
 
@@ -1062,8 +1086,8 @@ on muster. Do not start another."* For opencode the result also carries
 Decisions 10-13 say how the owner's words map to a target. The mapping itself
 is the chief's reading of a sentence, so it lives in the chief's instructions
 and `agent_dispatch`'s description. That part is **prose**, and it is stated
-as prose here (see [8](#8-open-questions-for-the-owner), Q1, for the
-deterministic alternative). What muster enforces **structurally** is the rest:
+as prose here. The owner chose this over a deterministic word check
+(decision 14). What muster enforces **structurally** is the rest:
 a host target only ever starts in a turn the owner typed, or on the owner's own
 tap on a card that such a turn raised, and it starts **exactly** what the owner
 named or tapped.
@@ -1104,9 +1128,9 @@ required). Then, instead of reserving, it:
      hello offers the runtime when the runtime is known, most recently
      dispatched-to first;
    - **model card:** `Claude (Claude Code)` when the host offers `claude`,
-     then the OpenRouter models in the owner's short list when the host offers
-     `opencode` ([8](#8-open-questions-for-the-owner), Q2), and, if PR A's
-     card takes free text, "another OpenRouter model (type its id)";
+     then the models of `MUSTER_CHIEF_DISPATCH_MODELS` when the host offers
+     `opencode`, then "another OpenRouter model (type its id)" (decision 15,
+     "The model list" below);
 2. refuses, with no card, when a blank has **no** option: `"no host can start
    agents now (none of your hosts is online with -agent-spawn); nothing was
    asked or queued"`, or `"host %q offers neither claude nor opencode now"`;
@@ -1192,7 +1216,8 @@ same reason #485 binds a "Release & dispatch" tap to the target
 `ask_owner`, and the phase 3 PR checks each one against PR A's merged code
 before it builds on it:
 
-1. a card is an attention ask with **stored options** and an id, and its
+1. a card is an attention ask with **stored options** (and, for the model
+   card, a free-text answer, decision 15) and an id, and its
    answer is recorded with the door it came through (`AnsweredVia`, as for
    today's asks);
 2. muster's own code can raise one for the chief (not only the chief's tool
@@ -1205,6 +1230,29 @@ If PR A's `ask_owner` instead keeps the chief waiting **inside** the owner's
 typed turn (an `attention_wait` loop), `ownerTurnFor` already passes on the
 completing call, and the hold is only a record. The binding rules above still
 apply, so neither shape opens anything the other closes.
+
+**The model list** (decision 15). `MUSTER_CHIEF_DISPATCH_MODELS` is a
+comma-separated list of OpenRouter model ids, read at server start, each
+checked against `model`'s shape ([2.2](#22-parameters)); a malformed entry
+stops the server with its name, as other `MUSTER_*` settings do. It is **editable
+configuration**, not a recommendation baked into code. Its default is four
+coding models, each confirmed present in OpenRouter's public model list
+(`GET https://openrouter.ai/api/v1/models`) when this was written:
+
+```text
+qwen/qwen3-coder,moonshotai/kimi-k2-0905,z-ai/glm-4.6,deepseek/deepseek-v3.2
+```
+
+- An empty value offers no listed models, only Claude and the typed id.
+- The list says nothing about whether a **host's** opencode can run a model:
+  the host still checks each one against its own catalog when the spawn runs
+  (`bad_model`, [3.6](#36-the-commands-and-prompt-delivery)), so a stale entry
+  costs a refusal, never a wrong start.
+- **The typed id is always offered.** It needs PR A's card to take a free-text
+  answer. If PR A's card does not, phase 4 adds a free-text option to it, so
+  this becomes a fifth property checked against PR A before building. A typed
+  id binds a completing call like a tapped option does: the owner typed it
+  through an owner door, and it must pass `model`'s shape.
 
 **The phone.** The phone draws at most two options beside Dismiss
 (`AskPush.buttons()`, per #485). A card with more options shows the first two
@@ -2133,8 +2181,7 @@ The card reads the row, and the hub's listing for the row's window:
   muster keys by session (a focus, a route, an ask) therefore links to the
   card's row from the moment the reply lands, without a transcript guess.
 - **The card has no Stop button** for a host dispatch (D7, below). It shows
-  "close the window on `<host>` to stop it" instead
-  ([8](#8-open-questions-for-the-owner), Q4).
+  "close the window on `<host>` to stop it" instead (decision 17).
 - The card updates on the same events that redraw the sidebar's window rows,
   so it adds no polling.
 
@@ -2373,7 +2420,7 @@ index.
 | the window never reports (exists, but never appears in a listing) | the same as above | the same | the window, flagged by the orphan notice once its tag shows up; the hourly sweep keeps its worktree if it holds work |
 | the host goes offline mid-run | `live_agents` still lists it | held (fail-closed) until the 24-hour sweep | the agent keeps running on the host |
 | the agent exits, or the owner closes the window | the card shows "Ended" | released after two listings | a clean worktree is removed; one with work is kept ([3.3](#33-worktrees)) |
-| the owner wants it stopped from muster | — | `agent_destroy` with `host_dispatch` ends the record and frees the slot at once | **the window keeps running**: no kill message (D7, [8](#8-open-questions-for-the-owner) Q4) |
+| the owner wants it stopped from muster | — | `agent_destroy` with `host_dispatch` ends the record and frees the slot at once | **the window keeps running**: no kill message (D7, decision 17) |
 
 ### Relation to host-sessions.md
 
@@ -3049,7 +3096,7 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
   with `ExpectTurn` and `mirror.ForDispatch`; the host's tag check; and the
   12-per-hour limit
   ([3.10](#310-forwarding-into-a-host-spawned-agent));
-- **mirrored dispatch** (decisions 10-13,
+- **mirrored dispatch** (decisions 10-18,
   [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)), for claude:
   - the held targets `host/?/claude`, `host/?/?` and `host/<host>/?`, the
     `chief.dispatch_held` audit row, the host card and the model card through
@@ -3058,7 +3105,8 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
   - the mapping table in the chief's instructions and in `agent_dispatch`'s
     description, with the whole-paragraph pin and section digests updated as
     for #482;
-  - the model card offers only `Claude (Claude Code)` until phase 4 ships;
+  - the model card offers only `Claude (Claude Code)` until phase 4 ships, when
+  the configured list and the typed id join it;
 - **the live agent card for host dispatches**, keyed by the row id
   ([3.7](#the-live-agent-card));
 - **the host-side controls of [5.5](#55-a-compromised-server)**:
@@ -3385,7 +3433,7 @@ launcher and the API send, and adds the model
   ([3.10](#310-forwarding-into-a-host-spawned-agent));
 - the model card's OpenRouter options
   ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)), from the
-  owner's short list ([8](#8-open-questions-for-the-owner), Q2);
+  `MUSTER_CHIEF_DISPATCH_MODELS` and a typed id (decision 15);
 - the live agent card showing the model.
 
 **First, measure** (against a real `opencode serve`, v2.0.32+6ec5682, in a
@@ -3445,7 +3493,8 @@ send):
   `pod/claude-code` with today's sentence, and part of `request_hash`; a
   model outside the shape is refused before anything is reserved; the model
   card offers `Claude (Claude Code)` only when the host offers `claude`, and
-  the short list only when it offers `opencode`.
+  `MUSTER_CHIEF_DISPATCH_MODELS` and the typed id only when it offers
+  `opencode`; a malformed list entry stops the server at start, naming it.
 - **Browser (e2e), both runtimes.** The fake host binary gains `agent-spawn`:
   - `cmd/muster-mirror/e2emirror.go` (the fake tmux) answers an `agent-spawn`
     for `claude` by adding a window in an `agents` session, tagged with the
@@ -3470,7 +3519,7 @@ send):
   on that host, running `<model>` through OpenRouter, with the prompt as its
   first message;
 - "start a mirrored agent on `<host>`", naming no model → the model card,
-  offering Claude and the short list;
+  offering Claude, the configured list, and a typed id;
 - its permission ask appears in muster's Attention view (#416), and an answer
   from there continues the session;
 - a routed task comment reaches it through the API.
@@ -3526,43 +3575,3 @@ through the API).
 has no `-m/--model` flag; only `opencode run` and `opencode mini` have one
 (`packages/cli/src/commands/commands.ts:38-58, 366-370, 398-402`). That is why
 the model goes in the session create.
-
-## 8. Open questions for the owner
-
-Only the questions this revision could not settle from the owner's rules. Each
-has a recommendation; the design above follows it until the owner says
-otherwise.
-
-1. **How strictly should "mirrored" be enforced?** The mapping from your words
-   to a host target is the chief's reading of your sentence, a prose rule
-   ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)). The
-   deterministic alternative is for muster to refuse a host target unless the
-   message you typed contains "mirror". That check is exact, but it is a
-   spelled guard: "on my laptop" or a typo would be refused, and any message
-   that happens to contain the word would pass. **Recommended: keep it in the
-   chief's instructions**, because the card and the live agent card show
-   where an agent is going before and after it starts. Which do you want?
-2. **Which OpenRouter models should the model card offer?** The card needs a
-   short list; OpenRouter's whole catalog is too long for a card, and the
-   phone shows two options. (a) a list you set in muster's configuration;
-   (b) the models of your last few mirrored opencode dispatches; (c) no list,
-   only a typed model id. **Recommended: (a), plus a typed id when PR A's card
-   takes free text.** Which, and if (a), which models to start with?
-3. **The host's repository allow-list: empty by default, or every clone?**
-   `-agent-spawn-repos` empty means nothing can be spawned until you list
-   repositories on each host ([5.5](#55-a-compromised-server)). The
-   alternative is that every clone under the host's roots is allowed, which
-   leaves `connectedRepo`, a server check, as the only repository bound.
-   **Recommended: empty by default**, because it is the one repository bound
-   that holds if the server is compromised. Acceptable?
-4. **Should the live agent card be able to stop a host agent?** Today's design
-   has no kill message (D7): you close the window on the host, and muster's
-   `agent_destroy` only ends the record. A Stop button would need a new wire
-   message that the host honours only for a window whose own
-   `@muster-dispatch` tag matches. **Recommended: not in phases 3-4**; the
-   card says "close the window on `<host>`". Do you want Stop on the card?
-5. **"With Claude" plus a Claude model name.** Your rule sends "with Claude" to
-   Claude Code. Claude Code also takes `--model` (`claude --help`, 2.1.289).
-   Should "mirrored with Claude Opus" pass that model to Claude Code, or always
-   use your Claude Code default? **Recommended: always the default in phases
-   3-4**, so `model` stays refused on `host/<host>/claude`.
