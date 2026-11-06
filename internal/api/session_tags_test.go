@@ -163,7 +163,7 @@ func TestTheTagRoutesAddListAndRemove(t *testing.T) {
 		!strings.Contains(body, `aria-label="Remove tag deploy-blocker"`) {
 		t.Errorf("the answer is not the editor's body with the new chip:\n%s", body)
 	}
-	head := regexp.MustCompile(`<span id="session-tags-head" data-session-tags-head="1" hx-swap-oob="outerHTML"[^>]*><span data-session-tag="deploy-blocker"`)
+	head := regexp.MustCompile(`<span id="session-tags-head" data-session-tags-head="1" data-session-tags-for="mirror:ws:chief" hx-swap-oob="outerHTML"[^>]*><span data-session-tag="deploy-blocker"`)
 	if !head.MatchString(body) {
 		t.Errorf("the header's chips are not sent out of band:\n%s", body)
 	}
@@ -198,7 +198,7 @@ func TestTheTagRoutesAddListAndRemove(t *testing.T) {
 	rm := url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"chief"}, "tag": {"deploy-blocker"}}
 	rec = tagPost(t, s, h, ui.SessionTagsRemovePath, rm, true)
 	if rec.Code != http.StatusOK || len(mt.tagsOf(authz.OperatorUserID, sessiontags.Target{Host: "ws", Session: "chief"})) != 0 ||
-		!strings.Contains(rec.Body.String(), `data-session-tags-none=""`) || !strings.Contains(rec.Body.String(), `data-session-tags-head="0" hx-swap-oob="outerHTML"`) {
+		!strings.Contains(rec.Body.String(), `data-session-tags-none=""`) || !strings.Contains(rec.Body.String(), `data-session-tags-head="0" data-session-tags-for="mirror:ws:chief" hx-swap-oob="outerHTML"`) {
 		t.Errorf("remove = %d, left %v:\n%s", rec.Code, mt.tagsOf(authz.OperatorUserID, sessiontags.Target{Host: "ws", Session: "chief"}), rec.Body)
 	}
 }

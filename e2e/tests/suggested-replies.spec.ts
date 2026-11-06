@@ -191,6 +191,20 @@ test.describe.serial('phone 390×844', () => {
     }
   });
 
+  // The row's × puts the focus in the box: on a phone with the box still
+  // collapsed it reveals it first (a hidden box takes no focus). Red before:
+  // × hid the row and the focus went nowhere.
+  test('× with the box collapsed hides the row and reveals and focuses the box', async ({ page }) => {
+    await openView(page);
+    await turn(page, reply + '  ');
+    await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
+    await expect(page.locator('#mv-input'), 'collapsed').toBeHidden();
+    await page.locator('#mv-suggest-x').tap();
+    await expect(row(page)).toBeHidden();
+    await expect(page.locator('#mv-input')).toBeVisible();
+    await expect(page.locator('#mv-input')).toBeFocused();
+  });
+
   test('a tap below a draft appends on a new line; × hides the row for the turn; a reload shows none', async ({ page }) => {
     await openView(page);
     await turn(page, reply + ' ');

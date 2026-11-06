@@ -398,7 +398,7 @@ func mirrorViewTitleRow(v MirrorViewView) g.Node {
 	return Div(
 		Class("flex min-w-0 items-center gap-1.5"),
 		Div(Class("min-w-0 flex-1"), mirrorViewTitle(v)),
-		sessionTagsHeadNode(v.Tags),
+		sessionTagsHeadNode(SessionTagTarget{Host: v.Host, Session: v.Session}, v.Tags),
 	)
 }
 

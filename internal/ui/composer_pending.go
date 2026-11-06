@@ -246,6 +246,9 @@ var mirrorComposerJS = `
   function clearBox() { input.value = ''; fit(); }
   // shown reveals the box when it holds text (composer_reveal.go): every
   // write of a text into it below calls it.
+  // focusBox focuses the box, revealing it first where it is collapsed
+  // (composer_reveal.go): a hidden box takes no focus.
+  function focusBox() { if (window.musterComposerReveal) window.musterComposerReveal(input, true); else input.focus(); }
   function shown() { if (input.value) { ` + composerRevealCallJS("input") + ` } }
   // restore puts a message that did not go back in the box — only into an
   // empty box: what was typed since is not overwritten (the message's Retry,
@@ -826,7 +829,7 @@ var mirrorComposerJS = `
     if (input.disabled) { e.preventDefault(); return; }
     var att = window.musterAttach;
     if (att && att.pending()) { e.preventDefault(); say(att.pendingMessage); return; }
-    if (!input.value.trim() && !(att && att.count())) { e.preventDefault(); say(form.getAttribute('data-empty')); input.focus(); return; }
+    if (!input.value.trim() && !(att && att.count())) { e.preventDefault(); say(form.getAttribute('data-empty')); focusBox(); return; }
     if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function' || typeof Promise !== 'function') return;
     var sub = ('submitter' in e) ? e.submitter : clicked;
     clicked = null;

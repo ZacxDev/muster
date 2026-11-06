@@ -111,6 +111,7 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{AgentID: a.ID, Back: ui.AgentTerminalPath(a.Name)})
 	// The viewer's tags on the agent, in the header (ui/session_tags.go).
 	v.Tags = s.sessionTagsFor(r.Context(), sessiontags.Target{AgentID: a.ID})
+	v.TagTarget = ui.SessionTagTarget{AgentID: a.ID}
 	// The Terminal half of the switch, which the agent's chat opens in a frame
 	// (ui/view_swap.go).
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}

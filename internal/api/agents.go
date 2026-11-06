@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -1564,6 +1565,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
 	// The session switcher below the chat form (ui/switcher.go).
 	view.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{AgentID: a.ID})
+	// The viewer's tags on the agent, in the header (ui/session_tags.go).
+	view.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{AgentID: a.ID})
 	// What the retired Agents list's card showed: the header's status strip,
 	// its ⋯ menu and the notices (ui/agent_actions.go).
 	view.Card = s.agentPageCard(op.begin("card"), a, idx)

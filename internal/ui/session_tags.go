@@ -76,6 +76,17 @@ func (t SessionTagTarget) fields() [][2]string {
 	return [][2]string{{"kind", "mirror"}, {"host", t.Host}, {"session", t.Session}, {"window", t.Window}}
 }
 
+// key is the session t names, as the header carries it
+// (data-session-tags-for): "agent:<id>", or "mirror:<host>:<session>" (a host
+// has no ':', so the two halves cannot be confused; the window is not part of
+// it — tags are on the tmux session).
+func (t SessionTagTarget) key() string {
+	if t.AgentID > 0 {
+		return "agent:" + strconv.FormatInt(t.AgentID, 10)
+	}
+	return "mirror:" + t.Host + ":" + t.Session
+}
+
 // Query is the target as a query string (the list route's).
 func (t SessionTagTarget) Query() string {
 	q := url.Values{}
@@ -110,10 +121,14 @@ func sessionTagChip(tag string, extra string) g.Node {
 //
 // The chip is capped (max-w-[7rem], truncated) so the header's title keeps
 // its room on a phone (e2e/tests/title-room.spec.ts).
-func sessionTagsHead(tags []string, oob bool) g.Node {
+//
+// t names the session (data-session-tags-for, SessionTagTarget.key), so the
+// editor's copy into the other live view's header checks it is the same one.
+func sessionTagsHead(t SessionTagTarget, tags []string, oob bool) g.Node {
 	nodes := []g.Node{
 		ID(SessionTagsHeadID),
 		g.Attr("data-session-tags-head", strconv.Itoa(len(tags))),
+		g.Attr("data-session-tags-for", t.key()),
 		g.If(oob, hx("hx-swap-oob", "outerHTML")),
 		Class("inline-flex shrink-0 items-center gap-1 empty:hidden"),
 	}
@@ -169,7 +184,9 @@ func sessionTagsAllPopover(tags []string) g.Node {
 // sessionTagsHeadNode is what a header draws. Its "+N" popover is placed by
 // floatingMenuScript, which both headers' pages load at the end of their body
 // (a <script src> here would block the parser above the page's content).
-func sessionTagsHeadNode(tags []string) g.Node { return sessionTagsHead(tags, false) }
+func sessionTagsHeadNode(t SessionTagTarget, tags []string) g.Node {
+	return sessionTagsHead(t, tags, false)
+}
 
 // sessionTagsMenuItem is the ⋯ menu's "Tags…": it opens the editor. Without
 // script it is the browser's own popover toggle (popovertarget); with it, the
@@ -199,6 +216,10 @@ func sessionTagsEditor(t SessionTagTarget, tags []string, back string) g.Node {
 		g.Attr("popover", "auto"),
 		g.Attr("role", "dialog"),
 		g.Attr("aria-label", "Tags for this session"),
+		// 🔴 NOT BOOSTED: an agent's chat page is hx-boost'ed, and a request
+		// from inside a boosted element is a boosted one — its answer swapped
+		// the whole body and pushed /sessions/tags as the address (measured).
+		hx("hx-boost", "false"),
 		Class("inset-x-0 bottom-auto top-[max(0.5rem,10vh)] mx-auto my-0 w-[min(24rem,calc(100vw-1rem))] rounded-xl border-0 bg-s1 p-3 text-fg shadow-2xl ring-1 ring-line"),
 		sessionTagsBody(t, tags, back),
 	)
@@ -298,7 +319,7 @@ const (
 // bar's rows and counts out of band (switcherRefresh), whose words the
 // palette and the dock's filter read.
 func RenderSessionTagsAnswer(w io.Writer, t SessionTagTarget, tags []string, back string, s *Switcher) error {
-	for _, n := range []g.Node{sessionTagsBody(t, tags, back), sessionTagsHead(tags, true)} {
+	for _, n := range []g.Node{sessionTagsBody(t, tags, back), sessionTagsHead(t, tags, true)} {
 		if err := n.Render(w); err != nil {
 			return err
 		}
@@ -387,7 +408,9 @@ func sessionTagsScript() g.Node {
       try { if (window.parent !== window && window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) docs.push(window.parent.document); } catch (err) {}
       try { var fs = document.querySelectorAll('iframe[` + ViewFrameAttr + `]'); for (var i = 0; i < fs.length; i++) docs.push(fs[i].contentDocument); } catch (err) {}
       docs.forEach(function (d) {
-        try { var o = d && d.getElementById('` + SessionTagsHeadID + `'); if (o) o.outerHTML = h.outerHTML; } catch (err) {}
+        // Only into the header of the SAME session (data-session-tags-for:
+        // the agent, or host and tmux session) — never another's.
+        try { var o = d && d.getElementById('` + SessionTagsHeadID + `'); if (o && o.getAttribute('data-session-tags-for') === h.getAttribute('data-session-tags-for')) o.outerHTML = h.outerHTML; } catch (err) {}
       });
     }, 0);
   });

@@ -93,6 +93,10 @@ type AgentTerminalView struct {
 	// tmux session (internal/sessiontags) — drawn in the header after the
 	// title (sessionTagsHead); nil for none.
 	Tags []string
+	// TagTarget is the session Tags are on — the agent, or the mirrored tmux
+	// session — which the header names (data-session-tags-for), so the editor's
+	// copy into the other live view lands only on the same session's header.
+	TagTarget SessionTagTarget
 	// WSPath is the socket the page opens, WITHOUT its query ("" = the agent's
 	// /agents/{name}/terminal/ws). A mirrored session's is
 	// /mirror/terminal/ws?host=…&session=…, and the page appends mode/cols/rows.
@@ -328,7 +332,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								// tooltip), and/or its qualifier — drawn like its card.
 								g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
 								g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
-							sessionTagsHeadNode(v.Tags)),
+							sessionTagsHeadNode(v.TagTarget, v.Tags)),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"),
 							// What typing here really reaches (InteractiveNote).
 							g.If(v.InteractiveNote != "", g.Group([]g.Node{g.Attr("title", v.InteractiveNote), g.Attr("data-interactive-note", v.InteractiveNote)})),

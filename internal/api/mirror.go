@@ -282,6 +282,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		Back: mirrorRef(e).TerminalPath()})
 	// The viewer's tags on the tmux session, in the header (ui/session_tags.go).
 	v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
+	v.TagTarget = ui.SessionTagTarget{Host: h.Host, Session: e.Session}
 	if e.AgentNote != v.TerminalOnly {
 		v.Note = e.AgentNote
 	}

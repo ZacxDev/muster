@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
-import { sessionTagsPort } from '../lib/env';
+import { hookToken, sessionTagsPort } from '../lib/env';
 import { cc, MirrorRig } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 import { clsInit, readCls, settle } from '../lib/cls';
@@ -198,6 +198,59 @@ test('on a phone with no script the box is shown, and “Type a message” is no
     await expect(page.locator('#mv-form')).not.toHaveAttribute('data-mv-collapsed', '');
   } finally {
     await ctx.close();
+  }
+});
+
+// An EMPTY Send on a phone with the box collapsed says "Type a message first."
+// and puts the focus in the box — so it reveals it (a hidden box takes no
+// focus). Red before: the note was said and the box stayed hidden.
+test.describe('phone 390×844 touch: an empty Send', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('an empty Send reveals the collapsed box and focuses it', async ({ page }) => {
+    await open(page, view('tagd6', 16));
+    await expect(box(page)).toBeHidden();
+    await page.locator('#mv-send').tap();
+    await expect(page.locator('#mv-note')).toHaveText('Type a message first.');
+    await expect(box(page)).toBeVisible();
+    await expect(box(page)).toBeFocused();
+  });
+});
+
+// AN AGENT'S CHAT PAGE draws the agent's tags in its header too, so a tag added
+// from its ⋯ menu shows at once. Red before: the page had no tag slot, and the
+// answer's out-of-band chips had nowhere to land. The agent is a seeded one
+// (every server lists it); its tags are taken off again.
+test('a tag added from an agent’s chat page shows in its header', async ({ page }) => {
+  await signIn(page, origin);
+  const r = await fetch(origin + '/api/agents', { headers: { Authorization: `Bearer ${hookToken}` } });
+  const a = ((await r.json()) as { id: number; name: string }[]).find((x) => x.name === 'notes-tidy');
+  expect(a, 'the seeded agent is listed').toBeTruthy();
+  const untag = async () => {
+    const l = await page.request.get(origin + `/sessions/tags?kind=agent&agent_id=${a!.id}`);
+    for (const t of ((await l.json()) as { tags: string[] }).tags) {
+      await page.request.post(origin + '/sessions/tags/delete', { form: { kind: 'agent', agent_id: String(a!.id), tag: t }, headers: { Origin: origin }, maxRedirects: 0 });
+    }
+  };
+  await untag();
+  try {
+    await page.goto(origin + '/agents/' + a!.name);
+    const head = page.locator('header #session-tags-head');
+    await expect(head).toHaveAttribute('data-session-tags-for', 'agent:' + a!.id, { timeout: 20_000 });
+    await expect(head).toHaveAttribute('data-session-tags-head', '0');
+    await page.locator('#switcher-more-btn').click();
+    await page.locator('#switcher-tags').click();
+    await page.locator('#session-tags-input').fill('agent-tag');
+    await page.locator('#session-tags-input').press('Enter');
+    await expect(head.locator('[data-session-tag="agent-tag"]'), 'no reload').toBeVisible();
+    // An answer, not a navigation: the agent page is hx-boost'ed, and a boosted
+    // answer would swap the body and push the route as the address.
+    expect(new URL(page.url()).pathname).toBe('/agents/' + a!.name);
+    await expect(page.locator('#session-tags-editor')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.locator('header #session-tags-head [data-session-tag="agent-tag"]'), 'kept').toBeVisible();
+  } finally {
+    await untag();
   }
 });
 

@@ -459,7 +459,7 @@ func suggestRowScript() g.Node {
   x.addEventListener('click', function () {
     if (fp) dismiss(fp);
     hide();
-    input.focus();
+    if (window.musterComposerReveal) window.musterComposerReveal(input, true); else input.focus();
   });
   // A message went (Send or Queue, mirrorComposerScript): a new turn starts,
   // and a tap before it is reported with how much it was edited.

@@ -110,16 +110,16 @@ func TestTheMoreMenuHasTagsAndItsEditor(t *testing.T) {
 // Chips are the descriptive look whatever the namespace (a session tag carries
 // no behaviour).
 func TestTheHeaderDrawsTheSessionsTags(t *testing.T) {
-	none := renderString(t, sessionTagsHead(nil, false))
-	if none != `<span id="session-tags-head" data-session-tags-head="0" class="inline-flex shrink-0 items-center gap-1 empty:hidden"></span>` {
+	none := renderString(t, sessionTagsHead(SessionTagTarget{AgentID: 1}, nil, false))
+	if none != `<span id="session-tags-head" data-session-tags-head="0" data-session-tags-for="agent:1" class="inline-flex shrink-0 items-center gap-1 empty:hidden"></span>` {
 		t.Errorf("no tags: %s", none)
 	}
-	one := renderString(t, sessionTagsHead([]string{"gate:blocked"}, false))
+	one := renderString(t, sessionTagsHead(SessionTagTarget{AgentID: 1}, []string{"gate:blocked"}, false))
 	if !strings.Contains(one, `<span data-session-tag="gate:blocked" title="Tag: gate:blocked" class="`+sessionTagChipClass) ||
 		strings.Contains(one, "data-session-tags-more") || strings.Contains(one, "st-error") {
 		t.Errorf("one tag is not its plain chip alone: %s", one)
 	}
-	three := renderString(t, sessionTagsHead([]string{"alpha", "beta", "gamma"}, false))
+	three := renderString(t, sessionTagsHead(SessionTagTarget{AgentID: 1}, []string{"alpha", "beta", "gamma"}, false))
 	more := regexp.MustCompile(`<button type="button" data-session-tags-more="2" popovertarget="session-tags-all" aria-haspopup="dialog" aria-controls="session-tags-all" aria-expanded="false" aria-label="All 3 tags"[^>]*>\+2</button>`)
 	if !strings.Contains(three, `data-session-tag="alpha"`) || !more.MatchString(three) {
 		t.Errorf("three tags are not the first chip and +2: %s", three)
@@ -128,7 +128,7 @@ func TestTheHeaderDrawsTheSessionsTags(t *testing.T) {
 	if pop == nil || strings.Count(pop[1], `data-session-tag="`) != 3 {
 		t.Errorf("the +N popover does not list all three: %v", pop)
 	}
-	if !strings.Contains(renderString(t, sessionTagsHead([]string{"a"}, true)), `hx-swap-oob="outerHTML"`) {
+	if !strings.Contains(renderString(t, sessionTagsHead(SessionTagTarget{AgentID: 1}, []string{"a"}, true)), `hx-swap-oob="outerHTML"`) {
 		t.Error("the out-of-band copy is not marked for the swap")
 	}
 }
@@ -214,11 +214,14 @@ func TestEveryWriterOfTheBoxReveals(t *testing.T) {
 		src    string
 		writes int
 	}{
-		"the draft (composer_draft.go)":           {renderString(t, composerDraftScript()), 1},
-		"the pending send (composer_pending.go)":  {mirrorComposerJS, 1},
-		"the mic (dictate.go)":                    {renderString(t, dictateScript(TranscribePath)), 1},
-		"the / menu (composer_menu.go)":           {renderString(t, composerMenuScript("/x")), 1},
-		"the suggested replies (suggest_row.go)":  {renderString(t, suggestRowScript()), 1},
+		"the draft (composer_draft.go)": {renderString(t, composerDraftScript()), 1},
+		// shown() after a write, and focusBox() for an empty Send (it writes
+		// nothing; it reveals so the focus has a box to go to).
+		"the pending send (composer_pending.go)": {mirrorComposerJS, 2},
+		"the mic (dictate.go)":                   {renderString(t, dictateScript(TranscribePath)), 1},
+		"the / menu (composer_menu.go)":          {renderString(t, composerMenuScript("/x")), 1},
+		// The insert, and the row's × (which only focuses the box).
+		"the suggested replies (suggest_row.go)":  {renderString(t, suggestRowScript()), 2},
 		"the send queue's kept edit (send_queue)": {renderString(t, sendQueueScript()), 1},
 		"an attached file (attach.go)":            {renderString(t, attachScript(UploadPath)), 1},
 	} {
@@ -263,5 +266,73 @@ func TestTheMoreButtonIsInTheRenderedViewsInputRow(t *testing.T) {
 	tnav = tnav[:strings.Index(tnav, "</nav>")]
 	if !strings.Contains(tnav, `id="switcher-more-btn"`) || strings.Count(term, `id="switcher-more-btn"`) != 1 {
 		t.Error("the Terminal view's ⋯ is not in its bar (once)")
+	}
+}
+
+// TestTheAgentChatHeaderDrawsItsTags: an agent's chat page draws the viewer's
+// tags on the agent in its header — the slot the editor's out-of-band answer
+// and the other view's copy target — keyed to the agent. Red before: the chat
+// page drew no tag slot at all, so an edit there changed nothing on screen.
+func TestTheAgentChatHeaderDrawsItsTags(t *testing.T) {
+	page := renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 9, Tags: []string{"alpha", "beta"}}, Features{}))
+	// The page is hx-boost'ed: the editor opts out, or its answer would be a
+	// boosted navigation that swaps the whole body.
+	if ed := renderString(t, sessionTagsEditor(SessionTagTarget{AgentID: 9}, nil, "/agents/demo")); !strings.Contains(ed, `<div id="session-tags-editor" popover="auto" role="dialog" aria-label="Tags for this session" hx-boost="false"`) {
+		t.Error("the tag editor is not out of the page's boost")
+	}
+	h := page[strings.Index(page, "<header"):]
+	h = h[:strings.Index(h, "</header>")]
+	if !strings.Contains(h, `<span id="session-tags-head" data-session-tags-head="2" data-session-tags-for="agent:9"`) || !strings.Contains(h, `data-session-tag="alpha"`) || !strings.Contains(h, `>+1</button>`) {
+		t.Errorf("the chat page's header does not draw the agent's tags:\n%s", h)
+	}
+	none := renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 9}, Features{}))
+	if !strings.Contains(none, `<span id="session-tags-head" data-session-tags-head="0" data-session-tags-for="agent:9"`) {
+		t.Error("with no tags the chat page has no slot for an edit's answer")
+	}
+}
+
+// TestTheHeaderCopyIsOnlyIntoTheSameSession: the header names the session it
+// is for (data-session-tags-for: the agent's id, or host and tmux session), and
+// the editor copies its chips into the other live view's header only when that
+// header names the same one. Red before: the copy matched any header by id.
+func TestTheHeaderCopyIsOnlyIntoTheSameSession(t *testing.T) {
+	for _, c := range []struct {
+		t    SessionTagTarget
+		want string
+	}{
+		{SessionTagTarget{AgentID: 7}, "agent:7"},
+		{SessionTagTarget{Host: "laptop", Session: "w", Window: "@2"}, "mirror:laptop:w"},
+		{SessionTagTarget{Host: "laptop", Session: "w"}, "mirror:laptop:w"},
+	} {
+		if got := c.t.key(); got != c.want {
+			t.Errorf("%+v key = %q, want %q", c.t, got, c.want)
+		}
+	}
+	view := renderString(t, MirrorViewPage(MirrorViewView{Host: "laptop", Session: "w", Window: "@2", Interactive: true}))
+	if !strings.Contains(view, `data-session-tags-for="mirror:laptop:w"`) {
+		t.Error("the Rendered view's header does not name its session")
+	}
+	term := renderString(t, AgentTerminalPage(AgentTerminalView{Name: "w", TagTarget: SessionTagTarget{Host: "laptop", Session: "w"}}))
+	if !strings.Contains(term, `data-session-tags-for="mirror:laptop:w"`) {
+		t.Error("the Terminal view's header does not name its session")
+	}
+	js := renderString(t, sessionTagsScript())
+	if !strings.Contains(js, "o.getAttribute('data-session-tags-for') === h.getAttribute('data-session-tags-for')") {
+		t.Error("the copy does not compare the two headers' sessions")
+	}
+}
+
+// TestNoFocusGoesToAHiddenBox: the two places that only FOCUS the box — an
+// empty Send ("Type a message first.") and the suggested replies' × — reveal
+// it first on a touch screen (focus on a display:none box goes nowhere). Red
+// before: each called input.focus() alone.
+func TestNoFocusGoesToAHiddenBox(t *testing.T) {
+	if !strings.Contains(mirrorComposerJS, "say(form.getAttribute('data-empty')); focusBox(); return;") ||
+		!strings.Contains(mirrorComposerJS, "function focusBox() { if (window.musterComposerReveal) window.musterComposerReveal(input, true); else input.focus(); }") {
+		t.Error("an empty Send focuses the box without revealing it")
+	}
+	sg := renderString(t, suggestRowScript())
+	if !strings.Contains(sg, "hide();\n    if (window.musterComposerReveal) window.musterComposerReveal(input, true); else input.focus();") {
+		t.Error("the suggestions' × focuses the box without revealing it")
 	}
 }
