@@ -89,7 +89,7 @@ func (s *Server) dispatchCardFor(ctx context.Context, id int64, idx map[string]*
 	if a.NoteID != nil {
 		c.TaskID = *a.NoteID
 	}
-	c.State, c.Detail = s.dispatchState(ctx, a, liveStatusIndexed(a, idx))
+	c.State, c.Detail = s.dispatchCardState(ctx, a, liveStatusIndexed(a, idx))
 	return c
 }
 
@@ -105,8 +105,31 @@ func dispatchRuntimeLabel(kind, model string) string {
 	return "Gateway · " + model
 }
 
-// dispatchState is a started agent's state on its card, with the detail an
-// error carries. 🔴 THE ONE RULE (dispatch cards read nothing else):
+// dispatchCardState is a started agent's state on its card, with the detail an
+// error carries — THE ONE FUNCTION a card's state comes from (dispatchCardFor is
+// its only caller).
+//
+// 🔴 IT IS NOT AN END-STATE RULE OF ITS OWN. A recorded outcome, when the agent
+// has one (outcomeCardState), is read FIRST and wins: the dispatched-agent
+// outcome work (feat/dispatch-outcomes: agents.Agent.Outcome, with failed and
+// stuck) extends THIS function by filling outcomeCardState in, never by adding a
+// second rule beside it. Only an agent with no recorded outcome is derived
+// (derivedCardState).
+func (s *Server) dispatchCardState(ctx context.Context, a agents.Agent, status string) (string, string) {
+	if state, detail, ok := outcomeCardState(a); ok {
+		return state, detail
+	}
+	return s.derivedCardState(ctx, a, status)
+}
+
+// outcomeCardState is the card state of agent a's RECORDED outcome; ok false
+// when it has none. No outcome is recorded in this tree yet, so it is always
+// false: the outcome work replaces this body to map agents.Agent.Outcome
+// (adding its failed and stuck states to ui's Dispatch* set).
+func outcomeCardState(agents.Agent) (state, detail string, ok bool) { return "", "", false }
+
+// derivedCardState derives a card state from what the agent's row and this
+// process can see, for an agent with no recorded outcome:
 //
 //   - error: the agent's status is error, or its first turn failed;
 //   - done: it is stopped, or its task is ready for review or complete;
@@ -115,7 +138,7 @@ func dispatchRuntimeLabel(kind, model string) string {
 //     first turn (the kickoff claim is held);
 //   - waiting: it runs and no turn is running: its turn ended, and it waits for
 //     its owner.
-func (s *Server) dispatchState(ctx context.Context, a agents.Agent, status string) (string, string) {
+func (s *Server) derivedCardState(ctx context.Context, a agents.Agent, status string) (string, string) {
 	switch {
 	case status == agents.StatusError:
 		return ui.DispatchError, firstNonEmptyLine(a.KickoffError)

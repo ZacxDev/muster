@@ -118,8 +118,8 @@ These are binding, and this page does not reopen them.
    **Amended by a later owner decision.** The chief resolves the target from
    what the owner said, and the tool still never invents one:
    - "with Claude", or any Claude model → `pod/claude-code` (no model);
-   - any other model the owner names → `pod/gateway`, with that model as an
-     OpenRouter id (`openrouter/<provider>/<model>`);
+   - any other model the owner names → `pod/gateway`, with that model's
+     OpenRouter id (muster normalises it);
    - no model named → the chief **asks** with an `ask_owner` question card:
      Claude, or an OpenRouter model (a few sensible ones, plus the card's own
      "Other" box). It never picks one;
@@ -674,7 +674,7 @@ budget:
     "hosts": [{"host": "<host>", "targets": ["host/<host>/claude", "host/<host>/opencode"]}],
     "choices": [
       {"target": "pod/claude-code", "label": "Claude Code (your Claude account)", "when": "your owner said Claude, or named a Claude model; pass no model"},
-      {"target": "pod/gateway", "label": "Gateway (OpenRouter model: <model>)", "when": "your owner named any other model; pass it as model, as an OpenRouter id: openrouter/<provider>/<model>"}
+      {"target": "pod/gateway", "label": "Gateway (OpenRouter model: <model>)", "when": "your owner named any other model; give its OpenRouter model id as model (muster normalises it)"}
     ]
   },
   "budget": {"live": 1, "live_cap": 5, "today": 3, "daily_cap": 10, "live_agents": ["…"]}

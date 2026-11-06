@@ -248,8 +248,8 @@ and has no default**. Today that is a pod, `pod/claude-code` or
 `pod/gateway`; `host/<host>/claude` and `host/<host>/opencode` are refused until
 host spawning ships ([design](design/chief-dispatch.md)). The chief maps your
 words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
-other model you name is `pod/gateway` with that model (an OpenRouter model,
-`openrouter/<provider>/<model>`).
+other model you name is `pod/gateway` with that model's OpenRouter id (muster
+normalises it).
 Asked to start an agent without a model, the chief calls it with no target, and
 the refusal lists the choices that exist now in your words — "Claude Code (your
 Claude account)", "Gateway (OpenRouter model: <model>)" — with its budget, so it

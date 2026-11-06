@@ -252,7 +252,7 @@ func dispatchAgent(t *testing.T, pool *pgxpool.Pool, owner int64, a agents.Agent
 // TestTheChiefsChatDrawsEachDispatchedAgentWithItsLiveState: every
 // agent_dispatch result in the chief's stored transcript is drawn as the agent's
 // card — its name, where it runs, its repository, its task link, and its state
-// as dispatchState decides it — linking to the agent's page (its LIST link, as
+// as dispatchCardState decides it — linking to the agent's page (its LIST link, as
 // the sidebar's row: ui.AgentCardView.PageHref). A refusal is one compact line;
 // an agent of another owner draws as removed and names nothing of it. The card's
 // own refresh (GET /ui/dispatch-card) draws the same card.
@@ -423,5 +423,48 @@ func TestTheChiefsChatDrawsEachDispatchedAgentWithItsLiveState(t *testing.T) {
 	}
 	if w := f.call(t, http.MethodGet, ui.DispatchCardPath, nil, f.operator()); w.Code != http.StatusBadRequest {
 		t.Errorf("a card for nothing: %d", w.Code)
+	}
+}
+
+// TestAskOwnerIsOfferedWithNoStore (round 0, D1): ask_owner needs no store, so
+// a chief on a server with NO attention or plugin store is still offered it —
+// on its gateway list and its /mcp list — and its call still ends the turn. The
+// chief's standing instructions name it unconditionally; this is the tool
+// keeping that promise. Control: a worker on the same server is not offered it.
+func TestAskOwnerIsOfferedWithNoStore(t *testing.T) {
+	f := newConnFixture(t)
+	if f.srv.attentionToolsOn() {
+		t.Fatal("control: this fixture has the attention store")
+	}
+	sys := authz.System(context.Background())
+	var member int64
+	if err := f.pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`,
+		"askowner-"+strconv.FormatInt(time.Now().UnixNano(), 36)).Scan(&member); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(sys, `DELETE FROM agents WHERE owner_id = $1`, member)
+		_, _ = f.pool.Exec(sys, `DELETE FROM users WHERE id = $1`, member)
+	})
+	chief, _ := dispatchAgent(t, f.pool, member, agents.Agent{Name: "nostore-chief", DisplayName: "chief", Status: agents.StatusRunning})
+	worker, _ := dispatchAgent(t, f.pool, member, agents.Agent{Name: "nostore-worker", Status: agents.StatusRunning})
+	ctx := asUser(member)
+	has := func(defs []agents.ToolDef) bool {
+		for _, d := range defs {
+			if d.Name == askOwnerTool {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(f.srv.AgentToolDefsFor(ctx, chief)) || !has(f.srv.MCPToolDefsFor(ctx, chief)) {
+		t.Fatal("a chief on a server with no store is not offered ask_owner")
+	}
+	if has(f.srv.AgentToolDefsFor(ctx, worker)) || has(f.srv.MCPToolDefsFor(ctx, worker)) {
+		t.Fatal("a worker is offered ask_owner")
+	}
+	tctx := agents.WithTurnEnd(ctx)
+	if out := f.srv.dispatchAgentTool(tctx, chief, askOwnerTool, testAskArgs); !strings.Contains(out, `"asked":true`) || !agents.TurnEnded(tctx) {
+		t.Fatalf("ask_owner with no store: %s (turn ended %v)", out, agents.TurnEnded(tctx))
 	}
 }

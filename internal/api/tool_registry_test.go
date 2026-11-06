@@ -28,7 +28,11 @@ import (
 // is where that decision gets reviewed (agentTool's comment says why the
 // existing tools are gateway-only).
 var (
-	mcpLedger = []string{"connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle",
+	mcpLedger = []string{
+		// The chief's question card in its own chat (owner_ask.go): offered
+		// with no gate, so first in the registry.
+		"ask_owner",
+		"connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle",
 		"fleet_list", "focus_search", "sessions_overview", "fleet_report",
 		// The attention queue (attention_tools.go): every agent asks and works the
 		// owner's tasks; the chief alone lists the queue.
@@ -36,9 +40,7 @@ var (
 		"tasks_list", "task_get", "task_comment", "task_set_status",
 		"attention_list",
 		// A mirrored session's question to the chief (chief_ask_tool.go).
-		"answer_session_question",
-		// The chief's question card in its own chat (owner_ask.go).
-		"ask_owner"}
+		"answer_session_question"}
 	workerMCPLedger = []string{"connectors_list", "connector_request", "connector_status",
 		// postgres_query (connector_tools.go): read-only SQL on a postgres
 		// connector the agent holds an approved grant for. On MCP because a
@@ -53,8 +55,8 @@ var (
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
-	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search",
-		"sessions_overview", "fleet_report", "attention_list", "answer_session_question", "ask_owner"}
+	chiefOnlyLedger = []string{"ask_owner", "task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search",
+		"sessions_overview", "fleet_report", "attention_list", "answer_session_question"}
 )
 
 // without returns list minus the names in drop, in order.
@@ -199,8 +201,10 @@ func TestTheChiefOnlyToolsAreLedgered(t *testing.T) {
 	if !reflect.DeepEqual(notChief, notChiefToolList) {
 		t.Errorf("not-chief tools = %v, want exactly %v", notChief, notChiefToolList)
 	}
-	if got := chiefOnly(newConnFixture(t).srv); len(got) != 0 {
-		t.Errorf("with no plugin store the registry still declares chief-only tools %v", got)
+	// With no plugin or attention store, the one chief-only tool left is
+	// ask_owner: it needs no store and is offered with no gate (owner_ask.go).
+	if got := chiefOnly(newConnFixture(t).srv); !reflect.DeepEqual(got, []string{askOwnerTool}) {
+		t.Errorf("with no plugin store the registry declares chief-only tools %v, want exactly [ask_owner]", got)
 	}
 	// Behavioural half: each ledgered tool is offered to the chief and to nobody else.
 	names := func(a agents.Agent) map[string]bool {
@@ -263,7 +267,9 @@ func TestTheGatewayKindGetsTheConnectorToolsOnItsOwnPath(t *testing.T) {
 	}
 
 	bare := New(nil, AuthConfig{HookToken: connTestHookToken, UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
-	bare.UseExtensions(Extensions{Agents: stubAgentsStore{}})
+	// The agent list is read for the chief-only axis (ask_owner is always in
+	// the registry); this agent is not the chief.
+	bare.UseExtensions(Extensions{Agents: listingAgents{}})
 	var names []string
 	for _, d := range bare.AgentToolDefsFor(context.Background(), agents.Agent{ID: 1, Name: "bare"}) {
 		names = append(names, d.Name)
@@ -335,3 +341,9 @@ func TestTheCloseOutProtocolClaimsNoGitHubToken(t *testing.T) {
 		t.Error("without the store, the prompt points at a tool the agent is not given")
 	}
 }
+
+// listingAgents is stubAgentsStore with an empty agent list: the chief-only
+// axis's read (toolsFor), answered "no chief".
+type listingAgents struct{ stubAgentsStore }
+
+func (listingAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil }
