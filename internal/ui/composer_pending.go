@@ -79,13 +79,19 @@ import "strconv"
 //     going, so nothing is decided until it is known to still be here — then
 //     it is refused (text kept, Retry), and nothing behind it goes first.
 //
-// 🔴 ONLY A MESSAGE THE SERVER ANSWERED OK ("Sent") IS EVER MATCHED TO A ROW,
+// 🔴 ONLY A MESSAGE THE SERVER ANSWERED OK ("Sent") IS EVER SETTLED BY A ROW,
 // and the match only TIDIES: it removes a bubble whose message the server
 // already confirmed (its draft was let go at the OK). A wrong match is
 // cosmetic — a "Sent" bubble removed a little early or late — never a
 // delivery decision: it cannot release another message's draft or settle a
-// message that is not "Sent". A message still waiting its turn is never a
-// candidate either, and a waiting message is always posted.
+// message that is not "Sent". The one message OUT NOW ("Sending…", posted,
+// no answer yet) is matched too, because its row can be drawn before the OK
+// reaches the page (the host tails the transcript on its own tick): its
+// bubble then STANDS ASIDE — off the page in the task that draws the row, so
+// there is no frame with both — and its answer decides as before: the OK
+// settles it, anything else draws it again with its row given back. A message
+// still waiting its turn is never a candidate, and a waiting message is
+// always posted.
 //
 // 🔴 A "NOT CONFIRMED" (UNKNOWN) MESSAGE IS NEVER SETTLED BY A ROW (operator
 // decision, PR #450 round 4). A row is matched by its text, and a text match
@@ -281,6 +287,8 @@ var mirrorComposerJS = `
     if (d) d.sent(input);
     if (p.el) p.el.remove();
     p.el = null;
+    if (p.aside && used) used.delete(p.aside);
+    p.aside = null;
     input.value = p.text;
     if (nonce) nonce.value = p.nonce;
     againField(!!p.again);
@@ -380,8 +388,25 @@ var mirrorComposerJS = `
     clearTimeout(p.timer);
     p.state = state;
     if (reason !== undefined) p.reason = reason;
+    // Stood aside for its row (reconcile) and now answered OK: done, here and
+    // now — its row is already on the page. Settled directly, so a detached
+    // bubble never waits on a later reconcile or the pendingSentSettleMS
+    // timer, and is never drawn again (unpark, below) to be matched anew.
+    if (p.aside && state === 'sent') { settle(p); return; }
     paint(p);
+    // Stood aside for a row (reconcile), and now anything but on its way
+    // (failed, Not confirmed, a step-up): drawn again — the row decided
+    // nothing.
+    if (p.aside && state !== 'sending') unpark(p);
     if (state === 'sent' && p.el) p.timer = setTimeout(function () { settle(p); }, ` + strconv.Itoa(pendingSentSettleMS) + `);
+  }
+  // unpark draws p's bubble again, at the conversation's end, and gives back
+  // the row it stood aside for.
+  function unpark(p) {
+    var row = p.aside;
+    p.aside = null;
+    if (used && row) used.delete(row);
+    if (p.el && log && !p.el.parentNode) { log.insertBefore(p.el, tail()); log.scrollTop = log.scrollHeight; }
   }
 
   // ---- With no bubble (a Terminal view, a Queue): the refused message's
@@ -512,19 +537,28 @@ var mirrorComposerJS = `
   // what it draws.
   function rowText(r) { var raw = r.getAttribute('data-prompt'); return raw !== null ? raw : r.textContent; }
   function begins(a, text) { return norm(text).indexOf(a) === 0; }
-  // reconcile removes every SENT bubble whose row is now on the page, then
-  // keeps the rest at the conversation's end. mirrorViewScript calls it after
-  // each batch it draws — in the SAME task, so the row and its bubble are
-  // never on screen together.
+  // reconcile removes every SENT bubble whose row is now on the page (and
+  // stands aside the one out now whose row is), then keeps the rest at the
+  // conversation's end. mirrorViewScript calls it after each batch it draws —
+  // in the SAME task, so the row and its bubble are never on screen together.
   function reconcile() {
     if (!log) return;
-    // 🔴 ONLY "SENT": the server already confirmed these, and their drafts
-    // were let go at the OK. A message still waiting its turn, asking for a
-    // step-up, refused or NOT CONFIRMED is never settled by a row (see the
-    // file's comment), so a wrong match below can only remove a "Sent"
-    // bubble early or late — settle() of a sent message touches nothing
-    // else.
-    var open = live.filter(function (p) { return p.el && !p.done && p.state === 'sent'; });
+    // 🔴 ONLY "SENT" IS SETTLED: the server already confirmed these, and their
+    // drafts were let go at the OK. A message still waiting its turn, asking
+    // for a step-up, refused or NOT CONFIRMED is never settled by a row (see
+    // the file's comment), so a wrong match below can only remove a "Sent"
+    // bubble early or late, or hide the one out now until its answer —
+    // settle() of a sent message touches nothing else.
+    // 🔴 The one message OUT NOW (posted, "Sending…") is a candidate too: its
+    // row can be drawn BEFORE the host's OK reaches the page (the host tails
+    // the transcript on its own tick). Matched, its bubble only STANDS ASIDE
+    // (aside): taken off the page in this same task, so the row and the bubble
+    // are never on screen together — but nothing is decided. It is not done,
+    // its draft is not let go, and its answer still settles it: the OK takes
+    // it away for good (set → settle); anything else draws it again
+    // (set → unpark), with its row given back. A wrong match can only hide a
+    // bubble until its answer, never settle a message.
+    var open = live.filter(function (p) { return p.el && !p.done && !p.aside && (p.state === 'sent' || (p === current && p.state === 'sending')); });
     if (open.length) {
       var rows = Array.prototype.slice.call(log.querySelectorAll('[data-bubble="user"]'));
       var cc = null, ccTaken = {};
@@ -539,9 +573,13 @@ var mirrorComposerJS = `
         else { for (var i = 0; i < cand.length && !hit; i++) { if (begins(a, rowText(cand[i]))) hit = cand[i]; } }
         if (hit) {
           if (used) used.add(hit);
-          settle(p);
+          if (p.state === 'sent') settle(p);
+          else { p.aside = hit; p.el.remove(); }
           return;
         }
+        // The cc-queued region below settles; a message not yet answered OK
+        // is never settled.
+        if (p.state !== 'sent') return;
         // Held by Claude Code itself: the queued region shows it — one row
         // beyond as many of that text as it showed at the press, each row
         // for one bubble.
@@ -565,7 +603,9 @@ var mirrorComposerJS = `
     // clearLog). A reset redraws every row, so none is "seen" any more.
     kept: function () {
       live.forEach(function (p) { p.before = null; });
-      return live.filter(function (p) { return p.el; }).map(function (p) { return p.el; });
+      // One standing aside is not on the page, and a reset does not put it
+      // back (its row is redrawn as a new one).
+      return live.filter(function (p) { return p.el && !p.aside; }).map(function (p) { return p.el; });
     }
   };
 
