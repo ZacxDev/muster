@@ -84,7 +84,7 @@ var overviewBudget = 12 * time.Second
 func sessionsOverviewToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionsOverviewToolName,
 		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code windows active in the " +
-			"last 24 h — is doing now, newest-active first: id, kind, name, host, status, current focus, the distinct focus titles of " +
+			"last 24 h — is doing now, newest-active first: id, kind, name, host, status, current focus with how old it is (focus_set_at; focus_age \"2d\" past a day, focus_stale past four), the distinct focus titles of " +
 			"the last 6 h with their times, anything it has waiting on your owner, and its last few user and assistant messages " +
 			"(secrets redacted, tool output left out). Use it before filing a task or drafting a reply about ongoing work, to find " +
 			"the session already on it. Size-capped." + focusUntrustedTail +
@@ -233,14 +233,16 @@ type overviewLine struct {
 }
 
 type overviewSession struct {
-	ID          string             `json:"id"`
-	Kind        string             `json:"kind"`
-	Name        string             `json:"name"`
-	Host        string             `json:"host,omitempty"`
-	Where       string             `json:"where,omitempty"` // fleetListRow.Where
-	Status      string             `json:"status"`
-	ActiveAt    string             `json:"active_at,omitempty"`
-	Focus       string             `json:"focus,omitempty"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Host     string `json:"host,omitempty"`
+	Where    string `json:"where,omitempty"` // fleetListRow.Where
+	Status   string `json:"status"`
+	ActiveAt string `json:"active_at,omitempty"`
+	Focus    string `json:"focus,omitempty"`
+	// focusAgeFields: how old Focus is (fleetListRow's).
+	focusAgeFields
 	RecentFocus []overviewTitle    `json:"recent_focus,omitempty"`
 	Attention   *overviewAttention `json:"attention,omitempty"`
 	// Transcript is the tail ([]overviewLine), or "unavailable (<reason>)".
@@ -267,7 +269,7 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 	if len(live) > in.Limit {
 		omitted, live = len(live)-in.Limit, live[:in.Limit]
 	}
-	fi := s.focusIndex(ctx)
+	fi, now := s.focusIndex(ctx), s.now()
 	recent, err := s.ext.Focus.RecentTitles(ctx, liveOf(live), s.now().Add(-focus.HistoryWindow), 0)
 	if err != nil {
 		s.logger.Printf("sessions_overview: recent titles: %v", err)
@@ -280,7 +282,7 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 	out := []overviewSession{}
 	for i, ls := range live {
 		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Name: ls.name, Host: ls.host, Where: ls.where, Status: ls.status,
-			Focus: fi[ls.sub].Title, Attention: pending[ls.sub], Transcript: tails[i]}
+			Focus: fi[ls.sub].Title, focusAgeFields: fi.ageFields(ls.sub, now), Attention: pending[ls.sub], Transcript: tails[i]}
 		if !ls.activeAt.IsZero() {
 			row.ActiveAt = ls.activeAt.UTC().Format(time.RFC3339)
 		}

@@ -256,7 +256,7 @@ command, path or URL, never what Claude said.
 | a held question (a session's `AskUserQuestion`) | `<where> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
 | a session's stop, with `MUSTER_SESSION_STATE=1` ([above](#stalled--waiting-session-state)) | `<where> needs you` / `<where> is stalled` | `Needs you · idle 12m`: its state and idle time only — except a stop waiting on a question muster can answer, which is pushed with that question's own title and body (the row above or the waiting session's below), under the stop's `attention-episode-<id>` tag |
 | a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <where>`, or `Waiting: <where>` when its host names no tool |
-| a [notice](#notices) | `<where> may be waiting on you` | the session's focus title, then the chief's message; no options and no `ask` payload |
+| a [notice](#notices) | `<where> may be waiting on you` | the session's focus title (with its age past a day, ` · 2d`: [focus.md](focus.md#how-old-a-focus-is)), then the chief's message; no options and no `ask` payload |
 
 `<where>` is the window's exact tmux target — see [How a window is named](#how-a-window-is-named).
 

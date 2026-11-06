@@ -27,7 +27,9 @@ type FocusView struct {
 
 // 🔴 THE FOCUS AGE RULE — ONE PLACE. Every surface that shows a focus title
 // (the switcher dock's second line, the palette's results, the Asks list's
-// rows) says how old it is through FocusAgeOf, and nothing else decides it:
+// rows, a chief notice's push body, and the chief's fleet_list and
+// sessions_overview rows — internal/api's focusIndex.ageFields) says how old
+// it is through FocusAgeOf, and nothing else decides it:
 // the dock and the palette draw in the browser, so the server computes the
 // age at RENDER time and hands them the result as attributes
 // (data-switcher-focus-age, data-switcher-focus-stale); their scripts only
@@ -75,6 +77,16 @@ func FocusAgeLabel(age FocusAge) string {
 		l += " (stale)"
 	}
 	return l
+}
+
+// FocusAgeSuffix is age as plain text after its title — " · 2d" — or "" when
+// there is no age: the Asks list's age element and a notice's push body both
+// spell it through here.
+func FocusAgeSuffix(age FocusAge) string {
+	if age.Text == "" {
+		return ""
+	}
+	return " · " + age.Text
 }
 
 // FocusAgeOf is the age at now of a focus title written at updatedAt. A zero

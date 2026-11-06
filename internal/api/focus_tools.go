@@ -34,7 +34,8 @@ func focusToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: fleetListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored Claude Code windows — compactly: " +
-				"id, kind, name, status, focus title (what it is working on) and, when a session has no focus or a stale one, " +
+				"id, kind, name, status, focus title (what it is working on) with how old it is — focus_set_at, and focus_age " +
+				"(\"2d\") past a day with focus_stale past four days: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
 				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{})},
 		{Type: "function", Name: focusSearchToolName,
@@ -66,6 +67,8 @@ type fleetListRow struct {
 	Where  string `json:"where,omitempty"`
 	Status string `json:"status"`
 	Focus  string `json:"focus,omitempty"`
+	// focusAgeFields: how old Focus is (focus_set_at, focus_age, focus_stale).
+	focusAgeFields
 	// FocusProblem is why the session has no focus, or a stale one: the
 	// latest refresh's short, non-secret reason (focus.Reason). Absent when
 	// the focus is current.
@@ -73,7 +76,7 @@ type fleetListRow struct {
 }
 
 func (s *Server) toolFleetList(ctx context.Context) string {
-	fi := s.focusIndex(ctx)
+	fi, now := s.focusIndex(ctx), s.now()
 	rows := []fleetListRow{}
 	if s.ext.Agents != nil {
 		list, err := s.ext.Agents.List(ctx)
@@ -84,7 +87,8 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
 			rows = append(rows, fleetListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
-				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
+				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title,
+				focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 		}
 	}
 	seen := map[string]bool{}
@@ -100,7 +104,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 			status = "unknown"
 		}
 		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host, Host: e.Host,
-			Where: e.Where(), Status: status, Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
+			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
 }
