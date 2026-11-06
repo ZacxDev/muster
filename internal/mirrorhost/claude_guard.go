@@ -33,18 +33,17 @@ import (
 //  2. THE SCREEN (ccdialog.OnScreen, ccd's reading since #163): a permission
 //     prompt, the AskUserQuestion picker or a numbered select menu at the
 //     bottom of the pane — for a dialog the status does not say yet, or a
-//     numbered menu it never reports (one the person opened). This is the
-//     Hermes gated send's approach (hermes_send.go: capture the pane, check
-//     it, before any key), with Claude Code's reading of the screen. A screen
-//     that cannot be read is refused: it is not presumed safe.
+//     numbered menu it never reports (one the person opened): capture the
+//     pane and check it before any key. A screen that cannot be read is
+//     refused: it is not presumed safe.
 //
 // ⚠ A CHECK BEFORE THE KEYS, NOT A LOCK. A dialog that opens in the
 // milliseconds between the last check and a key is not caught: Claude Code has
 // no "submit only if idle" (docs/design/agent-cards.md, "Deferred: (c)").
 //
 // The Terminal view's composer (Msg.AnyPane) is NOT gated: it is the person
-// typing into the pane they are looking at. Hermes panes have their own gated
-// send (hermes_send.go). Opencode panes have no guard of either kind.
+// typing into the pane they are looking at. Opencode panes are refused by the
+// paste guard (paneguard.go), not this one.
 
 // The Claude prompt guard's refusals. Their text is the person's (mirror's
 // Claude*Text); internals are logged on the host.
@@ -122,7 +121,7 @@ func claudeRefusalOf(err error) string {
 // the paste resolved to pane: nil to type, else the refusal. Every read is
 // made now. With emptyBox (every check before the paste) Claude Code's input
 // box must also be empty: a message pasted after text left there would be
-// submitted with it as one turn, as Hermes's send refuses too. The check
+// submitted with it as one turn. The check
 // before the Enter passes false — the box then holds the text just pasted.
 // A ghost suggestion in the box (dim) is no text: ccdialog.InputBox reads it "".
 func (h *hostSide) claudeReady(ctx context.Context, cb ClaudeBackend, m mirror.Msg, pane string, emptyBox bool) error {
@@ -228,4 +227,16 @@ func (t Tmux) ClaudeScreen(ctx context.Context, paneID string) (string, error) {
 		return "", fmt.Errorf("tmux capture-pane: %w", err)
 	}
 	return string(out), nil
+}
+
+// sleepCtx waits d, or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

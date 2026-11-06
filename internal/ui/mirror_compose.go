@@ -137,7 +137,7 @@ type ComposerView struct {
 	// (SuggestPath with its address) and draws the chip row above the
 	// composer (suggest_row.go); "" draws none. Only a Claude Code window's
 	// Rendered view on an interactive host sets it — never a Terminal view,
-	// never Hermes. A disabled composer draws none either way.
+	// never another runtime's. A disabled composer draws none either way.
 	Suggest string
 	// SuggestPaused draws one line saying the viewer's suggested replies are
 	// paused (the auto-pause), with the way back on (Account). Drawn with the

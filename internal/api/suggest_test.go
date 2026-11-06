@@ -197,8 +197,8 @@ func TestEachExclusionMakesNoCall(t *testing.T) {
 		}, nil},
 		{"read-only host", func(fm *fakeMirror, _ *Extensions) { fm.interactive = false }, nil},
 		{"no rendered view (Terminal only)", func(fm *fakeMirror, _ *Extensions) { fm.v2 = nil }, nil},
-		{"Hermes window", func(fm *fakeMirror, _ *Extensions) {
-			fm.windows = []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeHermes, AgentSession: "local-" + strings.Repeat("a", 64)}}
+		{"opencode window", func(fm *fakeMirror, _ *Extensions) {
+			fm.windows = []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_" + strings.Repeat("a", 26)}}
 		}, nil},
 		{"kill switch", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Off = true }, nil},
 		{"user toggle off", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = &suggestPrefs{off: true} }, nil},

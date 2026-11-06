@@ -1901,9 +1901,9 @@ new paste path.
 - **What stays unchanged.**
   - `PasteWindow`, including its step-up check (`transcript.go:435`), which
     sees the delivery-time auth like every other queued row.
-  - `SanitizePaste`, `gatedSendSwitch` and the Hermes idle gate.
+  - `SanitizePaste` and the Claude prompt guard's server half.
   - `TestEveryServerPasteGoesThroughPasteWindow`
-    (`internal/mirror/hermes_switch_test.go:19-120`).
+    (`internal/mirror/paste_ledger_test.go`).
   - There is no `ChiefForward` option and no context marker.
 - **Idle only, without new code.** The dispatcher sends a row only once its
   window has been idle for `IdleFor`, and it treats an unknown state as not

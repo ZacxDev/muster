@@ -401,7 +401,7 @@ func TestAMalformedReportIsRefusedAndStoresNothing(t *testing.T) {
 		"head_ref with ..":            with("head_ref", "feat/../main"),
 		"no session":                  with("claude_session", "<drop>"),
 		"a session with a slash":      with("claude_session", "../../etc"),
-		"a runtime-qualified session": with("claude_session", "hermes:20000101_000000_abcdef"),
+		"a runtime-qualified session": with("claude_session", "opencode:ses_20000101000000abcdef"),
 	}
 	for name, body := range cases {
 		if code, _ := f.report(t, "", body); code != 400 {

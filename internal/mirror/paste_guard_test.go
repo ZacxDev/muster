@@ -11,22 +11,23 @@ import (
 )
 
 // guardedPaneBackend is a current muster-mirror's tmux whose "shell" session
-// runs what the host's paste guard sees as rule (mirrorhost.HermesGuardBackend:
-// a Hermes rule, or opencode's).
+// runs what the host's paste guard sees as rule (mirrorhost.PaneGuardBackend:
+// a multiplexer client, or opencode's rule).
 type guardedPaneBackend struct {
 	paneBackend
 	rule string
 }
 
-func (b guardedPaneBackend) PaneHermes(_ context.Context, pane string) (mirrorhost.HermesProc, bool, error) {
+func (b guardedPaneBackend) PaneGuard(_ context.Context, pane string) (mirrorhost.GuardProc, bool, error) {
 	if pane == "%a-shell" {
-		return mirrorhost.HermesProc{PID: 4242, Rule: b.rule}, true, nil
+		return mirrorhost.GuardProc{PID: 4242, Rule: b.rule}, true, nil
 	}
-	return mirrorhost.HermesProc{}, false, nil
+	return mirrorhost.GuardProc{}, false, nil
 }
 
 // TestTheHostsGuardRefusalReachesMusterAsItsKind: a REAL host (muster-mirror's
-// client) and a REAL hub, for each runtime the host's paste guard refuses. A
+// client) and a REAL hub, for each rule the host's paste guard refuses on — a
+// rule no runtime owns among them, refused as unchecked (fail closed). A
 // Terminal-view paste into a session whose pane runs it is refused by the
 // host; muster receives it as ErrPasteRefused whose kind is that runtime's
 // (a paste-guard refusal) and whose words are the host's sentence, and
@@ -34,8 +35,9 @@ func (b guardedPaneBackend) PaneHermes(_ context.Context, pane string) (mirrorho
 // control).
 func TestTheHostsGuardRefusalReachesMusterAsItsKind(t *testing.T) {
 	for _, c := range []struct{ rule, kind, text string }{
-		{"comm=hermes", mirror.PasteRefusalHermes, mirror.PasteRefusedHermesText},
 		{"opencode", mirror.PasteRefusalOpenCode, mirror.PasteRefusedOpenCodeText},
+		{"multiplexer client", mirror.PasteRefusalMultiplexer, mirror.PasteRefusedMultiplexerText},
+		{"a rule no runtime owns", mirror.PasteRefusalUnchecked, mirror.PasteRefusedUncheckedText},
 	} {
 		t.Run(c.kind, func(t *testing.T) {
 			r := newRig(t)

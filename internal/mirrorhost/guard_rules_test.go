@@ -12,23 +12,19 @@ import (
 	"testing"
 )
 
-// guardRuleValues is every hermesRule* constant by its name.
+// guardRuleValues is every rule* constant by its name.
 var guardRuleValues = map[string]string{
-	"hermesRuleLauncher":    hermesRuleLauncher,
-	"hermesRulePython":      hermesRulePython,
-	"hermesRuleCheckout":    hermesRuleCheckout,
-	"hermesRuleMultiplexer": hermesRuleMultiplexer,
-	"hermesRuleChrome":      hermesRuleChrome,
-	"hermesRuleOpenCode":    hermesRuleOpenCode,
+	"ruleMultiplexer": ruleMultiplexer,
+	"ruleOpenCode":    ruleOpenCode,
 }
 
 // TestEveryRuleTheGuardReturnsIsOwned: every rule the paste guard can name —
-// read from the SOURCE, as every hermesRule* constant a return statement of
-// guardShape, hermesShape, a runtime's shape method or Tmux.PaneHermes (the
-// chrome check) names — is the multiplexer rule or is OWNED by one runtime's
-// pasteGuard, so guardPane refuses it in that runtime's words, never by its
-// fall-back. The table above must also hold every hermesRule* constant the
-// package declares, so a new rule cannot be missed by a stale list.
+// read from the SOURCE, as every rule* constant a return statement of
+// guardShape or a runtime's shape method names — is the multiplexer rule or
+// is OWNED by one runtime's pasteGuard, so guardPane refuses it in that
+// runtime's words, never by its fall-back. The table above must also hold
+// every rule* constant the package declares, so a new rule cannot be missed
+// by a stale list.
 func TestEveryRuleTheGuardReturnsIsOwned(t *testing.T) {
 	fset := token.NewFileSet()
 	paths, err := filepath.Glob("*.go")
@@ -54,7 +50,7 @@ func TestEveryRuleTheGuardReturnsIsOwned(t *testing.T) {
 				for _, spec := range d.Specs {
 					if vs, ok := spec.(*ast.ValueSpec); ok {
 						for _, n := range vs.Names {
-							if strings.HasPrefix(n.Name, "hermesRule") {
+							if isRuleName(n.Name) {
 								declared[n.Name] = true
 							}
 						}
@@ -62,7 +58,7 @@ func TestEveryRuleTheGuardReturnsIsOwned(t *testing.T) {
 				}
 			case *ast.FuncDecl:
 				name := d.Name.Name
-				if name != "guardShape" && name != "hermesShape" && name != "shape" && name != "PaneHermes" {
+				if name != "guardShape" && name != "shape" {
 					continue
 				}
 				ast.Inspect(d.Body, func(n ast.Node) bool {
@@ -71,7 +67,7 @@ func TestEveryRuleTheGuardReturnsIsOwned(t *testing.T) {
 						return true
 					}
 					ast.Inspect(ret, func(m ast.Node) bool {
-						if id, ok := m.(*ast.Ident); ok && strings.HasPrefix(id.Name, "hermesRule") {
+						if id, ok := m.(*ast.Ident); ok && isRuleName(id.Name) {
 							returned[id.Name] = true
 						}
 						return true
@@ -93,12 +89,12 @@ func TestEveryRuleTheGuardReturnsIsOwned(t *testing.T) {
 	if !slices.Equal(dk, tk) {
 		t.Fatalf("the package declares rules %q; this test's table holds %q", dk, tk)
 	}
-	if len(returned) < 5 {
+	if len(returned) < 2 {
 		t.Fatalf("instrument check: the guard's functions return only %d rules (%v)", len(returned), returned)
 	}
 	for name := range returned {
 		rule := guardRuleValues[name]
-		if rule == hermesRuleMultiplexer {
+		if rule == ruleMultiplexer {
 			continue
 		}
 		owners := 0
@@ -111,4 +107,10 @@ func TestEveryRuleTheGuardReturnsIsOwned(t *testing.T) {
 			t.Errorf("the guard can return %s (%q), which %d runtimes own; want exactly one", name, rule, owners)
 		}
 	}
+}
+
+// isRuleName reports whether an identifier names a guard rule: "rule" and an
+// upper-case letter (ruleOpenCode), never a plain word like "rule" itself.
+func isRuleName(n string) bool {
+	return len(n) > 4 && strings.HasPrefix(n, "rule") && n[4] >= 'A' && n[4] <= 'Z'
 }

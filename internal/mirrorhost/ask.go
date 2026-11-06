@@ -356,15 +356,15 @@ func (h *hostSide) askAnswer() bool {
 // 🔴 REFUSED UNLESS THIS HOST OPTED IN (-interactive), whatever muster asks —
 // muster refuses it too — and only for a listed session, into a pane that
 // runs Claude Code NOW (re-resolved here, as for a paste to the rendered view),
-// through typeInto and so the Hermes paste guard.
+// through typeInto and so the paste guard.
 // The driver itself refuses to touch a picker that is not this question,
 // untouched — or exactly as muster's own earlier typing left it (m.Ask.Prior;
 // internal/askdrive's DriveFrom).
 func (h *hostSide) answer(m mirror.Msg) {
 	if r, ok := runtimeNamed(m.Runtime); ok {
 		if an, ok := r.(answerer); ok {
-			// The runtime's own answer (a Hermes approval: through Hermes's
-			// gateway, never by keys, hermes_asks.go).
+			// The runtime's own answer (an opencode ask: through opencode's
+			// API, never by keys, opencode_asks.go).
 			an.answer(h, m)
 			return
 		}

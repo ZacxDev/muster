@@ -52,10 +52,6 @@ import (
 const (
 	NoticeTask          = "task"
 	NoticeCommandOutput = "command-output"
-	// NoticeHermes: a row Hermes wrote into the conversation that the person
-	// did not type (a process finishing, a model switch, …), named by its
-	// display kind in Text (internal/hermeshost's Render).
-	NoticeHermes = "hermes"
 	// NoticeOpenCode: a message opencode wrote into the session that the
 	// person did not type (a synthetic or system message, a shell job, a
 	// compaction, …), named in Text (internal/opencodehost's Render).

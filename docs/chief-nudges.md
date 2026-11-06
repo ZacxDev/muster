@@ -343,7 +343,7 @@ typed into a pane from one another agent sent there.
 
 A **waiting** window (a permission prompt, a question muster cannot answer) is
 never nudged: only an idle session is a candidate, and the send queue does not
-paste into a waiting one. An opencode or Hermes window is never nudged either
+paste into a waiting one. An opencode window is never nudged either
 ([Limits](#limits)).
 
 ## What the chief is asked

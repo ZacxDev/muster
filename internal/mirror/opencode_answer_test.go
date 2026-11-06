@@ -44,7 +44,7 @@ func TestAnOpenCodeAnswerReachesItsHost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(asUser(1), 5*time.Second)
 	defer cancel()
 	h := connectAnswerHost(t, r, openCodeHello(`,"openCodeAnswer":true`, "once reject"), func(mirror.Msg) mirror.Msg { return mirror.Msg{} })
-	if hv := r.svc.Hosts(ctx); len(hv) != 1 || !hv[0].OpenCodeAnswer || hv[0].HermesAnswer {
+	if hv := r.svc.Hosts(ctx); len(hv) != 1 || !hv[0].OpenCodeAnswer {
 		t.Fatalf("the host's openCodeAnswer was not believed (or read as another runtime's): %+v", hv)
 	}
 	if err := r.svc.AnswerOpenCodeAsk(ctx, "on", "work", "@1", "per_1", "reject"); err != nil {
@@ -57,7 +57,7 @@ func TestAnOpenCodeAnswerReachesItsHost(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("the host received %d answers", len(got))
 	}
-	if m := got[0]; m.Runtime != mirror.RuntimeOpenCode || m.Window != "@1" || m.Ask != nil || m.HermesApproval != nil || m.OpenCodeReply == nil ||
+	if m := got[0]; m.Runtime != mirror.RuntimeOpenCode || m.Window != "@1" || m.Ask != nil || m.OpenCodeReply == nil ||
 		*m.OpenCodeReply != (mirror.OpenCodeReply{PromptID: "per_1", Choice: "reject"}) {
 		t.Fatalf("the permission's answer: %+v (%+v)", m, m.OpenCodeReply)
 	}
@@ -75,7 +75,7 @@ func TestAnOpenCodeAnswerIsRefusedBeforeTheHost(t *testing.T) {
 		want                                         error
 	}{
 		{"no openCodeAnswer", ``, "once reject", "@1", "per_1", "once", nil, mirror.ErrOpenCodeAnswerUnsupported},
-		{"another runtime's flag", `,"hermesAnswer":true`, "once reject", "@1", "per_1", "once", nil, mirror.ErrOpenCodeAnswerUnsupported},
+		{"an older host's removed hermesAnswer flag", `,"hermesAnswer":true`, "once reject", "@1", "per_1", "once", nil, mirror.ErrOpenCodeAnswerUnsupported},
 		{"read-only host", `,"openCodeAnswer":true,"interactive":false`, "once reject", "@1", "per_1", "once", nil, mirror.ErrOpenCodeAnswerUnsupported},
 		{"a stale sign-in", `,"openCodeAnswer":true`, "once reject", "@1", "per_1", "once", func() context.Context { return asStaleUser(1) }, mirror.ErrStepUpRequired},
 		{"another request", `,"openCodeAnswer":true`, "once reject", "@1", "per_2", "once", nil, mirror.ErrOpenCodeAskGone},
@@ -133,8 +133,8 @@ func TestAnOpenCodeAnswersHostRefusals(t *testing.T) {
 
 // The wire: an opencode window's Pending keeps its own asks — a permission's
 // choices only muster's (never "always"), a question's options only whole —
-// and loses another runtime's; a Claude or Hermes window never carries an
-// opencode ask.
+// and loses another runtime's; a Claude window, or one of a runtime muster
+// does not know, never carries an opencode ask.
 func TestAnOpenCodeWindowsPendingOnTheWire(t *testing.T) {
 	oc := func(id string, p mirror.Pending) mirror.Window {
 		return mirror.Window{Session: "s", ID: id, Runtime: mirror.RuntimeOpenCode, AgentSession: ocAnsSID, Status: mirror.StatusWaiting, Pending: &p}
@@ -146,7 +146,7 @@ func TestAnOpenCodeWindowsPendingOnTheWire(t *testing.T) {
 		oc("@4", mirror.Pending{Kind: "approval", Summary: "x", PromptID: "p1", Choices: "once deny"}),
 		oc("@5", mirror.Pending{Kind: "permission", Summary: "x", PromptID: "frm_1", Choices: "once"}),
 		oc("@6", mirror.Pending{Kind: "question", Summary: "Pick", PromptID: "frm_1", Options: "a\na"}),
-		{Session: "s", ID: "@7", Runtime: mirror.RuntimeHermes, Status: mirror.StatusWaiting,
+		{Session: "s", ID: "@7", Runtime: "unknown-runtime", Status: mirror.StatusWaiting,
 			Pending: &mirror.Pending{Kind: "permission", Summary: "x", PromptID: "per_1", Choices: "once"}},
 		{Session: "s", ID: "@8", Claude: true, Status: mirror.StatusWaiting,
 			Pending: &mirror.Pending{Kind: "question", Summary: "Q", PromptID: "frm_1", Options: "Yes\nNo"}},

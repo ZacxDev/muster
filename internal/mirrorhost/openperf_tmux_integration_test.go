@@ -359,7 +359,6 @@ func TestTmuxOpenPerfReport(t *testing.T) {
 
 	r := newPerfRig(t)
 	be := r.backend
-	be.Hermes = NewHermesSource(t.TempDir(), t.TempDir())
 	be.OpenCode = NewOpenCodeSource(context.Background(), nil, "not paired (perf rig)", log.New(io.Discard, "", 0))
 	m := newPerfMuster(t)
 	m.connect(t, be)

@@ -601,18 +601,6 @@ func TestOneStopIsOnePushAcrossTheHookAndThePass(t *testing.T) {
 			f.advance(30 * time.Second)
 		}
 	}
-	t.Run("a plain waiting Hermes window", func(t *testing.T) {
-		f := newStateFixture(t, false)
-		f.mirror.mu.Lock()
-		f.mirror.windows[0] = mirror.Window{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeHermes,
-			AgentSession: "hermes-synthetic-1", Status: mirror.StatusIdle, StatusSince: nudgeSince}
-		f.mirror.mu.Unlock()
-		f.seenIdleThenWaiting()
-		run(t, f)
-		if got := f.pushes(); len(got) != 1 || !strings.HasPrefix(got[0], "attention attention-episode-") {
-			t.Fatalf("pushes: %v", got)
-		}
-	})
 	t.Run("a host offline, then back", func(t *testing.T) {
 		// Its window is first seen waiting while the host is offline (inside
 		// the grace that keeps its items): nothing pushes until it is back and

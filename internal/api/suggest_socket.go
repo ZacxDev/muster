@@ -16,12 +16,12 @@ import (
 // Rendered view's chip row reads — or "" when the window can have none: the
 // server has no engine, suggestions are off for the viewer (the kill switch,
 // their toggle, the auto-pause), the host is read-only, or the window is not a
-// Claude Code pane with a session (Hermes, a plain terminal).
+// Claude Code pane with a session (opencode, a plain terminal).
 func (s *Server) suggestPath(ctx context.Context, h mirror.HostView, e mirror.SessionView) string {
 	if s.ext.Suggest == nil || !h.Interactive {
 		return ""
 	}
-	if !e.Claude || e.ClaudeSession == "" || e.HermesView() || e.Runtime != "" || !e.HasRenderedView() {
+	if !e.Claude || e.ClaudeSession == "" || e.Runtime != "" || !e.HasRenderedView() {
 		return ""
 	}
 	if s.ext.Suggest.Enabled(ctx, requestOwner(ctx)) != "" {
@@ -40,7 +40,7 @@ func (s *Server) suggestPaused(ctx context.Context, h mirror.HostView, e mirror.
 	if s.ext.Suggest == nil || !h.Interactive || s.ext.Suggest.Off {
 		return false
 	}
-	if !e.Claude || e.ClaudeSession == "" || e.HermesView() || e.Runtime != "" || !e.HasRenderedView() {
+	if !e.Claude || e.ClaudeSession == "" || e.Runtime != "" || !e.HasRenderedView() {
 		return false
 	}
 	return s.ext.Suggest.Enabled(ctx, requestOwner(ctx)) == suggest.OutcomePaused

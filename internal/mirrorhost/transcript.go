@@ -28,19 +28,6 @@ const reresolveEvery = 3
 // readChunk bounds one poll's read of new transcript bytes.
 const readChunk = 1 << 20
 
-// hermesSource is the backend's HermesSource, when it has one AND this
-// connection speaks v2 (a rendered view does not exist on v1).
-func (h *hostSide) hermesSource() (*HermesSource, bool) {
-	if h.version < 2 {
-		return nil, false
-	}
-	hs, ok := capabilityOf[HermesSourcer](h.c.cfg.Backend)
-	if !ok || hs.HermesSource() == nil {
-		return nil, false
-	}
-	return hs.HermesSource(), true
-}
-
 // claudeBackend is the backend's ClaudeBackend, when it has one AND this
 // connection speaks v2.
 func (h *hostSide) claudeBackend() (ClaudeBackend, bool) {
@@ -204,7 +191,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 }
 
 // THE RENDERED VIEW's LOOP, shared by both streams — Claude Code's
-// transcript file (tail) and Hermes's state.db (hermesTail): ONE send, ONE
+// transcript file (tail) and opencode's server API (openCodeTail): ONE send, ONE
 // ticker, ONE re-resolve cadence, ONE busy marker. Each stream supplies what
 // differs: how it (re)starts, how it re-resolves its pane, and how it polls.
 type renderedView struct {
@@ -647,15 +634,17 @@ func (h *hostSide) panePaste() bool {
 //     muster sends): only a pane that runs Claude Code NOW, re-resolved here —
 //     a prompt written for Claude is never typed into the shell it left behind;
 //   - with m.AnyPane (the Terminal view's composer): the session's active pane
-//     whatever runs in it — EXCEPT a pane whose process tree holds Hermes,
-//     which is refused. Otherwise that is no more than this host already
-//     granted by -interactive, which lets the same person type into the same
-//     pane.
+//     whatever runs in it — EXCEPT one the paste guard refuses. Otherwise
+//     that is no more than this host already granted by -interactive, which
+//     lets the same person type into the same pane.
 //
-// 🔴 EITHER WAY THE KEYS GO THROUGH typeInto (hermes.go), the one way this host
-// types into a pane: the Hermes paste guard refuses a pane whose process tree
-// holds Hermes, a multiplexer client or a process it cannot read — a Claude
-// Code pane too, when Hermes was started in it (`claude &`, then `hermes`).
+// m.Runtime is ignored on a paste (an older muster's, for a runtime since
+// removed): what runs in the pane is read here, never taken from muster.
+//
+// 🔴 EITHER WAY THE KEYS GO THROUGH typeInto (paneguard.go), the one way this
+// host types into a pane: the paste guard refuses a pane whose process tree
+// holds opencode on its terminal, a multiplexer client or a process it cannot
+// read — a Claude Code pane too, when opencode was started in it.
 func (h *hostSide) paste(m mirror.Msg) {
 	reply := func(err error) {
 		msg := ""
@@ -666,15 +655,6 @@ func (h *hostSide) paste(m mirror.Msg) {
 			h.c.log.Printf("muster-mirror: pasted a message into %q%s", m.Session, windowSuffix(m.Window))
 		}
 		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg, Refusal: pasteRefusalOf(err)})
-	}
-	if r, ok := runtimeNamed(m.Runtime); ok {
-		if gs, ok := r.(gatedSender); ok {
-			// The runtime's gated send (Hermes's, hermes_send.go): its own
-			// checks, replies and refusal kinds, and the one deliberate
-			// exception to the guard.
-			gs.gatedSend(h, m)
-			return
-		}
 	}
 	if !h.c.cfg.Interactive {
 		reply(errors.New("this host is read-only (muster-mirror was not started with -interactive)"))
@@ -729,8 +709,8 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errNotClaudeNow)
 		return
 	}
-	// 🔴 THE PASTE GUARD FIRST (guardPane, hermes.go), then Claude's: a
-	// Claude pane with Hermes or opencode in its foreground shows THAT
+	// 🔴 THE PASTE GUARD FIRST (guardPane, paneguard.go), then Claude's: a
+	// Claude pane with opencode in its foreground shows THAT
 	// program's screen, which the Claude prompt guard would misread (no input
 	// box) and hold as Claude's. It is the other program's refusal, in its
 	// words. typeInto runs the guard again at the moment of typing.

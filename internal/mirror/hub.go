@@ -104,14 +104,6 @@ type HostView struct {
 	Online bool
 	// Interactive: the host advertised -interactive.
 	Interactive bool
-	// HermesSend: the host advertised Msg.HermesSend (it runs with
-	// -hermes-send and is -interactive, v2): a Hermes window's rendered view
-	// offers Send and Queue, through the host's gated send (Hermes Phase 3).
-	HermesSend bool
-	// HermesAnswer: the host advertised Msg.HermesAnswer (it runs with
-	// -hermes-answer and is -interactive, v2): a Hermes approval muster shows
-	// for one of its windows can be answered here (Hermes Phase 4).
-	HermesAnswer bool
 	// OpenCodeAnswer: the host advertised Msg.OpenCodeAnswer (it is
 	// -interactive, v2, and holds an opencode token): an opencode ask muster shows
 	// for one of its windows can be answered here.
@@ -377,12 +369,10 @@ type hostConn struct {
 	// resumeSpawn: the host advertised Msg.ResumeSpawn, speaks v2 and is
 	// -interactive.
 	resumeSpawn bool
-	// gatedSends and gatedAnswers: per runtime with a gated send (RuntimeSpec.
-	// Advertises), whether the host advertised that it sends to it (Hermes:
-	// Msg.HermesSend — the server half of the gated-send switch, PasteWindow)
-	// and answers its asks (Msg.HermesAnswer, AnswerHermesApproval), speaks v2
-	// and is -interactive.
-	gatedSends, gatedAnswers map[string]bool
+	// runtimeAnswers: per runtime that answers its own asks (RuntimeSpec.Answers),
+	// whether the host advertised that it does (Msg.OpenCodeAnswer), speaks
+	// v2 and is -interactive.
+	runtimeAnswers map[string]bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -445,8 +435,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, HermesSend: hc.gatedSends[RuntimeHermes], HermesAnswer: hc.gatedAnswers[RuntimeHermes],
-			OpenCodeAnswer: hc.gatedAnswers[RuntimeOpenCode]})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn,
+			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode]})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -513,8 +503,8 @@ func (hc *hostConn) target(session, window string) (id string, claude bool, err 
 }
 
 // targetRuntime is target with the agent runtime of the window it resolved to
-// (Window.AgentRuntime): RuntimeClaude, RuntimeHermes or "" for none. A
-// per-session host reports Claude Code only (Msg.Claude), never Hermes.
+// (Window.AgentRuntime): RuntimeClaude, RuntimeOpenCode or "" for none. A
+// per-session host reports Claude Code only (Msg.Claude).
 func (hc *hostConn) targetRuntime(session, window string) (id, runtime string, err error) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
@@ -715,15 +705,13 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Starting a process on the host is more than a write into a pane:
 		// -interactive hosts only, and only those that opted in (resume.go).
 		hc.resumeSpawn = hello.ResumeSpawn && hello.Interactive
-		// Each runtime's gated-send switch: a send into its window is a write
-		// into the pane like any other, and answering its approval is a write
-		// into the session (it can let a command run): -interactive hosts
-		// only, like the rest.
-		hc.gatedSends, hc.gatedAnswers = map[string]bool{}, map[string]bool{}
+		// Each runtime's answer switch: answering its ask is a write into
+		// the session (it can let a command run): -interactive hosts only,
+		// like the rest.
+		hc.runtimeAnswers = map[string]bool{}
 		for _, r := range runtimes {
-			if r.Advertises != nil {
-				send, answer := r.Advertises(hello)
-				hc.gatedSends[r.Name], hc.gatedAnswers[r.Name] = send && hello.Interactive, answer && hello.Interactive
+			if r.Answers != nil {
+				hc.runtimeAnswers[r.Name] = r.Answers(hello) && hello.Interactive
 			}
 		}
 	}

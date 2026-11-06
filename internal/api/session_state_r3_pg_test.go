@@ -15,7 +15,7 @@ import (
 
 // Session state's audit round 2 (#426): an agent's turn seen mid-turn, the
 // owner's chief off, reclassifying once the classifier comes on, the backoff
-// cap, Hermes, and the nudges never judging Hermes.
+// cap, and an older host's Hermes window, which neither stall read lists.
 
 // TestAnAgentTurnSeenMidTurnStillEndsTheStop (N1): a pass lands while the
 // owner's prompt is the conversation's newest message (a turn no turn gate
@@ -119,72 +119,27 @@ func TestAStreakIsReclassifiedOnceTheClassifierComesOn(t *testing.T) {
 	}
 }
 
-// TestAHermesStallReadsNoTranscript (N3): an idle Hermes stop, with the
-// classifier configured, is never read or classified — no_transcript, counted
-// as asked.
-func TestAHermesStallReadsNoTranscript(t *testing.T) {
-	f := newStateFixture(t, true)
-	j := withJev(t, f.nudgeFixture)
-	f.mirror.mu.Lock()
-	f.mirror.windows = []mirror.Window{{Session: "main", ID: "@5", Index: 5, Label: "hermes", Runtime: mirror.RuntimeHermes,
-		AgentSession: "h-78", Status: mirror.StatusIdle, StatusSince: nudgeSince}}
-	f.mirror.agentState = &mirror.AgentState{Runtime: mirror.RuntimeHermes, Status: mirror.StatusIdle, Since: nudgeSince,
-		Observed: f.srv.now().Add(-20 * time.Minute)}
-	f.mirror.mu.Unlock()
-	f.statePass(t)
-	e := f.oneEpisode(t)
-	if e.Jev.Err != jevNoTranscript || !e.Asked || e.State != sessionstate.StateStalled || f.readCount() != 0 || f.jevCalls(j) != 0 {
-		t.Fatalf("episode %+v, reads %d, calls %d", e, f.readCount(), f.jevCalls(j))
-	}
-}
-
-// TestAHermesApprovalIsAnEpisodeAnswerableOrNot (N3, as the operator changed
-// it after #463): a Hermes window waiting on an approval opens an episode
-// whether or not its host answers it from muster — an answerable ask's push
-// waits the grace like any wait's. Until then one with a prompt id its host
-// answers opened none, and pushed at once.
-func TestAHermesApprovalIsAnEpisodeAnswerableOrNot(t *testing.T) {
-	for _, prompt := range []string{"p1", ""} {
-		t.Run("prompt="+prompt, func(t *testing.T) {
-			f := newStateFixture(t, false)
-			f.mirror.mu.Lock()
-			f.mirror.windows = []mirror.Window{{Session: "main", ID: "@5", Index: 5, Label: "hermes", Runtime: mirror.RuntimeHermes,
-				AgentSession: "h-79", Status: mirror.StatusWaiting, StatusSince: nudgeSince,
-				Pending: &mirror.Pending{Kind: mirror.PendingApproval, Summary: "terminal: make", Tool: "terminal", PromptID: prompt, Choices: "once deny"}}}
-			f.mirror.agentState = &mirror.AgentState{Runtime: mirror.RuntimeHermes, Status: mirror.StatusWaiting, Since: nudgeSince,
-				Observed: f.srv.now().Add(-time.Minute)}
-			f.mirror.mu.Unlock()
-			f.srv.ext.Mirror = &hermesAskMirror{fakeMirror: f.mirror, answers: true}
-			f.statePass(t)
-			if n := len(f.episodes(t)); n != 1 {
-				t.Fatalf("episodes: %d, want 1", n)
-			}
-		})
-	}
-}
-
-// TestTheStallNudgesNeverJudgeAHermesWindow (N3): the nudge sweep's stall
-// facts list no Hermes window — only session state's do.
-func TestTheStallNudgesNeverJudgeAHermesWindow(t *testing.T) {
+// TestNeitherStallReadListsAnOlderHostsHermesWindow: an older muster-mirror
+// may still name a window Runtime "hermes"; muster no longer knows that
+// runtime, so neither the nudge sweep's stall facts nor session state's list
+// it (no episode, no nudge). The Claude Code window beside it is the control.
+func TestNeitherStallReadListsAnOlderHostsHermesWindow(t *testing.T) {
 	f := newStateFixture(t, true)
 	f.mirror.mu.Lock()
 	f.mirror.windows = append(f.mirror.windows, mirror.Window{Session: "main", ID: "@5", Index: 5, Label: "hermes",
-		Runtime: mirror.RuntimeHermes, AgentSession: "h-80", Status: mirror.StatusIdle, StatusSince: nudgeSince})
+		Runtime: "hermes", AgentSession: "h-80", Status: mirror.StatusIdle, StatusSince: nudgeSince})
 	f.mirror.mu.Unlock()
 	octx := f.srv.attentionPrincipal(context.Background(), authz.OperatorUserID)
-	for _, c := range f.srv.stallInputs(octx, nil) {
-		if c.Runtime == mirror.RuntimeHermes {
-			t.Fatalf("the nudges' stall facts list a Hermes window: %+v", c.Session)
+	nudges, state := f.srv.stallInputs(octx, nil), f.srv.stallFacts(octx, nil, f.mirror.Hosts(octx)).sessions
+	for _, cs := range [][]nudgeCandidate{nudges, state} {
+		for _, c := range cs {
+			if c.Window == "@5" || c.Runtime != "" {
+				t.Fatalf("a stall read lists the older host's Hermes window: %+v", c.Session)
+			}
 		}
 	}
-	hermes := 0
-	for _, c := range f.srv.stallFacts(octx, nil, f.mirror.Hosts(octx), true).sessions {
-		if c.Runtime == mirror.RuntimeHermes {
-			hermes++
-		}
-	}
-	if hermes != 1 {
-		t.Fatalf("session state's stall facts list %d Hermes windows, want 1", hermes)
+	if len(nudges) == 0 || len(state) == 0 {
+		t.Fatalf("CONTROL: the Claude Code window is not listed: nudges %d, state %d", len(nudges), len(state))
 	}
 }
 

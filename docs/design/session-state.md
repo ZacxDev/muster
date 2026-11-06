@@ -148,7 +148,8 @@ part the operator does not read.
 
 - `waitingSessions` (`attention.go:410`) lists windows whose host reports
   status `waiting`: a permission prompt, an AskUserQuestion, an opencode
-  question or permission request (#416), a Hermes ask. Held AskUserQuestions
+  question or permission request (#416) (a Hermes ask too, before Hermes
+  support was removed). Held AskUserQuestions
   and opencode questions come back as single **answerable** items
   (`attention.go:425-429`, `:491-497`), pushed with full text under the
   operator's "Full text always" decision (`attention.go:820-827`).
@@ -251,8 +252,8 @@ session keep today's exclusions.
 ### Answerable asks are episodes too
 
 *As first built (PR 2, #430) and until the follow-up to #463:* a held AskUserQuestion, an
-opencode question or permission request muster can relay, and a Hermes
-approval with a prompt id were **answerable asks** that opened no episode and
+opencode question or permission request muster can relay, and (before Hermes
+support was removed) a Hermes approval with a prompt id were **answerable asks** that opened no episode and
 kept the waiting diff's full-text push, **sent at once**. Measured on the live
 fleet right after #463, every needs-you push the
 operator felt came from such a question, sent the second it registered and
@@ -458,7 +459,8 @@ nudged: the send queue does not paste into one (`sendqueue/dispatcher.go:71-73`)
 so a queued nudge would wait for the owner to answer by hand and then paste
 into the next, different context.
 
-**View-only runtimes** (default D3): opencode and Hermes windows get the same
+**View-only runtimes** (default D3): opencode windows (and Hermes's, before
+its support was removed) get the same
 push and row, but are **never nudged**; a Chief `nudge` for one is recorded
 and treated as `notify`, as #415 already treats a runtime window.
 
@@ -708,8 +710,8 @@ without reworking the rest of the design.
 - **D2. Keep the stall classifier,** in the roles above: it splits
   `needs-you` from `stalled` for an idle session, and gates the `needs-you`
   nudge.
-- **D3. View-only runtimes.** opencode and Hermes windows get the same push and
-  row, but are never nudged.
+- **D3. View-only runtimes.** opencode windows (and Hermes's, before its
+  support was removed) get the same push and row, but are never nudged.
 - **D4. Chief-chat quotes' own shadow gate** (step 3b-1). A nudge quoting the
   owner's Chief chat pastes only for an owner on
   `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS` (same format as the other

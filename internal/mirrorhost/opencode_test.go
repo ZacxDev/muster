@@ -281,7 +281,7 @@ func TestAnOpenCodeStatusIsUnknownWhileTheEventStreamIsDown(t *testing.T) {
 }
 
 // TestTheOpenCodeLocatorClaimsNoOtherRuntimesPane: a Claude Code pane, a
-// Hermes one and a plain shell are not opencode windows, and with no opencode
+// pane running another Python CLI and a plain shell are not opencode windows, and with no opencode
 // process in the table no pane title is even read (the negative control: the
 // same table with the TUI is read).
 func TestTheOpenCodeLocatorClaimsNoOtherRuntimesPane(t *testing.T) {
@@ -293,7 +293,7 @@ func TestTheOpenCodeLocatorClaimsNoOtherRuntimesPane(t *testing.T) {
 	proc.stdin(11, "/dev/pts/1")
 	proc.add(20, 1, "zsh", "/w", "-zsh")
 	proc.stdin(20, "/dev/pts/2")
-	proc.add(21, 20, "hermes", "/w", "/usr/bin/python3", "/usr/bin/hermes", "chat")
+	proc.add(21, 20, "python3", "/w", "/usr/bin/python3", "/usr/bin/agent-cli", "chat")
 	proc.stdin(21, "/dev/pts/2")
 	procs, children := (ClaudeLocator{Proc: proc.root}).table()
 	reads := 0
@@ -580,4 +580,30 @@ func TestTheViewRedrawsOnTheTokensStateNotItsCountdown(t *testing.T) {
 		_, resets, _ := watchEvents(d, 5)
 		return resets > 1
 	})
+}
+
+// watchEvents is stream id's events as muster holds them (a Reset starts them
+// over), how many Resets it sent, and its last batch.
+func watchEvents(d *drivenMuster, id uint32) (evs []cctranscript.Event, resets int, last mirror.Msg) {
+	for _, m := range d.of(mirror.TypeEvents) {
+		if m.ID != id {
+			continue
+		}
+		if m.Reset {
+			resets++
+			evs = nil
+		}
+		evs = append(evs, m.Events...)
+		last = m
+	}
+	return evs, resets, last
+}
+
+// evText is evs, one "kind:text…|" each: what a test compares.
+func evText(evs []cctranscript.Event) string {
+	var b strings.Builder
+	for _, e := range evs {
+		b.WriteString(e.Kind + ":" + e.Text + e.Output + e.Tool + "|")
+	}
+	return b.String()
 }

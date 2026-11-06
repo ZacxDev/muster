@@ -11,9 +11,9 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// TestAHostsHermesGuardRefusalReadsTheSameWithAndWithoutScript: when the
-// host's paste guard refuses a Terminal-view send (Hermes, a multiplexer, an
-// unchecked pane, opencode), the person reads the guard's own words on BOTH
+// TestAHostsGuardRefusalReadsTheSameWithAndWithoutScript: when the host's
+// paste guard refuses a Terminal-view send (a multiplexer, an unchecked pane,
+// opencode), the person reads the guard's own words on BOTH
 // paths — the composer's script (the response body:
 // exactly the host's sentence, with no "mirror: the host refused the
 // message:" in front of it) and a form the browser posted itself (a redirect
@@ -21,8 +21,8 @@ import (
 // queued message (Queue, Send now) refused so says it in its row. Each of
 // the guard's kinds; and a host refusal that is NOT the guard's keeps the
 // generic answer (the control: the new branch keys on the kind, not on any
-// refusal).
-func TestAHostsHermesGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) {
+// refusal) — an older host's removed "hermes" kind among them.
+func TestAHostsGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) {
 	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}
 	s, ts := viewServer(t, fm)
 	cookie := sessionCookieFor(s)
@@ -46,7 +46,6 @@ func TestAHostsHermesGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) 
 		return resp.Header.Get("Location")
 	}
 	for _, c := range []struct{ refusal, text, notice string }{
-		{mirror.PasteRefusalHermes, mirror.PasteRefusedHermesText, "hermes"},
 		{mirror.PasteRefusalMultiplexer, mirror.PasteRefusedMultiplexerText, "multiplexer"},
 		{mirror.PasteRefusalUnchecked, mirror.PasteRefusedUncheckedText, "unchecked"},
 		{mirror.PasteRefusalOpenCode, mirror.PasteRefusedOpenCodeText, "opencode"},
@@ -69,19 +68,23 @@ func TestAHostsHermesGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) 
 			t.Errorf("%s, a queued message: %+v; want not sent, saying %q", c.refusal, out, c.text)
 		}
 	}
-	if !strings.Contains(mirror.PasteRefusedHermesText, "Hermes runs in this pane") || !strings.Contains(mirror.PasteRefusedHermesText, "Type it in the terminal") {
-		t.Fatalf("the Hermes refusal no longer says what docs/mirroring.md quotes: %q", mirror.PasteRefusedHermesText)
-	}
 	if !strings.HasPrefix(mirror.PasteRefusedOpenCodeText, "Sending to opencode isn't supported yet") {
 		t.Fatalf("the opencode refusal no longer says what the operator asked for: %q", mirror.PasteRefusedOpenCodeText)
 	}
 
-	// Control: another host refusal, with no kind, is the generic answer.
-	fm.v2.pasteErr = &mirror.PasteRefusedError{Why: "session \"chief\" is not in this host's latest list"}
-	if code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, cookie, "", form); code != http.StatusBadGateway || !strings.HasPrefix(body, "mirror: the host refused the message: ") {
-		t.Errorf("a refusal that is not the guard's: %d %q; want the generic 502 with the host's reason after the prefix", code, body)
-	}
-	if loc := nav(); !strings.HasSuffix(loc, "notice=failed") {
-		t.Errorf("a refusal that is not the guard's, without script: %q, want notice=failed", loc)
+	// Control: another host refusal, with no kind — or with the kind an
+	// older host's Hermes guard names, which muster no longer knows — is the
+	// generic answer.
+	for _, pr := range []*mirror.PasteRefusedError{
+		{Why: "session \"chief\" is not in this host's latest list"},
+		{Why: "Not sent: Hermes runs in this pane. Type it in the terminal.", Refusal: "hermes"},
+	} {
+		fm.v2.pasteErr = pr
+		if code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, cookie, "", form); code != http.StatusBadGateway || body != "mirror: the host refused the message: "+pr.Why {
+			t.Errorf("a refusal that is not the guard's (kind %q): %d %q; want the generic 502 with the host's reason after the prefix", pr.Refusal, code, body)
+		}
+		if loc := nav(); !strings.HasSuffix(loc, "notice=failed") {
+			t.Errorf("a refusal that is not the guard's (kind %q), without script: %q, want notice=failed", pr.Refusal, loc)
+		}
 	}
 }

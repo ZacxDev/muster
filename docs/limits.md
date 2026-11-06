@@ -88,8 +88,7 @@
   Its parsers are tested against the documented formats, not against
   captured output. If a Mac's Claude Code windows still open in the Terminal
   view only, the line at the top says which step failed.
-- **On macOS, only Claude Code is looked up that way.** Hermes and opencode
-  windows, and the count of a Claude Code session's background shells, still
+- **On macOS, only Claude Code is looked up that way.** opencode windows, and the count of a Claude Code session's background shells, still
   read `/proc`, so on a Mac they are not found.
 - 🔴 **`-interactive` is a shell on the host** for anyone who can type into its
   Terminal view in muster — live keys are always on there, behind a recent

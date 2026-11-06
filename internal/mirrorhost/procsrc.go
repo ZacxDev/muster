@@ -21,8 +21,8 @@ import (
 //     with no build tag, so they are tested on Linux.
 //
 // Only the Claude Code locator and what reads through it (Tmux.Windows,
-// resumeLive, the catalog's cwd) go through this. The Hermes and opencode
-// runtimes and the background-shell count (internal/cctasks) still read a
+// resumeLive, the catalog's cwd) go through this. The opencode runtime, the
+// paste guard and the background-shell count (internal/cctasks) still read a
 // proc root of their own, so on macOS they find nothing, as before.
 type procSource interface {
 	// table reads every process once: parent, name, argv and start time, and

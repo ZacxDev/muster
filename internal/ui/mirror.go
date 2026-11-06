@@ -67,7 +67,7 @@ type MirrorCardView struct {
 	// opens the RENDERED view by default (MirrorViewPath); otherwise it opens the
 	// terminal.
 	Claude bool
-	// AgentView: the host reports a non-Claude runtime with a view (Hermes)
+	// AgentView: the host reports a non-Claude runtime with a view (opencode)
 	// in the pane AND names the conversation it shows
 	// (mirror.SessionView.AgentView), so the entry opens
 	// its read-only rendered view by default, as a Claude Code entry does.
@@ -80,7 +80,7 @@ type MirrorCardView struct {
 	// (internal/focus, keyed by its Claude session id), nil for none.
 	Focus *FocusView
 	// FocusKey is the key its focus is stored under (mirror.SessionView
-	// .SessionKey: the Claude session id, or "hermes:<id>"), "" when the host
+	// .SessionKey: the Claude session id, or "opencode:<id>"), "" when the host
 	// reports none — so it has no focus and no previous titles.
 	FocusKey string
 	// PrevFocus is the session's previous focus titles, newest first, its
@@ -114,7 +114,7 @@ type MirrorCardView struct {
 }
 
 // MirrorCardHref is where a mirrored entry opens: the rendered view for a
-// Claude Code pane or a Hermes one with a known session, the terminal for
+// Claude Code pane or an opencode one with a known session, the terminal for
 // anything else.
 func MirrorCardHref(m MirrorCardView) string {
 	ref := MirrorRef{Host: m.Host, Session: m.Session, Window: m.Window}

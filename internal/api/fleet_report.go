@@ -52,7 +52,7 @@ import (
 //     session's transcript last named, stored with its focus
 //     (focus.Focus.Cwd, migration 0065), and is used for this decision only —
 //     it is never written into the reply. A session whose directory is
-//     unknown — a dispatched agent, a Hermes window, a session whose focus was
+//     unknown — a dispatched agent, an opencode window, a session whose focus was
 //     written before 0065 or by a host that predates it, one past the focus
 //     retention — is LEFT OUT and counted in the coverage's gaps; one outside
 //     the prefixes is left out and not mentioned at all.
