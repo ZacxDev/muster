@@ -126,18 +126,44 @@ func TestTheComposeChiefRefusesAnAgentPlaneVariableBesideIt(t *testing.T) {
 }
 
 func TestTheComposeChiefNamesWhatItNeeds(t *testing.T) {
-	for _, env := range []string{envConnectorEncKey, envConnectPort, envAgentConnectURL, envAgentAPIURL} {
-		t.Run(env, func(t *testing.T) {
-			e := composeEnv("/run/muster-spec")
-			delete(e, env)
-			cfg, err := loadEnv(t, e)
-			if err != nil {
-				t.Fatalf("loadConfig: %v", err)
-			}
-			if err := cfg.validateProvisioner(); err == nil || !strings.Contains(err.Error(), "but "+env+" is not set") {
-				t.Fatalf("without %s: %v", env, err)
-			}
-		})
+	e := composeEnv("/run/muster-spec")
+	delete(e, envConnectorEncKey)
+	cfg, err := loadEnv(t, e)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if err := cfg.validateProvisioner(); err == nil || !strings.Contains(err.Error(), "but "+envConnectorEncKey+" is not set") {
+		t.Fatalf("without %s: %v", envConnectorEncKey, err)
+	}
+}
+
+// TestTheComposeChiefDefaultsItsDoorOnTheComposeNetwork: the Compose file
+// forwards no connect port or URL; the runtime defaults them to the stack's
+// own names (muster:8106 for the door, muster:<MUSTER_PORT> for the API), and
+// a value that is set wins.
+func TestTheComposeChiefDefaultsItsDoorOnTheComposeNetwork(t *testing.T) {
+	e := composeEnv("/run/muster-spec")
+	for _, k := range []string{envConnectPort, envAgentConnectURL, envAgentAPIURL} {
+		delete(e, k)
+	}
+	e[envPort] = "8105"
+	cfg, err := loadEnv(t, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConnectPort != 8106 || cfg.AgentConnectURL != "http://muster:8106" || cfg.AgentAPIURL != "http://muster:8105" {
+		t.Fatalf("defaults: port %d connect %q api %q", cfg.ConnectPort, cfg.AgentConnectURL, cfg.AgentAPIURL)
+	}
+	if err := cfg.validateProvisioner(); err != nil {
+		t.Fatalf("the defaulted config is refused: %v", err)
+	}
+	e[envConnectPort], e[envAgentConnectURL], e[envAgentAPIURL] = "18201", "http://door.example.invalid:18201", "http://api.example.invalid:9"
+	cfg, err = loadEnv(t, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConnectPort != 18201 || cfg.AgentConnectURL != "http://door.example.invalid:18201" || cfg.AgentAPIURL != "http://api.example.invalid:9" {
+		t.Fatalf("set values did not win: port %d connect %q api %q", cfg.ConnectPort, cfg.AgentConnectURL, cfg.AgentAPIURL)
 	}
 }
 

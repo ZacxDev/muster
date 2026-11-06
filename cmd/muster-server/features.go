@@ -102,12 +102,15 @@ func featureCatalog() []features.Feature {
 				v(envAgentCCAccounts, "account names"), v(envAgentCCTokenPrefix+"<NAME>", "claude setup-token")},
 			Settings: []string{envAgentCCStorage, envAgentCCCooldown, envAgentCCMaxJobs, envAgentCCFailover, envAgentCCBypassPools,
 				envAgentCCPoolDeployKeys, envAgentCCEgressLockedPools, envAgentNetpolFromNS, envAgentNetpolFromLabels, envCheckoutWaitTimeout}},
-		{ID: features.Chief, Kubernetes: true, Name: "Chief",
-			Description: "An agent that manages your other agents; each user turns it on under Account. Needs agent dispatch.",
-			Enable:      provisioner,
-			// The Compose chief (composechief.go). Its enable step and hint are
-			// the Compose stack's own, written with the `chief` profile.
-			Settings: []string{envChiefRuntime, envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel}},
+		// The documented install: the Compose stack's `chief` profile and the
+		// Compose chief runtime (composechief.go). A Kubernetes deployment runs
+		// it through MUSTER_AGENT_PROVISIONER instead (docs/chief.md).
+		{ID: features.Chief, Name: "Chief",
+			Description: "A fleet agent that reports on your sessions and agents, and routes work to them; the admin turns it on under Account.",
+			Enable: []features.Var{features.ProfileVar("chief"), is(envChiefRuntime, chiefRuntimeCompose),
+				v(envConnectorEncKey, "32 random bytes, base64")},
+			Note:     composeChiefCredentialNote,
+			Settings: []string{envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel}},
 		{ID: features.ChiefSessionRuntimes, Kubernetes: true, Name: "Chief session runtimes",
 			Description: "Start a chief chat session on Claude Code, with its own model.",
 			Enable:      []features.Var{is(envChiefSessionRuntimes, "claude-code")}},
@@ -227,7 +230,7 @@ func openRouterStatus(ext api.Extensions) features.Status {
 // own predicate, chiefRuntimeMissing).
 func chiefMissing(c config, ext api.Extensions) string {
 	if ext.Provisioner == nil || chiefRuntimeMissing(c, ext) {
-		return "it acts through the chief, which " + features.KubernetesHint + " — see docs/features.md#chief"
+		return "it acts through the chief, which is not set up — see docs/features.md#chief"
 	}
 	return ""
 }
@@ -343,7 +346,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	// what it needs missing it is OFF, never MISCONFIGURED.
 	switch {
 	case ext.Provisioner == nil:
-		st[features.Chief] = off("there is no agent provisioner (" + envAgentProvisioner + ")")
+		st[features.Chief] = off(envChiefRuntime + " is unset (and there is no agent provisioner, " + envAgentProvisioner + ")")
 	case chiefRuntimeMissing(c, ext):
 		st[features.Chief] = off("there is no runtime a chief can run on (" + envAgentGateway +
 			" is unset and " + envAgentKinds + " does not list claude-code)")

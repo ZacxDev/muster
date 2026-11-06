@@ -481,7 +481,10 @@ func TestTheDictationHintIsTheComposeOne(t *testing.T) {
 	for _, c := range []struct{ id, want string }{
 		{features.Dictation, "set COMPOSE_PROFILES=stt and " + envSTTToken + " in .env and restart (docs/features.md#dictation)"},
 		{features.Attachments, "set COMPOSE_PROFILES=s3, S3_STORE_SECRET_KEY and " + envUploadSigningKey + " in .env and restart (docs/features.md#attachments)"},
-		{features.Chief, "needs Kubernetes (in-cluster dispatch) — see docs/features.md#chief"},
+		{features.Chief, "set COMPOSE_PROFILES=chief, " + envChiefRuntime + "=compose and " + envConnectorEncKey + " in .env and restart; " +
+			"then give it a credential: " + envChiefClaudeToken + " (a Claude subscription token, `claude setup-token`) or the " +
+			"OpenRouter key " + envAgentOpenRouterKey + ". On OpenRouter muster adds no budget: set a credit limit on the key " +
+			"itself (https://openrouter.ai/settings/keys) (docs/features.md#chief)"},
 	} {
 		if got := get(c.id).EnableHint(); got != c.want {
 			t.Errorf("%s hint\n got %q\nwant %q", c.id, got, c.want)
@@ -489,7 +492,8 @@ func TestTheDictationHintIsTheComposeOne(t *testing.T) {
 	}
 	// The set #440's Compose file does not forward, pinned: every one says
 	// Kubernetes, and no other does.
-	want := []string{features.Dispatch, features.AgentGateway, features.ClaudeCodeAgents, features.Chief,
+	// The chief is NOT among them: the Compose stack runs it (its `chief` profile).
+	want := []string{features.Dispatch, features.AgentGateway, features.ClaudeCodeAgents,
 		features.ChiefSessionRuntimes, features.ChiefNudges, features.MemoRelay, features.Officers}
 	var got []string
 	for _, f := range set.All() {
@@ -662,7 +666,7 @@ func TestEveryHintWorksOnTheComposeInstall(t *testing.T) {
 func TestChiefDependentHintsSayTheChiefFirst(t *testing.T) {
 	set := featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, true)
 	f, _ := set.Get(features.Plugins)
-	want := "needs the chief, which needs Kubernetes (in-cluster dispatch) — see docs/features.md#chief; then set " +
+	want := "needs the chief — see docs/features.md#chief; then set " +
 		envPlugins + "=1 in .env and restart (docs/features.md#plugins)"
 	if f.EnableHint() != want {
 		t.Fatalf("plugins hint\n got %q\nwant %q", f.EnableHint(), want)

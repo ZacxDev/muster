@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,11 @@ import (
 //     LLM proxy — is decided by [ComposeChief.Credential], one rule handed to
 //     this package and to the spec builder alike.
 // ---------------------------------------------------------------------------
+
+// OpenRouterKeySettingsURL is where an OpenRouter key's credit limit is set.
+// The Compose chief on OpenRouter has no muster budget: the limit on the key is
+// its spending cap.
+const OpenRouterKeySettingsURL = "https://openrouter.ai/settings/keys"
 
 // ComposeChiefAccount is the Claude account the Compose chief's row names. It
 // holds MUSTER_CHIEF_CLAUDE_TOKEN when that is set; otherwise the account has
@@ -327,4 +334,80 @@ func (s *Server) composeChiefKindAccount(ctx context.Context, p dispatchParams) 
 		return "", "", fmt.Errorf("%w: %v", ErrDispatchRefused, err)
 	}
 	return agents.KindClaudeCode, ComposeChiefAccount, nil
+}
+
+// ChiefNotSetUp is the Account page's text where the chief cannot run: no
+// Compose chief runtime and no agent provisioner. It is the enable step.
+const ChiefNotSetUp = "Not available on this install yet. To turn it on, add COMPOSE_PROFILES=chief, " +
+	"MUSTER_CHIEF_RUNTIME=compose and MUSTER_CONNECTOR_ENCRYPTION_KEY to .env, run docker compose up -d --wait, " +
+	"and come back here (docs/features.md#chief). Everything else works without it."
+
+// The Account page's lines about the Compose chief, below its switch.
+const (
+	ComposeChiefRunsOnClaude     = "Runs on your Claude subscription (MUSTER_CHIEF_CLAUDE_TOKEN)."
+	ComposeChiefNetworkNote      = "Its network is not confined: the chief's container reaches the internet, and not muster's database (docs/chief.md)."
+	ComposeChiefRoutingOn        = "Routing work to your sessions: on."
+	ComposeChiefRoutingOff       = "Routing work to your sessions: off. Add MUSTER_SESSION_ROUTING=1 to .env and run docker compose up -d --wait."
+	composeChiefInstanceDeadline = 3 * time.Second
+)
+
+// ComposeChiefStopFailed is the container line of a chief turned off whose
+// container says the stop left something running.
+func ComposeChiefStopFailed(reason string) string {
+	return "Off, but its container did not stop: " + reason + ". It keeps retrying; " +
+		"docker compose restart chief ends everything in it."
+}
+
+// ComposeChiefRunsOnOpenRouter is the credential line for the OpenRouter key.
+func ComposeChiefRunsOnOpenRouter(model string) string {
+	return "Runs on your OpenRouter key, on " + model + " (MUSTER_CHIEF_LLM_MODEL). muster adds no budget of its own: " +
+		"set a credit limit on the key itself, at " + OpenRouterKeySettingsURL + "."
+}
+
+// composeChiefDetails is what the admin's Account page says about the Compose
+// chief beside its switch: which credential it runs on (and, on OpenRouter,
+// that the key's credit limit is the only spending cap), whether its container
+// is answering when it is on, that its network is not confined, and whether
+// routing to sessions is on.
+func (s *Server) composeChiefDetails(ctx context.Context, owner int64, chief agents.Agent, has, on bool) string {
+	p := func(id, text string) string {
+		return `<p data-compose-chief="` + id + `" class="text-sm text-fg2">` + html.EscapeString(text) + `</p>
+`
+	}
+	var b string
+	switch cred, err := s.ext.ComposeChief.Credential(ctx, owner); {
+	case err != nil:
+		b += p("credential", "No credential yet: "+ComposeChiefNeedsCredential+".")
+	case cred == ComposeChiefOpenRouter:
+		model := "(the LLM proxy is not enabled)"
+		if s.chiefLLM != nil {
+			model = s.chiefLLM.model
+		}
+		b += p("credential", ComposeChiefRunsOnOpenRouter(model))
+	default:
+		b += p("credential", ComposeChiefRunsOnClaude)
+	}
+	if has {
+		if inst, ok := s.instanceIndexWithin(ctx, composeChiefInstanceDeadline)[chief.Name]; ok && inst != nil {
+			switch {
+			case on && inst.Phase != provision.PhaseRunning && inst.Reason != "":
+				b += p("container", "Its container: "+inst.Reason+".")
+			// 🔴 OFF, BUT THE STOP LEFT SOMETHING RUNNING. The switch reads off and
+			// the chief gets no work, but the supervisor says a process outlived
+			// the stop (internal/provision/compose: replicas 0 reads its status;
+			// ccd compose reports error, never off, while one lives).
+			case !on && inst.Phase == provision.PhaseFailed && inst.Reason != "":
+				b += p("container", ComposeChiefStopFailed(inst.Reason))
+			}
+		}
+	}
+	b += p("network", ComposeChiefNetworkNote)
+	// route_to_session's own gate (agent.go): session routing, which needs no
+	// plugins since an owner's request and a task are routed without one.
+	if routesOn(s.ext) {
+		b += p("routing", ComposeChiefRoutingOn)
+	} else {
+		b += p("routing", ComposeChiefRoutingOff)
+	}
+	return b
 }

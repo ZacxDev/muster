@@ -459,6 +459,8 @@ var bannerExempt = map[string]string{
 		"MUSTER_CHIEF_RUNTIME, which refuses to boot with it set alone",
 	envChiefLLMModel: "printed with its value on the `chief llm: … through the LLM proxy` line api.EnableChiefLLM logs on " +
 		"the Compose chief; it means nothing without MUSTER_CHIEF_RUNTIME, which refuses it alone",
+	envTestLLMUpstream: "TEST ONLY: announced on its own loud `llm proxy: 🔴 the chief's upstream is OVERRIDDEN …` line " +
+		"when set; unset (every real deployment) there is nothing to announce, and it is refused without the Compose chief runtime",
 	envChiefClaudeToken: "a secret, never printed; which credential the chief runs on is the Account page's to say, " +
 		"and it is refused at boot without MUSTER_CHIEF_RUNTIME",
 	envFleetReportPaths: "counted on the `fleet-report requests: ON` line, which names it; it does nothing without " +

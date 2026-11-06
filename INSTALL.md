@@ -236,7 +236,7 @@ Read the output and note:
 | `curl`, `tar` | every machine | Install them with the system package manager (ask first). |
 | `tmux` | every machine | Install it (`apt install tmux`, `dnf install tmux`, `brew install tmux`; ask first). muster shows tmux windows, so this is required. Any packaged version works, including Ubuntu 24.04's 3.4: muster types picker answers with `paste-buffer -S` on tmux 3.7+ and plain `paste-buffer` before 3.7 (tested on 3.2a, 3.3a, 3.4 and 3.7c). |
 | `tailscale`, logged in | every machine | Asked up front (Step 1, question 4). Install from <https://tailscale.com/download>. Then `tailscale up` (on Linux, `sudo tailscale up`) prints a sign-in URL: give it to the person to open, and wait. Every machine and the phone must sign in to the **same** tailnet. |
-| `docker` and `docker compose` | the hub only | Install Docker Engine (Linux) or Docker Desktop (macOS) with the Compose v2 plugin. |
+| `docker` and `docker compose` | the hub only | Install Docker Engine (Linux) or Docker Desktop (macOS) with the Compose v2 plugin, 2.20 or later (CI checks the compose file on 2.20.3). |
 | free disk | the hub | At least 10 GB; 20 GB if dictation will run locally (Step 1). |
 | `qrencode` | optional | Lets `muster doctor` draw the phone's QR code. Install it if the person allowed it in Step 1. |
 | gpu and `docker gpu runtime` | the hub, for GPU dictation | An NVIDIA GPU with at least 6 GB of memory **and** a Docker GPU runtime (the NVIDIA Container Toolkit), on **amd64**, makes the best dictation option available. |

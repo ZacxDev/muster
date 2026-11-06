@@ -340,6 +340,8 @@ const (
 	envChiefSpecDir     = "MUSTER_CHIEF_SPEC_DIR"
 	envChiefClaudeToken = "MUSTER_CHIEF_CLAUDE_TOKEN"
 	envChiefLLMModel    = "MUSTER_CHIEF_LLM_MODEL"
+	// TEST ONLY (testllm.go): the chief's LLM proxy upstream.
+	envTestLLMUpstream = "MUSTER_TEST_LLM_UPSTREAM"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -855,6 +857,9 @@ type config struct {
 	// chief's requests are pinned to when it runs on the OpenRouter key
 	// (api.DefaultChiefLLMModel when unset).
 	ChiefLLMModel string
+	// LLMTestUpstream is MUSTER_TEST_LLM_UPSTREAM, accepted only with the
+	// Compose chief runtime (testllm.go).
+	LLMTestUpstream string
 
 	// AgentGateway names the agent runtime whose chat wire this deployment talks:
 	// one of gatewayChoices. Default gatewayNone, which leaves
@@ -1652,6 +1657,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	if c.AuthMode == "" {
 		c.AuthMode = string(api.AuthModePassword)
+	}
+	if err := c.applyTestLLMUpstream(getenv); err != nil {
+		return config{}, err
 	}
 	// Last: it refuses agent-plane variables set beside it, so every one of
 	// them must already be read.

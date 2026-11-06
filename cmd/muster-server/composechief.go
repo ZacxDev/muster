@@ -80,6 +80,12 @@ const (
 	// bearer. muster holds both as supplementary groups (group_add).
 	composeSpecGroup  = 1001
 	composeFilesGroup = 1000
+
+	// composeConnectPort is the connect door's port inside the Compose stack
+	// (not published to the host), and composeMusterPort muster's own when
+	// MUSTER_PORT is unset (the Compose file sets 8105).
+	composeConnectPort = 8106
+	composeMusterPort  = 8105
 )
 
 // chiefCompose reports whether this server runs the Compose chief.
@@ -112,6 +118,22 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 	}
 	if c.ChiefLLMModel == "" {
 		c.ChiefLLMModel = api.DefaultChiefLLMModel
+	}
+	// The connect door and the URL the chief calls back on, on the Compose
+	// stack's own network (the services are named muster and chief), unless
+	// set: the Compose file forwards none of them.
+	if c.ConnectPort == 0 {
+		c.ConnectPort = composeConnectPort
+	}
+	if c.AgentConnectURL == "" {
+		c.AgentConnectURL = fmt.Sprintf("http://muster:%d", c.ConnectPort)
+	}
+	if c.AgentAPIURL == "" {
+		port := c.Port
+		if port == 0 {
+			port = composeMusterPort
+		}
+		c.AgentAPIURL = fmt.Sprintf("http://muster:%d", port)
 	}
 	if !filepath.IsAbs(c.ChiefSpecDir) {
 		return fmt.Errorf("invalid %s %q: it must be an absolute path (the shared volume's mount point in "+
@@ -187,13 +209,19 @@ func (c config) validateComposeChief() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("%s=%s but %s %s not set: the chief reaches muster's tools only over the MCP "+
 			"server on the connect port (%s, %s), which needs the connector store (%s), and it calls "+
-			"back on %s. The Compose file sets all but %s when %s is set",
+			"back on %s. The runtime defaults all but %s on the Compose stack's network when they are unset",
 			envChiefRuntime, chiefRuntimeCompose, strings.Join(missing, ", "),
 			map[bool]string{true: "is", false: "are"}[len(missing) == 1],
-			envConnectPort, envAgentConnectURL, envConnectorEncKey, envAgentAPIURL, envConnectorEncKey, envChiefRuntime)
+			envConnectPort, envAgentConnectURL, envConnectorEncKey, envAgentAPIURL, envConnectorEncKey)
 	}
 	return nil
 }
+
+// composeChiefCredentialNote is the Chief feature's Note: what turning it on
+// takes beyond its .env lines.
+const composeChiefCredentialNote = "then give it a credential: " + envChiefClaudeToken + " (a Claude subscription token, " +
+	"`claude setup-token`) or the OpenRouter key " + envAgentOpenRouterKey + ". On OpenRouter muster adds no budget: set a " +
+	"credit limit on the key itself (" + api.OpenRouterKeySettingsURL + ")"
 
 // composeChiefHint is what an unreachable chief container is reported with.
 const composeChiefHint = "start it: add chief to COMPOSE_PROFILES in .env and run `docker compose up -d --wait` (docs/features.md#chief)"

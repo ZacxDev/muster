@@ -57,10 +57,12 @@ printf 'MUSTER_VAPID_PUBLIC_KEY=fixture-vapid-pub\nMUSTER_VAPID_PRIVATE_KEY=fixt
 printf 'S3_STORE_SECRET_KEY=fixture-s3-secret\nMUSTER_UPLOAD_SIGNING_KEY=fixture-signing-key-fixture-signing-key\n' >> "$tmp/env"
 # The same, with a model chosen: both sides of the STT pair must follow it.
 { cat "$tmp/env"; echo "MUSTER_STT_MODEL=Systran/faster-whisper-medium"; } > "$tmp/env-model"
+# The chief: its profile's two lines (the connector key is in the example).
+{ cat "$tmp/env"; echo "MUSTER_CHIEF_RUNTIME=compose"; } > "$tmp/env-chief"
 
 fail=0
-for profile in default stt stt-whisper stt-cohere s3 stt,s3 stt+model; do
-  envfile="$tmp/env"; [ "$profile" = stt+model ] && envfile="$tmp/env-model"
+for profile in default stt stt-whisper stt-cohere s3 stt,s3 stt+model chief; do
+  envfile="$tmp/env"; [ "$profile" = stt+model ] && envfile="$tmp/env-model"; [ "$profile" = chief ] && envfile="$tmp/env-chief"
   args=(-f "$COMPOSE" --env-file "$envfile" -p compose-check)
   case "$profile" in
     default) ;;
@@ -82,7 +84,8 @@ want = {"default": {"postgres", "muster"},
         "stt-whisper": {"postgres", "muster"} | whisper,
         "stt-cohere": {"postgres", "muster", "stt-cohere"},
         "s3": {"postgres", "muster", "s3"},
-        "stt,s3": {"postgres", "muster", "s3"} | whisper}[profile]
+        "stt,s3": {"postgres", "muster", "s3"} | whisper,
+        "chief": {"postgres", "muster", "chief", "chief-init"}}[profile]
 errs = []
 if set(svcs) != want:
     errs.append(f"services {sorted(svcs)} != {sorted(want)}")
@@ -156,6 +159,74 @@ if "s3" in svcs:
         errs.append("the store's root password is not the .env's S3_STORE_SECRET_KEY")
     if s3.get("ports"):
         errs.append(f"the s3 store is published on the host: {s3['ports']}")
+# The chief's container and muster's side of it (deploy/docker-compose.yml,
+# internal/provision/compose's "Who can read what").
+def nets(s):
+    n = s.get("networks") or {}
+    return set(n) if isinstance(n, dict) else set(n)
+def mounts(s):
+    return [(v.get("type"), v.get("source"), v.get("target"), bool(v.get("read_only")), (v.get("volume") or {}).get("subpath"))
+            for v in s.get("volumes", [])]
+if nets(m) != {"default", "chief"}:
+    errs.append(f"muster networks {sorted(nets(m))}, want default and chief")
+if ("volume", "chief-spec", "/run/muster-spec", False, None) not in mounts(m):
+    errs.append(f"muster does not mount chief-spec read-write at /run/muster-spec: {mounts(m)}")
+if ("volume", "chief-instructions", "/run/muster-spec/chief/files/etc/claude-code", False, None) not in mounts(m):
+    errs.append(f"muster does not mount chief-instructions where its driver writes files/etc/claude-code: {mounts(m)}")
+# No volume subpath anywhere: Compose before 2.25 refuses the WHOLE file over one
+# (the old-Compose tier below measures that), chief profile or not.
+for name, sv in svcs.items():
+    for mt in mounts(sv):
+        if mt[4] is not None:
+            errs.append(f"{name} mounts a volume subpath {mt}: Compose before 2.25 refuses the whole file")
+if sorted(str(g) for g in m.get("group_add", [])) != ["1000", "1001"]:
+    errs.append(f"muster group_add {m.get('group_add')}, want 1000 and 1001 (it gives the spec and the files their groups)")
+for other in ("postgres", "s3", "stt-whisper", "stt-cohere"):
+    if other in svcs and "chief" in nets(svcs[other]):
+        errs.append(f"{other} is on the chief's network")
+chief_env = {k: env.get(k) for k in ("MUSTER_CHIEF_RUNTIME",)}
+want_env = {"MUSTER_CHIEF_RUNTIME": "compose"}
+# The runtime's own defaults (cmd/muster-server composechief.go) must match
+# where this file mounts the spec volume and what muster listens on.
+if ("volume", "chief-spec", "/run/muster-spec", False, None) not in mounts(m) or m.get("environment", {}).get("MUSTER_PORT") != "8105":
+    errs.append("muster's spec mount or port no longer matches the Compose chief runtime's defaults (/run/muster-spec, 8105)")
+if profile == "chief" and chief_env != want_env:
+    errs.append(f"muster's chief settings {chief_env}, want {want_env}")
+if profile != "chief" and any(chief_env.values()):
+    errs.append(f"muster's chief settings are not empty without MUSTER_CHIEF_RUNTIME: {chief_env}")
+if "chief" in svcs:
+    c = svcs["chief"]
+    if c.get("image") != "ghcr.io/zacxdev/claude-code-agent:1.2.3":
+        errs.append(f"chief image {c.get('image')!r}, want ghcr.io/zacxdev/claude-code-agent:1.2.3 (the release's)")
+    if c.get("user") != "0:1001" or not c.get("init"):
+        errs.append(f"chief user {c.get('user')!r} init {c.get('init')!r}: the supervisor runs as 0:1001 under an init")
+    if c.get("cap_drop") != ["ALL"] or sorted(c.get("cap_add", [])) != ["KILL", "SETGID", "SETUID"]:
+        errs.append(f"chief capabilities drop {c.get('cap_drop')} add {c.get('cap_add')}: want ALL dropped, SETUID SETGID KILL added")
+    if "no-new-privileges:true" not in c.get("security_opt", []):
+        errs.append("chief lacks no-new-privileges")
+    if nets(c) != {"chief"}:
+        errs.append(f"chief networks {sorted(nets(c))}, want only chief (off Postgres's)")
+    if c.get("ports"):
+        errs.append(f"chief is published on the host: {c['ports']}")
+    if c.get("environment", {}).get("CCD_SPEC_DIR") != "/run/muster-spec/chief":
+        errs.append(f"chief CCD_SPEC_DIR {c.get('environment', {}).get('CCD_SPEC_DIR')!r}")
+    cm = mounts(c)
+    for want_m in (("volume", "chief-spec", "/run/muster-spec", True, None),
+                   ("volume", "chief-instructions", "/etc/claude-code", True, None),
+                   ("volume", "chief-data", "/data", False, None)):
+        if want_m not in cm:
+            errs.append(f"chief lacks the mount {want_m}: {cm}")
+    hc = " ".join(c.get("healthcheck", {}).get("test", []))
+    if "/compose/status" not in hc:
+        errs.append(f"chief healthcheck {hc!r} does not probe the supervisor's /compose/status")
+    if c.get("depends_on", {}).get("chief-init", {}).get("condition") != "service_completed_successfully":
+        errs.append("chief does not wait for chief-init")
+    ci = mounts(svcs.get("chief-init", {}))
+    if ("volume", "chief-instructions", "/v/chief/files/etc/claude-code", False, None) not in ci:
+        errs.append(f"chief-init does not prepare the instructions volume at files/etc/claude-code: {ci}")
+    ci = svcs["chief-init"]
+    if ci.get("restart") != "no" or ci.get("network_mode") != "none":
+        errs.append(f"chief-init restart {ci.get('restart')!r} network_mode {ci.get('network_mode')!r}: a one-shot with no network")
 for e in errs:
     print(f"FAIL [{profile}]: {e}")
 if not errs:
@@ -264,6 +335,47 @@ elif grep -q MUSTER_VERSION "$tmp/neg.err"; then
   echo "ok   [negative control]: the unfilled .env.example is refused, naming MUSTER_VERSION"
 else
   echo "FAIL [negative control]: refused, but not for MUSTER_VERSION: $(cat "$tmp/neg.err")"; fail=1
+fi
+
+# --- the oldest Compose this file must parse on ------------------------------
+# Compose validates the WHOLE file against its own schema before it applies any
+# profile, so a key an old Compose does not know refuses `up` for every user,
+# whether or not they use the profile that needs it (#474 round 1 F1: a volume
+# `subpath`, which Compose refuses before 2.25). COMPOSE_CHECK_OLD names an old
+# docker-compose binary; CI pins one (.github/workflows/ci.yml).
+if [ -n "${COMPOSE_CHECK_OLD:-}" ]; then
+  old="$COMPOSE_CHECK_OLD"
+  oldv="$("$old" version --short 2>/dev/null)" || { echo "compose-check: COMPOSE_CHECK_OLD=$old does not run" >&2; exit 2; }
+  # Negative control first: the same binary must REFUSE the file with a subpath
+  # mount put back, or it could not see the break this tier exists for.
+  python3 - "$COMPOSE" "$tmp/subpath.yml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+anchor = "      - chief-data:/data\n"
+assert s.count(anchor) == 1, "the chief's data mount moved; update this control"
+s = s.replace(anchor, anchor + "      - type: volume\n        source: chief-spec\n        target: /mnt/control\n"
+              "        volume:\n          subpath: chief/files\n")
+open(sys.argv[2], "w").write(s)
+PY
+  if "$old" -f "$tmp/subpath.yml" --env-file "$tmp/env" -p compose-check config -q 2>"$tmp/old-neg.err"; then
+    echo "FAIL [compose $oldv, negative control]: a volume subpath was ACCEPTED; this binary cannot see the break"; fail=1
+  elif grep -q subpath "$tmp/old-neg.err"; then
+    echo "ok   [compose $oldv, negative control]: a volume subpath is refused, naming it"
+  else
+    echo "FAIL [compose $oldv, negative control]: refused, but not for subpath: $(cat "$tmp/old-neg.err")"; fail=1
+  fi
+  for profile in default stt s3 chief; do
+    envfile="$tmp/env"; [ "$profile" = chief ] && envfile="$tmp/env-chief"
+    args=(-f "$COMPOSE" --env-file "$envfile" -p compose-check)
+    [ "$profile" = default ] || args+=(--profile "$profile")
+    if "$old" "${args[@]}" config -q 2>"$tmp/old.err"; then
+      echo "ok   [compose $oldv, $profile]: the file parses"
+    else
+      echo "FAIL [compose $oldv, $profile]: $(cat "$tmp/old.err")"; fail=1
+    fi
+  done
+else
+  echo "note compose-check: the old-Compose tier did not run (set COMPOSE_CHECK_OLD to a docker-compose binary; CI does)"
 fi
 
 exit "$fail"

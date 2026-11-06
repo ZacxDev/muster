@@ -415,8 +415,11 @@ docker socket.
   cannot touch uid 1000's 0700 `/data`. `ccd compose` marks itself
   non-dumpable.
 
-`images/claude-code-agent/compose-smoke.sh <image>` runs this mode with the
-real `ccd` and CLI in `docker compose`, and CI runs it.
+`images/claude-code-agent/compose-smoke.sh <image>:<tag>` runs this mode
+with the real `ccd` and CLI, as `deploy/docker-compose.yml`'s own `chief`
+service, and CI runs it. A stand-in for muster writes the specs muster never
+would (a new generation, a new epoch, an unknown version, a removed spec).
+`tests/compose-up.sh`'s chief phase covers the rest with muster itself.
 
 ## Talking to an agent
 

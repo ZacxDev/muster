@@ -15,7 +15,9 @@ import { openMore } from '../lib/nav';
 //   - the Features page lists the registry: mirrored sessions On (core),
 //     suggested replies Off ("needs MUSTER_AGENT_OPENROUTER_KEY" — off, not
 //     misconfigured, on a keyless install), dictation Off with the Compose
-//     profile line, the chief Off with "needs Kubernetes" and no .env block,
+//     profile line, the chief Off with its Compose .env block (the chief
+//     profile, MUSTER_CHIEF_RUNTIME=compose), officers Off with "needs
+//     Kubernetes" and no .env block,
 //     and NOTHING misconfigured (the default install's doctor passes);
 //   - the nav's More carries a muted, labelled Connectors entry (linking to its
 //     row), and no /plugins or /flows link.
@@ -83,8 +85,13 @@ for (const size of [
       await expect(page.locator('section[data-feature][data-state="misconfigured"]')).toHaveCount(0);
       await expect(page.locator('[data-features-counts]')).toContainText('0 misconfigured');
       const chief = row(page, 'chief');
-      await expect(chief.locator('[data-feature-kubernetes]')).toContainText('needs Kubernetes (in-cluster dispatch)');
-      await expect(chief.locator('[data-feature-enable]')).toHaveCount(0);
+      await expect(chief).toHaveAttribute('data-state', 'off');
+      await expect(chief.locator('[data-feature-kubernetes]')).toHaveCount(0);
+      await expect(chief.locator('[data-feature-enable]')).toContainText('COMPOSE_PROFILES=chief');
+      await expect(chief.locator('[data-feature-enable]')).toContainText('MUSTER_CHIEF_RUNTIME=compose');
+      const officers = row(page, 'officers');
+      await expect(officers.locator('[data-feature-kubernetes]')).toContainText('needs Kubernetes (in-cluster dispatch)');
+      await expect(officers.locator('[data-feature-enable]')).toHaveCount(0);
       await expect(row(page, 'attachments')).toHaveAttribute('data-state', 'off');
       await expect(row(page, 'connectors')).toHaveAttribute('data-state', 'off');
 

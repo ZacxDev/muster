@@ -753,7 +753,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			return nil, fmt.Errorf("%s=%s: the Compose chief's credential rule is not wired (no agent provisioner), "+
 				"so the LLM proxy could not ask it", envChiefRuntime, chiefRuntimeCompose)
 		}
-		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: chiefLLMUpstream}); err != nil {
+		upstream := chiefLLMUpstream
+		if cfg.LLMTestUpstream != "" {
+			logger.Printf("llm proxy: 🔴 the chief's upstream is OVERRIDDEN to %s by %s — TEST ONLY: every chief "+
+				"request, and the OpenRouter key muster attaches to it, goes there", cfg.LLMTestUpstream, envTestLLMUpstream)
+			upstream = cfg.LLMTestUpstream
+		}
+		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: upstream}); err != nil {
 			a.Close()
 			return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)
 		}
