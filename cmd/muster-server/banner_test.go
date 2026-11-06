@@ -451,6 +451,16 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envChiefRuntime: "set, the compose driver logs `chief runtime: COMPOSE (MUSTER_CHIEF_RUNTIME=compose) — …` at boot " +
+		"(buildComposeDriver, pinned by TestTheComposeChiefIsWrittenWhereItsContainerReadsIt); unset there is no Compose " +
+		"chief, and the Features page and `muster doctor` report the chief's state with its reason. It is not on the " +
+		"shared ON fixture because it refuses that fixture's own agent-plane variables",
+	envChiefSpecDir: "printed with its value on the `chief runtime: COMPOSE` line; it means nothing without " +
+		"MUSTER_CHIEF_RUNTIME, which refuses to boot with it set alone",
+	envChiefLLMModel: "printed with its value on the `chief llm: … through the LLM proxy` line api.EnableChiefLLM logs on " +
+		"the Compose chief; it means nothing without MUSTER_CHIEF_RUNTIME, which refuses it alone",
+	envChiefClaudeToken: "a secret, never printed; which credential the chief runs on is the Account page's to say, " +
+		"and it is refused at boot without MUSTER_CHIEF_RUNTIME",
 	envFleetReportPaths: "counted on the `fleet-report requests: ON` line, which names it; it does nothing without " +
 		"MUSTER_FLEET_REPORT_SENDERS, and senders set without it refuse to boot, so there is no silent state to announce",
 	envChiefNudgeLiveOwners: "counted on the `chief nudges: ON` line when set, and named there as empty on the SHADOW line; " +

@@ -109,6 +109,10 @@ func (s *Server) handleChiefReplace(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "no user to replace a chief for"})
 		return
 	}
+	if s.ext.ComposeChief != nil {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": ComposeChiefReplaceRefusal})
+		return
+	}
 	var req chiefReplaceRequest
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
 	if err == nil && len(strings.TrimSpace(string(body))) > 0 {

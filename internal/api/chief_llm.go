@@ -26,7 +26,9 @@ import (
 // chief, the admin's), and that chief is ON (chiefActing, the gate the
 // chief-only tools use). The agent authenticates as every caller of the route
 // does (requireConnectorAgent: its own token; the shared hook and service
-// tokens refused).
+// tokens refused). On Compose (Extensions.ComposeChief set) it is admitted
+// only when ComposeChief.Credential says OpenRouter, on the key the
+// credential plane gives (composeChiefLLMKey).
 //
 // 🔴 THE KEY IS THE ADMIN'S, MUSTER_AGENT_OPENROUTER_KEY (ChiefLLM.Key). There
 // is no chief key, and no other user's chief is served on it.
@@ -135,7 +137,16 @@ func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.
 		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", "your owner turned the chief off")
 		return
 	}
-	if s.chiefLLM.key == "" {
+	key := s.chiefLLM.key
+	// On Compose the one credential rule decides, and the key is the plane's
+	// (compose_chief.go composeChiefLLMKey).
+	if s.ext.ComposeChief != nil {
+		var ok bool
+		if key, ok = s.composeChiefLLMKey(w, ctx, a); !ok {
+			return
+		}
+	}
+	if key == "" {
 		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "no_key").Inc()
 		s.logger.Printf("llm proxy: refused the chief agent %d (%q): MUSTER_AGENT_OPENROUTER_KEY is empty (nothing sent)", a.ID, a.Name)
 		// A 400, not a 401/429: Claude Code retries those, and this ends the
@@ -144,6 +155,6 @@ func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.
 		return
 	}
 	s.chiefLLM.px.ServeMessages(w, r, llmproxy.Caller{Officer: chiefLLMLabel, InstanceLabel: chiefLLMLabel,
-		AgentID: a.ID, AgentName: a.Name, Model: s.chiefLLM.model, Key: s.chiefLLM.key, Unbudgeted: true,
+		AgentID: a.ID, AgentName: a.Name, Model: s.chiefLLM.model, Key: key, Unbudgeted: true,
 		Title: "muster chief", KeyRemedy: chiefKeyRemedy})
 }

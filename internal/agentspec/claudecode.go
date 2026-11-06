@@ -124,6 +124,10 @@ func ClaudeCodeNetwork() provision.Network {
 // cluster policy, which selects the pod by [LabelEgress]=[EgressLocked], is the
 // only allow (docs/jobs.md "A pool's egress lock").
 func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
+	// The Compose container: not confined (Config.ComposeContainer).
+	if cfg.ComposeContainer {
+		return provision.Network{}
+	}
 	n := ClaudeCodeNetwork()
 	if egressLocked {
 		n.PublicEgressTCPPorts = nil
@@ -133,6 +137,24 @@ func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
 	}
 	return n
+}
+
+// ComposeChiefAllowedMCPTools are the muster MCP tools the Compose chief runs
+// without a prompt (operator decision): reading the fleet and the board, and
+// routing work to a session. Every other prompt is denied in its container.
+// Pinned by TestTheComposeChiefsAllowedToolsArePinned.
+var ComposeChiefAllowedMCPTools = []string{
+	"sessions_overview", "fleet_list", "focus_search", "fleet_report",
+	"tasks_list", "task_get", "attention_list", "route_to_session",
+}
+
+// claudeCodeResourcesFor is ClaudeCodeResources, or none for the Compose
+// container (Config.ComposeContainer: its driver cannot enforce limits).
+func claudeCodeResourcesFor(cfg Config) provision.Resources {
+	if cfg.ComposeContainer {
+		return provision.Resources{}
+	}
+	return ClaudeCodeResources
 }
 
 // EnvClaudeDisableNonessentialTraffic is the Claude Code CLI's switch for its
@@ -380,8 +402,12 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if a.CCAccount == "" {
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s but names no Claude account", a.Name, agents.KindClaudeCode)
 	}
+	// 🔴 A SESSION ON THE LLM ROUTE NEEDS NO TOKEN: it places none
+	// (claudeCodeSecrets), and the Compose chief without a subscription token
+	// has its account but no token at all. Every other session still refuses a
+	// missing one.
 	token, ok := cc.Accounts[a.CCAccount]
-	if !ok || token == "" {
+	if !opts.ClaudeCodeSession.LLMRoute && (!ok || token == "") {
 		// The account NAME only — never a token, and not the configured set's
 		// values either.
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs on Claude account %q, which is not "+
@@ -458,7 +484,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// reached through muster's proxy with its own muster token, and the
 		// entrypoint refuses a routed pod that also holds one.
 		Secrets:   claudeCodeSecrets(a, token, route),
-		Resources: ClaudeCodeResources,
+		Resources: claudeCodeResourcesFor(cfg),
 		Workspace: provision.Workspace{Path: ClaudeCodeDataPath, Size: size, Persist: true},
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
@@ -502,6 +528,21 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	// The agent's own session settings (podagent/session.go), only when set:
 	// an agent without them keeps the spec — and so the fingerprint — it had.
+	// The Compose chief: exactly its read and route tools pre-allowed
+	// (operator decision), and no other source of an allow list. Every other
+	// prompt is denied in its container by the supervisor (ccd compose sets
+	// CCD_APPROVE_UNANSWERED=deny for its child), because nobody can answer one.
+	if cfg.ComposeContainer {
+		if len(opts.ClaudeCodeSession.AllowMCPTools) > 0 {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, whose allowed tools are "+
+				"ComposeChiefAllowedMCPTools alone; the session asks for %v", a.Name, opts.ClaudeCodeSession.AllowMCPTools)
+		}
+		if opts.ClaudeCodeSession.HQMCP {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, which is offered no HQ "+
+				"server: its pre-allowed tools are ComposeChiefAllowedMCPTools alone", a.Name)
+		}
+		opts.ClaudeCodeSession.AllowMCPTools = slices.Clone(ComposeChiefAllowedMCPTools)
+	}
 	if names := opts.ClaudeCodeSession.AllowMCPTools; len(names) > 0 {
 		v, err := podagent.FormatAllowMCPTools(names)
 		if err != nil {

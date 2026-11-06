@@ -335,6 +335,12 @@ const (
 	envAndroidPackage    = "MUSTER_ANDROID_PACKAGE"
 	envAndroidCertSHA256 = "MUSTER_ANDROID_CERT_SHA256"
 
+	// --- the chief on the docker compose install (see composechief.go) ---
+	envChiefRuntime     = "MUSTER_CHIEF_RUNTIME"
+	envChiefSpecDir     = "MUSTER_CHIEF_SPEC_DIR"
+	envChiefClaudeToken = "MUSTER_CHIEF_CLAUDE_TOKEN"
+	envChiefLLMModel    = "MUSTER_CHIEF_LLM_MODEL"
+
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
 	envAgentGateway      = "MUSTER_AGENT_GATEWAY"
@@ -835,6 +841,20 @@ type config struct {
 	// api.Extensions.Provisioner nil and every lifecycle route refusing exactly
 	// as it did before this knob existed.
 	AgentProvisioner string
+
+	// ChiefRuntime is MUSTER_CHIEF_RUNTIME: "" or "compose" (composechief.go),
+	// which runs the chief in the docker compose install's `chief` container
+	// and sets the agent plane above itself. ChiefSpecDir is the shared
+	// volume's mount point (MUSTER_CHIEF_SPEC_DIR); ChiefClaudeToken is the
+	// chief's Claude subscription token (MUSTER_CHIEF_CLAUDE_TOKEN), "" for the
+	// OpenRouter key through the LLM proxy.
+	ChiefRuntime     string
+	ChiefSpecDir     string
+	ChiefClaudeToken string
+	// ChiefLLMModel is MUSTER_CHIEF_LLM_MODEL: the OpenRouter model the Compose
+	// chief's requests are pinned to when it runs on the OpenRouter key
+	// (api.DefaultChiefLLMModel when unset).
+	ChiefLLMModel string
 
 	// AgentGateway names the agent runtime whose chat wire this deployment talks:
 	// one of gatewayChoices. Default gatewayNone, which leaves
@@ -1633,6 +1653,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.AuthMode == "" {
 		c.AuthMode = string(api.AuthModePassword)
 	}
+	// Last: it refuses agent-plane variables set beside it, so every one of
+	// them must already be read.
+	if err := c.applyComposeChief(getenv); err != nil {
+		return config{}, err
+	}
 
 	return c, nil
 }
@@ -2115,6 +2140,12 @@ func oneOf(value string, choices []string) bool {
 // refusal: the same misconfiguration is either one fatal line at start or a card
 // that silently never provisions.
 func (c config) validateProvisioner() error {
+	// The Compose chief sets the agent plane itself and refused every variable
+	// below that was set beside it (applyComposeChief): it has its own
+	// requirements and none of these.
+	if c.chiefCompose() {
+		return c.validateComposeChief()
+	}
 	named := c.agentProvisioner()
 	if !oneOf(named, provisionerChoices) {
 		return fmt.Errorf("invalid %s %q: want one of %s", envAgentProvisioner,

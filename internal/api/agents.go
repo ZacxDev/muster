@@ -150,7 +150,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/agents/repos", s.requireSession(s.handleAgentRepoOptions))
 	mux.HandleFunc("GET /ui/agents/notes", s.requireSession(s.handleAgentNoteOptions))
 	mux.HandleFunc("GET /api/openrouter/models", s.requireSession(s.handleOpenRouterModels))
-	mux.HandleFunc("POST /agents", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentCreate)))
+	mux.HandleFunc("POST /agents", s.requireSession(s.requireLifecycleProvisioner(s.requireDispatchServed(s.handleAgentCreate))))
 	mux.HandleFunc("POST /agents/{id}/start", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStart)))
 	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStop)))
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
@@ -992,6 +992,9 @@ func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
 // trigger refuses every other change). Every later build of this agent's spec
 // reads the stored name; nothing else re-selects.
 func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind, account string, err error) {
+	if s.ext.ComposeChief != nil {
+		return s.composeChiefKindAccount(ctx, p)
+	}
 	kind, err = s.resolveKind(ctx, p.Kind)
 	if err != nil {
 		return "", "", err

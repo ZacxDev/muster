@@ -224,6 +224,10 @@ muster sends the request on with the server's key attached. Only the
 - **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY` in `.env`. With it
   empty, every request is refused (400) with a message naming it, and nothing
   is sent.
+- **Changing it.** A credential change in `.env` (adding or removing
+  `MUSTER_CHIEF_CLAUDE_TOKEN`) reaches a running chief when muster restarts
+  (`docker compose up -d --wait`): muster re-applies the running chief's spec
+  at boot, with no Off/On needed. A chief that is off, or stopped, stays so.
 - **Which model.** A setting, `deepseek/deepseek-v4.1-flash` by default. Every
   request is pinned to it, whatever model the client asks for.
 - **What it may spend.** muster sets **no budget** for the chief: no daily

@@ -351,6 +351,14 @@ type Config struct {
 	// claude-code agent's network policy allows egress to it (and only it) when
 	// ConnectURL is set. Required with ConnectURL for that kind.
 	ConnectPort int
+	// ComposeContainer says a claude-code instance runs in a container the
+	// docker compose file declares (the Compose chief, through the compose
+	// driver), not in a pod this binary renders. That driver can enforce
+	// neither resource limits nor network confinement and refuses a spec that
+	// asks for them, so such a spec carries NEITHER: it is built unconfined, and
+	// the documentation says "network not confined" (docs/chief.md). Never set
+	// it for a driver that can confine: the spec would stop asking.
+	ComposeContainer bool
 	// WorkspacePath defaults to [DefaultWorkspacePath].
 	WorkspacePath string
 	// WorkspaceSize is the workspace volume size, e.g. "10Gi". Empty leaves the

@@ -206,6 +206,9 @@ var (
 		// rows filed under the operator, as the seed's are.
 		"e2e/mkchat.run",
 		"internal/dbtest.AsOperator",
+		// The Compose chief's boot re-apply: the admin's (user 1's) chief, the
+		// one the compose driver runs, re-applied on the current credential.
+		"internal/api.(*Server).reapplyComposeChief",
 		// The cairn memo relay: it presents the OPERATOR's cairn credential, so it
 		// serves the operator's agents and must be handed nobody else's. Running as
 		// the operator (not the system) is what makes row-level security say so.
