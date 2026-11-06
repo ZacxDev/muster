@@ -173,6 +173,10 @@ var pgBackedPackages = []string{
 	// index, and "another user cannot see your episodes" about row-level
 	// security.
 	"internal/sessionstate",
+	// Session tags (session_tags). "Another user cannot read or change your
+	// tags", "a tag is one row in any case" and "an agent's tags die with it"
+	// are claims about row-level security, a unique index and a cascade.
+	"internal/sessiontags",
 	// Suggested replies' per-user toggle (migration 0048). "Another user cannot
 	// read or flip your toggle" is a claim about row-level security.
 	"internal/suggest",

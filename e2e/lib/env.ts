@@ -297,6 +297,9 @@ export const chiefMobilePort = port + 260;
 // tests/optimistic-send.spec.ts: a sent message shows at once as pending — its
 // own server (mirror plugin on, a 1 s send-queue idle) and its own fake host.
 export const optimisticSendPort = port + 261;
+// tests/session-tags.spec.ts: session tags and the Rendered view's collapsible
+// box — its own server (mirror plugin on) and its own fake host.
+export const sessionTagsPort = port + 270;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

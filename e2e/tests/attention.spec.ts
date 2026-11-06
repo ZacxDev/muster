@@ -7,6 +7,7 @@ import { signIn } from '../lib/signin';
 import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
+import { revealBox } from '../lib/composer';
 
 // THE ATTENTION QUEUE, the operator's click path, every hop real:
 //
@@ -330,6 +331,8 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   const view = await page.context().newPage();
   await view.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
   await expect(view.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+  // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+  await revealBox(view);
   await view.locator('#mv-input').fill('only next for now');
   await view.locator('#mv-send').click();
   await expect(view.locator('#mv-input')).toHaveValue('');
@@ -370,6 +373,7 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   await signIn(page, origin);
   await page.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
   await expect(page.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+  await revealBox(page);
   await page.locator('#mv-input').fill('yes, a minor bump');
   await page.locator('#mv-send-more').click();
   await page.locator('#mv-queue-send').click();

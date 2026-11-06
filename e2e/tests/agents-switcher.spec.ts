@@ -1,4 +1,5 @@
 import { Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { agentsSwitcherPort, hookToken } from '../lib/env';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
@@ -355,9 +356,14 @@ for (const vp of [
       await expect(more).toBeVisible();
       await expect(more).toHaveAccessibleName('More for this session');
       await expect(pin, 'the pin is in the ⋯ menu, not the bar').toBeHidden();
-      const mb = (await more.boundingBox())!, bb = (await bar(page).boundingBox())!;
+      // On the Rendered view the ⋯ is in the composer's input row, beside Send
+      // (operator ask: the ⋯ with the message controls), not in the bar.
+      const mb = (await more.boundingBox())!, sb = (await page.locator('#mv-send').boundingBox())!;
       expect([Math.round(mb.width), Math.round(mb.height)], 'a 44px target').toEqual([44, 44]);
-      expect(mb.y >= bb.y - 0.5 && mb.y + mb.height <= bb.y + bb.height + 0.5, 'inside the bar').toBe(true);
+      await expect(page.locator('#mv-form #switcher-more-btn'), 'in the input row').toHaveCount(1);
+      await expect(bar(page).locator('#switcher-more-btn'), 'not in the bar').toHaveCount(0);
+      expect(Math.abs(mb.y + mb.height / 2 - (sb.y + sb.height / 2)), 'on Send\'s row').toBeLessThanOrEqual(2);
+      expect(mb.x + mb.width, 'before Send').toBeLessThanOrEqual(sb.x + 0.5);
       await (vp.use.hasTouch ? more.tap() : more.click());
       await expect(page.locator('#switcher-more')).toBeVisible();
       await expect(more).toHaveAttribute('aria-expanded', 'true');
@@ -595,7 +601,9 @@ test.describe('the Terminal view at 390×844', () => {
     await ready(page);
     await page.goto(MANGO);
     await expect(bar(page)).toBeVisible();
-    await page.locator('#mv-input').tap();
+    // The box is collapsed on a touch screen: "Type a message" opens and
+    // focuses it, as a tap on the box did (lib/composer.ts).
+    await revealBox(page);
     await page.setViewportSize({ width: 390, height: 500 });
     await expect(page.locator('html')).toHaveAttribute('data-keyboard', '');
     await expect(bar(page)).toBeHidden();

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page, Route } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import {
   binDir, dsn, e2eRoot, gotrueSecret, repoRoot, stepupBrowserPort, stepupGotruePort, stepupMainPort, versionA,
@@ -400,6 +401,8 @@ test.describe('the rendered view on a phone (390×844)', () => {
     const send = page.locator('#mv-send');
     await expect(input).toBeEnabled();
     await expect(send).toBeEnabled();
+    // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+    await revealBox(page);
     await expect(page.locator('#term-mode')).toHaveCount(0);
     for (const el of [input, send]) {
       const b = (await el.boundingBox())!;
@@ -531,6 +534,7 @@ async function openView(page: Page) {
   await page.goto(browserURL + viewPath);
   await expect(page.locator('#mv-log [data-bubble="assistant"]').first()).toContainText('Hi.', { timeout: 20_000 });
   await expect(page.locator('#mv-input')).toBeEnabled();
+  await revealBox(page);
   return { input: page.locator('#mv-input'), send: page.locator('#mv-send'), sends };
 }
 

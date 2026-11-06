@@ -158,8 +158,15 @@ test.describe.serial('phone 390×844', () => {
       .poll(async () => { const lb = (await page.locator('#mv-log').boundingBox())!; return lb.y + lb.height - rb.y; }, { message: 'the conversation ends above the row' })
       .toBeLessThanOrEqual(1);
 
+    // On a phone the box starts collapsed behind "Type a message"
+    // (composer_reveal.go), and the chip's insert REVEALS it: text is never
+    // put in a hidden box.
+    await expect(page.locator('#mv-input'), 'collapsed on a touch screen').toBeHidden();
+    await expect(page.locator('#mv-text')).toBeVisible();
     // A tap fills — and sends nothing.
     await chips(page).first().tap();
+    await expect(page.locator('#mv-input'), 'the insert revealed the box').toBeVisible();
+    await expect(page.locator('#mv-text')).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('#mv-input')).toHaveValue(chipA);
     await expect(page.locator('#mv-input')).toBeFocused();
     await page.waitForTimeout(1500);

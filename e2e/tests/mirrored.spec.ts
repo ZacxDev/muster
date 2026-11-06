@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { hookToken, mirrorPort, password } from '../lib/env';
@@ -522,6 +523,8 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
   await page.goto(origin + viewPath('main'));
   await expect(page.locator('#mv-log [data-tool-row]')).toHaveCount(1);
   await expect(page.locator('#mv-input')).toBeEnabled();
+  // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
+  await revealBox(page);
   const pasted = () => (fs.existsSync(tr + '.pasted') ? fs.readFileSync(tr + '.pasted', 'utf8') : '');
 
   // Signed in just now, so the sign-in is fresh: the send is pasted into the
@@ -632,6 +635,9 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   await expect(viewCard(page, 'main')).toBeVisible();
   await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), viewCard(page, 'main').tap()]);
   await expect(page.locator('#mv-input')).toBeEnabled();
+  // The box is collapsed on a touch screen (lib/composer.ts); what is measured
+  // below is the composer with its box open.
+  await revealBox(page);
 
   // As loaded: on screen, phone-shaped, and the transcript ends above it.
   await onScreen(H, 'as loaded');
@@ -684,6 +690,7 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   }, KB);
   await page.reload();
   await expect(page.locator('#mv-input')).toBeEnabled();
+  await revealBox(page);
   await expect.poll(async () => { const b = (await page.locator('#mv-send').boundingBox())!; return b.y + b.height; },
     { message: 'with an overlaid keyboard the composer sits above it' }).toBeLessThanOrEqual(H - KB + 0.5);
   await onScreen(H - KB, 'above an overlaid keyboard');

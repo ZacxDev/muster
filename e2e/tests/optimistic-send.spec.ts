@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Locator, Page, Route } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, optimisticSendPort, password, repoRoot, versionTerm } from '../lib/env';
@@ -104,6 +105,9 @@ async function openView(page: Page) {
   await page.goto(origin + viewPath);
   await expect(page.locator('#mv-input'), `the rendered view (log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+  // Collapsed on a touch screen behind "Type a message" (lib/composer.ts);
+  // a restored draft has already revealed it.
+  await revealBox(page);
 }
 
 // delaySends holds every POST to `route` for ms before it goes on to the

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { request as pwRequest, Page } from '@playwright/test';
+import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, viewSwapPort } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
@@ -134,6 +135,9 @@ test.describe('a mirrored window', () => {
 
   test('rendered → terminal → rendered → terminal: ONE transcript stream and ONE tmux attach, the content intact, the address and title following the view', async ({ page }) => {
     await openRendered(page);
+    // The box shown (collapsed on a touch screen: lib/composer.ts), so the
+    // "takes no focus" check below is about the frame, not a hidden box.
+    await revealBox(page);
     await settled();
     expect(watchedFromStart('@1'), `one transcript stream (log:\n${rig.log})`).toBe(1);
     expect(attached('@1'), 'no attach yet').toBe(0);
@@ -323,6 +327,7 @@ test.describe('a mirrored window', () => {
       }
       await route.continue();
     });
+    await revealBox(v);
     await v.locator('#mv-input').fill('from the rendered view');
     await v.locator('#mv-send').click();
     await expect(page.locator('#term-confirm'), 'asked in the top window’s dialog').toBeVisible();
@@ -356,7 +361,7 @@ test.describe('a mirrored window', () => {
     await expect(page.locator('#term-status')).toHaveText('Connected');
     await page.locator('#view-rendered').click();
     const v = framed(page);
-    await expect(v.locator('#mv-input')).toBeVisible();
+    await revealBox(v);
     // The top page as an older one is: ask, and no framedAsk.
     const [had, ask] = await page.evaluate(() => { const su = (window as { musterStepUp?: Record<string, unknown> }).musterStepUp!; const was = su.framedAsk; delete su.framedAsk; return [was, typeof su.ask]; });
     expect(ask, 'the top page can still be asked').toBe('function');
@@ -445,6 +450,7 @@ test.describe('a mirrored window', () => {
       }
       await route.continue();
     });
+    await revealBox(v);
     await v.locator('#mv-input').fill('by the browser, from the frame');
     await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('notice') === 'sent'), v.locator('#mv-send').click()]);
     expect(aborted, 'the script tried its own way first').toBe(1);

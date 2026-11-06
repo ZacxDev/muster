@@ -132,7 +132,11 @@ func sessionTagsHead(tags []string, oob bool) g.Node {
 				g.Attr("aria-expanded", "false"),
 				g.Attr("aria-label", "All "+strconv.Itoa(len(tags))+" tags"),
 				g.Attr("title", strings.Join(tags, ", ")),
-				Class("press inline-flex min-h-[28px] shrink-0 items-center rounded-md bg-s2 px-1.5 text-xs font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:bg-s3"),
+				// relative z-20: ABOVE the Rendered view's title button's 44px hit
+				// area (mirrorTitleHitClass's ::after, z-10, spanning the title
+				// column this sits in) — measured, a tap on "+N" opened the
+				// full title instead.
+				Class("press relative z-20 inline-flex min-h-[28px] shrink-0 items-center rounded-md bg-s2 px-1.5 text-xs font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:bg-s3"),
 				g.Text("+"+strconv.Itoa(len(tags)-1)),
 			),
 			sessionTagsAllPopover(tags),
@@ -362,7 +366,22 @@ func sessionTagsScript() g.Node {
   });
   document.addEventListener('htmx:afterSwap', function (e) {
     var t = e.detail && e.detail.target;
-    if (t && t.id === '` + sessionTagsBodyID + `' && isOpen(byId(ED))) focusInput();
+    if (!t || t.id !== '` + sessionTagsBodyID + `') return;
+    if (isOpen(byId(ED))) focusInput();
+    // 🔴 THE OTHER VIEW IS ALIVE TOO (view_swap.go): the Rendered and
+    // Terminal views of one window are the top page and a frame over it, never
+    // reloaded by a switch. Its header gets the same chips, so a switch shows
+    // the tags just edited (same origin; the same session by construction).
+    setTimeout(function () {
+      var h = byId('` + SessionTagsHeadID + `');
+      if (!h) return;
+      var docs = [];
+      try { if (window.parent !== window && window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) docs.push(window.parent.document); } catch (err) {}
+      try { var fs = document.querySelectorAll('iframe[` + ViewFrameAttr + `]'); for (var i = 0; i < fs.length; i++) docs.push(fs[i].contentDocument); } catch (err) {}
+      docs.forEach(function (d) {
+        try { var o = d && d.getElementById('` + SessionTagsHeadID + `'); if (o) o.outerHTML = h.outerHTML; } catch (err) {}
+      });
+    }, 0);
   });
 })();
 `))
