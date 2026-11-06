@@ -45,11 +45,11 @@ agent you run in tmux shows up; Claude Code gets the most.
 - **A chief that knows what every session is on.** An optional fleet agent
   you chat with: ask it what everyone is working on, who is on what, or what
   needs you, and have it hand a request or a task to the session already on
-  it. On the Compose install it is the `chief` profile, one per install (the
-  admin's), on amd64 hosts, with a Claude subscription token or your
-  OpenRouter key (muster sets no budget: put a credit limit on the key);
-  routing also needs `MUSTER_SESSION_ROUTING=1`. It sends what it reads of
-  your sessions to its model. Prompts that work, with real replies:
+  it. It sends what it reads of your sessions to its model, and on an
+  OpenRouter key muster sets no budget: put a credit limit on the key.
+  Finding who is on what relies on [focus](docs/features.md#focus), which needs
+  an OpenRouter key. What it needs: [docs/features.md](docs/features.md#chief);
+  prompts that work, with real replies:
   [docs/chief-cookbook.md](docs/chief-cookbook.md).
 
 <p align="center"><img src="docs/img/ask-flow.gif" width="270" alt="On a phone: the sidebar lists sessions on two machines; one asks whether to tag and publish a release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"></p>

@@ -24,16 +24,16 @@ tools (see [the limits](#what-it-cannot-do-on-the-compose-install)).
 | [the task board](#the-task-board) | "What's on the task board? What does task 2 say?" | `tasks_list`, `task_get` |
 | [a task routed to the session on it](#route-a-task-to-the-session-on-it) | "Route task 1 to whoever is on billing." | `route_to_session` |
 
-What the tools read, in short: `sessions_overview` is each live session (a
-dispatched agent, or a mirrored Claude Code window active in the last 24 hours)
-with its status, current [focus](focus.md), recent focus titles, anything it
-has waiting on you, and its last few user and assistant messages, secrets
-redacted and tool output left out. `fleet_list` is every session with its
-focus title and age. `focus_search` is full-text search over focus, current or
-over past hours. `fleet_report` covers every session with focus activity in a
-window of up to 4 days, ended ones included. `attention_list` is everything
-waiting on you. **All of it goes to the chief's model**: on OpenRouter, to
-OpenRouter; on a Claude subscription token, to the Claude API.
+What each tool returns is in [focus.md](focus.md#the-tools) and
+[attention.md](attention.md); which ones the Compose chief may run is in
+[chief.md](chief.md#on-the-docker-compose-install). **All of it goes to the
+chief's model**: on OpenRouter, to OpenRouter; on a Claude subscription token,
+to the Claude API.
+
+"Who is on what" and routing find sessions by their [focus](focus.md), and
+focus is written only with an OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`):
+a chief on a subscription token alone has no focus to search, only the recent
+messages `sessions_overview` returns.
 
 ## Everything being worked on
 
