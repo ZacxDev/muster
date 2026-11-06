@@ -170,7 +170,6 @@ func TestParseRefusesABadLLMBlock(t *testing.T) {
 		want         string
 	}{
 		{"llm with no tiers", llm, withKey, "llm needs tiers.routine"},
-		{"llm on a shipping officer", llm + `,"repo":"example-org/widget","ship":{}`, withKey, "llm is not supported on a shipping officer"},
 		{"a routine OpenRouter id with no llm", routine("deepseek/deepseek-v4.1-flash"), withKey, "only through the LLM proxy"},
 		{"llm with a Claude routine model", routine("haiku") + llm, withKey, "tiers.routine.model must be a provider model id"},
 		{"a judgement OpenRouter id, even with llm", `,"tiers":{"routine":{"model":"vendor/model"},"judgement":{"model":"vendor/model"}}` + llm, withKey, "tiers.judgement"},

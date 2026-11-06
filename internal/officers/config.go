@@ -382,12 +382,9 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		}
 	}
 	hasLLM := len(d.LLM) > 0 && string(d.LLM) != "null"
-	// 🔴 NO LLM PROXY FOR A SHIPPING OFFICER, as no tiers: its every instance
-	// holds the merge and release tools.
-	if hasLLM && len(d.Ship) > 0 && string(d.Ship) != "null" {
-		return Officer{}, fmt.Errorf("officer %s: llm is not supported on a shipping officer (one with `ship`): its instances hold "+
-			"its merge and release tools; remove llm", o.ID)
-	}
+	// A shipping officer may have `llm`: the LLM proxy serves only the ROUTINE
+	// pool (llm needs tiers), and a routine pool never holds the ship tools,
+	// gate or App token (Officer.Pool).
 	if len(d.Tiers) > 0 && string(d.Tiers) != "null" {
 		// 🔴 ONE SOURCE PER VALUE. With tiers, the judgement pool's model and
 		// max are tiers.judgement's; a top-level one beside it would be a second
@@ -398,12 +395,10 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		if d.MaxInstances != 0 {
 			return Officer{}, fmt.Errorf("officer %s: with tiers, set the judgement pool's size as tiers.judgement.max_instances; remove the top-level max_instances", o.ID)
 		}
-		// 🔴 A SHIPPING OFFICER IS NOT TIERED. Its instances push, open pull
-		// requests and reach muster's merge and tag gates; a routine pool on a
-		// cheaper model would hold the same tools. Refused, not left to config.
-		if len(d.Ship) > 0 && string(d.Ship) != "null" {
-			return Officer{}, fmt.Errorf("officer %s: tiers is not supported on a shipping officer (one with `ship`): every instance would hold its merge and release tools; remove tiers", o.ID)
-		}
+		// 🔴 A TIERED SHIPPING OFFICER SHIPS FROM ITS JUDGEMENT POOL ONLY.
+		// Officer.Pool(TierRoutine) has no Ship and no CILogs, so a routine
+		// instance gets no ship tool, no push gate and no officer App token:
+		// it is an ordinary read-only officer instance.
 		t, err := parseTiers(d.Tiers, hasLLM)
 		if err != nil {
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
@@ -473,20 +468,19 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		}
 	}
 	if len(d.Ship) > 0 && string(d.Ship) != "null" {
-		// 🔴 read_repos IS REFUSED ON A SHIPPING OFFICER. Its every request is
-		// decided by its push gate and served with its OWN App's token, never
-		// the deployment App's (connectors.Gate: a gated caller cannot reach an
-		// ungated credential by any path). Honouring read_repos would mean
-		// either a second credential behind the gate — breaking that rule — or
-		// widening the officer's own App, which is installed for its one
-		// repository. Neither is a quiet default, so the declaration is refused.
-		if len(o.ReadRepos) > 0 {
-			return Officer{}, fmt.Errorf("officer %s: read_repos is not supported on a shipping officer (one with "+
-				"`ship`): its requests carry only its own App's token, for its one repository; remove read_repos", o.ID)
-		}
+		// read_repos beside ship: a READ to one of them is admitted by the push
+		// gate (it admits no write outside the ship repositories) and served
+		// with the DEPLOYMENT App's read-only token for that one repository
+		// (PushGate.ReadCred), never the officer App's. A read_repos entry that
+		// is also a ship repository is refused below: it would have two answers.
 		ship, err := parseShip(o.ID, o.Repo, d.Ship, getenv)
 		if err != nil {
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		for _, rr := range o.ReadRepos {
+			if _, dup := ship.RepoFor(o.Repo, rr); dup {
+				return Officer{}, fmt.Errorf("officer %s: read_repos entry %q is one of ship.repos, which the officer already reads; remove it", o.ID, rr)
+			}
 		}
 		o.Ship = ship
 	}

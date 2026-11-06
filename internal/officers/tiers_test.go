@@ -166,7 +166,6 @@ func TestTiersRefusals(t *testing.T) {
 		{"top-level model too", `,"model":"sonnet",` + tiersBlock, "tiers.judgement.model"},
 		{"top-level max too", `,"max_instances":2,` + tiersBlock, "tiers.judgement.max_instances"},
 		{"tiers not an object", `,"tiers":["routine"]`, "tiers"},
-		{"shipping officer", `,` + tiersBlock + `,"repo":"example-org/widget","ship":{}`, "tiers is not supported on a shipping officer"},
 	} {
 		_, err := parseOfficer(t, tc.fields)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

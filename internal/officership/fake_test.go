@@ -39,6 +39,28 @@ type fakeGH struct {
 	// readied is every node id MarkReady was called with; readyErr fails it.
 	readied  []string
 	readyErr error
+	// listed is what a newest-N window of the repository's pull requests
+	// would hold (nothing reads it any more: a test sets it to show the gate
+	// no longer depends on one); listCalls counts OfficerPRs calls;
+	// commitTimes is what CommitTime answers.
+	listed      []PR
+	listCalls   int
+	commitTimes map[string]time.Time
+	// closed is every pull request ClosePR closed; closeErr fails it.
+	closed   []int
+	closeErr error
+	// all is EVERY pull request of the repository (PRsForBranch and
+	// OfficerPRs read it).
+	// byBranch counts PRsForBranch calls, compareCalls Compare's.
+	all          []PR
+	byBranch     int
+	compareCalls int
+	// deleted is every branch DeleteBranch deleted; deleteErr fails it.
+	deleted   []string
+	deleteErr error
+	// creatorBlind makes OfficerPRs answer an empty list, as GitHub's issues
+	// list does (200 []) for a creator login it does not match (measured).
+	creatorBlind bool
 }
 
 type commitInfo struct {
@@ -50,7 +72,7 @@ func newFakeGH() *fakeGH {
 	return &fakeGH{slug: "ship-officer", prs: map[int]PR{}, files: map[int][]File{}, contents: map[string]string{},
 		compares: map[string]Compare{}, statuses: map[string]map[string]string{}, checkRuns: map[string][]CheckRun{},
 		comments: map[int][]Comment{}, branches: map[string]string{}, tagObjects: map[string]TagObject{},
-		commits: map[string]commitInfo{}, prsFor: map[string][]PR{}}
+		commits: map[string]commitInfo{}, prsFor: map[string][]PR{}, commitTimes: map[string]time.Time{}}
 }
 
 var errNotFound = errors.New("fake: not found")
@@ -67,6 +89,9 @@ func (f *fakeGH) PR(_ context.Context, n int) (PR, error) {
 }
 func (f *fakeGH) PRFiles(_ context.Context, n int) ([]File, error) { return f.files[n], nil }
 func (f *fakeGH) Compare(_ context.Context, base, head string) (Compare, error) {
+	f.mu.Lock()
+	f.compareCalls++
+	f.mu.Unlock()
 	c, ok := f.compares[base+"..."+head]
 	if !ok {
 		return Compare{}, fmt.Errorf("fake: no comparison %s...%s", base, head)
@@ -172,6 +197,89 @@ func (f *fakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
 		f.prs[n] = p
 	}
 	return nil
+}
+
+func (f *fakeGH) ClosePR(_ context.Context, n int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	f.closed = append(f.closed, n)
+	for i := range f.listed {
+		if f.listed[i].Number == n {
+			f.listed[i].State = "closed"
+		}
+	}
+	for i := range f.all {
+		if f.all[i].Number == n {
+			f.all[i].State = "closed"
+		}
+	}
+	if p, ok := f.prs[n]; ok {
+		p.State = "closed"
+		f.prs[n] = p
+	}
+	return nil
+}
+
+func stateIs(want, have string) bool { return want == "all" || want == have }
+
+func (f *fakeGH) PRsForBranch(_ context.Context, branch, state string) ([]PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byBranch++
+	var out []PR
+	for _, p := range f.all {
+		if p.HeadRef == branch && stateIs(state, p.State) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeGH) OfficerPRs(_ context.Context, login, state string) ([]PR, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCalls++
+	if f.creatorBlind {
+		return nil, nil
+	}
+	var out []PR
+	for _, p := range f.all {
+		if p.Author == login && stateIs(state, p.State) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeGH) DeleteBranch(_ context.Context, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, branch)
+	delete(f.branches, branch)
+	return nil
+}
+
+func (f *fakeGH) Branches(_ context.Context, prefix string) ([]Branch, error) {
+	var out []Branch
+	for name, sha := range f.branches {
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			out = append(out, Branch{Name: name, SHA: sha})
+		}
+	}
+	return out, nil
+}
+func (f *fakeGH) CommitTime(_ context.Context, sha string) (time.Time, error) {
+	t, ok := f.commitTimes[sha]
+	if !ok {
+		return time.Time{}, errNotFound
+	}
+	return t, nil
 }
 
 // fakeHQ is the HQ side of the gates.
