@@ -521,6 +521,25 @@ func TestARunningComposeChiefIsReappliedOnItsNewCredentialAtBoot(t *testing.T) {
 	}
 }
 
+// TestARunningComposeChiefWhoseCredentialWasRemovedIsStoppedAtBoot is #474
+// round 2 G1: the admin deletes MUSTER_CHIEF_CLAUDE_TOKEN from .env (with no
+// OpenRouter key either) and runs `docker compose up -d --wait`. The running
+// chief must not keep the withdrawn token while Account says "No credential
+// yet": the boot re-apply stops it (spec replicas 0), and says so on its line.
+func TestARunningComposeChiefWhoseCredentialWasRemovedIsStoppedAtBoot(t *testing.T) {
+	st, _ := onTheToken(t)
+	st2 := newComposeStackAt(t, st.root, nil)
+	_, cs, _, _ := readChiefSpec(t, st.root)
+	if cs.Replicas != 0 {
+		t.Fatalf("after a restart with no credential left the chief's spec is replicas %d (it keeps running on the deleted token):\n%s",
+			cs.Replicas, st2.logs.String())
+	}
+	want := "chief runtime: stopped the running chief at boot: no credential is left in .env (" + api.ComposeChiefNeedsCredential + ")\n"
+	if !strings.Contains(st2.logs.String(), want) {
+		t.Fatalf("no boot line %q:\n%s", want, st2.logs.String())
+	}
+}
+
 // TestAComposeChiefThatIsOffIsNotStartedAtBoot: the boot re-apply starts
 // nothing that is off, on either axis, and leaves its spec byte-identical:
 //

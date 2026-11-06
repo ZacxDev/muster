@@ -2,6 +2,7 @@ package agentprovision
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -208,5 +209,63 @@ func TestAStopDuringARebindWaitsAndEndsStopped(t *testing.T) {
 	}
 	if got := store.recordingStore.agent.Status; got != agents.StatusStopped {
 		t.Fatalf("final status = %q, want stopped", got)
+	}
+}
+
+// TestAStopDuringAStartIfLiveCheckEndsStopped is #474 round 2 G2: the Compose
+// chief's boot re-apply checks that the spec is live and then starts it. A Stop
+// from the agent page that lands between the two must not be undone: the check
+// and the start hold the agent's lifecycle lock, so the Stop waits, runs after
+// the start, and the agent ends stopped.
+func TestAStopDuringAStartIfLiveCheckEndsStopped(t *testing.T) {
+	a, store, driver := rebindFixture(t)
+	checking, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		started, err := a.StartIfLive(context.Background(), fixtureAgentID, func() (bool, error) {
+			close(checking)
+			<-release
+			return true, nil
+		})
+		if err == nil && !started {
+			t.Error("StartIfLive reported not started for a live agent")
+		}
+		done <- err
+	}()
+	<-checking
+	stopped := make(chan error, 1)
+	go func() { stopped <- a.Stop(context.Background(), fixtureAgentID) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned (%v) while StartIfLive was between its check and its start", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("StartIfLive: %v", err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	driver.mu.Lock()
+	order := append([]string(nil), driver.order...)
+	driver.mu.Unlock()
+	if len(order) != 2 || !strings.HasPrefix(order[0], "update:") || order[1] != "scale" {
+		t.Fatalf("backend order = %v, want the start's re-apply, then the scale to zero", order)
+	}
+	if got := store.recordingStore.agent.Status; got != agents.StatusStopped {
+		t.Fatalf("final status = %q, want stopped (the Stop was undone)", got)
+	}
+}
+
+// TestStartIfLiveStartsNothingThatIsNotLive: live false starts nothing.
+func TestStartIfLiveStartsNothingThatIsNotLive(t *testing.T) {
+	a, _, driver := rebindFixture(t)
+	started, err := a.StartIfLive(context.Background(), fixtureAgentID, func() (bool, error) { return false, nil })
+	driver.mu.Lock()
+	n := len(driver.order)
+	driver.mu.Unlock()
+	if err != nil || started || n != 0 {
+		t.Fatalf("not live: started %v, err %v, %d backend call(s); want none", started, err, n)
 	}
 }

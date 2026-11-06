@@ -377,6 +377,12 @@ func TestTheBootReapplyReadsTheSpecsReplicasNotThePhase(t *testing.T) {
 			insts: []provision.Instance{{Ref: provision.Ref{Name: agents.ChiefNameFor(authz.OperatorUserID)}, Phase: c.phase}}}
 		replicas := c.replicas
 		ext.ComposeChief.Spec = func() (int64, int, error) { return 4, replicas, nil }
+		ext.ComposeChief.StartIfLive = func(ctx context.Context, id int64, live func() (bool, error)) (bool, error) {
+			if ok, err := live(); err != nil || !ok {
+				return false, err
+			}
+			return true, cp.Start(ctx, id)
+		}
 		w.s.UseExtensions(ext)
 		msg, err := w.s.reapplyComposeChief(context.Background())
 		cp.mu.Lock()
@@ -384,6 +390,40 @@ func TestTheBootReapplyReadsTheSpecsReplicasNotThePhase(t *testing.T) {
 		cp.mu.Unlock()
 		if err != nil || started != c.wantStart {
 			t.Errorf("phase %s, replicas %d: started %v (%q, %v), want started %v", c.phase, c.replicas, started, msg, err, c.wantStart)
+		}
+	}
+}
+
+// TestABootWithNoCredentialStopsOnlyALiveChief: G1's api half. No credential
+// left and the spec live: the chief is stopped, nothing started. Control: the
+// same with the spec already stopped touches nothing.
+func TestABootWithNoCredentialStopsOnlyALiveChief(t *testing.T) {
+	for _, replicas := range []int{1, 0} {
+		w := composeWorld(t, true, "", ErrComposeChiefNoCredential)
+		for i := range w.store.rows {
+			if w.store.rows[i].ID == homeChiefID {
+				w.store.rows[i].Name = agents.ChiefNameFor(authz.OperatorUserID)
+			}
+		}
+		cp := &callProvisioner{}
+		ext := w.s.ext
+		ext.Provisioner = cp
+		r := replicas
+		ext.ComposeChief.Spec = func() (int64, int, error) { return 2, r, nil }
+		ext.ComposeChief.StartIfLive = func(ctx context.Context, id int64, live func() (bool, error)) (bool, error) {
+			return true, cp.Start(ctx, id)
+		}
+		w.s.UseExtensions(ext)
+		msg, err := w.s.reapplyComposeChief(context.Background())
+		cp.mu.Lock()
+		calls := strings.Join(cp.calls, ",")
+		cp.mu.Unlock()
+		want := ""
+		if replicas == 1 {
+			want = "stop " + itoa(homeChiefID)
+		}
+		if err != nil || calls != want {
+			t.Errorf("replicas %d, no credential: calls %q (%q, %v), want %q", replicas, calls, msg, err, want)
 		}
 	}
 }
