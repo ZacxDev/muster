@@ -39,8 +39,8 @@ import (
 //     (attach.go).
 //
 // And this script reveals a box that has text when it runs, and again after a
-// form reset or a back/forward-cache restore — the browser's own restore of a
-// field's value, which no writer here makes.
+// form reset or a back/forward-cache restore (pageshow with persisted) — the
+// browser's own restore of a field's value, which no writer here makes.
 
 // composerCollapsibleAttr is what the SERVER puts on the form: this box may be
 // collapsed. composerCollapsedAttr is what the reveal's script sets from it —
@@ -117,7 +117,11 @@ const composerRevealJS = `
   function check() { if (input.value) reveal(false); }
   check();
   form.addEventListener('reset', function () { setTimeout(check, 0); });
-  window.addEventListener('pageshow', check);
+  // Only a back/forward-cache RESTORE: on an ordinary load the draft has
+  // already revealed the box itself (a pageshow check there would hide a
+  // writer that forgot to — measured: dropping the draft's reveal was
+  // invisible to the browser suite while this ran on every pageshow).
+  window.addEventListener('pageshow', function (e) { if (e.persisted) check(); });
 })();
 `
 
