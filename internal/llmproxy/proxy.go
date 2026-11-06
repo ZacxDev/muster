@@ -15,10 +15,17 @@
 // store before the response ends, so the instance's next request sees them;
 // and one audit record and one log line are written.
 //
+// The admin's chief is the one other caller (Caller.Unbudgeted): the same
+// allowlist, pin, key handling and metering, on the one key the route layer
+// hands it (the server's MUSTER_AGENT_OPENROUTER_KEY, internal/api), and with
+// no budget, no item cap and no usage row — the key's own provider-side credit
+// limit is its cap, so a 402 is answered with the caller's KeyRemedy.
+//
 // 🔴 THE KEY IS ATTACHED HERE AND NOWHERE ELSE. It is never logged, never
 // audited, never sent to the client: every byte relayed downstream is passed
-// through redact first, a 401/403 body is replaced by muster's own message,
-// and every other non-2xx body is relayed redacted. The client's own
+// through redact first, a 401/403 body (and a KeyRemedy caller's 402 body) is
+// replaced by muster's own message, and every other non-2xx body is relayed
+// redacted. The client's own
 // credential (its muster token) is never sent upstream.
 //
 // 🔴 THE MODEL PIN HOLDS BECAUSE THE BODY IS AN ALLOWLIST. OpenRouter reads
@@ -87,9 +94,12 @@ const (
 	estimateOutputTokens = 4096
 )
 
-// Caller is the officer instance a request is made for, with its officer's
-// settings. The route layer builds it after authenticating the instance.
+// Caller is the agent a request is made for, with its settings: an officer
+// routine instance (budgeted), or the chief (Unbudgeted). The route layer
+// builds it after authenticating the agent.
 type Caller struct {
+	// Officer labels the caller in metrics, logs and the audit detail: the
+	// officer id, or "chief".
 	Officer string
 	// Instance is the routine instance's number in its pool, and
 	// InstanceLabel how it is named in metrics and logs (`r<n>`).
@@ -101,6 +111,25 @@ type Caller struct {
 	DailyBudgetUSD   float64
 	MaxTokensPerItem int64
 	Key              string
+	// Unbudgeted: muster enforces NO budget and NO per-item cap for this
+	// caller, and keeps no usage row for it (the store is neither read nor
+	// written); the cap is the key's own provider-side credit limit. Usage is
+	// still metered in the metrics, the log line and the audit record.
+	//
+	// 🔴 IT IS A SEPARATE FIELD SO THAT ZERO VALUES STAY SAFE. A budgeted
+	// caller (the zero value, false) whose DailyBudgetUSD is 0 is refused on
+	// its first request (spent 0 >= budget 0), exactly as an officer with a
+	// missing budget always was: "no budget" can never be spelled as a 0.
+	Unbudgeted bool
+	// Title is the X-Title header the provider attributes the request to;
+	// "" is "muster officer".
+	Title string
+	// KeyRemedy is what the client is told when the provider refuses the key
+	// (401/403), and the log line's remedy; "" is the officer's (the operator's
+	// MUSTER_OFFICER_OPENROUTER_KEY_<NAME>). A caller with one is also told it
+	// on a 402 (a spent credit limit), which is NOT counted as a refused key;
+	// an officer's 402 is relayed.
+	KeyRemedy string
 }
 
 // Usage is one request's metered usage, booked to the store.
@@ -182,7 +211,10 @@ type Config struct {
 	// HTTP is the upstream transport; nil is a client that follows no
 	// redirect.
 	HTTP *http.Client
-	// Store is required.
+	// Store keeps each officer's spend. nil is a proxy with no budget store:
+	// it serves Unbudgeted callers only, and a budgeted caller is refused
+	// (refused_store, nothing sent) because its spend cannot be read — never
+	// served as if it had no budget.
 	Store Store
 	// Audit receives one record per request ServeMessages answers (a
 	// malformed body's refusal included); nil records none.
@@ -208,8 +240,9 @@ type Proxy struct {
 
 // New builds a Proxy.
 func New(cfg Config) (*Proxy, error) {
-	if cfg.Store == nil {
-		return nil, errors.New("llmproxy: a store is required (the daily budget must survive a restart)")
+	st := cfg.Store
+	if st == nil {
+		st = noStore{}
 	}
 	up := strings.TrimRight(cfg.Upstream, "/")
 	if up == "" {
@@ -241,9 +274,19 @@ func New(cfg Config) (*Proxy, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Proxy{upstream: up, http: hc, store: cfg.Store, audit: cfg.Audit, log: lg, now: now, items: newItems(),
+	return &Proxy{upstream: up, http: hc, store: st, audit: cfg.Audit, log: lg, now: now, items: newItems(),
 		authFailed: map[string]int{}}, nil
 }
+
+// noStore is the Store of a proxy built with none: every read fails, so a
+// budgeted caller there takes the ordinary "the budget could not be read"
+// refusal and nothing is sent.
+type noStore struct{}
+
+var errNoStore = errors.New("llmproxy: this proxy has no budget store")
+
+func (noStore) SpentToday(context.Context, string, time.Time) (float64, error) { return 0, errNoStore }
+func (noStore) Book(context.Context, Usage) error                              { return errNoStore }
 
 // Claimed tells the per-item meter that instance of officer now holds item.
 func (p *Proxy) Claimed(officer string, instance int, item string) {
@@ -360,34 +403,40 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	}
 
 	day := Day(start)
-	metrics.OfficerLLMBudget.WithLabelValues(c.Officer).Set(c.DailyBudgetUSD)
-	spent, err := p.store.SpentToday(r.Context(), c.Officer, day)
-	if err != nil {
-		p.log.Printf("llm proxy: officer %s: the day's spend could not be read (refusing, nothing sent): %v", c.Officer, err)
-		Refuse(w, http.StatusServiceUnavailable, "api_error", "the officer's budget could not be read just now; nothing was sent")
-		finish("refused_store", http.StatusServiceUnavailable)
-		return
-	}
-	metrics.OfficerLLMSpentToday.WithLabelValues(c.Officer).Set(spent)
-	if spent >= c.DailyBudgetUSD {
-		Refuse(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf(
-			"officer %s has spent its daily LLM budget ($%.4f of $%.2f, UTC day %s); nothing was sent. "+
-				"Stop here: the item stays queued.", c.Officer, spent, c.DailyBudgetUSD, day.Format("2006-01-02")))
-		finish("refused_budget", http.StatusBadRequest)
-		return
-	}
-	used, item := p.items.used(k)
-	rec.Item = item
-	if used >= c.MaxTokensPerItem {
-		what := "item " + item
-		if item == "" {
-			what = "the work before any claimed item"
+	item := ""
+	// An Unbudgeted caller (the chief) skips the budget and the item cap
+	// entirely: the key's own credit limit is its cap (Caller.Unbudgeted).
+	if !c.Unbudgeted {
+		metrics.OfficerLLMBudget.WithLabelValues(c.Officer).Set(c.DailyBudgetUSD)
+		spent, err := p.store.SpentToday(r.Context(), c.Officer, day)
+		if err != nil {
+			p.log.Printf("llm proxy: officer %s: the day's spend could not be read (refusing, nothing sent): %v", c.Officer, err)
+			Refuse(w, http.StatusServiceUnavailable, "api_error", "the officer's budget could not be read just now; nothing was sent")
+			finish("refused_store", http.StatusServiceUnavailable)
+			return
 		}
-		Refuse(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf(
-			"this instance has used %d tokens on %s, the cap is %d; nothing was sent. Stop here: the item will be "+
-				"handed on when its lease lapses.", used, what, c.MaxTokensPerItem))
-		finish("refused_item_cap", http.StatusBadRequest)
-		return
+		metrics.OfficerLLMSpentToday.WithLabelValues(c.Officer).Set(spent)
+		if spent >= c.DailyBudgetUSD {
+			Refuse(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf(
+				"officer %s has spent its daily LLM budget ($%.4f of $%.2f, UTC day %s); nothing was sent. "+
+					"Stop here: the item stays queued.", c.Officer, spent, c.DailyBudgetUSD, day.Format("2006-01-02")))
+			finish("refused_budget", http.StatusBadRequest)
+			return
+		}
+		var used int64
+		used, item = p.items.used(k)
+		rec.Item = item
+		if used >= c.MaxTokensPerItem {
+			what := "item " + item
+			if item == "" {
+				what = "the work before any claimed item"
+			}
+			Refuse(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf(
+				"this instance has used %d tokens on %s, the cap is %d; nothing was sent. Stop here: the item will be "+
+					"handed on when its lease lapses.", used, what, c.MaxTokensPerItem))
+			finish("refused_item_cap", http.StatusBadRequest)
+			return
+		}
 	}
 
 	up, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstream+UpstreamPath+upstreamQuery(r), bytes.NewReader(out))
@@ -403,7 +452,11 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	}
 	up.Header.Set("Content-Type", "application/json")
 	up.Header.Set("Accept-Encoding", "identity")
-	up.Header.Set("X-Title", "muster officer")
+	title := c.Title
+	if title == "" {
+		title = "muster officer"
+	}
+	up.Header.Set("X-Title", title)
 	up.Header.Set("Authorization", "Bearer "+c.Key)
 
 	m := &meter{}
@@ -439,17 +492,37 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		p.upstreamAuthFailed(c.Officer, resp.StatusCode)
+		p.upstreamAuthFailed(c, resp.StatusCode)
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		rec.UpstreamError = upstreamError(b, c.Key)
 		// 🔴 A 400, NOT THE PROVIDER'S STATUS: Claude Code retries a 401 about
 		// ten times with backoff, which on an instance reads as a stall; a 400
 		// ends the turn with this message. The audit and the metrics keep the
 		// provider's own status.
-		Refuse(w, http.StatusBadRequest, "authentication_error", fmt.Sprintf(
-			"the provider refused muster's key for officer %s (HTTP %d). This is a muster configuration fault, not "+
-				"the model: the operator has been told.", c.Officer, resp.StatusCode))
+		text := fmt.Sprintf("the provider refused muster's key for officer %s (HTTP %d). This is a muster configuration fault, not "+
+			"the model: the operator has been told.", c.Officer, resp.StatusCode)
+		if c.KeyRemedy != "" {
+			text = fmt.Sprintf("the provider refused the OpenRouter key (HTTP %d): %s", resp.StatusCode, c.KeyRemedy)
+		}
+		Refuse(w, http.StatusBadRequest, "authentication_error", text)
 		finish("upstream_auth", resp.StatusCode)
+		return
+	}
+	if resp.StatusCode == http.StatusPaymentRequired && c.KeyRemedy != "" {
+		// 🔴 A 402 IS A SPENT CREDIT LIMIT, NOT A BROKEN KEY. For a caller whose
+		// only cap is its key's provider-side credit limit (the chief), the 402
+		// is the expected way that cap is hit, so it is answered with the
+		// caller's remedy, as a 400 for the same reason as above, and it does
+		// NOT go through upstreamAuthFailed: the key is fine, so the
+		// auth-failing gauge and the 🔴 key log line stay untouched. An officer
+		// (no KeyRemedy) still has its 402 relayed below.
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		rec.UpstreamError = upstreamError(b, c.Key)
+		p.log.Printf("llm proxy: %s: the provider answered HTTP 402 (payment required: the key's credit limit is probably "+
+			"spent, agent %q): %s", c.Officer, c.AgentName, c.KeyRemedy)
+		Refuse(w, http.StatusBadRequest, "billing_error", fmt.Sprintf("the provider refused the request for payment "+
+			"(HTTP 402): the OpenRouter key's credit limit is probably used up; %s", c.KeyRemedy))
+		finish("upstream_status", resp.StatusCode)
 		return
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -588,6 +661,14 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 	if estimated {
 		metrics.OfficerLLMCostEstimated.WithLabelValues(c.Officer).Inc()
 	}
+	if c.Unbudgeted {
+		// 🔴 NOT BOOKED, DELIBERATELY, AND SAID SO. Nothing reads an Unbudgeted
+		// caller's spend (no budget), and officer_llm_usage's officer column
+		// admits only `<type>:<area>` ids, so a "chief" row would be refused by
+		// the database. Its usage is in the metrics above, the log line and the
+		// audit record (Record.Detail), which is where it is read.
+		return
+	}
 	p.items.add(k, item, u.tokens())
 	err := p.store.Book(context.WithoutCancel(ctx), Usage{Officer: c.Officer, Instance: c.Instance, Day: day,
 		Input: rec.Input, Output: rec.Output, CacheRead: rec.CacheRead, CacheWrite: rec.CacheWrite, CostUSD: cost, Estimated: estimated})
@@ -600,7 +681,13 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 // upstreamAuthFailed records a 401/403 from the provider: counted every time,
 // logged loudly once when the officer's state changes into failing (or from
 // one failing status to the other).
-func (p *Proxy) upstreamAuthFailed(officer string, status int) {
+//
+// The state is kept per Caller.Officer. The chief is one caller ("chief", the
+// admin's chief on the one server key), so its state is that key's. A 402 never
+// reaches here for a KeyRemedy caller: a spent credit limit is not a refused
+// key. A 403 does, whatever the provider meant by it.
+func (p *Proxy) upstreamAuthFailed(c Caller, status int) {
+	officer := c.Officer
 	metrics.OfficerLLMUpstreamAuth.WithLabelValues(officer, strconv.Itoa(status)).Inc()
 	metrics.OfficerLLMUpstreamAuthFailing.WithLabelValues(officer).Set(1)
 	p.mu.Lock()
@@ -608,6 +695,11 @@ func (p *Proxy) upstreamAuthFailed(officer string, status int) {
 	p.authFailed[officer] = status
 	p.mu.Unlock()
 	if prev != status {
+		if c.KeyRemedy != "" {
+			p.log.Printf("llm proxy: 🔴 THE PROVIDER REFUSES %s's OPENROUTER KEY (HTTP %d, agent %q). Every request "+
+				"fails until the key is fixed: %s", officer, status, c.AgentName, c.KeyRemedy)
+			return
+		}
 		p.log.Printf("llm proxy: 🔴 THE PROVIDER REFUSES OFFICER %s's KEY (HTTP %d). Every request of its routine "+
 			"instances fails until the key is fixed; Claude Code retries a 401 about ten times, so on the instance this "+
 			"looks like a stall. Check the officer's key (%s<NAME>).", officer, status, "MUSTER_OFFICER_OPENROUTER_KEY_")

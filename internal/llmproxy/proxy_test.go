@@ -37,6 +37,7 @@ type memStore struct {
 	spent   map[string]float64 // officer|day -> usd
 	booked  []Usage
 	readErr error
+	reads   int // SpentToday calls
 }
 
 func newMemStore() *memStore { return &memStore{spent: map[string]float64{}} }
@@ -44,6 +45,7 @@ func newMemStore() *memStore { return &memStore{spent: map[string]float64{}} }
 func (m *memStore) SpentToday(_ context.Context, officer string, day time.Time) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.reads++
 	if m.readErr != nil {
 		return 0, m.readErr
 	}
