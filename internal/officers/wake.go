@@ -448,9 +448,9 @@ type officerState struct {
 	// strikes counts consecutive passes that saw a permanent refusal; a
 	// successful answer and an outage (5xx, network) both reset it.
 	strikes int
-	// capReached: at the last successful pass the judgement pool was at its
+	// capReached: the last pass succeeded and saw the judgement pool at its
 	// daily session cap with claimable judgement items waiting
-	// (muster_officer_judgement_cap_reached). capLoggedDay is the UTC day that
+	// (muster_officer_judgement_cap_reached); a failed pass clears it. capLoggedDay is the UTC day that
 	// was last logged, so the line is written once per (officer, UTC day).
 	capReached   bool
 	capLoggedDay string
@@ -596,6 +596,11 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	obs, err := r.observe(ctx, pools)
 	if err != nil {
 		r.mu.Lock()
+		// A pass that saw nothing cannot say the pool is held back by its
+		// session cap: muster_officer_judgement_cap_reached is the last
+		// SUCCESSFUL pass's state, so a failed pass (and a fault scale-down,
+		// which follows one) clears it rather than republish a stale value.
+		s.capReached = false
 		s.failures++
 		s.nextAt = now.Add(Backoff(o, s.failures))
 		f, next := s.failures, s.nextAt

@@ -1577,8 +1577,9 @@ An officer may split its instances into two **pools**, one per HQ item tier
     reached (30/30 until 00:00 UTC): 7 claimable judgement item(s) wait in
     HQ …`). Later polls that day log nothing more, and a restarted process
     logs it once again. `muster_officer_judgement_cap_reached` counts the
-    officers in that state at their last pass. HQ is not told: muster has no
-    officer-level status call to HQ that could carry the reason.
+    officers in that state at their last pass; a pass that fails (HQ or the
+    fleet unreadable) clears it. HQ is not told: muster has no officer-level
+    status call to HQ that could carry the reason.
   - Nothing else changes. The routine pool is not capped by it (its bound is
     the [`llm`](#the-llm-proxy) budget), and neither is an untiered officer.
 
