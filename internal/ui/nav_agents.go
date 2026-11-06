@@ -374,6 +374,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			hostMarkDecorative(host, icon),
 			Span(Class("min-w-0 flex-1 truncate"), g.Text(label)),
 			g.If(e.mirror != nil && !e.mirror.Online, navOffline()),
+			navOutcome(e.agent),
 			navWork(e.work()),
 			navAttentionPill(att, e.waiting()),
 		),

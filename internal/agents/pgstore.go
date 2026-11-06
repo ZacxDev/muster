@@ -48,7 +48,8 @@ func NewPGTx(tx pgx.Tx) *PGStore { return &PGStore{pool: tx} }
 const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id, note_text,
 	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
 	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool, gateway_secret,
-	cc_account_pinned, cc_failover`
+	cc_account_pinned, cc_failover,
+	outcome, outcome_reason, outcome_at, activity_at, first_reply_at, dispatched_by`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -58,7 +59,8 @@ func scanAgent(row interface {
 		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.HooksToken, &a.KickedOff,
 		&a.LastOutput, &a.ErrorMessage, &a.CreatedAt, &a.UpdatedAt,
 		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID, &a.WorkerPool,
-		&a.GatewaySecret, &a.CCAccountPinned, &a.CCFailover)
+		&a.GatewaySecret, &a.CCAccountPinned, &a.CCFailover,
+		&a.Outcome, &a.OutcomeReason, &a.OutcomeAt, &a.ActivityAt, &a.FirstReplyAt, &a.DispatchedBy)
 	return a, err
 }
 

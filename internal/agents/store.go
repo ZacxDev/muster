@@ -209,6 +209,29 @@ type Agent struct {
 	// container died mid-turn). Cleared at the start of each delivery. It exists
 	// because that failure used to be a log line and nothing else.
 	KickoffError string `json:"kickoffError,omitempty"`
+
+	// --- the agent's OUTCOME (migration 0087, internal/agentoutcome) ---
+	//
+	// Every agent started with a first turn ends in one of done / failed / stuck,
+	// visible on its row: see internal/agentoutcome's package doc for the states
+	// and who writes them. None of these is serialised with the row; the machine
+	// projection (api.agentJSON) and the outcome API (api.AgentOutcome) say them.
+
+	// Outcome is agents.outcome: "" (not tracked), or one of agentoutcome's
+	// Running / Done / Failed / Stuck.
+	Outcome string `json:"-"`
+	// OutcomeReason is why, in muster's words ("" while running or done).
+	OutcomeReason string `json:"-"`
+	// OutcomeAt is when Outcome last changed; nil when it never has.
+	OutcomeAt *time.Time `json:"-"`
+	// ActivityAt is the newest activity muster observed of the agent (a turn's
+	// start, end or stream event, a pod's work report); nil when none.
+	ActivityAt *time.Time `json:"-"`
+	// FirstReplyAt is when the agent's first reply arrived; nil before it.
+	FirstReplyAt *time.Time `json:"-"`
+	// DispatchedBy is the chief agent that started this one (agent_dispatch);
+	// nil for every other start.
+	DispatchedBy *int64 `json:"-"`
 }
 
 // ChatMessage is one persisted web-chat message in an agent's transcript.

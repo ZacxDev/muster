@@ -46,6 +46,10 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// The agent page's status strip, ⋯ menu and notices (ui/agent_actions.go):
 	// what the retired Agents list's card showed, re-fetched on a change.
 	mux.HandleFunc("GET /ui/agents/{id}/header", s.requireSession(s.handleAgentHeader))
+	// The agent's status and the OUTCOME of what it was started on
+	// (agent_outcome.go): what a live card reads. A pure DB read, so it is
+	// registered without a provisioner.
+	mux.HandleFunc("GET /agents/{id}/outcome", s.requireSession(s.handleAgentOutcome))
 	// Agent-reply notifications: the FAB's panel + OOB badge, and the per-session
 	// mark-read used by the chat client when a turn finishes. Both are pure DB
 	// reads/writes, so they're registered without a provisioner.
@@ -614,6 +618,9 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// Decided from kickoff_error's muster-written prefix too; the boolean crosses.
 		KickoffAwaitingGrant: agents.KickoffAwaitingGrant(a),
 		GitHubProblem:        s.githubAgentProblem(a),
+		// The outcome and its reason (agent_outcome.go), scrubbed of the note.
+		Outcome:       a.Outcome,
+		OutcomeReason: agents.ScrubNote(a.OutcomeReason, a.PendingNote),
 		Namespace:            a.Namespace,
 		NoteID:               a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
@@ -956,6 +963,10 @@ type dispatchParams struct {
 	// `stopped` first, and in that window the agent would drop out of the
 	// chief's live count (agent_dispatch's worker_pool without a prompt).
 	StartWithoutKickoff bool
+	// DispatchedBy is the chief agent starting this one (agent_dispatch), 0 for
+	// every other door: its outcome is then also said in that chief's chat
+	// (agent_outcome.go).
+	DispatchedBy int64
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
@@ -1105,6 +1116,18 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// rule cannot be right in one and absent in the other. See
 	// agents/modelauth.go for the measured failure this prevents — an agent that
 	// runs forever on its FALLBACK model while reporting nothing wrong.
+	//
+	// 🔴 AND, FIRST, A MODEL THAT IS NOT IN THE CATALOGUE (model_validate.go): a
+	// display name the runtime would read as a model of its default provider,
+	// failing every turn while the agent read `running`. A name that maps to one
+	// model is resolved to its id here; anything else is refused before the row.
+	if p.Model != "" {
+		model, err := s.checkAgentModel(ctx, p.Model)
+		if err != nil {
+			return agents.Agent{}, err
+		}
+		p.Model = model
+	}
 	if err := agents.ValidateModelCredential(p.Model); err != nil {
 		return agents.Agent{}, err
 	}
@@ -1153,6 +1176,11 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	if err != nil {
 		return agents.Agent{}, err
 	}
+	// A first turn is owed: the agent's work now has an outcome to end in
+	// (agent_outcome.go) — running until it answers, fails or goes quiet.
+	if p.Kickoff {
+		s.outcomeDispatched(ctx, rec, p.DispatchedBy)
+	}
 	// The agent was just created (provisioning): nudge open pages so a task's
 	// linked-agent chip + the sidebar's agent list appear live (best-effort).
 	s.agentChangedFor(requestOwner(ctx), rec.Name)
@@ -1193,7 +1221,13 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Start(ctx, id) }, "start")
+	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error {
+		err := s.ext.Provisioner.Start(ctx, id)
+		if err == nil {
+			s.outcomeRestarted(ctx, id)
+		}
+		return err
+	}, "start")
 }
 
 func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
@@ -1284,6 +1318,22 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 	if gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
 		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)
 		return
+	}
+	// The catalogue check (model_validate.go), after the kind's refusal so a
+	// claude-code agent keeps its own sentence: a name resolves to its id, an
+	// unknown value is refused with the closest ids. Re-checked against the
+	// credential rule, since a resolved id is a new slug.
+	if model != "" {
+		resolved, err := s.checkAgentModel(ctx, model)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		model = resolved
+		if err := agents.ValidateModelCredential(model); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	updated, err := s.ext.Agents.SetModel(ctx, id, model)
 	if err != nil {
@@ -2240,7 +2290,15 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 // dispatchOperatorTool arms; with it gone, a chat turn cannot render a pod at all.
 // That ledger is updated in the same commit — do not re-add a row for a path that
 // no longer exists.
-func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (string, error) {
+func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (reply string, err error) {
+	// 🔴 EVERY TURN'S COURSE FEEDS THE AGENT'S OUTCOME (agent_outcome.go): its
+	// start and its stream are activity the watchdog reads, and its end — an
+	// answer, or a failure — is recorded, pushed once when it changes the outcome,
+	// and told to the chief that started it. Wrapped here, the one function every
+	// chat door's turn passes.
+	s.outcomeTurnStarted(ctx, a, false)
+	defer func() { s.outcomeTurnEnded(ctx, a, reply, err) }()
+	ctx = agents.WithTurnActivity(ctx, func() { s.outcomeActivity(ctx, a) })
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)
@@ -2250,7 +2308,7 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// this mark after each round of calls.
 	ctx = agents.WithTurnEnd(ctx)
 	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
-	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
+	reply, err = s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
 	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
 	// 404 on request 2+ comes after the runtime answered request 1 and its tools
 	// ran; resending the message toolless there pastes it into the session twice

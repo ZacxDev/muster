@@ -294,6 +294,7 @@ var agentHrefCallLedger = map[string]int{
 	// before) and the conversation a chief nudge's ask is about for that one.
 	"AgentSessionHref ← internal/api/attention_push_target.go:Server.askingAgentHref": 1,
 	"AgentPath ← internal/api/push_task.go:Server.notifyAgentRunning":                 1,
+	"AgentPath ← internal/api/agent_outcome.go:Server.announceOutcome":                1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the

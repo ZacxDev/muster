@@ -584,6 +584,14 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	if in.Model != "" && kindArg != agents.KindGateway {
 		return refuse(agentDispatchModel)
 	}
+	// 🔴 THE MODEL IS CHECKED AGAINST THE CATALOGUE BEFORE ANYTHING IS RESERVED
+	// (model_validate.go): a display name resolves to its id; an unknown value is
+	// refused with the closest ids, for the chief to ask its owner.
+	model := s.resolveAgentModel(ctx, in.Model)
+	if model.Refusal != "" {
+		return dispatchModelRefusal(model, s.chiefBudgetNow(ctx))
+	}
+	in.Model = model.Model
 	onTask := in.TaskID > 0
 	if !onTask {
 		switch {
@@ -664,6 +672,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		}
 	}
 	detail := map[string]any{"kind": kind, "target": in.Target}
+	recordDispatchModel(detail, model)
 	if in.RequestKey != "" {
 		detail[plugins.DetailRequestKey], detail[plugins.DetailRequestHash] = in.RequestKey, hash
 	}
@@ -756,6 +765,9 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		if in.Repo != "" && n.Repo != "" && !strings.EqualFold(n.Repo, in.Repo) {
 			return errTaskDispatch("task " + strconv.FormatInt(in.TaskID, 10) + " " + chiefDispatchTaskRepo + " (" + n.Repo + "): omit repo")
 		}
+		if why := s.recordTaskModel(ctx, detail, kind, in.Model, n.Model); why != "" {
+			return errTaskDispatch(why)
+		}
 		task = n
 		return nil
 	}
@@ -785,7 +797,8 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	// The first message: the chief's relayed prompt (fenced), the task's text,
 	// then muster's rules — last, so they win.
 	var kickoff string
-	p := dispatchParams{Kind: kind, Repo: in.Repo, RepoBranch: in.Base, Model: in.Model, WorkerPool: in.WorkerPool, Kickoff: true}
+	p := dispatchParams{Kind: kind, Repo: in.Repo, RepoBranch: in.Base, Model: in.Model, WorkerPool: in.WorkerPool, Kickoff: true,
+		DispatchedBy: a.ID}
 	if onTask {
 		if task.Repo == "" {
 			task.Repo = in.Repo

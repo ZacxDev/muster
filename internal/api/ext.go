@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/attention"
@@ -152,6 +153,23 @@ type Extensions struct {
 	// kind alone — every deployment before kinds existed — and the dispatch form
 	// shows no picker.
 	Kinds AgentKinds
+
+	// ModelCatalog is the model catalogue every door that sets an agent's model
+	// checks it against (model_validate.go): OpenRouterCatalog() in a deployment.
+	// nil reads as an UNREACHABLE catalogue — an id-shaped model passes unchecked
+	// and anything else is refused — never as "everything goes".
+	ModelCatalog ModelCatalog
+
+	// Outcomes writes a started agent's outcome (internal/agentoutcome,
+	// migration 0087): agent_outcome.go and the watchdog. nil (no database):
+	// nothing is tracked, a failed turn changes no status, and the watchdog
+	// does nothing.
+	Outcomes agentoutcome.Store
+
+	// AgentWatchdog is the outcome watchdog's thresholds
+	// (MUSTER_AGENT_STUCK_NO_REPLY, MUSTER_AGENT_STUCK_SILENT); the zero value is
+	// agentoutcome.DefaultThresholds.
+	AgentWatchdog agentoutcome.Thresholds
 
 	// PublicURL is MUSTER_PUBLIC_URL, the externally reachable origin. Its host
 	// is one of the origins requireSameOrigin and the WebSockets accept

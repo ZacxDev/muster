@@ -447,6 +447,105 @@ from its page.
 
 ![An agent's page on a phone, its live status and its ⋯ menu open](img/agent-actions.png)
 
+## How an agent's work ends
+
+Every agent started with a first turn — from the dispatch form, a task's
+**Dispatch**, or the chief's `agent_dispatch` — ends in an **outcome** you can
+see: never silently "running". The outcome is shown on the agent's page (a
+**failed** or **stuck** badge beside the status, and a notice above the
+transcript saying why), on its sidebar row, in `GET /api/agents`
+(`outcome`, `outcomeReason`, `outcomeAt`) and in `GET /agents/{id}/outcome`
+(below).
+
+| outcome | when | what happens |
+|---|---|---|
+| `running` | the agent was started with a first turn | — |
+| `done` | its turn answered and it is idle (its pod reports no subagents or background shells), or it moved its own task to **ready for review** or **complete** | one push, `<agent> finished: <first line of its reply>`, and a note to the chief that started it |
+| `failed` | a turn of it **failed**: the runtime reported the turn failed (a model it does not know, say), the turn outlived its budget, it answered nothing, or its first turn was never delivered | its status becomes `error` with the reason as its error message; one push, `<agent> failed: <reason>`, linking to the agent; and a note to the chief that started it, so the chief can tell you and offer to start it again |
+| `stuck` | the [silence watchdog](#the-silence-watchdog) saw no activity | one push, `<agent> is stuck: <reason>`, and a note to the chief |
+
+**What does not count as a failure:** you closing the chat while a turn runs,
+a runtime that refused a turn before it typed anything (busy, not ready, rate
+limited — the sender is told), a connection to a pod that is restarting, and
+a first turn cut off by muster itself shutting down (the runtime may still be
+running it; the watchdog judges what it does next). **The chief is never set
+to `error` by a failed turn**: its status gates every delivery muster makes
+to it, so its failure is pushed and shown, and its next good turn clears it.
+
+**One push per change.** Every change of outcome is a database write
+conditional on the outcome it leaves, so of two writers (two replicas, a turn
+ending while the watchdog runs) exactly one applies it, and only that one
+pushes. A second failure of an agent already `failed` updates the reason and
+pushes nothing. The push is the `agent_outcome` event on **Account →
+Notifications**, under the same per-owner cap as every push
+([push.md](push.md)).
+
+**Starting it again.** **Start** from the ⋯ menu clears a `failed` or
+`stuck` outcome; the agent is then not watched until it is given new work.
+Fix the cause first: for a model the runtime did not know, change the agent's
+model (it is checked, below), then Start it.
+
+### Models are checked before a pod starts
+
+Every door that sets an agent's model — the dispatch form, a task's own model
+when it is dispatched, `POST /agents/{id}/model` on the agent page, and the
+chief's `agent_dispatch` (before it reserves anything) — checks the value
+against the OpenRouter model catalogue (the list the dispatch form's model
+picker reads, cached for an hour):
+
+- an exact id passes (`openrouter/<id>`, or a bare `<id>`, stored as
+  `openrouter/<id>`);
+- a display name, or a case or spacing variant, that matches **exactly one**
+  model (its name, its name without the `Vendor: ` prefix, or its id's model
+  half) is resolved to that model's id, and both are recorded;
+- anything else is **refused** before any pod starts, with up to five of the
+  closest ids, so the chief can ask you which you meant.
+
+When the catalogue cannot be read, a value that has the `vendor/model` id
+shape passes unchecked (logged as a warning), and anything else is refused.
+muster's own suggested models always pass. The chief's `task.chief_dispatch`
+audit row records the `model` the agent runs on, and `model_input` when the
+value given was resolved.
+
+### The silence watchdog
+
+A sweep, every `MUSTER_AGENT_WATCHDOG_INTERVAL` (`1m`), over every agent whose
+outcome is `running` or `stuck`:
+
+- **no first reply** and no activity for `MUSTER_AGENT_STUCK_NO_REPLY`
+  (`5m`) after its first turn was delivered → `stuck`, *no reply since
+  kickoff*;
+- **replied, still working**, and no activity for `MUSTER_AGENT_STUCK_SILENT`
+  (`30m`) → `stuck`, *silent for 30 min*;
+- `stuck`, and then any activity → `running` again (no push).
+
+"Activity" is everything muster can see the agent do: a turn starting or
+ending, every read of a turn's stream (text, thinking, tool calls — a long
+tool run streams the whole time), its pod's work reports (sent every minute
+while it has subagents or background shells running), and the agent's row and
+transcript (the same "last active" the sidebar orders by). So a genuinely
+working agent is never flipped. Before its first turn is delivered, the
+kickoff deliverer owns the verdict: an agent whose instance never became
+ready is failed after 15 minutes, as before, and that is now pushed too.
+
+### Reading an outcome
+
+`GET /agents/{id}/outcome` (a signed-in session; your own agents only)
+answers:
+
+```json
+{"agentId": 42, "name": "keen-wren", "displayName": "#7 · fix the build",
+ "status": "error", "outcome": "failed",
+ "reason": "first turn failed: runtime turn failed (server_error): …",
+ "since": "…", "lastActivityAt": "…", "dispatchedBy": 3}
+```
+
+`outcome` is `running`, `done`, `failed`, `stuck`, `starting` (an untracked
+agent whose first turn is still owed), or `""` (nobody started it with a first
+turn). In Go, the same projection is `api.Server.AgentOutcome` (by id) and
+`api.Server.AgentOutcomeOf` (a row you already hold), which is what a live
+card in the chief panel reads.
+
 ## Destroying an agent
 
 Two doors take the same teardown (`destroyAgent` in `internal/api/agents.go`):

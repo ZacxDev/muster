@@ -15,6 +15,9 @@ const (
 	EventComment   = "comment"   // an external (machine) comment on a task
 	EventPlugin    = "plugin"    // a plugin reply draft awaits its owner's approval, or the chief routed something to a session
 	EventAttention = "attention" // something new in the attention queue: an agent's question, a session waiting
+	// EventAgentOutcome: an agent started with a first turn finished, failed or
+	// went quiet (internal/agentoutcome) — one push per change of its outcome.
+	EventAgentOutcome = "agent_outcome"
 )
 
 // Event is one toggle.
@@ -33,6 +36,7 @@ var Events = []Event{
 	{EventComment, "A machine commented on a task"},
 	{EventPlugin, "A reply draft awaits your approval, or your chief routed something to a session"},
 	{EventAttention, "An agent asks you something, or a session is waiting on you"},
+	{EventAgentOutcome, "An agent you started finished, failed or went quiet"},
 }
 
 // KnownEvent reports whether name is in Events.

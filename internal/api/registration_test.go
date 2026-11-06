@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -82,6 +83,11 @@ func fullyWiredServer(t *testing.T) *Server {
 		// test that does not wire a dependency cannot notice a route gated on it.
 		Gateway:   stubGateway{},
 		Kinds:     stubKinds{},
+		// The outcome tracker and the model catalogue: registration must not
+		// branch on them (GET /agents/{id}/outcome is registered either way).
+		ModelCatalog:  stubModelCatalog{},
+		Outcomes:      agentoutcome.NewPG(nil),
+		AgentWatchdog: agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},
 		PublicURL: "http://example.test",
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this

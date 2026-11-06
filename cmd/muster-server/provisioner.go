@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
+	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -316,9 +317,10 @@ func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
 // turnCtx is the context each first turn is sent under, for the agent
 // (agentkickoff.Config.TurnContext): buildApp passes api.Server.
 // OfficerTurnContext, so an officer instance of a fresh_session_per_item pool
-// gets its kickoff in a NEW conversation.
+// gets its kickoff in a NEW conversation. outcome hears each first turn's
+// course (agentkickoff.Config.Outcome; nil: nothing is tracked).
 func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string),
-	turnCtx func(context.Context, agents.Agent) context.Context, logger *log.Logger) (*agentkickoff.Deliverer, error) {
+	turnCtx func(context.Context, agents.Agent) context.Context, outcome agentkickoff.OutcomeReporter, logger *log.Logger) (*agentkickoff.Deliverer, error) {
 	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
 		return nil, nil
 	}
@@ -330,7 +332,18 @@ func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.
 		Logger:          logger,
 		OnChange:        onChange,
 		TurnContext:     turnCtx,
+		Outcome:         outcome,
 	})
+}
+
+// kickoffOutcomes is the server's outcome tracker as the deliverer's reporter,
+// or nil (a NIL INTERFACE, never a typed nil) when nothing is tracked: a first
+// turn's failure then changes no status, as before.
+func kickoffOutcomes(srv *api.Server) agentkickoff.OutcomeReporter {
+	if r, ok := srv.KickoffOutcomes(); ok {
+		return r
+	}
+	return nil
 }
 
 // buildStatusPromoter builds the loop that moves a stored `provisioning` status

@@ -91,6 +91,7 @@ var noStoreLiterals = map[string]string{
 	"redirectTo":               "home's redirect, from `/` and GET /agents (it follows who the chief is now)",
 	"handleAgentsHome":         "GET /agents: home's redirect, or the onboarding page when there is nowhere to go",
 	"handleAgentHeader":        "an agent page's status strip, ⋯ menu and notices, live",
+	"handleAgentOutcome":       "an agent's status and outcome, live (a card polls it)",
 	"handleSessionTagsList":    "a session's tags: the viewer's own, private, and changed by any tab",
 }
 

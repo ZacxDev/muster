@@ -108,6 +108,11 @@ var pgBackedPackages = []string{
 	// agents.DecideReconcile's retry branch — so only the real store can show the
 	// escalation firing at the dwell boundary.
 	"internal/agentkickoff",
+	// Added by the outcome tracker. Its "one push per change" IS the SQL: every
+	// transition is a write conditional on the outcome it leaves (and a stuck
+	// verdict on the activity it was read with), so only the real store can show
+	// a second writer of one change seeing applied=false.
+	"internal/agentoutcome",
 	// Added by the status promoter. Its guard IS the SQL: MarkRunning promotes
 	// only a row still `provisioning` at the updated_at the tick read, and only a
 	// real store can show a Stop or a Start landing mid-tick winning that race.

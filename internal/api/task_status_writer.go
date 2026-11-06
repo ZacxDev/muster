@@ -168,5 +168,18 @@ func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int6
 		// wctx so its title can name the writer's source (reviewSourceLabel).
 		s.notifyTaskDone(wctx, n)
 	}
+	// The third: an AGENT moving its task to review or complete ends its work —
+	// its outcome becomes done, said once (agent_outcome.go). Only an agent's
+	// own writers: the owner moving a card is not the agent reporting back.
+	if prev, ok := previous(); err == nil && ok && prev != status && agentStatusWriter(writer) &&
+		(status == notes.StatusReadyForReview || status == notes.StatusComplete) {
+		s.outcomeTaskDone(ctx, id, status)
+	}
 	return n, err
+}
+
+// agentStatusWriter reports whether writer is one of an agent's own status
+// writers (its route, its native tool, the all-agents task_set_status).
+func agentStatusWriter(w statusWriter) bool {
+	return w == writerAgentRoute || w == writerAgentTool || w == writerTaskTool
 }
