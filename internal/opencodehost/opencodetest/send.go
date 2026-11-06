@@ -3,6 +3,7 @@ package opencodetest
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -31,6 +32,49 @@ import (
 
 //go:embed testdata/prompt-v2.0.32.json
 var promptCapture []byte
+
+// promptSSE is the event stream the same real server sent meanwhile: the
+// fake's session-create and prompt routes emit ITS frames (realFrame), so a
+// test of what the host does with them runs on the shape opencode sends.
+//
+//go:embed testdata/prompt-v2.0.32.sse
+var promptSSE string
+
+// PromptFrame is the n-th (0-based) captured frame of type typ from
+// testdata/prompt-v2.0.32.sse, verbatim; it panics when there is none.
+func PromptFrame(typ string, n int) string { return frameOf(promptSSE, typ, n) }
+
+// realFrame is captured frame typ (the first of its type) rewritten for this
+// server's session sid: data.sessionID and durable.aggregateID become sid, the
+// location directory dir, each of set's keys is set in data, and the frame's
+// id and time are this server's. Everything else is the real frame's.
+func (s *Server) realFrame(typ, sid, dir string, set map[string]any) string {
+	var f map[string]any
+	if err := json.Unmarshal([]byte(PromptFrame(typ, 0)), &f); err != nil {
+		panic(err)
+	}
+	data, _ := f["data"].(map[string]any)
+	data["sessionID"] = sid
+	for k, v := range set {
+		data[k] = v
+	}
+	if loc, ok := data["location"].(map[string]any); ok && dir != "" {
+		loc["directory"] = dir
+	}
+	if loc, ok := f["location"].(map[string]any); ok && dir != "" {
+		loc["directory"] = dir
+	}
+	if d, ok := f["durable"].(map[string]any); ok {
+		d["aggregateID"] = sid
+	}
+	s.mu.Lock()
+	s.seq++
+	f["id"] = fmt.Sprintf("evt_fixture%06d", s.seq)
+	f["created"] = s.now().UnixMilli()
+	s.mu.Unlock()
+	b, _ := json.Marshal(f)
+	return string(b)
+}
 
 // Captured is one body of testdata/prompt-v2.0.32.json, as the real server
 // sent it (create, getsession, prompt1, prompt1-again, prompt2, prompt-404,
@@ -193,7 +237,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.sessions = append(s.sessions, raw)
 	s.mu.Unlock()
-	s.Emit(in.ID, "session.created", map[string]any{})
+	// The REAL server's session.created frame (testdata/prompt-v2.0.32.sse),
+	// which names the session as data.sessionID and nothing about its status.
+	s.EmitFrame(s.realFrame("session.created", in.ID, in.Location.Directory, nil))
 	writeJSON(w, map[string]any{"data": json.RawMessage(raw)})
 }
 
@@ -243,10 +289,11 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request, sid string) {
 	p := Prompt{Session: sid, ID: in.ID, Text: in.Text, Delivery: in.Delivery}
 	s.prompts = append(s.prompts, p)
 	s.mu.Unlock()
-	s.Emit(sid, "session.inbox.enqueued", map[string]any{"inboxID": in.ID,
-		"item": map[string]any{"type": "user", "payload": map[string]any{"text": in.Text}, "delivery": in.Delivery}})
+	// The REAL server's admission frames, rewritten for this prompt.
+	s.EmitFrame(s.realFrame("session.inbox.enqueued", sid, "", map[string]any{"inboxID": in.ID,
+		"item": map[string]any{"type": "user", "payload": map[string]any{"text": in.Text}, "delivery": in.Delivery}}))
 	s.PutMessage(sid, map[string]any{"id": in.ID, "type": "user", "text": in.Text, "time": map[string]any{"created": s.now().UnixMilli()}})
-	s.Emit(sid, "session.inbox.delivered", map[string]any{"inboxID": in.ID})
+	s.EmitFrame(s.realFrame("session.inbox.delivered", sid, "", map[string]any{"inboxID": in.ID}))
 	if delay > 0 {
 		select {
 		case <-time.After(delay):

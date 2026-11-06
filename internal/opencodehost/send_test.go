@@ -275,3 +275,74 @@ func TestTheLaunchRecord(t *testing.T) {
 		t.Fatalf("after removal: %v", err)
 	}
 }
+
+// shape is v's structure: each object's keys, recursively (values dropped).
+func shape(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, e := range x {
+			out[k] = shape(e)
+		}
+		return out
+	case []any:
+		if len(x) == 0 {
+			return []any{}
+		}
+		return []any{shape(x[0])}
+	}
+	return nil
+}
+
+// TestTheFakeEmitsTheRealServersFrames: the frames the fake sends when a
+// session is created and a prompt admitted are the REAL server's
+// (testdata/prompt-v2.0.32.sse) — the same structure, key for key — and the
+// client reads the session each names, as it does the captured one.
+func TestTheFakeEmitsTheRealServersFrames(t *testing.T) {
+	_, cl := fakeClient(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan Event, 16)
+	connected := make(chan struct{})
+	go func() {
+		_ = cl.Events(ctx, func() { close(connected) }, func(e Event) {
+			if strings.HasPrefix(e.Type, "session.created") || strings.HasPrefix(e.Type, "session.inbox.") {
+				got <- e
+			}
+		})
+	}()
+	<-connected
+	if _, err := cl.CreateSession(ctx, "ses_fixtureNew", "/srv/fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.Prompt(ctx, "ses_fixtureNew", "msg_fixture1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []string{"session.created", "session.inbox.enqueued", "session.inbox.delivered"} {
+		var e Event
+		select {
+		case e = <-got:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no %s frame", typ)
+		}
+		if e.Type != typ || e.SessionID() != "ses_fixtureNew" {
+			t.Fatalf("frame %s naming %q, want %s naming the new session", e.Type, e.SessionID(), typ)
+		}
+		var real, fake map[string]any
+		_ = json.Unmarshal([]byte(opencodetest.PromptFrame(typ, 0)), &real)
+		b, _ := json.Marshal(e)
+		_ = json.Unmarshal(b, &fake)
+		// The parsed Event keeps id, type and data: compare those against the
+		// real frame's.
+		rd, _ := json.Marshal(shape(real["data"]))
+		fd, _ := json.Marshal(shape(fake["data"]))
+		if string(rd) != string(fd) {
+			t.Fatalf("%s data shape %s; the real server's %s", typ, fd, rd)
+		}
+	}
+	// The captured frame itself names its session the same way.
+	var e Event
+	if err := json.Unmarshal([]byte(opencodetest.PromptFrame("session.created", 0)), &e); err != nil || e.SessionID() == "" {
+		t.Fatalf("the real session.created names no session: %v", err)
+	}
+}
