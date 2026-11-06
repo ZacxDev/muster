@@ -209,7 +209,8 @@ func routeToolDefFor(request bool) agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeToSessionToolName,
 		Description: "Hand one of your owner's MIRRORED Claude Code sessions (find it with focus_search or fleet_list; its id " +
 			"is \"mirror:<claude session id>\") " + what + "A message's answer comes back as the reply: sent at once when " +
-			"your owner has allowlisted the sender, otherwise after your owner approves it. A task's answer is added to the " +
+			"your owner has allowlisted the sender, otherwise after your owner approves it — except a message that cannot be replied to (no_reply): " +
+			"it goes as a one-way heads-up, and its answer comes back to you, never to the sender. A task's answer is added to the " +
 			"task as a comment. " + answer + "If the session does not answer within the deadline, it comes back to you. " +
 			"Refused for a session that cannot take it now (an offline or read-only host, a window that is gone or does not " +
 			"report Claude Code's status), saying why.",

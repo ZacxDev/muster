@@ -148,9 +148,28 @@ func TestARouteRefusesWhatTheChiefMayNotRoute(t *testing.T) {
 	// TestANoReplyMessageIsRoutedOneWayAndNeverBecomesADraft); every other
 	// origin still refuses it.
 	noReply := w.delivered(t, "m-noreply", true)
-	for _, o := range []RouteOrigin{{Via: RouteViaMCP, Host: "h", Session: "s"}} {
-		if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, noReply.ID, target, time.Hour, o); !errors.Is(err, ErrNoReply) {
-			t.Fatalf("a no_reply message routed via %s: %v", o, err)
+	if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, noReply.ID, target, time.Hour,
+		RouteOrigin{Via: RouteViaMCP, Host: "h", Session: "s"}); !errors.Is(err, ErrNoReply) {
+		t.Fatalf("a no_reply message routed via the owner's door: %v", err)
+	}
+	// muster's own routes (by thread, by pull request) take a QUEUED message,
+	// so each is tried on a queued no_reply one: refused, and the message is
+	// left queued (the refusal rolls back the hand-over to the chief).
+	in := msg("m-noreply-queued")
+	in.NoReply = true
+	queued, _, err := w.s.Submit(plugin(2), w.p.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []RouteOrigin{
+		{Via: RouteViaThread, Session: "s", Thread: "thread-1"},
+		{Via: RouteViaPR, Session: "s", PR: "o/r#1", HeadSHA: "0123456789abcdef0123456789abcdef01234567"},
+	} {
+		if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, queued.ID, target, time.Hour, o); !errors.Is(err, ErrNoReply) {
+			t.Fatalf("a no_reply message routed via %s: %v; want ErrNoReply", o, err)
+		}
+		if m, _ := w.s.Message(plugin(2), queued.ID); m.Status != StatusQueued {
+			t.Fatalf("after the refused route via %s the message is %s; want still queued", o, m.Status)
 		}
 	}
 	w.route(t, w.m)

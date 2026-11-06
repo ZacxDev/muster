@@ -21,10 +21,22 @@
 -- re-applied by db.RLSOn (it changes no policy, grant or default); the column
 -- inherits the table's row-level security. Idempotent.
 --
--- ROLLBACK (after rolling the image back; an older image would relay a one-way
--- route's answer as a reply draft, which the store refuses, failing the route):
+-- ROLLBACK. An older image does not know one_way: it would relay an OPEN
+-- one-way route's answer as a reply draft (which the store refuses, failing the
+-- route), and it would hand a RELAYED one-way route that still owes the chief
+-- its answer (handback set) back as a plain hand-back — the session's report
+-- lost, and the chief told to reply_draft, which refuses. So:
+--   1. BEFORE rolling the image back, let this image's route sweep (every 30 s)
+--      deliver the owed answers; this must reach 0:
+--        SELECT count(*) FROM session_routes WHERE one_way AND state = 'relayed' AND handback IS NOT NULL;
+--   2. Then, immediately before rolling the image back (so the older image
+--      never sees them), end what is left. 🔴 A relayed route still owing its
+--      answer here LOSES that answer (it stays in reply_body, read nowhere);
+--      the statement clears the debt so the older image does not mis-deliver it:
 --   UPDATE session_routes SET state = 'failed', finished_at = now(), error = 'rolled back', handback = NULL
 --       WHERE one_way AND state IN ('routed', 'answered');
+--   UPDATE session_routes SET handback = NULL WHERE one_way AND state = 'relayed' AND handback IS NOT NULL;
+--   3. Roll the image back, then remove the schema:
 --   ALTER TABLE session_routes DROP CONSTRAINT IF EXISTS session_routes_one_way_no_draft;
 --   ALTER TABLE session_routes DROP CONSTRAINT IF EXISTS session_routes_one_way_check;
 --   ALTER TABLE session_routes DROP COLUMN IF EXISTS one_way;
