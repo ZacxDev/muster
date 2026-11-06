@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -170,6 +171,83 @@ func TestTheComposeChiefsTerminalSaysWhereItsOutputIs(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "docker compose logs chief") {
 		t.Fatalf("the terminal page: %d %.1500s", rec.Code, rec.Body)
 	}
+}
+
+// instancesProvisioner is stubProvisioner reporting fixed instances.
+type instancesProvisioner struct {
+	stubProvisioner
+	insts []provision.Instance
+}
+
+func (p instancesProvisioner) Instances(context.Context) ([]provision.Instance, error) {
+	return p.insts, nil
+}
+
+// TestTheAdminsAccountPageSaysWhatTheComposeChiefRunsOn: below the switch, the
+// Account page says which credential the chief runs on — on OpenRouter, its
+// model and that the key's own credit limit is the only cap, with the link —
+// whether its container answers while it is on, that its network is not
+// confined, and whether routing to sessions is on. Every line is pinned whole.
+func TestTheAdminsAccountPageSaysWhatTheComposeChiefRunsOn(t *testing.T) {
+	section := func(w *chiefWorld) string { s, _ := w.chiefSection(t); return html.UnescapeString(s) }
+	line := func(id, text string) string {
+		return `<p data-compose-chief="` + id + `" class="text-sm text-fg2">` + text + `</p>`
+	}
+
+	or := composeWorld(t, false, ComposeChiefOpenRouter, nil)
+	or.s.chiefLLM = &chiefLLMRuntime{model: "example-lab/fixture-model-7b"}
+	got := section(or)
+	for _, want := range []string{
+		line("credential", "Runs on your OpenRouter key, on example-lab/fixture-model-7b (MUSTER_CHIEF_LLM_MODEL). "+
+			"muster adds no budget of its own: set a credit limit on the key itself, at https://openrouter.ai/settings/keys."),
+		line("network", "Its network is not confined: the chief's container reaches the internet, and not muster's database (docs/chief.md)."),
+		line("routing", "Routing work to your sessions: off. Add MUSTER_SESSION_ROUTING=1 to .env and run docker compose up -d --wait."),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the Account page lacks\n  %s\nin:\n%s", want, got)
+		}
+	}
+
+	cl := composeWorld(t, false, ComposeChiefClaude, nil)
+	if got := section(cl); !strings.Contains(got, line("credential", "Runs on your Claude subscription (MUSTER_CHIEF_CLAUDE_TOKEN).")) ||
+		strings.Contains(got, "openrouter.ai") {
+		t.Errorf("the subscription chief's Account page:\n%s", got)
+	}
+
+	none := composeWorld(t, false, "", ErrComposeChiefNoCredential)
+	if got := section(none); !strings.Contains(got, line("credential", "No credential yet: "+ComposeChiefNeedsCredential+".")) {
+		t.Errorf("the credential-less chief's Account page:\n%s", got)
+	}
+
+	// On, with its container not answering: the driver's reason is shown.
+	down := composeWorld(t, true, ComposeChiefClaude, nil)
+	chief := w0(down)
+	ext := down.s.ext
+	ext.Provisioner = instancesProvisioner{insts: []provision.Instance{{Ref: provision.Ref{Name: chief.Name}, Phase: provision.PhasePending,
+		Reason: "the chief container is not answering at chief:18789: connection refused; start it: add chief to COMPOSE_PROFILES"}}}
+	down.s.UseExtensions(ext)
+	down.h = down.s.Handler()
+	if got := section(down); !strings.Contains(got, line("container", "Its container: the chief container is not answering at chief:18789: "+
+		"connection refused; start it: add chief to COMPOSE_PROFILES.")) {
+		t.Errorf("the Account page does not say the container is down:\n%s", got)
+	}
+	// Control: running, no container line.
+	ext.Provisioner = instancesProvisioner{insts: []provision.Instance{{Ref: provision.Ref{Name: chief.Name}, Phase: provision.PhaseRunning, Ready: true}}}
+	down.s.UseExtensions(ext)
+	down.h = down.s.Handler()
+	if got := section(down); strings.Contains(got, `data-compose-chief="container"`) {
+		t.Errorf("a running chief's page has a container line:\n%s", got)
+	}
+}
+
+// w0 is the chief row of a chiefWorld built withChief.
+func w0(w *chiefWorld) agents.Agent {
+	for _, a := range w.store.rows {
+		if a.ID == homeChiefID {
+			return a
+		}
+	}
+	return agents.Agent{}
 }
 
 // TestTheLLMProxyAsksTheComposeChiefsCredentialRule: on Compose the chief

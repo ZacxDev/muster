@@ -54,12 +54,12 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Android](#android) | the native app's passkeys and push | the app (early: does little yet) | off | 2–3 lines |
 | [Service token](#service-token) | another service writes to muster as the admin | a service that calls muster | off | 1 line |
 | [Other settings](#other-settings) | timings, host icons | nothing | defaults | 1 line each |
+| [Chief](#chief) | a fleet agent: what each session is on, routing work to sessions; home opens its chat | the `chief` profile, the connector key, a Claude subscription token or an OpenRouter key | off | `--profile chief` + 2 lines + a credential |
 | **Advanced** | | | | |
 | [Dispatch](#dispatch) | muster starts agents in their own pods | **Kubernetes**: muster deployed in a cluster, manifests you write | off | not in the Compose stack |
 | ↳ [Agent gateway](#agent-gateway), [Claude Code agents](#claude-code-agents) | chat with agents; the `claude-code` agent kind | dispatch, an agent image | off | not in the Compose stack |
-| [Chief](#chief) | a fleet agent; home opens its chat | dispatch (Kubernetes), an agent image, a model key | off | not in the Compose stack |
-| ↳ [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief | off | not in the Compose stack |
-| [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief (Kubernetes), an OpenRouter key | off | not in the Compose stack |
+| [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief on Kubernetes | off | not in the Compose stack |
+| [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief on Kubernetes, an OpenRouter key | off | not in the Compose stack |
 | [Plugins](#plugins) | external systems (an inbox) reach your chief; reply drafts | **a plugin process you run**, the chief | off | 1 line + more |
 | ↳ [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins (session routing also works without them, for your own typed requests and tasks) | plugins, and mostly the chief | off | 1 line each |
 | [Memo relay](#memo-relay) | cairn memos delivered to dispatched agents | **cairn you host**, dispatch | off | not in the Compose stack |
@@ -310,6 +310,61 @@ your phone. [mirroring.md](mirroring.md#answering-claudes-questions).
 - **Check:** ask a Claude Code session in tmux to ask you a multiple-choice
   question; the Rendered view shows it as a form.
 
+### Chief
+
+Your fleet agent. Ask it what every session and agent is working on and who is
+on what, and have it route a task, a request or an idea to the session already
+on it. Plugin messages and your sessions' `chief_ask` questions go to it, and
+home opens its chat. [chief.md](chief.md).
+
+- **Needs:** the `chief` profile (a [claude-code-agent](provisioner.md#agent-kinds)
+  container that muster configures through a shared volume, with no Docker
+  socket), the [connector store](#connectors)'s key, and **one credential**:
+  - a Claude subscription token (`claude setup-token`), or
+  - an [OpenRouter](https://openrouter.ai) key, through muster's LLM proxy, on
+    `deepseek/deepseek-v4.1-flash` unless `MUSTER_CHIEF_LLM_MODEL` names
+    another model. 🔴 **muster adds no budget of its own: set a credit limit on
+    the key itself** at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys).
+    That limit is the only spending cap.
+- **`.env`:**
+
+  ```sh
+  COMPOSE_PROFILES=chief                 # add it to the one COMPOSE_PROFILES line
+  MUSTER_CHIEF_RUNTIME=compose
+  MUSTER_CONNECTOR_ENCRYPTION_KEY=<openssl rand -base64 32>   # if not set already
+  MUSTER_CHIEF_CLAUDE_TOKEN=<claude setup-token>   # OR MUSTER_AGENT_OPENROUTER_KEY=<key>
+  ```
+
+  Then `docker compose up -d --wait`, and **Account → Chief → Turn the chief
+  on**. The subscription token wins when both are set.
+- **Routing work to sessions** also needs [session routing](#session-routing):
+  `MUSTER_SESSION_ROUTING=1` (not plugins: an idea you type in the chief's chat
+  and your tasks are routed without them). Account → Chief says whether it is on.
+- **Summaries** of what each session is doing need no key of their own. With
+  [focus](#focus) on, the chief also reads each session's focus title.
+- **Default:** off. Without the profile and the runtime, Account → Chief says
+  how to turn it on, and a session's `chief_ask` is told to use
+  `attention_ask` instead.
+- **What it does not do in the Compose stack:**
+  - one chief per install: the admin's (user 1). Other users' Account page says
+    so;
+  - no other agents: agent dispatch still needs [Kubernetes](#dispatch);
+  - no Terminal view (its output is in `docker compose logs chief`);
+  - no `muster chief replace`;
+  - its **network is not confined**: its container reaches the internet. It
+    is on a network of its own with muster, and cannot reach Postgres, S3 or
+    STT.
+
+  Details are in [chief.md](chief.md#on-the-docker-compose-install).
+- **Turning it off** stops the Claude Code CLI in the container. The container
+  stays up and idle.
+- **Check:** `chief runtime: COMPOSE (MUSTER_CHIEF_RUNTIME=compose) — …` in
+  `docker compose logs muster`; Account → Chief reads **On.** and names its
+  credential; `muster doctor` lists `chief` on. With the chief on and the
+  container down, Account → Chief says the container is not answering.
+- **On Kubernetes** the chief runs in its own pod instead, through the
+  [agent provisioner](#dispatch) ([chief.md](chief.md)).
+
 ### Session state
 
 Every stop of a session becomes an episode, pushed **once** (naming the
@@ -494,17 +549,6 @@ on Claude subscription tokens, with worker pools and the jobs API
 `MUSTER_AGENT_CC_TOKEN_<NAME>` per account. Needs [dispatch](#dispatch); not
 available in the Compose stack.
 
-### Chief
-
-Your fleet agent: it answers you about the state of the work, and plugin
-messages are delivered to it. [chief.md](chief.md).
-
-- **Needs [dispatch](#dispatch)** (Kubernetes) and either a `gateway`-kind agent
-  image with its OpenRouter key, or the `claude-code` kind with a Claude
-  subscription token. Then each user turns it on under **Account → Chief**.
-- **In the Compose stack** Account → Chief says "Not available on this install",
-  and a session's `chief_ask` is told to use `attention_ask` instead.
-
 ### Chief session runtimes
 
 A picker for the runtime (and Claude model) of each chief chat session:
@@ -519,9 +563,9 @@ own words or points you at them. Ships in **shadow mode**: decisions are
 recorded on the Asks page's Chief nudges tab, nothing is sent.
 [chief-nudges.md](chief-nudges.md).
 
-- **Needs** the [chief](#chief), which needs in-cluster [dispatch](#dispatch)
-  (Kubernetes), and the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`) for its
-  stall classifier.
+- **Needs** the [chief](#chief) on Kubernetes (in-cluster [dispatch](#dispatch)),
+  and the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`) for its stall
+  classifier.
 - **Not available in the Compose stack**: `MUSTER_CHIEF_NUDGES` and the other
   `MUSTER_CHIEF_NUDGE_*` settings are not forwarded, like the rest of the
   agent plane. In a Kubernetes deployment, `MUSTER_CHIEF_NUDGES=1` turns it on

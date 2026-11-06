@@ -210,7 +210,7 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 		return head + state("unavailable", ComposeChiefNotYours) + `</section>`
 	}
 	if owner <= 0 || !s.chiefToggleAvailable(owner, list) {
-		return head + state("unavailable", "Not available on this install. The chief runs as an agent in its own Kubernetes pod, and this muster has no agent provisioner (MUSTER_AGENT_PROVISIONER). Everything else works without it.") + `</section>`
+		return head + state("unavailable", ChiefNotSetUp) + `</section>`
 	}
 	notice := ""
 	switch r.URL.Query().Get("chief") {
@@ -240,10 +240,15 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 		s.logger.Printf("chief: account: read the toggle: %v", err)
 		return head + state("unknown", "Your chief setting could not be read. Reload the page to try again.") + `</section>`
 	}
-	if on {
-		return head + notice + state("on", "On.") + form(false, "Turn the chief off") + `</section>`
+	details := ""
+	if s.ext.ComposeChief != nil {
+		chief, has := primaryChief(ownedBy(list, owner))
+		details = s.composeChiefDetails(ctx, owner, chief, has, on)
 	}
-	return head + notice + state("off", "Off.") + form(true, "Turn the chief on") + `</section>`
+	if on {
+		return head + notice + state("on", "On.") + details + form(false, "Turn the chief off") + `</section>`
+	}
+	return head + notice + state("off", "Off.") + details + form(true, "Turn the chief on") + `</section>`
 }
 
 // chiefSwitchLock is owner's switch lock: every POST /account/chief of one

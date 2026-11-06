@@ -55,13 +55,12 @@ REQUIRED_ANCHORS = ["core", "ask-cards", "other-settings"]
 # credentials only (cmd/muster-server/provisioner.go), so none of it can work
 # in the Compose stack, and docs/features.md#dispatch says so.
 AGENT_PLANE = "agent plane: needs muster running inside Kubernetes (docs/features.md#dispatch)"
-# The Compose chief's own variables, until the compose file's `chief` profile
-# forwards them (the pull request that adds the profile removes this group).
-COMPOSE_CHIEF_PENDING = "the Compose chief runtime: forwarded with the `chief` profile, which a later change adds"
+# The Compose chief's spec volume path: the Compose file mounts it where the
+# runtime's default (/run/muster-spec) looks, so it is not an .env line.
 NOT_FORWARDED = {
-    **{name: COMPOSE_CHIEF_PENDING for name in [
-        "MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_SPEC_DIR", "MUSTER_CHIEF_CLAUDE_TOKEN", "MUSTER_CHIEF_LLM_MODEL",
-    ]},
+    "MUSTER_TEST_LLM_UPSTREAM": "test only: the Compose smoke test's fake model; only tests/compose-chief.override.yml sets it",
+    "MUSTER_TEST_MODE": "test only: the flag MUSTER_TEST_LLM_UPSTREAM needs; only tests/compose-chief.override.yml sets it",
+    "MUSTER_CHIEF_SPEC_DIR": "the Compose file mounts the chief's spec volume at the runtime's default, /run/muster-spec",
     **{name: AGENT_PLANE for name in [
         "MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_AGENT_GATEWAY_MODEL",
         "MUSTER_AGENT_GATEWAY_PORT", "MUSTER_AGENT_RUNTIME_CONFIG", "MUSTER_AGENT_RUNTIME_INSTALL",

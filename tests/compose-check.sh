@@ -57,10 +57,12 @@ printf 'MUSTER_VAPID_PUBLIC_KEY=fixture-vapid-pub\nMUSTER_VAPID_PRIVATE_KEY=fixt
 printf 'S3_STORE_SECRET_KEY=fixture-s3-secret\nMUSTER_UPLOAD_SIGNING_KEY=fixture-signing-key-fixture-signing-key\n' >> "$tmp/env"
 # The same, with a model chosen: both sides of the STT pair must follow it.
 { cat "$tmp/env"; echo "MUSTER_STT_MODEL=Systran/faster-whisper-medium"; } > "$tmp/env-model"
+# The chief: its profile's two lines (the connector key is in the example).
+{ cat "$tmp/env"; echo "MUSTER_CHIEF_RUNTIME=compose"; } > "$tmp/env-chief"
 
 fail=0
-for profile in default stt stt-whisper stt-cohere s3 stt,s3 stt+model; do
-  envfile="$tmp/env"; [ "$profile" = stt+model ] && envfile="$tmp/env-model"
+for profile in default stt stt-whisper stt-cohere s3 stt,s3 stt+model chief; do
+  envfile="$tmp/env"; [ "$profile" = stt+model ] && envfile="$tmp/env-model"; [ "$profile" = chief ] && envfile="$tmp/env-chief"
   args=(-f "$COMPOSE" --env-file "$envfile" -p compose-check)
   case "$profile" in
     default) ;;
@@ -82,7 +84,8 @@ want = {"default": {"postgres", "muster"},
         "stt-whisper": {"postgres", "muster"} | whisper,
         "stt-cohere": {"postgres", "muster", "stt-cohere"},
         "s3": {"postgres", "muster", "s3"},
-        "stt,s3": {"postgres", "muster", "s3"} | whisper}[profile]
+        "stt,s3": {"postgres", "muster", "s3"} | whisper,
+        "chief": {"postgres", "muster", "chief", "chief-init"}}[profile]
 errs = []
 if set(svcs) != want:
     errs.append(f"services {sorted(svcs)} != {sorted(want)}")
@@ -156,6 +159,63 @@ if "s3" in svcs:
         errs.append("the store's root password is not the .env's S3_STORE_SECRET_KEY")
     if s3.get("ports"):
         errs.append(f"the s3 store is published on the host: {s3['ports']}")
+# The chief's container and muster's side of it (deploy/docker-compose.yml,
+# internal/provision/compose's "Who can read what").
+def nets(s):
+    n = s.get("networks") or {}
+    return set(n) if isinstance(n, dict) else set(n)
+def mounts(s):
+    return [(v.get("type"), v.get("source"), v.get("target"), bool(v.get("read_only")), (v.get("volume") or {}).get("subpath"))
+            for v in s.get("volumes", [])]
+if nets(m) != {"default", "chief"}:
+    errs.append(f"muster networks {sorted(nets(m))}, want default and chief")
+if ("volume", "chief-spec", "/run/muster-spec", False, None) not in mounts(m):
+    errs.append(f"muster does not mount chief-spec read-write at /run/muster-spec: {mounts(m)}")
+if sorted(str(g) for g in m.get("group_add", [])) != ["1000", "1001"]:
+    errs.append(f"muster group_add {m.get('group_add')}, want 1000 and 1001 (it gives the spec and the files their groups)")
+for other in ("postgres", "s3", "stt-whisper", "stt-cohere"):
+    if other in svcs and "chief" in nets(svcs[other]):
+        errs.append(f"{other} is on the chief's network")
+chief_env = {k: env.get(k) for k in ("MUSTER_CHIEF_RUNTIME",)}
+want_env = {"MUSTER_CHIEF_RUNTIME": "compose"}
+# The runtime's own defaults (cmd/muster-server composechief.go) must match
+# where this file mounts the spec volume and what muster listens on.
+if ("volume", "chief-spec", "/run/muster-spec", False, None) not in mounts(m) or m.get("environment", {}).get("MUSTER_PORT") != "8105":
+    errs.append("muster's spec mount or port no longer matches the Compose chief runtime's defaults (/run/muster-spec, 8105)")
+if profile == "chief" and chief_env != want_env:
+    errs.append(f"muster's chief settings {chief_env}, want {want_env}")
+if profile != "chief" and any(chief_env.values()):
+    errs.append(f"muster's chief settings are not empty without MUSTER_CHIEF_RUNTIME: {chief_env}")
+if "chief" in svcs:
+    c = svcs["chief"]
+    if c.get("image") != "ghcr.io/zacxdev/claude-code-agent:1.2.3":
+        errs.append(f"chief image {c.get('image')!r}, want ghcr.io/zacxdev/claude-code-agent:1.2.3 (the release's)")
+    if c.get("user") != "0:1001" or not c.get("init"):
+        errs.append(f"chief user {c.get('user')!r} init {c.get('init')!r}: the supervisor runs as 0:1001 under an init")
+    if c.get("cap_drop") != ["ALL"] or sorted(c.get("cap_add", [])) != ["KILL", "SETGID", "SETUID"]:
+        errs.append(f"chief capabilities drop {c.get('cap_drop')} add {c.get('cap_add')}: want ALL dropped, SETUID SETGID KILL added")
+    if "no-new-privileges:true" not in c.get("security_opt", []):
+        errs.append("chief lacks no-new-privileges")
+    if nets(c) != {"chief"}:
+        errs.append(f"chief networks {sorted(nets(c))}, want only chief (off Postgres's)")
+    if c.get("ports"):
+        errs.append(f"chief is published on the host: {c['ports']}")
+    if c.get("environment", {}).get("CCD_SPEC_DIR") != "/run/muster-spec/chief":
+        errs.append(f"chief CCD_SPEC_DIR {c.get('environment', {}).get('CCD_SPEC_DIR')!r}")
+    cm = mounts(c)
+    for want_m in (("volume", "chief-spec", "/run/muster-spec", True, None),
+                   ("volume", "chief-spec", "/etc/claude-code", True, "chief/files/etc/claude-code"),
+                   ("volume", "chief-data", "/data", False, None)):
+        if want_m not in cm:
+            errs.append(f"chief lacks the mount {want_m}: {cm}")
+    hc = " ".join(c.get("healthcheck", {}).get("test", []))
+    if "/compose/status" not in hc:
+        errs.append(f"chief healthcheck {hc!r} does not probe the supervisor's /compose/status")
+    if c.get("depends_on", {}).get("chief-init", {}).get("condition") != "service_completed_successfully":
+        errs.append("chief does not wait for chief-init")
+    ci = svcs["chief-init"]
+    if ci.get("restart") != "no" or ci.get("network_mode") != "none":
+        errs.append(f"chief-init restart {ci.get('restart')!r} network_mode {ci.get('network_mode')!r}: a one-shot with no network")
 for e in errs:
     print(f"FAIL [{profile}]: {e}")
 if not errs:

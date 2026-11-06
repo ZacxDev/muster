@@ -248,8 +248,12 @@ func TestAFreshInstallHasNoChiefAndSaysSo(t *testing.T) {
 		t.Errorf("the sidebar has a chief row:\n%s", sb)
 	}
 	section, state := w.chiefSection(t)
-	if state != "unavailable" || !strings.Contains(section, "Not available on this install") {
-		t.Errorf("Chief section state %q, want unavailable:\n%s", state, section)
+	// The whole sentence, pinned: it is the enable step a Compose user follows.
+	const want = `<p id="chief-state" data-state="unavailable" class="text-sm text-fg">Not available on this install yet. ` +
+		`To turn it on, add COMPOSE_PROFILES=chief, MUSTER_CHIEF_RUNTIME=compose and MUSTER_CONNECTOR_ENCRYPTION_KEY to .env, ` +
+		`run docker compose up -d --wait, and come back here (docs/features.md#chief). Everything else works without it.</p>`
+	if state != "unavailable" || !strings.Contains(section, want) {
+		t.Errorf("Chief section state %q, want unavailable with the enable step:\n%s", state, section)
 	}
 	if strings.Contains(section, `id="chief-toggle"`) || strings.Contains(section, "<form") {
 		t.Errorf("an unavailable chief draws a switch:\n%s", section)

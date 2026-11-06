@@ -869,12 +869,17 @@ jobs:
           tests/release-publish-test.sh
           tests/stt-cohere-source-test.sh
 
-      # The default stack, then the s3 and stt profiles with the .env lines
-      # docs/features.md gives. espeak-ng speaks the stt phase's test clips.
-      - name: bring the compose stack up from this run's image
+      # The default stack, then the s3, stt and chief profiles with the .env
+      # lines docs/features.md gives. espeak-ng speaks the stt phase's test
+      # clips. The chief phase runs this run's claude-code-agent image against
+      # a fake model behind muster's LLM proxy (tests/compose-chief.override.yml,
+      # tests/fake-llm): real CLI turns and real muster tool calls, no key.
+      - name: bring the compose stack up from this run's images
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng >/dev/null
+          python3 tests/fake-llm/fake_llm_test.py
           make image IMAGE=muster-local VERSION=0.0.0
+          docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent-local:0.0.0 .
           tests/compose-up.sh muster-local 0.0.0
 
       # setup-python, not the runner's system python: that one is
@@ -1281,7 +1286,10 @@ jobs:
   release:
     name: GitHub release (tags only)
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
-    needs: [image-muster, image-stt-cohere]
+    # image-claude-code-agent: the release's docker-compose.yml names
+    # claude-code-agent:<version> (the chief profile), so the release waits
+    # for that tag to exist.
+    needs: [image-muster, image-stt-cohere, image-claude-code-agent]
     runs-on: ubuntu-latest
     concurrency:
       group: github-release-${{ github.ref_name }}

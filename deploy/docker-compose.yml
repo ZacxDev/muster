@@ -28,6 +28,11 @@
 #                 attachments, with its bucket created on start. Two .env
 #                 lines: S3_STORE_SECRET_KEY and MUSTER_UPLOAD_SIGNING_KEY
 #                 (plus MUSTER_PUBLIC_URL, which the install sets anyway).
+#   chief         the chief, your fleet agent (docs/features.md#chief): a
+#                 claude-code-agent container muster configures through a
+#                 shared volume (no Docker socket). Two .env lines,
+#                 MUSTER_CHIEF_RUNTIME=compose and MUSTER_CONNECTOR_ENCRYPTION_KEY,
+#                 and a credential: MUSTER_CHIEF_CLAUDE_TOKEN or the OpenRouter key.
 # A third dictation option, your own OpenAI-compatible API key, needs no
 # container. See docs/features.md and docs/dictation.md.
 #
@@ -223,11 +228,29 @@ services:
       MUSTER_AGENTS_IDLE_AFTER: ${MUSTER_AGENTS_IDLE_AFTER:-}
       MUSTER_HOST_ICONS: ${MUSTER_HOST_ICONS:-}
 
-      # NOT FORWARDED, ON PURPOSE: agent dispatch, the chief and what needs it
-      # (its stall nudges, officers, the memo relay: MUSTER_AGENT_PROVISIONER,
+      # The chief (docs/features.md#chief), with the `chief` profile:
+      # MUSTER_CHIEF_RUNTIME=compose runs it in the `chief` container below,
+      # configured through the chief-spec volume at /run/muster-spec. It sets
+      # the agent plane itself, the connect door (port 8106, not published) and
+      # the URLs the chief uses (http://muster:…) included.
+      MUSTER_CHIEF_RUNTIME: ${MUSTER_CHIEF_RUNTIME:-}
+      MUSTER_CHIEF_CLAUDE_TOKEN: ${MUSTER_CHIEF_CLAUDE_TOKEN:-}
+      MUSTER_CHIEF_LLM_MODEL: ${MUSTER_CHIEF_LLM_MODEL:-}
+
+      # NOT FORWARDED, ON PURPOSE: agent dispatch and what needs it (the chief's
+      # stall nudges, officers, the memo relay: MUSTER_AGENT_PROVISIONER,
       # MUSTER_CHIEF_NUDGES, …). Their provisioner uses Kubernetes in-cluster
       # credentials only, so they cannot run in this stack
       # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH.
+    # The chief's spec volume (read-write here; read-only in the chief
+    # container), and the network the chief reaches muster on. muster writes
+    # the chief's spec with group 1001 and its files with group 1000, the
+    # claude-code-agent image's own groups, so it holds both
+    # (internal/provision/compose: the agent's session cannot read its spec).
+    volumes:
+      - chief-spec:/run/muster-spec
+    group_add: ["1000", "1001"]
+    networks: [default, chief]
     # The image is distroless; the server binary probes its own /readyz.
     healthcheck:
       test: ["CMD", "/muster-server", "healthcheck"]
@@ -392,8 +415,84 @@ services:
       retries: 12
       start_period: 10s
 
+  # --- the chief (profile chief) ---------------------------------------------
+  # The chief runs in the claude-code-agent image. muster never starts it (that
+  # would need the Docker socket, which is root on the host): this file does,
+  # and muster tells its supervisor (`ccd compose`) what to run by writing the
+  # chief's spec into the chief-spec volume — the compose driver,
+  # internal/provision/compose. Turning the chief off under Account → Chief
+  # stops the Claude Code CLI inside; the container stays up and idle.
+  #
+  # One-shot: the volume's directories, with the owners and groups muster and
+  # the supervisor need (muster is uid 65532; 1001 is the supervisor's group,
+  # 1000 the agent's). The subpath mount below needs files/etc/claude-code to
+  # exist before the chief starts.
+  chief-init:
+    profiles: ["chief"]
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
+    user: "0:0"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        install -d -o 65532 -g 1001 -m 2750 /v /v/chief
+        install -d -o 65532 -g 1000 -m 2750 /v/chief/files /v/chief/files/etc /v/chief/files/etc/claude-code
+    volumes:
+      - chief-spec:/v
+    network_mode: none
+    restart: "no"
+
+  chief:
+    profiles: ["chief"]
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
+    restart: unless-stopped
+    depends_on:
+      chief-init:
+        condition: service_completed_successfully
+    # 🔴 THE SUPERVISOR IS NOT THE AGENT. It runs as uid 0 with primary group
+    # 1001 and no capability but changing uid and signalling, so it can read
+    # the spec (group 1001) and nothing else of root's; it starts the agent as
+    # uid 1000, group 1000, which cannot read the spec — the spec holds the
+    # agent's turn bearer (internal/provision/compose, "Who can read what").
+    user: "0:1001"
+    init: true
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CCD_SPEC_DIR: /run/muster-spec/chief
+    volumes:
+      - chief-spec:/run/muster-spec:ro
+      # The managed instructions, read-only to the agent (subpath of the
+      # chief-spec volume; needs Docker Engine 26+ / Compose 2.23+).
+      - type: volume
+        source: chief-spec
+        target: /etc/claude-code
+        read_only: true
+        volume:
+          subpath: chief/files/etc/claude-code
+      - chief-data:/data
+    # Its own network, which muster is on and Postgres, S3 and STT are not.
+    # ⚠ NOT CONFINED: it reaches the internet (the Claude API needs it).
+    networks: [chief]
+    healthcheck:
+      # The supervisor's own status: 200 whether the chief is on, off or not
+      # yet configured, so `up --wait` does not wait for you to turn it on.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:18789/compose/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+networks:
+  default: {}
+  chief: {}
+
 volumes:
   pgdata:
   hf-cache:
   whisper-cache:
   s3-data:
+  chief-spec:
+  chief-data:
