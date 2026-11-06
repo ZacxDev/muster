@@ -16,12 +16,12 @@ import (
 // THE LAUNCHER (`muster-mirror opencode`), against a fake opencode server.
 
 type launchRig struct {
-	srv    *opencodetest.Server
-	home   string
-	env    map[string]string
-	execd  []string
-	stderr bytes.Buffer
-	tuiVer string
+	srv     *opencodetest.Server
+	homeDir string
+	env     map[string]string
+	execd   []string
+	stderr  bytes.Buffer
+	tuiVer  string
 }
 
 func newLaunchRig(t *testing.T) *launchRig {
@@ -32,7 +32,7 @@ func newLaunchRig(t *testing.T) *launchRig {
 	if err := opencodehost.WriteTokenFile(filepath.Join(home, ".muster", "opencode-token"), opencodehost.TokenFile{URL: srv.URL, Token: srv.Issue()}); err != nil {
 		t.Fatal(err)
 	}
-	return &launchRig{srv: srv, home: home, tuiVer: "opencode v2.0.0-fixture",
+	return &launchRig{srv: srv, homeDir: home, tuiVer: "opencode v2.0.0-fixture",
 		env: map[string]string{"HOME": home, "TMUX": "/srv/fixture/tmux-1000/default,4242,0", "TMUX_PANE": "%12"}}
 }
 
@@ -56,7 +56,7 @@ func (r *launchRig) run(args ...string) int { return runOpenCodeLaunch(args, r.d
 
 func (r *launchRig) record(t *testing.T) (opencodehost.LaunchRecord, error) {
 	t.Helper()
-	return opencodehost.ReadLaunch(opencodehost.LaunchDirDefault(r.home), "/srv/fixture/tmux-1000/default", "%12")
+	return opencodehost.ReadLaunch(opencodehost.LaunchDirDefault(r.homeDir), "/srv/fixture/tmux-1000/default", "%12")
 }
 
 // TestTheLauncherCreatesTheSessionRecordsItAndExecsTheTUIOnIt: with no -s it
@@ -192,7 +192,7 @@ func TestTheLauncherStartsUnboundWhatItCannotBind(t *testing.T) {
 			if want := append([]string{"/srv/fixture/bin/opencode"}, c.want...); !slices.Equal(r.execd, want) {
 				t.Fatalf("exec %q, want %q", r.execd, want)
 			}
-			if _, err := opencodehost.ReadLaunch(opencodehost.LaunchDirDefault(r.home), "/srv/fixture/tmux-1000/default", "%12"); !errors.Is(err, opencodehost.ErrNoLaunch) {
+			if _, err := opencodehost.ReadLaunch(opencodehost.LaunchDirDefault(r.homeDir), "/srv/fixture/tmux-1000/default", "%12"); !errors.Is(err, opencodehost.ErrNoLaunch) {
 				t.Fatalf("recorded: %v", err)
 			}
 		})
@@ -200,7 +200,7 @@ func TestTheLauncherStartsUnboundWhatItCannotBind(t *testing.T) {
 }
 
 // filepathJoinTemp is a HOME with no token file.
-func filepathJoinTemp(r *launchRig) string { return filepath.Join(r.home, "elsewhere") }
+func filepathJoinTemp(r *launchRig) string { return filepath.Join(r.homeDir, "elsewhere") }
 
 // TestTheLauncherRefusesWhatItDoesNotKnow: an unknown flag, a subcommand and
 // a second directory are refused (rc 2), never passed on blind.
