@@ -5,31 +5,28 @@ import (
 	"testing"
 )
 
-// TestTheTestLLMUpstreamNeedsTheTestFlag: MUSTER_TEST_LLM_UPSTREAM sends every
-// chief request and the OpenRouter key to its URL, so it is refused unless
-// MUSTER_TEST_MODE=1 is set beside it and the Compose chief runtime is on; the
-// flag alone, a non-URL and any other flag value are refused too. Control:
-// the full pair is accepted and reaches the config.
-func TestTheTestLLMUpstreamNeedsTheTestFlag(t *testing.T) {
+// TestTheTestLLMUpstreamNeedsTheComposeChief: MUSTER_TEST_LLM_UPSTREAM sends
+// every chief request and the OpenRouter key to its URL, so it is refused
+// unless the Compose chief runtime is on, and when it is not an http(s) URL.
+// Control: beside the runtime it is accepted and reaches the config.
+func TestTheTestLLMUpstreamNeedsTheComposeChief(t *testing.T) {
 	base := func() map[string]string {
 		e := composeEnv("/run/muster-spec")
 		e[envTestLLMUpstream] = "http://fake-llm.example.invalid:8080/"
-		e[envTestMode] = "1"
 		return e
 	}
 	cfg, err := loadEnv(t, base())
 	if err != nil || cfg.LLMTestUpstream != "http://fake-llm.example.invalid:8080" {
-		t.Fatalf("control: the full pair gave %q, %v", cfg.LLMTestUpstream, err)
+		t.Fatalf("control: beside the Compose chief it gave %q, %v", cfg.LLMTestUpstream, err)
 	}
 	for name, c := range map[string]struct {
 		edit func(map[string]string)
 		want string
 	}{
-		"no test flag":       {func(e map[string]string) { delete(e, envTestMode) }, "TEST ONLY"},
-		"flag not 1":         {func(e map[string]string) { e[envTestMode] = "yes" }, "TEST ONLY"},
-		"flag alone":         {func(e map[string]string) { delete(e, envTestLLMUpstream) }, "arms nothing else"},
-		"not a URL":          {func(e map[string]string) { e[envTestLLMUpstream] = "fake-llm:8080" }, "not an http(s) URL"},
-		"no compose runtime": {func(e map[string]string) { delete(e, envChiefRuntime) }, "nothing else reads it"},
+		"not a URL": {func(e map[string]string) { e[envTestLLMUpstream] = "fake-llm:8080" }, "not an http(s) URL"},
+		// A server with no Compose chief at all (no runtime, no spec dir), so no
+		// other chief check can be the one that refuses.
+		"no compose runtime": {func(e map[string]string) { delete(e, envChiefRuntime); delete(e, envChiefSpecDir) }, "nothing else reads it"},
 	} {
 		e := base()
 		c.edit(e)

@@ -340,10 +340,8 @@ const (
 	envChiefSpecDir     = "MUSTER_CHIEF_SPEC_DIR"
 	envChiefClaudeToken = "MUSTER_CHIEF_CLAUDE_TOKEN"
 	envChiefLLMModel    = "MUSTER_CHIEF_LLM_MODEL"
-	// TEST ONLY (testllm.go): the chief's LLM proxy upstream, and the flag
-	// without which it is refused.
+	// TEST ONLY (testllm.go): the chief's LLM proxy upstream.
 	envTestLLMUpstream = "MUSTER_TEST_LLM_UPSTREAM"
-	envTestMode        = "MUSTER_TEST_MODE"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -859,8 +857,8 @@ type config struct {
 	// chief's requests are pinned to when it runs on the OpenRouter key
 	// (api.DefaultChiefLLMModel when unset).
 	ChiefLLMModel string
-	// LLMTestUpstream is MUSTER_TEST_LLM_UPSTREAM, accepted only beside
-	// MUSTER_TEST_MODE=1 (testllm.go).
+	// LLMTestUpstream is MUSTER_TEST_LLM_UPSTREAM, accepted only with the
+	// Compose chief runtime (testllm.go).
 	LLMTestUpstream string
 
 	// AgentGateway names the agent runtime whose chat wire this deployment talks:

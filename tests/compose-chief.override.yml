@@ -23,7 +23,6 @@ services:
   muster:
     environment:
       MUSTER_TEST_LLM_UPSTREAM: http://fake-llm:8080
-      MUSTER_TEST_MODE: "1"
     depends_on:
       fake-llm:
         condition: service_healthy

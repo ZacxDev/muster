@@ -59,7 +59,6 @@ AGENT_PLANE = "agent plane: needs muster running inside Kubernetes (docs/feature
 # runtime's default (/run/muster-spec) looks, so it is not an .env line.
 NOT_FORWARDED = {
     "MUSTER_TEST_LLM_UPSTREAM": "test only: the Compose smoke test's fake model; only tests/compose-chief.override.yml sets it",
-    "MUSTER_TEST_MODE": "test only: the flag MUSTER_TEST_LLM_UPSTREAM needs; only tests/compose-chief.override.yml sets it",
     "MUSTER_CHIEF_SPEC_DIR": "the Compose file mounts the chief's spec volume at the runtime's default, /run/muster-spec",
     **{name: AGENT_PLANE for name in [
         "MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_AGENT_GATEWAY_MODEL",

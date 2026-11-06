@@ -556,8 +556,7 @@ except the last two, which the Compose smoke test sets and which say so.
 |---|---|---|---|
 | `MUSTER_TEST_DATABASE_URL` | none (DB tests skip) | for store tests | The Postgres template database for the Go suite. See [testing.md](testing.md). |
 | `MUSTER_TEST_REQUIRE_DB` | off | in CI | Turns a missing database into a failure instead of a skip. |
-| `MUSTER_TEST_LLM_UPSTREAM` | none | no | **Read by the shipped muster-server**, unlike the rows above, and refused unless `MUSTER_TEST_MODE=1` is set beside it and `MUSTER_CHIEF_RUNTIME=compose` is on. It replaces the Compose chief's LLM proxy upstream (OpenRouter) with this http(s) URL — the Compose smoke test's fake model (`tests/compose-chief.override.yml`). 🔴 Every chief request, with the OpenRouter key muster attaches, goes there; the boot log says so. Never set it in a real deployment; the Compose file does not forward it. |
-| `MUSTER_TEST_MODE` | none | no | `1`: the explicit statement that this muster is a test, without which `MUSTER_TEST_LLM_UPSTREAM` is refused. Set alone, or to any other value, it is refused. |
+| `MUSTER_TEST_LLM_UPSTREAM` | none | no | **Read by the shipped muster-server**, unlike the rows above, and refused unless `MUSTER_CHIEF_RUNTIME=compose` is on. It replaces the Compose chief's LLM proxy upstream (OpenRouter) with this http(s) URL — the Compose smoke test's fake model (`tests/compose-chief.override.yml`). 🔴 Every chief request, with the OpenRouter key muster attaches, goes there; the boot log says so. Never set it in a real deployment; the Compose file does not forward it. |
 | `MUSTER_E2E_SUB` | none | for `e2e/mkmember` | A GoTrue user id for the e2e member fixture. |
 | `MUSTER_E2E_EMAIL` | none | for `e2e/mkmember` | That fixture user's email. |
 | `MUSTER_E2E_AGENT` | none | for `e2e/mkchat` | The name of the agent the mirror-chat spec's chat fixture creates (or deletes). |

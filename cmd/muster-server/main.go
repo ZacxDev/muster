@@ -755,8 +755,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 		upstream := chiefLLMUpstream
 		if cfg.LLMTestUpstream != "" {
-			logger.Printf("llm proxy: 🔴 the chief's upstream is OVERRIDDEN to %s by %s (%s=1) — TEST ONLY: every chief "+
-				"request, and the OpenRouter key muster attaches to it, goes there", cfg.LLMTestUpstream, envTestLLMUpstream, envTestMode)
+			logger.Printf("llm proxy: 🔴 the chief's upstream is OVERRIDDEN to %s by %s — TEST ONLY: every chief "+
+				"request, and the OpenRouter key muster attaches to it, goes there", cfg.LLMTestUpstream, envTestLLMUpstream)
 			upstream = cfg.LLMTestUpstream
 		}
 		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: upstream}); err != nil {

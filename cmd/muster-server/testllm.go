@@ -15,26 +15,18 @@ import (
 // real Claude Code CLI runs real turns with no key.
 //
 // 🔴 IT SENDS EVERY CHIEF REQUEST, AND THE OWNER'S OPENROUTER KEY MUSTER
-// ATTACHES TO IT, TO THAT URL. So it is refused unless MUSTER_TEST_MODE=1 is
-// set beside it — a second, explicit statement that this is a test — and
-// unless the chief runtime is on (nothing else reads it); a set
-// MUSTER_TEST_MODE with no override is refused too, as an armed switch.
-// Neither is forwarded by deploy/docker-compose.yml: only the test override
-// file sets them. The boot log says so loudly when it is in effect.
+// ATTACHES TO IT, TO THAT URL. The guard is that deploy/docker-compose.yml does
+// not forward it: only the test override file sets it. It is refused unless
+// the Compose chief runtime is on (nothing else reads it) and it is an http(s)
+// URL, and the boot log says so loudly when it is in effect. (A second "this is
+// a test" flag was deleted in round 0: whoever can set this variable can set
+// that one too, so it added friction and no protection.)
 // ---------------------------------------------------------------------------
 
 func (c *config) applyTestLLMUpstream(getenv func(string) string) error {
 	up := strings.TrimRight(strings.TrimSpace(getenv(envTestLLMUpstream)), "/")
-	mode := strings.TrimSpace(getenv(envTestMode))
-	switch {
-	case up == "" && mode == "":
+	if up == "" {
 		return nil
-	case up == "":
-		return fmt.Errorf("%s=%q is set but %s is not: it arms nothing else. Unset it", envTestMode, mode, envTestLLMUpstream)
-	case mode != "1":
-		return fmt.Errorf("%s is set but %s is not 1: it sends every chief request, and the OpenRouter key muster "+
-			"attaches, to %q. It is TEST ONLY; set %s=1 beside it in a test, and never in a real deployment",
-			envTestLLMUpstream, envTestMode, up, envTestMode)
 	}
 	if u, err := url.Parse(up); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("%s=%q is not an http(s) URL", envTestLLMUpstream, up)
