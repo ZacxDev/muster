@@ -37,6 +37,7 @@ func TestAnOpenCodeAskIsPushedAndWithdrawnLikeAClaudeOne(t *testing.T) {
 	set(mirror.StatusWaiting, &mirror.Pending{Kind: "question", Tool: "question", Summary: "Which database should the fixture use? (and 1 more question)"})
 	nudge()
 	nudge()
+	pastWaitingGrace(f.srv) // its push waits the grace (since #463's follow-up)
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention "+tag {
 		t.Fatalf("the question: %v", got)
 	}
@@ -58,6 +59,7 @@ func TestAnOpenCodeAskIsPushedAndWithdrawnLikeAClaudeOne(t *testing.T) {
 		Pending: &mirror.Pending{Kind: "permission", Tool: "bash", Summary: "bash: rm -rf build", PromptID: "per_1a2aa6345001HPvxtQP9FD941m", Choices: "once reject"}})
 	f.mirror.mu.Unlock()
 	nudge()
+	pastWaitingGrace(f.srv)
 	got := f.pushes()
 	if len(got) != 3 || got[2] != "attention attention-"+sessionKey("ws", "main", "@6") {
 		t.Fatalf("the permission request: %v", got)

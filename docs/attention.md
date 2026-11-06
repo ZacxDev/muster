@@ -77,9 +77,14 @@ stop, oldest first, saying where the session is (its window's
 for how long, and a **View in session** link. A row has **no answer box**. A
 waiting window muster cannot answer is a row here instead of a "Session
 waiting" item (one muster cannot key, from an older host that sends no Claude
-session id, stays a "Session waiting" item with today's push); a question muster can answer (a held AskUserQuestion, an
-opencode question or permission request, a Hermes approval) stays an
-answerable item above it, with its own full-text push.
+session id, stays a "Session waiting" item with today's push, held the same 60
+seconds); a question muster can answer (a held AskUserQuestion, an opencode
+question or permission request its host relays, a Hermes approval) stays an
+answerable item above it — its card, drawn at once, with no second row — but
+its stop **is** an episode, pushed once, held like any other wait, and that
+push is the question's own full-text notification. An opencode question muster
+cannot relay keeps its card, which says to answer it in the terminal (and no
+second row), but its push is a plain wait's text-free one.
 
 **One push per stop.** Each episode is pushed **once**, however the stop moves
 between waiting and idle, and its notification closes when the stop ends:
@@ -117,10 +122,18 @@ was down has its notification closed.
   no tool, command, focus title or anything the session said (the codename
   is the host's, from its labels file, not the session's). Tapping it opens the
   session (`/attention/open/episode-<id>`, resolved when tapped), else the row.
-- A waiting window is **held for 60 seconds** (not configurable) and pushed
-  once they have passed, unless the stop has ended by then: a permission
-  prompt you answer at the terminal inside them, while its host stays
-  connected, does not buzz your phone, and its row never shows it pushed. The
+  **Except a stop waiting on a question muster can answer** when it is pushed:
+  its push is that question's own notification (`<where> is asking`, the
+  question and its options in full, as an ask's), under the episode's tag and
+  tap route.
+- **Every prompt's push waits 60 seconds** (not configurable) — a permission
+  prompt, and since the follow-up to #463 a question muster can answer too (an
+  AskUserQuestion, an opencode or Hermes prompt): it is pushed once they have
+  passed, unless the stop has ended by then. A prompt or question you answer
+  at the terminal or in muster inside them, while its host stays connected,
+  does not buzz your phone, and its row never shows it pushed. A question's
+  card is on the Asks page and in the session from the start; only the phone
+  waits. The
   hold only delays a push, it never drops one: a window whose host lists it
   waiting without saying since when is pushed from that listing, and a held
   window whose host drops is pushed once muster has known the host offline
@@ -136,9 +149,15 @@ was down has its notification closed.
   longer, and the 2-minute repush floor can hold it past that.
   While held, its row is an ordinary waiting row. The hold is worked out
   afresh on every pass from when the stop opened, not kept in a timer: a
-  restart mid-hold still pushes it, once. Never
-  through the chief. Answerable asks (an AskUserQuestion card, an opencode or
-  Hermes prompt) are not held: they keep their own push, at once.
+  restart mid-hold still pushes it, once, and a question muster reads back
+  from its transcript after a restart is the same stop: pushed before the
+  restart, it is not pushed again; never pushed and past its 60 seconds, it is
+  pushed once. A question asked right after one you answered is a new stop
+  with its own 60 seconds: the stop of the one you answered ends the moment
+  its window stops waiting, not a pass later. Never through the chief. A
+  window muster cannot key keeps the
+  waiting diff's push, held by the same rule (timed from when muster first
+  saw it wait, re-checked every 30 seconds).
 - An idle stop is pushed at once when no chief judges it live (the feature
   off, you in shadow mode, no chief). When your chief judges it live, the
   push follows its decision for the stop: a **sent** nudge never pushes; a
@@ -235,7 +254,7 @@ command, path or URL, never what Claude said.
 |---|---|---|
 | a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any — except muster's own ask about a [plugin message nobody acted on](plugins.md#a-message-the-chief-does-not-act-on), whose long fixed sentence would fill the body: its body is `From: <sender> · Subject: <subject>`, then the option (the page shows the whole question) |
 | a held question (a session's `AskUserQuestion`) | `<where> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
-| a session's stop, with `MUSTER_SESSION_STATE=1` ([above](#stalled--waiting-session-state)) | `<where> needs you` / `<where> is stalled` | `Needs you · idle 12m`: its state and idle time only |
+| a session's stop, with `MUSTER_SESSION_STATE=1` ([above](#stalled--waiting-session-state)) | `<where> needs you` / `<where> is stalled` | `Needs you · idle 12m`: its state and idle time only — except a stop waiting on a question muster can answer, which is pushed with that question's own title and body (the row above or the waiting session's below), under the stop's `attention-episode-<id>` tag |
 | a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <where>`, or `Waiting: <where>` when its host names no tool |
 | a [notice](#notices) | `<where> may be waiting on you` | the session's focus title, then the chief's message; no options and no `ask` payload |
 
@@ -321,8 +340,14 @@ you are typing) (`internal/api/attention_asker.go`). A session is not re-notifie
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
-  sessions that are already waiting are recorded silently. While a host is
-  disconnected for less than 5 minutes its items stay (no clear);
+  sessions that are already waiting are recorded silently, except one whose
+  60 seconds (by its host's own time) ran out after this muster started: no
+  earlier muster can have pushed it, so it is pushed once those 60 seconds
+  are up if it still waits — at once if they already are (a slow restart). One
+  whose 60 seconds ran out while muster was down is taken as pushed: nothing
+  records the waiting diff's pushes across a restart. While a host is disconnected for less than 5 minutes its
+  items stay (no clear). (With session state on, a window muster can key is
+  an episode instead, whose push is recorded in the database: see above.)
 - when it goes waiting again within 2 minutes of its last notification or of
   being recorded (busy and back is one episode).
 

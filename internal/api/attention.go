@@ -118,17 +118,28 @@ type attentionState struct {
 	waiting map[int64]map[string]attentionItem
 	// seenHosts is each owner's hosts this process has already observed: a
 	// host's FIRST observation seeds its waiting sessions without pushing, so a
-	// restart (or the double rollout, or a host reconnecting) re-notifies none.
+	// restart (or the double rollout, or a host reconnecting) re-notifies none
+	// — except a wait still inside its grace there, which is held as a new
+	// one (diffHeld) and pushed once the grace has passed, if it still waits.
 	seenHosts map[int64]map[string]bool
+	// diffHeld is each owner's waiting items (by key) the diff is HOLDING:
+	// new, not pushed, inside their grace (insideGrace, timed from the value:
+	// the first nudge that saw it wait — or, on its host's first sight, its own
+	// Since). Re-diffed on the attention sweep (recheckOfflineHosts) until each
+	// is pushed or gone.
+	diffHeld map[int64]map[string]time.Time
 	// pushedAt is when each session item was last pushed: a session that goes
 	// waiting again within attentionRepushAfter is not pushed again.
 	pushedAt map[string]time.Time
-	// episodeWaiting is each owner's plain waiting windows (by item key) as the
+	// episodeWaiting is each owner's covered waiting windows (by item key) as the
 	// last hub nudge saw them, with session state on: only a window that
 	// STARTED waiting since is looked up and pushed as an episode
 	// (episodeWaitingPushes) — the push itself is claimed in the database, so
-	// this only spares the reads.
-	episodeWaiting map[int64]map[string]bool
+	// this only spares the reads. Each holds the window's episode key and place
+	// as that nudge saw them: what the hook reads once the window stops waiting
+	// (episodeWaitsAnswered) or loses its key (episodeHandedOver), when the
+	// window itself can no longer name its episode.
+	episodeWaiting map[int64]map[string]coveredWait
 	// diffShown is each waiting item (by key) this diff PUSHED and has not
 	// cleared: its notification is showing. A window that gains its session
 	// key mid-wait is seeded as an episode only when it is (session_push.go).
@@ -1017,10 +1028,14 @@ func (s *Server) AttentionMirrorChanged(owner int64) {
 }
 
 // attentionMirrorChanged diffs owner's waiting sessions against the last
-// nudge's. A session that started waiting is pushed — unless its host is
-// observed for the first time in this process (seeded silently: a restart or a
-// reconnect re-notifies nothing) or it was pushed within attentionRepushAfter;
-// one that stopped is cleared. Called on the hub's change nudge
+// nudge's. A session that started waiting is pushed once it has waited out
+// its GRACE (insideGrace, Server.waitingGrace: 60 s, the episode's own) — held
+// until then (diffHeld), re-diffed on the attention sweep, and never pushed
+// if it stopped waiting first — unless its host is observed for the first
+// time in this process (seeded silently: a restart or a reconnect re-notifies
+// nothing that was due before; a wait still inside its grace there is held
+// like a new one) or it was pushed within attentionRepushAfter; one that
+// stopped is cleared. Called on the hub's change nudge
 // (BroadcastAgentsChangedFor).
 func (s *Server) attentionMirrorChanged(owner int64) {
 	if s.ext.Mirror == nil || owner <= 0 {
@@ -1048,23 +1063,25 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	// (episodeHandedOver).
 	var episodePushed map[string]bool
 	if s.sessionStateOn() {
-		// 🔴 SESSION STATE ON: A WAITING WINDOW MUSTER CANNOT ANSWER, AND THAT
-		// SESSION STATE KEYS (episodeCover), IS AN EPISODE, opened from here
-		// and pushed once per stop, claimed — held for its grace and then
-		// pushed by the state pass (session_push.go, EpisodeWaitingGrace) —
-		// and left out of
-		// this diff, which would push it a second time and clear it the moment
-		// it stops waiting. Answerable asks, and a window session state cannot
-		// key, stay here, with today's push.
+		// 🔴 SESSION STATE ON: A WAITING WINDOW THAT SESSION STATE KEYS
+		// (episodeCover) — WHATEVER IT WAITS ON, AN ANSWERABLE ASK TOO — IS AN
+		// EPISODE, opened from here and pushed once per stop, claimed — held
+		// for its grace and then pushed by the state pass (session_push.go,
+		// EpisodeWaitingGrace) — and left out of this diff, which would push it
+		// a second time and clear it the moment it stops waiting. Only a
+		// window session state cannot key stays here, held by the same grace.
 		kept, fresh, seed := waiting[:0:0], []attentionItem(nil), []attentionItem(nil)
-		cur := map[string]bool{}
+		cur := map[string]coveredWait{}
+		listed := map[string]bool{} // every item waiting now, covered or not
 		s.attention.mu.Lock()
 		if s.attention.episodeWaiting == nil {
-			s.attention.episodeWaiting = map[int64]map[string]bool{}
+			s.attention.episodeWaiting = map[int64]map[string]coveredWait{}
 		}
 		prev := s.attention.episodeWaiting[owner]
 		for _, it := range waiting {
-			if _, _, _, ok := episodeCover(hs, it); !ok {
+			listed[it.Key] = true
+			key, _, w, ok := episodeCover(hs, it)
+			if !ok {
 				kept = append(kept, it)
 				continue
 			}
@@ -1080,18 +1097,30 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 				kept, seed = append(kept, it), append(seed, it)
 				continue
 			}
-			cur[it.Key] = true
-			if !prev[it.Key] {
+			cur[it.Key] = coveredWait{key: key, host: it.card.ref.Host, session: w.Session, window: w.ID}
+			if _, was := prev[it.Key]; !was {
 				fresh = append(fresh, it) // started waiting since the last nudge (or first seen by this process)
+			}
+		}
+		// 🔴 A COVERED WINDOW THAT STOPPED WAITING (its prompt answered) ENDS
+		// ITS STOP HERE, at once (episodeWaitsAnswered): left to the next pass, a
+		// question asked right after it would join its episode and be timed from
+		// ITS opening — pushed early, or at once, though the new question was
+		// answered inside its own grace (audit round 1 F1).
+		var left []coveredWait
+		for k, cw := range prev {
+			if _, still := cur[k]; !still && !listed[k] {
+				left = append(left, cw)
 			}
 		}
 		s.attention.episodeWaiting[owner] = cur
 		s.attention.mu.Unlock()
+		s.episodeWaitsAnswered(octx, hs, left)
 		s.episodeWaitingPushes(octx, owner, fresh, hs, true)
 		s.episodeWaitingPushes(octx, owner, seed, hs, false)
 		// prev is never written again (cur replaced it), so it is read
 		// unlocked here.
-		episodePushed = s.episodeHandedOver(octx, hs, kept, prev)
+		episodePushed = s.episodeHandedOver(octx, kept, prev)
 		waiting = kept
 	}
 	for _, it := range waiting {
@@ -1112,6 +1141,14 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	if s.attention.diffShown == nil {
 		s.attention.diffShown = map[string]bool{}
 	}
+	if s.attention.diffHeld == nil {
+		s.attention.diffHeld = map[int64]map[string]time.Time{}
+	}
+	held := s.attention.diffHeld[owner]
+	if held == nil {
+		held = map[string]time.Time{}
+		s.attention.diffHeld[owner] = held
+	}
 	before := s.attention.waiting[owner]
 	seen := s.attention.seenHosts[owner]
 	if seen == nil {
@@ -1130,20 +1167,59 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		}
 	}
 	s.attention.waiting[owner] = now
+	for k := range held {
+		if _, ok := now[k]; !ok {
+			delete(held, k) // stopped waiting inside its grace: never pushed
+		}
+	}
 	for k, it := range now {
-		if _, ok := before[k]; ok {
+		from, holding := held[k]
+		if _, ok := before[k]; ok && !holding {
 			continue
 		}
-		if !seen[it.host] || episodePushed[k] {
-			// The host's first observation: seed, do not push — and stamp it, so
-			// the re-push window covers a seeded session too. Likewise a window
-			// whose stop an EPISODE push covered at the last nudge and that now
-			// names an answerable ask (a host that reports waiting before it
-			// names the ask): the stop was pushed once already.
-			s.attention.pushedAt[k] = at
+		if !holding {
+			// A new wait's grace runs from now — the first nudge that saw it, as
+			// an episode's runs from its opening.
+			from = at
+			if !seen[it.host] || episodePushed[k] {
+				// The host's first observation: seed, do not push — and stamp it, so
+				// the re-push window covers a seeded session too. Likewise a window
+				// whose stop an EPISODE push covered at the last nudge: the stop was
+				// pushed once already. 🔴 EXCEPT, on a first observation, a wait
+				// on an online host that NO EARLIER PROCESS CAN HAVE PUSHED
+				// (diffNeverPushed: its grace, by its own Since, ran out after this
+				// process started — a restart, slow or not, or a reconnect, caught
+				// it mid-hold, audit round 1 F2): it is held for the rest of its
+				// grace, or pushed now if that has passed, once, if it still waits.
+				// A wait with no Since (its age unknown), one whose grace ran out
+				// before this process started (its push was due, and sent, then),
+				// or one on an offline host is seeded, as before: a restart never
+				// re-notifies it.
+				since := it.Since
+				if since.After(at) {
+					since = at // a host clock ahead of this one: never a longer hold
+				}
+				if episodePushed[k] || it.Offline || !s.diffNeverPushed(since) {
+					s.attention.pushedAt[k] = at
+					continue
+				}
+				from = since
+			}
+		}
+		// 🔴 THE HOLD (insideGrace — the episode's own rule): a new wait is
+		// pushed only once it has waited out its grace, and only if it still
+		// waits then; one answered inside it is never pushed. A held item on a
+		// host that dropped stays held while it is listed, and pushes once the
+		// grace has passed — a delay, never a silence.
+		if insideGrace(at.Sub(from), s.waitingGrace) {
+			held[k] = from
 			continue
 		}
-		if last, ok := s.attention.pushedAt[k]; ok && at.Sub(last) < attentionRepushAfter {
+		delete(held, k)
+		// The re-push window is timed from when this wait STARTED (from), not
+		// from its held push: waiting again within attentionRepushAfter of the
+		// last push is the same episode, however long its grace held it.
+		if last, ok := s.attention.pushedAt[k]; ok && from.Sub(last) < attentionRepushAfter {
 			continue // the same episode, back again
 		}
 		s.attention.pushedAt[k] = at
@@ -1175,14 +1251,39 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	}
 }
 
+// diffNeverPushed reports whether a waiting item that started at since can
+// have been pushed by no process before this one: its grace (insideGrace,
+// timed from since) ran out at or after this process started, so the push it
+// was held for was never due while an earlier process ran. False for a zero
+// since (its age unknown). 🔴 THE DIFF'S PUSHES ARE NOT RECORDED ANYWHERE A
+// RESTART CAN READ, so this is what a host's first sight trusts: a wait whose
+// push fell due before this process started is taken as pushed then — and so
+// is one whose push fell due while muster was DOWN (accepted: a restart never
+// re-notifies, and nothing tells the two apart).
+func (s *Server) diffNeverPushed(since time.Time) bool {
+	return !since.IsZero() && !since.Add(s.waitingGrace).Before(s.startedAt)
+}
+
+// coveredWait is a waiting window session state covers (episodeCover) as a hub
+// nudge saw it: its episode key and where it is.
+type coveredWait struct {
+	key, host, session, window string
+}
+
 // recheckOfflineHosts re-runs the diff for every owner with an item of a host
-// that dropped: nothing nudges for a host that is gone, so without this its
-// items would outlive attentionOfflineGrace on the owner's devices. On the
-// attention sweep.
+// that dropped — nothing nudges for a host that is gone, so without this its
+// items would outlive attentionOfflineGrace on the owner's devices — and for
+// every owner with an item the diff is HOLDING (diffHeld): nothing nudges for
+// a window that just sits waiting, so this is what pushes it once its grace
+// has passed. On the attention sweep.
 func (s *Server) recheckOfflineHosts() {
 	var owners []int64
 	s.attention.mu.Lock()
 	for owner, items := range s.attention.waiting {
+		if len(s.attention.diffHeld[owner]) > 0 {
+			owners = append(owners, owner)
+			continue
+		}
 		for _, it := range items {
 			if it.Offline {
 				owners = append(owners, owner)

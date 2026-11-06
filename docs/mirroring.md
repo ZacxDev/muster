@@ -728,7 +728,13 @@ a prompt does:
   screen, the command on the page;
 - a **question** (the question tool's form, `form.created`) is a *Session
   question* item, notified as "<window> is asking" with its question and, for
-  one question, its options.
+  one question, its options — when muster can relay its answer; one it cannot
+  keeps its card (which says to answer it in the terminal) and is notified as
+  a plain waiting window.
+
+Either notification waits 60 seconds and is sent only if the window still
+waits then ([attention.md](attention.md#stalled--waiting-session-state)); the
+item itself is on the page at once.
 
 Answered, rejected or cancelled in the terminal (`permission.replied`,
 `form.replied`, `form.cancelled`), the window stops waiting and the item and
@@ -1024,7 +1030,10 @@ refusal has no protection at all, so upgrade every host that runs Hermes.
 When Claude Code calls `AskUserQuestion`, the question shows in **both places
 at once**: the terminal draws its own picker, and the window's Rendered view
 draws the same questions as a form. Answer in either. Whichever is answered
-first counts, and the other side shows what happened. This needs a Claude Code
+first counts, and the other side shows what happened. Your phone is notified
+only if the question is still open 60 seconds after Claude asked it
+([attention.md](attention.md#stalled--waiting-session-state)), so a question
+you answer at the terminal, or in muster, within a minute never buzzes it. This needs a Claude Code
 hook on the host: `muster-mirror ask`. Add it to that machine's Claude Code
 `settings.json`, with no flags:
 
@@ -1249,6 +1258,13 @@ gone is reopened. A call whose result is already in the transcript is never
 registered, and a question past muster's size limits stays in the terminal
 only. Nothing changes on the host: this works with every `muster-mirror` that
 reports its windows' status.
+
+A question read back this way is **not notified again**. With session state on
+its push belongs to the window's stop, recorded in the database: one pushed
+before the restart is not pushed again, and one that was never pushed (its 60
+seconds had not passed) is pushed once they have, if it is still open
+([attention.md](attention.md#stalled--waiting-session-state)). Before
+the follow-up to #463 a restart re-sent every question it read back.
 
 When muster has no card for an open call, the conversation still shows it,
 with *Muster isn't tracking this question, so it can't answer it from here —
