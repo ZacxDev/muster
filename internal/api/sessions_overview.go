@@ -172,16 +172,38 @@ func liveOf(sessions []liveSession) focus.Live {
 // hintMinTerms words with message m's subject and body, best first — and, for
 // a pull-request review muster could not route, the session that authored it
 // (prAuthorHint). Any failure is no hint — logged, never a failed delivery.
+//
+// A TASK EVENT is matched on the TASK's words instead (taskEventHintText: its
+// title and body as stored, and the event's change line), never on the event's
+// JSON, whose keys would match every session that ever touched a task; and the
+// agents already bound to the task are left out — the event names them
+// already, and a hint is for who ELSE may be on it.
 func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m plugins.Message) plugins.Hints {
-	h := plugins.Hints{Window: focus.HistoryWindow, Author: s.prAuthorHint(ctx, m)}
+	h := plugins.Hints{Window: focus.HistoryWindow}
+	text, bound := m.Subject+"\n"+m.Body, map[int64]bool(nil)
+	if plugins.IsTaskEvent(m) {
+		text, bound = s.taskEventHintText(ctx, m)
+	} else {
+		h.Author = s.prAuthorHint(ctx, m)
+	}
 	if s.ext.Focus == nil {
 		return h
 	}
 	live := s.liveSessions(ctx, chief.ID)
+	if len(bound) > 0 {
+		kept := live[:0:0]
+		for _, ls := range live {
+			if ls.sub.Kind == focus.KindAgent && bound[ls.sub.AgentID()] {
+				continue
+			}
+			kept = append(kept, ls)
+		}
+		live = kept
+	}
 	if len(live) == 0 {
 		return h
 	}
-	matches, err := s.ext.Focus.MatchHistory(ctx, m.Subject+"\n"+m.Body, liveOf(live), s.now().Add(-focus.HistoryWindow),
+	matches, err := s.ext.Focus.MatchHistory(ctx, text, liveOf(live), s.now().Add(-focus.HistoryWindow),
 		hintMinTerms, plugins.MaxHintSessions)
 	if err != nil {
 		s.logger.Printf("plugins: message %d: session hint: %v", m.ID, err)
@@ -203,6 +225,35 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 		h.Sessions = append(h.Sessions, sh)
 	}
 	return h
+}
+
+// taskEventHintText is what task event m's session hint is matched on — the
+// task's title and body as muster stores them (read as the owner) and the
+// event's change line, or, when the task cannot be read, the event's own title
+// and change — and the agents bound to the task, which the hint leaves out:
+// those the event recorded (muster's rows when it was stored) and those bound
+// now.
+func (s *Server) taskEventHintText(ctx context.Context, m plugins.Message) (string, map[int64]bool) {
+	bound := map[int64]bool{}
+	var ev plugins.TaskEvent
+	_ = json.Unmarshal([]byte(m.Body), &ev) // a body that cannot be read leaves the zero event
+	for _, a := range ev.Agents {
+		bound[a.ID] = true
+	}
+	text := ev.Title + "\n" + ev.Change
+	if s.ext.Notes != nil {
+		if n, err := s.ext.Notes.Get(ctx, *m.TaskID); err == nil {
+			text = n.Title + "\n" + n.Body + "\n" + ev.Change
+			if s.ext.Agents != nil {
+				if on, err := s.liveOnTask(ctx, n.OwnerID, n.ID); err == nil {
+					for _, a := range on {
+						bound[a.ID] = true
+					}
+				}
+			}
+		}
+	}
+	return text, bound
 }
 
 // pluginHints is the deliverer's HintFunc for ext: nil without a focus store

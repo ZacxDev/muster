@@ -143,9 +143,15 @@ func TestARouteRefusesWhatTheChiefMayNotRoute(t *testing.T) {
 	if _, err := w.s.CreateRoute(session(2), worker.ID, 2, w.m.ID, target, time.Hour); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a message not delivered to this agent: %v", err)
 	}
+	// CHANGED with one-way routes (0087): the CHIEF's route of a no_reply
+	// message is no longer refused (it is a one-way route:
+	// TestANoReplyMessageIsRoutedOneWayAndNeverBecomesADraft); every other
+	// origin still refuses it.
 	noReply := w.delivered(t, "m-noreply", true)
-	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, noReply.ID, target, time.Hour); !errors.Is(err, ErrNoReply) {
-		t.Fatalf("a no_reply message: %v", err)
+	for _, o := range []RouteOrigin{{Via: RouteViaMCP, Host: "h", Session: "s"}} {
+		if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, noReply.ID, target, time.Hour, o); !errors.Is(err, ErrNoReply) {
+			t.Fatalf("a no_reply message routed via %s: %v", o, err)
+		}
 	}
 	w.route(t, w.m)
 	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour); !errors.Is(err, ErrAlreadyRouted) {
@@ -155,6 +161,92 @@ func TestARouteRefusesWhatTheChiefMayNotRoute(t *testing.T) {
 	w.approve(t, w.file(t, inflight, "already answered"))
 	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, inflight.ID, target, time.Hour); !errors.Is(err, ErrReplyInFlight) {
 		t.Fatalf("a message with a reply in flight: %v", err)
+	}
+}
+
+// 🔴 TestANoReplyMessageIsRoutedOneWayAndNeverBecomesADraft (0087): the chief's
+// route of a no_reply message is ONE-WAY — marked on the row and its audit — its
+// answer is not screened with the deployment's deny words (it never leaves
+// muster) and is finished relayed OWING THE CHIEF the answer
+// (FinishAnswerToChiefRoute, RouteOneWayAnswerOwed), never as a draft. The
+// draft relay still refuses it: RelayRoute fails the route, files no draft,
+// and the schema itself refuses a draft on a one-way route. A replyable
+// message's route is not one-way (control), and FinishAnswerToChiefRoute
+// refuses it.
+func TestANoReplyMessageIsRoutedOneWayAndNeverBecomesADraft(t *testing.T) {
+	w := newDraftWorld(t)
+	nr := w.delivered(t, "m-oneway", true)
+	r := w.route(t, nr)
+	if !r.OneWay || !r.AnswersToChief() || r.IsRequest() || r.IsTask() || r.MessageID != nr.ID {
+		t.Fatalf("a no_reply message's route: %+v; want one-way, carrying the message", r)
+	}
+	if acts := auditActions(t, w, RouteObject(r.RouteID)); len(acts) != 1 || acts[0] != "session_route.routed" {
+		t.Fatalf("audit: %v", acts)
+	}
+	var oneWayAudited bool
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT coalesce((detail->>'one_way')::bool, false)
+		FROM audit_log WHERE object = $1 AND action = 'session_route.routed'`, RouteObject(r.RouteID)).Scan(&oneWayAudited); err != nil || !oneWayAudited {
+		t.Fatalf("the routed audit row does not say one_way (%v)", err)
+	}
+	// Control: a replyable message's route is two-way, and cannot be finished
+	// as the chief's answer.
+	two := w.route(t, w.m)
+	if two.OneWay || two.AnswersToChief() {
+		t.Fatalf("control: a replyable message's route reads one-way: %+v", two)
+	}
+	if _, _, err := w.s.AnswerRoute(session(2), two.RouteID, "Yes."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.s.FinishAnswerToChiefRoute(session(2), two.RouteID); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("control: a replyable route finished as the chief's answer: %v", err)
+	}
+
+	// The answer: not screened against the deny words (it reaches only the chief).
+	w.s.denyWords = []string{"secretbox"}
+	a, fresh, err := w.s.AnswerRoute(session(2), r.RouteID, "Already fixing it on secretbox.")
+	if err != nil || !fresh || a.State != RouteAnswered {
+		t.Fatalf("a one-way answer naming a deny word: %+v %v %v; want it taken (it never leaves muster)", a, fresh, err)
+	}
+	got, err := w.s.FinishAnswerToChiefRoute(session(2), r.RouteID)
+	if err != nil || got.State != RouteRelayed || got.DraftID != nil {
+		t.Fatalf("finish: %+v %v", got, err)
+	}
+	owed, err := w.s.OwesHandBack(session(2), r.RouteID)
+	if err != nil || !owed {
+		t.Fatalf("the answer is not owed to the chief: %v %v", owed, err)
+	}
+	if _, reason, ok, err := w.s.TakeHandBack(session(2), r.RouteID); err != nil || !ok || reason != RouteOneWayAnswerOwed {
+		t.Fatalf("hand-back: %q %v %v; want %q", reason, ok, err, RouteOneWayAnswerOwed)
+	}
+	if again, err := w.s.FinishAnswerToChiefRoute(session(2), r.RouteID); err != nil || again.State != RouteRelayed {
+		t.Fatalf("finish again: %+v %v; want the relayed route as it is", again, err)
+	}
+
+	// The draft relay refuses a one-way route: no draft, the route failed.
+	nr2 := w.delivered(t, "m-oneway-2", true)
+	r2 := w.route(t, nr2)
+	if _, _, err := w.s.AnswerRoute(session(2), r2.RouteID, "On it."); err != nil {
+		t.Fatal(err)
+	}
+	failed, d, err := w.s.RelayRoute(session(2), r2.RouteID, w.chief.Name, true)
+	if !errors.Is(err, ErrRouteClosed) || d.ID != 0 || failed.State != RouteFailed || failed.DraftID != nil {
+		t.Fatalf("RelayRoute of a one-way route: %+v / %+v / %v; want it failed with no draft", failed, d, err)
+	}
+	var drafts int
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM plugin_reply_drafts WHERE message_id = ANY($1)`,
+		[]int64{nr.ID, nr2.ID}).Scan(&drafts); err != nil || drafts != 0 {
+		t.Fatalf("%d drafts exist for the no_reply messages (%v)", drafts, err)
+	}
+	// The schema: a one-way route cannot name a draft (0087's check), whatever
+	// a writer does — with a real draft id (control: the two-way route takes it).
+	other := w.delivered(t, "m-oneway-draft", false)
+	draft := w.file(t, other, "a real draft")
+	sys := authz.System(context.Background())
+	if _, err := w.s.pool.Exec(sys, `UPDATE session_routes SET draft_id = $2 WHERE route_id = $1`, r2.RouteID, draft.ID); err == nil {
+		t.Fatal("a one-way route took a draft_id")
+	}
+	if _, err := w.s.pool.Exec(sys, `UPDATE session_routes SET draft_id = $2 WHERE route_id = $1`, two.RouteID, draft.ID); err != nil {
+		t.Fatalf("control: a two-way route cannot take that draft_id either (%v), so the refusal above proves nothing", err)
 	}
 }
 
