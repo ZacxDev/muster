@@ -77,6 +77,13 @@ import (
 // runCompose): a daemonized descendant is re-parented to it rather than to the
 // container's init.
 //
+// 🔴 AND "off" IS REPORTED ONLY ONCE NOTHING IS LEFT. The sweep covers every
+// descendant and every process of the agent's uid, SIGKILLs what kill-server
+// did not end, and waits for it to be gone (composeKillWait). Anything still
+// alive after that makes the stop an ERROR naming it, retried every step, and
+// no child is started beside it (stop, stopOrFail): "off" is muster's word that
+// the chief has stopped calling the owner's model.
+//
 // 🔴 THE SUPERVISOR AND THE CLI ARE DIFFERENT USERS, SO THE SESSION CANNOT READ
 // THE SPEC. spec.json carries the turn bearer, and on Kubernetes the session is
 // kept out of its reach (turncred.go). Here the service runs as uid 0, primary
@@ -335,8 +342,9 @@ type composeSup struct {
 	logf                         func(format string, args ...any)
 	// cleanup runs after every stop, with the stopped child's environment: the
 	// tmux server it used, and anything else still descended from this process
-	// (composeCleanup).
-	cleanup func(ctx context.Context, env []string)
+	// or owned by the agent's uid (composeCleanup). An error names what is still
+	// alive after it killed and waited.
+	cleanup func(ctx context.Context, env []string) error
 	// cred is who the child runs as (composeIdentity); nil runs it as this
 	// process's own user (the tests).
 	cred *syscall.Credential
@@ -351,6 +359,10 @@ type composeSup struct {
 	st      composeStatus
 	child   *composeChild
 	hadSpec bool
+	// unclean is the environment of a stopped child whose cleanup left
+	// something alive: every step retries that cleanup, and nothing is
+	// reported off, nor started, until it succeeds (stop).
+	unclean []string
 
 	// The backoff after a child that ended on its own (run goroutine only).
 	exits     []time.Time
@@ -368,7 +380,7 @@ func newComposeSup(specDir string, cred *syscall.Credential) *composeSup {
 		startupBudget: composeStartupBudget, livenessGrace: composeLivenessGrace,
 		backoffMin: time.Second, backoffMax: 30 * time.Second, healthTimeout: 3 * time.Second,
 		logf: log.Printf, reap: reapOrphans, now: time.Now,
-		cleanup: func(ctx context.Context, env []string) { composeCleanup(ctx, env, cred) },
+		cleanup: func(ctx context.Context, env []string) error { return composeCleanup(ctx, env, cred) },
 		epoch: func(dataDir, epoch string) error {
 			return runAsCLI(context.Background(), cred, nil, "", composeSelf(), "compose-epoch", dataDir, epoch)
 		},
@@ -473,7 +485,9 @@ func (s *composeSup) step(ctx context.Context) {
 	}
 	sp, err := readComposeSpec(s.specDir)
 	if errors.Is(err, errSpecAbsent) {
-		s.stop(ctx, "no spec")
+		if s.stopOrFail(ctx, "no spec") {
+			return
+		}
 		s.mu.Lock()
 		reason := reasonAwaiting
 		if s.hadSpec {
@@ -484,7 +498,9 @@ func (s *composeSup) step(ctx context.Context) {
 		return
 	}
 	if err != nil {
-		s.stop(ctx, "a spec it refuses")
+		if s.stopOrFail(ctx, "a spec it refuses") {
+			return
+		}
 		s.mu.Lock()
 		s.hadSpec = true
 		s.st = composeStatus{State: composeError, Reason: err.Error()}
@@ -503,7 +519,9 @@ func (s *composeSup) step(ctx context.Context) {
 	}
 
 	if sp.Replicas == 0 {
-		s.stop(ctx, "replicas 0")
+		if s.stopOrFail(ctx, "replicas 0") {
+			return
+		}
 		s.exits, s.nextStart = nil, time.Time{}
 		s.set(func(st *composeStatus) {
 			specFields(st)
@@ -514,9 +532,16 @@ func (s *composeSup) step(ctx context.Context) {
 	if c != nil && c.key != sp.key() {
 		s.logf("ccd compose: generation %d (epoch %s): replacing the child started for generation %d",
 			sp.Generation, sp.Epoch, c.key.generation)
-		s.stop(ctx, "a new generation")
+		if s.stopOrFail(ctx, "a new generation") {
+			return
+		}
 		s.exits, s.nextStart = nil, time.Time{}
 		c = nil
+	}
+	// No child: a stop that left something alive is retried before anything
+	// else, and nothing is started beside what it left.
+	if c == nil && s.stopOrFail(ctx, "what a stopped chief left") {
+		return
 	}
 	s.set(specFields)
 	if c != nil {
@@ -552,7 +577,9 @@ func (s *composeSup) describeExit(c *composeChild) string {
 // childEnded handles a child that ended (or that probe gave up on, already
 // stopped): clean up after it and schedule the next start.
 func (s *composeSup) childEnded(ctx context.Context, c *composeChild, how string) {
-	s.stop(ctx, "it ended")
+	if s.stopOrFail(ctx, "it ended") {
+		return
+	}
 	var delay time.Duration
 	s.exits, delay, _ = podagent.RecordExit(s.exits, s.now(), 10*time.Minute, int(^uint(0)>>1), s.backoffMin, s.backoffMax)
 	s.nextStart, s.exitedKey = s.now().Add(delay), c.key
@@ -670,13 +697,44 @@ func (s *composeSup) childCmd(env []string) *exec.Cmd {
 	return cmd
 }
 
+// stopOrFail is stop, and on its error sets the status to error naming what is
+// still alive, and reports true: the caller must then report nothing else (in
+// particular not off) and start nothing.
+func (s *composeSup) stopOrFail(ctx context.Context, why string) bool {
+	err := s.stop(ctx, why)
+	if err == nil {
+		return false
+	}
+	reason := "the chief did not stop: " + err.Error()
+	s.logf("ccd compose: %s; retrying", reason)
+	s.set(func(st *composeStatus) { st.State, st.Reason, st.Boot, st.Ready = composeError, reason, "", false })
+	return true
+}
+
 // stop ends the child, if there is one, and everything it left behind.
-func (s *composeSup) stop(ctx context.Context, why string) {
+//
+// 🔴 IT SUCCEEDS ONLY WHEN NOTHING THE CHILD STARTED IS STILL ALIVE. "off" is
+// muster's word that the chief has stopped spending the owner's key, so a
+// process that outlived the kill — the CLI, or anything it left — makes this an
+// error, not a stop: the status says error, and every later step retries the
+// cleanup (s.unclean) before it reports anything else or starts a child.
+func (s *composeSup) stop(ctx context.Context, why string) error {
 	s.mu.Lock()
 	c := s.child
+	unclean := s.unclean
 	s.mu.Unlock()
 	if c == nil {
-		return
+		if unclean == nil || s.cleanup == nil {
+			return nil
+		}
+		err := s.cleanup(ctx, unclean)
+		if err == nil {
+			s.mu.Lock()
+			s.unclean = nil
+			s.mu.Unlock()
+			s.logf("ccd compose: what the stopped chief left has ended")
+		}
+		return err
 	}
 	s.set(func(st *composeStatus) { st.Ready, st.Reason = false, "stopping the chief: "+why })
 	select {
@@ -696,13 +754,18 @@ func (s *composeSup) stop(ctx context.Context, why string) {
 	// The group may outlive its leader (a child of the entrypoint that stayed in
 	// it); it never needs to outlive the stop.
 	_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL)
+	var err error
 	if s.cleanup != nil {
-		s.cleanup(ctx, c.env)
+		err = s.cleanup(ctx, c.env)
 	}
 	s.mu.Lock()
 	s.child = nil
 	s.st.Boot, s.st.Ready = "", false
+	if err != nil {
+		s.unclean = c.env
+	}
 	s.mu.Unlock()
+	return err
 }
 
 // prepareEpoch empties dataDir when its recorded epoch differs from epoch, then
@@ -800,10 +863,11 @@ func (s *composeSup) notReady(w http.ResponseWriter, r *http.Request, why string
 // composeCleanup ends what a stopped child leaves running: the tmux server it
 // used (CCD_TMUX_SOCKET in its environment, else tmux's default server, found
 // through the same TMUX_TMPDIR), and then every process still descended from
-// this one, which a stopped child leaves none of its own. kill-server runs as
-// cred: tmux's server socket is per uid (/tmp/tmux-<uid>), so only the child's
-// own user finds it.
-func composeCleanup(ctx context.Context, env []string, cred *syscall.Credential) {
+// this one or owned by the agent's uid (cred), which a stopped child leaves
+// none of its own. kill-server runs as cred: tmux's server socket is per uid
+// (/tmp/tmux-<uid>), so only the child's own user finds it. Its error names
+// what is still alive after everything was killed and waited for.
+func composeCleanup(ctx context.Context, env []string, cred *syscall.Credential) error {
 	args := []string{"kill-server"}
 	if sock := envValue(env, "CCD_TMUX_SOCKET"); sock != "" {
 		args = []string{"-L", sock, "kill-server"}
@@ -812,34 +876,137 @@ func composeCleanup(ctx context.Context, env []string, cred *syscall.Credential)
 	// "no server running" is the normal case for a child that never started one.
 	_ = runAsCLI(kctx, cred, env, "/", "tmux", args...)
 	cancel()
-	killDescendants(os.Getpid(), 5*time.Second, log.Printf)
+	uid := -1
+	if cred != nil {
+		uid = int(cred.Uid)
+	}
+	return killDescendants(os.Getpid(), uid, 5*time.Second, composeKillWait, log.Printf)
 }
 
-// killDescendants waits up to grace for root's descendants to end (kill-server's
-// SIGHUP takes a moment to land), SIGKILLs those still there, and reaps them.
-func killDescendants(root int, grace time.Duration, logf func(string, ...any)) {
-	deadline := time.Now().Add(grace)
+// composeKillWait is how long a stop waits, after SIGKILL, for what it killed
+// to be gone before it calls the stop failed.
+const composeKillWait = 5 * time.Second
+
+// sweepOps is what killDescendants does to processes (a seam for its test).
+type sweepOps struct {
+	left  func() []int // what is still alive
+	kill  func(pid int) error
+	reap  func()
+	sleep func(time.Duration)
+	now   func() time.Time
+}
+
+// killDescendants waits up to grace for what a stopped child left (root's
+// live descendants, and with uid >= 0 every live process of that uid but this
+// one) to end — kill-server's SIGHUP takes a moment to land — SIGKILLs what is
+// still there, and waits up to killWait for it to be gone, reaping as it goes.
+// It returns nil only once nothing is left; otherwise an error naming each pid.
+//
+// 🔴 THE UID IS THE AGENT'S, AND IN THIS CONTAINER ONLY THE AGENT RUNS AS IT.
+// The subreaper makes every descendant visible here, but "off" claims that the
+// chief has stopped calling the owner's model, which a process of the agent's
+// uid anywhere in the container would contradict, so that is swept too (a
+// `docker compose exec -u 1000` shell open at the stop included).
+func killDescendants(root, uid int, grace, killWait time.Duration, logf func(string, ...any)) error {
+	return sweep(sweepOps{
+		left: func() []int { return leftovers(root, uid) },
+		kill: func(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) },
+		reap: func() { reapOrphans(0) }, sleep: time.Sleep, now: time.Now,
+	}, grace, killWait, logf)
+}
+
+func sweep(op sweepOps, grace, killWait time.Duration, logf func(string, ...any)) error {
+	deadline := op.now().Add(grace)
 	for {
-		reapOrphans(0)
-		left := descendants(root)
+		op.reap()
+		left := op.left()
 		if len(left) == 0 {
-			return
+			return nil
 		}
-		if time.Now().After(deadline) {
-			names := make([]string, 0, len(left))
+		if op.now().After(deadline) {
+			logf("ccd compose: killing what the stopped chief left running: %s", procNames(left))
 			for _, p := range left {
-				names = append(names, fmt.Sprintf("%d (%s)", p, procComm(p)))
+				_ = op.kill(p)
 			}
-			logf("ccd compose: killing what the stopped chief left running: %s", strings.Join(names, ", "))
-			for _, p := range left {
-				_ = syscall.Kill(p, syscall.SIGKILL)
-			}
-			time.Sleep(200 * time.Millisecond)
-			reapOrphans(0)
-			return
+			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		op.sleep(100 * time.Millisecond)
 	}
+	deadline = op.now().Add(killWait)
+	for {
+		op.reap()
+		left := op.left()
+		if len(left) == 0 {
+			return nil
+		}
+		if op.now().After(deadline) {
+			return fmt.Errorf("%s still running %s after SIGKILL", procNames(left), killWait)
+		}
+		for _, p := range left {
+			_ = op.kill(p) // a process that appeared since the first kill
+		}
+		op.sleep(50 * time.Millisecond)
+	}
+}
+
+func procNames(pids []int) string {
+	names := make([]string, 0, len(pids))
+	for _, p := range pids {
+		names = append(names, fmt.Sprintf("%d (%s)", p, procComm(p)))
+	}
+	return strings.Join(names, ", ")
+}
+
+// leftovers are root's descendants and, with uid >= 0, every other process
+// whose real uid is uid, but never this process.
+//
+// 🔴 ZOMBIES COUNT. A killed CLI is a zombie until its parent (this process, as
+// the subreaper) reaps it, and the sweep reaps on every pass; leaving zombies
+// out let a stop report clean in the instant between the CLI's death and its
+// reaping, and the `[claude] <defunct>` it left was seen by #474's smoke as a
+// claude process still there after off. So off now also means reaped.
+func leftovers(root, uid int) []int {
+	set := map[int]bool{}
+	for _, p := range descendantsOf(root, true) {
+		set[p] = true
+	}
+	if uid >= 0 {
+		self := os.Getpid()
+		ents, _ := os.ReadDir(procRoot)
+		for _, e := range ents {
+			pid, err := strconv.Atoi(e.Name())
+			if err != nil || pid == self {
+				continue
+			}
+			if _, _, err := procStat(pid); err != nil {
+				continue
+			}
+			if u, ok := procUID(pid); ok && u == uid {
+				set[pid] = true
+			}
+		}
+	}
+	out := make([]int, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// procUID is pid's real uid, from /proc/<pid>/status.
+func procUID(pid int) (int, bool) {
+	b, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "status"))
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "Uid:" {
+			u, err := strconv.Atoi(f[1])
+			return u, err == nil
+		}
+	}
+	return 0, false
 }
 
 // procStat is pid's parent and state, from /proc/<pid>/stat.
@@ -867,7 +1034,10 @@ func procComm(pid int) string {
 }
 
 // descendants are the live (non-zombie) processes below root.
-func descendants(root int) []int {
+func descendants(root int) []int { return descendantsOf(root, false) }
+
+// descendantsOf is the processes below root, zombies included when zombies.
+func descendantsOf(root int, zombies bool) []int {
 	ents, _ := os.ReadDir(procRoot)
 	parent, state := map[int]int{}, map[int]string{}
 	for _, e := range ents {
@@ -885,7 +1055,7 @@ func descendants(root int) []int {
 	for pid := range parent {
 		for p, n := parent[pid], 0; n < maxProcWalk && p > 0; p, n = parent[p], n+1 {
 			if p == root {
-				if state[pid] != "Z" {
+				if zombies || state[pid] != "Z" {
 					out = append(out, pid)
 				}
 				break

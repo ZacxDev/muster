@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +102,9 @@ type composeHarness struct {
 	mu       sync.Mutex
 	logs     strings.Builder
 	cleanups [][]string
+	// cleanupErr, when set, is what the stubbed cleanup returns (a stop that
+	// left something alive); it is called with the call's 1-based number.
+	cleanupErr func(n int) error
 }
 
 func freeAddr(t *testing.T) string {
@@ -143,10 +147,14 @@ func newComposeHarness(t *testing.T) *composeHarness {
 		defer h.mu.Unlock()
 		fmt.Fprintf(&h.logs, f+"\n", a...)
 	}
-	s.cleanup = func(_ context.Context, env []string) {
+	s.cleanup = func(_ context.Context, env []string) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.cleanups = append(h.cleanups, env)
+		if h.cleanupErr != nil {
+			return h.cleanupErr(len(h.cleanups))
+		}
+		return nil
 	}
 	// 🔴 Never reap in the test process: a zombie child of ANOTHER test's
 	// exec.Cmd, collected here, would turn that test's Wait into an error.
@@ -758,7 +766,7 @@ func subreaperHelper() int {
 	}
 	orphan, _ := strconv.Atoi(strings.TrimSpace(string(out)))
 	before := descendants(os.Getpid())
-	killDescendants(os.Getpid(), 200*time.Millisecond, func(string, ...any) {})
+	_ = killDescendants(os.Getpid(), -1, 200*time.Millisecond, 2*time.Second, func(string, ...any) {})
 	_, statErr := os.Stat(filepath.Join("/proc", strconv.Itoa(orphan)))
 	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"orphan": orphan, "before": before,
 		"after": descendants(os.Getpid()), "orphan_gone": os.IsNotExist(statErr)})
@@ -814,5 +822,167 @@ func TestComposeRunsOnlyAsRootAndStartsTheChildAsTheCLIUser(t *testing.T) {
 	attr := s.childCmd(nil).SysProcAttr
 	if attr == nil || attr.Credential != cred || !attr.Setpgid {
 		t.Fatalf("the child command's SysProcAttr is %+v, want the credential and its own process group", attr)
+	}
+}
+
+// TestComposeIsNeverOffWhileAProcessItStartedLives: a stop whose cleanup finds
+// something still alive (here a real process, standing in for a CLI that
+// outlived kill-server and SIGKILL) must not be reported off — "off" is
+// muster's word that the chief has stopped calling the owner's model. The
+// status says error naming it, every step retries the cleanup, and a new spec
+// starts nothing beside it; once it is gone the supervisor carries on.
+func TestComposeIsNeverOffWhileAProcessItStartedLives(t *testing.T) {
+	h := newComposeHarness(t)
+	h.writeSpec(spec(1, 1, "aa"))
+	h.waitFor("running", running)
+
+	survivor := exec.Command("sleep", "300")
+	if err := survivor.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { _ = survivor.Wait(); close(exited) }()
+	t.Cleanup(func() { _ = survivor.Process.Kill(); <-exited })
+	alive := func() bool {
+		select {
+		case <-exited:
+			return false
+		default:
+			return true
+		}
+	}
+	h.mu.Lock()
+	h.cleanupErr = func(int) error {
+		if alive() {
+			return fmt.Errorf("%d (sleep) still running 5s after SIGKILL", survivor.Process.Pid)
+		}
+		return nil
+	}
+	h.mu.Unlock()
+
+	h.writeSpec(spec(1, 0, "aa"))
+	st := h.waitFor("the failed stop reported", func(st composeStatus) bool { return st.State == composeError })
+	want := fmt.Sprintf("the chief did not stop: %d (sleep) still running 5s after SIGKILL", survivor.Process.Pid)
+	if st.Reason != want || st.Boot != "" || st.Ready {
+		t.Fatalf("a stop that left a process alive: %+v, want error %q", st, want)
+	}
+	// Every step retries, and none says off; a new spec starts nothing.
+	before := h.cleanupCount()
+	h.writeSpec(spec(2, 1, "aa"))
+	for end := time.Now().Add(500 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if st := h.status(); st.State != composeError || st.Boot != "" {
+			t.Fatalf("while a process it started lives the status moved to %+v", st)
+		}
+	}
+	if h.sup.childPID() != 0 {
+		t.Fatal("a child was started beside what the stopped one left")
+	}
+	if n := h.cleanupCount(); n < before+3 {
+		t.Fatalf("the cleanup ran %d more time(s) in 500ms of 30ms steps; want it retried every step", n-before)
+	}
+
+	// Gone: the supervisor goes on to the spec it now reads.
+	_ = survivor.Process.Kill()
+	<-exited
+	h.waitFor("generation 2 running once nothing is left", func(st composeStatus) bool { return running(st) && st.Generation == 2 })
+	h.writeSpec(spec(2, 0, "aa"))
+	h.waitFor("off, with nothing alive", func(st composeStatus) bool { return st.State == composeOff })
+}
+
+// TestComposeSweepWaitsForWhatItKilledAndNamesWhatSurvives: the sweep returns
+// nil only once nothing is left. A process that is still there after its
+// SIGKILL is waited for, and one that never goes is an error naming it.
+func TestComposeSweepWaitsForWhatItKilledAndNamesWhatSurvives(t *testing.T) {
+	run := func(left func(kills int) []int) (err error, kills int) {
+		var clock time.Time
+		op := sweepOps{
+			left:  func() []int { return left(kills) },
+			kill:  func(int) error { kills++; return nil },
+			reap:  func() {},
+			sleep: func(d time.Duration) { clock = clock.Add(d) },
+			now:   func() time.Time { return clock },
+		}
+		err = sweep(op, time.Second, 2*time.Second, func(string, ...any) {})
+		return err, kills
+	}
+	if err, kills := run(func(int) []int { return nil }); err != nil || kills != 0 {
+		t.Fatalf("nothing left: %v, %d kill(s)", err, kills)
+	}
+	// Ends only well after its first SIGKILL: still waited for, and nil.
+	polls := 0
+	if err, kills := run(func(kills int) []int {
+		if kills > 0 {
+			if polls++; polls > 5 {
+				return nil
+			}
+		}
+		return []int{424242}
+	}); err != nil || kills == 0 {
+		t.Fatalf("a process that ends after its kill: %v, %d kill(s)", err, kills)
+	}
+	// Never ends: an error naming it, not a stop.
+	err, kills := run(func(int) []int { return []int{424242} })
+	if err == nil || !strings.Contains(err.Error(), "424242") || !strings.Contains(err.Error(), "after SIGKILL") || kills == 0 {
+		t.Fatalf("a process that survives its kill: %v, %d kill(s); want an error naming it", err, kills)
+	}
+}
+
+// TestComposeLeftoversIncludeTheAgentsUID: what a stop must see gone includes
+// every process of the agent's uid, descended from the supervisor or not (here
+// this test's own uid, and a process that is no descendant of root), and never
+// the supervisor itself. Control: without a uid only descendants count.
+func TestComposeLeftoversIncludeTheAgentsUID(t *testing.T) {
+	p := exec.Command("sleep", "300")
+	if err := p.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Process.Kill(); _ = p.Wait() }()
+	const noSuchRoot = -7 // nothing descends from it
+	got := leftovers(noSuchRoot, os.Getuid())
+	if !slices.Contains(got, p.Process.Pid) || slices.Contains(got, os.Getpid()) {
+		t.Fatalf("leftovers for uid %d: %v; want the sleep %d and not this process %d", os.Getuid(), got, p.Process.Pid, os.Getpid())
+	}
+	if got := leftovers(noSuchRoot, -1); len(got) != 0 {
+		t.Fatalf("control, no uid: %v, want nothing (nothing descends from root)", got)
+	}
+}
+
+// TestComposeLeftoversIncludeAnUnreapedZombie: a killed CLI is a zombie until it
+// is reaped, and a stop that reported clean in that instant left the
+// `[claude] <defunct>` #474's smoke saw after off. So a zombie is a leftover,
+// below root or of the agent's uid, until it is reaped.
+func TestComposeLeftoversIncludeAnUnreapedZombie(t *testing.T) {
+	z := exec.Command("true")
+	if err := z.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := z.Process.Pid
+	waited := false
+	defer func() {
+		if !waited {
+			_ = z.Wait()
+		}
+	}()
+	// It has exited and is not reaped: a zombie.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, st, err := procStat(pid); err == nil && st == "Z" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d never became a zombie", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := leftovers(os.Getpid(), -1); !slices.Contains(got, pid) {
+		t.Fatalf("below this process: leftovers %v lack the unreaped zombie %d", got, pid)
+	}
+	if got := leftovers(-7, os.Getuid()); !slices.Contains(got, pid) {
+		t.Fatalf("by uid: leftovers %v lack the unreaped zombie %d", got, pid)
+	}
+	_ = z.Wait()
+	waited = true
+	if got := leftovers(os.Getpid(), -1); slices.Contains(got, pid) {
+		t.Fatalf("after it was reaped: leftovers %v still name %d", got, pid)
 	}
 }
