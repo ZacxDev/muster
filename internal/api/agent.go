@@ -546,6 +546,17 @@ func (s *Server) ChiefTurnTools(ctx context.Context, chief agents.Agent) plugins
 	return set
 }
 
+// composeChiefFallbackTools is the Compose chief's pre-allowed set as
+// plugins.ChiefTools: what a turn is rendered for when the chief's own listing
+// cannot be read, so it still names no tool outside that set.
+func composeChiefFallbackTools() plugins.ChiefTools {
+	set := plugins.ChiefTools{}
+	for _, n := range agentspec.ComposeChiefAllowedMCPTools {
+		set[n] = true
+	}
+	return set
+}
+
 // composeChiefRefusal is the Compose chief's answer for a tool outside its
 // pre-allowed set.
 func composeChiefRefusal(name string) string {

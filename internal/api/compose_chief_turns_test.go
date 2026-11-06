@@ -168,6 +168,57 @@ func TestASessionQuestionIsNotPutToTheComposeChief(t *testing.T) {
 	}
 }
 
+// TestARoutesTextIsRenderedForItsChiefsTools is the seam between a route and
+// its chief's tools: the hand-back and the relayed answer muster sends a
+// route's chief (handBackText, routeAnswerPreface) name only tools that chief
+// is offered, for a route of every kind. Control: the same routes' texts for
+// the Kubernetes chief name reply_draft, task_route_attention and
+// plugin_message_settle, so the scan sees them.
+func TestARoutesTextIsRenderedForItsChiefsTools(t *testing.T) {
+	s, chief, _ := chiefAndWorkerServer(t)
+	ctx := context.Background()
+	id := chief.ID
+	routes := map[string]plugins.Route{
+		"message": {RouteID: "r-msg", AgentID: &id, MessageID: 41},
+		"one-way": {RouteID: "r-oneway", AgentID: &id, MessageID: 42, OneWay: true},
+		"request": {RouteID: "r-req", AgentID: &id, RequestMessageID: 43},
+		"task":    {RouteID: "r-task", AgentID: &id, TaskID: 44},
+	}
+	texts := func() string {
+		var all []string
+		for _, r := range routes {
+			all = append(all, s.handBackText(ctx, r, "it timed out"), s.routeAnswerPreface(ctx, r))
+		}
+		return strings.Join(all, "\n")
+	}
+	k8s := namedTools(s, texts())
+	for _, n := range []string{"reply_draft", "task_route_attention", "plugin_message_settle"} {
+		if !slices.Contains(k8s, n) {
+			t.Errorf("control: the Kubernetes chief's route texts do not name %s", n)
+		}
+	}
+	s.ext.ComposeChief = &ComposeChief{}
+	all := texts()
+	for _, n := range namedTools(s, all) {
+		if !slices.Contains(composeChiefToolLedger, n) {
+			t.Errorf("a route's text names %s, which the Compose chief is not offered:\n%s", n, all)
+		}
+	}
+	for phrase, tool := range actionPhrases {
+		if !slices.Contains(composeChiefToolLedger, tool) && strings.Contains(strings.ToLower(all), phrase) {
+			t.Errorf("a route's text says %q (%s), which the Compose chief is not offered:\n%s", phrase, tool, all)
+		}
+	}
+	// The chief cannot be read: the text is rendered for the Compose chief's
+	// pre-allowed set, never unrestricted.
+	s.ext.Agents = failingAgents{}
+	for _, n := range namedTools(s, texts()) {
+		if !slices.Contains(composeChiefToolLedger, n) {
+			t.Errorf("with the chief unreadable, a route's text names %s", n)
+		}
+	}
+}
+
 // TestThePluginDelivererIsGivenTheChiefsTurnTools is the seam between the
 // renderer and the offered set: the deliverer UseExtensions builds renders
 // every plugin turn for the chief's ChiefTurnTools — the Compose chief's
