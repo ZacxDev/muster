@@ -105,6 +105,9 @@ while it is on and its container is not answering, why.
   A Kubernetes chief's NetworkPolicy admits only public 443 and muster's connect
   port; the Compose file cannot express that.
 - **No resource limits** from muster (none are set on the container).
+- **amd64 only.** The `claude-code-agent` image is published for amd64 (x86_64)
+  alone, so the `chief` profile does not run on an arm64 host (a Raspberry Pi, an
+  Apple-silicon Mac without emulation). muster itself runs on both.
 - **No Terminal view**: muster has no exec into the container. Its output is in
   `docker compose logs chief` on the server.
 - **No other agents**: `agent_dispatch` is not offered, and the dispatch UI stays

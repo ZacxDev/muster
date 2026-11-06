@@ -351,6 +351,7 @@ home opens its chat. [chief.md](chief.md).
   - no other agents: agent dispatch still needs [Kubernetes](#dispatch);
   - no Terminal view (its output is in `docker compose logs chief`);
   - no `muster chief replace`;
+  - amd64 hosts only: the `claude-code-agent` image has no arm64 build;
   - its **network is not confined**: its container reaches the internet. It
     is on a network of its own with muster, and cannot reach Postgres, S3 or
     STT.
