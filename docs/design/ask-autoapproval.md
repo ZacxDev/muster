@@ -3,9 +3,9 @@
 **Status: proposal. Nothing on this page is built.** The operator settled the
 shape (what is recorded, who decides, the only two answers muster may ever
 give, and the reversal of an earlier non-goal) before this was written; it is
-recorded under [Operator decisions](#operator-decisions). Coordinator defaults
-are under [Defaults](#defaults-open-to-change). Three questions remain
-[open](#open-questions).
+recorded under [Operator decisions](#operator-decisions). The operator then
+answered the draft's three open questions and adopted its five defaults
+(decisions 6 to 9). No questions remain open.
 
 The ask, verbatim: *"I still find that agents are asking me things that they
 should be able to answer themselves, such as really basic things, just asking
@@ -433,15 +433,57 @@ a failure, and the ask is never auto-answered.
    check present (no checks is not green). This needs muster's PR-read token to
    request `checks: read` and `statuses: read`, which the App's registration
    already has.
-4. **Audit ladder ended with no 🔴 on that SHA.** One deterministic signal,
-   chosen in [open question 1](#open-questions); either way it must name the
-   head SHA from step 2, and any later commit voids it.
+4. **Audit ladder ended with no 🔴 on that SHA** (operator decision 6). The
+   newest check run named `MUSTER_ASK_AUTO_AUDIT_CHECK` on the head SHA from
+   step 2, created by the GitHub App whose slug is
+   `MUSTER_ASK_AUTO_AUDIT_APP` (runs from any other App are ignored, as
+   `reviewPassed` filters by `ReviewApp`), is `completed` with conclusion
+   `success`. Neutral, skipped, failure, pending, absent, or either variable
+   unset: not passed. A later commit has no such run, so it voids the verdict.
+   Who posts that run, and how its credential is kept from sessions, is
+   [The audit verdict poster](#the-audit-verdict-poster).
 5. **Unchanged at delivery.** Steps 2 to 4 are read again immediately before
    the answer is queued; a different head SHA, or any step now false, makes
    the ask the owner's (`superseded`).
 
 The answer text then pins the SHA (`--match-head-commit`), so a push between
 delivery and the agent's merge fails the merge.
+
+#### The audit verdict poster
+
+The check run is written outside muster, by the audit ladder's own tooling:
+the operator's audit-dispatch scripts, which live in a separate, private
+repository. That work is part of phase 4's scope.
+
+- **A dedicated GitHub App, used for nothing else.** Permissions:
+  `checks: write` and `metadata: read` only, installed on the repositories
+  whose merges may be auto-answered. It is neither muster's App nor any App or
+  token a session uses, so a session's GitHub credential cannot create a run
+  under its slug: GitHub stamps every check run with the App that created it,
+  and muster reads only runs from that slug.
+- **Its private key never enters a session's reach.** It is held by a small
+  poster process that runs as a separate OS user (on a host) or in its own
+  namespace with its own Secret (in a cluster). The key file is readable by
+  that user only, and is never in an environment variable, a repository, a
+  session's working tree or anything mounted into a session or an agent pod.
+  The ladder runner never holds the key: it sends the poster a request.
+- **The poster checks before it posts.** A request names the repository, PR,
+  head SHA, round number and verdict. The poster reads the PR itself (through
+  its own installation token) and refuses unless the PR's head is that SHA,
+  the PR carries a parseable `audit-claims` block for that round whose range
+  ends at that SHA, and the round is at least 2 (the ladder's floor). It then
+  posts the run: conclusion `success` for a verdict with no 🔴, `failure`
+  otherwise, with the round and the claims block's range in the run's summary.
+- **What it proves, and what it does not.** A run under that slug proves the
+  ladder tooling recorded "no 🔴" for exactly that commit, after a real round
+  posted its claims for it. It does not prove the audit was right. A session
+  that can reach the poster can still ask it to post, so the poster's request
+  channel is reachable only by the operator's user (a local socket owned by
+  the operator, not by the session user, where they differ) and every request
+  is logged with its caller. Where sessions run as the operator's own user,
+  this is the accepted residual: forging a verdict then also needs a
+  well-formed claims block from a round on that exact SHA, which is posted in
+  public on the PR.
 
 ### Delivering an auto-answer
 
@@ -462,10 +504,19 @@ mark the session's other open asks `answered_in_session`
 
 ### Notify and undo
 
-Each live auto-answer clears that ask's own notification and posts one
-low-urgency notification per session, replaced rather than stacked: *"Auto-answered
-'continue' in `<window>` (rule R<id>). Tap to review."* Tap opens the Log row.
-A `merge_when_green` answer always gets its own notification.
+Each live auto-answer clears that ask's own notification. Then (operator
+decision 7):
+
+- **For a rule's first 30 days live** (counted from its latest promotion, so a
+  demoted and re-promoted rule starts again): one low-urgency notification per
+  session, replaced rather than stacked: *"Auto-answered 'continue' in
+  `<window>` (rule R<id>). Tap to review."* Tap opens the Log row.
+- **After that, a digest:** no notification per answer. One notification a
+  day, at 09:00 in the owner's time zone, and only when there was at least one
+  answer: *"muster auto-answered N asks yesterday (rule R<id>: n, …)."* Tap
+  opens the Log filtered to auto-answers from that day.
+- A `merge_when_green` answer always gets its own notification, whatever the
+  rule's age.
 
 From the row: **Wrong** demotes the rule; **Stop the session** queues the
 owner's own message *"Stop. Disregard the auto-answer and wait for me."* through
@@ -515,8 +566,13 @@ A **Log** tab on the Asks page (`/attention?tab=log`):
   record, two per owner message and immediate demotion; accepted residual: the
   session ran one step it should not have, and the owner was told.
 - **A forged audit verdict.** Sessions commonly hold the owner's own GitHub
-  identity, so a signal they can write, they can forge. This is why the choice
-  of signal is [open question 1](#open-questions).
+  identity, so a PR comment is a signal they could write. The verdict is
+  therefore a check run from a dedicated App whose key no session holds
+  (decision 6). The residual risk, a session asking the poster to post, is
+  stated in [The audit verdict poster](#the-audit-verdict-poster).
+- **A digest hides a wrong answer for up to a day.** Accepted by decision 7
+  once a rule has had 30 days of per-session notifications. Demotion on
+  disagreement still applies at once.
 - **Pattern drift.** Agents phrase the same question many ways; rules may need
   many patterns. Cost: more shadow time, never a looser match.
 - **Pane replies are not attributed.** Agreement may count a message another
@@ -599,19 +655,30 @@ commit and green after; the PR states that matrix.
 - **Files.** `checksGreen` extracted from `internal/officership/gates.go` to a
   shared package both callers use; `internal/askrules/mergegate.go`; the
   PR-read mint widened to `checks: read`, `statuses: read` (muster's own read,
-  never injected into an agent); the audit-verdict reader for whichever signal
-  open question 1 settles; `MUSTER_ASK_AUTO_MERGE`.
+  never injected into an agent); the audit-verdict reader (the check run filtered
+  by App slug, sharing `reviewPassed`'s shape); `MUSTER_ASK_AUTO_MERGE`,
+  `MUSTER_ASK_AUTO_AUDIT_CHECK`, `MUSTER_ASK_AUTO_AUDIT_APP`.
+- **Runner-side work, outside this repository.** In the operator's private
+  audit-dispatch tooling: register the dedicated verdict App; build the poster
+  ([The audit verdict poster](#the-audit-verdict-poster)) with its key under a
+  separate user or namespace; have the ladder runner, when a round ends with no
+  🔴, send the poster `{repo, pr, head_sha, round, verdict}`, and send a
+  `failure` verdict when a round has a 🔴. Its tests live in that repository:
+  the poster's refusals (head moved, no claims block for the round, round below
+  2) each shown red, and a check that the key path is unreadable by the
+  session user.
 - **Tests.** Against a fake GitHub with literal fixtures: green, one pending,
   one failed, one neutral, none at all, status-versus-run precedence, a newer
-  failed attempt over an older success; the verdict present, absent,
-  malformed, naming another SHA, from the wrong author or App; the head
-  moving between check and delivery; a question naming two PRs or a PR this
-  session did not create. The officership gate's existing tests must still
-  pass against the extracted function. **Mutation targets:** `completed`,
-  `success`, missing-is-not-green, the SHA binding, the author/App filter, the
-  re-read at delivery.
-- **Rollout.** `MUSTER_ASK_AUTO_MERGE=on` with a `merge_when_green` rule in
-  `shadow` first; promotion only after its shadow record meets the criteria.
+  failed attempt over an older success; the verdict run present, absent,
+  neutral, failed, on another SHA, from another App slug, with the variables
+  unset; the head moving between check and delivery; a question naming two PRs
+  or a PR this session did not create. The officership gate's existing tests
+  must still pass against the extracted function. **Mutation targets:**
+  `completed`, `success`, missing-is-not-green, the SHA binding, the App-slug
+  filter, the re-read at delivery.
+- **Rollout.** The poster and App first, posting runs that nothing reads yet;
+  then `MUSTER_ASK_AUTO_MERGE=on` with a `merge_when_green` rule in `shadow`;
+  promotion only after its shadow record meets the criteria.
 
 ### Later
 
@@ -621,36 +688,8 @@ commit and green after; the PR states that matrix.
 
 ## Open questions
 
-1. **Which signal says "the audit ladder ended with no 🔴"?** Today's
-   `audit-claims` blocks record claims, not severity, so muster cannot read it
-   from them. (a) A new fenced block in a PR comment, e.g.
-   `audit-verdict round=<k> head=<sha40> red=0`, accepted only from an
-   allowlisted GitHub login and only for the current head SHA: no new
-   infrastructure, but any session holding that login can write it. (b) A
-   check run of a configured name from a configured GitHub App that sessions
-   hold no credentials for, on the head SHA, `completed`/`success` (the
-   officers' `ReviewCheck`/`ReviewApp` shape): not forgeable by a session, but
-   the ladder runner must post it. **Recommendation: (b).**
-2. **Notification for each live `continue`, or a digest?** The design sends one
-   low-urgency notification per session, replaced rather than stacked, which
-   still buzzes. A digest (no notification; the Log and a daily count) saves
-   more interruptions but hides a wrong answer until the owner looks.
-   **Recommendation: per-session notification for the first month of a rule,
-   then digest.**
-3. **May a `continue` rule answer an `attention_ask` that offers options?** The
-   design refuses (`options`), reading "not picking options" as covering every
-   ask with options. Allowing a free-text "Yes, continue." to an ask whose
-   options include a yes would widen phase 3. **Recommendation: refuse.**
-
-## Defaults (open to change)
-
-- D1. Text TTL 30 days, metadata 180 days.
-- D2. Promotion offer: 10 answered shadow matches, 3 sessions, 90% agree, no
-  disagree in the last 10. No early promotion.
-- D3. Caps: 2 per owner message per session, 20 per owner per hour, 10 per
-  rule per hour; merges 1 per head SHA, 3 per hour.
-- D4. Disagreement window: 10 minutes after an auto-answer.
-- D5. JEV at capture off until the pre-filter volume is measured.
+None. The draft's three were answered by the operator (decisions 6 to 8), and
+its defaults were adopted as listed (decision 9).
 
 ## Operator decisions
 
@@ -676,3 +715,23 @@ commit and green after; the PR states that matrix.
    points here. The Chief still composes nothing: the two answers are fixed
    texts, and a rule, not the Chief, sends them.
 5. **Deliverable.** This design first; phase 1 as its own PR after it.
+6. **The audit verdict is a check run** (the draft's open question 1, option
+   (b)): a configured check name from a configured GitHub App that sessions
+   hold no credentials for, on the head SHA, `completed`/`success`. The ladder
+   runner posts it, and that runner-side work is in phase 4's scope
+   ([The audit verdict poster](#the-audit-verdict-poster)).
+7. **Notifications** (open question 2): per session, replaced rather than
+   stacked, for a rule's first month live; then a daily digest
+   ([Notify and undo](#notify-and-undo)). Merge answers always notify on their
+   own.
+8. **A `continue` rule never answers an `attention_ask` that offers options**
+   (open question 3): refused, as the never-auto list's `options` reason.
+9. **The draft's defaults are adopted as listed:**
+   - text TTL 30 days, metadata 180 days;
+   - promotion is offered at 10 answered shadow matches, from 3 sessions, at
+     least 90% agree and no disagree in the last 10, with no early promotion;
+   - caps of 2 auto-answers per owner message per session, 20 per owner per
+     hour and 10 per rule per hour, and for merges 1 per head SHA and 3 per
+     hour;
+   - a 10-minute disagreement window after an auto-answer;
+   - JEV at capture off until the pre-filter volume is measured.
