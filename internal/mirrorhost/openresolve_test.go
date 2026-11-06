@@ -37,13 +37,13 @@ func TestAnOpenReadsItsWindowOnceThenFreshAgain(t *testing.T) {
 		t.Fatalf("CONTROL: %d listings for two reads outside an open, want 2", b.reads)
 	}
 	ctx, _ := h.beginResolve(context.Background(), 7)
-	for i := 0; i < 3; i++ { // opencode's claim, Hermes's, Claude Code's tail
+	for i := 0; i < 2; i++ { // opencode's claim, Claude Code's tail
 		if _, err := h.window(ctx, "main", "@3"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if b.reads != 3 {
-		t.Fatalf("an open's three runtimes made %d listings, want ONE shared", b.reads-2)
+		t.Fatalf("an open's two runtimes made %d listings, want ONE shared", b.reads-2)
 	}
 	// The first reply spends it: a re-resolve afterwards reads afresh.
 	h.reply(7)

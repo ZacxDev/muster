@@ -74,10 +74,11 @@ func TestEpisodeBody(t *testing.T) {
 
 // TestEpisodeCover pins the hook's half of the shared rule case by case: only a
 // plain waiting window on a host the state pass reads (online AND reporting
-// status) whose window the stall facts list (Hermes included) is covered.
+// status) whose window the stall facts list is covered — never an older
+// host's Hermes window, whose runtime muster no longer knows.
 func TestEpisodeCover(t *testing.T) {
 	claude := mirror.Window{Session: "main", ID: "@1", Index: 1, Claude: true, ClaudeSession: "0b6e9c7c-9d0d-4a8e-9c62-3f1b2a4d5e6f", Status: mirror.StatusWaiting}
-	hermes := mirror.Window{Session: "main", ID: "@1", Index: 1, Runtime: mirror.RuntimeHermes, AgentSession: "hermes-synthetic-1", Status: mirror.StatusWaiting}
+	hermes := mirror.Window{Session: "main", ID: "@1", Index: 1, Runtime: "hermes", AgentSession: "hermes-synthetic-1", Status: mirror.StatusWaiting}
 	item := attentionItem{Kind: attentionKindSession, card: attentionCard{ref: ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}}}
 	host := func(w mirror.Window, online, report bool) []mirror.HostView {
 		return []mirror.HostView{{Host: "ws", Online: online, StatusReport: report, Windows: []mirror.Window{w}}}
@@ -88,7 +89,7 @@ func TestEpisodeCover(t *testing.T) {
 		want bool
 	}{
 		{"a keyed window on a healthy host", host(claude, true, true), true},
-		{"a Hermes window naming its conversation", host(hermes, true, true), true},
+		{"an older host's Hermes window naming its conversation", host(hermes, true, true), false},
 		{"an offline host", host(claude, false, true), false},
 		{"an online host that reports no status", host(claude, true, false), false},
 	} {

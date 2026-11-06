@@ -77,9 +77,6 @@ const (
 	// jevNotConfigured: the owner's classifier does not run (the chief's
 	// nudges are off, there is no classifier, or the owner's chief is off).
 	jevNotConfigured = "not_configured"
-	// jevNoTranscript: a view-only runtime muster reads no transcript of
-	// (Hermes).
-	jevNoTranscript = "no_transcript"
 )
 
 // sessionStateOn reports whether the pass runs here (MUSTER_SESSION_STATE=1,
@@ -192,7 +189,7 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 	// The restart rule's clear first: an ended stop's notification is closed
 	// whether it ended in a pass, or while muster was down.
 	defer s.clearEndedEpisodes(octx, owner)
-	read := s.stallFacts(octx, nil, hs, sessionStateListsHermes)
+	read := s.stallFacts(octx, nil, hs)
 	seen := map[string]bool{}
 	agentsSeen := map[int64]bool{}
 	for _, c := range read.sessions {
@@ -345,8 +342,6 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			// Classified for this streak already — by an earlier pass, or
 			// before a restart.
 			jev, classified = episodeJev(ep), true
-		case c.noTranscript:
-			jev, classified = chiefnudge.Result{Err: jevNoTranscript}, true
 		case sp.cl == nil:
 			// With no classifier no transcript is read, so a streak that ends
 			// on the OWNER's word (an Esc-interrupted window, a prompt not yet
@@ -622,7 +617,7 @@ func (s *Server) episodeOwnerActed(octx context.Context, c nudgeCandidate, ep se
 	if !f.Known || f.WaitingNow || f.WasWaiting {
 		return sessionstate.OwnerActed(f)
 	}
-	if c.noTranscript || s.ownerChecked.done(ep.ID, c.StreakKey) {
+	if s.ownerChecked.done(ep.ID, c.StreakKey) {
 		return false
 	}
 	read, err := s.nudgeTranscript(octx, c)
@@ -733,7 +728,7 @@ func (u *hostUnreads) unreadFor(owner int64, host string, dropped, now time.Time
 
 // answerableItem reports whether waiting item it is an ask muster can answer:
 // a held AskUserQuestion, an opencode question or permission request its host
-// relays, a Hermes approval with a prompt id its host answers. One rule, for
+// relays. One rule, for
 // what such an ask keeps over a plain wait — its answer card on the Asks list
 // (pageAttentionItems) and its own full-text notification (episodeNotification). 🔴
 // IT IS NOT A PUSH RULE: an answerable ask's push waits the grace like every
@@ -748,8 +743,7 @@ func answerableItem(it attentionItem) bool {
 	if it.openCode != nil {
 		return it.openCode.kind != "" && it.openCode.why == ""
 	}
-	return it.Kind == attentionKindQuestion ||
-		it.hermes != nil && it.hermes.promptID != ""
+	return it.Kind == attentionKindQuestion
 }
 
 // episodeJev is ep's stored classification as a classifier Result.

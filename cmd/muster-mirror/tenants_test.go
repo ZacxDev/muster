@@ -198,7 +198,7 @@ func runDaemonsUntil(t *testing.T, grace time.Duration, until []string, envs ...
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	defer func() { newTmuxBackend, runContext = prevB, prevC }()
 	logs := make([]*lockedBuf, len(envs))
@@ -740,7 +740,7 @@ func TestAReadOnlyDaemonPicksUpATokenFileCreatedAfterItStarted(t *testing.T) {
 
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
-	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	var wg sync.WaitGroup
 	defer func() { cancel(); wg.Wait(); newTmuxBackend, runContext = prevB, prevC }()
@@ -815,7 +815,7 @@ func TestOneServerDownTheOtherKeepsMirroring(t *testing.T) {
 
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
-	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	var wg sync.WaitGroup
 	defer func() { cancel(); wg.Wait(); newTmuxBackend, runContext = prevB, prevC }()

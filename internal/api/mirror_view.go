@@ -94,23 +94,13 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		LiveCopy: e.LiveCopyWarning(),
 		// What the retired list's card said: "offline", and the host's note.
 		Offline: !h.Online, Note: e.AgentNote}
-	// 🔴 A WINDOW OF A RUNTIME WITH A GATED SEND (Hermes) SENDS ONLY WHEN
-	// ITS HOST ADVERTISED IT (Phase 3): otherwise its composer is drawn
-	// disabled, with no queue, and every send is refused again at the hub
-	// (the gated-send switch) and on the host (its own switch, and the paste
-	// guard). v.Hermes and v.HermesSend are that composer's (its words are
-	// Hermes's, the one such runtime).
-	if rt, ok := e.Spec(); ok && rt.GatedSend && e.AgentView() {
-		send, _ := h.GatedSendOn(rt)
-		v.Hermes, v.HermesSend = true, send && h.Interactive
-	}
 	// 🔴 A WINDOW OF A RUNTIME MUSTER ONLY VIEWS (opencode: Caps.Send off)
 	// has its composer drawn disabled, with no queue; every send is refused
 	// again at the hub (lookupAgent) and on the host (the paste guard).
 	if rt, ok := e.Spec(); ok && !rt.Caps.Send && e.AgentView() {
 		v.ViewOnly = rt.Kind
 	}
-	if (!v.Hermes || v.HermesSend) && v.ViewOnly == "" {
+	if v.ViewOnly == "" {
 		v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
@@ -348,8 +338,6 @@ func refuseStale(w http.ResponseWriter) {
 }
 
 // mirrorSendTimeout bounds one send end to end (the host confirms the paste).
-// It is above the hub's wait for a Hermes window's gated send (three Escapes
-// at 1.5 s, the paste and its checks, up to 8 s for the confirming row).
 const mirrorSendTimeout = 50 * time.Second
 
 // handleMirrorViewSend is POST /mirror/view/send (host, session, window,
@@ -375,8 +363,7 @@ const SendAgainHeader = ui.SendAgainHeader
 // to the host and never confirmed: it may be in the conversation already.
 const MirrorSendUnconfirmedRepeat = "Not sent again: the first try may already have been submitted, and muster never repeats it on its own. Check the conversation; to send it anyway, use Send again."
 
-// MirrorSendUnconfirmed answers a send the host never confirmed (a Claude Code
-// window's; a Hermes window's says it in the host's own words).
+// MirrorSendUnconfirmed answers a send the host never confirmed.
 const MirrorSendUnconfirmed = "May have been sent: muster handed it to the host, which did not confirm it. Check the conversation before sending again; to send it anyway, use Send again."
 
 // errUnconfirmedRepeat: the same message, by its nonce, after a delivery the
@@ -639,7 +626,6 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			return
 		}
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
-		var notIdle *mirror.HermesNotIdleError
 		var pr *mirror.PasteRefusedError
 		// 🔴 A send that MAY have landed offers "Send again" (a new nonce): the
 		// same nonce is never delivered again (claim's nonceUnconfirmed).
@@ -649,14 +635,6 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		switch {
 		case errors.Is(err, errUnconfirmedRepeat):
 			status, notice, msg = http.StatusConflict, noticeUnconfirmedRepeat, MirrorSendUnconfirmedRepeat
-		case errors.As(err, &notIdle):
-			// The hub's idle gate for a Hermes window: nothing was sent.
-			status, notice, msg = http.StatusConflict, hermesNotIdleNotices[notIdle.Status], notIdle.Error()
-		case errors.As(err, &pr) && hermesSendNotices[pr.Refusal] != "":
-			// The host's gated send: its own words, and a notice that says the
-			// same when the browser posted the form. Pasted-not-submitted and
-			// may-have-been-submitted are said as such, never as "not sent".
-			status, notice, msg = http.StatusConflict, hermesSendNotices[pr.Refusal], pr.Why
 		case errors.Is(err, mirror.ErrPasteUnconfirmed):
 			status, notice, msg = http.StatusBadGateway, noticeUnconfirmed, MirrorSendUnconfirmed
 		case errors.As(err, &pr) && claudeGuardNotices[pr.Refusal] != "":
@@ -665,7 +643,7 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			// such, never as "not sent".
 			status, notice, msg = http.StatusConflict, claudeGuardNotices[pr.Refusal], pr.Why
 		case mirror.PasteGuardRefusal(err) != "":
-			// The host's Hermes paste guard: its own words, without this
+			// The host's paste guard: its own words, without this
 			// side's "the host refused the message:" in front, and a notice
 			// code that says the same when the browser posted the form.
 			var pr *mirror.PasteRefusedError

@@ -512,8 +512,6 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		}
 		out = append(out, info)
 	}
-	// Hermes windows (e2ehermes.go), after the file's.
-	out = append(out, hermesWindowsE2E(context.Background())...)
 	return append(out, openCodeWindowsE2E()...), nil
 }
 

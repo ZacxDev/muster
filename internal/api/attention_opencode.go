@@ -35,8 +35,7 @@ import (
 // mirror.MaxPendingOptions options). Otherwise the item still notifies, and
 // says why it cannot be answered from here.
 //
-// 🔴 THE GATES COPY THE HERMES APPROVAL PATH (attention_hermes.go): the
-// session's owner (another owner's host is not found), same-origin
+// 🔴 THE GATES: the session's owner (another owner's host is not found), same-origin
 // (requireOperatorWrite), a fresh sign-in (internal/stepup) — and the hub and
 // host check again that the window still waits on exactly this ask, offering
 // this answer.
@@ -238,4 +237,14 @@ func (s *Server) handleAttentionOpenCodeAnswer(w http.ResponseWriter, r *http.Re
 	}
 	s.logger.Printf("attention: answered an opencode ask on %s", h.Host)
 	http.Redirect(w, r, attentionPath+"?answered=opencode", http.StatusSeeOther)
+}
+
+// attentionNotice is the page's notice for a query that names one (an
+// answer that went through), "" for none.
+func attentionNotice(r *http.Request) string {
+	if r.Method != http.MethodGet || r.URL.Query().Get("answered") != "opencode" {
+		return ""
+	}
+	return `<p role="status" class="rounded-lg bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="attention-notice">` +
+		html.EscapeString(openCodeAnsweredText) + `</p>`
 }

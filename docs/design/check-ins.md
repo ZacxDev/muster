@@ -82,7 +82,7 @@ base, `b3fef26f`.
 - The working directory is stored with focus (`agent_focus.cwd`, migration
   `0065`). Today only the fleet report's mail door reads it
   (`internal/api/fleet_report.go:291-302`). It is **unknown** for dispatched
-  agents, Hermes windows and older hosts ([focus.md](../focus.md), "The working
+  agents, opencode windows and older hosts ([focus.md](../focus.md), "The working
   directory").
 - Focus text is **untrusted**: it is a model's summary of text an outside
   party can influence ([focus.md](../focus.md), "Focus is untrusted").

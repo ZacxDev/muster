@@ -18,7 +18,7 @@ import (
 
 // Session state's audit round 1 (#426): the classifier's input, a host that
 // has not been read, a failed agent list, one bill per streak, the cost
-// bounds, an agent's turn, Hermes, and the per-pass budget.
+// bounds, an agent's turn, and the per-pass budget.
 
 // stateSecretLast is a last message carrying a secret-shaped string.
 const stateSecretLast = "Deployed with key sk-live-abcdef1234567890abcdef. Shall I merge it?"
@@ -292,23 +292,6 @@ func TestAnAgentsQuickExchangeStaysOneStop(t *testing.T) {
 	if got := mine(); len(got) < 1 || got[len(got)-1].ID != first[0].ID || got[len(got)-1].Open() ||
 		got[len(got)-1].EndReason != sessionstate.EndWorked {
 		t.Fatalf("a long reply turn did not end the stop: %+v", got)
-	}
-}
-
-// TestAHermesWindowGetsAnEpisode (F8): a Hermes window waiting on a prompt
-// muster cannot answer is needs_you with an episode, like opencode's.
-func TestAHermesWindowGetsAnEpisode(t *testing.T) {
-	f := newStateFixture(t, false)
-	f.mirror.mu.Lock()
-	f.mirror.windows = []mirror.Window{{Session: "main", ID: "@5", Index: 5, Label: "hermes", Runtime: mirror.RuntimeHermes,
-		AgentSession: "h-77", Status: mirror.StatusWaiting, StatusSince: nudgeSince}}
-	f.mirror.agentState = &mirror.AgentState{Runtime: mirror.RuntimeHermes, Status: mirror.StatusWaiting, Since: nudgeSince,
-		Observed: f.srv.now().Add(-time.Minute)}
-	f.mirror.mu.Unlock()
-	f.statePass(t)
-	e := f.oneEpisode(t)
-	if e.Runtime != mirror.RuntimeHermes || e.State != sessionstate.StateNeedsYou || !e.Waiting || e.Index != 5 {
-		t.Fatalf("episode: %+v", e)
 	}
 }
 

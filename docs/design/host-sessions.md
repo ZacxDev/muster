@@ -80,9 +80,6 @@ The design in one line each:
 
 ## Non-goals
 
-- **Hermes.** `internal/hermeshost` is a host pattern for *reading* a Hermes
-  pane, and Hermes host mirroring stays. Nothing here depends on it, and
-  there is no Hermes spawn profile.
 - **A general remote shell.** Free command lines and free paths are out.
   Arbitrary execution already exists through `-interactive`
   ([mirroring.md](../mirroring.md#read-only-interactive-and-sending)), and this
@@ -609,12 +606,12 @@ tmux display-message -p -t <pane id> '#{pane_current_path}'
   runs may need more, such as `SSH_AUTH_SOCK` for git over SSH. They get it
   only through the copied session environment ([environment](#environment)),
   which is **UNVERIFIED** to be complete.
-- **What muster shows.** muster has a rendered view only for Claude Code (and
-  Hermes), so an opencode session is **terminal-only**. The New session
+- **What muster shows.** muster has a rendered view only for Claude Code, so
+  an opencode session is **terminal-only**. The New session
   sheet says so next to the profile, and the redirect lands on the terminal.
   **The message box does not send into it.** The host refuses every Send,
   Queue and Send now into a pane whose terminal runs opencode
-  (`openCodeShape`, `internal/mirrorhost/hermes.go:378`;
+  (`openCodeShape`, `internal/mirrorhost/paneguard.go`;
   [mirroring.md](../mirroring.md#muster-does-not-send-to-opencode-yet)). So the
   sheet's notice reads "terminal-only; muster cannot send messages to opencode
   yet". In muster, an opencode session can be watched and killed, and typed
@@ -966,7 +963,7 @@ attach to it at the desk, and kill it.
 - **Profiles drifting between hosts.** Each host has its own `spawn.json`;
   generating them from one source keeps the drift in one place.
 - **The `opencode` profile is terminal-only, and its argv check is weak.**
-  muster has a rendered view only for Claude Code (and Hermes), so the sheet
+  muster has a rendered view only for Claude Code, so the sheet
   says so. Also, an opencode config may already allow nearly everything, so
   refusing `--auto` bounds little. The bound on an opencode spawn is the
   directory list, `maxLive` and the operator's own opencode configuration,

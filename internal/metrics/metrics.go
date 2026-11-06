@@ -276,7 +276,7 @@ var (
 
 	// MirrorHubRoundTrip is one request to a mirror host, frame written to
 	// answer read, by op (watch: to the first batch; attach: to the first
-	// output; paste, scroll, catalog, answer, cancel_ask, hermes_answer,
+	// output; paste, scroll, catalog, answer, cancel_ask, opencode_answer,
 	// subagent_tail: to the host's answer) and reason (mirror.Reason).
 	MirrorHubRoundTrip = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "muster_mirror_hub_roundtrip_seconds",

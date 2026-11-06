@@ -12,14 +12,12 @@ import (
 )
 
 // TestAQueuedMessageThatMayHaveLandedNeverSaysNotSent: when the delivery may
-// have reached the agent — the host never confirmed it, or Hermes's gated
-// send pressed Enter and saw no row — or was pasted and left unsubmitted in
-// Hermes's box, the queue row's detail AND Send now's answer say so, in the
+// have reached the agent — the host never confirmed it — or was pasted and
+// left unsubmitted in Claude Code's input box, the queue row's detail AND Send now's answer say so, in the
 // composer's words, and NEVER "Not sent" (which invites a resend and a second
 // turn). Both outcomes, both paths.
 func TestAQueuedMessageThatMayHaveLandedNeverSaysNotSent(t *testing.T) {
-	hermesUnconfirmed := "May have been submitted: check the conversation before sending again. Hermes recorded no new message within 8s of the Enter."
-	hermesPasted := "Pasted, not submitted: the text is in Hermes's input box, and muster did not press Enter, because Hermes's input box does not hold exactly the message after the paste. Check the terminal."
+	claudePasted := "Pasted, not submitted: the text is in Claude Code's input box, and Enter was not pressed, because a dialog opened. Check the terminal."
 	for _, c := range []struct {
 		name        string
 		err         error
@@ -27,8 +25,7 @@ func TestAQueuedMessageThatMayHaveLandedNeverSaysNotSent(t *testing.T) {
 		wantExact   string
 		wantContain string
 	}{
-		{"Hermes may have been submitted", joinUnconfirmed(&mirror.PasteRefusedError{Why: hermesUnconfirmed, Refusal: mirror.PasteRefusalHermesUnconfirmed}), true, hermesUnconfirmed, ""},
-		{"Hermes pasted, not submitted", &mirror.PasteRefusedError{Why: hermesPasted, Refusal: mirror.PasteRefusalHermesPasted}, false, hermesPasted, ""},
+		{"Claude Code pasted, not submitted", &mirror.PasteRefusedError{Why: claudePasted, Refusal: mirror.PasteRefusalClaudePasted}, true, claudePasted, ""},
 		{"Claude Code unconfirmed", fmt.Errorf("mirror: the host did not answer: %w", mirror.ErrPasteUnconfirmed), true, "", "May have been sent"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -67,14 +64,14 @@ func TestAQueuedMessageThatMayHaveLandedNeverSaysNotSent(t *testing.T) {
 	}
 }
 
-// TestAQueuedHermesMessageTheHubSupersedesIsQueuedAgain: the contract the
-// hub's fix relies on (a queued paste into a Hermes window that turned busy
-// is ErrSuperseded): the row goes back to queued, behind the window's Pasted,
+// TestAQueuedMessageTheHubSupersedesIsQueuedAgain: the contract the hub
+// relies on (a queued paste into a window that turned busy or waiting is
+// ErrSuperseded): the row goes back to queued, behind the window's Pasted,
 // and its detail never doubles "Not sent: Not sent:".
-func TestAQueuedHermesMessageTheHubSupersedesIsQueuedAgain(t *testing.T) {
+func TestAQueuedMessageTheHubSupersedesIsQueuedAgain(t *testing.T) {
 	f := newSQFixture(t)
 	f.mirror.v2.pasteErr = &mirror.SupersededError{Pasted: 42}
-	it := f.enqueue(t, "for Hermes", time.Minute, 0)
+	it := f.enqueue(t, "for a window gone busy", time.Minute, 0)
 	f.tick(t)
 	row := f.row(t, it.ID)
 	if row.State != sendqueue.Queued || strings.Contains(row.Detail, "Not sent: Not sent") {

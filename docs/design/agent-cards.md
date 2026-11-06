@@ -23,8 +23,7 @@ describe the design as decided. What is built, and what is not:
   **no** `-color-option` flag or environment variable. The rendered view's and
   terminal page's headers are **not** tinted (the operator asked for the cards).
 - **Deferred:** the rendered
-  view's work chip (that page has no live refresh); Hermes counts (after Hermes
-  Phase 2); the Phase 0 spike (until it lands, a running turn shows `1+ shell`);
+  view's work chip (that page has no live refresh); the Phase 0 spike (until it lands, a running turn shows `1+ shell`);
   and (c), below.
 
 It covers two additions to the Agents view's cards, plus one send-queue change
@@ -48,8 +47,7 @@ Where this page states how muster works today, the code is the authority (see
 commit it was written against. Claims about Claude Code cite the minified bundle
 of **Claude Code 2.1.289** by byte offset and by the pattern found there. Those
 offsets belong to that build only; the pattern is what to search for in another
-build. Claims about Hermes cite an **installed build**, not the commit
-[hermes.md](hermes.md) pins, and are marked **UNVERIFIED** against the pin.
+build.
 Record shapes come from real transcripts, read for shape only; no transcript
 content is reproduced here.
 
@@ -60,7 +58,6 @@ content is reproduced here.
 | (a) shells, mirrored Claude Code | **Yes, exact** while the CLI is alive | the CLI's own process tree: live task processes whose stdout is a task output file | new `work` message | |
 | (a) subagents, mirrored Claude Code | **Yes.** Exact when the session is idle; inferred from the transcript while busy | the sessions file's status, plus a transcript ledger of Agent calls and turn ends | same message | 5–6.5 days for (a) in all |
 | (a) dispatched `claude-code` agent (ccd) | **Yes**, the same code inside the pod | the same | `POST /agent/work` | (included above) |
-| (a) Hermes | **Partly**, and only after Hermes Phase 2 | `subagent_start`/`subagent_stop` hooks; the process checkpoint file | the same message | 1–1.5 days after Phase 2 |
 | (b) identity colour | **Yes**, but tmux does not hold the colour today: the host's tmux config must declare it | a tmux user option, `@muster-color`, read in the listing muster-mirror already runs | new `colors` message | 2.5–3 days, plus about 0.25 days of host config |
 | (c) send queue through background agents | **Deferred.** A background agent's permission prompt can meet muster's automatic Enter, a race that cannot be closed | — | — | not scheduled |
 
@@ -305,13 +302,13 @@ The hook events of 2.1.289 (offset **200190615**) include `SubagentStart` and
 
 ### What is knowable, per window
 
-| | mirrored Claude Code | dispatched `claude-code` (ccd) | Hermes |
-|---|---|---|---|
-| shells, count | **exact** while no foreground call can run (`idle`/`shell`, no Monitor); otherwise `1+` (process tree) | the same, same code in the pod | **UNVERIFIED**: `~/.hermes/processes.json` lists running background processes with `pid`, `host_start_time` and `session_key` (installed build: `tools/process_registry.py:44`, fields at `:653-658`) |
-| shells, yes/no | **exact** (`shell` status, or the count) | exact | as above |
-| subagents, count | **exact 0** when `idle`/`shell`; while `busy`/`waiting`, the transcript ledger (below) | same | **UNVERIFIED**: `subagent_start`/`subagent_stop` hooks exist and shell hooks may register them (installed build: `tools/delegate_tool.py:329`, `tools/delegate_tool_results.py:365`, allow-list `hermes_cli/plugins.py:135`). Needs the Phase 2 status hook, which is not built |
-| nested subagents (a subagent's own subagents) | **not counted**: their calls are in the subagent's transcript, as today's cards already say (`internal/mirrorhost/subagents.go:36-38`) | same | unknown |
-| cluster agents of other kinds | n/a | n/a | n/a: no badge |
+| | mirrored Claude Code | dispatched `claude-code` (ccd) |
+|---|---|---|
+| shells, count | **exact** while no foreground call can run (`idle`/`shell`, no Monitor); otherwise `1+` (process tree) | the same, same code in the pod |
+| shells, yes/no | **exact** (`shell` status, or the count) | exact |
+| subagents, count | **exact 0** when `idle`/`shell`; while `busy`/`waiting`, the transcript ledger (below) | same |
+| nested subagents (a subagent's own subagents) | **not counted**: their calls are in the subagent's transcript, as today's cards already say (`internal/mirrorhost/subagents.go:36-38`) | same |
+| cluster agents of other kinds | n/a | n/a |
 
 ### Recommended design
 
@@ -540,7 +537,6 @@ All counts in fixtures are pairwise distinct, for example 3 subagents and
 | Mirror wire, hub, card chip, rendered-view chip, e2e | 1.5–2 |
 | ccd reporter, `/agent/work`, agent-card chip, tests | 1–1.5 |
 | **Total for Claude Code** | **5–6.5** |
-| Hermes, after Hermes Phase 2: hook events added to the status file, process checkpoint read with PID and start-time validation | 1–1.5 |
 
 ---
 
@@ -742,7 +738,7 @@ Other rules:
 - **No colour:** the card looks exactly as it does today.
 - **Cluster agents and ccd:** no tmux, no colour, neutral border. A colour in the
   agent spec could come later; it is out of scope here.
-- **Hermes and plain shell windows** are tinted the same way. The colour belongs
+- **opencode and plain shell windows** are tinted the same way. The colour belongs
   to the tmux window, whatever runs in it.
 - **The rendered view and the terminal page** are not tinted. *(As built: the
   operator asked for the cards only.)*
@@ -832,7 +828,6 @@ Revised after the round-2 audit. (c) is deferred and not counted.
 | (b) host, wire, contrast variants, UI, tests | 2.5–3 |
 | **Total in muster: (a) + (b)** | **7.5–9.5** |
 | Host tmux config: generate `@muster-color` from the slot table | about 0.25 |
-| Later, after Hermes Phase 2: Hermes work counts | 1–1.5 |
 
 The ccd item in the spike concerns a possible existing ccd hazard, described in
 the deferred section under "Who is affected": a notification turn may fire no
@@ -1070,7 +1065,7 @@ It is gate 3.
 
 ### The input line, before the paste and before the Enter
 
-Like the Hermes gated send ([hermes.md](hermes.md)), the host reads the pane
+The host reads the pane
 with `capture-pane` at two moments and acts only on what it sees.
 
 **The reader.** It reuses ccd's bottom-of-screen anchoring (`isRule` and

@@ -13,9 +13,9 @@
 // moves conversations between windows; the Claude session id names the
 // conversation itself, so the focus follows it (mirror.Window.ClaudeSession). A
 // window whose host does not report one (an older muster-mirror) has no focus.
-// A Hermes conversation's key is runtime-qualified, "hermes:<session id>"
-// (mirror.Window.SessionKey, HermesSubject), so it can never be taken for a
-// Claude one.
+// Another runtime's conversation key is runtime-qualified,
+// "opencode:<session id>" (mirror.Window.SessionKey), so it can never be
+// taken for a Claude one.
 package focus
 
 import (
@@ -72,8 +72,8 @@ type Subject struct {
 }
 
 // ErrBadSubject refuses a subject that is not "agent:<id>",
-// "mirror:<claude session id>" or "mirror:hermes:<hermes session id>".
-var ErrBadSubject = errors.New(`focus: a subject is "agent:<id>", "mirror:<claude session id>" or "mirror:hermes:<hermes session id>"`)
+// "mirror:<claude session id>" or "mirror:opencode:<opencode session id>".
+var ErrBadSubject = errors.New(`focus: a subject is "agent:<id>", "mirror:<claude session id>" or "mirror:opencode:<opencode session id>"`)
 
 // AgentSubject is the subject of agent id.
 func AgentSubject(id int64) Subject { return Subject{Kind: KindAgent, Key: strconv.FormatInt(id, 10)} }
@@ -82,11 +82,6 @@ func AgentSubject(id int64) Subject { return Subject{Kind: KindAgent, Key: strco
 // sid — or, given a whole session key (mirror.Window.SessionKey), of the
 // conversation that key names.
 func MirrorSubject(sid string) Subject { return Subject{Kind: KindMirror, Key: sid} }
-
-// HermesSubject is the subject of the mirrored Hermes session with id sid: its
-// key is runtime-qualified ("hermes:<sid>"), as mirror.Window.SessionKey makes
-// it.
-func HermesSubject(sid string) Subject { return MirrorSubject(mirror.HermesKeyPrefix + sid) }
 
 // String is the subject as the tools spell it: "agent:12", "mirror:<sid>".
 func (s Subject) String() string { return string(s.Kind) + ":" + s.Key }
@@ -120,7 +115,7 @@ func (s Subject) Valid() error {
 }
 
 // ParseSubject reads "agent:<id>", "mirror:<claude session id>" or
-// "mirror:hermes:<hermes session id>".
+// "mirror:opencode:<opencode session id>".
 func ParseSubject(raw string) (Subject, error) {
 	kind, key, ok := strings.Cut(strings.TrimSpace(raw), ":")
 	if !ok {

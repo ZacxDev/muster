@@ -109,12 +109,12 @@ func TestATaskPushBodyKeepsSnakeCase(t *testing.T) {
 func TestTheAttentionQueueShowsPlainTitles(t *testing.T) {
 	out := attentionItemsHTML([]attentionItem{{
 		Key: "k33", Kind: attentionKindSession, Since: time.Now(),
-		Source: "**Hermes** [chat](https://example.com/h) @ host-a",
+		Source: "**Opencode** [chat](https://example.com/h) @ host-a",
 		Focus:  "Fixing ~~old~~ `auth` for C#",
 		Text:   "waiting",
 	}}, time.Now())
 	for _, want := range []string{
-		"<span data-attention-source>Hermes chat @ host-a</span>",
+		"<span data-attention-source>Opencode chat @ host-a</span>",
 		">Fixing old auth for C#</span>",
 	} {
 		if !strings.Contains(out, want) {

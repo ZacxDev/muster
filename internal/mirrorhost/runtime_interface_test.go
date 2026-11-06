@@ -40,23 +40,14 @@ func TestAHostViewSourceExistsExactlyWhereTheServerSaysAView(t *testing.T) {
 	}
 }
 
-// TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend: a runtime the
-// server sends to only through the host's gated send (GatedSend) has a host
-// gatedSender — the paste routed by Msg.Runtime — and no other runtime does.
-func TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend(t *testing.T) {
-	for name, r := range hostRuntimesBySpec(t) {
-		spec, _ := mirror.LookupRuntime(name)
-		if _, ok := r.(gatedSender); ok != spec.GatedSend {
-			t.Errorf("%s: a host gated sender %v, the server's GatedSend %v", name, ok, spec.GatedSend)
-		}
-	}
-	// The listing's runtimes are the ones that locate panes: Claude Code
-	// first, then Hermes, then opencode.
+// TestTheHostLocatesClaudeCodeThenOpenCode: the listing's runtimes are the
+// ones that locate panes, Claude Code first, then opencode — and nothing else.
+func TestTheHostLocatesClaudeCodeThenOpenCode(t *testing.T) {
 	var loc []string
 	for _, r := range (Tmux{}).runtimes() {
 		loc = append(loc, r.Name())
 	}
-	if want := []string{mirror.RuntimeClaude, mirror.RuntimeHermes, mirror.RuntimeOpenCode}; !slices.Equal(loc, want) {
+	if want := []string{mirror.RuntimeClaude, mirror.RuntimeOpenCode}; !slices.Equal(loc, want) {
 		t.Fatalf("locating runtimes %q, want %q", loc, want)
 	}
 }
@@ -67,7 +58,7 @@ func TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend(t *testing.T) {
 // its Pending naming its own asks (permission, question), advertising an
 // answer and never a send; on the wire with its own key prefix ("opencode:",
 // 0052) and a view only once its host names the session — and on the host it
-// has a view source and an answerer, no gated send, claims a pane whose
+// has a view source and an answerer, claims a pane whose
 // terminal runs the TUI, and keeps the paste guard's refusal.
 func TestOpenCodeIsViewedAndAnsweredButNeverSentTo(t *testing.T) {
 	r, ok := runtimeNamed(mirror.RuntimeOpenCode)
@@ -76,20 +67,17 @@ func TestOpenCodeIsViewedAndAnsweredButNeverSentTo(t *testing.T) {
 	}
 	spec, ok := mirror.LookupRuntime(mirror.RuntimeOpenCode)
 	if !ok || !spec.Caps.View || spec.Caps.Send || !spec.Caps.Prompts || !spec.OnWire || spec.KeyPrefix != "opencode:" || !spec.ViewNeedsSession ||
-		spec.GatedSend || spec.Advertises == nil || !spec.PendingNamesAsk || !slices.Equal(spec.AskKinds, []string{mirror.PendingPermission, mirror.PendingQuestion}) {
+		spec.Answers == nil || !spec.PendingNamesAsk || !slices.Equal(spec.AskKinds, []string{mirror.PendingPermission, mirror.PendingQuestion}) {
 		t.Fatalf("opencode's spec is not view + answer only: %+v", spec)
 	}
-	if send, answer := spec.Advertises(mirror.Msg{OpenCodeAnswer: true, HermesSend: true, HermesAnswer: true}); send || !answer {
-		t.Fatalf("opencode advertises send %v answer %v from a hello saying it answers, want answer only", send, answer)
+	if !spec.Answers(mirror.Msg{OpenCodeAnswer: true}) {
+		t.Fatal("opencode does not answer from a hello saying it answers")
 	}
-	if send, answer := spec.Advertises(mirror.Msg{HermesSend: true, HermesAnswer: true}); send || answer {
-		t.Fatalf("opencode reads another runtime's hello flags: send %v answer %v", send, answer)
+	if spec.Answers(mirror.Msg{AskAnswer: true, AskCancel: true}) {
+		t.Fatal("opencode reads another capability's hello flags as its own")
 	}
 	if _, ok := r.(viewSource); !ok {
 		t.Error("opencode has no view source")
-	}
-	if _, ok := r.(gatedSender); ok {
-		t.Error("opencode has a send")
 	}
 	if _, ok := r.(answerer); !ok {
 		t.Error("opencode has no answerer")
@@ -108,7 +96,7 @@ func TestOpenCodeIsViewedAndAnsweredButNeverSentTo(t *testing.T) {
 	if !ok {
 		t.Fatal("opencode is not a paste guard")
 	}
-	if rule, ok := g.shape(procInfo{comm: ".opencode-wrapp", argv: []string{"opencode"}}, func() string { return "" }); !ok || !g.owns(rule) ||
+	if rule, ok := g.shape(procInfo{comm: ".opencode-wrapp", argv: []string{"opencode"}}); !ok || !g.owns(rule) ||
 		g.refusal() != ErrOpenCodePane || g.refusalKind() != mirror.PasteRefusalOpenCode {
 		t.Fatalf("opencode's guard: rule %q ok %v", rule, ok)
 	}

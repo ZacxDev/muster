@@ -23,7 +23,7 @@
 // has not moved. So a caller navigates to what it tests. Landing every path on
 // home was tried and reverted: home opens the default session's view, and its
 // sockets broke five tests that count sockets and streams (mirror-windows,
-// mirrored, view-swap, hermes-view).
+// mirrored, view-swap, and a since-removed spec).
 //
 // A test that needs a session of its OWN — one it signs out, or a sign-in whose
 // issue time a step-up check reads — passes { fresh: true }. That still goes

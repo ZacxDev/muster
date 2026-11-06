@@ -137,8 +137,8 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 		}
 		seen[e.SessionKey()] = true
 		// ActiveAt is the window's CardActivity: a Claude window's transcript
-		// LAST MESSAGE (the time the cards show), else — an opencode or Hermes
-		// window, an older host that reports none — tmux's window activity.
+		// LAST MESSAGE (the time the cards show), else — an opencode window,
+		// an older host that reports none — tmux's window activity.
 		// ⚠ EXCEPT while a Claude window is busy or waiting: its host then
 		// reports its last message as the host's NOW (mirrorhost.WireWindows),
 		// so its activity moves every minute. A waiting one is skipped through
@@ -161,12 +161,13 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 
 // mirrorFocusEntries is every ONLINE mirrored window of ctx's principal whose
 // conversation focus can describe: a Claude Code window with its session id,
-// or a Hermes window whose host names its session (keyed "hermes:<id>",
-// mirror.SessionView.SessionKey), most recently active first.
+// or another runtime's window whose host names its session (keyed
+// "<runtime>:<id>", mirror.SessionView.SessionKey), most recently active
+// first.
 //
 // 🔴 FOCUS ONLY. Routing, the send queue and the sessions overview stay on
-// mirrorClaudeEntries: each of those is a way to SEND, and nothing sends to
-// Hermes before Phase 3.
+// mirrorClaudeEntries: each of those is a way to SEND, and muster sends only
+// to Claude Code.
 func (s *Server) mirrorFocusEntries(ctx context.Context) []mirror.SessionView {
 	if s.ext.Mirror == nil {
 		return nil
@@ -254,7 +255,7 @@ func (f focusSessions) Tail(ctx context.Context, sub focus.Subject) ([]focus.Ent
 			return nil, errNoSession
 		}
 		// The stream names its conversation by the bare id (Msg.Gen): a
-		// runtime-qualified key is "<prefix><id>" ("hermes:<id>").
+		// runtime-qualified key is "<prefix><id>" ("opencode:<id>").
 		return f.s.mirrorTail(ctx, e, mirror.SessionIDOf(sub.Key))
 	}
 	return nil, focus.ErrBadSubject

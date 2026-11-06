@@ -45,7 +45,6 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [limits.md](limits.md) — what it does not do, or has not proven
 - [decisions.md](decisions.md) — why things are the way they are
 - [design/android.md](design/android.md) — proposed: a native Android app (actionable notifications, bubbles, widgets, live status)
-- [design/hermes.md](design/hermes.md) — Hermes mirroring
 - [design/agent-cards.md](design/agent-cards.md) — live subagent and shell counts, and tmux identity colours, on the (since retired) Agents list's cards
 - [design/host-sessions.md](design/host-sessions.md) — proposed: start a tmux-backed session on one of your hosts from muster, mirrored automatically
 - [design/switcher-dock.md](design/switcher-dock.md) — proposed: a swipe-up dock that lists the session switcher's views vertically on a phone

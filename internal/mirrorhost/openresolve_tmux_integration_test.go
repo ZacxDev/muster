@@ -46,7 +46,6 @@ func newCacheRig(t *testing.T) *cacheRig {
 	// Every runtime a deployed host runs, so an open asks all three (a host
 	// without them asks only Claude Code).
 	be := r.backend
-	be.Hermes = NewHermesSource(t.TempDir(), t.TempDir())
 	be.OpenCode = NewOpenCodeSource(context.Background(), nil, "not paired (rig)", log.New(io.Discard, "", 0))
 	c := &cacheRig{perfRig: r, m: newPerfMuster(t)}
 	c.m.connect(t, be)
@@ -99,7 +98,7 @@ func TestTmuxAnOpenListsTheServerOnceAndOpensTheRightPane(t *testing.T) {
 		}
 		// 🔴 THE ASSERTION THAT IS RED BEFORE openresolve.go: an open listed the
 		// whole server (`list-panes -a`) once per runtime that could claim the
-		// window — three on this host (opencode, Hermes, Claude Code).
+		// window — two on this host (opencode, Claude Code).
 		if listAll != 1 {
 			t.Fatalf("the open ran %d server-wide listing(s), want exactly 1, shared by its runtimes", listAll)
 		}

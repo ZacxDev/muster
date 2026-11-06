@@ -52,10 +52,6 @@ type hookConfig struct {
 	URL       string `json:"url"`
 	AllowHTTP bool   `json:"allowHttp,omitempty"`
 	TokenFile string `json:"tokenFile,omitempty"`
-	// HermesStatusDir is where the daemon reads Hermes status files from:
-	// where `muster-mirror hermes-hook`, run by Hermes's gateway with none of
-	// the service's environment, writes them (hermes.go).
-	HermesStatusDir string `json:"hermesStatusDir,omitempty"`
 	// TmuxSocket is the socket path of the tmux server the daemon mirrors
 	// (tmuxsocket.go): how the hook picks the record for the caller's $TMUX.
 	// Empty only in a record an older daemon wrote.

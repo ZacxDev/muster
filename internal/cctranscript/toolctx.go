@@ -81,7 +81,7 @@ func EstimateTokens(output, in, out int64, outputKnown bool) int64 {
 //     apportioned by the bytes of its call and result. The SHARE is not
 //     measured, so it is marked approximate; the group total it came from is.
 //   - CostEstimate: no usage to measure by — a runtime that records none
-//     (Hermes), a host that predates Usage (WhyNoUsage) — or a gap the growth
+//     (opencode), a host that predates Usage (WhyNoUsage) — or a gap the growth
 //     cannot be put down to the calls alone: a prompt, a notice, an error or
 //     context the CLI INJECTED (an attachment record: a message typed while
 //     the tool ran, diagnostics, a skill listing…) arrived before the next turn

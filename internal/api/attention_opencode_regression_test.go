@@ -42,7 +42,7 @@ func TestAWaitingOpenCodeWindowIsAnAttentionItemNotifiedLikeClaudes(t *testing.T
 	m := &fakeMirror{online: true, interactive: true, statusReport: true, windows: openCodeWaiting()}
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Mirror: m})
-	by := itemsByWindow(s.waitingSessions(hermesUser()))
+	by := itemsByWindow(s.waitingSessions(attentionUser()))
 	if len(by) != 2 {
 		t.Fatalf("%d items, want the two waiting opencode windows: %+v", len(by), by)
 	}

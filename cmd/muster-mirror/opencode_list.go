@@ -89,3 +89,17 @@ func printOpenCode(ctx context.Context, backend mirrorhost.Backend, creds *openc
 	fmt.Fprintf(stdout, "opencode-windows\t%s\n", strconv.Itoa(n))
 	return 0
 }
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func stateOrUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
