@@ -624,10 +624,40 @@ type ActiveCount struct {
 // Active is Queued + Running: what MaxActivePerAgent bounds.
 func (c ActiveCount) Active() int { return c.Queued + c.Running }
 
-// activeCounts counts the caller's queued and running jobs per agent, inside
-// CreateChosen's transaction and under its locks: what its choice is given. An
-// agent with none is absent.
-func activeCounts(ctx context.Context, tx pgx.Tx, agentIDs []int64) (map[int64]ActiveCount, error) {
+// ActiveCounter counts the jobs queued and running on agents, whoever
+// submitted them. A pool submission's account failover asks it whether a worker is
+// idle before restarting its pod (internal/api holdIdleAgent); asserted rather
+// than added to Store, like Requeuer.
+type ActiveCounter interface {
+	// ActiveCounts is each of agentIDs' queued and running jobs, across every
+	// owner. An agent with none is absent.
+	ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error)
+}
+
+// ActiveCounts implements [ActiveCounter], under the system principal
+// whatever ctx carries — its own internal/authz System ledger entry, not the
+// reaper's (sys).
+//
+// 🔴 EVERY OWNER'S JOBS, NOT THE CALLER'S. Its answer decides whether a pod
+// restart would cut a job: under the caller's row-level security a job someone
+// else submitted to the agent would read as absent, and the agent as idle. It
+// returns counts only, nothing of any row.
+func (s *PGStore) ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error) {
+	return activeCounts(authz.System(ctx), s.pool, agentIDs)
+}
+
+var _ ActiveCounter = (*PGStore)(nil)
+
+// querier is what activeCounts reads through: a transaction (CreateChosen's)
+// or the pool (ActiveCounts).
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// activeCounts counts the queued and running jobs per agent that q can see —
+// inside CreateChosen's transaction and under its locks, the caller's: what
+// its choice is given. An agent with none is absent.
+func activeCounts(ctx context.Context, tx querier, agentIDs []int64) (map[int64]ActiveCount, error) {
 	out := map[int64]ActiveCount{}
 	if len(agentIDs) == 0 {
 		return out, nil

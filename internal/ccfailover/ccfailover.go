@@ -30,6 +30,20 @@
 //  5. records an event (cc_account_failovers) and logs one line — account
 //     NAMES, the reason and the reset time, never a token.
 //
+// # A pool submission overrides a pin (AccountFailedForPool)
+//
+// A worker pool refuses a job upfront when every worker's account is cooling
+// down or failed authentication; a refused submission runs no turn, so no
+// failover fires and the pool stays refused until the account resets
+// (2026-11-07: ~2.5 days, with a second account usable the whole time). So the
+// job API fails one such worker over itself (internal/api createPoolJob)
+// through [Service.AccountFailedForPool], which is AccountFailed except that a
+// pool worker's PIN does not stop the move: for a pool, nothing being stuck
+// wins over the account it was created on (operator, 2026-11-07). It applies
+// to agents in a worker pool only; a named agent, an officer instance and the
+// chief keep their pin as before, and failover off
+// (MUSTER_AGENT_CC_FAILOVER=off) still moves nothing.
+//
 // # Idempotent on (agent, from account)
 //
 // Two turns on one agent failing at once produce ONE rebind: in this process a
@@ -114,6 +128,11 @@ type Result struct {
 	Event Event
 	// Why is why the agent was not moved ("" when it was).
 	Why string
+	// NoTarget: not moved because no other account of the owner's is usable.
+	// Every agent of that owner on the same account gets the same answer, so a
+	// caller trying several of them stops there (internal/api
+	// failoverBlockedWorker).
+	NoTarget bool
 }
 
 // Pool is the part of ccpool.Pool a failover reads.
@@ -177,6 +196,8 @@ type Service struct {
 	mu    sync.Mutex
 	lanes map[int64]*sync.Mutex
 	memo  map[memoKey]memoEntry
+	// recent is each agent's latest rebind made by this process (Rebinding).
+	recent map[int64]memoEntry
 }
 
 type memoKey struct {
@@ -212,7 +233,22 @@ func New(cfg Config) (*Service, error) {
 	if lg == nil {
 		lg = log.New(io.Discard, "", 0)
 	}
-	return &Service{cfg: cfg, log: lg, lanes: map[int64]*sync.Mutex{}, memo: map[memoKey]memoEntry{}}, nil
+	return &Service{cfg: cfg, log: lg, lanes: map[int64]*sync.Mutex{}, memo: map[memoKey]memoEntry{},
+		recent: map[int64]memoEntry{}}, nil
+}
+
+// Rebinding is agentID's latest move made by THIS process within the last
+// memoTTL, so a job about to run on it can wait for its replacement pod
+// (AwaitRebound) instead of sending a turn into a restart. ok is false when
+// there is none.
+func (s *Service) Rebinding(agentID int64) (Result, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.recent[agentID]
+	if !ok || s.cfg.Now().Sub(e.at) >= memoTTL {
+		return Result{}, false
+	}
+	return e.res, true
 }
 
 // Enabled reports MUSTER_AGENT_CC_FAILOVER.
@@ -264,6 +300,20 @@ func (s *Service) Allowed(ag agents.Agent) (bool, string) {
 // account, failed with failure (ccd's typed error) and detail (its message).
 // It never returns an error: what it could not do is in Result.Why and the log.
 func (s *Service) AccountFailed(ctx context.Context, agentID int64, account, failure, detail string) Result {
+	return s.accountFailed(ctx, agentID, account, failure, detail, false)
+}
+
+// AccountFailedForPool is AccountFailed for a WORKER POOL's member, called by
+// a pool submission that found no worker it could use: the member's pin does
+// not stop the move (see the package doc). An agent in no pool is treated
+// exactly as AccountFailed treats it, pin included.
+func (s *Service) AccountFailedForPool(ctx context.Context, agentID int64, account, failure, detail string) Result {
+	return s.accountFailed(ctx, agentID, account, failure, detail, true)
+}
+
+// accountFailed is AccountFailed; forPool lets a pool member's pin be
+// overridden.
+func (s *Service) accountFailed(ctx context.Context, agentID int64, account, failure, detail string, forPool bool) Result {
 	res := Result{From: account}
 	if failure != ccpool.FailureRateLimited && failure != ccpool.FailureAuthFailed {
 		res.Why = "not an account failure"
@@ -302,7 +352,9 @@ func (s *Service) AccountFailed(ctx context.Context, agentID int64, account, fai
 		}
 		return res
 	}
-	if ok, why := s.Allowed(ag); !ok {
+	// 🔴 A POOL SUBMISSION OVERRIDES A POOL WORKER'S PIN, AND ONLY THAT. Off is
+	// still off, and an agent in no pool keeps its pin whoever asks.
+	if ok, why := s.Allowed(ag); !ok && !(forPool && s.cfg.Enabled && ag.WorkerPool != "") {
 		res.Why = why
 		return res
 	}
@@ -313,6 +365,7 @@ func (s *Service) AccountFailed(ctx context.Context, agentID int64, account, fai
 		return res
 	}
 	if !ok {
+		res.NoTarget = true
 		res.Why = "no other Claude account is usable (every other one is cooling down or failed authentication)"
 		s.log.Printf("ccfailover: agent %s stays on account %s after %s: %s", ag.Name, account, failure, res.Why)
 		return res
@@ -352,6 +405,7 @@ func (s *Service) AccountFailed(ctx context.Context, agentID int64, account, fai
 	}
 	s.mu.Lock()
 	s.memo[key] = memoEntry{res: res, at: now}
+	s.recent[agentID] = memoEntry{res: res, at: now}
 	s.mu.Unlock()
 	return res
 }

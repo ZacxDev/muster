@@ -391,11 +391,15 @@ type Extensions struct {
 }
 
 // AccountFailover is the part of internal/ccfailover.Service this package uses:
-// the job runner's re-queue (AccountFailed + AwaitRebound), the agent page's
+// the job runner's re-queue (AccountFailed + AwaitRebound), the pool
+// submission's failover of a worker (AccountFailedForPool), a job's wait for
+// its worker's replacement pod (Rebinding + AwaitRebound), the agent page's
 // history (Events) and the officer runtime's hooks (UseHooks).
 type AccountFailover interface {
 	AccountFailed(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result
+	AccountFailedForPool(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result
 	AwaitRebound(ctx context.Context, r ccfailover.Result) error
+	Rebinding(agentID int64) (ccfailover.Result, bool)
 	Events(ctx context.Context, agentID int64, limit int) ([]ccfailover.Event, error)
 	UseHooks(policy ccfailover.Policy, prepare ccfailover.Prepare)
 	Allowed(a agents.Agent) (bool, string)

@@ -82,6 +82,9 @@ type fakeFailover struct {
 	targets map[string]string
 	calls   []string
 	awaits  int
+	// recent is what Rebinding answers per agent; awaitErr fails AwaitRebound.
+	recent   map[int64]ccfailover.Result
+	awaitErr error
 }
 
 func (f *fakeFailover) AccountFailed(_ context.Context, agentID int64, account, failure, _ string) ccfailover.Result {
@@ -109,13 +112,22 @@ func (f *fakeFailover) AwaitRebound(context.Context, ccfailover.Result) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.awaits++
-	return nil
+	return f.awaitErr
 }
 func (f *fakeFailover) Events(context.Context, int64, int) ([]ccfailover.Event, error) {
 	return nil, nil
 }
 func (f *fakeFailover) UseHooks(ccfailover.Policy, ccfailover.Prepare) {}
-func (f *fakeFailover) Allowed(agents.Agent) (bool, string)            { return true, "" }
+func (f *fakeFailover) AccountFailedForPool(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result {
+	return f.AccountFailed(ctx, agentID, account, failure, detail)
+}
+func (f *fakeFailover) Rebinding(id int64) (ccfailover.Result, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.recent[id]
+	return r, ok
+}
+func (f *fakeFailover) Allowed(agents.Agent) (bool, string) { return true, "" }
 
 // accountGateway answers a turn by the account the agent is on NOW (the row the
 // runner re-read): limited accounts fail with failure, others answer reply.
@@ -205,6 +217,49 @@ func TestARateLimitedJobIsRequeuedOnItsWorkersNewAccountAndRuns(t *testing.T) {
 			}
 			if r.fo.awaits != 1 {
 				t.Fatalf("waited for the new pod %d time(s), want 1", r.fo.awaits)
+			}
+		})
+	}
+}
+
+// TestAJobOnAJustMovedWorkerWaitsForItsReplacementPod: keen-wren was just
+// moved to north (Rebinding answers it), so its row already reads running on
+// north while its pod restarts. A job on it waits for the replacement pod
+// before its turn; when the pod is not ready in time the job fails
+// agent_unavailable and no turn is sent. A move to an account the worker is no
+// longer on (an older move) is not waited for.
+func TestAJobOnAJustMovedWorkerWaitsForItsReplacementPod(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		to         string
+		awaitErr   error
+		wantAwaits int
+		wantStatus string
+		wantTurns  int
+	}{
+		{"waits, then runs", "north", nil, 1, jobs.StatusSucceeded, 1},
+		{"not ready in time", "north", errors.New("not ready"), 1, jobs.StatusFailed, 0},
+		{"an older move", "south", nil, 0, jobs.StatusSucceeded, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newFailoverRig(t, map[string]string{}, map[string]bool{}, "rate_limited")
+			r.fo.recent = map[int64]ccfailover.Result{7: {AgentName: "keen-wren", From: "west", To: tc.to, Moved: true, Rebound: true}}
+			r.fo.awaitErr = tc.awaitErr
+			out := r.await(t, r.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review"}))
+			if out["status"] != tc.wantStatus {
+				t.Fatalf("job = %v/%v (%v), want %s", out["status"], out["reason"], out["error"], tc.wantStatus)
+			}
+			if tc.wantStatus == jobs.StatusFailed && out["reason"] != jobs.ReasonAgentUnavailable {
+				t.Fatalf("reason = %v, want %s", out["reason"], jobs.ReasonAgentUnavailable)
+			}
+			r.fo.mu.Lock()
+			awaits := r.fo.awaits
+			r.fo.mu.Unlock()
+			if awaits != tc.wantAwaits {
+				t.Fatalf("waited %d time(s), want %d", awaits, tc.wantAwaits)
+			}
+			if got := r.gw.turns(); len(got) != tc.wantTurns {
+				t.Fatalf("turns = %v, want %d", got, tc.wantTurns)
 			}
 		})
 	}
