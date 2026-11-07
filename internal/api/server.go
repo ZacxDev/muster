@@ -212,6 +212,9 @@ type Server struct {
 	// outcome-write attempts (zero: jobFinishRetryPause).
 	jobLanes         jobLanes
 	ownJobs          ownJobs
+	// poolFailovers serialises a pool submission's account failover per
+	// (owner, pool) (jobs.go createPoolJob).
+	poolFailovers keyedLocks
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration

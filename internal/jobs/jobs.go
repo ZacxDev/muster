@@ -634,15 +634,16 @@ type ActiveCounter interface {
 	ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error)
 }
 
-// ActiveCounts implements [ActiveCounter], under the system principal (sys)
-// whatever ctx carries.
+// ActiveCounts implements [ActiveCounter], under the system principal
+// whatever ctx carries — its own internal/authz System ledger entry, not the
+// reaper's (sys).
 //
 // 🔴 EVERY OWNER'S JOBS, NOT THE CALLER'S. Its answer decides whether a pod
 // restart would cut a job: under the caller's row-level security a job someone
 // else submitted to the agent would read as absent, and the agent as idle. It
 // returns counts only, nothing of any row.
 func (s *PGStore) ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error) {
-	return activeCounts(sys(ctx), s.pool, agentIDs)
+	return activeCounts(authz.System(ctx), s.pool, agentIDs)
 }
 
 var _ ActiveCounter = (*PGStore)(nil)

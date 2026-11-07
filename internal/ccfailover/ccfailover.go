@@ -128,6 +128,11 @@ type Result struct {
 	Event Event
 	// Why is why the agent was not moved ("" when it was).
 	Why string
+	// NoTarget: not moved because no other account of the owner's is usable.
+	// Every agent of that owner on the same account gets the same answer, so a
+	// caller trying several of them stops there (internal/api
+	// failoverBlockedWorker).
+	NoTarget bool
 }
 
 // Pool is the part of ccpool.Pool a failover reads.
@@ -360,6 +365,7 @@ func (s *Service) accountFailed(ctx context.Context, agentID int64, account, fai
 		return res
 	}
 	if !ok {
+		res.NoTarget = true
 		res.Why = "no other Claude account is usable (every other one is cooling down or failed authentication)"
 		s.log.Printf("ccfailover: agent %s stays on account %s after %s: %s", ag.Name, account, failure, res.Why)
 		return res

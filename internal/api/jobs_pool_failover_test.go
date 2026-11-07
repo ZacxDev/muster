@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,9 +129,20 @@ type incidentRebinder struct {
 	ags   *incidentAgents
 	mu    sync.Mutex
 	moved []string
+	// entered, when set, is told each rebind that starts; gate, when set,
+	// holds each one (before the row moves) until it is closed: a pod
+	// re-apply that takes a while.
+	entered chan int64
+	gate    chan struct{}
 }
 
 func (r *incidentRebinder) Rebind(_ context.Context, id int64, from, to string, _ func(context.Context, agents.Agent) error) (agentprovision.RebindResult, error) {
+	if r.entered != nil {
+		r.entered <- id
+	}
+	if r.gate != nil {
+		<-r.gate
+	}
 	r.ags.rowMu.Lock()
 	a, ok := r.ags.rows[id]
 	if !ok {
@@ -157,13 +170,16 @@ func (r *incidentRebinder) moves() []string {
 	return out
 }
 
-// ccPoolKinds answers the pool's account states from the real pool.
+// ccPoolKinds answers the pool's account states from the real pool, and
+// counts the reads (one per worker choice a submission makes).
 type ccPoolKinds struct {
 	AgentKinds
-	pool *ccpool.Pool
+	pool  *ccpool.Pool
+	reads *atomic.Int64
 }
 
 func (k ccPoolKinds) ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error) {
+	k.reads.Add(1)
 	return k.pool.States(ctx, owner)
 }
 
@@ -197,11 +213,12 @@ func (m *memJobs) ActiveCounts(_ context.Context, ids []int64) (map[int64]jobs.A
 
 type incidentRig struct {
 	*jobFixture
-	ags  *incidentAgents
-	pool *ccpool.Pool
-	svc  *ccfailover.Service
-	rb   *incidentRebinder
-	gw   *accountGateway
+	reads *atomic.Int64
+	ags   *incidentAgents
+	pool  *ccpool.Pool
+	svc   *ccfailover.Service
+	rb    *incidentRebinder
+	gw    *accountGateway
 }
 
 // The agents of the incident. clever-heron is not in the pool.
@@ -231,6 +248,7 @@ func newIncidentRig(t *testing.T) *incidentRig {
 		t.Fatal(err)
 	}
 	rb := &incidentRebinder{ags: ags}
+	reads := &atomic.Int64{}
 	svc, err := ccfailover.New(ccfailover.Config{Enabled: true, Pool: pool, Agents: ags, Rebinder: rb,
 		Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
@@ -247,11 +265,11 @@ func newIncidentRig(t *testing.T) *incidentRig {
 		Jobs:            f.store,
 		JobWorkspace:    f.ws,
 		AccountFailover: svc,
-		Kinds:           ccPoolKinds{pool: pool},
+		Kinds:           ccPoolKinds{pool: pool, reads: reads},
 	})
 	f.ts = httptest.NewServer(f.s.Handler())
 	t.Cleanup(f.ts.Close)
-	return &incidentRig{jobFixture: f, ags: ags, pool: pool, svc: svc, rb: rb, gw: gw}
+	return &incidentRig{jobFixture: f, reads: reads, ags: ags, pool: pool, svc: svc, rb: rb, gw: gw}
 }
 
 // markLimited marks account rate-limited as ccd's typed failure does (the
@@ -399,6 +417,8 @@ func TestAPoolStaysRefusedWhenNoAccountIsUsable(t *testing.T) {
 		t.Fatalf("devin's cooldown = %v, %v", until, err)
 	}
 	reset := until.UTC().Format(time.RFC3339)
+	var logs bytes.Buffer
+	r.s.logger = log.New(&logs, "", 0)
 	code, out := r.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": incidentPool, "prompt": "review"}, true)
 	want := fmt.Sprintf(`no worker in pool %q can take the job: `+
 		`keen-fox (its Claude account "devin" is cooling down after a rate limit until %s); `+
@@ -411,6 +431,19 @@ func TestAPoolStaysRefusedWhenNoAccountIsUsable(t *testing.T) {
 	}
 	if m := r.rb.moves(); len(m) != 0 {
 		t.Fatalf("moves = %v, want none", m)
+	}
+	// Once keen-fox's failover finds no usable account, mellow-claw — on the
+	// same account — is not tried, and the submission logs ONE line.
+	const line = `jobs: pool "civ-hq-reviewers": no worker failed over: keen-fox (no other Claude account is usable ` +
+		`(every other one is cooling down or failed authentication))` + "\n"
+	var pool string
+	for _, l := range strings.SplitAfter(logs.String(), "\n") {
+		if strings.HasPrefix(l, `jobs: pool "`) {
+			pool += l
+		}
+	}
+	if pool != line {
+		t.Fatalf("pool failover log = %q\nwant              %q", pool, line)
 	}
 }
 
@@ -444,5 +477,93 @@ func TestHoldIdleAgentFailsClosed(t *testing.T) {
 		t.Fatal("a refused hold left the lane locked")
 	} else {
 		rel()
+	}
+}
+
+// postAsync submits a pool job in the background and delivers its status and body.
+func (r *incidentRig) postAsync(t *testing.T) <-chan [2]any {
+	t.Helper()
+	out := make(chan [2]any, 1)
+	go func() {
+		code, body := r.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": incidentPool, "prompt": "review"}, true)
+		out <- [2]any{code, body}
+	}()
+	return out
+}
+
+// burst runs the race the round-1 audit reproduced: S1's failover is moving a
+// worker (its rebind held at the gate, before the row moves) when S2, refused
+// too, arrives. It waits until S2 has made its first worker choice (one more
+// account-state read than there were when S1's move began), gives S2 a moment
+// to act on it, then lets the move finish, and returns both answers. The gate
+// is closed on every exit, so a failing run never leaves a request hanging.
+func (r *incidentRig) burst(t *testing.T) (s1, s2 [2]any) {
+	t.Helper()
+	gate := make(chan struct{})
+	var once sync.Once
+	open := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	r.rb.entered, r.rb.gate = make(chan int64, 4), gate
+	first := r.postAsync(t)
+	select {
+	case <-r.rb.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("S1 never started a failover")
+	}
+	base := r.reads.Load()
+	second := r.postAsync(t)
+	deadline := time.Now().Add(5 * time.Second)
+	for r.reads.Load() <= base {
+		if time.Now().After(deadline) {
+			t.Fatal("S2 never made its first worker choice")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	open()
+	return <-first, <-second
+}
+
+// TestASubmissionArrivingDuringAnotherSubmissionsFailoverIsNotRefused: the only
+// idle worker, keen-fox, is being moved to sara by S1 (mellow-claw has a job),
+// when S2 arrives, refused too. S2 must wait for that move and take keen-fox,
+// not read its held lane as "busy" and answer the stale 429 naming devin's
+// reset.
+func TestASubmissionArrivingDuringAnotherSubmissionsFailoverIsNotRefused(t *testing.T) {
+	r := newIncidentRig(t)
+	r.markLimited(t, "devin")
+	r.store.mu.Lock()
+	r.store.next++
+	r.store.rows[r.store.next] = jobs.Job{ID: r.store.next, AgentID: mellowClawID, Agent: "mellow-claw", Prompt: "earlier",
+		TimeoutSeconds: 60, Status: jobs.StatusRunning, CreatedAt: time.Now()}
+	r.store.mu.Unlock()
+	s1, s2 := r.burst(t)
+	if s1[0] != http.StatusAccepted {
+		t.Fatalf("S1 = %v %v, want 202", s1[0], s1[1])
+	}
+	if s2[0] != http.StatusAccepted {
+		t.Fatalf("S2, arriving during S1's failover = %v %v, want 202 on the worker S1 moved", s2[0], s2[1])
+	}
+	if got := strings.Join(r.rb.moves(), ","); got != "keen-fox:devin->sara" {
+		t.Fatalf("moves = %q, want only keen-fox:devin->sara", got)
+	}
+}
+
+// TestABurstOfRefusedSubmissionsMovesOneWorker: both workers idle on devin, two
+// submissions refused at once. ONE worker is moved and both jobs go to it; the
+// second submission does not move mellow-claw as well (a pod restart bought for
+// nothing).
+func TestABurstOfRefusedSubmissionsMovesOneWorker(t *testing.T) {
+	r := newIncidentRig(t)
+	r.markLimited(t, "devin")
+	s1, s2 := r.burst(t)
+	if s1[0] != http.StatusAccepted || s2[0] != http.StatusAccepted {
+		t.Fatalf("S1 = %v, S2 = %v; want both 202", s1[0], s2[0])
+	}
+	if got := strings.Join(r.rb.moves(), ","); got != "keen-fox:devin->sara" {
+		t.Fatalf("a burst of two refused submissions moved %q, want exactly one worker (keen-fox:devin->sara)", got)
+	}
+	if got := r.ags.account("mellow-claw"); got != "devin" {
+		t.Fatalf("mellow-claw is on %q, want devin (not moved)", got)
 	}
 }

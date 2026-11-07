@@ -193,10 +193,13 @@ var (
 		"internal/plugins.(*PGStore).UnroutedAsksToClose",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
-		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count),
-		// and a pool submission failover's idle check (jobs.PGStore.ActiveCounts —
-		// queued and running counts per agent, whoever submitted them; no row).
+		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
 		"internal/jobs.sys",
+		// A pool submission's account failover asks whether a worker is idle
+		// before restarting its pod: queued and running counts per agent,
+		// whoever submitted the jobs (under the caller's RLS another user's
+		// job would read as absent, and the worker as idle). Counts only, no row.
+		"internal/jobs.(*PGStore).ActiveCounts",
 		// The ask log (migration 0089): the retention sweep's one helper. It
 		// clears question and answer text past the TTL and deletes rows past
 		// 180 days, by age only, across every owner (asklog.PG.Purge), and

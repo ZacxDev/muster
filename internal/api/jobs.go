@@ -459,27 +459,78 @@ func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, 
 // that refuses upfront runs no turn on its workers, so without this it stayed
 // refused (2026-11-07). With no usable account nothing moves and the refusal
 // stands: the 429 naming each worker's reset.
+//
+// 🔴 ONE FAILOVER AT A TIME PER (owner, pool), AND THE CHOICE IS MADE AGAIN
+// UNDER IT. Refused submissions arriving together would otherwise each move a
+// worker (a burst of N moves N workers, restarting N pods for one job's worth
+// of need), and one arriving while another holds the worker it is moving would
+// read that worker as busy and answer the stale 429 although the move was about
+// to free it. So a refused submission takes the pool's failover lock, CHOOSES
+// AGAIN (a submission that waited finds the worker the one before it moved, and
+// takes it without moving another), and only if that is still refused moves a
+// worker itself.
 func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, error) {
 	j, created, blocked, err := s.createPoolJobOnce(ctx, n)
 	var refused *jobRefusal
 	if !errors.As(err, &refused) || len(blocked) == 0 || s.ext.AccountFailover == nil {
 		return j, created, err
 	}
-	if !s.failoverBlockedWorker(ctx, n.WorkerPool, blocked) {
+	unlock := s.poolFailovers.lock(strconv.FormatInt(callerID(ctx), 10) + "/" + n.WorkerPool)
+	j, created, blocked, err = s.createPoolJobOnce(ctx, n)
+	if !errors.As(err, &refused) || len(blocked) == 0 {
+		unlock()
+		return j, created, err
+	}
+	moved := s.failoverBlockedWorker(ctx, n.WorkerPool, blocked)
+	unlock()
+	if !moved {
 		return j, created, err
 	}
 	j, created, _, err = s.createPoolJobOnce(ctx, n)
 	return j, created, err
 }
 
-// failoverBlockedWorker moves the first of blocked (in name order) that is
-// idle — held, so no job starts on it meanwhile (holdIdleAgent) — and
-// that the account failover moves to a usable account. It reports whether one
-// was moved (by this call or, concurrently, another).
+// keyedLocks is one mutex per key, made on first use.
+type keyedLocks struct {
+	mu sync.Mutex
+	m  map[string]*sync.Mutex
+}
+
+// lock blocks until key's mutex is free and returns its release.
+func (k *keyedLocks) lock(key string) func() {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = make(map[string]*sync.Mutex)
+	}
+	l, ok := k.m[key]
+	if !ok {
+		l = &sync.Mutex{}
+		k.m[key] = l
+	}
+	k.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// failoverBlockedWorker tries blocked in order (name order) and moves the first
+// that is idle (holdIdleAgent: its job lane is held across the move, so no job
+// of this process starts on it meanwhile) and that the account failover moves
+// to a usable account (AccountFailedForPool: a pool worker's pin does not stop
+// it). A worker on an account for which the failover found no usable target is
+// not tried again for the rest of blocked: every worker on that account would
+// get the same answer. It reports whether a worker is now off its account —
+// moved by this call, or found already moved by another server. When none
+// moves it logs ONE line naming why each worker tried was not.
 func (s *Server) failoverBlockedWorker(ctx context.Context, pool string, blocked []blockedWorker) bool {
+	noTarget := map[string]bool{}
+	var why []string
 	for _, b := range blocked {
-		release, idle, _ := s.holdIdleAgent(ctx, b.a)
+		if noTarget[b.a.CCAccount] {
+			continue
+		}
+		release, idle, busy := s.holdIdleAgent(ctx, b.a)
 		if !idle {
+			why = append(why, b.a.Name+" ("+busy+")")
 			continue
 		}
 		res := s.ext.AccountFailover.AccountFailedForPool(ctx, b.a.ID, b.a.CCAccount, b.failure,
@@ -490,6 +541,13 @@ func (s *Server) failoverBlockedWorker(ctx context.Context, pool string, blocked
 				pool, b.a.Name, b.a.CCAccount, res.To, b.failure)
 			return true
 		}
+		if res.NoTarget {
+			noTarget[b.a.CCAccount] = true
+		}
+		why = append(why, b.a.Name+" ("+res.Why+")")
+	}
+	if len(why) > 0 {
+		s.logger.Printf("jobs: pool %q: no worker failed over: %s", pool, strings.Join(why, "; "))
 	}
 	return false
 }

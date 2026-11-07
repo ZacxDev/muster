@@ -593,7 +593,10 @@ owner's accounts**:
   job and some were skipped only because their account is cooling down or
   failed authentication, the submission moves one of them that is **idle** —
   no job queued or running on it, on any server — to a usable account (the
-  first by name), and places the job on it instead of answering 429. **A pool
+  first by name), and places the job on it instead of answering 429.
+  Refused submissions to one pool fail over one at a time: one arriving while
+  another is moving a worker waits for that move and chooses again, so it
+  takes the moved worker rather than moving a second one. **A pool
   overrides a pin:** a worker in a pool is moved this way even when its
   account was pinned at creation and it did not opt in to `cc_failover`.
   Nothing else does: a pinned named agent, officer instance or chief is moved
