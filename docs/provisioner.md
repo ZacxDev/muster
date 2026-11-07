@@ -538,11 +538,13 @@ outcome is `running` or `stuck`:
 
 "Activity" is everything muster can see the agent do: a turn **open** in
 muster (a claude-code turn streams nothing until it ends, so an open turn is
-never "no reply since kickoff"), a turn starting or ending, every read of a
+never "no reply since kickoff"), the runtime taking a turn or a turn ending, every read of a
 turn's stream (text, thinking, tool calls), its pod's work reports (sent every minute
 while it has subagents or background shells running), and the agent's row and
 transcript (the same "last active" the sidebar orders by). So a genuinely
-working agent is never flipped. Before its first turn is delivered, the
+working agent is never flipped. A message the runtime refused before typing
+it (a `busy` session; muster holds it and asks again) is not activity, and does
+not put a waiting agent back to running: only a turn the runtime takes does. Before its first turn is delivered, the
 kickoff deliverer owns the verdict: an agent whose instance never became
 ready is failed after 15 minutes, as before, and that is now pushed too.
 

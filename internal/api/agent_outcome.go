@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -131,14 +132,53 @@ func (s *Server) outcomeDispatched(ctx context.Context, a agents.Agent, chief in
 	}
 }
 
-// outcomeTurnStarted: a turn of a is starting. Activity now (unthrottled), and —
-// for a first turn of an agent nobody tracked (a saved agent Started later) —
-// the start of its tracking.
+// outcomeTurnStarted: a turn of a is starting and is known to be taken (the
+// kickoff deliverer's first turn): open, and taken now.
 func (s *Server) outcomeTurnStarted(ctx context.Context, a agents.Agent) {
 	if !s.outcomesOn() {
 		return
 	}
 	s.agentOutcomes.open(a.ID, 1)
+	s.outcomeTurnTaken(ctx, a)
+}
+
+// outcomeTurn brackets ONE ASK of a turn of a — the one rule for every chat
+// door (chatTurn, the machine message route). It returns the context to send
+// the ask under and the function to call with its result.
+//
+// 🔴 AN ASK IS NOT A TURN UNTIL THE RUNTIME TAKES IT. A message sent while
+// another turn holds the session is refused before anything is typed (a typed
+// 409 busy, agentgateway.Unsent) and #494's hold asks again every poll for up to
+// ten minutes. Each refused ask used to record activity and re-arm a waiting
+// agent to running: the watchdog read the asks as life, and the agent stopped
+// being "waiting" though nothing reached it. So the activity and the re-arm
+// (outcomeTurnTaken) run once, at the first sign the runtime took the text —
+// its 103 (agents.WithTurnAccepted), the first read of its stream — or when the
+// ask ends without an Unsent refusal. The turn is open (the watchdog's
+// "working") for the ask's duration either way.
+func (s *Server) outcomeTurn(ctx context.Context, a agents.Agent) (context.Context, func(reply string, err error)) {
+	if !s.outcomesOn() {
+		return ctx, func(string, error) {}
+	}
+	s.agentOutcomes.open(a.ID, 1)
+	var once sync.Once
+	taken := func() { once.Do(func() { s.outcomeTurnTaken(ctx, a) }) }
+	tctx := agents.WithTurnActivity(ctx, func() { taken(); s.outcomeActivity(ctx, a) })
+	tctx = agents.WithTurnAccepted(tctx, func(acc agents.TurnAcceptance) {
+		agents.MarkTurnAccepted(ctx, acc) // the callback ctx already carried
+		taken()
+	})
+	return tctx, func(reply string, err error) {
+		if agentgateway.Unsent(err) == "" {
+			taken()
+		}
+		s.outcomeTurnEnded(ctx, a, reply, err)
+	}
+}
+
+// outcomeTurnTaken: the runtime took a turn of a. Activity now (unthrottled),
+// and a done or waiting agent re-armed to running.
+func (s *Server) outcomeTurnTaken(ctx context.Context, a agents.Agent) {
 	octx, cancel := outcomeCtx(ctx)
 	defer cancel()
 	now := s.now()

@@ -2291,14 +2291,14 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 // That ledger is updated in the same commit — do not re-add a row for a path that
 // no longer exists.
 func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (reply string, err error) {
-	// 🔴 EVERY TURN'S COURSE FEEDS THE AGENT'S OUTCOME (agent_outcome.go): its
-	// start and its stream are activity the watchdog reads, and its end — an
-	// answer, or a failure — is recorded, pushed once when it changes the outcome,
-	// and told to the chief that started it. Wrapped here, the one function every
-	// chat door's turn passes.
-	s.outcomeTurnStarted(ctx, a)
-	defer func() { s.outcomeTurnEnded(ctx, a, reply, err) }()
-	ctx = agents.WithTurnActivity(ctx, func() { s.outcomeActivity(ctx, a) })
+	// 🔴 EVERY TURN'S COURSE FEEDS THE AGENT'S OUTCOME (agent_outcome.go
+	// outcomeTurn): the runtime taking it and its stream are activity the
+	// watchdog reads — an ask refused untyped (a held message's busy) is not —
+	// and its end, an answer or a failure, is recorded, pushed once when it
+	// changes the outcome, and told to the chief that started it. Wrapped here,
+	// the one function every chat door's turn passes.
+	ctx, ended := s.outcomeTurn(ctx, a)
+	defer func() { ended(reply, err) }()
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)
