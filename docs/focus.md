@@ -131,8 +131,11 @@ holds its only callers; `TestTheSessionNameCallerLedger` lists every surface):
 - **the chief's tools**: `fleet_list` and `sessions_overview` rows (`name`),
   `focus_search` hits (`name`), `fleet_report`, the route candidates and
   `route_to_session`'s text, `task_forward`'s label, the connector requests it
-  decides, and a mirrored session's ask label. (An agent's ask is stored with
-  its display name and named by the rule when the item is shown.)
+  decides, a mirrored session's ask label, and the [stall check](chief-nudges.md)'s
+  prompt, which names the session (`session: <name>`) above its focus title.
+  (An agent's ask is stored with the display name it had when it was filed —
+  a record, not a live name — and is named by the rule when the item is
+  shown.)
 
 A named session's **technical ids** — an agent's slug, a window's codename,
 tmux address and host — are off those main surfaces: they are the row's,

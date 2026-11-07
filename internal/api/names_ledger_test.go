@@ -29,13 +29,14 @@ var sessionNameAdapters = []string{
 // is a decision: add it here, with what it is) or SHRINKS (a surface that
 // stopped asking the rule now names sessions some other way, or not at all).
 var sessionNameCallers = []string{
-	"agents.go Server.activeNotificationRows",                    // the notifications panel's active rows
-	"agents.go Server.cardViewIndexed",                           // the sidebar rows, switcher pills and palette (agents)
-	"agents.go Server.handleAgentDetail",                         // the agent page's header and <title>
-	"agents.go Server.handleAgentName",                           // a Save of the unchanged prefilled name is not a rename
-	"agents.go Server.handleNotifications",                       // the notifications panel's unread rows
-	"attention.go Server.withFocus",                              // every attention item's name: the Asks list, pushes, attention_list, the summary
-	"chat_log_live.go Server.dispatchCardFor",                    // a dispatch card in the chief's chat
+	"agents.go Server.activeNotificationRows", // the notifications panel's active rows
+	"agents.go Server.cardViewIndexed",        // the sidebar rows, switcher pills and palette (agents)
+	"agents.go Server.handleAgentDetail",      // the agent page's header and <title>
+	"agents.go Server.handleAgentName",        // a Save of the unchanged prefilled name is not a rename
+	"agents.go Server.handleNotifications",    // the notifications panel's unread rows
+	"attention.go Server.withFocus",           // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"chat_log_live.go Server.dispatchCardFor",
+	"chief_nudge.go Server.stallFacts",                           // the chief's stall prompt (and a notice's stored "agent <name>")                    // a dispatch card in the chief's chat
 	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
 	"fleet_report.go Server.collectFleet",                        // the fleet report
 	"focus_tools.go Server.toolFleetList",                        // the chief's fleet_list
@@ -58,7 +59,8 @@ var sessionNameCallers = []string{
 // nameAdapterSelectors are names.go's functions a surface calls to name a
 // session: the adapters and the helpers built on them.
 var nameAdapterSelectors = map[string]bool{"agentName": true, "mirrorName": true, "storedMirrorName": true,
-	"subjectName": true, "subjectNameOf": true, "humanName": true, "mirrorLabel": true}
+	"subjectName": true, "subjectNameOf": true, "humanName": true, "mirrorLabel": true,
+	"humanMirrorName": true}
 
 // TestTheSessionNameCallerLedger pins the SEAM between the name rule and the
 // surfaces: (1) in the whole module, only names.go's adapters call

@@ -115,6 +115,16 @@ func (s *Server) mirrorLabel(ctx context.Context, e mirror.SessionView) string {
 	return e.DisplayTitle() + " @ " + e.Host
 }
 
+// humanMirrorName is the HUMAN name of the mirrored conversation keyed key
+// from its stored halves (storedMirrorName), "" when it has none — for the
+// stall prompt, which already gives the chief the window's place.
+func (fi focusIndex) humanMirrorName(key string) string {
+	if n := fi.storedMirrorName(key); n.Human() {
+		return n.Text
+	}
+	return ""
+}
+
 // storedName is sub's stored name halves, the zero value for none.
 func (s *Server) storedName(ctx context.Context, sub focus.Subject) focus.Name {
 	if s.ext.Focus == nil {

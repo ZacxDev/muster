@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 )
 
@@ -98,5 +100,28 @@ func TestAnAttentionItemAndItsPushCallTheSessionByItsName(t *testing.T) {
 	it.Name = ""
 	if got := attentionNotification(it, false).Title; got != "mango:1 · tmux main:1 @ ws is asking" {
 		t.Fatalf("unnamed push title %q, want its place", got)
+	}
+}
+
+// TestTheStallPromptCarriesTheSessionsStableName: through the real sweep (pg
+// fixture), the chief's stall check for a window whose conversation has a
+// manual name names it by that name — the name rule's, not the codename.
+func TestTheStallPromptCarriesTheSessionsStableName(t *testing.T) {
+	f := newNudgeFixture(t, false)
+	octx := asUser(authz.OperatorUserID)
+	if _, err := focus.NewPG(f.pool).SetManualName(octx, focus.MirrorSubject(nudgeSID), "Release prep"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, nudgeSID)
+	})
+	if n := f.pass(t); n != 1 {
+		t.Fatalf("decided %d, want the one stall", n)
+	}
+	f.gw.mu.Lock()
+	prompts := append([]string(nil), f.gw.prompt...)
+	f.gw.mu.Unlock()
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "session: Release prep") {
+		t.Fatalf("the stall prompt does not name the session by its stable name: %q", prompts)
 	}
 }
