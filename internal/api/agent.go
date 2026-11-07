@@ -877,7 +877,7 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)
 	case askOwnerTool:
-		return s.toolAskOwner(ctx, arguments)
+		return s.toolAskOwner(ctx, a, arguments)
 	case "connectors_list":
 		return s.toolConnectorsList(ctx, a)
 	case "connector_request":

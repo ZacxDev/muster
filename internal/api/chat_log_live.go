@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -39,6 +40,56 @@ func chatLinesOf(msgs []agents.ChatMessage) []ui.ChatLine {
 func (s *Server) withChatLogLive(ctx context.Context, v *ui.AgentDetailView, session agents.ChatSession) {
 	v.TurnInFlight = s.sessionTurns.inFlight(session.SessionKey)
 	v.DispatchCards = s.dispatchCardsFor(ctx, v.Messages)
+	v.OwnerCards = s.ownerCardsFor(ctx, v.Messages)
+}
+
+// ownerCardsFor reads the stored ask of every ask_owner call in lines whose
+// result names one, by the call's tool id; nil when there is none. The read is
+// the viewer's principal's: another owner's ask is not found, and draws as an
+// open card that names nothing.
+func (s *Server) ownerCardsFor(ctx context.Context, lines []ui.ChatLine) map[string]ui.OwnerCardState {
+	if s.ext.Attention == nil {
+		return nil
+	}
+	var out map[string]ui.OwnerCardState
+	for _, l := range lines {
+		if l.Kind != "tool_result" || l.ToolID == "" || (l.ToolName != askOwnerTool && l.ToolName != "mcp__muster__"+askOwnerTool) {
+			continue
+		}
+		id, ok := ui.ReadOwnerCardResult(l.Content)
+		if !ok {
+			continue
+		}
+		a, err := s.ext.Attention.Get(ctx, id)
+		if err != nil {
+			if !errors.Is(err, attention.ErrNotFound) {
+				s.logger.Printf("ask_owner: card %d: %v", id, err)
+			}
+			continue
+		}
+		if out == nil {
+			out = map[string]ui.OwnerCardState{}
+		}
+		out[l.ToolID] = ownerCardState(a)
+	}
+	return out
+}
+
+// ownerCardState is ask a as its card draws it.
+func ownerCardState(a attention.Ask) ui.OwnerCardState {
+	st := ui.OwnerCardState{AskID: a.ID}
+	switch a.Status {
+	case attention.Answered, attention.AnsweredInSession:
+		st.Status, st.Answer = ui.OwnerCardAnswered, a.Answer
+		st.Phone = a.AnsweredVia.Via == attention.ViaDevice
+	case attention.Expired:
+		st.Status, st.Closed = ui.OwnerCardClosed, "expired"
+	case attention.Cancelled:
+		st.Status, st.Closed = ui.OwnerCardClosed, "was withdrawn"
+	default:
+		st.Status = ui.OwnerCardOpen
+	}
+	return st
 }
 
 // dispatchCardsFor composes a card for every agent_dispatch call in lines that
@@ -61,6 +112,10 @@ func (s *Server) dispatchCardsFor(ctx context.Context, lines []ui.ChatLine) map[
 		}
 		if r.Refused != "" {
 			out[l.ToolID] = ui.DispatchCard{Refused: r.Refused}
+			continue
+		}
+		if r.HostDispatchID > 0 {
+			out[l.ToolID] = s.hostDispatchCard(ctx, r.HostDispatchID)
 			continue
 		}
 		if !read {
@@ -214,6 +269,13 @@ func (s *Server) handleDispatchCard(w http.ResponseWriter, r *http.Request) {
 			refused = refused[:max]
 		}
 		c = ui.DispatchCard{Refused: refused}
+	} else if hq := q.Get("host_dispatch"); hq != "" {
+		id, err := strconv.ParseInt(hq, 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "host_dispatch is an id", http.StatusBadRequest)
+			return
+		}
+		c = s.hostDispatchCard(r.Context(), id)
 	} else {
 		id, err := strconv.ParseInt(q.Get("agent"), 10, 64)
 		if err != nil || id <= 0 || s.ext.Agents == nil {
@@ -227,4 +289,25 @@ func (s *Server) handleDispatchCard(w http.ResponseWriter, r *http.Request) {
 	if err := ui.RenderDispatchCard(w, c); err != nil {
 		s.logger.Printf("agents: render dispatch card: %v", err)
 	}
+}
+
+// hostDispatchCard is host dispatch id's live card (property 4 of
+// docs/design/chief-dispatch.md 2.8: a card keyed by something other than a pod
+// agent row). It reads through hostDispatchCardSource — the host_dispatches
+// store, once phase 3 wires it — as the caller's principal; with no source, or
+// a read that fails, the card says it could not be read and stays refreshable.
+func (s *Server) hostDispatchCard(ctx context.Context, id int64) (c ui.DispatchCard) {
+	version := time.Now().UnixMicro() // before any read, as dispatchCardFor
+	defer func() { c.Version = version }()
+	unreadable := ui.DispatchCard{HostDispatchID: id, Unreadable: true, Name: "Host dispatch #" + strconv.FormatInt(id, 10)}
+	if s.hostDispatchCardSource == nil {
+		return unreadable
+	}
+	c, err := s.hostDispatchCardSource(ctx, id)
+	if err != nil {
+		s.logger.Printf("agents: dispatch card for host dispatch %d: %v", id, err)
+		return unreadable
+	}
+	c.HostDispatchID = id
+	return c
 }

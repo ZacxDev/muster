@@ -126,6 +126,11 @@ type AgentDetailView struct {
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
+	// OwnerCards is each STORED ask_owner card's state — its attention ask —
+	// by the call's tool id (internal/api ownerCardsFor). A call whose result
+	// names no stored ask draws from the transcript alone (a server with no
+	// attention store).
+	OwnerCards map[string]OwnerCardState
 
 	// Source task (Task 6): when this agent was dispatched from a Task, NoteID is
 	// its task id and TaskStatus its current lifecycle status. Both are populated
@@ -1553,6 +1558,19 @@ func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.No
 		}
 		if result != nil && !result.ToolOK {
 			return nil, false
+		}
+		// A STORED card (its result names its attention ask): its state is the
+		// ask's — answered here, on the Attention view or on the phone — never
+		// the transcript's. Each stored card is its own row, so two of them are
+		// two cards.
+		if result != nil {
+			if id, ok := ReadOwnerCardResult(result.Content); ok {
+				st, have := v.OwnerCards[m.ToolID]
+				if !have {
+					st = OwnerCardState{AskID: id, Status: OwnerCardOpen}
+				}
+				return storedOwnerAskCard(m.ToolID, ask, st), true
+			}
 		}
 		// ONE CARD PER ANSWER: one typed reply answers every question asked
 		// before it, so a second ask_owner since the owner last typed (two in

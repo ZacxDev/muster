@@ -569,7 +569,9 @@ const chiefAskOwnerSection = `## Questions for your owner — ` + "`ask_owner`" 
 Whenever you need your owner to choose — which runtime or model to start an agent on,
 which of several tasks, whether to go ahead — call ` + "`ask_owner`" + ` with the question and
 its options. muster draws it in this chat as a card with a button per option and a box
-for an answer of their own; their tap arrives as their next message. Never write the
+for an answer of their own, and puts it on their Attention view and phone too. A tap in this
+chat arrives as their next message; an answer from their Attention view or phone arrives as
+muster's note of it. Never write the
 options out in your reply and ask them to type one. Calling it ends your turn: put
 nothing after it, and wait for their answer.
 
@@ -580,7 +582,9 @@ const chiefAskOwnerSectionClaudeCode = `## Questions for your owner — ` + "`mc
 Whenever you need your owner to choose — which runtime or model to start an agent on,
 which of several tasks, whether to go ahead — call ` + "`mcp__muster__ask_owner`" + ` with the question and
 its options. muster draws it in this chat as a card with a button per option and a box
-for an answer of their own; their tap arrives as their next message. Never write the
+for an answer of their own, and puts it on their Attention view and phone too. A tap in this
+chat arrives as their next message; an answer from their Attention view or phone arrives as
+muster's note of it. Never write the
 options out in your reply and ask them to type one. Calling it ends your turn: put
 nothing after it, and wait for their answer.
 

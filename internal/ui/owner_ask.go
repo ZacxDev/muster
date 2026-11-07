@@ -118,12 +118,21 @@ const (
 // ownerAskCard draws one ask_owner call. answered says a message of the owner's
 // follows it in the conversation, and answer is that message.
 func ownerAskCard(toolID string, ask OwnerAsk, answered bool, answer string) g.Node {
+	if answered {
+		return ownerAskCardAs(toolID, ask, OwnerAskAnswered, answer, answer, 0)
+	}
+	return ownerAskCardAs(toolID, ask, OwnerAskWaiting, "", "", 0)
+}
+
+// ownerAskCardAs draws a card in state: chose is the answer an option is
+// matched against, shown the line under the options (the answer, or why a card
+// closed); askID, when the card is stored, is its attention ask.
+func ownerAskCardAs(toolID string, ask OwnerAsk, state, chose, shown string, askID int64) g.Node {
 	base := "oa-" + toolRowID(toolID)[2:]
 	qid := base + "-q"
-	state, label := OwnerAskWaiting, "waiting for you"
-	if answered {
-		state, label = OwnerAskAnswered, "answered"
-	}
+	answered := state == OwnerAskAnswered
+	label := map[string]string{OwnerAskWaiting: "waiting for you", OwnerAskAnswered: "answered", OwnerAskClosed: "closed"}[state]
+	answer := shown
 	head := Div(Class("flex min-h-[44px] items-center gap-2 px-3 py-2 text-xs font-medium text-fg2"),
 		Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("❓")),
 		Span(Class("min-w-0 truncate"), g.Text("Chief is asking")),
@@ -131,10 +140,13 @@ func ownerAskCard(toolID string, ask OwnerAsk, answered bool, answer string) g.N
 	question := P(ID(qid), g.Attr("data-owner-ask-question", ""), Class("break-words font-medium text-fg"), g.Text(ask.Question))
 
 	var body g.Node
-	if answered {
+	if state == OwnerAskClosed {
+		body = P(g.Attr("data-owner-ask-closed", ""), g.Attr("role", "status"), Class("break-words text-xs text-muted"),
+			g.Text("Not answered: this question "+shown+"."))
+	} else if answered {
 		opts := make([]g.Node, 0, len(ask.Options))
 		for _, o := range ask.Options {
-			chosen := ownerAskChose(ask, o.Label, answer)
+			chosen := ownerAskChose(ask, o.Label, chose)
 			opts = append(opts, Li(g.If(chosen, g.Attr("data-owner-ask-chosen", "")),
 				Class("break-words "+map[bool]string{true: "font-semibold text-fg", false: "text-fg2"}[chosen]),
 				g.Text(o.Label), g.If(o.Description != "", Span(Class("font-normal text-muted"), g.Text(" — "+o.Description)))))
@@ -152,11 +164,73 @@ func ownerAskCard(toolID string, ask OwnerAsk, answered bool, answer string) g.N
 		g.Attr("data-owner-ask", ""),
 		g.Attr("data-owner-ask-state", state),
 		g.Attr("data-tool-id", toolID),
+		g.If(askID > 0, g.Attr("data-owner-ask-id", strconv.FormatInt(askID, 10))),
 		g.Attr("aria-labelledby", qid),
 		Class(askCardClass),
 		head,
 		Div(Class("flex flex-col gap-3 px-3 pb-3"), question, body),
 	)
+}
+
+// OwnerCardAskIDKey is the key ask_owner's result names its stored card by
+// (the attention ask's id); ReadOwnerCardResult reads it back.
+const OwnerCardAskIDKey = "ask_id"
+
+// ReadOwnerCardResult reads the stored card's ask id out of an ask_owner result;
+// ok false for a result that names none (a refusal, or a server with no
+// attention store).
+func ReadOwnerCardResult(output string) (int64, bool) {
+	var r map[string]json.RawMessage
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &r) != nil {
+		return 0, false
+	}
+	var id int64
+	if json.Unmarshal(r[OwnerCardAskIDKey], &id) != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+// A stored card's ask, as the chat draws it (OwnerCardState.Status): the
+// attention ask's own status, collapsed to what a card shows.
+const (
+	OwnerCardOpen     = "open"
+	OwnerCardAnswered = "answered"
+	OwnerCardClosed   = "closed"
+)
+
+// OwnerCardState is a stored card's state, composed in internal/api from its
+// attention ask (ownerCardsFor): THE row every surface reads.
+type OwnerCardState struct {
+	AskID int64
+	// Status is OwnerCardOpen, OwnerCardAnswered or OwnerCardClosed (expired or
+	// withdrawn: Closed says which).
+	Status string
+	Answer string
+	// Phone: the answer came from the owner's paired phone (0090's door).
+	Phone bool
+	// Closed is why a closed card closed, in words ("expired", "withdrawn").
+	Closed string
+}
+
+// OwnerAskClosed is a stored card that closed unanswered (data-owner-ask-state).
+const OwnerAskClosed = "closed"
+
+// storedOwnerAskCard draws a stored card: the call's question and options (the
+// descriptions are the call's; the labels are also the ask's stored options),
+// in the ask's state.
+func storedOwnerAskCard(toolID string, ask OwnerAsk, st OwnerCardState) g.Node {
+	switch st.Status {
+	case OwnerCardAnswered:
+		answer := st.Answer
+		if st.Phone {
+			answer += " (on your phone)"
+		}
+		return ownerAskCardAs(toolID, ask, OwnerAskAnswered, st.Answer, answer, st.AskID)
+	case OwnerCardClosed:
+		return ownerAskCardAs(toolID, ask, OwnerAskClosed, "", st.Closed, st.AskID)
+	}
+	return ownerAskCardAs(toolID, ask, OwnerAskWaiting, "", "", st.AskID)
 }
 
 // ownerAskChose reports whether the owner's answer picked option label: the

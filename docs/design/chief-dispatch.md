@@ -1266,21 +1266,21 @@ completing call, and the hold is only a record. The binding rules above still
 apply, so neither shape opens anything the other closes.
 
 **Checked against PR A's merged code (#496, at `91a52662`): properties 1, 2
-and 4 do not hold, so the held-card half of this section needs a design change
-before it is built.** Property 3 holds.
+and 4 did not hold; the stored-card change (the PR before phase 3) makes all
+four hold.** The owner chose to extend `ask_owner` rather than drop the hold.
 
-| property | holds? | what the merged code does |
+| property | at #496 | now |
 |---|---|---|
-| 1. an attention ask with stored options, an id, and `AnsweredVia` | **no** | the card is drawn from the chief's own stored `ask_owner` tool call in the chat transcript (`internal/ui/agents_detail.go`, the `OwnerAskTool` case). It is not an attention row. Its id is the tool call's id. Its answer is **not stored**: "the card's state is read from the transcript, never stored" (`internal/ui/owner_ask.go`); a card is answered when an owner message follows it. There is no `AnsweredVia`. A free-text "Other" box does exist |
-| 2. muster's own code can raise one for the chief | **no** | `toolAskOwner` (`internal/api/owner_ask.go`) only validates the chief's call and ends the turn; nothing server-side creates a card. A card exists only where a chief tool call does |
-| 3. the answer reaches the chief as a turn | yes | a tap calls the composer's `sendText` (`__ownerAskSend`), so it is the owner's next chat message |
-| 4. the live agent card can be keyed by other than a pod agent row | **no, as merged** | `ReadDispatchResult` reads only `agent_id`, and `DispatchCardSrc` takes an agent id (`internal/ui/dispatch_card.go`). This is an additive extension, not a design change |
+| 1. an attention ask with stored options, an id, and `AnsweredVia` | **no**: the card was the chief's stored tool call, its answer never stored | **holds.** `ask_owner` files an attention ask raised by the chief (`raiseOwnerCard`, `internal/api/owner_ask.go`), with the option labels as its stored options; its result names it (`ask_id`). An answer records its door: `browser` or `device`, stamped by `attention.Answer` from the answering principal (migration 0090), or `mcp`. `AnswerSource.OwnerDoor()` is the binding's door rule, the same doors as #485's `ownerTapped`. The tap is bound to the exact option by `Ask.ChosenOption()`: the answer is exactly one of the row's stored options. The "Other" box is kept |
+| 2. muster's own code can raise one for the chief | **no** | **holds.** `raiseOwnerCard(ctx, chief, question, options)` is the one raise, for the tool and for server code; it pushes like any ask (`askFiled`), so the card is on the Attention view and the phone |
+| 3. the answer reaches the chief as a turn | yes | **holds, by two paths.** An answer on the Attention view or phone is delivered as a turn (the attention delivery, "your owner answered attention #N"). A tap in the chat is still the owner's next typed message, which also settles the card in session (`askerAddressed`) |
+| 4. the live agent card can be keyed by other than a pod agent row | **no** | **holds.** `ReadDispatchResult` reads `host_dispatch_id`. A card keyed `host-<id>` is served by `/ui/dispatch-card?host_dispatch=<id>` from `Server.hostDispatchCardSource`, which phase 3 wires to `host_dispatches` |
 
-A consequence of property 3's shape: a tap goes through the composer, so it is
-**indistinguishable from the owner typing the label**, and a completing call in
-that turn already passes `ownerTurnFor`. The tap is chat-only: it has no
-Attention row and no phone path, so this section's "a tap on the phone" has no
-door today.
+Two consequences for the binding below. A tap in the chat is the owner's typed
+turn, so a completing call made in that turn passes `ownerTurnFor` and needs no
+hold (the "owner types instead" path). An answer settled in session therefore
+never counts as `OwnerDoor()`. Only an answer recorded through the Attention
+view or the phone completes a hold from a turn the owner did not type.
 
 **The model list** (decision 15). `MUSTER_CHIEF_DISPATCH_MODELS` is a
 comma-separated list of OpenRouter model ids, read at server start, each
@@ -3681,7 +3681,7 @@ through the API).
 | ~~claude treats the word after `--` as the prompt, not a subcommand~~ **MEASURED FALSE**: `claude --session-id <uuid> -- update` **ran the `update` subcommand** and installed a new native build (into the scratch `HOME`). So `--` is **not** a guard against the subcommand hazard; **only the fixed preface is**, and it must stay load-bearing and tested (a prompt that does not start with it must be refused on the host, not merely never sent). A non-subcommand prompt after `--`, with `;`, `$(id)` and both quote kinds, arrived byte-identical as the first user message | [3.6](#36-the-commands-and-prompt-delivery) | phase 3 |
 | **MEASURED:** `--session-id <uuid>` is written to `<config>/sessions/<pid>.json` as `sessionId`, which is the mirror's second lookup (before the transcript guess), and names the transcript file `<uuid>.jsonl`. The mirror's own code path reading it was not run | [3.6](#36-the-commands-and-prompt-delivery) | phase 3 |
 | **MEASURED:** the spawn's own time. On two of the owner's repositories (about 2.5k and 3.2k tracked files, neither with `.gitmodules`), from scratch clones: a cold full clone took 2.5 s and 2.9 s, a warm `fetch --no-tags origin <base>` 0.7 s each, and `worktree add` 0.1-0.2 s. That is far below half the 120 s deadline, so the three deadlines stay. Submodule time was not measurable: neither repository has submodules | [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task) | phase 3 |
-| ~~PR A's `ask_owner` has the four properties [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) relies on~~ **CHECKED: 1, 2 and 4 do not hold** (table in [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) | [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) | phase 3, before building |
+| ~~PR A's `ask_owner` has the four properties [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) relies on~~ **CHECKED: 1, 2 and 4 did not hold; the stored-card change makes all four hold** (table in [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) | [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) | phase 3, before building |
 | `POST /api/session` with `model` runs the session's turns on that OpenRouter model; the provider id the hosts' configuration uses; how `GET /api/model` lists OpenRouter models, including just after a service restart | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
 | the shared service runs a session's tools in its `location.directory` | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
 | `muster-mirror opencode -s <id>` binds a pane on a session the host created a moment before | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
